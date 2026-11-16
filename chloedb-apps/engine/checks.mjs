@@ -113,7 +113,7 @@ export async function runTests(engine, appId, tests, fresh) {
 }
 
 // Deletes every row of the given tables, without running triggers.
-async function emptyTables(engine, appId, tables) {
+export async function emptyTables(engine, appId, tables) {
   for (const t of tables) {
     const name = physical(appId, t);
     for (;;) {
@@ -144,7 +144,7 @@ export function loadPlaywright() {
 // Opens the app and each of its views in a headless browser and returns the
 // errors seen, per view: {ran, views: [{tab, errors}]}. The page itself
 // reports its errors to the engine, which repairs them.
-export async function openViews(baseUrl, appId, { wait = 1500, v = null } = {}) {
+export async function openViews(baseUrl, appId, { wait = 1500, v = null, withText = false } = {}) {
   const pw = process.env.STRATA_APPS_OPEN_VIEWS === 'off' ? null : loadPlaywright();
   if (!pw || !baseUrl) return { ran: false, views: [] };
   const browser = await pw.chromium.launch();
@@ -164,7 +164,10 @@ export async function openViews(baseUrl, appId, { wait = 1500, v = null } = {}) 
       if (i > 0 || errors.length === 0) errors = i === 0 ? errors : [];
       let tab = '';
       if (await tabs.count()) { tab = (await tabs.nth(i).innerText()).trim(); await tabs.nth(i).click(); await page.waitForTimeout(wait); }
-      views.push({ tab, errors: [...new Set(errors)] });
+      // The words the view shows (its frames'), for the figures check.
+      let text = '';
+      if (withText) for (const f of page.frames()) text += `${await f.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '')}\n`;
+      views.push({ tab, errors: [...new Set(errors)], ...(withText ? { text: text.slice(0, 20000) } : {}) });
       errors = [];
     }
   } finally { await browser.close(); }

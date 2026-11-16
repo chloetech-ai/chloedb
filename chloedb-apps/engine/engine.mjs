@@ -6,10 +6,20 @@ import { EventEmitter } from 'node:events';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Store, physical, newId } from './store.mjs';
 import { rewriteSql, checkReads, tokenize } from './sql.mjs';
-import { decide, rulesOf, scopeSql, scopeParams, inScope, fillScope, SCOPE_PARAM } from './access.mjs';
+import { decide, rulesOf, scopeSql, scopeParams, inScope, fillScope, SCOPE_PARAM, mayCall, linksOf, viaKey } from './access.mjs';
 import { runFunction } from './sandbox.mjs';
 import { runRule } from './rules.mjs';
 import { rowLabel, tablesOf } from './activity.mjs';
+
+// :today in any SQL of an app is the day it runs ('YYYY-MM-DD', the
+// engine's local day) unless the caller gives one: a screen's DATA, a KPI, a
+// rule or app.sql need not pass it.
+export function withToday(sql, params) {
+  if (!/:today\b/.test(String(sql || '')) || (params && params.today !== undefined)) return params || {};
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  return { ...(params || {}), today: `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}` };
+}
 
 const MAX_ROWS = 1000;
 // What a person is called where an app shows them: their name, else their
@@ -261,10 +271,29 @@ export class Engine extends EventEmitter {
   // (a visitor or a member, through the public path): the tables' declared
   // access (access.mjs) holds them to what they may see. Without it (the
   // studio, the engine's own checks, triggers) every row is read.
+  // The person with what they belong to: the values of the link tables an
+  // access scope reads (the projects in their own rows of memberships),
+  // read with the app's rights, once per call.
+  async withLinks(appId, who, view = null) {
+    if (!who || !(who.user || who.company)) return who;
+    view = view || await this.view(appId);
+    const links = linksOf(view.tables.map((t) => t.spec));
+    if (!links.length) return who;
+    const db = await this.dbOf(appId);
+    const out = {};
+    for (const v of links) {
+      const id = v.by === 'company' ? who.company : who.user?.id;
+      if (!id || !view.tables.some((t) => t.spec.name === v.table)) { out[viaKey(v)] = []; continue; }
+      const rows = await db.query(`SELECT ${v.pick} FROM ${physical(appId, v.table)} WHERE ${v.match} = :id LIMIT 5000`, { id: String(id) }).catch(() => []);
+      out[viaKey(v)] = [...new Set(rows.flatMap((r) => (Array.isArray(r[v.pick]) ? r[v.pick] : [r[v.pick]])).filter((x) => x != null).map(String))];
+    }
+    return { ...who, links: out };
+  }
+
   async sql(appId, sql, params, ctx = {}) {
     const view = await this.view(appId);
     const names = view.tables.map((t) => t.spec.name);
-    const who = ctx.as || null;
+    const who = ctx.as ? await this.withLinks(appId, ctx.as, view) : null;
     const specs = new Map(view.tables.map((t) => [t.spec.name, t.spec]));
     const closed = view.tables.some((t) => rulesOf(t.spec));
     const scope = who ? (name) => {
@@ -272,7 +301,7 @@ export class Engine extends EventEmitter {
       return d.all ? null : { sql: (alias, o) => scopeSql(d.scope, alias, o) };
     } : null;
     const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t), { scope });
-    params = { ...bindPeople(sql, params, ctx), ...(who ? scopeParams(who) : {}) };
+    params = { ...withToday(sql, bindPeople(sql, params, ctx)), ...(who ? scopeParams(who) : {}) };
     const db = await this.dbOf(appId);
     // With the app's own key the server refuses any other table itself;
     // with the engine's, its plan is checked first.
@@ -299,6 +328,7 @@ export class Engine extends EventEmitter {
 
   async insert(appId, table, fields, ctx = {}) {
     const spec = await this.tableSpec(appId, table);
+    if (ctx.as) ctx = { ...ctx, as: await this.withLinks(appId, ctx.as) };
     fields = await this.mayWrite(appId, spec, 'add', fields, ctx);
     if (ctx.visitor) checkVisitorWrite(await this.view(appId), spec, fields);
     const doc = this.makeDoc(spec, fields);
@@ -317,6 +347,7 @@ export class Engine extends EventEmitter {
 
   async update(appId, table, id, fields, ctx = {}) {
     const spec = await this.tableSpec(appId, table);
+    if (ctx.as) ctx = { ...ctx, as: await this.withLinks(appId, ctx.as) };
     const db = await this.dbOf(appId);
     const [old] = await db.get(physical(appId, table), [String(id)]);
     if (!old) throw new Error(`no row ${id} in ${table}`);
@@ -335,6 +366,7 @@ export class Engine extends EventEmitter {
 
   async remove(appId, table, id, ctx = {}) {
     const spec = await this.tableSpec(appId, table);
+    if (ctx.as) ctx = { ...ctx, as: await this.withLinks(appId, ctx.as) };
     const db = await this.dbOf(appId);
     const [old] = await db.get(physical(appId, table), [String(id)]);
     await this.mayChange(appId, spec, 'remove', old, ctx);
@@ -398,12 +430,21 @@ export class Engine extends EventEmitter {
     // down: its writes are checked as theirs, its errors only recorded.
     // A person's call (ctx.as) runs as them: its reads and writes are held
     // to the tables' declared access, all the way down.
+    // A function that declares its callers (ALLOW CALL, access.mjs) is the
+    // app's own code acting for them: the call is checked against who may
+    // make it, then it runs with the app's rights (its reads and writes are
+    // not held to the caller's), as a SECURITY DEFINER procedure does.
+    // The person stays its user (:user_id), and who added a row stays theirs.
     // The person on the public path whose action led here (sender) stays
-    // known even in a trigger that runs as the app: what it may email
-    // follows them (services.email, audit 4, X-G5).
+    // known either way, even in a trigger that runs as the app: what it may
+    // email follows them (services.email, audit 4, X-G5).
+    const definer = !!fn.spec?.callers && (ctx.as || ctx.visitor);
+    if (definer) mayCall(fn.spec.callers, String(fn.title || slug).toLowerCase(), ctx.as || { role: 'visitor', user: null });
     const pub = !!(ctx.pub || ctx.visitor);
     const sender = ctx.sender || ctx.as || (pub ? { role: 'visitor', user: null } : null);
-    const inner = { depth, by: fn.id, user, test: !!ctx.test, visitor: !!ctx.visitor, pub, ...(ctx.as ? { as: ctx.as } : {}), ...(sender ? { sender } : {}) };
+    const inner = definer
+      ? { depth, by: fn.id, user, test: !!ctx.test, visitor: false, pub: false, ...(ctx.who ? { who: ctx.who } : {}), ...(sender ? { sender } : {}) }
+      : { depth, by: fn.id, user, test: !!ctx.test, visitor: !!ctx.visitor, pub, ...(ctx.as ? { as: ctx.as } : {}), ...(ctx.who ? { who: ctx.who } : {}), ...(sender ? { sender } : {}) };
     const services = () => {
       if (!this.services) throw new Error('this engine runs without services (people, files, email, places)');
       return this.services;
@@ -454,6 +495,8 @@ export class Engine extends EventEmitter {
     } catch (e) {
       // A rule's refusal ("Only 2 left") is for the person, not a repair.
       if (!e.refused) this.reportError(appId, fn.id, e.message, ctx.trigger ? `trigger on ${ctx.trigger}` : 'call', { visitor: !!(ctx.visitor || ctx.pub) });
+      // A refusal is recorded as use: refused again and again, the app may say it sooner (recommend.mjs).
+      else if (!ctx.depth && !ctx.test) this.store.track(appId, 'refused', fn.id, `${slug}: ${e.message}`, { person: ctx.who || user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen }).catch(() => {});
       throw e;
     }
   }
@@ -548,6 +591,9 @@ export class Engine extends EventEmitter {
 
   // Tracks the write and runs the functions that wait for it.
   async after(appId, table, event, row, ctx) {
+    // Who added the row, at any depth (a rule's insert is its caller's):
+    // a payment is bound to the order its payer placed (services.pay).
+    if (event === 'insert' && ctx.who && !ctx.test && row && row.id !== undefined) await this.store.noteMaker(appId, table, row.id, ctx.who).catch(() => {});
     const view = await this.view(appId);
     // A build's own checks (checks.mjs, ctx.test) are not anyone's use of the app.
     if (!ctx.depth && !ctx.test) {

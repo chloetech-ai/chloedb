@@ -16,11 +16,11 @@ import { assignLayouts } from './layouts.mjs';
 import { audienceOf } from './audience.mjs';
 import { placePhotos, placeScreenPhotos, photoIds, warmPhotos, photoCache } from './photos.mjs';
 import { withPhotos } from './source.mjs';
-import { checkAccess, parseAccessList, allowText, wantsAccess } from './access.mjs';
+import { checkAccess, parseAccessList, allowText, wantsAccess, WHO } from './access.mjs';
 import { compileStatements, compileStatement, STATEMENT_DOC } from './statement.mjs';
 import { compileRuleStatements, isRuleStatement, RULE_SQL_DOC } from './rulesql.mjs';
 import { checkRule, RULES_DOC } from './rules.mjs';
-import { TESTS_DOC, TESTS_SQL_DOC, checkTests, runTests, openViews } from './checks.mjs';
+import { TESTS_DOC, TESTS_SQL_DOC, checkTests, runTests, openViews, emptyTables } from './checks.mjs';
 import { LOOK, checkDrawn } from './look.mjs';
 import { ABILITIES, usesOf } from './reach.mjs';
 import { parseEvery, everyWords, ScheduleError } from './schedule.mjs';
@@ -39,6 +39,7 @@ export function keysIn(code) {
   return out;
 }
 import { madeUp, tidyTitle } from './taste.mjs';
+import { parseAttached, dataPart, prepareData, computeFigure, compareFigure, figureNotShown, gateOf, renameIn, currencyOf } from './data.mjs';
 import { ART_DOC, TASTE_DOC, LAYOUT_NAMES, LAYOUT_SHORT, parseLayout } from './quality.mjs';
 
 // A screen's budget (budgetOf, below): what a change may grow it to.
@@ -58,7 +59,7 @@ The person describes what they want in their own words: the first version of a n
 
 Column types:
 - text: prose, searched by words (titles, notes, descriptions, bodies)
-- keyword: a short label you filter, group and sort by: a status, category, person, email, url, color, a reference to another row's id
+- keyword: a short label you filter, group and sort by: a status, category, person, email, url, color, a reference to another row's id (screens show the referenced row's name, joined in the query, never its id)
 - keyword[]: a list of labels (tags)
 - int, float, bool
 - timestamp: a moment, ISO 8601 text in and out ("2026-11-08T10:00:00Z"). For a calendar day without a time (a due date, the day of a check-in, a birthday) use a keyword holding "YYYY-MM-DD" instead: it compares and sorts correctly, does not shift with time zones, and app.today() gives today's in the person's time zone
@@ -76,18 +77,24 @@ Choose text only for prose people search by words, and keyword for anything you 
 
 The engine enforces who may read and write a table, on the server, for every read and write the app's people make (app.sql, app.insert, app.update, app.remove and the functions they call): hiding rows or buttons in a screen protects nothing. Declare it in the plan's "access", one ALLOW statement per string:
 
-    ALLOW READ | ADD | CHANGE | REMOVE | WRITE | ALL [, ...] ON <table> TO everyone | members | admins | owner [WHERE <column> = :user_id | <column> = :company_id [OR ...]]
+    ALLOW READ | ADD | CHANGE | REMOVE | WRITE | ALL [, ...] ON <table> TO everyone | members | admins | owner [WHERE <column> = :user_id | <column> = :company_id | <column> IN (SELECT <column> FROM <link table> WHERE <column> = :user_id) [OR ...]]
 
 - WRITE is add, change and remove; ALL is read and write. members are people signed in to the app; admins are the ones its owner made admins (and the owner); each includes the ones after it (TO members lets admins and the owner too). everyone includes visitors who are not signed in.
 - WHERE keeps a person to their own rows (owner_id = :user_id) or their company's (company_id = :company_id): reads see only those rows, an add fills the column with the person's id (or their company's) when the row leaves it out, and changes and removes reach only those rows. The column is a keyword column of the table: add it in "tables" when the table lacks it.
+- WHERE <column> IN (SELECT <column> FROM <link table> WHERE <column> = :user_id) keeps people to the rows of what they belong to, through a table that links people to things (a person on an account, a parent and a child, a client and their case): ALLOW READ ON tickets TO members WHERE account IN (SELECT account FROM members_of WHERE person = :user_id). The link table holds one row per person and thing (its person column a PERSON field, so the owner picks the name); the owner (or admins) adds those rows on a screen of their own, and that is how someone is put on an account. An add under it must name one of their things; nothing is filled in.
 - In an app that declares no access at all, a table is open to whoever reaches the app. Once any table of the app has an ALLOW statement, a table with none is read by everyone and written by the app's owner only: give every table the app's people write its statements. Once a table has one, only what its statements allow goes through. The app's builder (the studio) always sees every row.
 - A trigger (a function or rule with "on") runs as the person whose write fired it: their access holds for what it reads and writes. A trigger that must reach rows that person may not (a total over everyone's orders, a counter on a table only the owner writes) runs as the app: "as": "app" on the function (RUNS AS APP before AS in a CREATE RULE); then let it write only what everyone may see.
 - Statements for a table replace the ones it had: give all of a table's statements together.
+- A function people call says who may: ALLOW CALL ON <function> TO everyone | members | admins | owner. It is the app's own code acting for them: the engine checks the call against that, then runs it with the app's rights, so a visitor's order may lower a stock no visitor may change and a member's booking may take a place they may not edit. Its refusals (REQUIRE) and a call by someone not allowed are said to the person. Keep what such a function does to what its callers should be able to cause.
 - Examples. Only signed-in people read or change the data: ALLOW ALL ON invoices TO members. Everyone reads the menu, the owner edits it: ALLOW READ ON dishes TO everyone, ALLOW WRITE ON dishes TO owner. Each person sees their own notes: ALLOW ALL ON notes TO members WHERE owner_id = :user_id. Admins see everything: ALLOW ALL ON notes TO admins.
 - Companies (workspaces): the engine keeps which company each person works in (not a table of the app: never make one). In a view: app.companies() -> [{id, name, role, invited}], app.company() -> the id of the one they work in now or null, app.createCompany(name) (they become its admin), app.useCompany(id), app.addToCompany(company, email, role) (an admin invites someone who has an account; role 'member' or 'admin'), app.joinCompany(id) (a person joins a company that invited them: app.companies() lists it with invited set and role null until they do; offer them a Join button). A table each company keeps to itself has a company_id keyword column and ALLOW ALL ON t TO members WHERE company_id = :company_id.
 - In SQL, :user_id, :user_email, :user_name and :company_id are bound by the engine to the signed-in person and their company (never pass them yourself); a query that names one when nobody is signed in is refused with "Sign in first", so a screen that needs a person shows app.signIn first.
 
 Whenever the request says who may see or change data (only signed-in people, the owner, admins, roles, each person's or each company's own data), declare access for every table of the app, including the ones that stay open (ALLOW READ ON t TO everyone): a build that asks for it and declares none is refused.
+
+Access follows who the data is for, said or not. Data the request treats as someone's own business (a company's finances, salaries, customers and what they owe, a person's health, budget or diary, staff records, private notes) is for its owner or its team: declare it (ALLOW ALL ON t TO owner, or TO members when a team shares it), so a link that gets out shows a sign-in, never the figures. Data meant for the public (a menu, prices, a timetable, a portfolio) is read by everyone and changed by the owner. An app with both says each table's own. What people pay or sign up for (a workshop's handouts and exercises, a members' archive) reaches those who have it, never the owner alone: a function they may call (ALLOW CALL ON get-handout TO members) checks they paid or signed up and returns it, with the app's rights, while its tables stay the owner's; the screens show it through that function, never by reading those tables themselves. When everyone signed in may have it, members read it (ALLOW READ ON t TO members).
+
+When the request names kinds of people who reach different things (crews and homeowners, coaches and players), the owner needs to say who is on what, in the app: the rows people reach carry who may reach them, as keyword[] columns of account ids picked with a people field in the row's own form (a renovation's crew and its homeowners), and access keeps each person to the rows that name them (ALLOW READ ON renovations TO members WHERE crew = :user_id OR homeowners = :user_id: a keyword[] column matches when any of its ids is theirs). Never a separate table of who is on what that access cannot read. Rows under them (a renovation's jobs) carry the same columns, copied from their parent when added. A job that is someone's keeps who it is for with a person field, shown by name.
 
 # SQL (Strata's dialect: read-only SELECT through app.sql)
 
@@ -104,6 +111,7 @@ Whenever the request says who may see or change data (only signed-in people, the
 - GROUP BY keyword, int, float or bool columns, or date_trunc('day' | 'week' | 'month', a timestamp). Never GROUP BY a text column. Aggregates: COUNT(*), COUNT(DISTINCT c), SUM, AVG, MIN, MAX. HAVING. Name aggregates with AS.
 - ORDER BY any column or alias, ASC or DESC, several keys; always end a query that returns rows with LIMIT (at most 500).
 - JOIN ... ON, LEFT JOIN, subqueries, WITH, UNION, CASE, coalesce, round, abs, length, strftime('%Y-%m-%d', t), EXTRACT(dow FROM t), date_trunc, now(), CAST(x AS INT).
+- :today is today's date ('YYYY-MM-DD') in any SQL of the app (DATA, KPIs, rules, app.sql), filled in on its own; pass it only to mean another day.
 - Dates in computed values (SELECT, CASE, the SQL functions): 'YYYY-MM-DD' keywords and timestamps compare as they are (CASE WHEN due < :today THEN 'late' END), and date_trunc and date_part read either; a day later is date_trunc('day', d) + n * 86400000000 (microseconds). CAST(... AS TIMESTAMP) takes a value only (a parameter or a literal), never a column or an expression of one.
 - No INSERT, UPDATE or DELETE in app.sql: write with app.insert, app.update, app.remove.
 - Counts come back as numbers; timestamps as ISO text; bools as true or false; keyword[] as arrays.
@@ -127,7 +135,7 @@ app in a view (every call returns a Promise):
 - app.track(action, detail): records something meaningful the person did (app.track('filter', 'status=done'), app.track('search', q)). Opening a view, inserts, updates and removes are recorded already. What is recorded is how the app learns what to offer next.
 - app.toast(text): a short message at the bottom
 - app.download(name, text, type = 'text/csv') saves a file the person keeps; app.csv(rows, columns) makes its CSV text (columns: names or {key, label}). A list's CSV needs neither: its EXPORT clause.
-- app.fmt.ago(iso) ("3 h ago"), app.fmt.date(iso) ("8 Nov 2026"), app.fmt.time(iso), app.fmt.datetime(iso), app.fmt.number(n), app.fmt.money(n, currency='USD')
+- app.fmt.ago(iso) ("3 h ago"), app.fmt.date(iso) ("8 Nov 2026"), app.fmt.time(iso), app.fmt.datetime(iso), app.fmt.number(n), app.fmt.count(n, 'flag') ("1 flag", "3 flags"; count(n, 'person', 'people')) for every number said in words, app.fmt.money(n, currency=the app's own, from its data or request)
 - app.today(): today's date as "YYYY-MM-DD"; app.now(): the time as ISO text
 
 The frame has no network: fetch, imports, external scripts, fonts and stylesheets are blocked, and so are localStorage and cookies (keep state in a table, or in variables while the view is open). confirm() and prompt() work. Images may load from https URLs the data holds, and from files the app stores (app.fileUrl(id), below).
@@ -171,11 +179,12 @@ returning an object of functions. Helpers get no app and no page (no app.*, docu
 # Services: people, files, email, places, a model, the web
 
 Every app gets these from the runtime. In views and components each call returns a Promise; the ones marked (functions too) also work in functions, where they return directly.
-- People. app.me() -> the signed-in person {id, name, email, role} or null. app.signIn(email, password), app.signUp({email, name, password}) and app.signOut(): every view of the app starts again afterwards, seeing the new person. app.people() -> the app's members [{id, name, email, role}] (functions too). One account works in every app here; the first person to sign in to an app is its owner, the others are members. In a function, app.user is the person whose action led to the call, or null. To record who did something, keep the person's id in a keyword column (author, assignee) and show names from app.people(). Use the shared components for this (ui.signIn, ui.userMenu, ui.avatar, ui.peoplePicker). Who may read or write a table is declared in "access" (see Access) and enforced by the engine; lib.access only decides what a screen shows. An app that only one person uses needs none of it.
+- People. app.me() -> the signed-in person {id, name, email, role} or null. app.signIn(email, password), app.signUp({email, name, password}) and app.signOut(): every view of the app starts again afterwards, seeing the new person. app.people() -> the app's members [{id, name, email, role}] (functions too). One account works in every app here; the first person to sign in to an app is its owner, the others are members. In a function, app.user is the person whose action led to the call, or null. To record who did something, keep the person's id in a keyword column (author, assignee) and show names from app.people(). Use the shared components for this (ui.signIn, ui.userMenu, ui.avatar, ui.peoplePicker). A screen anyone may open shows its content, never a sign-in form before it: when an action there needs someone signed in (the engine refuses it until then), the app asks them to sign in at that moment and then carries the action on; a screen kept to members gets its own sign-in page. Who may read or write a table is declared in "access" (see Access) and enforced by the engine; lib.access only decides what a screen shows. An app that only one person uses needs none of it.
 - Files. app.upload(file) takes a File from <input type="file"> or a drop (a FileList or an array uploads each) and returns {id, name, type, size, url}; files are at most 15 MB. Keep the id in a keyword column, or a keyword[] for several. app.fileUrl(id) is the URL to show it (an img's src, a link); app.fileUrl(id, {download: true}) downloads it. app.files(ids) -> [{id, name, type, size, url}] (functions too). The shared ui.uploader, ui.image, ui.gallery, ui.imageViewer and ui.fileList do the rest.
+- Card payments. app.pay({table, id, amount: '<column>', status: '<column>', description}) asks for a card payment of a row of <table> that has an amount to charge: amount names the row's column holding it (in the app's currency), status the column set when it is paid (left out, no column changes). It resolves to {url, mode, amount, currency}; the payer pays on that hosted page, opened from a tap (a "Pay by card" button: window.open(url)); the app never sees or stores card details, so never add card fields. Only the one who added the row (or the owner) may ask. When the card provider confirms it, the status column becomes 'paid' (a bool one true); until the owner connects a provider the page is in test mode, says so, and a payment there sets it to 'paid (test)', never 'paid': screens show it as it is. A request to take card payments for rows people add uses it: add the row (a rule that checks it), then app.pay for the new row, then the button.
 - Email. app.email({to, subject, text}) puts a plain-text email in the app's outbox and returns {id, status} (functions too; from a view only when someone is signed in). At most 10 recipients, and 30 emails an hour per app. On a published app, what a visitor or member sets off (from a view, or a function or trigger their action runs) goes only to the app's own people (its members' emails); its admins and owner write to anyone. Without a mail server the outbox holds it (status "held"): tell the person it is queued, never that it was delivered.
 - Places. app.geocode(address) -> up to 5 matches [{label, lat, lng}] (functions too). app.tiles is the URL template of map tiles; ui.map and ui.locationPicker use it, with lib.geo for distances.
-- A model. app.ask(prompt, {json, system, web}) -> the model's answer as text, or as a JSON value with json: true (functions too). A small, quick model answers in a few seconds; the same question gets the same kept answer at no cost, and each app has a daily number of questions. Use it for what needs judgement over words and no query or code can do: summarize notes, sort a message into one of the app's categories, pull fields out of pasted text, draft a reply, suggest tags or a next step. Never for what SQL, an "=expression" or a helper computes (totals, dates, sorting, search). Put the data it needs in the prompt (the rows, as short text or JSON), say exactly what to answer, and keep the answer in a column when it is worth keeping, so it is asked once. Call it on a person's tap (a button, or a function a button calls) or in a trigger on insert, never on every load, and show "Thinking..." while it answers. {web: true} lets the model search the web for current facts (prices, opening hours, news, a product's details): slower, 10 to 40 seconds, and its sources come in the last line.
+- A model. app.ask(prompt, {json, system, web}) -> the model's answer as text, or as a JSON value with json: true (functions too). A small, quick model answers in a few seconds; the same question gets the same kept answer at no cost, and each app has a daily number of questions. Use it for what needs judgement over words and no query or code can do: summarize notes, sort a message into one of the app's categories, pull fields out of pasted text, draft a reply, suggest tags or a next step. Never for what SQL, an "=expression" or a helper computes (totals, dates, sorting, search). Put the data it needs in the prompt (the rows, as short text or JSON), say exactly what to answer, and keep the answer in a column when it is worth keeping, so it is asked once. Call it on a person's tap (a button, or a function a button calls) or in a trigger on insert, never on every load, and show "Thinking..." while it answers. {web: true} lets the model search the web for current facts (prices, opening hours, news, a product's details): slower, 10 to 40 seconds, and its sources come in the last line. Never as the person types: suggestions as they type come from the app's own rows at once (ui.combobox with the rows as its options, matched as they type); a lookup that asks the model or the web for what the rows lack goes in the combobox's onSearch, asked only when typing pauses and shown below the instant matches when it answers.
 - The web. app.fetch(url, {method, json, headers, secret}) -> {ok, status, url, type, json, text, title, body} (functions too): public pages and APIs over http and https (JSON comes parsed in json; an HTML page's readable words in text and its title in title). Addresses on this machine or its network are refused; at most 2 MB and 10 seconds; GET answers are kept for 10 minutes. Prefer an API that answers JSON over reading a page. Write each address in full in the code ('https://api.example.com/v1/...'): the owner allows each host the app reads from, and separately each one it sends to (method 'POST'), and sees them listed from the code. An API that needs a key: never write the key, a token or a password in the code or ask the person to type one into a form; pass {secret: 'weather'} (a short name for it) and the engine adds the key the owner keeps under that name to the request. Say in the view, in one line, where the owner sets it when the call answers that the secret is missing.
 - A feed or a JSON list that fills a table on a clock is a CREATE SOURCE rule, not code (see Rules); a rule or function that runs on its own each hour, day or week has a schedule (EVERY ...).
 - The owner switches a model, web search, the web and schedules on for each app, and allows each host; until then app.ask and app.fetch throw an error that says so (an error with refused set). Catch it where you call them and show the screen without the answer, saying in one line that it is off. In a build's tests they answer "" (null with json; {ok: false} from app.fetch) and call nothing: test what the app does with rows, not the model's words.
@@ -190,7 +199,7 @@ A function's code defines
 a plain synchronous function: app calls return their results directly (no async, no await, no Promises). app in a function:
 - app.sql(sql, params) -> rows; app.insert(table, row) -> row; app.update(table, id, fields) -> row; app.remove(table, id)
 - app.call(slug, input); app.now() -> ISO time; app.log(...)
-- app.user (the signed-in person or null), app.people(), app.files(ids), app.email(msg), app.geocode(address), app.ask(prompt, opts), app.fetch(url, opts): the services above
+- app.user (the signed-in person or null), app.people(), app.files(ids), app.email(msg), app.pay({table, id, amount, status}), app.geocode(address), app.ask(prompt, opts), app.fetch(url, opts): the services above
 It returns any JSON value. It runs in QuickJS with a 10 s limit (time spent waiting for app.ask and app.fetch does not count), no network but app.fetch, no files, no require or import. Date, Math, JSON, RegExp, Array and the rest of standard JavaScript work.
 
 A function may declare a trigger, "on": {"table": "tasks", "event": "insert"} (or "update" or "delete"): it then runs after each such write with input {row, table, event}, where row is the row as stored (the old row for delete). Writes a trigger makes run their own triggers, at most 3 deep. Use a trigger when something must happen whenever rows change (keep a counter, log history, fill a derived column); use a plain function that views call for work on demand.
@@ -210,7 +219,9 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 {
   "name": "Habits",
   "ux": {"who": "...", "job": "...", "often": "daily", "device": "phone", "first": "today", "glance": "..."},
-  "art": {"concept": "...", "mood": "...", "layout": "split, ...", "type": "serif titles over plain text", "accent": "...", "imagery": "none", "action": "Start lesson 1"},
+  "art": {"concept": "...", "mood": "...", "layout": "split, ...", "type": "serif titles over plain text", "accent": "...", "theme": "...", "imagery": "none", "action": "Start lesson 1"},
+  "currency": "EUR",
+  "locale": "es-ES",
   "summary": "what this version changed, in one or two plain sentences, written to the person",
   "tables": [{"name": "tasks", "description": "what a row is", "columns": [{"name": "title", "type": "text"}, {"name": "status", "type": "keyword"}]}],
   "access": ["ALLOW ALL ON tasks TO members WHERE owner_id = :user_id"],
@@ -221,21 +232,29 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
   "upgrade": [],
   "remove": [],
   "reuse": [{"id": "abc123/view/board@2", "slug": "board", "title": "Board", "order": 2}],
-  "seed": {"tasks": [{"title": "...", "status": "open"}]},
+  "seed": {"projects": [{"id": "p1", "name": "..."}], "tasks": [{"title": "...", "status": "open", "project": "p1", "due": "2026-11-20"}]},
+  "import": {"Sheet name": "table"},
+  "figures": [{"label": "...", "view": "dashboard", "data": "top_customers", "table": "invoices", "sum": "amount", "by": "customer", "top": 5}],
+  "welcome": {"title": "...", "text": "...", "points": ["..."]},
   "suggestions": [{"text": "...", "why": "..."}]
 }
 
-- name: only for a new app, or when asked to rename it: what a person would call it on their home screen, 2 to 4 words ("Habits", "Plant care", "Lunch votes"); never the request cut short.
-- ux: the brief the screens are designed from, decided first, before the tables and screens (for a new app, and for a change that alters who uses it or how): "who" uses it and where; the "job" they come back for, in their words; how "often" ("several times a day", "daily", "several times a week", "weekly", "monthly" or "now and then"); the "device" ("phone", "desktop" or "both"; a thing done daily is done on a phone unless the request says otherwise); "first", the slug of the screen that opens first, where that job is done; and the "glance", what they see on opening without a tap (the count, the list or the number that matters). The screens follow it, in this order: first the one where the job is done (in one or two taps for a job done daily or more: a check per item, a quick add, a toggle; never a form to fill for it), then the ones to look back (history, charts, totals), last the ones to set up (the list of things, settings). On a phone a screen is one column of what fits a phone; a table with more than three columns is drawn as cards.
+- name: only for a new app, or when asked to rename it: what a person would call it on their home screen. When the request names it, that name; otherwise coin one as a product would be named, one or two words with a little character from its subject ("Tidepool" for a swim club's lane bookings, "Spokeyard" for a bike repair queue, "Seedline" for a seed library), never a plain description ("Swim bookings", "Repair tracker") and never the request cut short.
+- ux: the brief the screens are designed from, decided first, before the tables and screens (for a new app, and for a change that alters who uses it or how): "who" uses it and where; the "job" they come back for, in their words; how "often" ("several times a day", "daily", "several times a week", "weekly", "monthly" or "now and then"); the "device" ("phone", "desktop" or "both"; a thing done daily is done on a phone unless the request says otherwise); "first", the slug of the screen that opens first, where that job is done; and the "glance", what they see on opening without a tap (the count, the list or the number that matters). The screens follow it, in this order: first the one where the job is done (in one or two taps for a job done daily or more: a check per item, a quick add, a toggle; never a form to fill for it), then the ones to look back (history, charts, totals), last the ones to set up (the list of things, settings). When the request asks the app to show something (a summary, what is owed, a streak, a total, what is on), the first screen shows that result, and an input done often goes on it as a quick add beside the result, not as an opening screen of its own that hides it. On a phone a screen is one column of what fits a phone; a table with more than three columns is drawn as cards.
 ${ART_DOC}
+- currency: the ISO code of the app's money ("EUR", "GBP", "JPY") when it handles money and the request or its data says which; leave it out otherwise (an attached sheet's money says it too). Every app.fmt.money then reads in it.
+- locale: the BCP 47 tag of the app's language and place ("es-ES", "en-GB", "pt-BR", "en-US"), from the language the request is written in and where it is (an address, a currency); for a new app, or when asked to change its language. Every price, number and date then reads as there ("28 €" in Spain, "£24.00" in Britain): write amounts with app.fmt.money and app.fmt.number, never by hand.
 - tables: tables to add, and existing tables you add columns to (for an existing table, list only its new columns).
 - access: ALLOW statements (see Access) for the tables whose access is new or changes; leave it out otherwise (a table keeps the access it has).
-- views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. A view only the owner (or admins) uses, such as managing the rows a public page shows, says "for": "owner"; one for signed-in members only, "for": "members"; visitors of a published app never see an owner's view in its menu. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes). "order" places views (the lowest opens first).
+- views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. A view only the owner (or admins) uses, such as managing the rows a public page shows, says "for": "owner"; one for signed-in members only, "for": "members"; visitors of a published app never see an owner's view in its menu. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes); a view and a function never share one, since each code block is named by its slug (the enrolling screen "enrol", its rule "take-enrolment"). "order" places views (the lowest opens first).
 - components and helpers: the ones you add, or write a new version of, each with a <code slug="ui:NAME"> or <code slug="lib:NAME"> block holding its whole code. The components and helpers the code calls are found from it: the app keeps the version of each it has, and takes the newest of one it did not use before.
 - upgrade: names of components or helpers this app uses at an older version (see the list) that it should move to the newest.
 - remove: slugs of views or functions to take out.
 - reuse: capabilities from the library to copy, by id.
-- seed: example rows, only for a new app, and only when examples help the person see the app working (3 to 8 rows per table, realistic, dated near today). Leave it out when the app holds the person's own data from the start (an expense log, a journal), unless they asked for examples.
+- seed: example rows for a new app, so that every screen opens looking finished, never empty: 4 to 8 rows for every table a screen lists or counts, realistic and specific to the request's domain and words (real-sounding names, amounts and states, a mix of states so every filter and badge shows something, a few overdue or due soon), dated around today (see "Today" above). Rows that other rows refer to carry an "id" ("p1", "p2") and the rows referring to them use it (a task's "project": "p1"), so lists, counts and joins line up across tables. Never put the attached data's rows here: the engine imports them. Leave seed out only for a log of the person's own entries (a journal, an expense log), and then give that first screen a designed empty state that says what goes there and how to add the first.
+- import: for attached data (see "The attached data"), which table each sheet goes to.
+- figures: every figure a screen computes from rows that the request is about (a total, a count, a top N, a sum per group, a count per range), declared so the engine can work it out from the rows itself and check that the screen's query gives the same: [{"label": "Top 5 customers by revenue", "view": "<view slug>", "data": "<the screen's data entry that computes it>", "table": "<table>", "sum": "<column>" (or "count": true, or "avg" / "min" / "max": "<column>"), "by": "<column to group by>" (optional), "top": 5 (optional, the biggest first), "where": {"<column>": "value" | ["values"] | {"not": ["values"]} | {"before" | "after": "today" | "YYYY-MM-DD"} | {"lt" | "lte" | "gt" | "gte": a number, a day or "today"}} (optional; overdue is {"paid": false, "due": {"before": "today"}}), "age": {"of": "<a day column>", "buckets": [[null, 0], [1, 30], [31, 60], [61, 90], [91, null]]} (optional: sums per range of days past that day, today counted as 0, each row in exactly one range)}]. The data entry returns the figure's rows: one row for a single number, a row per group (its name and its number) for "by", a row per bucket (or one row with a column per bucket) for "age". 1 to 6 of them, for a new app with attached data and for a change that adds or changes such a figure; none otherwise.
+- welcome: when access keeps a screen's data to signed-in people, what a visitor sees there before signing in: {"title": "the app's name or promise", "text": "one or two sentences: what it is and who it is for", "points": ["2 to 3 short lines on what signing in gives"]}.
 - suggestions: 3 changes the person might ask for next, written as they would ask for them ("Let me snooze a task until a date"), each with a short why that refers to what they asked, or to what they did as recorded above; never claim a habit the record does not show. Make them specific to this app, small enough to build in one step, and new: not what the app does already, not what was just asked, and not one of the suggestions made before (listed above with what became of them).
 - Each screen has a budget: at most ${BUDGET.parts} parts, ${BUDGET.kpis} big numbers, ${BUDGET.fields} fields in a form (more go under {"section"} headings), and ${BUDGET.code.toLocaleString('en-US')} characters of code in its expressions and code blocks. A change that would go past one folds what it adds into what is there (a column, a filter, an action on the row), moves it to a later screen, or says it with a part instead of code.
 - An app has one to five views. Do not split what belongs together across views.`;
@@ -270,7 +289,7 @@ Write each view as a screen unless it needs something a screen cannot say. A scr
 
 A screen may give "layout": one of ${LAYOUT_NAMES.join(', ')} (its page structure: ${Object.entries(LAYOUT_SHORT).map(([k, v]) => `${k}, ${v}`).join('; ')}).
 
-Values: a string that starts with "=" is a JavaScript expression; anything else is taken as it is. An expression sees each "data" entry by name (its rows), each "let" by name (computed in order, after the data), state, set(changes) (merges into state and redraws), app (as in a view: app.insert, app.update, app.remove, app.call, app.open, app.toast, app.fmt, app.today(), app.me()...), lib (the helpers), ui, h, params (app.params), today, and, inside "each", the item by its name. A handler is an expression that gives a function ("=g => app.remove('guests', g.id)"); after it finishes the screen fetches its data again. Callbacks in a component's props are handlers too.
+Values: a string that starts with "=" is a JavaScript expression; anything else is taken as it is. An expression sees each "data" entry by name (its rows), each "let" by name (computed in order, after the data), state, set(changes) (merges into state and redraws), app (as in a view: app.insert, app.update, app.remove, app.call, app.open, app.toast, app.fmt, app.today()...), me (the signed-in person {id, name, email, role}, or null: "=me ? me.name : ''"; app.me() is a promise, for a handler to await), lib (the helpers), ui, h, params (app.params), today, and, inside "each", the item by its name. A handler is an expression that gives a function ("=g => app.remove('guests', g.id)"); after it finishes the screen fetches its data again. Callbacks in a component's props are handlers too.
 
 data: name -> a SELECT (as for app.sql), or {"sql": "...", "params": {"name": value}} (values may be expressions, such as "=state.month": the data is fetched again when the state changes), or {"sql": "=expression giving the SELECT", "params": {...}} when the query itself depends on state, or "=expression" for anything else (a Promise is awaited: "=app.call('totals', {month: state.month})", "=app.people()").
 
@@ -280,12 +299,12 @@ Blocks, in "body" and in every block that holds blocks:
 - {"row": [blocks]}, {"col": [blocks]}, {"grid": [blocks]} (cards that wrap), {"split": [blocks]} (two columns, stacked on phones), {"card": [blocks], "title": "..."}, {"section": [blocks], "title": "..."}
 - {"if": "=expr", "then": [blocks], "else": [blocks]}
 - {"each": "=list", "as": "item", "body": [blocks], "empty": "text when the list is empty", "class": "list" | "grid" | "row"}
-- {"kpis": [{"label": "...", "value": "...", "hint": "..."}]}: big numbers; {"label": "Owed", "of": "<data name>", "format": "money"} shows the first value of a query's first row (formats: date, days, money, number, percent, pct, hours, duration, clock)
+- {"kpis": [{"label": "...", "value": "...", "hint": "..."}]}: big numbers; {"label": "Owed", "of": "<data name>", "format": "money"} shows the first value of a query's first row; "change": true on a column or a big number says it is a change (signed, up in the good tone, down in the bad, n/a where there is nothing to compare) (formats: date, days, money, number, percent, pct, hours, duration, clock)
 - {"chips": "stateKey", "options": [...]}: picks one value of state (options: strings or {"value", "label"}); {"input": "stateKey", "type": "search" | "text" | "select" | "date" | "number" | "checkbox", "placeholder": "...", "options": [...], "label": "..."}: an input bound to state
 - {"button": "label", "do": "=handler", "class": "primary" | "ghost" | "danger" | "small" | "link", "confirm": "a question to confirm first (never for a remove: it offers Undo)"}
-- {"form": "table", "fields": [{"name", "label", "type", "options", "required", "placeholder", "value", "hint"}] (a long form may group its fields under headings: {"section": "Payment"} among the fields starts one), "submit": "label", "set": {"column": "=value"} (more columns to store, such as the project the form adds to), "edit": "=the row to edit, or null", "after": "=handler(storedRow)", "cancel": "=handler", "layout": "col", "fold": false}: adds a row, or saves the row given in edit; it keeps what is typed across redraws. On a phone a form of three fields or more, on a screen that lists rows, folds behind its submit button so the rows show first; "fold": false keeps it open (when filling it is the job), true folds it everywhere. Field types: text (the default), textarea, number, date ("YYYY-MM-DD", for a keyword column), time, datetime (a timestamp column), select (options), checkbox (bool), tags (keyword[]), email, url, color, file (uploads it and stores its id), rating (1 to 5).
+- {"form": "table", "fields": [{"name", "label", "type", "options", "required", "placeholder", "value", "hint"}] (a long form may group its fields under headings: {"section": "Payment"} among the fields starts one), "submit": "label", "set": {"column": "=value"} (more columns to store, such as the project the form adds to), "edit": "=the row to edit, or null", "after": "=handler(storedRow)", "cancel": "=handler", "layout": "col", "fold": false}: adds a row, or saves the row given in edit; it keeps what is typed across redraws. On a phone a form of three fields or more, on a screen that lists rows, folds behind its submit button so the rows show first; "fold": false keeps it open (when filling it is the job), true folds it everywhere. Field types: text (the default), textarea, number, date ("YYYY-MM-DD", for a keyword column), time, datetime (a timestamp column), select (options), person (one of the app's people, who signed up to it: stores their id; the field for a column that ties a row to someone's account, such as who a job is for, so the owner picks a name and never types an id), people (several of them, kept as a keyword[] list of ids: a renovation's crew), checkbox (bool), tags (keyword[]), email, url, color, file (uploads it and stores its id), rating (1 to 5).
 - {"checks": "=things", "done": "=checks", "table": "checks table", "item": "its column holding the thing's id", "day": "its 'YYYY-MM-DD' column", "name": "the things' name column", "days": 7}: the daily check-off (habits, medication, chores): one big tap per thing for today, its last days, its streak and how many are done today; a tap adds or removes that day's row. A check per day is this block (or the CHECKS part), never a grid written in code
-- {"table": "=rows", "columns": [{"key": "column", "label": "...", "value": "=r => ...", "badge": true, "format": "date" | "datetime" | "ago" | "money" | "number" | "percent" | "stars" | "bool"}], "actions": [{"label": "...", "do": "=r => ...", "confirm": "...", "class": "..."}], "onRow": "=r => ...", "empty": "..."}
+- {"table": "=rows", "columns": [{"key": "column", "label": "...", "value": "=r => ...", "badge": true, "change": true, "format": "date" | "datetime" | "ago" | "money" | "number" | "percent" | "change" | "stars" | "bool"}], "actions": [{"label": "...", "do": "=r => ...", "confirm": "...", "class": "..."}], "onRow": "=r => ...", "empty": "..."}
 - {"code": "async function render(root, ctx) { ... }"}: for a part the blocks cannot say, JavaScript as in a view (h, svg, app, ui, lib), drawn again whenever the screen redraws; ctx holds state, set, refresh() and the data and lets by name.
 
 Keep expressions short: do work over many rows in SQL (GROUP BY, SUM) or in a function, and logic another app could use in a helper. Write a code view (a code block, no "screen") only when most of the screen would be "code" blocks: a game, a drawing surface, an editor of its own.
@@ -293,7 +312,9 @@ Keep expressions short: do work over many rows in SQL (GROUP BY, SUM) or in a fu
 ## How a working screen reads
 
 Working screens are drawn like a good phone app: a large title, the screen's numbers as one sentence under it, and the rows of a table as grouped list cells (a table on a computer), grouped by their state. Write for that; what makes an app look unfinished is mostly how a screen is put together, not its colors:
-- Numbers lead with what needs doing. A screen's first big numbers (its KPIs) are read as one sentence, in their order: first the one that asks for action (overdue, out, waiting, owed, due now), then the totals. Two to four, never one that is always zero.
+- Numbers lead with what needs doing. A screen's first big numbers (its KPIs) are read as one sentence, in their order: first the one that asks for action (overdue, out, waiting, owed, due now), then the totals. Two to four, never one that is always zero. A person's own small app (a routine, a collection, a tracker of their own) says its two or three figures as one plain line under its title, with its main action beside it (HEADER), and keeps big number cards for screens that are about the numbers.
+- What the request asks the app to tell the person (flags, warnings, a judgement, what to do next) is on its first screen, beside the rows it is about (a split: the rows in the main column, the callouts beside them), never only in another tab. A judgement the request asks of a model (how a set of things affects me, a read of my month) is an ASK panel there, over only the rows it needs, at the top of the column beside the rows (before the callouts), where it is seen first.
+- The screen takes the shape of its subject: rows the person thinks of in groups (morning and evening, stages, days) go in lanes (LANES), with what relates rows to each other shown on the cards as badges (FLAGS) rather than in a separate table; rows that ask for an action (clashes, risks, warnings, advice) are callouts (CALLOUTS) with what to do in their tip. Tables are for comparing many columns.
 - Rows people keep are a list of a table (LIST with COLUMNS, or a "table" block), not cards drawn by hand: on a phone each row becomes a cell with its name, a line of detail, its state and its next step. Give the state a BADGE column (its words group the rows: Out, Low, OK) and keep the row's number (on hand, owed, votes) as a column. Draw cards yourself only for what is not rows of a table (photos, a board, a big today view).
 - One next step per row, named for what it does ('Mark paid', 'Order more', 'Vote', 'Start'): the row's first action (ACTION in a LIST, which comes before Edit and Delete). Never offer the same action twice on a row: no Edit button beside an Edit in a menu, no menu that repeats the buttons, no second vote link.
 - One main action per screen: its add button or its form's submit. Every other button is plain.
@@ -302,12 +323,12 @@ Working screens are drawn like a good phone app: a large title, the screen's num
 
 ## Front pages
 
-An app that people outside it will visit (a shop, café, restaurant, studio, salon, event, wedding, club, portfolio, a product's landing page) opens on a front page: a screen with "page": "front", drawn edge to edge, each part a full-width section, in the design's colors and gradient, with quiet motion (parts rise into view as the page scrolls, photos zoom slowly, numbers count up). Make it the first view ("Home", order 0); the views that do the work (orders, bookings, the guest list) come after it, and its actions open them. Write it like Apple's own pages or a fine magazine: one idea per section, few and confident words, real photos, generous space; 6 to 10 sections. Its structure follows the art direction's layout ("layout" on the screen, LAYOUT in a statement): hero (a photo hero), split (words beside the photo), editorial (a plain left-aligned hero over a ruled list, for menus and lessons), gallery (photos first); its hero stays short enough that the main action shows on a phone's first screen. A tool only its owner uses has no front page unless asked.
+An app that people outside it will visit (a shop, café, restaurant, studio, practice, event, wedding, portfolio, a product's landing page) opens on a front page: a screen with "page": "front", drawn edge to edge, each part a full-width section, in the design's colors and gradient, with quiet motion (parts rise into view as the page scrolls, photos zoom slowly, numbers count up). Make it the first view ("Home", order 0); the views that do the work (orders, bookings, the guest list) come after it, and its actions open them. Write it like Apple's own pages or a fine magazine: one idea per section, few and confident words, real photos, generous space; 6 to 10 sections. Its structure follows the art direction's layout ("layout" on the screen, LAYOUT in a statement): hero (a photo hero), split (words beside the photo), editorial (a plain left-aligned hero over a ruled list, for menus and lessons), gallery (photos first); its hero stays short enough that the main action shows on a phone's first screen. The part visitors come for (the next race, the menu and its prices, the products, the timetable) comes right after the hero and starts on the first screen: never a section of slogan or story before it. A tool only its owner uses has no front page unless asked.
 
 Its blocks (they work in any screen; on a front page each is a section of its own):
 - {"nav": "Brand", "links": [action, ...], "action": action}: the site's header, first in the body. Links go to parts of the page ("href": "#id") or to views ("open": "slug").
-- {"hero": "A headline with *one* emphasized word", "eyebrow": "a short line above", "sub": "one or two sentences", "photo": "what it shows", "look": "photo" | "split" | "gradient" | "plain", "actions": [action, action], "align": "center" | "left", "height": "full" | "tall" | "short", "badge": "a short floating note (split)", "note": "small print"}. photo: the photo fills the screen, white type over it; split: words beside the photo; gradient: the design's moving gradient (the photo, if given, rises below the words); plain: words alone. *word* draws a word in the gradient, in any title.
-- {"carousel": [{"title", "text", "photo", "price", "badge", "eyebrow", "action"}], "look": "cards" | "slides", "auto": 6}: cards is a shelf that scrolls sideways; slides fill the width, one photo at a time with its words, moving on by themselves every "auto" seconds. From rows: "carousel": "=products", "item": {"title": "=item.name", "price": "=app.fmt.money(item.price)", "src": "=item.image", "action": {"label": "Add", "do": "=() => app.insert('cart', {product: item.id})"}} (each row is "item", or the name in "as"); or "body": [blocks] to draw each card from blocks.
+- {"hero": "A headline with *one* emphasized word", "eyebrow": "a short line above", "sub": "one or two sentences", "photo": "what it shows", "look": "photo" | "split" | "gradient" | "plain" | "type", "actions": [action, action], "align": "center" | "left", "height": "full" | "tall" | "short", "badge": "a short floating note (split)", "note": "small print"}. photo: the photo fills the screen, white type over it; split: words beside the photo; gradient: the design's moving gradient (the photo, if given, rises below the words); plain: words alone; type: the headline is the picture, very large and bold with its *word* in the accent (when there is no real photo of the product). *word* draws a word in the gradient, in any title.
+- {"carousel": [{"title", "text", "photo", "price", "badge", "eyebrow", "date", "state", "action"}], "look": "cards" | "slides", "auto": 6}: cards is a shelf that scrolls sideways (a card with a "date", "YYYY-MM-DD", and no photo shows its day as a calendar block: an event, a class, a show; "state": "out" says it is no longer on offer, its badge in the danger tone); slides fill the width, one photo at a time with its words, moving on by themselves every "auto" seconds. From rows: "carousel": "=products", "item": {"title": "=item.name", "price": "=app.fmt.money(item.price)", "src": "=item.image", "action": {"label": "Add", "do": "=() => app.insert('cart', {product: item.id})"}} (each row is "item", or the name in "as"); or "body": [blocks] to draw each card from blocks.
 - {"gallery": [{"photo", "title"}], "look": "mosaic" | "masonry" | "grid"} (or "=rows" with "item"): a photo opens large when tapped.
 - {"features": [{"icon", "title", "text", "action"}], "columns": 2 | 3 | 4, "look": "tiles" | "plain" | "photos"}: "photos" gives each a "photo" instead of an icon. Icons: check star heart bolt shield clock leaf sparkles chat calendar pin truck gift camera music cup globe lock users chart home phone mail tag cart sun moon book flame award smile card wifi arrow play dumbbell briefcase code cloud search bell rocket scissors paw tooth plane palette.
 - {"stats": [{"value": 1200, "label": "...", "prefix": "$", "suffix": "+"}]}: big numbers that count up: "=expression" over data, or facts the request gives; never made up (no customer counts, ratings or reviews the rows do not hold).
@@ -319,7 +340,7 @@ Its blocks (they work in any screen; on a front page each is a section of its ow
 - {"faq": [{"q", "a"}]}; {"steps": [{"title", "text", "icon"}]}: how it works, numbered.
 - {"footer": "Brand", "text": "...", "columns": [{"title", "links": [action, ...]}], "note": "..."}: last in the body.
 Section blocks (carousel, gallery, features, stats, quotes, pricing, faq, steps) take "title", "eyebrow" and "sub" for their heading. Any block takes "id" (the target of an "#id" link) and "tint": true (a tinted section). Plain blocks between them (h, text, grid, each, form, table, ui...) are gathered in a section of their own, so a booking form or today's menu from the data fits on a front page too.
-An action: {"label", "open": "a view's slug", "params", "href": "#id" or "https://...", "do": "=handler", "style": "primary" | "secondary" | "link"}; the first action of a group is primary, the others secondary.
+An action: {"label", "open": "a view's slug", "params", "href": "#id" or "https://...", "do": "=handler", "style": "primary" | "secondary" | "link", "size": "big"}; the first action of a group is primary, the others secondary. A button the request calls big, large or prominent is "size": "big" and comes first in its group (on a screen, a button with "class": "primary big"). A call to action that names a deed (Enrol, Buy, Book, Join, Subscribe) does that deed when tapped: it opens the view that takes it, or its "do" runs the rule and the payment; it never scrolls ("href": "#id") to a section that holds the real button. A "#id" link is for reading more (the lessons, the menu, the prices).
 Photos: "photo": a few plain words, the subject first, as you would search a photo library ("barista pouring latte art", "yoga class in a bright studio", "bride and groom on a beach", "modern living room"). The engine finds each photo when the version is stored and adds "src" (and a "credit" when its license asks for one); never write "src" for such a photo yourself. A photo the app's data holds is "src": "=item.image" (a URL or a stored file's id). Example rows may hold "photo:a query" in a text column (a product's image), which becomes a photo's URL: name the thing itself, plainly, the kind first ("croissant", "pie pumpkin", "bread rye loaf", "coffee beans dark roast"), never a brand or place name.
 
 {"page": "front", "layout": "hero", "body": [
@@ -401,6 +422,27 @@ export function prepareScreens(plan, code, view) {
   return problems;
 }
 
+// Whether a screen draws a sign-in form (ui signIn) before its main part
+// (the first block that shows or takes the app's rows: a list, table,
+// cards, form, big numbers or a pattern). Headings, words, a header and a
+// hero come before either and do not count.
+export function signInFirst(screen) {
+  const MAIN = ['table', 'each', 'carousel', 'kpis', 'form', 'list', 'board', 'calendar', 'gallery', 'use', 'chart'];
+  const has = (x, test) => {
+    if (Array.isArray(x)) return x.some((y) => has(y, test));
+    if (!x || typeof x !== 'object') return false;
+    if (test(x)) return true;
+    return Object.entries(x).some(([k, v]) => k !== 'data' && k !== 'let' && v && typeof v === 'object' && has(v, test));
+  };
+  const isSignIn = (b) => b.ui === 'signIn' || (typeof b.code === 'string' && /\bui\.signIn\s*\(/.test(b.code));
+  const isMain = (b) => MAIN.some((k) => b[k] !== undefined) && !isSignIn(b);
+  for (const b of Array.isArray(screen?.body) ? screen.body : []) {
+    if (has(b, isSignIn)) return true;
+    if (has(b, isMain)) return false;
+  }
+  return false;
+}
+
 // A screen's budget: parts, big numbers, fields in a form, and characters
 // of code (its expressions and code blocks), measured on the screen as
 // written (a pattern is one part; what its parameters say in code counts).
@@ -439,6 +481,7 @@ export function overBudget(slug, now, before) {
   if (grew('code')) out.push(`over budget: screen ${slug} has ${now.code.toLocaleString('en-US')} characters of code in its expressions and code blocks (its budget is ${BUDGET.code.toLocaleString('en-US')}): say it with parts and their clauses (LIST, CHECKS, FIND...), move logic into a rule, and keep code to what no part can say`);
   return out;
 }
+
 // The budget a screen had before this change, from its statement when it
 // has one (as written), else its stored screen.
 function budgetBefore(view, slug) {
@@ -575,6 +618,36 @@ export function editCode(plan, code, view) {
       delete item.edits;
     }
   }
+  // An entry of a view or function the app has, given without its code (no
+  // block, edits, patch, screen or rule): a change of the entry alone (who a
+  // screen is for, its title, its order). Its code stays as it is; a
+  // screen's FOR line follows a new "for".
+  for (const [kind, list, have] of [['view', plan?.views, view.views], ['function', plan?.functions, view.functions]]) {
+    for (const item of list || []) {
+      // (an empty patch changes nothing: the same as none)
+      if (item && Array.isArray(item.patch) && !item.patch.length) delete item.patch;
+      if (!item || !item.slug || item.edited || code[item.slug] !== undefined || item.patch !== undefined || item.screen !== undefined || item.rule !== undefined || item.statement !== undefined) continue;
+      const cur = (have || []).find((x) => x.slug === item.slug);
+      if (!cur) continue;
+      for (const k of ['title', 'description']) if (item[k] === undefined) item[k] = cur[k];
+      if (kind === 'view' && item.order === undefined) item.order = cur.spec?.order;
+      if (kind === 'function' && item.on === undefined) item.on = cur.spec?.on || undefined;
+      if (kind === 'function' && item.every === undefined && !cur.spec?.rule) item.every = cur.spec?.every || undefined;
+      if (cur.spec?.statement) {
+        let src = cur.spec.statement;
+        if (kind === 'view' && typeof item.for === 'string' && ['owner', 'admins', 'members', 'everyone'].includes(item.for)) {
+          src = /^\s*FOR\s+\S+\s*$/im.test(src) ? src.replace(/^(\s*)FOR\s+\S+\s*$/im, `$1FOR ${item.for}`) : src.replace(/^(.*\n)/, `$1FOR ${item.for}\n`);
+        }
+        code[item.slug] = src;
+      } else if (kind === 'view' && cur.spec?.screen) {
+        try { item.screen = JSON.parse(cur.code); } catch { code[item.slug] = cur.code; }
+      } else if (kind === 'function' && cur.spec?.rule) {
+        try { item.rule = JSON.parse(cur.code); } catch { code[item.slug] = cur.code; }
+      } else code[item.slug] = cur.code;
+      if (kind === 'view' && item.for === undefined && cur.spec?.for !== undefined) item.for = cur.spec.for;
+      item.kept = true;
+    }
+  }
   return problems;
 }
 
@@ -652,17 +725,55 @@ export function screenWatcher(view, onScreen) {
 }
 
 const tee = (...fns) => (seen, text) => { for (const f of fns) if (f) f(seen, text); };
+// Calls fn once with the plan's JSON as soon as its </plan> has streamed in,
+// while the model goes on to write the statements after it.
+export const planWatcher = (fn) => {
+  let done = false;
+  return (seen, text) => {
+    if (done || !fn || typeof text !== 'string') return;
+    const a = text.indexOf('<plan>');
+    const b = a < 0 ? -1 : text.indexOf('</plan>', a);
+    if (b < 0) return;
+    done = true;
+    let plan = null;
+    try { plan = JSON.parse(text.slice(a + 6, b)); } catch { return; }
+    try { fn(plan); } catch { /* a hook's own failure is not the build's */ }
+  };
+};
 const previewer = (view, progress) => screenWatcher(view, (p) => progress(`Drew the screen ${p.title} while the rest is written`, { preview: { ...p, screen: expandScreen(p.screen).screen } }));
 
 // A plan's screens become the code of their views (JSON text), so the rest
 // of the forge handles them as it handles code.
+// A front page's call to action that names a deed (Enrol, Buy, Book...) and
+// only scrolls to a section holding the real button does the deed itself: it
+// takes that button's "do" or "open" (the one deed button in the section whose
+// label starts with the same word). Links that read more stay links.
+export function retargetDeeds(screen) {
+  if (!screen || !Array.isArray(screen.body)) return screen;
+  const all = (x, out = []) => { if (Array.isArray(x)) x.forEach((y) => all(y, out)); else if (x && typeof x === 'object') { out.push(x); for (const v of Object.values(x)) if (v && typeof v === 'object') all(v, out); } return out; };
+  const nodes = all(screen.body);
+  const word = (l) => String(l || '').trim().toLowerCase().split(/\s+/)[0];
+  const isDeed = (a) => typeof a.label === 'string' && (typeof a.do === 'string' || typeof a.open === 'string') && a.href === undefined;
+  for (const a of nodes) {
+    if (typeof a.label !== 'string' || typeof a.href !== 'string' || !/^#[\w-]+$/.test(a.href) || a.do !== undefined || a.open !== undefined || word(a.label).length < 3) continue;
+    const target = nodes.find((n) => n.id === a.href.slice(1) && n !== a);
+    if (!target) continue;
+    const deeds = all(target).filter((n) => n !== a && isDeed(n) && word(n.label) === word(a.label));
+    if (deeds.length !== 1) continue;
+    const d = deeds[0];
+    delete a.href;
+    for (const k of ['do', 'open', 'params']) if (d[k] !== undefined) a[k] = d[k];
+  }
+  return screen;
+}
+
 export function screensToCode(plan, code) {
   for (const v of plan?.views || []) {
     if (!v) continue;
     if (!(v.screen && typeof v.screen === 'object') && typeof code[v.slug] === 'string' && code[v.slug].trim().startsWith('{')) {
       try { v.screen = JSON.parse(code[v.slug]); } catch { /* checked as code */ }
     }
-    if (v.screen && typeof v.screen === 'object') code[v.slug] = JSON.stringify(v.screen, null, 1);
+    if (v.screen && typeof v.screen === 'object') code[v.slug] = JSON.stringify(retargetDeeds(v.screen), null, 1);
     else delete v.screen;
   }
   return code;
@@ -709,6 +820,10 @@ export async function dryRunScreens(db, appId, names, plan) {
       // data, a helper) cannot be known here: such a query is not run, so
       // that a right query is never sent back as wrong.
       if (Object.entries((q && typeof q === 'object' && q.params) || {}).some(([k, x]) => typeof x === 'string' && x.startsWith('=') && params[k] == null)) continue;
+      // The signed-in person's own parameters are the engine's to bind when
+      // the screen runs; here someone stands in, so a right query is not
+      // sent back as failing (and the model asked to fix it).
+      for (const k of ['user_id', 'user_email', 'user_name', 'company_id']) if (params[k] === undefined && new RegExp(`:${k}\\b`).test(sql)) params[k] = `dry-run-${k}`;
       try {
         const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t));
         await checkReads(db, phys, params, names.map((t) => physical(appId, t)));
@@ -717,6 +832,190 @@ export async function dryRunScreens(db, appId, names, plan) {
     }
   }
   return problems;
+}
+
+// One data entry of a screen, run as the screen runs it when it opens (its
+// parameters from its first state); undefined when it cannot be run here.
+async function runData(db, appId, names, screen, name, today = new Date().toISOString().slice(0, 10)) {
+  const q = (screen.data || {})[name];
+  const sql = typeof q === 'string' ? q : q && q.sql;
+  if (typeof sql !== 'string' || sql.startsWith('=')) return undefined;
+  const nothing = new Proxy(() => null, { get: () => nothing, apply: () => null });
+  const state = screen.state || {};
+  const params = {};
+  for (const [k, x] of Object.entries((q && typeof q === 'object' && q.params) || {})) {
+    if (typeof x !== 'string' || !x.startsWith('=')) { params[k] = x; continue; }
+    try { params[k] = new Function('s', `with (s) { return (${x.slice(1)}\n); }`)({ state, today, params: {}, app: { today: () => today, now: () => new Date().toISOString(), me: () => null }, lib: nothing }) ?? null; } catch { params[k] = null; }
+    if (params[k] == null) return undefined;
+  }
+  const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t));
+  return db.query(phys, params);
+}
+
+// Two big numbers of a screen where one is the other's query with more
+// conditions ANDed on (Past due within Outstanding) and that come out equal
+// on the app's rows: two cards with one figure under two names read as a
+// mistake. Said to the model as a problem to fix (one figure, the other as
+// a part of it), never rewritten here.
+export function kpiParts(screen) {
+  const sqlOf = (name) => { const q = (screen.data || {})[name]; return typeof q === 'string' ? q : q && typeof q.sql === 'string' ? q.sql : null; };
+  const split = (sql) => {
+    const t = String(sql).replace(/\s+/g, ' ').trim();
+    const m = /^([\s\S]*?)\sWHERE\s([\s\S]*)$/i.exec(t);
+    const strip = (w) => w.replace(/[()]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return m ? { head: m[1].toLowerCase(), where: strip(m[2]) } : { head: t.toLowerCase(), where: '' };
+  };
+  const kpis = [];
+  const walk = (x) => { if (Array.isArray(x)) x.forEach(walk); else if (x && typeof x === 'object') { if (Array.isArray(x.kpis)) for (const k of x.kpis) if (k && typeof k.of === 'string' && sqlOf(k.of)) kpis.push(k); for (const v of Object.values(x)) walk(v); } };
+  walk(screen?.body);
+  const out = [];
+  for (const a of kpis) for (const b of kpis) {
+    if (a === b || a.of === b.of) continue;
+    const pa = split(sqlOf(a.of)), pb = split(sqlOf(b.of));
+    if (pa.head !== pb.head || /\bor\b/.test(pa.where) || pa.where.length <= pb.where.length || !pa.where.includes(pb.where) || (pb.where && !/\band\b/.test(pa.where))) continue;
+    out.push({ part: a, whole: b });
+  }
+  return out;
+}
+async function kpiEchoes(db, appId, names, plan, today) {
+  const out = [];
+  for (const v of plan.views || []) {
+    if (!v.screen || typeof v.screen !== 'object') continue;
+    for (const { part, whole } of kpiParts(v.screen)) {
+      const val = async (k) => { const rows = await runData(db, appId, names, v.screen, k.of, today).catch(() => null); const r = rows && rows[0]; return r ? Number(r.v !== undefined ? r.v : Object.values(r)[0]) : null; };
+      const [x, y] = [await val(part), await val(whole)];
+      if (x !== null && x !== 0 && x === y) out.push(`view ${v.slug}: the big numbers "${part.label}" and "${whole.label}" are the same rows (one with more conditions) and come out equal (${x}) on the app's rows: show one figure and say the other as a part of it (its "hint", such as "all of it ${String(part.label).toLowerCase()}"), or two that differ`);
+    }
+  }
+  return out;
+}
+
+// The figures a plan declares, worked out from the rows of their tables and
+// compared with what the screens' data entries give: the ones that differ.
+export async function figureProblems(db, appId, names, plan, figures, today = new Date().toISOString().slice(0, 10), live = null) {
+  const out = [];
+  const rowsOf = new Map();
+  for (const f of figures) {
+    let v = (plan.views || []).find((x) => x && x.slug === f.view && x.screen);
+    if (!v) {
+      // A screen this version keeps as it is: checked as it is.
+      const cap = live?.views?.find((x) => x.slug === f.view && x.spec?.screen);
+      try { v = cap ? { slug: cap.slug, screen: JSON.parse(cap.code), kept: true } : null; } catch { v = null; }
+    }
+    if (!v || !(v.screen.data || {})[f.data]) { if (!v?.kept) out.push(`figure "${f.label || f.data}": the view ${f.view} has no data entry ${f.data}; name the screen's data entry that computes it`); continue; }
+    if (!rowsOf.has(f.table)) rowsOf.set(f.table, await db.query(`SELECT * FROM ${physical(appId, f.table)} LIMIT 5000`).catch(() => []));
+    const rows = rowsOf.get(f.table);
+    if (!rows.length) continue;
+    let got;
+    try { got = await runData(db, appId, names, v.screen, f.data, today); } catch { continue; /* a failing query is reported by the dry run */ }
+    if (got === undefined) continue;
+    const bad = compareFigure(f, computeFigure(f, rows, today), got);
+    if (bad && !v.kept) out.push(`view ${v.slug}: data.${f.data} gives the wrong figure: ${bad}`);
+  }
+  return out;
+}
+
+// The declared figures each screen's words fail to show, worked out from
+// the rows its tables hold now: [{cap, message}], one per screen.
+async function figuresNotShown(engine, appId, live, opened, figures) {
+  if (!live) return [];
+  const today = new Date().toISOString().slice(0, 10);
+  const out = new Map();
+  for (const f of figures) {
+    const cap = live.views.find((x) => x.slug === f.view);
+    const seen = cap && opened.find((o) => o.tab && o.tab.trim().toLowerCase() === String(cap.title).trim().toLowerCase());
+    if (!seen || typeof seen.text !== 'string') continue;
+    try { if (JSON.parse(cap.code).gate) continue; } catch { /* a code view */ }
+    const rows = await engine.db.query(`SELECT * FROM ${physical(appId, f.table)} LIMIT 5000`).catch(() => []);
+    if (!rows.length) continue;
+    const lacks = figureNotShown(computeFigure(f, rows, today), seen.text);
+    if (!lacks.length) continue;
+    const prev = out.get(cap.id);
+    const line = `"${f.label || f.data}" should show ${lacks.slice(0, 5).join(', ')} (worked out from the rows), but the screen does not show ${lacks.length === 1 ? 'it' : 'them'}; check that the part showing it gets the rows of data.${f.data} with the props or columns it reads`;
+    out.set(cap.id, { cap: cap.id, message: prev ? `${prev.message}; ${line}` : line });
+  }
+  return [...out.values()];
+}
+
+// The rows a build adds: the attached data, then (for a new app) the
+// example rows, each for a table this version creates.
+function rowsOfBuild(plan, data, fresh, first) {
+  const out = data.imports.filter((i) => fresh.has(i.table)).map((i) => ({ table: i.table, rows: i.rows, imported: true }));
+  if (first && plan.seed && typeof plan.seed === 'object') {
+    // (never made-up rows beside the person's own attached ones)
+    const own = new Set(out.map((o) => o.table));
+    for (const [table, rows] of Object.entries(plan.seed)) if (fresh.has(table) && !own.has(table) && Array.isArray(rows) && rows.length) out.push({ table, rows: rows.slice(0, 50), imported: false });
+  }
+  return out;
+}
+
+// Writes rows straight to their tables (no triggers), typed as the
+// engine types them. Returns how many went in.
+async function putRows(engine, appId, specs, batches) {
+  let n = 0;
+  for (const { table, rows } of batches) {
+    const spec = specs.get(table);
+    if (!spec) continue;
+    const docs = [];
+    for (const r of rows) {
+      try {
+        const doc = engine.makeDoc(spec, Object.fromEntries(Object.entries(r).filter(([k]) => k !== 'id' && k !== 'created')));
+        for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
+        doc.id = r.id ? String(r.id) : Math.random().toString(36).slice(2, 12);
+        docs.push(doc);
+      } catch { /* a row the table refuses is left out */ }
+    }
+    for (let i = 0; i < docs.length; i += 500) await engine.db.write(docs.slice(i, i + 500).map((doc) => ({ op: 'insert', table: physical(appId, table), doc })));
+    n += docs.length;
+  }
+  return n;
+}
+
+// Puts a sign-in entry (spec.gate) on each screen whose data visitors may
+// not read, and takes it off one whose data they may: the plan's screens,
+// and the app's other screens when this version changes who reads what.
+function gateScreens(plan, code, view, stored, accessOf) {
+  const specOf = (t) => stored.get(t) || view.tables.find((x) => x.spec.name === t)?.spec || null;
+  const access = (t) => accessOf.get(t) || specOf(t)?.access || null;
+  // who may call each function (ALLOW CALL), for a screen whose data calls
+  // one kept to signed-in people
+  const calls = new Map([...parseAccessList(plan.access || [])].filter(([, rs]) => rs.some((r) => r.call)).map(([n, rs]) => [n, rs.find((r) => r.call).who]));
+  const callerOf = (slug) => calls.get(slug) || (view.functions || []).find((f) => f.slug === slug)?.spec?.callers || null;
+  const opts = (title) => ({ name: plan.name || view.app?.name || '', welcome: plan.welcome || null, ux: plan.ux || briefOf(view.app) || null, title, callerOf });
+  for (const v of plan.views || []) {
+    if (!v) continue;
+    if (!v.screen || typeof v.screen !== 'object') {
+      // A view written in JavaScript: its gate goes in its spec, and the
+      // studio draws it before the view (web/studio.js).
+      if (typeof code[v.slug] !== 'string') continue;
+      const gate = gateOf({ data: { code: code[v.slug] } }, access, opts(v.title));
+      if (gate) { v.gate = gate; if (!/\bui\.signIn\b/.test(code[v.slug])) code[v.slug] += `\n// A visitor sees the sign-in entry first (ui.signIn), from the app's access.\n`; } else delete v.gate;
+      continue;
+    }
+    const gate = gateOf(v.screen, access, opts(v.title));
+    if (gate) v.screen.gate = gate; else delete v.screen.gate;
+    code[v.slug] = JSON.stringify(v.screen, null, 1);
+  }
+  if (!accessOf.size) return;
+  const planned = new Set((plan.views || []).map((v) => v && v.slug));
+  plan.regated = [];
+  for (const cap of view.views || []) {
+    if (planned.has(cap.slug)) continue;
+    if (!cap.spec?.screen) {
+      const gate = gateOf({ data: { code: cap.code } }, access, opts(cap.title));
+      if (JSON.stringify(gate || null) === JSON.stringify(cap.spec?.gate || null)) continue;
+      const spec = { ...cap.spec };
+      if (gate) spec.gate = gate; else delete spec.gate;
+      plan.regated.push({ cap, code: gate && !/\bui\.signIn\b/.test(cap.code) ? `${cap.code}\n// A visitor sees the sign-in entry first (ui.signIn), from the app's access.\n` : cap.code, spec });
+      continue;
+    }
+    let screen;
+    try { screen = JSON.parse(cap.code); } catch { continue; }
+    const gate = gateOf(screen, access, opts(cap.title));
+    if (JSON.stringify(gate || null) === JSON.stringify(screen.gate || null)) continue;
+    if (gate) screen.gate = gate; else delete screen.gate;
+    plan.regated.push({ cap, code: JSON.stringify(screen, null, 1) });
+  }
 }
 
 // Front-page blocks first: a footer has "text", a band "title".
@@ -763,7 +1062,7 @@ export function checkScreen(screen, columnsOf = () => null) {
     const sql = typeof q === 'string' ? q : q && q.sql;
     if (typeof sql !== 'string') { problems.push(`data.${name}: give a SELECT, {"sql", "params"} or an "=expression"`); continue; }
     if (sql.startsWith('=')) expr(sql, `data.${name}`);
-    else if (!/^\s*(select|with)\b/i.test(sql)) problems.push(`data.${name}: only SELECT (or WITH) queries; write with app.insert, app.update and app.remove`);
+    else if (!/^\s*(select|with)\b/i.test(sql)) problems.push(`data.${name}: only SELECT (or WITH) queries, or an "=expression" (what a function returns is "=app.call('its-slug', {...})"); write with app.insert, app.update and app.remove`);
   }
   walkValues(screen.state || {}, 'state');
   walkValues(screen.let || {}, 'let');
@@ -804,6 +1103,20 @@ export function checkScreen(screen, columnsOf = () => null) {
     });
   };
   walk(screen.body, 'body');
+  // A link to a part of the page ("href": "#part") goes to a part with that
+  // "id": one that names none would do nothing when tapped.
+  const ids = new Set(), hrefs = new Set();
+  const seek = (x) => {
+    if (Array.isArray(x)) x.forEach(seek);
+    else if (x && typeof x === 'object') for (const [k, v] of Object.entries(x)) {
+      if (k === 'id' && typeof v === 'string') ids.add(v);
+      else if (k === 'href' && typeof v === 'string' && /^#[\w-]+$/.test(v)) hrefs.add(v.slice(1));
+      else if (k !== 'code') seek(v);
+    }
+  };
+  seek(screen.body);
+  const lost = [...hrefs].filter((x) => !ids.has(x));
+  if (lost.length) problems.push(`links go to ${lost.map((x) => `#${x}`).join(', ')}, which no part of the screen has as its "id": give the part they mean that "id" (the form, the list)`);
   const claims = madeUp(screen);
   if (claims.length) problems.push(`the screen says what the app's rows do not hold: ${claims.slice(0, 3).join('; ')}. Show only what its data or the request gives: take it out, or count it from a table with an "=expression"`);
   if (JSON.stringify(screen).length > 120 * 1024) problems.push('the screen is longer than 120 KiB');
@@ -891,6 +1204,11 @@ export async function buildContext(engine, appId, request) {
     const brief = briefOf(view.app);
     if (brief) parts.push(`## Its UX brief\n${BRIEF.map((k) => `- ${k}: ${brief[k]}`).join('\n')}\n\nKeep to it: the first screen stays the one where the job is done, and a change goes where its use belongs (what is done as often as the job, on the first screen; looking back, on a later one; setting up, last). Give "ux" again only when the request changes who uses the app or how.`);
     if (brief?.art) parts.push(`## Its art direction\n${ART.map((k) => `- ${k}: ${brief.art[k] || '-'}`).join('\n')}\n\nWhat you add keeps to it (its words, its photos). Give "art" again only when the request asks for another feel.`);
+    // What the person uploaded to the app (photos, documents): the model
+    // sees them by id and name, and uses them where the request names them.
+    const uploads = (await store.db.query('SELECT id, name, type, author FROM sa_files WHERE app = :a ORDER BY created DESC LIMIT 60', { a: appId }).catch(() => []))
+      .filter((f) => f.author !== 'photos' && !/^[0-9]{10,}-[0-9a-f]+\.jpg$/i.test(String(f.name || '')));
+    if (uploads.length) parts.push(`## Files the person uploaded to the app\n${uploads.map((f) => `- ${f.id}: ${f.name || 'unnamed'} (${f.type || 'file'})`).join('\n')}\n\nThese are the person's own: where the request names them, or asks for their photos (a gallery, the hero, a team), show them by id ("src": "<id>" in a block, app.fileUrl(id) in code), never a searched "photo" in their place.`);
     const tables = [];
     for (const t of view.tables) {
       const name = physical(appId, t.spec.name);
@@ -1008,6 +1326,11 @@ export async function buildContext(engine, appId, request) {
     capIndex = parts.length;
     parts.push(`# Library: screens, rules and functions other apps have that fit this request best\n\nThe best first, found by the request's words and by what it means. Reuse or fork one when it does what the request asks; leave them otherwise.\n\n${entries.join('\n\n')}`);
   }
+  // Today, for example rows dated near it; and the sheets the request
+  // attaches, which the engine imports itself (engine/data.mjs).
+  const sheets = parseAttached(request.text);
+  parts.push(`# Today\n\nToday is ${new Date().toISOString().slice(0, 10)}.`);
+  if (sheets.length) parts.push(dataPart(sheets));
   const source = { user: 'the person asked for this', suggestion: 'the person accepted this suggestion', repair: 'the runtime reported this error; fix its cause', library: 'the person asked to bring this in from the library', evolve: 'nobody asked: the engine saw this in how people use the app, and builds it as a version they can try beside the live one and keep or drop. Make it small, in the app\'s own style, and change nothing it does not need' }[request.source] || 'the person asked for this';
   parts.push(`# The request (${source})\n\n${request.text}`);
   // The same context for one piece's writer: of the library's shared pieces,
@@ -1028,7 +1351,7 @@ export async function buildContext(engine, appId, request) {
     return copy.filter(Boolean).join('\n\n');
   };
   const found = new Map(lib.map((c) => [c.id, c.found]));
-  return { prompt: parts.join('\n\n'), forPiece, view, library: libCaps.map((c) => ({ ...c, found: found.get(c.id) })), shared, system: systemWith(shared), request };
+  return { prompt: parts.join('\n\n'), forPiece, view, library: libCaps.map((c) => ({ ...c, found: found.get(c.id) })), shared, system: systemWith(shared), request, sheets };
 }
 
 // The system prompt with the whole library of shared pieces, by name and
@@ -1127,7 +1450,23 @@ export function accessProblems(plan, view, requestText = '') {
     columns.set(t.name, set);
   }
   if (plan.access !== undefined && !Array.isArray(plan.access)) return ['access: a list of ALLOW statements, one string each'];
-  const problems = checkAccess(plan.access || [], columns);
+  const functions = new Set([...(view.functions || []).map((f) => f.slug), ...(plan.functions || []).map((f) => f.slug)]);
+  const problems = checkAccess(plan.access || [], columns, functions);
+  // A function people call in an app that declares who reaches its data says
+  // who may call it, so it can do for them what they may not do themselves.
+  const declares = (plan.access || []).length || view.tables.some((t) => t.spec.access?.length);
+  if (declares && !problems.length) {
+    const calls = new Set([...(view.functions || []).filter((f) => f.spec?.callers).map((f) => f.slug), ...[...parseAccessList(plan.access || [])].filter(([, rs]) => rs.some((r) => r.call)).map(([n]) => n)]);
+    const silent = (plan.functions || []).filter((f) => !f.on && !f.every && !calls.has(f.slug)).map((f) => f.slug);
+    // One that says none gets the plain default instead of a whole answer
+    // again: a rule acting for the signed-in person (it reads :user_id) is
+    // for members, with the app's rights; any other runs as whoever calls
+    // it, held to the tables' own statements.
+    for (const slug of silent) {
+      const f = (plan.functions || []).find((x) => x.slug === slug);
+      if (/:user[._]id\b/.test(JSON.stringify(f || {}))) plan.access = [...(plan.access || []), `ALLOW CALL ON ${slug} TO members`];
+    }
+  }
   if (!problems.length && wantsAccess(requestText)) {
     const declared = new Set([...view.tables.filter((x) => x.spec.access?.length).map((x) => x.spec.name), ...parseAccessList(plan.access || []).keys()]);
     const open = [...columns.keys()].filter((t) => !declared.has(t));
@@ -1136,9 +1475,105 @@ export function accessProblems(plan, view, requestText = '') {
   return problems;
 }
 
+// A screen people use that reads a table only its owner (or admins) may
+// read: its readers get a refusal where its content should be (a lesson's
+// questions kept to the owner, so the students who paid see none). Its
+// readers may read it, or the screen is kept to the owner.
+export function readerProblems(plan, view, code = {}) {
+  const rules = new Map();
+  for (const t of view.tables || []) if (Array.isArray(t.spec?.access) && t.spec.access.length) rules.set(t.spec.name, [...parseAccessList(t.spec.access).values()].flat());
+  for (const [t, rs] of parseAccessList(plan.access || [])) rules.set(t, rs);
+  const least = (t) => {
+    const rs = (rules.get(t) || []).filter((r) => !r.call && r.actions.includes('read'));
+    if (!rules.has(t)) return 0;
+    return rs.length ? Math.min(...rs.map((r) => WHO.indexOf(r.who))) : WHO.length;
+  };
+  const out = [];
+  for (const v of plan.views || []) {
+    if (!v || !v.slug || v.for === 'owner' || v.for === 'admins') continue;
+    const text = v.screen && typeof v.screen === 'object' ? JSON.stringify(v.screen.data || {}) + JSON.stringify(v.screen.body || []) : String((code && code[v.slug]) || '');
+    const read = new Set([...text.matchAll(/\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)/gi)].map((m) => m[1]).filter((t) => rules.has(t)));
+    const shut = [...read].filter((t) => least(t) >= WHO.indexOf('admins'));
+    if (!shut.length) continue;
+    const who = v.for === 'members' ? 'its signed-in members' : 'its visitors and members';
+    out.push(`view ${v.slug} is for ${who}, but reads ${shut.join(', ')}, which only the owner${shut.some((t) => least(t) === WHO.indexOf('admins')) ? ' and admins' : ''} may read: they would get a refusal where its content goes. Give it to them through a function they may call that checks they may have it (ALLOW CALL ... TO members; it runs with the app's rights), let them read ${shut.length === 1 ? 'it' : 'them'} (ALLOW READ ON ${shut[0]} TO members, or WHERE a column keeps each to their own rows), or say "for": "owner" on the view`);
+  }
+  return out;
+}
+
+// A screen people use that adds to, changes or removes from a table only
+// its owner (or admins) may: they are refused when they send it (a shop's
+// checkout form writing straight into orders). A rule they may call does it
+// with the app's rights, or they are let write.
+export function writerProblems(plan, view, code = {}) {
+  const rules = new Map();
+  for (const t of view.tables || []) if (Array.isArray(t.spec?.access) && t.spec.access.length) rules.set(t.spec.name, [...parseAccessList(t.spec.access).values()].flat());
+  for (const [t, rs] of parseAccessList(plan.access || [])) rules.set(t, rs);
+  const least = (t, action) => {
+    if (!rules.has(t)) return 0;
+    const rs = rules.get(t).filter((r) => !r.call && r.actions.includes(action));
+    return rs.length ? Math.min(...rs.map((r) => WHO.indexOf(r.who))) : WHO.length;
+  };
+  const VERB = { add: 'adds to', change: 'changes', remove: 'removes from' };
+  const callers = new Set([...[...parseAccessList(plan.access || [])].filter(([, rs]) => rs.some((r) => r.call)).map(([n]) => n), ...(view.functions || []).filter((f) => f.spec?.callers).map((f) => f.slug)]);
+  const warned = new Set();
+  const out = [];
+  for (const v of plan.views || []) {
+    if (!v || !v.slug || v.for === 'owner' || v.for === 'admins') continue;
+    const writes = [];
+    const walk = (x) => {
+      if (Array.isArray(x)) return x.forEach(walk);
+      if (!x || typeof x !== 'object') return;
+      if (typeof x.form === 'string' && /^[a-z_][a-z0-9_]*$/.test(x.form) && x.do === undefined) writes.push([x.form, 'add']);
+      Object.values(x).forEach(walk);
+    };
+    let text;
+    if (v.screen && typeof v.screen === 'object') { walk(v.screen.body || []); text = JSON.stringify(v.screen); } else text = String((code && code[v.slug]) || '');
+    for (const m of text.matchAll(/\bapp\.(insert|update|remove)\(\s*\\?['"`]([a-z_][a-z0-9_]*)\\?['"`]/g)) writes.push([m[2], { insert: 'add', update: 'change', remove: 'remove' }[m[1]]]);
+    const shut = new Map();
+    for (const [t, a] of writes) if (rules.has(t) && least(t, a) >= WHO.indexOf('admins') && !shut.has(t)) shut.set(t, a);
+    const who = v.for === 'members' ? 'its signed-in members' : 'its visitors and members';
+    // A function it calls that says no ALLOW CALL runs as the person who
+    // calls it: what it writes where they may not is refused too.
+    for (const m of text.matchAll(/\bapp\.call\(\s*\\?['"`]([a-z][a-z0-9-]*)\\?['"`]/g)) {
+      const slug = m[1];
+      if (callers.has(slug) || warned.has(`${v.slug}/${slug}`)) continue;
+      const f = (plan.functions || []).find((x) => x && x.slug === slug);
+      const body = f ? `${JSON.stringify(f)}\n${String((code && code[slug]) || '')}` : String((code && code[slug]) || '');
+      if (!body.trim()) continue;
+      const wrote = new Map();
+      for (const w of body.matchAll(/\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([a-z_][a-z0-9_]*)/gi)) wrote.set(w[2].toLowerCase(), /^INSERT/i.test(w[1]) ? 'add' : /^UPDATE/i.test(w[1]) ? 'change' : 'remove');
+      for (const w of body.matchAll(/"(insert|update|remove|upsert)"\s*:\s*"([a-z_][a-z0-9_]*)"/g)) wrote.set(w[2], w[1] === 'update' ? 'change' : w[1] === 'remove' ? 'remove' : 'add');
+      const barred = [...wrote].filter(([t, a]) => rules.has(t) && least(t, a) >= WHO.indexOf('admins'));
+      if (!barred.length) continue;
+      warned.add(`${v.slug}/${slug}`);
+      out.push(`view ${v.slug} is for ${who}, but calls ${slug}, which ${barred.map(([t, a]) => `${VERB[a]} ${t}`).join(' and ')} (only the owner may), and says no ALLOW CALL: it runs as the person who calls it and is refused. Give it ALLOW CALL ON ${slug} TO ${v.for === 'members' ? 'members' : 'everyone'} (it then runs with the app's rights; keep what it does to what they should be able to cause)`);
+    }
+    if (!shut.size) continue;
+    const [t0, a0] = [...shut][0];
+    out.push(`view ${v.slug} is for ${who}, but ${[...shut].map(([t, a]) => `${VERB[a]} ${t}`).join(' and ')}, which only the owner may do: they would be refused when they send it. Let a rule they may call do it with the app's rights (a form only adds the rows they may add, so a button whose "do" is app.call('<rule>', {...}) sends it; ALLOW CALL ON <rule> TO everyone or members), let them do it (ALLOW ${a0.toUpperCase()} ON ${t0} TO members, or WHERE a column keeps each to their own rows), or say "for": "owner" on the view`);
+  }
+  return out;
+}
+
+// Access that opens the data to signed-in members while every screen is
+// still the owner's: a member who signs in finds nothing to open (a change
+// that let "only signed-in users" in, and left each screen "for": "owner").
+export function audienceProblems(plan, view) {
+  if (!Array.isArray(plan.access) || !plan.access.length) return [];
+  const opened = [...parseAccessList(plan.access)].filter(([, rs]) => rs.some((r) => !r.call && r.actions.includes('read') && WHO.indexOf(r.who) <= WHO.indexOf('members'))).map(([t]) => t);
+  if (!opened.length) return [];
+  const mine = new Map((view.views || []).map((v) => [v.slug, v.spec?.for ?? null]));
+  for (const v of plan.views || []) if (v && v.slug) mine.set(v.slug, v.for ?? mine.get(v.slug) ?? null);
+  for (const s of plan.remove || []) mine.delete(s);
+  if (!mine.size || [...mine.values()].some((f) => f !== 'owner' && f !== 'admins')) return [];
+  return [`access lets signed-in members read ${opened.join(', ')}, but every screen is still for the owner (${[...mine.keys()].join(', ')}): a member who signs in finds nothing to open. Say which screens are theirs: FOR members in each one's statement (an edit), or "for": "members" in its plan entry`];
+}
+
 export async function validate(plan, code, view, library, shared = new Map(), requestText = '') {
   const problems = checkBrief(plan, view);
   problems.push(...accessProblems(plan, view, requestText));
+  if (!problems.some((p) => p.startsWith('access:'))) problems.push(...readerProblems(plan, view, code), ...writerProblems(plan, view, code), ...audienceProblems(plan, view));
   const tables = new Map(view.tables.map((t) => [t.spec.name, t.spec]));
   for (const t of plan.tables || []) {
     if (!NAME_RE.test(t.name || '')) { problems.push(`table name ${JSON.stringify(t.name)}: lowercase letters, digits and _`); continue; }
@@ -1167,11 +1602,12 @@ export async function validate(plan, code, view, library, shared = new Map(), re
   for (const [kind, list] of [['view', plan.views], ['function', plan.functions]]) {
     for (const item of list || []) {
       if (!SLUG_RE.test(item.slug || '')) { problems.push(`${kind} slug ${JSON.stringify(item.slug)}: lowercase letters, digits and dashes`); continue; }
-      if (slugs.has(item.slug)) problems.push(`${item.slug} is given twice`);
+      if (slugs.has(item.slug)) problems.push(`${item.slug} is given twice: a view and a function never share a slug (each code block is named by it); rename the ${kind}, and every call and ALLOW CALL that names it`);
       slugs.add(item.slug);
       if (kind === 'view' && item.screen) {
         for (const x of checkScreen(item.screen, columnsFor(view, plan))) problems.push(`view ${item.slug}: ${x}`);
         if (BUDGETS.has(item)) problems.push(...overBudget(item.slug, BUDGETS.get(item), budgetBefore(view, item.slug)));
+        if (signInFirst(item.screen)) problems.push(`view ${item.slug}: it draws a sign-in form before its main part; take it out: when an action needs someone signed in, the app asks them to sign in at that moment and then carries on, and a screen kept to members gets its own sign-in page`);
         continue;
       }
       const src = code[item.slug];
@@ -1201,6 +1637,15 @@ export async function validate(plan, code, view, library, shared = new Map(), re
         if (![].concat(on.event || 'insert').every((e) => ['insert', 'update', 'delete'].includes(e))) problems.push(`function ${item.slug}: trigger event is insert, update or delete (or a list of them)`);
       }
     }
+  }
+  // OFFERS ... CALL <rule> QTY: the rule gets {id, qty}; one that never
+  // reads :qty would take one whatever quantity the person chose.
+  const codeOf = (slug) => code[slug] ?? (view.functions || []).find((f) => f.slug === slug)?.code ?? null;
+  for (const v of plan.views || []) {
+    const seen = [];
+    const seek = (x) => { if (Array.isArray(x)) x.forEach(seek); else if (x && typeof x === 'object') { if (x.use === 'offers' && x.qty && typeof x.call === 'string') seen.push(x.call); Object.values(x).forEach(seek); } };
+    seek(v.screen?.body);
+    for (const fn of seen) { const src = codeOf(fn); if (typeof src === 'string' && !/:qty\b/.test(src)) problems.push(`view ${v.slug}: OFFERS gives QTY, so ${fn} is called with {id, qty}: its rule REQUIREs the count >= :qty, lowers it by :qty and charges :qty times the price`); }
   }
   if (TESTS) problems.push(...checkTests(plan.tests, columnsFor(view, plan)));
   if (plan.patterns !== undefined) {
@@ -1271,7 +1716,7 @@ export { briefOf };
 // The art direction (plan.art), kept with the brief: what the app should feel
 // like, what its photos show, its accent and the type of its titles. Doable
 // writes one before any interface; the designs and the screens follow it.
-const ART = ['concept', 'mood', 'layout', 'type', 'accent', 'imagery', 'action'];
+const ART = ['concept', 'mood', 'layout', 'type', 'accent', 'theme', 'imagery', 'action'];
 const TYPES_OF_TITLES = ['system', 'serif', 'rounded', 'mono'];
 export function cleanArt(a) {
   if (!a || typeof a !== 'object' || Array.isArray(a) || typeof a.concept !== 'string' || !a.concept.trim()) return null;
@@ -1279,6 +1724,7 @@ export function cleanArt(a) {
   const t = out.type.toLowerCase();
   out.type = TYPES_OF_TITLES.find((x) => t.includes(x)) || (/editorial|elegant|classic/.test(t) ? 'serif' : /friendly|playful|soft/.test(t) ? 'rounded' : /code|technical|terminal/.test(t) ? 'mono' : 'system');
   if (!out.imagery) out.imagery = 'none';
+  out.theme = /^\s*dark\b/i.test(out.theme) ? 'dark' : 'light';
   // The first screen's structure, as the kit names it (quality.mjs LAYOUTS).
   out.structure = parseLayout(out.layout) || '';
   return out;
@@ -1288,11 +1734,30 @@ export function cleanArt(a) {
 // The app's name from the plan's, keeping what the owner asked for: a first
 // line "Name: Pawsome Grooming" (or "Title:") is the name as it is, and a
 // leading label like "acme-shop" or "team_42" stays in front of it.
+// The name a request gives the business or the app itself: "called Dave's
+// Tacos", "under the name Sable & Stone", "a shop for Wick & Wax", "para
+// Peluquería Lucía", or a quoted name; null when it gives none.
+const CAP = "[\\p{Lu}0-9][\\p{L}\\p{N}'’-]*";
+const NAMED = new RegExp(`(?:\\bcalled|\\bnamed|under the name|\\bfor|\\bpara|\\bpour|\\bfür)\\s+(${CAP}(?:\\s+(?:&|and|y|de|del|la|el|of|the|et)?\\s*${CAP})*)`, 'u');
+export function namedIn(text) {
+  const t = String(text || '');
+  const q = t.match(/["“]([^"”\n]{2,40})["”]/);
+  if (q) return q[1].trim();
+  const m = t.match(NAMED);
+  if (!m) return null;
+  const name = m[1].replace(/[.,:;]+$/, '').trim();
+  // one plain word that only opens a sentence is no name
+  return name.length >= 3 && !/^(My|Our|A|An|The|This|That|Me|Us|Each|Every|All|Some|Mi|Mis|Un|Una|El|La)$/.test(name) ? name : null;
+}
+
 export function appTitle(planned, app) {
   const name = String(planned || '').trim().slice(0, 32);
   const first = String(app?.description || '').trim().split('\n')[0];
   const given = first.match(/^(?:app\s+)?(?:name|title|called)\s*[:=]\s*["“']?([^"”'.\n]{1,60})/i);
   if (given) return given[1].trim();
+  // the request's own name for it always wins over one the plan coined
+  const own = namedIn(first);
+  if (own && !name.toLowerCase().includes(own.toLowerCase())) return own.slice(0, 60);
   const label = first.match(/^([A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+)(?=[\s:,.]|$)/);
   if (!label || name.toLowerCase().includes(label[1].toLowerCase())) return name;
   return `${label[1]} ${name}`.slice(0, 60).trim();
@@ -1389,7 +1854,7 @@ Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_S
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
 - Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
 - Keep the scope to what the request asks: the fewest pieces, each the smallest that does its job well. Content gets an outline of what it covers, sized to the request (a short course is 4 to 6 lessons, a quiz 5 to 8 questions, unless the person asked for more).
-- Keep "summary"${SUGGEST_AFTER ? ' and "seed"' : ', "seed" and "suggestions"'} as always.${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULE_SQL ? '\n- A function that is a rule has no writer either: after the plan, give its CREATE RULE statement now, complete, in a <code slug="..."> block of its slug. Only functions written in JavaScript get a writer.' : RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
+- Keep "summary"${SUGGEST_AFTER ? ', "seed", "import", "figures" and "welcome"' : ', "seed", "import", "figures", "welcome" and "suggestions"'} as always (for a new app, the seed is not optional).${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.\n- Mark each view "format": "screen" (its statement follows the plan) or "code" (written in JavaScript by its writer), and each function "format": "rule" or "javascript": a writer starts as soon as the plan is read.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULE_SQL ? '\n- A function that is a rule has no writer either: after the plan, give its CREATE RULE statement now, complete, in a <code slug="..."> block of its slug. Only functions written in JavaScript get a writer.' : RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
 
 // First versions written in parallel: the plan names every screen and rule
 // with a spec and no statement, and each is then written by its own writer
@@ -1397,7 +1862,12 @@ Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_S
 // takes the time of its plan and its biggest piece rather than of all of it
 // in one answer. Measured on 12 first versions (2026-11-08) it was not
 // faster (36.6 s each against 33.7 s, the plan alone taking 14 s) and cost
-// more, so it is off unless STRATA_APPS_PARALLEL=on.
+// more. Made the default on 2026-11-14 for one app's build time, it was
+// measured again on 11 apps (2026-11-15): no faster on average (0.96 min
+// against 0.85), drawn less well (6.60 against 7.11 of 10) and working less
+// (47 against 55 of 65 jobs), since screens written apart from the plan
+// miss what it decided (who may write a table). So it is off unless
+// STRATA_APPS_PARALLEL=on.
 export const PARALLEL = STATEMENTS && process.env.STRATA_APPS_PARALLEL === 'on';
 
 const PLAN_STEP_PARALLEL = `# This step: the plan alone
@@ -1428,8 +1898,72 @@ const pieceStep = (what, slug) => `# This step: write ${what}
 
 Write the code of ${what} alone, as the plan above and its spec say: what the spec lists and nothing beyond it, in compact code. Other writers write the other pieces at the same time, from the same plan: call them exactly as the plan gives them (components by their props, helpers by their api, functions by their input and output, tables by their columns). Answer with one <code slug="${slug}">...</code> block holding the whole code, and nothing else.`;
 
+// A first version's example rows are written by their own writer, which
+// starts as soon as the plan's tables have streamed in and works while the
+// model writes the rest of the plan and the screens' statements. They were
+// a third of a course plan's answer (its lessons and questions), written
+// after everything else in it. Off with STRATA_APPS_SEED_WRITER=off.
+export const SEED_WRITER = process.env.STRATA_APPS_SEED_WRITER !== 'off';
+
+const SEED_PLAN_NOTE = `
+- Leave "seed" out of this plan: the example rows are written by their own writer, who starts as soon as your "tables" are written and sees the request and the plan up to them. So give each table that gets example rows an "examples" line in its entry: how many rows and which, in a few words (their names or titles, the states they are in), enough that the rows a screen or a text names are the rows written.`;
+
+const TESTS_STEP = `# This step: tests
+
+Write the tests ("tests") of the plan above, as described in the system prompt: tests of its rules and functions. The example rows are written by their own writer, and the screens and functions at the same time, from the same plan: use the tables, columns, function slugs and inputs as the plan gives them. Answer with one <code slug="examples">{"tests": [...]}</code> block holding that JSON, and nothing else.`;
+
+const SEED_STEP = `# This step: the example rows
+
+Write the example rows ("seed") of the plan above, as the system prompt describes them, for its tables as they are given (their columns, and the values a choice or status column takes), and as each table's "examples" line says: those rows, written out whole and realistic, content in full (an article's text, a recipe's steps). The rest of the plan and its screens are written at the same time, from the same plan. A column that says who someone is (who a job is for, an author, a crew) has no accounts behind it yet: write the example people's names there (a list of names in a list column), the same few people across the tables, so every such column shows who. Answer with one <code slug="seed">...</code> block holding the seed's JSON object (each table's name to its rows), and nothing else; {} when the app holds only the person's own entries.`;
+
+// Calls fn once with the plan's keys up to its "tables" (name, ux, art,
+// locale and the tables), as soon as that list has streamed in.
+export const tablesWatcher = (fn) => {
+  let done = false;
+  return (seen, text) => {
+    if (done || !fn || typeof text !== 'string') return;
+    const a = text.indexOf('<plan>');
+    if (a < 0) return;
+    const key = text.indexOf('"tables"', a);
+    const open = key < 0 ? -1 : text.indexOf('[', key);
+    if (open < 0) return;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = open; i < text.length; i++) {
+      const c = text[i];
+      if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === '[' || c === '{') depth++;
+      else if (c === ']' || c === '}') {
+        depth--;
+        if (!depth) {
+          done = true;
+          let plan = null;
+          try { plan = JSON.parse(`${text.slice(a + 6, i + 1)}}`); } catch { return; }
+          if (!Array.isArray(plan?.tables) || !plan.tables.length) return;
+          try { fn(plan); } catch { /* a hook's own failure is not the build's */ }
+          return;
+        }
+      }
+    }
+  };
+};
+
+// The answer of the example rows' and tests' writer, laid into the plan. When
+// the example rows have a writer of their own (seeded), this writer wrote the
+// tests alone: the rows stay as their writer left them, whichever was done first.
+export function takeExamplesInto(plan, text, { seeded = false } = {}) {
+  let out = null;
+  try { out = JSON.parse(String(text).trim().replace(/^```(?:json)?\s*/, '').replace(/```\s*$/, '')); } catch { /* none */ }
+  if (!out || typeof out !== 'object') return plan;
+  if (!seeded) { if (out.seed && typeof out.seed === 'object') plan.seed = out.seed; else delete plan.seed; }
+  if (Array.isArray(out.tests)) plan.tests = out.tests; else delete plan.tests;
+  return plan;
+}
+
 // The pieces a plan says to write, each with the slug of its code block.
-function planPieces(plan, parallel = false) {
+function planPieces(plan, parallel = false, seeded = false) {
   const out = [];
   for (const v of plan.views || []) {
     if (v.screen) continue;
@@ -1441,7 +1975,7 @@ function planPieces(plan, parallel = false) {
     if (parallel && f.format !== 'javascript') out.push({ what: `the function ${f.slug}`, label: `function ${f.slug}`, slug: f.slug, item: f, step: ruleStep(f.slug), model: SCREEN_MODEL, statement: true });
     else out.push({ what: `the function ${f.slug}`, label: `function ${f.slug}`, slug: f.slug, item: f });
   }
-  if (parallel && !plan.seed && !plan.tests) out.push({ what: 'the example rows and tests', label: 'examples', slug: 'examples', item: {}, step: EXAMPLES_STEP, model: SCREEN_MODEL, owns: (p) => /^tests\[|^seed|^examples/.test(p) });
+  if (parallel && !plan.seed && !plan.tests) out.push({ what: seeded ? 'the tests' : 'the example rows and tests', label: 'examples', slug: 'examples', item: {}, step: seeded ? TESTS_STEP : EXAMPLES_STEP, model: SCREEN_MODEL, owns: (p) => /^tests\[|^seed|^examples/.test(p) });
   for (const [kind, { ns, plural }] of Object.entries(SHARED)) {
     for (const c of plan[plural] || []) out.push({ what: `the shared ${kind} ${c.name}`, label: `${kind} ${c.name}`, slug: `${ns}:${c.name}`, item: c });
   }
@@ -1458,7 +1992,54 @@ async function pool(items, n, fn) {
   return out;
 }
 
-async function buildSplit({ prompt, forPiece, view, library, shared, system = SYSTEM, request = null }, progress, tr = new Trace()) {
+// How hard the model thinks while it plans a first version. That answer is
+// the longest of a build (the plan, the screens' statements and the example
+// rows), and at the CLI's default effort most of its output was thinking: a
+// course site's plan wrote 24,000 tokens in 149 s, at medium 15,000 in 96 s,
+// the app as good. At low (2026-11-14, course builds twice each) it thought
+// about half as much again: the plan in 62 to 67 s against 95 to 98 s at
+// medium, the pages it drew as good to the eye. STRATA_APPS_PLAN_EFFORT (or
+// STRATA_APPS_EFFORT) sets it.
+export const PLAN_EFFORT = process.env.STRATA_APPS_PLAN_EFFORT || process.env.STRATA_APPS_EFFORT || 'low';
+
+// A fix laid over a first answer: plan lists merged by slug (or name),
+// other plan keys and code blocks replaced where the fix gives them.
+export function mergeAnswers(first, fix) {
+  const plan = JSON.parse(JSON.stringify(first.plan || {}));
+  // "drop": slugs (or names) the fix takes out, or renames away from
+  const drop = new Set(Array.isArray(fix.plan?.drop) ? fix.plan.drop.map(String) : []);
+  const code0 = { ...(first.code || {}) };
+  if (drop.size) {
+    for (const k of Object.keys(plan)) if (Array.isArray(plan[k])) plan[k] = plan[k].filter((x) => !(x && typeof x === 'object' && drop.has(String(x.slug || x.name || ''))));
+    for (const d of drop) delete code0[d];
+  }
+  // a slug the fix gives in one list (a view) is no longer in another (a
+  // function of the same name the fix renamed away)
+  const lists = ['views', 'functions', 'components', 'helpers'];
+  for (const k of lists) {
+    for (const y of Array.isArray(fix.plan?.[k]) ? fix.plan[k] : []) {
+      const id = y && (y.slug || y.name);
+      if (!id) continue;
+      for (const o of lists) {
+        if (o === k || !Array.isArray(plan[o]) || !plan[o].some((x) => x && (x.slug || x.name) === id)) continue;
+        plan[o] = plan[o].filter((x) => !(x && (x.slug || x.name) === id));
+        delete code0[id]; // its code was the other kind's
+      }
+    }
+  }
+  for (const [k, v] of Object.entries(fix.plan || {})) {
+    if (k === 'drop') continue;
+    const keyed = Array.isArray(v) && Array.isArray(plan[k]) && v.every((x) => x && typeof x === 'object' && (x.slug || x.name)) && plan[k].every((x) => x && typeof x === 'object' && (x.slug || x.name));
+    if (!keyed) { plan[k] = v; continue; }
+    const id = (x) => x.slug || x.name;
+    const out = plan[k].map((x) => v.find((y) => id(y) === id(x)) || x);
+    for (const y of v) if (!out.some((x) => id(x) === id(y))) out.push(y);
+    plan[k] = out;
+  }
+  return { plan, code: { ...code0, ...(fix.code || {}) } };
+}
+
+async function buildSplit({ prompt, forPiece, view, library, shared, system = SYSTEM, request = null, onPlan = null }, progress, tr = new Trace()) {
   let cost = 0;
   let plan;
   let problems = [];
@@ -1466,35 +2047,115 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   // A first version is planned short and written in parallel (screens and
   // rules too); otherwise the plan carries the screens' and rules' statements.
   const parallel = PARALLEL && !view.comp.n;
-  const STEP = parallel ? PLAN_STEP_PARALLEL : PLAN_STEP;
+  const sideSeed = SEED_WRITER && !view.comp.n;
+  const STEP = parallel ? `${PLAN_STEP_PARALLEL}${sideSeed ? SEED_PLAN_NOTE : ''}` : sideSeed ? `${PLAN_STEP}${SEED_PLAN_NOTE}` : PLAN_STEP;
   let planPrompt = `${prompt}\n\n${STEP}`;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  let first = null;
+  // The writers of the pieces the plan marks as code (views in JavaScript,
+  // functions, components and helpers) start as soon as its </plan> has
+  // streamed in, while the model goes on to write the statements: their
+  // answers are used when the plan passes its checks the first time.
+  const early = new Map();
+  const startEarly = (p) => {
+    if (!p || typeof p !== 'object') return;
+    const text = `# The plan, decided\n\n<plan>\n${JSON.stringify(p, null, 1)}\n</plan>`;
+    const items = [
+      ...(p.views || []).filter((v) => v && v.slug && v.format === 'code').map((v) => ({ slug: v.slug, what: `the view ${v.slug}`, item: v })),
+      ...(p.functions || []).filter((f) => f && f.slug && f.format === 'javascript').map((f) => ({ slug: f.slug, what: `the function ${f.slug}`, item: f })),
+      ...Object.entries(SHARED).flatMap(([kind, { ns, plural }]) => (p[plural] || []).filter((c) => c && c.name).map((c) => ({ slug: `${ns}:${c.name}`, what: `the shared ${kind} ${c.name}`, item: c }))),
+    ];
+    for (const it of items) {
+      const piecePrompt = `${forPiece(it.item.uses, it.item.forked_from)}\n\n${text}\n\n${pieceStep(it.what, it.slug)}`;
+      early.set(it.slug, { prompt: piecePrompt, answer: ask({ system, prompt: piecePrompt }).catch(() => null) });
+    }
+    if (items.length) progress(`Writing ${items.map((i) => i.slug).join(', ')} while the plan's statements are written`);
+  };
+  // The example rows' writer (see SEED_WRITER).
+  let seeding = null;
+  const startSeed = (p) => {
+    const t0 = Date.now();
+    const seedPrompt = `${forPiece([])}\n\n# The plan so far\n\n<plan>\n${JSON.stringify(p, null, 1)}\n</plan>\n\n${SEED_STEP}`;
+    const span = tr.start('write', 'example rows', { piece: 'seed' });
+    progress(`Writing the example rows of ${p.tables.length} table${p.tables.length === 1 ? '' : 's'} while the plan is written`);
+    seeding = ask({ system, prompt: seedPrompt, model: SCREEN_MODEL, effort: PLAN_EFFORT }).then((answer) => {
+      tr.call(span, answer, system.length + seedPrompt.length);
+      cost += answer.cost || 0;
+      const block = parseAnswer(`<plan>{}</plan>\n${answer.text}`).code;
+      const text = String(block.seed ?? Object.values(block)[0] ?? '').trim().replace(/^```(?:json)?\s*/, '').replace(/```\s*$/, '');
+      const seed = JSON.parse(text);
+      progress(`Wrote the example rows in ${Math.round((Date.now() - t0) / 1000)} s`);
+      return seed && typeof seed === 'object' && !Array.isArray(seed) ? seed : null;
+    }).catch((e) => { progress(`The example rows' writer failed: ${String(e.message || e).slice(0, 200)}`); return null; });
+  };
+  let partialTried = false;
+  let third = false;
+  let merged = null;
+  for (let attempt = 1; attempt <= (third ? 3 : 2); attempt++) {
     progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`, { step: attempt === 1 ? 'plan' : 'fix' });
     const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
-    const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, onWrite: tee(writing(progress, 'The model'), previewer(view, progress)) });
+    const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, effort: PLAN_EFFORT, onWrite: tee(writing(progress, 'The model'), previewer(view, progress), attempt === 1 ? planWatcher(onPlan) : null, attempt === 1 && !parallel ? planWatcher(startEarly) : null, attempt === 1 && sideSeed ? tablesWatcher(startSeed) : null) });
     tr.call(span, answer, system.length + planPrompt.length);
     cost += answer.cost || 0;
     await tr.span('check', 'Check the plan', async (c) => {
       try {
-        const parsed = parseAnswer(answer.text);
+        // A fix answers with what changes only (code blocks alone, even):
+        // laid over the first answer.
+        let parsed;
+        try { parsed = parseAnswer(answer.text); } catch (e) {
+          if (!first || /<plan>/.test(answer.text)) throw e;
+          parsed = { plan: {}, code: Object.fromEntries([...answer.text.matchAll(/<code\s+slug="([^"]+)"\s*>\n?([\s\S]*?)\n?<\/code>/g)].map((m) => [m[1], m[2]])) };
+        }
+        if (first) {
+          // what was written early from the first plan stays unless the fix
+          // touches it (its entry) or what it stands on (tables, shared code)
+          const fp = parsed.plan || {};
+          if (fp.tables || fp.components || fp.helpers) early.clear();
+          for (const x of [...(fp.views || []), ...(fp.functions || [])]) if (x && x.slug) early.delete(x.slug);
+          parsed = mergeAnswers(first, parsed);
+          merged = JSON.parse(JSON.stringify(parsed));
+        } else {
+          if (attempt > 1) early.clear();
+          first = JSON.parse(JSON.stringify(parsed));
+        }
         plan = parsed.plan;
         // The plan's CREATE SCREEN statements come with it; other code waits for the writers.
         const statements = Object.fromEntries(Object.entries(parsed.code || {}).filter(([, c]) => /^\s*CREATE\s+SCREEN\b/i.test(c) || isRuleStatement(c)));
+        // A screen given as its JSON (what a statement compiles to) is that
+        // screen too, not a piece to write again after the plan.
+        for (const [slug, c] of Object.entries(parsed.code || {})) {
+          const v = (plan?.views || []).find((x) => x && x.slug === slug);
+          if (!v || v.screen || typeof c !== 'string' || !c.trim().startsWith('{')) continue;
+          let screen = null;
+          try { screen = JSON.parse(c); } catch { continue; }
+          if (screen && typeof screen === 'object' && Array.isArray(screen.body)) { v.screen = screen; if (v.format === 'code') v.format = 'screen'; }
+        }
         const preparing = prepareScreens(plan, statements, view);
         completePlan(plan, view, library);
         problems = [...preparing, ...(await validate(plan, {}, view, library, shared, request?.text)).filter((p) => !/has no <code slug=/.test(p))];
       } catch (e) { problems = [e.message]; }
       c.problems = problems.slice(0, 8);
     });
-    if (problems.length && problems.every(isBudget) && attempt === 2) {
+    // A screen's budget is a soft limit. A first version over it only is
+    // kept at once: planning it again costs a whole answer (half a minute
+    // or more) and leaves most of what was over as it was.
+    if (problems.length && problems.every(isBudget) && (attempt === 2 || !view.comp.n)) {
       progress(`Kept over a screen's budget: ${problems.map((p) => p.replace(/^over budget: /, '').split(':')[0]).join('; ')}`);
       problems = [];
     }
     if (!problems.length) { decidedAt = span.end; progress(`The model planned it in ${Math.round(answer.ms / 1000)} s`); break; }
-    planPrompt = `${prompt}\n\n${STEP}\n\n# Your previous plan\n\n${answer.text}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\nAnswer again with the whole plan, these fixed.`;
+    // The fix is asked for as what changes, not the whole answer again: a
+    // first version's answer is the longest of a build (a minute or more),
+    // its fix mostly a few lines.
+    planPrompt = `${prompt}\n\n${STEP}\n\n# Your previous plan\n\n${answer.text}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\n${first ? '# This step: the fixes only\n\nAnswer with what changes and nothing else: a <plan> holding only the keys you change (a view, function, table, component or helper in its list by its slug or name, whole; any other key, such as "access", "seed" or "figures", whole), then the code blocks you rewrite, each whole. Everything you leave out stays as it is in your previous plan; to take one out or rename it, list its old slug in "drop" in the plan.' : 'Answer again with the whole plan, these fixed.'}`;
+    // a fix laid over the first answer that still fails is asked for whole
+    if (attempt === 2 && first && partialTried) { first = null; third = true; planPrompt = `${prompt}\n\n${STEP}\n\n# Your previous plan\n\n<plan>\n${JSON.stringify(merged?.plan || {}, null, 1)}\n</plan>\n${Object.entries(merged?.code || {}).map(([k, c]) => `<code slug="${k}">\n${c}\n</code>`).join('\n')}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\nAnswer again with the whole plan, these fixed.`; }
+    partialTried = !!first;
   }
   if (problems.length) return { plan, code: {}, cost, problems, decidedAt };
-  const pieces = planPieces(plan, parallel);
+  // The example rows come when their writer is done (the plan's own, if it
+  // gave them anyway, stay).
+  const seedDone = seeding && seeding.then((seed) => { if (seed && !(plan.seed && typeof plan.seed === 'object' && Object.keys(plan.seed).length)) plan.seed = seed; });
+  const pieces = planPieces(plan, parallel, !!seeding);
   const code = rulesToCode(plan, screensToCode(plan, {}));
   const planText = `# The plan, decided\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>`;
   // Each screen's writer has its own watcher, so a screen is drawn as soon as
@@ -1507,12 +2168,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     if (typeof code.examples !== 'string') return;
     examples = code.examples;
     delete code.examples;
-    let out = null;
-    try { out = JSON.parse(examples.trim().replace(/^```(?:json)?\s*/, '').replace(/```\s*$/, '')); } catch { /* none */ }
-    if (out && typeof out === 'object') {
-      if (out.seed && typeof out.seed === 'object') plan.seed = out.seed; else delete plan.seed;
-      if (Array.isArray(out.tests)) plan.tests = out.tests; else delete plan.tests;
-    }
+    takeExamplesInto(plan, examples, { seeded: !!seeding });
   };
   // What a piece was written as, for its writer to fix: a screen's or a
   // rule's statement once compiled.
@@ -1539,8 +2195,9 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
       const fix = notes.get(pc.slug);
       const span = tr.start(fix ? 'fix' : 'write', fix ? `${pc.label}, again` : pc.label, { piece: pc.slug, ...(fix ? { problems: fix.problems.slice(0, 4) } : {}) });
       const extra = fix ? `\n\n# Your previous code for it\n\n<code slug="${pc.slug}">\n${fix.code}\n</code>\n\n# Its problems\n\n${fix.problems.map((p) => `- ${p}`).join('\n')}\n\nWrite it again, whole, with these fixed.` : '';
-      const piecePrompt = `${forPiece(pc.item.uses, pc.item.forked_from)}\n\n${planText}\n\n${pc.step || pieceStep(pc.what, pc.slug)}${extra}`;
-      const answer = await ask({
+      const pre = !fix && early.get(pc.slug);
+      const piecePrompt = pre ? pre.prompt : `${forPiece(pc.item.uses, pc.item.forked_from)}\n\n${planText}\n\n${pc.step || pieceStep(pc.what, pc.slug)}${extra}`;
+      const answer = (pre && await pre.answer) || await ask({
         system,
         prompt: piecePrompt,
         ...(pc.model ? { model: pc.model } : {}),
@@ -1571,7 +2228,12 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   await write(pieces);
   takeExamples();
   problems = await tr.span('check', 'Check the code', async (c) => { const p = [...prepareScreens(plan, code, view), ...await validate(plan, code, view, library, shared, request?.text)]; c.problems = p.slice(0, 8); return p; });
-  if (problems.length) {
+  // A piece that still fails after its fix gets one more (a first version
+  // that fails its checks does not build at all); what is only over budget
+  // or only in the tests is settled below without another round.
+  const blocking = () => problems.some((p) => !isBudget(p) && !(parallel && /^tests\[/.test(p)));
+  for (let round = 1; round <= 2; round++) {
+    if (round === 1 ? !problems.length : !blocking()) break;
     const notes = new Map();
     for (const pc of pieces) {
       const mine = problems.filter((p) => (pc.owns ? pc.owns(p) : p.startsWith(`${pc.label}:`) || p.startsWith(`${pc.label} `)));
@@ -1579,11 +2241,10 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     }
     const again = pieces.filter((pc) => notes.has(pc.slug));
     progress(`Checking the code: ${problems.length} problem${problems.length === 1 ? '' : 's'} (${problems.slice(0, 3).join('; ').slice(0, 400)})${again.length ? `; writing ${again.map((p) => p.label).join(', ')} again` : ''}`);
-    if (again.length) {
-      await write(again, notes);
-      takeExamples();
-      problems = await tr.span('check', 'Check the code again', async (c) => { const p = [...prepareScreens(plan, code, view), ...await validate(plan, code, view, library, shared, request?.text)]; c.problems = p.slice(0, 8); return p; });
-    }
+    if (!again.length) break;
+    await write(again, notes);
+    takeExamples();
+    problems = await tr.span('check', round === 1 ? 'Check the code again' : 'Check the code a third time', async (c) => { const p = [...prepareScreens(plan, code, view), ...await validate(plan, code, view, library, shared, request?.text)]; c.problems = p.slice(0, 8); return p; });
   }
   // A screen's budget was asked of the plan already; over it, it is kept.
   if (problems.some(isBudget)) {
@@ -1596,7 +2257,44 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     plan.tests = [];
     problems = [];
   }
+  await seedDone;
+  if (sideSeed) for (const t of plan.tables || []) if (t && typeof t === 'object') delete t.examples;
   return { plan, code, cost, problems, decidedAt };
+}
+
+// What each members' screen (one with a gate) shows over the app's rows,
+// for the rows of a new app are its example rows: its SQL data, run with the
+// app's rights, at most 12 rows each (:today is the day; an entry whose
+// parameters depend on the screen's state is left out). Kept as the app's
+// setting "samples", which the server lays into each screen's gate.
+export async function gateSamples(engine, appId, { today = new Date().toISOString().slice(0, 10) } = {}) {
+  const view = await engine.view(appId);
+  const out = {};
+  for (const v of view.views || []) {
+    if (!v.spec?.screen || typeof v.code !== 'string') continue;
+    let screen;
+    try { screen = JSON.parse(v.code); } catch { continue; }
+    if (!screen || !screen.gate) continue;
+    const data = {};
+    for (const [name, q] of Object.entries(screen.data || {})) {
+      const def = typeof q === 'string' ? { sql: q } : q && typeof q === 'object' ? q : null;
+      if (!def || typeof def.sql !== 'string' || def.sql.trim().startsWith('=')) continue;
+      const params = {};
+      let ok = true;
+      for (const [k, x] of Object.entries(def.params || {})) {
+        if (typeof x !== 'string' || !x.startsWith('=')) params[k] = x;
+        else if (/^=\s*today\s*$/.test(x)) params[k] = today;
+        else { ok = false; break; }
+      }
+      if (!ok) continue;
+      if (/:today\b/.test(def.sql) && params.today === undefined) params.today = today;
+      try { data[name] = (await engine.sql(appId, def.sql, params)).slice(0, 12); } catch { /* left out: the screen draws it empty */ }
+    }
+    // (a screen whose example queries found no rows gets no preview: its sign-in shows)
+    if (Object.values(data).some((rows) => Array.isArray(rows) && rows.length)) out[v.slug] = data;
+  }
+  if (Object.keys(out).length) await engine.store.putSetting(appId, 'samples', JSON.stringify(out));
+  return out;
 }
 
 // Runs a request through the model and applies its answer as the next version.
@@ -1605,8 +2303,18 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
 function photoOptions(engine, appId, plan, view) {
   const files = engine.services?.filesDir;
   if (files) photoCache(path.join(files, '..', 'photo-cache'));
-  const save = engine.services?.saveFile ? async (bytes, meta) => (await engine.services.saveFile(appId, bytes, meta)).id : null;
-  return { save, accent: plan?.art?.accent || briefOf(view?.app)?.art?.accent || '' };
+  // (a photo found on the web and kept is the engine's, not the owner's)
+  const save = engine.services?.saveFile ? async (bytes, meta) => (await engine.services.saveFile(appId, bytes, meta, 'photos')).id : null;
+  // (the owner's photos are read to be looked at before a hero takes one)
+  const ownBytes = engine.services?.readFile ? async (id) => (await engine.services.readFile(appId, id)).bytes : null;
+  return { save, ownBytes, accent: plan?.art?.accent || briefOf(view?.app)?.art?.accent || '' };
+}
+
+// The photos the owner uploaded to the app (not the ones the engine kept
+// from the web), newest first.
+async function ownPhotos(engine, appId) {
+  const rows = await engine.store.db.query("SELECT id, name, author FROM sa_files WHERE app = :a AND type LIKE 'image/%' ORDER BY created DESC LIMIT 40", { a: appId }).catch(() => []);
+  return rows.filter((r) => r.author !== 'photos' && !/^[0-9]{10,}-[0-9a-f]+\.jpg$/i.test(String(r.name || ''))).map((r) => r.id);
 }
 
 export async function forge(engine, appId, request, progress = () => {}) {
@@ -1633,7 +2341,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const started = Date.now();
   progress('Reading the app and its history from ChloeDB', { step: 'read' });
   const context = await tr.span('strata', 'Read the app, its data and the library from ChloeDB', () => buildContext(engine, appId, request));
-  const { prompt, view, library, shared, system } = context;
+  const { prompt, view, library, shared, system, sheets = [] } = context;
   if (library.length) progress(`Found ${library.length} capabilit${library.length === 1 ? 'y' : 'ies'} in the library that may fit: ${library.map((c) => `${c.title} (${c.found === 'meaning' ? 'by meaning' : c.found === 'both' ? 'by words and meaning' : 'by words'})`).join(', ')}`);
   let answer;
   let plan;
@@ -1643,7 +2351,13 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   let attemptPrompt = prompt;
   let decidedAt = 0;
   const split = SPLIT === 'always' || (SPLIT === 'first' && !view.comp.n);
-  if (split) ({ plan, code, cost, problems, decidedAt } = await buildSplit(context, progress, tr));
+  // A new app's designs start from the art direction as soon as the plan
+  // has streamed in, not after its statements are written and checked: the
+  // app is then drawn in its own design from its first open.
+  const early = !view.comp.n && !request.candidate && typeof engine.onDirection === 'function'
+    ? (p) => { const art = cleanArt(p?.art); if (art) engine.onDirection(appId, { art, views: (p.views || []).map((v) => ({ title: v.title })), tables: (p.tables || []).map((t) => t.name) })?.catch?.(() => {}); }
+    : null;
+  if (split) ({ plan, code, cost, problems, decidedAt } = await buildSplit({ ...context, onPlan: early }, progress, tr));
   const small = !split && smallChange(request.text, view);
   for (let attempt = 1; attempt <= (small ? 3 : 2) && !split; attempt++) {
     const model = small && attempt === 1 ? SMALL_MODEL : SCREEN_MODEL;
@@ -1678,9 +2392,22 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     throw err;
   }
   progress('The code passed the checks; storing it in ChloeDB', { step: 'store' });
+  // The app's currency, once: from its sheets' money or what was asked (£,
+  // euros), so every price reads in it (the kit's app.fmt.money default).
+  // The plan's own word first; else, once, an attached sheet's money; the
+  // request's own words only as the last fallback.
+  // Its locale likewise: how money, numbers and dates read (web/frame.js).
+  if (typeof plan.locale === 'string' && /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(plan.locale.trim())) {
+    try { new Intl.NumberFormat(plan.locale.trim()); await store.putSetting(appId, 'locale', plan.locale.trim()).catch(() => {}); } catch { /* not a locale */ }
+  }
+  if (typeof plan.currency === 'string' && /^[A-Z]{3}$/.test(plan.currency.trim())) await store.putSetting(appId, 'currency', plan.currency.trim()).catch(() => {});
+  else if (!(await store.setting(appId, 'currency').catch(() => null))) {
+    const cur = currencyOf(sheets, `${request.text || ''}\n${view.app?.description || ''}`);
+    if (cur) await store.putSetting(appId, 'currency', cur).catch(() => {});
+  }
   // The photos the screens and example rows name are searched for while the
   // tables are made and the queries run (engine/photos.mjs).
-  const photoOpts = photoOptions(engine, appId, plan, view);
+  const photoOpts = { ...photoOptions(engine, appId, plan, view), own: await ownPhotos(engine, appId) };
   warmPhotos(plan).catch(() => {});
   // A new app's three designs are made from its art direction, beside the
   // storing (the server's hook; the drawn-page check waits for them).
@@ -1688,9 +2415,14 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const designing = art && typeof engine.onDirection === 'function'
     ? Promise.resolve(engine.onDirection(appId, { art, views: (plan.views || []).map((v) => ({ title: v.title })), tables: (plan.tables || []).map((t) => t.name) })).catch(() => null)
     : null;
-  if (art) progress(`Art direction: ${art.concept}${art.structure ? `; ${art.structure} layout` : ''}${art.accent ? `; accent ${art.accent}` : ''}${art.type !== 'system' ? `; ${art.type} titles` : ''}${art.action ? `; main action "${art.action}"` : ''}`);
+  if (art) progress(`Art direction: ${art.concept}${art.structure ? `; ${art.structure} layout` : ''}${art.accent ? `; accent ${art.accent}` : ''}${art.theme === 'dark' ? '; dark' : ''}${art.type !== 'system' ? `; ${art.type} titles` : ''}${art.action ? `; main action "${art.action}"` : ''}`);
   let storing = tr.start('strata', 'Store the code and the new version in ChloeDB');
 
+  // What the app holds when it opens (engine/data.mjs): the attached sheets
+  // go to tables whose columns hold them, typed; example rows line up.
+  const today = new Date().toISOString().slice(0, 10);
+  const data = prepareData(plan, view, sheets, today);
+  for (const n of data.notes) progress(n);
   // Tables first: data the new code reads must exist when it goes live.
   const caps = new Map(view.comp.caps.map((id) => {
     const c = store.capCache.get(id);
@@ -1700,7 +2432,11 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const tableSpecs = new Map(view.tables.map((t) => [t.spec.name, t.spec]));
   const written = [];
   // The plan's ALLOW statements, by table, as the engine keeps them.
-  const accessOf = new Map([...parseAccessList(plan.access || [])].map(([name, rules]) => [name, rules.map(allowText)]));
+  const parsedAccess = parseAccessList(plan.access || []);
+  const accessOf = new Map([...parsedAccess].filter(([, rules]) => !rules.some((r) => r.call)).map(([name, rules]) => [name, rules.map(allowText)]));
+  // Who may call each function (ALLOW CALL ON <function> TO <who>): kept in
+  // the function's spec; such a function runs with the app's rights.
+  const callsOf = new Map([...parsedAccess].filter(([, rules]) => rules.some((r) => r.call)).map(([name, rules]) => [name, rules.find((r) => r.call).who]));
   const stored = new Map();
   for (const t of plan.tables || []) {
     const old = tableSpecs.get(t.name);
@@ -1734,15 +2470,31 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   if (accessOf.size) progress(`Access: ${[...accessOf.values()].flat().join('; ')}`);
   // Screens: their queries run now against the tables as they are, and the
   // model gets one try to fix the screens whose queries fail.
+  // The tables this version creates hold their rows (the attached data, the
+  // example rows) while the screens' queries run and the figures are
+  // checked against them, and are emptied again before the tests.
+  const freshTables = new Set((plan.tables || []).map((t) => t.name).filter((n) => !view.tables.some((t) => t.spec.name === n)));
+  const rowsToAdd = rowsOfBuild(plan, data, freshTables, !view.comp.n);
+  const checkFigures = (plan.views || []).some((v) => v.screen) && data.figures.length;
+  if (checkFigures) await tr.span('strata', 'Put the rows in, to check the figures', () => putRows(engine, appId, stored, rowsToAdd));
   if ((plan.views || []).some((v) => v.screen)) {
     const names = [...new Set([...view.tables.map((t) => t.spec.name), ...(plan.tables || []).map((t) => t.name)])];
-    const run = (label) => tr.span('check', label, async (c) => { const p = await dryRunScreens(engine.db, appId, names, plan); c.problems = p.slice(0, 8); return p; });
+    const run = (label) => tr.span('check', label, async (c) => {
+      const p = await dryRunScreens(engine.db, appId, names, plan);
+      if (checkFigures) p.push(...await figureProblems(engine.db, appId, names, plan, data.figures, today, view));
+      // big numbers that are one another's rows and come out equal, on the
+      // rows the tables hold (a change to a screen of an app with data too,
+      // not only a build with figures to check)
+      p.push(...await kpiEchoes(engine.db, appId, names, plan, today));
+      c.problems = p.slice(0, 8);
+      return p;
+    });
     let failed = await run("Run the screens' queries");
     if (failed.length) {
       tr.end(storing);
       progress(`Running the screens' queries: ${failed.length} failed (${failed.slice(0, 2).join('; ').slice(0, 300)}); asking the model to fix them`);
       const span = tr.start('fix', 'The model fixes the screens whose queries fail', { problems: failed.slice(0, 4) });
-      const fixPrompt = `${prompt}\n\n# Your plan\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>\n\n# These queries failed when run against the app's tables\n\n${failed.map((p) => `- ${p}`).join('\n')}\n\n# This step\n\nAnswer with a <plan> holding only "views": each screen view above whose queries failed, whole, with its queries fixed (the same slug, title and order). No code blocks, nothing else.`;
+      const fixPrompt = `${prompt}\n\n# Your plan\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>\n\n# These queries failed, or gave figures other than the ones worked out from the rows, when run against the app's tables\n\n${failed.map((p) => `- ${p}`).join('\n')}\n\n# This step\n\nAnswer with a <plan> holding only "views": each screen view above whose queries failed, whole, with its queries fixed (the same slug, title and order; a figure's data entry gives the figure's rows, as \"figures\" says). No code blocks, nothing else.`;
       try {
         const answer = await ask({ system, prompt: fixPrompt, onWrite: writing(progress) });
         tr.call(span, answer, system.length + fixPrompt.length);
@@ -1762,8 +2514,12 @@ async function forgeTraced(engine, appId, request, progress, tr) {
       failed = await run("Run the screens' queries again");
       progress(failed.length ? `Still failing, stored as they are (the runtime reports them): ${failed.slice(0, 2).join('; ').slice(0, 300)}` : "The screens' queries run");
       storing = tr.start('strata', 'Store the code and the new version in ChloeDB');
-    }
+    } else if (checkFigures) progress(`The figures check out: ${data.figures.map((f) => f.label || f.data).join(', ')}`);
   }
+  if (checkFigures) await emptyTables(engine, appId, freshTables);
+  // A screen whose data only signed-in people may read shows a visitor a
+  // sign-in entry instead (web/screen.js draws spec.gate).
+  gateScreens(plan, code, view, stored, accessOf);
   // Photos the screens name by what they show become pictures (engine/photos.mjs).
   const photos = await tr.span('strata', 'Find the photos the screens name', () => placePhotos(plan, code, photoOpts));
   if (photos.count) progress(`Found ${photos.count} photo${photos.count === 1 ? '' : 's'}: ${photos.sources}`);
@@ -1772,12 +2528,23 @@ async function forgeTraced(engine, appId, request, progress, tr) {
       // The patterns a screen was expanded from, for the graph: this
       // version's, and a patched screen keeps its earlier ones.
       const patterns = kind === 'view' && item.screen ? [...new Set([...(item.patched !== undefined ? view.views.find((x) => x.slug === item.slug)?.spec?.patterns || [] : []), ...(item.patterns || [])])] : [];
-      const spec = kind === 'view' ? { order: item.order ?? 50, ...audienceOf(item, view), ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.on && item.as === 'app' ? { as: 'app' } : {}), ...(item.every ? { every: item.every } : {}), ...(item.source ? { source: true } : {}), ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) };
+      const callers = kind === 'function' ? callsOf.get(item.slug) || view.functions.find((f) => f.slug === item.slug)?.spec?.callers || null : null;
+      const spec = kind === 'view' ? { order: item.order ?? 50, ...audienceOf(item, view), ...(item.gate ? { gate: item.gate } : {}), ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.on && item.as === 'app' ? { as: 'app' } : {}), ...(item.every ? { every: item.every } : {}), ...(item.source ? { source: true } : {}), ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}), ...(callers ? { callers } : {}) };
       const id = await store.putCapability({ app: appId, slug: item.slug, kind, title: item.title || item.slug, description: item.description || '',
         code: code[item.slug], spec, forked_from: item.forked_from || null, author: request.source === 'repair' ? 'repair' : 'forge' });
       caps.set(`${kind}/${item.slug}`, id);
       written.push(id);
     }
+  }
+  // Callers declared for a function this version does not rewrite: a new
+  // version of it with them.
+  for (const [slug, who] of callsOf) {
+    if ((plan.functions || []).some((f) => f.slug === slug)) continue;
+    const cur = view.functions.find((f) => f.slug === slug);
+    if (!cur || cur.spec?.callers === who) continue;
+    const id = await store.putCapability({ app: appId, slug, kind: 'function', title: cur.title, description: cur.description || '', code: cur.code, spec: { ...cur.spec, callers: who }, forked_from: cur.forked_from || null, author: 'forge' });
+    caps.set(`function/${slug}`, id);
+    written.push(id);
   }
   for (const r of plan.reuse || []) {
     const src = library.find((c) => c.id === r.id);
@@ -1789,6 +2556,16 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     written.push(id);
     progress(`Reused ${src.title} from the library (${src.id})`);
   }
+  // Screens this version did not rewrite whose sign-in entry changes with the access.
+  for (const { cap, code: c, spec } of plan.regated || []) {
+    const id = await store.putCapability({ app: appId, slug: cap.slug, kind: 'view', title: cap.title, description: cap.description || '', code: c, spec: spec || cap.spec, forked_from: cap.forked_from || null, author: 'forge' });
+    caps.set(`view/${cap.slug}`, id);
+    written.push(id);
+    let gated = !!spec?.gate;
+    try { if (!spec) gated = !!JSON.parse(c).gate; } catch { /* a code view */ }
+    progress(`The screen ${cap.title} shows visitors a sign-in entry${gated ? '' : ' no more'}`);
+  }
+  delete plan.regated;
   for (const s of plan.remove || []) {
     caps.delete(`view/${s}`);
     caps.delete(`function/${s}`);
@@ -1831,7 +2608,10 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const n = await store.writeComposition(appId, [...caps.values()], request.text, plan.summary || '', { head: !candidate });
   // The live version's name and brief are the app's.
   if (!candidate) {
-    const named = typeof plan.name === 'string' && plan.name.trim() && !(await store.setting(appId, 'named')) ? { name: appTitle(plan.name, view.app) } : {};
+    // A change that renames the main heading renames the app, whose name the header shows.
+    const renamed = view.comp.n ? renameIn(request.text) : null;
+    if (renamed) plan.name = renamed;
+    const named = typeof plan.name === 'string' && plan.name.trim() && !(await store.setting(appId, 'named')) ? { name: renamed || appTitle(plan.name, view.app) } : {};
     const brief = briefToKeep(plan, view.app);
     const ux = brief ? { ux: JSON.stringify(brief) } : {};
     if (named.name || ux.ux) await store.updateApp(appId, { ...named, ...ux });
@@ -1862,7 +2642,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const problemsLeft = [];
   // The app's tests run on the tables this version creates, while they are
   // empty; a failure goes to the repair like an error a person saw.
-  const fresh = new Set((plan.tables || []).map((t) => t.name).filter((n) => !view.tables.some((t) => t.spec.name === n)));
+  const fresh = freshTables;
   if (TESTS && Array.isArray(plan.tests) && plan.tests.length && fresh.size) {
     const testing = tr.start('check', "Run the app's tests");
     const results = await runTests(engine, appId, plan.tests.slice(0, 5), fresh).catch((e) => [{ name: 'tests', ok: false, problem: e.message }]);
@@ -1877,29 +2657,57 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     }
   }
   // Example rows go in once the tables are part of the live version.
-  if (!view.comp.n && plan.seed) {
-    const seeding = tr.start('strata', 'Add example rows');
+  if (rowsToAdd.length) {
+    const seeding = tr.start('strata', 'Add the attached data and example rows');
     let added = 0;
-    for (const [table, rows] of Object.entries(plan.seed)) {
-      for (const row of (rows || []).slice(0, 20)) {
-        try { await engine.insert(appId, table, row, { depth: 1 }); added++; } catch (e) { progress(`Example row skipped: ${e.message}`); }
+    let skipped = 0;
+    for (const { table, rows, imported } of rowsToAdd) {
+      // Many imported rows go in by the batch (no triggers); a few, one by one.
+      if (imported && rows.length > 200) { added += await putRows(engine, appId, stored, [{ table, rows }]); continue; }
+      for (const row of rows) {
+        try { await engine.insert(appId, table, row, { depth: 1 }); added++; } catch (e) { if (skipped++ < 3) progress(`${imported ? 'An imported row' : 'An example row'} was skipped: ${e.message}`); }
       }
     }
-    if (added) progress(`Added ${added} example rows`);
+    if (added) progress(`Added ${added} rows (${rowsToAdd.map((r) => `${r.rows.length} ${r.imported ? 'imported into' : 'examples in'} ${r.table}`).join(', ')})`);
     tr.end(seeding, { rows: added });
+    // A new app's members' screens keep what they show over its example
+    // rows, for a visitor to see them drawn with those (never over rows the
+    // owner brought: then a visitor gets the sign-in entry alone).
+    if (added && !view.comp.n && !candidate && rowsToAdd.every((r) => !r.imported)) {
+      const kept = await gateSamples(engine, appId).catch((e) => { progress(`The example rows for the sign-in pages were not kept: ${e.message}`); return {}; });
+      if (Object.keys(kept).length) progress(`Kept example rows for ${Object.keys(kept).join(', ')}, shown to visitors before they sign in`);
+    }
   }
   // Every view is opened in a headless browser, when one is installed; an
   // error there reaches the engine as a person's would, and is repaired.
   // (A candidate's views are opened before it is offered: its errors are its own.)
-  const opening = openViews(engine.baseUrl, appId, { v: candidate ? n : null }).then((r) => {
+  const shownFigures = data.figures.filter((f) => f.view);
+  const opening = openViews(engine.baseUrl, appId, { v: candidate ? n : null, withText: shownFigures.length > 0 }).then(async (r) => {
     const bad = r.views.filter((v) => v.errors.length);
     if (r.ran) engine.log(`[${appId}] opened ${r.views.length} view${r.views.length === 1 ? '' : 's'} after version ${n}${bad.length ? `: errors in ${bad.map((v) => `${v.tab || 'the app'} (${v.errors[0]})`).join('; ')}` : ', no errors'}`);
+    // The declared figures must show on their screens as worked out from the
+    // rows; one that does not goes to the repair, as an error would.
+    if (r.ran && shownFigures.length && !candidate) {
+      const live = await store.resolve(appId).catch(() => null);
+      let missing = await figuresNotShown(engine, appId, live, r.views, shownFigures).catch(() => []);
+      // A screen still loading its data reads as one that does not show it:
+      // looked at again, slower, before anything goes to the repair.
+      if (missing.length) {
+        const again = await openViews(engine.baseUrl, appId, { withText: true, wait: 4000 }).catch(() => null);
+        if (again?.ran) missing = await figuresNotShown(engine, appId, live, again.views, shownFigures).catch(() => []);
+      }
+      // Only while this version is still the live one.
+      if (missing.length && (await store.resolve(appId).catch(() => null))?.comp.n !== n) missing = [];
+      for (const m of missing) engine.reportError(appId, m.cap, m.message, 'in the figures check');
+      if (missing.length) engine.log(`[${appId}] figures not shown: ${missing.map((m) => m.message).join('; ').slice(0, 400)}`);
+    }
     return bad;
   }).catch((e) => { engine.log(`[${appId}] opening the views: ${e.message}`); return []; });
   // The drawn-page check (look.mjs): the live version drawn on a phone and a
   // computer, measured, and looked at against the brief, after the build has
   // answered; the server sends what stands in the way to the repair.
-  if (LOOK && !candidate && engine.baseUrl) {
+  // (The version a check's own repair makes is not checked again: one round.)
+  if (LOOK && !candidate && engine.baseUrl && request.source !== 'look') {
     const designed = designing ? Promise.race([designing, new Promise((ok) => setTimeout(ok, 30_000))]) : null;
     Promise.all([opening, designed]).then(() => checkDrawn(engine, appId)).then((r) => { if (r.ran) engine.emit('drawn', { app: appId, n, source: request.source || 'user', ...r }); })
       .catch((e) => engine.log?.(`[${appId}] drawing the screens: ${e.message}`));
@@ -2088,9 +2896,11 @@ export async function editScreen(engine, appId, slug, { patch, screen, statement
   let next;
   let source = null;
   let photos = null;
+  let title = cur.title;
   try {
     if (typeof statement === 'string') {
       const out = compileStatement(statement);
+      if (out.title) title = out.title;
       if (out.slug !== slug) throw new Error(`the statement creates ${out.slug}; this screen is ${slug}`);
       next = out.screen;
       photos = out.photos;
@@ -2102,11 +2912,11 @@ export async function editScreen(engine, appId, slug, { patch, screen, statement
   if (photos && !ex.problems.length) withPhotos(ex.screen, photos);
   const problems = [...ex.problems, ...checkScreen(ex.screen, columnsFor(view, {}))];
   // A photo the edit names is found as for a built screen.
-  if (!problems.length) await placeScreenPhotos(ex.screen, { ...photoOptions(engine, appId, null, view), used: new Set([...view.views.filter((v) => v.slug !== slug).flatMap((v) => photoIds(v.code)), ...photoIds(JSON.stringify(ex.screen))]) });
+  if (!problems.length) await placeScreenPhotos(ex.screen, { ...photoOptions(engine, appId, null, view), own: await ownPhotos(engine, appId), used: new Set([...view.views.filter((v) => v.slug !== slug).flatMap((v) => photoIds(v.code)), ...photoIds(JSON.stringify(ex.screen))]) });
   if (!problems.length) problems.push(...await dryRunScreens(engine.db, appId, view.tables.map((t) => t.spec.name), { views: [{ slug, screen: ex.screen }] }));
   if (problems.length) throw Object.assign(new Error(problems.slice(0, 4).join('; ')), { status: 400, problems });
   const code = JSON.stringify(ex.screen, null, 1);
-  if (code === cur.code && (source || null) === (cur.spec.statement || null)) return { n: view.comp.n, unchanged: true };
+  if (code === cur.code && (source || null) === (cur.spec.statement || null) && title === cur.title) return { n: view.comp.n, unchanged: true };
   const spec = { ...cur.spec };
   if (source) spec.statement = source; else delete spec.statement;
   // The patterns it was expanded from: a patch keeps the earlier ones.
@@ -2117,7 +2927,7 @@ export async function editScreen(engine, appId, slug, { patch, screen, statement
   const shared = await store.shared();
   const missing = [...sharedRefs(code)].filter((k) => !shared.has(k));
   if (missing.length) throw Object.assign(new Error(`the library has no ${missing.map((k) => k.replace('component/', 'ui.').replace('helper/', 'lib.')).join(', ')}`), { status: 400 });
-  const id = await store.putCapability({ app: appId, slug, kind: 'view', title: cur.title, description: cur.description, code, spec, author: 'person' });
+  const id = await store.putCapability({ app: appId, slug, kind: 'view', title, description: cur.description, code, spec, author: 'person' });
   const own = view.comp.caps.filter((c) => !view.shared.some((x) => x.id === c)).map((c) => (c === cur.id ? id : c));
   const roots = own.filter((c) => /\/(view|function)\//.test(c));
   const pinned = await pinShared(store, roots, { had: new Map(view.shared.map((c) => [`${c.kind}/${c.slug}`, c.id])), shared });

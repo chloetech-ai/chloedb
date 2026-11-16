@@ -1,0 +1,159 @@
+{
+ "title": "Book a time: a strip of days, the free times of the chosen day, taken ones greyed out",
+ "about": "Appointments, lessons, calls, a court, a van or a person by the hour: bookings are rows with a start (and an end); the part offers each day's slots between opening and closing time and greys out the taken ones, so nothing is booked twice. With RESOURCE the person picks whom or what first (a staff member, a court) and only that one's bookings take its slots. The chosen slot opens the view that finishes the booking, or calls the rule that takes it (which refuses a clash with times_overlap).",
+ "params": {
+  "table": {
+   "about": "the bookings table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}_slots"
+  },
+  "start": {
+   "about": "the bookings column with the start ('YYYY-MM-DDTHH:MM')",
+   "default": "start"
+  },
+  "end": {
+   "about": "the bookings column with the end (optional)"
+  },
+  "open": {
+   "about": "the opening time",
+   "default": "09:00"
+  },
+  "close": {
+   "about": "the closing time",
+   "default": "17:00"
+  },
+  "step": {
+   "about": "minutes between slot starts",
+   "default": 30
+  },
+  "length": {
+   "about": "a booking's minutes",
+   "default": 30
+  },
+  "closed": {
+   "about": "weekdays with no slots, 0 Sunday to 6 Saturday (a list)",
+   "default": [
+    0
+   ]
+  },
+  "days": {
+   "about": "how many days ahead are offered",
+   "default": 14
+  },
+  "resource": {
+   "about": "the bookings column naming whom or what is booked"
+  },
+  "resources": {
+   "about": "the table of those (to pick from)"
+  },
+  "label": {
+   "about": "the resources column with each one's name",
+   "default": "name"
+  },
+  "view": {
+   "about": "the view a chosen slot opens with {start, end, resource}"
+  },
+  "call": {
+   "about": "the function a chosen slot calls with {start, end, resource}"
+  },
+  "title": {
+   "about": "a heading",
+   "default": "Book a time"
+  },
+  "note": {
+   "about": "a line under the heading"
+  }
+ },
+ "example": {
+  "use": "slots",
+  "table": "appointments",
+  "start": "starts",
+  "end": "ends",
+  "open": "08:30",
+  "close": "18:00",
+  "step": 30,
+  "length": 45,
+  "resource": "staff",
+  "resources": "staff_members",
+  "label": "name",
+  "call": "take-appointment",
+  "title": "Book an appointment"
+ },
+ "screen": {
+  "state": {
+   "{{key}}_r": null
+  },
+  "data": {
+   "{{key}}_who": {
+    "$when": "resource&resources",
+    "$value": "SELECT id, {{label}} AS sa_name FROM {{resources}} ORDER BY {{label}} LIMIT 100"
+   },
+   "{{key}}": {
+    "$when": "!resource",
+    "$value": {
+     "sql": "SELECT * FROM {{table}} WHERE days_between(:today, {{start}}) >= 0 LIMIT 3000",
+     "params": {
+      "today": "=today"
+     }
+    }
+   },
+   "{{key}}_r": {
+    "$when": "resource",
+    "$value": {
+     "sql": "SELECT * FROM {{table}} WHERE days_between(:today, {{start}}) >= 0 AND {{resource}} = :r LIMIT 3000",
+     "params": {
+      "today": "=today",
+      "r": "=state.{{key}}_r || ''"
+     }
+    }
+   }
+  },
+  "let": {
+   "{{key}}_taken": "=(data[{{key|json}}] || data[{{key|json}} + '_r'] || []).map(b => {{end|json}} && b[{{end|json}}] ? {start: b[{{start|json}}], end: b[{{end|json}}]} : b[{{start|json}}])",
+   "{{key}}_book": "=s => { const v = {start: s.start, end: s.end, resource: state.{{key}}_r || null}; return {{view|json}} ? app.open({{view|json}}, v) : {{call|json}} ? app.call({{call|json}}, v).then(() => app.toast('Booked for ' + app.fmt.datetime(s.start))) : null; }"
+  },
+  "body": [
+   {
+    "h": "{{title}}",
+    "level": 2
+   },
+   {
+    "$when": "note",
+    "text": "{{note}}",
+    "muted": true
+   },
+   {
+    "$when": "resource&resources",
+    "chips": "{{key}}_r",
+    "options": "=({{key}}_who || []).map(p => ({value: p.id, label: String(p.sa_name ?? p.id)}))"
+   },
+   {
+    "if": "={{resource|json}} && !state.{{key}}_r",
+    "then": [
+     {
+      "text": "Pick one above to see the free times.",
+      "muted": true
+     }
+    ],
+    "else": [
+     {
+      "ui": "bookingSlots",
+      "props": {
+       "taken": "={{key}}_taken",
+       "open": "{{open}}",
+       "close": "{{close}}",
+       "step": "{{step}}",
+       "length": "{{length}}",
+       "closed": "{{closed}}",
+       "days": "{{days}}",
+       "onBook": "={{key}}_book"
+      }
+     }
+    ]
+   }
+  ]
+ }
+}

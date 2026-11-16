@@ -29,6 +29,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fullBleedProblems } from './photoqc.mjs';
 
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'library');
 const UNSPLASH_KEY = process.env.STRATA_APPS_UNSPLASH_KEY || '';
@@ -268,6 +269,14 @@ const HUES = [[/red|salsa|tomato|chili|cherry|ruby|crimson/, 4], [/coral|salmon|
   [/pink|rose|blush|magenta|berry|fuchsia/, 330], [/brown|coffee|cocoa|walnut|oak|stone|sand|earth|taupe|umber/, 28]];
 export function accentHue(accent) {
   const t = String(accent || '').toLowerCase();
+  // a colour given as #rgb or #rrggbb is its own hue
+  const hex = t.match(/#([0-9a-f]{6}|[0-9a-f]{3})\b/);
+  if (hex) {
+    const x = hex[1].length === 3 ? hex[1].replace(/./g, '$&$&') : hex[1];
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(x.slice(i, i + 2), 16));
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), c = mx - mn;
+    if (c) { let hh = mx === r ? ((g - b) / c) % 6 : mx === g ? (b - r) / c + 2 : (r - g) / c + 4; return Math.round((hh * 60 + 360) % 360); }
+  }
   for (const [re, hue] of HUES) if (re.test(t)) return hue;
   return 220;
 }
@@ -381,13 +390,65 @@ async function keep(r, save) {
 // and has none yet. Returns the photos placed. A block nothing is found for
 // is drawn: a hero or band on the design's gradient (the page's own), a
 // card or photo with a drawn picture.
-export async function placeScreenPhotos(screen, { used = new Set(), find = findPhoto, save = null, accent = '', drawn = true } = {}) {
+export async function placeScreenPhotos(screen, { used = new Set(), find = findPhoto, save = null, accent = '', drawn = true, judge = fullBleedProblems, fetchBytes = photoBytes, own = [], ownBytes = null } = {}) {
   const placed = [];
   const jobs = photoJobs(screen);
-  if (find === findPhoto) await prefetchPhotos(jobs);
+  // The owner's own photos (uploaded to the app, not yet on the page) go to
+  // its full-width places first, theirs before anyone else's, when they
+  // pass the same look as a found one (not flat, dark or washed out, not
+  // too busy for words). When the plan has already put some of them on the
+  // page (a gallery of them), it chose where they go: the rest stay out of
+  // the hero it chose otherwise.
+  const onPage = JSON.stringify(screen);
+  const placedOwn = (own || []).some((id) => id && onPage.includes(id));
+  const hue = accent ? accentHue(accent) : null;
+  const mine = [];
+  if (!placedOwn) {
+    for (const id of (own || []).filter((x) => x && !onPage.includes(x) && !used.has(x))) {
+      if (judge && ownBytes) {
+        const bytes = await ownBytes(id).catch(() => null);
+        const problems = bytes ? await judge(bytes, { hue }).catch(() => []) : ['could not be read'];
+        if (problems.length) continue;
+      }
+      mine.push(id);
+    }
+  }
+  if (find === findPhoto) await prefetchPhotos(jobs.filter((j) => !((j.kind === 'hero' || j.kind === 'band') && mine.length)));
   const found = [];
   for (const j of jobs) {
-    const r = await find(j.query, { use: j.use, used });
+    if ((j.kind === 'hero' || j.kind === 'band') && mine.length) {
+      const id = mine.shift();
+      used.add(id);
+      found.push({ id, src: id, credit: null, href: null, source: 'own' });
+      continue;
+    }
+    let r = await find(j.query, { use: j.use, used });
+    // A photo found on the web for a full-width place (a hero, a band) is
+    // looked at first: too small, too dark or washed out, flat or blurred,
+    // and the next one is tried, then the built-in set's (chosen by eye).
+    if (judge && (j.kind === 'hero' || j.kind === 'band')) {
+      let tries = 0;
+      while (r && r.remote) {
+        const bytes = await fetchBytes(r.src).catch(() => null);
+        const problems = bytes ? await judge(bytes, { hue }).catch(() => []) : ['could not be fetched'];
+        if (!problems.length) break;
+        used.add(r.id);
+        if (++tries >= 3) { r = null; break; }
+        const next = await find(j.query, { use: j.use, used });
+        r = next && next.id !== r.id ? next : null;
+      }
+      // none fit: one of the built-in set, unless its colours fight the
+      // design too; then the hero stays type on the design's own ground
+      if (!r) {
+        const [b] = matchBuiltin(j.query, { used });
+        r = b ? { id: b.id, src: unsplashUrl(b.id, j.use), credit: null, href: null, source: 'builtin', tone: b.tone } : null;
+        if (r && hue != null) {
+          const bytes = await fetchBytes(r.src).catch(() => null);
+          const problems = bytes ? await judge(bytes, { hue }).catch(() => []) : [];
+          if (problems.some((x) => /clash/.test(x))) r = null;
+        }
+      }
+    }
     if (r) used.add(r.id);
     found.push(r);
   }
@@ -410,6 +471,21 @@ export async function placeScreenPhotos(screen, { used = new Set(), find = findP
       placed.push({ query: j.query, source: 'drawn' });
     }
   });
+  // An owner's photo the screen itself put in a hero or a band gets the same
+  // look as any other there: one with no picture in it (a texture, a plain
+  // gradient) or too dark or flat to carry words leaves the hero to the
+  // design's own ground (it stays wherever else the screen shows it).
+  if (judge && ownBytes && (own || []).length) {
+    const ownSet = new Set(own.map(String));
+    const heroes = [];
+    const walk2 = (v) => { if (Array.isArray(v)) { v.forEach(walk2); return; } if (!v || typeof v !== 'object') return; if ((v.hero !== undefined || v.band !== undefined) && typeof v.src === 'string' && ownSet.has(v.src)) heroes.push(v); for (const x of Object.values(v)) if (x && typeof x === 'object') walk2(x); };
+    walk2(screen?.body || []);
+    for (const v of heroes) {
+      const bytes = await ownBytes(v.src).catch(() => null);
+      const problems = bytes ? await judge(bytes, { hue }).catch(() => []) : [];
+      if (problems.length) { placed.push({ query: v.src, source: 'own refused', problems }); delete v.src; if (v.look === 'photo') v.look = 'type'; }
+    }
+  }
   return placed;
 }
 
@@ -472,7 +548,7 @@ export function warmPhotos(plan, { open = OPEN } = {}) {
 // (the app's files), accent (the art direction's), drawn (draw what is not
 // found), find (stands in for findPhoto in tests).
 export async function placePhotos(plan, code, opts = {}) {
-  const { open = OPEN, save = null, accent = plan?.art?.accent || '', drawn = true } = opts;
+  const { open = OPEN, save = null, accent = plan?.art?.accent || '', drawn = true, own = [], ownBytes = null } = opts;
   const find = opts.find || ((q, o) => findPhoto(q, { ...o, open }));
   const placed = [];
   const used = new Set();
@@ -480,7 +556,7 @@ export async function placePhotos(plan, code, opts = {}) {
   // Every search first, in parallel.
   if (open && !opts.find) await warmPhotos(plan, { open });
   for (const v of screens) {
-    const got = await placeScreenPhotos(v.screen, { used, find, save, accent, drawn });
+    const got = await placeScreenPhotos(v.screen, { used, find, save, accent, drawn, own, ownBytes });
     if (got.length) { placed.push(...got); code[v.slug] = JSON.stringify(v.screen, null, 1); }
   }
   const footer = footerOf(plan);

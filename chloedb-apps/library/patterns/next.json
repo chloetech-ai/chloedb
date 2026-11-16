@@ -1,0 +1,122 @@
+{
+ "title": "The next thing to come as the headline, and the ones after it as dated cards",
+ "about": "Classes, matches, shows, meetings, departures, open days: rows with a day, of which visitors come for the next one. It leads with that one (a date block, its title, when and where, how long until it, its main action) and lists the ones after it as cards with their day. Put it first on a page whose visitors come for what is next, never below a slogan.",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}_next"
+  },
+  "date": {
+   "about": "the column with each row's day ('YYYY-MM-DD') or time",
+   "need": true
+  },
+  "name": {
+   "about": "the column with its title",
+   "default": "name"
+  },
+  "time": {
+   "about": "a column with its time of day, when date has none"
+  },
+  "place": {
+   "about": "a column with where it is"
+  },
+  "text": {
+   "about": "a column with a short text"
+  },
+  "badge": {
+   "about": "a column with a short word shown beside its title (Full, New)"
+  },
+  "where": {
+   "about": "an SQL condition on the rows (one condition; wrap ORs in parentheses)"
+  },
+  "eyebrow": {
+   "about": "the line above the next one's title",
+   "default": "Next up"
+  },
+  "action": {
+   "about": "the main button's words (Enter, Book a place)"
+  },
+  "open": {
+   "about": "the view the action opens with {id}"
+  },
+  "call": {
+   "about": "the function the action calls with {id}"
+  },
+  "title": {
+   "about": "a heading over the ones after it",
+   "default": "Coming up"
+  },
+  "more": {
+   "about": "how many after it are shown",
+   "default": 6
+  },
+  "empty": {
+   "about": "words when nothing is coming",
+   "default": "Nothing coming up yet."
+  }
+ },
+ "example": {
+  "use": "next",
+  "table": "sessions",
+  "date": "day",
+  "name": "title",
+  "place": "venue",
+  "text": "summary",
+  "eyebrow": "Next session",
+  "action": "Save a place",
+  "open": "book"
+ },
+ "screen": {
+  "data": {
+   "{{key}}": {
+    "sql": "SELECT * FROM {{table}} WHERE days_between(:today, {{date}}) >= 0{{where|pre: AND }} ORDER BY {{date}} LIMIT 40",
+    "params": {
+     "today": "=today"
+    }
+   }
+  },
+  "let": {
+   "{{key}}_one": "=(({{key}} || [])[0]) || null",
+   "{{key}}_go": "=it => {{open|json}} ? app.open({{open|json}}, {id: it.id}) : {{call|json}} ? app.call({{call|json}}, {id: it.id}).then(() => app.toast('Done')) : null",
+   "{{key}}_rest": "=({{key}} || []).slice(1, 1 + Number({{more|json}}))"
+  },
+  "body": [
+   {
+    "ui": "nextUp",
+    "props": {
+     "item": "={{key}}_one ? {id: {{key}}_one.id, title: {{key}}_one[{{name|json}}], date: {{key}}_one[{{date|json}}], time: {{time|json}} ? {{key}}_one[{{time|json}}] : null, place: {{place|json}} ? {{key}}_one[{{place|json}}] : null, text: {{text|json}} ? {{key}}_one[{{text|json}}] : null, badge: {{badge|json}} ? {{key}}_one[{{badge|json}}] : null} : null",
+     "eyebrow": "{{eyebrow}}",
+     "action": {
+      "$when": "action",
+      "$value": "={label: {{action|json}}, do: {{key}}_go}"
+     },
+     "empty": "{{empty}}"
+    }
+   },
+   {
+    "if": "={{key}}_rest.length > 0",
+    "then": [
+     {
+      "carousel": "={{key}}_rest",
+      "item": {
+       "title": "=item[{{name|json}}]",
+       "date": "=String(item[{{date|json}}] || '').slice(0, 10)",
+       "text": "=[{{time|json}} ? item[{{time|json}}] : null, {{place|json}} ? item[{{place|json}}] : null].filter(Boolean).join(' · ')",
+       "badge": "={{badge|json}} ? item[{{badge|json}}] : null",
+       "action": {
+        "$when": "action",
+        "$value": "={label: {{action|json}}, do: () => {{key}}_go(item)}"
+       }
+      },
+      "look": "cards",
+      "title": "{{title}}"
+     }
+    ]
+   }
+  ]
+ }
+}

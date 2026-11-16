@@ -34,13 +34,20 @@
 // The studio (the app's builder and owner, not through the public path)
 // always has every row: the statements are for the app's people.
 //
-// Server functions called by people run as them (their reads and writes are
-// held to the same statements), and so do the triggers their writes set off
-// (audit 4, X-G4): a trigger reaches only what the person whose write fired
-// it may reach, unless the app marks it to run as the app ("as": "app", or
-// RUNS AS APP in a CREATE RULE), for a trigger that keeps a total over
-// everyone's rows. Schedules, and triggers of the studio's writes, run as the
-// app.
+// Server functions are the app's own code. One the app declares callers for
+//
+//   ALLOW CALL ON place-order TO everyone
+//
+// may be called by those people (a call from anyone else is refused, 401 or
+// 403, said to the person), and then runs with the app's rights, as a
+// stored procedure with SECURITY DEFINER does: a visitor's order lowers the
+// stock no visitor may change. A function with no CALL statement runs as
+// the person who called it (their reads and writes held to the tables'
+// statements), and so do the triggers their writes set off (audit 4, X-G4):
+// a trigger reaches only what the person whose write fired it may reach,
+// unless the app marks it to run as the app ("as": "app", or RUNS AS APP in
+// a CREATE RULE), for a trigger that keeps a total over everyone's rows.
+// Schedules, and triggers of the studio's writes, run as the app.
 
 export const ACTIONS = ['read', 'add', 'change', 'remove'];
 const ACTION_WORDS = { READ: ['read'], SELECT: ['read'], ADD: ['add'], INSERT: ['add'], CHANGE: ['change'], UPDATE: ['change'], EDIT: ['change'],
@@ -58,11 +65,22 @@ const BY = { user_id: 'user', 'user.id': 'user', company_id: 'company', 'company
 export const SCOPE_PARAM = { user: 'sa_user_id', company: 'sa_company_id' };
 
 const fail = (msg) => { throw Object.assign(new Error(`ALLOW: ${msg}`), { status: 400 }); };
-const HOW = 'ALLOW READ | ADD | CHANGE | REMOVE | WRITE | ALL ON <table> TO everyone | members | admins | owner [WHERE <column> = :user_id | <column> = :company_id]';
+const HOW = 'ALLOW READ | ADD | CHANGE | REMOVE | WRITE | ALL ON <table> TO everyone | members | admins | owner [WHERE <column> = :user_id | <column> = :company_id | <column> IN (SELECT <column> FROM <table> WHERE <column> = :user_id)]';
+// A scope through a link table: the rows whose column is one of the values
+// the person's own rows of another table hold (the accounts they are on).
+const VIA = /^([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\(\s*SELECT\s+([A-Za-z_][A-Za-z0-9_]*)\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)\s+WHERE\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*:([A-Za-z_.]+)\s*\)$/i;
+export const viaKey = (v) => `${v.table}.${v.pick}.${v.match}.${v.by}`;
 
 // One statement -> {table, actions, who, scope: [{col, by}]}.
 export function parseAllow(text) {
   const s = String(text || '').trim().replace(/;\s*$/, '').replace(/\s+/g, ' ');
+  // ALLOW CALL ON <function> TO <who>: who may call one of the app's functions
+  const c = s.match(/^ALLOW\s+CALL\s+ON\s+([A-Za-z][A-Za-z0-9_-]*)\s+TO\s+(.+)$/i);
+  if (c) {
+    const who = WHO_WORDS[c[2].trim().toUpperCase().replace(/^THE\s+(APP'?S\s+)?/, '').replace(/\s+ONLY$/, '')];
+    if (!who) fail(`TO ${c[2].trim()}: say everyone, members, admins or owner`);
+    return { table: c[1].toLowerCase(), actions: ['call'], who, scope: [], call: true };
+  }
   const m = s.match(/^ALLOW\s+(.+?)\s+ON\s+([A-Za-z_][A-Za-z0-9_]*)\s+TO\s+(.+?)(?:\s+WHERE\s+(.+))?$/i);
   if (!m) fail(`write it as ${HOW}, not ${JSON.stringify(s.slice(0, 120))}`);
   const actions = new Set();
@@ -78,8 +96,17 @@ export function parseAllow(text) {
   const scope = [];
   if (m[4]) {
     for (const term of m[4].split(/\s+OR\s+/i)) {
+      const via = term.trim().match(VIA);
+      if (via) {
+        const by = BY[via[5].toLowerCase()];
+        if (!by) fail(`WHERE ... IN (SELECT ... WHERE <column> = :user_id or :company_id), not :${via[5]}`);
+        const col = via[1].toLowerCase();
+        if (col === 'created') fail(`WHERE ${col}: scope rows by a column that holds what the person belongs to (an account's id)`);
+        scope.push({ col, by, via: { table: via[3].toLowerCase(), pick: via[2].toLowerCase(), match: via[4].toLowerCase(), by } });
+        continue;
+      }
       const t = term.trim().replace(/^\((.*)\)$/, '$1').trim().match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*:([A-Za-z_.]+)$/);
-      if (!t || !BY[t[2].toLowerCase()]) fail(`WHERE takes <column> = :user_id or <column> = :company_id (joined by OR), not ${JSON.stringify(term.trim())}`);
+      if (!t || !BY[t[2].toLowerCase()]) fail(`WHERE takes <column> = :user_id, <column> = :company_id or <column> IN (SELECT <column> FROM <table> WHERE <column> = :user_id) (joined by OR), not ${JSON.stringify(term.trim())}`);
       const col = t[1].toLowerCase();
       if (col === 'id' || col === 'created') fail(`WHERE ${col}: scope rows by a column that holds a person's or a company's id (owner_id, company_id)`);
       scope.push({ col, by: BY[t[2].toLowerCase()] });
@@ -90,8 +117,9 @@ export function parseAllow(text) {
 
 // The statement as the engine keeps and shows it.
 export function allowText(rule) {
+  if (rule.call) return `ALLOW CALL ON ${rule.table} TO ${rule.who}`;
   const what = rule.actions.length === ACTIONS.length ? 'ALL' : rule.actions.map((a) => a.toUpperCase()).join(', ');
-  const where = rule.scope.length ? ` WHERE ${rule.scope.map((t) => `${t.col} = :${t.by}_id`).join(' OR ')}` : '';
+  const where = rule.scope.length ? ` WHERE ${rule.scope.map((t) => (t.via ? `${t.col} IN (SELECT ${t.via.pick} FROM ${t.via.table} WHERE ${t.via.match} = :${t.by}_id)` : `${t.col} = :${t.by}_id`)).join(' OR ')}` : '';
   return `ALLOW ${what} ON ${rule.table} TO ${rule.who}${where}`;
 }
 
@@ -111,14 +139,20 @@ export function parseAccessList(list) {
 
 // Problems with a plan's access statements, against the app's tables and
 // columns (Map table -> Set of columns).
-export function checkAccess(list, columns) {
+export function checkAccess(list, columns, functions = null) {
   const problems = [];
   const items = Array.isArray(list) ? list : list ? [list] : [];
   for (const raw of items) {
     let r;
     try { r = parseAllow(raw); } catch (e) { problems.push(`access: ${e.message}`); continue; }
+    if (r.call) { if (functions && !functions.has(r.table)) problems.push(`access: ${allowText(r)} names the function ${r.table}, which the app does not have`); continue; }
     if (!columns.has(r.table)) { problems.push(`access: ${allowText(r)} names the table ${r.table}, which the app does not have`); continue; }
-    for (const t of r.scope) if (!columns.get(r.table).has(t.col)) problems.push(`access: ${allowText(r)}: ${r.table} has no column ${t.col} (add it to the table, a keyword column)`);
+    for (const t of r.scope) {
+      if (!columns.get(r.table).has(t.col)) problems.push(`access: ${allowText(r)}: ${r.table} has no column ${t.col} (add it to the table, a keyword column)`);
+      if (!t.via) continue;
+      if (!columns.has(t.via.table)) problems.push(`access: ${allowText(r)} reads the table ${t.via.table}, which the app does not have (the table linking people to what they belong to)`);
+      else for (const c of [t.via.pick, t.via.match]) if (!columns.get(t.via.table).has(c)) problems.push(`access: ${allowText(r)}: ${t.via.table} has no column ${c}`);
+    }
   }
   return problems;
 }
@@ -144,6 +178,16 @@ const PEOPLE = { everyone: 'everyone', members: "the app's signed-in members", a
 const VERB = { read: 'see', add: 'add to', change: 'change', remove: 'remove from' };
 const refusal = (status, message) => Object.assign(new Error(message), { status, refused: status === 401 ? 'sign-in' : 'access' });
 
+// Whether a person may call a function whose callers are `callers` (a WHO
+// word): nothing when they may, else a thrown 401 (sign in first) / 403.
+export function mayCall(callers, title, who) {
+  if (!callers || !who) return;
+  const need = WHO.indexOf(callers);
+  if (rank(who.role) >= need) return;
+  if (!who.user) throw refusal(401, `Sign in first: only ${PEOPLE[callers]} can ${title}`);
+  throw refusal(403, `Only ${PEOPLE[callers]} can ${title}`);
+}
+
 // What `who` may do: {all: true} (every row), {scope: [{col, by}]} (those
 // rows), or a thrown 401 (sign in first) / 403. who is {role, user, company}
 // (a person of the app, or role visitor and no user); null is the studio.
@@ -166,7 +210,8 @@ export function decide(spec, action, who, { closed = false } = {}) {
   }
   if (fits.some((r) => !r.scope.length)) return { all: true };
   const terms = [];
-  for (const r of fits) for (const t of r.scope) if (!terms.some((x) => x.col === t.col && x.by === t.by)) terms.push(t);
+  const same = (x, t) => x.col === t.col && x.by === t.by && (x.via ? !!t.via && viaKey(x.via) === viaKey(t.via) : !t.via);
+  for (const r of fits) for (const t of r.scope) if (!terms.some((x) => same(x, t))) terms.push(t.via ? { ...t, values: (who.links && who.links[viaKey(t.via)]) || [] } : t);
   const usable = terms.filter((t) => (t.by === 'user' ? !!who.user : !!who.company));
   if (!usable.length) {
     if (!who.user) throw refusal(401, `Sign in first: ${table} shows each person their own rows`);
@@ -178,8 +223,10 @@ export function decide(spec, action, who, { closed = false } = {}) {
 const valueOf = (t, who) => (t.by === 'user' ? who.user?.id : who.company);
 
 // The scope as SQL on a table's alias, with the engine's own parameters.
+const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
 export function scopeSql(scope, alias, { left = false } = {}) {
-  const terms = scope.map((t) => `${alias}.${t.col} = :${SCOPE_PARAM[t.by]}`).join(' OR ');
+  // (a link table's values are known before the query: the person's own)
+  const terms = scope.map((t) => (t.via ? (t.values && t.values.length ? `${alias}.${t.col} IN (${t.values.map(lit).join(', ')})` : '1 = 0') : `${alias}.${t.col} = :${SCOPE_PARAM[t.by]}`)).join(' OR ');
   return left ? `(${terms} OR ${alias}.id IS NULL)` : `(${terms})`;
 }
 
@@ -191,14 +238,28 @@ export function scopeParams(who) {
   return out;
 }
 
-export const inScope = (row, scope, who) => !!row && scope.some((t) => row[t.col] != null && String(row[t.col]) === String(valueOf(t, who)));
+// (a keyword[] column is theirs when any of its values is)
+export const inScope = (row, scope, who) => !!row && scope.some((t) => {
+  const v = row[t.col];
+  if (v == null) return false;
+  if (t.via) { const ok = new Set((t.values || []).map(String)); return Array.isArray(v) ? v.some((x) => ok.has(String(x))) : ok.has(String(v)); }
+  return Array.isArray(v) ? v.map(String).includes(String(valueOf(t, who))) : String(v) === String(valueOf(t, who));
+});
+
+// The link tables an app's access reads, each once: [{table, pick, match, by}].
+export function linksOf(specs) {
+  const out = new Map();
+  for (const spec of specs) for (const r of rulesOf(spec) || []) for (const t of r.scope) if (t.via) out.set(viaKey(t.via), t.via);
+  return [...out.values()];
+}
 
 // An add under a scope: the scope's columns the row leaves out are filled
 // with the person's (or company's) id; a row that names someone else is
 // refused.
 export function fillScope(fields, scope, who, table) {
   const out = { ...(fields || {}) };
-  for (const t of scope) if (out[t.col] === undefined || out[t.col] === null || out[t.col] === '') out[t.col] = valueOf(t, who);
+  // (what a person belongs to is theirs to name: a link scope fills nothing)
+  for (const t of scope) if (!t.via && (out[t.col] === undefined || out[t.col] === null || out[t.col] === '')) out[t.col] = valueOf(t, who);
   if (!inScope(out, scope, who)) throw refusal(403, `You can add to ${table} only as yourself (${scope.map((t) => t.col).join(' or ')})`);
   return out;
 }

@@ -1,0 +1,109 @@
+{
+ "title": "A table's rows as a price list: each name with its price on one line, a note under it, grouped under headings; or a rate table with labelled columns",
+ "about": "Services and their prices, rates per hour or per page, plans, fees: the price never drifts away from its name, on a phone either. With COLUMNS it is a rate table (service, per hour, turnaround, best for) that becomes one card per row on a phone. Choose it whenever prices are listed; a table or cards are for comparing many other columns.",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data",
+   "default": "{{table}}_prices"
+  },
+  "name": {
+   "about": "the column with each row's name",
+   "default": "name"
+  },
+  "price": {
+   "about": "the column with its price (a number, or text such as 'from 40')",
+   "default": "price"
+  },
+  "note": {
+   "about": "a column with a short line under the name"
+  },
+  "group": {
+   "about": "a column whose value is the heading a row goes under"
+  },
+  "badge": {
+   "about": "a column with a short word beside the name (New, Popular)"
+  },
+  "unit": {
+   "about": "words after every price (per hour, per page)"
+  },
+  "columns": {
+   "about": "a rate table instead of a list: [{key, label, format: money | number | text}], the first the name"
+  },
+  "where": {
+   "about": "an SQL condition on the rows"
+  },
+  "order": {
+   "about": "SQL ORDER BY",
+   "default": "created"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "eyebrow": {
+   "about": "a short line above the heading"
+  },
+  "open": {
+   "about": "the view a row opens with {id} (to book or order it)"
+  },
+  "empty": {
+   "about": "words when there are no rows",
+   "default": "No prices yet."
+  }
+ },
+ "example": {
+  "use": "prices",
+  "table": "services",
+  "name": "name",
+  "price": "price",
+  "note": "length",
+  "group": "kind",
+  "unit": "",
+  "title": "Services and prices",
+  "open": "book"
+ },
+ "screen": {
+  "data": {
+   "{{key}}": "SELECT * FROM {{table}}{{where|pre: WHERE }} ORDER BY {{order}} LIMIT 300"
+  },
+  "let": {
+   "{{key}}_items": "=({{key}} || []).map(r => Object.assign({}, r, {id: r.id, name: r[{{name|json}}], price: r[{{price|json}}], note: {{note|json}} ? r[{{note|json}}] : null, group: {{group|json}} ? r[{{group|json}}] : null, badge: {{badge|json}} ? r[{{badge|json}}] : null}))"
+  },
+  "body": [
+   {
+    "section": [
+     {
+      "ui": "priceList",
+      "props": {
+       "items": "={{key}}_items",
+       "unit": {
+        "$when": "unit",
+        "$value": "{{unit}}"
+       },
+       "columns": {
+        "$when": "columns",
+        "$value": "{{columns}}"
+       },
+       "onSelect": {
+        "$when": "open",
+        "$value": "=it => app.open({{open|json}}, {id: it.id})"
+       },
+       "empty": "{{empty}}"
+      }
+     }
+    ],
+    "title": {
+     "$when": "title",
+     "$value": "{{title}}"
+    },
+    "eyebrow": {
+     "$when": "eyebrow",
+     "$value": "{{eyebrow}}"
+    }
+   }
+  ]
+ }
+}

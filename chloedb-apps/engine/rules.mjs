@@ -51,6 +51,20 @@ export function used(sql, params) {
   return out;
 }
 
+// An input the caller left out is no value: NULL, so the rule's REQUIRE says
+// what is missing ("Choose a workshop") instead of the query failing unbound.
+// The person's own parameters are the engine's to bind (engine.mjs).
+const ENGINE_PARAMS = new Set(['user_id', 'user_email', 'user_name', 'company_id']);
+function absent(sql, input, lets) {
+  const have = paramsOf(input, lets);
+  const out = {};
+  String(sql).split(/('(?:[^']|'')*')/).forEach((part, i) => {
+    if (i % 2) return;
+    for (const m of part.matchAll(/(?<![:\w]):([A-Za-z_][A-Za-z0-9_]*)/g)) if (have[m[1]] === undefined && !ENGINE_PARAMS.has(m[1]) && !/^(_|sa_)/.test(m[1])) out[m[1]] = null;
+  });
+  return out;
+}
+
 // A rule's refusal: the person sees the message; it is not an error to repair.
 export class Refused extends Error {
   constructor(message) { super(message); this.refused = true; this.status = 409; }
@@ -60,7 +74,7 @@ const MAX_EACH = 1000;
 
 export async function runRule(rule, input, host) {
   const lets = {};
-  const query = async (sql) => { const q = sqlOf(sql); return host('sql', [q, used(q, paramsOf(input, lets))]); };
+  const query = async (sql) => { const q = sqlOf(sql); return host('sql', [q, { ...absent(q, input, lets), ...used(q, paramsOf(input, lets)) }]); };
   const value = async (v) => {
     if (typeof v === 'string' && SELECT_RE.test(v)) { const rows = await query(v); const r = rows[0]; return r ? Object.values(r)[0] ?? null : null; }
     if (typeof v === 'string' && /^:[A-Za-z_][A-Za-z0-9_.]*$/.test(v)) { const p = paramsOf(input, lets); return p[v.slice(1).replace('.', '_')] ?? null; }

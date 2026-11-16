@@ -3,7 +3,7 @@
 // generated and stored in Strata.
 
 import { drawGraph, nodePanel, GRAPH_HELP } from './graph.js';
-import { designCss, checkDesign, PRESETS } from './design.js';
+import { designCss, checkDesign, PRESETS, pairFor } from './design.js';
 import { mountActivity } from './activity.js';
 import { frameCsp, FRAME_SANDBOX, linkToOpen } from './policy.js';
 
@@ -36,7 +36,7 @@ const SESSION = (() => { try { const k = 'sa-session'; return sessionStorage.get
 // 403) or transient (nobody answered: the network, the engine restarting
 // behind a proxy, too many requests), told apart from the app's own errors.
 const TRANSIENT = new Set([408, 429, 502, 503, 504]);
-const failed = (res, data) => Object.assign(new Error(data.error || res.statusText || `HTTP ${res.status}`),
+const failed = (res, data) => Object.assign(new Error(data.error || res.statusText || `HTTP ${res.status}`), { status: res.status },
   data.refused || res.status === 401 || res.status === 403 ? { refused: true } : {}, TRANSIENT.has(res.status) ? { transient: true } : {});
 const unanswered = () => Object.assign(new Error('No answer from the app (the connection, or it is restarting)'), { transient: true });
 
@@ -150,6 +150,11 @@ function connect() {
   });
   es.onerror = () => { dot.className = 'status down'; dot.title = 'Not connected to the engine'; };
   const mine = (e) => { const d = JSON.parse(e.data); return d.app === S.appId ? d : null; };
+  // The app on its own is the page its visitors see: the builder's work on
+  // it (a build's progress, its checks, a repair) is the studio's to show,
+  // never theirs. A new version still replaces the one on screen.
+  const builder = (e) => (BARE ? null : mine(e));
+  const note = (text) => { if (!BARE) toast(text); };
   es.addEventListener('data', (e) => {
     const d = mine(e);
     if (!d) return;
@@ -161,7 +166,7 @@ function connect() {
   es.addEventListener('design', (e) => { if (mine(e)) refreshApp(); });
   es.addEventListener('candidates', (e) => { if (mine(e)) refreshApp(); });
   es.addEventListener('progress', (e) => {
-    const d = mine(e);
+    const d = builder(e);
     if (!d) return;
     if (S.runningText !== d.text) { S.runningText = d.text; S.lines = []; S.lastReplace = false; }
     if (d.replace && S.lastReplace) S.lines[S.lines.length - 1] = d.line;
@@ -173,7 +178,7 @@ function connect() {
     renderProgress();
   });
   es.addEventListener('preview', (e) => {
-    const d = mine(e);
+    const d = builder(e);
     if (!d) return;
     S.previews.set(d.slug, { slug: d.slug, title: d.title, order: d.order, screen: d.screen });
     if (!S.previewView || !S.previews.has(S.previewView)) S.previewView = d.slug;
@@ -188,7 +193,7 @@ function connect() {
     S.lines = [];
     S.build = null;
     S.runningText = '';
-    toast(d.candidate ? `Built from your use, ready to try (version ${d.n})${d.summary ? `: ${d.summary}` : ''}` : `Version ${d.n} is live${d.summary ? `: ${d.summary}` : ''}`);
+    note(d.candidate ? `Built from your use, ready to try (version ${d.n})${d.summary ? `: ${d.summary}` : ''}` : `Version ${d.n} is live${d.summary ? `: ${d.summary}` : ''}`);
     refreshApp();
   });
   es.addEventListener('failed', (e) => {
@@ -198,7 +203,7 @@ function connect() {
     S.previews.clear();
     S.previewView = null;
     renderFrames();
-    if (d.candidate) toast(`A change built from your use did not go through: ${d.error}`);
+    if (d.candidate) note(`A change built from your use did not go through: ${d.error}`);
     else S.failed = { text: S.runningText, error: d.error, said: d.said, lines: S.lines.slice() };
     S.lines = [];
     S.build = null;
@@ -206,12 +211,12 @@ function connect() {
     refreshApp();
   });
   es.addEventListener('repair', (e) => {
-    const d = mine(e);
+    const d = builder(e);
     if (!d) return;
     toast('A capability failed; the engine is repairing it');
   });
   es.addEventListener('drawn', (e) => {
-    const d = mine(e);
+    const d = builder(e);
     if (!d) return;
     const graded = d.grade ? `, ${d.grade} of 5 for what it is for` : '';
     const ideas = d.suggested ? `; ${d.suggested} suggestion${d.suggested === 1 ? '' : 's'} under Suggested next` : '';
@@ -693,8 +698,16 @@ function renderApp() {
   const st = S.app;
   applyDesign();
   if (BARE) {
-    document.title = st.app.name;
-    $('.brand').replaceChildren(h('span', { class: 'mark' }), h('span', { class: 'name' }, st.app.name));
+    // A site's name is the one its front page's header gives (the bar of
+    // its other screens says the same), else the app's.
+    const siteName = (() => {
+      for (const v of st.views || []) {
+        try { const b = (JSON.parse(v.code || '{}').body || []).find((x) => x && typeof x.nav === 'string' && !x.nav.startsWith('=')); if (b) return b.nav; } catch { /* not a screen */ }
+      }
+      return null;
+    })();
+    document.title = siteName || st.app.name;
+    $('.brand').replaceChildren(h('span', { class: 'mark' }), h('span', { class: 'name' }, siteName || st.app.name));
     renderLook();
   } else {
     $('#crumbs').replaceChildren(...[h('span', { class: 'sep' }, '/'), h('b', st.app.name), st.version.n ? h('span', { class: 'pill' }, st.version.trying ? `trying v${st.version.trying} (live v${st.version.live})` : `v${st.version.n}`) : null,
@@ -702,21 +715,61 @@ function renderApp() {
       st.views.length ? h('a', { class: 'navlink small own', href: `/a/${st.app.id}`, target: '_blank', title: 'The app without the studio: for a phone, or to hand to someone' }, 'Open on its own') : null].filter(Boolean));
   }
   const views = st.views;
-  if (!views.find((v) => v.slug === S.view)) S.view = views[0]?.slug || null;
+  if (!views.find((v) => v.slug === S.view)) S.view = (BARE && views.find((v) => !isDetailOnly(v, views))?.slug) || views[0]?.slug || null;
+  // An app of one screen on its own (a clock, a timer, a calculator) is
+  // that screen, whole: no app bar, no tab of its one screen.
+  document.body.classList.toggle('one-screen', !!BARE && views.length === 1);
+  // An app whose home is a site's front page keeps the site's header on its
+  // other screens: on a computer the screens' tabs sit in the bar beside its
+  // name, as the front page's links do, not in a second row under it.
+  const site = !!BARE && views.some((v) => v.spec?.screen && /"page"\s*:\s*"front"|"body"\s*:\s*\[\s*\{\s*"nav"\s*:/.test(v.code || ''));
+  document.body.classList.toggle('site-nav', site);
+  placeTabs();
   // The first screen shown is opened too.
   if (S.view && !S.viewSince && !S.activity) {
     S.viewSince = Date.now();
     const first = views.find((v) => v.slug === S.view);
     if (first) api('POST', `/api/apps/${S.appId}/track${atV()}`, { kind: 'open', detail: S.view, cap: first.id }).catch(() => {});
   }
-  // tabs
+  // tabs: on the app's own page a screen of one row (a DETAIL opened from
+  // a list, with the row's id) is reached from its list, not a tab beside it.
   const tabs = $('#tabs');
-  tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => { S.taps = (S.taps || 0) + 1; switchView(v.slug); } }, tabIcon(v.title), h('span', { class: 'tlabel' }, v.title), S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
+  const tabbed = BARE ? views.filter((v) => !isDetailOnly(v, views)) : views;
+  // (on the app's own page, a tab that would repeat the name in the bar
+  // beside it is the home it is: "Home")
+  const brandName = BARE ? String(document.title || '').trim().toLowerCase() : '';
+  const tabTitle = (v) => (brandName && String(v.title || '').trim().toLowerCase() === brandName ? 'Home' : v.title);
+  tabs.replaceChildren(...(tabbed.length ? tabbed : views).map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => { S.taps = (S.taps || 0) + 1; switchView(v.slug); } }, tabIcon(tabTitle(v)), h('span', { class: 'tlabel' }, tabTitle(v)), S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
     h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, st.running ? 'Changing...' : 'Change'));
-  if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
+  if (!views.length && BARE && st.public && st.version?.n) tabs.replaceChildren();
+  else if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
   renderTryBar();
   renderFrames();
   renderPanel();
+}
+
+// The tabs of a site (body.site-nav) on a computer: in the bar, before its
+// right-hand part; on a phone (and otherwise) in their own row, where the
+// phone's tab bar is drawn.
+const WIDE = typeof matchMedia === 'function' ? matchMedia('(min-width: 861px)') : null;
+function placeTabs() {
+  const tabs = document.getElementById('tabs');
+  const top = document.querySelector('.top');
+  if (!tabs || !top) return;
+  const inBar = document.body.classList.contains('site-nav') && !!WIDE?.matches;
+  if (inBar && tabs.parentElement !== top) top.insertBefore(tabs, top.querySelector('.top-right'));
+  if (!inBar && tabs.parentElement === top) document.querySelector('.stage')?.prepend(tabs);
+}
+WIDE?.addEventListener?.('change', placeTabs);
+
+// A screen that shows one row, opened from another screen with its id
+// (app.open("project", {id})): a DETAIL that another view opens.
+function isDetailOnly(v, views) {
+  // a detail screen, or one that shows the row it is opened with (it reads
+  // its params and another screen opens it with them)
+  if (!(v.spec?.patterns || []).includes('detail') && !/\bparams\.[A-Za-z_]/.test(v.code || '')) return false;
+  const opens = new RegExp(`app\\.open\\(\\\\?["'\`]${v.slug}\\\\?["'\`]\\s*,`);
+  return views.some((o) => o !== v && opens.test(o.code || ''));
 }
 
 // An icon for a screen, from the words of its title (the bold look shows
@@ -810,11 +863,16 @@ function ownLook() {
 // ?look=bold (or plain) shows any app in that look, to compare looks on the
 // same app; the app's own design is unchanged.
 const LOOK_PARAM = new URLSearchParams(location.search).get('look');
+const TYPE_PARAM = new URLSearchParams(location.search).get('type');
 function currentDesign() {
   const d = S.app?.design;
   const chosen = !d ? checkDesign(PRESETS[0]) : (() => { const own = ownLook(); return d.designs[own !== null && d.designs[own] ? own : d.chosen] || d.designs[0]; })();
-  // a design stored before looks existed has none: checking it gives the default
-  return checkDesign(LOOK_PARAM ? { ...chosen, look: LOOK_PARAM } : chosen, chosen);
+  // a design stored before looks existed has none: checking it gives the default;
+  // one stored before type pairings gets the one its titles and the app's subject suggest
+  // (?type=ledger shows another, to compare).
+  const pair = TYPE_PARAM ? { type: TYPE_PARAM, titles: { ledger: 'serif', classic: 'serif', elegant: 'serif', rounded: 'rounded', mono: 'mono' }[TYPE_PARAM] || 'system' }
+    : pairFor(chosen, `${chosen.name || ''} ${chosen.about || ''} ${S.app?.app?.name || ''} ${String(S.app?.app?.description || '').slice(0, 400)}`);
+  return checkDesign({ ...chosen, ...pair, ...(LOOK_PARAM ? { look: LOOK_PARAM } : {}) }, chosen);
 }
 function applyDesign() {
   const d = currentDesign();
@@ -908,8 +966,11 @@ function renderLook() {
     right.prepend(btn);
     document.addEventListener('click', (e) => { if (!e.target.closest?.('#lookmenu')) $('#lookmenu')?.setAttribute('hidden', ''); });
   }
+  renderWho(right);
   const d = S.app?.design;
-  btn.hidden = !d;
+  // A published app's visitors (and its owner on it) get the design its owner
+  // chose: picking among the three is the studio's, not a stray "Aa".
+  btn.hidden = !d || !!S.app?.public;
   $('#lookmenu')?.remove();
   if (!d) return;
   const own = ownLook();
@@ -920,6 +981,45 @@ function renderLook() {
       h('span', { class: 'swatch', style: `background:${x.light.accent}` }), h('span', { class: 'swatch', style: `background:${x.dark.bg}` }),
       h('span', { class: 'grow' }, h('b', x.name), x.about ? h('div', { class: 'hint' }, x.about) : null), i === cur ? h('span', { class: 'check' }, '✓') : null)));
   right.append(menu);
+}
+
+// Who is signed in, on the app's own page: their initials in the bar, and
+// a menu with their name and Sign out (on a phone too). Nobody signed in,
+// nothing shows: a screen kept to members shows its own sign-in.
+async function renderWho(right) {
+  const appId = S.appId;
+  if (S.meFor !== appId) {
+    S.meFor = appId;
+    S.me = await api('GET', `/api/apps/${appId}/me`).then((r) => r.user || null).catch(() => null);
+    if (S.appId !== appId) return;
+  }
+  $('#who')?.remove();
+  $('#whomenu')?.remove();
+  const me = S.me;
+  $('#whoin')?.remove();
+  if (!me) {
+    // Nobody signed in, in an app with screens or actions for its members:
+    // a way in from every screen, not only from a front page's header.
+    const st = S.app;
+    const needs = !!st?.public && ((st.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate) || (st.functions || []).some((f) => (f.callers || f.spec?.callers) === 'members'));
+    if (needs) right.prepend(h('button', { id: 'whoin', class: 'who-out', type: 'button', onclick: () => openSignIn() }, 'Sign in'));
+    return;
+  }
+  const name = String(me.name || me.email || 'You');
+  const initials = name.split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+  const btn = h('button', { id: 'who', class: 'who', type: 'button', title: `Signed in as ${name}`, 'aria-label': `Signed in as ${name}: account menu`,
+    onclick: (e) => { e.stopPropagation(); $('#whomenu')?.toggleAttribute('hidden'); } }, h('span', { class: 'who-av' }, initials), h('span', { class: 'who-name' }, name));
+  const signOut = async () => { await api('POST', '/api/signout').catch(() => {}); S.meFor = null; authChanged(); };
+  const menu = h('div', { id: 'whomenu', class: 'lookmenu whomenu', hidden: true },
+    h('div', { class: 'lookhead' }, 'Signed in as'),
+    h('div', { class: 'who-line' }, h('b', name), me.email && me.email !== name ? h('div', { class: 'hint' }, me.email) : null),
+    h('button', { class: 'lookitem', type: 'button', onclick: signOut }, 'Sign out'));
+  // on a computer Sign out is in the bar itself; on a phone, in the menu
+  const out = h('button', { id: 'whoout', class: 'who-out', type: 'button', onclick: signOut }, 'Sign out');
+  $('#whoout')?.remove();
+  right.prepend(btn, out);
+  right.append(menu);
+  if (!S.whoClose) { S.whoClose = true; document.addEventListener('click', (e) => { if (!e.target.closest?.('#whomenu')) $('#whomenu')?.setAttribute('hidden', ''); }); }
 }
 
 function togglePanel() {
@@ -994,7 +1094,9 @@ function compileScreen(text) {
   const scripts = [
     `<script>window.__SA_EXPR = []; window.__SA_CODE = []; window.__SA_EXPR_SRC = ${JSON.stringify(exprs).replace(/</g, '\\u003c')};</script>`,
     ...exprs.map((e, i) => `<script>__SA_EXPR[${i}] = function (s) { with (s) { return (${noClose(e)}\n); } };</script>`),
-    ...codes.map((c, i) => `<script>__SA_CODE[${i}] = function () {\n${noClose(c)}\n;return typeof render === 'function' ? render : null; };</script>`),
+    // A code block sees what an expression of the screen sees by name (params,
+    // today), its own declarations shadowing them.
+    ...codes.map((c, i) => `<script>__SA_CODE[${i}] = function () { var params = (typeof app !== 'undefined' && app.params) || {}; var today = typeof app !== 'undefined' && app.today ? app.today() : ''; return (function () {\n${noClose(c)}\n;return typeof render === 'function' ? render : null; })(); };</script>`),
   ];
   return { spec: compiled, scripts: scripts.join('\n') };
 }
@@ -1005,13 +1107,20 @@ const webHosts = () => (S.app?.reach?.on?.fetch ? (S.app.reach.on.hosts || []).m
 
 function srcdoc(view, params, components, helpers, design = S.designCss) {
   const screen = view.spec && view.spec.screen ? compileScreen(view.code) : null;
+  // A view in JavaScript whose data is kept to signed-in people shows a
+  // visitor the sign-in entry first (view.spec.gate, set by the forge;
+  // drawn by web/screen.js's gateView).
+  const gate = !screen && view.spec && view.spec.gate ? JSON.stringify(view.spec.gate).replace(/</g, '\\u003c') : null;
   const code = screen
     ? (screen.error ? `throw new Error(${JSON.stringify(screen.error)});` : `async function render(root, app) { await __sa_screen(root, app, ${JSON.stringify(screen.spec).replace(/</g, '\\u003c')}); }`)
-    : noClose(view.code);
+    : gate ? `${noClose(view.code)}\n;{ const __inner = render; render = async (root, app) => { const me = await Promise.resolve(app.me()).catch(() => null); if (!me) { root.replaceChildren(window.__sa_gateView(app, ${gate})); return; } return __inner(root, app); }; }`
+      : noClose(view.code);
+  // the app's other screens, for a front page's header to offer them
+  const others = (S.app?.views || []).filter((x) => x.slug !== view.slug && !isDetailOnly(x, S.app.views)).map((x) => ({ slug: x.slug, title: x.title, for: x.spec?.for || null }));
   // A visitor's access (a published app's page, or "See it as a stranger"):
   // the frame offers no write it would be refused. None for the owner.
   const access = S.app?.public ? S.app.access || 'look' : null;
-  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, origin: location.origin, params: params || {}, access }).replace(/</g, '\\u003c');
+  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, locale: S.app?.app?.locale || null, labels: S.app?.labels || [], screens: others, lone: BARE && (S.app?.views || []).length === 1 ? view.title || null : null, members: (S.app?.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate) || (S.app?.functions || []).some((f) => (f.callers || f.spec?.callers) === 'members'), origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6), access }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
@@ -1019,12 +1128,12 @@ ${noClose(c.code)}
   const libs = (helpers || []).map((c) => `<script>__sa_helper(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
 ;return helper(); });</script>`).join('\n');
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  return `<!doctype html><html${S.app?.app?.locale ? ` lang="${String(S.app.app.locale).replace(/[^A-Za-z0-9-]/g, "")}"` : ""}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="${frameCsp(location.origin, { hosts: webHosts() })}">
 <style>${KIT}</style><style id="__design">${design || ''}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${FRAME}</script>
-${screen ? `<script>${FRONT}</script>\n<script>${SCREEN}</script>\n${screen.scripts || ''}` : ''}
+${screen ? `<script>${FRONT}</script>\n<script>${SCREEN}</script>\n${screen.scripts || ''}` : gate ? `<script>${SCREEN}</script>` : ''}
 ${libs}
 ${comps}
 <script>
@@ -1053,6 +1162,15 @@ function previewBox() {
     iframe);
 }
 
+// The new version of the screen on show has drawn (or failed, or taken too
+// long): it takes the old one's place.
+function settleFrame() {
+  const out = S.outgoing;
+  S.outgoing = null;
+  if (out) out.iframe.remove();
+  for (const f of S.frames.values()) if (f.incoming) { f.incoming = false; f.iframe.style.visibility = ''; }
+}
+
 function renderFrames() {
   const box = $('#frames');
   const st = S.app;
@@ -1072,7 +1190,9 @@ function renderFrames() {
   if (!st.views.length) {
     for (const f of S.frames.values()) f.iframe.remove();
     S.frames.clear();
-    box.replaceChildren(buildingScreen());
+    // On the app's own page, an app whose every screen is kept to its
+    // owner shows a visitor its sign-in, never a build that never comes.
+    box.replaceChildren(BARE && st.public && st.version?.n ? signInScreen() : buildingScreen());
     return;
   }
   box.querySelector('.building')?.remove();
@@ -1080,8 +1200,15 @@ function renderFrames() {
   const compSig = [...(st.components || []), ...(st.helpers || [])].map((c) => c.id).join(',') + `|${webHosts().join(' ')}`;
   for (const [slug, f] of S.frames) {
     const v = st.views.find((x) => x.slug === slug);
-    if (!v || v.id !== f.capId || f.comps !== compSig) { f.iframe.remove(); S.frames.delete(slug); S.errors.delete(slug); }
+    if (!v || v.id !== f.capId || f.comps !== compSig) {
+      // The screen on show stays until its new version has drawn: a frame
+      // replaced at once is blank for as long as the new one takes to load
+      // and draw (a visitor saw a blank page while a version went live).
+      if (v && slug === S.view && !f.iframe.hidden && !f.incoming && !S.activity) { settleFrame(); S.outgoing = { slug, iframe: f.iframe }; } else f.iframe.remove();
+      S.frames.delete(slug); S.errors.delete(slug);
+    }
   }
+  if (S.outgoing && (S.outgoing.slug !== S.view || S.activity)) settleFrame();
   const v = st.views.find((x) => x.slug === S.view);
   if (v && !S.frames.has(v.slug) && S.left?.get(v.slug) !== v.id) {
     const params = S.params?.[v.slug] || {};
@@ -1098,10 +1225,17 @@ function renderFrames() {
       S.errors.set(v.slug, { message: 'the view left its page (it navigated the frame), so it was closed' });
       renderApp();
     });
+    const incoming = S.outgoing?.slug === v.slug;
+    if (incoming) {
+      iframe.style.visibility = 'hidden';
+      // a frame that never says it drew is shown anyway after a while
+      setTimeout(() => { if (S.frames.get(v.slug)?.iframe === iframe) settleFrame(); }, 6000);
+    }
     box.append(iframe);
-    S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params });
+    S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params, incoming });
   }
   for (const [slug, f] of S.frames) f.iframe.hidden = slug !== S.view || !!S.activity;
+  document.body.classList.toggle('gated', !!BARE && !!S.frames.get(S.view)?.gated);
   if (S.activity && !BARE) {
     if (!S.act || !box.contains(S.act.box)) {
       S.act?.destroy();
@@ -1112,7 +1246,8 @@ function renderFrames() {
   } else if (S.act) { S.act.destroy(); S.act.box.remove(); S.act = null; }
   // An app on its own showing a front page gives the page the whole window:
   // the page has its own header.
-  document.body.classList.toggle('front-view', BARE && !!v?.spec?.screen && /"page"\s*:\s*"front"/.test(v.code || ''));
+  // (A screen with a site header of its own, a "nav" part, is one too.)
+  document.body.classList.toggle('front-view', BARE && !!v?.spec?.screen && /"page"\s*:\s*"front"|"body"\s*:\s*\[\s*\{\s*"nav"\s*:/.test(v.code || ''));
   box.querySelector('.viewerr')?.remove();
   const err = S.errors.get(S.view);
   if (err && S.app?.public) {
@@ -1129,6 +1264,50 @@ function renderFrames() {
       !err.repairing ? h('button', { class: 'btn small', onclick: () => ask(`The view "${v?.title}" shows this error: ${err.message}. Fix it.`) }, 'Ask to fix') : null,
       h('button', { class: 'btn small ghost', onclick: () => { S.errors.delete(S.view); renderFrames(); } }, 'Dismiss')));
   }
+}
+
+// The same sign-in over whatever screen is showing (the bar's "Sign in").
+function openSignIn() {
+  if ($('#signinover')) return;
+  const box = signInScreen(true);
+  const over = h('div', { id: 'signinover', class: 'signin-over', onclick: (e) => { if (e.target === over) over.remove(); } }, box);
+  document.body.append(over);
+  over.querySelector('input[name=email]')?.focus();
+}
+
+// The sign-in of an app on its own page when nothing in it is open to a
+// visitor: sign in, or create an account (the first one is the owner's).
+function signInScreen(over = false) {
+  const st = S.app;
+  const base = `/api/apps/${S.appId}`;
+  if (S.me && !over) {
+    const who = String(S.me.name || S.me.email || 'you');
+    return h('div', { class: 'building signin' }, h('div', { class: 'box' }, h('h2', st.app.name),
+      h('p', { class: 'hint' }, `Signed in as ${who}. Nothing here is open to your account yet: the app's owner decides who sees what.`),
+      h('div', { class: 'signin-row' }, h('button', { class: 'btn small', type: 'button', onclick: async () => { await api('POST', '/api/signout').catch(() => {}); S.meFor = null; S.me = null; authChanged(); } }, 'Sign out'))));
+  }
+  let create = false;
+  const msg = h('div', { class: 'hint signin-msg', role: 'alert' });
+  const name = h('input', { name: 'name', placeholder: 'Your name', autocomplete: 'name', hidden: true });
+  const email = h('input', { name: 'email', type: 'email', placeholder: 'Email', autocomplete: 'email', required: true });
+  const pass = h('input', { name: 'password', type: 'password', placeholder: 'Password', autocomplete: 'current-password', required: true });
+  const go = h('button', { class: 'btn primary', type: 'submit' }, 'Sign in');
+  const flip = h('button', { class: 'btn ghost small', type: 'button', onclick: () => { create = !create; name.hidden = !create; go.textContent = create ? 'Create account' : 'Sign in'; flip.textContent = create ? 'I have an account' : 'Create an account'; pass.autocomplete = create ? 'new-password' : 'current-password'; } }, 'Create an account');
+  const form = h('form', { class: 'signin-form', onsubmit: async (e) => {
+    e.preventDefault();
+    msg.textContent = '';
+    go.disabled = true;
+    try {
+      await api('POST', `${base}/${create ? 'signup' : 'signin'}`, create ? { email: email.value, password: pass.value, name: name.value || email.value } : { email: email.value, password: pass.value });
+      S.meFor = null;
+      $('#signinover')?.remove();
+      window.dispatchEvent(new CustomEvent('sa-signed', { detail: true }));
+      authChanged();
+    } catch (err) { msg.textContent = String(err.message || err); } finally { go.disabled = false; }
+  } }, name, email, pass, h('div', { class: 'signin-row' }, go, flip), msg);
+  return h('div', { class: `building signin${over ? ' card' : ''}` }, h('div', { class: 'box' },
+    h('h2', st.app.name), h('p', { class: 'hint' }, 'Sign in to continue.'), form,
+    over ? h('button', { class: 'btn ghost small', type: 'button', onclick: () => $('#signinover')?.remove() }, 'Not now') : null));
 }
 
 // A build that did not go through, in a plain sentence (the engine's said),
@@ -1669,11 +1848,11 @@ async function upload(base, file) {
 
 // After someone signs in or out every view starts again, so that each one
 // sees who is there now.
-function authChanged() {
+function authChanged(keep = null) {
+  S.meFor = null;
   setTimeout(() => {
-    for (const f of S.frames.values()) f.iframe.remove();
-    S.frames.clear();
-    S.errors.clear();
+    for (const [slug, f] of [...S.frames]) { if (slug === keep) continue; f.iframe.remove(); S.frames.delete(slug); S.errors.delete(slug); }
+    if (keep && S.frames.get(keep)) S.frames.get(keep).gated = false;
     refreshApp();
   }, 400);
 }
@@ -1689,11 +1868,31 @@ window.addEventListener('message', async (e) => {
     if (!['sql', 'me', 'people', 'files'].includes(m.method)) { e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, error: 'a preview changes nothing' }, '*'); return; }
     entry = { slug: 'preview', preview: true };
   }
-  const reply = (value, error, refused, transient) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused, transient }, '*');
+  // auth: the engine wants someone signed in (401), so the screen can ask then;
+  // transient: nobody answered (the screen asks again shortly)
+  const reply = (value, error, refused, auth, transient) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused, ...(auth ? { auth: true } : {}), transient }, '*');
   const base = `/api/apps/${S.appId}`;
   // Writes and calls name the screen they were made on, and the taps (in the
   // app and on its tabs) since the write before.
   if (m.kind === 'tap') { if (!entry.preview) S.taps = (S.taps || 0) + 1; return; }
+  if ((m.kind === 'ready' || m.kind === 'error') && S.frames.get(entry.slug)?.incoming) settleFrame();
+  if (m.kind === 'ready') return;
+  // The screen's content edges, so the app's own bar and tabs line up with
+  // a centred, narrower page (web/frame.js __sa_bounds).
+  if (m.kind === 'bounds') {
+    if (!BARE || entry.slug !== S.view) return;
+    const f = S.frames.get(entry.slug)?.iframe?.getBoundingClientRect();
+    if (!f) return;
+    document.body.style.setProperty('--content-left', `${Math.max(0, Math.round(f.left + Number(m.left) || 0))}px`);
+    document.body.style.setProperty('--content-right', `${Math.max(0, Math.round(window.innerWidth - f.right + Number(m.right) || 0))}px`);
+    return;
+  }
+  if (m.kind === 'gate') {
+    const f = S.frames.get(entry.slug);
+    if (f) f.gated = !!m.on;
+    if (entry.slug === S.view) document.body.classList.toggle('gated', !!BARE && !!m.on);
+    return;
+  }
   const on = entry.preview ? {} : { 'x-sa-view': entry.slug };
   if (!entry.preview && m.kind === 'rpc' && ['insert', 'update', 'remove', 'call'].includes(m.method)) { on['x-sa-taps'] = String(S.taps || 0); S.taps = 0; }
   try {
@@ -1707,8 +1906,10 @@ window.addEventListener('message', async (e) => {
         case 'remove': value = await api('POST', `${base}/remove${atV()}`, { table: a, id: b }, on); break;
         case 'call': value = (await api('POST', `${base}/call${atV()}`, { name: a, input: b }, on)).result; break;
         case 'me': value = (await api('GET', `${base}/me`)).user; break;
-        case 'signIn': value = (await api('POST', `${base}/signin`, a)).user; authChanged(); break;
-        case 'signUp': value = (await api('POST', `${base}/signup`, a)).user; authChanged(); break;
+        // keep: signed in from a screen in the middle of something (an action
+        // that needed a member): that screen stays to finish it, the others draw again
+        case 'signIn': { const { keep, ...cred } = a || {}; value = (await api('POST', `${base}/signin`, cred)).user; authChanged(keep ? entry.slug : null); break; }
+        case 'signUp': { const { keep, ...cred } = a || {}; value = (await api('POST', `${base}/signup`, cred)).user; authChanged(keep ? entry.slug : null); break; }
         case 'signOut': value = await api('POST', '/api/signout'); authChanged(); break;
         case 'people': value = (await api('GET', `${base}/people`)).people; break;
         case 'companies': value = (await api('GET', `${base}/companies`, null, companyHeader())).companies; break;
@@ -1719,6 +1920,7 @@ window.addEventListener('message', async (e) => {
         case 'joinCompany': value = (await api('POST', `${base}/companies/join`, { company: a })).member; S.company = value.company; authChanged(); break;
         case 'files': value = (await api('POST', `${base}/files/info`, { ids: a })).files.map((f) => ({ ...f, url: location.origin + f.url })); break;
         case 'email': value = (await api('POST', `${base}/email`, a)).email; break;
+        case 'pay': { const pmt = (await api('POST', `${base}/pay`, a)).payment; value = { ...pmt, url: location.origin + pmt.url }; break; }
         case 'geocode': value = (await api('GET', `/api/geocode?q=${encodeURIComponent(a || '')}`)).places; break;
         case 'ask': value = (await api('POST', `${base}/ask`, { prompt: a, opts: b || {} })).answer; break;
         case 'fetch': value = (await api('POST', `${base}/fetch`, { url: a, opts: b || {} })).page; break;
@@ -1742,7 +1944,7 @@ window.addEventListener('message', async (e) => {
       renderApp();
     }
   } catch (err) {
-    if (m.kind === 'rpc') reply(undefined, err.message, !!err.refused, !!err.transient);
+    if (m.kind === 'rpc') reply(undefined, err.message, !!err.refused, err.status === 401, !!err.transient);
   }
 });
 

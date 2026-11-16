@@ -75,6 +75,7 @@
 
   window.__sa_front = (ctx) => {
     const { h, val, T, block, run, app, scope } = ctx;
+    const refused = ctx.refused || (() => null);
     // What a part keeps across redraws (a carousel's slide, an open answer),
     // and the parts already shown (they do not rise into view again).
     const keep = new Map();
@@ -94,21 +95,27 @@
       if (el) el.scrollIntoView({ behavior: still() ? 'auto' : 'smooth', block: 'start' });
     };
     // An action: {label, open: "view", params, href: "#part" or a URL, do: "=handler", style: "primary" | "secondary" | "link"}.
-    const action = (a, s, path, i = 0) => {
+    // (more(): what the person chose beside it, such as a quantity: the
+    // arguments of its handler, and added to the params of the view it opens)
+    const action = (a, s, path, i = 0, more = null) => {
       if (a == null || a === false) return null;
       if (typeof a === 'string') a = { label: a };
       const style = a.style || a.class || (i === 0 ? 'primary' : 'secondary');
       const label = tx(a.label, s, path);
       const kids = [label, style === 'link' ? h('span', { class: 'fp-chev', 'aria-hidden': 'true' }, '›') : null];
-      const cls = `fp-btn ${style}`;
+      const cls = `fp-btn ${style}${a.size === 'big' ? ' big' : ''}`;
       const href = a.href !== undefined ? tx(a.href, s, path) : '';
       if (href && /^https?:/i.test(href)) return h('a', { class: cls, href, target: '_blank', rel: 'noopener' }, kids);
       const go = async () => {
         if (href && href.startsWith('#')) { scrollToId(href.slice(1)); return; }
-        if (a.open !== undefined) { app.open(tx(a.open, s, path), a.params ? val(a.params, s, path) : undefined); return; }
-        if (a.do !== undefined) { const fn = val(a.do, s, `${path}.do`); if (typeof fn === 'function') await run(fn, [], `${path}.do`); }
+        const extra = more ? more() : null;
+        if (a.open !== undefined) { const p = a.params ? val(a.params, s, path) : undefined; app.open(tx(a.open, s, path), extra && extra.params ? { ...(p || {}), ...extra.params } : p); return; }
+        if (a.do !== undefined) { const fn = val(a.do, s, `${path}.do`); if (typeof fn === 'function') await run(fn, extra ? extra.args : [], `${path}.do`); }
       };
-      return h('button', { class: cls, type: 'button', onclick: (e) => { e.stopPropagation(); go(); } }, kids);
+      const btn = h('button', { class: cls, type: 'button', onclick: (e) => { e.stopPropagation(); go(); } }, kids);
+      // what the app refused when this was pressed stays said under it
+      const said = a.do !== undefined ? refused(`${path}.do`) : null;
+      return said ? h('span', { class: 'fp-said' }, btn, h('span', { class: 'fp-refused', role: 'alert' }, said)) : btn;
     };
     const actions = (b, s, path) => {
       const xs = b.actions !== undefined ? list(b.actions, s, `${path}.actions`) : b.action !== undefined ? [val(b.action, s, `${path}.action`)] : [];
@@ -142,18 +149,80 @@
 
     const F = {};
 
+    // The app's other screens (a members' list, the owner's Manage) in the
+    // header of a front page, which has no tabs: the ones the person may
+    // open (the studio gives a visitor no owner's screen), less any the
+    // header links already by name.
+    // Where a link goes, and what it says: two links to one place (or one
+    // the header's action already offers) are one.
+    const aims = (l, s, path) => {
+      const o = typeof l === 'string' ? { label: l } : l && typeof l === 'object' ? l : {};
+      const out = [`label:${String(tx(o.label, s, path) ?? '').trim().toLowerCase()}`];
+      if (o.open !== undefined) out.push(`open:${tx(o.open, s, path)}`);
+      if (o.href !== undefined) out.push(`href:${tx(o.href, s, path)}`);
+      return out;
+    };
+    const screenLinks = (links, s, path, close, taken = new Set()) => {
+      const said = new Set(links.map((l) => String(typeof l === 'string' ? l : l?.label ?? '').trim().toLowerCase()));
+      // a screen for the owner (or admins) shows only to them, once the page
+      // knows who is signed in: never in a visitor's header
+      const staff = (x) => x.for === 'owner' || x.for === 'admins';
+      const named = (x) => String(x.title).trim().toLowerCase();
+      // A staff screen whose title a link here already says (the page's own
+      // "Races" section) is still offered, as what it is for: "Manage races".
+      const screens = ((window.__SA && window.__SA.screens) || []).filter((x) => x && x.title && !taken.has(`open:${x.slug}`) && (staff(x) || (!said.has(named(x)) && !taken.has(`label:${named(x)}`))));
+      const out = screens.map((x, i) => {
+        const clash = said.has(named(x)) || taken.has(`label:${named(x)}`);
+        const a = action({ label: clash ? `Manage ${String(x.title).trim().replace(/^./, (c) => c.toLowerCase())}` : x.title, open: x.slug, style: 'navlink' }, s, `${path}.screens[${i}]`, 1);
+        if (!a) return a;
+        a.addEventListener('click', close);
+        if (staff(x)) {
+          a.hidden = true;
+          const may = (me) => !!me && (me.role === 'owner' || (x.for === 'admins' && me.role === 'admin'));
+          Promise.resolve(app.me()).then((me) => { a.hidden = !may(me); }).catch(() => {});
+          const signed = (e) => { if (!a.isConnected) { window.removeEventListener('sa-signed', signed); return; } a.hidden = !may(e.detail); };
+          window.addEventListener('sa-signed', signed);
+        }
+        return a;
+      });
+      // An app with screens for its members offers a visitor the way in:
+      // "Sign in" (or create an account) until someone is signed in.
+      if (window.__SA && window.__SA.members && window.__sa_askSignIn && !said.has('sign in') && !said.has('log in')) {
+        const a = h('button', { class: 'fp-btn navlink', type: 'button', onclick: (e) => { e.stopPropagation(); close(); Promise.resolve(window.__sa_askSignIn()).then((ok) => { if (ok) a.remove(); }); } }, 'Sign in');
+        Promise.resolve(app.me()).then((me) => { if (me) a.remove(); }).catch(() => {});
+        const signed = (e) => { if (!a.isConnected) { window.removeEventListener('sa-signed', signed); return; } a.hidden = !!e.detail; };
+        window.addEventListener('sa-signed', signed);
+        out.push(a);
+      }
+      return out;
+    };
     F.nav = (b, s, path) => {
-      const links = list(b.links, s, `${path}.links`);
+      const act0 = b.action !== undefined ? val(b.action, s, `${path}.action`) : undefined;
+      const taken = new Set(act0 !== undefined ? aims(act0, s, path) : []);
+      const links = list(b.links, s, `${path}.links`).filter((l, i) => {
+        const k = aims(l, s, `${path}.links[${i}]`);
+        if (k.some((x) => taken.has(x) && x !== 'label:')) return false;
+        k.forEach((x) => taken.add(x));
+        return true;
+      });
       let el;
       const close = () => el && el.classList.remove('open');
-      el = h('header', { class: 'fp-nav' }, h('div', { class: 'fp-nav-in' },
+      // A long name and a long action do not both fit a phone's bar beside
+      // the menu button: there the action moves into the menu (the hero
+      // shows it too), and the bar keeps the name and the menu.
+      const act = b.action !== undefined ? val(b.action, s, `${path}.action`) : undefined;
+      const label = (x) => String(x && typeof x === 'object' ? x.label ?? '' : x ?? '');
+      const tight = act !== undefined && String(tx(b.nav, s, path) ?? '').length + label(act).length > 25;
+      const inMenu = tight ? action(typeof act === 'object' && act ? { ...act, style: 'navlink' } : { label: label(act), style: 'navlink' }, s, `${path}.action`, 1) : null;
+      if (inMenu) { inMenu.classList.add('fp-menu-act'); inMenu.addEventListener('click', close); }
+      el = h('header', { class: `fp-nav${tight ? ' tight' : ''}` }, h('div', { class: 'fp-nav-in' },
         h('a', { class: 'fp-brand', href: '#', onclick: (e) => { e.preventDefault(); scrollTo({ top: 0, behavior: still() ? 'auto' : 'smooth' }); } }, h('span', { class: 'fp-mark', 'aria-hidden': 'true' }), tx(b.nav, s, path)),
         h('nav', { class: 'fp-links' }, links.map((l, i) => {
           const a = action(typeof l === 'string' ? { label: l } : { ...l, style: 'navlink' }, s, `${path}.links[${i}]`, 1);
           a && a.addEventListener('click', close);
           return a;
-        })),
-        b.action !== undefined ? action(val(b.action, s, `${path}.action`), s, `${path}.action`, 0) : null,
+        }), screenLinks(links, s, path, close, taken), inMenu),
+        act !== undefined ? action(act, s, `${path}.action`, 0) : null,
         h('button', { class: 'fp-menu', type: 'button', 'aria-label': 'Menu', onclick: () => el.classList.toggle('open') }, h('i'), h('i'))));
       return el;
     };
@@ -163,10 +232,21 @@
     let pageLayout = null;
     const LAYOUT_HERO = { hero: 'photo', split: 'split', editorial: 'plain', gallery: 'split', dashboard: 'split', tool: 'split' };
     F.hero = (b, s, path) => {
-      const pic0 = b.src || b.photo;
-      const look = b.look || (pageLayout && LAYOUT_HERO[pageLayout] && (pic0 || LAYOUT_HERO[pageLayout] === 'plain') ? LAYOUT_HERO[pageLayout] : pic0 ? 'photo' : 'gradient');
+      // a photo is one placed (src): a photo named but not found (or not yet,
+      // while the page is drawn during a build) is no grey box, the words
+      // stand on the design's gradient instead
+      // (an =expression for src counts only when it gives a photo now)
+      let pic0 = b.src;
+      if (typeof pic0 === 'string' && pic0.startsWith('=')) { try { pic0 = val(pic0, s, `${path}.src`); } catch { pic0 = null; } }
+      if (typeof pic0 !== 'string' || !pic0.trim()) pic0 = null;
+      // No photo: the headline is the picture (type), short, so the part
+      // after it starts on the first screen; never an empty gradient where
+      // a photo would be.
+      const asked = b.look || (pageLayout && LAYOUT_HERO[pageLayout] && (pic0 || LAYOUT_HERO[pageLayout] === 'plain') ? LAYOUT_HERO[pageLayout] : pic0 ? 'photo' : 'type');
+      const look = (asked === 'photo' || asked === 'split') && !pic0 ? 'type' : asked;
       const align = b.align || (look === 'split' || pageLayout === 'editorial' ? 'left' : 'center');
-      const height = b.height || (look === 'photo' ? 'full' : look === 'split' ? 'tall' : 'tall');
+      // (a type-led hero is short: its words are the hero, not the space)
+      const height = b.height || (look === 'photo' ? 'full' : look === 'type' ? 'short' : 'tall');
       const text = h('div', { class: `fp-hero-text ${align}` },
         [b.eyebrow ? h('p', { class: 'fp-eyebrow' }, tx(b.eyebrow, s, path)) : null,
           h('h1', { class: 'fp-display' }, rich(tx(b.hero, s, path))),
@@ -187,9 +267,13 @@
             h('figure', { class: 'fp-hero-pic' }, pic(b, s, path, '', true), credit(b),
               b.badge ? h('div', { class: 'fp-float' }, rich(tx(b.badge, s, path))) : null)));
       }
+      // type: the words are the picture, a big bold headline in the accent, no photo
+      if (look === 'type') {
+        return h('section', { class: cls, id: b.id || null }, h('div', { class: 'fp-wrap' }, text));
+      }
       return h('section', { class: cls, id: b.id || null }, look === 'gradient' ? blobs() : null,
         h('div', { class: 'fp-wrap' }, text,
-          b.src || b.photo ? h('figure', { class: 'fp-hero-shot' }, pic(b, s, path, '', true), credit(b)) : null));
+          pic0 ? h('figure', { class: 'fp-hero-shot' }, pic(b, s, path, '', true), credit(b)) : null));
     };
 
     F.band = (b, s, path) => {
@@ -264,7 +348,13 @@
       const track = h('div', { class: 'fp-track', onscroll: () => { st.x = track.scrollLeft; } }, cards);
       const by = (d) => track.scrollBy({ left: d * Math.max(260, track.clientWidth * 0.8), behavior: still() ? 'auto' : 'smooth' });
       requestAnimationFrame(() => { if (st.x) track.scrollLeft = st.x; });
-      return h('div', { class: 'fp-carousel cards' }, track,
+      // A short shelf (five cards or fewer) fits a wide screen as a row
+      // that wraps, so no card is cut at the edge; a phone still swipes.
+      const fit = cards.length <= 5;
+      // A short shelf (six or fewer) is a stack on a phone: every card, with
+      // its price and action, in view as the page scrolls, not one at a time.
+      const short = cards.length <= 6;
+      return h('div', { class: `fp-carousel cards${fit ? ' fit' : ''}${short ? ' short' : ''}`, style: `--n: ${cards.length}` }, track,
         cards.length > 1 ? h('div', { class: 'fp-ctrl' },
           h('button', { class: 'fp-round', type: 'button', 'aria-label': 'Back', onclick: () => by(-1) }, icon('arrow', 'fp-ico flip')),
           h('button', { class: 'fp-round', type: 'button', 'aria-label': 'More', onclick: () => by(1) }, icon('arrow'))) : null);
@@ -277,19 +367,57 @@
       return [head(b, s, path), look === 'carousel' ? shelf(cards, b, path) : h('div', { class: 'fp-quotes' }, cards.map((c, i) => rv(c, `${path}[${i}]`, i)))];
     };
 
-    // A card; in a row where other cards have photos, one without gets the
-    // design's gradient with its initials, so the row stays even.
+    // A card; in a row where other cards have photos, one without gets a
+    // quiet pattern in the design's tint (no letters), so the row stays even.
+    // A card's day (its "date": "2026-11-27", or "Nov 27, 2026"), for an
+    // event's calendar block: month, day, weekday.
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const dayParts = (v) => {
+      const t = String(v ?? '').trim();
+      let y, m, d;
+      let x = /^(\d{4})-(\d{2})-(\d{2})\b/.exec(t);
+      if (x) { y = +x[1]; m = +x[2] - 1; d = +x[3]; } else if ((x = /^(?:[A-Za-z]{3,9},?\s+)?([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?$/.exec(t))) {
+        m = MONTHS.findIndex((n) => x[1].slice(0, 3).toLowerCase() === n.toLowerCase()); d = +x[2]; y = x[3] ? +x[3] : null;
+      } else return null;
+      if (m < 0 || m > 11 || !(d >= 1 && d <= 31)) return null;
+      const wd = y ? new Date(Date.UTC(y, m, d)).toLocaleDateString(undefined, { weekday: 'short', timeZone: 'UTC' }) : '';
+      return { mon: MONTHS[m], day: d, wd };
+    };
     const card = (it, s, path, row = false) => {
-      const go = it.action && (it.action.open !== undefined || it.action.href !== undefined) ? action(it.action, s, `${path}.action`, 1) : null;
       const has = it.src || it.photo;
-      const ph = () => h('div', { class: 'fp-ph', role: 'img', 'aria-label': String(it.title || '') }, h('span', { class: 'fp-ph-init' }, initials(it.title)));
+      // "qty": the most one can take: a quantity beside the action, 1 to it
+      const most = Math.floor(Number(it.qty));
+      const qty = it.action && most >= 1 ? h('input', { class: 'fp-qty', type: 'number', min: 1, max: most, value: 1, inputmode: 'numeric', 'aria-label': 'Quantity', onclick: (e) => e.stopPropagation() }) : null;
+      // (more than is left goes on to the action, which says why it cannot)
+      const chosen = qty ? () => { const n = Math.max(1, Math.floor(Number(qty.value) || 1)); qty.value = n; return { args: [n], params: { qty: n } }; } : null;
+      const act = it.action ? action(it.action, s, `${path}.action`, it.action.style ? 1 : 0, chosen) : null;
+      const go = it.action && (it.action.open !== undefined || it.action.href !== undefined) ? action(it.action, s, `${path}.action`, 1, chosen) : null;
+      // an event without a photo: its day as a calendar block beside its words
+      const day = !has && !row && it.date ? dayParts(it.date) : null;
+      if (day) {
+        const el = h('div', { class: 'fp-card dated' },
+          h('div', { class: 'fp-date', 'aria-hidden': 'true' }, h('span', { class: 'fp-date-m' }, day.mon), h('b', { class: 'fp-date-d' }, String(day.day)), day.wd ? h('span', { class: 'fp-date-w' }, day.wd) : null),
+          h('div', { class: 'fp-card-body' },
+            it.title ? h('h3', null, rich(it.title)) : null,
+            it.text ? h('p', { class: 'muted' }, String(it.text)) : null,
+            it.badge ? h('span', { class: 'fp-chip' }, String(it.badge)) : null,
+            act ? h('div', { class: 'fp-card-foot' }, h('div', { class: 'fp-card-act' }, qty, act)) : null));
+        el.setAttribute('aria-label', `${String(it.date ?? '')} ${String(it.title ?? '')}`.trim());
+        if (go) { el.classList.add('link'); el.addEventListener('click', () => go.click()); }
+        return el;
+      }
+      const ph = () => h('div', { class: 'fp-ph fp-ph-pattern', role: 'img', 'aria-label': String(it.title || '') });
       const el = h('div', { class: `fp-card${has || row ? ' has-pic' : ''}` },
         has || row ? h('figure', { class: 'fp-card-pic' }, has ? pic(it, s, path) : ph(), it.badge ? h('span', { class: 'fp-badge' }, String(it.badge)) : null, credit(it)) : null,
         h('div', { class: 'fp-card-body' },
           it.eyebrow ? h('p', { class: 'fp-eyebrow small' }, String(it.eyebrow)) : null,
           it.title ? h('h3', null, rich(it.title)) : null,
           it.text ? h('p', { class: 'muted' }, String(it.text)) : null,
-          it.price !== undefined || it.action ? h('div', { class: 'fp-card-foot' }, it.price !== undefined ? h('span', { class: 'fp-price' }, String(it.price)) : null, it.action ? action(it.action, s, `${path}.action`, it.action.style ? 1 : 0) : null) : null));
+          // a card without a photo says its badge in its words ("Sold out", "Only 2 left")
+          !(has || row) && it.badge ? h('span', { class: `fp-chip${it.state === 'out' ? ' out' : ''}` }, String(it.badge)) : null,
+          it.price !== undefined || it.action ? h('div', { class: 'fp-card-foot' }, it.price !== undefined ? h('span', { class: 'fp-price' }, String(it.price)) : null, qty || act ? h('div', { class: 'fp-card-act' }, qty, act) : null) : null));
+      // "state": "out" (no longer on offer, as OFFERS says it): the card is quieter
+      if (it.state === 'out') el.classList.add('out');
       if (go) { el.classList.add('link'); el.addEventListener('click', () => go.click()); }
       return el;
     };
@@ -371,7 +499,11 @@
     };
 
     F.gallery = (b, s, path) => {
-      const xs = items(b, 'gallery', s, path).map((x) => (typeof x === 'string' ? { src: x } : x || {}));
+      // Only the tiles that have a picture: a gallery of none is no section
+      // at all, never a wall of colour blocks.
+      const xs = items(b, 'gallery', s, path).map((x) => (typeof x === 'string' ? { src: x } : x || {}))
+        .filter((x, i) => { const src = x.src !== undefined ? val(x.src, s, `${path}[${i}].src`) : null; return typeof src === 'string' && !!src.trim(); });
+      if (!xs.length) return null;
       const look = b.look || 'mosaic';
       // A mosaic: the first photo large, then as many wide ones as it takes
       // to end on a full row (of four columns, or two on a phone).
@@ -436,16 +568,36 @@
     const flat = (x) => (Array.isArray(x) ? x.flatMap(flat) : x == null || x === false ? [] : [x]);
     function page(body, s, layout = null) {
       pageLayout = layout;
+      // The hero carries the page's main action: one that gives none takes
+      // the header's (a page whose only action was a small header link)
+      const list = Array.isArray(body) ? body : [body];
+      const navAct = list.find((b) => b && typeof b === 'object' && b.nav !== undefined && b.action !== undefined)?.action;
+      if (navAct) body = list.map((b) => (b && typeof b === 'object' && b.hero !== undefined && b.actions === undefined && b.action === undefined ? { ...b, actions: [navAct] } : b));
       const out = [];
       let loose = null;
       const section = (b, i) => h('section', { class: `fp-sec${b && b.tint ? ' tint' : ''}`, id: (b && b.id) || null }, h('div', { class: 'fp-wrap' }));
-      (Array.isArray(body) ? body : [body]).forEach((b, i) => {
+      // A page's footer is its end, wherever the screen gave it (parts added
+      // after it go above it); paths stay those of the screen's own order.
+      const all = (Array.isArray(body) ? body : [body]).map((b, i) => [b, i]);
+      const ordered = [...all.filter(([b]) => kindOf(b) !== 'footer'), ...all.filter(([b]) => kindOf(b) === 'footer')];
+      ordered.forEach(([b, i]) => {
         const kind = kindOf(b);
         const els = flat(block(b, s, `body[${i}]`));
         if (kind && (FULL.has(kind) || (kind === 'carousel' && b.look === 'slides'))) { loose = null; out.push(...els); return; }
+        // (a part with nothing to show, such as a gallery of no pictures, is no section)
+        if (kind && !els.length) return;
         if (kind) { loose = null; const sec = section(b, i); sec.firstChild.append(...els); if (kind === 'media') sec.classList.add('media'); out.push(sec); return; }
         if (!els.length) return;
-        if (!loose || (b && (b.id || b.tint))) { loose = section(b, i); out.push(loose); }
+        // A block with an id or a tint starts a section of its own, unless
+        // the one open holds only a heading: that heading is this block's
+        // title, so the block joins it (and gives it its id and tint)
+        // rather than leaving the heading alone over an empty gap.
+        const heading = b && typeof b === 'object' && b.h !== undefined;
+        if (loose && loose.headOnly && b && (b.id || b.tint)) {
+          if (b.id && !loose.id) loose.id = b.id;
+          if (b.tint) loose.classList.add('tint');
+        } else if (!loose || (b && (b.id || b.tint))) { loose = section(b, i); loose.headOnly = true; out.push(loose); }
+        if (!heading) loose.headOnly = false;
         loose.firstChild.append(...els);
       });
       // A header over a photo is white until the page scrolls under it.
@@ -500,6 +652,10 @@
           }
         }, { rootMargin: '0px 0px -6% 0px', threshold: 0.08 });
       }
+      // a window taller than any screen shows the whole page at once
+      const tall = () => { if (innerHeight > 1500) { document.documentElement.classList.add('rv-now'); for (const el of document.querySelectorAll('.rv:not(.in)')) { el.classList.add('in'); seen.add(el.dataset.rk); } } };
+      if (!window.__sa_tallHooked) { window.__sa_tallHooked = true; addEventListener('resize', tall); }
+      tall();
       for (const el of rootEl.querySelectorAll('.rv:not(.in)')) {
         if (!io || still()) { el.classList.add('in'); seen.add(el.dataset.rk); } else io.observe(el);
       }

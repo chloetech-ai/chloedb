@@ -13,11 +13,60 @@ export const FONTS = {
 };
 const TITLE_FONTS = { ...FONTS, system: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", Roboto, system-ui, sans-serif' };
 
+// Type pairings: a display face for titles and big numbers over the body
+// text. The faces ship with the engine (web/fonts, SIL Open Font License,
+// declared in kit.css and studio.css) and load only when a design uses
+// them. weight is the titles' weight (a face with one weight keeps it).
+export const TYPES = {
+  system: { title: TITLE_FONTS.system, weight: 650, track: '-.02em' },
+  ledger: { title: '"Fraunces", "Iowan Old Style", Georgia, serif', weight: 600, track: '-.015em' },
+  classic: { title: '"Playfair Display", "Didot", Georgia, serif', weight: 650, track: '-.01em' },
+  elegant: { title: '"Instrument Serif", "Iowan Old Style", Georgia, serif', weight: 400, track: '-.005em' },
+  grotesk: { title: '"Space Grotesk", -apple-system, system-ui, sans-serif', weight: 600, track: '-.025em' },
+  bricolage: { title: '"Bricolage Grotesque", -apple-system, system-ui, sans-serif', weight: 700, track: '-.03em' },
+  rounded: { title: '"Nunito", ui-rounded, "SF Pro Rounded", system-ui, sans-serif', weight: 750, track: '-.01em', body: '"Nunito", ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif' },
+  mono: { title: '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace', weight: 650, track: '-.03em' },
+};
+// A design's titles and pairing for an app's subject: its own pairing when
+// it chose one of its titles' family (other than plain system), else the one
+// the subject suggests; a report, a ledger or the books of a firm get the
+// warm serif even when the titles were left plain.
+const FORMAL = /(board|report|financ|ledger|accounting|bookkeep|invoice|variance|aging|receivable|budget|cash ?flow|legal|law firm)/i;
+export function pairFor(d, subject = '') {
+  const titles = CHOICES.titles[d?.titles] ? d.titles : 'system';
+  if (TYPES[d?.type] && d.type !== 'system' && TYPE_FAMILY[d.type] === titles) return { titles, type: d.type };
+  if (titles === 'system' && FORMAL.test(String(subject))) return { titles: 'serif', type: 'ledger' };
+  if (titles === 'system' && /\b(agency|studio|consultanc|atelier|architect)/i.test(String(subject))) return { titles: 'serif', type: 'elegant' };
+  return { titles, type: typeOf({ titles }, subject) };
+}
+// The title families each pairing belongs to (the "titles" token).
+const TYPE_FAMILY = { system: 'system', ledger: 'serif', classic: 'serif', elegant: 'serif', grotesk: 'system', bricolage: 'system', rounded: 'rounded', mono: 'mono' };
+// The pairing a design uses: its own when it fits its titles, else the one
+// its titles and its subject suggest (a ledger's warm serif, a boutique's
+// high-contrast one, a studio's light one; a technical grotesque for data,
+// a bold one for clubs and events).
+export function typeOf(d, subject = '') {
+  const titles = d?.titles || 'system';
+  if (TYPES[d?.type] && TYPE_FAMILY[d.type] === titles) return d.type;
+  const t = String(subject || '').toLowerCase();
+  if (titles === 'serif') {
+    if (/salon|hair|beauty|fashion|wedding|hotel|wine|jewel|luxury|spa|perfume|boutique/.test(t)) return 'classic';
+    if (/studio|agency|portfolio|gallery|architect|design|photo|art\b|ceramic|poetry|museum/.test(t)) return 'elegant';
+    return 'ledger';
+  }
+  if (titles === 'rounded') return 'rounded';
+  if (titles === 'mono') return 'mono';
+  if (/club|run|race|sport|team|gym|fitness|league|event|festival|street|music|kids|game/.test(t)) return 'bricolage';
+  if (/dashboard|data|api|engineer|metric|analytics|sales|report|server|database|code|dev|crm|pipeline/.test(t)) return 'grotesk';
+  return 'system';
+}
+
 // What each token may be, and what it means (the model is told this).
 export const CHOICES = {
   scheme: { auto: 'follows the device: light by day, dark at night', light: 'always light', dark: 'always dark' },
   font: { system: 'San Francisco, neutral', rounded: 'SF Rounded, friendly', serif: 'New York, editorial', mono: 'SF Mono, technical' },
   titles: { system: 'San Francisco', rounded: 'SF Rounded', serif: 'New York', mono: 'SF Mono' },
+  type: { system: 'system titles, quiet', ledger: 'Fraunces, a warm serif (ledgers, food, craft, books)', classic: 'Playfair Display, a high-contrast serif (beauty, fashion, hospitality)', elegant: 'Instrument Serif, a light display serif (studios, agencies, portfolios)', grotesk: 'Space Grotesk, a technical sans (data, engineering, tools)', bricolage: 'Bricolage Grotesque, a bold sans with character (clubs, sports, events, street food)', rounded: 'Nunito, friendly and rounded (families, learning)', mono: 'JetBrains Mono (technical)' },
   corners: { round: 'capsule buttons and 16px cards', soft: '7-10px corners, precise', square: '4px corners, crisp' },
   density: { airy: 'larger text, more space', regular: 'balanced: 14px text, 32px controls', compact: 'dense, for many rows and fields' },
   surface: { outlined: 'hairline boxes on a neutral page, like a console', grouped: 'borderless white cards on a tinted page (iOS Settings)', raised: 'cards lifted by a soft shadow' },
@@ -103,7 +152,7 @@ const hsl = (h) => {
 };
 // An accent's hue (0-360), saturation and lightness (0-1), for checks on a palette.
 export const hslOf = (h) => (HEX.test(String(h)) ? hsl(String(h).toLowerCase()) : [0, 0, 0]);
-const fromHsl = (hh, s, l) => {
+export const fromHsl = (hh, s, l) => {
   const k = (n) => (n + hh / 30) % 12; const a = s * Math.min(l, 1 - l);
   return hex([0, 8, 4].map((n) => 255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1)))));
 };
@@ -136,6 +185,7 @@ export function checkDesign(d, base = PRESETS[0]) {
     dark: scheme === 'light' ? light : dark,
     font: pick(d?.font, 'font', base.font),
     titles: pick(d?.titles, 'titles', base.titles),
+    type: typeOf({ titles: pick(d?.titles, 'titles', base.titles), type: d?.type }, `${d?.name || ''} ${d?.about || ''}`),
     corners: pick(d?.corners, 'corners', base.corners),
     density: pick(d?.density, 'density', base.density),
     surface: pick(d?.surface, 'surface', base.surface),
@@ -155,14 +205,19 @@ const WIDTH = { narrow: '760px', regular: '1040px', wide: '1280px' };
 const STATUS = { light: { ok: '#18794e', warn: '#b4560a', bad: '#c4302b', info: '#2563c9' }, dark: { ok: '#3fcf8e', warn: '#f2a33a', bad: '#ff8a80', info: '#7cb4ff' } };
 
 // Secondary text: the design's grey, darkened (or lightened) until it reads
-// at 4.5:1 on the page and on a card (WCAG AA), however pale the design.
-export function mutedOf(p, start = 55) {
+// at 5.5:1 on the page, a card and the tinted grounds small grey words sit
+// on (bands, filled cells), however pale the design: AA's 4.5 read as faint
+// in small labels.
+export const MUTED_RATIO = 5.5;
+export function mutedOf(p, start = 55, grounds = [], ratio = MUTED_RATIO) {
+  const on = [p.bg, p.card, ...grounds];
   for (let k = start; k <= 100; k++) {
     const m = mix(p.bg, p.fg, k / 100);
-    if (contrast(m, p.bg) >= 4.6 && contrast(m, p.card) >= 4.6) return m;
+    if (on.every((g) => contrast(m, g) >= ratio)) return m;
   }
   return p.fg;
 }
+const rgba = (h, a) => `rgba(${rgb(h).map((v) => Math.round(v)).join(', ')}, ${a})`;
 
 // The color pair of the bold look, from the accent: deep (a band and the
 // main buttons, white text on it at 8:1) and pop (a light tint of the same
@@ -178,9 +233,11 @@ export function boldColors(p, isDark) {
 }
 
 // A design's colors on the native look's page and cells.
+// The design's own page and cards (its tint is the app's), with cards that
+// stand off a page of their own color by a step of grey.
 export function nativePalette(p, isDark) {
-  const bg = isDark ? '#000000' : '#f2f2f7';
-  const card = isDark ? '#1c1c1e' : '#ffffff';
+  const bg = contrast(p.bg, p.card) < 1.03 ? (isDark ? '#000000' : mix(p.card, p.fg, 0.045)) : p.bg;
+  const card = p.card;
   const ink = isDark ? '#ffffff' : '#000000';
   const fg = contrast(p.fg, bg) >= 7 && contrast(p.fg, card) >= 7 ? p.fg : readable(p.fg, isDark ? card : bg, 7, ink);
   const accent = contrast(p.accent, card) >= 4.5 && contrast(p.accent, bg) >= 4.5 ? p.accent : readable(p.accent, isDark ? card : bg, 4.5, fg);
@@ -204,22 +261,33 @@ export function designVars(input, which = 'light') {
   const s = STATUS[isDark ? 'dark' : 'light'];
   const b = boldColors(p, isDark);
   const bold = d.look === 'bold';
+  // Grounds as plain colors (not color-mix), so what reads on them can be
+  // worked out here and by anything that measures the page.
+  const page = bold ? b.wash : p.bg;
+  const band = mix(page, p.fg, isDark ? 0.05 : 0.035);
+  const fillSolid = mix(p.card, p.fg, isDark ? 0.1 : 0.06);
+  const muted = mutedOf({ ...p, bg: page }, isDark ? 58 : 55, [band, fillSolid, mix(p.card, p.fg, isDark ? 0.08 : 0.05)]);
   return {
     '--bg': bold ? b.wash : p.bg, '--card': p.card, '--fg': p.fg, '--accent': p.accent, '--accent-fg': onColor(p.accent),
     '--ok': s.ok, '--warn': s.warn, '--bad': s.bad, '--info': s.info,
-    '--font': FONTS[d.font], '--font-title': TITLE_FONTS[d.titles],
+    '--font': d.font === 'system' && TYPES[d.type].body ? TYPES[d.type].body : FONTS[d.font], '--font-title': TYPES[d.type].title, '--title-weight': String(TYPES[d.type].weight), '--title-track': TYPES[d.type].track, '--type': d.type,
     '--radius': k.card, '--radius-control': k.control, '--radius-field': k.field, '--radius-small': k.small,
     '--text': n.text, '--space': n.space, '--pad': n.pad, '--row': n.row, '--control': n.control, '--page': WIDTH[d.width],
     '--card-border': border, '--card-shadow': shadow, '--field-border': 'var(--line-2)',
     '--field-bg': isDark ? 'color-mix(in srgb, var(--fg) 3%, var(--card))' : 'var(--card)',
-    '--muted': mutedOf(p, isDark ? 58 : 55),
+    '--muted': muted,
+    '--band': band, '--btn2': mix(p.card, p.fg, isDark ? 0.1 : 0.06), '--btn2-hover': mix(p.card, p.fg, isDark ? 0.16 : 0.12),
+    '--muted-band': muted,
+    '--accent-tint': mix(p.card, p.accent, isDark ? 0.2 : 0.1), '--accent-ink': readable(p.accent, mix(p.card, p.accent, isDark ? 0.2 : 0.1), 4.6, p.fg), '--bad-tint': mix(p.card, s.bad, isDark ? 0.22 : 0.12),
+    '--nav-bg': rgba(page, 0.86),
     '--line': `color-mix(in srgb, var(--fg) ${isDark ? 11 : 10}%, transparent)`,
     '--line-2': `color-mix(in srgb, var(--fg) ${isDark ? 19 : 17}%, transparent)`,
-    '--soft': `color-mix(in srgb, var(--fg) ${isDark ? 6 : 4}%, transparent)`,
-    '--fill': `color-mix(in srgb, var(--fg) ${isDark ? 8 : 5}%, var(--card))`,
-    '--head': `color-mix(in srgb, var(--fg) ${isDark ? 3 : 2.5}%, var(--card))`,
-    '--accent-soft': `color-mix(in srgb, var(--accent) ${isDark ? 20 : 12}%, transparent)`,
-    '--seg-on': isDark ? 'color-mix(in srgb, var(--fg) 14%, var(--card))' : 'var(--card)',
+    '--soft': rgba(p.fg, isDark ? 0.06 : 0.04),
+    '--fill': mix(p.card, p.fg, isDark ? 0.08 : 0.05),
+    '--fill-solid': fillSolid,
+    '--head': mix(p.card, p.fg, isDark ? 0.03 : 0.025),
+    '--accent-soft': rgba(p.accent, isDark ? 0.2 : 0.12),
+    '--seg-on': isDark ? mix(p.card, p.fg, 0.2) : 'var(--card)',
     '--shadow': shadow,
     '--g1': d.gradient[0], '--g2': d.gradient[1], '--g3': d.gradient[2],
     '--slow': d.motion === 'lively' ? '.6' : '1', '--play': d.motion === 'still' ? 'paused' : 'running', '--rv': d.motion === 'still' ? '0' : '1',
@@ -242,5 +310,6 @@ export function presetDesigns(seed = '') {
   let hsh = 0;
   for (const ch of String(seed)) hsh = (hsh * 31 + ch.charCodeAt(0)) >>> 0;
   const by = (nav) => PRESETS.filter((p) => p.nav === nav);
-  return ['segmented', 'tabs', 'sidebar'].map((nav, i) => { const list = by(nav); return checkDesign(list[(hsh + i) % list.length]); });
+  // the one in use at first is a light one (a dark page is a choice, not a default)
+  return ['segmented', 'tabs', 'sidebar'].map((nav, i) => { const list = by(nav).filter((p) => i > 0 || p.scheme !== 'dark'); return checkDesign(list[(hsh + i) % list.length]); });
 }
