@@ -1134,13 +1134,14 @@ fn candidates() -> usize {
     CANDIDATES_RUN.load(Ordering::Relaxed)
 }
 
-/// A Strata statement with the run's candidates: its vector searches get
-/// `ef => N` when the run has other than [`CANDIDATES`].
-fn with_ef(sql: &str) -> std::borrow::Cow<'_, str> {
-    match candidates() {
-        CANDIDATES => sql.into(),
-        n => sql.replace("similarity(emb, :v)", &format!("similarity(emb, :v, ef => {n})")).replace("similarity(emb, :i)", &format!("similarity(emb, :i, ef => {n})")).into(),
-    }
+/// A Strata statement with the run's candidates: its vector searches always
+/// get `ef => N`, the default run's 64 too, so that a row says the beam it
+/// ran at. ChloeDB's own default beam is 200 since 10 November 2026
+/// (`chloedb::vector::DEFAULT_EF`), and a run that left `ef` out searched at
+/// 200 under the label "64 candidates" while the other engines searched at 64.
+fn with_ef(sql: &str) -> String {
+    let n = candidates();
+    sql.replace("similarity(emb, :v)", &format!("similarity(emb, :v, ef => {n})")).replace("similarity(emb, :i)", &format!("similarity(emb, :i, ef => {n})"))
 }
 const OVERSAMPLE: usize = 4;
 /// Each input's depth for the hybrid kinds (Strata's default).

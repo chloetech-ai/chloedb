@@ -1,0 +1,17 @@
+# fanout.sh's jobs for the website's rerun on 0.3.5 (16 November 2026): the
+# same-nodes lanes of fanout-jobs-same-nodes.tsv (each lane's engines one
+# after another on one set of nodes, ChloeDB first and again last for the
+# drift), with the answer cache off (#552) and ChloeDB's beam sent as
+# labelled (PRF-3), plus the vector candidates swept on the sharded lanes and,
+# for Qdrant and Postgres, on a node of their own (a sweep of all nine
+# one-node engines would outrun the lane's timeout).
+#   PASSES=3 COPY_JOBS=0 BUDGET=35 MAX_NODES=20 \
+#   IMAGE=ghcr.io/chloetech-ai/chloedb-server:<full sha>-bench \
+#   fanout.sh run fanout-jobs-0.3.5.tsv            # the 1M jobs
+#   COLLECTION=msmarco-10000k ... fanout.sh run fanout-jobs-0.3.5-10m.tsv
+# Milvus runs alone on a fresh node only: last in the one-node lane it was
+# still compacting during its first passes (4 November's README).
+sharded-1m  strata-first+es+os+solr+vespa+strata-last                      sharded  9   EFS=128/256/512
+one-1m      qdrant+meili+postgres+redis+weaviate+manticore+paradedb+typesense  one      11
+milvus-solo milvus                                                         one      3
+ef-one-1m   qdrant+postgres                                                one      6   EFS=128/256/512

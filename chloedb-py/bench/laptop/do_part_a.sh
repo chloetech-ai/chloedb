@@ -143,8 +143,8 @@ command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --pr
 python3 -m venv /work/venv && . /work/venv/bin/activate
 pip install -q maturin numpy pyarrow duckdb lancedb tantivy sqlite-vec faiss-cpu fastembed psutil
 cd /work/strata/chloedb-py && maturin develop --release -q
-cd /work/strata/strata && cargo build --release --features baselines --bin chloedb-baselines -q
-python3 -c 'import strata, sqlite3; c = sqlite3.connect(\":memory:\"); c.enable_load_extension(True); print(\"SETUP DONE\")'
+cd /work/strata/chloedb && cargo build --release --features baselines --bin chloedb-baselines -q
+python3 -c 'import chloedb, sqlite3; c = sqlite3.connect(\":memory:\"); c.enable_load_extension(True); print(\"SETUP DONE\")'
 SH
         nohup bash /work/setup.sh >/work/logs/setup.log 2>&1 &
         echo setup started"

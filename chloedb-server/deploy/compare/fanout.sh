@@ -21,8 +21,11 @@
 #   fanout.sh analyze DIR      # every job's reports into DIR, and analyze.py's tables (run on the base node, next to the data)
 #   fanout.sh down             # delete the cluster and check that nothing tagged strata-bench is left
 #
-# IMAGE (required for run) is the chloedb-server image every job uses, e.g.
-# ghcr.io/chloetech-ai/strata-server:<full sha of a main commit>.
+# IMAGE (required for run) is the chloedb-server image every job uses, with
+# the benchmark tools: the Dockerfile's `bench` stage, which image.yml
+# publishes as ghcr.io/chloetech-ai/chloedb-server:<full sha>-bench for each
+# main commit it publishes (and for a run of it by hand on a branch). The
+# plain `<sha>` images have had no engine-compare since 12 November 2026.
 # MAX_NODES (default 22) counts every node of the cluster, the base node
 # too: the account allows 25 droplets and strata-e2e uses 2. BUDGET (default
 # 50, dollars at list price) stops new jobs once what has been spent plus
@@ -730,12 +733,14 @@ prep)
     (cd "$REPO" && tar -c chloedb/scripts/prepare_msmarco.py chloedb/scripts/prepare_msmarco_compare.py chloedb/scripts/embed_queries.py \
         chloedb-server/deploy/compare/analyze.py) | $K exec -i base -- tar -x -C /srv/scripts
     in_base "pip install -q numpy pyarrow onnxruntime tokenizers >/srv/logs/pip.log 2>&1
-        nohup bash -c 'set -e; python3 /srv/scripts/strata/scripts/prepare_msmarco_compare.py /srv/data --docs $docs
+        nohup bash -c 'set -e; python3 /srv/scripts/chloedb/scripts/prepare_msmarco_compare.py /srv/data --docs $docs
             cd /srv/data/$coll && sha256sum docs.jsonl doc_vecs.f32 queries.jsonl query_vecs.f32 qrels.tsv meta.json >SHA256SUMS && echo PREP DONE' \
             >/srv/logs/prep-$coll.log 2>&1 &"
     log "prep of $coll started: its log is /srv/logs/prep-$coll.log on the base pod"
     until in_base "grep -q 'PREP DONE' /srv/logs/prep-$coll.log"; do
-        if ! in_base "pgrep -f prepare_msmarco_compare >/dev/null || grep -q 'PREP DONE' /srv/logs/prep-$coll.log"; then
+        # [p]: the pattern must not match the shell that runs pgrep, whose
+        # command line holds it, or a prep that died is waited for for ever.
+        if ! in_base "pgrep -f '[p]repare_msmarco_compare.py /srv/data --docs $docs' >/dev/null || grep -q 'PREP DONE' /srv/logs/prep-$coll.log"; then
             in_base "tail -20 /srv/logs/prep-$coll.log"
             echo "prep failed" >&2
             exit 1
@@ -749,7 +754,7 @@ prep)
     ;;
 run)
     jobs=${1:-$HERE/fanout-jobs.tsv}
-    : "${IMAGE:?set IMAGE to a chloedb-server image, e.g. ghcr.io/chloetech-ai/strata-server:<sha>}"
+    : "${IMAGE:?set IMAGE to a chloedb-server bench image, e.g. ghcr.io/chloetech-ai/chloedb-server:<full sha>-bench}"
     COLLECTION=${COLLECTION:-msmarco-1000k}
     [ -f "$STATE/data/$COLLECTION/meta.json" ] || { echo "no $COLLECTION prepared (fanout.sh prep)"; exit 1; }
     CONTEXT=$(kubectl config current-context)

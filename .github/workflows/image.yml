@@ -19,7 +19,9 @@ name: Image
 # publish. A release tag, chloedb-server-v<version> (or strata-server-v),
 # publishes `<version>` and the sha once release-gate.yml has checked that
 # the tag is on main and that CI's full matrix passed on it: that is the
-# tag to pin in production, `latest` moves with main. A pull request that
+# tag to pin in production, `latest` moves with main. Each of these runs
+# also publishes `<sha>-bench`, x86-64 only: the Dockerfile's `bench` stage,
+# the image the benchmark harness (deploy/compare) runs. A pull request that
 # changes the Dockerfile or this workflow builds both images and publishes
 # nothing, so a broken image shows before it merges. A run started by hand
 # publishes the branch it runs on, as its sha only.
@@ -122,6 +124,26 @@ jobs:
             org.opencontainers.image.description=chloedb-server, with the crawler, the spreadsheets, the network operations app and ChloeCtx
           cache-from: type=gha,scope=image-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+      # The Dockerfile's `bench` stage (the server with engine-compare,
+      # chloedb-server-bench and the traffic profiles), which the benchmark
+      # harness runs on its nodes (deploy/compare/fanout.sh's IMAGE): x86-64
+      # only, as `<sha>-bench`, from the build stage just cached. Without it
+      # no image after 12 November 2026 (#422) could run the harness.
+      - if: matrix.arch == 'amd64'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: chloedb-server/deploy/Dockerfile
+          target: bench
+          platforms: linux/amd64
+          push: ${{ env.PUSH == 'true' }}
+          provenance: mode=min
+          tags: ${{ env.IMAGE }}:${{ env.SHA }}-bench
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+            org.opencontainers.image.description=chloedb-server with the benchmark tools (engine-compare, chloedb-server-bench)
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
 
   publish:
     name: image (publish)
