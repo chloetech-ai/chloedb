@@ -5,12 +5,14 @@
 pub mod answer;
 pub mod api;
 pub mod ask;
+pub mod canon;
 pub mod complete;
 pub mod crawl;
 pub mod digest;
 pub mod ingest;
 pub mod link;
 pub mod load;
+pub mod minds;
 pub mod nl;
 pub mod people;
 pub mod prepare;

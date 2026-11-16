@@ -103,6 +103,10 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/link", get(link_route))
         .route("/v1/digest", get(digest_route))
         .route("/v1/digest/write", get(digest_write_route))
+        .route("/v1/minds", get(minds_route))
+        .route("/v1/canon", get(canon_route))
+        .route("/v1/canon/work", get(canon_work_route))
+        .route("/v1/minds/arc", get(arc_route))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
         // Up, for a probe: no token, nothing read.
         .route("/healthz", get(|| async { "ok" }))
@@ -618,6 +622,83 @@ pub struct LinkParams {
 /// One link across HN: its submissions, the comments elsewhere that cite
 /// it, the people around it and the graph of them; a site's most
 /// discussed links; with no link, the most discussed links of all.
+#[derive(serde::Deserialize, Default)]
+pub struct CanonParams {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    from: Option<i64>,
+    #[serde(default)]
+    to: Option<i64>,
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    id: String,
+}
+
+/// The books or papers HN recommends most, all told or for some years.
+async fn canon_route(State(svc): State<Shared>, Query(a): Query<CanonParams>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let v = crate::canon::list(&c, &a.kind, a.from, a.to, &a.q).await;
+    done(&trace, v, t0)
+}
+
+/// One work of the canon, with the comments that named it.
+async fn canon_work_route(State(svc): State<Shared>, Query(a): Query<CanonParams>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    match crate::canon::work(&c, &a.id).await {
+        Some(v) => done(&trace, v, t0),
+        None => Err(ApiError(StatusCode::NOT_FOUND, format!("{} is not in the canon", a.id))),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct MindParams {
+    #[serde(default)]
+    topic: String,
+    #[serde(default)]
+    who: String,
+}
+
+/// The people who wrote about a topic in the most years, and the arcs
+/// of those already read.
+async fn minds_route(State(svc): State<Shared>, Query(a): Query<MindParams>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let v = crate::minds::people(&c, &a.topic).await;
+    done(&trace, v, t0)
+}
+
+/// One person's arc on a topic: kept, or read now by the model (counted
+/// against the day's answers, as questions are).
+async fn arc_route(State(svc): State<Shared>, Query(a): Query<MindParams>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    if a.topic.trim().is_empty() || a.who.trim().is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "name a topic and a person".into()));
+    }
+    let kept = c.soft("a kept arc?", "SELECT id FROM hn_answers WHERE id = :k", json!({"k": crate::minds::key(&a.topic, a.who.trim())})).await;
+    if kept.is_empty() {
+        let day = crate::ingest::now() / 86_400;
+        let mut asks = svc.asks.lock().unwrap_or_else(|e| e.into_inner());
+        if asks.0 != day {
+            *asks = (day, 0);
+        }
+        if asks.1 >= svc.ask_per_day {
+            return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, format!("today's {} new readings are made: try one read before, or tomorrow", svc.ask_per_day)));
+        }
+        asks.1 += 1;
+    }
+    let v = crate::minds::arc(&c, &a.topic, a.who.trim(), &svc.model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    done(&trace, v, t0)
+}
+
 async fn link_route(State(svc): State<Shared>, Query(a): Query<LinkParams>) -> Answer {
     let t0 = Instant::now();
     let trace = Trace::new();

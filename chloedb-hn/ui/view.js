@@ -14,6 +14,9 @@
 //   trends/<terms>      how much HN talked about things, year by year
 //   ask/<question>      what HN thinks, summed up with every claim cited
 //   front               the front page as the tables rank it, live
+//   canon/<kind>/<years> the books and papers HN recommends most
+//   canon/work/<id>     one of them, with the comments that named it
+//   minds/<topic>/<who> people whose take on a topic changed, and one's arc
 //
 // Every answer of the API carries the SQL it ran: the "SQL" button at the
 // bottom shows the queries behind the page in view.
@@ -65,6 +68,35 @@ const CSS = `
 .hn-grid.two { grid-template-columns: minmax(0, 1fr) 300px; }
 @media (max-width: 1100px) { .hn-grid { grid-template-columns: 200px minmax(0, 1fr); } .hn-grid > .hn-right { display: none; } }
 .hn-key { font: 11px var(--mono); border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 5px; }
+.hn-pg-h { margin: 6px 0 2px; font-size: 22px; letter-spacing: -.01em; }
+.hn-pg-sub { color: var(--muted); margin: 0 0 12px; max-width: 760px; }
+.hn-canon { list-style: none; margin: 0; padding: 0; }
+.hn-canon li { display: grid; grid-template-columns: 34px 44px 1fr 150px; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+.hn-canon .rk { font: 600 15px var(--sans); color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.hn-canon .cv { width: 44px; height: 62px; border-radius: 4px; background: var(--surface-2); object-fit: cover; display: block; }
+.hn-canon .cv.p { display: grid; place-items: center; font: 700 10px var(--sans); color: var(--muted); }
+.hn-canon .tt { font-weight: 600; font-size: 14.5px; line-height: 1.3; }
+.hn-canon .by { color: var(--muted); font-size: 12.5px; }
+.hn-canon .n { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.hn-canon .n b { color: var(--text); }
+.hn-bars { display: flex; align-items: flex-end; gap: 1px; height: 34px; }
+.hn-bars i { flex: 1; background: color-mix(in srgb, var(--accent) 50%, transparent); border-radius: 1px 1px 0 0; min-height: 1px; }
+.hn-bars i.in { background: var(--accent); }
+.hn-mind { display: grid; grid-template-columns: 1fr 200px; gap: 14px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.hn-mind .who { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.hn-mind .arc { font-size: 13px; color: var(--text-2); margin-top: 3px; }
+.hn-mind .arc b { color: var(--text); font-weight: 600; }
+.hn-mind button, .hn-read { font: 600 12.5px var(--sans); padding: 6px 11px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--surface); color: var(--accent); cursor: pointer; }
+.hn-shift { font: 600 11.5px var(--sans); padding: 1px 7px; border-radius: 999px; margin-left: 6px; }
+.hn-shift.up { background: var(--good-soft); color: var(--good-ink); }
+.hn-shift.down { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+.hn-shift.flat { background: var(--surface-2); color: var(--muted); }
+.hn-q { display: grid; grid-template-columns: 62px 14px 1fr; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); align-items: start; }
+.hn-q .y { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.hn-q .d { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; }
+.hn-q .t { font-size: 14px; }
+.hn-q .t .on { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+@media (max-width: 700px) { .hn-canon li { grid-template-columns: 26px 36px 1fr; } .hn-canon li > :last-child { display: none; } .hn-mind { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .hn-it-hint { display: none; } .hn-bar { gap: 8px; } .hn-fast { padding: 9px 10px; font-size: 12px; } .hn-brand span { display: none; } }
 @media (max-width: 760px) { .hn-grid, .hn-grid.two { grid-template-columns: minmax(0, 1fr); } .hn-grid > .hn-left { display: none; } .hn-brand small { display: none; } }
 .hn-left { position: sticky; top: 108px; max-height: calc(100vh - 120px); overflow: auto; scrollbar-width: thin; padding-right: 4px; }
@@ -520,7 +552,7 @@ function render(el, ctx) {
   }
   drawSql();
 
-  const PAGES = [["", "Search"], ["front", "Front page"], ["trends", "Trends"], ["link", "Links"], ["digest", "Weekly"], ["people", "People"], ["ask", "What HN thinks"], ["about", "How it works"]];
+  const PAGES = [["", "Search"], ["front", "Front page"], ["trends", "Trends"], ["canon", "Canon"], ["minds", "Changed minds"], ["link", "Links"], ["digest", "Weekly"], ["people", "People"], ["ask", "What HN thinks"], ["about", "How it works"]];
   function drawNav(page) {
     fill(nav, ...PAGES.map(([p, t]) => h("a", { href: app.href(p), class: (page === p || (p === "" && (page === "search" || page === "item"))) ? "on" : "" }, t)), h("span", { class: "sp" }), live);
   }
@@ -670,6 +702,8 @@ function render(el, ctx) {
       if (page === "front") return await front(main, app, alive);
       if (page === "link") return await linkPage(main, app, (rest[0] || ""), alive);
       if (page === "digest") return await digest(main, app, (rest[0] || ""), alive);
+      if (page === "canon") return await canonPage(main, app, rest, alive);
+      if (page === "minds") return await mindsPage(main, app, rest, alive);
       if (page === "about") return about(main, app);
       fill(main, h("div", { class: "hn-empty" }, "No such page."));
     } catch (e) {
@@ -1626,6 +1660,168 @@ async function front(main, app, alive) {
 }
 
 // ---- how it works ----------------------------------------------------------
+
+// ---- the canon -------------------------------------------------------------
+
+// Years in a few spans, for the canon's tabs.
+const SPANS = [["", "All time"], ["2007-2012", "2007–2012"], ["2013-2018", "2013–2018"], ["2019-2026", "2019–now"]];
+
+function yearBars(years, span, from = 2007, to = new Date().getFullYear()) {
+  const by = new Map((years || []).map((y) => [y.year, y.people]));
+  const max = Math.max(1, ...by.values());
+  const [a, b] = span ? span.split("-").map(Number) : [0, 0];
+  const bars = [];
+  for (let y = from; y <= to; y++) bars.push(h("i", { class: span && y >= a && y <= b ? "in" : "", style: { height: `${Math.max(3, ((by.get(y) || 0) / max) * 100)}%`, opacity: by.get(y) ? 1 : 0.25 }, title: `${y}: ${fmt(by.get(y) || 0)} people` }));
+  return h("div", { class: "hn-bars" }, bars);
+}
+
+async function canonPage(main, app, rest, alive) {
+  if (rest[0] === "work") return canonWork(main, app, rest.slice(1).join("/"), alive);
+  const kind = rest[0] === "paper" ? "paper" : "book";
+  const span = SPANS.some(([v]) => v === (rest[1] || "")) ? (rest[1] || "") : "";
+  const [from, to] = span ? span.split("-") : [];
+  const q = rest[2] || "";
+  const box = h("input", { type: "search", placeholder: kind === "book" ? "Find a book: title or author" : "Find a paper: title or author", value: q, "aria-label": "Find in the canon", style: { font: "14px var(--sans)", padding: "7px 11px", borderRadius: "9px", border: "1px solid var(--line-2)", background: "var(--surface)", color: "var(--text)", minWidth: "220px" } });
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter") app.go("canon", kind, span, box.value.trim()); });
+  const seg = (items, cur, pick) => h("div", { class: "hn-seg" }, items.map(([v, t]) => h("button", { class: cur === v ? "on" : "", onclick: () => pick(v) }, t)));
+  const list = h("div", {}, skel(8));
+  fill(main,
+    h("h2", { class: "hn-pg-h" }, "The HN canon"),
+    h("p", { class: "hn-pg-sub" }, "The books and papers Hacker News recommends most. Each is counted by the people who linked to it or named it in a comment since 2007 (its title written as a title, or beside its author), one person once, however often they did."),
+    h("div", { class: "hn-head", style: { marginBottom: "8px" } },
+      seg([["book", "Books"], ["paper", "Papers"]], kind, (v) => app.go("canon", v, span, "")),
+      seg(SPANS, span, (v) => app.go("canon", kind, v, q)),
+      h("span", { class: "sp" }), box),
+    list);
+  const j = await app.api(`/v1/canon?kind=${kind}${from ? `&from=${from}&to=${to}` : ""}${q ? `&q=${enc(q)}` : ""}`);
+  if (!alive()) return;
+  const ws = j.works || [];
+  if (!ws.length) return fill(list, h("div", { class: "hn-empty" }, q ? "Nothing in the canon matches that." : "The canon is not built yet."));
+  fill(list,
+    h("div", { class: "hn-head" }, h("span", { class: "t" }, h("b", {}, fmt((j.counts || {})[kind] || ws.length)), kind === "book" ? " books" : " papers", span ? ` · ranked by the people of ${SPANS.find((x) => x[0] === span)[1]}` : " · ranked by everyone who named them")),
+    h("ol", { class: "hn-canon" }, ws.map((w, i) => h("li", {},
+      h("span", { class: "rk" }, i + 1),
+      w.image ? h("img", { class: "cv", src: w.image, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : h("span", { class: "cv p" }, w.kind === "paper" ? "arXiv" : "Book"),
+      h("div", {},
+        h("a", { class: "tt", href: app.href("canon", "work", w.id) }, w.title),
+        h("div", { class: "by" }, [w.creator, w.published].filter(Boolean).join(" · ")),
+        h("div", { class: "n" }, h("b", {}, fmt(span ? w.within : w.people)), span ? " people in those years · " : " people · ", `${fmt(w.mentions)} comments · peak ${w.peak || "–"}`)),
+      yearBars(w.years, span)))));
+}
+
+async function canonWork(main, app, id, alive) {
+  fill(main, h("div", { class: "hn-grid two" }, h("section", {}, skel(6)), h("aside", {})));
+  const w = await app.api(`/v1/canon/work?id=${enc(id)}`);
+  if (!alive()) return;
+  const re = markers({ text: "" });
+  fill(main, h("div", { class: "hn-grid two" },
+    h("section", {},
+      h("a", { href: app.href("canon", w.kind), style: { fontSize: "13px", color: "var(--accent)" } }, "← The canon"),
+      h("h2", { class: "hn-pg-h" }, w.title),
+      h("div", { class: "hn-meta" }, w.creator ? h("span", {}, w.creator) : null, w.published ? h("span", {}, w.published) : null, w.url ? h("a", { href: w.url, target: "_blank", rel: "noopener noreferrer" }, w.kind === "paper" ? "on arXiv ↗" : "on Open Library ↗") : null),
+      h("div", { class: "hn-kpis" }, h("span", {}, h("b", {}, fmt(w.people)), "people named it"), h("span", {}, h("b", {}, fmt(w.mentions)), "comments"), h("span", {}, h("b", {}, fmt(w.linkers)), "linked to it"), h("span", {}, "first in ", h("b", {}, w.first)), w.peak ? h("span", {}, "peak ", h("b", {}, w.peak)) : null),
+      h("div", { class: "hn-sec" }, h("h3", {}, "The comments that named it, best received first")),
+      h("ul", { class: "hn-res" }, (w.comments || []).map((c) => h("li", { class: "hn-c" },
+        h("div", { class: "on" }, "on ", h("a", { href: app.href("item", c.story) }, c.story_title || `story ${c.story}`)),
+        h("div", { class: "hn-meta" }, h("a", { href: app.href("user", c.author) }, c.author), h("a", { href: app.href("item", c.id), title: day(c.created) }, ago(c.created))),
+        c.body_hl ? h("div", { class: "txt", html: c.body_hl }) : h("div", { class: "txt" }, marked(excerpt(c.body, re, 480), re)))))),
+    h("aside", { class: "hn-right", style: { display: "block" } },
+      h("div", { class: "hn-card" }, h("h4", {}, "People who named it, a year"), yearBars(w.years, ""), h("div", { class: "hn-yl" }, h("span", {}, 2007), h("span", {}, new Date().getFullYear()))),
+      h("div", { class: "hn-card" }, h("h4", {}, "How it was counted"),
+        w.rule ? h("p", { style: { fontSize: "12.5px", margin: "0 0 6px" } }, w.rule[0].toUpperCase() + w.rule.slice(1) + ".") : null,
+        w.why ? h("div", { style: { fontSize: "12px", color: "var(--muted)", marginBottom: "6px" } }, `${fmt(w.mentions)} kept of ${fmt(w.candidates)} candidates: `, Object.entries(w.why).map(([k, n]) => `${fmt(n)} by ${{ link: "a link", alias: "the short name", title: "the title", name: "the author's name" }[k] || k}`).join(", ")) : null,
+        h("pre", { style: { whiteSpace: "pre-wrap", fontSize: "11.5px", margin: 0, color: "var(--text-2)" } }, "-- the candidates\n", w.candidates_by, "\n-- ", JSON.stringify(w.counted_params || {})),
+        (w.editions || []).length > 1 ? h("div", { style: { fontSize: "12px", color: "var(--muted)", marginTop: "6px" } }, `${w.editions.length} editions and links counted as one`) : null))));
+}
+
+// ---- changed minds ---------------------------------------------------------
+
+const STANCE = (s) => s >= 1.25 ? "var(--good)" : s >= 0.25 ? "color-mix(in srgb, var(--good) 55%, var(--muted))" : s > -0.25 ? "var(--muted)" : s > -1.25 ? "color-mix(in srgb, var(--bad) 60%, var(--muted))" : "var(--bad)";
+
+function shiftBadge(arc) {
+  if (!arc) return null;
+  const s = Number(arc.shift || 0);
+  const cls = s >= 0.5 ? "up" : s <= -0.5 ? "down" : "flat";
+  return h("span", { class: `hn-shift ${cls}`, title: "The last years' stance less the first years', from -4 to 4" }, s >= 0.5 ? `warmed ${s.toFixed(1)}` : s <= -0.5 ? `cooled ${s.toFixed(1)}` : "steady");
+}
+
+// A stance a year, from -2 (against) to 2 (for), as a line.
+function stanceLine(years, W = 200, H = 46) {
+  const ys = (years || []).filter((y) => y.stance != null);
+  if (ys.length < 2) return h("div", { style: { fontSize: "12px", color: "var(--muted)" } }, "One year read.");
+  const x0 = ys[0].year, x1 = ys[ys.length - 1].year;
+  const X = (y) => 4 + ((y - x0) / Math.max(1, x1 - x0)) * (W - 8), Y = (s) => H / 2 - (s / 2) * (H / 2 - 4);
+  return h("div", {}, h("svg", { viewBox: `0 0 ${W} ${H}`, style: { width: "100%", height: `${H}px` } },
+    h("line", { x1: 0, x2: W, y1: H / 2, y2: H / 2, stroke: "var(--line-2)", "stroke-dasharray": "3 3" }),
+    h("polyline", { points: ys.map((y) => `${X(y.year)},${Y(y.stance)}`).join(" "), fill: "none", stroke: "var(--accent)", "stroke-width": 2, "stroke-linejoin": "round" }),
+    ys.map((y) => h("circle", { cx: X(y.year), cy: Y(y.stance), r: 3.2, fill: STANCE(y.stance) }, h("title", {}, `${y.year}: ${y.stance}`)))),
+    h("div", { class: "hn-yl" }, h("span", {}, x0), h("span", {}, "for ↑ · against ↓"), h("span", {}, x1)));
+}
+
+async function mindsPage(main, app, rest, alive) {
+  const topic = (rest[0] || "").trim();
+  const who = (rest[1] || "").trim();
+  if (topic && who) return mindArc(main, app, topic, who, alive);
+  const box = h("input", { type: "search", placeholder: "A topic: rust, bitcoin, remote work…", value: topic, "aria-label": "A topic", style: { font: "14px var(--sans)", padding: "7px 11px", borderRadius: "9px", border: "1px solid var(--line-2)", background: "var(--surface)", color: "var(--text)", minWidth: "240px" } });
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter" && box.value.trim()) app.go("minds", box.value.trim()); });
+  const list = h("div", {}, topic ? skel(6) : null);
+  const chips = h("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap", margin: "8px 0 12px" } });
+  fill(main,
+    h("h2", { class: "hn-pg-h" }, "Changed minds"),
+    h("p", { class: "hn-pg-sub" }, "The people who wrote about a topic over many years, and how their take on it moved. A model reads a few of their comments on it a year for where each stands; every quote shown is copied from the comment, and the comments are a click away."),
+    h("div", { class: "hn-head" }, box, h("button", { class: "hn-read", onclick: () => box.value.trim() && app.go("minds", box.value.trim()) }, "Show people")),
+    chips, list);
+  const j = await app.api(`/v1/minds?topic=${enc(topic)}`);
+  if (!alive()) return;
+  fill(chips, (j.topics || []).map((t) => h("a", { class: `hn-chip${t === j.topic ? " f" : ""}`, href: app.href("minds", t) }, t)));
+  if (!topic) return fill(list, h("div", { class: "hn-empty" }, "Pick a topic to see who wrote about it for years."));
+  const ps = j.people || [];
+  if (!ps.length) return fill(list, h("div", { class: "hn-empty" }, "No one wrote about it over enough years."));
+  const read = ps.filter((p) => p.arc).length;
+  const row = (p) => {
+    const slot = h("div", {});
+    const draw = (arc) => fill(slot, arc
+      ? h("div", { class: "arc" }, arc.changed ? h("b", {}, "Changed: ") : h("b", {}, "Held: "), `${arc.from || "?"} → ${arc.to || "?"}`, shiftBadge(arc))
+      : h("button", { onclick: async (e) => {
+        e.target.textContent = "Reading their comments…"; e.target.disabled = true;
+        try { const a = await app.ctx.api(`/v1/minds/arc?topic=${enc(j.topic)}&who=${enc(p.author)}`); p.arc = a; draw(a); fill(chart, stanceLine(a.years)); }
+        catch (err) { e.target.textContent = String(err.message || err).slice(0, 80); }
+      } }, "Read their arc"));
+    const chart = h("div", {}, p.arc ? stanceLine(p.arc.years) : yearBars(p.years.map((y) => ({ year: y.year, people: y.n })), "", p.first, p.last));
+    draw(p.arc);
+    return h("div", { class: "hn-mind" },
+      h("div", {}, h("a", { class: "who", href: app.href("minds", j.topic, p.author) }, ava(p.author), p.author),
+        h("div", { class: "hn-meta" }, h("span", {}, `${fmt(p.n)} comments on it`), h("span", {}, `${p.first}–${p.last}, in ${p.active_years} years`), h("a", { href: app.href("user", p.author) }, "profile")), slot),
+      chart);
+  };
+  fill(list, h("div", { class: "hn-head" }, h("span", { class: "t" }, h("b", {}, fmt(ps.length)), ` people wrote about ${j.topic} in four years or more · `, h("b", {}, fmt(j.comments)), " comments mention it", read ? ` · ${read} arcs read, the biggest change first` : "")), ps.map(row));
+}
+
+async function mindArc(main, app, topic, who, alive) {
+  fill(main, h("div", {}, h("div", { class: "hn-empty" }, `Reading ${who}'s comments on ${topic}…`), skel(4)));
+  let a;
+  try { a = await app.api(`/v1/minds/arc?topic=${enc(topic)}&who=${enc(who)}`); }
+  catch (e) { if (alive()) fill(main, h("a", { href: app.href("minds", topic), style: { fontSize: "13px", color: "var(--accent)" } }, `← Changed minds on ${topic}`), h("div", { class: "hn-err" }, String(e.message || e))); return; }
+  if (!alive()) return;
+  const pts = a.points || [];
+  fill(main, h("div", { class: "hn-grid two" },
+    h("section", {},
+      h("a", { href: app.href("minds", topic), style: { fontSize: "13px", color: "var(--accent)" } }, `← Changed minds on ${topic}`),
+      h("h2", { class: "hn-pg-h" }, h("a", { href: app.href("user", who) }, who), ` on ${topic}`),
+      h("div", { class: "arc", style: { fontSize: "15px", margin: "4px 0 6px" } }, h("b", {}, a.changed ? "Changed: " : "Held: "), `${a.from || "?"} → ${a.to || "?"}`, shiftBadge(a)),
+      a.summary ? h("p", { style: { color: "var(--text-2)", maxWidth: "720px" } }, a.summary) : null,
+      h("div", { class: "hn-sec" }, h("h3", {}, `${pts.length} comments read, oldest first`)),
+      pts.map((p) => h("div", { class: "hn-q" },
+        h("span", { class: "y" }, String(p.created || "").slice(0, 7)),
+        h("span", { class: "d", style: { background: STANCE(p.stance) }, title: `stance ${p.stance}` }),
+        h("div", { class: "t" }, p.quote ? h("a", { href: app.href("item", p.id) }, `“${p.quote}”`) : h("a", { href: app.href("item", p.id), style: { color: "var(--muted)" } }, "(no exact quote: the comment)"),
+          h("span", { class: "on" }, "on ", h("a", { href: app.href("item", p.story) }, p.story_title || `story ${p.story}`)))))),
+    h("aside", { class: "hn-right", style: { display: "block" } },
+      h("div", { class: "hn-card" }, h("h4", {}, "Stance, year by year"), stanceLine(a.years, 236, 70)),
+      h("div", { class: "hn-card" }, h("h4", {}, "How this was read"), h("div", { style: { fontSize: "12.5px", color: "var(--text-2)" } },
+        `${a.read || pts.length} of ${who}'s comments that BM25 finds most about “${topic}”, three a year at most, read by ${String(a.model || "a model").replace(/^anthropic\//, "")} for where each stands (from −2, against, to 2, for). A quote the comment does not hold word for word is not shown. `,
+        a.kept ? `Read ${day(a.at)} and kept.` : "Read just now, and kept.")))));
+}
 
 function about(main, app) {
   const p = (t) => h("p", { style: { color: "var(--text-2)", maxWidth: "760px" } }, t);

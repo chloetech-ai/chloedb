@@ -112,6 +112,15 @@ pub fn tables(model: &str, comment_model: &str) -> Vec<(&'static str, String)> {
             image KEYWORD, site_name KEYWORD, kind KEYWORD,
             emb VECTOR OPTIONS(embed = 'title, description, body', model = '{model}')
         )")),
+        // The HN canon (crate::canon): the books and papers comments link
+        // to or name, a row a work, with the people who did, a year.
+        ("hn_canon", "CREATE TABLE IF NOT EXISTS hn_canon (
+            id KEYWORD PRIMARY KEY, kind KEYWORD, title TEXT, creator TEXT, published KEYWORD,
+            url KEYWORD, image KEYWORD, people INT, mentions INT, linkers INT, first INT, last INT,
+            years TEXT OPTIONS(indexed = false), comments TEXT OPTIONS(indexed = false),
+            phrase TEXT OPTIONS(indexed = false), params TEXT OPTIONS(indexed = false), ids TEXT OPTIONS(indexed = false),
+            rule TEXT OPTIONS(indexed = false), candidates INT, why TEXT OPTIONS(indexed = false)
+        )".to_string()),
     ]
 }
 
