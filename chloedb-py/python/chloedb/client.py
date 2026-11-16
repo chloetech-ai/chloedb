@@ -202,6 +202,9 @@ class Client(Search, FrameStore):
         self._schemas: dict[str | None, dict] = {}
         self._json_only = False  # a server that answers no Arrow
         self._conns = threading.local()
+        # The chloedb-server `chloedb.serve` started for this client, which
+        # close() stops.
+        self.server: Any = None
 
     # Connections. Each thread keeps one connection to the server alive
     # between its requests, rather than a TLS handshake and a socket per
@@ -294,10 +297,13 @@ class Client(Search, FrameStore):
         state = dict(self.__dict__)
         state.pop("_conns", None)
         state.pop("_lock", None)
+        # A copy talks to the same server, which stays this client's to stop.
+        state["server"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
         self.__dict__.update(state)
+        self.__dict__.setdefault("server", None)
         self._conns = threading.local()
         if isinstance(self, Session):
             self._lock = threading.Lock()
@@ -898,7 +904,10 @@ class Client(Search, FrameStore):
         return self._call("POST", "/v1/agent", body)
 
     def close(self) -> None:
-        pass
+        """Stops the server, when `chloedb.serve` started it for this
+        client; a client of any other server keeps nothing open to close."""
+        if self.server is not None:
+            self.server.stop()
 
     def __enter__(self) -> "Client":
         return self

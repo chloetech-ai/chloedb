@@ -25,6 +25,9 @@ langchain = ["langchain-core>=0.3", "numpy"]
 langgraph = ["langgraph>=0.3", "langgraph-checkpoint>=2.0"]
 # chloedb.llama_index: a LlamaIndex vector store
 llama-index = ["llama-index-core>=0.12"]
+# chloedb.serve: the prebuilt chloedb-server of the same release (its
+# version moves with this package's: tests/test_serve.py checks it)
+server = ["chloedb-server==0.3.6"]
 
 [tool.maturin]
 python-source = "python"
