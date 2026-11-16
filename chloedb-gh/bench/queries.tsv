@@ -1,0 +1,105 @@
+# Searches as a person would type them when they want a kind of project,
+# with the repos that answer each one. Written before either engine's
+# answers were looked at. A query marked `tuned` is one of the six (or close
+# to one) the ranking was compared on while it was written; the report gives
+# the score with and without them.
+# query	answers (any one of them counts)	tuned
+self-hosted photo and video backup like google photos	immich-app/immich,photoprism/photoprism	tuned
+terminal file manager	jarun/nnn,ranger/ranger,sxyazi/yazi,gokcehan/lf	tuned
+fast grep alternative that respects gitignore	BurntSushi/ripgrep,ggreer/the_silver_searcher
+cat clone with syntax highlighting	sharkdp/bat
+find files faster than find	sharkdp/fd
+fuzzy finder for the command line	junegunn/fzf
+smarter cd command that learns your habits	ajeetdsouza/zoxide,wting/autojump,rupa/z
+terminal ui for git	jesseduffield/lazygit,extrawurst/gitui,jonas/tig
+terminal ui for docker	jesseduffield/lazydocker
+kubernetes terminal ui	derailed/k9s
+cross-shell customizable prompt	starship/starship
+gpu accelerated terminal emulator	alacritty/alacritty,kovidgoyal/kitty,wez/wezterm
+self-hosted password manager server compatible with bitwarden	dani-garcia/vaultwarden
+network-wide ad blocking dns	pi-hole/pi-hole,AdguardTeam/AdGuardHome
+home automation platform	home-assistant/core
+self-hosted media server	jellyfin/jellyfin
+local-first markdown note taking app	logseq/logseq,siyuan-note/siyuan,laurent22/joplin
+open source alternative to notion	AppFlowy-IO/AppFlowy,toeverything/AFFiNE,siyuan-note/siyuan
+open source firebase alternative	supabase/supabase,appwrite/appwrite,pocketbase/pocketbase	tuned
+headless cms	strapi/strapi,payloadcms/payload,directus/directus
+workflow automation tool like zapier	n8n-io/n8n,activepieces/activepieces,huginn/huginn
+run large language models locally	ollama/ollama,ggml-org/llama.cpp	tuned
+web ui for stable diffusion	AUTOMATIC1111/stable-diffusion-webui,comfyanonymous/ComfyUI,lllyasviel/Fooocus
+framework for building applications with llms	langchain-ai/langchain,run-llama/llama_index
+vector database	milvus-io/milvus,qdrant/qdrant,weaviate/weaviate,chroma-core/chroma
+speech recognition model	openai/whisper,ggml-org/whisper.cpp
+gradient boosting library	dmlc/xgboost,microsoft/LightGBM,catboost/catboost
+deep learning framework	pytorch/pytorch,tensorflow/tensorflow,jax-ml/jax
+real-time object detection	ultralytics/ultralytics,ultralytics/yolov5,AlexeyAB/darknet,pjreddie/darknet
+fast dataframe library	pola-rs/polars,pandas-dev/pandas
+in-process analytical sql database	duckdb/duckdb
+distributed sql database	cockroachdb/cockroach,pingcap/tidb,yugabyte/yugabyte-db
+time series database	influxdata/influxdb,timescale/timescaledb,questdb/questdb,VictoriaMetrics/VictoriaMetrics,prometheus/prometheus
+full-text search engine	elastic/elasticsearch,meilisearch/meilisearch,typesense/typesense,quickwit-oss/tantivy
+in-memory key value store	redis/redis,valkey-io/valkey,dragonflydb/dragonfly	tuned
+distributed event streaming platform	apache/kafka,redpanda-data/redpanda,nats-io/nats-server
+container orchestration	kubernetes/kubernetes,hashicorp/nomad
+infrastructure as code	hashicorp/terraform,pulumi/pulumi,opentofu/opentofu
+reverse proxy with automatic https	caddyserver/caddy,traefik/traefik
+monitoring dashboards and visualization	grafana/grafana
+self-hosted uptime monitoring	louislam/uptime-kuma
+self-hosted git service	go-gitea/gitea,gogs/gogs
+react framework with server side rendering	vercel/next.js,remix-run/remix
+javascript runtime	nodejs/node,denoland/deno,oven-sh/bun
+frontend build tool with a fast dev server	vitejs/vite,webpack/webpack,evanw/esbuild,parcel-bundler/parcel
+utility-first css framework	tailwindlabs/tailwindcss
+javascript test framework	jestjs/jest,vitest-dev/vitest,mochajs/mocha
+end to end browser testing	microsoft/playwright,cypress-io/cypress,puppeteer/puppeteer
+python web framework for building apis	fastapi/fastapi,encode/starlette,pallets/flask
+fast python package manager	astral-sh/uv,python-poetry/poetry,pypa/pipenv	tuned
+python linter	astral-sh/ruff,PyCQA/flake8,pylint-dev/pylint
+python code formatter	psf/black,astral-sh/ruff
+static site generator	gohugoio/hugo,jekyll/jekyll,withastro/astro,11ty/eleventy
+cross platform desktop apps with web technologies	electron/electron,tauri-apps/tauri
+cross platform mobile ui toolkit	flutter/flutter,facebook/react-native
+open source game engine	godotengine/godot,bevyengine/bevy
+http client library for python	psf/requests,encode/httpx
+command line http client	httpie/cli,curl/curl
+open source api client like postman	hoppscotch/hoppscotch,usebruno/bruno,Kong/insomnia
+screen recording and live streaming	obsproject/obs-studio
+media player	mpv-player/mpv,videolan/vlc
+download videos from youtube	yt-dlp/yt-dlp,ytdl-org/youtube-dl
+neovim configuration distribution	LazyVim/LazyVim,NvChad/NvChad,AstroNvim/AstroNvim,nvim-lua/kickstart.nvim
+vim fork focused on extensibility	neovim/neovim
+code editor written in rust	zed-industries/zed,helix-editor/helix,lapce/lapce
+tiling window manager for macos	koekeishiya/yabai,nikitabobko/AeroSpace,ianyh/Amethyst
+keyboard remapping for macos	pqrs-org/Karabiner-Elements
+clipboard manager for mac	p0deje/Maccy
+self-hosted rss reader	FreshRSS/FreshRSS,miniflux/v2
+e-book manager	kovidgoyal/calibre
+find secrets in git repositories	gitleaks/gitleaks,trufflesecurity/trufflehog
+vulnerability scanner for container images	aquasecurity/trivy,anchore/grype
+mesh vpn built on wireguard	tailscale/tailscale,juanfont/headscale,slackhq/nebula,netbirdio/netbird
+open source remote desktop	rustdesk/rustdesk
+continuous file synchronization between devices	syncthing/syncthing
+self-hosted cloud storage	nextcloud/server,owncloud/core
+self-hosted team chat	mattermost/mattermost,RocketChat/Rocket.Chat,zulip/zulip
+javascript data visualization library	d3/d3,chartjs/Chart.js,apache/echarts
+open source business intelligence dashboards	apache/superset,metabase/metabase
+workflow orchestration for data pipelines	apache/airflow,PrefectHQ/prefect,dagster-io/dagster
+stream processing framework	apache/flink,apache/spark
+rust web framework	tokio-rs/axum,actix/actix-web,rwf2/Rocket
+go web framework	gin-gonic/gin,labstack/echo,gofiber/fiber
+asynchronous runtime for rust	tokio-rs/tokio
+typescript orm	prisma/prisma,typeorm/typeorm,drizzle-team/drizzle-orm
+react state management	reduxjs/redux,pmndrs/zustand
+accessible react component library	shadcn-ui/ui,mui/material-ui,radix-ui/primitives
+diagrams from text	mermaid-js/mermaid,plantuml/plantuml
+hand-drawn style whiteboard	excalidraw/excalidraw,tldraw/tldraw
+open source figma alternative	penpot/penpot
+privacy friendly web analytics	plausible/analytics,umami-software/umami,matomo-org/matomo
+open source product analytics	PostHog/posthog
+error tracking and performance monitoring	getsentry/sentry
+load testing tool	grafana/k6,locustio/locust
+dotfiles manager	twpayne/chezmoi
+shell history sync and search	atuinsh/atuin
+disk usage analyzer for the terminal	bootandy/dust,Byron/dua-cli,dundee/gdu
+system monitor for the terminal	aristocratos/btop,ClementTsang/bottom,htop-dev/htop
+modern ls replacement	eza-community/eza,ogham/exa,lsd-rs/lsd

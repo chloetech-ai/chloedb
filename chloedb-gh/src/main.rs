@@ -13,7 +13,7 @@
 //! `serve` is the app: its API and the view the command center shows
 //! (chloedb-server --app gh=URL), over the cluster the rows went into.
 
-use chloedb_gh::{api, prepare, reduce, slots, strata::Strata};
+use chloedb_gh::{api, apimeta, prepare, reduce, slots, strata::Strata};
 
 use anyhow::{bail, Result};
 use chrono::NaiveDate;
@@ -21,7 +21,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "chloedb-gh", version, about = "GitHub's public history on ChloeDB")]
+#[command(
+    name = "chloedb-gh",
+    version,
+    about = "GitHub's public history on ChloeDB"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -81,6 +85,30 @@ enum Command {
         #[arg(long, default_value_t = 4)]
         shards: usize,
     },
+    /// What GitHub's search API says of each repo with --min-stars or more
+    /// today (stars, description, language, topics, license, name), as
+    /// `meta` and `names` rows under --out that `reduce` reads after the
+    /// days'. At most 10 calls a minute without a token (GITHUB_TOKEN).
+    ApiMeta {
+        #[arg(long)]
+        out: PathBuf,
+        /// This machine's share of the bands of stars, `i/n`.
+        #[arg(long, default_value = "0/1")]
+        part: String,
+        #[arg(long, default_value_t = 4)]
+        shards: usize,
+        #[arg(long, default_value_t = 50)]
+        min_stars: i64,
+        /// The repos made since this day first (GH Archive has no
+        /// description, language or topics for them).
+        #[arg(long, default_value = "2025-10-01")]
+        since: chrono::NaiveDate,
+        /// Seconds between calls: 7 keeps under 10 a minute; 2.1 under 30 with a token.
+        #[arg(long)]
+        gap: Option<f64>,
+        #[arg(long, default_value = "https://api.github.com")]
+        base_url: String,
+    },
     /// Serve the API and the view for the command center (chloedb-server
     /// --app gh=URL). Every request needs the token but /healthz.
     Serve {
@@ -111,26 +139,117 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Prepare { from, to, shards, out, jobs, logins, names, old_ids_below, base_url, part, local } => {
-            let Some((i, n)) = part.split_once('/').and_then(|(i, n)| Some((i.parse().ok()?, n.parse().ok()?))) else {
+        Command::Prepare {
+            from,
+            to,
+            shards,
+            out,
+            jobs,
+            logins,
+            names,
+            old_ids_below,
+            base_url,
+            part,
+            local,
+        } => {
+            let Some((i, n)) = part
+                .split_once('/')
+                .and_then(|(i, n)| Some((i.parse().ok()?, n.parse().ok()?)))
+            else {
                 bail!("--part is i/n, such as 0/2");
             };
-            prepare::run(prepare::Opts { from, to, shards, out, jobs, logins, names, old_ids_below, base_url, part: (i, n), local })
+            prepare::run(prepare::Opts {
+                from,
+                to,
+                shards,
+                out,
+                jobs,
+                logins,
+                names,
+                old_ids_below,
+                base_url,
+                part: (i, n),
+                local,
+            })
         }
-        Command::Reduce { inputs, shard, out, min_stars, shards } => reduce::run(reduce::Opts { inputs, shard, out, min_stars, shards }),
-        Command::Serve { listen, strata, key, token, hn } => serve(listen, strata, key, token, hn),
+        Command::Reduce {
+            inputs,
+            shard,
+            out,
+            min_stars,
+            shards,
+        } => reduce::run(reduce::Opts {
+            inputs,
+            shard,
+            out,
+            min_stars,
+            shards,
+        }),
+        Command::ApiMeta {
+            out,
+            part,
+            shards,
+            min_stars,
+            since,
+            gap,
+            base_url,
+        } => {
+            let (i, n) = part
+                .split_once('/')
+                .and_then(|(i, n)| Some((i.parse().ok()?, n.parse().ok()?)))
+                .ok_or_else(|| anyhow::anyhow!("--part is i/n"))?;
+            let token = std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty());
+            let gap = std::time::Duration::from_secs_f64(gap.unwrap_or(if token.is_some() {
+                2.1
+            } else {
+                7.0
+            }));
+            apimeta::run(apimeta::Opts {
+                out,
+                part: (i, n),
+                shards,
+                min_stars,
+                since,
+                gap,
+                token,
+                base_url,
+            })
+        }
+        Command::Serve {
+            listen,
+            strata,
+            key,
+            token,
+            hn,
+        } => serve(listen, strata, key, token, hn),
         Command::ShardOf { shards, keys } => {
             for k in keys {
-                println!("{k}\tslot {}\tshard {}", slots::slot(k), slots::shard(k, shards));
+                println!(
+                    "{k}\tslot {}\tshard {}",
+                    slots::slot(k),
+                    slots::shard(k, shards)
+                );
             }
             Ok(())
         }
     }
 }
 
-fn serve(listen: String, url: String, key: Option<String>, token: Option<String>, hn: Option<String>) -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())).init();
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+fn serve(
+    listen: String,
+    url: String,
+    key: Option<String>,
+    token: Option<String>,
+    hn: Option<String>,
+) -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(async move {
         let listener = tokio::net::TcpListener::bind(&listen).await.map_err(|e| anyhow::anyhow!("{listen}: {e}"))?;
         let svc = std::sync::Arc::new(api::Service {

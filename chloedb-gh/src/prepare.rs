@@ -150,7 +150,19 @@ impl Meta {
         macro_rules! take {
             ($($f:ident),*) => { $( if newer.$f.is_some() { self.$f = newer.$f; } )* };
         }
-        take!(name, description, language, homepage, stars, forks, created, topics, license, fork, archived);
+        take!(
+            name,
+            description,
+            language,
+            homepage,
+            stars,
+            forks,
+            created,
+            topics,
+            license,
+            fork,
+            archived
+        );
         self.t = self.t.max(newer.t);
     }
 }
@@ -164,7 +176,9 @@ pub fn run(opts: Opts) -> Result<()> {
     let mut d = opts.from;
     let mut i = 0usize;
     while d <= opts.to {
-        if i % opts.part.1 == opts.part.0 && !opts.out.join("done").join(format!("{d}.json")).exists() {
+        if i % opts.part.1 == opts.part.0
+            && !opts.out.join("done").join(format!("{d}.json")).exists()
+        {
             days.push(d);
         }
         d = d.succ_opt().unwrap();
@@ -185,7 +199,13 @@ pub fn run(opts: Opts) -> Result<()> {
         .connect_timeout(Duration::from_secs(20))
         .user_agent("chloedb-gh-prepare")
         .build()?;
-    eprintln!("prepare: {} days to do, {} workers, {} shards, out {}", days.len(), opts.jobs, opts.shards, opts.out.display());
+    eprintln!(
+        "prepare: {} days to do, {} workers, {} shards, out {}",
+        days.len(),
+        opts.jobs,
+        opts.shards,
+        opts.out.display()
+    );
     let total = days.len();
     let queue = Arc::new(Mutex::new(days));
     let shared = Arc::new(Shared {
@@ -228,16 +248,27 @@ pub fn run(opts: Opts) -> Result<()> {
     }
     let failed = failed.lock().unwrap();
     if !failed.is_empty() {
-        bail!("{} days failed (run again to retry them): {:?}", failed.len(), &failed[..failed.len().min(20)]);
+        bail!(
+            "{} days failed (run again to retry them): {:?}",
+            failed.len(),
+            &failed[..failed.len().min(20)]
+        );
     }
-    eprintln!("prepare: all {total} days done in {:.0} s", start.elapsed().as_secs_f64());
+    eprintln!(
+        "prepare: all {total} days done in {:.0} s",
+        start.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
 fn fetch(s: &Shared, name: &str) -> Result<Option<Vec<u8>>> {
     if let Some(dir) = &s.opts.local {
         let p = dir.join(name);
-        return Ok(if p.exists() { Some(std::fs::read(p)?) } else { None });
+        return Ok(if p.exists() {
+            Some(std::fs::read(p)?)
+        } else {
+            None
+        });
     }
     let url = format!("{}/{name}", s.opts.base_url.trim_end_matches('/'));
     let mut wait = 2u64;
@@ -250,7 +281,9 @@ fn fetch(s: &Shared, name: &str) -> Result<Option<Vec<u8>>> {
                 Err(e) if attempt < 8 => eprintln!("prepare: {name}: {e}; again in {wait} s"),
                 Err(e) => return Err(e.into()),
             },
-            Ok(r) if attempt < 8 => eprintln!("prepare: {name}: HTTP {}; again in {wait} s", r.status()),
+            Ok(r) if attempt < 8 => {
+                eprintln!("prepare: {name}: HTTP {}; again in {wait} s", r.status())
+            }
             Ok(r) => bail!("{name}: HTTP {}", r.status()),
             Err(e) if attempt < 8 => eprintln!("prepare: {name}: {e}; again in {wait} s"),
             Err(e) => return Err(e.into()),
@@ -263,7 +296,10 @@ fn fetch(s: &Shared, name: &str) -> Result<Option<Vec<u8>>> {
 
 fn do_day(s: &Shared, day: NaiveDate) -> Result<()> {
     let n = s.opts.shards;
-    let mut d = Day { events: (0..n).map(|_| EventRows::default()).collect(), ..Default::default() };
+    let mut d = Day {
+        events: (0..n).map(|_| EventRows::default()).collect(),
+        ..Default::default()
+    };
     let t0 = Instant::now();
     // The next hour downloads while this one is read: a download runs at
     // about the speed one core reads, so this keeps both busy.
@@ -311,7 +347,12 @@ fn read_hour(s: &Shared, d: &mut Day, gz: &[u8]) -> Result<()> {
         let got = match r.read_until(b'\n', &mut line) {
             Ok(n) => n,
             // A truncated hour (a few exist): keep what was read.
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof || e.kind() == std::io::ErrorKind::InvalidInput => break,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::UnexpectedEof
+                    || e.kind() == std::io::ErrorKind::InvalidInput =>
+            {
+                break
+            }
             Err(e) => {
                 eprintln!("prepare: a damaged hour, kept what was read: {e}");
                 break;
@@ -336,7 +377,10 @@ fn read_hour(s: &Shared, d: &mut Day, gz: &[u8]) -> Result<()> {
 
 fn one(s: &Shared, d: &mut Day, e: Event) {
     let n = s.opts.shards;
-    let (Some(ty), Some(t)) = (e.ty.as_deref(), e.created_at.as_deref().and_then(archive::unix)) else {
+    let (Some(ty), Some(t)) = (
+        e.ty.as_deref(),
+        e.created_at.as_deref().and_then(archive::unix),
+    ) else {
         d.skipped += 1;
         return;
     };
@@ -347,7 +391,11 @@ fn one(s: &Shared, d: &mut Day, e: Event) {
         (_, Some(r)) if r.id.is_some() => (r.id.unwrap(), r.full()),
         (_, Some(r)) => match r.full() {
             Some(full) => {
-                let id = s.repo_ids.as_ref().and_then(|m| m.get(&full.to_ascii_lowercase()).copied()).unwrap_or_else(|| synthetic_id(&format!("repo:{full}")));
+                let id = s
+                    .repo_ids
+                    .as_ref()
+                    .and_then(|m| m.get(&full.to_ascii_lowercase()).copied())
+                    .unwrap_or_else(|| synthetic_id(&format!("repo:{full}")));
                 (id, Some(full))
             }
             None => {
@@ -364,7 +412,11 @@ fn one(s: &Shared, d: &mut Day, e: Event) {
         Some(a) => match (a.id, &a.login) {
             (Some(id), l) => (id, l.clone()),
             (None, Some(l)) => {
-                let id = s.logins.as_ref().and_then(|m| m.get(&l.to_ascii_lowercase()).copied()).unwrap_or_else(|| synthetic_id(l));
+                let id = s
+                    .logins
+                    .as_ref()
+                    .and_then(|m| m.get(&l.to_ascii_lowercase()).copied())
+                    .unwrap_or_else(|| synthetic_id(l));
                 (id, Some(l.clone()))
             }
             (None, None) => (0, None),
@@ -413,12 +465,23 @@ fn one(s: &Shared, d: &mut Day, e: Event) {
     if let Some(r) = &e.repository {
         meta(d, r, t);
     }
-    if let Some(r) = p.and_then(|p| p.pull_request.as_ref()).and_then(|r| r.base.as_ref()).and_then(|b| b.repo.as_ref()) {
+    if let Some(r) = p
+        .and_then(|p| p.pull_request.as_ref())
+        .and_then(|r| r.base.as_ref())
+        .and_then(|b| b.repo.as_ref())
+    {
         meta(d, r, t);
     }
     if ty == "CreateEvent" {
-        if let Some(desc) = p.filter(|p| p.ref_type.as_deref() == Some("repository")).and_then(|p| p.description.clone()) {
-            let m = RepoMeta { id: Some(repo), description: Some(desc), ..Default::default() };
+        if let Some(desc) = p
+            .filter(|p| p.ref_type.as_deref() == Some("repository"))
+            .and_then(|p| p.description.clone())
+        {
+            let m = RepoMeta {
+                id: Some(repo),
+                description: Some(desc),
+                ..Default::default()
+            };
             meta(d, &m, t);
         }
     }
@@ -471,7 +534,17 @@ pub fn write_parquet(path: &Path, cols: Vec<(&str, ArrayRef)>) -> Result<()> {
         return Ok(());
     }
     std::fs::create_dir_all(path.parent().unwrap())?;
-    let schema = Arc::new(Schema::new(cols.iter().map(|(n, a)| Field::new(*n, a.data_type().clone(), a.null_count() > 0 || matches!(a.data_type(), DataType::Null))).collect::<Vec<_>>()));
+    let schema = Arc::new(Schema::new(
+        cols.iter()
+            .map(|(n, a)| {
+                Field::new(
+                    *n,
+                    a.data_type().clone(),
+                    a.null_count() > 0 || matches!(a.data_type(), DataType::Null),
+                )
+            })
+            .collect::<Vec<_>>(),
+    ));
     let batch = RecordBatch::try_new(schema.clone(), cols.into_iter().map(|c| c.1).collect())?;
     let tmp = path.with_extension("parquet.tmp");
     let f = std::fs::File::create(&tmp)?;
@@ -482,33 +555,33 @@ pub fn write_parquet(path: &Path, cols: Vec<(&str, ArrayRef)>) -> Result<()> {
     Ok(())
 }
 
-fn ints(v: &[i64]) -> ArrayRef {
+pub(crate) fn ints(v: &[i64]) -> ArrayRef {
     let mut b = Int64Builder::with_capacity(v.len());
     b.append_slice(v);
     Arc::new(b.finish())
 }
-fn opt_ints(v: &[Option<i64>]) -> ArrayRef {
+pub(crate) fn opt_ints(v: &[Option<i64>]) -> ArrayRef {
     let mut b = Int64Builder::with_capacity(v.len());
     for x in v {
         b.append_option(*x);
     }
     Arc::new(b.finish())
 }
-fn strs<S: AsRef<str>>(v: &[S]) -> ArrayRef {
+pub(crate) fn strs<S: AsRef<str>>(v: &[S]) -> ArrayRef {
     let mut b = StringBuilder::new();
     for x in v {
         b.append_value(x.as_ref());
     }
     Arc::new(b.finish())
 }
-fn opt_strs(v: &[Option<String>]) -> ArrayRef {
+pub(crate) fn opt_strs(v: &[Option<String>]) -> ArrayRef {
     let mut b = StringBuilder::new();
     for x in v {
         b.append_option(x.as_deref());
     }
     Arc::new(b.finish())
 }
-fn opt_bools(v: &[Option<bool>]) -> ArrayRef {
+pub(crate) fn opt_bools(v: &[Option<bool>]) -> ArrayRef {
     let mut b = BooleanBuilder::with_capacity(v.len());
     for x in v {
         b.append_option(*x);
@@ -519,7 +592,11 @@ fn opt_bools(v: &[Option<bool>]) -> ArrayRef {
 fn write_day(s: &Shared, day: NaiveDate, d: &Day) -> Result<()> {
     let out = &s.opts.out;
     let n = s.opts.shards;
-    let file = |table: &str, sh: usize| out.join(table).join(format!("s{sh}")).join(format!("{day}.parquet"));
+    let file = |table: &str, sh: usize| {
+        out.join(table)
+            .join(format!("s{sh}"))
+            .join(format!("{day}.parquet"))
+    };
     let day_start = day.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
     let mut stars: Vec<Vec<(i64, i64, i64)>> = vec![Vec::new(); s.opts.shards];
     for (repo, (st, fk)) in &d.stars {
@@ -527,37 +604,86 @@ fn write_day(s: &Shared, day: NaiveDate, d: &Day) -> Result<()> {
     }
     for sh in 0..s.opts.shards {
         let e = &d.events[sh];
-        let kinds: Vec<&str> = e.kind.iter().map(|k| d.kinds.names[*k as usize].as_str()).collect();
-        write_parquet(&file("events", sh), vec![("t", ints(&e.t)), ("kind", strs(&kinds)), ("repo", ints(&e.repo)), ("actor", ints(&e.actor)), ("n", opt_ints(&e.n))])?;
-        let mut names: Vec<(&(i64, String), &i64)> = d.names.iter().filter(|((r, _), _)| slots::shard(*r, n) == sh).collect();
+        let kinds: Vec<&str> = e
+            .kind
+            .iter()
+            .map(|k| d.kinds.names[*k as usize].as_str())
+            .collect();
+        write_parquet(
+            &file("events", sh),
+            vec![
+                ("t", ints(&e.t)),
+                ("kind", strs(&kinds)),
+                ("repo", ints(&e.repo)),
+                ("actor", ints(&e.actor)),
+                ("n", opt_ints(&e.n)),
+            ],
+        )?;
+        let mut names: Vec<(&(i64, String), &i64)> = d
+            .names
+            .iter()
+            .filter(|((r, _), _)| slots::shard(*r, n) == sh)
+            .collect();
         names.sort_unstable();
         write_parquet(
             &file("names", sh),
             vec![
-                ("repo", ints(&names.iter().map(|x| x.0 .0).collect::<Vec<_>>())),
+                (
+                    "repo",
+                    ints(&names.iter().map(|x| x.0 .0).collect::<Vec<_>>()),
+                ),
                 ("t", ints(&names.iter().map(|x| *x.1).collect::<Vec<_>>())),
-                ("name", strs(&names.iter().map(|x| x.0 .1.as_str()).collect::<Vec<_>>())),
+                (
+                    "name",
+                    strs(&names.iter().map(|x| x.0 .1.as_str()).collect::<Vec<_>>()),
+                ),
             ],
         )?;
-        let mut actors: Vec<(&i64, &(String, i64))> = d.actors.iter().filter(|(a, _)| slots::shard(**a, n) == sh).collect();
+        let mut actors: Vec<(&i64, &(String, i64))> = d
+            .actors
+            .iter()
+            .filter(|(a, _)| slots::shard(**a, n) == sh)
+            .collect();
         actors.sort_unstable_by_key(|x| *x.0);
         write_parquet(
             &file("actors", sh),
             vec![
-                ("actor", ints(&actors.iter().map(|x| *x.0).collect::<Vec<_>>())),
-                ("t", ints(&actors.iter().map(|x| x.1 .1).collect::<Vec<_>>())),
-                ("login", strs(&actors.iter().map(|x| x.1 .0.as_str()).collect::<Vec<_>>())),
+                (
+                    "actor",
+                    ints(&actors.iter().map(|x| *x.0).collect::<Vec<_>>()),
+                ),
+                (
+                    "t",
+                    ints(&actors.iter().map(|x| x.1 .1).collect::<Vec<_>>()),
+                ),
+                (
+                    "login",
+                    strs(&actors.iter().map(|x| x.1 .0.as_str()).collect::<Vec<_>>()),
+                ),
             ],
         )?;
-        let mut metas: Vec<(&i64, &Meta)> = d.meta.iter().filter(|(r, _)| slots::shard(**r, n) == sh).collect();
+        let mut metas: Vec<(&i64, &Meta)> = d
+            .meta
+            .iter()
+            .filter(|(r, _)| slots::shard(**r, n) == sh)
+            .collect();
         metas.sort_unstable_by_key(|x| *x.0);
-        let m = |f: &dyn Fn(&Meta) -> Option<String>| opt_strs(&metas.iter().map(|x| f(x.1)).collect::<Vec<_>>());
-        let mi = |f: &dyn Fn(&Meta) -> Option<i64>| opt_ints(&metas.iter().map(|x| f(x.1)).collect::<Vec<_>>());
-        let mb = |f: &dyn Fn(&Meta) -> Option<bool>| opt_bools(&metas.iter().map(|x| f(x.1)).collect::<Vec<_>>());
+        let m = |f: &dyn Fn(&Meta) -> Option<String>| {
+            opt_strs(&metas.iter().map(|x| f(x.1)).collect::<Vec<_>>())
+        };
+        let mi = |f: &dyn Fn(&Meta) -> Option<i64>| {
+            opt_ints(&metas.iter().map(|x| f(x.1)).collect::<Vec<_>>())
+        };
+        let mb = |f: &dyn Fn(&Meta) -> Option<bool>| {
+            opt_bools(&metas.iter().map(|x| f(x.1)).collect::<Vec<_>>())
+        };
         write_parquet(
             &file("meta", sh),
             vec![
-                ("repo", ints(&metas.iter().map(|x| *x.0).collect::<Vec<_>>())),
+                (
+                    "repo",
+                    ints(&metas.iter().map(|x| *x.0).collect::<Vec<_>>()),
+                ),
                 ("t", ints(&metas.iter().map(|x| x.1.t).collect::<Vec<_>>())),
                 ("name", m(&|x| x.name.clone())),
                 ("description", m(&|x| x.description.clone())),
@@ -578,7 +704,15 @@ fn write_day(s: &Shared, day: NaiveDate, d: &Day) -> Result<()> {
         let n_st: Vec<i64> = st.iter().map(|x| x.1).collect();
         let n_fk: Vec<i64> = st.iter().map(|x| x.2).collect();
         let days = vec![day_start; st.len()];
-        write_parquet(&file("stars", sh), vec![("repo", ints(&repo)), ("day", ints(&days)), ("stars", ints(&n_st)), ("forks", ints(&n_fk))])?;
+        write_parquet(
+            &file("stars", sh),
+            vec![
+                ("repo", ints(&repo)),
+                ("day", ints(&days)),
+                ("stars", ints(&n_st)),
+                ("forks", ints(&n_fk)),
+            ],
+        )?;
     }
     Ok(())
 }
@@ -608,7 +742,11 @@ fn load_first_ids(dir: &Path, below: i64, what: &str) -> Result<FxHashMap<String
         let r = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(f)?)?.build()?;
         for b in r {
             let b = b?;
-            let (ids, ts, logins) = (b.column(0).as_primitive::<Int64Type>(), b.column(1).as_primitive::<Int64Type>(), b.column(2).as_string::<i32>());
+            let (ids, ts, logins) = (
+                b.column(0).as_primitive::<Int64Type>(),
+                b.column(1).as_primitive::<Int64Type>(),
+                b.column(2).as_string::<i32>(),
+            );
             for i in 0..b.num_rows() {
                 let (id, t) = (ids.value(i), ts.value(i));
                 if id <= 0 || id >= below {

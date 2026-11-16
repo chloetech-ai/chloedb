@@ -109,7 +109,11 @@ impl RepoMeta {
     }
     /// Whether it says anything worth keeping beyond a name.
     pub fn has_details(&self) -> bool {
-        self.description.is_some() || self.language.is_some() || self.stars().is_some() || self.topics.is_some() || self.license.is_some()
+        self.description.is_some()
+            || self.language.is_some()
+            || self.stars().is_some()
+            || self.topics.is_some()
+            || self.license.is_some()
     }
 }
 
@@ -160,7 +164,10 @@ impl<'de> Deserialize<'de> for Actor {
                 f.write_str("an actor")
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Actor, E> {
-                Ok(Actor { id: None, login: Some(v.to_owned()) })
+                Ok(Actor {
+                    id: None,
+                    login: Some(v.to_owned()),
+                })
             }
             fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<Actor, A::Error> {
                 let mut a = Actor::default();
@@ -236,7 +243,9 @@ impl<'de> Deserialize<'de> for Lenient<i64> {
                 Ok(Lenient(i64::try_from(v).ok()))
             }
             fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
-                Ok(Lenient((v.fract() == 0.0 && v.abs() < 9e15).then_some(v as i64)))
+                Ok(Lenient(
+                    (v.fract() == 0.0 && v.abs() < 9e15).then_some(v as i64),
+                ))
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
                 Ok(Lenient(v.parse().ok()))
@@ -324,7 +333,11 @@ fn lenient_bool<'de, D: Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Erro
 /// An object's field `want` as an integer, or the value itself when it is
 /// one (`issue` is an object with a `number` from 2015, an id before;
 /// `forkee` an object with an `id`).
-fn int_or_field<'de, D: Deserializer<'de>>(d: D, want: &'static str, bare: bool) -> Result<Option<i64>, D::Error> {
+fn int_or_field<'de, D: Deserializer<'de>>(
+    d: D,
+    want: &'static str,
+    bare: bool,
+) -> Result<Option<i64>, D::Error> {
     struct V {
         want: &'static str,
         bare: bool,
@@ -349,7 +362,11 @@ fn int_or_field<'de, D: Deserializer<'de>>(d: D, want: &'static str, bare: bool)
             Ok(self.bare.then_some(v))
         }
         fn visit_u64<E: de::Error>(self, v: u64) -> Result<Option<i64>, E> {
-            Ok(if self.bare { i64::try_from(v).ok() } else { None })
+            Ok(if self.bare {
+                i64::try_from(v).ok()
+            } else {
+                None
+            })
         }
         fn visit_f64<E: de::Error>(self, _: f64) -> Result<Option<i64>, E> {
             Ok(None)
@@ -483,7 +500,9 @@ fn lenient_strs<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, 
 /// Seconds since 1970 of an archive time: "2024-06-17T15:00:00Z" or, before
 /// 2015, "2013-06-15T15:00:42-07:00".
 pub fn unix(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s).ok().map(|t| t.timestamp())
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|t| t.timestamp())
 }
 
 /// What happened, as one short word: `star` for a WatchEvent (GitHub's
@@ -495,8 +514,14 @@ pub fn kind(ty: &str, p: Option<&Payload>) -> String {
         "WatchEvent" => "star".into(),
         "ForkEvent" => "fork".into(),
         "PushEvent" => "push".into(),
-        "CreateEvent" => format!("create_{}", p.and_then(|p| p.ref_type.as_deref()).unwrap_or("x")),
-        "DeleteEvent" => format!("delete_{}", p.and_then(|p| p.ref_type.as_deref()).unwrap_or("x")),
+        "CreateEvent" => format!(
+            "create_{}",
+            p.and_then(|p| p.ref_type.as_deref()).unwrap_or("x")
+        ),
+        "DeleteEvent" => format!(
+            "delete_{}",
+            p.and_then(|p| p.ref_type.as_deref()).unwrap_or("x")
+        ),
         "IssueCommentEvent" => "comment".into(),
         "PullRequestReviewEvent" => "review".into(),
         "PullRequestReviewCommentEvent" => "review_comment".into(),
@@ -507,7 +532,10 @@ pub fn kind(ty: &str, p: Option<&Payload>) -> String {
         "GollumEvent" => "wiki".into(),
         "DiscussionEvent" => "discussion".into(),
         "PullRequestEvent" => {
-            let merged = p.and_then(|p| p.pull_request.as_ref()).and_then(|r| r.merged).unwrap_or(false);
+            let merged = p
+                .and_then(|p| p.pull_request.as_ref())
+                .and_then(|r| r.merged)
+                .unwrap_or(false);
             if action == "closed" && merged {
                 "pr_merged".into()
             } else {
@@ -563,9 +591,24 @@ mod tests {
         let new = r#"{"id":"1","type":"PullRequestEvent","actor":{"id":5,"login":"ann","display_login":"ann"},"repo":{"id":9,"name":"o/r","url":"x"},"payload":{"action":"closed","number":12,"pull_request":{"number":12,"merged":true,"base":{"repo":{"id":9,"full_name":"o/r","description":"A thing","language":"Rust","stargazers_count":"bad","topics":["db",3],"license":{"spdx_id":"MIT"}}}}},"created_at":"2024-06-17T15:00:00Z"}"#;
         let e: Event = serde_json::from_str(new).unwrap();
         assert_eq!(e.actor.as_ref().unwrap().id, Some(5));
-        assert_eq!(kind(e.ty.as_deref().unwrap(), e.payload.as_ref()), "pr_merged");
+        assert_eq!(
+            kind(e.ty.as_deref().unwrap(), e.payload.as_ref()),
+            "pr_merged"
+        );
         assert_eq!(number("PullRequestEvent", e.payload.as_ref()), Some(12));
-        let base = e.payload.as_ref().unwrap().pull_request.as_ref().unwrap().base.as_ref().unwrap().repo.as_ref().unwrap();
+        let base = e
+            .payload
+            .as_ref()
+            .unwrap()
+            .pull_request
+            .as_ref()
+            .unwrap()
+            .base
+            .as_ref()
+            .unwrap()
+            .repo
+            .as_ref()
+            .unwrap();
         assert_eq!(base.full().as_deref(), Some("o/r"));
         assert_eq!(base.stars(), None);
         assert_eq!(base.topics.as_deref(), Some(&["db".to_string()][..]));
@@ -582,6 +625,9 @@ mod tests {
         assert_eq!(r.stars(), Some(4));
         assert_eq!(unix("2013-06-15T15:00:42-07:00"), Some(1371333642));
         assert_eq!(kind("FollowEvent", None), "follow");
-        assert_eq!(kind("PullRequestReviewThreadEvent", None), "pull_request_review_thread");
+        assert_eq!(
+            kind("PullRequestReviewThreadEvent", None),
+            "pull_request_review_thread"
+        );
     }
 }

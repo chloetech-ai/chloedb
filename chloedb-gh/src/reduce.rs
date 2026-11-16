@@ -60,7 +60,9 @@ fn files(inputs: &[PathBuf], table: &str, shard: usize) -> Result<Vec<PathBuf>> 
 
 fn each_batch(files: &[PathBuf], mut f: impl FnMut(&Batch)) -> Result<()> {
     for p in files {
-        let r = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(p)?)?.with_batch_size(65536).build()?;
+        let r = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(p)?)?
+            .with_batch_size(65536)
+            .build()?;
         for b in r {
             f(&Batch(b?));
         }
@@ -73,7 +75,11 @@ struct Batch(RecordBatch);
 
 impl Batch {
     fn col(&self, name: &str) -> Option<&ArrayRef> {
-        self.0.schema().index_of(name).ok().map(|i| self.0.column(i))
+        self.0
+            .schema()
+            .index_of(name)
+            .ok()
+            .map(|i| self.0.column(i))
     }
     fn ints(&self, name: &str) -> Option<&arrow_array::Int64Array> {
         self.col(name).map(|c| c.as_primitive::<Int64Type>())
@@ -154,11 +160,15 @@ impl Month {
 /// The first second of the month of `t` (UTC).
 fn month_of(t: i64) -> i64 {
     let d = Utc.timestamp_opt(t, 0).single().unwrap_or_default();
-    Utc.with_ymd_and_hms(d.year(), d.month(), 1, 0, 0, 0).single().map_or(0, |m| m.timestamp())
+    Utc.with_ymd_and_hms(d.year(), d.month(), 1, 0, 0, 0)
+        .single()
+        .map_or(0, |m| m.timestamp())
 }
 
 fn month_cols<K>(rows: &[(K, Month)]) -> Vec<(&'static str, ArrayRef)> {
-    let c = |f: &dyn Fn(&Month) -> i64| -> ArrayRef { Arc::new(rows.iter().map(|r| f(&r.1)).collect::<Int64Array>()) };
+    let c = |f: &dyn Fn(&Month) -> i64| -> ArrayRef {
+        Arc::new(rows.iter().map(|r| f(&r.1)).collect::<Int64Array>())
+    };
     vec![
         ("stars", c(&|m| m.stars)),
         ("forks", c(&|m| m.forks)),
@@ -189,16 +199,39 @@ pub fn run(o: Opts) -> Result<()> {
             c.1 += at_i(f, i).unwrap_or(0);
         }
     })?;
-    let mut repos: FxHashMap<i64, Repo> = counts.iter().filter(|(_, c)| c.0 >= o.min_stars).map(|(r, c)| (*r, Repo { stars: c.0, forks: c.1, ..Default::default() })).collect();
-    eprintln!("reduce s{sh}: {} repos with stars or forks, {} with {}+ stars ({:.0} s)", counts.len(), repos.len(), o.min_stars, t0.elapsed().as_secs_f64());
+    let mut repos: FxHashMap<i64, Repo> = counts
+        .iter()
+        .filter(|(_, c)| c.0 >= o.min_stars)
+        .map(|(r, c)| {
+            (
+                *r,
+                Repo {
+                    stars: c.0,
+                    forks: c.1,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    eprintln!(
+        "reduce s{sh}: {} repos with stars or forks, {} with {}+ stars ({:.0} s)",
+        counts.len(),
+        repos.len(),
+        o.min_stars,
+        t0.elapsed().as_secs_f64()
+    );
     drop(counts);
     // Names: the latest, and every one with when it was first seen.
     let mut names: FxHashMap<(i64, String), i64> = FxHashMap::default();
     each_batch(&files(&o.inputs, "names", sh)?, |b| {
         let (ids, ts, ns) = (b.ints("repo"), b.ints("t"), b.strs("name"));
         for i in 0..b.rows() {
-            let (Some(id), Some(t), Some(n)) = (at_i(ids, i), at_i(ts, i), at_s(ns, i)) else { continue };
-            let Some(r) = repos.get_mut(&id) else { continue };
+            let (Some(id), Some(t), Some(n)) = (at_i(ids, i), at_i(ts, i), at_s(ns, i)) else {
+                continue;
+            };
+            let Some(r) = repos.get_mut(&id) else {
+                continue;
+            };
             r.first_seen = Some(r.first_seen.map_or(t, |f| f.min(t)));
             let e = names.entry((id, n.to_string())).or_insert(t);
             *e = (*e).min(t);
@@ -211,11 +244,26 @@ pub fn run(o: Opts) -> Result<()> {
     // What events said of each repo, newest last.
     each_batch(&files(&o.inputs, "meta", sh)?, |b| {
         let (ids, ts) = (b.ints("repo"), b.ints("t"));
-        let (desc, lang, home, topics, lic, name) = (b.strs("description"), b.strs("language"), b.strs("homepage"), b.strs("topics"), b.strs("license"), b.strs("name"));
-        let (fork, arch, created, stars, forks) = (b.bools("fork"), b.bools("archived"), b.ints("created"), b.ints("stars"), b.ints("forks"));
+        let (desc, lang, home, topics, lic, name) = (
+            b.strs("description"),
+            b.strs("language"),
+            b.strs("homepage"),
+            b.strs("topics"),
+            b.strs("license"),
+            b.strs("name"),
+        );
+        let (fork, arch, created, stars, forks) = (
+            b.bools("fork"),
+            b.bools("archived"),
+            b.ints("created"),
+            b.ints("stars"),
+            b.ints("forks"),
+        );
         for i in 0..b.rows() {
             let Some(id) = at_i(ids, i) else { continue };
-            let Some(r) = repos.get_mut(&id) else { continue };
+            let Some(r) = repos.get_mut(&id) else {
+                continue;
+            };
             let t = at_i(ts, i);
             macro_rules! set_s {
                 ($f:ident, $c:expr) => {
@@ -253,18 +301,40 @@ pub fn run(o: Opts) -> Result<()> {
     ids.sort_unstable();
     {
         let rs: Vec<&Repo> = ids.iter().map(|id| &repos[id]).collect();
-        let s = |f: &dyn Fn(&Repo) -> Option<String>| -> ArrayRef { Arc::new(rs.iter().map(|r| f(r)).collect::<StringArray>()) };
-        let n = |f: &dyn Fn(&Repo) -> Option<i64>| -> ArrayRef { Arc::new(rs.iter().map(|r| f(r)).collect::<Int64Array>()) };
-        let bo = |f: &dyn Fn(&Repo) -> Option<bool>| -> ArrayRef { Arc::new(rs.iter().map(|r| f(r)).collect::<BooleanArray>()) };
+        let s = |f: &dyn Fn(&Repo) -> Option<String>| -> ArrayRef {
+            Arc::new(rs.iter().map(|r| f(r)).collect::<StringArray>())
+        };
+        let n = |f: &dyn Fn(&Repo) -> Option<i64>| -> ArrayRef {
+            Arc::new(rs.iter().map(|r| f(r)).collect::<Int64Array>())
+        };
+        let bo = |f: &dyn Fn(&Repo) -> Option<bool>| -> ArrayRef {
+            Arc::new(rs.iter().map(|r| f(r)).collect::<BooleanArray>())
+        };
         write_parquet(
             &o.out.join("repos").join(format!("s{sh}.parquet")),
             vec![
                 ("repo", Arc::new(Int64Array::from(ids.clone())) as ArrayRef),
                 ("name", s(&|r| r.name.clone())),
-                ("owner", s(&|r| r.name.as_deref().and_then(|n| n.split_once('/')).map(|(o, _)| o.to_string()))),
+                (
+                    "owner",
+                    s(&|r| {
+                        r.name
+                            .as_deref()
+                            .and_then(|n| n.split_once('/'))
+                            .map(|(o, _)| o.to_string())
+                    }),
+                ),
                 // GitHub's names ignore case: these find "Owner/Name" by any.
                 ("lname", s(&|r| r.name.as_deref().map(str::to_lowercase))),
-                ("lowner", s(&|r| r.name.as_deref().and_then(|n| n.split_once('/')).map(|(o, _)| o.to_lowercase()))),
+                (
+                    "lowner",
+                    s(&|r| {
+                        r.name
+                            .as_deref()
+                            .and_then(|n| n.split_once('/'))
+                            .map(|(o, _)| o.to_lowercase())
+                    }),
+                ),
                 ("description", s(&|r| r.description.clone())),
                 ("language", s(&|r| r.language.clone())),
                 ("homepage", s(&|r| r.homepage.clone())),
@@ -287,13 +357,38 @@ pub fn run(o: Opts) -> Result<()> {
     write_parquet(
         &o.out.join("repo_names").join(format!("s{sh}.parquet")),
         vec![
-            ("repo", Arc::new(nm.iter().map(|x| x.0 .0).collect::<Int64Array>()) as ArrayRef),
-            ("name", Arc::new(nm.iter().map(|x| Some(x.0 .1.as_str())).collect::<StringArray>())),
-            ("lname", Arc::new(nm.iter().map(|x| Some(x.0 .1.to_lowercase())).collect::<StringArray>())),
-            ("first_seen", Arc::new(nm.iter().map(|x| x.1).collect::<Int64Array>())),
+            (
+                "repo",
+                Arc::new(nm.iter().map(|x| x.0 .0).collect::<Int64Array>()) as ArrayRef,
+            ),
+            (
+                "name",
+                Arc::new(
+                    nm.iter()
+                        .map(|x| Some(x.0 .1.as_str()))
+                        .collect::<StringArray>(),
+                ),
+            ),
+            (
+                "lname",
+                Arc::new(
+                    nm.iter()
+                        .map(|x| Some(x.0 .1.to_lowercase()))
+                        .collect::<StringArray>(),
+                ),
+            ),
+            (
+                "first_seen",
+                Arc::new(nm.iter().map(|x| x.1).collect::<Int64Array>()),
+            ),
         ],
     )?;
-    eprintln!("reduce s{sh}: wrote {} repos and {} names ({:.0} s)", ids.len(), nm.len(), t0.elapsed().as_secs_f64());
+    eprintln!(
+        "reduce s{sh}: wrote {} repos and {} names ({:.0} s)",
+        ids.len(),
+        nm.len(),
+        t0.elapsed().as_secs_f64()
+    );
     drop(nm);
     months(&o, &repos, t0)?;
     drop(repos);
@@ -302,7 +397,9 @@ pub fn run(o: Opts) -> Result<()> {
     each_batch(&files(&o.inputs, "actors", sh)?, |b| {
         let (ids, ts, ls) = (b.ints("actor"), b.ints("t"), b.strs("login"));
         for i in 0..b.rows() {
-            let (Some(id), Some(t), Some(l)) = (at_i(ids, i), at_i(ts, i), at_s(ls, i)) else { continue };
+            let (Some(id), Some(t), Some(l)) = (at_i(ids, i), at_i(ts, i), at_s(ls, i)) else {
+                continue;
+            };
             match actors.get_mut(&id) {
                 Some(e) => {
                     if t >= e.2 {
@@ -324,14 +421,41 @@ pub fn run(o: Opts) -> Result<()> {
     write_parquet(
         &o.out.join("actors").join(format!("s{sh}.parquet")),
         vec![
-            ("actor", Arc::new(av.iter().map(|x| x.0).collect::<Int64Array>()) as ArrayRef),
-            ("login", Arc::new(av.iter().map(|x| Some(x.1 .0.as_str())).collect::<StringArray>())),
-            ("llogin", Arc::new(av.iter().map(|x| Some(x.1 .0.to_lowercase())).collect::<StringArray>())),
-            ("first_seen", Arc::new(av.iter().map(|x| x.1 .1).collect::<Int64Array>())),
-            ("last_seen", Arc::new(av.iter().map(|x| x.1 .2).collect::<Int64Array>())),
+            (
+                "actor",
+                Arc::new(av.iter().map(|x| x.0).collect::<Int64Array>()) as ArrayRef,
+            ),
+            (
+                "login",
+                Arc::new(
+                    av.iter()
+                        .map(|x| Some(x.1 .0.as_str()))
+                        .collect::<StringArray>(),
+                ),
+            ),
+            (
+                "llogin",
+                Arc::new(
+                    av.iter()
+                        .map(|x| Some(x.1 .0.to_lowercase()))
+                        .collect::<StringArray>(),
+                ),
+            ),
+            (
+                "first_seen",
+                Arc::new(av.iter().map(|x| x.1 .1).collect::<Int64Array>()),
+            ),
+            (
+                "last_seen",
+                Arc::new(av.iter().map(|x| x.1 .2).collect::<Int64Array>()),
+            ),
         ],
     )?;
-    eprintln!("reduce s{sh}: wrote {} actors; done in {:.0} s", av.len(), t0.elapsed().as_secs_f64());
+    eprintln!(
+        "reduce s{sh}: wrote {} actors; done in {:.0} s",
+        av.len(),
+        t0.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
@@ -347,7 +471,10 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
     let mut by_lang: FxHashMap<(i64, String), Month> = FxHashMap::default();
     let mut by_topic: FxHashMap<(i64, String), Month> = FxHashMap::default();
     let mut rows = 0u64;
-    let mut flush = |month: i64, cur: &mut FxHashMap<i64, Month>, people: &mut FxHashSet<(i64, i64)>| -> Result<()> {
+    let mut flush = |month: i64,
+                     cur: &mut FxHashMap<i64, Month>,
+                     people: &mut FxHashSet<(i64, i64)>|
+     -> Result<()> {
         if cur.is_empty() {
             return Ok(());
         }
@@ -364,23 +491,52 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
             if let Some(l) = &r.language {
                 by_lang.entry((month, l.clone())).or_default().add(m);
             }
-            for t in r.topics.iter().flat_map(|t| t.split(',')).filter(|t| !t.is_empty()) {
+            for t in r
+                .topics
+                .iter()
+                .flat_map(|t| t.split(','))
+                .filter(|t| !t.is_empty())
+            {
                 by_topic.entry((month, t.to_string())).or_default().add(m);
             }
         }
-        let name = Utc.timestamp_opt(month, 0).single().map(|d| d.format("%Y-%m").to_string()).unwrap_or_default();
-        let mut cols = vec![("repo", Arc::new(v.iter().map(|x| x.0).collect::<Int64Array>()) as ArrayRef), ("month", Arc::new(Int64Array::from(vec![month; v.len()])) as ArrayRef)];
+        let name = Utc
+            .timestamp_opt(month, 0)
+            .single()
+            .map(|d| d.format("%Y-%m").to_string())
+            .unwrap_or_default();
+        let mut cols = vec![
+            (
+                "repo",
+                Arc::new(v.iter().map(|x| x.0).collect::<Int64Array>()) as ArrayRef,
+            ),
+            (
+                "month",
+                Arc::new(Int64Array::from(vec![month; v.len()])) as ArrayRef,
+            ),
+        ];
         cols.extend(month_cols(&v));
         write_parquet(&dir.join(format!("{name}.parquet")), cols)
     };
     for p in files(&o.inputs, "events", sh)? {
-        let r = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&p)?)?.with_batch_size(65536).build()?;
+        let r = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&p)?)?
+            .with_batch_size(65536)
+            .build()?;
         for b in r {
             let b = Batch(b?);
-            let (ts, kinds, rs, actors, ns) = (b.ints("t"), b.strs("kind"), b.ints("repo"), b.ints("actor"), b.ints("n"));
+            let (ts, kinds, rs, actors, ns) = (
+                b.ints("t"),
+                b.strs("kind"),
+                b.ints("repo"),
+                b.ints("actor"),
+                b.ints("n"),
+            );
             for i in 0..b.rows() {
                 rows += 1;
-                let (Some(t), Some(k), Some(repo)) = (at_i(ts, i), at_s(kinds, i), at_i(rs, i)) else { continue };
+                let (Some(t), Some(k), Some(repo)) = (at_i(ts, i), at_s(kinds, i), at_i(rs, i))
+                else {
+                    continue;
+                };
                 if !repos.contains_key(&repo) {
                     continue;
                 }
@@ -417,15 +573,41 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
     }
     flush(month, &mut cur, &mut people)?;
     drop(flush);
-    eprintln!("reduce s{sh}: months from {rows} events ({:.0} s)", t0.elapsed().as_secs_f64());
+    eprintln!(
+        "reduce s{sh}: months from {rows} events ({:.0} s)",
+        t0.elapsed().as_secs_f64()
+    );
     for (table, map) in [("lang_months", by_lang), ("topic_months", by_topic)] {
         let mut v: Vec<((i64, String), Month)> = map.into_iter().collect();
         v.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let key = if table == "lang_months" { "language" } else { "topic" };
+        let key = if table == "lang_months" {
+            "language"
+        } else {
+            "topic"
+        };
         // These sums have no key of their own: `part` places them (shard_by),
         // a value that falls on this shard.
-        let part = (0..).find(|p| crate::slots::shard(*p, o.shards) == sh).unwrap_or(0);
-        let mut cols = vec![("part", Arc::new(Int64Array::from(vec![part; v.len()])) as ArrayRef), ("month", Arc::new(v.iter().map(|x| x.0 .0).collect::<Int64Array>()) as ArrayRef), (key, Arc::new(v.iter().map(|x| Some(x.0 .1.as_str())).collect::<StringArray>()) as ArrayRef)];
+        let part = (0..)
+            .find(|p| crate::slots::shard(*p, o.shards) == sh)
+            .unwrap_or(0);
+        let mut cols = vec![
+            (
+                "part",
+                Arc::new(Int64Array::from(vec![part; v.len()])) as ArrayRef,
+            ),
+            (
+                "month",
+                Arc::new(v.iter().map(|x| x.0 .0).collect::<Int64Array>()) as ArrayRef,
+            ),
+            (
+                key,
+                Arc::new(
+                    v.iter()
+                        .map(|x| Some(x.0 .1.as_str()))
+                        .collect::<StringArray>(),
+                ) as ArrayRef,
+            ),
+        ];
         cols.extend(month_cols(&v));
         write_parquet(&o.out.join(table).join(format!("s{sh}.parquet")), cols)?;
     }

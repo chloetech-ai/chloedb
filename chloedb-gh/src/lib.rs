@@ -2,6 +2,7 @@
 //! the app (`api`, `pages`), a client of chloedb-server over HTTP.
 
 pub mod api;
+pub mod apimeta;
 pub mod archive;
 pub mod ask;
 pub mod pages;

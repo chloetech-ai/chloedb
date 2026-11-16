@@ -37,8 +37,17 @@ impl Trace {
         Trace::default()
     }
 
-    pub fn push(&self, what: &str, sql: &str, params: &Value, rows: usize, ms: f64, note: Option<&str>) {
-        let mut q = json!({"what": what, "sql": sql, "rows": rows, "ms": (ms * 100.0).round() / 100.0});
+    pub fn push(
+        &self,
+        what: &str,
+        sql: &str,
+        params: &Value,
+        rows: usize,
+        ms: f64,
+        note: Option<&str>,
+    ) {
+        let mut q =
+            json!({"what": what, "sql": sql, "rows": rows, "ms": (ms * 100.0).round() / 100.0});
         if params.as_object().is_some_and(|o| !o.is_empty()) {
             q["params"] = params.clone();
         }
@@ -66,22 +75,50 @@ pub struct Strata {
 
 impl Strata {
     pub fn new(url: &str, key: Option<String>) -> Strata {
-        let http = reqwest::Client::builder().timeout(Duration::from_secs(120)).connect_timeout(Duration::from_secs(10)).build().expect("an HTTP client");
-        Strata { url: url.trim_end_matches('/').to_string(), key: key.filter(|k| !k.is_empty()), http }
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .expect("an HTTP client");
+        Strata {
+            url: url.trim_end_matches('/').to_string(),
+            key: key.filter(|k| !k.is_empty()),
+            http,
+        }
     }
 
-    async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value> {
+    async fn call(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value> {
         self.call_within(method, path, body, None).await
     }
 
     /// A statement that may take minutes (`CREATE RECOMMENDER` over
     /// millions of events): the client waits up to `secs`.
     pub async fn sql_long(&self, sql: &str, secs: u64) -> Result<Value> {
-        self.call_within(reqwest::Method::POST, "/v1/sql", Some(&json!({ "sql": sql })), Some(Duration::from_secs(secs))).await
+        self.call_within(
+            reqwest::Method::POST,
+            "/v1/sql",
+            Some(&json!({ "sql": sql })),
+            Some(Duration::from_secs(secs)),
+        )
+        .await
     }
 
-    async fn call_within(&self, method: reqwest::Method, path: &str, body: Option<&Value>, timeout: Option<Duration>) -> Result<Value> {
-        let mut req = self.http.request(method, format!("{}{}", self.url, path)).header("x-chloedb-client", "chloedb-gh");
+    async fn call_within(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+        timeout: Option<Duration>,
+    ) -> Result<Value> {
+        let mut req = self
+            .http
+            .request(method, format!("{}{}", self.url, path))
+            .header("x-chloedb-client", "chloedb-gh");
         if let Some(t) = timeout {
             req = req.timeout(t);
         }
@@ -91,15 +128,24 @@ impl Strata {
         if let Some(b) = body {
             req = req.json(b);
         }
-        let r = req.send().await.map_err(|e| Error { status: 0, message: format!("{}: {}", self.url, e) })?;
+        let r = req.send().await.map_err(|e| Error {
+            status: 0,
+            message: format!("{}: {}", self.url, e),
+        })?;
         let status = r.status();
         let text = r.text().await.unwrap_or_default();
         let j: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if status.is_success() {
             return Ok(j);
         }
-        let message = j["error"].as_str().map(str::to_string).unwrap_or_else(|| text.chars().take(400).collect());
-        Err(Error { status: status.as_u16(), message })
+        let message = j["error"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| text.chars().take(400).collect());
+        Err(Error {
+            status: status.as_u16(),
+            message,
+        })
     }
 
     pub async fn get(&self, path: &str) -> Result<Value> {
@@ -117,18 +163,36 @@ impl Strata {
 
     /// A SELECT's rows, each an object keyed by column.
     pub async fn query(&self, sql: &str, params: Value) -> Result<Vec<Row>> {
-        let j = self.post("/v1/query", &json!({ "sql": sql, "params": params, "objects": true })).await?;
+        let j = self
+            .post(
+                "/v1/query",
+                &json!({ "sql": sql, "params": params, "objects": true }),
+            )
+            .await?;
         Ok(rows_of(j))
     }
 
     /// As [`Strata::query`], kept in `trace` under the name `what`.
-    pub async fn traced(&self, trace: &Trace, what: &str, sql: &str, params: Value) -> Result<Vec<Row>> {
+    pub async fn traced(
+        &self,
+        trace: &Trace,
+        what: &str,
+        sql: &str,
+        params: Value,
+    ) -> Result<Vec<Row>> {
         let t0 = Instant::now();
         let r = self.query(sql, params.clone()).await;
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         match &r {
             Ok(rows) => trace.push(what, sql, &params, rows.len(), ms, None),
-            Err(e) => trace.push(what, sql, &params, 0, ms, Some(&format!("refused: {}", e.message))),
+            Err(e) => trace.push(
+                what,
+                sql,
+                &params,
+                0,
+                ms,
+                Some(&format!("refused: {}", e.message)),
+            ),
         }
         r
     }
@@ -140,7 +204,12 @@ impl Strata {
     /// The names of the server's tables.
     pub async fn tables(&self) -> Result<Vec<String>> {
         let j = self.get("/v1/tables").await?;
-        Ok(j["tables"].as_array().into_iter().flatten().filter_map(|t| t["table"].as_str().map(str::to_string)).collect())
+        Ok(j["tables"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t["table"].as_str().map(str::to_string))
+            .collect())
     }
 
     /// Writes `ops` in batches of 1,000, each a transaction of its own. A
@@ -155,7 +224,10 @@ impl Strata {
             loop {
                 match self.post("/v1/write", &body).await {
                     Ok(_) => break,
-                    Err(e) if (e.status == 0 || e.status == 429 || e.status >= 500) && t0.elapsed() < Duration::from_secs(60) => {
+                    Err(e)
+                        if (e.status == 0 || e.status == 429 || e.status >= 500)
+                            && t0.elapsed() < Duration::from_secs(60) =>
+                    {
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(Duration::from_secs(5));
                     }
@@ -169,29 +241,58 @@ impl Strata {
 
     /// Rows as JSON lines into a table (`POST /v1/import`), each line a row.
     pub async fn import_lines(&self, table: &str, body: Vec<u8>) -> Result<Value> {
-        let mut req = self.http.post(format!("{}/v1/import?format=jsonl&table={table}", self.url)).header("x-chloedb-client", "chloedb-gh").header("content-type", "application/x-ndjson").timeout(Duration::from_secs(1800)).body(body);
+        let mut req = self
+            .http
+            .post(format!("{}/v1/import?format=jsonl&table={table}", self.url))
+            .header("x-chloedb-client", "chloedb-gh")
+            .header("content-type", "application/x-ndjson")
+            .timeout(Duration::from_secs(1800))
+            .body(body);
         if let Some(k) = &self.key {
             req = req.bearer_auth(k);
         }
-        let r = req.send().await.map_err(|e| Error { status: 0, message: format!("{}: {}", self.url, e) })?;
+        let r = req.send().await.map_err(|e| Error {
+            status: 0,
+            message: format!("{}: {}", self.url, e),
+        })?;
         let status = r.status();
         let text = r.text().await.unwrap_or_default();
         let j: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if status.is_success() {
             return Ok(j);
         }
-        Err(Error { status: status.as_u16(), message: j["error"].as_str().map(str::to_string).unwrap_or_else(|| text.chars().take(400).collect()) })
+        Err(Error {
+            status: status.as_u16(),
+            message: j["error"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| text.chars().take(400).collect()),
+        })
     }
 
     pub async fn upsert(&self, table: &str, rows: Vec<Value>) -> Result<usize> {
-        self.write(rows.into_iter().map(|doc| json!({"op": "upsert", "table": table, "doc": doc})).collect()).await
+        self.write(
+            rows.into_iter()
+                .map(|doc| json!({"op": "upsert", "table": table, "doc": doc}))
+                .collect(),
+        )
+        .await
     }
 }
 
 fn rows_of(j: Value) -> Vec<Row> {
     match j {
         Value::Object(mut o) => match o.remove("rows") {
-            Some(Value::Array(a)) => a.into_iter().filter_map(|r| if let Value::Object(m) = r { Some(m) } else { None }).collect(),
+            Some(Value::Array(a)) => a
+                .into_iter()
+                .filter_map(|r| {
+                    if let Value::Object(m) = r {
+                        Some(m)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
             _ => Vec::new(),
         },
         _ => Vec::new(),
@@ -227,10 +328,16 @@ impl RowExt for Row {
     }
     fn list(&self, k: &str) -> Vec<String> {
         match self.get(k) {
-            Some(Value::Array(a)) => a.iter().map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).collect(),
+            Some(Value::Array(a)) => a
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| v.to_string())
+                })
+                .collect(),
             Some(Value::String(s)) if !s.is_empty() => vec![s.clone()],
             _ => Vec::new(),
         }
     }
 }
-

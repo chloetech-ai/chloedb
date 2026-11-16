@@ -7,6 +7,7 @@ the days of every node sit side by side in one folder a table):
 
     python3 pull.py --peers 10.0.0.2,10.0.0.3 --shard 1 --into /work/in
     python3 pull.py --peers ... --shard all --tables actors,names --until 2016-12-31 --into /work/maps
+    python3 pull.py --peers ... --shard all --tables names --since 2012-09-01 --until 2014-12-31 --into /work/maps
 
 Files already there at the same size are skipped, so a pull started again
 goes on. Standard library only.
@@ -41,6 +42,7 @@ def main():
     ap.add_argument("--shard", required=True, help="a shard number, or all")
     ap.add_argument("--shards", type=int, default=4)
     ap.add_argument("--tables", default="", help="only these tables (comma-separated)")
+    ap.add_argument("--since", default="", help="only days from this one (YYYY-MM-DD)")
     ap.add_argument("--until", default="", help="only days up to this one (YYYY-MM-DD)")
     ap.add_argument("--into", required=True)
     ap.add_argument("--jobs", type=int, default=8)
@@ -56,7 +58,8 @@ def main():
                 rel = rel.removeprefix("./")
                 if not rel or (tables and rel.split("/")[0] not in tables):
                     continue
-                if a.until and os.path.basename(rel).removesuffix(".parquet") > a.until:
+                day = os.path.basename(rel).removesuffix(".parquet")
+                if (a.until and day > a.until) or (a.since and day < a.since):
                     continue
                 todo.append((base, rel, int(size)))
     total = sum(t[2] for t in todo)
