@@ -68,7 +68,10 @@ def typo(word, rnd):
     return word[:i] + word[i] + word[i:]
 
 def llm(strata, model, instructions, text, max_tokens=300):
-    rows = sql(strata, "SELECT llm(:m, :i, :t, max_tokens => %d) AS a" % max_tokens, {"m": model, "i": instructions, "t": text})
+    # The model is a literal of the statement: llm() takes no parameter for it.
+    lit = model.replace("'", "''")
+    # And a column of a row (of one story, which it does not read).
+    rows = sql(strata, f"SELECT id, llm('{lit}', :i, :t, max_tokens => {max_tokens}) AS a FROM hn_stories LIMIT 1", {"i": instructions, "t": text})
     return (rows[0]["a"] if rows else "") or ""
 
 def ours(app, q, only="story"):

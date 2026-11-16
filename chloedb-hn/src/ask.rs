@@ -42,6 +42,7 @@ pub async fn sources(c: &Ctx<'_>, p: &Parsed, budget: usize) -> (Vec<Row>, Vec<R
         Ok(r) => r,
         // Comments kept without vectors: by their words and their story's title.
         Err(_) => {
+            params.remove("v");
             let sql = format!(
                 "SELECT id, author, year, story, story_title, body FROM hn_comments WHERE chars > 120{extra} \
                  ORDER BY rrf(bm25(body, :q, synonyms => 1, min => '50%'), bm25(story_title, :q)) * (1 + 0.2 * pop) DESC \
@@ -79,8 +80,11 @@ pub async fn ask(c: &Ctx<'_>, q: &str, model: &str, fresh: bool) -> Result<Value
         return Ok(json!({"question": q, "answer": "", "sources": [], "note": "No comments speak to this yet."}));
     }
     let ctx = context(&taken);
-    let sql = "SELECT llm(:model, :instructions, :question, :context, max_tokens => 900) AS answer";
-    let got = c.rows("the answer (llm() on the server)", sql, json!({"model": model, "instructions": INSTRUCTIONS, "question": format!("Question: {q}"), "context": format!("Comments:\n\n{ctx}")})).await.map_err(|e| e.to_string())?;
+    // The model is a literal of the statement (llm() takes no parameter
+    // for it), and the call is a column of a row: of one story, which it
+    // does not read.
+    let sql = format!("SELECT id, llm('{}', :instructions, :question, :context, max_tokens => 900) AS answer FROM hn_stories LIMIT 1", model.replace('\'', "''"));
+    let got = c.rows("the answer (llm() on the server)", &sql, json!({"instructions": INSTRUCTIONS, "question": format!("Question: {q}"), "context": format!("Comments:\n\n{ctx}")})).await.map_err(|e| e.to_string())?;
     let answer = got.first().map(|r| r.s("answer")).unwrap_or_default();
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     let sources: Vec<Value> = taken.iter().enumerate().map(|(i, r)| json!({"n": i + 1, "id": r.i("id"), "author": r.s("author"), "year": r.i("year"), "story": r.i("story"), "story_title": r.s("story_title"), "text": crate::text::clip(&r.s("body"), 400), "decision": r.s("pack_decision"), "tokens": r.i("pack_tokens")})).collect();
