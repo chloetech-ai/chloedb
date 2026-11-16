@@ -67,7 +67,7 @@ const CSS = `
 .ax-grid { display: grid; grid-template-columns: 220px minmax(0, 1fr) 290px; gap: 26px; align-items: start; }
 .ax-grid.two { grid-template-columns: minmax(0, 1fr) 320px; }
 @media (max-width: 1120px) { .ax-grid { grid-template-columns: 200px minmax(0, 1fr); } .ax-grid > .ax-right { display: none; } }
-@media (max-width: 780px) { .ax-grid, .ax-grid.two { grid-template-columns: minmax(0, 1fr); } .ax-grid > .ax-left { display: none; } .ax-brand small { display: none; } .ax-box .kbd { display: none; } .ax-box input { font-size: 16px; } }
+@media (max-width: 780px) { .ax-grid, .ax-grid.two { grid-template-columns: minmax(0, 1fr); } .ax-grid > .ax-left { display: none; } .ax-brand small { display: none; } .ax-box .kbd { display: none; } .ax-box input { font-size: 16px; } .ax-try.ax-row { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; } .ax-try.ax-row > * { flex: none; } }
 .ax-left { position: sticky; top: 108px; max-height: calc(100vh - 120px); overflow: auto; scrollbar-width: thin; padding-right: 4px; }
 .ax-facet { margin-bottom: 18px; }
 .ax-facet h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
@@ -984,15 +984,25 @@ async function trendsPage(app, main, terms, alive) {
 
 const AREAS = [["", "All of arXiv"], ["cs", "Computer science"], ["stat", "Statistics"], ["eess", "Electrical eng."], ["math", "Mathematics"], ["physics", "Physics"], ["astro-ph", "Astrophysics"], ["cond-mat", "Condensed matter"], ["hep", "High energy physics"], ["quant-ph", "Quantum physics"], ["q-bio", "Biology"], ["q-fin", "Finance"], ["econ", "Economics"]];
 
-async function hotPage(app, main, area, alive) {
+// The spans a reader can compare: the last N days against the N before.
+const SPANS = [[30, "1 month", "month"], [91, "3 months", "3 months"], [182, "6 months", "6 months"], [365, "1 year", "year"], [730, "2 years", "2 years"]];
+
+async function hotPage(app, main, arg, alive) {
+  // "#/hot/<area>/<days>", "all" for all of arXiv.
+  const [a0, d0] = (arg || "").split("/");
+  const area = a0 === "all" ? "" : (a0 || "");
+  const days = SPANS.some(([d]) => String(d) === d0) ? Number(d0) : 365;
+  const label = (SPANS.find(([d]) => d === days) || [0, "", "year"])[2];
   const out = h("div", {}, skel(8));
+  const on = { borderColor: "var(--accent)", color: "var(--accent)" };
   fill(main, h("div", {},
-    h("div", { class: "ax-ph" }, h("h1", {}, "What's rising"), h("div", { class: "au" }, "Techniques, domains and topics whose share of papers grew most in the last twelve months against the twelve before.")),
-    h("div", { class: "ax-try", style: { justifyContent: "flex-start" } }, AREAS.map(([k, t]) => h("a", { href: app.href("hot", k), style: (area || "") === k ? { borderColor: "var(--accent)", color: "var(--accent)" } : {} }, t))),
+    h("div", { class: "ax-ph" }, h("h1", {}, "What's rising"), h("div", { class: "au" }, `Techniques, domains and topics whose share of papers grew most in the last ${label} against the ${label} before.`)),
+    h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "10px 0 2px" } }, h("span", { style: { fontSize: "12.5px", color: "var(--muted)", alignSelf: "center", marginRight: "2px" } }, "Compare the last"), SPANS.map(([d, t]) => h("a", { href: app.href("hot", area || "all", d), style: d === days ? on : {} }, t))),
+    h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "6px 0 14px" } }, AREAS.map(([k, t]) => h("a", { href: app.href("hot", k || "all", days), style: area === k ? on : {} }, t))),
     out));
-  const j = await app.api(`/v1/hot?area=${enc(area || "")}`);
+  const j = await app.api(`/v1/hot?area=${enc(area)}&days=${days}`);
   if (!alive()) return;
-  const col = (title, rows, kind) => h("div", { class: "ax-card" }, h("h4", {}, title), h("div", { class: "ax-rise" }, (rows || []).map((t) => [h("a", { href: kind === "topic" ? app.href("topic", t.id) : app.href("concept", t.id) }, t.name || t.label), h("span", { class: "g" }, `${Number(t.growth).toFixed(2)}×`), h("div", { class: "s" }, kind === "topic" ? (t.about || "") : `${fmt(t.recent)} papers, from ${fmt(t.before)}`)])));
+  const col = (title, rows, kind) => h("div", { class: "ax-card" }, h("h4", {}, title), h("div", { class: "ax-rise" }, (rows || []).length ? (rows || []).map((t) => [h("a", { href: kind === "topic" ? app.href("topic", t.id) : app.href("concept", t.id) }, t.name || t.label), h("span", { class: "g" }, `${Number(t.growth).toFixed(2)}×`), h("div", { class: "s" }, kind === "topic" && t.about && t.before === undefined ? t.about : `${fmt(t.recent)} papers, from ${fmt(t.before)}${kind === "topic" && t.about ? ` · ${t.about}` : ""}`)]) : h("div", { class: "s" }, "Nothing rose clearly beyond chance in this span.")));
   fill(out, h("div", { class: "ax-cols" }, col("Techniques", j.techniques, "c"), col("Domains", j.domains, "c"), col("Topics", j.topics, "topic")));
 }
 

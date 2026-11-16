@@ -38,7 +38,7 @@ pub fn subject(p: &Parsed) -> String {
     }
     // What it is about (a field, a category, a person), not when: the
     // dates are said in the chips ("on robotics", not "on since 2023, in robotics").
-    let what = |dates: bool| p.notes.iter().filter(|n| n.kind != "ask" && n.kind != "sort" && (dates || n.kind != "date")).map(|n| n.what.trim_start_matches("in ").to_string()).collect::<Vec<_>>();
+    let what = |dates: bool| p.notes.iter().filter(|n| n.kind != "ask" && n.kind != "sort" && n.kind != "window" && (dates || n.kind != "date")).map(|n| n.what.trim_start_matches("in ").to_string()).collect::<Vec<_>>();
     let main = what(false);
     if main.is_empty() { what(true).join(", ") } else { main.join(", ") }
 }
@@ -98,6 +98,20 @@ fn change(now: i64, before: i64) -> String {
         format!("{} in the last twelve months, up {pct}% from {}", fmt(now), fmt(before))
     } else {
         format!("{} in the last twelve months, down {}% from {}", fmt(now), -pct, fmt(before))
+    }
+}
+
+/// The span a rising answer compares, in words: "the last 3 months".
+pub fn span_words(days: i64) -> String {
+    match days {
+        28..=31 => "the last month".into(),
+        85..=95 => "the last 3 months".into(),
+        175..=190 => "the last 6 months".into(),
+        360..=370 => "the last twelve months".into(),
+        725..=735 => "the last 2 years".into(),
+        d if d % 365 == 0 => format!("the last {} years", d / 365),
+        d if d % 30 == 0 => format!("the last {} months", d / 30),
+        d => format!("the last {d} days"),
     }
 }
 
@@ -223,22 +237,32 @@ pub async fn answer(c: &Ctx<'_>, p: &Parsed, papers: &[Row], total: i64) -> Opti
         }
         Ask::Hot => {
             // Within what the query is about (its filters and its words):
-            // what grew most from the twelve months before to the last twelve.
+            // what grew most from the span before to the last one (a year
+            // each unless the reader picks another).
             let scoped = !wh.is_empty();
+            let days = p.window.unwrap_or(365).clamp(7, 3650);
+            let span = span_words(days);
             let join = |extra: &str| if wh.is_empty() { format!("WHERE {extra}") } else { format!("{wh} AND {extra}") };
-            let recent = join("created >= now() - INTERVAL '365 days'");
-            let before = join("created >= now() - INTERVAL '730 days' AND created < now() - INTERVAL '365 days'");
+            let recent = join(&format!("created >= now() - INTERVAL '{days} days'"));
+            let before = join(&format!("created >= now() - INTERVAL '{} days' AND created < now() - INTERVAL '{days} days'", 2 * days));
+            // The topics' own counts are of the last year; any other span, or
+            // a subject, counts the topics of its papers.
+            let live_topics = scoped || days != 365;
+            // Every topic in both spans: a topic past the limit in one span
+            // would count as none there (and grow from nothing).
+            let tl = 5000;
             let pr = Value::Object(params.clone());
             let (tr, tb, kr, kb, or, ob) = tokio::join!(
-                c.soft("techniques, the last twelve months", &format!("SELECT techniques, COUNT(*) AS n FROM ax_papers {recent} GROUP BY techniques ORDER BY n DESC LIMIT 200"), pr.clone()),
-                c.soft("techniques, the twelve before", &format!("SELECT techniques, COUNT(*) AS n FROM ax_papers {before} GROUP BY techniques ORDER BY n DESC LIMIT 200"), pr.clone()),
-                c.soft("domains, the last twelve months", &format!("SELECT domains, COUNT(*) AS n FROM ax_papers {recent} GROUP BY domains ORDER BY n DESC LIMIT 200"), pr.clone()),
-                c.soft("domains, the twelve before", &format!("SELECT domains, COUNT(*) AS n FROM ax_papers {before} GROUP BY domains ORDER BY n DESC LIMIT 200"), pr.clone()),
-                async { if scoped { c.soft("topics, the last twelve months", &format!("SELECT topic, COUNT(*) AS n FROM ax_papers {recent} GROUP BY topic ORDER BY n DESC LIMIT 300"), pr.clone()).await } else { Vec::new() } },
-                async { if scoped { c.soft("topics, the twelve before", &format!("SELECT topic, COUNT(*) AS n FROM ax_papers {before} GROUP BY topic ORDER BY n DESC LIMIT 300"), pr.clone()).await } else { Vec::new() } },
+                c.soft(&format!("techniques, {span}"), &format!("SELECT techniques, COUNT(*) AS n FROM ax_papers {recent} GROUP BY techniques ORDER BY n DESC LIMIT 200"), pr.clone()),
+                c.soft("techniques, the span before", &format!("SELECT techniques, COUNT(*) AS n FROM ax_papers {before} GROUP BY techniques ORDER BY n DESC LIMIT 200"), pr.clone()),
+                c.soft(&format!("domains, {span}"), &format!("SELECT domains, COUNT(*) AS n FROM ax_papers {recent} GROUP BY domains ORDER BY n DESC LIMIT 200"), pr.clone()),
+                c.soft("domains, the span before", &format!("SELECT domains, COUNT(*) AS n FROM ax_papers {before} GROUP BY domains ORDER BY n DESC LIMIT 200"), pr.clone()),
+                async { if live_topics { c.soft(&format!("topics, {span}"), &format!("SELECT topic, COUNT(*) AS n FROM ax_papers {recent} GROUP BY topic ORDER BY n DESC LIMIT {tl}"), pr.clone()).await } else { Vec::new() } },
+                async { if live_topics { c.soft("topics, the span before", &format!("SELECT topic, COUNT(*) AS n FROM ax_papers {before} GROUP BY topic ORDER BY n DESC LIMIT {tl}"), pr.clone()).await } else { Vec::new() } },
             );
-            // A subject has fewer papers than arXiv: fewer make a trend.
-            let least = if scoped { 5 } else { 20 };
+            // A subject has fewer papers than arXiv, and a month fewer than a
+            // year: fewer make a trend.
+            let least = if scoped { 5 } else if days < 120 { 10 } else { 20 };
             let rise = |a: &[Row], b: &[Row], col: &str| -> Vec<(String, i64, i64, f64)> {
                 let before: HashMap<String, i64> = b.iter().map(|r| (r.s(col), r.i("n"))).collect();
                 let all_a: i64 = a.iter().map(|r| r.i("n")).sum::<i64>().max(1);
@@ -268,8 +292,8 @@ pub async fn answer(c: &Ctx<'_>, p: &Parsed, papers: &[Row], total: i64) -> Opti
             };
             let techs = named(rise(&tr, &tb, "techniques"));
             let doms = named(rise(&kr, &kb, "domains"));
-            let topics = if scoped {
-                // The subject's own topics, by the same measure.
+            let topics = if live_topics {
+                // The topics of the span's papers, by the same measure.
                 let up = rise(&or, &ob, "topic");
                 let ids: Vec<i64> = up.iter().filter_map(|x| x.0.parse().ok()).collect();
                 let rows = if ids.is_empty() { Vec::new() } else { c.soft("those topics' names", "SELECT id, label, about, papers, field_label FROM ax_topics WHERE id IN (:ids)", json!({"ids": ids})).await };
@@ -281,11 +305,11 @@ pub async fn answer(c: &Ctx<'_>, p: &Parsed, papers: &[Row], total: i64) -> Opti
             let scope = if subj.is_empty() { "arXiv".to_string() } else { subj.trim_start_matches("in ").to_string() };
             let names: Vec<String> = techs.iter().take(3).map(|t| format!("{} ({}×)", t["name"].as_str().unwrap_or(""), t["growth"])).collect();
             let text = if names.is_empty() {
-                format!("No technique grew clearly in {scope} over the last twelve months: too few papers, or none rose beyond what chance would give.")
+                format!("No technique grew clearly in {scope} over {span}: too few papers, or none rose beyond what chance would give.")
             } else {
-                format!("Growing fastest in {scope} over the last twelve months: {}.", names.join(", "))
+                format!("Growing fastest in {scope} over {span}: {}.", names.join(", "))
             };
-            Some(json!({"kind": "hot", "text": text, "techniques": techs, "domains": doms, "topics": topics}))
+            Some(json!({"kind": "hot", "text": text, "days": days, "span": span, "techniques": techs, "domains": doms, "topics": topics}))
         }
         Ask::Origin => {
             let pr = Value::Object(params.clone());

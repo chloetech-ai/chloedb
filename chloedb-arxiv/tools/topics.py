@@ -64,7 +64,13 @@ def read_rows(path):
 
 
 def claude(prompt, key, model="claude-haiku-5-5", max_tokens=300):
-    body = json.dumps({"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]}).encode()
+    req = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]}
+    # A short answer only: with thinking on, Haiku can spend all of
+    # max_tokens thinking and write nothing (a tenth of the topics were
+    # left named by their terms that way).
+    if "haiku" in model:
+        req["thinking"] = {"type": "disabled"}
+    body = json.dumps(req).encode()
     base = os.environ.get("ANTHROPIC_API_URL", "https://api.anthropic.com")
     for attempt in range(6):
         try:

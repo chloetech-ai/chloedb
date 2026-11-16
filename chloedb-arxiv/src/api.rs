@@ -330,6 +330,9 @@ struct Q {
     user: String,
     #[serde(default)]
     fresh: Option<u8>,
+    /// What is rising: the days of each span compared.
+    #[serde(default)]
+    days: Option<i64>,
 }
 
 /// Completions as a search is typed: questions the grammar reads, phrases
@@ -497,6 +500,7 @@ async fn hot(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
         p.area = Some(a.area.clone());
     }
     p.ask = Some(understand::Ask::Hot);
+    p.window = a.days;
     let v = answer::answer(&c, &p, &[], 0).await.unwrap_or(Value::Null);
     done(&trace, v, t0)
 }

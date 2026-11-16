@@ -86,6 +86,9 @@ pub struct Parsed {
     pub cites_min: Option<i64>,
     pub has_code: bool,
     pub topic: Option<i64>,
+    /// What is rising: the days of each of the two spans compared (the
+    /// last `window` days against the `window` before), a year when none.
+    pub window: Option<i64>,
     /// `date`, `cites`, `old` (relevance when none).
     pub sort: Option<String>,
     pub ask: Option<Ask>,
@@ -772,6 +775,16 @@ fn sentence(p: &mut Parsed, words: Vec<String>, now: i64) {
             p.text.clear();
         }
     }
+    // "What's hot in robotics in the last 3 months": the span is what is
+    // compared (those months against the ones before), not a filter.
+    if p.ask == Some(Ask::Hot) && p.before.is_none() {
+        if let Some(a) = p.after.take() {
+            p.window = Some(((now - a) / 86_400).clamp(7, 3650));
+            for n in p.notes.iter_mut().filter(|n| n.kind == "date") {
+                n.kind = "window".into();
+            }
+        }
+    }
     // A paper named by its id: "papers like 1706.03762".
     if let Some(id) = p.text.split_whitespace().find(|w| is_arxiv_id(w)) {
         p.paper = Some(clean_id(id));
@@ -1139,6 +1152,23 @@ mod tests {
         let p = parse("privacy in security protocols", 1_790_000_000);
         assert!(p.cats.is_empty());
         assert!(p.words().contains("security"), "{:?}", p.words());
+    }
+
+    #[test]
+    fn rising_span() {
+        // The span of a rising question is what is compared, not a filter.
+        let p = parse("what's hot in robotics in the last 3 months", 1_790_000_000);
+        assert!(matches!(p.ask, Some(Ask::Hot)));
+        assert_eq!(p.window, Some(90));
+        assert_eq!(p.after, None);
+        assert_eq!(p.cats, vec!["cs.RO"]);
+        assert!(p.words().is_empty(), "{:?}", p.words());
+        // Elsewhere it stays a filter.
+        let p = parse("diffusion models in the last 3 months", 1_790_000_000);
+        assert_eq!(p.window, None);
+        assert!(p.after.is_some());
+        assert_eq!(crate::answer::span_words(91), "the last 3 months");
+        assert_eq!(crate::answer::span_words(730), "the last 2 years");
     }
 
     #[test]
