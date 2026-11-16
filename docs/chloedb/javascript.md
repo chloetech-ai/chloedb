@@ -26,7 +26,7 @@ If importing `chloedb` throws an error that calls it a placeholder, npm installe
 Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) also has a tarball per platform with the addon built in, for a machine that cannot reach npm's registry. Install the tarball for your platform, or its URL:
 
 ```sh
-npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.5/chloedb-0.3.5-darwin-arm64.tgz
+npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.6/chloedb-0.3.6-darwin-arm64.tgz
 ```
 
 The workflow [`js-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml) builds both on a `chloedb-js-v<version>` tag, the way napi-rs packages are laid out (`chloedb` names each platform's package as an optional dependency, of which npm installs the one of your machine), and installs each into an empty app and runs it there before attaching the tarballs to the release and publishing the packages to npm (the workflow's header says what publishing needs). `node scripts/pack.mjs <platform>` packs a tarball by hand, and `--npm <platform>` and `--npm-main` the packages npm gets.

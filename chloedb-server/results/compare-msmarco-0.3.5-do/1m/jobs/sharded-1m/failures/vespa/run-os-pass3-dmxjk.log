@@ -1,0 +1,58 @@
+os-pass3 bm25                     warm-up: p50 3.340, 3.359 ms
+os-pass3 bm25                     c=1        350 q/s  p50   2.739 ms  p90   3.510 ms  p99   4.990 ms  errors 0
+os-pass3 bm25                     c=4       1130 q/s  p50   3.358 ms  p90   4.705 ms  p99   6.555 ms  errors 0
+os-pass3 bm25                     c=16      2023 q/s  p50   7.151 ms  p90  12.273 ms  p99  18.668 ms  errors 0
+os-pass3 bm25 + filter            warm-up: p50 4.216, 4.178 ms
+os-pass3 bm25 + filter            c=1        281 q/s  p50   3.330 ms  p90   4.711 ms  p99   8.037 ms  errors 0
+os-pass3 bm25 + filter            c=4        877 q/s  p50   4.236 ms  p90   6.368 ms  p99  10.738 ms  errors 0
+os-pass3 bm25 + filter            c=16      1437 q/s  p50   9.704 ms  p90  18.747 ms  p99  29.382 ms  errors 0
+os-pass3 vector                   warm-up: p50 6.027, 5.949 ms
+os-pass3 vector                   c=1        221 q/s  p50   4.416 ms  p90   5.393 ms  p99   6.591 ms  errors 0
+os-pass3 vector                   c=4        641 q/s  p50   5.993 ms  p90   7.991 ms  p99   9.984 ms  errors 0
+os-pass3 vector                   c=16       993 q/s  p50  15.254 ms  p90  23.270 ms  p99  30.142 ms  errors 0
+os-pass3 vector + filter          warm-up: p50 12.207, 11.891 ms
+os-pass3 vector + filter          c=1        116 q/s  p50   8.522 ms  p90  10.007 ms  p99  12.442 ms  errors 0
+os-pass3 vector + filter          c=4        320 q/s  p50  12.069 ms  p90  16.333 ms  p99  20.066 ms  errors 0
+os-pass3 vector + filter          c=16       413 q/s  p50  37.394 ms  p90  52.991 ms  p99  64.073 ms  errors 0
+os-pass3 hybrid (RRF)             warm-up: p50 11.320, 11.597 ms
+os-pass3 hybrid (RRF)             c=1        122 q/s  p50   7.859 ms  p90  10.069 ms  p99  15.067 ms  errors 0
+os-pass3 hybrid (RRF)             c=4        336 q/s  p50  11.353 ms  p90  15.771 ms  p99  24.108 ms  errors 0
+os-pass3 hybrid (RRF)             c=16       429 q/s  p50  36.324 ms  p90  50.851 ms  p99  64.469 ms  errors 0
+os-pass3 hybrid (weighted)        warm-up: p50 11.069, 11.161 ms
+os-pass3 hybrid (weighted)        c=1        123 q/s  p50   7.742 ms  p90  10.073 ms  p99  14.639 ms  errors 0
+os-pass3 hybrid (weighted)        c=4        333 q/s  p50  11.335 ms  p90  16.305 ms  p99  24.335 ms  errors 0
+os-pass3 hybrid (weighted)        c=16       433 q/s  p50  35.243 ms  p90  51.311 ms  p99  70.375 ms  errors 0
+os-pass3 boosted (bm25 × decay)   warm-up: p50 11.420, 11.270 ms
+os-pass3 boosted (bm25 × decay)   c=1        105 q/s  p50   7.504 ms  p90  19.943 ms  p99  33.719 ms  errors 0
+os-pass3 boosted (bm25 × decay)   c=4        282 q/s  p50  11.369 ms  p90  29.162 ms  p99  50.931 ms  errors 0
+os-pass3 boosted (bm25 × decay)   c=16       344 q/s  p50  41.642 ms  p90  78.328 ms  p99 120.139 ms  errors 0
+os-pass3 facet                    warm-up: p50 2.076, 2.033 ms
+os-pass3 facet                    c=1        518 q/s  p50   1.774 ms  p90   2.421 ms  p99   4.680 ms  errors 0
+os-pass3 facet                    c=4       1766 q/s  p50   2.068 ms  p90   3.132 ms  p99   6.121 ms  errors 0
+os-pass3 facet                    c=16      3395 q/s  p50   4.103 ms  p90   7.713 ms  p99  13.457 ms  errors 0
+os-pass3 key lookup               warm-up: p50 0.862, 0.870 ms
+os-pass3 key lookup               c=1       1182 q/s  p50   0.878 ms  p90   1.126 ms  p99   1.362 ms  errors 0
+os-pass3 key lookup               c=4       4863 q/s  p50   0.865 ms  p90   1.124 ms  p99   1.450 ms  errors 0
+os-pass3 key lookup               c=16     14287 q/s  p50   1.075 ms  p90   1.701 ms  p99   2.607 ms  errors 0
+os-pass3 phrase                   warm-up: p50 3.209, 3.194 ms
+os-pass3 phrase                   c=1        354 q/s  p50   2.794 ms  p90   3.984 ms  p99   5.296 ms  errors 0
+os-pass3 phrase                   c=4       1208 q/s  p50   3.186 ms  p90   5.003 ms  p99   6.975 ms  errors 0
+os-pass3 phrase                   c=16      2161 q/s  p50   6.675 ms  p90  12.533 ms  p99  19.234 ms  errors 0
+os-pass3 typo                     warm-up: p50 33.460, 32.528 ms
+os-pass3 typo                     c=1         45 q/s  p50  20.620 ms  p90  35.322 ms  p99  52.159 ms  errors 0
+os-pass3 typo                     c=4        111 q/s  p50  33.169 ms  p90  56.828 ms  p99  84.712 ms  errors 0
+os-pass3 typo                     c=16       123 q/s  p50 126.111 ms  p90 177.941 ms  p99 249.545 ms  errors 0
+os-pass3 prefix                   warm-up: p50 5.346, 5.366 ms
+os-pass3 prefix                   c=1        237 q/s  p50   3.794 ms  p90   5.789 ms  p99  11.163 ms  errors 0
+os-pass3 prefix                   c=4        683 q/s  p50   5.387 ms  p90   8.425 ms  p99  14.876 ms  errors 0
+os-pass3 prefix                   c=16      1047 q/s  p50  13.621 ms  p90  24.611 ms  p99  38.366 ms  errors 0
+os-pass3 similar items            warm-up: p50 12.724, 12.774 ms
+os-pass3 similar items            c=1        112 q/s  p50   8.805 ms  p90  10.390 ms  p99  12.588 ms  errors 0
+os-pass3 similar items            c=4        301 q/s  p50  12.850 ms  p90  17.285 ms  p99  21.311 ms  errors 0
+os-pass3 similar items            c=16       391 q/s  p50  40.358 ms  p90  54.327 ms  p99  64.274 ms  errors 0
+os-pass3 sql aggregate            warm-up: p50 100.063, 98.371 ms
+os-pass3 sql aggregate            c=1         19 q/s  p50  55.320 ms  p90  74.877 ms  p99  86.391 ms  errors 0
+os-pass3 sql aggregate            c=4         42 q/s  p50  95.672 ms  p90 140.292 ms  p99 159.388 ms  errors 0
+os-pass3 sql aggregate            c=16        40 q/s  p50 384.204 ms  p90 530.504 ms  p99 618.908 ms  errors 0
+os-pass3 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-pass3.json

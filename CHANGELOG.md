@@ -13,6 +13,86 @@ changes collect under "Unreleased".
 
 ### What changes by default
 
+- **A SQLite import into a table without a key that has rows is refused**
+  (409 `conflict` over HTTP), before anything is written: nothing tells
+  its rows from the file's, so they went in beside them, and importing the
+  same file again repeated every row. Over HTTP, an import into such a
+  table while another import writes it is refused too, so that the same
+  file uploaded twice at once is written once. `--append`, `?append=true`,
+  `append=True` in Python and `append: true` in JavaScript add them as
+  before; a keyed table takes the file's rows in place of its own, as it
+  did. A copy between servers into such a table is refused too.
+
+### SQLite imports (what the stress test of 15 November left)
+
+- **A file of many tables imports in time that grows with their number**,
+  not its square: a 4,000-table file took 227 s from the command line, as
+  each table made two commits and each commit writes every table's schema.
+  An import now makes the tables it creates in one commit and bulk-loads
+  the empty ones in one more (`Db::create_tables`, `Db::try_load_tables`),
+  a merge looks at the table it merges rather than at every table, and an
+  HTTP import makes its tables in one commit and sends the rows of small
+  tables in shared requests.
+- A date column written in seconds and later in milliseconds reads each
+  integer in the unit of its size (the seconds were read as milliseconds,
+  in January 1970); names lose their accents (`Größe` is `Grosse`, it was
+  `Gr__e`) and a name of no Latin letter (`名前`) is named by its place
+  (`column_2`, it was `__`); a file with no table, and an upload with no
+  body, are refused (they imported nothing and answered 200); the command
+  line names the file once and without `schema error:`.
+
+### Google Cloud in the Cloud view (experimental)
+
+- The command center's **Cloud setup** plans, makes, resizes and deletes a
+  cluster on **Google Kubernetes Engine**, beside EKS and DOKS
+  (`/v1/admin/gcp/*`, `"provider": "gcp"`). It takes **no key**: its calls
+  use gcloud's application default credentials where the server runs,
+  best signed in as a service account through impersonation
+  (`gcloud auth application-default login --impersonate-service-account
+  ...`), or the metadata server on a VM or in GKE; key files are refused.
+  Only the project is kept (`<db>.gcp.json`, `--gcp-file`).
+- Plans read the machine types, Google's list prices (on demand and Spot),
+  GKE's versions, the project's quotas and networks; **Check with Google
+  Cloud** also says which permissions the credentials hold. A cluster may
+  be zonal or regional, on Spot nodes and with GKE's autoscaler, and
+  **Nodes…** resizes a made one (`POST /v1/admin/gcp/nodes`). Clusters
+  are in the Regular release channel (GKE refuses a new project's cluster
+  with none), with an exclusion that holds minor and node upgrades for 90
+  days, so the copies restart only when asked.
+- The operator's `coordinatorAccountAnnotations` annotates the
+  coordinators' service account; a cluster planned on GKE uses it for
+  Workload Identity, so its own command center can act as the deployer's
+  service account once the plan's one binding is made.
+- A command center on another cloud's Kubernetes (DigitalOcean's, EKS)
+  reaches Google Cloud with no key too, through **workload identity
+  federation**: the server reads a federation's file (`external_account`),
+  exchanges the token Kubernetes gives the coordinators' account at
+  Google's Security Token Service and impersonates the service account;
+  the operator's new `gcpFederation` mounts the token and the file. The
+  Cloud view gives the commands that set it up for its own cluster, which
+  ChloeDB never runs. Files that run a program for their token, take AWS's
+  own credentials, or send tokens anywhere but Google's APIs are refused.
+
+## 0.3.6
+
+What you say again becoming a ChloeCtx rule, Kafka topics read by the server
+itself, SQLite imports fixed by a stress test of every way a file comes in,
+a slot move whose flip no failover can lose a write in, `npm install
+chloedb`, thirteen new screen parts and two access statements in the app
+engine, Workbench's Converge, and a network operations demo whose network
+is read back from what it reports: `chloedb-server-v0.3.6`,
+`chloedb-py-v0.3.6` and `chloedb-js-v0.3.6`, which is on npm too (the Java
+package is built from source; `chloedb-crawl`, `chloedb-sheets` and
+`chloectx` are attached prebuilt to the server's release). The file format
+stays 3 and the shard protocol stays 21, with no new field or plan feature,
+so servers of 0.3.5 and 0.3.6 mix in a cluster in either order, with one
+ordered step (Replication, below). ChloeCtx makes one more small-model call
+after a turn that is like something said before. **Finish an upgrade before
+moving slots: a 0.3.6 replica under a 0.3.5 primary refuses a slot move's
+flip.**
+
+### What changes by default
+
 - **ChloeCtx: what you have to say again becomes a rule, for one more
   small-model call after each of your turns.** An instruction ChloeCtx kept
   for one task only, said again in that session or another (reworded, or as
@@ -32,15 +112,7 @@ changes collect under "Unreleased".
   no longer one of the user's rules.
 - Workbench's Fix the harness lists what you said again and the rules
   broken though the session was shown them, when ChloeCtx is on.
-- **A SQLite import into a table without a key that has rows is refused**
-  (409 `conflict` over HTTP), before anything is written: nothing tells
-  its rows from the file's, so they went in beside them, and importing the
-  same file again repeated every row. Over HTTP, an import into such a
-  table while another import writes it is refused too, so that the same
-  file uploaded twice at once is written once. `--append`, `?append=true`,
-  `append=True` in Python and `append: true` in JavaScript add them as
-  before; a keyed table takes the file's rows in place of its own, as it
-  did. A copy between servers into such a table is refused too.
+- Workbench opens on Converge (below); its sessions are at `#/workbench`.
 
 ### JavaScript on npm
 
@@ -92,21 +164,6 @@ columns, imports at once, killed, of damaged, locked and WAL files:
   out shadow tables, skips a table it cannot read (a `vec0` table) instead
   of refusing the whole file, keeps ids of more than 15 digits as text as
   its CSV import does, and refuses a damaged file.
-- **A file of many tables imports in time that grows with their number**,
-  not its square: a 4,000-table file took 227 s from the command line, as
-  each table made two commits and each commit writes every table's schema.
-  An import now makes the tables it creates in one commit and bulk-loads
-  the empty ones in one more (`Db::create_tables`, `Db::try_load_tables`),
-  a merge looks at the table it merges rather than at every table, and an
-  HTTP import makes its tables in one commit and sends the rows of small
-  tables in shared requests.
-- A date column written in seconds and later in milliseconds reads each
-  integer in the unit of its size (the seconds were read as milliseconds,
-  in January 1970); names lose their accents (`Größe` is `Grosse`, it was
-  `Gr__e`) and a name of no Latin letter (`名前`) is named by its place
-  (`column_2`, it was `__`); a file with no table, and an upload with no
-  body, are refused (they imported nothing and answered 200); the command
-  line names the file once and without `schema error:`.
 
 ### Replication
 
@@ -121,9 +178,107 @@ columns, imports at once, killed, of damaged, locked and WAL files:
   first, while the new primary took writes to the slots that no copy
   reached, and the new primary then refused the flip for good (TLC,
   `spec/slots` `MoveNow`, `MoveStuck`). A primary of 0.3.5 or earlier
-  writes no mark, so a replica of this release under one refuses the flips
+  writes no mark, so a 0.3.6 replica under one refuses the flips
   it takes, and the maps after them, until a later flip from that shard is
   marked or the replica is replaced: finish an upgrade before moving slots.
+
+### Kubernetes operator
+
+- **The operator says what it runs** (`status.operator`: its version,
+  image and digest), and the command center's Rollouts view says when the
+  servers run a newer version or a later build than the operator, with the
+  `kubectl set image` that upgrades it. The upgrader moves the servers,
+  never the operator: a cluster whose servers followed `latest` to 0.3.5
+  under an older operator had its rollouts stop at the extra copy, refused
+  `403 cluster_token_required` (the 0.3.5 coordinator adds a server only
+  with the cluster's token, which an older operator does not send). That
+  refusal now says to upgrade the operator.
+
+### Kafka
+
+- **The server reads Kafka topics itself.** A connector of kind `kafka`
+  keeps a consumer of its topics while it is on, started and stopped from
+  the command center's Connectors page or with `POST
+  /v1/admin/connectors/NAME/start` and `/stop`, which last across restarts.
+  Its events go through the path `/v1/stream` takes, each partition a
+  stream source whose offset is written in the transaction of its rows, so
+  a stop, a restart, a `kill -9`, a broker restart or a coordinator taking
+  over writes no event twice and misses none. JSON or text values, a map
+  over the whole event (`$.value.x`, `$.key`, `$.offset`, `$.ts`,
+  `$.headers`), tombstones skipped or deleting their key's row, TLS, and
+  SASL PLAIN or SCRAM with the password kept as a secret; the brokers pass
+  the reach check a pull's URL does. There is no consumer group: the page
+  shows the lag of each partition. Until now Kafka came in only through a
+  consumer of your own (the Python package's `chloedb.ingest.kafka`).
+- **A test broker** in the server's process, to try a connector without
+  Kafka: the page's Test Kafka broker card, `/v1/admin/kafka/test-broker`
+  (loopback only), or `chloedb-server kafka-test-broker` on its own. It
+  keeps topics in memory and makes up click events at a rate.
+- A connector's map can name a column's type (`{"path": "$.action",
+  "type": "KEYWORD"}`) for the table `create_target` makes, since a plain
+  path makes a `TEXT` column, which `GROUP BY` refuses.
+- New dependencies of chloedb-server: `rskafka` (and `lz4` through it) and
+  `crc32c`.
+
+### App engine
+
+- **Thirteen new screen parts**, written as clauses of `CREATE SCREEN`:
+  NEXT, DUE, LEND, PLAN, REPORT, TEAM, PRICES, TIMETABLE, SLOTS, INBOX,
+  STANDINGS, DOCUMENT and GALLERY; SQL functions for ranges (`band_of`,
+  `band_rank`, `bands()`, `days_overlap`, `times_overlap`); `:today`
+  filled in by itself in any app SQL that names it.
+- **Access.** `ALLOW CALL ON <function> TO everyone | members | admins`
+  lets those people call one of the app's functions, which then runs with
+  the app's rights, as a `SECURITY DEFINER` procedure does; a function
+  without it runs as its caller, as before. `ALLOW ... WHERE <col> IN
+  (SELECT <col> FROM <link table> WHERE <person col> = :user_id)` keeps
+  people to the rows of what they are on, read when the call is made. A
+  screen that visitors or members use and that writes a table only the
+  owner may write is a build problem, with the fix named. Nothing changes
+  for an existing app until it uses the new statements.
+- A visitor who opens a members' screen sees it drawn with the example rows
+  of the app's first version, marked and inert, under a sign-in bar.
+- On an 11-app benchmark against the builder before it, blind judge, on an
+  Apple M2 laptop: whole-app score 7.46 against 6.00, and 55 of 65
+  functional jobs against 38 of 59.
+- An app's list of builders keeps the order people were invited in, on a
+  cluster of shards too (invitations of one call tied).
+
+### Workbench
+
+- **Converge** (`#/converge`): personas play the product, and each problem
+  they hit becomes a finding that walks gated stages (found, reproduce,
+  scope, prioritize, develop, verify, review, merged) to a pull request,
+  with each gate's evidence kept. Three steps are yours: moving a finding
+  out of Found, starting development, and approving the merge. Its
+  autopilot is off by default and keeps to a daily model budget.
+- **`serve --lan`** opens Workbench to the local network: it answers only
+  private and link-local addresses and `.local` names, and the token is
+  still required. It is plain HTTP, so the token travels in the clear on
+  that network: use it only on a trusted one. Without it nothing changes.
+
+### Network operations (demo)
+
+- NetOps builds a second network only from what the simulated one reports
+  (SNMP, LLDP, BGP-LS, BMP and the OLTs' ONT tables) and serves it beside
+  the listed one, with an Inventory | Discovered switch (`--topology both`,
+  the default; `inventory` or `discovered` serve one). The discovered one
+  has tables of its own (`netops_disc_*`) and a Discovery page that says
+  how each site, device and link was found.
+- When the root-cause agent names a cause, the incident's room says what
+  happened, why this is probably the cause (each claim with the query
+  behind it, run again through `GET /v1/evidence/:id`) and what it is not.
+
+### Releases, site and operations
+
+- The benchmark harness sends ChloeDB's beam (`ef => N`) in every vector
+  statement: the default run's row said 64 candidates and searched at 200.
+  Postgres's candidates sweep now moves `hnsw.ef_search`, Qdrant's wait
+  fails after 4 hours rather than never, and `image.yml` publishes a
+  `<sha>-bench` image for `fanout.sh`.
+- The website and its docs load Google Tag Manager, so visits show in
+  Google Analytics.
+- Dependencies: crc32fast 1.5.5, flate2 1.1.11, ureq 3.5.1.
 
 ## 0.3.5
 

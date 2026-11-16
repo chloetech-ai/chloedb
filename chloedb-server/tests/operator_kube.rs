@@ -171,6 +171,9 @@ async fn the_operator_makes_a_clusters_objects_on_an_api_server() {
     let schema = get(&k, "/api/v1/namespaces/db/configmaps/orders-schema").await;
     chloedb::schema::Schema::from_json(schema["data"]["schema.json"].as_str().unwrap()).unwrap();
     assert_eq!(now().await["status"]["phase"], "Creating");
+    // The operator says its version, which the command center compares with
+    // the servers' (the upgrader moves them, never the operator).
+    assert_eq!(now().await["status"]["operator"]["version"], env!("CARGO_PKG_VERSION"));
 
     // Then, once the first copy of each is ready, the coordinator over them.
     let out = kube::once(&k, &now().await).await;

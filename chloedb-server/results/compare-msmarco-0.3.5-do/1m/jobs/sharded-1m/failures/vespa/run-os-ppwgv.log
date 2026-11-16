@@ -1,0 +1,58 @@
+os       bm25                     warm-up: p50 7.967, 6.720, 5.737, 4.672, 4.204, 3.781, 3.638 ms
+os       bm25                     c=1        331 q/s  p50   2.848 ms  p90   3.826 ms  p99   5.789 ms  errors 0
+os       bm25                     c=4       1116 q/s  p50   3.426 ms  p90   4.750 ms  p99   6.636 ms  errors 0
+os       bm25                     c=16      2062 q/s  p50   7.048 ms  p90  11.765 ms  p99  18.537 ms  errors 0
+os       bm25 + filter            warm-up: p50 5.732, 4.822, 4.430 ms
+os       bm25 + filter            c=1        277 q/s  p50   3.374 ms  p90   4.735 ms  p99   8.118 ms  errors 0
+os       bm25 + filter            c=4        880 q/s  p50   4.200 ms  p90   6.400 ms  p99  10.786 ms  errors 0
+os       bm25 + filter            c=16      1472 q/s  p50   9.544 ms  p90  18.058 ms  p99  27.815 ms  errors 0
+os       vector                   warm-up: p50 7.322, 6.595 ms
+os       vector                   c=1        209 q/s  p50   4.652 ms  p90   5.755 ms  p99   7.074 ms  errors 0
+os       vector                   c=4        581 q/s  p50   6.546 ms  p90   9.117 ms  p99  12.233 ms  errors 0
+os       vector                   c=16       971 q/s  p50  14.905 ms  p90  25.803 ms  p99  33.590 ms  errors 0
+os       vector + filter          warm-up: p50 12.271, 12.988 ms
+os       vector + filter          c=1        113 q/s  p50   8.712 ms  p90  10.339 ms  p99  12.153 ms  errors 0
+os       vector + filter          c=4        321 q/s  p50  12.169 ms  p90  16.282 ms  p99  20.226 ms  errors 0
+os       vector + filter          c=16       412 q/s  p50  37.745 ms  p90  53.474 ms  p99  66.039 ms  errors 0
+os       hybrid (RRF)             warm-up: p50 12.665, 11.961 ms
+os       hybrid (RRF)             c=1        118 q/s  p50   8.082 ms  p90  10.564 ms  p99  15.507 ms  errors 0
+os       hybrid (RRF)             c=4        320 q/s  p50  11.864 ms  p90  16.845 ms  p99  24.099 ms  errors 0
+os       hybrid (RRF)             c=16       397 q/s  p50  38.649 ms  p90  55.746 ms  p99  73.065 ms  errors 0
+os       hybrid (weighted)        warm-up: p50 11.787, 11.239 ms
+os       hybrid (weighted)        c=1        121 q/s  p50   7.847 ms  p90  10.249 ms  p99  15.852 ms  errors 0
+os       hybrid (weighted)        c=4        333 q/s  p50  11.326 ms  p90  16.233 ms  p99  23.730 ms  errors 0
+os       hybrid (weighted)        c=16       437 q/s  p50  34.803 ms  p90  50.964 ms  p99  66.426 ms  errors 0
+os       boosted (bm25 × decay)   warm-up: p50 11.230, 11.285 ms
+os       boosted (bm25 × decay)   c=1        116 q/s  p50   6.881 ms  p90  17.621 ms  p99  28.494 ms  errors 0
+os       boosted (bm25 × decay)   c=4        298 q/s  p50  10.979 ms  p90  26.092 ms  p99  45.027 ms  errors 0
+os       boosted (bm25 × decay)   c=16       352 q/s  p50  40.672 ms  p90  77.446 ms  p99 131.643 ms  errors 0
+os       facet                    warm-up: p50 3.719, 2.966, 2.184, 2.070 ms
+os       facet                    c=1        515 q/s  p50   1.772 ms  p90   2.444 ms  p99   5.131 ms  errors 0
+os       facet                    c=4       1787 q/s  p50   2.010 ms  p90   3.109 ms  p99   6.325 ms  errors 0
+os       facet                    c=16      3426 q/s  p50   4.049 ms  p90   7.746 ms  p99  13.591 ms  errors 0
+os       key lookup               warm-up: p50 0.960, 0.887 ms
+os       key lookup               c=1       1180 q/s  p50   0.888 ms  p90   1.134 ms  p99   1.420 ms  errors 0
+os       key lookup               c=4       4799 q/s  p50   0.862 ms  p90   1.145 ms  p99   1.530 ms  errors 0
+os       key lookup               c=16     14224 q/s  p50   1.082 ms  p90   1.699 ms  p99   2.529 ms  errors 0
+os       phrase                   warm-up: p50 3.595, 3.292 ms
+os       phrase                   c=1        383 q/s  p50   2.585 ms  p90   3.712 ms  p99   5.391 ms  errors 0
+os       phrase                   c=4       1222 q/s  p50   3.149 ms  p90   4.945 ms  p99   7.249 ms  errors 0
+os       phrase                   c=16      2179 q/s  p50   6.559 ms  p90  12.373 ms  p99  19.853 ms  errors 0
+os       typo                     warm-up: p50 34.459, 34.455 ms
+os       typo                     c=1         46 q/s  p50  20.390 ms  p90  35.571 ms  p99  54.516 ms  errors 0
+os       typo                     c=4        112 q/s  p50  34.016 ms  p90  56.249 ms  p99  84.819 ms  errors 0
+os       typo                     c=16       125 q/s  p50 122.099 ms  p90 176.040 ms  p99 241.565 ms  errors 0
+os       prefix                   warm-up: p50 5.878, 5.565 ms
+os       prefix                   c=1        232 q/s  p50   3.871 ms  p90   5.839 ms  p99  10.025 ms  errors 0
+os       prefix                   c=4        686 q/s  p50   5.355 ms  p90   8.458 ms  p99  14.224 ms  errors 0
+os       prefix                   c=16      1033 q/s  p50  13.653 ms  p90  25.280 ms  p99  39.353 ms  errors 0
+os       similar items            warm-up: p50 14.294, 13.493 ms
+os       similar items            c=1        114 q/s  p50   8.778 ms  p90  10.125 ms  p99  12.560 ms  errors 0
+os       similar items            c=4        299 q/s  p50  12.933 ms  p90  17.241 ms  p99  21.751 ms  errors 0
+os       similar items            c=16       393 q/s  p50  40.000 ms  p90  55.396 ms  p99  66.338 ms  errors 0
+os       sql aggregate            warm-up: p50 99.284, 99.966 ms
+os       sql aggregate            c=1         19 q/s  p50  53.484 ms  p90  77.061 ms  p99  85.396 ms  errors 0
+os       sql aggregate            c=4         40 q/s  p50 100.205 ms  p90 146.906 ms  p99 193.637 ms  errors 0
+os       sql aggregate            c=16        39 q/s  p50 399.984 ms  p90 590.317 ms  p99 665.623 ms  errors 0
+os       result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os.json

@@ -208,6 +208,14 @@ impl Cluster {
         format!("{}-s{id}", self.name)
     }
 
+    /// The cluster's name as the command center shows it: namespace/name,
+    /// or the name alone in the namespace the cloud view makes clusters in
+    /// (`strata`, an internal name kept from before the rename, which the
+    /// header should not show as if it were the product's).
+    fn shown_name(&self) -> String {
+        if self.ns == crate::cloud::NAMESPACE { self.name.clone() } else { format!("{}/{}", self.ns, self.name) }
+    }
+
     /// What a server tells of where it runs (`/v1/cluster`'s copies): its
     /// image, pod and node, and the cluster's name and environment. Taken
     /// at a server's next restart: the settings' hash leaves them out.
@@ -217,7 +225,7 @@ impl Cluster {
             json!({"name": "STRATA_IMAGE", "value": self.spec.image}),
             field("STRATA_POD", "metadata.name"),
             field("STRATA_NODE", "spec.nodeName"),
-            json!({"name": "STRATA_CLUSTER_NAME", "value": format!("{}/{}", self.ns, self.name)}),
+            json!({"name": "STRATA_CLUSTER_NAME", "value": self.shown_name()}),
         ];
         if let Some(e) = self.spec.environment.as_deref().filter(|e| !e.is_empty()) {
             env.push(json!({"name": "STRATA_ENVIRONMENT", "value": e}));
@@ -288,7 +296,13 @@ impl Cluster {
         // The coordinators' account: this one StrataCluster, read and scaled
         // from the command center.
         let account = self.coordinator_account();
-        let sa = json!({"apiVersion": "v1", "kind": "ServiceAccount", "metadata": self.meta(&account, self.labels())});
+        // Its annotations, such as Workload Identity's on GKE: the
+        // operator's apply is the one that owns them.
+        let mut sa_meta = self.meta(&account, self.labels());
+        if !self.spec.coordinator_account_annotations.is_empty() {
+            sa_meta["annotations"] = json!(self.spec.coordinator_account_annotations);
+        }
+        let sa = json!({"apiVersion": "v1", "kind": "ServiceAccount", "metadata": sa_meta});
         let role = self.coordinator_role(true);
         let binding = json!({
             "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": self.meta(&account, self.labels()),
@@ -463,6 +477,17 @@ impl Cluster {
         env.push(json!({"name": "STRATA_DRAIN_MS", "value": DRAIN_MS.to_string()}));
         env.extend(self.place_env());
         env.extend(self.from_secrets());
+        // Workload identity federation: the coordinators' own token, for
+        // the pool's provider, beside the file that says how Google takes
+        // it; Kubernetes renews the token in its file.
+        if let Some(f) = &s.gcp_federation {
+            env.push(json!({"name": "GOOGLE_APPLICATION_CREDENTIALS", "value": format!("{}/credentials.json", super::GCP_FEDERATION_DIR)}));
+            volumes.push(json!({"name": "gcp-federation", "projected": {"sources": [
+                {"serviceAccountToken": {"audience": f.audience, "expirationSeconds": 3600, "path": "token"}},
+                {"configMap": {"name": f.config_map, "items": [{"key": f.key, "path": "credentials.json"}]}},
+            ]}}));
+            mounts.push(json!({"name": "gcp-federation", "mountPath": super::GCP_FEDERATION_DIR, "readOnly": true}));
+        }
         let mut container = json!({
             "name": "coordinator", "image": s.image, "args": args, "env": env,
             "ports": [{"name": "http", "containerPort": 7700}],
@@ -1950,6 +1975,7 @@ pub const OPERATOR: &str = "operator";
 /// spec ([`super::reconcile`]), and writes what it found in its status.
 pub async fn run(o: Options) -> Result<(), String> {
     let kube = Kube::new(&o)?;
+    let _ = RUNS.set(own_image(&kube).await);
     if o.install_crd {
         let crd = super::crd();
         let name = crd["metadata"]["name"].as_str().unwrap_or_default().to_string();
@@ -1971,6 +1997,43 @@ pub async fn run(o: Options) -> Result<(), String> {
         }
         tokio::time::sleep(o.every).await;
     }
+}
+
+/// What this operator runs, which its status says (`status.operator`): its
+/// version, and in a pod its image and the digest its node pulled, read
+/// once as it starts ([`run`]). The upgrader moves the servers, never the
+/// operator, and servers newer than their operator may refuse what it asks
+/// (a 0.3.5 coordinator adds a server only with the cluster's token, which
+/// an operator from before 0.3.5 does not send: audit CLU-3), so the
+/// command center compares it with the servers'.
+static RUNS: std::sync::OnceLock<Json> = std::sync::OnceLock::new();
+
+fn operator_status() -> Json {
+    RUNS.get().cloned().unwrap_or_else(|| json!({"version": env!("CARGO_PKG_VERSION")}))
+}
+
+/// This operator's version, image and digest, from its own pod (`HOSTNAME`,
+/// in its account's namespace); its version alone outside a pod.
+async fn own_image(kube: &Kube) -> Json {
+    let mut j = json!({"version": env!("CARGO_PKG_VERSION")});
+    let ns = std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace").ok().map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    let pod = std::env::var("HOSTNAME").ok().filter(|p| !p.is_empty());
+    let (Some(ns), Some(pod)) = (ns, pod) else { return j };
+    match kube.get(&format!("{}/{pod}", ns_path(&ns, "v1", "pods"))).await {
+        Ok(Some(p)) => {
+            let cs = p["status"]["containerStatuses"].as_array().cloned().unwrap_or_default();
+            let c = cs.iter().find(|c| c["name"] == "operator").or(cs.first()).cloned().unwrap_or(Json::Null);
+            if let Some(i) = c["image"].as_str() {
+                j["image"] = json!(i);
+            }
+            if let Some(d) = c["imageID"].as_str().and_then(super::upgrade::digest_of) {
+                j["digest"] = json!(d);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "could not read the operator's own pod: its status says its version only"),
+    }
+    j
 }
 
 /// One step for one cluster, and its status: the outcome, what the next
@@ -2037,6 +2100,7 @@ pub async fn once(kube: &Kube, c: &Json) -> Outcome {
         "phase": out.phase, "message": out.message, "shards": out.shards, "observedGeneration": meta["generation"],
         "rollout": out.rollout, "history": history, "log": super::logged(&c["status"]["log"], out.phase, &out.message, now),
         "autoscale": autoscale, "upgrade": upgrade,
+        "operator": operator_status(),
     });
     // The autoscaler's readings alone rewrite the status once a minute.
     let fresh = c["status"]["autoscale"]["atMs"].as_u64().is_some_and(|t| now.saturating_sub(t) < 60_000);
@@ -2280,6 +2344,76 @@ mod tests {
         Cluster { kube, ns: "db".into(), name: "orders".into(), uid: "u-1".into(), spec: serde_json::from_value(spec).unwrap() }
     }
 
+    /// GKE's Workload Identity: the coordinators' account carries the
+    /// annotation the spec names, the servers restart for none of it, and
+    /// a cluster without it keeps its version.
+    #[test]
+    fn the_coordinators_account_carries_its_annotations() {
+        let wi = json!({"demo": 10, "coordinatorAccountAnnotations": {"iam.gke.io/gcp-service-account": "deployer@p.iam.gserviceaccount.com"}});
+        let c = cluster(wi.clone());
+        let sa = c.common().into_iter().find(|(p, _)| p.ends_with("/serviceaccounts/orders-coordinator")).unwrap().1;
+        assert_eq!(sa["metadata"]["annotations"]["iam.gke.io/gcp-service-account"], "deployer@p.iam.gserviceaccount.com");
+        let plain = cluster(json!({"demo": 10}));
+        let sa = plain.common().into_iter().find(|(p, _)| p.ends_with("/serviceaccounts/orders-coordinator")).unwrap().1;
+        assert!(sa["metadata"].get("annotations").is_none());
+        assert_eq!(c.spec.server_config(), plain.spec.server_config());
+        assert_eq!(plain.spec.version(), serde_json::from_value::<Spec>(json!({"demo": 10})).unwrap().version());
+        assert!(serde_json::to_value(&plain.spec).unwrap().get("coordinatorAccountAnnotations").is_none());
+        c.spec.check().unwrap();
+        for bad in ["", "/x", "a b", "iam.gke.io/", "x/y/z!"] {
+            let s: Spec = serde_json::from_value(json!({"demo": 1, "coordinatorAccountAnnotations": {bad: "v"}})).unwrap();
+            assert!(s.check().is_err(), "{bad:?}");
+        }
+    }
+
+
+    /// Workload identity federation: the coordinators get their own
+    /// token for the provider's audience and the federation's file in one
+    /// folder, and GOOGLE_APPLICATION_CREDENTIALS names it; the servers
+    /// get none of it, and a cluster without it keeps its pods.
+    #[test]
+    fn the_coordinators_get_a_token_for_googles_federation() {
+        let aud = "https://iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/chloedb/providers/k8s-orders";
+        let c = cluster(json!({"demo": 10, "gcpFederation": {"configMap": "orders-gcp", "audience": aud}}));
+        c.spec.check().unwrap();
+        let shards = vec![vec!["http://a:7701".to_string()]];
+        let pod = c.coordinator_workload(&shards, 1)["spec"]["template"]["spec"].clone();
+        let k = &pod["containers"][0];
+        let env = k["env"].as_array().unwrap();
+        assert!(env.contains(&json!({"name": "GOOGLE_APPLICATION_CREDENTIALS", "value": "/var/run/secrets/gcp/credentials.json"})), "{env:?}");
+        let v = pod["volumes"].as_array().unwrap().iter().find(|v| v["name"] == "gcp-federation").unwrap();
+        assert_eq!(v["projected"]["sources"][0]["serviceAccountToken"], json!({"audience": aud, "expirationSeconds": 3600, "path": "token"}));
+        assert_eq!(v["projected"]["sources"][1]["configMap"], json!({"name": "orders-gcp", "items": [{"key": "credentials.json", "path": "credentials.json"}]}));
+        assert!(k["volumeMounts"].as_array().unwrap().contains(&json!({"name": "gcp-federation", "mountPath": "/var/run/secrets/gcp", "readOnly": true})));
+        let plain = cluster(json!({"demo": 10}));
+        assert!(plain.coordinator_workload(&shards, 1)["spec"]["template"]["spec"]["volumes"].is_null());
+        assert_eq!(c.spec.server_config(), plain.spec.server_config(), "the servers restart for none of it");
+        assert_ne!(c.spec.coordinator_config(), plain.spec.coordinator_config(), "the coordinators do");
+        assert_eq!(plain.spec.version(), serde_json::from_value::<Spec>(json!({"demo": 10})).unwrap().version());
+        for bad in [
+            json!({"configMap": "Orders_GCP", "audience": aud}),
+            json!({"configMap": "orders-gcp", "audience": ""}),
+            json!({"configMap": "orders-gcp", "key": "a/b", "audience": aud}),
+        ] {
+            let s: Spec = serde_json::from_value(json!({"demo": 1, "gcpFederation": bad.clone()})).unwrap();
+            assert!(s.check().is_err(), "{bad}");
+        }
+        let twice: Spec = serde_json::from_value(json!({"demo": 1, "gcpFederation": {"configMap": "g", "audience": aud}, "secretEnv": [{"name": "GOOGLE_APPLICATION_CREDENTIALS", "secret": "x"}]})).unwrap();
+        assert!(twice.check().unwrap_err().contains("GOOGLE_APPLICATION_CREDENTIALS"));
+    }
+
+    /// The name the command center shows: namespace/name, but the name
+    /// alone in the cloud view's namespace, `strata`, which is not the
+    /// product's name.
+    #[test]
+    fn the_shown_name_leaves_out_the_cloud_namespace() {
+        let mut c = cluster(json!({"demo": 10}));
+        let named = |c: &Cluster| c.place_env().into_iter().find(|e| e["name"] == "STRATA_CLUSTER_NAME").unwrap()["value"].clone();
+        assert_eq!(named(&c), "db/orders");
+        c.ns = crate::cloud::NAMESPACE.into();
+        c.name = "e2e".into();
+        assert_eq!(named(&c), "e2e");
+    }
 
     /// N-D4: an app's pod template names the id of the key its Secret
     /// holds, so that a new key (its tables changed) rolls the pod, which

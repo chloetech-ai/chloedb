@@ -322,6 +322,13 @@
                     "description": "A Secret whose key token is the cluster's token (--cluster-token), which the servers and coordinators send each other and clients never hold. Needs tokenSecret.",
                     "type": "string"
                   },
+                  "coordinatorAccountAnnotations": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Annotations of the coordinators' ServiceAccount, such as iam.gke.io/gcp-service-account (GKE's Workload Identity) or eks.amazonaws.com/role-arn: the command center then calls the cloud as that account, with no key. No copy restarts when it changes.",
+                    "type": "object"
+                  },
                   "coordinatorArgs": {
                     "description": "More arguments for every coordinator.",
                     "items": {
@@ -456,6 +463,28 @@
                     "required": [
                       "source",
                       "name"
+                    ],
+                    "type": "object"
+                  },
+                  "gcpFederation": {
+                    "description": "Workload identity federation for the coordinators on a cluster outside Google Cloud: a token Kubernetes gives their account for audience, and the federation's file from configMap, both mounted in /var/run/secrets/gcp, so that the command center calls Google Cloud as a service account with no key. Changing it restarts the coordinators.",
+                    "properties": {
+                      "audience": {
+                        "description": "The token's audience, one the pool's provider allows: https://iam.googleapis.com/projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER.",
+                        "type": "string"
+                      },
+                      "configMap": {
+                        "description": "The ConfigMap with the file gcloud iam workload-identity-pools create-cred-config wrote for the token file /var/run/secrets/gcp/token.",
+                        "type": "string"
+                      },
+                      "key": {
+                        "description": "Its key that holds the file (default credentials.json).",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "configMap",
+                      "audience"
                     ],
                     "type": "object"
                   },

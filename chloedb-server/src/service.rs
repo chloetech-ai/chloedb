@@ -613,6 +613,10 @@ pub struct Service {
     /// The cloud view's DigitalOcean token and size catalogues
     /// ([`crate::digitalocean`]).
     pub digitalocean: Arc<crate::digitalocean::DigitalOcean>,
+    /// The cloud view's Google Cloud project, credentials (Application
+    /// Default Credentials or the metadata server: never a key) and
+    /// machine catalogues ([`crate::gcp`]).
+    pub gcp: Arc<crate::gcp::Gcp>,
     /// The clusters the cloud view made, and the loop that sees each one
     /// through ([`crate::cloud::clusters`]).
     pub clouds: Arc<crate::cloud::clusters::Clusters>,
@@ -878,6 +882,7 @@ impl Service {
             connectors: Default::default(),
             aws: Arc::new(crate::aws::Aws::memory()),
             digitalocean: Arc::new(crate::digitalocean::DigitalOcean::memory()),
+            gcp: Arc::new(crate::gcp::Gcp::memory()),
             clouds: Arc::new(crate::cloud::clusters::Clusters::memory()),
             hub: Arc::new(crate::hub::Hub::memory()),
             log_store: None,
@@ -3047,6 +3052,24 @@ impl Service {
         let counts = self.understanding_counts(&u, None).await?;
         u.confirm(&counts);
         Ok(u)
+    }
+
+    /// What a search `query` of `table.field` marks in a text: as the
+    /// field's analyzer reads it, with the table's synonyms on one server
+    /// (a coordinator reads the field's analyzer from the schema).
+    pub async fn highlight_marks(self: &Arc<Self>, table: &str, field: &str, query: &str) -> Result<chloedb::text::highlight::Marks, ApiError> {
+        if let Backend::Local(db) = &self.backend {
+            let (db, table, field, query) = (db.clone(), table.to_string(), field.to_string(), query.to_string());
+            return Ok(tokio::task::spawn_blocking(move || db.highlight_marks(&table, &field, &query)).await.map_err(ApiError::internal)??);
+        }
+        let schema = self.table(table).await?;
+        let f = schema.field(field).ok_or_else(|| ApiError::bad(format!("{table} has no field {field}")))?;
+        if !matches!(f.ty, chloedb::schema::FieldType::Text { .. }) {
+            return Err(ApiError::bad(format!("{table}.{field} is not a TEXT field: only text is highlighted")));
+        }
+        let analyzer = f.text_analyzer();
+        let syn = self.synonyms();
+        Ok(chloedb::text::highlight::Marks::new(query, analyzer, syn.as_ref().map(|s| s.of(analyzer))))
     }
 
     /// "Did you mean" ([`chloedb::db::Db::correct`]): the words of `text`

@@ -3,7 +3,7 @@
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.3.5). The
+(November 2026, every crate and package at version 0.3.6). The
 [changelog](../CHANGELOG.md) says what changed.
 
 ChloeDB is pre-1.0: the statements below are the current behaviour, which
@@ -105,7 +105,7 @@ server of their own commit.
 **Not promised.** A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.5), and keeps it between releases: name a
+version of the last release (0.3.6), and keeps it between releases: name a
 build from a commit after a release by its commit.
 
 ## A cluster of mixed versions
@@ -155,13 +155,13 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   Kubernetes, upgrade the operator before the coordinators: the 0.3.5
   operator adds servers with its `clusterTokenSecret`, and an older one
   sends the admin token.
-  The next release (unreleased) keeps the shard protocol at 21, and a slot
-  move's flip from a replicated shard waits for a mark that the shard's
-  primary writes through its log: a replica of it takes the flip only once
-  it applied that mark. A primary of 0.3.5 or earlier writes none, so a
-  newer replica under one refuses that flip and the maps after it, until
-  a later flip from the shard is marked or the replica is replaced. Finish
-  the upgrade before moving slots.
+  0.3.6 keeps the shard protocol at 21 and adds no plan feature and no
+  field, and a slot move's flip from a replicated shard waits for a mark
+  that the shard's primary writes through its log: a replica of it takes
+  the flip only once it applied that mark. A primary of 0.3.5 or earlier
+  writes none, so a 0.3.6 replica under one refuses that flip and the maps
+  after it, until a later flip from the shard is marked or the replica is
+  replaced. Finish the upgrade before moving slots.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
@@ -249,6 +249,7 @@ These apps show what ChloeDB can do and are not part of its releases or
 their promises:
 
 - `chloedb-netops`, network operations on a simulated carrier network;
+- `chloedb-hn`, Hacker News searched, asked in sentences and completed as typed;
 - `chloedb-swarm`, simulated users, an internal test instrument;
 - `examples/feature-store`, a shop ranked on features ChloeDB keeps;
 - `examples/parley`, a social network of LLM agents.
