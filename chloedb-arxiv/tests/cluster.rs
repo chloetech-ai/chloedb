@@ -372,6 +372,34 @@ async fn two_servers_every_page() {
     let e = get(&http, &app, &format!("/v1/explain/{}?level=wizard", rec_id(2))).await;
     assert_eq!((e["kept"].clone(), e["level"].clone(), e["note"]["explain"].clone()), (json!(true), json!("practitioner"), json!("Kept for a student.")), "{e}");
 
+    // Weekly feeds: a reader's three write themselves, a fourth is refused,
+    // and one that does not is saved as before.
+    for i in 0..3 {
+        let f = post(&http, &app, "/v1/feeds", json!({"user": "reader-weekly", "config": {"name": format!("w{i}"), "interests": ["recommendation"], "weekly": true}})).await;
+        assert!(f["id"].as_str().is_some(), "{f}");
+    }
+    let r = http.post(format!("{}/v1/feeds", app.url)).bearer_auth(TOKEN).json(&json!({"user": "reader-weekly", "config": {"name": "w3", "weekly": true}})).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+    let f = post(&http, &app, "/v1/feeds", json!({"user": "reader-weekly", "config": {"name": "by hand"}})).await;
+    assert_eq!(get(&http, &app, &format!("/v1/feeds/{}", f["id"].as_str().unwrap())).await["config"]["weekly"], false);
+
+    // Team feeds: another reader changes a feed only with its team link's
+    // key, the feed stays its owner's, and a dropped link stops working.
+    let f = post(&http, &app, "/v1/feeds", json!({"user": "reader-owner", "config": {"name": "ours"}})).await;
+    let fid = f["id"].as_str().unwrap().to_string();
+    let save = |team: &str| http.post(format!("{}/v1/feeds", app.url)).bearer_auth(TOKEN).json(&json!({"id": fid, "user": "reader-mate", "team": team, "config": {"name": "ours, changed"}})).send();
+    assert_eq!(save("").await.unwrap().status().as_u16(), 403);
+    let key = post(&http, &app, &format!("/v1/feeds/{fid}/team"), json!({"user": "reader-owner"})).await["team"].as_str().unwrap().to_string();
+    assert_eq!(key.len(), 32);
+    assert_eq!(save(&key).await.unwrap().status().as_u16(), 200);
+    let o = get(&http, &app, &format!("/v1/feeds/{fid}?user=reader-owner")).await;
+    assert_eq!((o["owner"].clone(), o["config"]["name"].clone(), o["team"].clone()), (json!("reader-owner"), json!("ours, changed"), json!(key)), "{o}");
+    assert_eq!(get(&http, &app, &format!("/v1/feeds/{fid}?team={key}")).await["member"], true);
+    let other = get(&http, &app, &format!("/v1/feeds/{fid}?team=nope")).await;
+    assert_eq!((other["member"].clone(), other["team"].clone()), (json!(false), Value::Null));
+    post(&http, &app, &format!("/v1/feeds/{fid}/team"), json!({"user": "reader-owner", "off": true})).await;
+    assert_eq!(save(&key).await.unwrap().status().as_u16(), 403);
+
     // Likely classics: a judged paper is listed with its judgement and the
     // paper's row, under the models' card.
     let row = json!({"id": rec_id(4), "p": 0.2, "lift": 18.5, "win": 182, "early": 7, "record_cites": 900, "area": "cs", "pcat": "cs.IR", "created": chrono::Utc::now().to_rfc3339(), "why": ["cited in its first 182 days", "code"]});

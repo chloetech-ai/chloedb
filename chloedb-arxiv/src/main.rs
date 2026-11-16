@@ -180,17 +180,6 @@ fn server_bin(given: &Option<PathBuf>) -> PathBuf {
     fail("--local needs chloedb-server: give --server-bin, or put it on the PATH (cd chloedb-server && cargo build --release)")
 }
 
-fn random_token() -> String {
-    let mut b = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read;
-        let _ = f.read_exact(&mut b);
-    } else {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
-        b = (t ^ (std::process::id() as u128) << 64).to_le_bytes();
-    }
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
 
 struct Local {
     child: Child,
@@ -273,7 +262,7 @@ async fn load_all(db: &Strata, graph: &Strata, rows: &PathBuf, only: &[String], 
 }
 
 async fn serve(a: ServeArgs) {
-    let token = a.token.clone().filter(|t| !t.is_empty()).or_else(|| a.local.as_ref().map(|_| random_token()));
+    let token = a.token.clone().filter(|t| !t.is_empty()).or_else(|| a.local.as_ref().map(|_| chloedb_arxiv::random_token()));
     let listener = tokio::net::TcpListener::bind(&a.listen).await.unwrap_or_else(|e| fail(format!("{}: {e}", a.listen)));
     let me = format!("http://{}", listener.local_addr().map(|x| x.to_string()).unwrap_or(a.listen.clone()));
     let (url, local) = match (&a.local, &a.strata) {
@@ -361,6 +350,7 @@ async fn serve(a: ServeArgs) {
     });
     // Standing questions are checked each hour.
     tokio::spawn(api::watch_rounds(svc.clone()));
+    tokio::spawn(api::issue_rounds(svc.clone()));
     {
         // Make the gap finder's list, the topics born lately and the techniques' spread before anyone asks.
         let svc = svc.clone();

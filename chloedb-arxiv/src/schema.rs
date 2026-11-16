@@ -119,6 +119,11 @@ pub fn tables(model: &str) -> Vec<(&'static str, String)> {
             id KEYWORD PRIMARY KEY, owner KEYWORD, name TEXT, config TEXT OPTIONS(indexed = false),
             created TIMESTAMP, updated TIMESTAMP, public BOOL
         )".to_string()),
+        // A feed shared with a team: whoever holds its link's key changes
+        // the feed and writes its issues; the owner makes and drops it.
+        ("ax_teams", "CREATE TABLE IF NOT EXISTS ax_teams (
+            id KEYWORD PRIMARY KEY, link KEYWORD, owner KEYWORD, created TIMESTAMP
+        )".to_string()),
         ("ax_issues", "CREATE TABLE IF NOT EXISTS ax_issues (
             id KEYWORD PRIMARY KEY, feed KEYWORD, vol INT, since TIMESTAMP, until TIMESTAMP,
             made TIMESTAMP, title TEXT, body TEXT OPTIONS(indexed = false), papers KEYWORD[], ms FLOAT

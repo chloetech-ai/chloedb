@@ -84,6 +84,9 @@ pub struct Config {
     /// With `full`: the figures shown a paper (0 to 3), its own images
     /// copied from its page.
     pub figures: usize,
+    /// Write an issue each week on its own (Mondays, from 06:00 UTC), for
+    /// the feed's RSS.
+    pub weekly: bool,
 }
 
 impl Default for Config {
@@ -110,6 +113,7 @@ impl Default for Config {
             weights: Weights::default(),
             affiliations: true,
             figures: 2,
+            weekly: false,
         }
     }
 }
@@ -765,6 +769,35 @@ fn esc(s: &str) -> String {
 }
 
 /// A feed's issues as RSS 2.0, newest first, each issue's papers as HTML.
+/// Feeds of one reader that write their issues on their own, at most.
+pub const WEEKLY_PER_READER: usize = 3;
+/// Issues written on their own in one hourly round, at most: each reads
+/// its papers' pages on arxiv.org 15 seconds apart.
+pub const WEEKLY_PER_ROUND: usize = 6;
+
+/// The start of this week's issues: the last Monday at 06:00 UTC at or before `now`.
+pub fn week_start(now: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
+    use chrono::{Datelike, TimeZone};
+    let back = now.weekday().num_days_from_monday() as i64;
+    let monday = (now - chrono::Duration::days(back)).date_naive();
+    let start = chrono::Utc.from_utc_datetime(&monday.and_hms_opt(6, 0, 0).unwrap_or_default());
+    if start > now { start - chrono::Duration::days(7) } else { start }
+}
+
+/// The weekly feeds due an issue: none made since this week's start,
+/// the longest waiting first.
+pub fn due(feeds: &[(String, Config)], last: &std::collections::HashMap<String, String>, now: chrono::DateTime<chrono::Utc>) -> Vec<String> {
+    let start = week_start(now).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut d: Vec<(String, String)> = feeds
+        .iter()
+        .filter(|(_, c)| c.weekly)
+        .map(|(id, _)| (last.get(id).cloned().unwrap_or_default(), id.clone()))
+        .filter(|(m, _)| m.as_str() < start.as_str())
+        .collect();
+    d.sort();
+    d.into_iter().map(|(_, id)| id).take(WEEKLY_PER_ROUND).collect()
+}
+
 pub fn rss(feed_id: &str, cfg: &Config, issues: &[Row], base: &str) -> String {
     let mut s = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<rss version=\"2.0\"><channel><title>{}</title><link>{base}/#/feed/{feed_id}</link><description>{}</description>\n", esc(&cfg.name), esc(if cfg.tagline.is_empty() { "A digest of arXiv, made by ChloeDB" } else { &cfg.tagline }));
     for r in issues {
@@ -787,6 +820,21 @@ pub fn rss(feed_id: &str, cfg: &Config, issues: &[Row], base: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weekly_issues_are_due_from_monday_morning() {
+        use chrono::TimeZone;
+        let at = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&chrono::Utc);
+        // A Monday before 06:00 belongs to the week before.
+        assert_eq!(week_start(at("2026-11-16T05:59:00Z")), chrono::Utc.with_ymd_and_hms(2026, 11, 9, 6, 0, 0).unwrap());
+        assert_eq!(week_start(at("2026-11-16T06:00:00Z")), chrono::Utc.with_ymd_and_hms(2026, 11, 16, 6, 0, 0).unwrap());
+        assert_eq!(week_start(at("2026-11-19T12:00:00Z")), chrono::Utc.with_ymd_and_hms(2026, 11, 16, 6, 0, 0).unwrap());
+        let on = Config { weekly: true, ..Config::default() };
+        let feeds = vec![("a".to_string(), on.clone()), ("b".to_string(), on.clone()), ("c".to_string(), Config::default()), ("d".to_string(), on)];
+        let last: std::collections::HashMap<String, String> = [("a", "2026-11-16T07:00:00Z"), ("b", "2026-11-10T07:00:00Z")].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        // a has this week's; d never had one, so it waits longest; c is not weekly.
+        assert_eq!(due(&feeds, &last, at("2026-11-17T00:00:00Z")), vec!["d", "b"]);
+    }
 
     #[test]
     fn pages() {

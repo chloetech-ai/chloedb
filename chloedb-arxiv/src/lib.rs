@@ -29,3 +29,17 @@ pub mod spread;
 pub mod strata;
 pub mod understand;
 pub mod watch;
+
+/// 128 random bits as hex, from /dev/urandom (the time and the process id
+/// where there is none): a server's token, a team feed's link.
+pub fn random_token() -> String {
+    let mut b = [0u8; 16];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let _ = f.read_exact(&mut b);
+    } else {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        b = (t ^ (std::process::id() as u128) << 64).to_le_bytes();
+    }
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}

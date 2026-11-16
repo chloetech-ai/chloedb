@@ -2190,15 +2190,22 @@ async function libraryPage(app, main, alive) {
 
 // ----------------------------------------------------------------- feeds
 
+// Team feeds this browser holds the link of: feed id → the link's key.
+function teamKeys() { try { return JSON.parse(localStorage.getItem("ax_teams") || "{}") || {}; } catch { return {}; } }
+function setTeamKey(id, key) { const t = teamKeys(); if (key) t[id] = key; else delete t[id]; try { localStorage.setItem("ax_teams", JSON.stringify(t)); } catch {} }
+
 async function feedsPage(app, main, alive) {
   fill(main, skel(6));
-  const [mine, pub] = await Promise.all([app.api(`/v1/feeds?user=${enc(app.user)}`), app.ctx.api("/v1/feeds").catch(() => ({ feeds: [] }))]);
+  const keys = teamKeys();
+  const [mine, pub, team] = await Promise.all([app.api(`/v1/feeds?user=${enc(app.user)}`), app.ctx.api("/v1/feeds").catch(() => ({ feeds: [] })),
+    Promise.all(Object.entries(keys).slice(0, 30).map(([id, k]) => app.ctx.api(`/v1/feeds/${enc(id)}?team=${enc(k)}`).then((j) => (j.member ? { id, name: j.config.name, updated: (j.issues[0] || {}).made || "" } : (setTeamKey(id, null), null))).catch(() => null))).then((r) => r.filter(Boolean))]);
   if (!alive()) return;
   const row = (f) => h("li", { class: "ax-p compact" }, h("div", { class: "ttl" }, h("a", { href: app.href("feed", f.id) }, f.name)), h("div", { class: "meta" }, `updated ${ago(f.updated)}`, h("a", { href: `feeds/${f.id}/rss.xml`, target: "_blank" }, "RSS")));
   fill(main, h("div", { style: { maxWidth: "900px" } },
     h("div", { class: "ax-ph" }, h("h1", {}, "Feeds"), h("div", { class: "au" }, "A weekly digest of arXiv written for you, like the best research newsletters: say what you care about in your own words, and every week it picks the papers that matter most to you and writes a paragraph on each, with who it is from, what it does and what it found.")),
     h("div", { class: "acts", style: { display: "flex", gap: "8px", margin: "12px 0" } }, h("a", { class: "ax-btn pri", href: app.href("feed", "new") }, "+ New feed"), h("a", { class: "ax-btn", href: app.href("feed", "example") }, "Start from “Recommender systems weekly”")),
     sec("Your feeds"), (mine.feeds || []).length ? h("ul", { class: "ax-list" }, mine.feeds.map(row)) : h("div", { class: "ax-empty" }, "None yet."),
+    team.length ? [sec("Your team's feeds"), h("ul", { class: "ax-list" }, team.map(row))] : null,
     (pub.feeds || []).length ? [sec("Shared feeds"), h("ul", { class: "ax-list" }, pub.feeds.map(row))] : null));
 }
 
@@ -2231,11 +2238,14 @@ function slider(label, min, max, step, get, set, onChange, fmtv = (v) => v) {
 async function studioPage(app, main, arg, alive) {
   const [id0, ...seedWords] = arg.split("/");
   let feedId = id0 === "new" || id0 === "example" ? "" : id0;
+  // "#/feed/<id>/team/<key>": the team's link, kept in this browser.
+  if (feedId && seedWords[0] === "team" && seedWords[1]) { setTeamKey(feedId, seedWords[1]); history.replaceState(null, "", app.href("feed", feedId)); }
+  const teamKey = feedId ? teamKeys()[feedId] || "" : "";
   fill(main, skel(10));
-  let cfg, issues = [], owner = app.user;
+  let cfg, issues = [], owner = app.user, member = false, teamLink = "", shared = false;
   if (feedId) {
-    const j = await app.api(`/v1/feeds/${enc(feedId)}`);
-    cfg = j.config; issues = j.issues || []; owner = j.owner;
+    const j = await app.api(`/v1/feeds/${enc(feedId)}?user=${enc(app.user)}&team=${enc(teamKey)}`);
+    cfg = j.config; issues = j.issues || []; owner = j.owner; member = !!j.member; teamLink = j.team || ""; shared = !!j.shared;
   } else if (id0 === "example") {
     cfg = (await app.ctx.api("/v1/feeds/example")).config;
   } else {
@@ -2246,6 +2256,7 @@ async function studioPage(app, main, arg, alive) {
   }
   if (!alive()) return;
   const mine = owner === app.user;
+  const canEdit = mine || member;
   const preview = h("div", { class: "ax-prev" }, skel(8));
   const status = h("div");
   let ptimer, pseq = 0;
@@ -2267,20 +2278,38 @@ async function studioPage(app, main, arg, alive) {
   const nameIn = h("input", { type: "text", value: cfg.name, oninput: (e) => { cfg.name = e.target.value; } });
   const tagIn = h("input", { type: "text", value: cfg.tagline, oninput: (e) => { cfg.tagline = e.target.value; } });
   const audIn = h("select", { onchange: (e) => { cfg.audience = e.target.value; } }, ["practitioners and researchers", "machine learning engineers", "researchers", "executives and investors", "students"].map((a) => h("option", { value: a, selected: cfg.audience === a ? "" : null }, a)));
-  const saveBtn = h("button", { class: "ax-btn", disabled: !mine && !!feedId }, feedId ? "Save" : "Save feed");
+  const saveBtn = h("button", { class: "ax-btn", disabled: !canEdit && !!feedId }, feedId ? "Save" : "Save feed");
+  // The owner shares the feed with a team by a link; whoever opens it can change it and write its issues.
+  const teamBox = h("div");
+  const linkOf = (k) => new URL(app.href("feed", feedId, "team", k), location.href.split("#")[0]).href;
+  const drawTeam = () => {
+    if (!feedId) return fill(teamBox);
+    if (!mine) return fill(teamBox, member ? h("div", { class: "ax-card", style: { fontSize: "13px" } }, "Shared with your team by link: you can change this feed and write its issues.") : null);
+    if (!teamLink) return fill(teamBox, h("button", { class: "ax-btn", onclick: async () => { const r = await app.api(`/v1/feeds/${enc(feedId)}/team`, { body: { user: app.user } }); teamLink = r.team; drawTeam(); } }, "Share with your team"));
+    const url = linkOf(teamLink);
+    const copy = h("button", { class: "ax-btn" }, "Copy team link");
+    copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(url); copy.textContent = "Copied ✓"; } catch { copy.textContent = url; } });
+    fill(teamBox, h("div", { class: "ax-card", style: { fontSize: "13px" } },
+      h("div", { style: { marginBottom: "6px" } }, "Shared with your team: whoever opens this link can change the feed and write its issues, with no sign-in. It stays yours."),
+      h("input", { type: "text", readonly: "", value: url, style: { width: "100%", fontFamily: "var(--mono)", fontSize: "12px", marginBottom: "6px" }, onfocus: (e) => e.target.select() }),
+      h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, copy, h("button", { class: "ax-btn", onclick: async () => { await app.api(`/v1/feeds/${enc(feedId)}/team`, { body: { user: app.user, off: true } }); teamLink = ""; drawTeam(); } }, "Stop sharing"))));
+  };
+  drawTeam();
   const writeBtn = h("button", { class: "ax-btn pri" }, "✦ Write this week's issue");
   saveBtn.onclick = async () => {
-    const j = await app.api("/v1/feeds", { body: { id: feedId, user: app.user, config: cfg } });
-    if (!feedId) { feedId = j.id; history.replaceState(null, "", app.href("feed", feedId)); }
+    let j;
+    try { j = await app.api("/v1/feeds", { body: { id: feedId, user: app.user, config: cfg, team: teamKey } }); } catch (e) { fill(status, h("div", { class: "ax-err" }, String(e.message || e))); throw e; }
+    fill(status);
+    if (!feedId) { feedId = j.id; history.replaceState(null, "", app.href("feed", feedId)); drawTeam(); }
     saveBtn.textContent = "Saved ✓"; setTimeout(() => (saveBtn.textContent = "Save"), 1500);
   };
   writeBtn.onclick = async () => {
     if (!feedId) await saveBtn.onclick();
-    else await app.api("/v1/feeds", { body: { id: feedId, user: app.user, config: cfg } });
+    else if (canEdit) await app.api("/v1/feeds", { body: { id: feedId, user: app.user, config: cfg, team: teamKey } });
     writeBtn.disabled = true;
     fill(status, h("div", { class: "ax-card" }, h("div", { class: "ax-prog" }, h("div")), h("div", { class: "step", style: { fontSize: "13px", color: "var(--text-2)" } }, "Starting…")));
     try {
-      const { job } = await app.api(`/v1/feeds/${enc(feedId)}/issue`, { body: { user: app.user } });
+      const { job } = await app.api(`/v1/feeds/${enc(feedId)}/issue`, { body: { user: app.user, team: teamKey } });
       for (;;) {
         await new Promise((r) => setTimeout(r, 1500));
         const s = await app.ctx.api(`/v1/jobs/${job}`);
@@ -2317,7 +2346,10 @@ async function studioPage(app, main, arg, alive) {
     h("div", { class: "ax-f" }, h("label", {}, "Written for"), audIn),
     h("div", { class: "ax-f" }, h("label", {}, "Extras"), checks([["tools", "Tools"], ["benchmarks", "Benchmarks"], ["surveys", "Surveys"]], cfg.extras, changed)),
     h("div", { class: "ax-f" }, h("label", { class: "ax-check" }, h("label", { class: cfg.affiliations ? "on" : "", onclick: (e) => { e.preventDefault(); cfg.affiliations = !cfg.affiliations; e.currentTarget.classList.toggle("on"); } }, "Say who each paper is from (reads its arXiv page)"))),
-    h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, saveBtn, writeBtn, feedId ? h("a", { class: "ax-btn", href: `feeds/${feedId}/rss.xml`, target: "_blank" }, "RSS") : null));
+    h("div", { class: "ax-f" }, h("label", { class: "ax-check" }, h("label", { class: cfg.weekly ? "on" : "", onclick: (e) => { e.preventDefault(); cfg.weekly = !cfg.weekly; e.currentTarget.classList.toggle("on"); } }, "Write an issue every Monday on its own")),
+      h("small", { style: { color: "var(--muted)", fontSize: "12px" } }, "Each new issue goes to the feed's RSS, so a feed reader gets it on Monday. Save to start; at most three of your feeds.")),
+    h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, saveBtn, writeBtn, feedId ? rssButtons(`feeds/${feedId}/rss.xml`) : null),
+    teamBox);
   fill(main, h("div", {},
     h("div", { class: "ax-ph" }, h("div", { class: "ey" }, h("a", { href: app.href("feeds") }, "Feeds"), "→", feedId ? "Studio" : "New feed"), h("h1", {}, "Feed studio"), h("div", { class: "au" }, "Every change re-picks the papers at once (no model is called for the preview). Writing an issue reads each paper's full text on arXiv, explains it, and copies the figures that explain it best; arXiv asks programs to read a page every 15 seconds, so an issue of 10 papers takes about ten minutes, and a paper read once is kept.")),
     h("div", { class: "ax-studio" }, form,
@@ -2325,6 +2357,14 @@ async function studioPage(app, main, arg, alive) {
         issues.length ? h("div", { class: "ax-card" }, h("h4", {}, "Issues"), h("div", { class: "ax-people" }, issues.map((i) => [h("a", { href: app.href("issue", i.id) }, i.title), h("span", { class: "n" }, ago(i.made))]))) : null,
         sec("Preview of the next issue"), preview))));
   runPreview();
+}
+
+// A feed's RSS: open it, or copy its address for a feed reader.
+function rssButtons(path) {
+  const url = new URL(path, location.href.split("#")[0]).href;
+  const copy = h("button", { class: "ax-btn", title: url }, "Copy RSS address");
+  copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(url); copy.textContent = "Copied ✓"; } catch { copy.textContent = url; } });
+  return [h("a", { class: "ax-btn", href: url, target: "_blank", rel: "noopener" }, "RSS"), copy];
 }
 
 // A figure's image, copied from the paper's page and kept: fetched as JSON
