@@ -1,0 +1,10 @@
+os       topic docs-os-1794800612, 4 partitions; 1000000 documents before
+os       250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 24 ms  p90 34 ms  p99 42 ms  max 75 ms (read p50 19 ms)
+os       500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (500/s); lag p50 24 ms  p90 34 ms  p99 51 ms  max 83 ms (read p50 18 ms)
+os       1000/s           produced 30000 in 30.0 s; written 30000 in 30.0 s (999/s); lag p50 28 ms  p90 39 ms  p99 82 ms  max 142 ms (read p50 19 ms)
+os       2000/s           produced 60000 in 30.0 s; written 60000 in 30.0 s (1998/s); lag p50 36 ms  p90 76 ms  p99 222 ms  max 374 ms (read p50 20 ms)
+os       flat out         produced 20000 in 0.9 s; written 20000 in 6.4 s (3130/s); lag p50 3070 ms  p90 4906 ms  p99 5514 ms  max 5532 ms (read p50 2519 ms)
+os       before the crash produced 10000 in 6.4 s; written 5057 in 6.4 s (790/s); lag p50 61 ms  p90 161 ms  p99 240 ms  max 285 ms (read p50 27 ms)
+os       after the crash   resumed in 2.3 s: 528 events written a second time, 0 skipped by the server; 1142500 documents, 0 lost
+wrote /data/compare/stream-os.json
+os       deleted 142500 streamed documents in 3.4 s

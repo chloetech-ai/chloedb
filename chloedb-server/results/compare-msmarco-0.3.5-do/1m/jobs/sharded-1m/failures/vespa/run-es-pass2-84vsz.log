@@ -1,0 +1,55 @@
+es-pass2 bm25                     warm-up: p50 3.918, 3.680 ms
+es-pass2 bm25                     c=1        332 q/s  p50   2.884 ms  p90   3.705 ms  p99   5.381 ms  errors 0
+es-pass2 bm25                     c=4       1030 q/s  p50   3.683 ms  p90   5.141 ms  p99   7.299 ms  errors 0
+es-pass2 bm25                     c=16      1870 q/s  p50   7.524 ms  p90  13.773 ms  p99  21.537 ms  errors 0
+es-pass2 bm25 + filter            warm-up: p50 4.538, 4.484 ms
+es-pass2 bm25 + filter            c=1        261 q/s  p50   3.596 ms  p90   4.943 ms  p99   8.835 ms  errors 0
+es-pass2 bm25 + filter            c=4        825 q/s  p50   4.452 ms  p90   6.814 ms  p99  12.073 ms  errors 0
+es-pass2 bm25 + filter            c=16      1388 q/s  p50  10.068 ms  p90  18.691 ms  p99  31.971 ms  errors 0
+es-pass2 vector                   warm-up: p50 5.000, 4.966 ms
+es-pass2 vector                   c=1        251 q/s  p50   3.901 ms  p90   4.510 ms  p99   5.151 ms  errors 0
+es-pass2 vector                   c=4        784 q/s  p50   5.031 ms  p90   6.134 ms  p99   7.381 ms  errors 0
+es-pass2 vector                   c=16      1398 q/s  p50  10.710 ms  p90  15.530 ms  p99  21.545 ms  errors 0
+es-pass2 vector + filter          warm-up: p50 5.951, 5.798 ms
+es-pass2 vector + filter          c=1        219 q/s  p50   4.430 ms  p90   5.129 ms  p99   6.258 ms  errors 0
+es-pass2 vector + filter          c=4        640 q/s  p50   5.934 ms  p90   7.465 ms  p99   9.879 ms  errors 0
+es-pass2 vector + filter          c=16      1094 q/s  p50  13.684 ms  p90  20.386 ms  p99  28.849 ms  errors 0
+es-pass2 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-pass2 hybrid (weighted)        warm-up: p50 8.940, 8.984 ms
+es-pass2 hybrid (weighted)        c=1        144 q/s  p50   5.969 ms  p90  10.476 ms  p99  18.326 ms  errors 0
+es-pass2 hybrid (weighted)        c=4        386 q/s  p50   9.198 ms  p90  15.850 ms  p99  29.912 ms  errors 0
+es-pass2 hybrid (weighted)        c=16       535 q/s  p50  27.408 ms  p90  46.041 ms  p99  78.136 ms  errors 0
+es-pass2 boosted (bm25 × decay)   warm-up: p50 11.017, 10.783 ms
+es-pass2 boosted (bm25 × decay)   c=1        116 q/s  p50   6.815 ms  p90  17.858 ms  p99  31.007 ms  errors 0
+es-pass2 boosted (bm25 × decay)   c=4        301 q/s  p50  10.933 ms  p90  26.042 ms  p99  44.719 ms  errors 0
+es-pass2 boosted (bm25 × decay)   c=16       381 q/s  p50  37.352 ms  p90  70.143 ms  p99 118.858 ms  errors 0
+es-pass2 facet                    warm-up: p50 2.210, 2.201 ms
+es-pass2 facet                    c=1        503 q/s  p50   1.887 ms  p90   2.391 ms  p99   3.539 ms  errors 0
+es-pass2 facet                    c=4       1734 q/s  p50   2.139 ms  p90   3.028 ms  p99   4.511 ms  errors 0
+es-pass2 facet                    c=16      3413 q/s  p50   4.129 ms  p90   7.210 ms  p99  12.713 ms  errors 0
+es-pass2 key lookup               warm-up: p50 1.046, 1.044 ms
+es-pass2 key lookup               c=1       1013 q/s  p50   1.026 ms  p90   1.282 ms  p99   1.504 ms  errors 0
+es-pass2 key lookup               c=4       3922 q/s  p50   1.057 ms  p90   1.370 ms  p99   1.708 ms  errors 0
+es-pass2 key lookup               c=16     10705 q/s  p50   1.451 ms  p90   2.179 ms  p99   3.090 ms  errors 0
+es-pass2 phrase                   warm-up: p50 3.338, 3.302 ms
+es-pass2 phrase                   c=1        349 q/s  p50   2.877 ms  p90   4.013 ms  p99   5.587 ms  errors 0
+es-pass2 phrase                   c=4       1177 q/s  p50   3.316 ms  p90   5.118 ms  p99   7.199 ms  errors 0
+es-pass2 phrase                   c=16      2114 q/s  p50   6.790 ms  p90  12.774 ms  p99  20.948 ms  errors 0
+es-pass2 typo                     warm-up: p50 22.553, 22.245 ms
+es-pass2 typo                     c=1         63 q/s  p50  15.003 ms  p90  24.045 ms  p99  37.451 ms  errors 0
+es-pass2 typo                     c=4        170 q/s  p50  22.093 ms  p90  36.275 ms  p99  53.844 ms  errors 0
+es-pass2 typo                     c=16       195 q/s  p50  78.093 ms  p90 115.508 ms  p99 164.703 ms  errors 0
+es-pass2 prefix                   warm-up: p50 4.991, 4.906 ms
+es-pass2 prefix                   c=1        259 q/s  p50   3.604 ms  p90   4.970 ms  p99   8.932 ms  errors 0
+es-pass2 prefix                   c=4        748 q/s  p50   4.969 ms  p90   7.507 ms  p99  12.137 ms  errors 0
+es-pass2 prefix                   c=16      1174 q/s  p50  12.025 ms  p90  21.732 ms  p99  35.010 ms  errors 0
+es-pass2 similar items            warm-up: p50 9.673, 9.487 ms
+es-pass2 similar items            c=1        146 q/s  p50   6.653 ms  p90   7.529 ms  p99   9.816 ms  errors 0
+es-pass2 similar items            c=4        399 q/s  p50   9.586 ms  p90  12.451 ms  p99  16.220 ms  errors 0
+es-pass2 similar items            c=16       565 q/s  p50  27.265 ms  p90  39.748 ms  p99  49.690 ms  errors 0
+es-pass2 sql aggregate            warm-up: p50 83.262, 87.437 ms
+es-pass2 sql aggregate            c=1         19 q/s  p50  51.524 ms  p90  72.085 ms  p99  87.420 ms  errors 0
+es-pass2 sql aggregate            c=4         47 q/s  p50  83.781 ms  p90 121.336 ms  p99 143.247 ms  errors 0
+es-pass2 sql aggregate            c=16        51 q/s  p50 325.381 ms  p90 445.891 ms  p99 496.552 ms  errors 0
+es-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-pass2.json

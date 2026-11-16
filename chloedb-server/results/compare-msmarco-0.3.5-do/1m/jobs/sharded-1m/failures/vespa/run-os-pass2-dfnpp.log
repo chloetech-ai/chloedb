@@ -1,0 +1,58 @@
+os-pass2 bm25                     warm-up: p50 3.546, 3.450 ms
+os-pass2 bm25                     c=1        345 q/s  p50   2.799 ms  p90   3.557 ms  p99   4.937 ms  errors 0
+os-pass2 bm25                     c=4       1121 q/s  p50   3.393 ms  p90   4.697 ms  p99   6.511 ms  errors 0
+os-pass2 bm25                     c=16      2067 q/s  p50   6.998 ms  p90  11.946 ms  p99  18.291 ms  errors 0
+os-pass2 bm25 + filter            warm-up: p50 4.332, 4.231 ms
+os-pass2 bm25 + filter            c=1        284 q/s  p50   3.296 ms  p90   4.680 ms  p99   8.077 ms  errors 0
+os-pass2 bm25 + filter            c=4        873 q/s  p50   4.219 ms  p90   6.508 ms  p99  10.768 ms  errors 0
+os-pass2 bm25 + filter            c=16      1424 q/s  p50   9.878 ms  p90  18.219 ms  p99  30.382 ms  errors 0
+os-pass2 vector                   warm-up: p50 6.073, 5.871 ms
+os-pass2 vector                   c=1        222 q/s  p50   4.419 ms  p90   5.254 ms  p99   6.391 ms  errors 0
+os-pass2 vector                   c=4        643 q/s  p50   6.017 ms  p90   8.035 ms  p99   9.830 ms  errors 0
+os-pass2 vector                   c=16       999 q/s  p50  15.202 ms  p90  22.868 ms  p99  28.936 ms  errors 0
+os-pass2 vector + filter          warm-up: p50 12.123, 12.065 ms
+os-pass2 vector + filter          c=1        115 q/s  p50   8.588 ms  p90  10.122 ms  p99  12.247 ms  errors 0
+os-pass2 vector + filter          c=4        323 q/s  p50  12.007 ms  p90  16.161 ms  p99  19.974 ms  errors 0
+os-pass2 vector + filter          c=16       412 q/s  p50  37.860 ms  p90  52.969 ms  p99  63.071 ms  errors 0
+os-pass2 hybrid (RRF)             warm-up: p50 11.554, 11.506 ms
+os-pass2 hybrid (RRF)             c=1        123 q/s  p50   7.797 ms  p90  10.126 ms  p99  14.492 ms  errors 0
+os-pass2 hybrid (RRF)             c=4        332 q/s  p50  11.359 ms  p90  16.531 ms  p99  22.782 ms  errors 0
+os-pass2 hybrid (RRF)             c=16       430 q/s  p50  35.814 ms  p90  51.431 ms  p99  67.866 ms  errors 0
+os-pass2 hybrid (weighted)        warm-up: p50 11.211, 11.121 ms
+os-pass2 hybrid (weighted)        c=1        123 q/s  p50   7.794 ms  p90   9.981 ms  p99  15.019 ms  errors 0
+os-pass2 hybrid (weighted)        c=4        333 q/s  p50  11.383 ms  p90  16.041 ms  p99  24.489 ms  errors 0
+os-pass2 hybrid (weighted)        c=16       437 q/s  p50  34.797 ms  p90  51.865 ms  p99  72.122 ms  errors 0
+os-pass2 boosted (bm25 × decay)   warm-up: p50 11.245, 11.803 ms
+os-pass2 boosted (bm25 × decay)   c=1        108 q/s  p50   7.353 ms  p90  18.884 ms  p99  31.050 ms  errors 0
+os-pass2 boosted (bm25 × decay)   c=4        282 q/s  p50  11.476 ms  p90  29.183 ms  p99  52.079 ms  errors 0
+os-pass2 boosted (bm25 × decay)   c=16       343 q/s  p50  40.973 ms  p90  77.377 ms  p99 135.519 ms  errors 0
+os-pass2 facet                    warm-up: p50 2.091, 2.040 ms
+os-pass2 facet                    c=1        513 q/s  p50   1.809 ms  p90   2.423 ms  p99   4.727 ms  errors 0
+os-pass2 facet                    c=4       1790 q/s  p50   2.017 ms  p90   3.071 ms  p99   6.134 ms  errors 0
+os-pass2 facet                    c=16      3439 q/s  p50   4.039 ms  p90   7.470 ms  p99  13.471 ms  errors 0
+os-pass2 key lookup               warm-up: p50 0.858, 0.852 ms
+os-pass2 key lookup               c=1       1154 q/s  p50   0.919 ms  p90   1.157 ms  p99   1.477 ms  errors 0
+os-pass2 key lookup               c=4       4811 q/s  p50   0.866 ms  p90   1.138 ms  p99   1.451 ms  errors 0
+os-pass2 key lookup               c=16     14299 q/s  p50   1.080 ms  p90   1.699 ms  p99   2.489 ms  errors 0
+os-pass2 phrase                   warm-up: p50 3.124, 3.101 ms
+os-pass2 phrase                   c=1        365 q/s  p50   2.723 ms  p90   3.880 ms  p99   5.455 ms  errors 0
+os-pass2 phrase                   c=4       1210 q/s  p50   3.194 ms  p90   4.964 ms  p99   7.263 ms  errors 0
+os-pass2 phrase                   c=16      2108 q/s  p50   6.672 ms  p90  13.011 ms  p99  21.993 ms  errors 0
+os-pass2 typo                     warm-up: p50 33.640, 32.393 ms
+os-pass2 typo                     c=1         45 q/s  p50  20.304 ms  p90  36.348 ms  p99  54.325 ms  errors 0
+os-pass2 typo                     c=4        112 q/s  p50  33.461 ms  p90  56.096 ms  p99  87.223 ms  errors 0
+os-pass2 typo                     c=16       125 q/s  p50 124.576 ms  p90 174.397 ms  p99 236.487 ms  errors 0
+os-pass2 prefix                   warm-up: p50 5.513, 5.351 ms
+os-pass2 prefix                   c=1        236 q/s  p50   3.814 ms  p90   5.781 ms  p99  10.235 ms  errors 0
+os-pass2 prefix                   c=4        683 q/s  p50   5.365 ms  p90   8.437 ms  p99  14.360 ms  errors 0
+os-pass2 prefix                   c=16      1043 q/s  p50  13.209 ms  p90  25.773 ms  p99  39.498 ms  errors 0
+os-pass2 similar items            warm-up: p50 12.705, 12.879 ms
+os-pass2 similar items            c=1        115 q/s  p50   8.672 ms  p90  10.041 ms  p99  11.633 ms  errors 0
+os-pass2 similar items            c=4        302 q/s  p50  12.744 ms  p90  17.270 ms  p99  21.296 ms  errors 0
+os-pass2 similar items            c=16       391 q/s  p50  40.158 ms  p90  54.539 ms  p99  62.512 ms  errors 0
+os-pass2 sql aggregate            warm-up: p50 99.964, 98.387 ms
+os-pass2 sql aggregate            c=1         18 q/s  p50  55.636 ms  p90  75.511 ms  p99  85.325 ms  errors 0
+os-pass2 sql aggregate            c=4         42 q/s  p50  96.782 ms  p90 139.383 ms  p99 167.010 ms  errors 0
+os-pass2 sql aggregate            c=16        41 q/s  p50 385.302 ms  p90 553.381 ms  p99 634.053 ms  errors 0
+os-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-pass2.json

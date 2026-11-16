@@ -1,0 +1,22 @@
+os-ef256 vector                   warm-up: p50 8.505, 8.462 ms
+os-ef256 vector                   c=1        163 q/s  p50   6.048 ms  p90   7.130 ms  p99   8.807 ms  errors 0
+os-ef256 vector                   c=4        455 q/s  p50   8.486 ms  p90  11.443 ms  p99  14.317 ms  errors 0
+os-ef256 vector                   c=16       629 q/s  p50  24.528 ms  p90  34.473 ms  p99  45.879 ms  errors 0
+os-ef256 vector + filter          warm-up: p50 21.734, 21.979 ms
+os-ef256 vector + filter          c=1         65 q/s  p50  15.344 ms  p90  17.900 ms  p99  20.101 ms  errors 0
+os-ef256 vector + filter          c=4        180 q/s  p50  21.764 ms  p90  28.196 ms  p99  33.582 ms  errors 0
+os-ef256 vector + filter          c=16       208 q/s  p50  75.364 ms  p90 100.143 ms  p99 113.999 ms  errors 0
+os-ef256 hybrid (RRF)             warm-up: p50 11.485, 11.411 ms
+os-ef256 hybrid (RRF)             c=1        122 q/s  p50   7.753 ms  p90  10.285 ms  p99  14.787 ms  errors 0
+os-ef256 hybrid (RRF)             c=4        337 q/s  p50  11.234 ms  p90  16.066 ms  p99  23.858 ms  errors 0
+os-ef256 hybrid (RRF)             c=16       432 q/s  p50  35.803 ms  p90  50.080 ms  p99  67.954 ms  errors 0
+os-ef256 hybrid (weighted)        warm-up: p50 11.197, 11.483 ms
+os-ef256 hybrid (weighted)        c=1        125 q/s  p50   7.694 ms  p90   9.873 ms  p99  14.862 ms  errors 0
+os-ef256 hybrid (weighted)        c=4        338 q/s  p50  11.339 ms  p90  15.791 ms  p99  23.732 ms  errors 0
+os-ef256 hybrid (weighted)        c=16       436 q/s  p50  35.278 ms  p90  51.135 ms  p99  68.380 ms  errors 0
+os-ef256 similar items            warm-up: p50 18.245, 18.112 ms
+os-ef256 similar items            c=1         82 q/s  p50  12.228 ms  p90  14.433 ms  p99  17.509 ms  errors 0
+os-ef256 similar items            c=4        218 q/s  p50  17.863 ms  p90  23.826 ms  p99  29.928 ms  errors 0
+os-ef256 similar items            c=16       261 q/s  p50  60.041 ms  p90  82.262 ms  p99  93.780 ms  errors 0
+os-ef256 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1338,"miss_count":2}}
+wrote /data/compare/run-os-ef256.json

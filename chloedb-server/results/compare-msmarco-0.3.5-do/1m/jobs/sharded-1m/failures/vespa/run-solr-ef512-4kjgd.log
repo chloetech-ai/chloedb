@@ -1,0 +1,22 @@
+solr-ef512 vector                   warm-up: p50 11.954, 11.831 ms
+solr-ef512 vector                   c=1        130 q/s  p50   7.665 ms  p90   8.648 ms  p99  10.692 ms  errors 0
+solr-ef512 vector                   c=4        286 q/s  p50  13.312 ms  p90  19.191 ms  p99  25.131 ms  errors 0
+solr-ef512 vector                   c=16       369 q/s  p50  42.058 ms  p90  62.707 ms  p99  82.423 ms  errors 0
+solr-ef512 vector + filter          warm-up: p50 31.550, 30.818 ms
+solr-ef512 vector + filter          c=1         49 q/s  p50  20.449 ms  p90  23.312 ms  p99  34.319 ms  errors 0
+solr-ef512 vector + filter          c=4        114 q/s  p50  33.474 ms  p90  47.505 ms  p99  58.035 ms  errors 0
+solr-ef512 vector + filter          c=16       132 q/s  p50 120.430 ms  p90 178.864 ms  p99 223.001 ms  errors 0
+solr-ef512 hybrid (RRF)             warm-up: p50 12.317, 12.402 ms
+solr-ef512 hybrid (RRF)             c=1        115 q/s  p50   7.586 ms  p90  13.768 ms  p99  21.429 ms  errors 0
+solr-ef512 hybrid (RRF)             c=4        271 q/s  p50  12.676 ms  p90  24.987 ms  p99  37.874 ms  errors 0
+solr-ef512 hybrid (RRF)             c=16       361 q/s  p50  37.066 ms  p90  81.764 ms  p99 130.217 ms  errors 0
+solr-ef512 hybrid (weighted)        warm-up: p50 12.885, 12.986 ms
+solr-ef512 hybrid (weighted)        c=1        107 q/s  p50   7.980 ms  p90  15.720 ms  p99  26.882 ms  errors 0
+solr-ef512 hybrid (weighted)        c=4        265 q/s  p50  12.968 ms  p90  26.006 ms  p99  42.765 ms  errors 0
+solr-ef512 hybrid (weighted)        c=16       302 q/s  p50  42.700 ms  p90 100.216 ms  p99 178.085 ms  errors 0
+solr-ef512 similar items            warm-up: p50 23.929, 21.215, 21.673 ms
+solr-ef512 similar items            c=1         69 q/s  p50  14.040 ms  p90  16.625 ms  p99  22.518 ms  errors 0
+solr-ef512 similar items            c=4        174 q/s  p50  21.724 ms  p90  30.368 ms  p99  49.603 ms  errors 0
+solr-ef512 similar items            c=16       203 q/s  p50  76.232 ms  p90 114.933 ms  p99 150.027 ms  errors 0
+solr-ef512 result cache: {"after":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}},"before":{"nodes":{"http://solr-0.solr:8983":null,"http://solr-1.solr:8983":null},"queryResultCache":{"size":0}}}
+wrote /data/compare/run-solr-ef512.json

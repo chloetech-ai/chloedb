@@ -1,0 +1,92 @@
+1	ok	1794790974	1794791357	build
+2	ok	1794791357	1794791362	up strata
+3	ok	1794791362	1794791733	run strata
+4	ok	1794791733	1794792102	run strata --label strata-pass2
+5	ok	1794792102	1794792471	run strata --label strata-pass3
+6	ok	1794792471	1794792612	run strata --candidates 128 --label strata-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+7	ok	1794792612	1794792752	run strata --candidates 128 --label strata-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+8	ok	1794792752	1794792893	run strata --candidates 128 --label strata-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+9	ok	1794792893	1794793035	run strata --candidates 256 --label strata-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+10	ok	1794793035	1794793176	run strata --candidates 256 --label strata-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+11	ok	1794793176	1794793318	run strata --candidates 256 --label strata-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+12	ok	1794793318	1794793462	run strata --candidates 512 --label strata-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+13	ok	1794793462	1794793605	run strata --candidates 512 --label strata-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+14	ok	1794793605	1794793749	run strata --candidates 512 --label strata-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+15	ok	1794793749	1794793750	down strata
+16	ok	1794793750	1794793820	up es
+17	ok	1794793820	1794794425	load es
+18	ok	1794794425	1794794820	run es
+19	ok	1794794820	1794795183	run es --label es-pass2
+20	ok	1794795183	1794795545	run es --label es-pass3
+21	ok	1794795545	1794795665	run es --candidates 128 --label es-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+22	ok	1794795665	1794795784	run es --candidates 128 --label es-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+23	ok	1794795784	1794795903	run es --candidates 128 --label es-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+24	ok	1794795903	1794796023	run es --candidates 256 --label es-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+25	ok	1794796023	1794796143	run es --candidates 256 --label es-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+26	ok	1794796143	1794796264	run es --candidates 256 --label es-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+27	ok	1794796264	1794796385	run es --candidates 512 --label es-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+28	ok	1794796385	1794796506	run es --candidates 512 --label es-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+29	ok	1794796506	1794796627	run es --candidates 512 --label es-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+30	ok	1794796627	1794796628	trial
+31	ok	1794796628	1794796700	run es --kinds hybrid (RRF),hybrid (weighted) --paid --label es-trial
+32	ok	1794796700	1794796804	writes es
+33	ok	1794796804	1794796968	stream es
+34	ok	1794796968	1794796972	down es
+35	ok	1794796972	1794797041	up os
+36	ok	1794797041	1794797909	load os
+37	ok	1794797909	1794798341	run os
+38	ok	1794798341	1794798735	run os --label os-pass2
+39	ok	1794798735	1794799130	run os --label os-pass3
+40	ok	1794799130	1794799280	run os --candidates 128 --label os-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+41	ok	1794799280	1794799429	run os --candidates 128 --label os-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+42	ok	1794799429	1794799579	run os --candidates 128 --label os-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+43	ok	1794799579	1794799725	run os --candidates 256 --label os-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+44	ok	1794799725	1794799877	run os --candidates 256 --label os-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+45	ok	1794799877	1794800029	run os --candidates 256 --label os-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+46	ok	1794800029	1794800186	run os --candidates 512 --label os-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+47	ok	1794800186	1794800342	run os --candidates 512 --label os-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+48	ok	1794800342	1794800499	run os --candidates 512 --label os-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+49	ok	1794800499	1794800606	writes os
+50	ok	1794800606	1794800762	stream os
+51	ok	1794800762	1794800764	down os
+52	ok	1794800764	1794800807	up solr
+53	ok	1794800807	1794802100	load solr
+54	ok	1794802100	1794802531	run solr
+55	ok	1794802531	1794802935	run solr --label solr-pass2
+56	ok	1794802935	1794803334	run solr --label solr-pass3
+57	ok	1794803334	1794803483	run solr --candidates 128 --label solr-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+58	ok	1794803483	1794803644	run solr --candidates 128 --label solr-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+59	ok	1794803644	1794803792	run solr --candidates 128 --label solr-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+60	ok	1794803792	1794803943	run solr --candidates 256 --label solr-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+61	ok	1794803943	1794804097	run solr --candidates 256 --label solr-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+62	ok	1794804097	1794804257	run solr --candidates 256 --label solr-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+63	ok	1794804257	1794804414	run solr --candidates 512 --label solr-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+64	ok	1794804414	1794804569	run solr --candidates 512 --label solr-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+65	ok	1794804569	1794804724	run solr --candidates 512 --label solr-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+66	ok	1794804724	1794804841	writes solr
+67	ok	1794804841	1794804997	stream solr
+68	ok	1794804997	1794805029	down solr
+69	ok	1794805029	1794805185	up vespa
+70	fail:1	1794805185	1794806585	load vespa
+71	skipped	1794806626	1794806626	run vespa
+72	skipped	1794806626	1794806626	run vespa --label vespa-pass2
+73	skipped	1794806626	1794806626	run vespa --label vespa-pass3
+74	skipped	1794806626	1794806626	run vespa --candidates 128 --label vespa-ef128 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+75	skipped	1794806626	1794806626	run vespa --candidates 128 --label vespa-ef128-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+76	skipped	1794806626	1794806626	run vespa --candidates 128 --label vespa-ef128-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+77	skipped	1794806626	1794806626	run vespa --candidates 256 --label vespa-ef256 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+78	skipped	1794806626	1794806626	run vespa --candidates 256 --label vespa-ef256-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+79	skipped	1794806626	1794806626	run vespa --candidates 256 --label vespa-ef256-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+80	skipped	1794806626	1794806626	run vespa --candidates 512 --label vespa-ef512 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+81	skipped	1794806626	1794806626	run vespa --candidates 512 --label vespa-ef512-pass2 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+82	skipped	1794806626	1794806626	run vespa --candidates 512 --label vespa-ef512-pass3 --kinds vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+83	skipped	1794806626	1794806626	writes vespa
+84	skipped	1794806626	1794806626	stream vespa
+85	ok	1794806626	1794806658	down vespa
+86	ok	1794806658	1794806665	up strata
+87	ok	1794806665	1794807040	run strata --label strata-b
+88	ok	1794807040	1794807411	run strata --label strata-b-pass2
+89	ok	1794807411	1794807781	run strata --label strata-b-pass3
+90	ok	1794807781	1794807854	writes strata
+91	ok	1794807854	1794808012	stream strata
+92	ok	1794808012	1794808013	down strata
