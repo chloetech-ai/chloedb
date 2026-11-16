@@ -17,7 +17,9 @@ name: reserve names
 # are skipped once the real package is there (js-release.yml and
 # crate-release.yml publish it, 0.1 and later): on npm a placeholder
 # published after it would become `latest`, and on both it would be a
-# version nobody should pick. PyPI keeps its placeholder on purpose: pip
+# version nobody should pick. On npm the run then marks the placeholders it
+# holds deprecated instead (run it with `npm` once the first release is
+# there). PyPI keeps its placeholder on purpose: pip
 # takes it only where no wheel fits, and it says how to build there.
 on:
   workflow_dispatch:
@@ -63,11 +65,20 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           latest=$(npm view chloedb version 2> /dev/null || true)
+          test -n "$NODE_AUTH_TOKEN" || { echo "::error::the repository secret NPM_TOKEN is not set"; exit 1; }
           case "$latest" in
             "" | 0.0.*) ;;
-            *) echo "npm has the real chloedb ($latest): no placeholder"; exit 0 ;;
+            *)
+              # The real package is there: no placeholder, and the ones npm
+              # holds are marked deprecated, so that an app pinned to one
+              # (or a lockfile) is told what to install. 0.0.1 still says
+              # Strata, and npm keeps a version's text for good.
+              echo "npm has the real chloedb ($latest): no placeholder"
+              for v in $(npm view chloedb versions --json | node -e 'const v = JSON.parse(require("fs").readFileSync(0, "utf8")); console.log([].concat(v).filter((x) => x.startsWith("0.0.")).join(" "))'); do
+                npm deprecate "chloedb@$v" "A placeholder that only held the name, not ChloeDB: npm install chloedb (ChloeDB $latest)"
+              done
+              exit 0 ;;
           esac
-          test -n "$NODE_AUTH_TOKEN" || { echo "::error::the repository secret NPM_TOKEN is not set"; exit 1; }
           npm publish --access public --provenance
 
   crates:

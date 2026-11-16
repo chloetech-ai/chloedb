@@ -32,9 +32,13 @@ name: chloedb-js release
 # token's account must be one of its maintainers) and `@chloedb/*`, stored
 # as the secret NPM_TOKEN of the environment `npm` (with required
 # reviewers, so that each publish waits for a person); then, for tags, the
-# variable. npm refuses a version it already holds, and the job skips a
-# package npm has at this version, so running it again finishes a publish
-# that stopped partway.
+# variable. Until it is set, each release needs that run by hand: the docs
+# say `npm install chloedb`, and release-publish.yml's check of them fails
+# while npm's latest is an older version. npm refuses a version it already
+# holds, and the job skips a package npm has at this version, so running it
+# again finishes a publish that stopped partway. After the first publish,
+# reserve-names.yml (run with `npm`) marks the 0.0.x placeholders
+# deprecated.
 on:
   push:
     tags: ["chloedb-js-v*", "strata-js-v*"]
