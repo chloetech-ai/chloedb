@@ -155,6 +155,13 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   Kubernetes, upgrade the operator before the coordinators: the 0.3.5
   operator adds servers with its `clusterTokenSecret`, and an older one
   sends the admin token.
+  The next release (unreleased) keeps the shard protocol at 21, and a slot
+  move's flip from a replicated shard waits for a mark that the shard's
+  primary writes through its log: a replica of it takes the flip only once
+  it applied that mark. A primary of 0.3.5 or earlier writes none, so a
+  newer replica under one refuses that flip and the maps after it, until
+  a later flip from the shard is marked or the replica is replaced. Finish
+  the upgrade before moving slots.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer

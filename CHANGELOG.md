@@ -42,6 +42,20 @@ changes collect under "Unreleased".
   before; a keyed table takes the file's rows in place of its own, as it
   did. A copy between servers into such a table is refused too.
 
+### JavaScript on npm
+
+- **`npm install chloedb` installs ChloeDB.** Until now npm had only the
+  name-holding placeholder, 0.0.1, which still pointed at Strata and threw
+  on import; the JavaScript releases were on GitHub only. 0.3.5 is
+  published there as `chloedb` with the addon of each platform as
+  `@chloedb/<platform>` (darwin-arm64, darwin-x64, linux-x64-gnu,
+  linux-arm64-gnu), which npm picks by itself. An app that got the
+  placeholder takes the release with `npm install chloedb@latest` (a plain
+  `npm install chloedb` keeps its `^0.0.x` range). The
+  JavaScript guide installs from npm first and keeps the release tarballs
+  for machines that cannot reach it, and reserve-names.yml marks the 0.0.x
+  placeholders deprecated once the real package is there.
+
 ### SQLite imports (stress test of 15 November)
 
 A test of every way a SQLite file comes in (the command line, `POST
@@ -93,6 +107,23 @@ columns, imports at once, killed, of damaged, locked and WAL files:
   (`column_2`, it was `__`); a file with no table, and an upload with no
   body, are refused (they imported nothing and answered 200); the command
   line names the file once and without `schema error:`.
+
+### Replication
+
+- A slot move from a replicated shard no longer loses a write when the
+  shard's primary fails over during the flip. The primary now writes a
+  mark of the flip through its log (`_strata/move flip`) and waits until
+  its copies hold it before it takes the flip; a replica takes the flip
+  only once it applied the mark, and a primary elected while its log holds
+  it refuses writes to the moving slots until it takes the flip. A hold of
+  the writes and an export count only in the term they were made in.
+  Before, a primary that started again as a replica took the flip given
+  first, while the new primary took writes to the slots that no copy
+  reached, and the new primary then refused the flip for good (TLC,
+  `spec/slots` `MoveNow`, `MoveStuck`). A primary of 0.3.5 or earlier
+  writes no mark, so a replica of this release under one refuses the flips
+  it takes, and the maps after them, until a later flip from that shard is
+  marked or the replica is replaced: finish an upgrade before moving slots.
 
 ## 0.3.5
 

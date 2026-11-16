@@ -260,26 +260,44 @@ impl Hold {
     }
 }
 
+/// Whether `map`, given to a shard whose slots are moving from it under
+/// `held`, as its shard `shard`, gives some of them away: the move's flip,
+/// which [`flip_ok`] decides.
+pub fn flips(held: Option<(&SlotMap, usize)>, map: &SlotMap, shard: usize) -> bool {
+    let Some(mv) = held.and_then(|(m, s)| exporting(m, s)) else { return false };
+    held.is_some_and(|(m, _)| map.epoch > m.epoch) && !mv.slots.iter().all(|&s| map.owner(s) == shard)
+}
+
 /// Whether a shard whose slots are moving from it under `held` takes
 /// `map`, as its shard `shard`, that gives some of them away (the move's
-/// flip): only while writes to them have been held since before the last
-/// export of their rows ([`Hold::covers`]), so that the shard they go to
-/// holds every write to them. A hold lost meanwhile (the shard restarted,
-/// or its coordinator did not ask for it again in time) let writes in
-/// that no export copied, which the cleanup after the flip would delete
-/// (409: the move gives up, and copies again when asked). A server of the
-/// shard that takes no writes from clients (a replica, or a primary
-/// another replaced) passes `covered`: what it holds came from the one
-/// that does, which takes the map first ([`Change::synced`]).
-pub fn flip_ok(held: Option<(&SlotMap, usize)>, map: &SlotMap, shard: usize, covered: bool) -> Result<(), ApiError> {
-    let Some(mv) = held.and_then(|(m, s)| exporting(m, s)) else { return Ok(()) };
-    if held.is_some_and(|(m, _)| map.epoch <= m.epoch) || mv.slots.iter().all(|&s| map.owner(s) == shard) || covered {
+/// flip, [`flips`]): only when `covered`, so that the shard they go to
+/// holds every write to them. For the server that takes clients' writes
+/// (`writer`), that is while writes to them have been held since before
+/// the last export of their rows ([`Hold::covers`]), or once its log holds
+/// the flip's mark, which it then writes through the log and waits for
+/// before it takes the map. A hold lost meanwhile (the shard restarted, its
+/// primary changed, or its coordinator did not ask for it again in time)
+/// let writes in that no export copied, which the cleanup after the flip
+/// would delete (409: the move gives up, and copies again when asked).
+/// Any other server of the shard (a replica, or a primary another
+/// replaced) takes the flip only once it applied the mark, acknowledged:
+/// one that took it before (a primary started again as a replica, given
+/// the flip first while the new primary took writes to the slots unheld)
+/// let a write be lost (TLC, spec/slots `MoveNow`).
+pub fn flip_ok(held: Option<(&SlotMap, usize)>, map: &SlotMap, shard: usize, covered: bool, writer: bool) -> Result<(), ApiError> {
+    if !flips(held, map, shard) || covered {
         return Ok(());
     }
-    Err(conflict(format!(
-        "writes to the slots moving from this shard were not held since their rows were last exported (it restarted, or the hold ran out), so the shard they move to may lack some: map epoch {} cannot give them away; copy them again",
-        map.epoch
-    )))
+    Err(conflict(match writer {
+        true => format!(
+            "writes to the slots moving from this shard were not held since their rows were last exported (it restarted, its primary changed, or the hold ran out), so the shard they move to may lack some: map epoch {} cannot give them away; copy them again",
+            map.epoch
+        ),
+        false => format!(
+            "this copy has not applied the mark of the flip of the slots moving from this shard, which the shard's primary writes before it takes the flip, so the primary may have taken writes to them that the shard they move to lacks: map epoch {} cannot give them away here yet",
+            map.epoch
+        ),
+    }))
 }
 
 /// How a server answered a coordinator giving it a cluster map.
@@ -1140,14 +1158,18 @@ mod tests {
     fn a_shard_gives_its_moving_slots_away_only_while_it_held_their_writes() {
         let m2 = map(2).start_move(&[0, 1], 1).unwrap();
         let m3 = m2.flip_move().unwrap();
-        assert!(flip_ok(Some((&m2, 0)), &m3, 0, true).is_ok());
-        assert_eq!(flip_ok(Some((&m2, 0)), &m3, 0, false).unwrap_err().status, 409);
+        assert!(flip_ok(Some((&m2, 0)), &m3, 0, true, true).is_ok());
+        assert_eq!(flip_ok(Some((&m2, 0)), &m3, 0, false, true).unwrap_err().status, 409);
+        // A replica refuses it until it applied the flip's mark.
+        assert!(flip_ok(Some((&m2, 0)), &m3, 0, false, false).unwrap_err().message.contains("has not applied the mark"));
+        assert!(flip_ok(Some((&m2, 0)), &m3, 0, true, false).is_ok());
+        assert!(flips(Some((&m2, 0)), &m3, 0) && !flips(Some((&m3, 0)), &m3, 0) && !flips(Some((&m2, 1)), &m3, 1));
         // Given up, or another change: the slots stay.
-        assert!(flip_ok(Some((&m2, 0)), &m2.abort_move().unwrap(), 0, false).is_ok());
-        assert!(flip_ok(Some((&m2, 0)), &m2.set_servers(1, vec!["s9".into()]).unwrap(), 0, false).is_ok());
+        assert!(flip_ok(Some((&m2, 0)), &m2.abort_move().unwrap(), 0, false, true).is_ok());
+        assert!(flip_ok(Some((&m2, 0)), &m2.set_servers(1, vec!["s9".into()]).unwrap(), 0, false, true).is_ok());
         // The shard the slots go to, and one with no move, need no hold.
-        assert!(flip_ok(Some((&m2, 1)), &m3, 1, false).is_ok());
-        assert!(flip_ok(None, &m3, 0, false).is_ok());
+        assert!(flip_ok(Some((&m2, 1)), &m3, 1, false, true).is_ok());
+        assert!(flip_ok(None, &m3, 0, false, true).is_ok());
     }
 
     #[test]

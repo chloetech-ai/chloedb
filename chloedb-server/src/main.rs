@@ -976,6 +976,38 @@ enum Command {
         #[arg(long)]
         drop_slot: bool,
     },
+    /// A test Kafka broker: enough of Kafka's protocol for the kafka
+    /// connector (and clients that need no consumer group, such as rpk) to
+    /// read and write its topics,
+    /// kept in memory, with a topic of made-up click events written at a
+    /// rate. For trying a Kafka connector without Kafka; until stopped.
+    KafkaTestBroker {
+        /// Where it listens.
+        #[arg(long, default_value = "127.0.0.1:19092")]
+        listen: std::net::SocketAddr,
+        /// The topic of made-up click events.
+        #[arg(long, default_value = "demo.clicks")]
+        topic: String,
+        /// Its partitions.
+        #[arg(long, default_value_t = 3)]
+        partitions: i32,
+        /// Events a second written to it (0: none).
+        #[arg(long, default_value_t = 5.0)]
+        rate: f64,
+        /// A user clients sign in as (SASL PLAIN), with --password.
+        #[arg(long)]
+        username: Option<String>,
+        #[arg(long, env = "CHLOEDB_KAFKA_TEST_PASSWORD", hide_env_values = true)]
+        password: Option<String>,
+        /// The most messages a partition keeps; older ones are dropped.
+        #[arg(long, default_value_t = 200_000)]
+        retain: usize,
+        /// The host clients are told to connect to (default: the --listen
+        /// address, or 127.0.0.1 for 0.0.0.0): set it when clients on
+        /// other machines read it.
+        #[arg(long)]
+        advertise: Option<String>,
+    },
     /// Switch clients over to a cluster that follows another: hold the
     /// source's writes (POST /v1/admin/hold-writes there), wait until
     /// the follower applied them all, and promote it
@@ -1414,6 +1446,22 @@ async fn run() {
             if let Err(e) = chloedb_server::postgres::run(o).await {
                 fail(&format!("follow-postgres {name}: {e}"));
             }
+            return;
+        }
+        Some(Command::KafkaTestBroker { listen, topic, partitions, rate, username, password, retain, advertise }) => {
+            let sasl = match (username, password) {
+                (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                (None, None) => None,
+                _ => fail("--username and --password go together"),
+            };
+            let o = chloedb_server::connectors::kafka_broker::Options { listen: *listen, topic: topic.clone(), partitions: *partitions, rate: *rate, sasl, retain: *retain, advertise: advertise.clone() };
+            if listen.ip().is_unspecified() && advertise.is_none() {
+                eprintln!("note: it tells clients to connect to 127.0.0.1:{}; for clients on other machines, give --advertise HOST", listen.port());
+            }
+            let b = chloedb_server::connectors::kafka_broker::TestBroker::start(o).await.unwrap_or_else(|e| fail(&format!("kafka-test-broker: {e}")));
+            out!("test kafka broker at {} (topic {topic}, {partitions} partitions, {rate} events a second); Ctrl-C stops it", b.address());
+            let _ = tokio::signal::ctrl_c().await;
+            b.stop();
             return;
         }
         Some(Command::SwitchOver { target, target_token, target_ca, name, source, source_key, source_ca, unplanned, wait_s }) => {

@@ -2,6 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ChloeDB from Python · ChloeDB docs</title>
 <link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
@@ -15,6 +22,10 @@
 <link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/python.md: edit that file and run the script, not this page. -->
 <header class="top gutter"><div class="wrap">
   <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
@@ -684,7 +695,7 @@ client.get(&quot;u2&quot;, min_seq_no=w.seq_no, min_seq_nos=w.seq_nos)</pre>
 </table></div>
 <h3 id="streams-and-kafka">Streams and Kafka<a class="anchor" href="#streams-and-kafka" aria-label="Link to this section">#</a></h3>
 <p><code>client.stream(events)</code> writes an iterable of <a href="server.html#streams">stream lines</a> through <code>/v1/stream</code> as it is read, each an operation or one event's operations as <code>{"ops": [...], "source": {"name", "offset", "ts"}}</code>, and returns the stream's last answer (<code>lines</code>, <code>written</code>, <code>skipped</code>). <code>client.source(name)</code> is the offset of the last event a source wrote (None for none), and <code>client.sources()</code> lists them all. A server skips the operations of an offset it has reached, so a stream resumed from <code>source(name) + 1</code>, or from anywhere before it, writes each event once.</p>
-<p><code>chloedb.ingest.kafka</code> is a Kafka (or Redpanda) consumer built on it, which needs <code>confluent-kafka</code> (<code>pip install confluent-kafka</code>, or <code>pip install "./chloedb-py[kafka]"</code>). Each partition is a source named <code>&lt;topic&gt;/&lt;partition&gt;</code> (after <code>prefix=</code>), and a partition given to the consumer is read from after the offset the server has, not from what the consumer group committed to Kafka, so each event is written once across consumer restarts, server restarts and rebalances. Within a partition the events are written in order.</p>
+<p><code>chloedb.ingest.kafka</code> is a Kafka (or Redpanda) consumer built on it (for one that needs no process of yours, the server reads topics itself with a <a href="connectors.html#kafka-topics">Kafka connector</a>), which needs <code>confluent-kafka</code> (<code>pip install confluent-kafka</code>, or <code>pip install "./chloedb-py[kafka]"</code>). Each partition is a source named <code>&lt;topic&gt;/&lt;partition&gt;</code> (after <code>prefix=</code>), and a partition given to the consumer is read from after the offset the server has, not from what the consumer group committed to Kafka, so each event is written once across consumer restarts, server restarts and rebalances. Within a partition the events are written in order.</p>
 <pre data-lang="python">import json
 import chloedb
 from chloedb import ingest
