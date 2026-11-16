@@ -599,7 +599,8 @@ struct Args {
     #[arg(long)]
     no_read_stats: bool,
     /// The cluster's name, as the command center shows it (default: the
-    /// StrataCluster, namespace/name, that runs a coordinator).
+    /// StrataCluster that runs a coordinator, namespace/name, or its name
+    /// alone in the cloud view's namespace).
     #[arg(long, env = "CHLOEDB_CLUSTER_NAME")]
     cluster_name: Option<String>,
     /// The cluster's environment ("production", "staging"...): the
