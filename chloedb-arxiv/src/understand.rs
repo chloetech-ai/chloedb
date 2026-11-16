@@ -295,6 +295,29 @@ fn area_word(w: &str) -> Option<&'static str> {
     }
 }
 
+/// Fields named in a word that arXiv files under categories rather than an
+/// area ("in sociology"): read as those categories when the word ends the
+/// subject, so "attention in vision transformers" keeps its words.
+fn field_cats(w: &str) -> Option<&'static [&'static str]> {
+    Some(match w {
+        "sociology" | "sociologists" => &["physics.soc-ph", "cs.SI", "cs.CY"],
+        "linguistics" | "nlp" => &["cs.CL"],
+        "neuroscience" => &["q-bio.NC"],
+        "genomics" => &["q-bio.GN"],
+        "epidemiology" => &["q-bio.PE"],
+        "chemistry" => &["physics.chem-ph"],
+        "cosmology" => &["astro-ph.CO"],
+        "education" => &["physics.ed-ph", "cs.CY"],
+        "cryptography" | "security" => &["cs.CR"],
+        "databases" => &["cs.DB"],
+        "networking" => &["cs.NI"],
+        "graphics" => &["cs.GR"],
+        "hci" => &["cs.HC"],
+        "robotics" => &["cs.RO"],
+        _ => return None,
+    })
+}
+
 const PAPER_WORDS: &[&str] = &["paper", "papers", "article", "articles", "preprint", "preprints", "work", "works", "publication", "publications", "research", "studies", "study", "results"];
 const FILLER: &[&str] = &["the", "a", "an", "is", "was", "were", "are", "be", "been", "has", "have", "had", "ever", "on", "about", "of", "that", "which", "did", "do", "does", "there", "all", "to", "for", "with", "in", "me", "show", "find", "list", "give", "tell", "please", "regarding", "related", "arxiv", "any", "some", "written", "published", "posted", "so", "far", "what", "whats", "what's", "most", "top", "best", "and", "or", "i", "should", "can", "you", "my"];
 
@@ -674,11 +697,22 @@ fn sentence(p: &mut Parsed, words: Vec<String>, now: i64) {
             i += 1;
             continue;
         }
-        // Areas: "in physics", "in math".
+        // Areas: "in physics", "in math"; fields: "in sociology".
         if matches!(w.as_str(), "in" | "within") {
             if let Some(a) = area_word(&next) {
                 p.area = Some(a.into());
                 p.note(format!("in {next}"), said(i, i + 2, &t), "area", a);
+                i += 2;
+                continue;
+            }
+            let ends = i + 2 >= t.len() || matches!(next2.as_str(), "since" | "after" | "before" | "from" | "during" | "this" | "last" | "over" | "in") || date_span(&next2).is_some() || PAPER_WORDS.contains(&next2.as_str());
+            if let Some(cs) = field_cats(&next).filter(|_| ends) {
+                for c in cs {
+                    if !p.cats.iter().any(|x| x == c) {
+                        p.cats.push(c.to_string());
+                    }
+                }
+                p.note(format!("in {next}"), said(i, i + 2, &t), "category", cs.join(","));
                 i += 2;
                 continue;
             }
@@ -725,6 +759,19 @@ fn sentence(p: &mut Parsed, words: Vec<String>, now: i64) {
         k += 1;
     }
     p.text = text.join(" ");
+    // A question about a field alone ("what's hot in sociology", the "in"
+    // taken by the question): the field's categories, not the word.
+    if p.ask.is_some() && text.len() == 1 {
+        if let Some(cs) = field_cats(&text[0].to_lowercase()) {
+            for c in cs {
+                if !p.cats.iter().any(|x| x == c) {
+                    p.cats.push(c.to_string());
+                }
+            }
+            p.note(text[0].to_lowercase(), text[0].clone(), "category", cs.join(","));
+            p.text.clear();
+        }
+    }
     // A paper named by its id: "papers like 1706.03762".
     if let Some(id) = p.text.split_whitespace().find(|w| is_arxiv_id(w)) {
         p.paper = Some(clean_id(id));
@@ -1078,6 +1125,20 @@ mod tests {
         let p = parse("mixture of experts at NeurIPS 2024", NOW);
         assert_eq!(p.venue.as_deref(), Some("NeurIPS"));
         assert_eq!(p.text, "mixture of experts");
+    }
+
+    #[test]
+    fn fields() {
+        let p = parse("What's hot in sociology", 1_790_000_000);
+        assert_eq!(p.cats, vec!["physics.soc-ph", "cs.SI", "cs.CY"]);
+        assert!(p.words().is_empty(), "{:?}", p.words());
+        assert!(matches!(p.ask, Some(Ask::Hot)));
+        let p = parse("who writes most in robotics since 2023", 1_790_000_000);
+        assert_eq!(p.cats, vec!["cs.RO"]);
+        // A field word inside the subject stays a word.
+        let p = parse("privacy in security protocols", 1_790_000_000);
+        assert!(p.cats.is_empty());
+        assert!(p.words().contains("security"), "{:?}", p.words());
     }
 
     #[test]

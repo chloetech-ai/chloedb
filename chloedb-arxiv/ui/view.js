@@ -67,7 +67,7 @@ const CSS = `
 .ax-grid { display: grid; grid-template-columns: 220px minmax(0, 1fr) 290px; gap: 26px; align-items: start; }
 .ax-grid.two { grid-template-columns: minmax(0, 1fr) 320px; }
 @media (max-width: 1120px) { .ax-grid { grid-template-columns: 200px minmax(0, 1fr); } .ax-grid > .ax-right { display: none; } }
-@media (max-width: 780px) { .ax-grid, .ax-grid.two { grid-template-columns: minmax(0, 1fr); } .ax-grid > .ax-left { display: none; } .ax-brand small { display: none; } }
+@media (max-width: 780px) { .ax-grid, .ax-grid.two { grid-template-columns: minmax(0, 1fr); } .ax-grid > .ax-left { display: none; } .ax-brand small { display: none; } .ax-box .kbd { display: none; } .ax-box input { font-size: 16px; } }
 .ax-left { position: sticky; top: 108px; max-height: calc(100vh - 120px); overflow: auto; scrollbar-width: thin; padding-right: 4px; }
 .ax-facet { margin-bottom: 18px; }
 .ax-facet h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }

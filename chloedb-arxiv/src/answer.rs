@@ -36,7 +36,11 @@ pub fn subject(p: &Parsed) -> String {
     if !w.is_empty() {
         return w;
     }
-    p.notes.iter().filter(|n| n.kind != "ask" && n.kind != "sort").map(|n| n.what.clone()).collect::<Vec<_>>().join(", ")
+    // What it is about (a field, a category, a person), not when: the
+    // dates are said in the chips ("on robotics", not "on since 2023, in robotics").
+    let what = |dates: bool| p.notes.iter().filter(|n| n.kind != "ask" && n.kind != "sort" && (dates || n.kind != "date")).map(|n| n.what.trim_start_matches("in ").to_string()).collect::<Vec<_>>();
+    let main = what(false);
+    if main.is_empty() { what(true).join(", ") } else { main.join(", ") }
 }
 
 /// Papers by year over everything (for shares), from the column.
@@ -218,44 +222,69 @@ pub async fn answer(c: &Ctx<'_>, p: &Parsed, papers: &[Row], total: i64) -> Opti
             Some(json!({"kind": "compare", "text": format!("{}. {lead} has the most papers in the last twelve months.", text.join("; ")), "terms": out}))
         }
         Ask::Hot => {
-            // Within the filters (a category, an area): what grew most in a year.
-            let mut fp = Map::new();
-            let mut q = p.clone();
-            q.text.clear();
-            q.phrases.clear();
-            let base = search::about(&q, &mut fp);
-            let join = |extra: &str| if base.is_empty() { format!("WHERE {extra}") } else { format!("{base} AND {extra}") };
+            // Within what the query is about (its filters and its words):
+            // what grew most from the twelve months before to the last twelve.
+            let scoped = !wh.is_empty();
+            let join = |extra: &str| if wh.is_empty() { format!("WHERE {extra}") } else { format!("{wh} AND {extra}") };
             let recent = join("created >= now() - INTERVAL '365 days'");
             let before = join("created >= now() - INTERVAL '730 days' AND created < now() - INTERVAL '365 days'");
-            let pr = Value::Object(fp.clone());
-            let (tr, tb, kr, kb) = tokio::join!(
+            let pr = Value::Object(params.clone());
+            let (tr, tb, kr, kb, or, ob) = tokio::join!(
                 c.soft("techniques, the last twelve months", &format!("SELECT techniques, COUNT(*) AS n FROM ax_papers {recent} GROUP BY techniques ORDER BY n DESC LIMIT 200"), pr.clone()),
                 c.soft("techniques, the twelve before", &format!("SELECT techniques, COUNT(*) AS n FROM ax_papers {before} GROUP BY techniques ORDER BY n DESC LIMIT 200"), pr.clone()),
                 c.soft("domains, the last twelve months", &format!("SELECT domains, COUNT(*) AS n FROM ax_papers {recent} GROUP BY domains ORDER BY n DESC LIMIT 200"), pr.clone()),
                 c.soft("domains, the twelve before", &format!("SELECT domains, COUNT(*) AS n FROM ax_papers {before} GROUP BY domains ORDER BY n DESC LIMIT 200"), pr.clone()),
+                async { if scoped { c.soft("topics, the last twelve months", &format!("SELECT topic, COUNT(*) AS n FROM ax_papers {recent} GROUP BY topic ORDER BY n DESC LIMIT 300"), pr.clone()).await } else { Vec::new() } },
+                async { if scoped { c.soft("topics, the twelve before", &format!("SELECT topic, COUNT(*) AS n FROM ax_papers {before} GROUP BY topic ORDER BY n DESC LIMIT 300"), pr.clone()).await } else { Vec::new() } },
             );
-            let rise = |a: &[Row], b: &[Row], col: &str| -> Vec<Value> {
+            // A subject has fewer papers than arXiv: fewer make a trend.
+            let least = if scoped { 5 } else { 20 };
+            let rise = |a: &[Row], b: &[Row], col: &str| -> Vec<(String, i64, i64, f64)> {
                 let before: HashMap<String, i64> = b.iter().map(|r| (r.s(col), r.i("n"))).collect();
                 let all_a: i64 = a.iter().map(|r| r.i("n")).sum::<i64>().max(1);
                 let all_b: i64 = b.iter().map(|r| r.i("n")).sum::<i64>().max(1);
-                let mut v: Vec<(f64, Value)> = a.iter().filter(|r| !r.s(col).is_empty() && r.i("n") >= 20).map(|r| {
+                let mut v: Vec<(String, i64, i64, f64)> = a.iter().filter(|r| !r.s(col).is_empty() && r.i("n") >= least).filter_map(|r| {
                     let k = r.s(col);
                     let n = r.i("n");
                     let m = *before.get(&k).unwrap_or(&0);
-                    // Share against share, smoothed.
+                    // Share against share, smoothed so a handful is not a boom.
                     let g = ((n as f64 + 5.0) / all_a as f64) / ((m as f64 + 5.0) / all_b as f64);
-                    let name = concepts::dict().by_slug(&k).map(|c| c.name.clone()).unwrap_or(k.clone());
-                    (g * (n as f64).ln(), json!({"id": k, "name": name, "recent": n, "before": m, "growth": (g * 100.0).round() / 100.0}))
+                    // Only a rise the counts bear out: the growth's lower end
+                    // (counts as Poisson, 90% one-sided) above 1, so 16 papers
+                    // after 2 is not ranked over 369 after 145.
+                    let low = g.ln() - 1.645 * (1.0 / (n as f64 + 0.5) + 1.0 / (m as f64 + 0.5)).sqrt();
+                    (low > 0.0).then(|| (k, n, m, (g * 100.0).round() / 100.0))
                 }).collect();
-                v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-                v.into_iter().map(|x| x.1).take(12).collect()
+                // Fastest first, as the answer says.
+                v.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal).then(b.1.cmp(&a.1)));
+                v.truncate(12);
+                v
             };
-            let techs = rise(&tr, &tb, "techniques");
-            let doms = rise(&kr, &kb, "domains");
-            let topics = c.soft("the topics growing fastest", &format!("SELECT id, label, about, papers, recent, growth, field_label FROM ax_topics WHERE recent >= 100{} ORDER BY growth DESC LIMIT 12", if p.cats.is_empty() { String::new() } else { " AND cats = :c0".into() }), json!({"c0": p.cats.first()})).await;
-            let scope = if subj.is_empty() { "arXiv".to_string() } else { subj.clone() };
+            let named = |v: Vec<(String, i64, i64, f64)>| -> Vec<Value> {
+                v.into_iter().map(|(k, n, m, g)| {
+                    let name = concepts::dict().by_slug(&k).map(|c| c.name.clone()).unwrap_or(k.clone());
+                    json!({"id": k, "name": name, "recent": n, "before": m, "growth": g})
+                }).collect()
+            };
+            let techs = named(rise(&tr, &tb, "techniques"));
+            let doms = named(rise(&kr, &kb, "domains"));
+            let topics = if scoped {
+                // The subject's own topics, by the same measure.
+                let up = rise(&or, &ob, "topic");
+                let ids: Vec<i64> = up.iter().filter_map(|x| x.0.parse().ok()).collect();
+                let rows = if ids.is_empty() { Vec::new() } else { c.soft("those topics' names", "SELECT id, label, about, papers, field_label FROM ax_topics WHERE id IN (:ids)", json!({"ids": ids})).await };
+                let by: HashMap<String, &Row> = rows.iter().map(|r| (r.s("id"), r)).collect();
+                up.into_iter().filter_map(|(k, n, m, g)| by.get(&k).map(|r| json!({"id": k, "label": r.s("label"), "about": r.s("about"), "papers": r.i("papers"), "field_label": r.s("field_label"), "recent": n, "before": m, "growth": g}))).collect::<Vec<_>>()
+            } else {
+                c.soft("the topics growing fastest", "SELECT id, label, about, papers, recent, growth, field_label FROM ax_topics WHERE recent >= 100 ORDER BY growth DESC LIMIT 12", Value::Null).await.into_iter().map(Value::Object).collect()
+            };
+            let scope = if subj.is_empty() { "arXiv".to_string() } else { subj.trim_start_matches("in ").to_string() };
             let names: Vec<String> = techs.iter().take(3).map(|t| format!("{} ({}×)", t["name"].as_str().unwrap_or(""), t["growth"])).collect();
-            let text = format!("Growing fastest in {scope} over the last twelve months: {}.", names.join(", "));
+            let text = if names.is_empty() {
+                format!("No technique grew clearly in {scope} over the last twelve months: too few papers, or none rose beyond what chance would give.")
+            } else {
+                format!("Growing fastest in {scope} over the last twelve months: {}.", names.join(", "))
+            };
             Some(json!({"kind": "hot", "text": text, "techniques": techs, "domains": doms, "topics": topics}))
         }
         Ask::Origin => {
