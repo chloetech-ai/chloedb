@@ -1,5 +1,5 @@
-//! Aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `COUNT(DISTINCT)` and
-//! percentiles ([`quantile`]), over a whole result or per group, with
+//! Aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `COUNT(DISTINCT)`,
+//! percentiles ([`quantile`]) and approximate ones ([`sketch`]), over a whole result or per group, with
 //! `HAVING` and ordering of groups.
 //!
 //! The executor accumulates rows segment by segment ([`Groups`]); shards of
@@ -21,8 +21,10 @@ use crate::value::Value;
 
 pub mod exact;
 pub mod quantile;
+pub mod sketch;
 pub use exact::{near_units, ExactSum, NEAR_EVERY};
 pub use quantile::Quantile;
+pub use sketch::Sketch;
 
 fn err(m: impl Into<String>) -> Error {
     Error::Query(m.into())
@@ -98,6 +100,8 @@ pub enum Acc {
     Distinct(BTreeSet<Part>),
     /// A percentile's values.
     Quantile(Box<Quantile>),
+    /// An approximate percentile's sketch.
+    Sketch(Box<Sketch>),
 }
 
 impl Acc {
@@ -112,6 +116,7 @@ impl Acc {
                 AggFn::CountDistinct => Acc::Distinct(BTreeSet::new()),
                 AggFn::PercentileCont(p) => Acc::Quantile(Box::new(Quantile::new(p.get(), true))),
                 AggFn::PercentileDisc(p) => Acc::Quantile(Box::new(Quantile::new(p.get(), false))),
+                AggFn::ApproxPercentile(p) => Acc::Sketch(Box::new(Sketch::new(p.get()))),
             },
             _ => Acc::Count(0),
         }
@@ -176,6 +181,7 @@ impl Acc {
                 }
             }
             Acc::Quantile(q) => return q.add(v),
+            Acc::Sketch(s) => return s.add(v),
         }
         0
     }
@@ -185,6 +191,7 @@ impl Acc {
     pub fn held(&self) -> u64 {
         match self {
             Acc::Quantile(q) => q.bytes(),
+            Acc::Sketch(s) => s.bytes(),
             _ => 0,
         }
     }
@@ -211,6 +218,7 @@ impl Acc {
             Acc::Min(m) | Acc::Max(m) => m.clone().unwrap_or(Value::Null),
             Acc::Distinct(s) => Value::Int(s.len() as i64),
             Acc::Quantile(q) => q.value(),
+            Acc::Sketch(s) => s.value(),
         }
     }
 
@@ -218,7 +226,8 @@ impl Acc {
     /// `[sum, n, integer sum]`, a distinct count the list of values, a sum
     /// `[sum, int, any, integer sum]` (integer sums as decimal text: they
     /// can exceed 64 bits), a percentile its values and how many of each
-    /// ([`Quantile::partial`]). The FLOAT sum travels rounded once, and the
+    /// ([`Quantile::partial`]), an approximate one its sketch's bytes
+    /// ([`Sketch::partial`]). The FLOAT sum travels rounded once, and the
     /// coordinator adds the shards' sums exactly.
     pub fn partial(&self) -> Value {
         match self {
@@ -226,6 +235,7 @@ impl Acc {
             Acc::Avg { sum, isum, n } => Value::List(vec![Value::Float(sum.value()), Value::Int(*n), Value::Str(isum.to_string())]),
             Acc::Distinct(s) => Value::List(s.iter().map(Part::value).collect()),
             Acc::Quantile(q) => q.partial(),
+            Acc::Sketch(s) => s.partial(),
             a => a.value(),
         }
     }
@@ -254,6 +264,7 @@ impl Acc {
             }
             (Acc::Distinct(s), Value::List(xs)) => s.extend(xs.iter().map(Part::of)),
             (Acc::Quantile(q), p) => q.merge(p).ok_or_else(bad)?,
+            (Acc::Sketch(s), p) => s.merge(p).map_err(err)?,
             _ => return Err(bad()),
         }
         Ok(())
@@ -282,6 +293,7 @@ impl Acc {
             (Acc::Min(_) | Acc::Max(_), _) => {}
             (Acc::Distinct(s), Acc::Distinct(t)) => s.extend(t),
             (Acc::Quantile(q), Acc::Quantile(r)) => q.absorb(*r),
+            (Acc::Sketch(s), Acc::Sketch(t)) => s.absorb(*t),
             (a, b) => unreachable!("absorbing {b:?} into {a:?}"),
         }
     }
@@ -425,7 +437,7 @@ impl Groups {
             for (a, v) in accs.iter_mut().zip(&r[group_cols..]) {
                 let before = a.held();
                 a.merge(v)?;
-                charge.add(a.held() - before)?;
+                charge.add(a.held().saturating_sub(before))?;
             }
         }
         Ok(())

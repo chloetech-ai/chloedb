@@ -163,6 +163,15 @@ async fn bodies_are_capped_by_route() {
     // Writes take --max-body-mb: here 1 MiB.
     let doc = |i: usize, len: usize| json!({"op": "upsert", "doc": {"id": format!("big{i}"), "title": "y".repeat(len)}});
     refused(post("/v1/write", json!({"ops": [doc(0, 1100 << 10)]}).to_string()).await);
+    // Sent at once, the refusal is read, in the API's error shape, naming
+    // the limits.
+    let r = client.post(format!("{base}/v1/write")).header("content-type", "application/json").body(json!({"ops": [doc(0, 1100 << 10)]}).to_string()).send().await;
+    if let Ok(r) = r {
+        assert_eq!(r.status(), 413);
+        let j: Json = r.json().await.unwrap();
+        assert_eq!((j["error_code"].as_str(), j["retryable"].as_bool()), (Some("too_large"), Some(false)), "{j}");
+        assert!(j["error"].as_str().unwrap().contains("1 MiB for rows") && j["error"].as_str().unwrap().contains("--max-body-mb"), "{j}");
+    }
     let r = post("/v1/write", json!({"ops": [doc(1, 900 << 10)]}).to_string()).await.unwrap();
     assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
 }
@@ -341,4 +350,147 @@ async fn a_coordinator_sends_a_busy_shard_its_part_again() {
     }
     let (status, body) = query(&base, "SELECT COUNT(*) FROM products").await;
     assert_eq!((status, body["rows"][0][0].as_u64()), (200, Some(N as u64 + 20)), "{body}");
+}
+
+/// Query understanding and "did you mean" through a coordinator held to
+/// --max-rows, as on one server: the dictionaries understanding reads
+/// (up to 200,000 values) are the server's own reads, and a coordinator
+/// corrects text by its shards' term statistics.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_capped_coordinator_understands_and_corrects_as_one_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let rows_capped = |db: Arc<Db>| {
+        let mut s = capped(db);
+        s.max_groups = None;
+        Arc::new(s)
+    };
+    let one = http(rows_capped(open(dir.path(), "all.strata", |_| true))).await;
+    let shard = |s: usize| move |i: usize| shard_of(&chloedb::Value::Str(format!("p{i:07}")), 2) == s;
+    let shards = [grpc(rows_capped(open(dir.path(), "s0.strata", shard(0)))).await, grpc(rows_capped(open(dir.path(), "s1.strata", shard(1)))).await];
+    let c = Coordinator::connect(shards.to_vec()).await.unwrap();
+    let schema = c.schema.clone();
+    let mut coord = Service::new(Backend::Cluster(Arc::new(c)), schema, agent(), 16, Duration::from_secs(10));
+    coord.max_rows = Some(100);
+    let coord = http(Arc::new(coord)).await;
+    let client = chloedb_server::http_client().build().unwrap();
+    let post = |base: &str, path: &str, body: Json| {
+        let r = client.post(format!("{base}{path}")).json(&body).send();
+        async move {
+            let r = r.await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap_or(Json::Null))
+        }
+    };
+    for text in ["waterprof hiking boots", "lether boots", "waterproof jacket", "the walking shoes"] {
+        let body = json!({"table": "products", "field": "body", "text": text});
+        let (s1, want) = post(&one, "/v1/correct", body.clone()).await;
+        let (s2, got) = post(&coord, "/v1/correct", body).await;
+        assert_eq!((s1, s2), (200, 200), "{text}: {want} {got}");
+        assert_eq!(got["text"], want["text"], "{text}: {got} vs one server's {want}");
+        assert_eq!(got["changed"], want["changed"], "{text}: {got}");
+    }
+    let (_, fixed) = post(&coord, "/v1/correct", json!({"table": "products", "field": "body", "text": "waterprof hiking boots"})).await;
+    assert_eq!((fixed["text"].as_str(), fixed["words"][0]["to"].as_str()), (Some("waterproof hiking boots"), Some("waterproof")), "{fixed}");
+    let (status, e) = post(&coord, "/v1/correct", json!({"table": "products", "field": "brand", "text": "x"})).await;
+    assert_eq!(status, 400, "{e}");
+    // Understanding: the words, and a search with them.
+    let body = json!({"table": "products", "field": "body", "text": "leather boots under 300", "fields": "category, brand, price"});
+    let (s1, want) = post(&one, "/v1/understand", body.clone()).await;
+    let (s2, got) = post(&coord, "/v1/understand", body).await;
+    assert_eq!((s1, s2), (200, 200), "{want} {got}");
+    assert_eq!((got["ranked"].clone(), got["filters"].clone(), got["boosts"].clone()), (want["ranked"].clone(), want["filters"].clone(), want["boosts"].clone()), "{got} vs one server's {want}");
+    let sql = "SELECT id FROM products ORDER BY bm25(body, :q, understand => 'boost', understand_fields => 'category, brand, price') DESC LIMIT 10";
+    let (status, a) = post(&coord, "/v1/query", json!({"sql": sql, "params": {"q": "leather boots under 300"}})).await;
+    assert_eq!(status, 200, "{a}");
+    assert_eq!(a["rows"].as_array().unwrap().len(), 10, "{a}");
+    // Without understand_fields, every keyword field is read.
+    let (status, a) = post(&coord, "/v1/understand", json!({"table": "products", "field": "body", "text": "leather boots"})).await;
+    assert_eq!(status, 200, "{a}");
+    // A field derived from a dictionary is refused on a coordinator, whose
+    // shards would each tag rows from their own share of the dictionary
+    // (audit 4, X-C2); on one server it is made.
+    let news = "CREATE TABLE news (id KEYWORD PRIMARY KEY, body TEXT, brands KEYWORD[] OPTIONS(derive = 'body', model = 'dict:products.brand'))";
+    let (status, e) = post(&coord, "/v1/sql", json!({"sql": news})).await;
+    assert_eq!(status, 400, "{e}");
+    assert!(e["error"].as_str().unwrap_or("").contains("coordinator"), "{e}");
+    let (status, e) = post(&one, "/v1/sql", json!({"sql": news})).await;
+    assert_eq!(status, 200, "{e}");
+}
+
+/// Errors answered before a handler runs (a body that is not JSON, the
+/// wrong content type, a route or method there is none of) carry the same
+/// shape as the handlers' errors: `error`, `error_code`, `retryable`.
+#[tokio::test(flavor = "multi_thread")]
+async fn errors_outside_the_handlers_have_the_api_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = capped(open(dir.path(), "e.strata", |i| i < 10));
+    let base = http(Arc::new(svc)).await;
+    let client = chloedb_server::http_client().build().unwrap();
+    let cases = [
+        (client.post(format!("{base}/v1/query")).header("content-type", "application/json").body("{x"), 400, "bad_request", "JSON"),
+        (client.post(format!("{base}/v1/query")).header("content-type", "text/plain").body("{}"), 415, "unsupported_media_type", "Content-Type"),
+        (client.post(format!("{base}/v1/query")).body("{}"), 415, "unsupported_media_type", "Content-Type"),
+        (client.get(format!("{base}/v1/nope")), 404, "not_found", "no route matches GET /v1/nope"),
+        (client.delete(format!("{base}/v1/query")), 405, "bad_request", "does not take this method"),
+    ];
+    for (req, status, code, says) in cases {
+        let r = req.send().await.unwrap();
+        assert_eq!(r.status().as_u16(), status);
+        assert!(r.headers()["content-type"].to_str().unwrap().starts_with("application/json"));
+        let j: Json = r.json().await.unwrap();
+        assert_eq!((j["error_code"].as_str(), j["retryable"].as_bool()), (Some(code), Some(false)), "{j}");
+        assert!(j["error"].as_str().unwrap().contains(says), "{says}: {j}");
+    }
+}
+
+/// A statement longer than `--max-statement-bytes`, or holding more than
+/// `--max-statement-elements` words, values and symbols, is refused with a
+/// 400 query error before it is parsed, through `/v1/query`, `/v1/sql` and
+/// `/v1/explain`; the same list passed as a parameter is not counted. The
+/// defaults take a statement as long as the server's own tests send, and
+/// 0 lifts a bound.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_statement_too_long_or_too_large_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut svc = capped(open(dir.path(), "st.strata", |_| true));
+    assert_eq!((svc.max_statement_bytes, svc.max_statement_elements), (chloedb::query::parse::STATEMENT_BYTES, chloedb::query::parse::STATEMENT_ELEMENTS));
+    svc.max_statement_bytes = 64 << 10;
+    svc.max_statement_elements = 5_000;
+    let base = http(Arc::new(svc)).await;
+    let c = chloedb_server::http_client().build().unwrap();
+    let post = |path: &'static str, body: Json| {
+        let c = c.clone();
+        let base = base.clone();
+        async move {
+            let r = c.post(format!("{base}{path}")).json(&body).send().await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap_or(Json::Null))
+        }
+    };
+    let ids = |n: usize| (0..n).map(|i| format!("'p{:07}'", i % N)).collect::<Vec<_>>().join(", ");
+    // 3,000 ids: 6,000 elements in 35 KB.
+    let many = format!("SELECT COUNT(*) FROM products WHERE id IN ({})", ids(3_000));
+    // A comment of 70 KB: one element, but too long.
+    let long = format!("SELECT COUNT(*) FROM products /* {} */", "x".repeat(70 << 10));
+    for (sql, says) in [(&many, "elements"), (&long, "bytes")] {
+        for path in ["/v1/query", "/v1/sql", "/v1/explain"] {
+            let (s, b) = post(path, json!({"sql": sql})).await;
+            assert_eq!(s, 400, "{path}: {b}");
+            assert_eq!(b["error_code"], "query_invalid", "{path}: {b}");
+            let e = b["error"].as_str().unwrap();
+            assert!(e.contains(says) && e.contains("--max-statement-") && e.contains(":ids"), "{path}: {e}");
+        }
+    }
+    // Under both: answered.
+    let (s, b) = post("/v1/query", json!({"sql": format!("SELECT COUNT(*) FROM products WHERE id IN ({})", ids(2_000))})).await;
+    assert_eq!((s, b["rows"][0][0].as_i64()), (200, Some(N as i64)), "{b}");
+    // As a parameter, any number.
+    let list: Vec<String> = (0..20_000).map(|i| format!("p{:07}", i % N)).collect();
+    let (s, b) = post("/v1/query", json!({"sql": "SELECT COUNT(*) FROM products WHERE id IN (:ids)", "params": {"ids": list}})).await;
+    assert_eq!((s, b["rows"][0][0].as_i64()), (200, Some(N as i64)), "{b}");
+    // 0: no bound.
+    let mut open_svc = capped(open(dir.path(), "st2.strata", |_| true));
+    open_svc.max_statement_bytes = 0;
+    open_svc.max_statement_elements = 0;
+    let base = http(Arc::new(open_svc)).await;
+    let r = c.post(format!("{base}/v1/query")).json(&json!({"sql": long})).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
 }

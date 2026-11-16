@@ -132,10 +132,19 @@ async fn three_shards_log_what_one_database_logs() {
     // The coordinator made the table on every shard and spread the rows.
     let count = |svc: Arc<Service>| async move { js::result(&svc.query(QueryReq { sql: "SELECT COUNT(*) FROM rank_log".into(), ..Default::default() }).await.unwrap().rs, 0.0)["rows"][0][0].as_u64().unwrap() as usize };
     assert_eq!((count(whole.clone()).await, count(coord.clone()).await), (n, n));
-    // A shard's query is not logged, and a coordinator does not export.
+    // A coordinator exports the log over its shards, as one database does;
+    // a shard's query is not logged.
     let h = http(coord.clone()).await;
-    let r = chloedb_server::http_client().build().unwrap().post(format!("{h}/v1/rank_log/export")).json(&json!({})).send().await.unwrap();
-    assert_eq!(r.status().as_u16(), 400);
+    let hw = http(whole.clone()).await;
+    let export = |base: String| async move {
+        let r = chloedb_server::http_client().build().unwrap().post(format!("{base}/v1/rank_log/export")).json(&json!({})).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        let mut ids: Vec<String> = r.text().await.unwrap().lines().map(|l| serde_json::from_str::<Json>(l).unwrap()["id"].to_string()).collect();
+        ids.sort();
+        ids
+    };
+    let (a, b) = (export(hw).await, export(h.clone()).await);
+    assert_eq!((a.len(), b.len()), (n, n));
     let r = chloedb_server::http_client().build().unwrap().post(format!("{h}/v1/query")).json(&json!({"sql": QUERIES[0], "params": {"t": "red mug"}, "shard": true, "log": true})).send().await.unwrap();
     assert_eq!(r.status().as_u16(), 400);
 }

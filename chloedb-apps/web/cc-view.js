@@ -38,6 +38,8 @@ const CSS = `
 .ac .ac-chip:hover { border-color: var(--accent); color: var(--text); }
 .ac .tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; letter-spacing: .02em; padding: 1px 7px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); white-space: nowrap; }
 .ac .tag.live { background: var(--good-soft); color: var(--good-ink); } .ac .tag.try { background: var(--warn-soft); color: var(--cc-warn-ink, #8a5b00); }
+.ac .tag.bad { background: var(--crit-soft); color: var(--crit-ink); }
+.ac .appcard .cardacts { display: flex; gap: 6px; margin-top: 2px; }
 .ac .tag.k-create { background: color-mix(in srgb, var(--ac-c) 16%, transparent); color: var(--ac-c); }
 .ac .tag.k-scratch { background: color-mix(in srgb, var(--ac-s) 18%, transparent); color: var(--ac-s); }
 .ac .tag.k-reused { background: color-mix(in srgb, var(--ac-r) 22%, transparent); color: var(--text-2); }
@@ -108,6 +110,8 @@ const CSS = `
 .ac .msg.it.bad { background: var(--crit-soft); border-color: transparent; }
 .ac .msg.sys { align-self: stretch; max-width: none; background: transparent; border: 1px dashed var(--line-2); color: var(--text-2); font-size: 12px; }
 .ac .msg.sys .i { width: 13px; height: 13px; vertical-align: -2px; }
+.ac-down { position: fixed; left: 50%; top: 64px; transform: translateX(-50%); z-index: 40; background: var(--surface); border: 1px solid var(--line-2); border-radius: 999px; padding: 6px 14px; font-size: 12.5px; color: var(--text-2); box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+.ac .prog .stopbar { display: flex; gap: 6px; align-items: center; }
 .ac .msg .m { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 4px; font-size: 11.5px; color: var(--muted); }
 .ac .linkbtn { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; }
 .ac .linkbtn:hover { text-decoration: underline; }
@@ -153,11 +157,24 @@ const CSS = `
 .ac .ac-usage .sep { flex: none; }
 .ac .device { flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; padding: 16px; overflow: auto; position: relative; }
 .ac .device .shell { position: relative; background: var(--bg); width: 100%; height: 100%; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 0 var(--line), 0 10px 30px rgba(0,0,0,.08); }
-.ac .device.phone .shell { width: 390px; height: min(800px, 100%); border-radius: 34px; border: 9px solid #15171b; box-shadow: 0 18px 40px rgba(0,0,0,.18); }
+.ac .device.phone { padding: 12px 8px; }
+.ac .device.phone .shell { box-sizing: border-box; width: 408px; max-width: 100%; height: min(800px, 100%); border-radius: 34px; border: 9px solid #15171b; box-shadow: 0 18px 40px rgba(0,0,0,.18); }
 .ac .device.tablet .shell { width: 820px; max-width: 100%; height: min(1000px, 100%); border-radius: 22px; border: 9px solid #15171b; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ac .device.phone .shell, :root:not([data-theme="light"]) .ac .device.tablet .shell { border-color: #3a3f48; } }
 :root[data-theme="dark"] .ac .device.phone .shell, :root[data-theme="dark"] .ac .device.tablet .shell { border-color: #3a3f48; }
 .ac .device iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+/* Desktop: drawn 1280 px wide (or the stage's width, when wider), scaled to fit down to MIN_SCALE, then scrolled (fitDevice) */
+.ac .device .sizer { display: none; }
+.ac .device.desktop .sizer { display: block; flex: none; }
+.ac .device.desktop { padding: 0; overflow: auto hidden; justify-content: flex-start; }
+.ac .device.desktop .shell { position: absolute; left: 0; top: 0; border-radius: 0; transform-origin: 0 0; }
+.ac .home-name { border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; min-width: 0; flex: 0 1 200px; padding: 4px 0; border-bottom: 1px dashed var(--line-2); }
+.ac .pubchoices { display: flex; flex-direction: column; gap: 6px; }
+.ac .pubchoice { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+.ac .pubchoice.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.ac .pubchoice input { margin-top: 3px; }
+.ac .pubchoice .what { display: block; font-size: 12.5px; color: var(--text-2); }
+.ac .pubwarn { border-radius: 10px; padding: 8px 10px; font-size: 12.5px; background: var(--warn-soft, var(--surface-2)); border: 1px solid color-mix(in srgb, var(--warn, #b7791f) 30%, transparent); }
 .ac .device iframe[hidden] { display: none; }
 .ac .viewerr { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center; background: var(--crit-soft); border: 1px solid color-mix(in srgb, var(--crit) 30%, transparent); border-radius: 10px; padding: 8px 10px; font-size: 12.5px; }
 .ac .building { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; text-align: center; }
@@ -232,9 +249,13 @@ const CSS = `
   .ac .grid3 { grid-template-columns: minmax(0, 1fr); }
   .ac .grid3 > .col { height: auto; min-height: 0; }
   .ac .grid3 > .ac-stage { height: 640px; }
+  /* a phone has no keyboard shortcut to show, and the hint wrapped a letter a line */
+  .ac .kbd-hint { visibility: hidden; min-width: 0; overflow: hidden; }
+  /* on a phone the app is drawn at the phone's own width, without a frame */
+  .ac .device.phone { padding: 0; }
+  .ac .device.phone .shell { width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; }
   .ac .grid3 > .builder .scroll { max-height: 55vh; }
   .ac .wsbar h1 { max-width: 70vw; }
-  .ac .wsbar .seg { display: none; }
   .ac .hero { padding: 18px; } .ac .hero h1 { font-size: 21px; }
 }
 `;
@@ -263,6 +284,7 @@ const STEP_LABELS = {
   read: () => 'Read the app and the library',
   plan: (b) => (b.first ? 'Plan the app' : stepKeys(b).includes('write') ? 'Plan the change' : 'Write the change'),
   write: (b) => (b.first ? 'Write the screens and rules' : 'Write the pieces'),
+  fix: () => 'Fix what the checks found',
   store: () => 'Check it and store it in ChloeDB',
 };
 const SOURCE_LABEL = { suggestion: 'a suggestion', edit: 'edited by hand' };
@@ -270,6 +292,14 @@ const SOURCE_LABEL = { suggestion: 'a suggestion', edit: 'edited by hand' };
 const AUTO = new Set(['repair', 'look', 'use']);
 const AUTO_LABEL = { repair: 'The engine repairs a piece that failed', look: 'The engine fixes what its screen check found', use: 'The engine builds a change from how the app is used' };
 
+// A call that failed for want of an answer, not because of what it asked:
+// the network, a timeout, the engine restarting behind chloedb-server (502,
+// 503, 504), too many requests (429).
+const transientError = (err) => !!err && (err.answered === false || [0, 408, 429, 502, 503, 504].includes(Number(err.status)));
+const DESKTOP_W = 1280; // the Desktop stage's width, as a laptop's window
+const MIN_SCALE = 0.6; // the smallest the Desktop stage is drawn: 13 px text at about 8 px
+// Columns whose values look like people's contact details (Publish warns of them).
+const CONTACT = /(^|_)(e_?mail|phone|mobile|cell|tel|telephone|whatsapp|address|postcode|zip)(_|$)/i;
 const secs = (ms) => (ms < 1000 ? `${(ms / 1000).toFixed(1)} s` : ms < 100000 ? `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s` : `${Math.floor(ms / 60000)} min ${Math.round((ms % 60000) / 1000)} s`);
 const bsecs = (ms) => (ms < 950 ? 'under 1 s' : ms < 10000 ? `${Math.max(1, Math.round(ms / 1000))} s` : ms < 90000 ? `${Math.round(ms / 5000) * 5} s` : `${Math.round(ms / 60000)} min`);
 const money = (c) => `$${(c || 0).toFixed(2)}`;
@@ -281,17 +311,18 @@ const hue = (s) => { let x = 0; for (const c of String(s)) x = (x * 31 + c.charC
 
 function stepKeys(b) {
   const seen = new Set((b?.steps || []).map((x) => x.key));
-  return ['read', 'plan', 'write', 'store'].filter((k) => k !== 'write' || seen.has(k) || b?.split);
+  // fix: a round of fixes the checks asked for, counted once it starts
+  return ['read', 'plan', 'write', 'fix', 'store'].filter((k) => (k !== 'write' || seen.has(k) || b?.split) && (k !== 'fix' || seen.has(k)));
 }
 // How far a build is (0..1) and about how long is left, as the studio
 // reckons it: each step's expected time from the last builds' timelines.
 function buildPace(b) {
   const elapsed = (b.elapsed || 0) + (Date.now() - b.at);
   const keys = stepKeys(b);
-  const exp = (k) => Math.max(200, b.expect?.[k] || (k === 'write' ? 9000 : k === 'plan' ? 15000 : 1500));
+  const exp = (k) => Math.max(200, b.expect?.[k] || (k === 'write' ? 9000 : k === 'plan' || k === 'fix' ? 15000 : 1500));
   const total = keys.reduce((a, k) => a + exp(k), 0);
   const cur = b.steps.at(-1);
-  if (!cur) return { f: 0.01, elapsed, left: total, slow: false };
+  if (!cur) return { f: 0.01, elapsed, left: total, slow: false, late: elapsed > 2 * total };
   const i = Math.max(0, keys.indexOf(cur.key));
   const before = keys.slice(0, i).reduce((a, k) => a + exp(k), 0);
   const after = keys.slice(i + 1).reduce((a, k) => a + exp(k), 0);
@@ -299,7 +330,8 @@ function buildPace(b) {
   const t = Math.max(0, elapsed - cur.t);
   let within = t < e ? 0.85 * t / e : 0.85 + 0.15 * (1 - Math.exp(-(t - e) / e));
   if (cur.key === 'write' && b.pieces?.length) within = Math.max(within, b.pieces.filter((p) => p.state === 'done').length / b.pieces.length * 0.95);
-  return { f: Math.min(0.97, (before + within * e) / total), elapsed, left: Math.max(0, e - t) + after, slow: t > e * 1.6 };
+  // late: twice what the whole build usually takes (offer to start it again)
+  return { f: Math.min(0.97, (before + within * e) / total), elapsed, left: Math.max(0, e - t) + after, slow: t > e * 1.6, late: elapsed > 2 * total };
 }
 const paceText = (b) => {
   if (!b) return 'Waiting for its turn';
@@ -341,6 +373,10 @@ function render(el, ctx) {
 
   // ---- live updates: long polls of the engine's events
 
+  // While the engine does not answer its events (restarting, or down), a
+  // note says so; it goes once the engine answers again.
+  const downNote = h('div', { class: 'ac-down', role: 'status', style: { display: 'none' } }, h('span', { class: 'spin' }), ' The app engine is not answering (restarting?). Trying again…');
+  el.append(downNote);
   let seq = null;
   (async () => {
     let fails = 0;
@@ -349,6 +385,7 @@ function render(el, ctx) {
         const out = await api(`/api/events?after=${seq ?? 0}&wait=${seq === null ? 0 : 20000}`, { timeout: 45000 });
         const first = seq === null;
         seq = out.seq;
+        if (fails) { downNote.style.display = 'none'; if (!first) page?.onEvent?.('app', {}); }
         fails = 0;
         if (!first) for (const e of out.events) { try { page?.onEvent?.(e.type, e.data || {}); } catch (err) { console.warn(err); } }
       } catch (e) {
@@ -356,6 +393,7 @@ function render(el, ctx) {
         // An engine from before /api/events: the page polls on its own.
         if (e.status === 404) { page?.noEvents?.(); return; }
         fails++;
+        if (transientError(e)) downNote.style.display = '';
         await new Promise((r) => setTimeout(r, Math.min(15000, 1000 * 2 ** Math.min(fails, 4))));
       }
     }
@@ -380,9 +418,10 @@ function render(el, ctx) {
 
   function home() {
     const ta = h('textarea', { placeholder: 'Describe the first version: what it keeps, what you do with it, what you want to see.', 'aria-label': 'Describe your app' });
+    const nameIn = h('input', { class: 'home-name', placeholder: 'Name (optional)', 'aria-label': 'The app’s name (optional; kept as you write it)', maxlength: 60 });
     const go = h('button', { class: 'btn primary', type: 'button', onclick: () => create() }, icon('sparkle'), 'Build it');
     const err = h('span', { class: 'small', style: { color: 'var(--crit-ink)' } });
-    const tip = h('span', { class: 'small muted grow' }, '⌘/Ctrl + Enter');
+    const tip = h('span', { class: 'small muted grow kbd-hint' }, '⌘/Ctrl + Enter');
     async function create() {
       const description = ta.value.trim();
       if (description.length < 5) { ta.focus(); return; }
@@ -390,7 +429,7 @@ function render(el, ctx) {
       go.replaceChildren(h('span', { class: 'spin' }), 'Starting');
       err.textContent = '';
       try {
-        const out = await post('/api/apps', { description });
+        const out = await post('/api/apps', { description, ...(nameIn.value.trim() ? { name: nameIn.value.trim() } : {}) });
         location.hash = ctx.href('a', out.app);
       } catch (e) {
         err.textContent = e.status === 403 ? 'Building an app needs an admin key' : e.message;
@@ -403,7 +442,7 @@ function render(el, ctx) {
     const hero = h('section', { class: 'hero' },
       h('h1', {}, 'What should we build?'),
       h('p', { class: 'lead' }, 'Describe an app in a sentence or two. The agent plans it, declares its tables, screens and rules as CREATE statements, writes JavaScript only where a statement cannot say it, checks every piece, and keeps the app in this cluster as rows. Then change it by asking.'),
-      h('div', { class: 'prompt' }, ta, h('div', { class: 'bar' }, tip, err, go)),
+      h('div', { class: 'prompt' }, ta, h('div', { class: 'bar' }, nameIn, tip, err, go)),
       h('div', { class: 'examples' }, EXAMPLES.map(([t, d]) => h('button', { class: 'ac-chip', type: 'button', title: d, onclick: () => { ta.value = d; ta.focus(); } }, icon('plus'), t))),
       facts);
     const gallery = h('div', { class: 'gallery' }, h('div', { class: 'small muted' }, 'Loading the apps...'));
@@ -412,13 +451,30 @@ function render(el, ctx) {
     setTimeout(() => ta.focus(), 0);
 
     const made = new Map();
+    // An app's state in a word: its live version, building, or "did not
+    // build" (its first build failed; the engine says so, status).
+    const stateTag = (a) => (Number(a.head) ? h('span', { class: 'tag live' }, `v${a.head}`)
+      : a.status === 'failed' ? h('span', { class: 'tag bad', title: 'Its first build did not go through: open it to see why, or try again' }, 'did not build')
+        : h('span', { class: 'tag try' }, 'building'));
+    const stateWord = (a) => (Number(a.head) ? `v${a.head}` : a.status === 'failed' ? 'did not build' : 'building');
+    const again = async (e, a) => {
+      e.preventDefault(); e.stopPropagation();
+      try { await post(`/api/apps/${a.id}/requests`, { text: a.description }); location.hash = ctx.href('a', a.id); } catch (err) { toast(err.status === 403 ? 'Building an app needs an admin key' : err.message, 'bad'); }
+    };
+    const drop = async (e, a) => {
+      e.preventDefault(); e.stopPropagation();
+      const ok = await core.confirm({ title: `Delete “${String(a.name || a.id).trim()}”?`, ok: 'Delete app', danger: true, body: 'Its first version never built, so it has no screens or rows: this removes its request and what it cost from the gallery.' });
+      if (!ok) return;
+      try { await post(`/api/apps/${a.id}/delete`, {}); toast('Deleted', 'ok'); refresh(); } catch (err) { toast(err.status === 403 ? 'Deleting an app needs an admin key' : err.message, 'bad'); }
+    };
     const card = (a) => {
       const m = made.get(a.id);
       const initials = String(a.name || a.id).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
       return h('a', { class: 'appcard', href: ctx.href('a', a.id) },
         h('div', { class: 'row' }, h('div', { class: 'ico', style: { background: `hsl(${hue(a.id)} 55% 48%)` } }, initials || '·'),
-          h('div', { class: 'grow' }, h('div', { class: 'nm' }, a.name || a.id), h('div', { class: 'meta' }, a.head ? h('span', { class: 'tag live' }, `v${a.head}`) : h('span', { class: 'tag try' }, 'building'), a.created ? core.ago(new Date(a.created).getTime()) : null))),
+          h('div', { class: 'grow' }, h('div', { class: 'nm' }, a.name || a.id), h('div', { class: 'meta' }, stateTag(a), a.created ? core.ago(new Date(a.created).getTime()) : null, a.cost?.builds ? h('span', { title: `What its ${a.cost.builds} build${a.cost.builds === 1 ? '' : 's'} cost` }, money(a.cost.usd)) : null))),
         h('div', { class: 'ds' }, a.description || ''),
+        !Number(a.head) && a.status === 'failed' ? h('div', { class: 'cardacts' }, h('button', { class: 'btn sm', type: 'button', onclick: (e) => again(e, a) }, 'Try again'), h('button', { class: 'btn sm ghost', type: 'button', onclick: (e) => drop(e, a) }, 'Delete')) : null,
         m && m.runs ? [meter(m, false), h('div', { class: 'meta' }, h('span', {}, h('b', { style: { color: 'var(--ac-c)' } }, pct(m.totals.create.share)), ' from CREATE'), h('span', {}, `${num(m.runs)} lines`))] : h('div', { class: 'ac-meter' }));
     };
     let apps = [];
@@ -436,7 +492,7 @@ function render(el, ctx) {
     };
     const group = ([a, ...older]) => (older.length
       ? h('div', { class: 'appgrp' }, card(a), h('div', { class: 'earlier', title: 'Other apps with this name, newest first' }, h('span', {}, `${older.length} earlier:`),
-        older.map((o) => h('a', { href: ctx.href('a', o.id) }, o.head ? `v${o.head}` : 'building', o.created ? ` · ${core.ago(new Date(o.created).getTime())}` : ''))))
+        older.map((o) => h('a', { href: ctx.href('a', o.id) }, stateWord(o), o.created ? ` · ${core.ago(new Date(o.created).getTime())}` : ''))))
       : card(a));
     const paint = () => {
       gallery.replaceChildren(...(apps.length ? groups().map(group) : [core.empty('box', 'No apps yet', 'Describe one above, or start from an example.')]));
@@ -448,11 +504,12 @@ function render(el, ctx) {
         paint();
         const s = status.spend;
         const named = groups().length;
-        facts.replaceChildren(
+        // (replaceChildren prints a null as "null": only what is there)
+        facts.replaceChildren(...[
           h('span', {}, h('b', {}, String(named)), ` app${named === 1 ? '' : 's'}`, named < apps.length ? ` (${apps.length} with the earlier ones)` : ''),
           status.model && status.model !== 'null' ? h('span', {}, 'built by ', h('b', {}, String(status.model))) : null,
           h('span', {}, s && s.cap != null ? [h('b', {}, money(s.usd)), ` spent of the ${money(s.cap)} limit`] : 'no spending limit'),
-          status.feed ? h('span', {}, h('b', {}, 'live'), ': following the cluster’s changes') : null);
+          status.feed ? h('span', {}, h('b', {}, 'live'), ': following the cluster’s changes') : null].filter(Boolean));
         // What each app is made of, a few at a time.
         for (const a of apps.slice(0, 24)) {
           if (made.has(a.id) || !a.head) continue;
@@ -604,7 +661,9 @@ function render(el, ctx) {
     const W = {
       st: null, view: firstScreen, frames: new Map(), errors: new Map(), left: new Map(),
       lines: [], build: null, runningText: '', runningId: null, ended: new Set(), failed: null, previews: new Map(), previewView: null,
-      tab: 'made', device: (() => { try { return localStorage.getItem('ac-device') || 'desktop'; } catch { return 'desktop'; } })(),
+      // The device the stage draws: the owner's choice, else (auto) the one
+      // the stage's width shows at its real size (fitDevice).
+      tab: 'data', device: (() => { try { return localStorage.getItem('ac-device') || 'auto'; } catch { return 'auto'; } })(),
       tryV: null, pick: null, designCss: '', polling: false, stopped: false, logOpen: false,
     };
     const atV = () => (W.tryV ? `?v=${W.tryV}` : '');
@@ -667,15 +726,70 @@ __sa_ready();
     const title = h('h1', {}, '…');
     const verTag = h('span');
     const status = h('span', { class: 'small muted' });
-    const devices = core.seg([['phone', 'Phone', 'A phone, 390 px wide'], ['tablet', 'Tablet', 'A tablet, 820 px wide'], ['desktop', 'Desktop', 'The whole stage']], W.device, (v) => {
+    const devices = core.seg([['phone', 'Phone', 'A phone, 390 px wide'], ['tablet', 'Tablet', 'A tablet, 820 px wide'], ['desktop', 'Desktop', `A computer, ${DESKTOP_W} px wide: drawn smaller when the stage is narrower, down to ${Math.round(MIN_SCALE * 100)}%, then scrolled`]], W.device === 'auto' ? null : W.device, (v) => {
       W.device = v; try { localStorage.setItem('ac-device', v); } catch { /* this visit only */ }
-      deviceBox.className = `device ${v}`;
+      fitDevice();
     });
     const ownLink = h('a', { class: 'btn sm', target: '_blank', rel: 'noopener', title: 'The app on its own, as people use it: sign-in, a phone', hidden: true }, icon('ext'), 'Its own page');
     // Open to the public, or not: the tag opens the Publish tab.
     const pubTag = h('button', { class: 'pubtag', type: 'button', onclick: () => { W.tab = 'publish'; paintInspector(); } });
     const studioBtn = h('button', { class: 'btn sm ghost', type: 'button', title: 'Open the standalone studio in a tab of its own', onclick: () => openStudio(`#/app/${appId}`) }, 'Studio');
-    const bar = h('div', { class: 'wsbar' }, h('a', { class: 'crumb', href: ctx.href() }, icon('left'), 'Apps'), title, verTag, status, h('span', { class: 'grow' }), devices, pubTag, ownLink, studioBtn);
+    const moreBtn = h('button', { class: 'btn sm ghost icon', type: 'button', title: 'Rename or delete this app', 'aria-label': 'Rename or delete this app',
+      onclick: (e) => core.menu(e.currentTarget, [{ label: 'Rename…', icon: 'edit', onclick: renameApp }, { label: 'Duplicate', icon: 'copy', onclick: duplicateApp },
+        { label: 'Export its data (JSON)', icon: 'download', onclick: () => exportData() }, '-', { label: 'Delete app…', icon: 'trash', danger: true, onclick: deleteApp }]) }, icon('dots'));
+    const costTag = h('span', { class: 'small muted', title: 'What the model cost for every build of this app' });
+    const bar = h('div', { class: 'wsbar' }, h('a', { class: 'crumb', href: ctx.href() }, icon('left'), 'Apps'), title, verTag, status, costTag, h('span', { class: 'grow' }), devices, pubTag, ownLink, studioBtn, moreBtn);
+
+    function renameApp() {
+      const input = h('input', { class: 'input', value: W.st?.app.name || '', maxlength: 60, 'aria-label': 'The app’s name', style: { width: '100%' } });
+      const save = h('button', { class: 'btn primary' }, 'Rename');
+      const cancel = h('button', { class: 'btn' }, 'Cancel');
+      const m = core.modal({ title: 'Rename this app', body: [h('p', { class: 'dim', style: { marginTop: 0 } }, 'The name in the gallery and on its screens. It stays as you write it: later changes do not rename it.'), input], foot: [cancel, save] });
+      const go = async () => {
+        const name = input.value.trim();
+        if (!name) { input.focus(); return; }
+        save.disabled = true;
+        try { await post(`${base}/rename`, { name }); m.close(); toast('Renamed', 'ok'); refresh(); } catch (e) { save.disabled = false; toast(e.status === 403 ? 'Renaming an app needs an admin key' : e.message, 'bad'); }
+      };
+      save.onclick = go;
+      cancel.onclick = () => m.close();
+      input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } };
+    }
+    async function duplicateApp() {
+      try {
+        const out = await post(`${base}/duplicate`, {});
+        toast('Copied, with its data', 'ok');
+        location.hash = ctx.href('a', out.app);
+      } catch (e) { toast(e.status === 403 ? 'Copying an app needs an admin key' : e.message, 'bad'); }
+    }
+    // Every table's rows as one JSON file, or one table's as CSV.
+    const save = (text, file, type) => { const url = URL.createObjectURL(new Blob([text], { type })); const a = h('a', { href: url, download: file }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
+    const fileName = () => String(W.st?.app.name || appId).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || appId;
+    async function exportData(table = null) {
+      try {
+        const out = await api(`${base}/export`);
+        if (!table) { save(JSON.stringify(out, null, 2), `${fileName()}.json`, 'application/json'); return; }
+        const rows = out.tables[table] || [];
+        const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+        const cell = (v) => { const t = v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v); return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+        save([cols.join(','), ...rows.map((r) => cols.map((c) => cell(r[c])).join(','))].join('\r\n'), `${fileName()}-${table}.csv`, 'text/csv');
+      } catch (e) { toast(e.message, 'bad'); }
+    }
+    async function deleteApp() {
+      const st = W.st;
+      const name = st?.app.name || appId;
+      const rows = (st?.tables || []).reduce((a, t) => a + (t.rows || 0), 0);
+      const ok = await core.confirm({
+        title: `Delete ${name}?`, ok: 'Delete app', danger: true, typed: appId,
+        body: `This removes the app for good: its screens and versions, its ${(st?.tables || []).length} table${(st?.tables || []).length === 1 ? '' : 's'} (app_${appId}_*, ${num(rows)} row${rows === 1 ? '' : 's'}), its files and what people did in it${st?.publish?.on ? ', and its public address' : ''}. Other apps and the shared library stay as they are.`,
+      });
+      if (!ok) return;
+      try {
+        await post(`${base}/delete`, {});
+        toast(`${name} deleted`, 'ok');
+        location.hash = ctx.href();
+      } catch (e) { toast(e.status === 403 ? 'Deleting an app needs an admin key' : e.message, 'bad'); }
+    }
 
     const convo = h('div', { class: 'convo' });
     const convoScroll = h('div', { class: 'scroll' }, convo);
@@ -689,9 +803,34 @@ __sa_ready();
     const screens = h('div', { class: 'screens', role: 'tablist' });
     const reload = h('button', { class: 'btn ghost icon sm', type: 'button', title: 'Start the screen again', onclick: () => { for (const f of W.frames.values()) f.iframe.remove(); W.frames.clear(); W.errors.clear(); W.left.clear(); paintStage(); } }, icon('refresh'));
     const tryBar = h('div');
-    const deviceBox = h('div', { class: `device ${W.device}` });
+    const deviceBox = h('div', { class: 'device' });
     const shell = h('div', { class: 'shell' });
-    deviceBox.append(shell);
+    // What the stage scrolls over when the desktop is wider than it, drawn smaller.
+    const sizer = h('div', { class: 'sizer' });
+    deviceBox.append(sizer, shell);
+    // The device drawn: the owner's choice, else the largest the stage shows
+    // at its own size (a computer from 900 px, a tablet from 640 px, else a
+    // phone), so the app's text is never drawn too small to read. A computer
+    // keeps its width (a table stays a table, its columns all there), drawn
+    // smaller when the stage is narrower, but never under MIN_SCALE: the
+    // stage scrolls sideways instead.
+    function fitDevice() {
+      const w = deviceBox.clientWidth, ht = deviceBox.clientHeight;
+      const dev = W.device !== 'auto' ? W.device : !w ? 'phone' : w >= 900 ? 'desktop' : w >= 640 ? 'tablet' : 'phone';
+      deviceBox.className = `device ${dev}`;
+      devices.set(dev);
+      if (dev !== 'desktop') { shell.style.width = shell.style.height = shell.style.transform = shell.style.left = sizer.style.width = sizer.style.height = ''; return; }
+      if (!w || !ht) return;
+      const width = Math.max(DESKTOP_W, w);
+      const k = Math.max(MIN_SCALE, w / width);
+      shell.style.width = `${width}px`;
+      shell.style.height = `${Math.round(ht / k)}px`;
+      shell.style.transform = k < 1 ? `scale(${k})` : '';
+      sizer.style.width = `${Math.round(width * k)}px`;
+      sizer.style.height = `${ht}px`;
+    }
+    const fitter = typeof ResizeObserver === 'function' ? new ResizeObserver(() => fitDevice()) : null;
+    fitter?.observe(deviceBox);
     // Usage: the Activity view (web/activity.js, the studio's), over the whole stage.
     const usageBox = h('div', { class: 'ac-usage', hidden: true });
     const stage = h('section', { class: 'col ac-stage' }, h('div', { class: 'colhd', style: { background: 'var(--surface)' } }, screens, reload), tryBar, deviceBox, usageBox);
@@ -756,7 +895,10 @@ __sa_ready();
     function paint() {
       const st = W.st;
       title.textContent = st.app.name || appId;
-      verTag.replaceChildren(st.version.n ? h('span', { class: `tag ${st.version.trying ? 'try' : 'live'}` }, st.version.trying ? `trying v${st.version.trying} · live v${st.version.live}` : `v${st.version.n} live`) : h('span', { class: 'tag try' }, 'first version'));
+      costTag.textContent = st.cost?.builds ? `${money(st.cost.usd)} in ${st.cost.builds} build${st.cost.builds === 1 ? '' : 's'}` : '';
+      const firstFailed = !st.version.n && !st.running && !W.lines.length && ['failed', 'stopped'].includes((st.requests || [])[0]?.status);
+      verTag.replaceChildren(st.version.n ? h('span', { class: `tag ${st.version.trying ? 'try' : 'live'}` }, st.version.trying ? `trying v${st.version.trying} · live v${st.version.live}` : `v${st.version.n} live`)
+        : firstFailed ? h('span', { class: 'tag bad' }, 'did not build') : h('span', { class: 'tag try' }, 'first version'));
       status.replaceChildren(...(W.lines.length ? [h('span', { class: 'spin' }), ' building'] : []));
       const pub = st.publish;
       pubTag.hidden = !pub || !st.views.length;
@@ -789,16 +931,15 @@ __sa_ready();
           items.push(h('div', { class: 'msg it' }, h('div', {}, r.comp ? h('b', {}, `Version ${r.comp} is live. `) : null, r.summary || 'Done.'),
             h('div', { class: 'm' }, r.ms ? h('span', {}, secs(r.ms)) : null, r.cost ? h('span', {}, money(r.cost)) : null, r.created ? h('span', {}, core.ago(new Date(r.created).getTime())) : null,
               r.source !== 'edit' ? h('button', { class: 'linkbtn', onclick: () => showTimeline(appId, r.id, r.comp ? `How version ${r.comp} was built` : 'This build') }, 'Timeline') : null)));
-        } else if (r.status === 'failed') {
-          items.push(h('div', { class: 'msg it bad' }, h('b', {}, 'This did not go through. '), r.error || '',
-            h('div', { class: 'm' }, h('button', { class: 'linkbtn', onclick: () => ask(r.text) }, 'Try again'), h('button', { class: 'linkbtn', onclick: () => showTimeline(appId, r.id, 'How this build failed') }, 'Timeline'))));
+        } else if (r.status === 'failed' || r.status === 'stopped') {
+          items.push(failure(r.said, r.error, r.text, r.status === 'failed' ? r.id : null));
         }
       }
       if (W.lines.length) {
         items.push(asked(W.runningText, W.runningSource));
         items.push(progressBox());
-      } else if (W.failed && !reqs.some((r) => r.status === 'failed' && r.text === W.failed.text)) {
-        items.push(h('div', { class: 'msg it bad' }, h('b', {}, 'This did not go through. '), W.failed.error, h('div', { class: 'm' }, h('button', { class: 'linkbtn', onclick: () => ask(W.failed.text) }, 'Try again'))));
+      } else if (W.failed && !reqs.some((r) => (r.status === 'failed' || r.status === 'stopped') && r.text === W.failed.text)) {
+        items.push(failure(W.failed.said, W.failed.error, W.failed.text, null));
       }
       // Built from use: versions the engine made from patterns in what people do.
       const cands = (st.evolve?.candidates || []).filter((c) => c.status === 'ready' || c.status === 'building');
@@ -828,9 +969,22 @@ __sa_ready();
       }
       convo.replaceChildren(...items);
       ta.disabled = false;
-      ta.placeholder = st.version.n ? 'Ask for a change: "add a due date and sort by it", "a chart of this week", "let me import a CSV"…' : 'Waiting for the first version… you can queue a change now.';
+      const firstFailed = !st.version.n && !W.lines.length && ['failed', 'stopped'].includes((st.requests || [])[0]?.status);
+      ta.placeholder = st.version.n ? 'Ask for a change: "add a due date and sort by it", "a chart of this week", "let me import a CSV"…'
+        : firstFailed ? 'Describe the app again, in other words if you like, to build its first version…' : 'Waiting for the first version… you can queue a change now.';
       hint.textContent = W.lines.length ? 'Requests wait their turn' : '⌘/Ctrl + Enter';
       if (nearBottom || W.lines.length) convoScroll.scrollTop = convoScroll.scrollHeight;
+    }
+
+    // A build that did not go through: what went wrong and what to do, in a
+    // sentence (the engine's said), the error itself folded under Details.
+    function failure(said, error, text, requestId) {
+      const t = said || { title: 'The build did not go through.', hint: '' };
+      const stopped = t.title === 'Stopped.';
+      return h('div', { class: `msg it${stopped ? '' : ' bad'}` }, h('b', {}, t.title), t.hint ? ` ${t.hint}` : null,
+        error && !stopped ? h('details', { class: 'log' }, h('summary', {}, 'Details'), h('div', {}, error)) : null,
+        h('div', { class: 'm' }, h('button', { class: 'linkbtn', onclick: () => ask(text) }, 'Try again'),
+          requestId ? h('button', { class: 'linkbtn', onclick: () => showTimeline(appId, requestId, 'How this build failed') }, 'Timeline') : null));
     }
 
     // What was asked: by the owner, or by the engine itself (a repair, the
@@ -864,13 +1018,26 @@ __sa_ready();
             state === 'done' && s.end != null ? h('span', { class: 'took' }, bsecs(s.end - s.t)) : null);
         })),
         b?.pieces?.length ? h('div', { class: 'bits' }, b.pieces.map((p) => h('span', { class: `bit ${p.state}`, title: `${p.kind} ${p.label}` }, p.state === 'done' ? '✓' : h('span', { class: 'spin' }), p.label))) : null,
-        h('div', { class: 'now' }, nowLine), log);
+        h('div', { class: 'now' }, nowLine),
+        h('div', { class: 'm stopbar' }, h('button', { class: 'btn sm ghost', type: 'button', title: 'Stop this build: the model stops at once and the app stays as it is', onclick: () => stopBuild(false) }, 'Stop'),
+          h('button', { class: 'btn sm', type: 'button', style: { display: b && buildPace(b).late ? '' : 'none' }, title: 'It is taking twice as long as builds here usually do', onclick: () => stopBuild(true) }, 'Stop and try again')),
+        log);
+    }
+    async function stopBuild(again) {
+      const text = W.runningText;
+      try {
+        const out = await post(`${base}/stop`, W.runningId ? { request: W.runningId } : {});
+        if (!out.stopped) { toast('Nothing is being built right now'); return; }
+        if (again && text) { W.lines = []; await ask(text); }
+      } catch (e) { toast(e.status === 403 ? 'Stopping a build needs an admin key' : e.message, 'bad'); }
     }
     const pacer = setInterval(() => {
       if (!W.lines.length || !W.build) return;
       const f = buildPace(W.build).f;
       for (const el of root.querySelectorAll('.prog .fill')) el.style.width = `${Math.round(f * 1000) / 10}%`;
       for (const el of root.querySelectorAll('.prog .pace')) el.textContent = paceText(W.build);
+      const late = buildPace(W.build).late;
+      for (const el of root.querySelectorAll('.prog .stopbar .btn:not(.ghost)')) el.style.display = late ? '' : 'none';
     }, 250);
 
     async function submit() {
@@ -909,7 +1076,7 @@ __sa_ready();
       // the screens
       screens.replaceChildren(...(st.views.length ? st.views.map((v) => h('button', { type: 'button', role: 'tab', 'aria-pressed': String(v.slug === W.view), onclick: () => switchView(v.slug) },
         v.title, W.errors.has(v.slug) ? h('span', { class: 'dot', title: 'This screen hit an error' }) : null)) : [h('span', { class: 'small muted', style: { padding: '0 6px' } }, 'No screens yet')]),
-        st.views.length ? h('button', { type: 'button', role: 'tab', class: 'usage-tab', title: 'What people did in the app: each visit, step by step', 'aria-pressed': String(W.view === USAGE), onclick: () => switchView(USAGE) }, h('span', { class: 'pulse' }), 'Usage') : null);
+        ...(st.views.length ? [h('button', { type: 'button', role: 'tab', class: 'usage-tab', title: 'What people did in the app: each visit, step by step', 'aria-pressed': String(W.view === USAGE), onclick: () => switchView(USAGE) }, h('span', { class: 'pulse' }), 'Usage')] : []));
       paintUsage();
       // trying a version
       const c = st.version.trying ? (st.evolve?.candidates || []).find((x) => x.n === st.version.trying) : null;
@@ -917,8 +1084,8 @@ __sa_ready();
         c?.status === 'ready' ? h('button', { class: 'btn sm primary', onclick: () => decide(c, 'keep') }, 'Keep') : null,
         h('button', { class: 'btn sm ghost', onclick: () => tryVersion(null) }, 'Back to live'))] : []));
       // screens drawn while the model writes the rest
-      shell.querySelector('.previewbar')?.remove();
-      shell.querySelector('.building')?.remove();
+      deviceBox.querySelector('.previewbar')?.remove();
+      deviceBox.querySelector('.building')?.remove();
       if (W.previews.size && W.lines.length) {
         const list = [...W.previews.values()].sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
         const cur = W.previews.get(W.previewView) || list[0];
@@ -932,7 +1099,7 @@ __sa_ready();
           pv.srcdoc = srcdoc({ slug: cur.slug, id: `preview:${cur.slug}`, title: cur.title, spec: { screen: true }, code: JSON.stringify({ ...cur.screen, preview: true }) }, {});
           shell.append(pv);
         }
-        shell.append(h('div', { class: 'previewbar' }, h('span', { class: 'spin' }), h('b', {}, 'Preview'), h('span', { class: 'grow muted' }, 'while the agent writes the rest'),
+        deviceBox.append(h('div', { class: 'previewbar' }, h('span', { class: 'spin' }), h('b', {}, 'Preview'), h('span', { class: 'grow muted' }, 'while the agent writes the rest'),
           list.map((p) => h('button', { class: 'ac-chip', style: p.slug === cur.slug ? { borderColor: 'var(--accent)' } : null, onclick: () => { W.previewView = p.slug; paintStage(); } }, p.title))));
         return;
       }
@@ -940,9 +1107,10 @@ __sa_ready();
       if (!st.views.length) {
         for (const f of W.frames.values()) f.iframe.remove();
         W.frames.clear();
-        const failedFirst = !st.running && !W.lines.length && (st.requests || []).find((r) => r.status === 'failed');
-        shell.append(h('div', { class: 'building' }, h('div', { class: 'box' },
-          h('h2', {}, failedFirst ? 'The first version did not build' : 'Building the first version'),
+        const failedFirst = !st.running && !W.lines.length && ['failed', 'stopped'].includes((st.requests || [])[0]?.status) ? st.requests[0] : null;
+        deviceBox.append(h('div', { class: 'building' }, h('div', { class: 'box' },
+          h('h2', {}, failedFirst ? (failedFirst.status === 'stopped' ? 'The first build was stopped' : 'The first version did not build') : 'Building the first version'),
+          failedFirst?.said && failedFirst.status !== 'stopped' ? h('div', { class: 'small', style: { textAlign: 'center' } }, failedFirst.said.title) : null,
           h('div', { class: 'small dim', style: { textAlign: 'center' } }, st.app.description),
           W.lines.length ? h('div', { class: 'small muted', style: { textAlign: 'center' } }, 'Follow it on the left; its screens show here as soon as they are written.')
             : failedFirst ? h('button', { class: 'btn sm', style: { alignSelf: 'center' }, onclick: () => ask(st.app.description) }, 'Try again') : h('div', { class: 'small muted', style: { textAlign: 'center' } }, h('span', { class: 'spin' }), ' Waiting for the engine…'))));
@@ -973,10 +1141,10 @@ __sa_ready();
       }
       for (const [slug, f] of W.frames) f.iframe.hidden = slug !== W.view;
       if (W.view === USAGE) return;
-      shell.querySelector('.viewerr')?.remove();
+      deviceBox.querySelector('.viewerr')?.remove();
       const err = W.errors.get(W.view);
       if (err) {
-        shell.append(h('div', { class: 'viewerr' }, icon('bad'), h('div', { class: 'grow' }, h('b', {}, 'This screen hit an error. '), err.message,
+        deviceBox.append(h('div', { class: 'viewerr' }, icon('bad'), h('div', { class: 'grow' }, h('b', {}, 'This screen hit an error. '), err.message,
           err.repairing ? h('div', { class: 'small muted' }, h('span', { class: 'spin' }), ' The engine is repairing it; the fixed version replaces it when ready.') : null),
           !err.repairing ? h('button', { class: 'btn sm', onclick: () => ask(`The screen "${v?.title}" shows this error: ${err.message}. Fix it.`) }, 'Ask to fix') : null,
           h('button', { class: 'btn sm ghost', onclick: () => { W.errors.delete(W.view); paintStage(); } }, 'Dismiss')));
@@ -1018,7 +1186,7 @@ __sa_ready();
       for (const f of W.frames.values()) if (f.iframe.contentWindow === e.source) entry = f;
       const preview = !entry && [...shell.querySelectorAll('iframe.pv')].some((f) => f.contentWindow === e.source);
       if (!entry && !preview) return;
-      const reply = (value, error, refused) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused }, '*');
+      const reply = (value, error, refused, transient) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused, transient }, '*');
       if (preview && m.kind === 'rpc' && !['sql', 'me', 'people', 'files'].includes(m.method)) { reply(undefined, 'a preview changes nothing'); return; }
       try {
         if (m.kind === 'rpc') {
@@ -1031,7 +1199,9 @@ __sa_ready();
             case 'remove': value = await post(`${base}/remove${atV()}`, { table: a, id: b }); break;
             case 'call': value = (await post(`${base}/call${atV()}`, { name: a, input: b })).result; break;
             case 'me': value = null; break; // people sign in on the app's own page
-            case 'signIn': case 'signUp': case 'signOut': throw new Error('People sign in on the app’s own page; here you see the app as a visitor does');
+            case 'companies': value = []; break;
+            case 'company': value = null; break;
+            case 'signIn': case 'signUp': case 'signOut': case 'createCompany': case 'useCompany': case 'addToCompany': case 'joinCompany': throw new Error('People sign in on the app’s own page; here you see the app as a visitor does');
             case 'people': value = (await api(`${base}/people`)).people; break;
             case 'files': value = (await post(`${base}/files/info`, { ids: a })).files.map((f) => ({ ...f, url: `${kit.base}${f.url}` })); break;
             case 'email': value = (await post(`${base}/email`, a)).email; break;
@@ -1061,14 +1231,19 @@ __sa_ready();
           paintStage();
         }
       } catch (err) {
-        if (m.kind === 'rpc') reply(undefined, err.message, !!err.body?.refused);
+        // A refusal (a rule's, or a key's: 401, 403) is an answer, and a call
+        // nobody answered (the network, the engine restarting: no answer, 502
+        // to 504) is no fault of the view: neither is reported as its error.
+        if (m.kind === 'rpc') reply(undefined, err.message, !!err.body?.refused || err.status === 401 || err.status === 403, transientError(err));
       }
     };
     window.addEventListener('message', onMessage);
 
     // ---- the inspector
 
-    const TABS = [['made', 'Made of'], ['time', 'Time'], ['code', 'Code'], ['data', 'Data'], ['versions', 'Versions'], ['design', 'Design'], ['reach', 'Reach'], ['publish', 'Publish']];
+    // What an owner needs first (their data, its versions, its look, who can
+    // use it), then how it is made.
+    const TABS = [['data', 'Data'], ['versions', 'Versions'], ['design', 'Design'], ['publish', 'Publish'], ['reach', 'Reach'], ['made', 'Made of'], ['time', 'Time'], ['code', 'Code']];
     function paintInspector() {
       const st = W.st;
       itabs.replaceChildren(...TABS.map(([k, label]) => h('button', { type: 'button', role: 'tab', 'aria-pressed': String(W.tab === k), onclick: () => { W.tab = k; W.pick = null; paintInspector(); } }, label,
@@ -1076,7 +1251,8 @@ __sa_ready();
       const keepScroll = ibody.parentNode.scrollTop;
       const draw = { made: madeTab, time: timeTab, code: codeTab, data: dataTab, versions: versionsTab, design: designTab, reach: reachTab, publish: publishTab }[W.tab] || madeTab;
       // A tab with a field being typed in is left as it is.
-      if (ibody.contains(document.activeElement) && /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement.tagName) && ibody.dataset.tab === W.tab) return;
+      const typing = document.activeElement && /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement.tagName) && !/^(checkbox|radio|button)$/.test(document.activeElement.type || '');
+      if (ibody.contains(document.activeElement) && typing && ibody.dataset.tab === W.tab) return;
       ibody.dataset.tab = W.tab;
       ibody.replaceChildren(...draw(st).flat(Infinity).filter(Boolean));
       ibody.parentNode.scrollTop = keepScroll;
@@ -1239,10 +1415,11 @@ __sa_ready();
         }).catch((e) => rows.replaceChildren(h('div', { class: 'small' }, e.message)));
       }
       return [
-        h('div', { class: 'note' }, 'The app’s data is in this cluster, in tables named ', h('span', { class: 'mono' }, `app_${appId}_*`), '. Tables only grow, so data survives every change and every step back.'),
+        h('div', { class: 'note' }, 'What people keep in the app. Pick a list to see its newest entries; nothing here is lost when the app changes or goes back a version.'),
         h('div', { class: 'list' }, st.tables.map((t) => h('div', { class: `li${W.pickTable === t.name ? ' on' : ''}`, onclick: () => { W.pickTable = W.pickTable === t.name ? null : t.name; paintInspector(); } },
           icon('table'), h('span', { class: 'grow' }, h('div', { class: 'nm' }, t.name), h('div', { class: 'small muted', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (t.columns || []).map((c) => c.name).join(', '))),
-          h('span', { class: 'small muted' }, `${num(t.rows)} row${t.rows === 1 ? '' : 's'}`)))),
+          h('span', { class: 'small muted' }, `${num(t.rows)} row${t.rows === 1 ? '' : 's'}`),
+          h('button', { class: 'btn sm ghost', type: 'button', title: `Download ${t.name} as a CSV file (a spreadsheet opens it)`, onclick: (e) => { e.stopPropagation(); exportData(t.name); } }, 'CSV')))),
         rows,
       ];
     }
@@ -1335,14 +1512,48 @@ __sa_ready();
       };
       const onIp = kit.publicUrl ? `${kit.publicUrl}/a/${appId}` : null;
       const links = [...p.urls, ...(onIp ? [onIp] : [])];
-      const name = h('input', { class: 'input mono', value: p.name || '', placeholder: 'kids-reading', 'aria-label': 'The app’s name in its address', style: { flex: '1 1 120px', minWidth: '0' } });
+      const suggested = String(st.app.name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/['’]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'my-app';
+      const name = h('input', { class: 'input mono', value: p.name || '', placeholder: suggested, 'aria-label': 'The app’s name in its address', style: { flex: '1 1 120px', minWidth: '0' } });
       const host = h('input', { class: 'input mono', placeholder: 'books.example.org', 'aria-label': 'A host of your own', style: { flex: '1 1 160px', minWidth: '0' } });
       const linkRow = (u) => h('div', { class: 'reach' }, icon('ext'), h('a', { class: 'grow mono', href: u, target: '_blank', rel: 'noopener', style: { wordBreak: 'break-all' } }, u.replace(/\/$/, '')),
         h('button', { class: 'btn sm ghost', onclick: () => core.copy(u) }, icon('copy'), 'Copy'));
+      // Who can see this? Four choices, from the safest; picked, seen as a
+      // stranger would see it, then made so.
+      const now = p.on ? (p.access || 'look') : 'off';
+      const pick = W.pubPick && W.pubPick.app === appId ? W.pubPick.v : now;
+      const CHOICES = [
+        ['off', 'Only me', 'Only you and other admins of this cluster can open it, from here or the studio.'],
+        ['look', 'Visitors can look', 'Anyone with the address sees what its screens show; nothing they do changes its data.'],
+        ['add', 'Customers can look and add', 'Anyone can also add entries and upload files (a booking, an order, a sign-up), and change or delete only what they added themselves, never anyone else’s.'],
+        ['change', 'Anyone can do anything', 'Anyone with the address can edit and delete every entry, other people’s included, as you can.'],
+      ];
+      const radios = CHOICES.map(([v, label, what]) => {
+        const id = `ac-pub-${appId}-${v}`;
+        const input = h('input', { type: 'radio', name: `ac-pub-${appId}`, id, value: v, checked: pick === v, onchange: () => { W.pubPick = { app: appId, v }; paintInspector(); } });
+        return h('label', { class: `pubchoice${pick === v ? ' on' : ''}`, for: id }, input, h('span', { class: 'grow' }, h('b', {}, label, v === now ? h('span', { class: 'small muted' }, ' · now') : null), h('span', { class: 'what' }, what)));
+      });
+      const contact = (st.tables || []).flatMap((t) => (t.columns || []).filter((c) => CONTACT.test(c.name)).map((c) => ({ table: t.name, column: c.name, rows: t.rows || 0 })));
+      const apply = async () => {
+        if (pick === 'change') {
+          const ok = await core.confirm({ title: 'Let anyone edit and delete?', ok: 'Let anyone do anything', danger: true, typed: p.name || appId,
+            body: 'Anyone with the address could edit or delete every entry, other people’s included. For an app strangers use, “Customers can look and add” is usually enough.' });
+          if (!ok) return;
+        }
+        W.pubPick = null;
+        await set(pick === 'off' ? { on: false } : { on: true, access: pick }, pick === 'off' ? 'Only you and other admins can open it now' : `Published: ${CHOICES.find((c) => c[0] === pick)[1].toLowerCase()}`);
+      };
+      const asStranger = () => openStudio(`a/${appId}?stranger=${pick === 'off' ? 'look' : pick}`);
       return [
-        h('div', { class: 'reach' }, core.toggle(p.on, (v) => set({ on: v }, v ? 'Open to the public' : 'Only admins can open it now')),
-          h('span', { class: 'grow' }, h('b', {}, 'Open to the public'), h('span', { class: 'what' }, p.on ? 'Anyone with the address can use it, with no account here.' : 'Only you and other admins can open it, from here or the studio.'))),
+        h('div', { class: 'lbl' }, 'Who can see this?'),
+        h('div', { class: 'pubchoices', role: 'radiogroup', 'aria-label': 'Who can see this app' }, radios),
+        contact.length && pick !== 'off' ? h('div', { class: 'pubwarn' }, icon('warn'), ' ', h('b', {}, 'Visible to everyone: '),
+          `${contact.map((c) => `${c.table}.${c.column}${c.rows ? ` (${num(c.rows)} entr${c.rows === 1 ? 'y' : 'ies'})` : ''}`).join(', ')} look${contact.length === 1 ? 's' : ''} like people’s emails, phone numbers or addresses. Anyone with the address could read them wherever a screen shows them. To keep them private, ask for sign-in, and for each person to see only their own entries.`) : null,
+        h('div', { class: 'row nw', style: { gap: '8px', flexWrap: 'wrap' } },
+          h('button', { class: 'btn sm', type: 'button', title: 'Open the app as someone with no account would, with this choice', onclick: asStranger }, icon('eye'), 'See it as a stranger'),
+          pick !== now ? h('button', { class: `btn sm ${pick === 'change' ? 'danger' : 'primary'}`, type: 'button', onclick: apply }, pick === 'off' ? 'Make it private' : now === 'off' ? 'Publish' : 'Save') : null,
+          pick !== now ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { W.pubPick = null; paintInspector(); } }, 'Cancel') : null),
         p.on && links.length ? [h('div', { class: 'lbl' }, 'Its addresses'), h('div', { class: 'list' }, links.map(linkRow))] : null,
+        h('div', { class: 'note' }, 'Whatever you choose, what visitors write is checked (only the choices its forms offer, nothing over 10 KB), and they never see how it is made, its versions or its people’s emails, nor reach other apps or this studio.'),
         p.domain ? [
           h('div', { class: 'lbl' }, 'Name'),
           h('div', { class: 'row nw' }, name, h('span', { class: 'small muted mono' }, `.${p.domain}`), h('button', { class: 'btn sm', onclick: () => set({ name: name.value.trim() }, 'Name saved') }, 'Save')),
@@ -1351,9 +1562,7 @@ __sa_ready();
           h('div', { class: 'row nw' }, host, h('button', { class: 'btn sm', onclick: () => host.value.trim() && set({ hosts: [...p.hosts, host.value.trim()] }, `${host.value.trim()} added`) }, 'Add')),
           h('div', { class: 'note' }, `Point a CNAME record for your host at ${p.name || 'its name'}.${p.domain}; the cluster gets its certificate once the record resolves.`),
         ] : h('div', { class: 'note' }, `This engine has no domain yet, so a published app is reached at ${onIp || '/a/<id> on the engine’s address'}. Give it one (the operator’s spec.apps.domain, with a wildcard DNS record) and each app gets a name of its own, like kids-reading.apps.example.com.`),
-        h('div', { class: 'lbl' }, 'What the public can do'),
-        h('div', { class: 'note' }, 'Use the app as its screens let them: read and write its tables, run its functions, sign up and in, upload files; and ask the model or fetch pages if Reach allows it, within its questions a day. Each visitor is held to a rate a minute. They never see how it is made, its versions or its people, nor reach other apps or this studio.'),
-        h('div', { class: 'note', style: { color: 'var(--warn-ink, var(--text-2))' } }, 'Anyone with the address can do what its screens do, edits and deletes included. For an app strangers use, ask for sign-in and for each person to see only their own rows.'),
+        h('div', { class: 'note' }, 'Visitors may also sign up and in, and ask the model or fetch pages if Reach allows it, within its questions a day. Each visitor is held to a rate a minute. Errors they hit are recorded under Usage; they never start a repair.'),
       ];
     }
 
@@ -1380,7 +1589,7 @@ __sa_ready();
       } else if (type === 'done' || type === 'failed') {
         W.ended.add(d.request);
         W.previews.clear(); W.previewView = null;
-        if (type === 'failed' && !d.candidate) W.failed = { text: W.runningText, error: d.error };
+        if (type === 'failed' && !d.candidate) W.failed = { text: W.runningText, error: d.error, said: d.said };
         if (type === 'done') toast(d.candidate ? `Built from use, ready to try (version ${d.n})` : `Version ${d.n} is live${d.summary ? `: ${d.summary}` : ''}`, 'ok', 5000);
         W.lines = []; W.build = null; W.runningText = '';
         refresh();
@@ -1405,6 +1614,7 @@ __sa_ready();
         W.stopped = true;
         W.act?.destroy();
         clearInterval(pacer);
+        fitter?.disconnect();
         poll?.();
         window.removeEventListener('message', onMessage);
         window.removeEventListener('resize', onResize);

@@ -301,16 +301,17 @@ fn json_csv_and_the_rust_api() {
         assert!(ingest::document(&schema, &serde_json::from_str(bad).unwrap()).is_err(), "{bad}");
     }
 
-    // CSV: a column the header lacks takes its default, an empty cell is null.
+    // CSV: a column the header lacks takes its default, and so does an
+    // empty cell (NULL with EmptyCell::Null, below).
     let csv = "id,body,n\nd,fourth,\ne,fifth,7\n";
     ingest::import(&db, Rows::new(&schema, std::io::Cursor::new(csv), Format::Csv).unwrap()).unwrap();
-    assert_eq!(row(&db, "SELECT kind, n, ok FROM events WHERE id = 'd'"), [s("click"), Value::Null, Value::Bool(true)]);
+    assert_eq!(row(&db, "SELECT kind, n, ok FROM events WHERE id = 'd'"), [s("click"), Value::Int(1), Value::Bool(true)]);
     assert_eq!(row(&db, "SELECT kind, n FROM events WHERE id = 'e'"), [s("click"), Value::Int(7)]);
     // The rows of one file share one time, and document_at takes it given.
     assert_eq!(row(&db, "SELECT at FROM events WHERE id = 'd'"), row(&db, "SELECT at FROM events WHERE id = 'e'"));
     assert_eq!(ingest::document_at(&schema, &serde_json::json!({"id": "g", "body": "x"}), DEC31).unwrap()[3], Value::Int(DEC31));
     let csv = "id,body,kind\nf,sixth,\n";
-    let e = ingest::import(&db, Rows::new(&schema, std::io::Cursor::new(csv), Format::Csv).unwrap()).unwrap_err().to_string();
+    let e = ingest::import(&db, Rows::new(&schema, std::io::Cursor::new(csv), Format::Csv).unwrap().empty_cells(ingest::EmptyCell::Null)).unwrap_err().to_string();
     assert!(e.contains("line 2: kind is NOT NULL"), "{e}");
     assert_eq!(rows(&db, "SELECT COUNT(*) FROM events"), [vec![Value::Int(5)]]);
 }

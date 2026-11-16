@@ -233,7 +233,14 @@ function answered() {
   Object.assign(conn, { ok: true, since_ms: null, status: null, message: null, path: null });
   bus.emit("connection", connection());
 }
+// An app's own request (/v1/apps/<name>/...) that fails says nothing of the
+// server: the server forwards it and answers for an app that is down, so a
+// request lost on its way (an app page's load cut off, a blocked request)
+// is that page's to say, not the whole command center's (APC-27). If the
+// server itself is gone, its own polls say so.
+const APP_PATH = /^\/v1\/apps\/[^/]+\/./;
 function notAnswering(status, message, path) {
+  if (APP_PATH.test(String(path || "").split("?")[0])) return;
   const now = Date.now();
   conn.last_fail_ms = now;
   const was = conn.ok;
@@ -258,14 +265,73 @@ const headerSafe = (t) => String(t).replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7
  * the command center (`x-strata-client`), so the server leaves the UI's own
  * calls out of the routes and queries it shows.
  */
-export async function api(path, opts = {}) {
+// A GET a key limited to tables was refused ("... is not for a key limited
+// to tables"): its path (without the query) is not asked again for that key,
+// so that a page polling it does not send a refused request a poll. The
+// refusal is thrown again, as the server gave it.
+const refusedFor = { token: null, paths: new Map() };
+const routeOf = (path) => String(path).split("?")[0];
+/** The refusal of a route this key was refused as a key limited to tables, or null. */
+export function refusedRoute(path) {
+  if (refusedFor.token !== token) return null;
+  return refusedFor.paths.get(routeOf(path)) || null;
+}
+
+// The key a 401 answered (null: no key), until another is given: the
+// polls hold meanwhile (`every`), so a tab without a valid key does not
+// ask the server every few seconds, nor fill its audit log with refusals.
+let refusedKey;
+/** Whether the server refused the key in use (or wants one): the views say "Sign in", the polls wait. */
+export const signInNeeded = () => refusedKey !== undefined && refusedKey === token;
+
+// The server's own views (statements, logs, index sizes, keys) are read by
+// an admin, or an ops or propose key: whoami says so (`may.server_views`).
+// Another key's page does not ask for them, to be refused (and audited) a poll.
+const SERVER_VIEWS = /^\/v1\/(admin\/|queries|logs|profile|index)/;
+function noServerViews(path) {
+  const w = ctx.whoami;
+  if (!w || w.root || w.may?.server_views !== false || !SERVER_VIEWS.test(routeOf(path))) return null;
+  return `${routeOf(path)} is one of the server's views: it needs an admin key (or an ops or propose key), and "${w.name || "this key"}" has ${w.scope}`;
+}
+
+export function api(path, opts = {}) {
+  // LIV-14: cards that ask the same thing at once share one request; each
+  // gets its own copy of the answer.
+  if (opts.method || opts.body !== undefined || opts.blob || opts.signal || opts.reason) return answer(path, opts);
+  const key = `${opts.hub ? "hub " : ""}${opts.text ? "text " : ""}${token || ""} ${path}`;
+  const was = inflight.get(key);
+  if (was) return was.then((j) => (j && typeof j === "object" ? structuredClone(j) : j));
+  const p = answer(path, opts).finally(() => inflight.delete(key));
+  inflight.set(key, p);
+  return p;
+}
+const inflight = new Map();
+async function answer(path, opts) {
+  try { return await request(path, opts); }
+  catch (e) {
+    // An agent's key says why it changes the server (the audit log keeps
+    // it): asked once, then the request is sent again with it.
+    if (e?.body?.error_code !== "reason_required" || opts.reason || opts.blob) throw e;
+    // Several at once (Acknowledge all) share one question.
+    asking ||= confirm({ title: "Say why", body: `This key is an agent's (${ctx.whoami?.name || "a key"}${roleOf() ? `, ${roleOf()}` : ""}): the server keeps a reason with each change it makes, in the audit log.`, ok: "Send", reason: "Why: a sentence, kept in the audit log" }).finally(() => { asking = null; });
+    const ok = await asking;
+    if (!ok) throw e;
+    return request(path, { ...opts, reason: ok.reason });
+  }
+}
+let asking = null;
+
+async function request(path, opts) {
+  const get = !opts.method && opts.body === undefined;
+  const held = get && !opts.hub ? refusedRoute(path) || noServerViews(path) : null;
+  if (held) throw new ApiError(403, held, { error: held, limited: !!ctx.whoami?.tables, local: true });
   const init = { method: opts.method || (opts.body === undefined ? "GET" : "POST"), headers: { "x-strata-client": "command-center" } };
   if (opts.body !== undefined) {
     if (opts.body instanceof Blob || opts.body instanceof ArrayBuffer || typeof opts.body === "string") { init.body = opts.body; if (opts.type) init.headers["content-type"] = opts.type; }
     else { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(opts.body); }
   }
   if (token) init.headers.authorization = "Bearer " + token;
-  if (opts.reason) init.headers["x-strata-reason"] = headerSafe(opts.reason);
+  if (opts.reason) init.headers["x-chloedb-reason"] = headerSafe(opts.reason);
   let timer = null, timedOut = false;
   if (opts.timeout) {
     const ac = new AbortController();
@@ -283,6 +349,7 @@ export async function api(path, opts = {}) {
     throw new ApiError(0, why, null, false);
   }
   clearTimeout(timer);
+  if (r.status === 401 && !opts.hub) refusedKey = token;
   if (opts.blob) {
     if (r.ok) { answered(); return r; }
     const t = await r.text().catch(() => "");
@@ -311,6 +378,12 @@ export async function api(path, opts = {}) {
   }
   answered();
   if (r.status === 401) bus.emit("unauthorized", path);
+  // A route this key's scope or its tables do not reach is not asked again for it.
+  if (r.status === 403 && get && !opts.hub && typeof j?.error === "string" && (j.error.includes("not for a key limited to tables") || j.error_code === "scope_refused")) {
+    if (refusedFor.token !== token) { refusedFor.token = token; refusedFor.paths = new Map(); }
+    refusedFor.paths.set(routeOf(path), j.error);
+    j.limited = !!ctx.whoami?.tables || j.error.includes("not for a key limited to tables");
+  }
   if (!r.ok) throw new ApiError(r.status, j?.error || ("HTTP " + r.status), j);
   return j;
 }
@@ -328,22 +401,71 @@ export const isPaused = () => ctx.paused;
 
 // ---------------------------------------------------------------- scope
 const RANK = { feed: 1, read: 2, write: 3, admin: 4 };
+// The routes as the server lists them (GET /v1/catalog: each one's scope,
+// tier, and whether the ops and propose roles may call it), for a key that
+// acts on the server by its role rather than its scope.
+let ROUTES = null;
+/** For data.js: the catalog's routes ([{method, path, scope, tier, roles}]). */
+export function provideRoutes(list) { ROUTES = list ? new Map(list.map((r) => [`${r.method} ${r.path}`, r])) : null; }
+/** A key for operations' role (whoami's scope "ops" or "propose"), or null. */
+export const roleOf = (w = ctx.whoami) => (w && !RANK[w.scope] && w.may?.server_views ? w.scope : null);
+/** What a key may do to the data: its scope, or for a role key what whoami's `may.data` says (read). */
+const dataScope = (w) => (RANK[w.scope] ? w.scope : w.may?.data || "read");
 /**
- * Whether the signed-in key may do this: can("feed" | "read" | "write" | "admin").
- * Unknown (not signed in, or whoami failed) can read only. Views hide or
- * disable what they cannot do, with `needs(scope)` as the tooltip.
+ * Whether the signed-in key may do this: can("feed" | "read" | "write" |
+ * "admin"), and, for an action on the server, its route ("POST
+ * /v1/alerts/:rule/ack"): the server's catalog then says which scope it
+ * needs and whether an ops or propose key may call it (the bounded,
+ * tier 1 actions for ops; the server's views for both). Unknown (not
+ * signed in, or whoami failed) can read only. Views hide or disable what
+ * they cannot do, with `needs(scope, route)` as the tooltip.
  */
-export function can(scope) {
+export function can(scope, route = null) {
   const w = ctx.whoami;
   if (!w) return scope === "read";
   if (w.root) return true;
-  return (RANK[w.scope] || 0) >= (RANK[scope] || RANK.admin);
+  const r = route ? ROUTES?.get(route) : null;
+  const need = r?.scope || scope;
+  // A key limited to tables is never the server's admin: its admin is its
+  // tables' (CREATE, ALTER, DROP).
+  if (w.tables && (RANK[need] || RANK.admin) >= RANK.admin) return false;
+  if ((RANK[dataScope(w)] || 0) >= (RANK[need] || RANK.admin)) return true;
+  const role = roleOf(w);
+  return !!(role && r?.roles?.[role]);
 }
-/** The tooltip of an action the key cannot take: "needs an admin key". */
-export const needs = (scope) => `needs ${scope === "admin" ? "an admin" : `a ${scope}`} key`;
+/** Whether an action's request needs a reason from this key (an agent's: whoami's `may.reason_required`). */
+export const reasonNeeded = () => !!ctx.whoami?.may?.reason_required;
+/** The tooltip of an action the key cannot take: "needs an admin key", or for a bounded action "needs a write or an ops key". */
+export function needs(scope, route = null) {
+  const r = route ? ROUTES?.get(route) : null;
+  const need = r?.scope || scope;
+  if (ctx.whoami?.tables && need === "admin") return "needs an admin key of the server (this key is limited to tables)";
+  const a = need === "admin" ? "an admin" : `a ${need}`;
+  const ops = route && (r ? r.roles?.ops : false);
+  const role = roleOf();
+  if (role === "propose" && ops) return `needs ${a} or an ops key (this key is propose: it files change requests)`;
+  if (ops) return `needs ${a} or an ops key`;
+  if (role) return `needs ${a} key (this key is ${role}: it files a change request instead)`;
+  return `needs ${a} key`;
+}
+/** Whether the signed-in key is limited to tables (whoami's `tables`). */
+export const limited = () => !!ctx.whoami?.tables;
+/** A key's grants in words: "swarm_* admin, * read" (whoami's or a key's `tables`). */
+export const grantsText = (tables) => Object.entries(tables || {}).map(([t, s]) => `${t} ${s}`).join(", ");
+/** What the header says of a key: its scope, or for a key limited to tables its grants (and its preset). */
+export function keyLabel(w) {
+  if (!w) return "";
+  if (!w.tables) return w.scope;
+  return (w.preset ? w.preset + ": " : "") + grantsText(w.tables);
+}
+/** Why a page shows nothing for an error `e`: "this key can't see …" for a key limited to tables, else the error. */
+export function cannotSee(e, what) {
+  if (e?.status === 403 && (e.body?.limited || limited())) return `This key can't see ${what}: it is limited to tables (${grantsText(ctx.whoami?.tables)}).`;
+  return e?.message || String(e);
+}
 /** Disables a button the key cannot use, and says why: gate(btn, "admin"). Returns the button. */
-export function gate(btn, scope) {
-  if (!can(scope)) { btn.disabled = true; btn.title = (btn.title ? btn.title + ": " : "") + needs(scope); btn.classList.add("gated"); }
+export function gate(btn, scope, route = null) {
+  if (!can(scope, route)) { btn.disabled = true; btn.title = (btn.title ? btn.title + ": " : "") + needs(scope, route); btn.classList.add("gated"); }
   return btn;
 }
 
@@ -477,6 +599,35 @@ export const fmt = {
   },
   pct(v, d = 1) { if (v == null || Number.isNaN(v)) return "–"; return (v * 100).toFixed(d).replace(/\.0+$/, "") + "%"; },
   rate(v) { return v == null ? "–" : fmt.si(v) + "/s"; },
+  /**
+   * A value of the data (a cell, a chart's point, a Sheets cell's sum): the
+   * one number format of every grid and chart, so a number reads the same in
+   * each. Grouped digits, 2 decimals from 1,000 up and up to 6 below, and an
+   * exponent outside 1e-4 to 1e15, where grouped digits stop being read.
+   */
+  num(v) {
+    if (v == null || v === "" || Number.isNaN(Number(v))) return "–";
+    v = Number(v);
+    if (!Number.isFinite(v)) return String(v);
+    const a = Math.abs(v);
+    if (a !== 0 && (a >= 1e15 || a < 1e-4)) return v.toExponential(4).replace(/\.?0+e/, "e");
+    return v.toLocaleString(undefined, { maximumFractionDigits: a >= 1000 ? 2 : 6 });
+  },
+  /** A chart axis's ticks: about `n` round values (1, 2, 2.5 or 5 times a power of ten) from lo to hi. */
+  ticks(lo, hi, n = 4) {
+    if (!(hi > lo)) hi = lo + 1;
+    const raw = (hi - lo) / Math.max(1, n), mag = 10 ** Math.floor(Math.log10(raw)), f = raw / mag;
+    const step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag;
+    const out = [];
+    for (let t = Math.floor(lo / step) * step; t <= Math.ceil(hi / step) * step + step / 2; t += step) out.push(+t.toPrecision(12));
+    return out;
+  },
+  /** A tick's label: short (1.5M, 250k), as round as the ticks are. */
+  tick(v) {
+    const a = Math.abs(v);
+    const short = (x, u) => +x.toPrecision(3) + u;
+    return a >= 1e12 ? short(v / 1e12, "T") : a >= 1e9 ? short(v / 1e9, "B") : a >= 1e6 ? short(v / 1e6, "M") : a >= 1e4 ? short(v / 1e3, "k") : fmt.num(+v.toPrecision(6));
+  },
   /** How long until a disk fills, from days: minutes or hours under a day, as the server's texts say it. */
   fills(days) {
     if (days == null || !Number.isFinite(days)) return "–";
@@ -684,6 +835,24 @@ export function pill(state, text) {
   return h("span", { class: "pill " + state }, icon(ic), text ?? state);
 }
 
+/**
+ * The mark of a feature with no compatibility promise yet (the server's
+ * x-chloedb-experimental header, GET /v1/catalog's `experimental`): its
+ * routes, settings and stored state may change or go in a minor release.
+ */
+export function experimental(what) {
+  const el = pill("warn", "Experimental");
+  el.title = `${what} is experimental: its API, its settings and what it stores may change in any release, with no upgrade path promised (docs/compatibility.md, "Experimental features").`;
+  return el;
+}
+
+/** The mark of a demo app: on a release train of its own, outside the engine's checks and promises. */
+export function demo(what) {
+  const el = pill("info", "Demo");
+  el.title = `${what} is a demo: it shows what ChloeDB can do, is tested on a train of its own (the Demos workflow), and makes no compatibility promise. A fault in it does not hold a ChloeDB release.`;
+  return el;
+}
+
 export function empty(ic, title, sub, action) {
   return h("div", { class: "empty" }, icon(ic), h("b", {}, title), sub ? h("div", { class: "small" }, sub) : null, action || null);
 }
@@ -768,25 +937,59 @@ export function dropzone({ label, sub, accept, multiple = true, onFiles }) {
   return z;
 }
 
+// ---------------------------------------------------------------- attention
+/**
+ * LIV-14: whether anybody is at the page. A tab nobody touched (no pointer,
+ * key, wheel or scroll) for IDLE_MS polls IDLE_SLOW times less often; a
+ * touch, a key or the tab shown again asks at once what is due, and polls at
+ * the full rate again. A hidden tab polls nothing.
+ */
+export const IDLE_MS = 30e3, IDLE_SLOW = 5;
+let lastInput = Date.now(), dozing = false;
+const wakers = new Set();
+/** True once nobody touched the page for IDLE_MS. */
+export function isIdle() {
+  if (!dozing && Date.now() - lastInput > IDLE_MS) { dozing = true; bus.emit("idle", true); }
+  return dozing;
+}
+function wake(shown) {
+  lastInput = Date.now();
+  if (!dozing && !shown) return;
+  if (dozing) { dozing = false; bus.emit("idle", false); }
+  for (const f of [...wakers]) f();
+}
+for (const ev of ["pointerdown", "pointermove", "keydown", "wheel", "scroll", "touchstart"]) document.addEventListener(ev, () => wake(false), { capture: true, passive: true });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) wake(true); });
+
 /**
  * Repeats `f` every `ms` while the page is visible; returns a stopper. While
  * the command center is paused (`isPaused()`), ticks after the first are
  * skipped, so a view does not redraw; `{always: true}` keeps polling (for a
- * change under way the person is waiting on).
+ * change under way the person is waiting on), at the full rate even while
+ * nobody is at the page unless `{idle: "slow"}`. Other polls run
+ * IDLE_SLOW times less often then (isIdle()), and at once when someone is
+ * back and they are due.
  */
 export function every(ms, f, now = true, opts = {}) {
-  let stopped = false, timer = null, running = false, first = true;
+  let stopped = false, timer = null, running = false, first = true, ran = 0;
+  const slows = !opts.always || opts.idle === "slow";
   const tick = async () => {
     if (stopped) return;
-    if (!document.hidden && !running && (first || opts.always || !ctx.paused)) { first = false; running = true; try { await f(); } catch (e) { console.warn(e); } running = false; }
+    const resting = slows && isIdle() && Date.now() - ran < ms * IDLE_SLOW - ms / 2;
+    // Paused, or without a valid key, a poll runs once (a view learns why it is empty) and then waits.
+    if (!document.hidden && !running && !resting && (first || opts.always || (!ctx.paused && !signInNeeded()))) { first = false; running = true; ran = Date.now(); try { await f(); } catch (e) { console.warn(e); } running = false; }
     if (!stopped) timer = setTimeout(tick, ms);
   };
+  // Someone is back (or the tab shown again): what is due is asked now.
+  const waker = () => { if (stopped || running || first || Date.now() - ran < ms) return; clearTimeout(timer); tick(); };
+  wakers.add(waker);
   if (now) tick(); else timer = setTimeout(tick, ms);
-  return () => { stopped = true; clearTimeout(timer); };
+  return () => { stopped = true; clearTimeout(timer); wakers.delete(waker); };
 }
 
 /** What an error says, for a view that could not load. */
 export function failure(e, what) {
+  if (e instanceof ApiError && e.status === 403 && (e.body?.limited || limited())) return empty("lock", `This key can't see ${what.toLowerCase()}`, cannotSee(e, what.toLowerCase()), h("button", { class: "btn sm", onclick: () => bus.emit("unauthorized") }, icon("access"), "Use another key"));
   if (e instanceof ApiError && e.status === 403) return empty("lock", `${what} needs an admin key`, e.message, h("button", { class: "btn sm", onclick: () => bus.emit("unauthorized") }, icon("access"), "Use another key"));
   if (e instanceof ApiError && e.status === 401) return empty("lock", "Sign in to see " + what.toLowerCase(), "This server needs a token or an API key.", h("button", { class: "btn sm primary", onclick: () => bus.emit("unauthorized") }, "Enter a key"));
   return h("div", { class: "error" }, `${what}: ${e.message}`);

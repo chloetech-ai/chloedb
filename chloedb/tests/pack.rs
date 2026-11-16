@@ -182,6 +182,34 @@ fn dedupe_on_a_vector_field_compares_meanings() {
     assert_eq!(p.rs.rows.len(), 3);
 }
 
+#[test]
+fn a_row_of_several_text_columns_is_not_skipped_while_the_budget_has_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let seed = Schema::new("seed", vec![Field::new("id", FieldType::Keyword)], Some("id")).unwrap();
+    let db = Db::create(&dir.path().join("t.strata"), seed, DbOptions { sync: false, ..DbOptions::default() }).unwrap();
+    run(&db, "CREATE TABLE items (id INT PRIMARY KEY, title TEXT, description TEXT, rank INT)");
+    // A title of a few tokens and a description of about thirty: past a
+    // quarter of the budget (30 tokens of 120), not past what is left.
+    let values: Vec<String> = (0..4)
+        .map(|i| format!("({i}, 'trail shoe model {i}', '{}', {})", "go ".repeat(28).trim_end(), 10 - i))
+        .collect();
+    run(&db, &format!("INSERT INTO items (id, title, description, rank) VALUES {}", values.join(", ")));
+    let p = db.pack("SELECT id, title, description FROM items ORDER BY rank DESC PACK 120 TOKENS WITH RECEIPT", &Params::new()).unwrap();
+    let summary: Vec<(i64, String, usize, usize)> = p.receipt.rows.iter().map(|d| (d.key.as_i64().unwrap(), d.decision.clone(), d.tokens, d.used)).collect();
+    let full = p.receipt.rows[0].full_tokens;
+    assert!(full > 120 / 4 && full < 60, "{summary:?}");
+    // Each row is taken whole, or excerpted, while an excerpt fits.
+    for d in &p.receipt.rows {
+        let left_before = 120 - (d.used - d.tokens);
+        if left_before >= full {
+            assert!(d.taken, "{summary:?}");
+        }
+        assert!(d.decision != "skip: over budget" || left_before < 32 + 8, "{summary:?}");
+    }
+    assert!(p.receipt.used <= 120);
+    assert!(p.receipt.rows.iter().filter(|d| d.taken).count() >= 2, "{summary:?}");
+}
+
 fn empty_db(dir: &std::path::Path) -> Db {
     let seed = Schema::new("seed", vec![Field::new("id", FieldType::Keyword)], Some("id")).unwrap();
     Db::create(&dir.join("p.strata"), seed, DbOptions { sync: false, ..DbOptions::default() }).unwrap()
@@ -324,4 +352,34 @@ fn query_leaf_runs_pack() {
         chloedb::query::exec::Leaf::Rows(rs) => assert_eq!(rs.rows, db.query(&sql, &task()).unwrap().rows),
         _ => panic!("rows"),
     }
+}
+
+/// Rows of a title and a description need room for both and an excerpt:
+/// once what is left is less, every row is turned away, and the pack stops
+/// reading rather than ranking up to 1,000 rows only to skip them (PRF-11:
+/// PACK 500 TOKENS over rrf had a p95 eight times its p50).
+#[test]
+fn a_budget_too_small_for_the_rows_left_stops_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = empty_db(dir.path());
+    run(&db, "CREATE TABLE items (id INT PRIMARY KEY, title TEXT, description TEXT)");
+    let title = "quiet leather camera for travel, with a strap and a case of waxed canvas";
+    let description = "a quiet camera in leather for travel and the city, ".repeat(4);
+    let description = description.trim_end();
+    let values: Vec<String> = (0..3000).map(|i| format!("({i}, '{title}', '{description}')")).collect();
+    run(&db, &format!("INSERT INTO items (id, title, description) VALUES {}", values.join(", ")));
+    // Eight rows whole, then a little more than an excerpt's 32 tokens
+    // but less than the title and an excerpt: no row fits any more.
+    let (rest, full) = (count_tokens(title), count_tokens(title) + count_tokens(description));
+    let budget = 8 * full + 32 + rest / 2;
+    assert!(rest >= 4 && full > 32 + rest, "{rest} {full}");
+    let sql = format!("SELECT id, title, description FROM items ORDER BY rrf(bm25(description, 'quiet camera'), bm25(title, 'leather camera')) DESC PACK {budget} TOKENS WITH RECEIPT");
+    let p = db.pack(&sql, &Params::new()).unwrap();
+    let summary = format!("{} of {budget} tokens, {} rows decided, {} queries", p.receipt.used, p.receipt.rows.len(), p.receipt.queries);
+    assert_eq!(p.receipt.rows.iter().filter(|d| d.taken).count(), 8, "{summary}");
+    assert_eq!(budget - p.receipt.used, 32 + rest / 2, "{summary}");
+    // The first read's rows were enough to see that: no deeper read.
+    assert_eq!(p.receipt.queries, 1, "{summary}");
+    assert_eq!(p.receipt.rows.len(), 64, "{summary}");
+    assert!(p.receipt.rows[8..].iter().all(|d| d.decision == "skip: over budget"), "{summary}");
 }

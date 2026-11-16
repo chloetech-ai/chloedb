@@ -2,7 +2,9 @@
 //! (`--app crawler=http://127.0.0.1:7800`). An app answers
 //!
 //! - `GET /app.json`: its name, title, icon (`icon_svg`, the inside of a
-//!   24-unit outline icon), and `view`, the path of its view module;
+//!   24-unit outline icon), `view`, the path of its view module, and
+//!   optionally `maturity` (`"demo"`: the command center marks the app as
+//!   a demo, on a release train of its own);
 //! - its view module: JavaScript the command center loads and runs with
 //!   its own helpers (the app's code is trusted as the server's is: an
 //!   admin names it on the server's command line);
@@ -15,13 +17,18 @@
 //! as `_`), else the server's `CHLOEDB_APP_TOKEN`, so that each app can
 //! hold a token of its own and none can call another as the server. So an
 //! app needs no address that browsers reach: the server checks the
-//! caller's key (read scope for `GET`, admin for the rest), and tells the
+//! caller's key (read scope for `GET`, admin for the rest; write for the
+//! rest of an app that checks its callers itself, [`checks_callers`],
+//! which alone takes a key limited to tables), and tells the
 //! app who it was in headers it sets itself, which the app may trust
 //! because they come with its token: `x-chloedb-principal` (the key's
 //! name, `token` or `open`), `x-chloedb-key` (its id), `x-chloedb-scope`
 //! and, for a key limited to tables, `x-chloedb-tables`
 //! (`crawl_*=admin,*=read`). A caller's own headers of those names are
-//! never passed on.
+//! never passed on. A key limited to tables calls an app only when the
+//! app's manifest says `"limited_keys": true`, that it holds such a key to
+//! the grants of that header ([`Apps::holds_grants`]); it then needs only
+//! a grant that reads, and the app decides the rest.
 //!
 //! The path is the app's own: `<path>` is joined to the app's URL segment
 //! by segment, each encoded again, so no `..` (written `%2e%2e`, once or
@@ -172,6 +179,10 @@ impl Apps {
                     "name": a.name, "url": a.url, "up": true,
                     "title": m["title"].as_str().unwrap_or(&a.name), "description": m["description"], "icon_svg": m["icon_svg"],
                     "view": m["view"].as_str().map(|v| format!("/v1/apps/{}/{}", a.name, v.trim_start_matches('/'))), "version": m["version"],
+                    // "demo" for an app on the demo train (netops, the
+                    // feature store, the swarm): the command center marks it.
+                    "maturity": m["maturity"],
+                    "checks_callers": m["checks_callers"] == json!(true) || m["limited_keys"] == json!(true),
                 }),
                 Err(e) => json!({"name": a.name, "url": a.url, "up": false, "title": a.name, "error": e}),
             };
@@ -192,6 +203,15 @@ impl Apps {
         let m = self.read_manifest(a).await;
         self.manifests.lock().unwrap_or_else(|e| e.into_inner()).insert(a.name.clone(), (Instant::now(), m.clone()));
         m
+    }
+
+    /// Whether app `name` holds a key limited to tables to its grants
+    /// (`"limited_keys": true` in its manifest): it is then called by such
+    /// keys too, as it reads `x-chloedb-tables` and refuses what they do
+    /// not grant. Other apps are not called by them at all.
+    pub async fn holds_grants(&self, name: &str) -> bool {
+        let Some(a) = self.find(name) else { return false };
+        checks_callers(&self.manifest(a).await)
     }
 
     async fn read_manifest(&self, a: &App) -> Result<Json, String> {
@@ -220,8 +240,32 @@ impl Apps {
             Err(m) => return err(StatusCode::BAD_REQUEST, m),
         };
         let Some(http) = &self.http else { return err(StatusCode::NOT_FOUND, "no apps".into()) };
+        // An app that checks its callers itself ([`checks_callers`]) takes a
+        // key limited to tables, and a change from a key of write scope; any
+        // other takes a key of every table, and changes from an admin's.
+        let get = method == Method::GET || method == Method::HEAD;
+        let unchecked = who.tables.is_some() || (!get && who.scope < crate::keys::Scope::Admin);
+        if unchecked && !checks_callers(&self.manifest(a).await) {
+            // A key limited to tables that was given the app reads through
+            // it, and only if it reads every table: the app reads as its own
+            // token may, which is no more than the key may then.
+            let given = who.allow.as_ref().is_some_and(|x| x.apps.iter().any(|n| n == name));
+            if let Some(g) = who.tables.as_ref().filter(|_| !(given && get && who.reads_all())) {
+                let why = match (given, get) {
+                    (true, true) => "it was given the app, which reads as its own token may, but does not read every table (*=read)".to_string(),
+                    (true, false) => "it was given the app to read through, and a change is the app's own token's".to_string(),
+                    (false, _) => "it takes a key of every table".to_string(),
+                };
+                return err(StatusCode::FORBIDDEN, format!("the app {name} does not check a key limited to tables, so {why}: the key {:?} may touch only {}", who.name, crate::keys::grants_text(g)));
+            }
+            if !get && who.scope < crate::keys::Scope::Admin {
+                return err(StatusCode::FORBIDDEN, format!("{method} /v1/apps/{name}/... needs a key with the admin scope; {:?} has {}", who.name, who.scope.name()));
+            }
+        }
         let mut req = http.request(method, url).timeout(Duration::from_secs(120));
-        for h in [header::CONTENT_TYPE, header::ACCEPT] {
+        // The validators of what the browser holds go too, so that an app
+        // that tags its answers (`ETag`) can answer 304 without the body.
+        for h in [header::CONTENT_TYPE, header::ACCEPT, header::IF_NONE_MATCH, header::IF_MODIFIED_SINCE] {
             if let Some(v) = headers.get(&h) {
                 req = req.header(h, v);
             }
@@ -238,15 +282,40 @@ impl Apps {
         };
         let status = StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         let ctype = r.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
+        // A download's name, what an app says of its answer in its own
+        // headers (`x-app-*`: what an export left out), and its validators
+        // (`ETag`, `Last-Modified`), go back as they came. The answer is
+        // still `no-cache`: the browser asks again each time, with the tag.
+        let mut passed = HeaderMap::new();
+        for (k, v) in r.headers() {
+            if k == reqwest::header::CONTENT_DISPOSITION || k == reqwest::header::ETAG || k == reqwest::header::LAST_MODIFIED || k.as_str().starts_with("x-app-") {
+                if let (Ok(k), Ok(v)) = (header::HeaderName::from_bytes(k.as_str().as_bytes()), header::HeaderValue::from_bytes(v.as_bytes())) {
+                    passed.insert(k, v);
+                }
+            }
+        }
+        // What the browser holds is current: no body.
+        if status == StatusCode::NOT_MODIFIED {
+            return (status, passed, [(header::CACHE_CONTROL, "no-cache")]).into_response();
+        }
         if r.content_length().is_some_and(|n| n as usize > MAX_ANSWER) {
             return err(StatusCode::BAD_GATEWAY, format!("the app {name}'s answer is larger than {} MB", MAX_ANSWER >> 20));
         }
         match r.bytes().await {
-            Ok(b) if b.len() <= MAX_ANSWER => (status, [(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, "no-cache".to_string())], b).into_response(),
+            Ok(b) if b.len() <= MAX_ANSWER => (status, passed, [(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, "no-cache".to_string())], b).into_response(),
             Ok(_) => err(StatusCode::BAD_GATEWAY, format!("the app {name}'s answer is larger than {} MB", MAX_ANSWER >> 20)),
             Err(e) => err(StatusCode::BAD_GATEWAY, format!("the app {name}'s answer was cut off: {e}")),
         }
     }
+}
+
+/// Whether an app's manifest says that it checks who called it itself:
+/// `"checks_callers": true` in its `app.json`, for an app that refuses what
+/// `x-chloedb-scope` and `x-chloedb-tables` do not allow (ChloeCtx's
+/// spaces). Such an app is forwarded a key limited to tables, and a change
+/// (not `GET`) from a key of write scope; any other is not.
+pub fn checks_callers(manifest: &Result<Json, String>) -> bool {
+    manifest.as_ref().is_ok_and(|m| m["checks_callers"] == json!(true) || m["limited_keys"] == json!(true))
 }
 
 /// Whether a path segment (as the router decoded it) is a dot segment, or
@@ -317,6 +386,14 @@ pub fn caller_headers(who: &crate::keys::Principal) -> Vec<(&'static str, String
     if let Some(t) = &who.tables {
         out.push(("x-chloedb-tables", t.iter().map(|g| format!("{}={}", g.table, g.scope.name())).collect::<Vec<_>>().join(",")));
     }
+    // A key for operations reads tables as a read key does; an app may hold
+    // it to less (ChloeCtx keeps sessions' transcripts from it).
+    if let Some(r) = who.role {
+        out.push(("x-chloedb-role", match r {
+            crate::keys::Role::Propose => "propose",
+            crate::keys::Role::Ops => "ops",
+        }.to_string()));
+    }
     out
 }
 
@@ -370,11 +447,14 @@ mod caller_tests {
 
     #[test]
     fn an_app_is_told_who_called() {
-        let p = Principal { name: "ana\nx".into(), key: Some("0a1b".into()), scope: Scope::Write, root: false, tables: Some(vec![Grant::parse("sheets_*=write").unwrap()].into()) };
+        let p = Principal { name: "ana\nx".into(), key: Some("0a1b".into()), scope: Scope::Write, root: false, tables: Some(vec![Grant::parse("sheets_*=write").unwrap()].into()), role: None, agent: false, on_behalf_of: None, allow: None };
         let h = caller_headers(&p);
         assert!(h.contains(&("x-chloedb-principal", "ana?x".into())));
         assert!(h.contains(&("x-chloedb-scope", "write".into())) && h.contains(&("x-chloedb-key", "0a1b".into())));
         assert!(h.contains(&("x-chloedb-tables", "sheets_*=write".into())));
+        assert!(!h.iter().any(|(k, _)| *k == "x-chloedb-role"));
+        let ops = Principal { role: Some(crate::keys::Role::Ops), ..p.clone() };
+        assert!(caller_headers(&ops).contains(&("x-chloedb-role", "ops".into())));
         assert_eq!(caller_headers(&Principal::open()).len(), 2);
     }
 }

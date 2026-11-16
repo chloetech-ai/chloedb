@@ -198,6 +198,65 @@ async fn workbooks_live_in_a_cluster() {
     assert!(r.status().is_success());
     assert!(r.bytes().await.unwrap().starts_with(b"PK"), "an xlsx is a zip");
 
+    // Numbers shown and exported with the digits they have: not IronCalc's
+    // nine fixed decimals (226159459.830000013), nor cut to nine (4.127118644).
+    api.ops(&id, json!([{"op": "set_many", "sheet": 0, "row": 20, "col": 1, "values": [["226159459.83", "4.127118644067796", "=1983364195.779999+0"]]}])).await;
+    let cells = api.shown(&id, 0, 20, 3).await;
+    assert_eq!((cells[&(20, 1)].as_str(), cells[&(20, 2)].as_str(), cells[&(20, 3)].as_str()), ("226159459.83", "4.1271186440678", "1983364195.78"));
+    let r = api.http.get(format!("{}/v1/books/{id}/export?format=csv", api.url)).bearer_auth(TOKEN).send().await.unwrap();
+    let csv_text = r.text().await.unwrap();
+    assert!(csv_text.contains("226159459.83,4.1271186440678,1983364195.78"), "{csv_text}");
+    // The xlsx says what it leaves out: the chart.
+    let r = api.http.get(format!("{}/v1/books/{id}/export?format=xlsx", api.url)).bearer_auth(TOKEN).send().await.unwrap();
+    assert_eq!(r.headers().get("x-app-left-out").and_then(|v| v.to_str().ok()), Some("1 chart"));
+
+    // Callers, as chloedb-server names them to an app that checks its
+    // callers: a workbook is its maker's; a key limited to tables opens its
+    // own and shared ones, and its queries read only its tables.
+    let as_ = |m: reqwest::Method, path: &str, who: &[(&str, &str)]| {
+        let mut r = api.http.request(m, format!("{}{path}", api.url)).bearer_auth(TOKEN);
+        for (k, v) in who {
+            r = r.header(*k, *v);
+        }
+        r
+    };
+    let ana = [("x-chloedb-principal", "ana"), ("x-chloedb-scope", "admin"), ("x-chloedb-tables", "ana_*=admin,regions=read")];
+    let bob = [("x-chloedb-principal", "bob"), ("x-chloedb-scope", "write"), ("x-chloedb-tables", "bob_*=admin")];
+    let reader = [("x-chloedb-principal", "rita"), ("x-chloedb-scope", "read")];
+    let r = as_(reqwest::Method::POST, "/v1/books", &ana).json(&json!({"name": "Ana's"})).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let mine: Value = r.json().await.unwrap();
+    let mine_id = mine["id"].as_str().unwrap().to_string();
+    assert_eq!(mine["owner"], "ana", "{mine}");
+    let list: Value = as_(reqwest::Method::GET, "/v1/books?whose=mine", &ana).send().await.unwrap().json().await.unwrap();
+    assert_eq!(list["books"].as_array().unwrap().iter().map(|b| b["id"].as_str().unwrap()).collect::<Vec<_>>(), [mine_id.as_str()], "{list}");
+    let list: Value = as_(reqwest::Method::GET, "/v1/books", &ana).send().await.unwrap().json().await.unwrap();
+    assert_eq!(list["books"].as_array().unwrap().len(), 1, "only its own: {list}");
+    let list: Value = as_(reqwest::Method::GET, "/v1/books?whose=shared", &reader).send().await.unwrap().json().await.unwrap();
+    assert_eq!(list["books"].as_array().unwrap().len(), 5, "a key of every table reads every workbook: {list}");
+    // Its queries read its tables and no other.
+    let r = as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/query"), &ana).json(&json!({"sheet": 0, "row": 1, "col": 1, "sql": "SELECT region FROM regions"})).send().await.unwrap();
+    let q: Value = r.json().await.unwrap();
+    assert!(q["error"].is_null(), "{q}");
+    let r = as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/query"), &ana).json(&json!({"sheet": 0, "row": 5, "col": 1, "sql": "SELECT id FROM sheets_books"})).send().await.unwrap();
+    let q: Value = r.json().await.unwrap();
+    assert!(q["error"].as_str().is_some_and(|e| e.contains("sheets_books")), "a table it may not read: {q}");
+    let r = as_(reqwest::Method::POST, "/v1/from-table", &ana).json(&json!({"table": "sheets_cells"})).send().await.unwrap();
+    assert_eq!(r.status(), 403, "{}", r.text().await.unwrap());
+    let r = as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/to-table"), &ana).json(&json!({"sheet": 0, "table": "not_anas"})).send().await.unwrap();
+    assert_eq!(r.status(), 403, "{}", r.text().await.unwrap());
+    // Others' workbooks: not opened, not changed, until shared (then opened).
+    assert_eq!(as_(reqwest::Method::GET, &format!("/v1/books/{id}"), &ana).send().await.unwrap().status(), 403);
+    assert_eq!(as_(reqwest::Method::GET, &format!("/v1/books/{mine_id}/cells"), &bob).send().await.unwrap().status(), 403);
+    assert_eq!(as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/share"), &bob).json(&json!({"shared": true})).send().await.unwrap().status(), 403);
+    assert_eq!(as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/share"), &ana).json(&json!({"shared": true})).send().await.unwrap().status(), 200);
+    assert_eq!(as_(reqwest::Method::GET, &format!("/v1/books/{mine_id}/cells"), &bob).send().await.unwrap().status(), 200);
+    assert_eq!(as_(reqwest::Method::POST, &format!("/v1/books/{mine_id}/ops"), &bob).json(&json!({"ops": []})).send().await.unwrap().status(), 403);
+    assert_eq!(as_(reqwest::Method::POST, "/v1/books", &reader).json(&json!({"name": "x"})).send().await.unwrap().status(), 403, "making one takes write");
+    assert_eq!(as_(reqwest::Method::DELETE, &format!("/v1/books/{mine_id}"), &ana).send().await.unwrap().status(), 200);
+    let manifest = api.get("/app.json").await;
+    assert_eq!(manifest["checks_callers"], true);
+
     // A restart: the cells, the formula, the chart and the query come back from Strata.
     sheets.stop();
     let sheets = Sheets::start(dir.path(), &bin);
@@ -211,4 +270,82 @@ async fn workbooks_live_in_a_cluster() {
     let list = api.get("/v1/books").await;
     assert_eq!(list["books"].as_array().unwrap().len(), 4);
     sheets.stop();
+}
+
+/// DAT-5: the Sheets a chloedb-server starts itself (`--start-apps
+/// sheets`, as an install with the apps beside the server does) holds a
+/// key the server limits to its tables, and runs each caller's statements
+/// with it narrowed to the caller's tables: the root, a writer and a key
+/// of some tables each open a table into a workbook; a reader cannot make
+/// one, and a key without the table cannot read it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_sheets_a_server_starts_serves_its_callers() {
+    let Some(bin) = server_bin().filter(|b| b.exists()) else {
+        assert!(std::env::var_os("CHLOEDB_SHEETS_NEED_SERVER").is_none(), "no chloedb-server binary (CHLOEDB_SERVER_BIN)");
+        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (port, grpc) = (free_port(), free_port());
+    let here = PathBuf::from(env!("CARGO_BIN_EXE_chloedb-sheets")).parent().unwrap().to_path_buf();
+    let path = std::env::join_paths(std::iter::once(here).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()))).unwrap();
+    let mut server = Command::new(&bin)
+        .arg("--db")
+        .arg(dir.path().join("srv.chloedb"))
+        .args(["--listen", &format!("127.0.0.1:{port}"), "--grpc", &format!("127.0.0.1:{grpc}"), "--token", TOKEN, "--start-apps", "sheets"])
+        .env("PATH", path)
+        .env_remove("CHLOEDB_APPS")
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("chloedb-server");
+    struct Kill<'a>(&'a mut Child);
+    impl Drop for Kill<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _kill = Kill(&mut server);
+    let url = format!("http://127.0.0.1:{port}");
+    let http = reqwest::Client::new();
+    let call = |auth: &str, path: &str, body: Value| http.post(format!("{url}{path}")).bearer_auth(auth.to_string()).json(&body).send();
+    // Up, with its Sheets answering through it.
+    let t0 = Instant::now();
+    loop {
+        if let Ok(r) = http.get(format!("{url}/v1/apps/sheets/v1/books")).bearer_auth(TOKEN).send().await {
+            if r.status().is_success() {
+                break;
+            }
+        }
+        assert!(t0.elapsed() < Duration::from_secs(90), "the Sheets chloedb-server started did not answer through it");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let r = call(TOKEN, "/v1/sql", json!({"sql": "CREATE TABLE docs (id KEYWORD PRIMARY KEY, title TEXT, n INT)"})).await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let ops: Vec<Value> = (0..3).map(|i| json!({"op": "insert", "table": "docs", "doc": {"id": format!("d{i}"), "title": format!("doc {i}"), "n": i}})).collect();
+    let r = call(TOKEN, "/v1/write", json!({"ops": ops})).await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let key = |body: Value| {
+        let r = call(TOKEN, "/v1/admin/keys", body);
+        async move {
+            let j: Value = r.await.unwrap().json().await.unwrap();
+            j["secret"].as_str().unwrap_or_else(|| panic!("no key: {j}")).to_string()
+        }
+    };
+    let writer = key(json!({"name": "writer", "scope": "write"})).await;
+    let some = key(json!({"name": "some", "tables": {"sheets_*": "write", "docs": "read"}})).await;
+    let reader = key(json!({"name": "reader", "scope": "read"})).await;
+    let other = key(json!({"name": "other", "tables": {"sheets_*": "write", "notes": "read"}})).await;
+    for (who, auth) in [("the root", TOKEN), ("a writer", writer.as_str()), ("a key of sheets_* and docs", some.as_str())] {
+        let r = call(auth, "/v1/apps/sheets/v1/from-table", json!({"table": "docs"})).await.unwrap();
+        let status = r.status();
+        let j: Value = r.json().await.unwrap();
+        assert!(status.is_success(), "{who}: {status} {j}");
+        assert_eq!(j["copied"]["rows"], 3, "{who}: {j}");
+    }
+    let r = call(&reader, "/v1/apps/sheets/v1/from-table", json!({"table": "docs"})).await.unwrap();
+    assert_eq!(r.status(), 403, "a reader makes no workbook: {}", r.text().await.unwrap());
+    let r = call(&other, "/v1/apps/sheets/v1/from-table", json!({"table": "docs"})).await.unwrap();
+    assert_eq!(r.status(), 403, "a key without docs reads none of it: {}", r.text().await.unwrap());
 }

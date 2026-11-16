@@ -93,11 +93,48 @@ fn close_end(text: &str, from: usize, name: &str) -> Option<usize> {
     }
 }
 
+/// The plain-text openings of a prompt that passes on another session's
+/// message, and who sent it.
+const RELAYED: [(&str, &str); 2] = [("The coordinator sent a message while you were working:", "coordinator"), ("Another Claude session sent a message:", "another-session")];
+
+/// Who relayed a prompt that is another agent's message: `coordinator`
+/// for a `<coordinator-relay>`, the `from` of a prompt that is a
+/// `<relay from="...">` (how a project's coordinator reaches a session on
+/// the user's machine), or the sender a harness names in plain words
+/// ([`RELAYED`]). `None` for the user's own prompt.
+pub fn relay_from(text: &str) -> Option<String> {
+    let t = text.trim_start();
+    if let Some((_, who)) = RELAYED.iter().find(|(open, _)| t.starts_with(open)) {
+        return Some(who.to_string());
+    }
+    relay_markup(t)
+}
+
+/// [`relay_from`] for a prompt that is a relay's markup.
+fn relay_markup(text: &str) -> Option<String> {
+    let t = text.trim_start();
+    let from = |t: &str| -> Option<String> {
+        let i = t.find("<relay from=\"")? + "<relay from=\"".len();
+        let name: String = t[i..].chars().take_while(|c| *c != '"').filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).take(64).collect();
+        (!name.is_empty()).then_some(name)
+    };
+    if t.starts_with("<coordinator-relay") {
+        return Some(from(t).unwrap_or_else(|| "coordinator".into()));
+    }
+    if t.starts_with("<relay from=\"") {
+        return from(t);
+    }
+    None
+}
+
 /// Whether `text` holds a machine envelope (a record stored before
 /// [`clean`] existed, or text that is nothing else).
 pub fn is_envelope(text: &str) -> bool {
     if !text.contains('<') && !text.contains("&lt;") {
         return false;
+    }
+    if relay_markup(text).is_some() {
+        return true;
     }
     let mut i = 0;
     while let Some(off) = text[i..].find(['<', '&']) {
@@ -110,6 +147,42 @@ pub fn is_envelope(text: &str) -> bool {
         i = at + 1;
     }
     false
+}
+
+/// Whether a stored record is a harness envelope that recall passes over:
+/// a `prompt` stored before [`clean`] existed. Only prompts are wrapped by
+/// a harness; code, tool output and notes that mention one of its tags
+/// (a hook that writes `<system-reminder>`) are the work itself, stay
+/// searchable, and are rendered through [`defuse`] (CTX-7).
+pub fn is_envelope_record(r: &crate::record::Record) -> bool {
+    r.kind == crate::record::Kind::Prompt && is_envelope(&r.text)
+}
+
+/// `text` with the opening `<` of every harness tag escaped (`&lt;`), so
+/// that a recalled record that quotes `<system-reminder>` reads as quoted
+/// text in the context it is injected into, not as a notice from the
+/// harness. Other angle brackets are left as they are.
+pub fn defuse(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('<') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut last = 0;
+    let mut i = 0;
+    while let Some(off) = text[i..].find('<') {
+        let at = i + off;
+        if tag_at(&text[at..]).is_some_and(|(name, _, _, _)| DROP.contains(&name) || UNWRAP.contains(&name)) {
+            out.push_str(&text[last..at]);
+            out.push_str("&lt;");
+            last = at + 1;
+        }
+        i = at + 1;
+    }
+    if last == 0 {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    out.push_str(&text[last..]);
+    std::borrow::Cow::Owned(out)
 }
 
 /// `text` without its envelopes: the dropped tags go with their content,
@@ -252,6 +325,23 @@ mod tests {
     }
 
     #[test]
+    fn a_relay_is_the_relaying_agents_and_its_markup_goes() {
+        assert_eq!(relay_from("<coordinator-relay><relay from=\"coordinator\"><note>Fix it.</note></relay></coordinator-relay>").as_deref(), Some("coordinator"));
+        assert_eq!(relay_from("<coordinator-relay>Fix it.</coordinator-relay>").as_deref(), Some("coordinator"));
+        let t = "<relay from=\"coordinator\">\nBuild the shop from the CREATE statements.\n</relay>";
+        assert_eq!(relay_from(t).as_deref(), Some("coordinator"));
+        assert_eq!(relay_from("  <relay from=\"lead-2\">x</relay>").as_deref(), Some("lead-2"));
+        assert_eq!(relay_from("Build the shop. <relay from=\"coordinator\">"), None, "a prompt that only quotes one is the user's");
+        assert_eq!(relay_from("Build the shop."), None);
+        // A harness that says in words whose message it passes on.
+        assert_eq!(relay_from("The coordinator sent a message while you were working:\nShip it.").as_deref(), Some("coordinator"));
+        assert_eq!(relay_from("Another Claude session sent a message:\n<agent-message>Done.</agent-message>").as_deref(), Some("another-session"));
+        assert!(!is_envelope("The coordinator sent a message while you were working:\nShip it."));
+        assert!(is_envelope(t));
+        assert_eq!(clean(t).trim(), "Build the shop from the CREATE statements.");
+    }
+
+    #[test]
     fn an_escaped_envelope_inside_a_relay() {
         let t = "<coordinator-relay>&lt;session-context nonce=&quot;n&quot;&gt;\nProject rules: never merge.\n&lt;/session-context nonce=&quot;n&quot;&gt;\n<relay from=\"coordinator\"><cited author=\"user\">I think ChloeCtx should be simpler</cited>\n<note>Repo x. Don&#39;t touch the Mac.</note></relay></coordinator-relay>";
         assert!(is_envelope(t));
@@ -267,5 +357,22 @@ mod tests {
         let t = "<command-message>review is running…</command-message>\n<command-name>/review</command-name>\n<command-args>PR 12</command-args>";
         assert_eq!(clean(t), "/review\nPR 12");
         assert_eq!(clean("<local-command-stdout>Total cost: $0.12</local-command-stdout>"), "");
+    }
+
+    #[test]
+    fn records_that_mention_a_tag_stay_and_are_defused() {
+        use crate::record::{Kind, Record};
+        let code = "const zorblaxWrap = (s) => `<system-reminder>${s}</system-reminder>`;";
+        let rec = |kind: Kind, text: &str| Record {
+            id: "s:1".into(), session: "s".into(), kind, tag: "-".into(), turn: 1, seq: 1, ts: 0, importance: 0.5,
+            files: String::new(), text: text.into(), ctx: String::new(), links: Vec::new(),
+        };
+        assert!(!is_envelope_record(&rec(Kind::ToolCall, code)), "an edit that quotes a tag is the work");
+        assert!(!is_envelope_record(&rec(Kind::Note, "Hooks wrap notices in <system-reminder> tags.")));
+        assert!(is_envelope_record(&rec(Kind::Prompt, "<system-reminder>x</system-reminder>\nRename it.")), "an old prompt's envelope");
+        let d = defuse(code);
+        assert_eq!(d, "const zorblaxWrap = (s) => `&lt;system-reminder>${s}&lt;/system-reminder>`;");
+        assert!(!d.contains("<system-reminder>"), "{d}");
+        assert_eq!(defuse("a < b and <div>"), "a < b and <div>");
     }
 }

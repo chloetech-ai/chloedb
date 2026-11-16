@@ -19,7 +19,8 @@
 //!
 //! Types are `TEXT`, `KEYWORD`, `INT` (or `INTEGER`, `BIGINT`), `FLOAT` (or
 //! `DOUBLE`, `REAL`), `BOOL` (or `BOOLEAN`), `TIMESTAMP` (microseconds,
-//! UTC; or `TIMESTAMPTZ`, `DATETIME`), `VECTOR(dimensions)`, `SPARSE`,
+//! UTC; or `TIMESTAMPTZ`, `DATETIME`, and `DATE`, a TIMESTAMP whose dates
+//! are midnight UTC), `VECTOR(dimensions)`, `SPARSE`,
 //! `EDGES`, `JSON` (an object of keys the schema does not name,
 //! [`crate::json`]; or `JSONB`) and `MEDIA` (a file's reference, [`crate::media`]; `OPTIONS(kind
 //! = 'image')`, `'audio'`, `'video'` or `'pdf'` says what file); `KEYWORD[]`
@@ -535,8 +536,8 @@ fn column_type(t: &DataType) -> std::result::Result<(&'static str, bool, Option<
         "TEXT" => Ok(("text", false, None)),
         "INT" | "INTEGER" | "BIGINT" | "INT64" => Ok(("int", false, None)),
         "BOOL" | "BOOLEAN" => Ok(("bool", false, None)),
-        "TIMESTAMP" | "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" | "DATETIME" => Ok(("timestamp", false, None)),
-        "DATE" => Err(format!("{t} is not a type here: a TIMESTAMP holds dates (as midnight UTC) and times")),
+        // A DATE is a TIMESTAMP: a date written alone is its midnight UTC.
+        "TIMESTAMP" | "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" | "DATETIME" | "DATE" => Ok(("timestamp", false, None)),
         "FLOAT" | "DOUBLE" | "REAL" | "DOUBLE PRECISION" | "FLOAT64" => Ok(("float", false, None)),
         "JSON" | "JSONB" => Ok(("json", false, None)),
         s if s.starts_with("VARCHAR") || s.starts_with("CHAR") || s.starts_with("STRING") => {

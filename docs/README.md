@@ -53,6 +53,7 @@ New here? Start with the [quickstart](quickstart.md), a first search in five min
 ## Apps on ChloeDB
 
 - [chloedb-sheets](chloedb/sheets.md): spreadsheets whose workbooks are ChloeDB rows.
+- [chloedb-netops](chloedb/netops.md): network operations on ChloeDB, with a simulated carrier network to try it on.
 - [chloedb-crawl](chloedb/crawler.md): a crawler that turns a site into a table and grows the cluster; [what the crawler does on your site](chloedb/crawler-bot.md).
 - [chloedb-apps](chloedb/apps.md) (a prototype): apps built from a description and changed by asking.
 - [ChloeCtx beside a cluster](chloectx/app.md): memory spaces for any agent, and past incidents next to each alert.

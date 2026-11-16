@@ -3,7 +3,7 @@
 `chloedb-sheets` is a spreadsheet app that keeps its workbooks in ChloeDB. A workbook has the things you expect of one: sheets, formulas (IronCalc's engine, over 300 of Excel's functions, array formulas and spills), number formats, fonts, colors, borders, merged cells, frozen panes, conditional formats, named ranges, sorting, filters, find and replace, charts and pivot tables. It also has what a spreadsheet kept in a database can have:
 
 - **Every cell is a row of a ChloeDB table**, so every workbook can be searched at once (BM25 over the cells' text), and a workbook opened in two windows shows what the other changed.
-- **The cluster's tables open as sheets**, live: rows paged in as you scroll, sorted by any column, filtered with a SQL `WHERE` and searched with `MATCH`, and edited in place (each change is a write to the table).
+- **The cluster's tables open as sheets**, live: rows paged in as you scroll (past the server's result window, by the sort's key: the key's column or a number, time or boolean column, so a table of any size is read to its end), sorted by any column, filtered with a SQL `WHERE` and searched with `MATCH`, and edited in place (each change is a write to the table).
 - **Cells can be filled by SQL**: a query of the cluster's tables writes its answer into a sheet from a cell on, is kept with the workbook, and runs again when you refresh it, so the cells (and the formulas and charts over them) follow the table.
 - **A sheet becomes a table**: its first row names the columns, each column gets the type its cells hold, and its rows are written to ChloeDB by a key you choose.
 - **Files come in and go out**: Excel workbooks (.xlsx, formulas and formats kept), CSV and TSV, and SQLite databases, whose tables become sheets of a workbook or tables of the cluster; a workbook goes out as .xlsx, a sheet as CSV.
@@ -12,7 +12,14 @@ Like [the crawler](crawler.md), it is a program of its own, in Rust, that talks 
 
 ## Run it
 
-Build both programs, then start chloedb-sheets with a cluster of its own:
+Install both programs, then start chloedb-sheets with a cluster of its own. <!-- since 0.3.2 --> The installer puts both in `~/.local/bin` prebuilt, and chloedb-sheets finds the server beside it:
+
+```bash
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with sheets
+~/.local/bin/chloedb-sheets serve --local ./sheets-cluster
+```
+
+Or build both from a checkout (any platform with Rust; the only way before release 0.3.2):
 
 ```bash
 (cd chloedb-server && cargo build --release)
@@ -29,11 +36,13 @@ Open `http://127.0.0.1:7700` and go to **Apps → Sheets**.
 Against a cluster that runs elsewhere, give chloedb-sheets the server (a coordinator or one server) and a key, and give the server the app. Its first start creates the two tables it keeps workbooks in, which takes an admin key; after that a key that can write is enough:
 
 ```bash
-chloedb-sheets serve --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --token "$SHEETS_TOKEN" --listen 0.0.0.0:7820
+chloedb-sheets serve --server http://coordinator:7700 --key "$CHLOEDB_KEY" --token "$SHEETS_TOKEN" --listen 0.0.0.0:7820
 chloedb-server ... --app sheets=http://sheets-host:7820   # with CHLOEDB_APP_TOKEN=$SHEETS_TOKEN
 ```
 
-`--token` (or `CHLOEDB_SHEETS_TOKEN`) is the bearer token its API requires; the server sends its `CHLOEDB_APP_TOKEN` ([apps](server.md#apps)). Requests that carry an `Origin` header are refused, so a page on another site cannot reach the app even from inside the network. As with every app, the command center reads it with the signed-in key's read scope and changes it with admin scope.
+`--server` was `--strata` before 0.3.2; the old name still works.
+
+`--token` (or `CHLOEDB_SHEETS_TOKEN`) is the bearer token its API requires; the server sends its `CHLOEDB_APP_TOKEN` ([apps](server.md#apps)). Requests that carry an `Origin` header are refused, so a page on another site cannot reach the app even from inside the network. It checks its callers itself (`"checks_callers": true` in its manifest), so chloedb-server sends it keys limited to tables, and keys that may only write, with who they are (`x-chloedb-principal`, `x-chloedb-scope`, `x-chloedb-tables`). A key that may write makes workbooks, which are its own: it changes them, shares them (**Share**, `POST /v1/books/:id/share {shared}`) and deletes them, and another key opens one only once it is shared, or when it is an admin of every table. A workbook made before owners existed is everyone's. What a workbook reads from the cluster (its query blocks, the tables opened as sheets, a sheet copied to a table) runs as the caller's key: chloedb-sheets sends its own token narrowed to the caller's grants (`x-chloedb-as-tables`, [server](server.md#apps)), so a query reads only the tables the signed-in key may read, and a refusal is the server's 403. The analyst preset's keys make their own workbooks this way. Called directly with its token (not through chloedb-server), it answers as before, as the token's.
 
 ### On Kubernetes
 
@@ -57,14 +66,14 @@ Removing `spec.sheets` deletes its Deployment and Service and restarts the coord
 `import` and `export` move files without the UI:
 
 ```bash
-target/release/chloedb-sheets import budget.xlsx --strata http://127.0.0.1:7700
-target/release/chloedb-sheets import shop.sqlite --tables orders,customers --name Shop --strata http://127.0.0.1:7700
-target/release/chloedb-sheets export <workbook id> -o budget.xlsx --strata http://127.0.0.1:7700
+target/release/chloedb-sheets import budget.xlsx --server http://127.0.0.1:7700
+target/release/chloedb-sheets import shop.sqlite --tables orders,customers --name Shop --server http://127.0.0.1:7700
+target/release/chloedb-sheets export <workbook id> -o budget.xlsx --server http://127.0.0.1:7700
 ```
 
 ## The app
 
-**Sheets** lists the workbooks, newest first, the cluster's tables, a search over every workbook, and an import area that takes a file dropped on it. A SQLite file asks which of its tables to bring and where: as sheets of a new workbook, or as tables of the cluster (through chloedb-server's own SQLite import, with the signed-in key, keeping the columns' types, keys and indexes). A file is not trusted: a SQLite file's views come in only when named (a view runs its query as it is read, and that query may not end), and reading one stops after 60 s for the list of tables and 180 s for the import; an xlsx file may expand to at most 512 MB and hold at most 2 million cells.
+**Sheets** lists the workbooks, newest first (**Mine**, **Shared** or **All**, with each one's owner), the cluster's tables, a search over every workbook, and an import area that takes a file dropped on it. A SQLite file asks which of its tables to bring and where: as sheets of a new workbook, or as tables of the cluster (through chloedb-server's own SQLite import, with the signed-in key, keeping the columns' types, keys and indexes). A file is not trusted: a SQLite file's views come in only when named (a view runs its query as it is read, and that query may not end), and reading one stops after 60 s for the list of tables and 180 s for the import; an xlsx file may expand to at most 512 MB and hold at most 2 million cells.
 
 ![A workbook: a color scale, data bars, number formats, a frozen header row and a stacked column chart over the sheet](../assets/img/strata-sheets-workbook.png)
 
@@ -81,6 +90,8 @@ A **filter** puts buttons on the header row of a range: each lists the column's 
 
 **A table of the cluster** opens at `#/app/sheets/t/<table>` as a sheet whose columns are the table's, named and typed in the header. Rows are read a page of 100 at a time as they come into view, ordered by the key (or by the column whose header you click, then by the key), and read again every five seconds. Typing into a cell sets that field of that row (`{"op": "set"}` by key); pasting sets many; Delete clears them. **Row** adds one, **Column** runs `ALTER TABLE ... ADD COLUMN`, **Delete rows** deletes the rows selected (after asking), and **Open as a workbook** copies the rows shown (the filter and order included) into a new workbook, for formulas, charts and pivots over them. A row's key does not change in place.
 
+**Numbers** are shown as Excel's General format shows them, to 15 significant digits and no more (`226159459.83`, `4.1271186440678`, `1.5E+20`), in the grid, a CSV and an xlsx file alike; a number format of the cell's own still applies. **Charts do not go into an .xlsx file**: the file keeps the cells, formulas and formats, and the download says how many charts it left out (the `x-app-left-out` header of `GET /v1/books/:id/xlsx`).
+
 ## How workbooks are kept
 
 Two tables hold every workbook. chloedb-sheets creates them at its first start:
@@ -90,7 +101,7 @@ Two tables hold every workbook. chloedb-sheets creates them at its first start:
 | `sheets_books` | a workbook | its name, where it came from, its sheets' names, its counts, and its frame: the workbook without its cells (styles, column widths, row heights, merges, names, conditional formats, frozen panes), IronCalc's model encoded with bitcode, as base64; and its charts, queries and filters as JSON |
 | `sheets_cells` | a cell | `book:sheet:row:col` as its key, the sheet's name, its reference (`B7`), what it shows (`text`, searched with BM25), its number, its input (a formula, or what was typed), its style's index and kind |
 
-`sheets_cells` is sharded by the workbook (`shard_by`), so a workbook's cells sit on one shard and are read in one pass, and clustered by it, so they are read in order. After each change chloedb-sheets compares every cell it touched with what it wrote last, and writes only the cells that changed, in one transaction with the workbook's row; the 350,000 cells of a 50,000-row SQLite import took 8.7 s to write, a change to one cell of it 0.1 to 0.15 s, on the container this was built in. A workbook is held in memory while it is used and let go after 30 minutes unused; a write ChloeDB refuses is retried every 30 seconds, and the workbook says it is not saved yet until one succeeds.
+`sheets_cells` is sharded by the workbook (`shard_by`), so a workbook's cells sit on one shard and are read in one pass, and clustered by it, so they are read in order. After each change chloedb-sheets compares every cell it touched with what it wrote last, and writes only the cells that changed, in one transaction with the workbook's row; the 350,000 cells of a 50,000-row SQLite import took 8.7 s to write, a change to one cell of it 0.1 to 0.15 s, on the container this was built in. A workbook is held in memory while it is used and let go after 30 minutes unused, or sooner, the least recently used first, when the open workbooks hold more than 1.5 million cells together (`CHLOEDB_SHEETS_OPEN_CELLS`); a write ChloeDB refuses is retried every 30 seconds, and the workbook says it is not saved yet until one succeeds.
 
 Changing an open workbook from two places is safe: chloedb-sheets applies changes to a workbook one at a time, and each viewer reads what changed since the version it holds (`GET /v1/books/<id>/changes?since=`) every three seconds, or redraws the sheet when rows or columns moved.
 
@@ -100,7 +111,7 @@ Each route is under the app's address (through chloedb-server: `/v1/apps/sheets/
 
 | route | what |
 |---|---|
-| `GET /v1/books`, `POST /v1/books {name}` | the workbooks; a new one |
+| `GET /v1/books?whose=mine\|shared\|all`, `POST /v1/books {name}` | the workbooks the caller may open (with `owner` and `shared`, and the caller as `me`); a new one, the caller's |
 | `POST /v1/import?name=&format=&tables=&header=` | a file (the body) as a new workbook: xlsx, csv, tsv or sqlite (by default what the bytes are); a SQLite file's `tables`, a CSV file's `header` |
 | `POST /v1/sqlite/tables` | a SQLite file's tables, their columns and row counts, and its views (`"kind": "view"`, not counted) |
 | `POST /v1/from-table {table \| sql, name, limit}` | a table of the cluster, or a SELECT's answer, as a new workbook |

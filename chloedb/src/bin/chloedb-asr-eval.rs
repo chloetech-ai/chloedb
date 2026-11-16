@@ -41,7 +41,7 @@ struct Args {
     /// The model, by the name a schema gives it.
     #[arg(long, default_value = "whisper-small")]
     model: String,
-    /// Where models are (default $CHLOEDB_MODELS or ~/.local/share/strata/models).
+    /// Where models are (default $CHLOEDB_MODELS or ~/.local/share/chloedb/models).
     #[arg(long)]
     models: Option<PathBuf>,
     /// Keep n utterances, spread evenly over the split by ID.

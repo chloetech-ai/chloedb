@@ -72,7 +72,13 @@ ORDER BY ppr(cooc, (SELECT item FROM events WHERE usr = :u ORDER BY ts DESC LIMI
 LIMIT 20;
 ```
 
+A walk runs on one database: a coordinator refuses `ppr` and the other graph queries ([graphs on a cluster](graphs.md#on-a-cluster)), while the counts above run anywhere.
+
 Personalized PageRank pushes a row only while its share of the walk is at least `eps` (1e-4 by default) times the sum of its edges' weights, so a single seed whose edges add up to more than 10,000 is never pushed and the walk returns nothing. Pass a smaller `eps`, as above, or keep the weights decayed or normalised.
+
+## Kept for you: `CREATE RECOMMENDER`
+
+`CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS items(emb)` keeps the counts of order 1 and items seen together from the writes of an events table, and `ORDER BY recommend('shop', :u)` fuses them with the similarity of the user's recent items and with popularity, leaving out what the user had ([recommenders](query-language.md#recommenders-create-recommender-and-recommend)). It runs on one database; a coordinator refuses it, and the tables of this page are what a cluster uses.
 
 ## Which to use
 

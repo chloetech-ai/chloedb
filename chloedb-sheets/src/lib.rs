@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod book;
+pub mod caller;
 pub mod books;
 pub mod io;
 pub mod ops;

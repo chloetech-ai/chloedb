@@ -34,6 +34,9 @@ pub struct Strata {
     pub url: String,
     key: Option<String>,
     http: reqwest::Client,
+    /// The caller's tables a statement runs for (`x-chloedb-as-tables`,
+    /// [`Strata::as_caller`]).
+    as_tables: Option<String>,
 }
 
 /// Rows a scroll reads a page at a time; the server's window is 10,000.
@@ -42,13 +45,24 @@ pub const PAGE: usize = 10_000;
 impl Strata {
     pub fn new(url: &str, key: Option<String>) -> Strata {
         let http = reqwest::Client::builder().timeout(Duration::from_secs(300)).connect_timeout(Duration::from_secs(10)).build().expect("an HTTP client");
-        Strata { url: url.trim_end_matches('/').to_string(), key: key.filter(|k| !k.is_empty()), http }
+        Strata { url: url.trim_end_matches('/').to_string(), key: key.filter(|k| !k.is_empty()), http, as_tables: None }
+    }
+
+    /// This client, its statements run for a caller: the server narrows
+    /// its token to the caller's tables (`x-chloedb-as-tables`) and checks
+    /// each statement as the caller's key ([`crate::caller`]). `None`: as
+    /// this app's token.
+    pub fn as_caller(&self, tables: Option<String>) -> Strata {
+        Strata { as_tables: tables, ..self.clone() }
     }
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<reqwest::Body>, ctype: &str) -> Result<(Value, Option<Duration>)> {
         let mut req = self.http.request(method, format!("{}{}", self.url, path)).header("x-strata-client", "chloedb-sheets");
         if let Some(k) = &self.key {
             req = req.bearer_auth(k);
+        }
+        if let Some(t) = &self.as_tables {
+            req = req.header("x-chloedb-as-tables", t);
         }
         if let Some(b) = body {
             req = req.header(reqwest::header::CONTENT_TYPE, ctype).body(b);

@@ -19,7 +19,9 @@ const CSS = `
 .fs-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .fs-kpis .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
 .fs-kpis .delta { max-width: none; }
-.fs-pipe { width: 100%; height: auto; display: block; }
+.fs-pipe { width: 100%; min-width: 760px; height: auto; display: block; }
+/* On a phone the diagram keeps a readable size and scrolls sideways. */
+:has(> .fs-pipe) { overflow-x: auto; }
 .fs-pipe .node rect { fill: var(--surface); stroke: var(--line-2); stroke-width: 1.2; }
 .fs-pipe .node.k-stream rect { stroke: var(--s1); }
 .fs-pipe .node.k-batch rect { stroke: var(--s4); }
@@ -233,7 +235,7 @@ function ctrChart(ctx, host) {
 function latencyChart(ctx, host, onState) {
   const chart = ctx.charts.timeChart({ height: 210, fmt: (v) => ctx.core.fmt.ms(v), min: 0,
     series: [
-      { name: "serving p50 (4 reads by key, 489 rows, transforms, model)", color: "var(--s2)", get: (p) => p.serve_p50 },
+      { name: "serving p50 (reads by key, transforms, model)", color: "var(--s2)", get: (p) => p.serve_p50 },
       { name: "serving p99", color: "var(--s5)", get: (p) => p.serve_p99, dash: true },
       { name: "write p50 (impressions + streaming features, one transaction)", color: "var(--s1)", get: (p) => p.write_p50 },
       { name: "click to feature p50", color: "var(--s3)", get: (p) => p.fresh_p50 },
@@ -353,7 +355,9 @@ function pipelinePage(root, ctx, onState) {
   });
   onState((st) => {
     kRate.set([fmt.si(st.counts.impressions), h("small", {}, `${fmt.si(st.rates.impressions)}/s`)], `${fmt.si(st.counts.clicks)} clicks, the labels`);
-    kServe.set(fmt.ms(st.serve.p50), `p99 ${fmt.ms(st.serve.p99)}; 489 rows by key a request`);
+    // The rows the last ranking read by key: none for the random order.
+    const reads = st.serve.rows == null ? "" : st.serve.rows ? `; ${fmt.n(st.serve.rows)} rows by key` : "; random: no reads";
+    kServe.set(fmt.ms(st.serve.p50), `p99 ${fmt.ms(st.serve.p99)}${reads}`);
     kFresh.set(fmt.ms(st.fresh.p50), `p99 ${fmt.ms(st.fresh.p99)}; the next ranking sees it`);
     kAuc.set(st.model ? st.model.auc_true.toFixed(3) : "random", st.model ? `${st.model.name}, ${st.model.join_kind}` : "train one on the Training tab");
     if (ctr2) {
@@ -392,15 +396,23 @@ function shopPage(root, ctx) {
   const who = h("div", { class: "fs-who" });
   const grid = h("div", { class: "fs-grid" });
   const timing = h("div");
-  const result = h("div");
+  const result = h("div"), failed = h("div");
   root.append(h("div", { class: "fs-note" }, "The sample application: the shop's ranking for one shopper, as the shoppers get it. Each card shows how much each feature pushed the product up or down. Click a product as this shopper: its impressions and the click are written in one transaction, and the shopper's features are read back at once."));
   root.append(h("div", { class: "fs-shop" },
     card({ title: "Shopper", tools: [again], body: [pick, who] }),
-    h("div", {}, card({ title: "Ranked for them", sub: "top 8 of 240", body: [timing, result, grid] }))));
+    h("div", {}, card({ title: "Ranked for them", sub: "top 8 of 240", body: [timing, failed, result, grid] }))));
   pick.onchange = () => { uid = pick.value; load(); };
 
   async function load(flash) {
-    const r = await ctx.api(`/api/shop?user=${encodeURIComponent(uid)}`);
+    let r;
+    try { r = await ctx.api(`/api/shop?user=${encodeURIComponent(uid)}`); } catch (e) {
+      // The shop could not rank (a table the model reads is gone): say so
+      // in place of the products, not a blank page.
+      failed.replaceChildren(h("div", { class: "error" }, `The shop could not rank: ${e.message}`));
+      grid.replaceChildren();
+      return;
+    }
+    failed.replaceChildren();
     last = r;
     drawWho(r, flash);
     const ms = r.ms;

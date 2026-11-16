@@ -42,14 +42,45 @@ export { Nearby, NearbyResult } from "./nearby.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** The native addon: `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`), else chloedb.node beside this
- * file (`npm run build` makes it). */
-function load() {
-  const path = process.env.CHLOEDB_NODE_ADDON || process.env.STRATA_NODE_ADDON || join(here, "chloedb.node");
-  if (!existsSync(path)) {
-    throw new ChloeDBError(`the ChloeDB addon is not built: ${path} is missing (run \`npm run build\` in chloedb-js, which needs Rust and a C compiler)`);
+/** This machine as the platform packages are named: linux-x64-gnu,
+ * darwin-arm64 (scripts/pack.mjs). */
+function platformName() {
+  if (process.platform !== "linux") return `${process.platform}-${process.arch}`;
+  let glibc = false;
+  try {
+    glibc = Boolean(process.report?.getReport?.()?.header?.glibcVersionRuntime);
+  } catch {
+    glibc = false;
   }
-  return createRequire(import.meta.url)(path);
+  return `linux-${process.arch}-${glibc ? "gnu" : "musl"}`;
+}
+
+/** The native addon: `$CHLOEDB_NODE_ADDON` (or `$STRATA_NODE_ADDON`), else
+ * chloedb.node beside this file (`npm run build` makes it, and a release's
+ * tarball has it), else the one of this platform's package,
+ * `@chloedb/<platform>`, which `npm install chloedb` from npm's registry
+ * installs beside it. */
+function load() {
+  const require = createRequire(import.meta.url);
+  const given = process.env.CHLOEDB_NODE_ADDON || process.env.STRATA_NODE_ADDON;
+  const beside = join(here, "chloedb.node");
+  if (given || existsSync(beside)) {
+    const path = given || beside;
+    if (!existsSync(path)) throw new ChloeDBError(`the ChloeDB addon ${path} is missing`);
+    return require(path);
+  }
+  const platform = platformName();
+  let found;
+  try {
+    found = require.resolve(`@chloedb/${platform}/chloedb.node`);
+  } catch {
+    throw new ChloeDBError(
+      `the ChloeDB addon is not installed: no ${beside}, and no package @chloedb/${platform} ` +
+        `(npm installs the one of a platform with a prebuilt addon: linux-x64-gnu, linux-arm64-gnu, darwin-arm64, darwin-x64; ` +
+        `elsewhere, run \`npm run build\` in chloedb-js, which needs Rust and a C compiler). chloedb/client works without it.`,
+    );
+  }
+  return require(found);
 }
 
 const native = load();
@@ -165,7 +196,7 @@ export class Database extends Searchable {
    * the path of a JSON file; the short form or the long one). `directory`
    * keeps it as a directory of segment files instead of one file. `models`
    * is where embedded fields' models are (default $CHLOEDB_MODELS or
-   * ~/.local/share/strata/models). `threads` is how many cores vector
+   * ~/.local/share/chloedb/models). `threads` is how many cores vector
    * indexes build on and each query searches segments on (default: every
    * core). `timeoutMs` and `memory` limit its queries (see `setLimits`).
    */

@@ -116,6 +116,33 @@ struct Problem {
     j: Json,
 }
 
+/// A problem's `next` for an agent too: `api`, the read its view makes,
+/// and `runbook`, the title of the runbook for it ([`crate::runbooks`]).
+fn for_agents(mut j: Json) -> Json {
+    let view = j["next"]["view"].as_str().unwrap_or_default().to_string();
+    let params = &j["next"]["params"];
+    let api = match view.as_str() {
+        "cluster" => Some("GET /v1/cluster".to_string()),
+        "performance" => Some("GET /v1/queries/slow".to_string()),
+        "queries" => Some("GET /v1/queries/recent?outcome=error".to_string()),
+        "tables" => Some("GET /v1/tables".to_string()),
+        "alerts" => Some("GET /v1/alerts".to_string()),
+        "logs" => Some(match params["q"].as_str() {
+            Some(q) => format!("GET /v1/logs?q={}", crate::mcp::encode(q)),
+            None => "GET /v1/logs".to_string(),
+        }),
+        v => v.strip_prefix("alert/").map(|r| format!("GET /v1/alerts/{r}")),
+    };
+    if let (Some(api), true) = (api, j["next"].is_object()) {
+        j["next"]["api"] = json!(api);
+    }
+    let id = j["id"].as_str().unwrap_or_default().to_string();
+    if let (Some(r), true) = (crate::runbooks::for_id(&id), j["next"].is_object()) {
+        j["next"]["runbook"] = json!(r.title);
+    }
+    j
+}
+
 fn severity(critical: bool) -> &'static str {
     if critical {
         "critical"
@@ -355,6 +382,10 @@ fn short(r: &Json) -> String {
     r["short"].as_str().or(r["url"].as_str()).unwrap_or("?").to_string()
 }
 
+/// How much more of its disk a copy uses than its shard's other copies
+/// before it is told, besides using over twice theirs.
+const HEAVY_DISK_BYTES: f64 = 1e9;
+
 fn down(r: &Json) -> bool {
     r["status"] == "down"
 }
@@ -365,6 +396,10 @@ impl Fleet {
         let mut m = self.memory.lock().unwrap_or_else(|e| e.into_inner());
         let now = i.now_ms;
         let shards: Vec<Json> = i.cluster["shards"].as_array().cloned().unwrap_or_default();
+        // A server that is not a coordinator, as one shard of itself
+        // ([`local_shard`]): its problems are this server's, not shard 0's.
+        let alone = shards.len() == 1 && shards[0]["local"] == true;
+        let at_shard = |shard: usize, name: &str| if alone { vec![name.to_string()] } else { vec![format!("shard {shard}"), name.to_string()] };
         let mut checks = Vec::new();
         let mut problems: Vec<Problem> = Vec::new();
 
@@ -780,7 +815,7 @@ impl Fleet {
                 rank: 4,
                 critical: true,
                 headline: title.clone(),
-                j: json!({"id": format!("damaged-{name}"), "severity": "critical", "title": title, "where": [format!("shard {shard}"), name], "since_ms": null,
+                j: json!({"id": format!("damaged-{name}"), "severity": "critical", "title": title, "where": at_shard(*shard, name), "since_ms": null,
                     "impact": format!("Searches that read the damaged segments fail on {name} (a coordinator tries another copy), and a primary elected from it would serve the damage"),
                     "next": {"text": format!("Replace {name} with a new copy (Cluster: Plan the repair), then remove it; or restore it from a checkpoint"), "view": "cluster", "params": {"shard": shard, "copy": name}}}),
             });
@@ -845,14 +880,23 @@ impl Fleet {
                     let fullest = if pct(lo) == pct(max) { if fills.is_empty() { String::new() } else { format!("; {name}{fills}") } } else { format!("; the fullest is {name}{fills}") };
                     (format!("{} copies' disks are {range} full{fullest}", over.len()), w)
                 } else {
-                    (format!("{name}'s disk is {} full{fills}", pct(max)), vec![format!("shard {shard}"), name.clone()])
+                    (format!("{name}'s disk is {} full{fills}", pct(max)), at_shard(shard, &name))
                 };
-                let impact = if over.len() > 1 { "Writes to a shard stop when its primary's disk is full".to_string() } else { format!("Writes to shard {shard} stop when its disk is full") };
+                let impact = if over.len() > 1 {
+                    "Writes to a shard stop when its primary's disk is full".to_string()
+                } else if alone {
+                    "Writes stop when the disk is full".to_string()
+                } else {
+                    format!("Writes to shard {shard} stop when its disk is full")
+                };
                 // The headline says the line crossed, not the share now
                 // and when it fills, which change every look.
                 let line = if critical { "95%" } else { "85%" };
                 let headline = match over.len() {
-                    0 => format!("{name}'s disk fills within 3 days at the last hour's rate"),
+                    // The estimate, as the problem's title says it: a
+                    // headline of "within 3 days" (the line) read as days
+                    // while the disk filled in hours.
+                    0 => format!("{name}'s disk fills in about {} at the last hour's rate", days.map_or_else(|| "3 days".to_string(), fills_in)),
                     1 => format!("{name}'s disk is over {line} full"),
                     n => format!("{n} copies' disks are over {} full", if over.iter().all(|d| d.0 >= 0.95) { "95%" } else { "85%" }),
                 };
@@ -866,6 +910,76 @@ impl Fleet {
             }
         }
         checks.push(dc);
+
+        // ----- placement: a shard whose copies all run on one node, while
+        // the cluster has others (LIV-6): a second copy protects it from a
+        // lost disk, not from that node going. A cluster on one node is
+        // laid out as it can be.
+        let node_of = |r: &Json| r["detail"]["place"]["node"].as_str().filter(|n| !n.is_empty()).map(String::from);
+        let nodes: std::collections::BTreeSet<String> = copies.iter().filter_map(|(_, r)| node_of(r)).collect();
+        let mut together: Vec<(usize, String, Vec<String>)> = Vec::new();
+        if nodes.len() > 1 {
+            for (k, s) in shards.iter().enumerate() {
+                let rs = s["replicas"].as_array().cloned().unwrap_or_default();
+                let on: Vec<Option<String>> = rs.iter().map(node_of).collect();
+                if rs.len() < 2 || on.iter().any(Option::is_none) {
+                    continue;
+                }
+                let first = on[0].clone().unwrap_or_default();
+                if on.iter().all(|n| n.as_deref() == Some(first.as_str())) {
+                    together.push((s["shard"].as_u64().unwrap_or(k as u64) as usize, first, rs.iter().map(short).collect()));
+                }
+            }
+        }
+        checks.push(json!({"id": "placement", "status": if together.is_empty() { "ok" } else { "warning" }, "nodes": nodes.len(),
+            "together": together.iter().map(|(sh, node, cs)| json!({"shard": sh, "node": node, "copies": cs})).collect::<Vec<_>>()}));
+        for (shard, node, cs) in &together {
+            let title = format!("Every copy of shard {shard} runs on node {node} ({})", both(cs));
+            problems.push(Problem {
+                rank: 17,
+                critical: false,
+                headline: format!("Shard {shard}'s copies all run on node {node}"),
+                j: json!({"id": format!("placement-{shard}"), "severity": "warning", "title": title, "where": [format!("shard {shard}"), node],
+                    "since_ms": null, "node": node, "copies": cs,
+                    "impact": format!("Losing node {node} stops shard {shard}'s reads and writes: its other copies guard against a lost disk, not a lost node"),
+                    "next": {"text": format!("Restart one of shard {shard}'s replicas so that the scheduler places it on another node (the operator asks for copies on different nodes; a node without room for it keeps it here), or add a node"), "view": "cluster", "params": {"shard": shard}}}),
+            });
+        }
+
+        // ----- a copy whose disk holds far more than its shard's other
+        // copies, which hold the same data (LIV-7: 4 GB against 0.8 GB):
+        // files that are not its tables, such as a copy of the database a
+        // transfer left when the server was stopped during it.
+        let used = |r: &Json| {
+            let l = &r["detail"]["load"];
+            Some(l["disk_total_bytes"].as_f64()? - l["disk_free_bytes"].as_f64()?).filter(|u| *u > 0.0)
+        };
+        let mut heavy: Vec<(usize, String, f64, f64)> = Vec::new();
+        for (k, s) in shards.iter().enumerate() {
+            let rs: Vec<&Json> = s["replicas"].as_array().into_iter().flatten().filter(|r| !down(r)).collect();
+            for r in &rs {
+                let Some(mine) = used(r) else { continue };
+                let peers: Vec<f64> = rs.iter().filter(|o| o["url"] != r["url"]).filter_map(|o| used(o)).collect();
+                let Some(most) = peers.iter().copied().reduce(f64::max) else { continue };
+                if mine > 2.0 * most && mine - most > HEAVY_DISK_BYTES {
+                    heavy.push((s["shard"].as_u64().unwrap_or(k as u64) as usize, short(r), mine, most));
+                }
+            }
+        }
+        let gb = |b: f64| format!("{:.1} GB", b / 1e9);
+        checks.push(json!({"id": "disk_balance", "status": if heavy.is_empty() { "ok" } else { "warning" },
+            "where": heavy.iter().map(|h| json!({"shard": h.0, "copy": h.1, "used_bytes": h.2, "peers_bytes": h.3})).collect::<Vec<_>>()}));
+        for (shard, name, mine, most) in &heavy {
+            let title = format!("{name} uses {} of its disk, its shard's other copies {} or less, for the same data", gb(*mine), gb(*most));
+            problems.push(Problem {
+                rank: 18,
+                critical: false,
+                headline: format!("{name} uses {:.0} times the disk of its shard's other copies", mine / most),
+                j: json!({"id": format!("disk-balance-{name}"), "severity": "warning", "title": title, "where": [format!("shard {shard}"), name], "since_ms": null,
+                    "impact": format!("{} on {name} is not its share of the data: its disk fills sooner, and a rule that grows every volume by the fullest one grows them all", gb(mine - most)),
+                    "next": {"text": format!("Look at what fills {name}'s volume besides the database and its log store; a server of this version removes the copies interrupted transfers left when it starts, so restarting {name} frees those"), "view": "cluster", "params": {"shard": shard, "copy": name}}}),
+            });
+        }
 
         // ----- alerts: the rules firing here that nobody silenced, each once
         // (a coordinator's each_copy rule gathers its copies'), as the bell
@@ -1014,7 +1128,7 @@ impl Fleet {
             "at_ms": now, "status": status, "headline": headline, "since_ms": since_ms, "first_signal_ms": first_signal_ms, "not_ok_since_ms": m.not_ok,
             "api": {"ok": true, "server": if i.coordinator.is_some() { "coordinator" } else { "shard" }},
             "checks": checks,
-            "problems": problems.into_iter().map(|p| p.j).collect::<Vec<_>>(),
+            "problems": problems.into_iter().map(|p| for_agents(p.j)).collect::<Vec<_>>(),
             "coordinators": coordinators,
             "window_s": WINDOW_S,
         })
@@ -1051,7 +1165,7 @@ pub fn local_shard(detail: &Json) -> Json {
     };
     let n = copies.len();
     let up = n - gone.len();
-    json!({"shards": [{"shard": 0, "state": state, "why": why, "serves_reads": reads, "takes_writes": writes, "majority": up * 2 > n,
+    json!({"shards": [{"shard": 0, "local": true, "state": state, "why": why, "serves_reads": reads, "takes_writes": writes, "majority": up * 2 > n,
         "failover": cap["failover_after_ms"].as_u64().unwrap_or(0) > 0, "primary": null, "replicas": copies}]})
 }
 
@@ -1069,6 +1183,41 @@ mod tests {
 
     fn inputs<'a>(cluster: &'a Json, points: &'a [Arc<Json>]) -> Inputs<'a> {
         Inputs { cluster, points, history: &[], slo_error_ratio: 0.01, slo_p99_ms: 250.0, alerts: Vec::new(), partial: false, coordinator: Some(json!({"url": null, "name": "c"})), peers: Vec::new(), gone: Vec::new(), now_ms: 10_000 }
+    }
+
+    /// LIV-6 and LIV-7: both copies of each shard ran on one node, and one
+    /// copy used five times its peer's disk; Home said every shard had two
+    /// copies, and nothing of the disk.
+    #[test]
+    fn copies_on_one_node_and_a_copy_with_far_more_disk_are_problems() {
+        let at = |short: &str, node: &str, used_gb: f64| json!({"short": short, "url": format!("http://{short}"), "status": "ok", "detail": {"place": {"node": node}, "load": {"disk_used_ratio": used_gb / 5.2, "disk_total_bytes": 5.2e9, "disk_free_bytes": 5.2e9 - used_gb * 1e9}}});
+        let c = json!({"shards": [
+            {"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [at("s0-0", "a", 0.8), at("s0-1", "a", 0.8)]},
+            {"shard": 1, "state": "ok", "failover": true, "majority": true, "replicas": [at("s1-0", "b", 4.0), at("s1-1", "c", 0.8)]},
+        ]});
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        let ps = j["problems"].as_array().unwrap();
+        let p = ps.iter().find(|p| p["id"] == "placement-0").unwrap_or_else(|| panic!("{j}"));
+        assert_eq!(p["title"], "Every copy of shard 0 runs on node a (s0-0 and s0-1)", "{p}");
+        assert!(ps.iter().all(|p| p["id"] != "placement-1"), "{j}");
+        let d = ps.iter().find(|p| p["id"] == "disk-balance-s1-0").unwrap_or_else(|| panic!("{j}"));
+        assert_eq!(d["title"], "s1-0 uses 4.0 GB of its disk, its shard's other copies 0.8 GB or less, for the same data", "{d}");
+        assert_eq!(ps.iter().filter(|p| p["id"].as_str().is_some_and(|i| i.starts_with("disk-balance"))).count(), 1);
+        // One node for the whole cluster: laid out as it can be.
+        let one = json!({"shards": [{"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [at("s0-0", "a", 0.8), at("s0-1", "a", 0.9)]}]});
+        let j = Fleet::default().judge(inputs(&one, &[]));
+        assert!(j["problems"].as_array().unwrap().iter().all(|p| !p["id"].as_str().unwrap().starts_with("placement") && !p["id"].as_str().unwrap().starts_with("disk-balance")), "{j}");
+    }
+
+    /// CCW-14: a server that is no coordinator has no shard 0 to name.
+    #[test]
+    fn one_servers_disk_is_the_servers() {
+        let detail = json!({"capability": {}, "health": {"replication": {"role": "standalone"}}, "load": {"disk_used_ratio": 0.96}});
+        let c = local_shard(&detail);
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        let p = j["problems"].as_array().unwrap().iter().find(|p| p["id"] == "disk").unwrap_or_else(|| panic!("{j}")).clone();
+        assert_eq!(p["where"], json!(["this server"]), "{p}");
+        assert_eq!(p["impact"], "Writes stop when the disk is full", "{p}");
     }
 
     #[test]
@@ -1379,6 +1528,24 @@ mod tests {
             let dc = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "disk").unwrap().clone();
             assert_eq!((dc["where"].as_str(), dc["over"].clone()), (Some("s0-0"), json!(["s0-0", "s0-1"])));
         }
+    }
+
+    /// A disk under the line that fills within 3 days: the headline says
+    /// the estimate, in the problem's unit (it said "within 3 days" while
+    /// the problem said about 1 h).
+    #[test]
+    fn a_filling_disks_headline_says_when_it_fills() {
+        let disk = |v: f64| json!({"shards": [{"shard": 0, "state": "ok", "replicas": [{"short": "s1-0", "url": "http://s1-0", "status": "ok", "detail": {"load": {"disk_used_ratio": v}}}]}]});
+        let f = Fleet::default();
+        let c = disk(0.70);
+        f.judge(inputs(&c, &[]));
+        let c = disk(0.74);
+        let mut i = inputs(&c, &[]);
+        i.now_ms = 10_000 + 600_000;
+        let j = f.judge(i);
+        let pr = j["problems"].as_array().unwrap().iter().find(|p| p["id"] == "disk").expect("a disk problem").clone();
+        assert_eq!(pr["title"], "s1-0's disk is 74% full and fills in about 1 h at the last hour's rate");
+        assert_eq!(j["headline"], "s1-0's disk fills in about 1 h at the last hour's rate");
     }
 
     #[test]

@@ -1,5 +1,5 @@
-//! Date functions: `date_trunc`, `date_part` and `EXTRACT`, and
-//! `strftime`, over a TIMESTAMP column. As values of rows they are the row
+//! Date functions: `date_trunc`, `date_bin`, `date_part` and `EXTRACT`,
+//! and `strftime`, over a TIMESTAMP column. As values of rows they are the row
 //! evaluator's; a `GROUP BY` of one over a table's TIMESTAMP field is the
 //! executor's, read from the field's column (a part that is a number from
 //! the columns, with the query's other groups and aggregates), and its
@@ -60,14 +60,20 @@ fn fill(db: &Db, rng: &mut StdRng, from: usize, to: usize, flush: usize) {
     }
 }
 
-const KEYS: [&str; 7] = [
+const KEYS: [&str; 13] = [
     "date_trunc('day', at)",
+    "date_bin('6 hours', at)",
+    "date_bin('90 minutes', at, '2026-08-01T00:17:00Z')",
+    "date_bin('1 day', at)",
+    "date_bin('7d', at, '2026-08-03')",
     "date_trunc('week', at)",
     "date_trunc('MONTH', at)",
     "EXTRACT(dow FROM at)",
     "date_part('hour', at)",
     "EXTRACT(SECOND FROM at)",
     "strftime('%Y-%m', at)",
+    "time_bucket('6 hours', at)",
+    "time_bucket(INTERVAL '90 minutes', at)",
 ];
 
 fn queries() -> Vec<String> {
@@ -97,6 +103,7 @@ fn check(db: &Db, stage: &str) {
         let got = db.query(&q, &Params::new()).unwrap_or_else(|e| panic!("{stage}: {q}: {e}"));
         let plan = db.explain(&q, &Params::new()).unwrap();
         assert!(plan.features.iter().any(|f| f == "dates"), "{stage}: {q}: {:?}", plan.features);
+        assert_eq!(plan.features.iter().any(|f| f == "date_bin"), q.contains("date_bin") || q.contains("time_bucket"), "{stage}: {q}: {:?}", plan.features);
         assert!(got.stats.plan.iter().any(|l| l.contains("aggregate") && l.contains("rows into groups")), "{stage}: {q}: {:?}", got.stats.plan);
         // A part that is a number is grouped by from the columns; text
         // (strftime) row by row.
@@ -159,6 +166,21 @@ fn values_of_rows() {
     );
     assert_eq!(rows, vec![vec![ts("1969-12-31"), Value::Float(30.0), Value::Float(30.0)], vec![ts("2026-11-05"), Value::Float(10.0), Value::Float(20.0)]]);
 
+    // date_bin: buckets of a fixed width from 1970, or from an origin; a
+    // day's bucket is date_trunc's day.
+    let rows = sql(&db, "SELECT id, date_bin('5 minutes', at), date_bin('15m', at, '2026-11-05T07:20:00Z'), date_bin('1 day', at) = date_trunc('day', at), date_bin('250ms', at) FROM snaps ORDER BY id");
+    assert_eq!(
+        rows,
+        vec![
+            vec![Value::Int(1), ts("2026-11-05T07:30:00Z"), ts("2026-11-05T07:20:00Z"), Value::Bool(true), ts("2026-11-05T07:31:52.25Z")],
+            vec![Value::Int(2), Value::Null, Value::Null, Value::Null, Value::Null],
+            vec![Value::Int(3), ts("1969-12-31T23:00:00Z"), ts("1969-12-31T22:50:00Z"), Value::Bool(true), ts("1969-12-31T23:00:00Z")],
+        ]
+    );
+    assert_eq!(sql(&db, "SELECT id FROM snaps WHERE date_bin('1 hour', at) = '2026-11-05T07:00:00Z'"), vec![vec![Value::Int(1)]]);
+    // time_bucket is date_bin's other name, and takes the width as an INTERVAL too.
+    assert_eq!(sql(&db, "SELECT time_bucket('5 minutes', at) = date_bin(INTERVAL '5 minutes', at) FROM snaps WHERE id = 1"), vec![vec![Value::Bool(true)]]);
+
     // What is wrong, said.
     for (q, says) in [
         ("SELECT date_trunc('fortnight', at) FROM snaps", "no unit \"fortnight\""),
@@ -168,8 +190,35 @@ fn values_of_rows() {
         ("SELECT date_trunc('day') FROM snaps", "two arguments"),
         ("SELECT to_char(at, 'YYYY') FROM snaps", "strftime"),
         ("SELECT date_trunc('fortnight', at) AS g, COUNT(*) FROM snaps GROUP BY g", "no unit \"fortnight\""),
+        ("SELECT date_bin('1 month', at) FROM snaps", "fixed unit"),
+        ("SELECT date_bin('1 month', at) AS g, COUNT(*) FROM snaps GROUP BY g", "fixed unit"),
+        ("SELECT date_bin('0 minutes', at) FROM snaps", "fixed unit"),
+        ("SELECT date_bin('5 minutes', at, 'yesterday') FROM snaps", "not a time"),
+        ("SELECT date_bin('5 minutes', total) FROM snaps", "takes a TIMESTAMP"),
+        ("SELECT date_bin('5 minutes') FROM snaps", "two or three arguments"),
     ] {
         let e = db.query(q, &Params::new()).err().unwrap_or_else(|| panic!("{q} is an error")).to_string();
         assert!(e.contains(says), "{q}: {e}");
     }
+}
+
+/// A day as other databases write it: `CAST(t AS DATE)`, `DATE(t)` and
+/// `CURRENT_DATE`, each `date_trunc('day', ...)`, in SELECT, GROUP BY and
+/// WHERE, on columns and on values.
+#[test]
+fn days_as_cast_date_and_current_date() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(dir.path());
+    let now = timestamp::now();
+    let today = timestamp::trunc(now, timestamp::Unit::Day).unwrap();
+    let t = |micros: i64| format!("'{}'", timestamp::format(micros));
+    sql(&db, &format!("INSERT INTO snaps VALUES (1, {}, 10, 'fixed'), (2, {}, 20, 'fixed'), (3, {}, 30, 'auction'), (4, NULL, 40, 'fixed')", t(today + 60_000_000), t(today + 120_000_000), t(today - 86_400_000_000 * 3)));
+    let day = |micros: i64| Value::Timestamp(micros);
+    assert_eq!(sql(&db, "SELECT id, CAST(at AS DATE), DATE(at) FROM snaps WHERE id IN (1, 4) ORDER BY id"), vec![vec![Value::Int(1), day(today), day(today)], vec![Value::Int(4), Value::Null, Value::Null]]);
+    assert_eq!(sql(&db, "SELECT CAST('2026-11-05T07:31:52Z' AS DATE), DATE('2026-11-05 23:59'), CURRENT_DATE"), vec![vec![day(1_793_836_800_000_000), day(1_793_836_800_000_000), day(today)]]);
+    let rows = sql(&db, "SELECT CAST(at AS DATE) AS d, COUNT(*) AS n FROM snaps WHERE at IS NOT NULL GROUP BY d ORDER BY n DESC");
+    assert_eq!(rows, vec![vec![day(today), Value::Int(2)], vec![day(today - 86_400_000_000 * 3), Value::Int(1)]]);
+    assert_eq!(sql(&db, "SELECT id FROM snaps WHERE at >= CURRENT_DATE ORDER BY id"), vec![vec![Value::Int(1)], vec![Value::Int(2)]]);
+    assert_eq!(sql(&db, "SELECT COUNT(*) FROM snaps WHERE at >= CURRENT_DATE - INTERVAL '7 days'"), vec![vec![Value::Int(3)]]);
+    assert_eq!(sql(&db, "SELECT id FROM snaps WHERE CAST(at AS DATE) = CURRENT_DATE - INTERVAL '3 days'"), vec![vec![Value::Int(3)]]);
 }

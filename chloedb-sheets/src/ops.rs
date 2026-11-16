@@ -3,6 +3,7 @@
 //! sheets, undo. Each is one of IronCalc's actions (one step to undo), and
 //! `sheet` is a sheet's index, as the view lists them.
 
+use crate::book::Shown;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -491,7 +492,7 @@ fn filter(e: &mut Engine, sheet: u32, area: Rect, criteria: &[Crit], header: boo
     for row in r0..=r1 {
         let mut h = false;
         for (col, vals) in &keep {
-            let shown = e.get_formatted_cell_value(sheet, row, *col)?;
+            let shown = e.shown(sheet, row, *col)?;
             if !vals.contains(shown.as_str()) {
                 h = true;
                 break;
@@ -578,6 +579,16 @@ fn summarize(b: &mut Book, sheet: u32, area: Rect, by: &[i32], values: &[Agg], h
     if by.is_empty() && values.is_empty() {
         return Err("summarize: group by a column, or aggregate one".into());
     }
+    // `by` and `values` name a sheet's columns (A is 1), not the area's:
+    // one outside it grouped by empty values (DAP-24).
+    let (c0, c1) = (area.col.max(1), area.last_col());
+    for c in by.iter().copied().chain(values.iter().map(|a| a.col)) {
+        if c < c0 || c > c1 {
+            let range = format!("{}:{}", crate::book::cell_ref(area.row.max(1), c0), crate::book::cell_ref(area.last_row(), c1));
+            let name = if c >= 1 { crate::book::col_name(c) } else { c.to_string() };
+            return Err(format!("summarize: column {name} is outside {range} (by and values name the sheet's columns, A being 1, within the area)"));
+        }
+    }
     let (r0, r1) = (area.row, area.last_row());
     let m = b.engine.get_model();
     let ws = m.workbook.worksheet(sheet)?;
@@ -585,7 +596,7 @@ fn summarize(b: &mut Book, sheet: u32, area: Rect, by: &[i32], values: &[Agg], h
     let first = r0 + header as i32;
     let name_of = |c: i32| -> String {
         if header {
-            let n = m.get_formatted_cell_value(sheet, r0, c).unwrap_or_default();
+            let n = m.shown(sheet, r0, c).unwrap_or_default();
             if !n.is_empty() {
                 return n;
             }
@@ -603,8 +614,8 @@ fn summarize(b: &mut Book, sheet: u32, area: Rect, by: &[i32], values: &[Agg], h
     let mut groups: Vec<(Vec<String>, Vec<Acc>)> = Vec::new();
     let mut index: HashMap<Vec<String>, usize> = HashMap::new();
     for r in first..=last {
-        let key: Vec<String> = by.iter().map(|c| m.get_formatted_cell_value(sheet, r, *c).unwrap_or_default()).collect();
-        let all_empty = key.iter().all(String::is_empty) && values.iter().all(|a| m.get_formatted_cell_value(sheet, r, a.col).unwrap_or_default().is_empty());
+        let key: Vec<String> = by.iter().map(|c| m.shown(sheet, r, *c).unwrap_or_default()).collect();
+        let all_empty = key.iter().all(String::is_empty) && values.iter().all(|a| m.shown(sheet, r, a.col).unwrap_or_default().is_empty());
         if all_empty {
             continue;
         }
@@ -614,7 +625,7 @@ fn summarize(b: &mut Book, sheet: u32, area: Rect, by: &[i32], values: &[Agg], h
         });
         for (ai, a) in values.iter().enumerate() {
             let acc = &mut groups[gi].1[ai];
-            let shown = m.get_formatted_cell_value(sheet, r, a.col).unwrap_or_default();
+            let shown = m.shown(sheet, r, a.col).unwrap_or_default();
             if !shown.is_empty() {
                 acc.count += 1;
                 acc.distinct.insert(shown);
@@ -717,7 +728,7 @@ mod tests {
     }
 
     fn shown(b: &Book, s: u32, r: i32, c: i32) -> String {
-        b.engine.get_formatted_cell_value(s, r, c).unwrap()
+        b.engine.shown(s, r, c).unwrap()
     }
 
     fn run(b: &mut Book, j: Value) -> Done {
@@ -767,6 +778,21 @@ mod tests {
         assert_eq!((shown(&b, n, 2, 1), shown(&b, n, 2, 2), shown(&b, n, 2, 3)), ("North".into(), "17.5".into(), "2".into()));
         assert_eq!(shown(&b, n, 3, 2), "5");
         assert_eq!(shown(&b, n, 4, 2), "22.5");
+    }
+
+    #[test]
+    fn a_summary_refuses_a_column_outside_its_area() {
+        let mut b = book();
+        run(&mut b, json!({"op": "set_many", "sheet": 0, "row": 1, "col": 1, "values": [["Region", "Sales", "Other"], ["North", "10", "x"]]}));
+        let sheets = b.engine.get_worksheets_properties().len();
+        let area = json!({"row": 1, "col": 1, "width": 2, "height": 2});
+        for (by, values) in [(json!([3]), json!([])), (json!([1]), json!([{"col": 3, "agg": "sum"}])), (json!([0]), json!([]))] {
+            let op = serde_json::from_value(json!({"op": "summarize", "sheet": 0, "area": area, "by": by, "values": values})).unwrap();
+            let e = apply(&mut b, op).err().expect("refused");
+            assert!(e.contains("is outside A1:B2"), "{e}");
+        }
+        assert!(apply(&mut b, serde_json::from_value(json!({"op": "summarize", "sheet": 0, "area": area, "by": [3], "values": []})).unwrap()).err().expect("refused").contains("column C is outside A1:B2"));
+        assert_eq!(b.engine.get_worksheets_properties().len(), sheets, "no sheet is added");
     }
 
     #[test]

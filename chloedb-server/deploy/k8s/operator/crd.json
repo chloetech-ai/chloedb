@@ -309,7 +309,7 @@
                         "x-kubernetes-preserve-unknown-fields": true
                       },
                       "tables": {
-                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: ctx_*=admin, chloectx_memory=read.",
+                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: ctx_*=admin, chloectx_memory=read, chloectx_mem_*=read.",
                         "items": {
                           "type": "string"
                         },
@@ -333,6 +333,19 @@
                     "description": "Resources of each coordinator's container.",
                     "type": "object",
                     "x-kubernetes-preserve-unknown-fields": true
+                  },
+                  "coordinatorStorage": {
+                    "description": "A volume for each coordinator, which keeps its history across restarts and rollouts: its log store (events, alerts, query statistics, table growth), its audit log and its alert rules. With it the coordinators run as a StatefulSet, each with a volume; without it (the default) as a Deployment that keeps all of that in memory only. Run 2 coordinators or more with it: a StatefulSet restarts one before it starts its next.",
+                    "properties": {
+                      "size": {
+                        "description": "Each coordinator's volume (default 2Gi; its log store takes up to 1 GiB, --log-store-mb).",
+                        "type": "string"
+                      },
+                      "storageClassName": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
                   },
                   "coordinators": {
                     "description": "Coordinators behind the cluster's Service (default 1).",
@@ -453,10 +466,43 @@
                   "imagePullPolicy": {
                     "type": "string"
                   },
+                  "netops": {
+                    "description": "Network operations beside the cluster: a chloedb-netops Deployment of one, which the command center shows under Apps; its network, telemetry, incidents and agents' runs are rows of the cluster's tables netops_*.",
+                    "properties": {
+                      "args": {
+                        "description": "More arguments of chloedb-netops serve (--fault-every 0, --history-hours 2, --no-simulate).",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "paused": {
+                        "description": "No pod for now (the tables stay; nothing is written to them).",
+                        "type": "boolean"
+                      },
+                      "resources": {
+                        "description": "Resources of its container.",
+                        "type": "object",
+                        "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "tables": {
+                        "description": "The tables the app's own key may touch, as table=scope (a name, a prefix and *, or *; read, write or admin). Default: netops_*=admin.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "replicas": {
                     "description": "Copies of each shard: a primary and its replicas (default 3).",
                     "minimum": 1,
                     "type": "integer"
+                  },
+                  "requireCopiesApart": {
+                    "description": "A shard's copies must run on different nodes (required of the scheduler, not preferred): a copy waits for a node that runs none of its shard's other copies, and a rollout's extra copy for one more node than the shard has copies (or set rollout.extraCopies false). Default false: preferred, so that fewer nodes than copies still run them all.",
+                    "type": "boolean"
                   },
                   "resources": {
                     "description": "Resources of each server's container.",

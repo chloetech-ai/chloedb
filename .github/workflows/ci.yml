@@ -20,22 +20,38 @@ on:
   # anything merged: flaky tests show up there before they block a merge.
   schedule:
     - cron: "17 3 * * *"
+  # By hand: everything, as the nightly run. Given `since`, only what the
+  # change from that commit needs, on Linux and macOS: with a full run
+  # that passed on that commit, release-gate.yml accepts it for a tag
+  # (`gh workflow run ci.yml --ref <tag> -f since=<sha>`).
   workflow_dispatch:
+    inputs:
+      since:
+        description: "A commit of main on which CI's full matrix passed (its full sha): run, on Linux and macOS, only the jobs the change from it needs. Empty: everything."
+        required: false
+        default: ""
+        type: string
+
+# A run given `since` is named for it, which is how release-gate.yml tells
+# it from a full run; every other run keeps GitHub's name (a run name of
+# only whitespace).
+run-name: ${{ inputs.since && format('CI since {0}', inputs.since) || ' ' }}
 
 # A new push to a pull request cancels its older run. Pushes to main share
 # one group that never cancels the run in progress, so main's runs keep
 # finishing, but a group holds one waiting run and a newer push replaces
 # it: after a burst of merges only the newest waits, and it tests every
-# merge before it. (A group per commit queued every merge's whole run,
+# merge before it, since a push's change is taken from the newest commit
+# of main whose run passed (job `changes`). (A group per commit queued every merge's whole run,
 # 5 macOS jobs each against a limit of 5 at once, and the queue grew by
 # hours.) The merge queue, the nightly run and a run by hand keep a group
-# per event and commit, so none of them is dropped.
+# per event and commit (and `since`), so none of them is dropped.
 # The jobs only read the repository: the token gets no write rights.
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || format('{0}-{1}', github.event_name, github.sha) }}
+  group: ci-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || format('{0}-{1}-{2}', github.event_name, github.sha, inputs.since) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -53,11 +69,12 @@ env:
 # repository: ubuntu-latest (4 cores, 16 GB) and macos-latest (3 cores,
 # 7 GB). The organisation's own runners (gh-linux, gh-mac and gh-mac2) are
 # billed by the minute even for a public repository, so no job uses them.
-# The exception is the on-demand runner (job `runner`): when GitHub's
-# runners are full, the two longest jobs of a change to the engine or the
-# server go to a DigitalOcean droplet of 16 cores, which exists only while
-# it is needed; otherwise, and whenever it is not there, they run on
-# ubuntu-latest.
+# The exception is the on-demand runner (job `runner`): the longest jobs
+# of a change to the engine or the server (the server's binary, ChloeDB's
+# and the server's tests) go to a DigitalOcean droplet of 16 cores, which
+# exists only while CI is busy; whenever it is not there, they run on
+# ubuntu-latest. The variable CI_RUNNER=overflow sends them there only
+# when GitHub's runners are full, and CI_RUNNER=off never.
 #
 # macOS jobs are the scarcest: the account runs five at once. A pull
 # request and the merge queue run nothing on macOS (since 13 November: a
@@ -84,16 +101,38 @@ env:
 jobs:
   # Which jobs the change needs (.github/scripts/ci_changes.py, whose
   # header lists the rules). A change to the documentation site, Markdown
-  # files or benchmark results alone runs nothing; one only under an app or
-  # a package (chloectx, chloedb-crawl, chloedb-sheets, chloedb-apps,
-  # chloedb-swarm, chloedb-py, chloedb-js, chloedb-java) runs that one's
-  # jobs and the jobs that use it; anything else (ChloeDB, chloedb-server,
-  # the workflows, the scripts, a file at the root) runs everything. The
+  # files or benchmark results alone runs nothing; one only under an app, a
+  # package (chloectx, chloedb-crawl, chloedb-sheets, chloedb-apps,
+  # chloedb-py, chloedb-js, chloedb-java) or chloedb-server runs that one's
+  # jobs and the jobs that use it (for the server, every job that starts
+  # one, and not ChloeDB's own); one only under a demo (chloedb-netops,
+  # chloedb-swarm, examples/feature-store, examples/parley), to another
+  # workflow or to the installers runs nothing here, since each is tested
+  # by a workflow of its own; a change to this file runs the jobs it
+  # changes (read job by job, against the base's file); a change to
+  # ChloeDB, to ci_changes.py or to a path the rules do not know runs
+  # everything. A run by hand given `since` runs what the change from that
+  # commit needs, on Linux and macOS (the release gate's second way);
+  # otherwise the
   # nightly run and a run by hand always run everything.
+  #
+  # A push to main is the change from the newest commit of main whose CI
+  # run passed, not from the commit before it: a commit whose run failed,
+  # was cancelled or was replaced while it waited is tested again by the
+  # next push, whatever that push touches. From the commit before, a
+  # documentation change after a failed run skipped every job, passed, and
+  # image.yml published the failed code as `latest` (the audit of
+  # 15 November 2026, PLT-3: cafcbdcd failed, b47dfd6f, docs only, passed
+  # in 20 s and was published). By induction each passed run tested every
+  # change since the passed run before it, so `latest` is tested code.
   changes:
     name: changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Reads CI's runs on main (the newest that passed) and compares commits.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       run: ${{ steps.diff.outputs.run }}
     steps:
@@ -102,46 +141,79 @@ jobs:
         id: diff
         env:
           EVENT: ${{ github.event_name }}
+          SINCE: ${{ inputs.since }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
-          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 .github/scripts/ci_changes.py --self-test
+          # `since` names a commit by its full sha, as the release gate
+          # reads it from the run's name: a branch or a tag would move.
+          if [ -n "$SINCE" ] && ! [[ "$SINCE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::since must be a commit's full sha (40 hex digits), not '$SINCE'"
+            exit 1
+          fi
           case "$EVENT" in
+            workflow_dispatch) base="$SINCE" ;;
             pull_request) base="$PR_BASE" ;;
             merge_group) base="$QUEUE_BASE" ;;
-            push) base="$BEFORE" ;;
+            push)
+              # The newest commit of main, this one or before it, whose CI
+              # run (a push's, the nightly's or one by hand, of this
+              # repository) passed. None among the last 50 runs that
+              # passed, or the API not answering: test everything.
+              base=""
+              for sha in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&status=success&exclude_pull_requests=true&per_page=50" \
+                  --jq ".workflow_runs[] | select(.head_repository.full_name == \"$GITHUB_REPOSITORY\" and (.event == \"push\" or .event == \"schedule\" or .event == \"workflow_dispatch\")) | .head_sha" || true); do
+                st=$(gh api "repos/$GITHUB_REPOSITORY/compare/$sha...$GITHUB_SHA" --jq .status 2>/dev/null || true)
+                case "$st" in ahead | identical) base=$sha && break ;; esac
+              done
+              echo "the newest commit of main whose run passed: ${base:-none found}"
+              ;;
             *) base="" ;;
           esac
           # A diff needs only the two commits' trees, not the history
           # between them. No base (a new branch, the nightly run, a run by
-          # hand) or one that cannot be fetched (a force push): test
-          # everything.
+          # hand without `since`) or one that cannot be fetched (a force
+          # push): test everything.
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git fetch --no-tags --depth=1 origin "$base"; then
             python3 .github/scripts/ci_changes.py --all | tee -a "$GITHUB_OUTPUT"
             exit 0
           fi
           git diff --name-only "$base" HEAD | tee "$RUNNER_TEMP/changed"
-          python3 .github/scripts/ci_changes.py < "$RUNNER_TEMP/changed" | tee -a "$GITHUB_OUTPUT"
+          # --base: a change to this file is read job by job against the
+          # base's (the jobs it changes run, rather than all of them).
+          python3 .github/scripts/ci_changes.py --base "$base" < "$RUNNER_TEMP/changed" | tee -a "$GITHUB_OUTPUT"
 
-  # Where the longest jobs run (chloedb-server's binary and its tests): on
-  # GitHub's runners while they have room; when they are full, on the
-  # on-demand runner, a DigitalOcean droplet made then and destroyed once CI
-  # has been idle 15 minutes (.github/ci-runner/, and ci-runner.yml, which
+  # Where the longest jobs run (chloedb-server's binary, ChloeDB's and the
+  # server's tests): on the on-demand runner, a DigitalOcean droplet made
+  # when a run needs it and destroyed once CI has been idle 15 minutes (.github/ci-runner/, and ci-runner.yml, which
   # destroys it), unless it is off, busy, not set up or does not come up in
   # 4 minutes. A pull
   # request from a fork never gets it: the secrets are not passed to it,
   # and the runner's job-started hook refuses its jobs (job-started.sh).
+  #
+  # The secrets that make the droplet (DIGITALOCEAN_TOKEN, and
+  # CI_RUNNER_ADMIN_TOKEN, which has Administration on the repository) are
+  # in the environment `ci-runner`, which only main may use: a branch's
+  # copy of this file runs with neither (audit 4, X-I2). Main's runs (a
+  # push, the nightly, a run by hand) make the droplet here; any other run
+  # (a pull request's, the merge queue's, a tag's) waits for ci-runner.yml's
+  # job `place`, which runs main's code with the secrets and posts the
+  # label as the commit status `ci-runner`.
   runner:
     name: runner
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).runner
     runs-on: ubuntu-latest
-    timeout-minutes: 8
-    # Reads how busy GitHub's runners are (the repository's runs and jobs).
+    timeout-minutes: 10
+    environment: ${{ github.ref == 'refs/heads/main' && 'ci-runner' || '' }}
+    # Reads how busy GitHub's runners are (the repository's runs and jobs),
+    # and outside main the status `place` posts.
     permissions:
       contents: read
       actions: read
+      statuses: read
     outputs:
       label: ${{ steps.want.outputs.label }}
     steps:
@@ -152,17 +224,25 @@ jobs:
         id: want
         env:
           SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-          GH_ADMIN_TOKEN: ${{ secrets.CI_RUNNER_ADMIN_TOKEN }}
+          ON_MAIN: ${{ github.ref == 'refs/heads/main' }}
+          DIGITALOCEAN_TOKEN: ${{ github.ref == 'refs/heads/main' && secrets.DIGITALOCEAN_TOKEN || '' }}
+          GH_ADMIN_TOKEN: ${{ github.ref == 'refs/heads/main' && secrets.CI_RUNNER_ADMIN_TOKEN || '' }}
           CI_RUNNER: ${{ vars.CI_RUNNER }}
           CI_RUNNER_SIZE: ${{ vars.CI_RUNNER_SIZE }}
           CI_RUNNER_REGION: ${{ vars.CI_RUNNER_REGION }}
           CI_RUNNER_COUNT: ${{ vars.CI_RUNNER_COUNT }}
           CI_RUNNER_HOSTED_LIMIT: ${{ vars.CI_RUNNER_HOSTED_LIMIT }}
           GITHUB_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if [ "$SAME_REPO" != true ]; then echo "label=ubuntu-latest" >> "$GITHUB_OUTPUT"; exit 0; fi
-          python3 .github/ci-runner/ci_runner.py want >> "$GITHUB_OUTPUT"
+          if [ "$ON_MAIN" = true ]; then
+            python3 .github/ci-runner/ci_runner.py want >> "$GITHUB_OUTPUT"
+          else
+            python3 .github/ci-runner/ci_runner.py placed >> "$GITHUB_OUTPUT"
+          fi
 
   # chloedb-server's release binary, built once for every job that runs it
   # (the smoke test, the Python and JavaScript packages, the guide's pages),
@@ -234,16 +314,19 @@ jobs:
         # workbooks in one, run in server-smoke, which builds chloedb-server;
         # here their other tests and clippy.
         crate: ${{ fromJSON(needs.changes.outputs.run).crates }}
-    # chloedb-server's tests, the longest job, run on the on-demand runner
-    # when it is up (job `runner`).
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && matrix.crate == 'chloedb-server' && needs.runner.outputs.label || matrix.os }}
+    # chloedb-server's and ChloeDB's tests, the longest jobs, run on the
+    # on-demand runner when it is up (job `runner`).
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (matrix.crate == 'chloedb-server' || matrix.crate == 'chloedb') && needs.runner.outputs.label || (matrix.os == 'macos-latest' && vars.MAC_RUNNER || matrix.os) }}
     # rust-cache saves only from a job that passed, so a macOS job that ran
     # out of time starts the next one cold too: chloedb-server's tests took
     # 59 minutes from a cold build on the macOS runner on 11-08, and Clippy
     # after them did not fit in 60.
-    timeout-minutes: ${{ matrix.os == 'macos-latest' && 90 || 60 }}
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && (vars.MAC_RUNNER && 150 || 90) || 60 }}
     env: &test-env
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.crate == 'chloedb' && '-C target-cpu=x86-64-v3' || '' }}
+      # On Linux, GitHub's runners and the on-demand one have Postgres, and
+      # tests/postgres.rs fails rather than skips without it (audit 4, X-I3).
+      CHLOEDB_TEST_POSTGRES_REQUIRED: ${{ matrix.crate == 'chloedb-server' && matrix.os == 'ubuntu-latest' && '1' || '' }}
     steps: &test-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -325,6 +408,14 @@ jobs:
         working-directory: ${{ matrix.crate }}
         run: cargo clippy --locked --release --all-targets ${{ matrix.crate == 'chloedb' && '--features sqlite' || '' }} -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
+  # The macOS jobs run on the user's Mac (self-hosted runners labelled
+  # `chloedb-mac`) when the repository variable MAC_RUNNER names that
+  # label; unset, they run on macos-latest. macOS jobs run only on a push
+  # to main, the nightly run and by hand, never on a pull request, so no
+  # outside code reaches the Mac. Unset the variable to switch back. The
+  # Mac runs two jobs at once beside its owner's work, so its jobs get
+  # twice the time (fault injection ran past 60 minutes there on 11-14).
+  #
   # ChloeDB's tests on macOS for a push to main: the `test` job's steps, in
   # a job of its own that CI result does not wait for (see the top of this
   # file). A pull request and the merge queue skip it. In the nightly run
@@ -332,13 +423,13 @@ jobs:
   macos:
     name: ${{ matrix.crate }} on ${{ matrix.os }}
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full && github.event_name == 'push'
+    if: fromJSON(needs.changes.outputs.run).macos && github.event_name == 'push'
     strategy:
       matrix:
         os: [macos-latest]
         crate: [chloedb]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    runs-on: ${{ matrix.os == 'macos-latest' && vars.MAC_RUNNER || matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && vars.MAC_RUNNER && 120 || 60 }}
     env: *test-env
     steps: *test-steps
 
@@ -349,7 +440,7 @@ jobs:
   kernels:
     name: chloedb kernels on a generic build
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).kernels
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -378,17 +469,18 @@ jobs:
   # includes `bert`, so the cross-encoder tests against transformers'
   # scores of the small models in chloedb/tests/models run here too.
   # Two parts that run at once, ChloeDB's and the server's: each builds
-  # candle on its own, and one after the other they took 31 minutes.
+  # candle on its own, and one after the other they took 31 minutes. A
+  # change to the server alone runs only the server's part.
   vision:
     name: images (feature vision, ${{ matrix.part }})
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: join(fromJSON(needs.changes.outputs.run).vision, ',') != ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        part: [chloedb, chloedb-server]
+        part: ${{ fromJSON(needs.changes.outputs.run).vision }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -417,11 +509,11 @@ jobs:
   # through candle): decoding, resampling and mel features, text derived
   # from sound and vectors of it with test models (the real models' weights
   # are not fetched here), and clippy over the feature's code in ChloeDB and
-  # the server.
+  # the server. A change to the server alone runs only the server's step.
   audio:
     name: sound (feature audio)
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).audio
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -438,6 +530,7 @@ jobs:
             chloedb-server
           key: audio
       - name: ChloeDB
+        if: fromJSON(needs.changes.outputs.run).audio_chloedb
         working-directory: chloedb
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
@@ -463,7 +556,7 @@ jobs:
   datafusion:
     name: DataFusion engine (feature datafusion, ${{ matrix.part }})
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).datafusion
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -488,7 +581,7 @@ jobs:
         working-directory: chloedb
         run: |
           f=datafusion,sqlite,parquet,s3
-          cargo test --locked --profile ci --features $f --test datafusion_engine --test hash_function --test window_functions --test set_operations --test pack
+          cargo test --locked --profile ci --features $f --test datafusion_engine --test hash_function --test window_functions --test set_operations --test pack --test deep_statements
           CHLOEDB_ENGINE=datafusion cargo test --locked --profile ci --features $f --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
           # Parquet files in and out, and s3:// URLs (chloedb::parquet, chloedb::objects)
           cargo test --locked --profile ci --features $f --test parquet
@@ -504,13 +597,13 @@ jobs:
   faults:
     name: fault injection on ${{ matrix.os }}
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).faults
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    runs-on: ${{ matrix.os == 'macos-latest' && vars.MAC_RUNNER || matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && vars.MAC_RUNNER && 120 || 60 }}
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
     steps:
@@ -538,7 +631,7 @@ jobs:
   relevance-gate:
     name: relevance gate (BEIR)
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).relevance
     runs-on: ubuntu-latest
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
@@ -576,7 +669,7 @@ jobs:
   relevance-gate-cross-encoder:
     name: relevance gate (cross-encoder)
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).cross_encoder
     runs-on: ubuntu-latest
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
@@ -618,7 +711,7 @@ jobs:
   miri:
     name: miri (${{ matrix.part }})
     needs: changes
-    if: fromJSON(needs.changes.outputs.run).full
+    if: fromJSON(needs.changes.outputs.run).miri
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -734,22 +827,26 @@ jobs:
           CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           CHLOEDB_SHEETS_NEED_SERVER: "1"
         run: cargo test --locked --profile ci --test cluster
+      # The demos (chloedb-netops, chloedb-swarm, examples/feature-store,
+      # examples/parley) are tested on a train of their own, demos.yml,
+      # outside CI result.
       # ChloeCtx as an app of a cluster of this build's servers (two shards
       # and a coordinator): spaces, notes, contexts within a budget, an
       # exchange distilled by a stub model, incidents matched to an alert
-      # that fires, and a restart.
+      # that fires, and a restart. And `chloectx sync` with a server of this
+      # build: a table and a key per project, and a forget that reaches it.
       - name: ChloeCtx in a cluster
         if: fromJSON(needs.changes.outputs.run).smoke_ctx
         working-directory: chloectx
         env:
           CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
           CHLOECTX_NEED_SERVER: "1"
-        run: cargo test --locked --profile ci --test app_cluster
+        run: cargo test --locked --profile ci --test app_cluster --test sync_server
       # The app engine (chloedb-apps, a prototype in Node): apps built from
       # plans, stored as SQL rows in a server of this build, run, tested and
       # searched; no model is called.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        if: fromJSON(needs.changes.outputs.run).smoke_apps || fromJSON(needs.changes.outputs.run).smoke_swarm
+        if: fromJSON(needs.changes.outputs.run).smoke_apps
         with:
           node-version: "22"
       - name: App engine against a server
@@ -776,18 +873,6 @@ jobs:
           STRATA_APPS_NEED_SERVER: "1"
           STRATA_APPS_TEST_SHARDS: "2"
         run: npm test
-      # Swarm (chloedb-swarm, Node): a run of simulated users with a scripted
-      # model in place of the API, each session in a sandbox server of this
-      # build, its checks, reviews and findings stored in another one.
-      - name: Swarm against a server
-        if: fromJSON(needs.changes.outputs.run).smoke_swarm
-        working-directory: chloedb-swarm
-        env:
-          CHLOEDB_SERVER_BIN: ${{ github.workspace }}/chloedb-server/target/release/chloedb-server
-          CHLOEDB_SWARM_NEED_SERVER: "1"
-        run: |
-          npm ci
-          npm test
 
   python:
     name: Python package on ${{ matrix.os }}
@@ -797,8 +882,8 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    runs-on: ${{ matrix.os == 'macos-latest' && vars.MAC_RUNNER || matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && vars.MAC_RUNNER && 120 || 60 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -816,7 +901,7 @@ jobs:
           workspaces: |
             chloedb-py
             chloedb-server
-          key: python
+          shared-key: python
       # The client tests run against a real server: on Linux the one job
       # server-bin built, on macOS (the nightly run) one built here.
       # chloedb-server's binary from job server-bin.
@@ -863,6 +948,49 @@ jobs:
           # optimisation and single codegen unit took most of this step.
           maturin develop --profile ci --locked
           pytest tests -v
+      # On Linux the recommender gate and Clippy run in job python-gate, at
+      # the same time as these tests (one after the other they took 23
+      # minutes, the longest job of a run once the engine's tests moved to
+      # the on-demand runner).
+      - name: Clippy
+        if: runner.os != 'Linux'
+        working-directory: chloedb-py
+        run: cargo clippy --locked --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+
+  # The Python package's recommender gate and Clippy, on Linux, beside job
+  # python's tests rather than after them. It needs no chloedb-server, so a
+  # change to the server alone does not run it (job python does).
+  python-gate:
+    name: Python package, recommender gate and clippy
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && fromJSON(needs.changes.outputs.run).python_gate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      # Job python's cache (the same shared-key), read only: that job saves it.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: false
+          workspaces: |
+            chloedb-py
+            chloedb-server
+          shared-key: python
+      - name: Build
+        working-directory: chloedb-py
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install maturin numpy
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          maturin develop --profile ci --locked
       # The recommender gate (chloedb/results/sequence/gate.py): every
       # candidate source and two baselines on MovieLens-1M, checked against
       # chloedb/tests/fixtures/recsys_gate.json and recsys_gate_time.json.
@@ -871,7 +999,6 @@ jobs:
       # after the other they took 6 and 2 minutes), and their output is
       # printed when both have ended.
       - name: Recommender gate
-        if: runner.os == 'Linux'
         working-directory: chloedb-py
         run: |
           . .venv/bin/activate
@@ -899,8 +1026,8 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    runs-on: ${{ matrix.os == 'macos-latest' && vars.MAC_RUNNER || matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && vars.MAC_RUNNER && 120 || 60 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -978,8 +1105,8 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    runs-on: ${{ matrix.os == 'macos-latest' && vars.MAC_RUNNER || matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && vars.MAC_RUNNER && 120 || 60 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -992,7 +1119,7 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: chloedb-java
           key: java
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6
         with:
           distribution: temurin
           java-version: "11"
@@ -1001,7 +1128,7 @@ jobs:
       - name: Build and test on Java 11
         working-directory: chloedb-java
         run: mvn -B -ntp -Dcargo.profile=ci package
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6
         with:
           distribution: temurin
           java-version: "25"
@@ -1036,6 +1163,20 @@ jobs:
         run: |
           pip install -r docs/site/scripts/requirements.txt
           python docs/site/scripts/build_docs.py --check
+      # The comparison's cells are marks the site draws, ChloeDB's are all
+      # checked, and while any other system's cell is unchecked ("?") the
+      # page says it is a draft (the audit of 15 November 2026, CMP-2).
+      - name: python3 docs/site/scripts/check_compare.py
+        run: python docs/site/scripts/check_compare.py
+      # The pages a newcomer follows use the new names (Strata and Engram are
+      # the old ones), and the Python modules and extras the docs name exist,
+      # marked "since" where the latest release lacks them (its tag, fetched).
+      - name: Old names, and the documented Python modules
+        run: |
+          python scripts/check-old-names.py
+          v=$(python -c 'import json; print(json.load(open("docs/site/versions.json"))["latest"])')
+          git fetch --no-tags --depth 1 origin "refs/tags/chloedb-py-v$v:refs/tags/chloedb-py-v$v" || echo "::warning::no tag chloedb-py-v$v"
+          python scripts/check-documented-python.py
 
   # Every code block of the guide's pages (docs/guide/*.md,
   # docs/quickstart.md) runs, in order, against this commit's programs, and
@@ -1148,10 +1289,88 @@ jobs:
           . "$RUNNER_TEMP/venv/bin/activate"
           python docs/guide/run.py
 
+  # Every push to main keeps Linux x86-64 builds of its programs as one
+  # archive per commit in the pre-release `main-builds`, the last 40
+  # commits' (scripts/fetch-build.sh <commit> fetches one): a simulator
+  # seed, a bisection or a bug report replays on the commit's own build in
+  # seconds rather than after a compile. chloedb-server is server-bin's
+  # release build; the others are built with the ci profile (release
+  # without link-time optimisation), on the on-demand runner when it is up.
+  main-builds:
+    name: main's builds
+    needs: [changes, runner, server-bin]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.server-bin.result == 'success' }}
+    runs-on: ${{ needs.runner.outputs.label || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: chloedb-server
+          path: .main-build
+      - name: Build folder
+        run: .github/ci-runner/target-dir.sh main-builds
+      - name: Build
+        run: |
+          set -euo pipefail
+          out="$PWD/.main-build"
+          t="${CARGO_TARGET_DIR:-}"
+          for spec in "chloedb-server chloedb-sim" "chloectx chloectx" "chloedb-crawl chloedb-crawl" "chloedb-sheets chloedb-sheets" "chloedb-netops chloedb-netops"; do
+            set -- $spec
+            (cd "$1" && cargo build --locked --profile ci --bin "$2")
+            cp "${t:-$1/target}/ci/$2" "$out/"
+          done
+          sha=$(git rev-parse --short=12 HEAD)
+          tar -C "$out" -czf "chloedb-main-$sha-linux-x86_64.tar.gz" .
+          sha256sum "chloedb-main-$sha-linux-x86_64.tar.gz" | tee "chloedb-main-$sha-linux-x86_64.tar.gz.sha256"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: main-build
+          path: chloedb-main-*-linux-x86_64.tar.gz*
+          retention-days: 1
+          if-no-files-found: error
+
+  main-builds-publish:
+    name: main's builds, published
+    needs: main-builds
+    if: ${{ !cancelled() && needs.main-builds.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: main-builds-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: main-build
+      - name: Upload to the pre-release main-builds, keep the last 40 commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! gh release view main-builds >/dev/null 2>&1; then
+            gh release create main-builds --prerelease --latest=false --target "$GITHUB_SHA" --title "main's builds" \
+              --notes "Linux x86-64 builds of each recent commit of main (chloedb-server, chloedb-sim, chloectx, chloedb-crawl, chloedb-sheets, chloedb-netops), for debugging. Not a release: scripts/fetch-build.sh <commit> fetches one."
+          fi
+          gh release upload main-builds chloedb-main-*-linux-x86_64.tar.gz* --clobber
+          gh api "repos/$GH_REPO/releases/tags/main-builds" --paginate --jq '.assets[] | [.id, .created_at, .name] | @tsv' \
+            | grep 'tar.gz$' | sort -k2 -r | tail -n +41 | while IFS=$'\t' read -r id _ name; do
+              echo "removing $name"
+              gh api -X DELETE "repos/$GH_REPO/releases/assets/$id"
+              sid=$(gh api "repos/$GH_REPO/releases/tags/main-builds" --jq ".assets[] | select(.name == \"$name.sha256\") | .id")
+              [ -n "$sid" ] && gh api -X DELETE "repos/$GH_REPO/releases/assets/$sid"
+            done
+
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, server-bin, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python, javascript, java, docs-site, docs-bins, docs]
+    needs: [changes, server-bin, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python, python-gate, javascript, java, docs-site, docs-bins, docs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

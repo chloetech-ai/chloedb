@@ -70,12 +70,20 @@ fn col_expr(paths: &[PathCol], times: &[TimeCol], c: Col) -> Expr {
         Col::Field(f) => Expr::Field(f as u32),
         Col::Path(p) => json_extract(paths[p].field, &paths[p].path, paths[p].kind),
         Col::Time(t) => {
+            let field = Expr::Field(times[t].field as u32);
             let (func, how) = match &times[t].of {
                 TimeOf::Trunc(u) => (Func::DateTrunc, u.name().to_string()),
                 TimeOf::Part(p) => (Func::DatePart, p.name().to_string()),
                 TimeOf::Format(f) => (Func::Strftime, f.clone()),
+                TimeOf::Bin { width, origin } => {
+                    let mut args = vec![Expr::Lit(Value::Str(crate::timestamp::stride_text(*width))), field];
+                    if *origin != 0 {
+                        args.push(Expr::Lit(Value::Timestamp(*origin)));
+                    }
+                    return Expr::Call { func: Func::DateBin, args };
+                }
             };
-            Expr::Call { func, args: vec![Expr::Lit(Value::Str(how)), Expr::Field(times[t].field as u32)] }
+            Expr::Call { func, args: vec![Expr::Lit(Value::Str(how)), field] }
         }
     }
 }

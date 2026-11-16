@@ -151,6 +151,55 @@ pub fn corrected_text(text: &str, corrections: &[Correction]) -> String {
     out
 }
 
+/// A word of a query that may be a typo ([`correction_words`]): it, its
+/// analysed term and the edits a neighbour may be away.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CorrectionWord {
+    pub word: String,
+    pub term: String,
+    pub edits: u8,
+}
+
+/// The words of `text` "did you mean" looks at: one analysed term each,
+/// long enough for a typo ([`Fuzzy::Auto`]). Codes, numbers and names
+/// written with capitals inside (`p150n`, `dLNs`, `iPSC`) are not typos of
+/// words, and stay.
+pub fn correction_words(text: &str, analyzer: text::Analyzer) -> Vec<CorrectionWord> {
+    let mut out = Vec::new();
+    for (_, word) in words_of(text) {
+        if word.chars().any(|c| c.is_numeric()) || word.chars().skip(1).any(|c| c.is_uppercase()) {
+            continue;
+        }
+        let seq = analyzer.query_term_seq(word, true);
+        let [t] = seq.as_slice() else { continue };
+        let edits = Fuzzy::Auto.edits(t.chars().count());
+        if edits == 0 {
+            continue;
+        }
+        out.push(CorrectionWord { word: word.to_string(), term: t.clone(), edits });
+    }
+    out
+}
+
+impl CorrectionWord {
+    /// The correction of a word in `df` documents (0: a word of the
+    /// collection is not corrected) among its indexed neighbours `near`
+    /// (term, documents, edits): the most likely one by
+    /// [`correction_chance`], if at least [`CORRECTION_CHANCE`]. A
+    /// coordinator passes its shards' counts summed.
+    pub fn correct(&self, df: u64, near: &[(String, u64, u8)], analyzer: text::Analyzer) -> Option<Correction> {
+        if df > 0 {
+            return None;
+        }
+        let (n, d, chance) = near
+            .iter()
+            .filter(|x| x.2 > 0 && x.2 <= self.edits && x.1 > df)
+            .map(|(n, ndf, d)| (n, *d, correction_chance(df, *ndf, *d)))
+            .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.1.cmp(&a.1)).then_with(|| b.0.cmp(a.0)))?;
+        (chance >= CORRECTION_CHANCE).then(|| Correction { word: self.word.clone(), term: self.term.clone(), to: n.clone(), to_word: surface(&self.word, n, analyzer), edits: d, chance })
+    }
+}
+
 /// Readers of one segment's indexes, by schema field. Each opens on first
 /// use (opening only parses headers: every structure is a zero-copy view),
 /// so a query touches the headers of the fields it uses and no others, which
@@ -439,6 +488,14 @@ pub struct ExecOptions {
     pub now: Option<i64>,
     /// Keep expired rows: what deletes them looks for them with it.
     pub expired: bool,
+    /// What one statement run with these options may cost
+    /// ([`crate::query::budget`]): its shape once written out, the time
+    /// its plans take, the rows it reads. Default: no bound.
+    pub budget: crate::query::budget::Budget,
+    /// The rows the statement read so far, against its budget's
+    /// `rows_read` ([`crate::query::budget::guarded`] makes it); shared by
+    /// its parts. `None`: not counted.
+    pub reads: Option<Arc<crate::query::budget::Reads>>,
 }
 
 /// The engine of a plan's operators ([`crate::query::ops`] or
@@ -512,6 +569,8 @@ impl Default for ExecOptions {
             engine: Engine::from_env(),
             now: None,
             expired: false,
+            budget: crate::query::budget::Budget::default(),
+            reads: None,
         }
     }
 }
@@ -551,6 +610,49 @@ impl ExecOptions {
     }
 }
 
+/// The multi-valued INT field whose ranges every condition of `cs` is, when
+/// there are several.
+fn ranges_of_one_list(schema: &Schema, cs: &[Pred]) -> Option<usize> {
+    let Some(Pred::IntRange { field, .. }) = cs.first() else { return None };
+    (cs.len() > 1 && schema.fields[*field].multi && cs.iter().all(|c| matches!(c, Pred::IntRange { field: f, .. } if f == field))).then_some(*field)
+}
+
+/// `cs`, the conditions of an `AND`, with the negated ranges of each
+/// multi-valued field that has several made one negation of their `OR`
+/// ([`ranges_of_one_list`]); `None` when no field has several.
+fn outside_lists(schema: &Schema, cs: &[Pred]) -> Option<Vec<Pred>> {
+    let negated_range = |c: &Pred| match c {
+        Pred::Not(r) => match &**r {
+            Pred::IntRange { field, .. } if schema.fields[*field].multi => Some(*field),
+            _ => None,
+        },
+        _ => None,
+    };
+    let mut count: HashMap<usize, usize> = HashMap::new();
+    for f in cs.iter().filter_map(negated_range) {
+        *count.entry(f).or_default() += 1;
+    }
+    if !count.values().any(|&n| n > 1) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(cs.len());
+    let mut ranges: Vec<(usize, Vec<Pred>)> = Vec::new();
+    for c in cs {
+        match negated_range(c) {
+            Some(f) if count[&f] > 1 => {
+                let Pred::Not(r) = c else { unreachable!("a negated range") };
+                match ranges.iter_mut().find(|(g, _)| *g == f) {
+                    Some((_, rs)) => rs.push((**r).clone()),
+                    None => ranges.push((f, vec![(**r).clone()])),
+                }
+            }
+            _ => out.push(c.clone()),
+        }
+    }
+    out.extend(ranges.into_iter().map(|(_, rs)| Pred::Not(Box::new(Pred::Or(rs)))));
+    Some(out)
+}
+
 /// Counts the steps of a long loop and checks its query's deadline and
 /// cancel flag ([`ExecOptions::check`]) every `every` of them, so that a
 /// query stops within a few thousand steps instead of at its next segment.
@@ -558,6 +660,19 @@ pub struct Ticker<'o> {
     opts: &'o ExecOptions,
     every: u32,
     n: u32,
+    /// Each step is a row read, counted against the statement's
+    /// `rows_read` ([`ExecOptions::reads`]).
+    counts: bool,
+}
+
+impl Drop for Ticker<'_> {
+    fn drop(&mut self) {
+        // The steps since the last check; the next check, or the answer's,
+        // holds them to the budget.
+        if let (true, Some(r)) = (self.counts, &self.opts.reads) {
+            r.add(self.n as u64);
+        }
+    }
 }
 
 impl<'o> Ticker<'o> {
@@ -566,7 +681,13 @@ impl<'o> Ticker<'o> {
     pub const DOCS: u32 = 1024;
 
     pub fn new(opts: &'o ExecOptions, every: u32) -> Ticker<'o> {
-        Ticker { opts, every: every.max(1), n: 0 }
+        Ticker { opts, every: every.max(1), n: 0, counts: true }
+    }
+
+    /// [`Ticker::new`] of a loop whose steps are not rows read (rows
+    /// already read, projected).
+    pub fn uncounted(opts: &'o ExecOptions, every: u32) -> Ticker<'o> {
+        Ticker { opts, every: every.max(1), n: 0, counts: false }
     }
 
     /// One step: [`ExecOptions::check`] every `every` steps.
@@ -577,6 +698,9 @@ impl<'o> Ticker<'o> {
             return Ok(());
         }
         self.n = 0;
+        if let (true, Some(r)) = (self.counts, &self.opts.reads) {
+            r.charge(self.every as u64)?;
+        }
         self.opts.check()
     }
 }
@@ -1233,37 +1357,16 @@ impl<'a> Executor<'a> {
     pub fn corrections(self, field: usize, text: &str) -> Result<Vec<Correction>> {
         let analyzer = self.schema.fields[field].text_analyzer();
         let mut out = Vec::new();
-        for (_, word) in words_of(text) {
-            // Codes, numbers and names written with capitals inside
-            // (`p150n`, `dLNs`, `iPSC`) are not typos of words.
-            if word.chars().any(|c| c.is_numeric()) || word.chars().skip(1).any(|c| c.is_uppercase()) {
-                continue;
-            }
-            let seq = analyzer.query_term_seq(word, true);
-            let [t] = seq.as_slice() else { continue };
-            let len = t.chars().count();
-            let e = Fuzzy::Auto.edits(len);
-            if e == 0 {
-                continue;
-            }
-            let local = self.local_stats(field, std::slice::from_ref(t))?;
-            let df = local.df.get(t).copied().unwrap_or(0);
+        for w in correction_words(text, analyzer) {
+            let local = self.local_stats(field, std::slice::from_ref(&w.term))?;
+            let df = local.df.get(&w.term).copied().unwrap_or(0);
             // A word some document holds is a word of the collection: "did
             // you mean" corrects only words in none.
             if df > 0 {
                 continue;
             }
-            let near = self.near_terms(field, t, e)?;
-            let best = near
-                .iter()
-                .filter(|x| x.2 > 0 && x.1 > df)
-                .map(|(n, ndf, d)| (n, *d, correction_chance(df, *ndf, *d)))
-                .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.1.cmp(&a.1)).then_with(|| b.0.cmp(a.0)));
-            if let Some((n, d, chance)) = best {
-                if chance >= CORRECTION_CHANCE {
-                    out.push(Correction { word: word.to_string(), term: t.clone(), to: n.clone(), to_word: surface(word, n, analyzer), edits: d, chance });
-                }
-            }
+            let near = self.near_terms(field, &w.term, w.edits)?;
+            out.extend(w.correct(df, &near, analyzer));
         }
         Ok(out)
     }
@@ -1544,7 +1647,7 @@ impl<'a> Executor<'a> {
     }
 
     pub fn execute(self, q: &Select) -> Result<ResultSet> {
-        match self.answer(q, None)? {
+        match self.answer_counted(q, None)? {
             Leaf::Rows(rs) => Ok(rs),
             #[cfg(feature = "datafusion")]
             Leaf::Arrow(_) => unreachable!("rows asked for"),
@@ -1558,7 +1661,24 @@ impl<'a> Executor<'a> {
     /// the rows being made first.
     #[cfg(feature = "datafusion")]
     pub fn execute_arrow(self, q: &Select, over: usize) -> Result<Leaf> {
-        self.answer(q, Some(over))
+        self.answer_counted(q, Some(over))
+    }
+
+    /// [`Executor::answer`], its rows counted as read against the
+    /// statement's `rows_read` ([`ExecOptions::reads`]), with what its
+    /// loops read since their last check.
+    fn answer_counted(self, q: &Select, arrow_over: Option<usize>) -> Result<Leaf> {
+        let reads = self.opts.reads.clone();
+        let leaf = self.answer(q, arrow_over)?;
+        if let Some(r) = reads {
+            let n = match &leaf {
+                Leaf::Rows(rs) => rs.rows.len(),
+                #[cfg(feature = "datafusion")]
+                Leaf::Arrow(a) => a.rows,
+            };
+            r.charge(n as u64)?;
+        }
+        Ok(leaf)
     }
 
     fn answer(mut self, q: &Select, arrow_over: Option<usize>) -> Result<Leaf> {
@@ -2358,6 +2478,24 @@ impl<'a> Executor<'a> {
             Pred::Graph { id } => self.graph_set(*id, s.ord, n),
             Pred::Sub(_) => return Err(unresolved()),
             Pred::Not(c) => self.materialize(s, c)?.complement(),
+            // Ranges of one multi-valued field (`groups <@ :allowed` is
+            // NOT of those between the list's values): the documents of
+            // all their codes at once, not a set for each range unioned.
+            Pred::Or(cs) if ranges_of_one_list(&self.schema, cs).is_some() => {
+                let field = ranges_of_one_list(&self.schema, cs).expect("checked");
+                let kw = self.keyword(s, field)?;
+                let mut codes = Vec::new();
+                for c in cs {
+                    if let Pred::IntRange { lo, hi, .. } = c {
+                        codes.extend(kw.int_codes_exact(*lo, *hi));
+                    }
+                }
+                kw.docs_codes(&codes)
+            }
+            // Negated ranges of one multi-valued field, which `<@` is once
+            // its NOT is pushed down: one complement of their union rather
+            // than a complement and an intersection for each (finding N-B4).
+            Pred::And(cs) if outside_lists(&self.schema, cs).is_some() => self.materialize(s, &Pred::And(outside_lists(&self.schema, cs).expect("checked")))?,
             Pred::Or(cs) => {
                 let mut acc = DocSet::empty(n);
                 for c in cs {
@@ -3153,6 +3291,32 @@ impl<'a> Executor<'a> {
         Ok(v)
     }
 
+    /// [`Self::near_terms`] of `term`, and when the index has no `term` at
+    /// all (a misspelling) and the word was written otherwise before it
+    /// was stemmed (`raw`), the terms near that form too: `wireles` stems
+    /// to `wirel`, three edits from `wireless`, but is one edit from it as
+    /// written. Each term once, at its nearest.
+    fn near_terms_of(&self, field: usize, term: &str, raw: Option<&str>, edits: u8) -> Result<Arc<Vec<(String, u64, u8)>>> {
+        let near = self.near_terms(field, term, edits)?;
+        let Some(raw) = raw.filter(|r| *r != term) else { return Ok(near) };
+        if near.iter().any(|x| x.2 == 0) {
+            return Ok(near);
+        }
+        let more = self.near_terms(field, raw, edits)?;
+        if more.is_empty() {
+            return Ok(near);
+        }
+        let mut all: Vec<(String, u64, u8)> = near.iter().cloned().collect();
+        for m in more.iter() {
+            match all.iter_mut().find(|x| x.0 == m.0) {
+                Some(x) => x.2 = x.2.min(m.2),
+                None => all.push(m.clone()),
+            }
+        }
+        all.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
+        Ok(Arc::new(all))
+    }
+
     /// A `MATCH` query with its synonyms and typos expanded to the indexed
     /// terms of every segment (so each segment evaluates the same terms).
     fn match_query(&self, field: usize, query: &str, expand: &Expand) -> Result<Arc<BoolQuery>> {
@@ -3168,7 +3332,8 @@ impl<'a> Executor<'a> {
             q = text::query::expand(q, syn, &edits);
         }
         let mut failed = None;
-        q = text::query::resolve_fuzzy(q, &mut |t, e| match self.near_terms(field, t, e) {
+        let raw = raw_forms(analyzer, query);
+        q = text::query::resolve_fuzzy(q, &mut |t, e| match self.near_terms_of(field, t, raw.get(t).map(String::as_str), e) {
             Ok(v) => v.iter().map(|x| x.0.clone()).collect(),
             Err(e) => {
                 failed = Some(e);
@@ -3258,6 +3423,7 @@ impl<'a> Executor<'a> {
             // terms in a coordinator's statistics round and in its query;
             // the chances by the collection's where they were sent.
             let auto = fz == Fuzzy::Auto;
+            let raw = raw_forms(analyzer, text);
             let names: Vec<String> = out.terms[..n_base].iter().map(|(t, _)| t.clone()).collect();
             let local = if auto { Some(self.local_stats(field, &names)?) } else { None };
             let sent = self.opts.stats.as_ref().and_then(|s| s.fields.get(&self.schema.fields[field].name));
@@ -3274,7 +3440,7 @@ impl<'a> Executor<'a> {
                         continue;
                     }
                 }
-                let near = self.near_terms(field, t, e)?;
+                let near = self.near_terms_of(field, t, raw.get(t).map(String::as_str), e)?;
                 for (n, ndf, d) in near.iter().filter(|x| x.2 > 0 && (!auto || x.1 > df)).take(MAX_FUZZY_TERMS) {
                     let mut x = w * text::fuzzy::weight(*d, len);
                     if auto {
@@ -3321,6 +3487,8 @@ impl<'a> Executor<'a> {
                 TimeOf::Trunc(u) => format!("date_trunc('{}', {})", u.name(), self.field_name(tc.field)),
                 TimeOf::Part(p) => format!("date_part('{}', {})", p.name(), self.field_name(tc.field)),
                 TimeOf::Format(f) => format!("strftime({}, {})", crate::query::hint::sql_value(&Value::Str(f.clone())), self.field_name(tc.field)),
+                TimeOf::Bin { width, origin: 0 } => format!("date_bin('{}', {})", crate::timestamp::stride_text(*width), self.field_name(tc.field)),
+                TimeOf::Bin { width, origin } => format!("date_bin('{}', {}, '{}')", crate::timestamp::stride_text(*width), self.field_name(tc.field), crate::timestamp::format(*origin)),
             }),
         }
     }
@@ -4582,7 +4750,8 @@ impl<'a> Executor<'a> {
         let mut at: Option<Seg<'a>> = None;
         // A filter the leaf cannot answer (`LIKE '%x%'` on a KEYWORD
         // field) projects every row of a segment for the operator above.
-        let mut tick = self.ticker();
+        // Rows projected are counted as read once, in the answer.
+        let mut tick = Ticker::uncounted(self.opts, Ticker::DOCS);
         for (r, h) in hits.iter().enumerate() {
             tick.tick()?;
             if at.as_ref().is_none_or(|s| s.ord != h.seg) {
@@ -5313,4 +5482,20 @@ struct PartPick {
     rest: Pred,
     /// The partitions' rows.
     rows: usize,
+}
+
+/// Each stemmed term of `text` whose word was written otherwise, with that
+/// word as the field's terms are folded but not stemmed: the form a typo's
+/// neighbours are also looked for by (`near_terms_of`).
+fn raw_forms(analyzer: crate::schema::Analyzer, text: &str) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    analyzer.for_each_token(text, |w| {
+        if let Some(t) = analyzer.term_of(w) {
+            let raw = analyzer.prefix_of(w);
+            if raw != *t {
+                out.entry(t.into_owned()).or_insert(raw);
+            }
+        }
+    });
+    out
 }

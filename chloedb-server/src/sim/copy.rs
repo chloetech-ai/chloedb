@@ -153,11 +153,28 @@ impl Sim {
     }
 
     fn become_replica(&mut self, i: usize, kept: Kept, flags: bool) {
-        let (r, save) = Replica::open(kept, self.clock(i), flags);
+        let (mut r, mut save) = Replica::open(kept, self.clock(i), flags);
+        // As before N-E2: a first copy votes for any copy holding what it
+        // holds. A membership of version 0 is no membership a primary
+        // numbered, and makes it no first copy that waits for a call.
+        if self.cfg.bugs.contains(&Bug::VotesWithALostVolume) && r.kept.first_only() {
+            r.kept.config = Some((0, 0));
+            save = Some(r.kept.clone());
+        }
         if let Some(k) = save {
             self.keep(i, &k);
         }
         self.copies[i].role = Role::Replica(r);
+    }
+
+    /// Copy `i`, crashed, lost its volume: it starts again on an empty
+    /// database with nothing kept beside it ([`Config::lost_volumes`]).
+    pub(crate) fn lose_volume(&mut self, i: usize) {
+        let c = &mut self.copies[i];
+        c.kept = None;
+        c.db = ModelDb::new(self.cfg.sync, self.cfg.ship_max).refusing_older_terms(self.cfg.bugs.contains(&Bug::RefusesOlderTerms));
+        self.history.lost_memory(i);
+        self.history.stats.lost_volumes += 1;
     }
 
     fn become_primary(&mut self, i: usize, core: Primary) {
@@ -230,7 +247,8 @@ impl Sim {
                 Some(t) if t.write == write => *t,
                 _ => *txns.iter().find(|t| t.write == write).expect("the primary holds the write it answers"),
             };
-            self.history.acknowledged(write, at.seq, i, self.now);
+            let term = self.copies[i].db.numbering.term;
+            self.history.acknowledged(write, at.seq, i, term, self.now);
         }
         self.answer(i, caller, call, Resp::Write(a.map(|_| seq)));
     }
@@ -282,7 +300,7 @@ impl Sim {
                         }
                         Ok(a)
                     }
-                    Role::Down => Err(ApiError { status: 409, message: "not replicated".into() }),
+                    Role::Down => Err(ApiError { code: None, status: 409, message: "not replicated".into() }),
                 };
                 self.answer(i, from, call, Resp::Vote(a));
                 if step_down {
@@ -292,10 +310,17 @@ impl Sim {
             }
             Req::Replicate(r) => {
                 let a = match &mut self.copies[i].role {
-                    Role::Replica(rep) => match rep.take(r.term, &r.primary, r.member, (r.config, r.copies), &n) {
+                    Role::Replica(rep) => match rep.take(r.term, &r.primary, (r.config, r.copies), &n) {
                         Err(e) => Err(e),
                         Ok(Take::Answer(a)) => Ok(a),
-                        Ok(Take::Apply { kept }) => {
+                        Ok(Take::Apply { mut kept }) => {
+                            // As before N-E2: a member at the first call
+                            // that says so, caught up or not.
+                            if self.cfg.bugs.contains(&Bug::VotesWithALostVolume) && r.member && !kept.as_ref().unwrap_or(&rep.kept).member {
+                                let mut k = kept.unwrap_or_else(|| rep.kept.clone());
+                                k.member = true;
+                                kept = Some(k);
+                            }
                             if let Some(k) = &kept {
                                 self.copies[i].kept = Some(k.clone());
                             }
@@ -331,7 +356,16 @@ impl Sim {
                                     }
                                     let db_term = self.copies[i].db.numbering.term;
                                     let Role::Replica(rep) = &mut self.copies[i].role else { unreachable!() };
-                                    rep.applied(r.term, r.behind, r.global_checkpoint, applied, db_term)
+                                    let a = rep.applied(r.term, r.behind, r.global_checkpoint, applied, db_term);
+                                    let joined = match self.cfg.bugs.contains(&Bug::VotesWithALostVolume) {
+                                        true => None,
+                                        false => rep.joined(r.member),
+                                    };
+                                    if let Some(k) = joined {
+                                        rep.took(Some(k.clone()), now);
+                                        self.copies[i].kept = Some(k);
+                                    }
+                                    a
                                 }
                             }
                         }
@@ -344,13 +378,13 @@ impl Sim {
                         }
                         a
                     }
-                    Role::Down => Err(ApiError { status: 409, message: "not replicated".into() }),
+                    Role::Down => Err(ApiError { code: None, status: 409, message: "not replicated".into() }),
                 };
                 self.answer(i, from, call, Resp::Replicate(a));
             }
             Req::Restore { term, primary, config, copy } => {
                 let a = match &mut self.copies[i].role {
-                    Role::Replica(rep) => match rep.take(term, &primary, false, (config, 0), &n) {
+                    Role::Replica(rep) => match rep.take(term, &primary, (config, 0), &n) {
                         Err(e) => Err(e),
                         Ok(Take::Answer(a)) => Ok(a),
                         Ok(Take::Apply { kept }) => {
@@ -396,7 +430,7 @@ impl Sim {
                         }
                         a
                     }
-                    Role::Down => Err(ApiError { status: 409, message: "not replicated".into() }),
+                    Role::Down => Err(ApiError { code: None, status: 409, message: "not replicated".into() }),
                 };
                 if a.is_ok() {
                     self.history.stats.copies += 1;
@@ -406,7 +440,7 @@ impl Sim {
             Req::Write { id } => {
                 let admitted = match &self.copies[i].role {
                     Role::Primary(run) => run.core.admit(n.term, now),
-                    _ => Err(ApiError { status: 409, message: "this server is a replica: it applies its primary's writes and takes none from clients; write to the primary".into() }),
+                    _ => Err(ApiError { code: None, status: 409, message: "this server is a replica: it applies its primary's writes and takes none from clients; write to the primary".into() }),
                 };
                 if let Err(e) = admitted {
                     return self.answer(i, from, call, Resp::Write(Err(e)));
@@ -430,7 +464,7 @@ impl Sim {
                 let a = match &self.copies[i].role {
                     Role::Primary(run) => run.core.readable(now, n.term).map(|_| true),
                     Role::Replica(rep) => rep.readable().map(|_| false),
-                    Role::Down => Err(ApiError { status: 503, message: "down".into() }),
+                    Role::Down => Err(ApiError { code: None, status: 503, message: "down".into() }),
                 };
                 let a = match a {
                     Ok(primary) => {
@@ -446,8 +480,8 @@ impl Sim {
             Req::Promote => {
                 let a = match (&self.copies[i].role, self.copies[i].election.is_some()) {
                     (Role::Replica(_), false) => Ok(()),
-                    (Role::Replica(_), true) => Err(ApiError { status: 409, message: "an election is under way".into() }),
-                    _ => Err(ApiError { status: 409, message: "this server is not a replica (--replica): only a replica is promoted".into() }),
+                    (Role::Replica(_), true) => Err(ApiError { code: None, status: 409, message: "an election is under way".into() }),
+                    _ => Err(ApiError { code: None, status: 409, message: "this server is not a replica (--replica): only a replica is promoted".into() }),
                 };
                 match a {
                     Err(e) => self.answer(i, from, call, Resp::Promote(Err(e))),
@@ -515,8 +549,12 @@ impl Sim {
         let n = self.copies[i].db.numbering.clone();
         let Role::Replica(rep) = &self.copies[i].role else { return };
         let c = rep.campaign(&n, by_hand);
+        let uncounted = rep.counted().err().filter(|_| !self.cfg.bugs.contains(&Bug::CampaignsUncounted));
         let phase = if by_hand { Phase::Hello } else { Phase::Pre };
         self.copies[i].election = Some(Election { c, asked: None, phase, round: 0, answers: Vec::new(), left: 0, reply });
+        if let Some(err) = uncounted {
+            return self.end_election(i, Err(err));
+        }
         self.ask_round(i, phase);
     }
 

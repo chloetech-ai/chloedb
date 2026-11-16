@@ -5,12 +5,13 @@
 // Without --strata it starts its own chloedb-server on DIR/apps.strata.
 
 import http from 'node:http';
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Login } from './login.mjs';
+import { callerOf, refusal, sees } from './callers.mjs';
 import { useSelfCookie } from './checks.mjs';
 import { Engine } from './engine.mjs';
 import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions, useCluster } from './forge.mjs';
@@ -18,12 +19,15 @@ import { repairRequest, lookSuggestions } from './look.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
 import { Changes, joinAsks } from './changes.mjs';
 import { useTableFunctions, useFunctionReads } from './sql.mjs';
-import { MODEL, spend, useSpendFile } from './llm.mjs';
-import { newId } from './store.mjs';
+import { MODEL, spend, useSpendFile, buildScope, checkProvider, withProvider } from './llm.mjs';
+import { explainFailure } from './failures.mjs';
+import { newId, shortName, firstBuildStatus } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { appScript } from './source.mjs';
 import { provenance } from './provenance.mjs';
-import { Publish } from './publish.mjs';
+import { STEP_DEFAULTS, expectedSteps } from './trace.mjs';
+import { Publish, forVisitor, strangerOf } from './publish.mjs';
+import { forVisitors } from './audience.mjs';
 import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { Reach, ABILITIES, usesOf } from './reach.mjs';
@@ -155,7 +159,19 @@ const scheduler = new Scheduler({ engine, reach, log });
 if (process.env.STRATA_APPS_SCHEDULES !== 'off') scheduler.start();
 // Beside a cluster, who may use the studio (login.mjs): chloedb-server with
 // its app token, and browsers it hands a login to.
-const login = new Login({ store: engine.store, appToken: process.env.STRATA_APP_TOKEN, publicUrl: process.env.STRATA_APPS_PUBLIC_URL, log });
+// An agent's MCP server (mcp.mjs) signs in with the agent token:
+// STRATA_APPS_AGENT_TOKEN, or DATA/agent.token, made on first start and
+// readable by its owner only (audit 4, X-G7).
+async function agentToken() {
+  if (process.env.STRATA_APPS_AGENT_TOKEN) return process.env.STRATA_APPS_AGENT_TOKEN.trim();
+  const file = path.join(DATA, 'agent.token');
+  try { const t = (await readFile(file, 'utf8')).trim(); if (t) return t; } catch { /* made below */ }
+  await mkdir(DATA, { recursive: true });
+  await writeFile(file, `${randomBytes(32).toString('base64url')}\n`, { mode: 0o600, flag: 'wx' }).catch(() => {});
+  await chmod(file, 0o600).catch(() => {});
+  return (await readFile(file, 'utf8').catch(() => '')).trim() || null;
+}
+const login = new Login({ store: engine.store, appToken: process.env.STRATA_APP_TOKEN, agentToken: await agentToken(), publicUrl: process.env.STRATA_APPS_PUBLIC_URL, log });
 useSelfCookie(login.selfCookie);
 if (login.on) log(`the studio needs a login, handed over by the command center${login.publicUrl ? `; it is reached at ${login.publicUrl}` : ' (set STRATA_APPS_PUBLIC_URL to say where browsers reach it)'}`);
 // Apps open to the public (publish.mjs): /a/<id>, and <name>.<domain> with a domain.
@@ -181,10 +197,12 @@ function visitorOf(req) {
   const m = String(req.headers.cookie || '').match(/(?:^|;\s*)sa_visitor=([a-z0-9]{8,20})/);
   return m ? m[1] : null;
 }
-// The person as this app sees them, or null.
-async function userOf(req, appId, pub = false) {
+// The person as this app sees them, or null. A visitor of a published app
+// (join false) is someone there only once they signed up or in on it: a
+// session from another app on the same address does not make them a member.
+async function userOf(req, appId, { join = true } = {}) {
   const person = await services.personOf(tokenOf(req)).catch(() => null);
-  return person ? services.user(appId, person, { pub }) : null;
+  return person ? services.user(appId, person, { join }) : null;
 }
 
 // ---- map tiles, fetched once and kept on disk (OpenStreetMap's policy:
@@ -322,28 +340,13 @@ async function submit(appId, text, source = 'user', extra = {}) {
 // How long each step of a build usually takes, first versions apart from
 // changes: medians of the last builds' timelines (sa_traces), so the studio's
 // progress bar moves at the pace builds here really go.
-const STEP_DEFAULTS = { first: { read: 300, plan: 12000, write: 9000, store: 2500 }, change: { read: 300, plan: 20000, write: 8000, store: 2000 } };
 let expected = structuredClone(STEP_DEFAULTS);
 async function learnExpected() {
   let rows = [];
   try { rows = await engine.db.query('SELECT trace FROM sa_traces ORDER BY created DESC LIMIT 80'); } catch { return; }
-  const seen = { first: {}, change: {} };
-  for (const r of rows) {
-    let t;
-    try { t = JSON.parse(r.trace); } catch { continue; }
-    if (t.status !== 'done' || !Array.isArray(t.spans)) continue;
-    const kind = t.spans.some((x) => /first version/.test(x.label || '')) ? 'first' : 'change';
-    const span = (k) => { const ss = t.spans.filter((x) => k.includes(x.kind)); return ss.length ? Math.max(...ss.map((x) => x.end ?? x.start)) - Math.min(...ss.map((x) => x.start)) : 0; };
-    const plan = span(['plan', 'model']);
-    const write = span(['write', 'fix']);
-    const read = t.spans.find((x) => x.kind === 'strata')?.end || 0;
-    const store = Math.max(0, (t.ms || 0) - read - plan - write);
-    for (const [k, v] of Object.entries({ read, plan, write, store })) if (v > 0 || k !== 'write') (seen[kind][k] ||= []).push(v);
-  }
-  const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
-  for (const kind of ['first', 'change']) {
-    for (const [k, list] of Object.entries(seen[kind])) if (list.length >= 3) expected[kind][k] = Math.round(median(list));
-  }
+  const traces = [];
+  for (const r of rows) { try { traces.push(JSON.parse(r.trace)); } catch { /* a broken timeline counts for nothing */ } }
+  expected = expectedSteps(traces);
 }
 learnExpected().catch(() => {});
 
@@ -353,7 +356,8 @@ async function runRequest(req, extra = {}) {
   // The build's steps as the studio draws them (read, plan, write, store),
   // with when each began, and the pieces being written at once.
   const split = SPLIT === 'always' || (SPLIT === 'first' && first);
-  const state = { id: req.id, text: req.text, source: req.source, lines, t0: Date.now(), first, split, steps: [], pieces: [], expect: expected[first ? 'first' : 'change'] };
+  // stop: aborts every model call of this build (POST .../stop).
+  const state = { id: req.id, text: req.text, source: req.source, lines, t0: Date.now(), first, split, steps: [], pieces: [], expect: expected[first ? 'first' : 'change'], stop: new AbortController() };
   running.set(req.app, state);
   // A line sent with {replace: true} takes the place of the previous such
   // line (the model's running count), so the log does not fill with them.
@@ -367,19 +371,26 @@ async function runRequest(req, extra = {}) {
   };
   await engine.store.putRequest({ ...req, status: 'running' });
   try {
-    const out = req.source === 'component' ? await useSharedVersion(engine, req.app, extra.cap, progress)
-      : await forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress);
+    // A build that names its provider (codex, agy) has its model calls go there.
+    if (extra.provider) log(`[${req.app}] ${req.id} built with the ${extra.provider} provider`);
+    const out = await buildScope.run({ signal: state.stop.signal }, () => (req.source === 'component' ? useSharedVersion(engine, req.app, extra.cap, progress)
+      : withProvider(extra.provider, () => forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress))));
+    if (state.stop.signal.aborted) throw Object.assign(new Error('stopped by its owner'), { stopped: true });
     await engine.store.putRequest({ ...req, status: 'done', comp: out.n, summary: out.summary, log: lines.map((l) => l.line).join('\n'), ms: out.ms, cost: out.cost });
     if (out.trace) { await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost }); learnExpected().catch(() => {}); }
     if (extra.candidate) await evolver.built(extra.candidate, out).catch((e) => log(`candidate ${extra.candidate}: ${e.message}`));
     broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary, candidate: extra.candidate || null });
     engine.changes?.soon();
-  } catch (e) {
-    progress(`Failed: ${e.message}`);
-    await engine.store.putRequest({ ...req, status: 'failed', error: e.message.slice(0, 2000), log: lines.map((l) => l.line).join('\n'), cost: e.cost || 0 });
-    if (e.trace) await saveTrace(req, e.trace, lines, { status: 'failed', error: e.message.slice(0, 500), cost: e.cost || 0 });
+  } catch (err) {
+    // Stopped by its owner: whatever the forge made of the stop, it is a stop.
+    const stopped = state.stop.signal.aborted;
+    const e = stopped ? Object.assign(new Error('stopped by its owner'), { cost: err.cost, trace: err.trace }) : err;
+    const status = stopped ? 'stopped' : 'failed';
+    progress(stopped ? 'Stopped' : `Failed: ${e.message}`);
+    await engine.store.putRequest({ ...req, status, error: e.message.slice(0, 2000), log: lines.map((l) => l.line).join('\n'), cost: e.cost || 0 });
+    if (e.trace) await saveTrace(req, e.trace, lines, { status, error: e.message.slice(0, 500), cost: e.cost || 0 });
     if (extra.candidate) await evolver.failed(extra.candidate, e.message).catch(() => {});
-    broadcast('failed', { app: req.app, request: req.id, error: e.message, candidate: extra.candidate || null });
+    broadcast('failed', { app: req.app, request: req.id, error: e.message, stopped, said: explainFailure(e.message, { stopped }), candidate: extra.candidate || null });
   } finally {
     running.delete(req.app);
     // A first build that gave no art direction: designs from the description.
@@ -421,7 +432,7 @@ engine.on('drawn', (d) => {
   drawnOf.set(d.app, { n: d.n, at: new Date().toISOString(), found: d.found, views: d.views, cost: d.cost, looked: d.looked, grade: d.grade ?? null });
   const said = d.found.length ? `${d.found.length} problem${d.found.length === 1 ? '' : 's'}, ${high.length} in the way` : 'nothing in the way';
   const look = d.looked ? ` (look $${(d.cost || 0).toFixed(3)})` : d.lookError ? ` (no look: ${d.lookError.slice(0, 120)})` : '';
-  log(`[${d.app}] drew version ${d.n} on a phone and a computer: ${said}${d.grade ? `, graded ${d.grade} of 5` : ''}${look}`);
+  log(`[${d.app}] ${d.static ? `checked version ${d.n} without a browser` : `drew version ${d.n} on a phone and a computer`}: ${said}${d.grade ? `, graded ${d.grade} of 5` : ''}${look}`);
   const text = repairRequest(d.found);
   // A newer change already being built is drawn and checked in turn.
   const fixing = !!text && AUTOREPAIR && d.source !== 'look' && !running.has(d.app) && Date.now() - (lookedAt.get(d.app) || 0) > 600000;
@@ -488,6 +499,9 @@ const MANIFEST = {
   description: 'Apps built from a description: written by a model, checked, kept in this cluster as rows, and changed by asking',
   icon_svg: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/>',
   view: 'cc/view.js',
+  // It refuses what x-chloedb-scope and x-chloedb-tables do not allow
+  // (callers.mjs): chloedb-server forwards it keys limited to tables.
+  checks_callers: true,
 };
 
 async function body(req) {
@@ -522,10 +536,10 @@ function designsOf(appId, fresh = false, direction = null) {
 // (forge.mjs calls engine.onDirection once its checks pass); a first build
 // that ends without one has its designs made from the description.
 const directions = new Map();
-function awaitDirection(appId) {
+function awaitDirection(appId, provider = null) {
   let give;
   const given = new Promise((ok) => { give = ok; });
-  const made = given.then((direction) => { directions.delete(appId); return designsOf(appId, false, direction); });
+  const made = given.then((direction) => { directions.delete(appId); return withProvider(provider, () => designsOf(appId, false, direction)); });
   made.catch((e) => console.error(`designs ${appId}: ${e.message}`));
   directions.set(appId, { give, made });
 }
@@ -550,7 +564,7 @@ async function appState(appId) {
   const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: c.code, sql: c.sql, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
   const run = running.get(appId);
   return {
-    app: view.app,
+    app: { ...view.app, name: nameOf(view.app) },
     design: await store.designs(appId),
     version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '', trying: view.comp.n !== head ? view.comp.n : null, live: head },
     evolve,
@@ -568,13 +582,16 @@ async function appState(appId) {
     suggestions: await store.suggestions(appId),
     // (versions built to try and not kept are listed with their candidates)
     versions: (await store.compositions(appId)).filter((c) => !unkept.has(Number(c.n)) || Number(c.n) === head),
-    requests: await store.requests(appId, 30),
+    // A failed or stopped request says why in a plain sentence (said), its error kept for the details.
+    requests: (await store.requests(appId, 30)).map((r) => (r.status === 'failed' || r.status === 'stopped' ? { ...r, said: explainFailure(r.error, { stopped: r.status === 'stopped' }) } : r)),
     running: run ? { id: run.id, text: run.text, source: run.source, lines: run.lines.map((l) => l.line), ...buildState(run) } : null,
     drawn: drawnOf.get(appId) || null,
     reach: await reachOf(appId, view),
     // Where its code came from: CREATE statements, the agent's own code, the library (provenance.mjs).
     made: provenance(view, appId),
     publish: publish.of(appId),
+    // What its builds cost, all of them.
+    cost: (await store.costs(appId)).get(appId) || { usd: 0, builds: 0 },
   };
 }
 
@@ -585,18 +602,27 @@ const publicAsk = (o = {}) => (o.json ? { json: true } : {});
 // A published app's state for the public: what its page needs to run its
 // screens (their code, its design, the live version), and nothing of how it
 // is made (requests, versions, suggestions), its people or its outbox.
-async function publicState(appId) {
+// An app's name as shown. One with no version yet that is still called by
+// the first 40 characters of its description (as apps were named before
+// shortName) is shown by a short name instead.
+const nameOf = (a) => (!Number(a.head) && a.name && String(a.description || '').startsWith(String(a.name).trim()) && String(a.name).trim().length >= 30 ? shortName(a.description) : a.name);
+
+async function publicState(appId, access) {
   const view = await engine.view(appId);
   const head = Number(view.app.head);
   const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, code: c.code, spec: c.spec });
   const reachNow = await reachOf(appId, view).catch(() => null);
   return {
     public: true,
+    // What visitors may do with its data (publish.mjs): the page offers no
+    // write a visitor who may only look would be refused.
+    access: access || 'look',
     app: { id: appId, name: view.app.name },
     design: await engine.store.designs(appId),
     version: { n: view.comp.n, summary: '', request: '', trying: null, live: head },
     evolve: { mode: 'off', signals: [], candidates: [] },
-    views: view.views.map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
+    // A visitor never gets the owner's views (engine/audience.mjs).
+    views: forVisitors(view.views).map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
     functions: view.functions.map((c) => ({ id: c.id, slug: c.slug, kind: c.kind, title: c.title })),
     components: view.components.map(cap),
     helpers: view.helpers.map(cap),
@@ -619,8 +645,22 @@ const routes = [
   ['POST', /^\/api\/handoff$/, async (b, m, url, cx) => login.handoff(cx.req, String(b.next || ''))],
   ['GET', /^\/api\/status$/, async () => ({ model: MODEL, strata: strataUrl, cluster: ON_CLUSTER, feed: engine.feed, keys: appKeys.status(), data: child ? DATA : null, autorepair: AUTOREPAIR,
     login: login.on ? { publicUrl: login.publicUrl } : null,
-    spend: spend.cap ? { usd: Math.round(spend.usd * 100) / 100, cap: spend.cap, asksUsd: Math.round(spend.asksUsd * 100) / 100, asksCap: spend.asksCap, calls: spend.calls, refused: spend.refused, since: spend.since } : null })],
-  ['GET', /^\/api\/apps$/, async () => ({ apps: await engine.store.listApps() })],
+    spend: spend.cap ? { usd: Math.round(spend.usd * 100) / 100, cap: spend.cap, asksUsd: Math.round(spend.asksUsd * 100) / 100, asksToday: Math.round(spend.asksDayUsd * 100) / 100, asksCap: spend.asksCap, calls: spend.calls, refused: spend.refused, since: spend.since } : null })],
+  ['GET', /^\/api\/apps$/, async (b, m, url, cx) => {
+    const costs = await engine.store.costs();
+    // A key limited to tables lists the apps whose tables it reads.
+    const apps = (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id));
+    // Each app's state: live (a version), building, or failed (its first
+    // build did not go through and none is running): the gallery said
+    // "building" for ever of an app whose first build failed.
+    const status = async (a) => {
+      if (Number(a.head)) return 'live';
+      if (running.has(a.id) || waiting.has(a.id)) return 'building';
+      const [last] = await engine.store.requests(a.id, 1).catch(() => []);
+      return firstBuildStatus(last, Date.now());
+    };
+    return { apps: await Promise.all(apps.map(async (a) => ({ ...a, name: nameOf(a), status: await status(a), cost: costs.get(a.id) || { usd: 0, builds: 0 } }))) };
+  }],
   // The events since ?after=N (see broadcast), for one app with ?app=.
   ['GET', /^\/api\/events$/, async (b, m, url) => waitEvents(Number(url.searchParams.get('after')) || 0, url.searchParams.get('app') || null,
     Math.min(25000, Math.max(0, Number(url.searchParams.get('wait') ?? 20000) || 0)))],
@@ -638,15 +678,53 @@ const routes = [
   ['POST', /^\/api\/apps$/, async (b) => {
     const description = String(b.description || '').trim();
     if (description.length < 5) throw Object.assign(new Error('describe the app in a sentence or more'), { status: 400 });
-    const name = description.split(/[.\n]/)[0].slice(0, 40);
+    // provider (claude, codex, agy): the CLI of this first build and its designs only.
+    const provider = checkProvider(b.provider);
+    // A name given is the app's for good (the plan's name does not replace it).
+    const given = String(b.name || '').trim().slice(0, 60);
+    const name = given || shortName(description);
     const app = await engine.store.createApp({ name, description });
+    if (given) await engine.store.putSetting(app, 'named', '1');
     // Its three designs are made beside the first build, from the art
     // direction its plan writes (or the description, when it has none).
-    awaitDirection(app);
-    const request = await submit(app, description, 'user');
+    awaitDirection(app, provider);
+    const request = await submit(app, description, 'user', provider ? { provider } : {});
     return { app, request: request.id };
   }],
-  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id) : appState(id))],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id, cx.access) : appState(id))],
+  // Renamed by its owner: the name stays (a later plan does not rename it).
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/rename$/, async (b, [id]) => {
+    const name = String(b.name || '').trim().replace(/\s+/g, ' ');
+    if (!name || name.length > 60) throw Object.assign(new Error('a name is 1 to 60 characters'), { status: 400 });
+    if (!(await engine.store.getApp(id))) throw Object.assign(new Error(`no app ${id}`), { status: 404 });
+    await engine.store.updateApp(id, { name });
+    await engine.store.putSetting(id, 'named', '1');
+    broadcast('app', { app: id });
+    return { name };
+  }],
+  // A copy, as a new app (its rows too, unless {rows: false}).
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/duplicate$/, async (b, [id]) => {
+    if (!(await engine.store.getApp(id))) throw Object.assign(new Error(`no app ${id}`), { status: 404 });
+    const copy = await engine.store.duplicateApp(id, { name: b.name, rows: b.rows !== false });
+    log(`[${id}] copied as ${copy}`);
+    broadcast('app', { app: copy });
+    return { app: copy };
+  }],
+  // Its rows, every table, as JSON (the app creator makes CSV of a table from it).
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/export$/, async (b, [id]) => engine.store.exportApp(id)],
+  // Deleted, with its own tables (app_<id>_*), versions, pieces, use and
+  // files; not while a change of it is being built.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/delete$/, async (b, [id]) => {
+    if (!(await engine.store.getApp(id))) throw Object.assign(new Error(`no app ${id}`), { status: 404 });
+    if (running.has(id) || waiting.has(id)) throw Object.assign(new Error('a change of this app is being built: delete it once that ends'), { status: 409 });
+    const out = await engine.store.deleteApp(id);
+    await rm(path.join(DATA, 'files', id), { recursive: true, force: true }).catch(() => {});
+    publish.forget(id);
+    for (const m of [drawnOf, lookedAt, activity, queues]) m.delete(id);
+    log(`[${id}] deleted: ${out.tables.length} table${out.tables.length === 1 ? '' : 's'}, ${out.rows} rows of the engine's`);
+    broadcast('app', { app: id, deleted: true });
+    return { deleted: id, ...out };
+  }],
   // Open to the public, or not (publish.mjs); only from the studio and the command center.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/publish$/, async (b, [id]) => publish.of(id)],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/publish$/, async (b, [id]) => {
@@ -679,31 +757,79 @@ const routes = [
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/requests$/, async (b, [id]) => {
     const text = String(b.text || '').trim();
     if (!text) throw Object.assign(new Error('say what to change'), { status: 400 });
+    // provider (claude, codex, agy): the CLI of this build only; an ask that
+    // joins a waiting request is built with that request's.
+    const provider = checkProvider(b.provider);
     const taken = b.suggestion ? await engine.store.setSuggestion(String(b.suggestion), 'taken') : null;
     // A newer shared component is taken without the model: its code is in Strata.
     if (taken?.source === 'component' && taken.cap) return { request: (await submit(id, text, 'component', { cap: taken.cap })).id };
     const source = ['user', 'suggestion', 'library'].includes(b.source) ? b.source : 'user';
-    const r = await submit(id, text, source);
+    const r = await submit(id, text, source, provider ? { provider } : {});
     return { request: r.id };
   }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/sql$/, async (b, [id]) => ({ rows: await engine.sql(id, b.sql, b.params) })],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, { user: await cx.user(id), who: await cx.who(id), ...cx.where(), pub: !!cx.public }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, { user: await cx.user(id), who: await cx.who(id), ...cx.where(), pub: !!cx.public }); noteActivity(id); return { row }; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, { user: await cx.user(id), who: await cx.who(id), ...cx.where(), pub: !!cx.public }); noteActivity(id); return out; }],
-  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, { user: await cx.user(id), who: await cx.who(id), ...cx.where(), pub: !!cx.public }); noteActivity(id); return out; }],
+  // Stop the build running for this app: its model calls are killed at once
+  // and the request ends "stopped" (requests queued after it go on).
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/stop$/, async (b, [id]) => {
+    const run = running.get(id);
+    if (!run || (b.request && b.request !== run.id)) return { stopped: false };
+    log(`[${id}] stopped by its owner`);
+    run.stop.abort();
+    return { stopped: true, request: run.id };
+  }],
+  // Reads and writes: for the app's people (the public path) under the
+  // tables' declared access (access.mjs, ctx.as); the studio has every row.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/sql$/, async (b, [id], url, cx) => ({ rows: await engine.sql(id, b.sql, b.params, { user: await cx.user(id), as: await cx.as(id), company: await cx.company(id) }) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/insert$/, async (b, [id], url, cx) => { const row = await engine.insert(id, b.table, b.row || {}, await cx.writer(id)); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/update$/, async (b, [id], url, cx) => { const row = await engine.update(id, b.table, b.id, b.fields || {}, await cx.writer(id)); noteActivity(id); return { row }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/remove$/, async (b, [id], url, cx) => { const out = await engine.remove(id, b.table, b.id, await cx.writer(id)); noteActivity(id); return out; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/call$/, async (b, [id], url, cx) => { const out = await engine.call(id, b.name, b.input, await cx.writer(id)); noteActivity(id); return out; }],
+  // Companies (services.mjs): the ones the signed-in person works in and the
+  // one they work in now (x-sa-company, else their first); made by a member,
+  // who becomes its admin; its admins add people who have an account.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/companies$/, async (b, [id], url, cx) => { const user = await cx.user(id); return { companies: await services.companies(id, user?.id), current: await cx.company(id) }; }],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies$/, async (b, [id], url, cx) => ({ company: await services.createCompany(id, (await cx.user(id))?.id, b) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies\/members$/, async (b, [id], url, cx) => {
+    const user = await cx.user(id);
+    if (cx.public && !user) throw Object.assign(new Error('Sign in first'), { status: 401 });
+    return { member: await services.addToCompany(id, b.company, cx.public ? user.id : null, b) };
+  }],
+  // A company that invited the signed-in person (an admin added them on the
+  // app's page): they join it themselves.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies\/join$/, async (b, [id], url, cx) => ({ member: await services.joinCompany(id, b.company, (await cx.user(id))?.id) })],
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies\/members\/remove$/, async (b, [id], url, cx) => {
+    const user = await cx.user(id);
+    if (cx.public && !user) throw Object.assign(new Error('Sign in first'), { status: 401 });
+    return services.removeFromCompany(id, b.company, cx.public ? user.id : null, String(b.person || ''));
+  }],
+  // A member made an admin, or a member again: by the app's owner (or the studio).
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/people\/role$/, async (b, [id], url, cx) => {
+    if (cx.public) {
+      const user = await cx.user(id);
+      if (!user) throw Object.assign(new Error('Sign in first'), { status: 401 });
+      if (user.role !== 'owner') throw Object.assign(new Error("Only the app's owner can change who is an admin"), { status: 403 });
+    }
+    return { person: await services.setRole(id, b.person, String(b.role || '')) };
+  }],
   // People: one account for every app here; joining an app on first use.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/me$/, async (b, [id], url, cx) => ({ user: await cx.user(id) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/signup$/, async (b, [id], url, cx) => { const out = await services.signUp(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/signin$/, async (b, [id], url, cx) => { const out = await services.signIn(id, b, { pub: !!cx.public }); setSession(cx.res, out.token); return { user: out.user }; }],
   ['POST', /^\/api\/signout$/, async (b, m, url, cx) => { await services.signOut(tokenOf(cx.req)); setSession(cx.res, null); return { ok: true }; }],
-  // The public (a published app's visitors) gets names and roles, never emails.
-  ['GET', /^\/api\/apps\/([a-z0-9]+)\/people$/, async (b, [id], url, cx) => ({ people: (await services.people(id)).map((p) => (cx.public ? { id: p.id, name: p.name, role: p.role, joined: p.joined } : p)) })],
+  // A published app's people are for its signed-in members only, and their
+  // emails for its owner: never for someone passing by.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/people$/, async (b, [id], url, cx) => {
+    if (!cx.public) return { people: await services.people(id) };
+    const user = await cx.user(id);
+    if (!user) throw Object.assign(new Error('sign in to this app to see who uses it'), { status: 401 });
+    const people = await services.people(id);
+    return { people: user.role === 'owner' ? people : people.map(({ id: pid, name, role }) => ({ id: pid, name, role })) };
+  }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/files\/info$/, async (b, [id]) => ({ files: (await services.fileInfo(id, b.ids)).map((f) => ({ ...f, url: `/api/apps/${id}/files/${f.id}` })) })],
   // Email from a view needs someone signed in; functions send as the app.
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/email$/, async (b, [id], url, cx) => {
     const user = await cx.user(id);
     if (!user) throw Object.assign(new Error('email: sign in to send email from this app'), { status: 401 });
-    return { email: await services.email(id, b, user.id) };
+    return { email: await services.email(id, b, user.id, { sender: cx.public ? await cx.as(id) : null }) };
   }],
   // What people did in the app, in its own words, for the Activity view.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/activity$/, async (b, [id], url, cx) => {
@@ -750,12 +876,13 @@ const routes = [
     // open and leave name a screen (leave with the time spent on it); abandon
     // is a form typed into and closed unsaved; an action is anything else an
     // app records (a search with the words and how many rows they found).
+    // A beacon sends no headers: the studio's says it is the owner's in its body.
     const kind = ['open', 'leave', 'abandon'].includes(b.kind) ? b.kind : 'action';
     const detail = kind === 'action' ? `${String(b.action || '').slice(0, 60)}${b.detail ? ` ${String(b.detail).slice(0, 200)}` : ''}` : String(b.detail || '');
     const where = cx.where(b.session);
     const screen = kind === 'open' || kind === 'leave' ? String(b.detail || '') : where.screen || b.screen;
     const q = kind === 'action' && /^(search|filter)$/.test(String(b.action || '')) ? (b.q ?? b.detail) : null;
-    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n, ...where, taps: null, screen, tbl: b.table, q, results: b.results, ms: b.ms });
+    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n, ...where, taps: null, screen, tbl: b.table, q, results: b.results, ms: b.ms, src: cx.owner || (!cx.public && b.owner === true) ? 'owner' : null });
     noteActivity(id);
     return { ok: true };
   }],
@@ -766,12 +893,11 @@ const routes = [
     if (cx.public) { log(`[${id}] error from a visitor (no repair): ${String(b.cap || '').slice(0, 40)} ${String(b.message || '').slice(0, 200)}`); return { ok: true, repairing: false }; }
     const cap = String(b.cap || '');
     // An error from code the app no longer runs (a window still showing an
-    // older version) is not sent to the forge.
-    const live = await engine.store.resolve(id).catch(() => null);
-    if (!live?.comp.caps.includes(cap)) return { ok: true, repairing: false, stale: true };
-    const repairing = AUTOREPAIR && !repaired.has(cap);
-    engine.reportError(id, cap, String(b.message || '').slice(0, 1500), 'in the browser');
-    return { ok: true, repairing };
+    // older version) is not sent to the forge; nor is a visitor's (a
+    // published app's public), which is only recorded for the owner.
+    const repairing = !cx.public && AUTOREPAIR && !repaired.has(cap);
+    const out = await engine.browserError(id, cap, b.message, { visitor: !!cx.public });
+    return out.stale ? { ok: true, repairing: false, stale: true } : { ok: true, repairing: repairing && out.sent };
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/suggest$/, async (b, [id]) => {
     const out = await evolver.tick(id, { force: true });
@@ -845,6 +971,7 @@ const routes = [
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  let visiting = false;
   try {
     if (url.pathname === '/healthz') return send(res, 200, { ok: true });
     // Caddy asks before it gets a certificate for a host (the operator's
@@ -857,7 +984,18 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/login' && login.on) return await login.redeem(url, res);
     // Someone not signed in to the studio may still open a published app.
     let refused = await login.check(req, url);
-    const open = login.on && refused ? await publish.allows(req, url) : !login.on ? await publish.allows(req, url) : null;
+    // Through chloedb-server: what the caller's key may do (callers.mjs).
+    const caller = login.fromServer(req) ? callerOf(req) : null;
+    const no = refusal(caller, req.method, url);
+    if (no) return send(res, 403, { error: no });
+    // The studio's "See it as a stranger": someone who may use the studio
+    // asks to be treated as a visitor (never the other way round).
+    const stranger = !refused ? strangerOf(req) : null;
+    const seen = stranger ? await publish.allows(req, url, stranger) : null;
+    // A refusal, not an error: the page says it and records nothing (refused).
+    if (seen?.denied) return send(res, 403, { error: seen.denied, refused: true });
+    const open = seen || (login.on && refused ? await publish.allows(req, url) : !login.on ? await publish.allows(req, url) : null);
+    if (refused && open?.denied) return send(res, 403, { error: open.denied, refused: true });
     if (refused && open) {
       refused = null;
       if (!open.file) {
@@ -866,7 +1004,9 @@ const server = http.createServer(async (req, res) => {
       }
     }
     // What the request is, for the routes: the published app it may use.
-    const cx0 = { public: login.on && open && !open.file ? open.app : null };
+    const visitorApp = seen ? seen.app : login.on && open && !open.file ? open.app : null;
+    const cx0 = { public: visitorApp, access: visitorApp ? open.access || null : null, stranger: !!seen, caller };
+    visiting = !!cx0.public;
     if (refused) {
       if (refused.json) return send(res, refused.status, refused.json);
       res.writeHead(refused.status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
@@ -911,7 +1051,7 @@ const server = http.createServer(async (req, res) => {
     // An upload is the file's bytes as the body; its name and type in the query.
     if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/apps\/([a-z0-9]+)\/files$/))) {
       const bytes = await rawBody(req, MAX_FILE);
-      const user = await userOf(req, m[1]);
+      const user = cx0.stranger ? null : await userOf(req, m[1], { join: !cx0.public });
       const file = await services.saveFile(m[1], bytes, { name: url.searchParams.get('name'), type: url.searchParams.get('type') || req.headers['content-type'] }, user?.id);
       noteActivity(m[1]);
       return send(res, 200, { file: { ...file, url: `/api/apps/${m[1]}/files/${file.id}` } });
@@ -923,7 +1063,31 @@ const server = http.createServer(async (req, res) => {
     // A write or a run also says how many taps led to it (x-sa-taps).
     const taps = Number(req.headers['x-sa-taps']);
     const where = (session) => ({ session: tag(req.headers['x-sa-session']) || tag(session), screen: tag(req.headers['x-sa-view']), ...(Number.isInteger(taps) && taps >= 0 && taps < 10000 ? { taps } : {}) });
-    const cx = { ...cx0, req, res, where, user: (appId) => userOf(req, appId, !!cx0.public), who: async (appId) => (await userOf(req, appId, !!cx0.public))?.id || visitorOf(req) };
+    const join = !cx0.public;
+    // A stranger is nobody signed in, whatever the studio's session.
+    const people = new Map(); // app -> the person, once per request
+    const personOf = (appId) => {
+      if (cx0.stranger) return Promise.resolve(null);
+      if (!people.has(appId)) people.set(appId, userOf(req, appId, { join }));
+      return people.get(appId);
+    };
+    // The company the person works in now (services.companyOf).
+    const companyOf = async (appId) => { const u = await personOf(appId); return u ? services.companyOf(appId, u.id, tag(req.headers['x-sa-company'])) : null; };
+    // Who a read or write is for, against the tables' declared access
+    // (access.mjs): one of the app's people on the public path (a visitor
+    // when nobody is signed in), or null for the studio, which has every row.
+    const asOf = async (appId) => {
+      if (!cx0.public) return null;
+      const user = await personOf(appId);
+      return { role: user ? user.role || 'member' : 'visitor', user, company: user ? await companyOf(appId) : null };
+    };
+    const who = async (appId) => (await personOf(appId))?.id || visitorOf(req);
+    // The app's owner trying it: the studio (which says so, x-sa-owner) or
+    // the command center (through chloedb-server), never a published app's
+    // visitor. Usage tells their events apart from people's (src "owner").
+    const owner = !cx0.public && (login.fromServer(req) || req.headers['x-sa-owner'] === '1');
+    const writer = async (appId) => ({ user: await personOf(appId), who: await who(appId), visitor: !!cx0.public, ownRows: cx0.access === 'add', ...where(), pub: !!cx0.public, as: await asOf(appId), company: await companyOf(appId), owner });
+    const cx = { ...cx0, req, res, where, user: personOf, who, as: asOf, company: companyOf, writer, owner };
     // ?v=N runs a request on version N of the app (a version built to try).
     const v = Number(url.searchParams.get('v')) || null;
     for (const [method, re, fn] of routes) {
@@ -939,7 +1103,7 @@ const server = http.createServer(async (req, res) => {
     const passOn = e.status && (e.status < 500 || ((e.status === 502 || e.status === 503) && !e.message.startsWith('strata')));
     const status = passOn ? e.status : (/^(no |table |app\.sql|one statement|empty SQL|.* takes )/.test(e.message) ? 400 : (e.message.startsWith('strata') ? 400 : 500));
     if (status >= 500) log(`${req.method} ${url.pathname}: ${e.stack || e.message}`);
-    send(res, status, { error: e.message, ...(e.refused ? { refused: true } : {}) });
+    send(res, status, { error: visiting ? forVisitor(status, e.message) : e.message, ...(e.refused ? { refused: true } : {}) });
   }
 });
 

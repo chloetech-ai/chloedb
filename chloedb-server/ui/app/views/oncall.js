@@ -11,27 +11,16 @@
 // with another question in the same conversation. The server keeps the
 // latest runs beside its audit log; proposals hold for an hour.
 
-import { h, icon, clear, fmt, card, api, toast, confirm, modal, seg, pill, empty, failure, store, can, needs, every, link, when, timeEl, copy, bus } from "../core.js";
-import { firingAlerts, refreshAlerts, state } from "../data.js";
+import { h, icon, clear, fmt, card, api, toast, confirm, modal, seg, pill, empty, failure, store, can, needs, every, link, when, timeEl, copy, bus, experimental } from "../core.js";
+import { firingAlerts, refreshAlerts, state, setPendingProposals } from "../data.js";
 
 export default {
   id: "oncall", title: "On-call agent", icon: "agent", group: "Operate",
-  keywords: "on-call oncall agent claude ai llm investigate incident alert firing why slow root cause diagnose triage proposals approve reject contain cancel silence runbook",
-  render, onParams, badge,
+  keywords: "on-call oncall agent claude ai llm investigate incident alert firing why slow root cause diagnose triage proposals approve reject contain cancel silence runbook change request changes inbox dry run plan stale",
+  render, onParams,
 };
-
-// ---------------------------------------------------------------- the badge
-// Proposals waiting for an admin: the navigation counts them.
-let pendingN = 0;
-export function badge() {
-  return pendingN ? { n: pendingN, tone: "warn", title: `${fmt.plural(pendingN, "proposal")} of the on-call agent wait for an admin` } : null;
-}
-async function pollPending() {
-  if (!can("admin") || document.hidden) return;
-  try { pendingN = (await api("/v1/admin/oncall/proposals?state=pending")).proposals?.length || 0; } catch { /* an older server, or no key */ }
-}
-setInterval(pollPending, 20000);
-bus.on("whoami", () => { pendingN = 0; pollPending(); });
+// The navigation's count of proposals waiting for an admin is the shell's
+// (data.js pendingProposals), polled whether or not this view was opened.
 
 // ---------------------------------------------------------------- words
 const SUGGEST = [
@@ -43,8 +32,10 @@ const SUGGEST = [
 ];
 const EFFORTS = [["", "default"], ["low", "low"], ["medium", "medium"], ["high", "high"]];
 const STATE_PILL = { running: ["info", "running"], done: ["ok", "reported"], failed: ["bad", "failed"], stopped: ["disabled", "stopped"] };
-const PROPOSAL_PILL = { pending: ["pending", "waits for an admin"], applying: ["info", "applying"], applied: ["ok", "applied"], failed: ["bad", "failed"], rejected: ["disabled", "rejected"], expired: ["disabled", "expired"] };
-const ACTION_ICON = { contain: "shield", remove_contain: "shield", cancel_query: "stop", silence_alert: "pause" };
+const PROPOSAL_PILL = { pending: ["pending", "waits for an admin"], applying: ["info", "applying"], applied: ["ok", "applied"], failed: ["bad", "failed"], rejected: ["disabled", "rejected"], expired: ["disabled", "expired"], withdrawn: ["disabled", "withdrawn"] };
+const ACTION_ICON = { contain: "shield", remove_contain: "shield", cancel_query: "stop", silence_alert: "pause", change: "wrench" };
+/** What a change request's tier means, for the person approving it. */
+const TIER_WORDS = { 1: "bounded, undone by itself", 2: "changes the cluster or its data, can be undone", 3: "loses data or costs money" };
 const mins = (m) => (m >= 120 && m % 60 === 0 ? `${m / 60} h` : `${m} min`);
 const QUERIES = { running: "Running queries", slow: "Slow queries", recent: "Recent queries", stats: "Statements by fingerprint" };
 /** What each tool reads, in words; its icon; and the view that shows the same. */
@@ -192,7 +183,7 @@ function render(page, route) {
 
   async function load() {
     try { ov = await api("/v1/admin/oncall"); ovErr = null; } catch (e) { ovErr = e; }
-    try { pending = (await api("/v1/admin/oncall/proposals?state=pending")).proposals || []; pendingN = pending.length; } catch { /* shown with the runs */ }
+    try { pending = (await api("/v1/admin/oncall/proposals?state=pending")).proposals || []; setPendingProposals(pending.length); } catch { /* shown with the runs */ }
     if (!alive) return;
     // The open conversation's runs, fetched again when they moved.
     const want = new Set([selected, ...thread().map((r) => r.id)].filter(Boolean));
@@ -214,7 +205,7 @@ function render(page, route) {
   // ---------------------------------------------------------- actions
   function keep() { const { question, model, effort, max_steps, note } = draft; store.set("oncall.draft", { question, model, effort, max_steps, note }); }
   async function start(body) {
-    if (!can("admin")) { toast(needs("admin"), "bad"); return false; }
+    if (!can("admin", "POST /v1/admin/oncall")) { toast(needs("admin", "POST /v1/admin/oncall"), "bad"); return false; }
     if (ov && !ov.configured && !nextKey) { toast("This server has no Claude key: paste one under Options, or start the server with ANTHROPIC_API_KEY", "bad"); return false; }
     let ok = false;
     busy = true; draw();
@@ -239,17 +230,33 @@ function render(page, route) {
     try { full.set(r.id, await api(`/v1/admin/oncall/runs/${encodeURIComponent(r.id)}/stop`, { body: {} })); toast("Stopping: it ends before its next model call", "info"); } catch (e) { toast(e.message, "bad"); }
     refresh();
   }
+  /** What a change request's dry run said when it was filed. */
+  function changeBlock(p) {
+    const d = p.plan || {};
+    const rows = d.affects && d.affects.rows != null ? `${fmt.n(d.affects.rows)} rows of ${d.affects.table}` : null;
+    const line = (k, v) => (v ? h("div", { class: "small" }, h("span", { class: "muted" }, k, ": "), v) : null);
+    return h("div", { class: "stack", style: { gap: "4px" } },
+      line("Tier", p.tier != null ? `${p.tier}: ${TIER_WORDS[p.tier] || ""}` : null),
+      line("Touches", rows),
+      line("Undo", d.undo || (d.reversible === false ? "none: it cannot be undone" : null)),
+      line("Meanwhile", d.blast),
+      line("Filed by", `${p.asked_by}${p.agent ? " (an agent)" : ""} ${fmt.ago(p.created_ms)}`));
+  }
   async function approve(p) {
-    const danger = p.action === "cancel_query" || (p.action === "contain" && p.body?.action === "refuse");
+    const change = p.action === "change";
+    const danger = p.action === "cancel_query" || (p.action === "contain" && p.body?.action === "refuse") || (change && (p.tier || 0) >= 3);
     const ok = await confirm({
       title: `Approve ${p.id}?`,
       ok: "Approve and apply",
       danger,
       body: h("div", { class: "stack", style: { gap: "10px" } },
         h("p", { style: { margin: 0 } }, h("b", {}, cap(p.what)), "."),
-        h("p", { class: "small dim", style: { margin: 0 } }, "Why, the agent says: ", p.why),
+        h("p", { class: "small dim", style: { margin: 0 } }, change ? "Why, it says: " : "Why, the agent says: ", p.why),
+        change ? changeBlock(p) : null,
         requestBlock(p, false),
-        h("p", { class: "small muted", style: { margin: 0 } }, "It is made now with your key, and the audit log names you, with the proposal's reason. It may no longer fit if the cluster moved since ", when(p.created_ms), ".")),
+        h("p", { class: "small muted", style: { margin: 0 } }, change
+          ? ["It is made now with your key, and the audit log names you and this change request. It is dry run again first: if the cluster moved since ", when(p.created_ms), " (other steps, other rows), it is not applied and fails as stale."]
+          : ["It is made now with your key, and the audit log names you, with the proposal's reason. It may no longer fit if the cluster moved since ", when(p.created_ms), "."])),
     });
     if (!ok) return;
     try {
@@ -304,7 +311,7 @@ function render(page, route) {
       tools.push(h("a", { class: "btn sm", href: "#/oncall?new=1" }, icon("plus"), "New investigation"));
     }
     clear(head, h("div", { class: "page-head" },
-      h("div", {}, h("h1", {}, selected && runs.length ? titleOf(runs[0]) : "On-call agent"),
+      h("div", {}, h("h1", {}, selected && runs.length ? titleOf(runs[0]) : "On-call agent", " ", experimental("The on-call agent")),
         h("p", {}, selected ? h("a", { href: "#/oncall?new=1", class: "oc-back" }, icon("left"), "On-call agent") : "A Claude model looks into an alert or a question with read-only tools, and reports what it found. Each action it would take waits for an admin's approval here.")),
       h("div", { class: "tools" }, tools)));
   }
@@ -319,9 +326,9 @@ function render(page, route) {
       clear(sideBox, inbox, card({ title: "Investigations", sub: ov ? `the last ${ov.kept} runs are kept` : "", body: h("div", { class: "stack", style: { gap: "0" } }, h("div", { class: "oc-find" }, sideSearch), sideList), flush: true }));
     }
     clear(inbox, pending.length ? card({
-      title: "Waiting for an admin", sub: fmt.plural(pending.length, "proposal"), cls: "oc-inbox", flush: true,
+      title: "Waiting for an admin", sub: fmt.plural(pending.length, pending.every((p) => p.action === "change") ? "change request" : "proposal"), cls: "oc-inbox", flush: true,
       body: h("div", { class: "oc-runs" }, pending.map((p) => h("div", { class: "oc-pend" },
-        h("button", { class: "oc-pend-what", onclick: () => { location.hash = "#/oncall?run=" + encodeURIComponent(p.run) + "&proposal=" + p.id; } },
+        h("button", { class: "oc-pend-what", title: p.action === "change" ? `Filed by ${p.asked_by}: ${p.why}` : "", onclick: () => { if (p.run) location.hash = "#/oncall?run=" + encodeURIComponent(p.run) + "&proposal=" + p.id; else approve(p); } },
           icon(ACTION_ICON[p.action] || "wrench"), h("span", { class: "grow" }, h("b", {}, cap(p.what)), h("span", { class: "small muted" }, ` · ${p.id} · expires ${left(p.expires_ms)}`))),
         h("div", { class: "row nw", style: { gap: "6px" } },
           h("button", { class: "btn sm primary", disabled: !can("admin"), title: can("admin") ? "Approve: see what it does first" : needs("admin"), onclick: () => approve(p) }, "Approve"),
@@ -396,7 +403,7 @@ function render(page, route) {
           h("a", { href: "#/alert/" + encodeURIComponent(a.id), class: "oc-aname" }, a.name || a.id),
           h("div", { class: "small muted" }, [a.severity, a.since_ms ? `firing for ${fmt.dur((Date.now() - a.since_ms) / 1000)}` : "firing", a.silenced ? "silenced" : null, a.ack ? `acknowledged by ${a.ack.by || "someone"}` : null].filter(Boolean).join(" · "),
             last ? [" · ", h("a", { href: "#/oncall?run=" + encodeURIComponent(last.id) }, `looked into ${fmt.ago(last.started_ms)}`)] : null)),
-        h("button", { class: "btn sm primary", disabled: busy || !can("admin"), title: can("admin") ? "" : needs("admin"), onclick: () => start({ alert: a.id }) }, icon("agent"), "Investigate"));
+        h("button", { class: "btn sm primary", disabled: busy || !can("admin", "POST /v1/admin/oncall"), title: can("admin", "POST /v1/admin/oncall") ? "" : needs("admin", "POST /v1/admin/oncall"), onclick: () => start({ alert: a.id }) }, icon("agent"), "Investigate"));
     })) : h("div", { class: "small muted", style: { padding: "12px 14px" } }, state.alerts ? "Nothing is firing." : "Loading the alerts…"));
   }
   function howItWorks() {
@@ -431,8 +438,8 @@ function render(page, route) {
     clear(threadBox, runs.map((r) => turn(r, runs)));
     followBox.hidden = false;
     const busyNow = runs.some((r) => r.state === "running") || busy;
-    followBtn.disabled = busyNow || !can("admin");
-    followBtn.title = !can("admin") ? needs("admin") : busyNow ? "Once it has reported" : "Ask (Ctrl+Enter)";
+    followBtn.disabled = busyNow || !can("admin", "POST /v1/admin/oncall");
+    followBtn.title = !can("admin", "POST /v1/admin/oncall") ? needs("admin", "POST /v1/admin/oncall") : busyNow ? "Once it has reported" : "Ask (Ctrl+Enter)";
   }
   function follow() {
     const runs = thread();
@@ -451,13 +458,13 @@ function render(page, route) {
     const took = r.state === "running" ? (Date.now() - r.started_ms) : r.took_ms;
     const meta = [r.model, r.effort ? `effort ${r.effort}` : null, `${fmt.n(r.turns || 0)} of ${fmt.n(r.max_steps)} model calls`, tokens(r.usage) ? `${fmt.si(tokens(r.usage))} tokens` : null, took ? fmt.ms(took) : null].filter(Boolean).join(" · ");
     const tools = [];
-    if (r.state === "running") tools.push(h("button", { class: "btn sm", disabled: !can("admin") || !!r.stopped_by, onclick: () => stopRun(r) }, icon("stop"), r.stopped_by ? "Stopping…" : "Stop"));
+    if (r.state === "running") tools.push(h("button", { class: "btn sm", disabled: !can("admin", "POST /v1/admin/oncall/runs/:id/stop") || !!r.stopped_by, onclick: () => stopRun(r) }, icon("stop"), r.stopped_by ? "Stopping…" : "Stop"));
     if (r.state === "done" && r === runs[runs.length - 1]) {
       tools.push(h("button", { class: "btn sm ghost", title: "Copy the conversation as Markdown", onclick: () => copy(asMarkdown(runs), "Copied as Markdown") }, icon("copy"), h("span", { class: "oc-wide" }, "Copy")));
-      tools.push(h("button", { class: "btn sm ghost", disabled: !can("write") || !!r.note, title: r.note ? "It is on the timeline" : can("write") ? "Post the report as a note on the events timeline" : needs("write"), onclick: () => postNote(r) }, icon("note"), h("span", { class: "oc-wide" }, r.note ? "On the timeline" : "Post on timeline")));
+      tools.push(h("button", { class: "btn sm ghost", disabled: !can("admin", "POST /v1/events/notes") || !!r.note, title: r.note ? "It is on the timeline" : can("admin", "POST /v1/events/notes") ? "Post the report as a note on the events timeline" : needs("admin", "POST /v1/events/notes"), onclick: () => postNote(r) }, icon("note"), h("span", { class: "oc-wide" }, r.note ? "On the timeline" : "Post on timeline")));
       tools.push(h("button", { class: "btn sm ghost", title: "Download the conversation as JSON", onclick: () => download(runs) }, icon("download")));
     }
-    if (r.state === "failed" || r.state === "stopped") tools.push(h("button", { class: "btn sm", disabled: busy || !can("admin"), onclick: () => start(r.follows ? { question: r.question, follows: r.follows } : r.alert && /^Alert \S+ is firing\./.test(r.question) ? { alert: r.alert } : { question: r.question, alert: r.alert || undefined }) }, icon("refresh"), "Run it again"));
+    if (r.state === "failed" || r.state === "stopped") tools.push(h("button", { class: "btn sm", disabled: busy || !can("admin", "POST /v1/admin/oncall"), onclick: () => start(r.follows ? { question: r.question, follows: r.follows } : r.alert && /^Alert \S+ is firing\./.test(r.question) ? { alert: r.alert } : { question: r.question, alert: r.alert || undefined }) }, icon("refresh"), "Run it again"));
     return h("section", { class: "card oc-turn", dataset: { run: r.id } },
       h("div", { class: "hd" },
         h("div", { class: "oc-q grow" },

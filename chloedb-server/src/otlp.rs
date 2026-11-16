@@ -252,6 +252,8 @@ async fn table(svc: &Arc<Service>, name: &str) -> Result<Arc<Schema>, ApiError> 
 pub async fn export(svc: &Arc<Service>, who: &Principal, name: Option<&str>, req: ExportLogsServiceRequest) -> Result<Exported, ApiError> {
     who.may(Scope::Write, "writing logs")?;
     let name = table_name(name.unwrap_or(TABLE))?;
+    // A key limited to tables writes logs into a table it may write.
+    who.may_table(Scope::Write, name, "OTLP logs")?;
     let schema = table(svc, name).await?;
     let batch: i64 = rand::random::<u32>() as i64 >> 1;
     let now = crate::telemetry::now_ms() as i64 * 1000;
@@ -359,7 +361,7 @@ fn gunzip(body: &[u8], max: usize) -> Result<Vec<u8>, ApiError> {
     let mut out = Vec::new();
     flate2::read::GzDecoder::new(body).take(max as u64 + 1).read_to_end(&mut out).map_err(|e| ApiError::bad(format!("the body is not gzip: {e}")))?;
     if out.len() > max {
-        return Err(ApiError { status: 413, message: format!("the body is more than {max} bytes uncompressed") });
+        return Err(ApiError { code: None, status: 413, message: format!("the body is more than {max} bytes uncompressed") });
     }
     Ok(out)
 }

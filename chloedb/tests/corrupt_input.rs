@@ -38,6 +38,9 @@ fn damaged_segments() {
     for data in inputs(2, 300, 30) {
         harness::segment(&data);
     }
+    // Found by the nightly fuzzer (issue #485): a damaged length that made
+    // decoding ask for about 2 PB.
+    harness::segment(b"]Fexnt_");
 }
 
 #[test]

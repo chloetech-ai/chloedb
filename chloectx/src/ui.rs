@@ -161,6 +161,45 @@ struct Server {
     token: String,
     cookie: String,
     default_store: Option<String>,
+    update: std::sync::Mutex<Update>,
+}
+
+/// The `chloectx upgrade` the page started, if any: one at a time, its
+/// output in `<home>/upgrade.log`.
+#[derive(Default)]
+struct Update {
+    child: Option<std::process::Child>,
+    started: i64,
+    exit: Option<i32>,
+}
+
+/// The last `max` bytes of `path`, from a line start.
+fn tail(path: &Path, max: u64) -> String {
+    let Ok(mut f) = std::fs::File::open(path) else { return String::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = len.saturating_sub(max);
+    use std::io::Seek;
+    let _ = f.seek(std::io::SeekFrom::Start(from));
+    let mut buf = Vec::new();
+    let _ = f.read_to_end(&mut buf);
+    let s = String::from_utf8_lossy(&buf).into_owned();
+    match (from > 0, s.find('\n')) {
+        (true, Some(i)) => s[i + 1..].to_string(),
+        _ => s,
+    }
+}
+
+/// Whether a request that changes something came from the page itself:
+/// it carries the header the page sets (which another site's page could
+/// only send after a preflight this server never answers), and an
+/// `Origin`, when there is one, naming this server.
+fn from_page(req: &Request) -> bool {
+    let same_origin = match (req.header("origin"), req.header("host")) {
+        (None, _) => true,
+        (Some(o), Some(h)) => o.strip_prefix("http://").is_some_and(|o| o == h),
+        (Some(_), None) => false,
+    };
+    req.header("x-chloectx-ui") == Some("1") && same_origin
 }
 
 pub(crate) struct Request {
@@ -277,6 +316,63 @@ impl Server {
         }
     }
 
+    fn update_log(&self) -> PathBuf {
+        self.opts.home.join("upgrade.log")
+    }
+
+    /// The version this server runs, how it stands, and the update the
+    /// page started: running, or how it ended, with the end of its output
+    /// and, once it installed, the version of the binary now installed.
+    fn version(&self, req: &Request) -> Json {
+        let check = req.param("check").is_some_and(|c| c == "1" || c == "force");
+        let mut v = crate::version::summary(&self.opts.home, check, req.param("check") == Some("force"));
+        let mut u = self.update.lock().unwrap();
+        if let Some(code) = u.child.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
+            u.exit = Some(code.code().unwrap_or(-1));
+            u.child = None;
+        }
+        if u.started > 0 {
+            let mut j = json!({"running": u.child.is_some(), "started": u.started, "exit": u.exit, "log": tail(&self.update_log(), 6000)});
+            if u.exit.is_some() {
+                // The binary at this path may be a new one (the upgrade's
+                // exit is `doctor`'s, which can fail after installing);
+                // this server is not.
+                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("chloectx"));
+                let out = std::process::Command::new(exe).arg("--version").stdin(std::process::Stdio::null()).output();
+                let installed = out.ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+                j["installed_new"] = json!(installed.as_deref().is_some_and(|i| i != format!("chloectx {}", env!("CHLOECTX_VERSION_LINE"))));
+                j["installed"] = json!(installed);
+            }
+            v["update"] = j;
+        }
+        v
+    }
+
+    /// Starts `chloectx upgrade` for the page: what the command line does,
+    /// with its output in `<home>/upgrade.log`.
+    fn start_update(&self) -> std::result::Result<(), String> {
+        let mut u = self.update.lock().unwrap();
+        if let Some(c) = u.child.as_mut() {
+            if c.try_wait().ok().flatten().is_none() {
+                return Err("an update is already running".into());
+            }
+        }
+        let exe = std::env::current_exe().map_err(|e| format!("this program's path: {e}"))?;
+        let log = std::fs::File::create(self.update_log()).map_err(|e| format!("{}: {e}", self.update_log().display()))?;
+        let err = log.try_clone().map_err(|e| e.to_string())?;
+        let child = std::process::Command::new(exe)
+            .arg("--project")
+            .arg(&self.opts.project)
+            .arg("upgrade")
+            .stdin(std::process::Stdio::null())
+            .stdout(log)
+            .stderr(err)
+            .spawn()
+            .map_err(|e| format!("could not start chloectx upgrade: {e}"))?;
+        *u = Update { child: Some(child), started: crate::now(), exit: None };
+        Ok(())
+    }
+
     fn authorized(&self, req: &Request) -> bool {
         if req.param("token").is_some_and(|t| same(t, &self.token)) {
             return true;
@@ -359,6 +455,16 @@ impl Server {
                 }
                 respond_json(&mut stream, "200 OK", &self.rpc(&s, &body, 120));
             }
+            ("GET", "/api/version") => respond_json(&mut stream, "200 OK", &self.version(&req)),
+            ("POST", "/api/update") => {
+                if !from_page(&req) {
+                    return respond_json(&mut stream, "403 Forbidden", &json!({"error": "updates start from the inspector's own page"}));
+                }
+                match self.start_update() {
+                    Ok(()) => respond_json(&mut stream, "200 OK", &json!({"started": true})),
+                    Err(e) => respond_json(&mut stream, "409 Conflict", &json!({"error": e})),
+                }
+            }
             ("POST", "/api/chat") | ("POST", "/api/session") | ("POST", "/api/stop") => {
                 respond_json(&mut stream, "404 Not Found", &json!({"error": "chat runs only in the demo (demo/run.sh); chloectx ui only reads stores"}))
             }
@@ -433,7 +539,7 @@ pub fn run(opts: Options) -> Result<()> {
     if opts.open && std::env::var_os("SSH_CONNECTION").is_none() {
         open_browser(&url);
     }
-    let server = std::sync::Arc::new(Server { cookie: format!("engram_ui_{port}"), token, default_store, opts });
+    let server = std::sync::Arc::new(Server { cookie: format!("engram_ui_{port}"), token, default_store, opts, update: Default::default() });
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
         let s = server.clone();
@@ -506,6 +612,42 @@ mod tests {
         let (more, off2) = read_events(&b, off);
         assert!(more.is_empty());
         assert_eq!(off, off2);
+    }
+
+    fn post(headers: &[(&str, &str)]) -> Request {
+        Request { method: "POST".into(), path: "/api/update".into(), query: vec![], headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), body: vec![] }
+    }
+
+    /// An update starts only from the page itself: with its header, and
+    /// from this server's origin when the browser names one.
+    #[test]
+    fn updates_start_only_from_the_page() {
+        let host = ("Host", "127.0.0.1:8765");
+        assert!(from_page(&post(&[host, ("X-ChloeCtx-UI", "1")])));
+        assert!(from_page(&post(&[host, ("X-ChloeCtx-UI", "1"), ("Origin", "http://127.0.0.1:8765")])));
+        assert!(!from_page(&post(&[host])), "a form post carries no such header");
+        assert!(!from_page(&post(&[host, ("X-ChloeCtx-UI", "1"), ("Origin", "https://example.com")])));
+        assert!(!from_page(&post(&[host, ("X-ChloeCtx-UI", "1"), ("Origin", "http://127.0.0.1:9999")])));
+    }
+
+    #[test]
+    fn the_update_log_shows_its_last_whole_lines() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("upgrade.log");
+        assert_eq!(tail(&p, 100), "", "no log yet");
+        std::fs::write(&p, "first line\nsecond line\nthird\n").unwrap();
+        assert_eq!(tail(&p, 1000), "first line\nsecond line\nthird\n");
+        assert_eq!(tail(&p, 15), "third\n", "from a line start");
+    }
+
+    /// The page's version summary names this build, whatever the checkout.
+    #[test]
+    fn the_version_summary_names_the_build() {
+        let d = tempfile::tempdir().unwrap();
+        let v = crate::version::summary(d.path(), false, false);
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["build"].as_str(), crate::version::BUILD_COMMIT);
+        assert!(v.get("standing").is_some() && v.get("line").is_some(), "{v}");
     }
 
     #[test]

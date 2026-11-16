@@ -423,6 +423,16 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     let products = t["tables"].as_array().unwrap().iter().find(|t| t["table"] == "products").cloned().unwrap_or_else(|| panic!("{t}"));
     assert_eq!((products["docs"].as_u64(), products["shards"][0]["docs"].as_u64()), (Some(10), Some(10)), "{t}");
     assert!(products["bytes"].as_u64().unwrap() > 0, "{t}");
+    // Its bytes on both copies, as each says them, and every table added up.
+    let on_copies = products["copies_bytes"].as_u64().unwrap();
+    assert_eq!((products["copies_measured"].as_u64(), products["copies_missing"].as_u64()), (Some(2), Some(0)), "{t}");
+    assert!(on_copies > products["bytes"].as_u64().unwrap(), "{t}");
+    assert_eq!(products["shards"][0]["copies_bytes"].as_u64(), Some(on_copies), "{t}");
+    let every = t["tables"].as_array().unwrap();
+    let sum = |k: &str| every.iter().filter_map(|x| x[k].as_u64()).sum::<u64>();
+    let tot = &t["totals"];
+    assert_eq!((tot["tables"].as_u64(), tot["failed"].as_u64(), tot["incomplete"].as_u64()), (Some(every.len() as u64), Some(0), Some(0)), "{t}");
+    assert_eq!((tot["docs"].as_u64(), tot["bytes"].as_u64(), tot["copies_bytes"].as_u64()), (Some(sum("docs")), Some(sum("bytes")), Some(sum("copies_bytes"))), "{t}");
 
     // A copy's shard verified by its primary, and a checkpoint of a copy,
     // each audited with the copy as its object.
@@ -520,6 +530,12 @@ async fn a_write_through_a_coordinator_says_what_each_shard_did() {
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let t: Json = client().get(format!("{other}/v1/tables")).send().await.unwrap().json().await.unwrap();
     assert!(t["tables"].as_array().unwrap().iter().any(|t| t["table"] == "notes"), "{t}");
+    // LIV-13: a coordinator's health counts the rows of every table, over
+    // its shards, beside the first table's `docs`.
+    let r = ui(client().post(format!("{base}/v1/sql"))).json(&json!({"sql": "INSERT INTO notes (id, body) VALUES (1, 'a'), (2, 'b'), (3, 'c')"})).send().await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let h: Json = client().get(format!("{base}/v1/health")).send().await.unwrap().json().await.unwrap();
+    assert_eq!((&h["docs"], &h["rows"], &h["tables"]), (&json!(45), &json!(48), &json!({"products": 45, "notes": 3})), "{h}");
 
     // Shard 1 goes down after the cluster was last seen whole: the write
     // goes, shard 0 takes it, and the answer says so, by short name.
@@ -563,6 +579,9 @@ async fn a_write_through_a_coordinator_says_what_each_shard_did() {
     let down = products["stale"].as_array().unwrap().iter().find(|s| s["short"] == sb).cloned().unwrap_or_else(|| panic!("{t}"));
     assert_eq!(down["down"], true, "{t}");
     assert!(down["since_ms"].as_u64().is_some(), "{t}");
+    // Its bytes on every copy leave that copy out, and say so.
+    assert_eq!((products["copies_measured"].as_u64(), products["copies_missing"].as_u64()), (Some(1), Some(1)), "{t}");
+    assert!(t["totals"]["incomplete"].as_u64().unwrap() >= 1, "{t}");
 }
 
 /// Every table's writes a minute are the last minutes', not an average
@@ -583,6 +602,10 @@ async fn a_tables_writes_a_minute_are_the_last_minutes() {
     let t = chloedb_server::inspect::tables(&svc).await.unwrap();
     let p = &t["tables"][0];
     assert_eq!(p["rate_window_s"].as_u64(), Some(60), "{t}");
+    // One server answers for its own copy alone, and adds its tables up.
+    assert!(p.get("copies_bytes").is_none() && t["totals"].get("copies_bytes").is_none(), "{t}");
+    let every = t["tables"].as_array().unwrap();
+    assert_eq!((t["totals"]["tables"].as_u64(), t["totals"]["bytes"].as_u64()), (Some(every.len() as u64), Some(every.iter().filter_map(|x| x["bytes"].as_u64()).sum())), "{t}");
     let w = p["writes_per_min"].as_f64().unwrap();
     assert!((5.9..=6.0).contains(&w), "{t}");
 }

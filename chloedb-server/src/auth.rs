@@ -26,30 +26,61 @@ pub struct Access {
     /// A certificate chain and its key, as PEM, for both listeners.
     pub tls: Option<Tls>,
     /// How long a client may take, and how many connections it may hold,
-    /// on the HTTP listeners ([`Limits`]).
+    /// on each listener ([`Limits`]).
     pub limits: Limits,
 }
 
-/// What an HTTP listener allows a connection, and how long it waits for
-/// the requests under way when it stops.
+/// What a listener (HTTP, OpenSearch or gRPC) allows a connection, and
+/// how long it waits for the requests under way when it stops.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     /// The longest a client may take to send a request's headers, and the
-    /// longest an idle keep-alive connection stays open.
+    /// longest an idle HTTP/1 keep-alive connection stays open.
     pub header_read: std::time::Duration,
+    /// The longest a connection stays open with no request under way, for
+    /// HTTP/2 too, whose pings keep a connection that answers them open
+    /// (`--idle-timeout-secs`; zero: no limit beyond `header_read`'s).
+    pub idle: std::time::Duration,
+    /// The longest a request's body may pause between two of its parts,
+    /// and the time after which it must have averaged
+    /// [`MIN_BODY_RATE`] bytes a second (`--body-timeout-secs`; zero: no
+    /// limit). Not on gRPC, whose streams of writes pause between batches.
+    pub body: std::time::Duration,
+    /// The longest a write to a connection may wait for the client to read
+    /// (`--write-timeout-secs`; zero: no limit): a client that stops
+    /// reading an answer does not hold its connection for ever.
+    pub write: std::time::Duration,
     /// The connections the listener holds open at once (`0`: three
     /// quarters of the process's open-file limit); past it, new ones wait
-    /// to be accepted.
+    /// to be accepted, but for a few kept for `/livez`, `/readyz` and
+    /// `/v1/health` alone.
     pub max_connections: usize,
+    /// The connections one client address may hold of them
+    /// (`--max-connections-per-client`; `0`: half the cap).
+    pub per_client: usize,
     /// Once the listener stops taking connections, how long the requests
     /// under way have to end before the server stops anyway
     /// (`--stop-grace-ms`).
     pub stop_grace: std::time::Duration,
 }
 
+/// The bytes a second a request's body averages at the least, once it has
+/// taken longer than [`Limits::body`]: 1 KiB, a slow phone's upload many
+/// times over, and a client that trickles a byte at a time is cut off.
+pub const MIN_BODY_RATE: u64 = 1024;
+
 impl Default for Limits {
     fn default() -> Limits {
-        Limits { header_read: std::time::Duration::from_secs(30), max_connections: 0, stop_grace: std::time::Duration::from_secs(20) }
+        use std::time::Duration;
+        Limits {
+            header_read: Duration::from_secs(30),
+            idle: Duration::from_secs(300),
+            body: Duration::from_secs(30),
+            write: Duration::from_secs(60),
+            max_connections: 0,
+            per_client: 0,
+            stop_grace: Duration::from_secs(20),
+        }
     }
 }
 

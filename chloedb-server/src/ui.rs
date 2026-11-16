@@ -24,10 +24,14 @@ pub const CLASSIC: &str = include_str!("../ui/classic.html");
 
 const JS: &str = "text/javascript; charset=utf-8";
 const CSS: &str = "text/css; charset=utf-8";
+const SVG: &str = "image/svg+xml";
 
 /// Each file under `/ui/`: its path there, type and contents.
 pub const FILES: &[(&str, &str, &str)] = &[
     ("app.css", CSS, include_str!("../ui/app/app.css")),
+    ("brand/chloedb-icon.svg", SVG, include_str!("../ui/app/brand/chloedb-icon.svg")),
+    ("brand/chloedb-mark.svg", SVG, include_str!("../ui/app/brand/chloedb-mark.svg")),
+    ("brand/chloedb-mark-on-light.svg", SVG, include_str!("../ui/app/brand/chloedb-mark-on-light.svg")),
     ("core.js", JS, include_str!("../ui/app/core.js")),
     ("charts.js", JS, include_str!("../ui/app/charts.js")),
     ("data.js", JS, include_str!("../ui/app/data.js")),
@@ -38,6 +42,8 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("catalog.js", JS, include_str!("../ui/app/catalog.js")),
     ("paths.js", JS, include_str!("../ui/app/paths.js")),
     ("results.js", JS, include_str!("../ui/app/results.js")),
+    ("bigresult.js", JS, include_str!("../ui/app/bigresult.js")),
+    ("health.js", JS, include_str!("../ui/app/health.js")),
     ("profile.js", JS, include_str!("../ui/app/profile.js")),
     ("flame.js", JS, include_str!("../ui/app/flame.js")),
     ("workload.js", JS, include_str!("../ui/app/workload.js")),
@@ -65,6 +71,7 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("views/statement.js", JS, include_str!("../ui/app/views/statement.js")),
     ("views/profile.js", JS, include_str!("../ui/app/views/profile.js")),
     ("views/logs.js", JS, include_str!("../ui/app/views/logs.js")),
+    ("views/explorer.js", JS, include_str!("../ui/app/views/explorer.js")),
     ("views/access.js", JS, include_str!("../ui/app/views/access.js")),
     ("views/system.js", JS, include_str!("../ui/app/views/system.js")),
     ("views/sql.js", JS, include_str!("../ui/app/views/sql.js")),
@@ -81,10 +88,12 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("views/sid.js", JS, include_str!("../ui/app/views/sid.js")),
     ("views/autocomplete.js", JS, include_str!("../ui/app/views/autocomplete.js")),
     ("views/understand.js", JS, include_str!("../ui/app/views/understand.js")),
+    ("views/enrich.js", JS, include_str!("../ui/app/views/enrich.js")),
     ("views/media.js", JS, include_str!("../ui/app/views/media.js")),
     ("views/graph.js", JS, include_str!("../ui/app/views/graph.js")),
     ("views/classic.js", JS, include_str!("../ui/app/views/classic.js")),
     ("views/apps.js", JS, include_str!("../ui/app/views/apps.js")),
+    ("views/connectors.js", JS, include_str!("../ui/app/views/connectors.js")),
     ("views/feedback.js", JS, include_str!("../ui/app/views/feedback.js")),
     ("views/start.js", JS, include_str!("../ui/app/views/start.js")),
     ("views/table.js", JS, include_str!("../ui/app/views/table.js")),

@@ -5,6 +5,7 @@
 //! unused for a while are let go (they are in Strata); a book Strata could
 //! not take is kept and saved again until it can.
 
+use crate::book::Shown;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -27,6 +28,24 @@ pub const MAX_QUERY_ROWS: usize = 100_000;
 const MAX_CELLS_BACK: usize = 20_000;
 /// A book unused for this long is let go.
 const IDLE: Duration = Duration::from_secs(30 * 60);
+/// Cells the open books hold together at most: past it the least recently
+/// used are let go (they are in Strata), as well as the idle ones. A cell
+/// open takes about a kilobyte (IronCalc's model, and what was saved), so
+/// a few large imports kept the process at gigabytes for half an hour
+/// (DAP-9). `CHLOEDB_SHEETS_OPEN_CELLS` sets it.
+const OPEN_CELLS: usize = 1_500_000;
+
+fn open_cells_budget() -> usize {
+    std::env::var("CHLOEDB_SHEETS_OPEN_CELLS").ok().and_then(|v| v.parse().ok()).unwrap_or(OPEN_CELLS)
+}
+
+/// Gives the memory freed back to the system (glibc keeps it otherwise).
+pub fn trim() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
 
 pub struct Books {
     pub strata: Strata,
@@ -116,6 +135,8 @@ impl Books {
         let summary = b.summary();
         let slot: Slot = Arc::new(tokio::sync::Mutex::new(Some(b)));
         self.slots().insert(summary["id"].as_str().unwrap_or_default().to_string(), slot);
+        self.let_go_over(open_cells_budget());
+        trim();
         Ok(summary)
     }
 
@@ -215,6 +236,44 @@ impl Books {
         Ok(self.answer(b, (!layout).then_some(keys), Vec::new(), None))
     }
 
+    /// Lets go of the least recently used books, saved and not in use,
+    /// until the open ones hold at most `budget` cells. The books let go.
+    pub fn let_go_over(&self, budget: usize) -> usize {
+        let mut open: Vec<(String, Slot, usize, Instant)> = Vec::new();
+        let mut total = 0;
+        for (id, slot) in self.slots().iter() {
+            let Ok(g) = slot.try_lock() else { continue };
+            if let Some(b) = g.as_ref() {
+                let n = b.saved.len();
+                total += n;
+                if b.unsaved.is_none() {
+                    open.push((id.clone(), slot.clone(), n, b.last_used));
+                }
+            }
+        }
+        if total <= budget {
+            return 0;
+        }
+        open.sort_by_key(|o| o.3);
+        let mut gone = 0;
+        for (id, slot, n, _) in open {
+            if total <= budget {
+                break;
+            }
+            let mut s = self.slots();
+            // still that book, and still not in use
+            if s.get(&id).is_some_and(|x| Arc::ptr_eq(x, &slot)) && slot.try_lock().is_ok() {
+                s.remove(&id);
+                total -= n;
+                gone += 1;
+            }
+        }
+        if gone > 0 {
+            tracing::info!("let go of {gone} workbooks: the open ones held more than {budget} cells");
+        }
+        gone
+    }
+
     /// Lets go of books unused for a while, and saves again those Strata
     /// could not take. Runs until the process ends.
     pub async fn keeper(self: Arc<Books>) {
@@ -241,6 +300,8 @@ impl Books {
                     }
                 }
             }
+            self.let_go_over(open_cells_budget());
+            trim();
         }
     }
 
@@ -262,16 +323,16 @@ impl Books {
 
     /// Runs a query into a block of a sheet (a new one, or the one `id` names
     /// again), and saves.
-    pub async fn query(&self, book: &str, spec: QuerySpec) -> Result<Value, Fail> {
+    pub async fn query(&self, book: &str, spec: QuerySpec, run: &Strata) -> Result<Value, Fail> {
         let mut g = self.open(book).await?;
         let b = g.as_mut().expect("open");
-        let err = self.fill_query(b, spec).await.err();
+        let err = self.fill_query(b, spec, run).await.err();
         let cells = self.save(b, false).await;
         Ok(self.answer(b, cells, Vec::new(), err))
     }
 
     /// Runs every query of a book again.
-    pub async fn refresh_all(&self, book: &str) -> Result<Value, Fail> {
+    pub async fn refresh_all(&self, book: &str, run: &Strata) -> Result<Value, Fail> {
         let mut g = self.open(book).await?;
         let b = g.as_mut().expect("open");
         let qs = b.ext.queries.clone();
@@ -279,7 +340,7 @@ impl Books {
         for q in qs {
             let Some(sheet) = b.sheet_index(q.sheet) else { continue };
             let spec = QuerySpec { id: Some(q.id.clone()), sheet, row: q.row, col: q.col, sql: q.sql.clone(), limit: None };
-            if let Err(e) = self.fill_query(b, spec).await {
+            if let Err(e) = self.fill_query(b, spec, run).await {
                 errors.push(json!({"id": q.id, "error": e}));
             }
         }
@@ -289,7 +350,9 @@ impl Books {
         Ok(a)
     }
 
-    async fn fill_query(&self, b: &mut Book, spec: QuerySpec) -> Result<(), String> {
+    /// `run`: the client the query runs with, narrowed to the caller's
+    /// tables ([`Strata::as_caller`]).
+    async fn fill_query(&self, b: &mut Book, spec: QuerySpec, run: &Strata) -> Result<(), String> {
         let sid = b.sheet_id(spec.sheet).ok_or("no such sheet")?;
         let sql = spec.sql.trim().trim_end_matches(';').to_string();
         if sql.is_empty() {
@@ -299,8 +362,7 @@ impl Books {
         let t0 = Instant::now();
         let mut names: Vec<String> = Vec::new();
         let mut rows: Vec<Vec<String>> = Vec::new();
-        let answer = self
-            .strata
+        let answer = run
             .scroll(&sql, json!({}), limit, |cols, page| {
                 if names.is_empty() {
                     names = cols.to_vec();
@@ -373,7 +435,7 @@ impl Books {
 
     /// A new workbook of a Strata table (or of any `SELECT`): a sheet of its
     /// rows, the names in the first row, frozen.
-    pub async fn from_table(&self, table: Option<&str>, sql: Option<&str>, name: Option<&str>, limit: Option<usize>) -> Result<Value, Fail> {
+    pub async fn from_table(&self, table: Option<&str>, sql: Option<&str>, name: Option<&str>, limit: Option<usize>, run: &Strata, ext: Ext) -> Result<Value, Fail> {
         let sql = match (sql.filter(|s| !s.trim().is_empty()), table) {
             (Some(s), _) => s.trim().trim_end_matches(';').to_string(),
             (None, Some(t)) => format!("SELECT * FROM {}", ident(t)),
@@ -382,8 +444,7 @@ impl Books {
         let limit = limit.unwrap_or(MAX_QUERY_ROWS).clamp(1, MAX_QUERY_ROWS);
         let mut names: Vec<String> = Vec::new();
         let mut rows: Vec<Vec<Value>> = Vec::new();
-        self.strata
-            .scroll(&sql, json!({}), limit, |cols, page| {
+        run.scroll(&sql, json!({}), limit, |cols, page| {
                 if names.is_empty() {
                     names = cols.to_vec();
                 }
@@ -394,12 +455,12 @@ impl Books {
                 }
             })
             .await
-            .map_err(|e| Fail { status: if e.status == 0 || e.status >= 500 { 502 } else { 400 }, message: e.to_string() })?;
+            .map_err(|e| Fail { status: if e.status == 0 || e.status >= 500 { 502 } else if e.status == 403 { 403 } else { 400 }, message: e.to_string() })?;
         rows.truncate(limit);
         let title = name.map(str::to_string).or_else(|| table.map(str::to_string)).unwrap_or_else(|| "Query".into());
         let n_rows = rows.len();
         let engine = tokio::task::block_in_place(|| table_engine(&title, &names, rows))?;
-        let mut summary = self.create(engine, &format!("table:{}", table.unwrap_or("query")), Ext::default()).await?;
+        let mut summary = self.create(engine, &format!("table:{}", table.unwrap_or("query")), ext).await?;
         summary["copied"] = json!({"rows": n_rows, "columns": names.len(), "sql": sql});
         Ok(summary)
     }
@@ -408,7 +469,7 @@ impl Books {
     /// columns, each column's type is what its values are (INT, FLOAT,
     /// BOOL or TEXT), and the rows are keyed by `key` (a column whose
     /// values are distinct) or by their number.
-    pub async fn to_table(&self, book: &str, sheet: u32, table: &str, key: Option<&str>) -> Result<Value, Fail> {
+    pub async fn to_table(&self, book: &str, sheet: u32, table: &str, key: Option<&str>, run: &Strata) -> Result<Value, Fail> {
         let (cols, docs) = {
             let g = self.open(book).await?;
             let b = g.as_ref().expect("open");
@@ -426,12 +487,12 @@ impl Books {
             ident(t),
             cols.iter().map(|(n, ty, pk)| format!("{} {}{}", ident(n), ty, if *pk { " PRIMARY KEY" } else { "" })).collect::<Vec<_>>().join(", ")
         );
-        self.strata.sql(&ddl).await.map_err(|e| Fail { status: if e.status == 409 { 409 } else if e.status >= 500 || e.status == 0 { 502 } else { 400 }, message: e.to_string() })?;
+        run.sql(&ddl).await.map_err(|e| Fail { status: if e.status == 409 || e.status == 403 { e.status } else if e.status >= 500 || e.status == 0 { 502 } else { 400 }, message: e.to_string() })?;
         let n = docs.len();
         let base = store::new_id("t");
         for (i, chunk) in docs.chunks(store::WRITE_OPS).enumerate() {
             let ops: Vec<Value> = chunk.iter().map(|d| json!({"op": "upsert", "table": t, "doc": d})).collect();
-            self.strata.write(ops, &format!("{base}-{i}"), store::PATIENCE).await.map_err(|e| Fail { status: 502, message: e.to_string() })?;
+            run.write(ops, &format!("{base}-{i}"), store::PATIENCE).await.map_err(|e| Fail { status: if e.status == 403 { 403 } else { 502 }, message: e.to_string() })?;
         }
         Ok(json!({"table": t, "rows": n, "columns": cols.iter().map(|(n, ty, pk)| json!({"name": n, "type": ty, "key": pk})).collect::<Vec<_>>(), "sql": ddl}))
     }
@@ -488,7 +549,7 @@ fn sheet_rows(b: &Book, sheet: u32, key: Option<&str>) -> Result<(Vec<(String, &
     let d = ws.dimension();
     let mut names: Vec<String> = Vec::new();
     for c in 1..=d.max_column {
-        let n = m.get_formatted_cell_value(sheet, 1, c).unwrap_or_default();
+        let n = m.shown(sheet, 1, c).unwrap_or_default();
         let mut n: String = n.trim().chars().map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' }).collect();
         n = n.trim_matches('_').to_string();
         if n.is_empty() || n.starts_with(|ch: char| ch.is_ascii_digit()) {
@@ -509,7 +570,7 @@ fn sheet_rows(b: &Book, sheet: u32, key: Option<&str>) -> Result<(Vec<(String, &
             let c = j as i32 + 1;
             let v = match m.get_cell_value_by_index(sheet, r, c) {
                 Ok(CellValue::Number(x)) => {
-                    let shown = m.get_formatted_cell_value(sheet, r, c).unwrap_or_default();
+                    let shown = m.shown(sheet, r, c).unwrap_or_default();
                     let is_int = x.fract() == 0.0 && x.abs() < 9e15;
                     *k = match *k {
                         0 | 1 if is_int => 1,
@@ -601,4 +662,35 @@ fn sheet_rows(b: &Book, sheet: u32, key: Option<&str>) -> Result<(Vec<(String, &
         })
         .collect();
     Ok((cols, docs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Books open past the budget of cells are let go, the least recently
+    /// used first; a book in use, or not yet saved, is kept (DAP-9).
+    #[tokio::test]
+    async fn the_least_recently_used_books_are_let_go_past_the_budget() {
+        let books = Books::new(Strata::new("http://127.0.0.1:9", None));
+        let t0 = Instant::now();
+        for (i, (cells, unsaved)) in [(400, false), (300, true), (500, false), (200, false)].into_iter().enumerate() {
+            let mut b = Book::new(format!("b{i}"), "new", new_engine("x"), Ext::default(), 0);
+            b.saved = (0..cells).map(|r| (Key { sheet: 1, row: r + 1, col: 1 }, 0)).collect();
+            b.last_used = t0 + Duration::from_secs(i as u64);
+            b.unsaved = unsaved.then(|| "Strata did not answer".to_string());
+            books.slots().insert(b.id.clone(), Arc::new(tokio::sync::Mutex::new(Some(b))));
+        }
+        assert_eq!(books.let_go_over(10_000), 0);
+        // b2 is in use: kept, though it is old enough to go.
+        let b2 = books.slots().get("b2").unwrap().clone();
+        let held = b2.lock_owned().await;
+        // Of the books not in use (900 cells), 300 at most: b0 (400) goes,
+        // b1 is kept (unsaved), and b3 (200) goes.
+        assert_eq!(books.let_go_over(300), 2);
+        let mut left: Vec<String> = books.slots().keys().cloned().collect();
+        left.sort();
+        assert_eq!(left, ["b1", "b2"]);
+        drop(held);
+    }
 }

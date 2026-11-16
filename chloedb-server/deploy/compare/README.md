@@ -113,12 +113,20 @@ Elasticsearch and Solr, 28 October 2026) are in
   are off for the index while it is timed
   (`index.requests.cache.enable: false`, which also covers their SQL
   endpoints); Manticore's query cache is off (`SET GLOBAL
-  qcache_max_bytes=0`; it keeps queries slower than 3 s). Vespa, the
-  other engines and ChloeDB keep no result cache by default (Typesense
-  only when a request asks with `use_cache`, which these do not). Page
-  caches and filter caches stay on everywhere. Each `run-*.json` keeps
-  the caches' counters from before and after the timed runs
-  (`result_cache`), so a report can show that none answered. Runs
+  qcache_max_bytes=0`; it keeps queries slower than 3 s). ChloeDB keeps
+  an answer cache from 13 November 2026 (#456, 0.3.1: 64 MiB by default),
+  which answered 99.5% of a run's queries from memory once the queries
+  came round again (the audit of 15 November 2026, PRF-1): its shards and
+  coordinators start with `--answer-cache-mb 0` (strata.yaml,
+  strata-coordinating.yaml, strata-coordinator.yaml; an image from before
+  #456 has no such cache, and no such flag), and `engine-compare run`
+  reads each server's `chloedb_answer_cache_total` and fails a run in
+  which any answer came from it (kept as `answer-cache-hits-<label>.json`,
+  not as a `run-*.json`). Vespa and the other engines keep no result cache
+  by default (Typesense only when a request asks with `use_cache`, which
+  these do not). Page caches and filter caches stay on everywhere. Each
+  `run-*.json` keeps the caches' counters from before and after the timed
+  runs (`result_cache`), so a report can show that none answered. Runs
   before 5 November 2026 only passed `request_cache=false` on
   Elasticsearch's and OpenSearch's `_search` and left Manticore's cache
   on, so their SQL aggregates could be answered from the request cache.

@@ -3,6 +3,8 @@
 //! sends the mix at rising rates, and leaves a report with a grade, the
 //! model fitted to it, advice, and predictions of other shapes; its table
 //! is dropped afterwards. A run on a single server predicts clusters too.
+//! A routing run measures each way of choosing a shard's copy through a
+//! coordinator of its own, beside the model of the same settings.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -161,4 +163,59 @@ async fn a_test_run_on_one_server_predicts_clusters() {
     let p = run::predict(&svc, &json!({"shards": [2], "copies": [2]})).unwrap();
     assert!(p["cells"][0]["capacity_qps"].as_f64().unwrap() > 0.0);
     assert_eq!(p["cells"][0]["coordinators"], 1);
+}
+
+/// A routing run: each setting through a coordinator made for the test on
+/// the same copies, the settings taking turns, the model beside; and the
+/// model's preview, which sends nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_routing_run_measures_each_setting_beside_the_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let urls = vec![format!("{}|{}", serve(create(d, "a.strata")).await, serve(create(d, "b.strata")).await)];
+    // Copies that do not replicate: the coordinator writes to each.
+    let opts = chloedb_server::coord::CoordOptions { write_every_copy: true, ..Default::default() };
+    let c = Arc::new(Coordinator::connect_with(urls, opts).await.unwrap());
+    let schema = c.schema.clone();
+    let svc = Arc::new(Service::new(Backend::Cluster(c), schema, agent(), 16, Duration::from_secs(10)));
+
+    // What the page can compare: this coordinator's setting first.
+    let v = run::view(&svc);
+    let vs = v["routing"]["variants"].as_array().unwrap();
+    assert!(vs.len() >= 4, "{vs:?}");
+    assert_eq!(vs[0]["route"], "least-cost");
+    assert!(vs[0]["name"].as_str().unwrap().contains("this coordinator"), "{}", vs[0]);
+
+    // The model's preview: a row a setting and count of clients.
+    let p = run::routing_preview(&svc, json!({"clients": [1, 4], "seconds": 2.0, "seeds": 1, "fault": "cpu"})).await.unwrap();
+    assert_eq!(p["rows"].as_array().unwrap().len(), vs.len() * 2, "{}", p["rows"]);
+    assert!(p["rows"].as_array().unwrap().iter().all(|r| r["qps"].as_f64().unwrap() > 0.0));
+    assert_eq!(p["setup"]["copies"], 2);
+    assert!(run::routing_preview(&svc, json!({"fault": "no such fault"})).await.is_err());
+
+    let config: Config = serde_json::from_value(json!({
+        "shape": "routing", "profile": "search-app", "docs": 2000, "dim": 16, "alone_s": 0.5, "step_s": 2.0,
+        "clients": [2], "rounds": 1, "after_write": 0.1,
+        "variants": [{"route": "least-cost"}, {"route": "round-robin"}],
+    }))
+    .unwrap();
+    run::start(&svc, "test", config).unwrap();
+    let r = finished(&svc).await;
+    let m = r["routing"]["measured"].as_array().unwrap();
+    assert_eq!(m.len(), 2, "{m:?}");
+    for row in m {
+        assert!(row["qps"].as_f64().unwrap() > 0.0 && row["p99_ms"].as_f64().unwrap() > 0.0, "{row}");
+        let shares: f64 = row["by_copy"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).sum();
+        assert!((shares - 1.0).abs() < 0.01, "shard 0's reads by copy: {row}");
+    }
+    assert!(m.iter().any(|row| row["after_write_p99_ms"].as_f64().is_some()), "{m:?}");
+    assert_eq!(r["routing"]["turns"].as_array().unwrap().len(), 2);
+    assert_eq!(r["routing"]["model"]["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(r["routing"]["compare"].as_array().unwrap().len(), 2);
+    assert!(!svc.catalog_now().await.iter().any(|t| t.table == TABLE));
+
+    // A single server has no copy to choose: refused before it runs.
+    let one = local(create(d, "one.strata"));
+    let config: Config = serde_json::from_value(json!({"shape": "routing"})).unwrap();
+    assert_eq!(run::start(&one, "test", config).unwrap_err().status, 400);
 }

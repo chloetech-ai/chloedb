@@ -15,12 +15,15 @@
 //! holds a Lease (`coordination.k8s.io/v1`, `<cluster>-map` in the
 //! cluster's namespace), taken and kept by the API server's
 //! compare-and-swap on the object's `resourceVersion`, and it keeps in the
-//! Lease the map it is about to give, before it gives it, and the map left
-//! in doubt once the change ends. The next coordinator to change the map,
-//! this one started again or another, takes the Lease with that map and
-//! gives it again first. A coordinator that cannot keep the Lease (the API
-//! server does not answer, or another took it once it expired) gives no
-//! map.
+//! Lease the map it is about to give, before it gives it, and once the
+//! change ends the newest map a server may hold: the map made, or the one
+//! left in doubt. The next coordinator to change the map, this one started
+//! again or another, takes the Lease with that map and gives it again
+//! first, unless the servers it reaches hold it already: a coordinator that
+//! reaches only a server the change missed would otherwise make a second
+//! map of the epoch (TLC, spec/clustermap `LeaseRacing`). A coordinator
+//! that cannot keep the Lease (the API server does not answer, or another
+//! took it once it expired) gives no map.
 //!
 //! A coordinator whose account may not use Leases (its Role was made by an
 //! operator from before them, which makes it again once it is upgraded)
@@ -171,17 +174,17 @@ impl MapLease {
         }
     }
 
-    /// Keeps the Lease at `now` with `doubt` as its map in doubt: before a
-    /// map is given (the map), and once a change ends (what it left in
-    /// doubt, or none). Refused (503) once another took it, or when the API
-    /// server does not answer: the map is not given then.
+    /// Keeps the Lease at `now` with `doubt` as its map in doubt, before a
+    /// map is given (the map). Refused (503) once another took it, or when
+    /// the API server does not answer: the map is not given then.
     pub async fn keep(&self, doubt: Option<&SlotMap>, now: u64) -> Result<(), ApiError> {
         let d = doubt.map(|m| m.to_json().to_string()).unwrap_or_default();
         self.write(Some(&d), true, now).await
     }
 
     /// Ends this coordinator's change at `now`, keeping `doubt` as the map
-    /// in doubt: the Lease is free for any coordinator from then.
+    /// in doubt (the newest a server may hold, made or not): the Lease is
+    /// free for any coordinator from then.
     pub async fn release(&self, doubt: Option<&SlotMap>, now: u64) -> Result<(), ApiError> {
         let d = doubt.map(|m| m.to_json().to_string()).unwrap_or_default();
         let r = self.write(Some(&d), false, now).await;
@@ -236,5 +239,5 @@ fn message(j: &Json) -> String {
 }
 
 fn unavailable(message: String) -> ApiError {
-    ApiError { status: 503, message }
+    ApiError { code: None, status: 503, message }
 }

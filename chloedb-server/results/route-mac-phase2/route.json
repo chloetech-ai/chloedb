@@ -1,0 +1,7840 @@
+{
+  "args": {
+    "busy_slots": 1,
+    "copies": 3,
+    "delay_ms": 30,
+    "hedge_delay_ms": 150,
+    "rounds": 2,
+    "rows": 3000000,
+    "seconds": 10.0,
+    "shards": 3,
+    "slots": 64,
+    "stats_cache_terms": 100000,
+    "warmup": 3.0
+  },
+  "coordinator": "CoordOptions::default() with each run's config set: hedge 100 ms, kept BM25 statistics",
+  "lag_ms": 50,
+  "machine": {
+    "arch": "aarch64",
+    "cores": 10,
+    "cpu": "Apple M1 Pro",
+    "memory_gb": 32,
+    "os": "macOS 27.0.1",
+    "setup": "one process: shards, coordinators and clients over loopback gRPC"
+  },
+  "runs": [
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 1.93,
+        "p50_ms": 0.83,
+        "p90_ms": 0.91,
+        "p999_ms": 1.24,
+        "p99_ms": 1.05,
+        "qps": 1199.0,
+        "queries": 11997,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          4079,
+          3928,
+          3992
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.2,
+        0.32,
+        0.27
+      ],
+      "shard0_per_second": [
+        [
+          306,
+          300,
+          299
+        ],
+        [
+          418,
+          396,
+          399
+        ],
+        [
+          400,
+          395,
+          395
+        ],
+        [
+          409,
+          383,
+          406
+        ],
+        [
+          416,
+          404,
+          399
+        ],
+        [
+          402,
+          390,
+          401
+        ],
+        [
+          414,
+          393,
+          395
+        ],
+        [
+          400,
+          394,
+          398
+        ],
+        [
+          407,
+          383,
+          403
+        ],
+        [
+          408,
+          398,
+          390
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 4.31,
+        "p50_ms": 0.74,
+        "p90_ms": 0.81,
+        "p999_ms": 1.13,
+        "p99_ms": 0.92,
+        "qps": 1336.0,
+        "queries": 13361,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          4547,
+          4380,
+          4434
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.39,
+        0.17,
+        0.2
+      ],
+      "shard0_per_second": [
+        [
+          340,
+          331,
+          330
+        ],
+        [
+          455,
+          433,
+          429
+        ],
+        [
+          452,
+          431,
+          439
+        ],
+        [
+          444,
+          434,
+          447
+        ],
+        [
+          463,
+          444,
+          446
+        ],
+        [
+          458,
+          436,
+          447
+        ],
+        [
+          448,
+          437,
+          456
+        ],
+        [
+          461,
+          444,
+          434
+        ],
+        [
+          458,
+          441,
+          444
+        ],
+        [
+          450,
+          433,
+          458
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 7.17,
+        "p50_ms": 0.82,
+        "p90_ms": 0.9,
+        "p999_ms": 1.21,
+        "p99_ms": 1.03,
+        "qps": 1224.0,
+        "queries": 12238,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          4080,
+          4080,
+          4080
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.32,
+        0.15,
+        0.27
+      ],
+      "shard0_per_second": [
+        [
+          300,
+          300,
+          300
+        ],
+        [
+          409,
+          409,
+          409
+        ],
+        [
+          410,
+          409,
+          410
+        ],
+        [
+          410,
+          411,
+          411
+        ],
+        [
+          410,
+          410,
+          409
+        ],
+        [
+          405,
+          404,
+          405
+        ],
+        [
+          410,
+          410,
+          410
+        ],
+        [
+          409,
+          409,
+          409
+        ],
+        [
+          410,
+          411,
+          410
+        ],
+        [
+          408,
+          408,
+          409
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 2.78,
+        "p50_ms": 0.79,
+        "p90_ms": 0.9,
+        "p999_ms": 1.21,
+        "p99_ms": 1.03,
+        "qps": 1253.0,
+        "queries": 12530,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          4177,
+          4177,
+          4177
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.22,
+        0.27,
+        0.15
+      ],
+      "shard0_per_second": [
+        [
+          301,
+          300,
+          301
+        ],
+        [
+          423,
+          423,
+          423
+        ],
+        [
+          425,
+          426,
+          426
+        ],
+        [
+          422,
+          422,
+          421
+        ],
+        [
+          415,
+          415,
+          415
+        ],
+        [
+          417,
+          417,
+          418
+        ],
+        [
+          417,
+          416,
+          416
+        ],
+        [
+          420,
+          421,
+          420
+        ],
+        [
+          418,
+          417,
+          418
+        ],
+        [
+          417,
+          418,
+          418
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 1.46,
+        "p50_ms": 0.75,
+        "p90_ms": 0.82,
+        "p999_ms": 1.13,
+        "p99_ms": 0.92,
+        "qps": 1329.0,
+        "queries": 13288,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          4510,
+          4352,
+          4428
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.32,
+        0.05,
+        0.2
+      ],
+      "shard0_per_second": [
+        [
+          340,
+          334,
+          334
+        ],
+        [
+          444,
+          433,
+          454
+        ],
+        [
+          462,
+          438,
+          434
+        ],
+        [
+          456,
+          436,
+          439
+        ],
+        [
+          441,
+          428,
+          449
+        ],
+        [
+          451,
+          434,
+          432
+        ],
+        [
+          452,
+          429,
+          443
+        ],
+        [
+          445,
+          440,
+          445
+        ],
+        [
+          458,
+          438,
+          439
+        ],
+        [
+          451,
+          434,
+          445
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 2.65,
+        "p50_ms": 0.73,
+        "p90_ms": 0.8,
+        "p999_ms": 1.19,
+        "p99_ms": 0.92,
+        "qps": 1364.0,
+        "queries": 13643,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          4633,
+          4471,
+          4541
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.24,
+        0.2,
+        0.2
+      ],
+      "shard0_per_second": [
+        [
+          340,
+          337,
+          340
+        ],
+        [
+          465,
+          442,
+          464
+        ],
+        [
+          465,
+          457,
+          455
+        ],
+        [
+          466,
+          444,
+          447
+        ],
+        [
+          456,
+          436,
+          441
+        ],
+        [
+          464,
+          441,
+          463
+        ],
+        [
+          468,
+          461,
+          452
+        ],
+        [
+          470,
+          451,
+          463
+        ],
+        [
+          473,
+          450,
+          456
+        ],
+        [
+          450,
+          432,
+          459
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 7.64,
+        "p50_ms": 0.75,
+        "p90_ms": 0.86,
+        "p999_ms": 1.2,
+        "p99_ms": 0.98,
+        "qps": 1301.0,
+        "queries": 13013,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          4338,
+          4339,
+          4338
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.39,
+        0.15,
+        0.2
+      ],
+      "shard0_per_second": [
+        [
+          325,
+          325,
+          325
+        ],
+        [
+          430,
+          430,
+          430
+        ],
+        [
+          436,
+          436,
+          436
+        ],
+        [
+          433,
+          434,
+          434
+        ],
+        [
+          437,
+          437,
+          437
+        ],
+        [
+          434,
+          434,
+          433
+        ],
+        [
+          432,
+          432,
+          432
+        ],
+        [
+          433,
+          432,
+          433
+        ],
+        [
+          433,
+          433,
+          433
+        ],
+        [
+          434,
+          435,
+          434
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 1.37,
+        "p50_ms": 0.75,
+        "p90_ms": 0.86,
+        "p999_ms": 1.14,
+        "p99_ms": 0.97,
+        "qps": 1315.0,
+        "queries": 13154,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          4385,
+          4385,
+          4386
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.27,
+        0.15,
+        0.2
+      ],
+      "shard0_per_second": [
+        [
+          330,
+          330,
+          331
+        ],
+        [
+          436,
+          435,
+          435
+        ],
+        [
+          437,
+          438,
+          437
+        ],
+        [
+          443,
+          443,
+          443
+        ],
+        [
+          438,
+          438,
+          438
+        ],
+        [
+          437,
+          437,
+          438
+        ],
+        [
+          435,
+          435,
+          435
+        ],
+        [
+          440,
+          439,
+          439
+        ],
+        [
+          444,
+          445,
+          445
+        ],
+        [
+          434,
+          434,
+          434
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 35.37,
+        "p50_ms": 3.41,
+        "p90_ms": 5.34,
+        "p999_ms": 12.3,
+        "p99_ms": 8.18,
+        "qps": 4403.0,
+        "queries": 44062,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15008,
+          14714,
+          14358
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        2.93,
+        2.95,
+        3.49
+      ],
+      "shard0_per_second": [
+        [
+          1122,
+          1110,
+          1077
+        ],
+        [
+          1503,
+          1479,
+          1443
+        ],
+        [
+          1478,
+          1448,
+          1412
+        ],
+        [
+          1494,
+          1460,
+          1434
+        ],
+        [
+          1495,
+          1484,
+          1419
+        ],
+        [
+          1498,
+          1463,
+          1432
+        ],
+        [
+          1509,
+          1486,
+          1440
+        ],
+        [
+          1516,
+          1472,
+          1444
+        ],
+        [
+          1500,
+          1474,
+          1446
+        ],
+        [
+          1513,
+          1459,
+          1454
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 39.84,
+        "p50_ms": 3.41,
+        "p90_ms": 5.36,
+        "p999_ms": 14.89,
+        "p99_ms": 8.23,
+        "qps": 4381.0,
+        "queries": 43834,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 271.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          14245,
+          14961,
+          14887
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.02,
+        3.17,
+        3.34
+      ],
+      "shard0_per_second": [
+        [
+          1113,
+          1102,
+          1119
+        ],
+        [
+          1429,
+          1486,
+          1499
+        ],
+        [
+          1443,
+          1489,
+          1463
+        ],
+        [
+          1461,
+          1509,
+          1478
+        ],
+        [
+          1449,
+          1503,
+          1461
+        ],
+        [
+          1448,
+          1514,
+          1453
+        ],
+        [
+          1417,
+          1529,
+          1481
+        ],
+        [
+          1336,
+          1494,
+          1537
+        ],
+        [
+          1390,
+          1464,
+          1522
+        ],
+        [
+          1403,
+          1504,
+          1501
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 34.62,
+        "p50_ms": 3.36,
+        "p90_ms": 5.43,
+        "p999_ms": 13.9,
+        "p99_ms": 8.92,
+        "qps": 4394.0,
+        "queries": 43965,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          14659,
+          14644,
+          14684
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.24,
+        3.22,
+        2.9
+      ],
+      "shard0_per_second": [
+        [
+          1060,
+          1182,
+          1092
+        ],
+        [
+          1423,
+          1553,
+          1457
+        ],
+        [
+          1395,
+          1498,
+          1488
+        ],
+        [
+          1540,
+          1423,
+          1482
+        ],
+        [
+          1533,
+          1378,
+          1479
+        ],
+        [
+          1470,
+          1411,
+          1506
+        ],
+        [
+          1480,
+          1464,
+          1465
+        ],
+        [
+          1474,
+          1318,
+          1482
+        ],
+        [
+          1451,
+          1546,
+          1428
+        ],
+        [
+          1446,
+          1499,
+          1442
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 26.21,
+        "p50_ms": 3.4,
+        "p90_ms": 5.36,
+        "p999_ms": 16.45,
+        "p99_ms": 8.7,
+        "qps": 4371.0,
+        "queries": 43731,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 380.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          14810,
+          14564,
+          14663
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.29,
+        3.39,
+        3.56
+      ],
+      "shard0_per_second": [
+        [
+          1024,
+          1126,
+          1105
+        ],
+        [
+          1480,
+          1498,
+          1451
+        ],
+        [
+          1487,
+          1475,
+          1447
+        ],
+        [
+          1464,
+          1439,
+          1512
+        ],
+        [
+          1483,
+          1441,
+          1448
+        ],
+        [
+          1482,
+          1434,
+          1489
+        ],
+        [
+          1520,
+          1443,
+          1420
+        ],
+        [
+          1472,
+          1464,
+          1505
+        ],
+        [
+          1533,
+          1434,
+          1445
+        ],
+        [
+          1457,
+          1478,
+          1472
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 33.37,
+        "p50_ms": 3.41,
+        "p90_ms": 5.4,
+        "p999_ms": 12.61,
+        "p99_ms": 8.31,
+        "qps": 4381.0,
+        "queries": 43829,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          14962,
+          15120,
+          13772
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        2.9,
+        3.61,
+        2.85
+      ],
+      "shard0_per_second": [
+        [
+          1144,
+          1146,
+          1059
+        ],
+        [
+          1487,
+          1506,
+          1366
+        ],
+        [
+          1498,
+          1514,
+          1370
+        ],
+        [
+          1514,
+          1525,
+          1381
+        ],
+        [
+          1462,
+          1484,
+          1367
+        ],
+        [
+          1492,
+          1519,
+          1388
+        ],
+        [
+          1468,
+          1495,
+          1328
+        ],
+        [
+          1505,
+          1499,
+          1382
+        ],
+        [
+          1498,
+          1521,
+          1391
+        ],
+        [
+          1513,
+          1532,
+          1389
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.49,
+        "errors": 0,
+        "max_ms": 38.97,
+        "p50_ms": 3.46,
+        "p90_ms": 5.4,
+        "p999_ms": 15.58,
+        "p99_ms": 8.3,
+        "qps": 4337.0,
+        "queries": 43396,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 249.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          10971,
+          15981,
+          16776
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        1.83,
+        3.2,
+        3.54
+      ],
+      "shard0_per_second": [
+        [
+          950,
+          1188,
+          1190
+        ],
+        [
+          1035,
+          1639,
+          1706
+        ],
+        [
+          1063,
+          1650,
+          1668
+        ],
+        [
+          1114,
+          1578,
+          1619
+        ],
+        [
+          1103,
+          1589,
+          1671
+        ],
+        [
+          1103,
+          1569,
+          1701
+        ],
+        [
+          1145,
+          1572,
+          1681
+        ],
+        [
+          1031,
+          1611,
+          1713
+        ],
+        [
+          1118,
+          1591,
+          1665
+        ],
+        [
+          1024,
+          1597,
+          1729
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 48.33,
+        "p50_ms": 3.39,
+        "p90_ms": 5.42,
+        "p999_ms": 14.81,
+        "p99_ms": 8.82,
+        "qps": 4360.0,
+        "queries": 43618,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          14551,
+          14676,
+          14407
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.49,
+        3.2,
+        3.1
+      ],
+      "shard0_per_second": [
+        [
+          1101,
+          1074,
+          1098
+        ],
+        [
+          1473,
+          1438,
+          1452
+        ],
+        [
+          1432,
+          1482,
+          1433
+        ],
+        [
+          1510,
+          1486,
+          1396
+        ],
+        [
+          1434,
+          1423,
+          1529
+        ],
+        [
+          1428,
+          1487,
+          1445
+        ],
+        [
+          1458,
+          1505,
+          1427
+        ],
+        [
+          1426,
+          1398,
+          1390
+        ],
+        [
+          1486,
+          1505,
+          1412
+        ],
+        [
+          1443,
+          1514,
+          1436
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 54.91,
+        "p50_ms": 3.39,
+        "p90_ms": 5.44,
+        "p999_ms": 16.75,
+        "p99_ms": 8.94,
+        "qps": 4342.0,
+        "queries": 43444,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 414.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          14617,
+          14824,
+          14410
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.32,
+        3.44,
+        3.44
+      ],
+      "shard0_per_second": [
+        [
+          1170,
+          1084,
+          1082
+        ],
+        [
+          1463,
+          1506,
+          1443
+        ],
+        [
+          1415,
+          1498,
+          1470
+        ],
+        [
+          1423,
+          1457,
+          1354
+        ],
+        [
+          1449,
+          1467,
+          1506
+        ],
+        [
+          1454,
+          1531,
+          1401
+        ],
+        [
+          1508,
+          1420,
+          1476
+        ],
+        [
+          1464,
+          1508,
+          1395
+        ],
+        [
+          1434,
+          1511,
+          1454
+        ],
+        [
+          1468,
+          1444,
+          1473
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 56.45,
+        "p50_ms": 13.23,
+        "p90_ms": 19.17,
+        "p999_ms": 33.43,
+        "p99_ms": 26.02,
+        "qps": 4705.0,
+        "queries": 47143,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          16434,
+          14123,
+          16650
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        16.41,
+        13.39,
+        16.46
+      ],
+      "shard0_per_second": [
+        [
+          1272,
+          1072,
+          1287
+        ],
+        [
+          1640,
+          1411,
+          1655
+        ],
+        [
+          1637,
+          1412,
+          1652
+        ],
+        [
+          1649,
+          1405,
+          1677
+        ],
+        [
+          1584,
+          1374,
+          1622
+        ],
+        [
+          1639,
+          1406,
+          1661
+        ],
+        [
+          1642,
+          1411,
+          1650
+        ],
+        [
+          1638,
+          1402,
+          1693
+        ],
+        [
+          1646,
+          1424,
+          1669
+        ],
+        [
+          1626,
+          1418,
+          1645
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 73.86,
+        "p50_ms": 13.34,
+        "p90_ms": 19.32,
+        "p999_ms": 33.98,
+        "p99_ms": 26.36,
+        "qps": 4671.0,
+        "queries": 46795,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 79.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          16270,
+          15672,
+          14975
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        16.02,
+        14.17,
+        14.9
+      ],
+      "shard0_per_second": [
+        [
+          1249,
+          1187,
+          1128
+        ],
+        [
+          1612,
+          1568,
+          1500
+        ],
+        [
+          1614,
+          1515,
+          1472
+        ],
+        [
+          1621,
+          1555,
+          1531
+        ],
+        [
+          1603,
+          1529,
+          1533
+        ],
+        [
+          1639,
+          1571,
+          1516
+        ],
+        [
+          1650,
+          1559,
+          1505
+        ],
+        [
+          1629,
+          1540,
+          1495
+        ],
+        [
+          1619,
+          1584,
+          1476
+        ],
+        [
+          1609,
+          1626,
+          1422
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 1.95,
+        "errors": 0,
+        "max_ms": 222.41,
+        "p50_ms": 13.35,
+        "p90_ms": 19.01,
+        "p999_ms": 176.19,
+        "p99_ms": 25.49,
+        "qps": 4599.0,
+        "queries": 46100,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 17.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          12201,
+          22103,
+          11901
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        11.76,
+        24.61,
+        10.71
+      ],
+      "shard0_per_second": [
+        [
+          1165,
+          1232,
+          1174
+        ],
+        [
+          1534,
+          1541,
+          1622
+        ],
+        [
+          1595,
+          1613,
+          1464
+        ],
+        [
+          1582,
+          1502,
+          1594
+        ],
+        [
+          1517,
+          1591,
+          1577
+        ],
+        [
+          1662,
+          1532,
+          1547
+        ],
+        [
+          1639,
+          1517,
+          1542
+        ],
+        [
+          1499,
+          1599,
+          1379
+        ],
+        [
+          8,
+          4060,
+          2
+        ],
+        [
+          0,
+          4599,
+          0
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 78.16,
+        "p50_ms": 13.32,
+        "p90_ms": 19.05,
+        "p999_ms": 32.16,
+        "p99_ms": 25.37,
+        "qps": 4683.0,
+        "queries": 46925,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 51.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15506,
+          15657,
+          15853
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        15.46,
+        15.02,
+        14.46
+      ],
+      "shard0_per_second": [
+        [
+          1213,
+          1207,
+          1171
+        ],
+        [
+          1515,
+          1572,
+          1627
+        ],
+        [
+          1524,
+          1559,
+          1631
+        ],
+        [
+          1581,
+          1503,
+          1589
+        ],
+        [
+          1524,
+          1621,
+          1509
+        ],
+        [
+          1460,
+          1490,
+          1608
+        ],
+        [
+          1607,
+          1547,
+          1553
+        ],
+        [
+          1494,
+          1636,
+          1590
+        ],
+        [
+          1569,
+          1545,
+          1587
+        ],
+        [
+          1573,
+          1602,
+          1568
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 56.31,
+        "p50_ms": 13.31,
+        "p90_ms": 19.22,
+        "p999_ms": 34.12,
+        "p99_ms": 26.35,
+        "qps": 4684.0,
+        "queries": 46914,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15000,
+          14304,
+          17654
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        14.34,
+        13.8,
+        19.22
+      ],
+      "shard0_per_second": [
+        [
+          1149,
+          1096,
+          1348
+        ],
+        [
+          1466,
+          1425,
+          1765
+        ],
+        [
+          1528,
+          1441,
+          1765
+        ],
+        [
+          1486,
+          1405,
+          1755
+        ],
+        [
+          1505,
+          1440,
+          1743
+        ],
+        [
+          1504,
+          1406,
+          1745
+        ],
+        [
+          1465,
+          1435,
+          1758
+        ],
+        [
+          1495,
+          1425,
+          1781
+        ],
+        [
+          1536,
+          1453,
+          1764
+        ],
+        [
+          1483,
+          1419,
+          1786
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 62.66,
+        "p50_ms": 13.29,
+        "p90_ms": 19.21,
+        "p999_ms": 32.66,
+        "p99_ms": 25.4,
+        "qps": 4691.0,
+        "queries": 47003,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 61.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          14900,
+          14619,
+          17570
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        14.68,
+        14.41,
+        18.98
+      ],
+      "shard0_per_second": [
+        [
+          1131,
+          1121,
+          1305
+        ],
+        [
+          1484,
+          1499,
+          1739
+        ],
+        [
+          1462,
+          1481,
+          1758
+        ],
+        [
+          1493,
+          1456,
+          1759
+        ],
+        [
+          1506,
+          1450,
+          1759
+        ],
+        [
+          1473,
+          1423,
+          1732
+        ],
+        [
+          1513,
+          1460,
+          1805
+        ],
+        [
+          1480,
+          1442,
+          1759
+        ],
+        [
+          1466,
+          1448,
+          1720
+        ],
+        [
+          1506,
+          1452,
+          1757
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 85.45,
+        "p50_ms": 13.34,
+        "p90_ms": 19.1,
+        "p999_ms": 31.0,
+        "p99_ms": 25.0,
+        "qps": 4685.0,
+        "queries": 46924,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15709,
+          15668,
+          15639
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        16.51,
+        15.51,
+        15.85
+      ],
+      "shard0_per_second": [
+        [
+          1231,
+          1180,
+          1163
+        ],
+        [
+          1552,
+          1619,
+          1503
+        ],
+        [
+          1521,
+          1577,
+          1593
+        ],
+        [
+          1582,
+          1501,
+          1631
+        ],
+        [
+          1617,
+          1503,
+          1547
+        ],
+        [
+          1582,
+          1559,
+          1552
+        ],
+        [
+          1553,
+          1578,
+          1519
+        ],
+        [
+          1538,
+          1685,
+          1468
+        ],
+        [
+          1584,
+          1469,
+          1632
+        ],
+        [
+          1537,
+          1581,
+          1577
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 137.15,
+        "p50_ms": 13.36,
+        "p90_ms": 19.04,
+        "p999_ms": 33.82,
+        "p99_ms": 25.53,
+        "qps": 4678.0,
+        "queries": 46874,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 68.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "equal",
+      "shard0_answers_by_copy": [
+        [
+          15644,
+          15781,
+          15554
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        14.05,
+        14.9,
+        14.54
+      ],
+      "shard0_per_second": [
+        [
+          1171,
+          1168,
+          1271
+        ],
+        [
+          1552,
+          1550,
+          1537
+        ],
+        [
+          1570,
+          1573,
+          1543
+        ],
+        [
+          1528,
+          1526,
+          1576
+        ],
+        [
+          1584,
+          1567,
+          1545
+        ],
+        [
+          1543,
+          1627,
+          1558
+        ],
+        [
+          1479,
+          1644,
+          1550
+        ],
+        [
+          1671,
+          1557,
+          1469
+        ],
+        [
+          1593,
+          1530,
+          1565
+        ],
+        [
+          1560,
+          1628,
+          1481
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 67.7,
+        "p50_ms": 0.88,
+        "p90_ms": 2.21,
+        "p999_ms": 63.82,
+        "p99_ms": 5.02,
+        "qps": 661.0,
+        "queries": 6613,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          2245,
+          2175,
+          2196
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.24,
+        0.12,
+        0.12
+      ],
+      "shard0_per_second": [
+        [
+          164,
+          166,
+          168
+        ],
+        [
+          235,
+          222,
+          215
+        ],
+        [
+          213,
+          215,
+          216
+        ],
+        [
+          223,
+          207,
+          230
+        ],
+        [
+          229,
+          220,
+          204
+        ],
+        [
+          212,
+          216,
+          219
+        ],
+        [
+          223,
+          210,
+          221
+        ],
+        [
+          231,
+          222,
+          221
+        ],
+        [
+          232,
+          223,
+          227
+        ],
+        [
+          224,
+          220,
+          233
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 116.64,
+        "p50_ms": 0.87,
+        "p90_ms": 2.17,
+        "p999_ms": 46.36,
+        "p99_ms": 4.66,
+        "qps": 710.0,
+        "queries": 7118,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 299.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          2285,
+          2433,
+          2515
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.27,
+        0.07,
+        0.17
+      ],
+      "shard0_per_second": [
+        [
+          182,
+          170,
+          186
+        ],
+        [
+          229,
+          243,
+          231
+        ],
+        [
+          234,
+          236,
+          243
+        ],
+        [
+          238,
+          231,
+          230
+        ],
+        [
+          218,
+          255,
+          259
+        ],
+        [
+          230,
+          229,
+          255
+        ],
+        [
+          228,
+          257,
+          249
+        ],
+        [
+          213,
+          235,
+          260
+        ],
+        [
+          236,
+          244,
+          242
+        ],
+        [
+          219,
+          272,
+          313
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 61.19,
+        "p50_ms": 0.81,
+        "p90_ms": 0.9,
+        "p999_ms": 1.26,
+        "p99_ms": 1.1,
+        "qps": 1211.0,
+        "queries": 12110,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          2,
+          6041,
+          6303
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        0.22,
+        0.15
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          449,
+          473
+        ],
+        [
+          0,
+          621,
+          597
+        ],
+        [
+          0,
+          597,
+          625
+        ],
+        [
+          0,
+          579,
+          567
+        ],
+        [
+          0,
+          622,
+          606
+        ],
+        [
+          0,
+          606,
+          614
+        ],
+        [
+          0,
+          609,
+          631
+        ],
+        [
+          2,
+          568,
+          763
+        ],
+        [
+          0,
+          610,
+          670
+        ],
+        [
+          0,
+          619,
+          611
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 3.54,
+        "p50_ms": 0.81,
+        "p90_ms": 0.9,
+        "p999_ms": 1.18,
+        "p99_ms": 1.08,
+        "qps": 1225.0,
+        "queries": 12256,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          2,
+          6235,
+          6483
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        0.34,
+        0.22
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          452,
+          476
+        ],
+        [
+          0,
+          630,
+          609
+        ],
+        [
+          0,
+          609,
+          633
+        ],
+        [
+          0,
+          620,
+          617
+        ],
+        [
+          0,
+          631,
+          605
+        ],
+        [
+          0,
+          615,
+          626
+        ],
+        [
+          0,
+          604,
+          636
+        ],
+        [
+          2,
+          631,
+          818
+        ],
+        [
+          0,
+          652,
+          707
+        ],
+        [
+          0,
+          622,
+          611
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 66.59,
+        "p50_ms": 0.85,
+        "p90_ms": 2.14,
+        "p999_ms": 64.29,
+        "p99_ms": 4.89,
+        "qps": 669.0,
+        "queries": 6704,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          2285,
+          2197,
+          2223
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.1,
+        0.12,
+        0.12
+      ],
+      "shard0_per_second": [
+        [
+          187,
+          170,
+          182
+        ],
+        [
+          231,
+          234,
+          217
+        ],
+        [
+          227,
+          221,
+          232
+        ],
+        [
+          226,
+          201,
+          216
+        ],
+        [
+          225,
+          231,
+          216
+        ],
+        [
+          224,
+          218,
+          213
+        ],
+        [
+          232,
+          219,
+          242
+        ],
+        [
+          231,
+          220,
+          214
+        ],
+        [
+          220,
+          220,
+          222
+        ],
+        [
+          232,
+          214,
+          230
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 79.5,
+        "p50_ms": 0.79,
+        "p90_ms": 2.11,
+        "p999_ms": 61.06,
+        "p99_ms": 4.61,
+        "qps": 718.0,
+        "queries": 7179,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 381.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          2322,
+          2394,
+          2555
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.34,
+        0.1,
+        0.17
+      ],
+      "shard0_per_second": [
+        [
+          175,
+          173,
+          182
+        ],
+        [
+          239,
+          223,
+          216
+        ],
+        [
+          236,
+          236,
+          240
+        ],
+        [
+          230,
+          212,
+          249
+        ],
+        [
+          226,
+          248,
+          241
+        ],
+        [
+          230,
+          244,
+          269
+        ],
+        [
+          246,
+          246,
+          262
+        ],
+        [
+          221,
+          247,
+          269
+        ],
+        [
+          224,
+          265,
+          276
+        ],
+        [
+          227,
+          238,
+          283
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 3.64,
+        "p50_ms": 0.77,
+        "p90_ms": 0.85,
+        "p999_ms": 1.15,
+        "p99_ms": 1.06,
+        "qps": 1288.0,
+        "queries": 12881,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          2,
+          6430,
+          6686
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.0,
+        0.17,
+        0.29
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          486,
+          495
+        ],
+        [
+          0,
+          667,
+          646
+        ],
+        [
+          0,
+          641,
+          671
+        ],
+        [
+          0,
+          663,
+          649
+        ],
+        [
+          0,
+          660,
+          650
+        ],
+        [
+          0,
+          641,
+          660
+        ],
+        [
+          0,
+          612,
+          662
+        ],
+        [
+          2,
+          618,
+          752
+        ],
+        [
+          0,
+          625,
+          691
+        ],
+        [
+          0,
+          655,
+          646
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 4.89,
+        "p50_ms": 0.78,
+        "p90_ms": 0.86,
+        "p999_ms": 3.85,
+        "p99_ms": 1.4,
+        "qps": 1240.0,
+        "queries": 12406,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 1.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          181,
+          6139,
+          6170
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.02,
+        0.29,
+        0.2
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          471,
+          485
+        ],
+        [
+          0,
+          647,
+          630
+        ],
+        [
+          0,
+          637,
+          652
+        ],
+        [
+          0,
+          647,
+          639
+        ],
+        [
+          0,
+          641,
+          633
+        ],
+        [
+          0,
+          628,
+          649
+        ],
+        [
+          0,
+          616,
+          661
+        ],
+        [
+          181,
+          395,
+          399
+        ],
+        [
+          0,
+          650,
+          629
+        ],
+        [
+          0,
+          655,
+          623
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 66.83,
+        "p50_ms": 3.53,
+        "p90_ms": 5.49,
+        "p999_ms": 63.9,
+        "p99_ms": 8.74,
+        "qps": 4049.0,
+        "queries": 40517,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          13156,
+          13702,
+          13679
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        5.49,
+        3.15,
+        2.49
+      ],
+      "shard0_per_second": [
+        [
+          976,
+          1008,
+          1014
+        ],
+        [
+          1321,
+          1367,
+          1366
+        ],
+        [
+          1316,
+          1367,
+          1377
+        ],
+        [
+          1320,
+          1370,
+          1368
+        ],
+        [
+          1314,
+          1383,
+          1380
+        ],
+        [
+          1339,
+          1395,
+          1375
+        ],
+        [
+          1254,
+          1308,
+          1325
+        ],
+        [
+          1308,
+          1367,
+          1357
+        ],
+        [
+          1327,
+          1383,
+          1371
+        ],
+        [
+          1318,
+          1377,
+          1372
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 77.83,
+        "p50_ms": 3.48,
+        "p90_ms": 5.39,
+        "p999_ms": 54.65,
+        "p99_ms": 10.17,
+        "qps": 4184.0,
+        "queries": 41865,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 460.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          8084,
+          16298,
+          18248
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        5.8,
+        2.71,
+        3.29
+      ],
+      "shard0_per_second": [
+        [
+          795,
+          1072,
+          1242
+        ],
+        [
+          1026,
+          1482,
+          1706
+        ],
+        [
+          888,
+          1583,
+          1831
+        ],
+        [
+          812,
+          1605,
+          1893
+        ],
+        [
+          839,
+          1678,
+          1770
+        ],
+        [
+          756,
+          1691,
+          1859
+        ],
+        [
+          688,
+          1715,
+          1901
+        ],
+        [
+          724,
+          1619,
+          1801
+        ],
+        [
+          689,
+          1695,
+          1872
+        ],
+        [
+          696,
+          1741,
+          1858
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 66.0,
+        "p50_ms": 3.42,
+        "p90_ms": 5.37,
+        "p999_ms": 55.33,
+        "p99_ms": 8.38,
+        "qps": 4320.0,
+        "queries": 43217,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          7711,
+          17684,
+          17844
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        2.17,
+        4.1,
+        4.37
+      ],
+      "shard0_per_second": [
+        [
+          591,
+          1310,
+          1368
+        ],
+        [
+          766,
+          1775,
+          1770
+        ],
+        [
+          765,
+          1776,
+          1781
+        ],
+        [
+          763,
+          1789,
+          1792
+        ],
+        [
+          787,
+          1699,
+          1830
+        ],
+        [
+          757,
+          1767,
+          1773
+        ],
+        [
+          802,
+          1725,
+          1758
+        ],
+        [
+          770,
+          1809,
+          1769
+        ],
+        [
+          744,
+          1807,
+          1785
+        ],
+        [
+          807,
+          1752,
+          1767
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 70.27,
+        "p50_ms": 3.45,
+        "p90_ms": 5.39,
+        "p999_ms": 20.24,
+        "p99_ms": 8.84,
+        "qps": 4269.0,
+        "queries": 42710,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 426.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          8130,
+          17473,
+          17602
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        2.66,
+        4.0,
+        4.12
+      ],
+      "shard0_per_second": [
+        [
+          619,
+          1326,
+          1303
+        ],
+        [
+          778,
+          1814,
+          1761
+        ],
+        [
+          815,
+          1720,
+          1769
+        ],
+        [
+          812,
+          1741,
+          1800
+        ],
+        [
+          809,
+          1752,
+          1775
+        ],
+        [
+          813,
+          1758,
+          1785
+        ],
+        [
+          854,
+          1785,
+          1679
+        ],
+        [
+          846,
+          1694,
+          1779
+        ],
+        [
+          782,
+          1787,
+          1779
+        ],
+        [
+          778,
+          1669,
+          1714
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 86.04,
+        "p50_ms": 3.49,
+        "p90_ms": 5.64,
+        "p999_ms": 65.66,
+        "p99_ms": 11.01,
+        "qps": 3967.0,
+        "queries": 39682,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          13065,
+          13539,
+          13089
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        5.34,
+        2.78,
+        2.8
+      ],
+      "shard0_per_second": [
+        [
+          1007,
+          1040,
+          1003
+        ],
+        [
+          1368,
+          1435,
+          1376
+        ],
+        [
+          1196,
+          1241,
+          1214
+        ],
+        [
+          1299,
+          1350,
+          1300
+        ],
+        [
+          1311,
+          1368,
+          1318
+        ],
+        [
+          1218,
+          1248,
+          1209
+        ],
+        [
+          1301,
+          1321,
+          1309
+        ],
+        [
+          1367,
+          1428,
+          1355
+        ],
+        [
+          1308,
+          1350,
+          1304
+        ],
+        [
+          1337,
+          1387,
+          1351
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 70.19,
+        "p50_ms": 3.49,
+        "p90_ms": 5.44,
+        "p999_ms": 56.78,
+        "p99_ms": 10.91,
+        "qps": 4158.0,
+        "queries": 41600,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 542.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          8597,
+          16536,
+          17288
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        2.61,
+        3.85,
+        3.83
+      ],
+      "shard0_per_second": [
+        [
+          854,
+          1158,
+          1243
+        ],
+        [
+          1000,
+          1559,
+          1659
+        ],
+        [
+          887,
+          1626,
+          1608
+        ],
+        [
+          862,
+          1652,
+          1730
+        ],
+        [
+          811,
+          1691,
+          1738
+        ],
+        [
+          844,
+          1646,
+          1750
+        ],
+        [
+          830,
+          1645,
+          1774
+        ],
+        [
+          810,
+          1682,
+          1753
+        ],
+        [
+          777,
+          1675,
+          1789
+        ],
+        [
+          745,
+          1762,
+          1781
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 66.39,
+        "p50_ms": 3.44,
+        "p90_ms": 5.37,
+        "p999_ms": 55.5,
+        "p99_ms": 8.28,
+        "qps": 4284.0,
+        "queries": 42868,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          7660,
+          17516,
+          17715
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        2.39,
+        3.83,
+        4.12
+      ],
+      "shard0_per_second": [
+        [
+          574,
+          1323,
+          1344
+        ],
+        [
+          764,
+          1733,
+          1807
+        ],
+        [
+          764,
+          1743,
+          1794
+        ],
+        [
+          766,
+          1790,
+          1715
+        ],
+        [
+          785,
+          1766,
+          1751
+        ],
+        [
+          758,
+          1756,
+          1818
+        ],
+        [
+          726,
+          1776,
+          1836
+        ],
+        [
+          777,
+          1786,
+          1729
+        ],
+        [
+          713,
+          1702,
+          1683
+        ],
+        [
+          785,
+          1732,
+          1793
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 69.38,
+        "p50_ms": 3.46,
+        "p90_ms": 5.46,
+        "p999_ms": 18.22,
+        "p99_ms": 8.82,
+        "qps": 4278.0,
+        "queries": 42812,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 446.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          8081,
+          17568,
+          17673
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        2.95,
+        3.93,
+        3.73
+      ],
+      "shard0_per_second": [
+        [
+          607,
+          1327,
+          1354
+        ],
+        [
+          829,
+          1754,
+          1758
+        ],
+        [
+          816,
+          1732,
+          1791
+        ],
+        [
+          822,
+          1730,
+          1795
+        ],
+        [
+          772,
+          1787,
+          1785
+        ],
+        [
+          861,
+          1737,
+          1639
+        ],
+        [
+          780,
+          1796,
+          1742
+        ],
+        [
+          793,
+          1755,
+          1797
+        ],
+        [
+          777,
+          1783,
+          1771
+        ],
+        [
+          807,
+          1755,
+          1783
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 135.54,
+        "p50_ms": 13.31,
+        "p90_ms": 20.38,
+        "p999_ms": 74.94,
+        "p99_ms": 53.76,
+        "qps": 4455.0,
+        "queries": 44680,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          16069,
+          13889,
+          14784
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        23.88,
+        10.49,
+        12.63
+      ],
+      "shard0_per_second": [
+        [
+          1291,
+          1126,
+          1186
+        ],
+        [
+          1522,
+          1323,
+          1412
+        ],
+        [
+          1622,
+          1411,
+          1494
+        ],
+        [
+          1614,
+          1390,
+          1493
+        ],
+        [
+          1643,
+          1404,
+          1508
+        ],
+        [
+          1639,
+          1399,
+          1474
+        ],
+        [
+          1519,
+          1320,
+          1396
+        ],
+        [
+          1634,
+          1410,
+          1499
+        ],
+        [
+          1613,
+          1395,
+          1505
+        ],
+        [
+          1579,
+          1367,
+          1445
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 139.13,
+        "p50_ms": 13.46,
+        "p90_ms": 20.81,
+        "p999_ms": 82.21,
+        "p99_ms": 46.22,
+        "qps": 4417.0,
+        "queries": 44253,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 587.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          7722,
+          18490,
+          18934
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        9.68,
+        18.24,
+        18.95
+      ],
+      "shard0_per_second": [
+        [
+          703,
+          1367,
+          1515
+        ],
+        [
+          847,
+          1887,
+          1993
+        ],
+        [
+          809,
+          1850,
+          1971
+        ],
+        [
+          732,
+          1810,
+          1940
+        ],
+        [
+          773,
+          1908,
+          2048
+        ],
+        [
+          684,
+          2000,
+          2065
+        ],
+        [
+          686,
+          1865,
+          1917
+        ],
+        [
+          617,
+          1787,
+          1659
+        ],
+        [
+          691,
+          1909,
+          1638
+        ],
+        [
+          941,
+          1669,
+          1687
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.73,
+        "errors": 0,
+        "max_ms": 89.13,
+        "p50_ms": 13.14,
+        "p90_ms": 19.09,
+        "p999_ms": 74.76,
+        "p99_ms": 28.23,
+        "qps": 4644.0,
+        "queries": 46525,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          10810,
+          17786,
+          17976
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        12.12,
+        17.39,
+        17.44
+      ],
+      "shard0_per_second": [
+        [
+          796,
+          1428,
+          1427
+        ],
+        [
+          1099,
+          1708,
+          1842
+        ],
+        [
+          1129,
+          1772,
+          1843
+        ],
+        [
+          1060,
+          1635,
+          1789
+        ],
+        [
+          1131,
+          1754,
+          1747
+        ],
+        [
+          1078,
+          1786,
+          1857
+        ],
+        [
+          1098,
+          1754,
+          1750
+        ],
+        [
+          1064,
+          1847,
+          1699
+        ],
+        [
+          1059,
+          1744,
+          1785
+        ],
+        [
+          1042,
+          1842,
+          1789
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 129.89,
+        "p50_ms": 13.2,
+        "p90_ms": 19.13,
+        "p999_ms": 71.39,
+        "p99_ms": 29.25,
+        "qps": 4606.0,
+        "queries": 46160,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 342.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          11348,
+          17618,
+          17782
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        13.93,
+        18.0,
+        18.93
+      ],
+      "shard0_per_second": [
+        [
+          943,
+          1409,
+          1292
+        ],
+        [
+          1062,
+          1779,
+          1809
+        ],
+        [
+          1067,
+          1811,
+          1837
+        ],
+        [
+          1133,
+          1753,
+          1759
+        ],
+        [
+          1082,
+          1867,
+          1785
+        ],
+        [
+          1206,
+          1666,
+          1819
+        ],
+        [
+          1206,
+          1721,
+          1717
+        ],
+        [
+          1137,
+          1785,
+          1780
+        ],
+        [
+          1140,
+          1836,
+          1736
+        ],
+        [
+          1165,
+          1676,
+          1869
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 96.43,
+        "p50_ms": 13.36,
+        "p90_ms": 20.01,
+        "p999_ms": 78.5,
+        "p99_ms": 52.63,
+        "qps": 4462.0,
+        "queries": 44784,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          16157,
+          14989,
+          13698
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        24.05,
+        14.07,
+        12.83
+      ],
+      "shard0_per_second": [
+        [
+          1295,
+          1200,
+          1108
+        ],
+        [
+          1609,
+          1496,
+          1364
+        ],
+        [
+          1606,
+          1498,
+          1365
+        ],
+        [
+          1618,
+          1490,
+          1360
+        ],
+        [
+          1632,
+          1528,
+          1398
+        ],
+        [
+          1546,
+          1415,
+          1301
+        ],
+        [
+          1557,
+          1458,
+          1309
+        ],
+        [
+          1638,
+          1515,
+          1381
+        ],
+        [
+          1631,
+          1514,
+          1385
+        ],
+        [
+          1642,
+          1513,
+          1391
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 96.34,
+        "p50_ms": 13.3,
+        "p90_ms": 19.56,
+        "p999_ms": 77.05,
+        "p99_ms": 32.64,
+        "qps": 4572.0,
+        "queries": 45808,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin adaptive",
+      "hedge_adaptive": true,
+      "hedges": 369.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          7515,
+          19251,
+          19672
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        13.22,
+        19.61,
+        16.93
+      ],
+      "shard0_per_second": [
+        [
+          689,
+          1458,
+          1429
+        ],
+        [
+          856,
+          1896,
+          1947
+        ],
+        [
+          765,
+          1784,
+          1854
+        ],
+        [
+          786,
+          1914,
+          1972
+        ],
+        [
+          717,
+          1928,
+          2047
+        ],
+        [
+          682,
+          1922,
+          1987
+        ],
+        [
+          668,
+          2018,
+          2022
+        ],
+        [
+          684,
+          1987,
+          1989
+        ],
+        [
+          770,
+          1869,
+          1903
+        ],
+        [
+          688,
+          1972,
+          1986
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.68,
+        "errors": 0,
+        "max_ms": 78.45,
+        "p50_ms": 13.41,
+        "p90_ms": 18.88,
+        "p999_ms": 69.67,
+        "p99_ms": 25.78,
+        "qps": 4625.0,
+        "queries": 46333,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          6884,
+          11507,
+          28025
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        8.68,
+        10.98,
+        31.61
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          0,
+          3561
+        ],
+        [
+          0,
+          0,
+          4585
+        ],
+        [
+          0,
+          0,
+          4669
+        ],
+        [
+          271,
+          392,
+          4010
+        ],
+        [
+          1027,
+          1788,
+          1832
+        ],
+        [
+          1032,
+          1797,
+          1831
+        ],
+        [
+          1102,
+          1810,
+          1722
+        ],
+        [
+          1065,
+          1809,
+          1812
+        ],
+        [
+          1008,
+          1676,
+          1777
+        ],
+        [
+          1048,
+          1802,
+          1763
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 97.98,
+        "p50_ms": 13.29,
+        "p90_ms": 19.16,
+        "p999_ms": 74.1,
+        "p99_ms": 27.59,
+        "qps": 4602.0,
+        "queries": 46155,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost adaptive",
+      "hedge_adaptive": true,
+      "hedges": 259.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "stall",
+      "shard0_answers_by_copy": [
+        [
+          10959,
+          17876,
+          17798
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        14.37,
+        17.39,
+        17.32
+      ],
+      "shard0_per_second": [
+        [
+          867,
+          1340,
+          1386
+        ],
+        [
+          1090,
+          1774,
+          1802
+        ],
+        [
+          1073,
+          1784,
+          1800
+        ],
+        [
+          1036,
+          1770,
+          1780
+        ],
+        [
+          1056,
+          1769,
+          1851
+        ],
+        [
+          1048,
+          1763,
+          1626
+        ],
+        [
+          1122,
+          1855,
+          1708
+        ],
+        [
+          1111,
+          1846,
+          1749
+        ],
+        [
+          1092,
+          1741,
+          1818
+        ],
+        [
+          1201,
+          1752,
+          1697
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 1.31,
+        "p50_ms": 0.85,
+        "p90_ms": 0.92,
+        "p999_ms": 1.2,
+        "p99_ms": 1.06,
+        "qps": 1177.0,
+        "queries": 11768,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          4002,
+          3845,
+          3922
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.27,
+        0.24,
+        0.24
+      ],
+      "shard0_per_second": [
+        [
+          306,
+          288,
+          294
+        ],
+        [
+          399,
+          393,
+          392
+        ],
+        [
+          399,
+          375,
+          405
+        ],
+        [
+          399,
+          392,
+          380
+        ],
+        [
+          398,
+          385,
+          392
+        ],
+        [
+          402,
+          376,
+          399
+        ],
+        [
+          400,
+          394,
+          384
+        ],
+        [
+          393,
+          385,
+          393
+        ],
+        [
+          409,
+          383,
+          388
+        ],
+        [
+          394,
+          385,
+          390
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 1.41,
+        "p50_ms": 0.85,
+        "p90_ms": 0.93,
+        "p999_ms": 1.18,
+        "p99_ms": 1.07,
+        "qps": 1165.0,
+        "queries": 11653,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          3885,
+          3885,
+          3885
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.27,
+        0.22,
+        0.27
+      ],
+      "shard0_per_second": [
+        [
+          291,
+          292,
+          292
+        ],
+        [
+          388,
+          388,
+          388
+        ],
+        [
+          390,
+          390,
+          389
+        ],
+        [
+          388,
+          387,
+          388
+        ],
+        [
+          386,
+          386,
+          386
+        ],
+        [
+          391,
+          392,
+          392
+        ],
+        [
+          386,
+          386,
+          386
+        ],
+        [
+          388,
+          388,
+          388
+        ],
+        [
+          391,
+          390,
+          390
+        ],
+        [
+          388,
+          388,
+          388
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 1.43,
+        "p50_ms": 0.85,
+        "p90_ms": 0.93,
+        "p999_ms": 1.19,
+        "p99_ms": 1.08,
+        "qps": 1163.0,
+        "queries": 11633,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost no-load",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": false,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          3878,
+          3878,
+          3879
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.29,
+        0.22,
+        0.2
+      ],
+      "shard0_per_second": [
+        [
+          289,
+          289,
+          289
+        ],
+        [
+          385,
+          384,
+          385
+        ],
+        [
+          389,
+          390,
+          390
+        ],
+        [
+          387,
+          387,
+          387
+        ],
+        [
+          390,
+          389,
+          389
+        ],
+        [
+          389,
+          389,
+          389
+        ],
+        [
+          388,
+          389,
+          389
+        ],
+        [
+          388,
+          387,
+          387
+        ],
+        [
+          385,
+          386,
+          386
+        ],
+        [
+          390,
+          390,
+          389
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 47.46,
+        "p50_ms": 0.85,
+        "p90_ms": 0.93,
+        "p999_ms": 1.2,
+        "p99_ms": 1.05,
+        "qps": 1167.0,
+        "queries": 11675,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          3971,
+          3832,
+          3874
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.22,
+        0.32,
+        0.22
+      ],
+      "shard0_per_second": [
+        [
+          298,
+          297,
+          289
+        ],
+        [
+          407,
+          382,
+          389
+        ],
+        [
+          395,
+          390,
+          388
+        ],
+        [
+          394,
+          383,
+          393
+        ],
+        [
+          403,
+          381,
+          383
+        ],
+        [
+          395,
+          384,
+          389
+        ],
+        [
+          394,
+          379,
+          396
+        ],
+        [
+          383,
+          363,
+          375
+        ],
+        [
+          400,
+          388,
+          381
+        ],
+        [
+          398,
+          385,
+          397
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 38.37,
+        "p50_ms": 0.85,
+        "p90_ms": 0.93,
+        "p999_ms": 1.18,
+        "p99_ms": 1.07,
+        "qps": 1168.0,
+        "queries": 11679,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          3893,
+          3893,
+          3894
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.32,
+        0.24,
+        0.27
+      ],
+      "shard0_per_second": [
+        [
+          293,
+          293,
+          294
+        ],
+        [
+          392,
+          391,
+          391
+        ],
+        [
+          390,
+          391,
+          390
+        ],
+        [
+          375,
+          375,
+          376
+        ],
+        [
+          390,
+          390,
+          390
+        ],
+        [
+          391,
+          391,
+          391
+        ],
+        [
+          393,
+          392,
+          392
+        ],
+        [
+          390,
+          391,
+          390
+        ],
+        [
+          390,
+          390,
+          391
+        ],
+        [
+          391,
+          391,
+          390
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 1.32,
+        "p50_ms": 0.85,
+        "p90_ms": 0.93,
+        "p999_ms": 1.19,
+        "p99_ms": 1.06,
+        "qps": 1174.0,
+        "queries": 11739,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 1,
+      "config": "least-cost no-load",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": false,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          3913,
+          3914,
+          3914
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.29,
+        0.24,
+        0.27
+      ],
+      "shard0_per_second": [
+        [
+          292,
+          293,
+          293
+        ],
+        [
+          394,
+          394,
+          393
+        ],
+        [
+          394,
+          394,
+          394
+        ],
+        [
+          391,
+          391,
+          391
+        ],
+        [
+          388,
+          388,
+          388
+        ],
+        [
+          392,
+          392,
+          392
+        ],
+        [
+          392,
+          392,
+          393
+        ],
+        [
+          393,
+          393,
+          393
+        ],
+        [
+          389,
+          389,
+          389
+        ],
+        [
+          389,
+          389,
+          388
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 23.43,
+        "p50_ms": 3.51,
+        "p90_ms": 6.03,
+        "p999_ms": 12.55,
+        "p99_ms": 8.76,
+        "qps": 4180.0,
+        "queries": 41824,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          14136,
+          14531,
+          13179
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.93,
+        3.68,
+        2.68
+      ],
+      "shard0_per_second": [
+        [
+          993,
+          1010,
+          934
+        ],
+        [
+          1333,
+          1376,
+          1243
+        ],
+        [
+          1365,
+          1391,
+          1260
+        ],
+        [
+          1415,
+          1463,
+          1317
+        ],
+        [
+          1445,
+          1488,
+          1359
+        ],
+        [
+          1418,
+          1463,
+          1318
+        ],
+        [
+          1420,
+          1461,
+          1318
+        ],
+        [
+          1456,
+          1494,
+          1353
+        ],
+        [
+          1463,
+          1494,
+          1371
+        ],
+        [
+          1463,
+          1514,
+          1349
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 75.99,
+        "p50_ms": 3.44,
+        "p90_ms": 5.52,
+        "p999_ms": 12.94,
+        "p99_ms": 8.74,
+        "qps": 4312.0,
+        "queries": 43153,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          12662,
+          15228,
+          15306
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.27,
+        3.2,
+        3.46
+      ],
+      "shard0_per_second": [
+        [
+          962,
+          1133,
+          1191
+        ],
+        [
+          1199,
+          1580,
+          1557
+        ],
+        [
+          1262,
+          1514,
+          1521
+        ],
+        [
+          1313,
+          1493,
+          1393
+        ],
+        [
+          1277,
+          1504,
+          1550
+        ],
+        [
+          1175,
+          1578,
+          1587
+        ],
+        [
+          1295,
+          1555,
+          1507
+        ],
+        [
+          1271,
+          1469,
+          1567
+        ],
+        [
+          1254,
+          1506,
+          1530
+        ],
+        [
+          1323,
+          1517,
+          1497
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 69.82,
+        "p50_ms": 3.45,
+        "p90_ms": 5.48,
+        "p999_ms": 13.7,
+        "p99_ms": 8.54,
+        "qps": 4311.0,
+        "queries": 43139,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost no-load",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": false,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          12446,
+          15320,
+          15397
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.1,
+        3.05,
+        3.32
+      ],
+      "shard0_per_second": [
+        [
+          938,
+          1176,
+          1166
+        ],
+        [
+          1271,
+          1587,
+          1478
+        ],
+        [
+          1264,
+          1540,
+          1551
+        ],
+        [
+          1261,
+          1519,
+          1540
+        ],
+        [
+          1254,
+          1503,
+          1543
+        ],
+        [
+          1267,
+          1518,
+          1536
+        ],
+        [
+          1249,
+          1594,
+          1504
+        ],
+        [
+          1193,
+          1546,
+          1590
+        ],
+        [
+          1253,
+          1564,
+          1534
+        ],
+        [
+          1254,
+          1475,
+          1574
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 51.91,
+        "p50_ms": 3.47,
+        "p90_ms": 5.59,
+        "p999_ms": 12.91,
+        "p99_ms": 8.39,
+        "qps": 4281.0,
+        "queries": 42824,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          14449,
+          13554,
+          14835
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        4.59,
+        2.39,
+        3.56
+      ],
+      "shard0_per_second": [
+        [
+          1096,
+          1044,
+          1118
+        ],
+        [
+          1435,
+          1346,
+          1483
+        ],
+        [
+          1454,
+          1370,
+          1479
+        ],
+        [
+          1459,
+          1352,
+          1503
+        ],
+        [
+          1450,
+          1371,
+          1480
+        ],
+        [
+          1443,
+          1358,
+          1476
+        ],
+        [
+          1365,
+          1279,
+          1414
+        ],
+        [
+          1466,
+          1369,
+          1514
+        ],
+        [
+          1442,
+          1369,
+          1495
+        ],
+        [
+          1466,
+          1355,
+          1497
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 57.13,
+        "p50_ms": 3.45,
+        "p90_ms": 5.47,
+        "p999_ms": 12.79,
+        "p99_ms": 8.53,
+        "qps": 4322.0,
+        "queries": 43260,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          12267,
+          15587,
+          15418
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.12,
+        3.34,
+        3.51
+      ],
+      "shard0_per_second": [
+        [
+          882,
+          1204,
+          1192
+        ],
+        [
+          1188,
+          1558,
+          1567
+        ],
+        [
+          1225,
+          1568,
+          1554
+        ],
+        [
+          1197,
+          1574,
+          1494
+        ],
+        [
+          1241,
+          1546,
+          1529
+        ],
+        [
+          1267,
+          1523,
+          1522
+        ],
+        [
+          1231,
+          1529,
+          1564
+        ],
+        [
+          1244,
+          1526,
+          1576
+        ],
+        [
+          1191,
+          1574,
+          1518
+        ],
+        [
+          1292,
+          1545,
+          1520
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 45.54,
+        "p50_ms": 3.45,
+        "p90_ms": 5.49,
+        "p999_ms": 14.93,
+        "p99_ms": 8.55,
+        "qps": 4302.0,
+        "queries": 43046,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 16,
+      "config": "least-cost no-load",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": false,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          12364,
+          15239,
+          15457
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.1,
+        3.63,
+        3.61
+      ],
+      "shard0_per_second": [
+        [
+          961,
+          1173,
+          1110
+        ],
+        [
+          1292,
+          1503,
+          1525
+        ],
+        [
+          1173,
+          1541,
+          1630
+        ],
+        [
+          1285,
+          1503,
+          1545
+        ],
+        [
+          1245,
+          1501,
+          1587
+        ],
+        [
+          1220,
+          1514,
+          1549
+        ],
+        [
+          1222,
+          1567,
+          1563
+        ],
+        [
+          1239,
+          1542,
+          1565
+        ],
+        [
+          1193,
+          1554,
+          1515
+        ],
+        [
+          1214,
+          1461,
+          1473
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 78.99,
+        "p50_ms": 9.4,
+        "p90_ms": 28.45,
+        "p999_ms": 42.06,
+        "p99_ms": 34.37,
+        "qps": 4485.0,
+        "queries": 44899,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          17361,
+          14008,
+          13610
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        42.12,
+        8.17,
+        6.95
+      ],
+      "shard0_per_second": [
+        [
+          1314,
+          1045,
+          1042
+        ],
+        [
+          1737,
+          1399,
+          1356
+        ],
+        [
+          1728,
+          1401,
+          1361
+        ],
+        [
+          1739,
+          1418,
+          1372
+        ],
+        [
+          1751,
+          1404,
+          1368
+        ],
+        [
+          1737,
+          1387,
+          1348
+        ],
+        [
+          1742,
+          1415,
+          1383
+        ],
+        [
+          1657,
+          1336,
+          1295
+        ],
+        [
+          1760,
+          1407,
+          1372
+        ],
+        [
+          1727,
+          1421,
+          1359
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 66.72,
+        "p50_ms": 13.31,
+        "p90_ms": 19.48,
+        "p999_ms": 54.75,
+        "p99_ms": 27.62,
+        "qps": 4631.0,
+        "queries": 46385,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          11552,
+          17360,
+          17567
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        16.88,
+        16.8,
+        17.83
+      ],
+      "shard0_per_second": [
+        [
+          898,
+          1341,
+          1364
+        ],
+        [
+          1191,
+          1737,
+          1677
+        ],
+        [
+          1153,
+          1619,
+          1689
+        ],
+        [
+          1183,
+          1835,
+          1682
+        ],
+        [
+          1189,
+          1749,
+          1676
+        ],
+        [
+          1135,
+          1703,
+          1786
+        ],
+        [
+          1066,
+          1798,
+          1788
+        ],
+        [
+          1152,
+          1687,
+          1819
+        ],
+        [
+          1159,
+          1709,
+          1803
+        ],
+        [
+          1120,
+          1699,
+          1806
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 46.64,
+        "p50_ms": 13.37,
+        "p90_ms": 19.33,
+        "p999_ms": 36.49,
+        "p99_ms": 26.66,
+        "qps": 4644.0,
+        "queries": 46530,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost no-load",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": false,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          11822,
+          17553,
+          17219
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        15.2,
+        17.83,
+        16.93
+      ],
+      "shard0_per_second": [
+        [
+          901,
+          1319,
+          1314
+        ],
+        [
+          1200,
+          1784,
+          1719
+        ],
+        [
+          1098,
+          1807,
+          1699
+        ],
+        [
+          1206,
+          1768,
+          1665
+        ],
+        [
+          1213,
+          1740,
+          1717
+        ],
+        [
+          1167,
+          1659,
+          1796
+        ],
+        [
+          1129,
+          1783,
+          1704
+        ],
+        [
+          1202,
+          1716,
+          1759
+        ],
+        [
+          1172,
+          1741,
+          1726
+        ],
+        [
+          1196,
+          1756,
+          1700
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 65.34,
+        "p50_ms": 8.89,
+        "p90_ms": 28.86,
+        "p999_ms": 41.35,
+        "p99_ms": 34.92,
+        "qps": 4475.0,
+        "queries": 44820,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          17072,
+          13451,
+          14336
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        43.41,
+        6.71,
+        7.54
+      ],
+      "shard0_per_second": [
+        [
+          1301,
+          1023,
+          1097
+        ],
+        [
+          1714,
+          1361,
+          1440
+        ],
+        [
+          1687,
+          1325,
+          1426
+        ],
+        [
+          1654,
+          1301,
+          1381
+        ],
+        [
+          1699,
+          1340,
+          1428
+        ],
+        [
+          1740,
+          1350,
+          1450
+        ],
+        [
+          1708,
+          1348,
+          1443
+        ],
+        [
+          1710,
+          1347,
+          1424
+        ],
+        [
+          1677,
+          1324,
+          1400
+        ],
+        [
+          1725,
+          1373,
+          1459
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 108.15,
+        "p50_ms": 13.43,
+        "p90_ms": 19.43,
+        "p999_ms": 32.95,
+        "p99_ms": 26.16,
+        "qps": 4627.0,
+        "queries": 46363,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          11632,
+          17506,
+          17292
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        15.56,
+        15.32,
+        16.39
+      ],
+      "shard0_per_second": [
+        [
+          894,
+          1319,
+          1339
+        ],
+        [
+          1190,
+          1753,
+          1718
+        ],
+        [
+          1126,
+          1793,
+          1643
+        ],
+        [
+          1184,
+          1798,
+          1643
+        ],
+        [
+          1136,
+          1795,
+          1742
+        ],
+        [
+          1081,
+          1668,
+          1924
+        ],
+        [
+          1221,
+          1741,
+          1662
+        ],
+        [
+          1155,
+          1719,
+          1739
+        ],
+        [
+          1153,
+          1719,
+          1735
+        ],
+        [
+          1166,
+          1749,
+          1695
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.15,
+        "errors": 0,
+        "max_ms": 138.78,
+        "p50_ms": 13.44,
+        "p90_ms": 19.16,
+        "p999_ms": 33.42,
+        "p99_ms": 25.44,
+        "qps": 4635.0,
+        "queries": 46456,
+        "raw_max_ms": null,
+        "raw_p50_ms": null,
+        "raw_p99_ms": null,
+        "reads_after_write": 0
+      },
+      "clients": 64,
+      "config": "least-cost no-load",
+      "hedge_adaptive": false,
+      "hedges": 19.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": false,
+      "scenario": "busy",
+      "shard0_answers_by_copy": [
+        [
+          11943,
+          17407,
+          17232
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        14.78,
+        17.34,
+        16.37
+      ],
+      "shard0_per_second": [
+        [
+          962,
+          1298,
+          1302
+        ],
+        [
+          1165,
+          1737,
+          1695
+        ],
+        [
+          1160,
+          1727,
+          1784
+        ],
+        [
+          1214,
+          1732,
+          1703
+        ],
+        [
+          1212,
+          1706,
+          1722
+        ],
+        [
+          1200,
+          1802,
+          1637
+        ],
+        [
+          1173,
+          1608,
+          1787
+        ],
+        [
+          1192,
+          1779,
+          1689
+        ],
+        [
+          1137,
+          1753,
+          1818
+        ],
+        [
+          1197,
+          1779,
+          1667
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.98,
+        "errors": 0,
+        "max_ms": 1.79,
+        "p50_ms": 0.64,
+        "p90_ms": 0.92,
+        "p999_ms": 1.21,
+        "p99_ms": 1.05,
+        "qps": 1140.0,
+        "queries": 11400,
+        "raw_max_ms": 103.58,
+        "raw_p50_ms": 0.23,
+        "raw_p99_ms": 0.34,
+        "reads_after_write": 3773
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 2.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          5059,
+          14,
+          10102
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.32,
+        0.02,
+        0.41
+      ],
+      "shard0_per_second": [
+        [
+          403,
+          0,
+          806
+        ],
+        [
+          522,
+          0,
+          1044
+        ],
+        [
+          464,
+          3,
+          923
+        ],
+        [
+          522,
+          0,
+          1046
+        ],
+        [
+          510,
+          0,
+          1019
+        ],
+        [
+          522,
+          0,
+          1044
+        ],
+        [
+          515,
+          0,
+          1029
+        ],
+        [
+          448,
+          11,
+          885
+        ],
+        [
+          519,
+          0,
+          1039
+        ],
+        [
+          505,
+          0,
+          1010
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.22,
+        "errors": 0,
+        "max_ms": 1.57,
+        "p50_ms": 0.63,
+        "p90_ms": 0.91,
+        "p999_ms": 1.14,
+        "p99_ms": 1.03,
+        "qps": 1173.0,
+        "queries": 11731,
+        "raw_max_ms": 66.82,
+        "raw_p50_ms": 0.23,
+        "raw_p99_ms": 0.33,
+        "reads_after_write": 3890
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          7177,
+          4,
+          8442
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.37,
+        0.0,
+        0.27
+      ],
+      "shard0_per_second": [
+        [
+          407,
+          0,
+          813
+        ],
+        [
+          534,
+          0,
+          1067
+        ],
+        [
+          690,
+          0,
+          879
+        ],
+        [
+          789,
+          0,
+          805
+        ],
+        [
+          762,
+          0,
+          774
+        ],
+        [
+          799,
+          0,
+          788
+        ],
+        [
+          766,
+          0,
+          792
+        ],
+        [
+          683,
+          4,
+          720
+        ],
+        [
+          814,
+          0,
+          830
+        ],
+        [
+          737,
+          0,
+          781
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 5.08,
+        "p50_ms": 0.65,
+        "p90_ms": 0.94,
+        "p999_ms": 1.99,
+        "p99_ms": 1.1,
+        "qps": 1106.0,
+        "queries": 11060,
+        "raw_max_ms": 105.24,
+        "raw_p50_ms": 0.23,
+        "raw_p99_ms": 0.35,
+        "reads_after_write": 3667
+      },
+      "clients": 1,
+      "config": "least-cost prefer",
+      "hedge_adaptive": false,
+      "hedges": 3.0,
+      "prefer_caught_up": true,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          5465,
+          3732,
+          5532
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.32,
+        0.24,
+        0.24
+      ],
+      "shard0_per_second": [
+        [
+          429,
+          298,
+          430
+        ],
+        [
+          564,
+          397,
+          587
+        ],
+        [
+          556,
+          360,
+          553
+        ],
+        [
+          587,
+          408,
+          592
+        ],
+        [
+          571,
+          396,
+          575
+        ],
+        [
+          580,
+          391,
+          592
+        ],
+        [
+          554,
+          373,
+          559
+        ],
+        [
+          329,
+          232,
+          346
+        ],
+        [
+          579,
+          389,
+          569
+        ],
+        [
+          576,
+          398,
+          580
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.98,
+        "errors": 0,
+        "max_ms": 2.34,
+        "p50_ms": 0.65,
+        "p90_ms": 0.93,
+        "p999_ms": 1.47,
+        "p99_ms": 1.08,
+        "qps": 1115.0,
+        "queries": 11148,
+        "raw_max_ms": 103.32,
+        "raw_p50_ms": 0.23,
+        "raw_p99_ms": 0.34,
+        "reads_after_write": 3700
+      },
+      "clients": 1,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 2.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          4950,
+          6,
+          9894
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.27,
+        0.02,
+        0.46
+      ],
+      "shard0_per_second": [
+        [
+          382,
+          0,
+          764
+        ],
+        [
+          514,
+          0,
+          1030
+        ],
+        [
+          445,
+          5,
+          883
+        ],
+        [
+          503,
+          0,
+          1008
+        ],
+        [
+          512,
+          0,
+          1022
+        ],
+        [
+          502,
+          0,
+          1004
+        ],
+        [
+          509,
+          0,
+          1018
+        ],
+        [
+          417,
+          1,
+          834
+        ],
+        [
+          509,
+          0,
+          1018
+        ],
+        [
+          525,
+          0,
+          1050
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.51,
+        "errors": 0,
+        "max_ms": 1.35,
+        "p50_ms": 0.66,
+        "p90_ms": 0.94,
+        "p999_ms": 1.2,
+        "p99_ms": 1.06,
+        "qps": 1124.0,
+        "queries": 11245,
+        "raw_max_ms": 101.13,
+        "raw_p50_ms": 0.23,
+        "raw_p99_ms": 0.33,
+        "reads_after_write": 3732
+      },
+      "clients": 1,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 1.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          6242,
+          2,
+          8735
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.2,
+        0.0,
+        0.44
+      ],
+      "shard0_per_second": [
+        [
+          381,
+          0,
+          762
+        ],
+        [
+          506,
+          0,
+          1010
+        ],
+        [
+          687,
+          0,
+          867
+        ],
+        [
+          730,
+          0,
+          765
+        ],
+        [
+          766,
+          0,
+          755
+        ],
+        [
+          745,
+          0,
+          768
+        ],
+        [
+          754,
+          0,
+          736
+        ],
+        [
+          561,
+          2,
+          846
+        ],
+        [
+          505,
+          0,
+          1012
+        ],
+        [
+          479,
+          0,
+          957
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 3.31,
+        "p50_ms": 0.67,
+        "p90_ms": 0.96,
+        "p999_ms": 1.76,
+        "p99_ms": 1.11,
+        "qps": 1094.0,
+        "queries": 10945,
+        "raw_max_ms": 104.08,
+        "raw_p50_ms": 0.24,
+        "raw_p99_ms": 0.35,
+        "reads_after_write": 3630
+      },
+      "clients": 1,
+      "config": "least-cost prefer",
+      "hedge_adaptive": false,
+      "hedges": 2.0,
+      "prefer_caught_up": true,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          5410,
+          3695,
+          5472
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        0.34,
+        0.32,
+        0.24
+      ],
+      "shard0_per_second": [
+        [
+          430,
+          295,
+          430
+        ],
+        [
+          549,
+          391,
+          573
+        ],
+        [
+          563,
+          362,
+          562
+        ],
+        [
+          560,
+          390,
+          564
+        ],
+        [
+          548,
+          384,
+          549
+        ],
+        [
+          558,
+          373,
+          573
+        ],
+        [
+          556,
+          376,
+          551
+        ],
+        [
+          400,
+          277,
+          424
+        ],
+        [
+          560,
+          377,
+          550
+        ],
+        [
+          554,
+          383,
+          554
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 1.0,
+        "errors": 0,
+        "max_ms": 10.78,
+        "p50_ms": 1.88,
+        "p90_ms": 2.73,
+        "p999_ms": 4.9,
+        "p99_ms": 3.73,
+        "qps": 5853.0,
+        "queries": 58551,
+        "raw_max_ms": 103.3,
+        "raw_p50_ms": 0.94,
+        "raw_p99_ms": 2.68,
+        "reads_after_write": 19585
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 28.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          26049,
+          123,
+          51974
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        2.98,
+        0.15,
+        8.93
+      ],
+      "shard0_per_second": [
+        [
+          1971,
+          0,
+          3943
+        ],
+        [
+          2629,
+          0,
+          5265
+        ],
+        [
+          2489,
+          73,
+          4893
+        ],
+        [
+          2613,
+          0,
+          5236
+        ],
+        [
+          2676,
+          0,
+          5347
+        ],
+        [
+          2661,
+          0,
+          5317
+        ],
+        [
+          2640,
+          0,
+          5281
+        ],
+        [
+          2457,
+          50,
+          4867
+        ],
+        [
+          2640,
+          0,
+          5281
+        ],
+        [
+          2615,
+          0,
+          5232
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.51,
+        "errors": 0,
+        "max_ms": 11.49,
+        "p50_ms": 1.92,
+        "p90_ms": 2.74,
+        "p999_ms": 5.03,
+        "p99_ms": 3.73,
+        "qps": 5881.0,
+        "queries": 58832,
+        "raw_max_ms": 102.15,
+        "raw_p50_ms": 0.97,
+        "raw_p99_ms": 2.7,
+        "reads_after_write": 19680
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 4.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          39591,
+          4,
+          38938
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        5.59,
+        0.0,
+        5.83
+      ],
+      "shard0_per_second": [
+        [
+          3012,
+          0,
+          2993
+        ],
+        [
+          3752,
+          0,
+          4015
+        ],
+        [
+          4031,
+          0,
+          3936
+        ],
+        [
+          4182,
+          0,
+          3847
+        ],
+        [
+          4009,
+          0,
+          3772
+        ],
+        [
+          4041,
+          0,
+          3719
+        ],
+        [
+          4034,
+          0,
+          3871
+        ],
+        [
+          3860,
+          4,
+          3839
+        ],
+        [
+          3857,
+          0,
+          4022
+        ],
+        [
+          3865,
+          0,
+          3949
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 17.66,
+        "p50_ms": 1.84,
+        "p90_ms": 2.89,
+        "p999_ms": 6.35,
+        "p99_ms": 4.33,
+        "qps": 5643.0,
+        "queries": 56445,
+        "raw_max_ms": 102.1,
+        "raw_p50_ms": 1.11,
+        "raw_p99_ms": 3.68,
+        "reads_after_write": 18881
+      },
+      "clients": 16,
+      "config": "least-cost prefer",
+      "hedge_adaptive": false,
+      "hedges": 3.0,
+      "prefer_caught_up": true,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          26360,
+          24245,
+          24742
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.78,
+        3.56,
+        3.54
+      ],
+      "shard0_per_second": [
+        [
+          1934,
+          1826,
+          1819
+        ],
+        [
+          2685,
+          2524,
+          2567
+        ],
+        [
+          2749,
+          2505,
+          2561
+        ],
+        [
+          2583,
+          2409,
+          2456
+        ],
+        [
+          2757,
+          2434,
+          2515
+        ],
+        [
+          2632,
+          2407,
+          2449
+        ],
+        [
+          2612,
+          2415,
+          2426
+        ],
+        [
+          2708,
+          2272,
+          2573
+        ],
+        [
+          2555,
+          2420,
+          2431
+        ],
+        [
+          2490,
+          2411,
+          2340
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.98,
+        "errors": 0,
+        "max_ms": 13.72,
+        "p50_ms": 1.99,
+        "p90_ms": 2.87,
+        "p999_ms": 5.38,
+        "p99_ms": 3.92,
+        "qps": 5549.0,
+        "queries": 55508,
+        "raw_max_ms": 102.09,
+        "raw_p50_ms": 0.92,
+        "raw_p99_ms": 2.76,
+        "reads_after_write": 18564
+      },
+      "clients": 16,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 12.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          24695,
+          179,
+          49215
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        3.56,
+        0.22,
+        8.41
+      ],
+      "shard0_per_second": [
+        [
+          1960,
+          0,
+          3921
+        ],
+        [
+          2614,
+          0,
+          5225
+        ],
+        [
+          2082,
+          126,
+          4042
+        ],
+        [
+          2542,
+          0,
+          5082
+        ],
+        [
+          2485,
+          0,
+          4970
+        ],
+        [
+          2453,
+          0,
+          4911
+        ],
+        [
+          2525,
+          0,
+          5046
+        ],
+        [
+          2330,
+          53,
+          4610
+        ],
+        [
+          2491,
+          0,
+          4979
+        ],
+        [
+          2584,
+          0,
+          5166
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.71,
+        "errors": 0,
+        "max_ms": 15.89,
+        "p50_ms": 2.08,
+        "p90_ms": 2.96,
+        "p999_ms": 5.52,
+        "p99_ms": 4.02,
+        "qps": 5437.0,
+        "queries": 54384,
+        "raw_max_ms": 102.62,
+        "raw_p50_ms": 1.0,
+        "raw_p99_ms": 2.93,
+        "reads_after_write": 18179
+      },
+      "clients": 16,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 6.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          35077,
+          64,
+          37434
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        5.78,
+        0.05,
+        6.17
+      ],
+      "shard0_per_second": [
+        [
+          2708,
+          0,
+          2867
+        ],
+        [
+          3451,
+          0,
+          3853
+        ],
+        [
+          3525,
+          0,
+          3775
+        ],
+        [
+          3747,
+          0,
+          3632
+        ],
+        [
+          3463,
+          33,
+          3720
+        ],
+        [
+          3501,
+          0,
+          3752
+        ],
+        [
+          3448,
+          0,
+          3682
+        ],
+        [
+          3340,
+          0,
+          3706
+        ],
+        [
+          3363,
+          0,
+          3839
+        ],
+        [
+          3614,
+          20,
+          3694
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.22,
+        "errors": 0,
+        "max_ms": 25.55,
+        "p50_ms": 2.1,
+        "p90_ms": 3.22,
+        "p999_ms": 7.34,
+        "p99_ms": 4.77,
+        "qps": 5079.0,
+        "queries": 50799,
+        "raw_max_ms": 102.27,
+        "raw_p50_ms": 1.21,
+        "raw_p99_ms": 4.05,
+        "reads_after_write": 16980
+      },
+      "clients": 16,
+      "config": "least-cost prefer",
+      "hedge_adaptive": false,
+      "hedges": 5.0,
+      "prefer_caught_up": true,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          18291,
+          24035,
+          25472
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        2.78,
+        4.46,
+        4.07
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          2633,
+          2602
+        ],
+        [
+          0,
+          3375,
+          3572
+        ],
+        [
+          1383,
+          2685,
+          2813
+        ],
+        [
+          2390,
+          2177,
+          2311
+        ],
+        [
+          2314,
+          2119,
+          2175
+        ],
+        [
+          2420,
+          2134,
+          2319
+        ],
+        [
+          2367,
+          2142,
+          2322
+        ],
+        [
+          2345,
+          1983,
+          2253
+        ],
+        [
+          2189,
+          2123,
+          2289
+        ],
+        [
+          2344,
+          2123,
+          2262
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 1.46,
+        "errors": 0,
+        "max_ms": 34.87,
+        "p50_ms": 7.26,
+        "p90_ms": 10.34,
+        "p999_ms": 16.02,
+        "p99_ms": 13.5,
+        "qps": 5985.0,
+        "queries": 59877,
+        "raw_max_ms": 150.29,
+        "raw_p50_ms": 5.29,
+        "raw_p99_ms": 12.1,
+        "reads_after_write": 20066
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 54.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          51196,
+          447,
+          28373
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        29.46,
+        2.56,
+        17.61
+      ],
+      "shard0_per_second": [
+        [
+          6159,
+          0,
+          0
+        ],
+        [
+          8049,
+          0,
+          0
+        ],
+        [
+          4804,
+          207,
+          2912
+        ],
+        [
+          2718,
+          0,
+          5422
+        ],
+        [
+          2727,
+          0,
+          5460
+        ],
+        [
+          2738,
+          0,
+          5470
+        ],
+        [
+          2665,
+          0,
+          5311
+        ],
+        [
+          3765,
+          240,
+          3798
+        ],
+        [
+          7735,
+          0,
+          0
+        ],
+        [
+          7802,
+          0,
+          0
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 1.27,
+        "errors": 0,
+        "max_ms": 27.82,
+        "p50_ms": 6.79,
+        "p90_ms": 10.05,
+        "p999_ms": 16.61,
+        "p99_ms": 13.63,
+        "qps": 5960.0,
+        "queries": 59647,
+        "raw_max_ms": 109.24,
+        "raw_p50_ms": 4.86,
+        "raw_p99_ms": 11.59,
+        "reads_after_write": 20019
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 45.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          31634,
+          144,
+          47942
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        17.63,
+        0.56,
+        31.05
+      ],
+      "shard0_per_second": [
+        [
+          3366,
+          0,
+          3138
+        ],
+        [
+          4321,
+          0,
+          3887
+        ],
+        [
+          4056,
+          55,
+          3848
+        ],
+        [
+          4395,
+          0,
+          4007
+        ],
+        [
+          4328,
+          0,
+          3849
+        ],
+        [
+          4111,
+          0,
+          3985
+        ],
+        [
+          4263,
+          0,
+          3783
+        ],
+        [
+          2794,
+          89,
+          4703
+        ],
+        [
+          0,
+          0,
+          7348
+        ],
+        [
+          0,
+          0,
+          7380
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 29.78,
+        "p50_ms": 6.52,
+        "p90_ms": 10.38,
+        "p999_ms": 21.01,
+        "p99_ms": 14.97,
+        "qps": 5793.0,
+        "queries": 57978,
+        "raw_max_ms": 107.85,
+        "raw_p50_ms": 5.42,
+        "raw_p99_ms": 13.77,
+        "reads_after_write": 19433
+      },
+      "clients": 64,
+      "config": "least-cost prefer",
+      "hedge_adaptive": false,
+      "hedges": 2.0,
+      "prefer_caught_up": true,
+      "refused_429": 0.0,
+      "round": 0,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          28049,
+          25151,
+          24284
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        17.56,
+        14.83,
+        15.85
+      ],
+      "shard0_per_second": [
+        [
+          2014,
+          1869,
+          1949
+        ],
+        [
+          2807,
+          2677,
+          2416
+        ],
+        [
+          2848,
+          2513,
+          2494
+        ],
+        [
+          2812,
+          2486,
+          2431
+        ],
+        [
+          2892,
+          2587,
+          2287
+        ],
+        [
+          2926,
+          2483,
+          2440
+        ],
+        [
+          2687,
+          2496,
+          2463
+        ],
+        [
+          2858,
+          2464,
+          2364
+        ],
+        [
+          2719,
+          2580,
+          2385
+        ],
+        [
+          2720,
+          2381,
+          2394
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 1.9,
+        "errors": 0,
+        "max_ms": 23.49,
+        "p50_ms": 8.97,
+        "p90_ms": 12.18,
+        "p999_ms": 18.64,
+        "p99_ms": 15.76,
+        "qps": 5266.0,
+        "queries": 52688,
+        "raw_max_ms": 128.98,
+        "raw_p50_ms": 6.34,
+        "raw_p99_ms": 14.63,
+        "reads_after_write": 17736
+      },
+      "clients": 64,
+      "config": "round-robin",
+      "hedge_adaptive": false,
+      "hedges": 54.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "round-robin",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          68623,
+          527,
+          1340
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        53.07,
+        1.95,
+        0.39
+      ],
+      "shard0_per_second": [
+        [
+          5427,
+          0,
+          0
+        ],
+        [
+          7128,
+          0,
+          0
+        ],
+        [
+          5980,
+          248,
+          813
+        ],
+        [
+          7203,
+          0,
+          0
+        ],
+        [
+          6986,
+          0,
+          0
+        ],
+        [
+          6950,
+          0,
+          0
+        ],
+        [
+          7068,
+          0,
+          0
+        ],
+        [
+          6194,
+          279,
+          527
+        ],
+        [
+          6990,
+          0,
+          0
+        ],
+        [
+          6934,
+          0,
+          0
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 1.44,
+        "errors": 0,
+        "max_ms": 37.05,
+        "p50_ms": 8.03,
+        "p90_ms": 11.49,
+        "p999_ms": 19.77,
+        "p99_ms": 15.42,
+        "qps": 5168.0,
+        "queries": 51726,
+        "raw_max_ms": 110.44,
+        "raw_p50_ms": 5.39,
+        "raw_p99_ms": 13.46,
+        "reads_after_write": 17467
+      },
+      "clients": 64,
+      "config": "least-cost",
+      "hedge_adaptive": false,
+      "hedges": 27.0,
+      "prefer_caught_up": false,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          20030,
+          152,
+          49069
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        12.46,
+        0.98,
+        36.27
+      ],
+      "shard0_per_second": [
+        [
+          0,
+          0,
+          5005
+        ],
+        [
+          0,
+          0,
+          6668
+        ],
+        [
+          2137,
+          89,
+          4732
+        ],
+        [
+          3802,
+          0,
+          3522
+        ],
+        [
+          3780,
+          0,
+          3452
+        ],
+        [
+          3699,
+          0,
+          3552
+        ],
+        [
+          3740,
+          0,
+          3607
+        ],
+        [
+          2872,
+          63,
+          4114
+        ],
+        [
+          0,
+          0,
+          6430
+        ],
+        [
+          0,
+          0,
+          6298
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    },
+    {
+      "client": {
+        "avoided_mean": 0.0,
+        "errors": 0,
+        "max_ms": 65.62,
+        "p50_ms": 7.13,
+        "p90_ms": 11.47,
+        "p999_ms": 24.25,
+        "p99_ms": 16.84,
+        "qps": 5295.0,
+        "queries": 53004,
+        "raw_max_ms": 99.24,
+        "raw_p50_ms": 5.88,
+        "raw_p99_ms": 14.84,
+        "reads_after_write": 17858
+      },
+      "clients": 64,
+      "config": "least-cost prefer",
+      "hedge_adaptive": false,
+      "hedges": 0.0,
+      "prefer_caught_up": true,
+      "refused_429": 0.0,
+      "round": 1,
+      "route": "least-cost",
+      "route_load": true,
+      "scenario": "ryw",
+      "shard0_answers_by_copy": [
+        [
+          25934,
+          22836,
+          22168
+        ]
+      ],
+      "shard0_mean_inflight_by_coordinator_copy": [
+        17.66,
+        15.02,
+        15.59
+      ],
+      "shard0_per_second": [
+        [
+          1973,
+          1796,
+          1703
+        ],
+        [
+          2623,
+          2320,
+          2141
+        ],
+        [
+          2655,
+          2304,
+          2261
+        ],
+        [
+          2578,
+          2146,
+          2242
+        ],
+        [
+          2579,
+          2306,
+          2147
+        ],
+        [
+          2612,
+          2218,
+          2303
+        ],
+        [
+          2619,
+          2363,
+          2161
+        ],
+        [
+          2619,
+          2270,
+          2244
+        ],
+        [
+          2556,
+          2248,
+          2234
+        ],
+        [
+          2430,
+          2290,
+          2137
+        ]
+      ],
+      "shard_errors": 0.0,
+      "shard_timeouts": 0.0
+    }
+  ],
+  "ryw_share": 0.25
+}

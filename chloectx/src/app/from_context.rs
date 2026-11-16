@@ -179,7 +179,7 @@ impl App {
         let store = self.space(space)?;
         let ks: Vec<_> = kinds.iter().filter_map(|k| note_kind(k).map(|x| x.0)).collect();
         let got = store.latest(&ks, (limit * 3).min(cluster::WINDOW), &Filter::default())?;
-        Ok(got.into_iter().filter(|r| r.tag != "superseded" && r.tag != "done" && !exclude.contains(&r.id)).take(limit).collect())
+        Ok(got.into_iter().filter(|r| !crate::record::closed_tag(&r.tag) && r.tag != "done" && !exclude.contains(&r.id)).take(limit).collect())
     }
 
     /// What a build costs here, measured, and what the engine may spend.
@@ -338,7 +338,7 @@ impl App {
             items.len(),
             kinds.join(", ")
         );
-        let made = self.cluster.post(&format!("{ENGINE}/api/apps"), &json!({"description": request})).map_err(|f| Fail(502, format!("the app engine: {f}")))?;
+        let made = self.cluster.post(&format!("{ENGINE}/api/apps"), &json!({"description": request, "name": title})).map_err(|f| Fail(502, format!("the app engine: {f}")))?;
         // The engine answers `{app: "<id>", request}`; an object with an id is taken too.
         let app_id = made["app"].as_str().or_else(|| made["app"]["id"].as_str()).unwrap_or("").to_string();
         if app_id.is_empty() {

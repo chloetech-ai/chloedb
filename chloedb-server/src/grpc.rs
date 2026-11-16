@@ -112,9 +112,10 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// and keeps promotions ([`HOLD_PROTOCOL`]), 18 scrolls a shard's rows
 /// for a coordinator ([`SCROLL_PROTOCOL`]), 19 checks a write without
 /// applying it ([`VALIDATE_PROTOCOL`]), and 20 compares the transaction a
-/// `Replicate` follows by its digest ([`SAME_TERM_PROTOCOL`]).
+/// `Replicate` follows by its digest ([`SAME_TERM_PROTOCOL`]), and 21
+/// answers what a write's operations found ([`RECEIPT_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 20;
+pub const PROTOCOL: u32 = 21;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -198,6 +199,15 @@ pub const VALIDATE_PROTOCOL: u32 = 19;
 /// alone, as before. Nothing gates on the number; it names the change.
 pub const SAME_TERM_PROTOCOL: u32 = 20;
 
+/// The protocol whose write answers say what the operations found
+/// (`WriteResponse.receipt` and its counts, [`crate::service::Receipt`]),
+/// and whose shards take an operation's `"if_missing"` and `"strict"`: a
+/// `set`, `add` or `delete` refused when no row has its key, an operation
+/// refused when it would replace a row or write a key twice. An older
+/// shard ignores both fields, and answers no counts, so a coordinator
+/// sends a strict write only to shards of this protocol.
+pub const RECEIPT_PROTOCOL: u32 = 21;
+
 /// The most bytes of a feed one `FeedChunk` carries.
 const FEED_CHUNK: usize = 1 << 20;
 
@@ -231,7 +241,23 @@ pub fn rows_from_pb(r: pb::GetResponse) -> Vec<Option<(Vec<Value>, u64)>> {
 
 /// A write's answer ([`crate::service::Written`]).
 pub fn write_response(w: crate::service::Written) -> pb::WriteResponse {
-    pb::WriteResponse { written: w.rows, seq_no: w.seq_no, seq_nos: w.seq_nos, skipped: w.skipped, ..Default::default() }
+    let r = w.receipt.unwrap_or_default();
+    pb::WriteResponse {
+        written: w.rows,
+        seq_no: w.seq_no,
+        seq_nos: w.seq_nos,
+        seq_term: w.seq_term,
+        seq_terms: w.seq_terms,
+        skipped: w.skipped,
+        receipt: w.receipt.is_some(),
+        inserted: r.inserted,
+        replaced: r.replaced,
+        updated: r.updated,
+        deleted: r.deleted,
+        collapsed: r.collapsed,
+        not_found: r.not_found,
+        ..Default::default()
+    }
 }
 
 /// What [`pb::strata_server::Strata::hello`] answers, but what is the
@@ -273,7 +299,7 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         plan: plan.map(Arc::new),
         hold: r.hold,
         release: r.release,
-        after: After::of(r.min_seq_no, r.min_seq_nos)?,
+        after: After::termed(r.min_seq_no, r.min_seq_nos, r.min_seq_term, r.min_seq_terms)?,
         // A coordinator's query that asked for its steps' CPU time; a shard
         // also measures it when set to for every query.
         profile: r.profile,
@@ -288,8 +314,13 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         scroll: None,
         skip_steps: r.skip_steps,
         cache_key,
+        // The caller, whose model budget llm() takes from ([`Grpc::query`]).
+        who: None,
         // A client's, held to the server's limits.
         own_read: false,
+        // The server's and the caller's key's statement budget
+        // ([`Service::budget_for`]); a gRPC request asks for none of its own.
+        budget: Default::default(),
     })
 }
 
@@ -365,7 +396,7 @@ fn method_scope(method: &str) -> Option<Scope> {
 fn may_call<T>(req: &Request<T>, method: &str) -> (Principal, Result<(), ApiError>) {
     let who = req.extensions().get::<Principal>().cloned().unwrap_or_else(Principal::open);
     let r = match method_scope(method) {
-        None if !who.root => Err(ApiError { status: 403, message: format!("{method} is a call between the servers of a cluster: it needs the cluster's token ({:?} may not make it)", who.name) }),
+        None if !who.root => Err(ApiError { code: None, status: 403, message: format!("{method} is a call between the servers of a cluster: it needs the cluster's token ({:?} may not make it)", who.name) }),
         None => Ok(()),
         Some(need) => who.may(need, method),
     };
@@ -410,7 +441,7 @@ impl Grpc {
         // ([`crate::service::FOLLOW`]).
         let follow: Option<Arc<str>> = req.metadata().get(crate::service::FOLLOW_HEADER).and_then(|v| v.to_str().ok()).map(Into::into);
         if follow.is_some() && !who.root && may.is_ok() {
-            may = Err(ApiError { status: 403, message: format!("{} is a coordinator's, with the cluster's token", crate::service::FOLLOW_HEADER) });
+            may = Err(ApiError { code: None, status: 403, message: format!("{} is a coordinator's, with the cluster's token", crate::service::FOLLOW_HEADER) });
         }
         if let Err(e) = may {
             self.0.metrics.grpc(method, "PermissionDenied", 0.0);
@@ -421,7 +452,7 @@ impl Grpc {
         let caller = {
             let md = |k: &str| req.metadata().get(k).and_then(|v| v.to_str().ok()).map(String::from);
             let app = md("x-strata-app").or_else(|| md("user-agent").as_deref().and_then(keys::product));
-            let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None };
+            let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None, ..Default::default() };
             crate::telemetry::Caller::of(&who, Some(r))
         };
         // A part whose deadline is its client's own (the coordinator says so):
@@ -430,7 +461,9 @@ impl Grpc {
         // The call itself, on the heap: a query's future is many kilobytes,
         // and each wrapper below would otherwise move it again (a shard's
         // query spent an eighth of its time copying it).
-        let call = Box::pin(f(self.0.clone(), who.clone(), req.into_inner()));
+        // The credential's scope ([`crate::service::SCOPE`]).
+        let scope = if who.root || who.limited() { Scope::Admin } else { who.scope };
+        let call = Box::pin(crate::service::SCOPE.scope(scope, f(self.0.clone(), who.clone(), req.into_inner())));
         let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), call)));
         let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(who.root, call)));
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
@@ -490,6 +523,8 @@ impl pb::strata_server::Strata for Grpc {
             svc.check_epoch(r.epoch)?;
             let (scroll, page) = (r.scroll, r.page_size as usize);
             let mut q = query_req(r)?;
+            // llm() takes from the caller's model budget.
+            q.who = Some(who.clone());
             if scroll {
                 q.scroll = Some(crate::service::ScrollAsk { page, keep_alive, owner });
             }
@@ -512,7 +547,7 @@ impl pb::strata_server::Strata for Grpc {
         self.serve("TermStats", req, |svc, _who, r| async move {
             svc.check_epoch(r.epoch)?;
             let plan = request_plan(r.protocol, r.plan, &r.plan_json)?;
-            let after = After::of(r.min_seq_no, r.min_seq_nos)?;
+            let after = After::termed(r.min_seq_no, r.min_seq_nos, r.min_seq_term, r.min_seq_terms)?;
             let (stats, snapshot, version) = svc.term_stats(&r.sql, plan.as_ref(), &params_from_pb(r.params), &after, r.timeout_ms as u64).await?;
             Ok(pb::TermStatsResponse { stats_json: json_bytes(&stats), snapshot, version })
         })
@@ -523,7 +558,7 @@ impl pb::strata_server::Strata for Grpc {
         self.serve("GuardCounts", req, |svc, _who, r| async move {
             svc.check_epoch(r.epoch)?;
             let plan = request_plan(r.protocol, r.plan, &r.plan_json)?;
-            let after = After::of(r.min_seq_no, r.min_seq_nos)?;
+            let after = After::termed(r.min_seq_no, r.min_seq_nos, r.min_seq_term, r.min_seq_terms)?;
             let (need, counts) = svc.guard_counts(&r.sql, plan.as_ref(), &params_from_pb(r.params), &after, r.timeout_ms as u64).await?;
             Ok(pb::GuardCountsResponse { need: need as u32, counts })
         })
@@ -535,7 +570,7 @@ impl pb::strata_server::Strata for Grpc {
             let q = r.query.unwrap_or_default();
             svc.check_epoch(q.epoch)?;
             let plan = request_plan(q.protocol, q.plan, &q.plan_json)?;
-            let after = After::of(q.min_seq_no, q.min_seq_nos)?;
+            let after = After::termed(q.min_seq_no, q.min_seq_nos, q.min_seq_term, q.min_seq_terms)?;
             let next = svc.sid_next(&q.sql, plan.as_ref(), &params_from_pb(q.params), &r.field, &r.prefixes, &after, q.timeout_ms as u64).await?;
             let next = next.into_iter().map(|cs| {
                 let (codes, counts) = cs.into_iter().unzip();
@@ -585,7 +620,7 @@ impl pb::strata_server::Strata for Grpc {
                     crate::service::SqlAnswer::Rows(_) => return Err(ApiError::bad("Write takes INSERT, UPDATE or DELETE; use Query")),
                 }
             };
-            Ok(write_response(w))
+            Ok(write_response(svc.termed(w)))
         })
         .await
     }
@@ -607,6 +642,7 @@ impl pb::strata_server::Strata for Grpc {
         let svc = self.0.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let span = tracing::info_span!("request", id = %id, method = "WriteStream");
+        let scope = if who.root || who.limited() { Scope::Admin } else { who.scope };
         let run = async move {
             let t0 = Instant::now();
             let mut s = Stream::default();
@@ -628,7 +664,7 @@ impl pb::strata_server::Strata for Grpc {
                 .await;
                 match r {
                     Ok(w) => {
-                        let r = pb::WriteResponse { offsets: s.offsets().into_iter().collect(), ..write_response(w) };
+                        let r = pb::WriteResponse { offsets: s.offsets().into_iter().collect(), ..write_response(svc.termed(w)) };
                         if tx.send(Ok(r)).await.is_err() {
                             break;
                         }
@@ -647,7 +683,7 @@ impl pb::strata_server::Strata for Grpc {
             tracing::debug!(batches = s.batches, written = s.written, skipped = s.skipped, "stream ended");
             svc.metrics.grpc("WriteStream", code, t0.elapsed().as_secs_f64());
         };
-        tokio::spawn(run.instrument(span));
+        tokio::spawn(crate::service::SCOPE.scope(scope, run).instrument(span));
         Ok(Response::new(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))))
     }
 
@@ -742,6 +778,10 @@ impl pb::strata_server::Strata for Grpc {
     type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, Status>> + Send>>;
 
     async fn feed(&self, req: Request<pb::FeedRequest>) -> Result<Response<Self::FeedStream>, Status> {
+        // A feed goes on until its follower leaves: it ends when the
+        // listener stops instead, so that the server stops within its
+        // grace time (as the HTTP feed does).
+        let stopping = Box::pin(crate::server::Stopping::of(req.extensions().get::<crate::server::Stopping>().cloned()));
         let rx = self
             .serve("Feed", req, |svc, _who, r| async move {
                 let copy = r.copy.then_some(crate::service::feed::CopyOpts { since: r.since, whole: r.whole, digests: r.digests });
@@ -750,7 +790,7 @@ impl pb::strata_server::Strata for Grpc {
             .await?
             .into_inner();
         let chunks = tokio_stream::wrappers::ReceiverStream::new(rx).flat_map(|lines| futures::stream::iter(lines.chunks(FEED_CHUNK).map(|c| Ok(pb::FeedChunk { lines: c.to_vec() })).collect::<Vec<_>>()));
-        Ok(Response::new(Box::pin(chunks)))
+        Ok(Response::new(Box::pin(chunks.take_until(stopping))))
     }
 
     async fn feed_keys(&self, req: Request<pb::FeedKeysRequest>) -> Result<Response<pb::FeedKeysResponse>, Status> {
@@ -786,7 +826,7 @@ impl pb::strata_server::Strata for Grpc {
         self.serve("Keys", req, |svc, who, r| async move {
             if who.is_open() {
                 return Err(ApiError {
-                    status: 409,
+                    code: None, status: 409,
                     message: "this server has no token: keys would close it to the servers that gave them, which send it none. Give the cluster's servers a --cluster-token to share keys".into(),
                 });
             }
@@ -806,7 +846,7 @@ impl pb::strata_server::Strata for Grpc {
     async fn get(&self, req: Request<pb::GetRequest>) -> Result<Response<pb::GetResponse>, Status> {
         self.serve("Get", req, |svc, _who, r| async move {
             svc.check_epoch(r.epoch)?;
-            let after = After::of(r.min_seq_no, r.min_seq_nos)?;
+            let after = After::termed(r.min_seq_no, r.min_seq_nos, r.min_seq_term, r.min_seq_terms)?;
             let table = Some(r.table).filter(|t| !t.is_empty());
             let keys = r.keys.into_iter().map(from_pb).collect();
             // A coordinator's read names the protocol it speaks; it counts

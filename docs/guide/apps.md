@@ -6,7 +6,14 @@ This page starts a server with Sheets and ChloeCtx beside it and uses both throu
 
 <!-- run: needs chloedb-server chloedb-sheets chloectx -->
 
-You need `chloedb-server`, `chloedb-sheets` and `chloectx` on your `PATH`. From a checkout of the repository, build each in its directory (`cargo build --release`) and add their `target/release` directories to `PATH`.
+You need `chloedb-server`, `chloedb-sheets` and `chloectx` on your `PATH`. <!-- since 0.3.2 --> From release 0.3.2, the installer puts the three there prebuilt, with nothing to compile:
+
+```sh
+# install
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with sheets,ctx
+```
+
+Release 0.3.0 and earlier have no prebuilt Sheets or ChloeCtx. With those, or to build from source, build each in its directory of a checkout of the repository (`cargo build --release`; Rust and a C compiler, several minutes) and add their `target/release` directories to `PATH`.
 
 ## How an app attaches
 
@@ -30,15 +37,15 @@ One token for the apps, a server that lists both, and the two apps pointed at th
 ```sh
 export CHLOEDB_APP_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
 
-chloedb-server --db ./apps.chloedb --listen 127.0.0.1:7700 --grpc off \
+chloedb-server --db ./apps.chloedb --listen 127.0.0.1:7700 --grpc off --start-apps off \
   --app sheets=http://127.0.0.1:7820 --app chloectx=http://127.0.0.1:7760 > server.log 2>&1 &
 until curl -sf http://127.0.0.1:7700/v1/health > /dev/null; do sleep 0.2; done
 
-chloedb-sheets serve --strata http://127.0.0.1:7700 --token "$CHLOEDB_APP_TOKEN" > sheets.log 2>&1 &
+chloedb-sheets serve --server http://127.0.0.1:7700 --token "$CHLOEDB_APP_TOKEN" > sheets.log 2>&1 &
 chloectx app --server http://127.0.0.1:7700 --token "$CHLOEDB_APP_TOKEN" --embedder hash:64 > chloectx.log 2>&1 &
 ```
 
-`--embedder hash:64` makes ChloeCtx's vectors from hashed words, which needs no download; leave it out to use its embedding model (`chloectx fetch-model` fetches it once). Without `--token` the server listens on loopback only and anything on this machine that reaches `127.0.0.1:7700` can change it; give it a token, and its clients keys, before it serves anyone else ([security](../chloedb/server.md#security)).
+`--start-apps off` keeps the server from starting the apps installed beside it on its own (it does by default, which is all a first run needs; this page starts them by hand to show how they attach). `--embedder hash:64` makes ChloeCtx's vectors from hashed words, which needs no download; leave it out to use its embedding model (`chloectx fetch-model` fetches it once). Without `--token` the server listens on loopback only and anything on this machine that reaches `127.0.0.1:7700` can change it; give it a token, and its clients keys, before it serves anyone else ([security](../chloedb/server.md#security)).
 
 The server lists the apps once they answer, which is what the command center's **Apps** menu shows:
 
@@ -143,7 +150,7 @@ print(answer["context"])
 
 ```text output
 True
-Notes from earlier conversations with the user, in their current versions, oldest first (date, kind, note; what it replaced in brackets). Rules come first; a later note can change what an earlier one says:
+Notes from earlier sessions, in their current versions, oldest first (date, kind, who said it when it was not the user, note; what it replaced in brackets). Rules that apply come first; a later note can change what an earlier one says:
 - 2026-10-15 decision: Refunds above 1000 EUR need the finance manager's approval; team leads approve up to 1000 EUR. (changed 2026-10-15; was: Refunds above 500 EUR need a team lead's approval.)
 - 2026-10-20 fact: Refunds are paid back to the original card within 5 working days.
 ```
@@ -156,4 +163,4 @@ The crawler attaches the same way (`--app crawler=URL`), and `chloedb-crawl serv
 
 ## On Kubernetes
 
-A cluster the operator runs gets each app from a field of its `StrataCluster`: `spec.crawler`, `spec.sheets`, `spec.chloectx` and `spec.apps` (the app engine, a prototype). The operator runs them from the cluster's own image and lists them on its coordinators, with nothing to start by hand ([server on Kubernetes](../chloedb/server.md#on-kubernetes)).
+A cluster the operator runs gets each app from a field of its `StrataCluster`: `spec.crawler`, `spec.sheets`, `spec.chloectx`, `spec.netops` ([network operations](../chloedb/netops.md)) and `spec.apps` (the app engine, a prototype). The operator runs them from the cluster's own image and lists them on its coordinators, with nothing to start by hand ([server on Kubernetes](../chloedb/server.md#on-kubernetes)).

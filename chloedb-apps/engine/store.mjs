@@ -31,10 +31,12 @@ const SYSTEM_TABLES = {
   // What people do in an app, one row per thing done: the kind (open, leave,
   // action, abandon, insert, update, delete, call, error), where (the browser
   // tab's session, the screen) and what (the table and row written, the fields
-  // changed, the words searched for and how many rows they found, how long).
+  // changed, the words searched for and how many rows they found, how long),
+  // and whose it was: src "owner" for the app's owner trying it in the studio
+  // or the command center, which Usage leaves out of its people by default.
   sa_events: `CREATE TABLE sa_events (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, kind KEYWORD, cap KEYWORD,
     detail TEXT, person KEYWORD, v INT, session KEYWORD, screen KEYWORD, tbl KEYWORD, rid KEYWORD, fields KEYWORD,
-    q KEYWORD, results INT, ms INT, label TEXT, taps INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+    q KEYWORD, results INT, ms INT, label TEXT, taps INT, src KEYWORD, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   // A suggestion from use names the pattern of use it answers (signal) and
   // what should change in people's use if it works (measure, JSON).
   sa_suggestions: `CREATE TABLE sa_suggestions (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, text TEXT, why TEXT,
@@ -57,6 +59,11 @@ const SYSTEM_TABLES = {
   // database) and the email apps send.
   sa_people: `CREATE TABLE sa_people (id KEYWORD PRIMARY KEY, email KEYWORD, name TEXT, hash KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_members: `CREATE TABLE sa_members (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, person KEYWORD NOT NULL, role KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Companies (workspaces) of an app's people, and who works in which with
+  // what role (admin or member): kept by the engine, never by an app's code,
+  // so a row scope by :company_id (access.mjs) means what the engine says.
+  sa_companies: `CREATE TABLE sa_companies (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, name TEXT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  sa_memberships: `CREATE TABLE sa_memberships (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, company KEYWORD NOT NULL, person KEYWORD NOT NULL, role KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_sessions: `CREATE TABLE sa_sessions (id KEYWORD PRIMARY KEY, person KEYWORD NOT NULL, expires TIMESTAMP, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_files: `CREATE TABLE sa_files (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, name TEXT, type KEYWORD, size INT, author KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   // Each app's three designs (designs.mjs) and the one in use.
@@ -76,7 +83,7 @@ export function briefOf(app) {
 const ADDED_COLUMNS = {
   // The UX brief, as JSON: who, job, often, device, first, glance.
   sa_apps: ['ux TEXT'],
-  sa_events: ['person KEYWORD', 'v INT', 'session KEYWORD', 'screen KEYWORD', 'tbl KEYWORD', 'rid KEYWORD', 'fields KEYWORD', 'q KEYWORD', 'results INT', 'ms INT', 'label TEXT', 'taps INT'],
+  sa_events: ['person KEYWORD', 'v INT', 'session KEYWORD', 'screen KEYWORD', 'tbl KEYWORD', 'rid KEYWORD', 'fields KEYWORD', 'q KEYWORD', 'results INT', 'ms INT', 'label TEXT', 'taps INT', 'src KEYWORD'],
   sa_suggestions: ['signal KEYWORD', 'measure TEXT'],
   // What a piece is and does, embedded, so that pieces are found by meaning
   // as well as by their words (searchCapabilities). A store whose Strata
@@ -116,6 +123,32 @@ const sameJson = (a, b) => { try { return JSON.stringify(canon(JSON.parse(a))) =
 const GRAPH_COLS = 'id, kind, app, slug, title, description, live, version, links';
 // A node as the graph's REACHABLE queries above select it.
 const nodeRow = ({ id, kind, app, slug, title, hops }) => ({ id, kind, app, slug, title, hops });
+
+// A short name for an app from its description, until its first plan names
+// it (and for good when that build fails): the words before a colon or a
+// dash, else the first clause, without "A"/"An"/"The" in front, cut at a
+// word, at most 40 characters. "A tiny reading list: links with a title"
+// is "Tiny reading list".
+export function shortName(description) {
+  const first = String(description || '').trim().split(/[.\n!?]/)[0];
+  let s = (first.split(/\s*[:;–—]\s*|\s+-\s+/)[0] || first).split(/,\s*/)[0].trim();
+  if (s.length < 3) s = first.trim();
+  s = s.replace(/^(an?|the|my|our)\s+/i, '');
+  if (s.length > 40) { const cut = s.slice(0, 41); s = /\s/.test(cut) ? cut.replace(/\s+\S*$/, '') : s.slice(0, 40); }
+  for (let k = 0; k < 3; k++) s = s.replace(/[\s,;:–—-]+$/, '').replace(/\s+(and|or|with|of|for|the|an?|to|in|on|my|at|by)$/i, '');
+  return s ? s[0].toUpperCase() + s.slice(1) : 'New app';
+}
+
+// What an app with no version yet is, from its last request: building
+// while it is queued or running, failed once it failed or was stopped, or
+// when it still says running long after any build could (the engine stopped
+// in the middle of it).
+export function firstBuildStatus(last, now = Date.now(), staleMs = 30 * 60 * 1000) {
+  if (!last) return 'building';
+  if (last.status === 'failed' || last.status === 'stopped') return 'failed';
+  if ((last.status === 'queued' || last.status === 'running') && now - new Date(last.created).getTime() > staleMs) return 'failed';
+  return 'building';
+}
 
 export class Store {
   constructor(strata, log = () => {}) {
@@ -242,6 +275,100 @@ export class Store {
     await this.db.write([{ op: 'upsert', table: 'sa_apps', doc: { ...doc, created: app.created } }]);
     this.resolved.delete(id);
     await this.syncAppGraph(id);
+  }
+
+  // Deletes an app: its own tables (app_<id>_*, and no other app's), and
+  // every row the engine keeps of it (its pieces, versions, requests,
+  // timelines, use, suggestions, settings, members, files, mail and graph).
+  // The shared library and other apps' pieces stay. Returns {tables, rows}.
+  async deleteApp(id) {
+    if (!/^[a-z0-9]{6}$/.test(String(id))) throw new Error(`no app ${id}`);
+    const prefix = `app_${id}_`;
+    const tables = (await this.db.tables()).map(tableName).filter((t) => t && t.startsWith(prefix));
+    // A links table refers to the table it links: dropped first.
+    const dropped = [];
+    for (let pass = 0; pass < 3 && dropped.length < tables.length; pass++) {
+      for (const t of tables) {
+        if (dropped.includes(t)) continue;
+        try { await this.db.sql(`DROP TABLE ${t}`); dropped.push(t); } catch (e) { if (pass === 2) throw e; }
+      }
+    }
+    let rows = 0;
+    for (const table of ['sa_capabilities', 'sa_compositions', 'sa_requests', 'sa_traces', 'sa_events', 'sa_suggestions', 'sa_candidates', 'sa_asks', 'sa_settings', 'sa_graph', 'sa_members', 'sa_companies', 'sa_memberships', 'sa_files', 'sa_outbox']) {
+      for (;;) {
+        let ids;
+        try { ids = await this.db.query(`SELECT id FROM ${table} WHERE app = :a LIMIT 1000`, { a: id }); } catch { break; }
+        if (!ids.length) break;
+        await this.db.write(ids.map((r) => ({ op: 'delete', table, key: r.id })));
+        rows += ids.length;
+        if (ids.length < 1000) break;
+      }
+    }
+    await this.db.write([{ op: 'delete', table: 'sa_designs', key: id }, { op: 'delete', table: 'sa_apps', key: id }]);
+    this.resolved.delete(id);
+    this.resolvedAt.clear();
+    this.capCache.clear();
+    this.made.clear();
+    this.walkers?.clear();
+    return { tables: dropped, rows };
+  }
+
+  // A copy of an app's live version as a new app: its own pieces copied as
+  // they are stored (the same SQL, under the new app), the shared ones it
+  // pins pinned again, its tables made, its look kept, and (rows) its rows
+  // copied, up to 10000 a table. Returns the new app's id.
+  async duplicateApp(id, { name, rows = true } = {}) {
+    const view = await this.resolve(id);
+    const copy = await this.createApp({ name: String(name || `${view.app.name} (copy)`).slice(0, 60), description: view.app.description || '' });
+    if (view.app.ux) await this.updateApp(copy, { ux: view.app.ux });
+    const stored = await this.db.get('sa_capabilities', view.comp.caps);
+    const ops = [];
+    const caps = [];
+    for (const r of stored) {
+      if (!r) continue;
+      if (r.app !== id) { caps.push(r.id); continue; }
+      const { meaning, score, created, ...doc } = r;
+      const cid = `${copy}/${r.kind}/${r.slug}@1`;
+      ops.push({ op: 'insert', table: 'sa_capabilities', doc: { ...doc, id: cid, app: copy, version: 1 } });
+      caps.push(cid);
+    }
+    for (let i = 0; i < ops.length; i += 200) await this.db.write(ops.slice(i, i + 200));
+    // A links table refers to the table it links: made after it.
+    const existing = new Set(await this.tableNames());
+    const tables = [...view.tables].sort((x, y) => Number(!!x.spec.links) - Number(!!y.spec.links));
+    for (const t of tables) await this.ensureTable(copy, t.spec, existing);
+    if (rows) {
+      for (const t of tables) {
+        const vec = new Set((t.spec.columns || []).filter((c) => c.type === 'meaning').map((c) => c.name));
+        const got = await this.db.query(`SELECT * FROM ${physical(id, t.spec.name)} LIMIT 10000`).catch(() => []);
+        const docs = got.map((r) => Object.fromEntries(Object.entries(r).filter(([k, v]) => !vec.has(k) && k !== 'score' && v !== null)));
+        for (let i = 0; i < docs.length; i += 500) await this.db.write(docs.slice(i, i + 500).map((doc) => ({ op: 'insert', table: physical(copy, t.spec.name), doc })));
+      }
+    }
+    const designs = await this.designs(id);
+    if (designs) await this.putDesigns(copy, designs);
+    await this.writeComposition(copy, caps, `A copy of ${view.app.name}`, `A copy of ${view.app.name} (version ${view.comp.n})`);
+    return copy;
+  }
+
+  // An app's rows, every table (up to 10000 rows each), for its owner to
+  // keep: {app, exported, tables: {name: [rows]}}.
+  async exportApp(id) {
+    const view = await this.resolve(id);
+    const tables = {};
+    for (const t of view.tables) {
+      const vec = new Set((t.spec.columns || []).filter((c) => c.type === 'meaning').map((c) => c.name));
+      const got = await this.db.query(`SELECT * FROM ${physical(id, t.spec.name)} ORDER BY created LIMIT 10000`).catch(() => []);
+      tables[t.spec.name] = got.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !vec.has(k) && k !== 'score')));
+    }
+    return { app: { id, name: view.app.name, version: view.comp.n }, exported: new Date().toISOString(), tables };
+  }
+
+  // What each app's builds cost (the model, as sa_requests records it):
+  // Map app -> {usd, builds}; for one app with app.
+  async costs(app = null) {
+    const rows = await this.db.query(`SELECT app, SUM(cost) AS usd, COUNT(*) AS n FROM sa_requests${app ? ' WHERE app = :a' : ''} GROUP BY app LIMIT 5000`, app ? { a: app } : {}).catch(() => []);
+    return new Map(rows.map((r) => [r.app, { usd: Math.round((Number(r.usd) || 0) * 100) / 100, builds: Number(r.n) || 0 }]));
   }
 
   // ---- designs: three per app, by the app's id
@@ -720,7 +847,7 @@ export class Store {
   // label: the name of the row written ("Monstera"), kept with the event so
   // that a removed row is still told by its name. taps: on a write or a run,
   // the taps in the app since the one before it (engine/measures.mjs).
-  async track(app, kind, cap, detail, { person = null, v = null, session = null, screen = null, tbl = null, rid = null, fields = null, q = null, results = null, ms = null, label = null, taps = null } = {}) {
+  async track(app, kind, cap, detail, { person = null, v = null, session = null, screen = null, tbl = null, rid = null, fields = null, q = null, results = null, ms = null, label = null, taps = null, src = null } = {}) {
     const doc = { id: newId(12), app, kind, cap: cap || '', detail: detail ? String(detail).slice(0, 500) : '' };
     const word = (x, n) => { const t = String(x ?? '').trim(); return t ? t.slice(0, n) : null; };
     const num = (x) => (x === null || x === undefined || x === '' || !Number.isFinite(Number(x)) ? null : Math.max(0, Math.round(Number(x))));
@@ -729,6 +856,7 @@ export class Store {
       // The fields changed, sorted: the same change on row after row is the same value.
       fields: word(Array.isArray(fields) ? [...fields].sort().join(',') : fields, 200),
       q: word(q === null || q === undefined ? null : String(q).toLowerCase().replace(/\s+/g, ' '), 120), results: num(results), ms: num(ms), label: word(label, 120), taps: num(taps),
+      src: src === 'owner' ? 'owner' : null,
     };
     for (const [k, x] of Object.entries(more)) if (x !== null) doc[k] = x;
     await this.db.write([{ op: 'insert', table: 'sa_events', doc }]);
@@ -737,7 +865,7 @@ export class Store {
   // The events since a time (ISO; all of them without one), newest first.
   async events(app, { since = null, limit = 5000 } = {}) {
     const n = Math.max(1, Math.min(10000, Math.floor(limit)));
-    return this.db.query(`SELECT kind, cap, detail, person, v, session, screen, tbl, rid, fields, q, results, ms, label, taps, ts FROM sa_events WHERE app = :a${since ? ' AND ts >= :since' : ''} ORDER BY ts DESC LIMIT ${n}`, since ? { a: app, since } : { a: app });
+    return this.db.query(`SELECT kind, cap, detail, person, v, session, screen, tbl, rid, fields, q, results, ms, label, taps, src, ts FROM sa_events WHERE app = :a${since ? ' AND ts >= :since' : ''} ORDER BY ts DESC LIMIT ${n}`, since ? { a: app, since } : { a: app });
   }
 
   async recentEvents(app, limit = 200) {

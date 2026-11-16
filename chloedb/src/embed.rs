@@ -314,14 +314,25 @@ fn model_err(what: impl std::fmt::Display) -> Error {
 }
 
 /// Where [`open`] looks for models by default: `$CHLOEDB_MODELS` (or
-/// `$CHLOEDB_MODELS`), else
-/// `~/.local/share/strata/models`.
+/// `$STRATA_MODELS`), else `~/.local/share/chloedb/models`; a machine that
+/// has `~/.local/share/strata/models` (the folder from before the rename)
+/// and no `~/.local/share/chloedb` keeps using the old one.
 pub fn models_dir() -> PathBuf {
     if let Some(d) = crate::env::var_os("CHLOEDB_MODELS") {
         return PathBuf::from(d);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join(".local/share/strata/models")
+    models_dir_in(&home)
+}
+
+/// [`models_dir`] under the home folder `home`, without the setting.
+pub fn models_dir_in(home: &Path) -> PathBuf {
+    let share = home.join(".local/share");
+    let old = share.join("strata/models");
+    if old.is_dir() && !share.join("chloedb").exists() {
+        return old;
+    }
+    share.join("chloedb/models")
 }
 
 /// Models [`open`] knows how to fetch: name, Hugging Face repository, and
@@ -2061,5 +2072,21 @@ impl Embedder for SiglipEmbedder {
         let images: Vec<&Image> = inputs.iter().filter_map(|i| if let Input::Image(m) = i { Some(*m) } else { None }).collect();
         let (mut texts, mut images) = (self.embed(&texts)?.into_iter(), self.images(&images)?.into_iter());
         Ok(inputs.iter().map(|i| if let Input::Text(_) = i { texts.next() } else { images.next() }.unwrap_or_default()).collect())
+    }
+}
+
+#[cfg(test)]
+mod models_dir_tests {
+    use super::models_dir_in;
+
+    #[test]
+    fn a_new_machine_uses_the_chloedb_folder_and_an_old_one_keeps_strata() {
+        let home = tempfile::tempdir().unwrap();
+        let share = home.path().join(".local/share");
+        assert_eq!(models_dir_in(home.path()), share.join("chloedb/models"));
+        std::fs::create_dir_all(share.join("strata/models")).unwrap();
+        assert_eq!(models_dir_in(home.path()), share.join("strata/models"), "the folder from before the rename");
+        std::fs::create_dir_all(share.join("chloedb")).unwrap();
+        assert_eq!(models_dir_in(home.path()), share.join("chloedb/models"), "once the new folder exists");
     }
 }

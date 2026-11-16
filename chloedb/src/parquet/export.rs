@@ -156,6 +156,50 @@ fn tmp_of(p: &Path) -> Result<PathBuf> {
     Ok(p.with_file_name(format!(".{}.strata-export-{}", name.to_string_lossy(), std::process::id())))
 }
 
+/// A Parquet file of table `s`'s rows, written as they come rather than
+/// from a snapshot: what a coordinator exports from the pages of a scroll
+/// over its shards. The file is as [`export`] writes it, its schema in its
+/// metadata when `meta`, so that an import reads it back.
+pub struct Writer {
+    w: ArrowWriter<File>,
+    arrow: Arc<datafusion::arrow::datatypes::Schema>,
+    schema: Schema,
+    rows: u64,
+}
+
+impl Writer {
+    pub fn create(path: &Path, s: &Schema, meta: bool) -> Result<Writer> {
+        let arrow = Arc::new(arrow_schema(s));
+        let props = WriterProperties::builder()
+            .set_compression(Compression::ZSTD(ZstdLevel::default()))
+            .set_created_by(format!("strata {}", env!("CARGO_PKG_VERSION")))
+            .set_key_value_metadata(meta.then(|| vec![KeyValue::new(META_KEY.to_string(), s.to_short_json().to_string())]))
+            .build();
+        let w = ArrowWriter::try_new(File::create(path)?, arrow.clone(), Some(props)).map_err(parquet_error)?;
+        Ok(Writer { w, arrow, schema: s.clone(), rows: 0 })
+    }
+
+    /// Writes `docs`, rows of the table in the order of its fields.
+    pub fn write(&mut self, docs: &[crate::value::Document]) -> Result<()> {
+        if docs.is_empty() {
+            return Ok(());
+        }
+        self.rows += docs.len() as u64;
+        self.w.write(&batch_of(&self.schema, &self.arrow, docs)?).map_err(parquet_error)?;
+        if self.w.in_progress_size() >= ROW_GROUP_BYTES {
+            self.w.flush().map_err(parquet_error)?;
+        }
+        Ok(())
+    }
+
+    /// Ends the file: the rows written.
+    pub fn finish(self) -> Result<u64> {
+        let file = self.w.into_inner().map_err(parquet_error)?;
+        file.sync_all()?;
+        Ok(self.rows)
+    }
+}
+
 /// Writes the rows of table `s` (of `snap`) to the new file `path`, with
 /// its schema in the file's metadata when `meta`.
 fn write_table(db: &Db, snap: &Snapshot, s: &Schema, path: &Path, meta: bool) -> Result<TableExport> {

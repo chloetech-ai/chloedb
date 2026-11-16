@@ -34,7 +34,7 @@ struct Args {
     /// The model, by the name a schema gives it (see `chloedb::embed::open`).
     #[arg(long, default_value = "potion-retrieval-32M")]
     model: String,
-    /// Where models are (default $CHLOEDB_MODELS or ~/.local/share/strata/models).
+    /// Where models are (default $CHLOEDB_MODELS or ~/.local/share/chloedb/models).
     #[arg(long)]
     models: Option<PathBuf>,
     /// Keep the first n documents.

@@ -1,5 +1,7 @@
 # Feature store demo
 
+> **A demo.** The feature store shows what ChloeDB can do; it is not part of ChloeDB's releases or their promises. It is tested on a train of its own (the `Demos` workflow, `.github/workflows/demos.yml`), outside CI's required check, so a fault in it does not hold a ChloeDB release, and the command center marks it as a demo ([compatibility](../../docs/compatibility.md#demos)).
+
 A shop that ranks its 240 products for each of 300 shoppers by a model, fed
 by features ChloeDB keeps, shown live in the command center (**Apps → Feature
 store**). One chloedb-server holds every part: the events, the feature tables,
@@ -14,12 +16,14 @@ python3 examples/feature-store/featurestore.py serve --local /tmp/fs-demo
 It needs Python 3.9 or newer, with no packages. The first start makes 12
 minutes of history: shoppers on a random ranking, written at the times they
 would have happened. This takes about 10 seconds. From then on, simulated
-shoppers ask for a ranking about 12 times a second.
+shoppers ask for a ranking about 12 times a second. Impressions older than
+three hours are let go (`--keep MINUTES`, 0 keeps them all), and a model
+trains on the last 30 minutes, so a demo left running stays as quick as a new one.
 
 To use a server that is already running, start it with
 `--app features=http://127.0.0.1:7810`, then run
 `featurestore.py serve --server http://127.0.0.1:7700`. The ASOF JOIN needs a
-server built from branch `claude/project-thread-481x6x` or later.
+chloedb-server of release 0.3.1 or later.
 
 ![The pipeline](screenshots/pipeline.png)
 

@@ -39,6 +39,7 @@ pub mod crawler;
 pub mod follow;
 pub mod kube;
 pub mod lease;
+pub mod netops;
 pub mod sheets;
 pub mod upgrade;
 
@@ -46,6 +47,7 @@ pub use apps::AppsSpec;
 pub use chloectx::ChloectxSpec;
 pub use crawler::CrawlerSpec;
 pub use follow::FollowSpec;
+pub use netops::NetopsSpec;
 pub use sheets::SheetsSpec;
 
 use std::collections::HashMap;
@@ -116,6 +118,26 @@ pub struct Spec {
     /// More arguments for every coordinator (`--hedge-ms 50`,
     /// `--partial`, ...).
     pub coordinator_args: Vec<String>,
+    /// A volume for each coordinator, which keeps its history across
+    /// restarts: its log store (events, alerts, query statistics, table
+    /// growth: `--log-store`), its audit log (`--audit-log`) and its alert
+    /// rules and their states (`--alerts`). With it the coordinators run as
+    /// a StatefulSet, each with a volume of its own; without it (the
+    /// default, as before) as a Deployment that keeps all of that in memory
+    /// only, so that every rollout forgets it (LIV-2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coordinator_storage: Option<CoordinatorStorage>,
+    /// Whether a shard's copies must run on different nodes: required of
+    /// the scheduler rather than preferred. A copy then waits, unscheduled,
+    /// for a node that runs none of its shard's other copies, and a
+    /// rollout's extra copy ([`RolloutSpec::extra_copies`]) for one more
+    /// node than the shard has copies. Turning it on or off restarts the
+    /// copies one at a time, as other settings do, each placed by the new
+    /// rule. Off (the default), the spread is preferred, so that a cluster
+    /// of fewer nodes than copies still runs them all, and the cluster's
+    /// objects, settings and version are as before.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub require_copies_apart: bool,
     /// How changes are made: paused, or held by gates on the cluster's
     /// live numbers.
     pub rollout: RolloutSpec,
@@ -148,6 +170,10 @@ pub struct Spec {
     /// Deployment of one, which the coordinators list as an app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apps: Option<AppsSpec>,
+    /// Network operations beside the cluster ([`netops`]): `chloedb-netops
+    /// serve` in a Deployment of one, which the coordinators list as an app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub netops: Option<NetopsSpec>,
 }
 
 /// How the operator makes a change (`spec.rollout`). Not part of a
@@ -342,6 +368,27 @@ impl Default for Storage {
     }
 }
 
+/// Each coordinator's volume (`spec.coordinatorStorage`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CoordinatorStorage {
+    /// Each coordinator's volume: its log store takes up to
+    /// `--log-store-mb` (1 GiB by default) of it.
+    pub size: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_class_name: Option<String>,
+}
+
+impl Default for CoordinatorStorage {
+    fn default() -> CoordinatorStorage {
+        CoordinatorStorage { size: "2Gi".into(), storage_class_name: None }
+    }
+}
+
+/// Where a coordinator with a volume keeps its history, and the flag
+/// that says so: given unless `coordinatorArgs` gives the flag itself.
+pub const COORDINATOR_FILES: [(&str, &str); 3] = [("--log-store", "/data/logs"), ("--audit-log", "/data/audit.jsonl"), ("--alerts", "/data/alerts.json")];
+
 /// An environment variable taken from a Secret (`spec.secretEnv`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -382,6 +429,8 @@ impl Default for Spec {
             coordinator_resources: None,
             args: Vec::new(),
             coordinator_args: Vec::new(),
+            coordinator_storage: None,
+            require_copies_apart: false,
             rollout: RolloutSpec::default(),
             autoscale: autoscale::Autoscale::default(),
             upgrade: upgrade::Upgrade::default(),
@@ -390,6 +439,7 @@ impl Default for Spec {
             sheets: None,
             chloectx: None,
             apps: None,
+            netops: None,
         }
     }
 }
@@ -398,11 +448,18 @@ impl Spec {
     /// The settings every server starts with, as a short hash: a copy
     /// started with another hash runs older settings, and is restarted.
     pub fn server_config(&self) -> String {
-        short_hash(&self.with_secret_env(json!({
+        let mut j = self.with_secret_env(json!({
             "image": self.image, "imagePullPolicy": self.image_pull_policy, "args": self.args, "resources": self.resources,
             "failoverAfterMs": self.failover_after_ms, "writeAcks": self.write_acks,
             "tokenSecret": self.token_secret, "clusterTokenSecret": self.cluster_token_secret,
-        })))
+        }));
+        // Only when given, so that a cluster without it keeps its hash (and
+        // its copies) across the operator's upgrade. Given, the copies
+        // restart one at a time, each placed by the rule it now requires.
+        if self.require_copies_apart {
+            j["copiesApart"] = json!("required");
+        }
+        short_hash(&j)
     }
 
     /// The settings every coordinator starts with, as a short hash.
@@ -413,6 +470,9 @@ impl Spec {
         }));
         // Only when there is one, so that a cluster without one keeps its
         // hash (and its coordinators) across the operator's upgrade.
+        if let Some(st) = &self.coordinator_storage {
+            j["storage"] = json!(st);
+        }
         let apps = self.apps();
         if !apps.is_empty() {
             j["apps"] = json!(apps);
@@ -425,7 +485,7 @@ impl Spec {
 
     /// The apps beside the cluster that the coordinators list, by name.
     pub fn apps(&self) -> Vec<&'static str> {
-        [(self.crawler.is_some(), crawler::APP), (self.sheets.is_some(), sheets::APP), (self.chloectx.is_some(), chloectx::APP), (self.apps.is_some(), apps::APP)].into_iter().filter(|a| a.0).map(|a| a.1).collect()
+        [(self.crawler.is_some(), crawler::APP), (self.sheets.is_some(), sheets::APP), (self.chloectx.is_some(), chloectx::APP), (self.apps.is_some(), apps::APP), (self.netops.is_some(), netops::APP)].into_iter().filter(|a| a.0).map(|a| a.1).collect()
     }
 
     /// `settings` with `secretEnv` when there is one: a cluster without it
@@ -459,6 +519,15 @@ impl Spec {
         }
     }
 
+    /// X-E7: with `coordinatorStorage` the coordinators are a StatefulSet,
+    /// which stops a pod before it starts its replacement, so one
+    /// coordinator means no API for the length of each rollout. Not
+    /// refused: a cluster that runs so keeps its spec valid.
+    pub fn lone_coordinator_warning(&self) -> Option<&'static str> {
+        (self.coordinator_storage.is_some() && self.coordinators < 2)
+            .then_some("coordinatorStorage with one coordinator: every rollout (each image upgrade too) stops it before its replacement starts, so the cluster's API is down for the restart; run 2 coordinators or more")
+    }
+
     /// What is wrong with it, if anything.
     pub fn check(&self) -> Result<(), String> {
         if self.shards == 0 || self.replicas == 0 || self.coordinators == 0 {
@@ -473,6 +542,11 @@ impl Spec {
         }
         if self.shards > 4096 {
             return Err("a cluster has at most 4,096 shards, one a slot".into());
+        }
+        if let Some(st) = &self.coordinator_storage {
+            if quantity(&st.size).is_none_or(|b| b == 0) {
+                return Err(format!("coordinatorStorage.size is a size Kubernetes reads, such as 2Gi, not {:?}", st.size));
+            }
         }
         if self.rollout.progress_deadline_seconds < 10 {
             return Err(format!("rollout.progressDeadlineSeconds is 10 or more (a copy takes seconds to restart), not {}", self.rollout.progress_deadline_seconds));
@@ -490,6 +564,9 @@ impl Spec {
         }
         if let Some(c) = &self.chloectx {
             c.check()?;
+        }
+        if let Some(n) = &self.netops {
+            n.check()?;
         }
         if let Some(a) = &self.apps {
             a.check()?;
@@ -673,6 +750,12 @@ pub trait Platform {
     async fn apps(&self, _spec: &Spec) -> Result<(), String> {
         Ok(())
     }
+    /// Runs the network operations app `spec.netops` asks for, or none
+    /// ([`netops`]): a Deployment of one and its Service on Kubernetes.
+    /// Applied once the coordinators are there.
+    async fn netops(&self, _spec: &Spec) -> Result<(), String> {
+        Ok(())
+    }
     /// Gives each app beside the cluster a key limited to its tables and a
     /// token of its own, made through the coordinators (`admin`), and
     /// takes them from an app that went ([`credentials`]). Before the
@@ -719,18 +802,33 @@ pub enum Check {
 pub struct Admin {
     pub base: String,
     pub token: Option<String>,
+    /// The cluster's token, for the calls that add a server ([`Self::join`]).
+    join_token: Option<String>,
     http: reqwest::Client,
 }
 
 impl Admin {
     pub fn new(base: &str, token: Option<String>) -> Admin {
         let http = crate::http_client().timeout(Duration::from_secs(60)).build().expect("an HTTP client");
-        Admin { base: base.trim_end_matches('/').to_string(), token, http }
+        Admin { base: base.trim_end_matches('/').to_string(), token, join_token: None, http }
+    }
+
+    /// The same API, adding servers with the cluster's token `t` (its
+    /// `clusterTokenSecret`): the coordinator sends that token to a server
+    /// it adds, so it takes it, not the admin token, for that (audit
+    /// CLU-3). `None`: the admin token, which is the cluster's then.
+    pub fn joining_with(mut self, t: Option<String>) -> Admin {
+        self.join_token = t;
+        self
     }
 
     pub async fn call(&self, method: reqwest::Method, path: &str, body: Option<Json>) -> Result<Json, String> {
+        self.call_as(self.token.as_deref(), method, path, body).await
+    }
+
+    async fn call_as(&self, token: Option<&str>, method: reqwest::Method, path: &str, body: Option<Json>) -> Result<Json, String> {
         let mut r = self.http.request(method.clone(), format!("{}{path}", self.base));
-        if let Some(t) = &self.token {
+        if let Some(t) = token {
             r = r.bearer_auth(t);
         }
         if let Some(b) = body {
@@ -748,6 +846,12 @@ impl Admin {
 
     async fn post(&self, path: &str, body: Json) -> Result<Json, String> {
         self.call(reqwest::Method::POST, path, Some(body)).await
+    }
+
+    /// POSTs a call that adds a server to the cluster (a shard, a copy),
+    /// with the cluster's token ([`Self::joining_with`]).
+    async fn join(&self, path: &str, body: Json) -> Result<Json, String> {
+        self.call_as(self.join_token.as_deref().or(self.token.as_deref()), reqwest::Method::POST, path, Some(body)).await
     }
 
     async fn delete(&self, path: &str) -> Result<Json, String> {
@@ -1099,6 +1203,7 @@ async fn step<P: Platform>(spec: &Spec, p: &P, admin: &Admin, before: &Rollout) 
     p.sheets(spec).await?;
     p.chloectx(spec).await?;
     p.apps(spec).await?;
+    p.netops(spec).await?;
     let view = match admin.view().await {
         Ok(v) => v,
         Err(e) => return Ok(Outcome::new(Phase::Creating, format!("waiting for the coordinator: {e}"))),
@@ -1242,7 +1347,7 @@ async fn act<P: Platform>(
         for &k in set.ready.iter().filter(|&&k| kept(set.id, k)) {
             let url = p.url(set.id, k);
             if !view.shards[i].servers.iter().any(|r| r.url == url) {
-                admin.post(&format!("/v1/admin/shards/{i}/replicas"), json!({"url": url, "force": true})).await?;
+                admin.join(&format!("/v1/admin/shards/{i}/replicas"), json!({"url": url, "force": true})).await?;
                 return scaling(format!("{url} joins shard {i}"));
             }
         }
@@ -1296,7 +1401,7 @@ async fn act<P: Platform>(
         let mut ready: Vec<usize> = set.ready.iter().copied().filter(|&k| k < set.replicas).collect();
         ready.sort();
         let servers: Vec<String> = ready.iter().map(|&k| p.url(set.id, k)).collect();
-        admin.post("/v1/admin/shards", json!({"servers": servers, "write_acks": spec.write_acks})).await?;
+        admin.join("/v1/admin/shards", json!({"servers": servers, "write_acks": spec.write_acks})).await?;
         return scaling(format!("shard {n} joins the cluster, served by {}", servers.join(", ")));
     }
     if spec.shards < n {
@@ -1351,7 +1456,12 @@ async fn act<P: Platform>(
     if !short.is_empty() {
         return Ok(Outcome::new(Phase::Scaling, format!("shards {} wait for copies to start", short.join(", "))));
     }
-    Ok(Outcome::new(Phase::Ready, format!("{n} shards of {} copies", spec.replicas)))
+    let mut said = format!("{n} shards of {} copies", spec.replicas);
+    if let Some(w) = spec.lone_coordinator_warning() {
+        said.push_str("; ");
+        said.push_str(w);
+    }
+    Ok(Outcome::new(Phase::Ready, said))
 }
 
 /// A copy running older settings than `spec`'s that has not started (its
@@ -1523,7 +1633,10 @@ async fn roll<P: Platform>(
         if let Some(step) = &restarted {
             if now.saturating_sub(step.since_ms) > deadline * 1000 {
                 let what = match (&no_room, step.name.strip_prefix("add ")) {
-                    (Some(why), _) => format!("{why} for more than {deadline} s: add a node or lower spec.resources, or set rollout.extraCopies false to restart a shard's copies without one (the shard then serves no reads and takes no writes for the seconds each restart takes)"),
+                    (Some(why), _) => format!(
+                        "{why} for more than {deadline} s: add a node{} or lower spec.resources, or set rollout.extraCopies false to restart a shard's copies without one (the shard then serves no reads and takes no writes for the seconds each restart takes)",
+                        if spec.require_copies_apart { " (with requireCopiesApart, one that runs none of the shard's copies)" } else { "" }
+                    ),
                     (None, Some(urls)) => format!("{urls} started with the new settings more than {deadline} s ago, and {} not back and caught up", unsettled.join(", ")),
                     (None, None) => format!("{} restarted with the new settings more than {deadline} s ago, and {} not back and caught up", step.name.trim_start_matches("restart "), unsettled.join(", ")),
                 };
@@ -1922,6 +2035,9 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
     if new.schema != old.schema || new.demo != old.demo {
         warnings.push("the first table's schema (or the demo) makes new servers only: change the tables that exist through the coordinator (ALTER TABLE)".into());
     }
+    if let Some(w) = new.lone_coordinator_warning() {
+        warnings.push(w.into());
+    }
     if new.replicas == 1 {
         warnings.push("one copy a shard: losing its server loses the shard until it is back, and its writes stop".into());
     } else if new.replicas == 2 && new.write_acks != "primary" {
@@ -1940,6 +2056,9 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
         }
         if new.sheets.is_some() {
             warnings.push("no token: anything that reaches the spreadsheets' pod may read and change the cluster's tables through it".into());
+        }
+        if new.netops.is_some() {
+            warnings.push("no token: anything that reaches the network operations pod may read and change its tables through it, and start its simulator's faults".into());
         }
         if new.chloectx.is_some() {
             warnings.push("no token: anything that reaches ChloeCtx's pod may read and change the cluster's tables through it, and call the model with the cluster's key".into());
@@ -2051,6 +2170,16 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
             (None, None) => unreachable!("the sheets specs differ"),
         });
     }
+    if new.netops != old.netops {
+        steps.push(match (&old.netops, &new.netops) {
+            (None, Some(_)) => "network operations start beside the cluster (chloedb-netops serve, a Deployment of one) and the coordinators list them, so the command center shows Apps → Network operations; the network, its telemetry and its incidents are kept in the tables netops_*, which the app makes and its simulator writes to each minute".into(),
+            (Some(_), None) => "network operations stop (their Deployment and Service go; the tables netops_* stay) and the coordinators no longer list them".into(),
+            (Some(a), Some(b)) if b.paused && !a.paused => "network operations pause: their pod goes (the tables netops_* stay, and nothing is written to them)".into(),
+            (Some(a), Some(b)) if a.paused && !b.paused => "network operations start again, from the tables they had".into(),
+            (_, Some(_)) => "network operations restart with the new settings, from the tables they had".into(),
+            (None, None) => unreachable!("the netops specs differ"),
+        });
+    }
     if new.chloectx != old.chloectx {
         steps.push(match (&old.chloectx, &new.chloectx) {
             (None, Some(c)) => format!("ChloeCtx starts beside the cluster (chloectx app, a Deployment of one{}) and the coordinators list it, so the command center shows Apps → ChloeCtx; its spaces are kept in the tables ctx_spaces and ctx_<space>", if c.needs_model() { ", which downloads its embedding model at each start" } else { "" }),
@@ -2120,6 +2249,11 @@ pub fn crd() -> Json {
             "coordinatorResources": free("Resources of each coordinator's container."),
             "args": {"type": "array", "items": {"type": "string"}, "description": "More arguments for every server."},
             "coordinatorArgs": {"type": "array", "items": {"type": "string"}, "description": "More arguments for every coordinator."},
+            "coordinatorStorage": {"type": "object", "description": "A volume for each coordinator, which keeps its history across restarts and rollouts: its log store (events, alerts, query statistics, table growth), its audit log and its alert rules. With it the coordinators run as a StatefulSet, each with a volume; without it (the default) as a Deployment that keeps all of that in memory only. Run 2 coordinators or more with it: a StatefulSet restarts one before it starts its next.", "properties": {
+                "size": {"type": "string", "description": "Each coordinator's volume (default 2Gi; its log store takes up to 1 GiB, --log-store-mb)."},
+                "storageClassName": {"type": "string"},
+            }},
+            "requireCopiesApart": {"type": "boolean", "description": "A shard's copies must run on different nodes (required of the scheduler, not preferred): a copy waits for a node that runs none of its shard's other copies, and a rollout's extra copy for one more node than the shard has copies (or set rollout.extraCopies false). Default false: preferred, so that fewer nodes than copies still run them all."},
             "rollout": {"type": "object", "description": "How changes are made: paused, or held by gates on the cluster's live numbers.", "properties": {
                 "paused": {"type": "boolean", "description": "While true the operator takes no step toward the spec (a copy that lost its data still joins again)."},
                 "gates": {"type": "object", "description": "Limits on live numbers: one over its limit for holdAfterSeconds holds the change until it is resumed.", "properties": {
@@ -2142,6 +2276,7 @@ pub fn crd() -> Json {
             "sheets": sheets::schema(),
             "chloectx": chloectx::schema(),
             "apps": apps::schema(),
+            "netops": netops::schema(),
         },
     });
     let status = free("What the operator found and does.");
@@ -2235,6 +2370,21 @@ mod tests {
         j["appTokens"] = json!(credentials::TOKEN_DIR);
         assert_eq!(new.coordinator_config(), short_hash(&j));
         assert!(!serde_json::to_value(&none).unwrap().as_object().unwrap().contains_key("apps"));
+    }
+
+    /// X-E7: one coordinator with a volume each is warned of in a plan and
+    /// in the status, not refused; two are not warned of.
+    #[test]
+    fn one_coordinator_with_storage_is_warned_of() {
+        let plain: Spec = serde_json::from_value(json!({"demo": 10})).unwrap();
+        assert!(plain.lone_coordinator_warning().is_none());
+        let lone: Spec = serde_json::from_value(json!({"demo": 10, "coordinatorStorage": {"size": "2Gi"}})).unwrap();
+        assert!(lone.check().is_ok());
+        let p = plan(&plain, &lone, 1, 3);
+        assert!(p["refused"].is_null() && p["warnings"].to_string().contains("coordinatorStorage with one coordinator"), "{p}");
+        let two: Spec = serde_json::from_value(json!({"demo": 10, "coordinators": 2, "coordinatorStorage": {"size": "2Gi"}})).unwrap();
+        assert!(two.lone_coordinator_warning().is_none());
+        assert!(!plan(&plain, &two, 1, 3)["warnings"].to_string().contains("coordinatorStorage"));
     }
 
     #[test]
