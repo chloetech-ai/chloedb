@@ -74,16 +74,16 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --backup-dir /data/backup --max-groups 2000000"]
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --backup-dir /data/backup --max-groups 2000000"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
-        - {name: CHLOEDB_MODELS, value: /data/models}
+        - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
         # 8 GB nodes (6.26 GiB allocatable): the server's memory budgets are
         # sized from the limit; the rest of the node's memory is the page
         # cache over the SSD, which is what makes it fast.
-        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 5Gi}}
+        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 6Gi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}]
 ---
@@ -103,16 +103,16 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --backup-dir /data/backup --max-groups 2000000"]
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --backup-dir /data/backup --max-groups 2000000"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
-        - {name: CHLOEDB_MODELS, value: /data/models}
+        - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
         # 8 GB nodes (6.26 GiB allocatable): the server's memory budgets are
         # sized from the limit; the rest of the node's memory is the page
         # cache over the SSD, which is what makes it fast.
-        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 5Gi}}
+        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 6Gi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}]
 ---
@@ -132,16 +132,16 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --backup-dir /data/backup --max-groups 2000000"]
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --backup-dir /data/backup --max-groups 2000000"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
-        - {name: CHLOEDB_MODELS, value: /data/models}
+        - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
         # 8 GB nodes (6.26 GiB allocatable): the server's memory budgets are
         # sized from the limit; the rest of the node's memory is the page
         # cache over the SSD, which is what makes it fast.
-        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 5Gi}}
+        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 6Gi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}]
 ---
@@ -161,16 +161,16 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --backup-dir /data/backup --max-groups 2000000"]
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --backup-dir /data/backup --max-groups 2000000"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
-        - {name: CHLOEDB_MODELS, value: /data/models}
+        - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
         # 8 GB nodes (6.26 GiB allocatable): the server's memory budgets are
         # sized from the limit; the rest of the node's memory is the page
         # cache over the SSD, which is what makes it fast.
-        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 5Gi}}
+        resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 6Gi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/db, type: Directory}}]
 ---
