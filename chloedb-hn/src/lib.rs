@@ -17,4 +17,6 @@ pub mod search;
 pub mod strata;
 pub mod text;
 pub mod thread;
+pub mod tier;
+pub mod trending;
 pub mod trends;

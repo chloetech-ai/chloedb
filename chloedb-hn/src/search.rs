@@ -50,7 +50,19 @@ impl<'a> Ctx<'a> {
         let f = self.rows(what, sql, params);
         async move { f.await.unwrap_or_default() }
     }
+    /// A query that may not hold the page back: refused by the server past
+    /// `ms`, and then no rows (the trace says so).
+    pub fn within(&self, what: &str, sql: &str, params: Value, ms: u64) -> impl std::future::Future<Output = Vec<Row>> + 'a {
+        let (db, trace, what, sql) = (self.db, self.trace, what.to_string(), sql.to_string());
+        async move { db.traced_within(trace, &what, &sql, params, Some(ms)).await.unwrap_or_default() }
+    }
 }
+
+/// How long a query that only adds to the results may take (the meaning
+/// candidates, the exact-text ones) before the results go without it.
+pub const BUDGET_MS: u64 = 1200;
+/// How long a facet may take.
+pub const FACET_MS: u64 = 3000;
 
 pub const STORY_COLS: &str = "id, title, url, site, domain, author, created, points, comments, kind, topics";
 pub const COMMENT_COLS: &str = "id, body, author, created, story, story_title, parent, parent_author, depth, replies, thread";
@@ -77,7 +89,7 @@ pub fn filters(p: &Parsed, story_table: bool, params: &mut serde_json::Map<Strin
     // segment) answers `ILIKE` without reading the rows.
     for (i, x) in p.exact.iter().enumerate() {
         params.insert(format!("ex{i}"), json!(like(x)));
-        w.push(if story_table { format!("(title ILIKE :ex{i} OR url ILIKE :ex{i})") } else { format!("body ILIKE :ex{i}") });
+        w.push(if story_table { format!("title ILIKE :ex{i}") } else { format!("body ILIKE :ex{i}") });
     }
     if story_table {
         if !p.kinds.is_empty() {
@@ -218,13 +230,23 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
     if mode == "exact" {
         // The words exactly as typed, inside words and punctuation too.
         params.insert("xall".into(), json!(like(&words)));
-        let cond = "(title ILIKE :xall OR url ILIKE :xall)";
+        // The title's substring index; a link's (`OR url ILIKE`) is ten
+        // times slower on 4.7 million links, and site: finds those.
+        let cond = "title ILIKE :xall";
         let ord = order_simple.unwrap_or("points DESC");
         let sql = format!("SELECT {STORY_COLS} FROM hn_stories {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_(cond));
         let count_where = where_(cond);
         let (rows, total) = tokio::join!(c.rows("stories, the text exactly (substring index)", &sql, Value::Object(params.clone())), count(c, "hn_stories", &count_where, &params));
         let rows = rows?;
         return Ok((rows, total));
+    }
+    if mode == "fast" {
+        // No ranking beyond the index's own: BM25 of the title, the top
+        // rows straight from the posting lists, no count.
+        let sql = format!("SELECT {STORY_COLS}, score() AS score FROM hn_stories {} ORDER BY bm25(title, :q) DESC LIMIT {limit} OFFSET {offset}", where_("MATCH(title, :m, min => :min)"));
+        let rows = c.rows("stories, BM25 of the title alone", &sql, Value::Object(params.clone())).await?;
+        let n = rows.len() as i64;
+        return Ok((rows, if n < limit as i64 { offset as i64 + n } else { -1 }));
     }
     if mode == "meaning" {
         params.insert("v".into(), json!({"embed": words, "field": "emb", "table": "hn_stories"}));
@@ -247,7 +269,7 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
     let mut code_sql = Vec::new();
     for (i, x) in p.code.iter().take(2).enumerate() {
         params.insert(format!("cx{i}"), json!(like(x)));
-        code_sql.push((format!("candidates with “{x}” exactly (substring index)"), format!("SELECT id FROM hn_stories {} ORDER BY points DESC LIMIT 100", where_(&format!("(title ILIKE :cx{i} OR url ILIKE :cx{i})")))));
+        code_sql.push((format!("candidates with “{x}” exactly (substring index)"), format!("SELECT id FROM hn_stories {} ORDER BY points DESC LIMIT 100", where_(&format!("title ILIKE :cx{i}")))));
     }
     if mode == "hybrid" {
         params.insert("v".into(), json!({"embed": words, "field": "emb", "table": "hn_stories"}));
@@ -259,8 +281,8 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
     let (lex_rows, body_rows, code_rows, v, total) = tokio::join!(
         c.rows("candidates by words", &lex, pv.clone()),
         c.soft("candidates by text", &body_sql, pv.clone()),
-        futures_util::future::join_all(code_sql.iter().map(|(what, sql)| c.soft(what, sql, pv.clone()))),
-        async { if mode == "hybrid" { c.soft("candidates by meaning", &vec_sql, pv.clone()).await } else { Vec::new() } },
+        futures_util::future::join_all(code_sql.iter().map(|(what, sql)| c.within(what, sql, pv.clone(), BUDGET_MS))),
+        async { if mode == "hybrid" { c.within("candidates by meaning", &vec_sql, pv.clone(), BUDGET_MS).await } else { Vec::new() } },
         count(c, "hn_stories", &count_where, &params),
     );
     let lex_rows = lex_rows?;
@@ -281,8 +303,20 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
     let rank = format!(
         "(coalesce(bm25(title, :q, fuzzy => 'auto', synonyms => 1), 0) + 0.8 * coalesce(bm25(title, :phrase), 0) + 0.2 * coalesce(bm25(body, :q, fuzzy => 'auto', synonyms => 1), 0) + 0.3 * coalesce(bm25(urlwords, :q), 0){sim}) * pow(points + 1, 0.35) * (0.8 + 0.2 * decay(created, now(), 157680000))"
     );
-    let sql = format!("SELECT {STORY_COLS}, score() AS score FROM hn_stories WHERE id IN ({}) ORDER BY {rank} DESC LIMIT {limit} OFFSET {offset}", list.join(", "));
-    let rows = c.rows("stories, ranked", &sql, Value::Object(params.clone())).await?;
+    // The top candidates by score are re-ordered by tier; fetching every
+    // candidate's row costs more than the order gains past the first 150.
+    let sql = format!("SELECT {STORY_COLS}, score() AS score FROM hn_stories WHERE id IN ({}) ORDER BY {rank} DESC LIMIT {}", list.join(", "), (offset + limit).max(150).min(ids.len()));
+    let mut rows = c.rows("stories, ranked", &sql, Value::Object(params.clone())).await?;
+    // Then tiers, as people expect of a search box: a code word as typed
+    // in the title, then every word of a short query in the title (as
+    // typed, then with a typo), before the rest; the score within each.
+    let tiers = crate::tier::Tiers::new(&words, &p.code);
+    for r in rows.iter_mut() {
+        let t = tiers.of(&r.s("title"), &r.s("url"));
+        r.insert("tier".into(), json!(t));
+    }
+    rows.sort_by_key(|r| std::cmp::Reverse(r.i("tier")));
+    let rows: Vec<Row> = rows.into_iter().skip(offset).take(limit).collect();
     let mut total = total;
     if total == 0 && !rows.is_empty() {
         total = count(c, "hn_stories", &where_(STORY_MATCH_FUZZY), &params).await;
@@ -300,12 +334,20 @@ pub fn short_title(t: &str) -> &str {
     t
 }
 
+/// Set once the server answers that it has no `/v1/highlight`.
+static NO_HIGHLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The texts with what the query matches marked by the server
 /// (`POST /v1/highlight`: stems, synonyms, typos and code as the field's
 /// analyzer reads them), HTML-escaped between `<mark>` tags; `None` from a
 /// server without it.
 pub async fn highlight(c: &Ctx<'_>, table: &str, field: &str, query: &str, texts: Vec<String>, size: usize) -> Option<Vec<String>> {
     if texts.is_empty() || query.trim().is_empty() {
+        return None;
+    }
+    // A server before 0.3.6 has no /v1/highlight: asked once, then the
+    // page marks the words itself.
+    if NO_HIGHLIGHT.load(std::sync::atomic::Ordering::Relaxed) {
         return None;
     }
     let t0 = std::time::Instant::now();
@@ -319,6 +361,9 @@ pub async fn highlight(c: &Ctx<'_>, table: &str, field: &str, query: &str, texts
             j["texts"].as_array().map(|a| a.iter().map(|t| t.as_str().unwrap_or("").to_string()).collect())
         }
         Err(e) => {
+            if e.message.contains("no route") {
+                NO_HIGHLIGHT.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             c.trace.push(&format!("highlights of {table}.{field}"), &shown, &Value::Null, 0, ms, Some(&format!("refused: {}", e.message)));
             None
         }
@@ -396,6 +441,12 @@ pub async fn comments(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset
     params.insert("q".into(), json!(words));
     params.insert("m".into(), json!(m));
     params.insert("min".into(), json!(min_words(&words)));
+    if r.mode == "fast" && (r.sort.is_empty() || r.sort == "best") {
+        let sql = format!("SELECT {COMMENT_COLS}, score() AS score FROM hn_comments {} ORDER BY bm25(body, :q) DESC LIMIT {limit} OFFSET {offset}", where_("MATCH(body, :m, min => :min)"));
+        let rows = c.rows("comments, BM25 of the text alone", &sql, Value::Object(params.clone())).await?;
+        let n = rows.len() as i64;
+        return Ok((rows, if n < limit as i64 { offset as i64 + n } else { -1 }));
+    }
     let matched = COMMENT_MATCH;
     let ord = match r.sort.as_str() {
         "date" => "created DESC".to_string(),
@@ -405,7 +456,10 @@ pub async fn comments(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset
         _ => "bm25(body, :q, fuzzy => 'auto', synonyms => 1, min => :min) * (1 + 0.25 * pop) DESC".to_string(),
     };
     let per = if p.story.is_some() { "" } else { " MAX 2 PER story" };
-    let sql = format!("SELECT {COMMENT_COLS}, score() AS score FROM hn_comments {} ORDER BY {ord}{per} LIMIT {limit} OFFSET {offset}", where_(if r.sort.is_empty() || r.sort == "best" { "" } else { matched }));
+    // score() is the ORDER BY's score, so only the ranking by words has one.
+    let best = !matches!(r.sort.as_str(), "date" | "old" | "comments" | "points");
+    let score = if best { ", score() AS score" } else { "" };
+    let sql = format!("SELECT {COMMENT_COLS}{score} FROM hn_comments {} ORDER BY {ord}{per} LIMIT {limit} OFFSET {offset}", where_(if best { "" } else { matched }));
     let count_where = where_(matched);
     let (rows, mut total) = tokio::join!(c.rows("comments", &sql, Value::Object(params.clone())), count(c, "hn_comments", &count_where, &params));
     let rows = rows?;
@@ -433,8 +487,8 @@ pub async fn facets(c: &Ctx<'_>, p: &Parsed, only_comments: bool) -> Value {
         let wh = if conds.is_empty() { String::new() } else { format!("WHERE {}", conds.join(" AND ")) };
         let pr = Value::Object(params.clone());
         let (years, authors) = tokio::join!(
-            c.soft("comments by year", &format!("SELECT year, COUNT(*) AS n FROM hn_comments {wh} GROUP BY year ORDER BY year"), pr.clone()),
-            c.soft("comments by person", &format!("SELECT author, COUNT(*) AS n FROM hn_comments {wh} GROUP BY author ORDER BY n DESC LIMIT 12"), pr.clone()),
+            c.within("comments by year", &format!("SELECT year, COUNT(*) AS n FROM hn_comments {wh} GROUP BY year ORDER BY year"), pr.clone(), FACET_MS),
+            c.within("comments by person", &format!("SELECT author, COUNT(*) AS n FROM hn_comments {wh} GROUP BY author ORDER BY n DESC LIMIT 12"), pr.clone(), FACET_MS),
         );
         out.insert("year".into(), facet(&years, "year"));
         out.insert("author".into(), facet(&authors, "author"));
@@ -449,21 +503,37 @@ pub async fn facets(c: &Ctx<'_>, p: &Parsed, only_comments: bool) -> Value {
     }
     let wh = if conds.is_empty() { String::new() } else { format!("WHERE {}", conds.join(" AND ")) };
     let pr = Value::Object(params.clone());
-    let points = "CASE WHEN points >= 1000 THEN '1000+' WHEN points >= 300 THEN '300+' WHEN points >= 100 THEN '100+' WHEN points >= 20 THEN '20+' ELSE '<20' END";
-    let (kinds, years, sites, authors, topics, pts) = tokio::join!(
-        c.soft("stories by kind", &format!("SELECT kind, COUNT(*) AS n FROM hn_stories {wh} GROUP BY kind ORDER BY n DESC"), pr.clone()),
-        c.soft("stories by year", &format!("SELECT year, COUNT(*) AS n FROM hn_stories {wh} GROUP BY year ORDER BY year"), pr.clone()),
-        c.soft("stories by site", &format!("SELECT site, COUNT(*) AS n FROM hn_stories {wh} GROUP BY site ORDER BY n DESC LIMIT 13"), pr.clone()),
-        c.soft("stories by person", &format!("SELECT author, COUNT(*) AS n FROM hn_stories {wh} GROUP BY author ORDER BY n DESC LIMIT 12"), pr.clone()),
-        c.soft("stories by topic", &format!("SELECT topics, COUNT(*) AS n FROM hn_stories {wh} GROUP BY topics ORDER BY n DESC LIMIT 14"), pr.clone()),
-        c.soft("stories by points", &format!("SELECT {points} AS b, COUNT(*) AS n FROM hn_stories {wh} GROUP BY b"), pr.clone()),
+    // Points in bands: a count of each floor (a range on the column beside
+    // the match) is ten times faster than a GROUP BY over a CASE, which
+    // reads every matching row's points.
+    let and_ = if wh.is_empty() { "WHERE".to_string() } else { format!("{wh} AND") };
+    let floors = [1000, 300, 100, 20];
+    let bands = futures_util::future::join_all(floors.iter().map(|f| c.within(&format!("stories with {f} points or more"), &format!("SELECT COUNT(*) AS n FROM hn_stories {and_} points >= {f}"), pr.clone(), FACET_MS)));
+    let all_n = c.within("stories, all", &format!("SELECT COUNT(*) AS n FROM hn_stories {wh}"), pr.clone(), FACET_MS);
+    let (kinds, years, sites, authors, topics, (bands, all_n)) = tokio::join!(
+        c.within("stories by kind", &format!("SELECT kind, COUNT(*) AS n FROM hn_stories {wh} GROUP BY kind ORDER BY n DESC"), pr.clone(), FACET_MS),
+        c.within("stories by year", &format!("SELECT year, COUNT(*) AS n FROM hn_stories {wh} GROUP BY year ORDER BY year"), pr.clone(), FACET_MS),
+        c.within("stories by site", &format!("SELECT site, COUNT(*) AS n FROM hn_stories {wh} GROUP BY site ORDER BY n DESC LIMIT 13"), pr.clone(), FACET_MS),
+        c.within("stories by person", &format!("SELECT author, COUNT(*) AS n FROM hn_stories {wh} GROUP BY author ORDER BY n DESC LIMIT 12"), pr.clone(), FACET_MS),
+        c.within("stories by topic", &format!("SELECT topics, COUNT(*) AS n FROM hn_stories {wh} GROUP BY topics ORDER BY n DESC LIMIT 14"), pr.clone(), FACET_MS),
+        async { tokio::join!(bands, all_n) },
     );
+    let at_least: Vec<Option<i64>> = bands.iter().map(|r| r.first().map(|x| x.i("n"))).collect();
+    let mut pts = Vec::new();
+    if let (Some(total), true) = (all_n.first().map(|x| x.i("n")), at_least.iter().all(Option::is_some)) {
+        let n: Vec<i64> = at_least.into_iter().flatten().collect();
+        for (label, v) in [("1000+", n[0]), ("300+", n[1] - n[0]), ("100+", n[2] - n[1]), ("20+", n[3] - n[2]), ("<20", total - n[3])] {
+            if v > 0 {
+                pts.push(json!({"value": label, "n": v}));
+            }
+        }
+    }
     out.insert("kind".into(), facet(&kinds, "kind"));
     out.insert("year".into(), facet(&years, "year"));
     out.insert("site".into(), json!(facet(&sites, "site").as_array().map(|a| a.iter().filter(|x| x["value"] != "" && !x["value"].is_null()).take(12).cloned().collect::<Vec<_>>()).unwrap_or_default()));
     out.insert("author".into(), facet(&authors, "author"));
     out.insert("topic".into(), facet(&topics, "topics"));
-    out.insert("points".into(), facet(&pts, "b"));
+    out.insert("points".into(), json!(pts));
     Value::Object(out)
 }
 

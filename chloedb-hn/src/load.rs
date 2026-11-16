@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use crate::strata::Strata;
 
-pub const ORDER: [&str; 6] = ["hn_users", "hn_stories", "hn_comments", "hn_replies", "hn_links", "hn_complete"];
+pub const ORDER: [&str; 8] = ["hn_users", "hn_stories", "hn_comments", "hn_replies", "hn_links", "hn_complete", "hn_terms", "hn_spikes"];
 
 /// Loads `dir/<table>.jsonl` for each table in `only` (all when empty);
 /// `progress` hears each request.

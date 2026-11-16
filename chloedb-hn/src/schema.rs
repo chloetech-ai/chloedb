@@ -86,6 +86,16 @@ pub fn tables(model: &str, comment_model: &str) -> Vec<(&'static str, String)> {
         ("hn_complete", "CREATE TABLE IF NOT EXISTS hn_complete (
             id KEYWORD PRIMARY KEY, kind KEYWORD, text KEYWORD, n INT, weight FLOAT
         ) OPTIONS(cluster_by = 'id')".to_string()),
+        // Trending: each month's terms of titles with their counts (term
+        // `*` is the month's count of titles), and each month's spikes
+        // against the twelve before it (crate::trending).
+        ("hn_terms", "CREATE TABLE IF NOT EXISTS hn_terms (
+            id KEYWORD PRIMARY KEY, month KEYWORD, term KEYWORD, n INT, points INT, top INT
+        )".to_string()),
+        ("hn_spikes", "CREATE TABLE IF NOT EXISTS hn_spikes (
+            id KEYWORD PRIMARY KEY, month KEYWORD, year INT, rank INT, term KEYWORD, n INT,
+            expected FLOAT, ratio FLOAT, score FLOAT, points INT, top INT, top_title TEXT
+        ) OPTIONS(cluster_by = 'id')".to_string()),
     ]
 }
 

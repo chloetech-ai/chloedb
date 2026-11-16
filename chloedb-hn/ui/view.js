@@ -157,6 +157,34 @@ const CSS = `
 .hn-ask b { display: block; font-size: 13.5px; }
 .hn-ask span { font-size: 12px; color: var(--text-2); }
 .hn-empty { padding: 40px 0; text-align: center; color: var(--muted); }
+.hn-trend { list-style: none; margin: 6px 0 0; padding: 0; }
+.hn-trend li { display: flex; gap: 12px; padding: 9px 2px; border-top: 1px solid var(--line); }
+.hn-trend li:first-child { border-top: 0; }
+.hn-trend .rk { width: 22px; flex: none; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; padding-top: 2px; }
+.hn-trend .tm { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.hn-trend .tm > a:first-child { font-weight: 680; font-size: 15.5px; color: var(--text); }
+.hn-trend .x { font-size: 12px; font-weight: 650; color: var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
+.hn-trend .m { font-size: 12.5px; color: var(--muted); }
+.hn-trend .st { display: block; font-size: 13px; color: var(--text-2); margin-top: 3px; }
+.hn-sub { font-size: 12.5px; color: var(--muted); margin: 2px 0 8px; max-width: 820px; }
+.hn-months { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 10px; }
+.hn-months .lead { display: block; font-size: 13px; color: var(--text-2); margin: 2px 0 8px; }
+.hn-months .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.hn-months .hn-chip small { color: var(--accent); font-weight: 650; }
+.hn-think { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
+.hn-think .orb { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; flex: none; color: var(--accent); background: radial-gradient(circle at 35% 35%, color-mix(in srgb, var(--accent) 30%, transparent), transparent 70%); animation: hnorb 2.4s ease-in-out infinite; }
+.hn-think .orb svg { width: 22px; height: 22px; animation: hnspin 6s linear infinite; }
+.hn-think b { display: block; font-size: 14.5px; background: linear-gradient(90deg, var(--text), var(--accent), var(--text)); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: hnsk 2s linear infinite; }
+.hn-think .st { font-size: 12.5px; color: var(--muted); }
+.hn-think .dots { margin-left: auto; display: flex; gap: 4px; }
+.hn-think .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: .3; animation: hndot 1.2s infinite; }
+.hn-think .dots i:nth-child(2) { animation-delay: .2s; }
+.hn-think .dots i:nth-child(3) { animation-delay: .4s; }
+.hn-in { animation: hnfade .5s ease-out; }
+@keyframes hnorb { 0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 35%, transparent); } 50% { transform: scale(1.06); box-shadow: 0 0 0 8px transparent; } }
+@keyframes hnspin { to { transform: rotate(360deg); } }
+@keyframes hndot { 0%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+@keyframes hnfade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .hn-skel { height: 64px; border-radius: 8px; margin: 10px 0; background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2)); background-size: 200% 100%; animation: hnsk 1.2s infinite; }
 @keyframes hnsk { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 .hn-more { display: block; width: 100%; margin: 14px 0; padding: 9px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text-2); font: 13px var(--sans); cursor: pointer; }
@@ -227,7 +255,9 @@ const CSS = `
 .hn-sqlp .q { border-top: 1px solid var(--line); padding: 9px 0; }
 .hn-sqlp .q:first-of-type { border-top: 0; }
 .hn-sqlp .w { display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 600; }
-.hn-sqlp .w span { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.hn-sqlp .w span { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; margin-left: auto; padding-left: 10px; }
+.hn-sqlp .w .sv { font-size: 11px; color: var(--muted); font-weight: 400; }
+.hn-sqlp .w .pt { font-style: normal; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); background: var(--accent-soft); border-radius: 5px; padding: 1px 6px; margin-right: 7px; }
 .hn-sqlp pre { margin: 5px 0 0; font: 11.5px/1.5 var(--mono); white-space: pre-wrap; background: var(--code); border-radius: 7px; padding: 7px 9px; color: var(--text-2); }
 .hn-sqlp .bad { color: var(--crit-ink); font-size: 12px; }
 .hn-foot { font-size: 12px; color: var(--muted); text-align: center; padding: 26px 0 6px; border-top: 1px solid var(--line); margin-top: 30px; }
@@ -355,8 +385,14 @@ function render(el, ctx) {
       if (j && Array.isArray(j.queries)) { app.queries = j.queries; app.took = j.took_ms; drawSql(); }
       return j;
     },
-    href: (...parts) => ctx.href(...parts),
-    go: (...parts) => { location.hash = ctx.href(...parts); },
+    // The queries of a page's later requests (comments, facets, an
+    // answer), added to the drawer under what they were for.
+    add: (j, part) => {
+      if (j && Array.isArray(j.queries)) { app.queries = app.queries.concat(j.queries.map((q) => ({ ...q, part }))); drawSql(); }
+      return j;
+    },
+    href: (...parts) => ctx.href(...slots(parts)),
+    go: (...parts) => { location.hash = ctx.href(...slots(parts)); },
   };
   const root = h("div", { class: "hn" });
   fill(el, root);
@@ -385,7 +421,7 @@ function render(el, ctx) {
     fill(sqlPanel, h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" } },
       h("b", {}, "The SQL behind this page"), h("button", { class: "hn-btn ghost", style: { padding: "3px 9px" }, onclick: () => sqlPanel.classList.remove("on") }, "Close")),
       app.queries.map((q) => h("div", { class: "q" },
-        h("div", { class: "w" }, q.what, h("span", {}, `${fmt(q.rows)} rows · ${(q.ms ?? 0).toFixed(1)} ms`)),
+        h("div", { class: "w" }, q.part ? h("i", { class: "pt" }, q.part) : null, q.what, h("span", { title: q.server_ms != null ? `the server's own time ${q.server_ms.toFixed(1)} ms; the rest is the network and the wait for the server` : "" }, `${fmt(q.rows)} rows · ${(q.ms ?? 0).toFixed(1)} ms`, q.server_ms != null ? h("small", { class: "sv" }, ` (server ${q.server_ms.toFixed(1)} ms)`) : null)),
         q.note ? h("div", { class: "bad" }, q.note) : null,
         h("pre", {}, q.sql, q.params && Object.keys(q.params).length ? `\n-- ${JSON.stringify(q.params)}` : ""))));
   }
@@ -400,22 +436,30 @@ function render(el, ctx) {
   let typed = 0, suggs = [], sel = -1;
   function search(q, push) {
     const path = q.trim() ? ["search", q.trim()] : [""];
-    if (push) app.go(...path);
-    else { history.replaceState(null, "", app.href(...path)); show(path); }
+    if (push) { closeSugg(); app.go(...path); return null; }
+    history.replaceState(null, "", app.href(...path));
+    return show(path);
   }
+  // The completions close once the search they were typed for is on the
+  // page, and a completion that answers after that is dropped.
+  function closeSugg() { ++sq; sel = -1; sugg.classList.remove("on"); }
   input.addEventListener("input", () => {
     clearTimeout(typed);
-    typed = setTimeout(() => search(input.value, false), 140);
+    typed = setTimeout(() => {
+      const v = input.value;
+      Promise.resolve(search(v, false)).catch(() => {}).finally(() => { if (input.value === v) closeSugg(); });
+    }, 140);
     suggest(input.value);
   });
+  window.addEventListener("hashchange", closeSugg);
   input.addEventListener("keydown", (e) => {
     const items = [...sugg.querySelectorAll(".it")];
     if (e.key === "ArrowDown" && items.length) { sel = (sel + 1) % items.length; items.forEach((x, i) => x.classList.toggle("sel", i === sel)); e.preventDefault(); }
     else if (e.key === "ArrowUp" && items.length) { sel = (sel - 1 + items.length) % items.length; items.forEach((x, i) => x.classList.toggle("sel", i === sel)); e.preventDefault(); }
-    else if (e.key === "Enter") { clearTimeout(typed); sugg.classList.remove("on"); if (sel >= 0 && suggs[sel]) suggs[sel](); else search(input.value, true); }
-    else if (e.key === "Escape") { sugg.classList.remove("on"); }
+    else if (e.key === "Enter") { clearTimeout(typed); const pick = sel >= 0 ? suggs[sel] : null; closeSugg(); if (pick) pick(); else search(input.value, true); }
+    else if (e.key === "Escape") { closeSugg(); }
   });
-  input.addEventListener("blur", () => setTimeout(() => sugg.classList.remove("on"), 150));
+  input.addEventListener("blur", () => setTimeout(closeSugg, 150));
   document.addEventListener("keydown", (e) => {
     if (e.key === "/" && document.activeElement !== input && !/input|textarea/i.test(document.activeElement?.tagName || "")) { e.preventDefault(); input.focus(); input.select(); }
   });
@@ -438,7 +482,7 @@ function render(el, ctx) {
     // A question left open for its topic ("how many stories mention ") goes in the box to be finished.
     const go = (text) => () => {
       if (text.endsWith(" ")) { input.value = text; input.focus(); suggest(text); return; }
-      input.value = text; sugg.classList.remove("on"); search(text, true);
+      input.value = text; closeSugg(); search(text, true);
     };
     const head = (t) => rows.push(h("div", { class: "hd" }, t));
     const qs = j.questions || [];
@@ -456,8 +500,8 @@ function render(el, ctx) {
     const people = (j.people || []).slice(0, 3), sites = (j.sites || []).slice(0, 2);
     if (people.length || sites.length) head("People and sites");
     for (const p of people) {
-      suggs.push(() => app.go("user", p.text));
-      rows.push(h("div", { class: "it", onmousedown: () => app.go("user", p.text) }, ava(p.text), h("span", { class: "t" }, p.text), h("span", { class: "m" }, `${compact(p.n)} posts`)));
+      suggs.push(() => { closeSugg(); app.go("user", p.text); });
+      rows.push(h("div", { class: "it", onmousedown: () => { closeSugg(); app.go("user", p.text); } }, ava(p.text), h("span", { class: "t" }, p.text), h("span", { class: "m" }, `${compact(p.n)} posts`)));
     }
     for (const s2 of sites) {
       const t = `site:${s2.text}`;
@@ -467,8 +511,8 @@ function render(el, ctx) {
     const st = (j.stories || []).slice(0, 3);
     if (st.length) head("Stories");
     for (const s of st) {
-      suggs.push(() => app.go("item", s.id));
-      rows.push(h("div", { class: "it", onmousedown: () => app.go("item", s.id) }, h("span", { class: "t" }, s.title), h("span", { class: "m" }, `${fmt(s.points)} points · ${new Date(s.created).getFullYear()}`)));
+      suggs.push(() => { closeSugg(); app.go("item", s.id); });
+      rows.push(h("div", { class: "it", onmousedown: () => { closeSugg(); app.go("item", s.id); } }, h("span", { class: "t" }, s.title), h("span", { class: "m" }, `${fmt(s.points)} points · ${new Date(s.created).getFullYear()}`)));
     }
     fill(sugg, ...rows);
     sugg.classList.toggle("on", rows.length > 0);
@@ -478,7 +522,8 @@ function render(el, ctx) {
   let current = null;
   async function show(path) {
     path = path || ctx.path() || [];
-    const [page = "", ...rest] = path;
+    const [page = "", ...kept] = path;
+    const rest = kept.map((x) => (x === "-" ? "" : x));
     current = path;
     drawNav(page);
     const my = ++app.seq;
@@ -505,7 +550,7 @@ function render(el, ctx) {
   }
   app.show = show;
   app.input = input;
-  ctx.onPath((p) => { if (JSON.stringify(p) !== JSON.stringify(current)) show(p); });
+  ctx.onPath((p) => { if (JSON.stringify(p) !== JSON.stringify(current)) { closeSugg(); show(p); } });
   show(ctx.path());
 
   // The feed's state, by the bar.
@@ -568,7 +613,9 @@ function answerCard(app, a, re, q, j) {
     kids.push(bars(ys, a.peak));
     kids.push(h("div", { class: "note" }, "Bars are each year's share of all stories posted that year: HN grew, so counts alone would favour recent years."));
   } else if (a.kind === "opinion") {
-    kids.push(h("a", { class: "hn-ask", href: app.href("ask", a.topic), style: { margin: "6px 0 0" } }, h("span", { html: SPARK }), h("span", {}, h("b", {}, a.title), h("span", {}, "A short answer from the comments, every claim cited"))));
+    // The model's answer, asked for now and written in when it comes; the
+    // results below do not wait for it.
+    return answerBox(app, q, () => true, { title: a.title, compact: true });
   }
   return h("div", { class: "hn-ans" }, kids);
 }
@@ -638,6 +685,15 @@ function addOp(q, op, replace) {
   return `${s} ${op}`.trim();
 }
 
+// A path's empty slots (the search's options: only, sort, mode) travel as
+// "-", since a path drops empty parts and the slots after would move up;
+// empty slots at the end are left off.
+function slots(parts) {
+  const p = [...parts];
+  while (p.length > 1 && (p[p.length - 1] === "" || p[p.length - 1] == null)) p.pop();
+  return p.map((x, i) => (i > 0 && (x === "" || x == null) ? "-" : x));
+}
+
 async function results(main, app, q, opts, alive) {
   const [only = "", sort = "", mode = ""] = opts;
   const head = h("div", { class: "hn-head" });
@@ -646,8 +702,13 @@ async function results(main, app, q, opts, alive) {
   const right = h("aside", { class: "hn-right" });
   const und = h("div", { class: "hn-und" });
   fill(main, und, h("div", { class: "hn-grid" }, left, h("section", {}, head, body), right));
-  const qs = `q=${enc(q)}${only ? `&only=${only}` : ""}${sort ? `&sort=${sort}` : ""}${mode ? `&mode=${mode}` : ""}`;
-  const j = await app.api(`/v1/search?${qs}`);
+  const base = `q=${enc(q)}${sort ? `&sort=${sort}` : ""}${mode ? `&mode=${mode}` : ""}`;
+  const qs = `${base}${only ? `&only=${only}` : ""}`;
+  // The stories first. The comments are asked for at the same time and
+  // shown when they come; the facets once the results are on the page.
+  const all = !only;
+  const cP = all ? app.ctx.api(`/v1/search?${base}&only=comment&per=8&facets=0`).catch(() => null) : null;
+  const j = await app.api(`/v1/search?${qs}&facets=0${all ? "&comments=0" : ""}`);
   if (!alive()) return;
   const u = j.understood || {};
   const re = markers(u);
@@ -661,17 +722,22 @@ async function results(main, app, q, opts, alive) {
 
   const set = (o, s, m) => app.go("search", q, o ?? only, s ?? sort, m ?? mode);
   const seg = (items, cur, pick) => h("div", { class: "hn-seg" }, items.map(([v, t]) => h("button", { class: (cur || items[0][0]) === v ? "on" : "", onclick: () => pick(v) }, t)));
-  const ts = j.total_stories || 0, tc = j.total_comments || 0;
+  const ts = j.total_stories || 0;
+  let tc = j.total_comments || 0;
+  const fast = j.mode === "fast";
   fill(head,
-    seg([["all", "All"], ["story", `Stories ${ts ? compact(ts) : ""}`], ["comment", `Comments ${tc ? compact(tc) : ""}`]], j.only, (v) => set(v === "all" ? "" : v)),
+    seg([["all", "All"], ["story", `Stories ${ts > 0 ? compact(ts) : ""}`], ["comment", `Comments ${tc > 0 ? compact(tc) : ""}`]], j.only, (v) => set(v === "all" ? "" : v)),
     h("span", { class: "sp" }),
     seg([["best", "Best"], ["points", "Points"], ["date", "Newest"], ["comments", "Discussed"]], j.sort, (v) => set(null, v === "best" ? "" : v)),
   );
   const list = [];
   if (j.did_you_mean) list.push(h("div", { class: "hn-dym" }, "Did you mean ", h("a", { href: app.href("search", j.did_you_mean) }, j.did_you_mean), "?"));
   if (j.answer) list.push(answerCard(app, j.answer, re, q, j));
-  list.push(h("div", { class: "hn-head", style: { margin: "8px 0 2px" } }, h("span", { class: "t" }, h("b", {}, fmt(ts)), " stories", tc ? [" · ", h("b", {}, fmt(tc)), " comments"] : "", ` · found in ${Math.round(j.took_ms)} ms`), h("span", { class: "sp" }),
-    h("span", { class: "t", style: { fontSize: "12px" } }, "Match by "), seg([["hybrid", "words + meaning"], ["words", "words"], ["meaning", "meaning"], ["exact", "exact text"]], j.mode, (v) => set(null, null, v === "hybrid" ? "" : v))));
+  const countLine = h("span", { class: "t" });
+  const drawCount = () => fill(countLine, fast ? [h("b", {}, "fast"), " · BM25 of the title alone, no ranking, no count"] : [h("b", {}, fmt(ts)), " stories"], !fast && tc > 0 ? [" · ", h("b", {}, fmt(tc)), " comments"] : "", ` · found in ${Math.round(j.took_ms)} ms`);
+  drawCount();
+  list.push(h("div", { class: "hn-head", style: { margin: "8px 0 2px" } }, countLine, h("span", { class: "sp" }),
+    h("span", { class: "t", style: { fontSize: "12px" } }, "Match by "), seg([["hybrid", "words + meaning"], ["words", "words"], ["meaning", "meaning"], ["exact", "exact text"], ["fast", "fast"]], j.mode, (v) => set(null, null, v === "hybrid" ? "" : v))));
   // The same link submitted again folds under its best discussion.
   const seen = new Map();
   const stories = [];
@@ -685,17 +751,31 @@ async function results(main, app, q, opts, alive) {
   if (stories.length) {
     list.push(h("ul", { class: "hn-res" }, stories.map(({ s, again }) => storyItem(app, s, re, again.length ? h("div", { class: "hn-again" }, `Also discussed ${again.length === 1 ? "once more" : `${again.length} more times`}: `, again.map((a, i) => [i ? ", " : "", h("a", { href: app.href("item", a.id) }, `${new Date(a.created).getFullYear()} (${fmt(a.comments)} comments)`)])) : null))));
   }
-  if ((j.comments || []).length) {
-    if (j.only === "all") list.push(h("div", { class: "hn-sec" }, h("h3", {}, "From the comments"), h("a", { href: app.href("search", q, "comment") }, `All ${fmt(tc)} comments →`)));
+  // The comments: on their own page, with the results; beside the
+  // stories, a placeholder they fill when they come.
+  const cBox = h("div", {});
+  if (all) {
+    fill(cBox, h("div", { class: "hn-sec" }, h("h3", {}, "From the comments"), h("span", { class: "t" }, "searching 40 million comments…")), skel(2));
+    list.push(cBox);
+    cP.then((k) => {
+      if (!alive()) return;
+      app.add(k, "comments");
+      if (!k || !(k.comments || []).length) { cBox.remove(); if (!stories.length) fill(body, h("div", { class: "hn-empty" }, "Nothing matched. ", j.did_you_mean ? "" : "Try fewer words, or Meaning above.")); return; }
+      tc = k.total_comments || 0;
+      drawCount();
+      fill(cBox, h("div", { class: "hn-sec" }, h("h3", {}, "From the comments"), h("a", { href: app.href("search", q, "comment") }, tc > 0 ? `All ${fmt(tc)} comments →` : "All comments →")),
+        h("ul", { class: "hn-res" }, k.comments.map((c) => commentItem(app, c, re))));
+    });
+  } else if ((j.comments || []).length) {
     list.push(h("ul", { class: "hn-res" }, j.comments.map((c) => commentItem(app, c, re))));
   }
-  if (!stories.length && !(j.comments || []).length) list.push(h("div", { class: "hn-empty" }, "Nothing matched. ", j.did_you_mean ? "" : "Try fewer words, or Meaning above."));
+  if (!stories.length && !(j.comments || []).length && !all) list.push(h("div", { class: "hn-empty" }, "Nothing matched. ", j.did_you_mean ? "" : "Try fewer words, or Meaning above."));
   else {
     let page = 0;
     const more = h("button", { class: "hn-more", onclick: async () => {
       page++;
       more.textContent = "Loading…";
-      const k = await app.api(`/v1/search?${qs}&page=${page}&facets=0`);
+      const k = app.add(await app.ctx.api(`/v1/search?${qs}&page=${page}&facets=0`), `page ${page + 1}`);
       const add2 = [...(k.stories || []).map((s) => storyItem(app, s, re)), ...(k.comments || []).map((c) => commentItem(app, c, re))];
       more.before(h("ul", { class: "hn-res" }, add2));
       more.textContent = "More results";
@@ -705,8 +785,22 @@ async function results(main, app, q, opts, alive) {
   }
   fill(body, ...list);
 
-  // Facets: each a click that narrows the query, by its operator.
-  const f = j.facets || {};
+  // Facets: asked for once the results are shown; each a click that
+  // narrows the query, by its operator.
+  fill(left, h("div", { class: "hn-facet" }, h("h4", {}, "When"), h("div", { class: "hn-skel", style: { height: "54px" } })), h("div", { class: "hn-facet" }, h("h4", {}, "Type"), h("div", { class: "hn-skel", style: { height: "90px" } })));
+  const words = (u.text || "").trim();
+  const spark = h("div", {}, h("div", { class: "hn-skel", style: { height: "60px" } }));
+  fill(right, 
+    words ? h("a", { class: "hn-ask", href: app.href("ask", `What does HN think about ${words}?`) }, h("span", { html: SPARK, style: { display: "contents" } }), h("div", {}, h("b", {}, `What does HN think about ${words}?`), h("span", {}, "A short answer from the comments, every claim cited"))) : null,
+    words ? h("div", { class: "hn-card" }, h("h4", {}, "Talked about, year by year", h("a", { href: app.href("trends", words) }, "Trends →")), spark) : null,
+    words ? peopleCard(app, words) : null,
+  );
+  if (fast) { fill(left); fill(spark, h("div", { style: { fontSize: "12.5px", color: "var(--muted)" } }, "Fast mode skips the facets.")); return; }
+  const fj = await app.ctx.api(`/v1/facets?${qs}`).catch(() => null);
+  if (!alive()) return;
+  app.add(fj, "facets");
+  const f = fj?.facets || {};
+  fill(spark, sparkYears(f.year));
   const KIND = { story: "Story", show: "Show HN", ask: "Ask HN", launch: "Launch HN", tell: "Tell HN", job: "Job", poll: "Poll" };
   fill(left, 
     years(app, f.year, q),
@@ -718,14 +812,6 @@ async function results(main, app, q, opts, alive) {
   );
   if (!left.children.length) left.append(h("div", { class: "hn-facet" }, h("h4", {}, "Filters"), h("div", { style: { fontSize: "12.5px", color: "var(--muted)" } }, "Type by:name, site:example.com, after:2020, points>100, type:show, or say it: “Show HN posts about databases since 2021”.")));
 
-  // Beside the results: a question for "What HN thinks", the people who
-  // know the topic, the trend.
-  const words = (u.text || "").trim();
-  fill(right, 
-    words ? h("a", { class: "hn-ask", href: app.href("ask", `What does HN think about ${words}?`) }, h("span", { html: SPARK, style: { display: "contents" } }), h("div", {}, h("b", {}, `What does HN think about ${words}?`), h("span", {}, "A short answer from the comments, every claim cited"))) : null,
-    words ? h("div", { class: "hn-card" }, h("h4", {}, "Talked about, year by year", h("a", { href: app.href("trends", words) }, "Trends →")), sparkYears(f.year)) : null,
-    words ? peopleCard(app, words) : null,
-  );
 }
 
 function sparkYears(rows) {
@@ -771,13 +857,18 @@ function home(main, app, alive) {
     h("div", {}, h("b", {}, compact(st?.tables?.hn_replies || 0)), h("span", {}, "reply edges")),
     h("div", {}, h("b", {}, st?.stories?.first ? new Date(st.stories.first).getFullYear() : "2006"), h("span", {}, "since")));
   drawStats(s);
-  const frontCol = h("div", { class: "hn-card" }, h("h4", {}, "On the front page now", h("a", { href: app.href("front") }, "All →")), skel(3));
+  const frontBody = h("div", {}, skel(3));
+  const frontCol = h("div", { class: "hn-card" }, h("h4", {}, "On the front page now", h("a", { href: app.href("front") }, "All →")), frontBody);
   const askCol = h("div", { class: "hn-card" }, h("h4", {}, "Ask the archive"),
     h("ul", { class: "hn-mini" }, ["What does HN think about SQLite in production?", "Is Rust worth it for a small team?", "What do people regret about microservices?", "How do founders find their first customers?"].map((t) =>
       h("li", {}, h("a", { href: app.href("ask", t) }, t), h("span", { class: "m" }, "an answer from the comments, cited")))));
-  const trendCol = h("div", { class: "hn-card" }, h("h4", {}, "Trends", h("a", { href: app.href("trends", "rust, go, zig") }, "Open →")),
-    h("ul", { class: "hn-mini" }, [["rust, go, zig", "languages"], ["kubernetes, docker, serverless", "infrastructure"], ["gpt, llm, copilot", "AI"], ["remote, office, layoffs", "work"]].map(([t, w]) =>
-      h("li", {}, h("a", { href: app.href("trends", t) }, t), h("span", { class: "m" }, w)))));
+  const trendBody = h("div", {}, skel(3));
+  const trendCol = h("div", { class: "hn-card" }, h("h4", {}, "Trending now", h("a", { href: app.href("trends") }, "Trends →")), trendBody);
+  app.ctx.api("/v1/trending?hours=48").then((j) => {
+    if (!alive()) return;
+    if (!j?.terms?.length) { trendBody.replaceWith(h("ul", { class: "hn-mini" }, [["rust, go, zig", "languages"], ["kubernetes, docker, serverless", "infrastructure"], ["gpt, llm, copilot", "AI"]].map(([t, w]) => h("li", {}, h("a", { href: app.href("trends", t) }, t), h("span", { class: "m" }, w))))); return; }
+    trendBody.replaceWith(h("ul", { class: "hn-mini" }, j.terms.slice(0, 6).map((t) => h("li", {}, h("a", { href: app.href("search", t.term, "", "date") }, t.term), h("span", { class: "m" }, `×${t.ratio >= 100 ? Math.round(t.ratio) : t.ratio} its usual share · ${fmt(t.n)} stories in 48 h`)))));
+  }).catch(() => trendBody.remove());
   fill(main, 
     h("div", { class: "hn-hero" },
       h("h1", {}, "Search every ", h("em", {}, "Hacker News"), " discussion"),
@@ -789,9 +880,9 @@ function home(main, app, alive) {
   app.ctx.api("/v1/status").then((st) => { if (alive()) drawStats(st); }).catch(() => {});
   app.api("/v1/front").then((j) => {
     if (!alive()) return;
-    frontCol.lastChild.replaceWith(h("ul", { class: "hn-mini" }, (j.stories || []).slice(0, 6).map((s) =>
+    frontBody.replaceWith(h("ul", { class: "hn-mini" }, (j.stories || []).slice(0, 6).map((s) =>
       h("li", {}, h("a", { href: app.href("item", s.id) }, s.title), h("span", { class: "m" }, `${fmt(s.points)} points · ${fmt(s.comments)} comments · ${ago(s.created)}`)))));
-  }).catch(() => frontCol.lastChild.remove());
+  }).catch(() => frontBody.remove());
 }
 
 // ---- a discussion ----------------------------------------------------------
@@ -959,9 +1050,9 @@ async function trends(main, app, terms, alive) {
   const box = h("input", { value: terms, placeholder: "Terms, separated by commas: rust, go, zig" });
   const go = () => app.go("trends", box.value.trim());
   box.onkeydown = (e) => { if (e.key === "Enter") go(); };
-  const out = h("div", {}, terms ? skel(3) : h("div", { class: "hn-empty" }, "Compare how much HN talked about things, as a share of all its stories each year."));
+  const out = h("div", {}, terms ? skel(3) : null);
   fill(main, h("h2", { style: { margin: "10px 0 2px", letterSpacing: "-.02em" } }, "Trends"), h("div", { class: "hn-input" }, box, h("button", { class: "hn-btn", onclick: go }, "Compare")), out);
-  if (!terms) return;
+  if (!terms) { trending(out, app, alive); return; }
   const j = await app.api(`/v1/trends?q=${enc(terms)}&in=stories`);
   if (!alive()) return;
   const S = (j.series || []).filter((s) => s.points.length);
@@ -985,20 +1076,75 @@ async function trends(main, app, terms, alive) {
       h("ul", { class: "hn-mini" }, (s.top || []).slice(0, 5).map((r) => h("li", {}, h("a", { href: app.href("item", r.id) }, r.title), h("span", { class: "m" }, `${fmt(r.points)} points · ${new Date(r.created).getFullYear()}`))))))));
 }
 
+// What is trending, found by the counts alone: the terms of the newest
+// titles against the year before, and every month's spikes since 2007.
+function trendRows(app, terms, n) {
+  return h("ol", { class: "hn-trend" }, (terms || []).slice(0, n).map((t, i) => h("li", {},
+    h("span", { class: "rk" }, i + 1),
+    h("div", {},
+      h("div", { class: "tm" }, h("a", { href: app.href("search", t.term, "", "date") }, t.term), h("span", { class: "x", title: `${t.n} titles where ${t.expected} were usual` }, `×${t.ratio >= 100 ? Math.round(t.ratio) : t.ratio}`), h("span", { class: "m" }, `${fmt(t.n)} stories · ${fmt(t.points)} points`), h("a", { class: "m", href: app.href("trends", t.term) }, "over the years →")),
+      t.top?.title ? h("a", { class: "st", href: app.href("item", t.top.id) }, t.top.title) : null))));
+}
+
+async function trending(out, app, alive) {
+  const now = h("div", {}, skel(3));
+  const tabs = h("div", { class: "hn-seg" });
+  let hours = 48;
+  const drawNow = async () => {
+    fill(tabs, [[48, "Last 48 hours"], [168, "This week"], [720, "This month"]].map(([v, t]) => h("button", { class: hours === v ? "on" : "", onclick: () => { hours = v; drawNow(); } }, t)));
+    fill(now, skel(3));
+    const j = app.add(await app.ctx.api(`/v1/trending?hours=${hours}`).catch(() => null), `trending, ${hours} h`);
+    if (!alive()) return;
+    if (!j?.terms?.length) { fill(now, h("div", { class: "hn-empty" }, j?.stories ? `Nothing stands out in the last ${hours} hours' ${fmt(j.stories)} stories yet.` : "No stories that new are loaded: the app's --feed keeps them coming.")); return; }
+    fill(now, h("div", { class: "hn-sub" }, `${fmt(j.stories)} stories in the window, against ${fmt(j.baseline.stories)} over the ${j.baseline.months} months from ${j.baseline.from}. ×N is how many times its usual share of titles; ranked by Dunning's log-likelihood, so a jump many titles show beats one rare word.`), trendRows(app, j.terms, 20));
+  };
+  const years = h("div", { class: "hn-seg", style: { flexWrap: "wrap" } });
+  const months = h("div", {}, skel(2));
+  const thisYear = new Date().getFullYear();
+  let year = thisYear - 1;
+  const drawYear = async () => {
+    const ys = [];
+    for (let y = thisYear; y >= 2007; y--) ys.push(y);
+    fill(years, ys.map((y) => h("button", { class: y === year ? "on" : "", onclick: () => { year = y; drawYear(); } }, y)));
+    fill(months, skel(2));
+    const j = app.add(await app.ctx.api(`/v1/spikes?year=${year}`).catch(() => null), `spikes of ${year}`);
+    if (!alive()) return;
+    const by = new Map();
+    for (const r of j?.spikes || []) { if (!by.has(r.month)) by.set(r.month, []); by.get(r.month).push(r); }
+    if (!by.size) { fill(months, h("div", { class: "hn-empty" }, "No spikes for this year: the trending rows are made by chloedb-hn trending and loaded with the rest.")); return; }
+    const MN = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    fill(months, h("div", { class: "hn-months" }, [...by.entries()].sort().reverse().map(([m, rs]) => h("div", { class: "hn-card" },
+      h("h4", {}, `${MN[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`),
+      rs[0]?.top_title ? h("a", { class: "lead", href: app.href("item", rs[0].top) }, rs[0].top_title) : null,
+      h("div", { class: "chips" }, rs.slice(0, 8).map((r) => h("a", { class: "hn-chip", href: app.href("search", `${r.term} ${m.slice(0, 4)}`), title: `${r.n} titles where ${r.expected} were usual (×${r.ratio}), ${fmt(r.points)} points` }, r.term, h("small", {}, ` ×${r.ratio >= 100 ? Math.round(r.ratio) : r.ratio}`))))))));
+  };
+  fill(out,
+    h("div", { class: "hn-head", style: { margin: "14px 0 6px" } }, h("h3", { style: { margin: 0 } }, "Trending now"), h("span", { class: "sp" }), tabs),
+    now,
+    h("div", { class: "hn-head", style: { margin: "26px 0 6px" } }, h("h3", { style: { margin: 0 } }, "Spikes through the years"), h("span", { class: "sp" })),
+    h("div", { class: "hn-sub" }, "Each month's titles against the twelve months before: what HN was suddenly about."),
+    years, months,
+    h("div", { class: "hn-sub", style: { marginTop: "18px" } }, "Or compare terms over the years: type them above, separated by commas."));
+  drawNow();
+  drawYear();
+}
+
 // ---- what HN thinks --------------------------------------------------------
 
-async function ask(main, app, question, alive) {
-  const box = h("input", { value: question, placeholder: "What does HN think about…" });
-  const go = () => app.go("ask", box.value.trim());
-  box.onkeydown = (e) => { if (e.key === "Enter") go(); };
-  const out = h("div", {}, question ? [h("div", { style: { color: "var(--muted)", fontSize: "13px", margin: "6px 0" } }, "Reading the comments that speak to it, packed into the model's budget by the database, then summing them up…"), skel(4)] : h("div", { class: "hn-empty" }, "Ask a question; the answer comes from HN's comments, each claim cited to the comment it came from."));
-  fill(main, h("h2", { style: { margin: "10px 0 2px", letterSpacing: "-.02em" } }, "What HN thinks"), h("div", { class: "hn-input" }, box, h("button", { class: "hn-btn", onclick: go }, "Ask")), out);
-  if (!question) return;
-  const j = await app.api(`/v1/ask?q=${enc(question)}`, { timeout: 120000 });
-  if (!alive()) return;
-  if (!j.answer) { fill(out, h("div", { class: "hn-empty" }, j.note || "No answer.")); return; }
-  const src = new Map((j.sources || []).map((s) => [s.n, s]));
+// The model's answer, as it is made: the comments it reads show at once
+// (packed by the database), the answer writes in when the model is done,
+// with an animation meanwhile. Used by the "What HN thinks" page and inline
+// in the results of a question about opinions.
+function answerBox(app, question, alive, opts = {}) {
   const cards = new Map();
+  const src = new Map();
+  const state = h("div", { class: "hn-think" },
+    h("span", { class: "orb", html: SPARK }),
+    h("div", {}, h("b", {}, "Reading the comments"), h("span", { class: "st" }, "packing the ones that speak to it into the model's budget…")),
+    h("span", { class: "dots" }, h("i", {}), h("i", {}), h("i", {})));
+  const answer = h("div", { class: "hn-card" }, h("div", { class: "hn-ans" }, opts.title ? h("div", { class: "ey" }, opts.title) : null, state));
+  const read = h("div", {});
+  const box = h("div", {}, answer, read);
   const cite = (text) => {
     const parts = [];
     let last = 0;
@@ -1011,27 +1157,65 @@ async function ask(main, app, question, alive) {
     parts.push(text.slice(last));
     return parts;
   };
-  const blocks = [];
-  let ul = null;
-  for (const line of j.answer.split("\n")) {
-    const t = line.trim();
-    if (!t) { ul = null; continue; }
-    const b = t.match(/^[-*•]\s+(.*)/);
-    if (b) { if (!ul) { ul = h("ul", {}); blocks.push(ul); } ul.append(h("li", {}, cite(b[1].replace(/\*\*(.+?)\*\*/g, "$1")))); }
-    else { ul = null; blocks.push(h("p", {}, cite(t.replace(/\*\*(.+?)\*\*/g, "$1")))); }
-  }
-  const r = j.receipt;
-  fill(out, 
-    h("div", { class: "hn-card" }, h("div", { class: "hn-ans" }, blocks),
+  const showSources = (list) => {
+    for (const x of list || []) src.set(x.n, x);
+    const shown = (list || []).slice(0, opts.compact ? 4 : 99);
+    fill(read,
+      h("div", { class: "hn-sec" }, h("h3", {}, opts.compact ? `The comments it reads (${(list || []).length})` : "The comments it read"), h("a", { href: app.href("search", question.replace(/^what (does|do) (hn|people) think (about|of)\s*/i, "").replace(/\?$/, ""), "comment") }, "Search them →")),
+      h("div", { class: "hn-src" }, shown.map((s) => { const c = h("div", { id: `s${s.n}` }, h("div", {}, h("span", { class: "n" }, s.n), h("a", { href: app.href("user", s.author), style: { fontWeight: 600 } }, s.author), ` · ${s.year} · `, h("a", { href: app.href("item", s.id), style: { color: "var(--muted)" } }, s.story_title)), h("div", { class: "x" }, s.text)); cards.set(s.n, c); return c; })));
+  };
+  const showAnswer = (j) => {
+    if (!j.answer) { fill(answer, h("div", { class: "hn-empty" }, j.note || "No answer.")); return; }
+    if (j.sources) showSources(j.sources);
+    const blocks = [];
+    let ul = null;
+    for (const line of j.answer.split("\n")) {
+      const t = line.trim();
+      if (!t) { ul = null; continue; }
+      const b = t.match(/^[-*•]\s+(.*)/);
+      if (b) { if (!ul) { ul = h("ul", {}); blocks.push(ul); } ul.append(h("li", {}, cite(b[1].replace(/\*\*(.+?)\*\*/g, "$1")))); }
+      else { ul = null; blocks.push(h("p", {}, cite(t.replace(/\*\*(.+?)\*\*/g, "$1")))); }
+    }
+    const r = j.receipt;
+    fill(answer, h("div", { class: "hn-ans hn-in" }, opts.title ? h("div", { class: "ey" }, opts.title) : null, blocks),
       h("div", { class: "hn-receipt" },
         h("span", {}, `${(j.sources || []).length} comments cited`),
         r ? h("span", {}, `${r.skipped} more left out by the pack (near duplicates, over budget)`) : null,
         h("span", {}, j.kept ? `kept answer from ${day(j.at)}` : `${(j.ms / 1000).toFixed(1)} s`),
         h("span", {}, j.model),
-        j.kept ? h("a", { href: "#", style: { color: "var(--accent)" }, onclick: async (e) => { e.preventDefault(); fill(out, skel(4)); await app.api(`/v1/ask?q=${enc(question)}&fresh=1`, { timeout: 120000 }); show2(); } }, "Ask again") : null)),
-    h("div", { class: "hn-sec" }, h("h3", {}, "The comments it read"), h("a", { href: app.href("search", question.replace(/^what (does|do) (hn|people) think (about|of)\s*/i, "").replace(/\?$/, ""), "comment") }, "Search them →")),
-    h("div", { class: "hn-src" }, (j.sources || []).map((s) => { const c = h("div", { id: `s${s.n}` }, h("div", {}, h("span", { class: "n" }, s.n), h("a", { href: app.href("user", s.author), style: { fontWeight: 600 } }, s.author), ` · ${s.year} · `, h("a", { href: app.href("item", s.id), style: { color: "var(--muted)" } }, s.story_title)), h("div", { class: "x" }, s.text)); cards.set(s.n, c); return c; })));
-  function show2() { app.show(["ask", question]); }
+        j.kept && !opts.compact ? h("a", { href: "#", style: { color: "var(--accent)" }, onclick: (e) => { e.preventDefault(); run(true); } }, "Ask again") : null));
+  };
+  const fail = (e) => fill(answer, h("div", { class: "hn-empty" }, String(e?.message || e || "The model did not answer.")));
+  async function run(fresh) {
+    if (fresh) fill(answer, h("div", { class: "hn-ans" }, state));
+    // The comments first (fast, and the whole answer when it is kept).
+    const k = fresh ? null : app.add(await app.ctx.api(`/v1/ask/comments?q=${enc(question)}`).catch(() => null), "comments read");
+    if (!alive()) return;
+    if (k?.answer) { showAnswer(k); return; }
+    if (k && !k.pending) { fill(answer, h("div", { class: "hn-empty" }, "No comments speak to this yet.")); read.replaceChildren(); return; }
+    if (k) {
+      showSources(k.sources);
+      fill(state.querySelector("b"), "Writing the answer");
+      fill(state.querySelector(".st"), `from ${k.sources.length} comments, each claim cited; usually 5 to 15 seconds`);
+    }
+    try {
+      const j = app.add(await app.ctx.api(`/v1/ask?q=${enc(question)}${fresh ? "&fresh=1" : ""}`, { timeout: 120000 }), "the answer");
+      if (alive()) showAnswer(j);
+    } catch (e) { if (alive()) fail(e); }
+  }
+  run(false);
+  return box;
+}
+
+async function ask(main, app, question, alive) {
+  const box = h("input", { value: question, placeholder: "What does HN think about…" });
+  const go = () => app.go("ask", box.value.trim());
+  box.onkeydown = (e) => { if (e.key === "Enter") go(); };
+  const out = h("div", {}, question ? null : h("div", { class: "hn-empty" }, "Ask a question; the answer comes from HN's comments, each claim cited to the comment it came from."));
+  fill(main, h("h2", { style: { margin: "10px 0 2px", letterSpacing: "-.02em" } }, "What HN thinks"), h("div", { class: "hn-input" }, box, h("button", { class: "hn-btn", onclick: go }, "Ask")), out);
+  if (!question) return;
+  app.queries = [];
+  fill(out, answerBox(app, question, alive));
 }
 
 // ---- the front page --------------------------------------------------------

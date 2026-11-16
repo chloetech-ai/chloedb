@@ -28,6 +28,11 @@ const STOP: &[&str] = &[
     "hn", "show", "ask", "tell", "launch", "-", "–", "—", "|", "&", "new", "just", "now", "more", "most", "all", "has", "have", "get", "use", "using", "up", "out", "one", "&amp;",
 ];
 
+/// A word too common to start, end or rank a phrase by.
+pub fn is_stop(w: &str) -> bool {
+    STOP.contains(&w)
+}
+
 /// A title's words as people type them: lowercase, punctuation at the
 /// ends off (`C++`, `node.js` and `.NET` keep theirs).
 pub fn words(t: &str) -> Vec<String> {

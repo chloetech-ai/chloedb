@@ -11,7 +11,7 @@ use crate::strata::RowExt;
 pub async fn trends(c: &Ctx<'_>, terms: &[String], by_month: bool, comments: bool) -> Value {
     let (table, field) = if comments { ("hn_comments", "body") } else { ("hn_stories", "title") };
     let period = if by_month { "date_trunc('month', created)" } else { "year" };
-    let totals = c.soft("everything said, per period", &format!("SELECT {period} AS p, COUNT(*) AS n FROM {table} GROUP BY p ORDER BY p"), Value::Null).await;
+    let totals = c.soft("everything said, per period", &format!("SELECT {period} AS p, COUNT(*) AS n FROM {table} GROUP BY p ORDER BY {period}"), Value::Null).await;
     let total: std::collections::HashMap<String, i64> = totals.iter().map(|r| (r.s("p"), r.i("n"))).collect();
     let mut series = Vec::new();
     for t in terms.iter().take(6) {
@@ -22,7 +22,7 @@ pub async fn trends(c: &Ctx<'_>, terms: &[String], by_month: bool, comments: boo
         let m = crate::query::match_text(&crate::query::parse(t, 0));
         let params = json!({"m": m});
         let (rows, peak) = tokio::join!(
-            c.soft(&format!("“{t}”, per period"), &format!("SELECT {period} AS p, COUNT(*) AS n FROM {table} WHERE MATCH({field}, :m, synonyms => 1) GROUP BY p ORDER BY p"), params.clone()),
+            c.soft(&format!("“{t}”, per period"), &format!("SELECT {period} AS p, COUNT(*) AS n FROM {table} WHERE MATCH({field}, :m, synonyms => 1) GROUP BY p ORDER BY {period}"), params.clone()),
             c.soft(&format!("“{t}”: the stories that drew most points"), &format!("SELECT {STORY_COLS} FROM hn_stories WHERE MATCH(title, :m, synonyms => 1) ORDER BY points DESC LIMIT 8"), params.clone()),
         );
         let pts: Vec<Value> = rows.iter().map(|r| {

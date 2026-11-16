@@ -28,8 +28,10 @@ enum Cmd {
     Load(LoadArgs),
     /// Serve the API, the view for the command center (chloedb-server --app hn=URL) and, with --public, the page itself.
     Serve(ServeArgs),
-    /// Write autocomplete's rows (hn_complete.jsonl: phrases of titles, sites, topics, people) from the rows `prepare` wrote.
+    /// Write autocomplete's rows (hn_complete.jsonl: phrases of titles, sites, topics, people) and trending's (hn_terms.jsonl, hn_spikes.jsonl) from the rows `prepare` wrote.
     Complete(CompleteArgs),
+    /// Write trending's rows only: each month's terms of titles (hn_terms.jsonl) and its spikes against the year before (hn_spikes.jsonl).
+    Trending(CompleteArgs),
 }
 
 #[derive(clap::Args)]
@@ -329,6 +331,13 @@ async fn main() {
             let t0 = std::time::Instant::now();
             let n = chloedb_hn::complete::build(&a.rows, |m| eprintln!("chloedb-hn: {m}")).unwrap_or_else(|e| fail(e));
             eprintln!("chloedb-hn: wrote {n} rows to {} in {:.0} s", a.rows.join("hn_complete.jsonl").display(), t0.elapsed().as_secs_f64());
+            let (terms, spikes) = chloedb_hn::trending::build(&a.rows, |m| eprintln!("chloedb-hn: {m}")).unwrap_or_else(|e| fail(e));
+            eprintln!("chloedb-hn: wrote {terms} month-terms and {spikes} spikes in {:.0} s", t0.elapsed().as_secs_f64());
+        }
+        Cmd::Trending(a) => {
+            let t0 = std::time::Instant::now();
+            let (terms, spikes) = chloedb_hn::trending::build(&a.rows, |m| eprintln!("chloedb-hn: {m}")).unwrap_or_else(|e| fail(e));
+            eprintln!("chloedb-hn: wrote {terms} month-terms and {spikes} spikes in {:.0} s", t0.elapsed().as_secs_f64());
         }
         Cmd::Load(a) => {
             let db = Strata::new(&a.strata, a.key.clone());

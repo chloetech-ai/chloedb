@@ -38,7 +38,17 @@ impl Trace {
     }
 
     pub fn push(&self, what: &str, sql: &str, params: &Value, rows: usize, ms: f64, note: Option<&str>) {
+        self.push_timed(what, sql, params, rows, ms, None, note)
+    }
+
+    /// As [`Trace::push`], with the server's own time (`took_ms`): the
+    /// rest of `ms` is the network and the wait before the server began.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_timed(&self, what: &str, sql: &str, params: &Value, rows: usize, ms: f64, server: Option<f64>, note: Option<&str>) {
         let mut q = json!({"what": what, "sql": sql, "rows": rows, "ms": (ms * 100.0).round() / 100.0});
+        if let Some(s) = server {
+            q["server_ms"] = json!((s * 100.0).round() / 100.0);
+        }
         if params.as_object().is_some_and(|o| !o.is_empty()) {
             q["params"] = params.clone();
         }
@@ -108,16 +118,39 @@ impl Strata {
         Ok(rows_of(j))
     }
 
+    /// As [`Strata::query`], refused by the server past `ms` milliseconds
+    /// (its default deadline is 5 s).
+    pub async fn query_within(&self, sql: &str, params: Value, ms: u64) -> Result<Vec<Row>> {
+        let j = self.post("/v1/query", &json!({ "sql": sql, "params": params, "objects": true, "timeout_ms": ms })).await?;
+        Ok(rows_of(j))
+    }
+
     /// As [`Strata::query`], kept in `trace` under the name `what`.
     pub async fn traced(&self, trace: &Trace, what: &str, sql: &str, params: Value) -> Result<Vec<Row>> {
+        self.traced_within(trace, what, sql, params, None).await
+    }
+
+    /// As [`Strata::traced`], with a deadline of its own.
+    pub async fn traced_within(&self, trace: &Trace, what: &str, sql: &str, params: Value, within: Option<u64>) -> Result<Vec<Row>> {
         let t0 = Instant::now();
-        let r = self.query(sql, params.clone()).await;
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        match &r {
-            Ok(rows) => trace.push(what, sql, &params, rows.len(), ms, None),
-            Err(e) => trace.push(what, sql, &params, 0, ms, Some(&format!("refused: {}", e.message))),
+        let mut body = json!({ "sql": sql, "params": params.clone(), "objects": true });
+        if let Some(ms) = within {
+            body["timeout_ms"] = json!(ms);
         }
-        r
+        let r = self.post("/v1/query", &body).await;
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        match r {
+            Ok(j) => {
+                let server = j["took_ms"].as_f64();
+                let rows = rows_of(j);
+                trace.push_timed(what, sql, &params, rows.len(), ms, server, None);
+                Ok(rows)
+            }
+            Err(e) => {
+                trace.push(what, sql, &params, 0, ms, Some(&format!("refused: {}", e.message)));
+                Err(e)
+            }
+        }
     }
 
     pub async fn health(&self) -> Result<Value> {

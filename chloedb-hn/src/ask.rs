@@ -63,19 +63,63 @@ pub fn context(rows: &[Row]) -> String {
     s
 }
 
+/// The packs made for questions in the last minutes, so the answer that
+/// follows the page's first look at its comments does not pack them again.
+type Pack = (std::time::Instant, Vec<Row>, Vec<Row>);
+static PACKS: std::sync::Mutex<Option<std::collections::HashMap<String, Pack>>> = std::sync::Mutex::new(None);
+
+async fn packed(c: &Ctx<'_>, q: &str) -> (Vec<Row>, Vec<Row>) {
+    let k = key(q);
+    {
+        let mut g = PACKS.lock().unwrap_or_else(|e| e.into_inner());
+        let m = g.get_or_insert_with(Default::default);
+        m.retain(|_, v| v.0.elapsed().as_secs() < 600);
+        if let Some((_, a, b)) = m.get(&k) {
+            return (a.clone(), b.clone());
+        }
+    }
+    let p = query::parse(q, crate::ingest::now());
+    let (taken, skipped) = sources(c, &p, 6000).await;
+    let mut g = PACKS.lock().unwrap_or_else(|e| e.into_inner());
+    let m = g.get_or_insert_with(Default::default);
+    if m.len() > 200 {
+        m.clear();
+    }
+    m.insert(k, (std::time::Instant::now(), taken.clone(), skipped.clone()));
+    (taken, skipped)
+}
+
+fn source_list(taken: &[Row]) -> Vec<Value> {
+    taken.iter().enumerate().map(|(i, r)| json!({"n": i + 1, "id": r.i("id"), "author": r.s("author"), "year": r.i("year"), "story": r.i("story"), "story_title": r.s("story_title"), "text": crate::text::clip(&r.s("body"), 400), "decision": r.s("pack_decision"), "tokens": r.i("pack_tokens")})).collect()
+}
+
+async fn kept(c: &Ctx<'_>, q: &str) -> Option<Value> {
+    let rows = c.soft("a kept answer", "SELECT answer, sources, model, at, ms FROM hn_answers WHERE id = :k", json!({"k": key(q)})).await;
+    let r = rows.first()?;
+    let sources: Value = serde_json::from_str(&r.s("sources")).unwrap_or(Value::Null);
+    Some(json!({"question": q, "answer": r.s("answer"), "sources": sources, "model": r.s("model"), "at": r.s("at"), "kept": true, "ms": r.f("ms")}))
+}
+
+/// The comments an answer will be made from, at once: the page shows
+/// them while the model writes. A kept answer comes whole.
+pub async fn comments_for(c: &Ctx<'_>, q: &str) -> Value {
+    if let Some(v) = kept(c, q).await {
+        return v;
+    }
+    let (taken, skipped) = packed(c, q).await;
+    json!({"question": q, "sources": source_list(&taken), "pending": !taken.is_empty(), "receipt": {"taken": taken.len(), "skipped": skipped.len()}})
+}
+
 /// The answer to a question, from the kept answers or made now.
 pub async fn ask(c: &Ctx<'_>, q: &str, model: &str, fresh: bool) -> Result<Value, String> {
     let k = key(q);
     if !fresh {
-        let kept = c.soft("a kept answer", "SELECT answer, sources, model, at, ms FROM hn_answers WHERE id = :k", json!({"k": k})).await;
-        if let Some(r) = kept.first() {
-            let sources: Value = serde_json::from_str(&r.s("sources")).unwrap_or(Value::Null);
-            return Ok(json!({"question": q, "answer": r.s("answer"), "sources": sources, "model": r.s("model"), "at": r.s("at"), "kept": true, "ms": r.f("ms")}));
+        if let Some(v) = kept(c, q).await {
+            return Ok(v);
         }
     }
-    let p = query::parse(q, crate::ingest::now());
     let t0 = std::time::Instant::now();
-    let (taken, skipped) = sources(c, &p, 6000).await;
+    let (taken, skipped) = packed(c, q).await;
     if taken.is_empty() {
         return Ok(json!({"question": q, "answer": "", "sources": [], "note": "No comments speak to this yet."}));
     }
@@ -87,7 +131,7 @@ pub async fn ask(c: &Ctx<'_>, q: &str, model: &str, fresh: bool) -> Result<Value
     let got = c.rows("the answer (llm() on the server)", &sql, json!({"instructions": INSTRUCTIONS, "question": format!("Question: {q}"), "context": format!("Comments:\n\n{ctx}")})).await.map_err(|e| e.to_string())?;
     let answer = got.first().map(|r| r.s("answer")).unwrap_or_default();
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let sources: Vec<Value> = taken.iter().enumerate().map(|(i, r)| json!({"n": i + 1, "id": r.i("id"), "author": r.s("author"), "year": r.i("year"), "story": r.i("story"), "story_title": r.s("story_title"), "text": crate::text::clip(&r.s("body"), 400), "decision": r.s("pack_decision"), "tokens": r.i("pack_tokens")})).collect();
+    let sources = source_list(&taken);
     let receipt = json!({"taken": taken.len(), "skipped": skipped.len(), "skipped_why": skipped.iter().map(|r| r.s("pack_decision")).collect::<Vec<_>>()});
     let at = chrono::Utc::now().to_rfc3339();
     let _ = c.db.write(vec![json!({"op": "upsert", "table": "hn_answers", "doc": {"id": k, "kind": "ask", "question": q, "answer": answer, "sources": serde_json::to_string(&sources).unwrap_or_default(), "model": model, "at": at, "ms": ms}})]).await;

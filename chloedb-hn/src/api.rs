@@ -83,6 +83,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/ui/view.js", get(view))
         .route("/v1/status", get(status))
         .route("/v1/search", get(search_route))
+        .route("/v1/facets", get(facets_route))
         .route("/v1/suggest", get(suggest))
         .route("/v1/item/:id", get(item))
         .route("/v1/item/:id/around", get(around))
@@ -90,7 +91,10 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/experts", get(experts))
         .route("/v1/trends", get(trends_route))
         .route("/v1/ask", get(ask_route))
+        .route("/v1/ask/comments", get(ask_comments_route))
         .route("/v1/front", get(front))
+        .route("/v1/trending", get(trending_route))
+        .route("/v1/spikes", get(spikes_route))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
         // Up, for a probe: no token, nothing read.
         .route("/healthz", get(|| async { "ok" }))
@@ -219,15 +223,19 @@ pub struct SearchParams {
     page: usize,
     #[serde(default)]
     facets: Option<u8>,
+    /// `comments=0`: the stories only (the page asks for the comments on
+    /// their own, so the stories show first).
+    #[serde(default)]
+    comments: Option<u8>,
+    /// Results a page, when not the default.
+    #[serde(default)]
+    per: Option<usize>,
 }
 
-/// One search: the query understood, the stories, the comments, the
-/// facets, and a word the titles hold for each typo.
-async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) -> Answer {
-    let t0 = Instant::now();
-    let trace = Trace::new();
-    let c = Ctx { db: &svc.db, trace: &trace };
-    let mut p = query::parse(&a.q, crate::ingest::now());
+/// The query understood, with a word that may be a person checked against
+/// the people table.
+async fn understand(c: &Ctx<'_>, q: &str) -> query::Parsed {
+    let mut p = query::parse(q, crate::ingest::now());
     if let Some(who) = p.author_maybe.clone() {
         let found = c.soft("is that a person?", "SELECT id FROM hn_users WHERE id = :u", json!({"u": who})).await;
         // HN names are case-sensitive, but people type them in lowercase.
@@ -241,13 +249,35 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
         }
         p.confirm_author(!found.is_empty());
     }
+    p
+}
+
+/// The facets of a search on their own: the page asks for them once the
+/// results are shown.
+async fn facets_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let p = understand(&c, &a.q).await;
+    let only = if !a.only.is_empty() { a.only.clone() } else { p.only.clone().unwrap_or_else(|| "all".into()) };
+    let f = search::facets(&c, &p, only == "comment").await;
+    done(&trace, json!({"q": a.q, "facets": f}), t0)
+}
+
+/// One search: the query understood, the stories, the comments, the
+/// facets, and a word the titles hold for each typo.
+async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let p = understand(&c, &a.q).await;
     let only = if !a.only.is_empty() { a.only.clone() } else { p.only.clone().unwrap_or_else(|| "all".into()) };
     let sort = if !a.sort.is_empty() { a.sort.clone() } else { p.sort.clone().unwrap_or_else(|| "best".into()) };
     let r = SearchReq { q: a.q.clone(), only: only.clone(), sort, mode: a.mode.clone(), page: a.page, per_page: 20, facets: a.facets != Some(0) };
-    let per = if only == "all" { 15 } else { 25 };
+    let per = a.per.filter(|n| (1..=50).contains(n)).unwrap_or(if only == "all" { 15 } else { 25 });
     let off = a.page * per;
     let want_s = only != "comment";
-    let want_c = only != "story" && p.kinds.is_empty() && p.site.is_none();
+    let want_c = only != "story" && p.kinds.is_empty() && p.site.is_none() && a.comments != Some(0);
     let words = query::plain_words(&p);
     let (s, cm, f, dym) = tokio::join!(
         async { if want_s { search::stories(&c, &p, &r, per, off).await.map(Some) } else { Ok(None) } },
@@ -483,6 +513,48 @@ async fn ask_route(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     done(&trace, v, t0)
 }
 
+#[derive(serde::Deserialize, Default)]
+pub struct TrendingParams {
+    #[serde(default)]
+    hours: Option<i64>,
+    #[serde(default)]
+    year: Option<i64>,
+}
+
+/// What HN's titles are suddenly about: the last hours against the year
+/// before.
+async fn trending_route(State(svc): State<Shared>, Query(a): Query<TrendingParams>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let v = crate::trending::now(&c, a.hours.unwrap_or(48)).await;
+    done(&trace, v, t0)
+}
+
+/// The spikes of the archive's months: a year's, or every month's
+/// strongest.
+async fn spikes_route(State(svc): State<Shared>, Query(a): Query<TrendingParams>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let v = crate::trending::history(&c, a.year).await;
+    done(&trace, v, t0)
+}
+
+/// The comments a question's answer is made from, before the model is
+/// asked (the page shows them while it writes).
+async fn ask_comments_route(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let q = a.q.trim();
+    if q.len() < 3 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "ask a question".into()));
+    }
+    let v = ask::comments_for(&c, q).await;
+    done(&trace, v, t0)
+}
+
 /// The front page as the tables hold it now: the newest stories, ranked
 /// as HN ranks them (points over age, with gravity), with the live feed's
 /// state.
@@ -490,6 +562,6 @@ async fn front(State(svc): State<Shared>) -> Answer {
     let t0 = Instant::now();
     let trace = Trace::new();
     let c = Ctx { db: &svc.db, trace: &trace };
-    let rows = c.soft("the newest stories, ranked as HN's front page ranks them", &format!("SELECT {}, (points - 1) / pow((now() - created) / 3600.0 + 2, 1.8) AS rank FROM hn_stories WHERE created > now() - INTERVAL '2 days' ORDER BY rank DESC LIMIT 30", search::STORY_COLS), Value::Null).await;
+    let rows = c.soft("the newest stories, ranked as HN's front page ranks them", &format!("SELECT {}, (points - 1) / pow((date_part('epoch', now()) - date_part('epoch', created)) / 3600.0 + 2, 1.8) AS rank FROM hn_stories WHERE created > now() - INTERVAL '2 days' ORDER BY rank DESC LIMIT 30", search::STORY_COLS), Value::Null).await;
     done(&trace, json!({"stories": rows, "feed": svc.feed.as_ref().map(|f| f.status())}), t0)
 }
