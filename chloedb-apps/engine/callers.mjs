@@ -60,6 +60,8 @@ export function refusal(c, method, url) {
   if (!c) return null;
   const path = url.pathname;
   const get = method === 'GET' || method === 'HEAD';
+  // An app carried in from another engine (bundle.mjs) is a new app: as building one.
+  if (path === '/api/apps/import' && c.grants && onPrefix(c, 'app_') < 3) return `${method} ${path} needs the admin scope on every app's tables (app_*), to make a new app; the key ${JSON.stringify(c.name)} is limited to ${c.grants.map((g) => `${g.table} (${SCOPES[g.scope]})`).join(', ')}`;
   const need = (n, what) => `${method} ${path} needs the ${SCOPES[n]} scope${what}; the key ${JSON.stringify(c.name)} ${c.grants ? `is limited to ${c.grants.map((g) => `${g.table} (${SCOPES[g.scope]})`).join(', ')}` : `has the ${SCOPES[c.scope]} scope`}`;
   // A key of every table: read to look, admin for the rest, as before the
   // engine checked its callers.

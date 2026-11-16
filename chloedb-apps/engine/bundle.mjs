@@ -95,7 +95,8 @@ export function checkBundle(b) {
 // added, one it has under that id with other code is added as the next
 // version. Then its tables are made or given the columns they lack, a table
 // made now gets the bundle's rows, the look, settings and files follow, and
-// the version goes live. Returns {app, n, created, added, rows, files}.
+// the version goes live. Returns {app, n, created, added, rows, files}, and
+// unchanged: true when nothing of it differs from the live version, which stays.
 export async function importBundle(engine, b, { into = null } = {}) {
   checkBundle(b);
   const { store } = engine;
@@ -195,6 +196,10 @@ export async function importBundle(engine, b, { into = null } = {}) {
     }
   }
 
+  // Nothing of it changed (the same pieces the live version has, in the same
+  // order): that version stays live, rather than a copy of it as the next.
+  const kept = into && now.comp.n && ops.length === 0 && !created.length && !Object.keys(added).length && caps.length === now.comp.caps.length && caps.every((id, i) => id === now.comp.caps[i]);
+  if (kept) return { app: target, n: now.comp.n, created, added, rows, files, unchanged: true };
   const n = await store.writeComposition(target, caps, `Published version ${b.version?.n ?? '?'}`, b.version?.summary || '');
   return { app: target, n, created, added, rows, files };
 }
