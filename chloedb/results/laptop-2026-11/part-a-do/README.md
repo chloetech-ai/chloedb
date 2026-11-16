@@ -744,7 +744,8 @@ A stream of new rows at a target rate, with a reader running:
 
 A1 measured ChloeDB 0.3.5 at 268 single-row inserts a second, against 6,080
 for the 6 November build on 6 November's node. The scripts in
-`part-a-0.3.5/write-tests/` ran on this node after Part A (`node_tests.sh`;
+`part-a-0.3.5/write-tests/` ran on this node while Part A's last
+step ran (sqlite-vec's A3, which only reads, on one core) (`node_tests.sh`;
 its output is `node_tests.log`): the same single-row inserts, updates and
 deletes as A1, on 0.3.5 and on the 6 November build (b022e39) one after the
 other, SQLite 3.53.1 on the same rows, `strace -T` of each, and a plain file
