@@ -377,6 +377,63 @@ pub struct Scope {
     pub size: String,
 }
 
+/// An agent's (or scope's) report that the work needs a person.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Blocked {
+    /// credentials, publish, account, external, decision, other
+    pub kind: String,
+    /// Why the agent cannot do it, one sentence.
+    pub what: String,
+    /// The exact step for the person.
+    pub you_do: String,
+    pub by: String,
+    pub at: i64,
+}
+
+pub const BLOCKED_KINDS: [&str; 6] = ["credentials", "publish", "account", "external", "decision", "other"];
+
+/// What every agent is told about steps it cannot take.
+const BLOCKED_HELP: &str = "If the work needs something only a person can do or reach from outside this checkout (publishing a package or a release, credentials or tokens, account or repository settings, an outside service, or a decision that is the owner's), do not work around it: write .converge/blocked.json, one JSON object {\"kind\": \"credentials\" or \"publish\" or \"account\" or \"external\" or \"decision\", \"what\": \"one sentence: why you cannot do it\", \"you_do\": \"the exact step for the person, with the command if there is one\"}, do not commit it, and stop.";
+
+/// Reads `.converge/blocked.json` from an agent's worktree (a plain line
+/// counts too: it is the step).
+fn read_blocked(wt: &Path, by: &str) -> Option<Blocked> {
+    let text = std::fs::read_to_string(wt.join(".converge/blocked.json")).ok()?;
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let v: Json = serde_json::from_str(text).or_else(|_| extract_json(text).ok_or(())).unwrap_or(Json::Null);
+    let mut b = if v.is_object() { blocked_of(&v, by)? } else { Blocked { kind: "other".into(), what: String::new(), you_do: one_line(text, 400), by: by.into(), at: now_ms() } };
+    if b.you_do.trim().is_empty() {
+        b.you_do = one_line(text, 400);
+    }
+    Some(b)
+}
+
+/// A `{kind, what, you_do}` object as a Blocked, if it names a step.
+fn blocked_of(v: &Json, by: &str) -> Option<Blocked> {
+    let you_do = v["you_do"].as_str().map(str::trim).filter(|t| !t.is_empty())?;
+    let kind = v["kind"].as_str().map(|k| k.trim().to_lowercase()).filter(|k| BLOCKED_KINDS.contains(&k.as_str())).unwrap_or_else(|| "other".into());
+    Some(Blocked { kind, what: one_line(v["what"].as_str().unwrap_or(""), 400), you_do: one_line(you_do, 600), by: by.into(), at: now_ms() })
+}
+
+/// The finding waits for a person: the autopilot stops on it.
+fn set_blocked(sup: &Supervisor, f: &mut Finding, b: Blocked) -> Result<(), ApiError> {
+    f.needs_you = Some(format!("Blocked: {}", b.you_do));
+    f.queued = None;
+    let st = f.stage.clone();
+    let (repo, title, by) = (f.repo.clone(), f.title.clone(), b.by.clone());
+    let detail = json!({ "kind": b.kind, "what": b.what, "you_do": b.you_do });
+    f.blocked = Some(b.clone());
+    f.updated = now_ms();
+    put_finding(sup, f)?;
+    event(sup, f, &st, &st, "blocked", false, &by, &format!("Blocked on you ({}): {}", b.kind, b.you_do), detail.clone());
+    log(sup, &repo, "decide", "autopilot", &format!("{}: blocked on you ({}): {}", short(&title, 60), b.kind, short(&b.you_do, 120)), json!({ "finding": f.id, "agent": f.agent }), detail);
+    Ok(())
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Finding {
@@ -421,6 +478,14 @@ pub struct Finding {
     pub guard_last: Option<i64>,
     /// Why a person is needed now (shown as "Needs you").
     pub needs_you: Option<String>,
+    /// What only a person can do (publish, credentials, an outside
+    /// service, a decision): the autopilot leaves it alone until you
+    /// say it is done (`unblock`).
+    pub blocked: Option<Blocked>,
+    /// Waits for capacity (an agent slot, WIP, budget): not a need of yours.
+    pub queued: Option<String>,
+    /// Why the last develop check failed, and what the agent said.
+    pub last_check: Option<Json>,
     pub dup_of: Option<String>,
     pub note: Option<String>,
     pub by: String,
@@ -1468,7 +1533,7 @@ fn prompt_for(role: &str, job: &Json) -> String {
             ) + if job["memory"] == true { "\n\nYou have memory of your earlier visits (memory_* tools); use it like a returning user would." } else { "" }
         }
         "scope" => format!(
-            "A user of the software in the current directory hit this problem:\n\nTitle: {}\nDetail: {}\nRepro script (fails while the problem is there):\n{}\n\nRead the code (do not change anything) and scope the fix. End your answer with one JSON object and nothing after it:\n{{\"area\": \"the component or folder\", \"files\": [\"paths a fix likely changes, including where its test goes\"], \"root_cause\": \"one or two sentences\", \"acceptance\": \"what must be true when it is fixed (the repro exits 0, plus ...)\", \"size\": \"S\" or \"M\" or \"L\"}}",
+            "A user of the software in the current directory hit this problem:\n\nTitle: {}\nDetail: {}\nRepro script (fails while the problem is there):\n{}\n\nRead the code (do not change anything) and scope the fix. End your answer with one JSON object and nothing after it:\n{{\"area\": \"the component or folder\", \"files\": [\"paths a fix likely changes, including where its test goes\"], \"root_cause\": \"one or two sentences\", \"acceptance\": \"what must be true when it is fixed (the repro exits 0, plus ...)\", \"size\": \"S\" or \"M\" or \"L\"}}\n\nIf the fix needs a step only a person can take (publishing a package or a release, credentials, account or repository settings, an outside service, the owner's decision), add to that object \"blocked\": {{\"kind\": \"credentials\" or \"publish\" or \"account\" or \"external\" or \"decision\", \"what\": \"why an agent cannot do it\", \"you_do\": \"the exact step for the person\"}}.",
             job["finding"]["title"].as_str().unwrap_or(""),
             job["finding"]["detail"].as_str().unwrap_or(""),
             job["finding"]["repro"].as_str().unwrap_or("(none)")
@@ -1562,8 +1627,8 @@ fn start_repro_agent(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, b
     let st = settings(sup, &f.repo);
     let short = f.id.trim_start_matches("cv").chars().take(8).collect::<String>();
     let task = format!(
-        "Write a reproduction script for this problem a user hit, without fixing it.\n\nProblem: {}\n{}\n\nWrite .converge/repro.sh at the repository root: a POSIX sh script, run from the root, that exits 1 while the problem is there and 0 once it is fixed (any other exit, or running past a few minutes, counts as a broken repro, so do not build more than it needs). Run it to check that it exits 1 now, then stop. If the problem cannot be checked by a script, write none and say why.",
-        f.title, f.detail
+        "Write a reproduction script for this problem a user hit, without fixing it.\n\nProblem: {}\n{}\n\nWrite .converge/repro.sh at the repository root: a POSIX sh script, run from the root, that exits 1 while the problem is there and 0 once it is fixed (any other exit, or running past a few minutes, counts as a broken repro, so do not build more than it needs). Run it to check that it exits 1 now, then stop. If the problem cannot be checked by a script, write none and say why.\n\n{}",
+        f.title, f.detail, BLOCKED_HELP
     );
     let req = SpawnRequest {
         repo: f.repo.clone(),
@@ -1580,6 +1645,7 @@ fn start_repro_agent(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, b
     let aid = a["id"].as_str().unwrap_or("").to_string();
     f.agent = Some(aid.clone());
     f.worktree = sup.agent_row(&aid).map(|r| r.cwd);
+    f.queued = None;
     f.needs_you = None;
     failed(sup, f, "repro_agent", by, &format!("Agent {aid} is writing the repro"), json!({ "agent": aid }))
 }
@@ -1721,6 +1787,13 @@ fn gate_scope(sup: &Arc<Supervisor>, id: &str) -> Result<(), ApiError> {
                 run.cost_usd = v["cost_usd"].as_f64().unwrap_or(0.0);
                 run.state = "done".into();
                 let mut sc: Scope = serde_json::from_value(v.clone()).unwrap_or_default();
+                if let Some(b) = blocked_of(&v["blocked"], "scope") {
+                    sc.size = sc.size.trim().to_uppercase();
+                    f.scope = Some(sc);
+                    run.ended = Some(now_ms());
+                    put_run(sup, &run)?;
+                    return set_blocked(sup, &mut f, b);
+                }
                 sc.size = sc.size.trim().to_uppercase();
                 // What you asked for keeps the acceptance you were given.
                 let before = f.scope.as_ref().map(|s| s.acceptance.clone()).filter(|a| !a.trim().is_empty());
@@ -1782,7 +1855,7 @@ pub fn score(f: &Finding) -> f64 {
 fn dev_task(f: &Finding) -> String {
     let sc = f.scope.clone().unwrap_or_default();
     format!(
-        "Fix this problem a user hit (Workbench Converge, finding {id}, severity {sev}).\n\nProblem: {title}\n{detail}\n\nScope: {area}. Likely files: {files}. Root cause: {cause}\nAcceptance: {acc}\n\nThis script fails now and must exit 0 when you are done (run it from the repository root with sh; do not change it, Workbench keeps its own copy):\n{repro}\n\nAdd a regression test, keep the change to the scope, run the tests, and commit your work on this branch. Then stop: Workbench checks the repro, the tests and the diff, and the persona who found it replays the journey.",
+        "Fix this problem a user hit (Workbench Converge, finding {id}, severity {sev}).\n\nProblem: {title}\n{detail}\n\nScope: {area}. Likely files: {files}. Root cause: {cause}\nAcceptance: {acc}\n\nThis script fails now and must exit 0 when you are done (run it from the repository root with sh; do not change it, Workbench keeps its own copy):\n{repro}\n\nAdd a regression test, keep the change to the scope, run the tests, and commit your work on this branch. Then stop: Workbench checks the repro, the tests and the diff, and the persona who found it replays the journey.\n\n{help}",
         id = f.id,
         sev = sev_name(f.severity),
         title = f.title,
@@ -1791,7 +1864,8 @@ fn dev_task(f: &Finding) -> String {
         files = if sc.files.is_empty() { "(not named)".into() } else { sc.files.join(", ") },
         cause = sc.root_cause,
         acc = sc.acceptance,
-        repro = f.repro.clone().unwrap_or_default()
+        repro = f.repro.clone().unwrap_or_default(),
+        help = BLOCKED_HELP
     )
 }
 
@@ -1821,6 +1895,7 @@ fn start_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &
     f.branch = Some(branch.clone());
     f.worktree = sup.agent_row(&aid).map(|r| r.cwd);
     f.rounds = 0;
+    f.queued = None;
     f.needs_you = None;
     advance_to(sup, f, "develop", "slot", true, by, &format!("Agent {aid} started on {branch}"), json!({ "agent": aid, "branch": branch }))
 }
@@ -1841,7 +1916,11 @@ fn steer_back(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, text: &s
     }
     let st = settings(sup, &f.repo);
     if f.rounds >= st.max_rounds {
-        f.needs_you = Some(format!("{} rounds without passing: look at the branch, steer the agent, or park it.", f.rounds));
+        let first = f.last_check.as_ref().and_then(|c| c["problems"][0].as_str().map(|p| one_line(p, 200)));
+        f.needs_you = Some(match first {
+            Some(p) => format!("{} rounds without passing: {p}. Look at the branch, steer the agent, or park it.", f.rounds),
+            None => format!("{} rounds without passing: look at the branch, steer the agent, or park it.", f.rounds),
+        });
     }
 }
 
@@ -1861,6 +1940,10 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
         return put_finding(sup, &f);
     };
     let base = base_of(&repo, &st);
+    let agent_name = f.agent.as_deref().map(|a| who(sup, a)).unwrap_or_else(|| "The fix agent".into());
+    if let Some(b) = read_blocked(&wt, &agent_name) {
+        return set_blocked(sup, &mut f, b);
+    }
     let mut problems: Vec<String> = Vec::new();
     let dirty = git(&wt, &["status", "--porcelain"]).unwrap_or_default();
     if !dirty.trim().is_empty() {
@@ -1913,7 +1996,9 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
         f.needs_you = None;
         return advance_to(sup, &mut f, "verify", "develop", true, "autopilot", &format!("Repro green {green} of {green}; tests pass; {} files changed", changed.len()), evidence);
     }
-    let text = format!("Workbench's check of your branch did not pass (round {}):\n- {}\nFix these, commit, and stop.", f.rounds + 1, problems.join("\n- "));
+    let text = format!("Workbench's check of your branch did not pass (round {}):\n- {}\nFix these, commit, and stop. {BLOCKED_HELP}", f.rounds + 1, problems.join("\n- "));
+    let said = f.agent.as_deref().and_then(|a| crate::capsule::last_summary(sup, a)).map(|t| crate::narrate::sentences(&t, 2, 400));
+    f.last_check = Some(json!({ "problems": problems, "agent_said": said, "at": now_ms(), "round": f.rounds + 1 }));
     steer_back(sup, lv, &mut f, &text);
     failed(sup, &mut f, "develop", "autopilot", &problems.join("; "), evidence)
 }
@@ -2380,6 +2465,10 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
     for f in &active {
         let id = f.id.clone();
         let (s2, l2) = (sup.clone(), lv.clone());
+        // Blocked on you: nothing to do until you say it is done.
+        if f.blocked.is_some() {
+            continue;
+        }
         let h = match f.stage.as_str() {
             "reproduce" if f.repro.is_some() => in_background(&id, "reproducing", {
                 let id = id.clone();
@@ -2390,7 +2479,10 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
             // A repro agent finished: take its script, or say it wrote none.
             "reproduce" if f.agent.as_deref().is_some_and(|a| agent_done(sup, a)) => {
                 if let Ok(mut g) = get_finding(sup, &id) {
-                    if take_repro(sup, &mut g, "autopilot").is_err() {
+                    let name = g.agent.as_deref().map(|a| who(sup, a)).unwrap_or_else(|| "The repro agent".into());
+                    if let Some(b) = g.worktree.as_deref().and_then(|w| read_blocked(Path::new(w), &name)) {
+                        let _ = set_blocked(sup, &mut g, b);
+                    } else if take_repro(sup, &mut g, "autopilot").is_err() {
                         let aid = g.agent.take();
                         g.needs_you = Some("The repro agent finished without writing .converge/repro.sh: paste a repro, ask again, or park it.".into());
                         g.repro_attempts += 1;
@@ -2418,6 +2510,14 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
                             repro_agents += 1;
                             started.push(format!("{id} repro agent"));
                             did.push(format!("a repro agent for {}", short(&f.title, 50)));
+                        }
+                        Err(e) if e.status == 429 => {
+                            let q = format!("waiting for a free agent slot ({})", one_line(&e.message, 120));
+                            if g.queued.as_deref() != Some(q.as_str()) {
+                                g.queued = Some(q);
+                                let _ = put_finding(sup, &g);
+                            }
+                            decide(&mut dec, "agent_slots".to_string(), format!("Agent slots full: {}", one_line(&e.message, 120)));
                         }
                         Err(e) => {
                             g.needs_you = Some(format!("Could not start a repro agent: {}", e.message));
@@ -2520,6 +2620,15 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
                 in_dev += 1;
                 started.push(format!("{} develop", f.id));
                 did.push(format!("development of {}", short(&f.title, 50)));
+            }
+            Err(e) if e.status == 429 => {
+                let q = format!("waiting for a free agent slot ({})", one_line(&e.message, 120));
+                if f.queued.as_deref() != Some(q.as_str()) {
+                    f.queued = Some(q);
+                    put_finding(sup, &f)?;
+                }
+                decide(&mut dec, "agent_slots".to_string(), format!("Agent slots full: {}", one_line(&e.message, 120)));
+                break;
             }
             Err(e) => {
                 f.needs_you = Some(format!("Could not start an agent: {}", e.message));
@@ -2914,6 +3023,11 @@ pub fn metrics_of(sup: &Supervisor, repo: &str, component: Option<&str>) -> Json
     json!({
         "ease": ease,
         "open": active.len(),
+        "blocked": {
+            "total": active.iter().filter(|f| f.blocked.is_some()).count(),
+            "by_kind": BLOCKED_KINDS.iter().map(|k| (k.to_string(), json!(active.iter().filter(|f| f.blocked.as_ref().is_some_and(|b| b.kind == *k)).count()))).filter(|(_, n)| n != &json!(0)).collect::<serde_json::Map<_, _>>(),
+            "queued": active.iter().filter(|f| f.queued.is_some()).count(),
+        },
         "open_by_severity": { "blocker": active.iter().filter(|f| f.severity >= 4).count(), "major": active.iter().filter(|f| f.severity == 3).count(), "minor": active.iter().filter(|f| f.severity == 2).count(), "papercut": active.iter().filter(|f| f.severity <= 1).count() },
         "by_stage": by_stage,
         "by_theme": by_theme,
@@ -3084,7 +3198,9 @@ pub fn needs_items(sup: &Supervisor, keep: &dyn Fn(&str) -> bool) -> Vec<(i64, J
     let all: Vec<Finding> = docs(sup, "SELECT doc FROM cv_findings WHERE state = 'active' LIMIT 5000", &Params::new());
     let mut groups: Vec<(String, String, Vec<&Finding>)> = Vec::new();
     for f in all.iter().filter(|f| keep(&f.repo)) {
-        let why = if let Some(n) = &f.needs_you {
+        let why = if let Some(b) = &f.blocked {
+            format!("Blocked on you ({}): {}", b.kind, b.you_do)
+        } else if let Some(n) = &f.needs_you {
             n.clone()
         } else if f.stage == "review" && f.ci.as_deref() == Some("pass") {
             "CI passed: approve the merge.".into()
@@ -3100,6 +3216,8 @@ pub fn needs_items(sup: &Supervisor, keep: &dyn Fn(&str) -> bool) -> Vec<(i64, J
             None => groups.push((key, why, vec![f])),
         }
     }
+    // What only you can do comes first.
+    groups.sort_by_key(|g| !g.1.starts_with("Blocked on you"));
     groups
         .into_iter()
         .map(|(key, why, fs)| {
@@ -3515,7 +3633,7 @@ async fn finding_put(State(app): State<App>, headers: HeaderMap, AxPath(id): AxP
 
 async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, verb)): AxPath<(String, String)>, body: Bytes) -> ApiResult {
     let v: Json = if body.is_empty() { json!({}) } else { parse_body(&body)? };
-    if matches!(verb.as_str(), "approve" | "start" | "reproduce" | "dismiss" | "back" | "park" | "unpark" | "pin" | "unpin" | "pr") {
+    if matches!(verb.as_str(), "approve" | "start" | "reproduce" | "dismiss" | "back" | "park" | "unpark" | "pin" | "unpin" | "pr" | "unblock") {
         user_only(&app, &headers)?;
     }
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
@@ -3530,6 +3648,31 @@ async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
             "park" => {
                 f.state = "parked".into();
                 failed(&sup, &mut f, "parked", "you", v["reason"].as_str().unwrap_or("Parked"), Json::Null)?;
+            }
+            "unblock" => {
+                let Some(b) = f.blocked.take() else { return Err(ApiError::conflict("this finding is not blocked")) };
+                let note = v["note"].as_str().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+                f.needs_you = None;
+                if let Some(wt) = f.worktree.as_deref() {
+                    let _ = std::fs::remove_file(Path::new(wt).join(".converge/blocked.json"));
+                }
+                let said = format!("The person did it: {}{}. Carry on from where you stopped.", b.you_do, note.as_deref().map(|n| format!(" ({n})")).unwrap_or_default());
+                match f.stage.as_str() {
+                    // A finished repro agent: a new one starts on the next tick.
+                    "reproduce" if f.agent.as_deref().is_some_and(|a| !sup.is_running(a)) || f.agent.is_none() => {
+                        f.agent = None;
+                    }
+                    _ => {
+                        if let Some(a) = f.agent.clone().filter(|a| sup.is_running(a)) {
+                            let _ = crate::levels::steer(&sup, &lv, &a, &said);
+                        }
+                    }
+                }
+                let st = f.stage.clone();
+                f.updated = now_ms();
+                put_finding(&sup, &f)?;
+                event(&sup, &f, &st, &st, "unblocked", true, "you", &format!("You did it: {}{}", b.you_do, note.as_deref().map(|n| format!(" ({n})")).unwrap_or_default()), json!({ "blocked": b, "note": note }));
+                kick(&sup, &lv, &f.repo);
             }
             "unpark" => {
                 f.state = "active".into();

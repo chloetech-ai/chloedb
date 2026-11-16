@@ -604,7 +604,7 @@ pub(crate) fn records(sup: &Supervisor, a: &Agent, ids: &[String]) -> HashMap<St
 
 /// The last thing the agent said when its turn ended (Claude Code's
 /// `last_assistant_message`), if it said anything.
-fn last_summary(sup: &Supervisor, id: &str) -> Option<String> {
+pub(crate) fn last_summary(sup: &Supervisor, id: &str) -> Option<String> {
     let evs = sup.all_events(id).ok()?;
     evs.iter().rev().filter(|e| e.kind == "Stop").find_map(|e| trail::data_of(e).and_then(|d| d["last_assistant_message"].as_str().map(str::trim).filter(|t| t.len() > 20).map(str::to_string)))
 }

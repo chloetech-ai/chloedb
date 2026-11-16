@@ -345,6 +345,41 @@ a.cv-btn { text-decoration: none; }
 .cv-rawg { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 8px; }
 .cv-rawg h3 { font-size: var(--fs-sm); margin: 0 0 6px; }
 .cv-tscroll { overflow-x: auto; }
+/* Blocked on you: a step only the person can take (credentials, a publish, an account). */
+.cv-card.blocked { border-color: var(--crit); border-left: 4px solid var(--crit); }
+.cv-blk { display: flex; gap: 6px; align-items: flex-start; background: var(--crit-soft); color: var(--crit-ink); border-radius: 6px; padding: 6px 8px; font-size: var(--fs-sm); line-height: var(--lh-sm); min-width: 0; }
+.cv-blk .t { flex: 1; min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.cv-blk .t b { font-weight: var(--w-title); }
+.cv-chip.blk { background: var(--crit); color: #fff; flex: none; }
+.cv-queued { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--muted); display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.cv-queued .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cv-chipf.blkf .n { color: var(--crit-ink); }
+.cv-chipf.blkf.on { border-color: var(--crit); background: var(--crit-soft); color: var(--crit-ink); }
+.cv-chipf.blkf::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--crit); }
+.cv-pill.blk { text-decoration: none; color: var(--crit-ink); border-color: var(--crit); background: var(--crit-soft); }
+.cv-bsec { border: var(--hair) solid var(--crit); background: var(--crit-soft); color: var(--crit-ink); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.cv-bsec .hd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: var(--w-title); }
+.cv-bsec .cv-label { color: var(--crit-ink); opacity: .8; }
+.cv-bsec p { margin: 2px 0 0; color: var(--text); overflow-wrap: anywhere; }
+.cv-bsec .do { display: flex; gap: 8px; align-items: stretch; margin-top: 4px; min-width: 0; }
+.cv-bsec .do code { flex: 1; min-width: 0; display: block; font-family: var(--mono); font-size: var(--fs-xs); line-height: var(--lh-xs); background: var(--surface); color: var(--text); border: var(--hair) solid var(--line-2); border-radius: 6px; padding: 10px; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cv-bsec .do .cv-btn { min-height: 44px; height: auto; flex: none; }
+.cv-bsec .by { font-size: var(--fs-xs); color: var(--text-2); }
+.cv-bsec .go { display: flex; gap: 8px; flex-wrap: wrap; }
+.cv-bsec .go input { flex: 1 1 180px; min-width: 0; min-height: 44px; font: inherit; font-size: 16px; padding: 0 10px; border: var(--hair) solid var(--line-2); border-radius: var(--r-sm); background: var(--surface); color: var(--text); }
+.cv-bsec .go .cv-btn { min-height: 44px; flex: 1 1 auto; justify-content: center; }
+.cv-btn.crit { background: var(--crit); border-color: var(--crit); color: #fff; }
+.cv-lc { display: flex; flex-direction: column; gap: 6px; }
+.cv-lc ul { margin: 0; padding-left: 18px; font-size: var(--fs-sm); display: flex; flex-direction: column; gap: 2px; }
+.cv-lc li { overflow-wrap: anywhere; }
+.cv-lc blockquote { margin: 0; border-left: 2px solid var(--line-2); padding: 2px 0 2px 10px; color: var(--text-2); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.cv-lc .by { font-size: var(--fs-xs); color: var(--muted); }
+.cv-kpi.blk { border-color: var(--crit); background: var(--crit-soft); }
+.cv-kpi.blk .v { color: var(--crit-ink); }
+.cv-kpi .kinds { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; }
+.cv-kpis.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .cv-kpis.five { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 900px) { .cv-kpis.five { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cv-kpis.five .cv-kpi.blk { grid-column: 1 / -1; min-height: 0; } }
 @media (max-width: 900px) { .cv-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cv-dash { grid-template-columns: 1fr; } }
 /* Phones: one stage a screen, swiped; the numbers in one scrolled row. */
 @media (max-width: 640px) {
@@ -405,6 +440,27 @@ const SEV = { 4: "blocker", 3: "major", 2: "minor", 1: "papercut" };
 const TABS = [["board", "Board"], ["activity", "Activity"], ["work", "Agents"], ["personas", "Personas"], ["metrics", "Metrics"], ["settings", "Autopilot"]];
 const SEV_NAME = { blocker: 4, major: 3, minor: 2, papercut: 1 };
 const KINDS = ["bug", "gap", "docs", "ux", "opportunity", "feature"];
+/** What the person has to do for a blocked finding, by kind (`blocked.kind`). */
+const BLOCK_KIND = { credentials: "Credentials", publish: "Publish", account: "Account", external: "Outside service", decision: "Decision", other: "Your step" };
+/** A finding blocked on the person: the server's `blocked`, guarded (an older server sends none). */
+const blockedOf = (f) => (f && f.state === "active" && f.blocked && typeof f.blocked === "object" ? f.blocked : null);
+const blockWord = (b) => BLOCK_KIND[b && b.kind] || BLOCK_KIND.other;
+/** The step to show: `you_do`, else the needs-you line without its "Blocked:". */
+const blockStep = (f, b) => String((b && (b.you_do || b.what)) || (f.needs_you || "").replace(/^Blocked:\s*/i, "") || "A step only you can take.");
+/** Does it read as a shell command (shown in monospace, with Copy)? */
+const looksLikeCmd = (s) => {
+  const x = String(s || "").trim();
+  if (!x || x.length > 400) return false;
+  return /`[^`]+`/.test(x) || /^(gh|git|npm|npx|pnpm|yarn|cargo|pip3?|python3?|uv|docker|kubectl|curl|brew|make|sh|bash|export|aws|gcloud|az|chloectx|chloedb[\w-]*|\.\/\S+)(\s|$)/.test(cmdOfStep(x));
+};
+/** The command part of a step: "Publish 0.0.3 to npm: gh workflow run …" gives the gh line. */
+const cmdOfStep = (s) => {
+  const x = String(s || "").trim();
+  const bt = /`([^`]+)`/.exec(x);
+  if (bt) return bt[1];
+  const i = x.indexOf(": ");
+  return (i >= 0 ? x.slice(i + 2).trim() : x).replace(/^\$\s*/, "");
+};
 const toMs = (t) => { if (t == null || t === "") return null; const n = typeof t === "number" ? t : /^\d+$/.test(String(t)) ? Number(t) : Date.parse(t); return Number.isFinite(n) && n > 0 ? n : null; };
 
 /** What an agent's last event says it is doing, in a few plain words. */
@@ -475,7 +531,7 @@ export function mount(root, ctx) {
   const S = {
     d: kept.d || null, sig: kept.sig, group: kept.group || "stage", range: kept.range, alive: true, timer: null,
     // The board's filters, multi-select: components, kinds (themes) and severities.
-    fc: new Set(kept.fc || []), ft: new Set(kept.ft || []), fs: new Set(kept.fs || []),
+    fc: new Set(kept.fc || []), ft: new Set(kept.ft || []), fs: new Set(kept.fs || []), fb: !!kept.fb,
     fold: new Map(kept.fold || []), hide: new Set(kept.hide || []), act: kept.act || null, actKinds: new Set(kept.actKinds || []),
   };
   {
@@ -485,8 +541,9 @@ export function mount(root, ctx) {
     if (q.has("component")) S.fc = new Set(list("component"));
     if (q.has("kind")) S.ft = new Set(list("kind"));
     if (q.has("sev")) S.fs = new Set(list("sev").map(Number).filter((x) => x >= 1 && x <= 4));
+    if (q.has("component") || q.has("kind") || q.has("sev") || q.has("blocked")) S.fb = q.get("blocked") === "1";
   }
-  const keep = () => { if (repo()) KEEP.set(repo(), { d: S.d, sig: S.sig, group: S.group, range: S.range, fc: [...S.fc], ft: [...S.ft], fs: [...S.fs], fold: [...S.fold], hide: [...S.hide], act: S.act, actKinds: [...S.actKinds] }); };
+  const keep = () => { if (repo()) KEEP.set(repo(), { d: S.d, sig: S.sig, group: S.group, range: S.range, fc: [...S.fc], ft: [...S.ft], fs: [...S.fs], fb: S.fb, fold: [...S.fold], hide: [...S.hide], act: S.act, actKinds: [...S.actKinds] }); };
   const api = (p, o) => ctx.api(p, o);
   const view = () => (location.hash.split("?")[0].split("/")[2] || "board");
   const fid = () => new URLSearchParams(location.hash.split("?")[1] || "").get("f");
@@ -498,6 +555,7 @@ export function mount(root, ctx) {
     if (S.fc.size) q.set("component", [...S.fc].join(","));
     if (S.ft.size) q.set("kind", [...S.ft].join(","));
     if (S.fs.size) q.set("sev", [...S.fs].join(","));
+    if (S.fb) q.set("blocked", "1");
     for (const [k, x] of Object.entries(extra)) if (x != null && x !== "") q.set(k, x);
     const s = q.toString().replace(/%2C/g, ",");
     return `#/converge${v && v !== "board" ? "/" + v : ""}${s ? "?" + s : ""}`;
@@ -505,9 +563,9 @@ export function mount(root, ctx) {
   const here = (extra) => href(view(), extra);
   /** Filters changed: the address follows without a hashchange. */
   const filtersToHash = () => { const x = { f: fid(), run: rid() }; history.replaceState(history.state, "", here(x)); keep(); };
-  const matches = (f, skip) => (skip === "c" || !S.fc.size || S.fc.has(f.component || "")) && (skip === "t" || !S.ft.size || S.ft.has(f.theme)) && (skip === "s" || !S.fs.size || S.fs.has(f.severity));
+  const matches = (f, skip) => (skip === "c" || !S.fc.size || S.fc.has(f.component || "")) && (skip === "t" || !S.ft.size || S.ft.has(f.theme)) && (skip === "s" || !S.fs.size || S.fs.has(f.severity)) && (skip === "b" || !S.fb || !!blockedOf(f));
   const filtered = () => (S.d?.findings || []).filter((f) => matches(f));
-  const anyFilter = () => S.fc.size + S.ft.size + S.fs.size > 0;
+  const anyFilter = () => S.fc.size + S.ft.size + S.fs.size > 0 || S.fb;
 
   async function load() {
     if (!repo()) { picker(); return; }
@@ -590,7 +648,8 @@ export function mount(root, ctx) {
       h("span", { class: "cv-pill" }, h("span", { class: `cv-dot${st.enabled ? " on" : ""}` }), st.enabled ? `Autopilot on · every ${Math.round(st.tick_s / 60)} min` : "Autopilot off"),
       h("span", { class: "cv-pill" }, `${usd(m.spent_today)} of ${usd(st.budget_usd_day)} today`),
       workCount() ? h("a", { class: "cv-pill live", href: href("work") }, h("span", { class: "cv-live" }, `${workCount()} working`)) : null,
-      needGroups().length ? h("a", { class: "cv-pill you", href: href("work") }, `${needGroups().length} need you`) : null,
+      blockedCount() ? h("a", { class: "cv-pill blk", href: href("board", { blocked: "1" }), onclick: (e) => { e.preventDefault(); S.fb = true; history.pushState(history.state, "", href("board")); S.view = view(); document.querySelectorAll(".cv-sheet, .cv-scrim").forEach((x) => x.remove()); draw(); } }, `${blockedCount()} blocked on you`) : null,
+      needGroups().filter((g) => !g.blocked).length ? h("a", { class: "cv-pill you", href: href("work") }, `${needGroups().filter((g) => !g.blocked).length} need you`) : null,
       h("button", { class: "cv-btn", type: "button", onclick: () => act(() => api("/api/converge/tick", { method: "POST", body: { repo: d.repo } }), "Tick started: each item whose gate can be checked now is moving") }, "Run a tick"),
       h("button", { class: "cv-btn", type: "button", onclick: () => act(() => api("/api/converge/settings", { method: "PUT", body: { repo: d.repo, enabled: !st.enabled } }), st.enabled ? "Autopilot paused: running steps finish" : "Autopilot on") }, st.enabled ? "Pause" : "Turn on"));
     const tabs = h("nav", { class: "cv-tabs", "aria-label": "Converge" }, TABS.map(([k, l]) => h("a", { href: href(k), class: k === v ? "on" : null, "aria-current": k === v ? "page" : null }, l)));
@@ -613,16 +672,41 @@ export function mount(root, ctx) {
   /** What waits for you, grouped as the Needs-you list groups it (src/converge.rs
    *  needs_items): one group per reason, so this count and the badge agree. */
   function needGroups() {
+    const blk = new Map();
     const out = new Map();
     for (const f of S.d?.findings || []) {
       if (f.state !== "active") continue;
+      // Blocked on you: grouped by kind, ahead of the rest (needs_items lists them first).
+      const b = blockedOf(f);
+      if (b) {
+        const k = `blocked:${BLOCK_KIND[b.kind] ? b.kind : "other"}`;
+        if (!blk.has(k)) blk.set(k, { key: k, kind: b.kind, blocked: true, findings: [] });
+        blk.get(k).findings.push(f);
+        continue;
+      }
+      // Waiting for a free agent slot is not yours to decide.
+      if (queuedOf(f)) continue;
       const why = f.needs_you ? f.needs_you : f.stage === "review" && f.ci === "pass" ? "CI passed: approve the merge." : f.stage === "prioritize" && f.door ? "Touches a one-way door: approve it for development." : null;
       if (!why) continue;
       const key = why.split(/[:(]/)[0].trim();
       if (!out.has(key)) out.set(key, { key, why, findings: [] });
       out.get(key).findings.push(f);
     }
-    return [...out.values()];
+    for (const g of blk.values()) {
+      const f0 = g.findings[0];
+      g.why = g.findings.length === 1 ? `Blocked: ${blockStep(f0, blockedOf(f0))}` : `Blocked on you · ${blockWord(g)}: ${g.findings.length} steps only you can take`;
+    }
+    return [...blk.values(), ...out.values()];
+  }
+  /** How many findings are blocked on you. */
+  const blockedCount = () => (S.d?.findings || []).filter((f) => blockedOf(f)).length;
+  /** "waiting for a free agent slot": the server's `queued`, or an older
+   *  server's needs-you that only says the agents are all busy. */
+  function queuedOf(f) {
+    if (!f || f.state !== "active" || blockedOf(f)) return null;
+    if (typeof f.queued === "string" && f.queued) return f.queued;
+    const m = /(\d+) agents are running, the most allowed/.exec(f.needs_you || "");
+    return m ? `waiting for a free agent slot (${m[1]} of ${m[1]})` : null;
   }
 
   async function act(fn, msg) {
@@ -716,7 +800,7 @@ export function mount(root, ctx) {
     const of = (skip, pred) => live.filter((f) => matches(f, skip) && pred(f));
     const themes = S.d.themes || Object.keys(THEME_WORDS);
     return h("div", { class: "cv-bar kinds", role: "group", "aria-label": "Filters" },
-      anyFilter() ? h("button", { class: "cv-chipf clear", type: "button", onclick: () => { S.fc.clear(); S.ft.clear(); S.fs.clear(); filtersToHash(); draw(); } }, "Clear") : null,
+      anyFilter() ? h("button", { class: "cv-chipf clear", type: "button", onclick: () => { S.fc.clear(); S.ft.clear(); S.fs.clear(); S.fb = false; filtersToHash(); draw(); } }, "Clear") : null,
       comps.length ? [h("span", { class: "cv-label" }, "Component"), comps.map((c) => { const l = of("c", (f) => (f.component || "") === c.name); return chip(S.fc.has(c.name), c.name, l.length, l.filter((f) => f.severity >= 4).length, flip(S.fc, c.name)); })] : null,
       h("span", { class: "cv-label" }, "Kind"),
       themes.map((t) => { const l = of("t", (f) => f.theme === t); return l.length || S.ft.has(t) ? chip(S.ft.has(t), THEME_WORDS[t] || t, l.length, l.filter((f) => f.severity >= 4).length, flip(S.ft, t)) : null; }),
