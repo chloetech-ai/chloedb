@@ -27,7 +27,8 @@ use serde_json::{json, Value as Json};
 
 use crate::{err, Result};
 
-const EVENTS: [(&str, Option<&str>, u64); 9] = [
+/// The hooks installed: event, matcher, timeout in seconds.
+pub const EVENTS: [(&str, Option<&str>, u64); 11] = [
     ("SessionStart", None, 15),
     // Long enough for query understanding in `sync` mode.
     ("UserPromptSubmit", None, 90),
@@ -39,6 +40,10 @@ const EVENTS: [(&str, Option<&str>, u64); 9] = [
     ("PreCompact", None, 15),
     ("PostCompact", None, 15),
     ("SessionEnd", None, 10),
+    // Recorded for `chloectx report` (when the agent waited for the user,
+    // when a sub-agent finished), never recalled.
+    ("Notification", None, 5),
+    ("SubagentStop", None, 5),
 ];
 
 /// The MCP server's name; its tools are `mcp__chloectx__*`.
@@ -456,7 +461,107 @@ pub fn project_has_hooks(project: &Path) -> bool {
     })
 }
 
+/// Whether the user settings hold the hooks of `chloectx install --user`.
+pub fn user_has_hooks() -> bool {
+    let settings = read_json(&crate::paths::user_settings());
+    let Some(hooks) = settings.get("hooks").and_then(|h| h.as_object()) else { return false };
+    hooks.values().filter_map(|l| l.as_array()).flatten().any(is_user_hook)
+}
+
+/// What a program that starts Claude Code sessions of its own (Workbench)
+/// adds to each session so that ChloeCtx records it and its agent has the
+/// memory tools, without writing any settings file of the user's:
+/// `settings` (merge into the session's `--settings` file) and `mcp` (into
+/// its `--mcp-config`). Both are empty when `cwd` is already wired, by the
+/// user's settings (`wired: "user"`) or its project's (`"project"`), so a
+/// session is never recorded twice.
+pub fn wiring(cwd: &Path, exe: &str, distill_model: Option<&str>) -> Json {
+    let wired = if project_has_hooks(cwd) {
+        Some("project")
+    } else if user_has_hooks() {
+        Some("user")
+    } else {
+        None
+    };
+    let (settings, mcp) = if wired.is_some() {
+        (json!({}), json!({}))
+    } else {
+        let mut s = json!({});
+        add_to_settings(&mut s, exe, false, distill_model);
+        // The server comes from --mcp-config, not a project's .mcp.json.
+        if let Some(o) = s.as_object_mut() {
+            o.remove("enabledMcpjsonServers");
+        }
+        (s, json!({ SERVER: {"type": "stdio", "command": exe, "args": ["mcp"]} }))
+    };
+    json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "exe": exe,
+        "wired": wired,
+        "settings": settings,
+        "mcp": mcp,
+        "store": crate::paths::store_dir(cwd).to_string_lossy(),
+        "model": model_status(),
+    })
+}
+
+/// Whether recall's embedding model is there (`chloectx fetch-model`
+/// downloads it); another embedder set in the environment needs none.
+fn model_status() -> Json {
+    let spec = std::env::var("CHLOECTX_EMBEDDER").unwrap_or_else(|_| "static".into());
+    let dir = crate::embed::models_dir().join("potion-retrieval-32M");
+    let ok = spec != "static" || dir.join("model.safetensors").is_file();
+    json!({"ok": ok, "embedder": spec, "path": dir.to_string_lossy(), "fix": if ok { Json::Null } else { json!("chloectx fetch-model") }})
+}
+
+/// The nearest folder above `p` that exists, for a mistyped path.
+fn nearest_existing(p: &Path) -> Option<&Path> {
+    p.ancestors().skip(1).find(|a| a.is_dir() && a.parent().is_some())
+}
+
+/// In a git work tree, keeps this machine's install files out of `git add`:
+/// each of `files` that is neither tracked nor ignored yet goes into the
+/// repository's `info/exclude` (local, never committed). What it did or
+/// what to watch for, for the person (CTX-12).
+fn keep_out_of_git(project: &Path, files: &[&str]) -> Vec<String> {
+    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(project).args(args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok();
+    let Some(out) = git(&["rev-parse", "--git-path", "info/exclude"]).filter(|o| o.status.success()) else { return Vec::new() };
+    let exclude = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let exclude = if exclude.is_absolute() { exclude } else { project.join(exclude) };
+    let mut notes = Vec::new();
+    let mut add = Vec::new();
+    for f in files {
+        if git(&["ls-files", "--error-unmatch", "--", f]).is_some_and(|o| o.status.success()) {
+            notes.push(format!("{f} is tracked by git and now names this machine's chloectx; do not commit that change"));
+        } else if !git(&["check-ignore", "-q", "--", f]).is_some_and(|o| o.status.success()) {
+            add.push(format!("/{f}"));
+        }
+    }
+    if !add.is_empty() {
+        let mut text = std::fs::read_to_string(&exclude).unwrap_or_default();
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text += "# ChloeCtx's project install: paths of this machine\n";
+        for a in &add {
+            text += &format!("{a}\n");
+        }
+        let ok = exclude.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&exclude, text).is_ok();
+        if ok {
+            notes.push(format!("{} hold this machine's paths, so they were added to {} (git leaves them out)", add.iter().map(|a| a.trim_start_matches('/')).collect::<Vec<_>>().join(" and "), exclude.display()));
+        } else {
+            notes.push(format!("{} hold this machine's paths: do not commit them", add.iter().map(|a| a.trim_start_matches('/')).collect::<Vec<_>>().join(" and ")));
+        }
+    }
+    notes
+}
+
 pub fn install(project: &Path, exe: &str, shared: bool, distill_model: Option<&str>) -> Result<String> {
+    // A mistyped path is not created (CTX-9).
+    if !project.is_dir() {
+        let hint = nearest_existing(project).map(|a| format!(" (the nearest folder above it that exists is {})", a.display())).unwrap_or_default();
+        return Err(err(format!("{} is not a folder{hint}; give the project's folder, as `chloectx --project DIR install`", project.display())));
+    }
     let settings_path = project.join(".claude").join(if shared { "settings.json" } else { "settings.local.json" });
     let mut settings = read_settings(&settings_path)?;
     let mcp_path = project.join(".mcp.json");
@@ -480,12 +585,15 @@ pub fn install(project: &Path, exe: &str, shared: bool, distill_model: Option<&s
     servers.insert(SERVER.into(), json!({"command": exe, "args": ["mcp"]}));
     saved.extend(backup_if_changed(&mcp_path, &mcp)?);
     write_json(&mcp_path, &mcp)?;
+    // Shared settings are meant to be committed; the local ones are not.
+    let git = if shared { Vec::new() } else { keep_out_of_git(project, &[".claude/settings.local.json", ".mcp.json"]) };
     Ok(format!(
-        "ChloeCtx installed for {}:\n  hooks and MCP approval: {}\n  MCP server: {}\n  store: {}{}",
+        "ChloeCtx installed for {}:\n  hooks and MCP approval: {}\n  MCP server: {}\n  store: {}{}{}",
         project.display(),
         settings_path.display(),
         mcp_path.display(),
         crate::paths::store_dir(project).display(),
+        git.iter().map(|n| format!("\n  git: {n}")).collect::<String>(),
         saved_note(&saved)
     ))
 }
@@ -604,6 +712,24 @@ pub fn uninstall_user() -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn wiring_skips_a_project_with_its_own_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = wiring(dir.path(), "/opt/chloectx", Some("haiku"));
+        if !user_has_hooks() {
+            assert_eq!(w["wired"], Json::Null, "{w}");
+            assert!(w["settings"]["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap().contains("/opt/chloectx hook Stop"), "{w}");
+            assert_eq!(w["settings"]["env"]["CHLOECTX_DISTILL_MODEL"], "haiku");
+            assert!(w["settings"].get("enabledMcpjsonServers").is_none());
+            assert_eq!(w["mcp"]["chloectx"]["args"], json!(["mcp"]));
+        }
+        install(dir.path(), "/opt/chloectx", false, None).unwrap();
+        let w = wiring(dir.path(), "/opt/chloectx", Some("haiku"));
+        assert_eq!(w["wired"], "project", "{w}");
+        assert_eq!(w["settings"], json!({}));
+        assert_eq!(w["mcp"], json!({}));
+    }
     use super::*;
 
     fn commands(settings: &Json) -> Vec<String> {

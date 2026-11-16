@@ -9,11 +9,15 @@ import { h, store } from "./core.js";
 export const OWNERS = [
   [/^sa_/, "App engine", "the app creator's own records: apps, versions, requests, traces", true],
   [/^app_/, "Apps", "the data of apps built in the app creator", false],
-  [/^ctx_/, "ChloeCtx", "ChloeCtx's memory spaces", true],
+  [/^ctx_|^chloectx_/, "ChloeCtx", "ChloeCtx's memory spaces", true],
+  // LIV-12: the network operations app's inventory, telemetry, syslog and incidents: its data, not machinery (its syslog is a source for Logs).
+  [/^netops_/, "Network operations", "the network operations app's inventory, telemetry, syslog, alerts and incidents", false],
+  [/^fs_/, "Feature store", "the feature store's features, snapshots, models and impressions", false],
   [/^sheets_/, "Sheets", "the spreadsheet app's workbooks and cells", true],
   [/^crawl_/, "Crawler", "the crawler's frontier, pages and crawls", true],
   [/^swarm_/, "Swarm", "simulated users' runs, sessions and findings", true],
   [/^strata_sim$|^chloedb_sim$/, "Simulator", "the traffic simulator's data", true],
+  [/^chloedb_connector/, "Connectors", "each connector's config, runs and cursor (the data goes to its target table)", true],
   [/^cc_/, "Command center", "feedback sent from the command center", true],
   [/^_/, "System", "the database's own tables", true],
 ];

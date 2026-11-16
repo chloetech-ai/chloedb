@@ -149,8 +149,9 @@ fn result_py<'py>(py: Python<'py>, rs: &ResultSet) -> PyResult<Bound<'py, PyDict
 /// image or sound file's for `{"embed": {"image": "<base64>"}}` or
 /// `{"embed": {"audio": "<base64>"}}`) or
 /// `{"vector_of": key, "field": f}` (a stored row's vector), each with
-/// `"table"` for a field of another table than the first.
-fn param(db: &Db, j: &Json) -> chloedb::Result<Value> {
+/// `"table"` for a field of another table than `from` (the statement's
+/// `FROM` table), else the first.
+fn param(db: &Db, j: &Json, from: Option<&str>) -> chloedb::Result<Value> {
     let bad = |m: String| chloedb::Error::Query(m);
     Ok(match j {
         Json::Null => Value::Null,
@@ -164,9 +165,9 @@ fn param(db: &Db, j: &Json) -> chloedb::Result<Value> {
         // where a vector is expected, a list of numbers is one.
         Json::Array(xs) if !xs.is_empty() && xs.iter().all(|x| x.is_i64()) => Value::List(xs.iter().map(|x| Value::Int(x.as_i64().unwrap_or(0))).collect()),
         Json::Array(xs) if !xs.is_empty() && xs.iter().all(|x| x.is_number()) => Value::Vector(xs.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect::<Vec<_>>().into()),
-        Json::Array(xs) => Value::List(xs.iter().map(|x| param(db, x)).collect::<chloedb::Result<_>>()?),
+        Json::Array(xs) => Value::List(xs.iter().map(|x| param(db, x, from)).collect::<chloedb::Result<_>>()?),
         Json::Object(o) if o.get("embed").is_some_and(|e| e.is_string() || e.get("image").is_some() || e.get("audio").is_some()) && o.keys().all(|k| k == "embed" || k == "field" || k == "table") => {
-            let s = table_of(db, o.get("table").and_then(|t| t.as_str()))?;
+            let s = table_of(db, o.get("table").and_then(|t| t.as_str()).or(from))?;
             let field = match o.get("field").and_then(|f| f.as_str()) {
                 Some(f) => f.to_string(),
                 None => s.fields.iter().find(|f| db.embedder_in(&s.table, &f.name).is_some()).map(|f| f.name.clone()).ok_or_else(|| bad("no embedded field has its model open".into()))?,
@@ -184,7 +185,7 @@ fn param(db: &Db, j: &Json) -> chloedb::Result<Value> {
             }
         }
         Json::Object(o) if o.contains_key("vector_of") && o.keys().all(|k| k == "vector_of" || k == "field" || k == "table") => {
-            let s = &*table_of(db, o.get("table").and_then(|t| t.as_str()))?;
+            let s = &*table_of(db, o.get("table").and_then(|t| t.as_str()).or(from))?;
             let pk = s.primary_key.ok_or_else(|| bad("vector_of needs a primary key".into()))?;
             let field = match o.get("field").and_then(|f| f.as_str()) {
                 Some(f) => f.to_string(),
@@ -204,10 +205,22 @@ fn param(db: &Db, j: &Json) -> chloedb::Result<Value> {
     })
 }
 
-fn params(db: &Db, j: &[(String, Json)]) -> chloedb::Result<Params> {
+/// The parameters of the statement `sql`: those that name no table read
+/// the table its `FROM` names first (when the database has it), else the
+/// first table.
+fn params(db: &Db, j: &[(String, Json)], sql: &str) -> chloedb::Result<Params> {
+    if j.is_empty() {
+        return Ok(Params::new());
+    }
+    let from = chloedb::query::tables::read_by_sql(sql).into_iter().find(|t| db.storage().table(t).is_some());
+    params_in(db, j, from.as_deref())
+}
+
+/// The parameters, those that name no table reading `from` (else the first table).
+fn params_in(db: &Db, j: &[(String, Json)], from: Option<&str>) -> chloedb::Result<Params> {
     let mut p = Params::new();
     for (k, v) in j {
-        p = p.set(k, param(db, v)?);
+        p = p.set(k, param(db, v, from)?);
     }
     Ok(p)
 }
@@ -617,7 +630,7 @@ impl Database {
         let db = self.get()?;
         let p = params_json(params)?;
         let l = self.limited(&db, timeout_ms, memory);
-        let rs = py.detach(|| self::params(&db, &p).and_then(|p| db.query_with(sql, &p, &l.opts))).map_err(|e| l.err(e))?;
+        let rs = py.detach(|| self::params(&db, &p, sql).and_then(|p| db.query_with(sql, &p, &l.opts))).map_err(|e| l.err(e))?;
         result_py(py, &rs)
     }
 
@@ -656,7 +669,7 @@ impl Database {
         let db = self.get()?;
         let p = params_json(params)?;
         let l = self.limited(&db, timeout_ms, memory);
-        py.detach(|| self::params(&db, &p).and_then(|p| db.query_leaf_with(sql, &p, &l.opts)).and_then(arrow::Arrow::of)).map_err(|e| l.err(e))
+        py.detach(|| self::params(&db, &p, sql).and_then(|p| db.query_leaf_with(sql, &p, &l.opts)).and_then(arrow::Arrow::of)).map_err(|e| l.err(e))
     }
 
     /// Runs any statement: a SELECT's answer as `query` gives it, or the
@@ -666,7 +679,7 @@ impl Database {
         let db = self.get()?;
         let p = params_json(params)?;
         let l = self.limited(&db, timeout_ms, memory);
-        match py.detach(|| self::params(&db, &p).and_then(|p| db.sql_with(sql, &p, &l.opts))).map_err(|e| l.err(e))? {
+        match py.detach(|| self::params(&db, &p, sql).and_then(|p| db.sql_with(sql, &p, &l.opts))).map_err(|e| l.err(e))? {
             SqlResult::Rows(rs) => Ok(result_py(py, &rs)?.into_any()),
             SqlResult::Written(n) => Ok(n.into_pyobject(py)?.into_any()),
         }
@@ -680,7 +693,7 @@ impl Database {
         let db = self.get()?;
         let p = params_json(params)?;
         let log: Json = serde_json::from_str(log).map_err(|e| ChloeDBError::new_err(format!("log options are JSON: {e}")))?;
-        let l = py.detach(|| Log::from_json(&log).and_then(|log| self::params(&db, &p).and_then(|p| db.query_logged(sql, &p, &log)))).map_err(err)?;
+        let l = py.detach(|| Log::from_json(&log).and_then(|log| self::params(&db, &p, sql).and_then(|p| db.query_logged(sql, &p, &log)))).map_err(err)?;
         let d = result_py(py, &l.rs)?;
         d.set_item("request", l.request)?;
         if !l.teams.is_empty() {
@@ -710,7 +723,7 @@ impl Database {
     fn plan(&self, py: Python<'_>, sql: &str, params: Option<&Bound<'_, PyDict>>) -> PyResult<String> {
         let db = self.get()?;
         let p = params_json(params)?;
-        py.detach(|| self::params(&db, &p).and_then(|p| db.explain(sql, &p)).and_then(|plan| plan.to_json_text())).map_err(err)
+        py.detach(|| self::params(&db, &p, sql).and_then(|p| db.explain(sql, &p)).and_then(|plan| plan.to_json_text())).map_err(err)
     }
 
     /// Runs a plan given as JSON text, as `sql` runs a statement.
@@ -1102,7 +1115,7 @@ impl Database {
         if let Some(t) = table {
             o.insert("table".into(), Json::String(t.into()));
         }
-        match py.detach(|| param(&db, &Json::Object(o))).map_err(err)? {
+        match py.detach(|| param(&db, &Json::Object(o), None)).map_err(err)? {
             Value::Vector(v) => Ok(v.to_vec()),
             _ => Err(PyValueError::new_err("the field's model embeds a text a vector a token (a multi-vector field): Database.embed_tokens gives them")),
         }
@@ -1129,7 +1142,7 @@ impl Database {
         let db = self.get()?;
         let p = params_json(params)?;
         let table = table_of(&db, table).map_err(err)?.table.clone();
-        py.detach(|| self::params(&db, &p).and_then(|p| db.sid_next(&table, field, &prefixes, filter.as_deref(), &p))).map_err(err)
+        py.detach(|| self::params_in(&db, &p, Some(&table)).and_then(|p| db.sid_next(&table, field, &prefixes, filter.as_deref(), &p))).map_err(err)
     }
 
     /// Trains a semantic-ID codebook on the vectors of `field` of `table`

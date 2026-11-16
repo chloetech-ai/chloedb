@@ -90,7 +90,7 @@ impl Service {
         }
         let view = self.follow_view().await?;
         let Some(c) = view["clusters"].as_array().into_iter().flatten().find(|c| c["name"] == name).cloned() else {
-            return Err(ApiError { status: 404, message: format!("this cluster never followed {name}") });
+            return Err(ApiError { code: None, status: 404, message: format!("this cluster never followed {name}") });
         };
         let shards = self.sources_by_shard().await?;
         let own: Vec<Marks> = own_marks_of(&shards).collect();

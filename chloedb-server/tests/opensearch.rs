@@ -180,6 +180,38 @@ async fn scenario(base: &str) -> Vec<Json> {
     assert_eq!(a["names"]["after_key"], json!({"n": "cy"}));
     assert_eq!(a["awarded"]["doc_count"], count_of(&|i| i % 5 == 0));
     seen.push(a.clone());
+    // A fixed_interval is date_bin's buckets, counted from the offset: the
+    // same buckets and metrics as counted here, empty ones between.
+    let r = ok(base, "POST", "/books/_search", Some(json!({"size": 0, "aggs": {
+        "every": {"date_histogram": {"field": "published", "fixed_interval": "1000d", "offset": "+12h"}, "aggs": {"y": {"max": {"field": "year"}}}},
+        "busy": {"date_histogram": {"field": "published", "fixed_interval": "90d", "min_doc_count": 1}}}}))).await;
+    let day = 86_400_000i64;
+    let ms = |i: usize| chloedb::timestamp::parse(book(i)["published"].as_str().unwrap()).unwrap() / 1000;
+    let key = |t: i64, w: i64, off: i64| (t - off).div_euclid(w) * w + off;
+    let mut want = std::collections::BTreeMap::<i64, (u64, i64)>::new();
+    for i in 0..N {
+        let e = want.entry(key(ms(i), 1000 * day, day / 2)).or_insert((0, i64::MIN));
+        e.0 += 1;
+        e.1 = e.1.max(1990 + (i % 30) as i64);
+    }
+    let every = r["aggregations"]["every"]["buckets"].as_array().unwrap();
+    let (lo, hi) = (*want.keys().next().unwrap(), *want.keys().last().unwrap());
+    assert_eq!(every.len() as i64, (hi - lo) / (1000 * day) + 1, "{every:?}");
+    for b in every {
+        let k = b["key"].as_i64().unwrap();
+        let (n, y) = want.get(&k).copied().unwrap_or((0, 0));
+        assert_eq!(b["doc_count"].as_u64(), Some(n), "{b}");
+        if n > 0 {
+            assert_eq!(b["y"]["value"].as_f64(), Some(y as f64), "{b}");
+        }
+    }
+    let mut busy = std::collections::BTreeMap::<i64, u64>::new();
+    for i in 0..N {
+        *busy.entry(key(ms(i), 90 * day, 0)).or_default() += 1;
+    }
+    let got: Vec<(i64, u64)> = r["aggregations"]["busy"]["buckets"].as_array().unwrap().iter().map(|b| (b["key"].as_i64().unwrap(), b["doc_count"].as_u64().unwrap())).collect();
+    assert_eq!(got, busy.into_iter().collect::<Vec<_>>());
+    seen.push(r["aggregations"].clone());
     // Numbers: from their columns while no document holds an array of
     // one, from `_source` once one does (each value counts).
     ok(base, "PUT", "/nums", Some(json!({"mappings": {"properties": {"n": {"type": "long"}, "x": {"type": "double"}, "k": {"type": "keyword"}}}}))).await;
@@ -375,6 +407,118 @@ async fn social(base: &str) -> Vec<Json> {
         ok(base, "DELETE", &format!("/{ix}"), None).await;
     }
     seen
+}
+
+/// Document `i` of the index of [`negations`]: each field missing from
+/// some documents (and `tags` an empty list in others, `meta` an object
+/// without `color`).
+fn item(i: usize) -> Json {
+    let mut d = json!({"title": format!("item {i}")});
+    if i % 4 != 0 {
+        d["brand"] = json!(["acme", "zeta", "omni"].get(i % 3));
+    }
+    if i % 5 != 0 {
+        d["price"] = json!((i * 7 % 40) as f64 + 0.5);
+    }
+    match i % 6 {
+        0 => {}
+        1 => d["tags"] = json!([]),
+        _ => d["tags"] = [json!(["x"]), json!(["x", "y"]), json!(["y"])][i % 3].clone(),
+    }
+    if i % 7 != 0 {
+        d["seen"] = json!(format!("2026-0{}-01T00:00:00Z", 1 + i % 3));
+    }
+    match i % 3 {
+        0 => {}
+        1 => d["meta"] = json!({}),
+        _ => d["meta"] = json!({"color": if i % 2 == 0 { "red" } else { "blue" }}),
+    }
+    d
+}
+
+const ITEMS: usize = 120;
+
+/// `must_not`, a query string's `NOT` and `-`, and a `filters`
+/// aggregation's other bucket keep the documents without the field, as
+/// OpenSearch's do (a document matches a query or does not): each against
+/// the documents counted here.
+async fn negations(base: &str) {
+    ok(base, "PUT", "/items", Some(json!({"mappings": {"properties": {
+        "title": {"type": "text"}, "brand": {"type": "keyword"}, "price": {"type": "double"}, "tags": {"type": "keyword"},
+        "seen": {"type": "date"}, "meta": {"properties": {"color": {"type": "keyword"}}}}}}))).await;
+    let mut nd = String::new();
+    for i in 0..ITEMS {
+        nd.push_str(&format!("{}\n{}\n", json!({"index": {"_id": format!("i{i}")}}), item(i)));
+    }
+    assert_eq!(ok(base, "POST", "/items/_bulk?refresh=true", Some(Json::String(nd))).await["errors"], json!(false));
+
+    let brand = |i: usize, b: &str| item(i)["brand"] == json!(b);
+    let price = |i: usize| item(i)["price"].as_f64();
+    let tag = |i: usize, t: &str| item(i)["tags"].as_array().is_some_and(|ts| ts.contains(&json!(t)));
+    let seen = |i: usize, d: &str| item(i)["seen"] == json!(d);
+    let color = |i: usize, c: &str| item(i)["meta"]["color"] == json!(c);
+    let check = |what: &str, r: &Json, want: &dyn Fn(usize) -> bool| {
+        let got: BTreeSet<String> = r["hits"]["hits"].as_array().unwrap().iter().map(|h| h["_id"].as_str().unwrap().to_string()).collect();
+        let want: BTreeSet<String> = (0..ITEMS).filter(|&i| want(i)).map(|i| format!("i{i}")).collect();
+        assert_eq!(r["hits"]["total"]["value"].as_u64(), Some(want.len() as u64), "{what}: total");
+        assert_eq!(got, want, "{what}");
+    };
+    let search = |q: Json| async move { ok(base, "POST", "/items/_search", Some(json!({"query": q, "size": ITEMS, "track_total_hits": true}))).await };
+    let not = |q: Json| json!({"bool": {"must_not": q}});
+
+    // A condition on one field.
+    let cases: Vec<(&str, Json, Box<dyn Fn(usize) -> bool>)> = vec![
+        ("term", json!({"term": {"brand": "zeta"}}), Box::new(move |i| !brand(i, "zeta"))),
+        ("terms", json!({"terms": {"brand": ["acme", "omni"]}}), Box::new(move |i| !brand(i, "acme") && !brand(i, "omni"))),
+        ("range", json!({"range": {"price": {"lt": 10}}}), Box::new(move |i| !price(i).is_some_and(|p| p < 10.0))),
+        ("two bounds", json!({"range": {"price": {"gte": 5, "lte": 30}}}), Box::new(move |i| !price(i).is_some_and(|p| (5.0..=30.0).contains(&p)))),
+        ("a list", json!({"term": {"tags": "x"}}), Box::new(move |i| !tag(i, "x"))),
+        ("prefix", json!({"prefix": {"brand": "ze"}}), Box::new(move |i| !brand(i, "zeta"))),
+        ("date", json!({"term": {"seen": "2026-02-01T00:00:00Z"}}), Box::new(move |i| !seen(i, "2026-02-01T00:00:00Z"))),
+        ("an object's field", json!({"term": {"meta.color": "red"}}), Box::new(move |i| !color(i, "red"))),
+    ];
+    for (what, q, want) in &cases {
+        check(&format!("must_not {what}"), &search(not(q.clone())).await, want);
+    }
+    // Conditions on several fields, and a negation inside a negation.
+    check("must_not of a should", &search(not(json!({"bool": {"should": [{"term": {"brand": "zeta"}}, {"range": {"price": {"gte": 30}}}]}}))).await, &|i| {
+        !(brand(i, "zeta") || price(i).is_some_and(|p| p >= 30.0))
+    });
+    check("must_not of a must", &search(not(json!({"bool": {"must": [{"term": {"brand": "acme"}}, {"term": {"tags": "y"}}]}}))).await, &|i| !(brand(i, "acme") && tag(i, "y")));
+    check("must_not of a must_not", &search(not(not(json!({"term": {"brand": "zeta"}})))).await, &|i| brand(i, "zeta"));
+    check(
+        "filter and must_not",
+        &search(json!({"bool": {"filter": {"range": {"price": {"lt": 20}}}, "must_not": [{"term": {"tags": "y"}}, {"term": {"meta.color": "blue"}}]}})).await,
+        &|i| price(i).is_some_and(|p| p < 20.0) && !tag(i, "y") && !color(i, "blue"),
+    );
+    // The positive conditions are as they were.
+    check("term", &search(json!({"term": {"brand": "zeta"}})).await, &|i| brand(i, "zeta"));
+    check("range", &search(json!({"range": {"price": {"lt": 10}}})).await, &|i| price(i).is_some_and(|p| p < 10.0));
+    // A query string's NOT and -.
+    for q in ["NOT brand:acme", "-brand:acme"] {
+        check(q, &search(json!({"query_string": {"query": q, "default_field": "title"}})).await, &|i| !brand(i, "acme"));
+    }
+    check("item -brand:acme", &search(json!({"query_string": {"query": "item -brand:acme", "default_field": "title"}})).await, &|i| !brand(i, "acme"));
+    // _count.
+    let n = ok(base, "POST", "/items/_count", Some(json!({"query": not(json!({"term": {"brand": "zeta"}}))}))).await;
+    assert_eq!(n["count"].as_u64(), Some((0..ITEMS).filter(|&i| !brand(i, "zeta")).count() as u64), "_count of a must_not");
+    // A filters aggregation's other bucket: the documents neither filter
+    // matches, those without a brand among them.
+    let r = ok(base, "POST", "/items/_search", Some(json!({"size": 0, "aggs": {"by": {"filters": {
+        "filters": {"acme": {"term": {"brand": "acme"}}, "cheap": {"range": {"price": {"lt": 10}}}}, "other_bucket_key": "rest"}}}}))).await;
+    let buckets = &r["aggregations"]["by"]["buckets"];
+    let count = |f: &dyn Fn(usize) -> bool| json!((0..ITEMS).filter(|&i| f(i)).count());
+    assert_eq!(buckets["acme"]["doc_count"], count(&|i| brand(i, "acme")), "{buckets}");
+    assert_eq!(buckets["cheap"]["doc_count"], count(&|i| price(i).is_some_and(|p| p < 10.0)), "{buckets}");
+    assert_eq!(buckets["rest"]["doc_count"], count(&|i| !brand(i, "acme") && !price(i).is_some_and(|p| p < 10.0)), "{buckets}");
+    ok(base, "DELETE", "/items", None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn negations_keep_documents_without_the_field() {
+    let dir = tempfile::tempdir().unwrap();
+    negations(&serve(Arc::new(local(dir.path())), Access::default()).await).await;
+    negations(&serve(Arc::new(cluster(dir.path()).await), Access::default()).await).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

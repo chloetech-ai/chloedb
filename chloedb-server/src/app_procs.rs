@@ -192,8 +192,9 @@ pub fn grants(app: &str) -> &'static [(&'static str, crate::keys::Scope)] {
         "crawler" => &[("crawl_*", Admin)],
         // Sheets opens any table as a live sheet.
         "sheets" => &[("sheets_*", Admin), ("*", Read)],
-        // The Inspector reads what chloectx sync copied.
-        "chloectx" => &[("ctx_*", Admin), ("chloectx_memory", Read)],
+        // The Inspector reads what chloectx sync copied: a table per
+        // project, and the one projects shared before 0.3.4.
+        "chloectx" => &[("ctx_*", Admin), ("chloectx_memory", Read), ("chloectx_mem_*", Read)],
         _ => &[],
     }
 }
@@ -224,14 +225,14 @@ impl AppKeys for ServerKeys {
 /// a credential of the server's (its token, its cluster token, its key,
 /// the apps' token) reaches an app. What it needs to run (the PATH, the
 /// home, the locale, proxies and CA files, where ChloeCtx keeps its
-/// models, the Anthropic key ChloeCtx and the crawler's model calls use)
-/// does.
+/// models, the Anthropic key ChloeCtx and the crawler's model calls use,
+/// whether the crawler may reach private addresses, an intranet's) does.
 fn keep_env(name: &str) -> bool {
     const KEEP: &[&str] = &[
         "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ", "TMPDIR", "TERM",
         "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
         "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "no_proxy", "all_proxy",
-        "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CHLOEDB_CRAWL_CONTACT", "CHLOECTX_HOME", "CHLOECTX_EMBEDDER", "CHLOECTX_DISTILL_MODEL",
+        "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CHLOEDB_CRAWL_CONTACT", "CHLOEDB_CRAWL_ALLOW_PRIVATE", "CHLOECTX_HOME", "CHLOECTX_EMBEDDER", "CHLOECTX_DISTILL_MODEL",
     ];
     KEEP.contains(&name) || name.starts_with("LC_")
 }

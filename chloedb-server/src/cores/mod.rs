@@ -11,6 +11,8 @@
 //! * [`shard`]: a shard's copies: votes and elections, a replica taking
 //!   what its primary ships, a primary shipping, counting the copies that
 //!   hold a write, fencing, and its lease on reads.
+//! * [`route`]: the order a coordinator asks a shard's copies in for a
+//!   read, by what it observed of them (`--route least-cost`).
 //! * [`slots`]: the cluster map: a shard taking a map and checking what is
 //!   routed to it, holding writes to slots moving from it and exporting
 //!   their rows; a coordinator changing the map ([`slots::Change`]) and
@@ -36,5 +38,6 @@
 //! [`crate::sim::db::ModelDb::apply_shipped`] models it).
 
 pub mod follow;
+pub mod route;
 pub mod shard;
 pub mod slots;

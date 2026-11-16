@@ -81,7 +81,8 @@ export function withArg(argv, flag, v, bool) {
     if (a.startsWith(flag + "=")) continue;
     out.push(a);
   }
-  if (bool ? v : v !== undefined && v !== null && v !== "") out.push(...(bool ? [flag] : [flag, String(v)]));
+  // A switch on by default is turned off as --flag=false (v "false").
+  if (bool ? v : v !== undefined && v !== null && v !== "") out.push(...(bool ? [v === "false" ? flag + "=false" : flag] : [flag, String(v)]));
   return out;
 }
 
@@ -178,6 +179,15 @@ export const SETTINGS = [
   { g: "Search", label: "Hedge after", at: "cargs:--hedge-ms", type: "step", list: [10, 20, 30, 50, 75, 100, 150, 200, 500, 1000], def: 100, show: (v) => v + " ms",
     effect: (v, x) => `When a shard's copy has not answered after ${v} ms, the coordinator asks another copy of it.` + (x.L.p99 != null ? (v > x.L.p99 ? ` The slowest copy's p99 is ${fmt.ms(x.L.p99)} now: it rarely fires.` : ` The slowest copy's p99 is ${fmt.ms(x.L.p99)} now: it fires for the slowest searches.`) : ""),
     warn: (v, x) => (x.R < 2 ? "one copy a shard: there is no other copy to hedge to" : null), takes: "coordinators" },
+  { g: "Search", label: "Copy asked first", at: "cargs:--route", type: "seg", def: "least-cost", opts: [["least-cost", "the one that costs least"], ["round-robin", "each in turn"]],
+    effect: (v) => ({ "least-cost": "Each read asks a shard's copies in turn, unless another costs clearly less by its recent round trips, its calls in flight, its errors and the load it reports: a slow or busy copy is asked less.", "round-robin": "Each read asks a shard's copies in turn, however fast each answers; one that failed or was outrun in the last 5 s goes last." })[v],
+    warn: (v, x) => (x.R < 2 ? "one copy a shard: there is no other copy to choose" : null), takes: "coordinators" },
+  { g: "Search", label: "Hedge by each copy's own speed", at: "cargs:--hedge-adaptive", type: "toggle", bool: true,
+    effect: (v) => (v ? "A search is hedged once the copy asked has taken longer than it usually does (its average plus six deviations, 2 ms at least, Hedge after at most). It cuts the slowest searches when a copy stalls now and then; on copies alike it hedges more and slows the slowest one in a thousand." : "A search is hedged after the fixed time of Hedge after."),
+    warn: (v, x) => (v && x.R < 2 ? "one copy a shard: there is no other copy to hedge to" : null), takes: "coordinators" },
+  { g: "Search", label: "Reads after a write prefer copies that hold it", at: "cargs:--prefer-caught-up", type: "toggle", bool: true, def: true,
+    effect: (v) => (v ? "A read that must see a write goes to the copies known to hold it, or those that answered such reads fast: a replica that applies writes late is asked few of them, and its share of other reads as before." : "A read that must see a write goes where any other read would, and waits there for the write."),
+    warn: (v, x) => (v && argOf(x.d?.coordinatorArgs, "--route") === "round-robin" ? "only with the copy that costs least asked first: each in turn ignores it" : null), takes: "coordinators" },
   { g: "Search", label: "Give up on a shard after", at: "cargs:--shard-timeout-ms", type: "step", list: [undefined, 100, 250, 500, 1000, 2000, 5000], show: (v) => (v ? v + " ms" : "the deadline"),
     effect: (v) => (v ? `A shard that has not answered in ${v} ms fails the search, or is left out of a partial answer.` : "A search waits for every shard until its deadline."), takes: "coordinators" },
   { g: "Search", label: "Partial answers", at: "cargs:--partial", type: "toggle", bool: true,
@@ -200,8 +210,19 @@ export const SETTINGS = [
     },
     warn: (v, x) => (v && x.A.cpu != null && x.A.cpu > cores(v) * 0.8 ? `each copy would need about ${fmt.si(x.A.cpu)} cores of the ${v} it is given` : null), takes: "servers" },
   { g: "Capacity", label: "Memory per server", at: "spec:resources.requests.memory", also: ["spec:resources.limits.memory"], type: "step", list: [undefined, "512Mi", "1Gi", "2Gi", "4Gi", "8Gi", "16Gi", "32Gi", "64Gi", "128Gi"], show: (v) => qty(v, "no request"),
-    effect: (v, x) => (v ? `Kept for each server and its limit: one that uses more is restarted by Kubernetes.` : "No request or limit: a server may use its node's memory.") + (x.L.rss != null ? ` Each copy holds about ${fmt.bytes(x.L.rss)} now, for a database of ${fmt.bytes(x.L.file)}.` : ""),
-    warn: (v, x) => (v && x.L.rss != null && quantity(v) < x.L.rss * 1.2 ? `a copy holds about ${fmt.bytes(x.L.rss)} now: ${v} would restart it` : null), takes: "servers" },
+    // LIV-11: the request is what the scheduler keeps; only a limit restarts a server that uses more. A change here sets both.
+    effect: (v, x) => {
+      const limit = getPath(x.d || {}, "resources.limits.memory");
+      const kept = !v ? "No request: the scheduler keeps no memory for the servers." : limit ? `Kept for each server${same(limit, v) ? ", and its limit" : `; its limit is ${limit}`}: one that uses more than ${limit} is restarted by Kubernetes.` : `Kept for each server by the scheduler. No limit is set, so one that uses more is not restarted, but may run its node short.`;
+      return kept + (x.L.rss != null ? ` Each copy holds about ${fmt.bytes(x.L.rss)} now, for a database of ${fmt.bytes(x.L.file)}.` : "");
+    },
+    warn: (v, x) => {
+      if (x.L.rss == null) return null;
+      const limit = getPath(x.d || {}, "resources.limits.memory");
+      if (limit && quantity(limit) < x.L.rss * 1.2) return `a copy holds about ${fmt.bytes(x.L.rss)} now: a limit of ${limit} would restart it`;
+      if (v && quantity(v) < x.L.rss) return `a copy holds about ${fmt.bytes(x.L.rss)} now, more than the ${v} requested: the scheduler may put more on a node than it holds`;
+      return null;
+    }, takes: "servers" },
   { g: "Capacity", label: "Volume per copy", at: "spec:storage.size", type: "step", list: ["1Gi", "2Gi", "5Gi", "10Gi", "20Gi", "50Gi", "100Gi", "200Gi", "500Gi", "1Ti", "2Ti", "4Ti"], grows: true, show: String,
     effect: (v, x) => {
       const used = x.A.file ?? x.A.diskUsed;
@@ -221,7 +242,7 @@ export const SETTINGS = [
   { g: "Coordinators", label: "Cores per coordinator", at: "spec:coordinatorResources.requests.cpu", type: "step", list: [undefined, "250m", "500m", "1", "2", "4", "8"], show: (v) => qty(v, "no request"),
     effect: (v) => (v ? `Kubernetes keeps ${v} cores for each coordinator.` : "Kubernetes keeps no cores for the coordinators."), takes: "coordinators" },
   { g: "Coordinators", label: "Memory per coordinator", at: "spec:coordinatorResources.requests.memory", also: ["spec:coordinatorResources.limits.memory"], type: "step", list: [undefined, "256Mi", "512Mi", "1Gi", "2Gi", "4Gi", "8Gi"], show: (v) => qty(v, "no request"),
-    effect: (v) => (v ? "Kept for each coordinator and its limit: it merges the shards' answers." : "No request or limit."), takes: "coordinators" },
+    effect: (v, x) => { const limit = getPath(x.d || {}, "coordinatorResources.limits.memory"); return !v ? "No request: the scheduler keeps no memory for the coordinators." : limit ? `Kept for each coordinator${same(limit, v) ? ", and its limit" : `; its limit is ${limit}`}: it merges the shards' answers.` : "Kept for each coordinator by the scheduler; no limit is set."; }, takes: "coordinators" },
 
   { g: "Access", label: "Client token", at: "spec:tokenSecret", type: "text", placeholder: "a Secret with key token",
     effect: (v) => (v ? `Clients and admins send the token in Secret ${v}, or an API key, to the coordinators.` : "No token: anything that reaches the Service may read, write and change the cluster."),
@@ -252,8 +273,8 @@ export function value(d, st) {
   if (where === "spec") return getPath(d, rest) ?? undefined;
   if (where === "argv") return d[rest] || [];
   const v = argOf(d[where === "args" ? "args" : "coordinatorArgs"], rest, st.bool);
-  if (st.bool) return !!v;
-  if (v === undefined) return undefined;
+  if (st.bool) return v === undefined ? !!st.def : !!v;
+  if (v === undefined) return st.type === "seg" ? st.def : undefined;
   return typeof (st.list || []).find((x) => x != null) === "number" && !Number.isNaN(Number(v)) ? Number(v) : v;
 }
 export function assign(d, st, v) {
@@ -266,10 +287,10 @@ export function assign(d, st, v) {
   }
   if (where === "argv") { d[rest] = v; return; }
   const key = where === "args" ? "args" : "coordinatorArgs";
-  d[key] = withArg(d[key], rest, st.def !== undefined && v === st.def ? undefined : v, st.bool);
+  d[key] = withArg(d[key], rest, st.def !== undefined && v === st.def ? undefined : st.bool && st.def && !v ? "false" : v, st.bool);
 }
 /** The value shown: what is set, or what the server does without it. */
-export const shown = (st, v) => (st.type === "seg" ? (st.opts.find((o) => same(o[0], v)) || [, String(v)])[1] : st.type === "toggle" ? (v ? "on" : "off") : st.show ? st.show(v ?? st.def) : v);
+export const shown = (st, v) => (st.type === "seg" ? (st.opts.find((o) => same(o[0], v ?? st.def)) || [, String(v)])[1] : st.type === "toggle" ? (v ? "on" : "off") : st.show ? st.show(v ?? st.def) : v);
 
 // ------------------------------------------------------------ YAML
 export function yaml(spec) {

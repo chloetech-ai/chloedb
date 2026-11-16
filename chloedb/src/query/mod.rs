@@ -20,6 +20,7 @@
 //!   `_functions` and written out into the queries that call them.
 
 pub mod agg;
+pub mod budget;
 #[cfg(feature = "datafusion")]
 pub mod arrow;
 pub mod compound;
@@ -48,8 +49,10 @@ pub mod parse;
 pub mod paths;
 pub mod plan;
 pub mod profile;
+pub(crate) mod rewrite;
 pub mod pool;
 pub mod rank;
+pub mod recommend;
 pub mod rollup;
 pub mod sequence;
 pub mod sql;

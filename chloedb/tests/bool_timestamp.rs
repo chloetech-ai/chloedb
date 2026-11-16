@@ -122,9 +122,9 @@ fn through_sql(layout: Layout) {
     let db = Db::create(&path, papers(), opts()).unwrap();
     assert_eq!((format_on_disk(&path), required(&path)), (3, vec!["compact_keys".to_string(), "field_ids".to_string(), "packed_positions".to_string()]));
 
-    // Neither type can be a key, and DATE points to TIMESTAMP.
+    // Neither type can be a key (DATE, a TIMESTAMP, is tested in
+    // swarm_fixes.rs).
     assert!(fails(&db, "CREATE TABLE z (id BOOL PRIMARY KEY)").contains("primary key"));
-    assert!(fails(&db, "CREATE TABLE z (id KEYWORD PRIMARY KEY, d DATE)").contains("TIMESTAMP"));
     assert_eq!(required(&path), ["compact_keys", "field_ids", "packed_positions"]);
 
     written(&db, "CREATE TABLE tasks (id KEYWORD PRIMARY KEY, title TEXT, done BOOL, due TIMESTAMP, n INT)");

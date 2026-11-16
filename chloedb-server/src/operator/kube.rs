@@ -371,10 +371,7 @@ impl Cluster {
                         // (images and operators before 0.2.1) are given to
                         // that group once.
                         "securityContext": run_as(true),
-                        // Copies of a shard on different nodes, when there are.
-                        "affinity": {"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
-                            {"weight": 100, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}},
-                        ]}},
+                        "affinity": self.copies_apart(&labels),
                         "containers": [container],
                         "volumes": [{"name": "schema", "configMap": {"name": format!("{}-schema", self.name)}}],
                     },
@@ -384,8 +381,47 @@ impl Cluster {
         })
     }
 
-    /// The coordinators' Deployment, over `shards` (each shard's servers).
-    pub fn coordinator_deployment(&self, shards: &[Vec<String>], replicas: usize) -> Json {
+    /// Copies of a shard on different nodes, when there are: preferred,
+    /// so that a cluster of fewer nodes than copies still runs them all.
+    /// A rollout of a shard of fewer than three copies adds a third
+    /// ([`super::RolloutSpec::extra_copies`]) and removes it after: a copy
+    /// that restarts beside it weighed the extra copy's node as much as its
+    /// peer's, so it landed beside its peer as often as not, and once the
+    /// extra copy went both copies of each shard ran on one node (LIV-6).
+    /// The shard's own copies (`apps.kubernetes.io/pod-index` below
+    /// `spec.replicas`, the label Kubernetes 1.28 and later give a
+    /// StatefulSet's pods) weigh twice as much as any copy of the set, which
+    /// alone counts where the label is not given.
+    ///
+    /// With `spec.requireCopiesApart` the shard's own copies' term is
+    /// required instead: no two of them on one node, and a copy waits for
+    /// a node without one. The term counts every copy of the set where the
+    /// label is not given, a rollout's extra copy too. The extra copy
+    /// itself prefers a node apart, as before.
+    fn copies_apart(&self, labels: &Json) -> Json {
+        let own: Vec<String> = (0..self.spec.replicas).map(|k| k.to_string()).collect();
+        let mut indexed = json!({"matchLabels": labels, "matchExpressions": [{"key": "apps.kubernetes.io/pod-index", "operator": "In", "values": own}]});
+        if self.spec.replicas == 0 {
+            indexed = json!({"matchLabels": labels});
+        }
+        let any = json!({"weight": 50, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}});
+        if self.spec.require_copies_apart {
+            return json!({"podAntiAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": [{"topologyKey": "kubernetes.io/hostname", "labelSelector": indexed}],
+                "preferredDuringSchedulingIgnoredDuringExecution": [any],
+            }});
+        }
+        json!({"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
+            {"weight": 100, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": indexed}},
+            any,
+        ]}})
+    }
+
+    /// The coordinators, over `shards` (each shard's servers): a
+    /// Deployment, or with `spec.coordinatorStorage` a StatefulSet whose
+    /// coordinators each keep their history on a volume of their own
+    /// ([`super::COORDINATOR_FILES`]).
+    pub fn coordinator_workload(&self, shards: &[Vec<String>], replicas: usize) -> Json {
         let s = &self.spec;
         let mut labels = self.labels();
         labels["app.kubernetes.io/component"] = json!("coordinator");
@@ -393,6 +429,13 @@ impl Cluster {
         let mut args = vec!["--shards".to_string(), list, "--listen".into(), "0.0.0.0:7700".into(), "--grpc".into(), "off".into()];
         if s.token_secret.is_none() {
             args.push("--no-token".into());
+        }
+        if s.coordinator_storage.is_some() {
+            // Not a flag coordinatorArgs gives itself: one given twice is refused.
+            let given = |flag: &str| s.coordinator_args.iter().any(|a| a == flag || a.starts_with(&format!("{flag}=")));
+            for (flag, path) in super::COORDINATOR_FILES.into_iter().filter(|(f, _)| !given(f)) {
+                args.extend([flag.to_string(), path.to_string()]);
+            }
         }
         args.extend(s.coordinator_args.iter().cloned());
         let mut env = self.coordinator_token_env();
@@ -430,15 +473,50 @@ impl Cluster {
         if let Some(p) = &s.image_pull_policy {
             container["imagePullPolicy"] = json!(p);
         }
-        if !mounts.is_empty() {
-            container["volumeMounts"] = json!(mounts);
-        }
         if let Some(r) = &s.coordinator_resources {
             container["resources"] = r.clone();
         }
-        let mut pod = json!({"serviceAccountName": self.coordinator_account(), "terminationGracePeriodSeconds": 30, "securityContext": run_as(false), "containers": [container]});
+        if s.coordinator_storage.is_some() {
+            mounts.push(json!({"name": "data", "mountPath": "/data"}));
+        }
+        if !mounts.is_empty() {
+            container["volumeMounts"] = json!(mounts);
+        }
+        let mut pod = json!({"serviceAccountName": self.coordinator_account(), "terminationGracePeriodSeconds": 30, "securityContext": run_as(s.coordinator_storage.is_some()), "containers": [container]});
         if !volumes.is_empty() {
             pod["volumes"] = json!(volumes);
+        }
+        if let Some(st) = &s.coordinator_storage {
+            // Coordinators on different nodes, when there are: a node lost
+            // takes one.
+            pod["affinity"] = json!({"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
+                {"weight": 100, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}},
+            ]}});
+            let mut claim = json!({"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": st.size}}});
+            if let Some(c) = &st.storage_class_name {
+                claim["storageClassName"] = json!(c);
+            }
+            return json!({
+                "apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": self.meta(&format!("{}-coordinator", self.name), labels.clone()),
+                "spec": {
+                    "serviceName": self.name,
+                    "replicas": replicas,
+                    "podManagementPolicy": "Parallel",
+                    "selector": {"matchLabels": labels},
+                    // A volume is one coordinator's, so one restarts before
+                    // the next starts: with two or more, the others serve.
+                    "updateStrategy": {"type": "RollingUpdate"},
+                    "minReadySeconds": 2,
+                    // A coordinator's history is kept when the cluster or
+                    // the coordinator goes.
+                    "persistentVolumeClaimRetentionPolicy": {"whenDeleted": "Retain", "whenScaled": "Retain"},
+                    "template": {
+                        "metadata": {"labels": labels, "annotations": {CONFIG: s.coordinator_config()}},
+                        "spec": pod,
+                    },
+                    "volumeClaimTemplates": [{"metadata": {"name": "data", "labels": labels}, "spec": claim}],
+                },
+            });
         }
         json!({
             "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&format!("{}-coordinator", self.name), labels.clone()),
@@ -1040,8 +1118,30 @@ impl Cluster {
         ns_path(&self.ns, "apps/v1", "statefulsets")
     }
 
+    /// The coordinators' object as the spec has them: a StatefulSet with
+    /// `coordinatorStorage`, else a Deployment.
     fn coordinator_path(&self) -> String {
-        format!("{}/{}-coordinator", ns_path(&self.ns, "apps/v1", "deployments"), self.name)
+        self.coordinator_path_of(self.spec.coordinator_storage.is_some())
+    }
+
+    /// The coordinators' object of the other kind: the one they ran as
+    /// before `coordinatorStorage` was given or taken away, which stops
+    /// once the new ones serve.
+    fn old_coordinator_path(&self) -> String {
+        self.coordinator_path_of(self.spec.coordinator_storage.is_none())
+    }
+
+    fn coordinator_path_of(&self, stateful: bool) -> String {
+        format!("{}/{}-coordinator", ns_path(&self.ns, "apps/v1", if stateful { "statefulsets" } else { "deployments" }), self.name)
+    }
+
+    /// The coordinators' object: of the kind the spec has them, else of
+    /// the other (they run so until they restart with the new settings).
+    async fn coordinator_object(&self) -> Result<Option<Json>, String> {
+        match self.kube.get(&self.coordinator_path()).await? {
+            Some(d) => Ok(Some(d)),
+            None => self.kube.get(&self.old_coordinator_path()).await,
+        }
     }
 
     /// The coordinators' URL, through their Service.
@@ -1051,7 +1151,18 @@ impl Cluster {
 
     /// The token the servers require, from the Secret.
     pub async fn admin_token(&self) -> Result<Option<String>, String> {
-        let Some(s) = &self.spec.token_secret else { return Ok(None) };
+        self.secret_token(self.spec.token_secret.as_deref()).await
+    }
+
+    /// The cluster's own token, from `clusterTokenSecret`: the operator adds
+    /// servers with it (audit CLU-3). `None` without one.
+    pub async fn cluster_token(&self) -> Result<Option<String>, String> {
+        self.secret_token(self.spec.cluster_token_secret.as_deref()).await
+    }
+
+    /// The key `token` of Secret `s`.
+    async fn secret_token(&self, s: Option<&str>) -> Result<Option<String>, String> {
+        let Some(s) = s else { return Ok(None) };
         let secret = self.kube.get(&format!("{}/{s}", ns_path(&self.ns, "v1", "secrets"))).await?.ok_or_else(|| format!("no Secret {s} in {}", self.ns))?;
         let b64 = secret["data"]["token"].as_str().ok_or_else(|| format!("Secret {s} has no key token"))?;
         let bytes = base64_decode(b64).ok_or_else(|| format!("Secret {s}: token is not base64"))?;
@@ -1078,6 +1189,22 @@ fn run_as(volume: bool) -> Json {
         s["fsGroupChangePolicy"] = json!("OnRootMismatch");
     }
     s
+}
+
+/// How far the coordinators' Deployment or StatefulSet is in restarting
+/// them with its template.
+fn rolled_of(d: &Json) -> super::Rolled {
+    let st = &d["status"];
+    let n = |j: &Json| j.as_u64().unwrap_or(0);
+    let (want, updated, ready, all) = (n(&d["spec"]["replicas"]), n(&st["updatedReplicas"]), n(&st["readyReplicas"]), n(&st["replicas"]));
+    let seen = n(&st["observedGeneration"]) >= n(&d["metadata"]["generation"]);
+    // A StatefulSet counts no unavailable ones: its revisions say whether
+    // every pod runs the template.
+    let current = d["kind"] != "StatefulSet" || st["currentRevision"] == st["updateRevision"];
+    let done = seen && updated == want && ready >= want && all == want && n(&st["unavailableReplicas"]) == 0 && current;
+    let old = all.saturating_sub(updated);
+    let text = format!("{updated} of {want} restarted, {ready} ready{}", if old > 0 { format!(", {old} older still serving") } else { String::new() });
+    super::Rolled { done, text }
 }
 
 const SERVER_SCRIPT: &str = r#"set -e
@@ -1152,10 +1279,27 @@ fn secret_env(name: &str, secret: &str) -> Json {
 /// What an app beside the cluster holds of its own
 /// ([`super::credentials`]): a key limited to its tables, and a token. What
 /// it does not, it takes from the admin token, as before such keys.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Creds {
     pub key: bool,
     pub token: bool,
+    /// The id of the key the Secret holds ([`super::credentials::KEY_ID`]):
+    /// on the pod template, so that a new key rolls the app's pod, which
+    /// reads its key from the environment once (audit N-D4).
+    pub key_id: Option<String>,
+    /// No key yet, because making one failed ([`super::credentials::PENDING`]):
+    /// the app is given no key rather than the admin token (audit X-E2).
+    pub pending: bool,
+}
+
+/// `d`, an app's Deployment, its pod template marked with the id of the
+/// key it is given: a key made again (its tables changed, or it was lost)
+/// changes the template, and the Deployment rolls the pod onto it.
+pub fn rolled(mut d: Json, creds: &Creds) -> Json {
+    if let (true, Some(id)) = (creds.key, &creds.key_id) {
+        d["spec"]["template"]["metadata"]["annotations"][super::credentials::KEY_ID] = json!(id);
+    }
+    d
 }
 
 impl Cluster {
@@ -1173,6 +1317,16 @@ impl Cluster {
         super::upgrade::apps_image(u, &state, image)
     }
 
+    /// The digest the app engine's Deployment runs (as its template names
+    /// it) and whether it is ready on it: rolled out to every pod, and
+    /// every pod available. None when it is paused, names no digest, or
+    /// cannot be read.
+    async fn apps_engine(&self) -> Option<(String, bool)> {
+        let path = format!("{}/{}", ns_path(&self.ns, "apps/v1", "deployments"), self.apps_name());
+        let d = self.kube.get(&path).await.ok()??;
+        engine_state(&d)
+    }
+
     /// An app's two variables, its cluster `key` and its own API's
     /// `token`: from its credentials Secret, or the admin token.
     fn app_env(&self, app: &str, creds: Creds, key: &str, token: &str) -> Vec<Json> {
@@ -1181,6 +1335,7 @@ impl Cluster {
         let mut env = Vec::new();
         match (creds.key, admin) {
             (true, _) => env.push(own(key, super::credentials::KEY)),
+            (false, _) if creds.pending => {}
             (false, Some(t)) => env.push(secret_env(key, t)),
             (false, None) => {}
         }
@@ -1197,7 +1352,9 @@ impl Cluster {
         let s = self.kube.get(&self.credentials_path(app)).await?;
         let e = s.as_ref().map(super::credentials::entries).unwrap_or_default();
         let has = |k: &str| e.get(k).is_some_and(|v| !v.is_empty());
-        Ok(Creds { key: has(super::credentials::KEY) && super::credentials::keyed(spec, app), token: has(super::credentials::TOKEN) })
+        let key_id = s.as_ref().and_then(|s| s["metadata"]["annotations"][super::credentials::KEY_ID].as_str()).map(str::to_string);
+        let pending = super::credentials::keyed(spec, app) && s.as_ref().is_some_and(|s| s["metadata"]["annotations"][super::credentials::PENDING] == "true");
+        Ok(Creds { key: has(super::credentials::KEY) && super::credentials::keyed(spec, app), token: has(super::credentials::TOKEN), key_id, pending })
     }
 
     fn credentials_path(&self, app: &str) -> String {
@@ -1286,7 +1443,13 @@ impl Platform for Cluster {
     }
 
     async fn coordinator(&self) -> Result<Option<(Vec<Vec<String>>, usize)>, String> {
-        let Some(d) = self.kube.get(&self.coordinator_path()).await? else { return Ok(None) };
+        let Some(d) = self.coordinator_object().await? else { return Ok(None) };
+        // Coordinators of both kinds (the spec's were made while the others
+        // served, by a restart or a change of their list): once the spec's
+        // all serve, the others stop, whichever step made them.
+        if d["kind"] == if self.spec.coordinator_storage.is_some() { "StatefulSet" } else { "Deployment" } && rolled_of(&d).done && self.kube.get(&self.old_coordinator_path()).await?.is_some() {
+            self.kube.delete(&self.old_coordinator_path()).await?;
+        }
         let args: Vec<&str> = d["spec"]["template"]["spec"]["containers"][0]["args"].as_array().into_iter().flatten().filter_map(Json::as_str).collect();
         let list = args.iter().position(|a| *a == "--shards").and_then(|k| args.get(k + 1)).copied().unwrap_or_default();
         let shards = list.split(',').filter(|s| !s.is_empty()).map(|s| s.split('|').map(str::to_string).collect()).collect();
@@ -1294,7 +1457,9 @@ impl Platform for Cluster {
     }
 
     async fn set_coordinator(&self, shards: &[Vec<String>], replicas: usize) -> Result<(), String> {
-        self.kube.apply(&self.coordinator_path(), &self.coordinator_deployment(shards, replicas)).await.map(|_| ())
+        // Those of the other kind serve on until these do: the restart
+        // waits for these, then stops them ([`Self::coordinators_rolled`]).
+        self.kube.apply(&self.coordinator_path(), &self.coordinator_workload(shards, replicas)).await.map(|_| ())
     }
 
     async fn follow(&self, spec: &Spec) -> Result<(), String> {
@@ -1320,25 +1485,25 @@ impl Platform for Cluster {
     async fn crawler(&self, spec: &Spec) -> Result<(), String> {
         let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
         let creds = self.creds(spec, super::crawler::APP).await?;
-        self.beside(self.crawler_paths(), spec.crawler.as_ref().map(|c| (with.crawler_service(), with.crawler_deployment(c, creds)))).await
+        self.beside(self.crawler_paths(), spec.crawler.as_ref().map(|c| (with.crawler_service(), rolled(with.crawler_deployment(c, creds.clone()), &creds)))).await
     }
 
     async fn sheets(&self, spec: &Spec) -> Result<(), String> {
         let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
         let creds = self.creds(spec, super::sheets::APP).await?;
-        self.beside(self.app_paths(&self.sheets_name()), spec.sheets.as_ref().map(|c| (with.sheets_service(), with.sheets_deployment(c, creds)))).await
+        self.beside(self.app_paths(&self.sheets_name()), spec.sheets.as_ref().map(|c| (with.sheets_service(), rolled(with.sheets_deployment(c, creds.clone()), &creds)))).await
     }
 
     async fn netops(&self, spec: &Spec) -> Result<(), String> {
         let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
         let creds = self.creds(spec, super::netops::APP).await?;
-        self.beside(self.app_paths(&self.netops_name()), spec.netops.as_ref().map(|c| (with.netops_service(), with.netops_deployment(c, creds)))).await
+        self.beside(self.app_paths(&self.netops_name()), spec.netops.as_ref().map(|c| (with.netops_service(), rolled(with.netops_deployment(c, creds.clone()), &creds)))).await
     }
 
     async fn chloectx(&self, spec: &Spec) -> Result<(), String> {
         let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
         let creds = self.creds(spec, super::chloectx::APP).await?;
-        self.beside(self.app_paths(&self.chloectx_name()), spec.chloectx.as_ref().map(|c| (with.chloectx_service(), with.chloectx_deployment(c, creds)))).await
+        self.beside(self.app_paths(&self.chloectx_name()), spec.chloectx.as_ref().map(|c| (with.chloectx_service(), rolled(with.chloectx_deployment(c, creds.clone()), &creds)))).await
     }
 
     async fn apps(&self, spec: &Spec) -> Result<(), String> {
@@ -1357,7 +1522,7 @@ impl Platform for Cluster {
         // Published apps' load balancer first: an sslip domain is its address.
         let address = with.apps_public(spec.apps.as_ref()).await?;
         let domain = spec.apps.as_ref().and_then(|a| a.publish.as_ref()).and_then(|p| p.domain(address.as_deref()));
-        self.beside(self.app_paths(&self.apps_name()), spec.apps.as_ref().map(|a| (with.apps_service(a), with.apps_deployment_at(a, domain.as_deref(), creds)))).await
+        self.beside(self.app_paths(&self.apps_name()), spec.apps.as_ref().map(|a| (with.apps_service(a), rolled(with.apps_deployment_at(a, domain.as_deref(), creds.clone()), &creds)))).await
     }
 
     async fn app_credentials(&self, spec: &Spec, admin: &super::Admin) -> Result<(), String> {
@@ -1371,7 +1536,7 @@ impl Platform for Cluster {
             let path = self.credentials_path(app);
             let Some(have) = self.kube.get(&path).await? else { continue };
             if let Some(id) = have["metadata"]["annotations"][cr::KEY_ID].as_str() {
-                admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{id}"), None).await.or_else(|e| if e.contains("404") { Ok(Json::Null) } else { Err(e) })?;
+                cr::revoke_own(admin, app, id).await?;
             }
             match self.kube.delete(&path).await {
                 Err(e) if forbidden(&e) => tracing::warn!(cluster = %self.name, app, error = %e, "{OLD_ROLE}: the Secret of an app taken out of the spec is left (its key is revoked)"),
@@ -1415,12 +1580,29 @@ impl Platform for Cluster {
             let mut key = e.get(cr::KEY).filter(|k| !k.is_empty()).cloned();
             let mut id = old_id.clone();
             let keyed = cr::keyed(spec, app);
+            let mut pending = false;
             if keyed && (key.is_none() || old_hash.as_deref() != Some(hash.as_str())) {
                 match cr::make_key(admin, app, &tables, old_id.as_deref()).await {
                     Ok((i, k)) => (id, key) = (Some(i), Some(k)),
-                    Err(e) => {
+                    // Coordinators from before keys limited to tables: the
+                    // admin token, as before such keys.
+                    Err(cr::KeyError::BeforeLimits(e)) => {
                         failed.push(format!("{app}: {e}"));
                         (id, key) = (None, None);
+                    }
+                    // A timeout, a 5xx, coordinators rolling: make_key makes
+                    // the new key before it revokes the old one, so the old
+                    // one still works. The Secret is left as it is, its old
+                    // key and tables' hash with it (the pod does not roll),
+                    // and the next reconcile tries again (audit X-E2).
+                    Err(cr::KeyError::Failed(e)) => {
+                        failed.push(format!("{app}: {e} (it keeps the key it has; tried again at the next reconcile)"));
+                        if key.is_some() {
+                            continue;
+                        }
+                        // No key yet: none until one is made, never the
+                        // admin token.
+                        (id, pending) = (None, true);
                     }
                 }
             }
@@ -1428,11 +1610,12 @@ impl Platform for Cluster {
                 // The crawler that grows the cluster: the admin token is
                 // its key, and the one it had is revoked.
                 if let Some(i) = &old_id {
-                    admin.call(reqwest::Method::DELETE, &format!("/v1/admin/keys/{i}"), None).await.or_else(|e| if e.contains("404") { Ok(Json::Null) } else { Err(e) })?;
+                    cr::revoke_own(admin, app, i).await?;
                 }
                 (id, key) = (None, None);
             }
-            let unchanged = have.is_some() && e.get(cr::TOKEN) == Some(&token) && e.get(cr::KEY) == key.as_ref() && old_id == id && (old_hash.as_deref() == Some(hash.as_str()) || key.is_none());
+            let was_pending = have.as_ref().is_some_and(|h| h["metadata"]["annotations"][cr::PENDING] == "true");
+            let unchanged = have.is_some() && e.get(cr::TOKEN) == Some(&token) && e.get(cr::KEY) == key.as_ref() && old_id == id && (old_hash.as_deref() == Some(hash.as_str()) || key.is_none()) && was_pending == pending;
             if unchanged {
                 continue;
             }
@@ -1447,18 +1630,21 @@ impl Platform for Cluster {
                 notes.insert(cr::KEY_ID.into(), json!(i));
                 notes.insert(cr::TABLES.into(), json!(hash));
             }
+            if pending {
+                notes.insert(cr::PENDING.into(), json!("true"));
+            }
             meta["annotations"] = Json::Object(notes);
             self.kube.apply(&path, &json!({"apiVersion": "v1", "kind": "Secret", "metadata": meta, "type": "Opaque", "data": data})).await?;
             tracing::info!(app, keyed = key.is_some(), "the app's credentials changed");
         }
         match failed.is_empty() {
             true => Ok(()),
-            false => Err(format!("an app keeps the admin token for now: {}", failed.join("; "))),
+            false => Err(format!("an app's own key was not made: {}", failed.join("; "))),
         }
     }
 
     async fn coordinator_config(&self) -> Result<Option<String>, String> {
-        let Some(d) = self.kube.get(&self.coordinator_path()).await? else { return Ok(None) };
+        let Some(d) = self.coordinator_object().await? else { return Ok(None) };
         Ok(Some(d["spec"]["template"]["metadata"]["annotations"][CONFIG].as_str().unwrap_or_default().to_string()))
     }
 
@@ -1526,14 +1712,19 @@ impl Platform for Cluster {
 
     async fn coordinators_rolled(&self) -> Result<super::Rolled, String> {
         let Some(d) = self.kube.get(&self.coordinator_path()).await? else { return Ok(super::Rolled { done: true, text: "no coordinators".into() }) };
-        let st = &d["status"];
-        let n = |j: &Json| j.as_u64().unwrap_or(0);
-        let (want, updated, ready, all) = (n(&d["spec"]["replicas"]), n(&st["updatedReplicas"]), n(&st["readyReplicas"]), n(&st["replicas"]));
-        let seen = n(&st["observedGeneration"]) >= n(&d["metadata"]["generation"]);
-        let done = seen && updated == want && ready >= want && all == want && n(&st["unavailableReplicas"]) == 0;
-        let old = all.saturating_sub(updated);
-        let text = format!("{updated} of {want} restarted, {ready} ready{}", if old > 0 { format!(", {old} older still serving") } else { String::new() });
-        Ok(super::Rolled { done, text })
+        let mut rolled = rolled_of(&d);
+        // The coordinators of the other kind (before coordinatorStorage was
+        // given or taken away) stop once these all serve.
+        if self.kube.get(&self.old_coordinator_path()).await?.is_some() {
+            if rolled.done {
+                self.kube.delete(&self.old_coordinator_path()).await?;
+                rolled.text = format!("{}; the coordinators of before stop", rolled.text);
+            } else {
+                rolled.text = format!("{}; the coordinators of before serve until then", rolled.text);
+            }
+            rolled.done = false;
+        }
+        Ok(rolled)
     }
 
     async fn trouble(&self, spec: &Spec) -> Result<Vec<super::Trouble>, String> {
@@ -1894,6 +2085,21 @@ async fn rolled_back(kube: &Kube, c: &Json, spec: &Spec, history: &Json, f: &sup
     Ok(format!("rolling back to version {n}: the version failed ({}): {}", f.step, f.text))
 }
 
+/// What an app engine Deployment runs and whether it is ready on it
+/// ([`Cluster::apps_engine`]).
+fn engine_state(d: &Json) -> Option<(String, bool)> {
+    let want = d["spec"]["replicas"].as_u64().unwrap_or(1);
+    if want == 0 {
+        return None;
+    }
+    let image = d["spec"]["template"]["spec"]["containers"].as_array()?.iter().find(|c| c["name"] == "apps")?["image"].as_str()?;
+    let digest = super::upgrade::digest_of(image)?;
+    let st = &d["status"];
+    let seen = st["observedGeneration"].as_u64().unwrap_or(0) >= d["metadata"]["generation"].as_u64().unwrap_or(0);
+    let ready = seen && st["updatedReplicas"].as_u64().unwrap_or(0) >= want && st["availableReplicas"].as_u64().unwrap_or(0) >= want && st["replicas"].as_u64().unwrap_or(0) <= want;
+    Some((digest, ready))
+}
+
 /// The upgrader's step for a cluster ([`super::upgrade`]): every
 /// `checkMinutes` it asks the registry what the followed tag names, and
 /// with `mode: on` rolls a new image out (by its digest) once the cluster
@@ -1940,7 +2146,9 @@ pub async fn upgraded(cluster: &Cluster, c: &Json, out: &Outcome, rejected: Opti
                 Ok(i) => {
                     if s.apps_track != tag || s.apps.as_ref().is_none_or(|l| l.digest != i.digest) {
                         let runs = if u.mode == Mode::On { "; the app engine runs it" } else { "" };
-                        s.note(now, format!("{tag} names {}{runs}", said(&i)));
+                        // Said as the app engine's (LIV-15): under the server's
+                        // versions, "latest names <commit>" read as the servers'.
+                        s.note(now, format!("App engine image: {tag} names {}{runs}", said(&i)));
                     }
                     s.apps = Some(i);
                     s.apps_track = tag;
@@ -1955,6 +2163,13 @@ pub async fn upgraded(cluster: &Cluster, c: &Json, out: &Outcome, rejected: Opti
     }
     if let Ok(r) = cluster.running_images().await {
         s.running = r;
+    }
+    // The app engine on a new image of its tag: kept once ready, rejected
+    // when it does not come up in time (X-E6).
+    if u.mode == Mode::On && s.apps.is_some() {
+        if let Some((deployed, ready)) = cluster.apps_engine().await {
+            s.engine_seen(&deployed, ready, now, super::upgrade::engine_verify_ms(spec.rollout.verify_seconds));
+        }
     }
     s.available = available(&s, &spec.image);
     let ready = out.phase == super::Phase::Ready && out.rollout.failed.is_none();
@@ -2035,7 +2250,7 @@ fn forbidden(e: &str) -> bool {
 }
 
 /// What an operator is told when its ClusterRole may not make Secrets.
-const OLD_ROLE: &str = "the operator's ClusterRole may not make, change or delete Secrets (it is from an older operator.yaml), so apps get no keys and tokens of their own; apply deploy/k8s/operator/operator.yaml again to give it";
+const OLD_ROLE: &str = "the operator may not make, change or delete Secrets in this namespace, so apps get no keys and tokens of their own: bind the ClusterRole strata-operator-secrets here (kubectl -n NS create rolebinding strata-operator-secrets --clusterrole=strata-operator-secrets --serviceaccount=strata-system:strata-operator; operator.yaml binds it in strata), or apply deploy/k8s/operator/operator.yaml again if it is from before 0.3";
 
 /// Applies the objects every cluster has, and the coordinators' client.
 async fn common(c: &Cluster) -> Result<Admin, String> {
@@ -2053,7 +2268,7 @@ async fn common(c: &Cluster) -> Result<Admin, String> {
             r => drop(r?),
         }
     }
-    Ok(Admin::new(&c.admin_url(), c.admin_token().await?))
+    Ok(Admin::new(&c.admin_url(), c.admin_token().await?).joining_with(c.cluster_token().await?))
 }
 
 #[cfg(test)]
@@ -2066,6 +2281,25 @@ mod tests {
     }
 
 
+    /// N-D4: an app's pod template names the id of the key its Secret
+    /// holds, so that a new key (its tables changed) rolls the pod, which
+    /// reads the key from its environment once; the admin token's pod is
+    /// not marked.
+    #[test]
+    fn a_new_app_key_rolls_its_pod() {
+        let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "sheets": {}}));
+        let with = |id: Option<&str>| {
+            let creds = Creds { key: true, token: true, key_id: id.map(String::from), pending: false };
+            rolled(c.sheets_deployment(c.spec.sheets.as_ref().unwrap(), creds.clone()), &creds)
+        };
+        let (a, b) = (with(Some("k1")), with(Some("k2")));
+        assert_eq!(a["spec"]["template"]["metadata"]["annotations"][super::super::credentials::KEY_ID], "k1");
+        assert_ne!(super::super::short_hash(&a), super::super::short_hash(&b), "a new key changes the Deployment");
+        assert_eq!(super::super::short_hash(&a), super::super::short_hash(&with(Some("k1"))));
+        let admin = rolled(c.sheets_deployment(c.spec.sheets.as_ref().unwrap(), Creds::default()), &Creds { key_id: Some("k1".into()), ..Default::default() });
+        assert!(admin["spec"]["template"]["metadata"]["annotations"].is_null(), "{admin}");
+    }
+
     /// Each app's own key and token, from its credentials Secret, once
     /// the operator made them; the admin token until then; the crawler
     /// that grows keeps the admin token as its key.
@@ -2074,24 +2308,24 @@ mod tests {
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "crawler": {"grow": false}, "sheets": {}, "chloectx": {}, "apps": {}}));
         let env = |d: &Json| d["spec"]["template"]["spec"]["containers"][0]["env"].clone();
         let from = |d: &Json, name: &str| env(d).as_array().unwrap().iter().find(|e| e["name"] == name).map(|e| e["valueFrom"]["secretKeyRef"].clone());
-        let own = Creds { key: true, token: true };
-        let d = c.sheets_deployment(c.spec.sheets.as_ref().unwrap(), own);
+        let own = Creds { key: true, token: true, key_id: None, pending: false };
+        let d = c.sheets_deployment(c.spec.sheets.as_ref().unwrap(), own.clone());
         assert_eq!(from(&d, "STRATA_KEY"), Some(json!({"name": "orders-sheets-credentials", "key": "key"})));
         assert_eq!(from(&d, "STRATA_SHEETS_TOKEN"), Some(json!({"name": "orders-sheets-credentials", "key": "token"})));
         assert!(!env(&d).to_string().contains("\"admin\""), "{}", env(&d));
         let d = c.sheets_deployment(c.spec.sheets.as_ref().unwrap(), Creds::default());
         assert_eq!(from(&d, "STRATA_KEY"), Some(json!({"name": "admin", "key": "token"})));
-        let d = c.crawler_deployment(c.spec.crawler.as_ref().unwrap(), Creds { key: false, token: true });
+        let d = c.crawler_deployment(c.spec.crawler.as_ref().unwrap(), Creds { key: false, token: true, key_id: None, pending: false });
         assert_eq!(from(&d, "STRATA_KEY"), Some(json!({"name": "admin", "key": "token"})));
         assert_eq!(from(&d, "STRATA_CRAWL_TOKEN"), Some(json!({"name": "orders-crawler-credentials", "key": "token"})));
-        let d = c.chloectx_deployment(c.spec.chloectx.as_ref().unwrap(), own);
+        let d = c.chloectx_deployment(c.spec.chloectx.as_ref().unwrap(), own.clone());
         assert_eq!(from(&d, "CHLOEDB_KEY"), Some(json!({"name": "orders-chloectx-credentials", "key": "key"})));
         assert_eq!(from(&d, "CHLOECTX_APP_TOKEN"), Some(json!({"name": "orders-chloectx-credentials", "key": "token"})));
-        let d = c.apps_deployment(c.spec.apps.as_ref().unwrap(), own);
+        let d = c.apps_deployment(c.spec.apps.as_ref().unwrap(), own.clone());
         assert_eq!(from(&d, "STRATA_TOKEN"), Some(json!({"name": "orders-apps-credentials", "key": "key"})));
         assert_eq!(from(&d, "STRATA_APP_TOKEN"), Some(json!({"name": "orders-apps-credentials", "key": "token"})));
         // The coordinators read each app's token from a folder of them.
-        let co = c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1);
+        let co = c.coordinator_workload(&[vec!["http://a:7701".into()]], 1);
         let pod = &co["spec"]["template"]["spec"];
         let sources = pod["volumes"][0]["projected"]["sources"].as_array().unwrap();
         assert_eq!(sources.len(), 4);
@@ -2100,7 +2334,7 @@ mod tests {
         assert!(from(&co, "STRATA_APP_TOKEN").is_some() && env(&co).to_string().contains("STRATA_APP_TOKEN_DIR"));
         // A cluster without apps mounts nothing.
         let none = cluster(json!({"demo": 10, "tokenSecret": "admin"}));
-        assert!(none.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["volumes"].is_null());
+        assert!(none.coordinator_workload(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["volumes"].is_null());
         // base64 both ways.
         for t in ["", "a", "ab", "abc", "sk_0a1b_00ff"] {
             assert_eq!(base64_decode(&base64_encode(t.as_bytes())).unwrap(), t.as_bytes());
@@ -2168,11 +2402,11 @@ mod tests {
         assert_eq!(s["spec"]["ports"][0]["port"], 7800);
         // The coordinators list it, with the token it takes; the servers
         // do not restart for it, the coordinators do.
-        let coord = c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1);
+        let coord = c.coordinator_workload(&[vec!["http://a:7701".into()]], 1);
         let env = coord["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
         assert!(env.iter().any(|e| e["name"] == "STRATA_APPS" && e["value"] == "crawler=http://orders-crawler:7800"));
         assert!(env.iter().any(|e| e["name"] == "STRATA_APP_TOKEN" && e["valueFrom"]["secretKeyRef"]["name"] == "admin"));
-        let plain = none.coordinator_deployment(&[vec!["http://a:7701".into()]], 1);
+        let plain = none.coordinator_workload(&[vec!["http://a:7701".into()]], 1);
         assert!(!plain["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().iter().any(|e| e["name"] == "STRATA_APPS"));
         assert_eq!(c.spec.server_config(), none.spec.server_config());
         assert_ne!(c.spec.coordinator_config(), none.spec.coordinator_config());
@@ -2201,7 +2435,7 @@ mod tests {
         // The admin token until the app has its own key and token.
         assert_eq!(secret(&d, "CHLOEDB_KEY"), Some(json!({"name": "admin", "key": "token"})));
         assert_eq!(secret(&d, "CHLOEDB_NETOPS_TOKEN"), Some(json!({"name": "admin", "key": "token"})));
-        let own = c.netops_deployment(n, Creds { key: true, token: true });
+        let own = c.netops_deployment(n, Creds { key: true, token: true, key_id: None, pending: false });
         assert_eq!(secret(&own, "CHLOEDB_KEY"), Some(json!({"name": "orders-netops-credentials", "key": "key"})));
         assert_eq!(secret(&own, "CHLOEDB_NETOPS_TOKEN"), Some(json!({"name": "orders-netops-credentials", "key": "token"})));
         let s = c.netops_service();
@@ -2235,7 +2469,7 @@ mod tests {
         assert_eq!(s["metadata"]["name"], "orders-sheets");
         assert_eq!(s["spec"]["selector"], d["spec"]["selector"]["matchLabels"]);
         assert_eq!(s["spec"]["ports"][0]["port"], 7820);
-        let env_of = |c: &Cluster| c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+        let env_of = |c: &Cluster| c.coordinator_workload(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
         let apps = |c: &Cluster| env_of(c).iter().find(|e| e["name"] == "STRATA_APPS").map(|e| e["value"].as_str().unwrap().to_string());
         assert_eq!(apps(&c).as_deref(), Some("sheets=http://orders-sheets:7820"));
         let both = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "crawler": {}, "sheets": {}}));
@@ -2287,7 +2521,7 @@ mod tests {
         assert_eq!(s["metadata"]["name"], "orders-chloectx");
         assert_eq!(s["spec"]["selector"], d["spec"]["selector"]["matchLabels"]);
         assert_eq!(s["spec"]["ports"][0]["port"], 7760);
-        let env = c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+        let env = c.coordinator_workload(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
         let apps = env.iter().find(|e| e["name"] == "STRATA_APPS").and_then(|e| e["value"].as_str()).unwrap_or_default().to_string();
         assert_eq!(apps, "sheets=http://orders-sheets:7820,chloectx=http://orders-chloectx:7760");
         // The servers do not restart for it.
@@ -2306,6 +2540,25 @@ mod tests {
         assert_eq!(d["spec"]["template"]["spec"]["containers"][0]["args"][8], "hash:256");
         let paused = cluster(json!({"tokenSecret": "admin", "chloectx": {"paused": true}}));
         assert_eq!(paused.chloectx_deployment(paused.spec.chloectx.as_ref().unwrap(), Creds::default())["spec"]["replicas"], 0);
+    }
+
+    #[test]
+    fn the_app_engines_deployment_is_ready_once_its_new_pod_is_available() {
+        let d = format!("sha256:{}", "e".repeat(64));
+        let dep = |gen: u64, observed: u64, updated: u64, available: u64, replicas: u64| {
+            json!({"metadata": {"generation": gen}, "spec": {"replicas": 1, "template": {"spec": {"containers": [{"name": "caddy", "image": "caddy:2"}, {"name": "apps", "image": format!("ghcr.io/x/apps@{d}")}]}}},
+                   "status": {"observedGeneration": observed, "updatedReplicas": updated, "availableReplicas": available, "replicas": replicas}})
+        };
+        assert_eq!(engine_state(&dep(3, 3, 1, 1, 1)), Some((d.clone(), true)));
+        assert_eq!(engine_state(&dep(3, 2, 1, 1, 1)), Some((d.clone(), false)), "the controller has not seen the change");
+        assert_eq!(engine_state(&dep(3, 3, 1, 0, 1)), Some((d.clone(), false)), "the new pod is not ready");
+        assert_eq!(engine_state(&dep(3, 3, 0, 1, 1)), Some((d.clone(), false)), "an old pod is the one available");
+        let mut paused = dep(3, 3, 0, 0, 0);
+        paused["spec"]["replicas"] = json!(0);
+        assert_eq!(engine_state(&paused), None);
+        let mut tag = dep(3, 3, 1, 1, 1);
+        tag["spec"]["template"]["spec"]["containers"][1]["image"] = json!("ghcr.io/x/apps:latest");
+        assert_eq!(engine_state(&tag), None, "a tag: not the upgrader's");
     }
 
     #[test]
@@ -2344,7 +2597,7 @@ mod tests {
         let v = c.apps_claim(a);
         assert_eq!((&v["metadata"]["name"], &v["spec"]["resources"]["requests"]["storage"]), (&json!("orders-apps"), &json!("1Gi")));
         assert_eq!(v["metadata"]["ownerReferences"][0]["uid"], "u-1", "it goes with the cluster");
-        let env_of = |c: &Cluster| c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+        let env_of = |c: &Cluster| c.coordinator_workload(&[vec!["http://a:7701".into()]], 1)["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
         let apps = env_of(&c).iter().find(|e| e["name"] == "STRATA_APPS").map(|e| e["value"].clone());
         assert_eq!(apps, Some(json!("apps=http://orders-apps:7730")));
         let plain = cluster(json!({"demo": 10, "tokenSecret": "admin", "apps": {"image": "registry.example/apps:1", "paused": true, "storage": {"size": "2Gi", "storageClassName": "fast"}}}));
@@ -2430,7 +2683,7 @@ mod tests {
     #[test]
     fn the_coordinators_are_given_every_shards_servers() {
         let c = cluster(json!({"demo": 10, "coordinatorArgs": ["--hedge-ms", "40"]}));
-        let d = c.coordinator_deployment(&[vec!["a".into(), "b".into()], vec!["c".into()]], 2);
+        let d = c.coordinator_workload(&[vec!["a".into(), "b".into()], vec!["c".into()]], 2);
         let args = &d["spec"]["template"]["spec"]["containers"][0]["args"];
         assert_eq!(args[1], "a|b,c");
         assert!(args.as_array().unwrap().contains(&json!("--no-token")));
@@ -2462,6 +2715,92 @@ mod tests {
         assert_eq!(binding["subjects"][0], json!({"kind": "ServiceAccount", "name": "orders-coordinator", "namespace": "db"}));
     }
 
+    /// LIV-2: the coordinators kept their audit log, events, alerts,
+    /// statement statistics and table growth in memory only, and every
+    /// rollout forgot them. With `coordinatorStorage` each keeps them on a
+    /// volume of its own; without it they run as before, to the hash.
+    #[test]
+    fn coordinators_with_storage_keep_their_history_on_a_volume_each() {
+        let plain = cluster(json!({"demo": 10}));
+        let d = plain.coordinator_workload(&[vec!["a".into()]], 2);
+        assert_eq!(d["kind"], "Deployment");
+        assert!(d["spec"]["template"]["spec"]["containers"][0]["args"].as_array().unwrap().iter().all(|a| a != "--log-store" && a != "--audit-log"), "{d}");
+        assert_eq!(plain.coordinator_path(), "/apis/apps/v1/namespaces/db/deployments/orders-coordinator");
+        let c = cluster(json!({"demo": 10, "coordinators": 2, "coordinatorStorage": {"size": "3Gi", "storageClassName": "fast"}, "coordinatorArgs": ["--alerts", "/data/mine.json"]}));
+        c.spec.check().unwrap();
+        assert_ne!(c.spec.coordinator_config(), plain.spec.coordinator_config(), "giving it restarts the coordinators");
+        let s = c.coordinator_workload(&[vec!["a".into()]], 2);
+        assert_eq!((s["kind"].as_str(), s["metadata"]["name"].as_str()), (Some("StatefulSet"), Some("orders-coordinator")));
+        let args: Vec<&str> = s["spec"]["template"]["spec"]["containers"][0]["args"].as_array().unwrap().iter().filter_map(Json::as_str).collect();
+        let after = |flag: &str| args.iter().position(|a| *a == flag).map(|k| args[k + 1]);
+        assert_eq!((after("--log-store"), after("--audit-log"), after("--alerts")), (Some("/data/logs"), Some("/data/audit.jsonl"), Some("/data/mine.json")), "{args:?}");
+        assert_eq!(args.iter().filter(|a| **a == "--alerts").count(), 1, "a flag coordinatorArgs gives is not given twice");
+        let pod = &s["spec"]["template"]["spec"];
+        assert!(pod["containers"][0]["volumeMounts"].as_array().unwrap().contains(&json!({"name": "data", "mountPath": "/data"})));
+        assert_eq!(pod["securityContext"]["fsGroup"], 10001);
+        assert_eq!(s["spec"]["volumeClaimTemplates"][0]["spec"], json!({"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "3Gi"}}, "storageClassName": "fast"}));
+        assert_eq!((s["spec"]["serviceName"].as_str(), s["spec"]["replicas"].as_u64()), (Some("orders"), Some(2)));
+        assert_eq!(s["spec"]["persistentVolumeClaimRetentionPolicy"], json!({"whenDeleted": "Retain", "whenScaled": "Retain"}));
+        assert_eq!(s["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/component"], "coordinator", "the cluster's Service selects them");
+        assert_eq!((c.coordinator_path(), c.old_coordinator_path()), ("/apis/apps/v1/namespaces/db/statefulsets/orders-coordinator".to_string(), "/apis/apps/v1/namespaces/db/deployments/orders-coordinator".to_string()));
+        let bad: Spec = serde_json::from_value(json!({"demo": 1, "coordinatorStorage": {"size": "lots"}})).unwrap();
+        assert!(bad.check().unwrap_err().contains("coordinatorStorage.size"));
+        let dflt: Spec = serde_json::from_value(json!({"demo": 1, "coordinatorStorage": {}})).unwrap();
+        assert_eq!(dflt.coordinator_storage.unwrap().size, "2Gi");
+        // A StatefulSet has rolled when every pod runs its revision.
+        let st = |cur: &str| json!({"kind": "StatefulSet", "metadata": {"generation": 3}, "spec": {"replicas": 2}, "status": {"observedGeneration": 3, "replicas": 2, "readyReplicas": 2, "updatedReplicas": 2, "currentRevision": cur, "updateRevision": "b"}});
+        assert!(!rolled_of(&st("a")).done);
+        assert!(rolled_of(&st("b")).done);
+    }
+
+    /// LIV-6: a rollout's extra copy weighed as much as a shard's own, so
+    /// a copy restarting beside it landed on its peer's node as often as
+    /// not. The shard's own copies weigh twice.
+    #[test]
+    fn a_shards_own_copies_keep_apart_more_than_its_extra_copy() {
+        let c = cluster(json!({"demo": 10, "replicas": 2}));
+        let set = c.statefulset(0, 3, None);
+        let terms = set["spec"]["template"]["spec"]["affinity"]["podAntiAffinity"]["preferredDuringSchedulingIgnoredDuringExecution"].as_array().unwrap().clone();
+        assert_eq!(terms.len(), 2, "{terms:?}");
+        assert!(set["spec"]["template"]["spec"]["affinity"]["podAntiAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"].is_null(), "a cluster of one node still runs every copy");
+        let own = &terms[0];
+        assert_eq!(own["weight"], 100);
+        assert_eq!(own["podAffinityTerm"]["labelSelector"]["matchExpressions"], json!([{"key": "apps.kubernetes.io/pod-index", "operator": "In", "values": ["0", "1"]}]), "copies 0 and 1, not the extra copy 2");
+        assert_eq!(own["podAffinityTerm"]["labelSelector"]["matchLabels"]["strata.chloetech.ai/set"], "0");
+        assert_eq!((terms[1]["weight"].as_u64(), terms[1]["podAffinityTerm"]["labelSelector"]["matchExpressions"].is_null()), (Some(50), true));
+    }
+
+    /// `spec.requireCopiesApart`: the shard's own copies' term is required
+    /// of the scheduler, the set's other term still preferred. Off, the
+    /// set and the servers' settings are what they were before the option.
+    #[test]
+    fn copies_apart_can_be_required() {
+        let off = cluster(json!({"demo": 10, "replicas": 2}));
+        let on = cluster(json!({"demo": 10, "replicas": 2, "requireCopiesApart": true}));
+        let (a, b) = (off.statefulset(0, 3, None), on.statefulset(0, 3, None));
+        let anti = &b["spec"]["template"]["spec"]["affinity"]["podAntiAffinity"];
+        let required = anti["requiredDuringSchedulingIgnoredDuringExecution"].as_array().unwrap();
+        assert_eq!(required.len(), 1, "{anti}");
+        assert_eq!(required[0]["topologyKey"], "kubernetes.io/hostname");
+        assert_eq!(required[0]["labelSelector"]["matchExpressions"], json!([{"key": "apps.kubernetes.io/pod-index", "operator": "In", "values": ["0", "1"]}]), "the shard's own copies, not the extra copy");
+        let preferred = anti["preferredDuringSchedulingIgnoredDuringExecution"].as_array().unwrap();
+        assert_eq!((preferred.len(), preferred[0]["weight"].as_u64()), (1, Some(50)));
+        // Off: as before the option, in the objects and in the version.
+        let before = json!({"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
+            {"weight": 100, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": off.set_labels(0), "matchExpressions": [{"key": "apps.kubernetes.io/pod-index", "operator": "In", "values": ["0", "1"]}]}}},
+            {"weight": 50, "podAffinityTerm": {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": off.set_labels(0)}}},
+        ]}});
+        assert_eq!(a["spec"]["template"]["spec"]["affinity"], before);
+        assert!(serde_json::to_value(&off.spec).unwrap().get("requireCopiesApart").is_none());
+        assert_ne!(on.spec.version(), off.spec.version());
+        assert_ne!(on.spec.server_config(), off.spec.server_config(), "turned on, the copies restart one at a time, each placed by the rule");
+        assert_eq!(b["spec"]["template"]["metadata"]["annotations"][CONFIG], json!(on.spec.server_config()));
+        let mut j = json!({"image": off.spec.image, "imagePullPolicy": null, "args": [], "resources": null, "failoverAfterMs": off.spec.failover_after_ms, "writeAcks": off.spec.write_acks, "tokenSecret": null, "clusterTokenSecret": null});
+        assert_eq!(off.spec.server_config(), super::super::short_hash(&j), "off: the servers' settings hash as before the option");
+        j["copiesApart"] = json!("required");
+        assert_eq!(on.spec.server_config(), super::super::short_hash(&j));
+    }
+
     #[test]
     fn a_link_names_one_cluster() {
         let o = Options { api: Some("http://127.0.0.1:1".into()), ..Default::default() };
@@ -2485,13 +2824,13 @@ mod tests {
         };
         let s = c.statefulset(0, 3, Some((0, 1)));
         assert_eq!(names(&s["spec"]["template"]["spec"]["containers"][0]["env"]), [("STRATA_CLUSTER_TOKEN".to_string(), "inner".to_string())]);
-        let d = c.coordinator_deployment(&[vec!["a".into()]], 1);
+        let d = c.coordinator_workload(&[vec!["a".into()]], 1);
         let coordinator = &d["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(names(&coordinator["env"]), [("STRATA_TOKEN".to_string(), "admin".to_string()), ("STRATA_CLUSTER_TOKEN".to_string(), "inner".to_string())]);
         assert!(!coordinator["args"].as_array().unwrap().contains(&json!("--no-token")));
         // Without one, the token is everyone's, as before.
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin"}));
-        let d = c.coordinator_deployment(&[vec!["a".into()]], 1);
+        let d = c.coordinator_workload(&[vec!["a".into()]], 1);
         assert_eq!(names(&d["spec"]["template"]["spec"]["containers"][0]["env"]), [("STRATA_TOKEN".to_string(), "admin".to_string())]);
     }
 
@@ -2500,7 +2839,7 @@ mod tests {
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}, {"name": "OPENAI_API_KEY", "secret": "models", "key": "openai"}]}));
         let from = |env: &Json, name: &str| env.as_array().unwrap().iter().find(|e| e["name"] == name).map(|e| e["valueFrom"]["secretKeyRef"].clone());
         let s = c.statefulset(0, 2, Some((0, 1)));
-        let d = c.coordinator_deployment(&[vec!["a".into()]], 1);
+        let d = c.coordinator_workload(&[vec!["a".into()]], 1);
         for env in [&s["spec"]["template"]["spec"]["containers"][0]["env"], &d["spec"]["template"]["spec"]["containers"][0]["env"]] {
             assert_eq!(from(env, "ANTHROPIC_API_KEY"), Some(json!({"name": "anthropic", "key": "key"})));
             assert_eq!(from(env, "OPENAI_API_KEY"), Some(json!({"name": "models", "key": "openai"})));
@@ -2664,5 +3003,112 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert!(!seen.iter().any(|(m, p)| m == "POST" && p == "/v1/admin/keys"), "no key is made: {seen:?}");
         assert!(seen.iter().any(|(m, p)| m == "PATCH" && p.contains("/secrets/")), "{seen:?}");
+    }
+
+    /// A fake Kubernetes API that keeps the Secrets it is sent, and
+    /// coordinators whose key creation answers `keys` (status, body).
+    async fn keeping_secrets(keys: (u16, Json), have: Option<Json>) -> (String, std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Json>>>, std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>) {
+        use std::sync::{Arc, Mutex};
+        let secrets: Arc<Mutex<std::collections::BTreeMap<String, Json>>> = Arc::default();
+        let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        if let Some(h) = have {
+            secrets.lock().unwrap().insert("/api/v1/namespaces/db/secrets/orders-sheets-credentials".into(), h);
+        }
+        let (k, s2) = (secrets.clone(), seen.clone());
+        let app = axum::Router::new().fallback(move |method: axum::http::Method, uri: axum::http::Uri, body: axum::body::Bytes| {
+            let (k, s2, keys) = (k.clone(), s2.clone(), keys.clone());
+            async move {
+                let path = uri.path().to_string();
+                s2.lock().unwrap().push((method.to_string(), path.clone()));
+                let ok = |j: Json| (axum::http::StatusCode::OK, axum::Json(j));
+                match (method.as_str(), path.as_str()) {
+                    ("GET", "/v1/whoami") => ok(json!({"auth": {"app_keys": true}})),
+                    ("GET", "/v1/admin/keys") => ok(json!({"keys": [{"id": "k-old", "name": "sheets-app", "revoked_ms": null}]})),
+                    ("POST", "/v1/admin/keys") => (axum::http::StatusCode::from_u16(keys.0).unwrap(), axum::Json(keys.1)),
+                    ("GET", p) if p.contains("/secrets/") => match k.lock().unwrap().get(p) {
+                        Some(s) => ok(s.clone()),
+                        None => (axum::http::StatusCode::NOT_FOUND, axum::Json(json!({"message": "not found"}))),
+                    },
+                    (_, p) if p.contains("/secrets/") => {
+                        let j: Json = serde_json::from_slice(&body).unwrap_or(Json::Null);
+                        k.lock().unwrap().insert(p.to_string(), j.clone());
+                        ok(j)
+                    }
+                    _ => ok(json!({})),
+                }
+            }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await });
+        (url, secrets, seen)
+    }
+
+    /// Audit X-E2: when making an app's new key fails (its tables changed
+    /// while the coordinators roll, a 5xx, a timeout), the Secret keeps
+    /// its old key, key id and tables' hash, so the pod neither rolls nor
+    /// falls back to the admin token; the next reconcile tries again.
+    #[tokio::test]
+    async fn a_failed_key_keeps_the_old_one() {
+        let old = json!({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "orders-sheets-credentials", "annotations": {super::super::credentials::KEY_ID: "k-old", super::super::credentials::TABLES: "an-older-hash"}},
+            "data": {"key": base64_encode(b"sk_old"), "token": base64_encode(b"t1")}});
+        let (url, secrets, seen) = keeping_secrets((503, json!({"error": "the coordinators are rolling"})), Some(old.clone())).await;
+        let mut c = cluster(json!({"tokenSecret": "admin", "sheets": {}}));
+        c.kube = Kube::new(&Options { api: Some(url.clone()), token: Some("t".into()), ..Default::default() }).unwrap();
+        let admin = Admin::new(&url, Some("admin".into()));
+        let spec = c.spec.clone();
+        let e = c.app_credentials(&spec, &admin).await.unwrap_err();
+        assert!(e.contains("keeps the key it has"), "{e}");
+        let seen = seen.lock().unwrap().clone();
+        assert!(seen.iter().any(|(m, p)| m == "POST" && p == "/v1/admin/keys"), "a key was asked for: {seen:?}");
+        assert!(!seen.iter().any(|(m, p)| m != "GET" && p.contains("/secrets/")), "the Secret is not written: {seen:?}");
+        assert!(!seen.iter().any(|(m, _)| m == "DELETE"), "nothing is revoked: {seen:?}");
+        assert_eq!(secrets.lock().unwrap().values().next().unwrap(), &old);
+        // The app keeps its own key, and its pod's template is unchanged.
+        let creds = c.creds(&spec, super::super::sheets::APP).await.unwrap();
+        assert_eq!((creds.key, creds.key_id.as_deref(), creds.pending), (true, Some("k-old"), false));
+        let env = c.app_env(super::super::sheets::APP, creds, "STRATA_KEY", "STRATA_SHEETS_TOKEN");
+        assert!(!env.iter().any(|v| v["valueFrom"]["secretKeyRef"]["name"] == "admin"), "{env:?}");
+    }
+
+    /// Audit X-E2: an app with no key yet whose key could not be made is
+    /// given none, rather than the admin token; coordinators from before
+    /// keys limited to tables still give it the admin token.
+    #[tokio::test]
+    async fn an_app_without_a_key_gets_none_rather_than_the_admin_token() {
+        let (url, kept, _) = keeping_secrets((503, json!({"error": "the coordinators are rolling"})), None).await;
+        let mut c = cluster(json!({"tokenSecret": "admin", "sheets": {}}));
+        c.kube = Kube::new(&Options { api: Some(url.clone()), token: Some("t".into()), ..Default::default() }).unwrap();
+        let admin = Admin::new(&url, Some("admin".into()));
+        let spec = c.spec.clone();
+        assert!(c.app_credentials(&spec, &admin).await.is_err());
+        let creds = c.creds(&spec, super::super::sheets::APP).await.unwrap();
+        assert_eq!((creds.key, creds.token, creds.pending), (false, true, true));
+        let env = c.app_env(super::super::sheets::APP, creds, "STRATA_KEY", "STRATA_SHEETS_TOKEN");
+        assert!(!env.iter().any(|v| v["name"] == "STRATA_KEY"), "no key, not the admin token: {env:?}");
+        assert!(!env.iter().any(|v| v["valueFrom"]["secretKeyRef"]["name"] == "admin"), "{env:?}");
+
+        // Coordinators from before limited keys: the admin token, as before.
+        let pending = kept.lock().unwrap().values().next().cloned();
+        assert_eq!(pending.as_ref().unwrap()["metadata"]["annotations"][super::super::credentials::PENDING], "true");
+        let every = json!({"key": {"id": "k1", "tables": {}}, "secret": "sk_k1_x"});
+        let (url, _, _) = keeping_secrets((200, every), pending.clone()).await;
+        c.kube = Kube::new(&Options { api: Some(url.clone()), token: Some("t".into()), ..Default::default() }).unwrap();
+        let admin = Admin::new(&url, Some("admin".into()));
+        let e = c.app_credentials(&spec, &admin).await.unwrap_err();
+        assert!(e.contains("from before keys limited"), "{e}");
+        let creds = c.creds(&spec, super::super::sheets::APP).await.unwrap();
+        assert_eq!((creds.key, creds.pending), (false, false));
+        let env = c.app_env(super::super::sheets::APP, creds, "STRATA_KEY", "STRATA_SHEETS_TOKEN");
+        assert!(env.iter().any(|v| v["name"] == "STRATA_KEY" && v["valueFrom"]["secretKeyRef"]["name"] == "admin"), "{env:?}");
+
+        // Once a key is made, the pending mark goes.
+        let made = json!({"key": {"id": "k2", "tables": {"sheets_*": "admin"}}, "secret": "sk_k2_x"});
+        let (url, _, _) = keeping_secrets((200, made), pending).await;
+        c.kube = Kube::new(&Options { api: Some(url.clone()), token: Some("t".into()), ..Default::default() }).unwrap();
+        let admin = Admin::new(&url, Some("admin".into()));
+        c.app_credentials(&spec, &admin).await.unwrap();
+        let creds = c.creds(&spec, super::super::sheets::APP).await.unwrap();
+        assert_eq!((creds.key, creds.key_id.as_deref(), creds.pending), (true, Some("k2"), false));
     }
 }

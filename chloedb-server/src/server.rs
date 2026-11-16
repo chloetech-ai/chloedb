@@ -117,6 +117,14 @@ pub struct Options {
     /// Memory for answers kept between queries, in MiB (`None`:
     /// [`crate::answers::DEFAULT_MB`]; 0: none kept).
     pub answer_cache_mb: Option<usize>,
+    /// The longest statement a request may send, in bytes, and the most
+    /// elements it may hold (`None`: [`chloedb::query::parse::STATEMENT_BYTES`]
+    /// and [`chloedb::query::parse::STATEMENT_ELEMENTS`]; 0: no bound).
+    pub max_statement_bytes: Option<usize>,
+    pub max_statement_elements: Option<usize>,
+    /// What one statement may cost ([`chloedb::query::budget`];
+    /// `--statement-budget`): a key's budget and a request's may lower it.
+    pub statement_budget: chloedb::query::budget::Budget,
     /// Write requests held at once before more are refused (0: no limit).
     pub max_queued_writes: usize,
     /// The largest write or import body, in MiB (0: 256).
@@ -180,6 +188,13 @@ pub struct Options {
     pub cloud_file: Option<PathBuf>,
     /// The hub's book of connections to other clusters ([`crate::hub`]).
     pub hub_file: Option<PathBuf>,
+    /// The connectors' secrets (default: DB.connectors.json beside --db).
+    pub connector_secrets: Option<PathBuf>,
+    /// The prefix of the variables connectors' `env:` secrets may name
+    /// (default [`crate::connectors::ENV_PREFIX`]).
+    pub connector_env_prefix: Option<String>,
+    /// Pulls of the connectors run here on their schedules.
+    pub connectors: bool,
     /// Who this hub's calls to other clusters say they come from.
     pub hub_device: Option<String>,
     /// The alert rules' file (default rules, in memory, without it).
@@ -308,6 +323,35 @@ pub fn db_options(directory: bool) -> DbOptions {
 }
 
 /// Opens or creates the database, or connects to the shards.
+/// N-E2, a primary's half ([`replication::copies_holding`]): a server
+/// started as a primary by its flags (`--replicas`, without `--replica`
+/// or `--promote`) with nothing kept beside its database and nothing in
+/// it asks its replicas what they hold. When one holds a transaction,
+/// the shard served before and this server lost its volume:
+/// with automatic failover it starts as a replica (`Ok(Some)`), and the
+/// copies elect the one holding the data; without, it does not start, as
+/// a primary would otherwise ship its empty database over theirs.
+async fn lost_volume(o: &Options, db: &Arc<chloedb::db::Db>, file: &std::path::Path, ships: &PrimaryOptions) -> Result<Option<replication::Holding>, String> {
+    if o.replicas.is_empty() || o.replica || o.promote || file.exists() {
+        return Ok(None);
+    }
+    if db.storage().numbering().is_some_and(|n| n.last().seq > 0) {
+        return Ok(None);
+    }
+    let held = replication::copies_holding(&o.replicas, ships.token.as_ref(), ships.ca.as_deref(), ships.call_timeout.min(Duration::from_secs(3))).await;
+    let Some(h) = held.into_iter().max_by_key(|h| (h.term, h.seq)) else { return Ok(None) };
+    if o.failover_after_ms == 0 {
+        return Err(format!(
+            "{} is empty and keeps no part in replication, but copy {} of its shard holds transactions up to {} (term {}): this server lost its volume, or is new to the shard. Started as the primary it would ship its empty database over the copies' data. Start it with --replica and promote the copy holding the data (POST /v1/admin/promote on that copy), or start the shard with --failover-after-ms so that its copies elect it",
+            db.storage().path().display(),
+            h.url,
+            h.seq,
+            h.term
+        ));
+    }
+    Ok(Some(h))
+}
+
 pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     let agent = AgentConfig { api_key: o.api_key.clone(), model: o.model.clone(), base_url: o.api_base.clone() };
     let timeout = Duration::from_millis(o.timeout_ms.max(1));
@@ -378,8 +422,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         };
         let db_options = |directory: bool| DbOptions { cold: cold.clone(), ..db_options(directory) };
         let db = if path.exists() {
-            let db = Db::open(&path, DbOptions { wal_drop_damaged: o.wal_drop_damaged, recover: o.recover, verify_checksums: o.verify_checksums, ship_log_bytes, ..db_options(o.directory) })
-                .map_err(|e| format!("open {}: {e}", path.display()))?;
+            let db = open_existing(&path, DbOptions { wal_drop_damaged: o.wal_drop_damaged, recover: o.recover, verify_checksums: o.verify_checksums, ship_log_bytes, ..db_options(o.directory) })?;
             if let Some(what) = db.storage().damaged() {
                 // Also in /v1/health ("degraded") and /v1/admin/check (an
                 // error) until the database is opened clean again.
@@ -388,18 +431,25 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             db
         } else if let Some(n) = o.demo {
             fill = Some(Fill::Demo(n));
-            Db::create_in(&path, demo::schema(n), DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| e.to_string())?
+            folder_of(&path)?;
+            Db::create_in(&path, demo::schema(n), DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| format!("create {}: {e}", path.display()))?
         } else if let Some(s) = &o.schema {
-            let text = std::fs::read_to_string(s).map_err(|e| format!("read {}: {e}", s.display()))?;
-            let schema = Schema::from_json(&text).map_err(|e| format!("{}: {e}", s.display()))?;
+            let (s, text) = schema_arg(s)?;
+            let schema = Schema::from_json(&text).map_err(|e| format!("{s}: {e}"))?;
             fill = o.copy_from.clone().map(Fill::Copy);
-            Db::create_in(&path, schema, DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| e.to_string())?
+            folder_of(&path)?;
+            Db::create_in(&path, schema, DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| format!("create {}: {e}", path.display()))?
         } else {
             // No schema: a database with no tables yet, which CREATE TABLE
             // and the imports that create tables fill.
+            folder_of(&path)?;
             tracing::info!(db = %path.display(), "creating the database with no tables: create one with CREATE TABLE or an import");
-            Db::create_empty(&path, DbOptions { ship_log_bytes, ..db_options(o.directory) }).map_err(|e| e.to_string())?
+            Db::create_empty(&path, DbOptions { ship_log_bytes, ..db_options(o.directory) }).map_err(|e| format!("create {}: {e}", path.display()))?
         };
+        // Copies a transfer left when this server was stopped during it.
+        if replicating || o.seq_no {
+            crate::replication::sweep_copies(&path);
+        }
         for (field, why) in db.open_codebooks(&o.models) {
             tracing::warn!(field = %field, error = %why, "cannot give this field semantic IDs: writes must carry them");
         }
@@ -498,6 +548,13 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         tracing::info!(memory_mib = b >> 20, "queries share a memory budget");
     }
     svc.query_memory = query_memory.map(crate::service::query_budget);
+    if let Some(n) = o.max_statement_bytes {
+        svc.max_statement_bytes = n;
+    }
+    if let Some(n) = o.max_statement_elements {
+        svc.max_statement_elements = n;
+    }
+    svc.statement_budget = o.statement_budget;
     svc.max_queued_writes = if o.max_queued_writes > 0 { o.max_queued_writes } else { usize::MAX };
     if o.max_body_mb > 0 {
         svc.max_body = o.max_body_mb.saturating_mul(1 << 20);
@@ -523,6 +580,16 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(file) = hub {
         let secrets = crate::hub::Secrets::detect(Some(crate::hub::Hub::keys_file_of(&file)));
         svc.hub = Arc::new(crate::hub::Hub::open(file, secrets, o.hub_device.clone())?);
+    }
+    let connector_secrets = o.connector_secrets.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::connectors::Connectors::file_of));
+    if let Some(file) = connector_secrets {
+        svc.connectors.keep_secrets(file)?;
+    }
+    if let Some(p) = &o.connector_env_prefix {
+        svc.connectors.set_env_prefix(p)?;
+    }
+    if o.connectors {
+        svc.connectors.enable();
     }
     let keys = o.keys.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(Keys::file_of));
     if let Some(file) = keys {
@@ -612,6 +679,14 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
                 (false, true) => tracing::info!("replica: a primary of a newer term replaced this one, which follows it"),
                 (false, false) => tracing::info!("replica, as kept beside the database: applies the writes its primary ships"),
             }
+        } else if let Some(h) = lost_volume(o, db, file, &ships).await? {
+            // N-E2: a primary by its flags on an empty volume, beside copies
+            // that hold the shard. It follows instead (not one of the
+            // shard's first copies: it counts once a primary caught it up),
+            // so that the copy holding the data is elected and copies it.
+            svc.set_replication(Replication::Replica(Arc::new(Follow::open(db.clone(), Some(file))?)));
+            svc.promote_options = Some(PrimaryOptions { replicas: o.replicas.clone(), acks: o.write_acks, ..ships });
+            tracing::warn!(copy = %h.url, term = h.term, seq_no = h.seq, "started as a primary by its flags on an empty database, while a copy of its shard holds transactions: its volume was lost (or it is new to the shard), so it starts as a replica and its shard's copies elect the one holding the data");
         } else if (!o.replicas.is_empty() && !o.replica) || o.promote {
             let opts = PrimaryOptions { replicas: o.replicas.clone(), acks: o.write_acks, promote: o.promote, ..ships };
             let p = Primary::start(db.clone(), Some(file), opts)?;
@@ -762,6 +837,14 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
     let pin = chloedb::model_pins::pin(&repo);
     let revision = pin.map_or("main", |p| p.revision);
     for (from, file) in files {
+        // A file already here that is the one pinned is kept, so a second
+        // fetch (the guides' "once") downloads nothing.
+        if let Some(want) = pin.and_then(|p| p.sha256(from)) {
+            if std::fs::read(out.join(file)).is_ok_and(|have| chloedb::model_pins::sha256_hex(&have) == want) {
+                tracing::info!(file, "already here, as pinned");
+                continue;
+            }
+        }
         let url = format!("https://huggingface.co/{repo}/resolve/{revision}/{from}");
         let r = client.get(&url).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("{url}: {e}"))?;
         let bytes = r.bytes().await.map_err(|e| format!("{url}: {e}"))?;
@@ -903,6 +986,49 @@ fn is_parquet(_: &Path) -> bool {
     false
 }
 
+/// `--schema`'s value: a JSON file, or the JSON itself (a value that starts
+/// with `{` or `[` and names no file). The name errors call it by, and its
+/// text.
+pub fn schema_arg(s: &Path) -> Result<(String, String), String> {
+    let given = s.to_string_lossy();
+    let inline = given.trim_start();
+    if (inline.starts_with('{') || inline.starts_with('[')) && !s.exists() {
+        return Ok(("--schema".to_string(), inline.to_string()));
+    }
+    let text = std::fs::read_to_string(s).map_err(|e| format!("--schema {}: {e}", s.display()))?;
+    Ok((s.display().to_string(), text))
+}
+
+/// Opens the database that is at `path`, and says plainly why not
+/// (ONB-13): a folder that holds no database in the directory layout is
+/// refused before anything is written in it, and an open that fails
+/// leaves nothing beside the file (the readers' folder it made).
+pub fn open_existing(path: &Path, opts: DbOptions) -> Result<Db, String> {
+    if path.is_dir() && !path.join(chloedb::storage::dir::CURRENT).exists() {
+        return Err(format!(
+            "open {}: a folder that holds no ChloeDB database: --db names a database file, a folder the directory layout (--directory) made, or a new path to create one",
+            path.display()
+        ));
+    }
+    let readers = chloedb::storage::share::share_dir(path, false);
+    let made = path.is_file() && !readers.exists();
+    Db::open(path, opts).map_err(|e| {
+        if made {
+            let _ = std::fs::remove_dir_all(&readers);
+        }
+        format!("open {}: {e}", path.display())
+    })
+}
+
+/// Whether the folder a new database at `path` goes in is there: a
+/// missing one is named, with what makes it (ONB-13).
+fn folder_of(path: &Path) -> Result<(), String> {
+    match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(p) if !p.is_dir() => Err(format!("create {}: its folder {} does not exist: make it first (mkdir -p {}), or give --db another path", path.display(), p.display(), p.display())),
+        _ => Ok(()),
+    }
+}
+
 /// `chloedb-server import`: loads `files` into the database at `path`, rows
 /// from JSON Lines, JSON, CSV or TSV files (`format`, or each file's
 /// extension) into its table `table` (the first if `None`), the tables of
@@ -931,13 +1057,13 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
     if any_sqlite && any_parquet && schema.is_some() {
         return Err("--schema with SQLite and Parquet files: import them one kind at a time".into());
     }
-    let text = schema.map(|s| std::fs::read_to_string(s).map_err(|e| format!("read {}: {e}", s.display()))).transpose()?;
-    let given = match (&text, schema, any_sqlite) {
-        (Some(t), Some(s), true) => chloedb::sqlite::schemas_from_json(t).map_err(|e| format!("{}: {e}", s.display()))?,
+    let schema = schema.map(schema_arg).transpose()?;
+    let given = match (&schema, any_sqlite) {
+        (Some((s, t)), true) => chloedb::sqlite::schemas_from_json(t).map_err(|e| format!("{s}: {e}"))?,
         _ => Vec::new(),
     };
-    let given_table = match (&text, schema, any_parquet) {
-        (Some(t), Some(s), true) => Some(Schema::from_json(t).map_err(|e| format!("{}: {e}", s.display()))?),
+    let given_table = match (&schema, any_parquet) {
+        (Some((s, t)), true) => Some(Schema::from_json(t).map_err(|e| format!("{s}: {e}"))?),
         _ => None,
     };
     let sq = chloedb::sqlite::ImportOptions { tables: how.tables.clone(), schemas: given, blobs_base64: how.blobs_base64 };
@@ -971,7 +1097,7 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
             }
         }
         let out = if plans.len() == 1 { plans.remove(0) } else { serde_json::Value::Array(plans) };
-        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        crate::print_out(&serde_json::to_string_pretty(&out).unwrap_or_default());
         return Ok(());
     }
     for (shown, fetched) in &inputs {
@@ -1011,8 +1137,8 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         let d = match db.take() {
             Some(d) => d,
             None => {
-                let (s, text) = schema.zip(text.as_deref()).ok_or_else(|| format!("{} does not exist: pass --schema FILE to create it", path.display()))?;
-                let schema = Schema::from_json(text).map_err(|e| format!("{}: {e}", s.display()))?;
+                let (s, text) = schema.as_ref().ok_or_else(|| format!("{} does not exist: pass --schema (a JSON file, or the JSON) to create it", path.display()))?;
+                let schema = Schema::from_json(text).map_err(|e| format!("{s}: {e}"))?;
                 created(Db::create_in(path, schema, opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?)
             }
         };
@@ -1216,7 +1342,10 @@ pub fn spawn_rollups(svc: &Arc<Service>, every: Duration) {
     }
     let svc = Arc::downgrade(svc);
     tokio::spawn(async move {
-        let mut reported = None;
+        // The error each rollup last reported, which is said again only
+        // once it changes.
+        let mut reported: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut listing: Option<String> = None;
         let mut tick: u64 = 0;
         loop {
             tokio::time::sleep(every).await;
@@ -1224,18 +1353,36 @@ pub fn spawn_rollups(svc: &Arc<Service>, every: Duration) {
             let full = tick % 60 == 59;
             tick += 1;
             match tokio::task::spawn_blocking(move || svc.refresh_rollups_due(full)).await {
-                Ok(Ok(n)) => {
-                    reported = None;
-                    if n > 0 {
-                        tracing::debug!(buckets = n, "refreshed rollups");
+                Ok(Ok(done)) => {
+                    listing = None;
+                    let names: std::collections::HashSet<String> = done.iter().map(|(n, _)| n.clone()).collect();
+                    reported.retain(|n, _| names.contains(n));
+                    for (name, res) in done {
+                        match res {
+                            Ok(s) => {
+                                if reported.remove(&name).is_some() {
+                                    tracing::info!(rollup = %name, "a rollup's refresh works again");
+                                }
+                                if s.folded > 0 {
+                                    tracing::debug!(rollup = %name, buckets = s.folded, "refreshed a rollup");
+                                }
+                            }
+                            Err(e) => {
+                                let why = e.to_string();
+                                if reported.get(&name) != Some(&why) {
+                                    tracing::warn!(rollup = %name, error = %why, "could not refresh a rollup; the others go on, and it is tried again in a few seconds");
+                                }
+                                reported.insert(name, why);
+                            }
+                        }
                     }
                 }
                 Ok(Err(e)) => {
                     let why = e.to_string();
-                    if reported.as_ref() != Some(&why) {
-                        tracing::warn!(error = %why, "could not refresh the rollups; the next try is in a few seconds");
+                    if listing.as_ref() != Some(&why) {
+                        tracing::warn!(error = %why, "could not read the rollups; the next try is in a few seconds");
                     }
-                    reported = Some(why);
+                    listing = Some(why);
                 }
                 Err(e) => tracing::error!(error = %e, "the rollups' refresher stopped"),
             }
@@ -1379,43 +1526,103 @@ pub async fn serve_opensearch(svc: Arc<Service>, listener: TcpListener, access: 
 /// Each connection must send a request's headers within
 /// [`auth::Limits::header_read`] (an idle keep-alive one is closed after
 /// it, and a TLS handshake has as long, 10 s at most), and the listener
-/// holds [`auth::Limits::max_connections`] at once: a client that opens
+/// holds [`auth::Limits::max_connections`] at once, of which one client
+/// address holds [`auth::Limits::per_client`] at most: a client that opens
 /// thousands and sends a byte a minute holds neither the process's file
-/// descriptors nor its memory. Every answer says to browsers not to sniff
-/// its type nor be framed by another site ([`security_headers`]). Long
-/// answers that would never end on their own (a follower's feed) watch
+/// descriptors nor its memory, nor every connection the others need. Past
+/// the cap a few connections are still taken, for the probes alone
+/// ([`crate::listener::HEALTH_ROUTES`]; any other request on them is
+/// answered 503). A connection with no request under way for
+/// [`auth::Limits::idle`] is closed, over HTTP/2 too; a request body that
+/// pauses or trickles ([`auth::Limits::body`]) fails, and so does a write
+/// the client does not read for [`auth::Limits::write`]
+/// ([`crate::listener`]). Every answer says to browsers not to sniff its
+/// type nor be framed by another site ([`security_headers`]). Long answers
+/// that would never end on their own (a follower's feed) watch
 /// [`Stopping`] and end when the listener stops taking connections.
 pub async fn serve_router_until(router: axum::Router, listener: TcpListener, access: &Access, stop: impl std::future::Future<Output = ()> + Send + 'static) -> std::io::Result<()> {
+    serve_conns(router, listener, access, stop, Kind::Http).await
+}
+
+/// What a listener serves: HTTP (the API, the UI, OpenSearch's API), or
+/// gRPC (HTTP/2 alone, request bodies not timed, no browser headers, no
+/// connections for the probes past the cap).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Http,
+    Grpc,
+}
+
+/// The calls under way at once on one gRPC connection (a coordinator
+/// sends all its calls to a shard on one): past it, a client waits for
+/// one to end.
+pub const GRPC_STREAMS: u32 = 1024;
+
+/// How long a connection closed for being idle has to say goodbye (an
+/// HTTP/2 GOAWAY, its ping answered) before it is dropped.
+const IDLE_GOODBYE: Duration = Duration::from_secs(1);
+
+async fn serve_conns(router: axum::Router, listener: TcpListener, access: &Access, stop: impl std::future::Future<Output = ()> + Send + 'static, kind: Kind) -> std::io::Result<()> {
+    use crate::listener::{self, Slot};
     use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
     let (stopping, stopped) = tokio::sync::watch::channel(false);
-    // x-chloedb-* headers are read as their x-strata-* names (crate::names).
-    let router = crate::names::http_layer(router).layer(axum::middleware::map_response(security_headers)).layer(axum::Extension(Stopping(stopped)));
+    let router = router.layer(axum::middleware::from_fn(listener::track));
+    let router = match kind {
+        // x-chloedb-* headers are read as their x-strata-* names (crate::names).
+        Kind::Http => crate::names::http_layer(router).layer(axum::middleware::map_response(security_headers)),
+        Kind::Grpc => router.layer(axum::middleware::from_fn(listener::grpc_deadline)),
+    };
+    let router = router.layer(axum::Extension(Stopping(stopped)));
     let tls = match &access.tls {
         Some(t) => Some(tokio_rustls::TlsAcceptor::from(auth::server_config(t).map_err(std::io::Error::other)?)),
         None => None,
     };
     let limits = access.limits;
-    let permits = match limits.max_connections {
+    let (permits, cap) = match limits.max_connections {
         0 => connections(),
-        n => Arc::new(tokio::sync::Semaphore::new(n)),
+        n => (Arc::new(tokio::sync::Semaphore::new(n)), n),
     };
-    let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
-    builder.http1().timer(TokioTimer::new()).header_read_timeout(limits.header_read);
-    // HTTP/2 has no header timeout: pings find a peer that went away.
-    builder.http2().timer(TokioTimer::new()).keep_alive_interval(limits.header_read).keep_alive_timeout(limits.header_read.min(Duration::from_secs(20)));
-    let builder = Arc::new(builder);
+    let clients = listener::Clients::new(match limits.per_client {
+        0 => cap / 2,
+        n => n,
+    });
+    // Past the cap: a few connections for the probes, two at once per
+    // address.
+    let health = Arc::new(tokio::sync::Semaphore::new(if kind == Kind::Http { listener::HEALTH_SLOTS } else { 0 }));
+    let probers = listener::Clients::new(2);
+    let builder = |header_read: Duration| {
+        let mut b = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+        b.http1().timer(TokioTimer::new()).header_read_timeout(header_read);
+        // HTTP/2 has no header timeout: pings find a peer that went
+        // away, and the idle timeout one that answers them.
+        b.http2().timer(TokioTimer::new()).keep_alive_interval(limits.header_read).keep_alive_timeout(limits.header_read.min(Duration::from_secs(20)));
+        match kind {
+            Kind::Http => b,
+            Kind::Grpc => {
+                b.http2().max_concurrent_streams(GRPC_STREAMS);
+                b.http2_only()
+            }
+        }
+    };
+    let (full, probe) = (Arc::new(builder(limits.header_read)), Arc::new(builder(limits.header_read.min(Duration::from_secs(5)))));
     // Each connection's task holds a clone of `open`: once every clone is
     // dropped, `closed` ends. A connection is told to finish when
-    // `stopping` says true; a listener dropped rather than stopped (its
-    // task aborted) leaves its connections be, as axum's does.
+    // `stopping` says true, and is cut when `alive` is dropped: once the
+    // grace time is over, or when the listener's future is dropped (its
+    // task aborted, as tests stop a shard), as tonic's server did.
     let (open, mut closed) = tokio::sync::mpsc::channel::<()>(1);
+    let (alive, _) = tokio::sync::watch::channel(());
     let handshake = limits.header_read.min(Duration::from_secs(10));
+    let body = if kind == Kind::Http { limits.body } else { Duration::ZERO };
     tokio::pin!(stop);
     loop {
-        // Past the cap, wait for a connection to close before taking one.
-        let permit = tokio::select! {
-            p = permits.clone().acquire_owned() => p.map_err(std::io::Error::other)?,
+        // Past the cap, wait for a connection to close before taking one,
+        // but for the few kept for the probes.
+        let (permit, slot) = tokio::select! {
+            biased;
             _ = &mut stop => break,
+            p = permits.clone().acquire_owned() => (p.map_err(std::io::Error::other)?, Slot::Full),
+            p = health.clone().acquire_owned() => (p.map_err(std::io::Error::other)?, Slot::Health),
         };
         let (tcp, peer) = tokio::select! {
             r = listener.accept() => match r {
@@ -1428,25 +1635,69 @@ pub async fn serve_router_until(router: axum::Router, listener: TcpListener, acc
             },
             _ = &mut stop => break,
         };
+        // A place under the cap freed while this one waited for a
+        // connection: it takes that instead.
+        let (permit, slot) = match slot {
+            Slot::Health => match permits.clone().try_acquire_owned() {
+                Ok(p) => (p, Slot::Full),
+                Err(_) => (permit, slot),
+            },
+            Slot::Full => (permit, slot),
+        };
+        // A client past its share is closed at once, before its
+        // handshake: it holds nothing the others need.
+        let held = match slot {
+            Slot::Full => clients.take(peer.ip(), None),
+            Slot::Health => probers.take(peer.ip(), None),
+        };
+        let Some(held) = held else {
+            // Its client sees only a reset: say so here, a line a second
+            // at most, and count it.
+            listener::CLOSED_PAST_SHARE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            static LIMIT: crate::obs::RateLimit = crate::obs::RateLimit::new(1);
+            if let Some(more) = LIMIT.admit() {
+                tracing::info!(client = %peer.ip(), held = clients.of(peer.ip()), closed_since = more, "a client past its share of connections (--max-connections-per-client): its new connection closed before any request");
+            }
+            continue;
+        };
         let _ = tcp.set_nodelay(true);
-        // Each request knows its peer's address (the audit log's `addr`),
-        // set on it as it comes in: layering the router per connection
-        // would copy every route, about 300 KB a connection.
-        let service = hyper_util::service::TowerToHyperService::new(tower::ServiceExt::map_request(router.clone(), with_peer(peer)));
-        let (tls, builder, open, mut told) = (tls.clone(), builder.clone(), open.clone(), stopping.subscribe());
+        let activity = listener::Activity::new();
+        // Each request knows its peer's address (the audit log's `addr`)
+        // and its connection's, set on it as it comes in: layering the
+        // router per connection would copy every route, about 300 KB a
+        // connection.
+        let conn = listener::Conn { activity: activity.clone(), slot, body };
+        let service = hyper_util::service::TowerToHyperService::new(tower::ServiceExt::map_request(router.clone(), with_conn(peer, conn)));
+        let builder = if slot == Slot::Full { full.clone() } else { probe.clone() };
+        let (tls, open, mut told, mut gone) = (tls.clone(), open.clone(), stopping.subscribe(), alive.subscribe());
+        let tcp = listener::Stall::new(tcp, limits.write);
         tokio::spawn(async move {
-            let (_permit, _open) = (permit, open);
+            let (_permit, _held, _open) = (permit, held, open);
             // Serves one connection until it ends, or finishes the
-            // request under way once the listener stops.
+            // requests under way once the listener stops or the
+            // connection has been idle too long.
             macro_rules! serve {
                 ($io:expr) => {{
                     let conn = builder.serve_connection_with_upgrades(TokioIo::new($io), service);
                     tokio::pin!(conn);
-                    tokio::select! {
-                        _ = conn.as_mut() => {}
-                        Ok(()) = async { told.wait_for(|s| *s).await.map(|_| ()) } => {
-                            conn.as_mut().graceful_shutdown();
-                            let _ = conn.await;
+                    let mut ending = false;
+                    // An idle connection told to finish has this long to
+                    // (HTTP/2's goodbye waits for a ping's answer).
+                    let mut cut: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+                    loop {
+                        tokio::select! {
+                            _ = conn.as_mut() => break,
+                            Ok(()) = async { told.wait_for(|s| *s).await.map(|_| ()) }, if !ending => {
+                                conn.as_mut().graceful_shutdown();
+                                ending = true;
+                            }
+                            _ = activity.idle_for(limits.idle), if !ending => {
+                                conn.as_mut().graceful_shutdown();
+                                ending = true;
+                                cut = Some(Box::pin(tokio::time::sleep(IDLE_GOODBYE)));
+                            }
+                            _ = async { cut.as_mut().expect("set").await }, if cut.is_some() => break,
+                            _ = gone.changed() => break,
                         }
                     }
                 }};
@@ -1468,13 +1719,16 @@ pub async fn serve_router_until(router: axum::Router, listener: TcpListener, acc
     if tokio::time::timeout(limits.stop_grace, closed.recv()).await.is_err() {
         tracing::warn!(grace_ms = limits.stop_grace.as_millis() as u64, "stopping with requests still under way: they had their grace time (--stop-grace-ms)");
     }
+    drop(alive);
     Ok(())
 }
 
-/// Sets a request's peer address (axum's `ConnectInfo`) as it comes in.
-fn with_peer<B>(peer: std::net::SocketAddr) -> impl Fn(axum::http::Request<B>) -> axum::http::Request<B> + Clone {
+/// Sets a request's peer address (axum's `ConnectInfo`) and its
+/// connection ([`crate::listener::Conn`]) as it comes in.
+fn with_conn<B>(peer: std::net::SocketAddr, conn: crate::listener::Conn) -> impl Fn(axum::http::Request<B>) -> axum::http::Request<B> + Clone {
     move |mut r| {
         r.extensions_mut().insert(axum::extract::ConnectInfo(peer));
+        r.extensions_mut().insert(conn.clone());
         r
     }
 }
@@ -1502,12 +1756,12 @@ impl Stopping {
     }
 }
 
-/// The connections the HTTP listeners hold at once, all of them together,
-/// when `--max-connections` is 0: three quarters of the process's
-/// open-file limit (the rest for its databases, its shards and the
-/// listeners themselves).
-fn connections() -> Arc<tokio::sync::Semaphore> {
-    static ALL: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+/// The connections the listeners hold at once, all of them together, when
+/// `--max-connections` is 0: three quarters of the process's open-file
+/// limit (the rest for its databases, its shards and the listeners
+/// themselves); and how many that is.
+fn connections() -> (Arc<tokio::sync::Semaphore>, usize) {
+    static ALL: std::sync::OnceLock<(Arc<tokio::sync::Semaphore>, usize)> = std::sync::OnceLock::new();
     ALL.get_or_init(|| {
         let mut n = 65_536;
         #[cfg(unix)]
@@ -1519,7 +1773,7 @@ fn connections() -> Arc<tokio::sync::Semaphore> {
                 n = (r.rlim_cur as usize / 4 * 3).clamp(64, 1 << 20);
             }
         }
-        Arc::new(tokio::sync::Semaphore::new(n))
+        (Arc::new(tokio::sync::Semaphore::new(n)), n)
     })
     .clone()
 }
@@ -1566,27 +1820,22 @@ async fn security_headers(mut res: axum::response::Response) -> axum::response::
 
 /// Serves gRPC: every call needs `access.cluster`, `access.token` or a key
 /// of the scope its method needs ([`crate::keys`]), over TLS with
-/// `access.tls`.
-pub async fn serve_grpc(svc: Arc<Service>, listener: TcpListener, access: Access) -> Result<(), tonic::transport::Error> {
-    use tokio_stream::StreamExt;
-    // A gRPC answer is several small writes (headers, data, trailers); with
-    // Nagle's algorithm on, the last waits for the client's delayed ACK and
-    // every call to a shard took 40 ms longer.
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener).map(|s| {
-        if let Ok(s) = &s {
-            let _ = s.set_nodelay(true);
-        }
-        s
-    });
+/// `access.tls`, until SIGTERM or Ctrl-C and the drain time.
+pub async fn serve_grpc(svc: Arc<Service>, listener: TcpListener, access: Access) -> std::io::Result<()> {
+    serve_grpc_until(svc, listener, access, shutdown()).await
+}
+
+/// [`serve_grpc`] until `stop` ends, on the HTTP listeners' accept loop
+/// ([`serve_router_until`]): the same connection cap and share per client,
+/// handshake, idle and write timeouts, and grace for the calls under way
+/// when it stops; a follower's `Feed` ends then.
+pub async fn serve_grpc_until(svc: Arc<Service>, listener: TcpListener, access: Access, stop: impl std::future::Future<Output = ()> + Send + 'static) -> std::io::Result<()> {
     // otlp: OpenTelemetry's LogsService, behind the same check.
     let otlp = crate::otlp::grpc_service(svc.clone(), svc.max_body);
     let otlp = tonic::service::interceptor::InterceptedService::new(otlp, Check { svc: svc.clone(), token: access.token.clone(), cluster: access.cluster.clone() });
     let service = grpc_service(svc, &access);
-    let mut builder = tonic::transport::Server::builder();
-    if let Some(tls) = &access.tls {
-        builder = builder.tls_config(tonic::transport::ServerTlsConfig::new().identity(tonic::transport::Identity::from_pem(&tls.cert, &tls.key)))?;
-    }
-    builder.add_service(service).add_service(otlp).serve_with_incoming_shutdown(incoming, shutdown()).await
+    let router = tonic::service::Routes::new(service).add_service(otlp).into_axum_router();
+    serve_conns(router, listener, &access, stop, Kind::Grpc).await
 }
 
 /// A shard server's gRPC service, its calls checked for their token or key
@@ -1621,6 +1870,22 @@ impl tonic::service::Interceptor for Check {
             // methods do not.
             Some(who) if who.limited() => {
                 self.svc.metrics.grpc("any", "PermissionDenied", 0.0);
+                // Audited as HTTP's refusals are: a stolen app key tried
+                // on the gRPC port leaves a trace.
+                self.svc.audit.add(crate::keys::Entry {
+                    ts_ms: crate::telemetry::now_ms(),
+                    who: who.name.clone(),
+                    key: who.key.clone(),
+                    scope: Some(who.scope.name()),
+                    method: "gRPC".into(),
+                    route: "any".into(),
+                    status: 403,
+                    ms: 0.0,
+                    request_id: None,
+                    detail: Some("a key limited to tables calls the HTTP API, not gRPC".into()),
+                    kind: crate::keys::REFUSAL.into(),
+                    ..Default::default()
+                });
                 Err(tonic::Status::permission_denied(format!("the key {:?} is limited to tables: it calls the HTTP API, not gRPC", who.name)))
             }
             Some(who) => {

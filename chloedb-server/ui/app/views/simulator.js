@@ -9,6 +9,11 @@
 // first and what it costs, and predicts other shapes: a copy more, a shard
 // more, other machines, more rows, each by how much (POST
 // /v1/admin/simulator/predict). Nothing here changes the cluster's shape.
+// "Choosing a copy" compares the coordinator's ways of choosing a shard's
+// copy (--route, --hedge-adaptive, --prefer-caught-up): the model's
+// preview at once (POST /v1/admin/simulator/routing, which sends nothing),
+// or measured, a run of shape "routing" that sends the mix through a
+// coordinator made for the test for each setting, on the same copies.
 
 import { h, icon, clear, fmt, card, api, toast, confirm, seg, pill, empty, tipOn, failure, store, can, needs, every, table } from "../core.js";
 import { xyChart, barList } from "../charts.js";
@@ -16,7 +21,7 @@ import { isProduction } from "../data.js";
 
 export default {
   id: "simulator", title: "Simulator", icon: "gauge", group: "Change",
-  keywords: "simulator simulate test run load test benchmark traffic mix qps capacity throughput latency p99 slo replicas copies shards machines cost estimate what if predict model grade advice",
+  keywords: "simulator simulate test run load test benchmark traffic mix qps capacity throughput latency p99 slo replicas copies shards machines cost estimate what if predict model grade advice routing route least cost round robin hedge adaptive caught up a/b",
   render,
 };
 
@@ -43,6 +48,17 @@ const STATE_TONE = { ok: "ok", warn: "warn", bad: "bad", info: "info" };
 const pct = (v, d = 0) => (v == null ? "–" : fmt.pct(v, d));
 const money = (v) => (v == null ? "–" : "$" + fmt.n(Math.round(v)));
 const signed = (v, f) => (v == null ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "±") + f(Math.abs(v)));
+// The model's what-ifs, on copy 0 of shard 0 (the values are the server's FAULTS).
+const FAULT_NOTE = {
+  none: "copies alike",
+  slow: "copy 0 answers 30 ms late",
+  cpu: "copy 0's machine busy with 2 other threads",
+  stall: "copy 0 stalls 60 ms each second",
+  slots: "copy 0 serves one call at a time",
+  behind: "a replica applies writes 50 ms late",
+};
+const RMETRICS = [["p99_ms", "p99"], ["p999_ms", "p99.9"], ["p50_ms", "p50"], ["qps", "Throughput"], ["after_write_p99_ms", "Read after a write"]];
+const clientsText = (c) => `${fmt.n(c)} ${c === 1 ? "client" : "clients"}`;
 
 function render(page, route) {
   const head = h("div"), main = h("div", { class: "sim" });
@@ -57,6 +73,9 @@ function render(page, route) {
   let wiAns = null, wiErr = null, wiSeq = 0;
   let alive = true;
   let stopPoll = null;
+  // Choosing a copy: the model's last answer, the what-if, the measure shown.
+  let rprev = null, rprevErr = null, rprevSeq = 0, rprevBusy = false;
+  let rfault = "none", rmetric = "p99_ms";
 
   const running = () => view?.run?.state === "running";
 
@@ -165,6 +184,71 @@ function render(page, route) {
     try { const j = await api("/v1/admin/simulator/table", { method: "DELETE" }); toast(j.dropped ? "Dropped" : "There was no test table", "ok"); } catch (e) { toast(e.message, "bad"); }
   }
 
+  // ---------------------------------------------------------- choosing a copy
+  const routingMode = () => draft?.mode === "routing";
+  /** The settings ticked, as POST takes them. */
+  function chosen() {
+    const off = new Set(draft?.roff || []);
+    return (view?.routing?.variants || []).filter((v) => !off.has(v.name)).map(({ name, ...v }) => v);
+  }
+  function routingClients(d) { return (d.clients?.length ? d.clients : [1, 16, 64]).slice(0, 4); }
+  /** What a routing run takes: loading, each kind alone, each setting's turns. */
+  function estimateRouting(d) {
+    const kinds = Object.values(d.mix || {}).filter((w) => w > 0).length || 10;
+    const turns = routingClients(d).length * (d.rounds || 3) * Math.max(1, chosen().length);
+    return d.docs / 9000 + 6 + kinds * (d.alone_s + 0.5) + (d.write_share > 0 || d.after_write > 0 ? d.alone_s : 0) + turns * ((d.step_s || 8) + 3) + 5;
+  }
+  function routingBody(d) {
+    const b = body({ ...d, shape: "ramp" });
+    delete b.max_steps; delete b.start_qps;
+    return { ...b, shape: "routing", variants: chosen(), clients: routingClients(d), rounds: d.rounds || 3, step_s: d.step_s || 8, after_write: d.after_write || 0 };
+  }
+  async function preview() {
+    const seq = ++rprevSeq;
+    const vs = chosen();
+    if (!vs.length) { rprevErr = new Error("Tick a setting to compare"); rprev = null; drawBody(); return; }
+    rprevBusy = true; drawBody();
+    const b = { variants: vs, clients: routingClients(draft), fault: rfault };
+    if (draft.after_write > 0) b.after_write = draft.after_write;
+    if (report?.fit) b.run = report.id;
+    try {
+      const j = await api("/v1/admin/simulator/routing", { body: b });
+      if (seq !== rprevSeq) return;
+      rprev = j; rprevErr = null;
+    } catch (e) { if (seq !== rprevSeq) return; rprevErr = e; }
+    rprevBusy = false;
+    if (alive) drawBody();
+  }
+  const previewSoon = (() => { let t; return () => { clearTimeout(t); t = setTimeout(preview, 300); }; })();
+  async function startRouting() {
+    const d = draft;
+    const vs = chosen();
+    if (vs.length < 1) { toast("Tick a setting to compare", "bad"); return; }
+    if (vs.length > 6) { toast("At most 6 settings in one run", "bad"); return; }
+    const mins = Math.max(1, Math.round(estimateRouting(d) / 60));
+    const prod = isProduction();
+    const cs = routingClients(d);
+    const ok = await confirm({
+      title: "Measure the settings on this cluster?",
+      ok: "Start the measured run",
+      danger: prod,
+      body: h("div", { class: "stack", style: { gap: "8px" } },
+        h("p", { style: { margin: 0 } }, `It loads ${fmt.n(d.docs)} test documents into a table of its own (${view.table}), times each kind alone for the model, then sends the mix through a coordinator made for the test for each of the ${vs.length} settings, on the same copies, at ${cs.join(", ")} clients, ${d.rounds || 3} rounds of ${fmt.n(d.step_s || 8)} s each. About ${mins} min.`),
+        h("p", { class: "small dim", style: { margin: 0 } }, "This coordinator's own settings do not change. " + (d.keep ? "The table is kept afterwards." : "The table is dropped afterwards.")),
+        prod ? h("div", { class: "sim-warn" }, icon("warn"), h("span", {}, `This cluster counts as production: at ${Math.max(...cs)} clients the copies run near their limit, so the traffic it serves slows down while it runs.`)) : null),
+      reason: prod ? "Why: kept in the audit log with the run" : false,
+    });
+    if (!ok) return;
+    busy = true; drawSetup();
+    try {
+      await api("/v1/admin/simulator", { body: routingBody(d), reason: ok.reason });
+      report = null; reportId = null;
+      await load(); poll();
+      toast("The measured run started", "ok");
+    } catch (e) { toast(e.message, "bad"); }
+    busy = false; draw();
+  }
+
   // ---------------------------------------------------------- what-if
   async function predict() {
     if (!report || !wi) return;
@@ -240,9 +324,12 @@ function render(page, route) {
     const ramp = d.shape !== "steady";
     const mins = Math.max(1, Math.round(estimate(d) / 60));
     const runBtn = h("button", { class: "btn primary", disabled: busy || running() || !can("admin"), title: can("admin") ? "" : needs("admin"), onclick: start }, icon("play"), running() ? "A run is under way" : "Run the test");
+    const modeSeg = field("Test", seg([["capacity", "Capacity", "what the cluster holds within its SLO, and what more would change"], ["routing", "Choosing a copy", "the coordinator's ways of choosing a shard's copy, compared"]], d.mode || "capacity", (v) => { d.mode = v; keep(); if (v === "routing" && !rprev) preview(); draw(); }, { "aria-label": "What to test" }));
+    if (routingMode()) { drawRoutingSetup(d, p, modeSeg); return; }
     clear(setupBox, card({
       title: "Test run", sub: p?.name ? `profile ${p.name}` : "",
       body: h("div", { class: "stack sim-form" },
+        modeSeg,
         !coordinator ? h("div", { class: "sim-note small" }, icon("info"), h("span", {}, "This is a single server: the test measures it, and the model predicts clusters of it (a coordinator's own costs assumed).")) : null,
         field("Workload", seg((view.presets || []).map((x) => [x.name, x.name, x.description]), d.profile, setPreset, { "aria-label": "Workload profile" }), p?.description),
         h("div", { class: "sim-mix" },
@@ -273,6 +360,42 @@ function render(page, route) {
     }));
   }
 
+  function drawRoutingSetup(d, p, modeSeg) {
+    const coordinator = view.coordinator;
+    const vs = view.routing?.variants || [];
+    const off = new Set(d.roff || []);
+    const n = chosen().length;
+    const tick = (v) => h("label", { class: "row nw small", style: { gap: "8px", alignItems: "flex-start" } },
+      h("input", { type: "checkbox", checked: !off.has(v.name), onchange: (e) => { const s = new Set(d.roff || []); if (e.target.checked) s.delete(v.name); else s.add(v.name); d.roff = [...s]; keep(); drawSetup(); if (rprev || rprevErr) previewSoon(); } }),
+      h("span", {}, v.name));
+    const clientsIn = h("input", { class: "input", value: routingClients(d).join(", "), "aria-label": "Clients at each level" });
+    clientsIn.onchange = () => { const xs = clientsIn.value.split(/[\s,]+/).map(Number).filter((x) => Number.isInteger(x) && x >= 1 && x <= 512).slice(0, 4); if (xs.length) d.clients = xs; keep(); drawSetup(); if (rprev) previewSoon(); };
+    const mins = Math.max(1, Math.round(estimateRouting(d) / 60));
+    const measureBtn = h("button", { class: "btn primary", disabled: busy || running() || !can("admin") || !coordinator || n < 1 || n > 6, title: !coordinator ? "A single server has no copy to choose: the preview models a cluster" : can("admin") ? (n > 6 ? "At most 6 settings in one run" : "Send the mix through a coordinator made for the test for each setting, on this cluster's copies") : needs("admin"), onclick: startRouting }, icon("play"), running() ? "A run is under way" : "Measure");
+    const previewBtn = h("button", { class: "btn", disabled: n < 1, title: "Run the model of this cluster for each setting: at once, and nothing is sent to the servers", onclick: preview }, icon("gauge"), "Preview");
+    clear(setupBox, card({
+      title: "Choosing a copy", sub: view.routing?.coordinator ? `now: ${view.routing.coordinator.name}` : "",
+      body: h("div", { class: "stack sim-form" },
+        modeSeg,
+        h("div", { class: "small dim" }, "How the coordinator picks which copy of a shard answers a read. The preview runs a model of this cluster at once and sends nothing; measuring sends the mix through a coordinator made for the test for each setting, on the same copies, in turns."),
+        !coordinator ? h("div", { class: "sim-note small" }, icon("info"), h("span", {}, "This is a single server: it has no copy to choose. The preview models a cluster of three copies a shard.")) : null,
+        field(`Settings to compare (${n})`, h("div", { class: "stack", style: { gap: "6px" } }, vs.map(tick))),
+        field("Workload", seg((view.presets || []).map((x) => [x.name, x.name, x.description]), d.profile, setPreset, { "aria-label": "Workload profile" }), p?.description),
+        h("div", { class: "sim-two" },
+          field("Clients at each level", clientsIn, "each sends its next request when answered"),
+          field("Reads right after a write, %", num(Math.round((d.after_write || 0) * 1000) / 10, (v) => { d.after_write = Math.min(0.9, Math.max(0, (v || 0) / 100)); if (rprev) previewSoon(); }, { min: 0, max: 90, step: 1 }), "a row written, then read back")),
+        h("div", { class: "sim-two" },
+          field("Rounds", num(d.rounds ?? 3, (v) => { d.rounds = Math.min(10, Math.max(1, Math.round(v || 3))); }, { min: 1, max: 10 }), "each starts at another setting"),
+          field("Each turn, s", num(d.step_s, (v) => { d.step_s = v || 8; }, { min: 2, max: 120 }))),
+        h("div", { class: "sim-two" },
+          field("Test documents", select(DOCS, d.docs, (v) => { d.docs = Number(v); drawSetup(); })),
+          field("Vector size", select(DIMS, d.dim, (v) => { d.dim = Number(v); }))),
+        field("Label", h("input", { class: "input", value: d.label || "", placeholder: "optional", oninput: (e) => { d.label = e.target.value; keep(); } })),
+        h("label", { class: "row nw small dim", style: { gap: "8px" } }, h("input", { type: "checkbox", checked: !!d.keep, onchange: (e) => { d.keep = e.target.checked; keep(); } }), `Keep the table ${view.table} afterwards`)),
+      foot: h("div", { class: "row between", style: { width: "100%", gap: "8px", flexWrap: "wrap" } }, h("span", { class: "small muted" }, `measuring: about ${mins} min`), h("div", { class: "row nw", style: { gap: "6px" } }, previewBtn, measureBtn)),
+    }));
+  }
+
   function drawRuns() {
     if (!sideBox) return;
     const rs = view.reports || [];
@@ -281,15 +404,18 @@ function render(page, route) {
       tools: can("admin") ? h("button", { class: "btn sm ghost", title: `Drop ${view.table} (a run kept it)`, onclick: dropTable }, icon("trash")) : null,
       flush: true,
       body: rs.length ? h("div", { class: "sim-runs" }, rs.map((r) => h("button", { class: "sim-run" + (r.id === report?.id ? " on" : ""), onclick: () => open(r.id) },
-        h("div", { class: "row between nw" }, h("b", {}, r.label || r.profile || r.id), r.grade ? pill(GRADE_TONE[r.grade] || "info", r.grade) : pill(r.state === "failed" ? "bad" : "disabled", r.state)),
-        h("div", { class: "small muted" }, [fmt.ago(r.finished_ms || r.started_ms), r.cluster, r.capacity_qps != null ? `${r.bound ? "≥ " : ""}${fmt.si(r.capacity_qps)}/s` : null].filter(Boolean).join(" · "))))) : h("div", { class: "small muted", style: { padding: "0 14px 12px" } }, "None yet."),
+        h("div", { class: "row between nw" }, h("b", {}, r.label || r.profile || r.id), r.grade ? pill(GRADE_TONE[r.grade] || "info", r.grade) : r.shape === "routing" && r.state === "done" ? pill("info", "choosing a copy") : pill(r.state === "failed" ? "bad" : "disabled", r.state)),
+        h("div", { class: "small muted" }, [fmt.ago(r.finished_ms || r.started_ms), r.cluster, r.capacity_qps != null ? `${r.bound ? "≥ " : ""}${fmt.si(r.capacity_qps)}/s` : null, r.settings ? `${r.settings} settings` : null].filter(Boolean).join(" · "))))) : h("div", { class: "small muted", style: { padding: "0 14px 12px" } }, "None yet."),
     }));
   }
 
   function drawBody() {
     if (!bodyBox) return;
     if (view.run && (running() || (!report && view.run))) { clear(bodyBox, progress(view.run)); return; }
-    if (reportErr) { clear(bodyBox, failure(reportErr, "The report")); return; }
+    const pv = routingMode() && (rprev || rprevErr || rprevBusy) ? previewView() : null;
+    if (reportErr) { clear(bodyBox, pv, failure(reportErr, "The report")); return; }
+    if (pv && (!report || report.routing)) { clear(bodyBox, pv, report ? reportView(report) : null); return; }
+    if (pv) { clear(bodyBox, pv); return; }
     if (!report) {
       clear(bodyBox, card({ body: h("div", { class: "sim-intro" },
         icon("gauge", "lg"),
@@ -312,14 +438,20 @@ function render(page, route) {
     const phases = h("ol", { class: "sim-phases" }, run.phases.map((p) => h("li", { class: "sim-phase " + p.state },
       h("span", { class: "sim-dot" }, p.state === "done" ? icon("check") : p.state === "running" ? h("span", { class: "sim-spin" }) : null),
       h("div", {}, h("div", {}, p.title), p.note ? h("div", { class: "small muted" }, p.note) : p.state === "running" ? h("div", { class: "small dim" }, run.text) : null))));
-    const chart = steps.length ? stepsChart(steps, slo, null, null) : h("div", { class: "small muted", style: { padding: "30px 0", textAlign: "center" } }, "The rates show here once the mix starts.");
+    const routed = run.phases.some((p) => p.id === "routing");
+    const chart = routed
+      ? (steps.length ? turnsTable(steps) : h("div", { class: "small muted", style: { padding: "30px 0", textAlign: "center" } }, "Each setting's turns show here once they start."))
+      : steps.length ? stepsChart(steps, slo, null, null) : h("div", { class: "small muted", style: { padding: "30px 0", textAlign: "center" } }, "The rates show here once the mix starts.");
     const last = steps[steps.length - 1];
+    const lastKvs = !last ? null : routed
+      ? h("div", { class: "row", style: { gap: "18px", marginBottom: "6px" } }, kv("Setting", last.name), kv("Clients", fmt.n(last.clients)), kv("Throughput", last.qps != null ? fmt.si(last.qps) + "/s" : "–"), kv("p99", fmt.ms(last.p99_ms), last.error ? "bad" : ""))
+      : h("div", { class: "row", style: { gap: "18px", marginBottom: "6px" } },
+        kv("Rate", fmt.rate(last.rate)), kv("p99", fmt.ms(last.p99_ms), last.holds ? "" : "bad"), kv("Errors", pct(last.error_share, 2)), kv("Coordinator", `${fmt.n(last.busy?.coordinator?.cores_used, 2)} cores`));
     return h("div", { class: "stack" },
       card({ title: run.state === "running" ? "Test run under way" : `Test run ${run.state}`, sub: [run.label, `started ${fmt.ago(run.started_ms)}`, run.by && run.by !== "open" ? `by ${run.by}` : null].filter(Boolean).join(" · "),
         tools: run.state === "running" ? h("button", { class: "btn sm", onclick: stop, disabled: !can("admin") }, icon("stop"), "Stop") : null,
         body: h("div", { class: "sim-prog" }, phases, h("div", { class: "grow", style: { minWidth: 0 } },
-          last ? h("div", { class: "row", style: { gap: "18px", marginBottom: "6px" } },
-            kv("Rate", fmt.rate(last.rate)), kv("p99", fmt.ms(last.p99_ms), last.holds ? "" : "bad"), kv("Errors", pct(last.error_share, 2)), kv("Coordinator", `${fmt.n(last.busy?.coordinator?.cores_used, 2)} cores`)) : null,
+          lastKvs,
           chart, run.error ? h("div", { class: "error" }, run.error) : null)) }));
   }
   function kv(k, v, tone = "") { return h("div", { class: "sim-kv " + tone }, h("span", { class: "small muted" }, k), h("b", {}, v)); }
@@ -347,6 +479,7 @@ function render(page, route) {
 
   // ---------------------------------------------------------- the report
   function reportView(r) {
+    if (!r.error && r.routing) return routingReport(r);
     if (r.error) {
       return card({ title: `Test run ${r.state}`, sub: fmt.datetime(r.finished_ms), body: h("div", { class: "stack" }, h("div", { class: "error" }, r.error), r.steps?.length ? stepsChart(r.steps, r.config?.slo_p99_ms || 100, null, null) : null) });
     }
@@ -433,6 +566,111 @@ function render(page, route) {
     return h("div", { class: "stack" }, verdict, kpis, checks,
       h("div", { class: "grid g2" }, chart, util),
       whatIfBox, adv, kinds, steps, notes);
+  }
+
+  // ---------------------------------------------------------- choosing a copy, shown
+  const metricFmt = (metric) => (v) => (v == null ? "–" : metric === "qps" ? fmt.si(v) + "/s" : fmt.ms(v));
+  /** A setting a row, a count of clients a column: the measure chosen,
+   * the best of each column marked, each against the first setting, and
+   * the model's under it when there is one. */
+  function routeTable({ variants, clients, rows, model, metric }) {
+    const up = metric === "qps", f = metricFmt(metric);
+    const at = (rs, vi, c) => rs?.find((x) => x.variant === vi && x.clients === c);
+    const best = {};
+    for (const c of clients) {
+      const vs = variants.map((_, vi) => at(rows, vi, c)?.[metric]).filter((v) => v != null);
+      best[c] = vs.length > 1 ? (up ? Math.max(...vs) : Math.min(...vs)) : null;
+    }
+    const top = clients[clients.length - 1];
+    const cols = [{ key: "name", label: "Setting", sortable: false, render: (r) => h("b", {}, r.name) }];
+    for (const c of clients) {
+      cols.push({ key: "c" + c, label: clientsText(c), num: true, sortable: false, render: (r) => {
+        const x = at(rows, r.vi, c), v = x?.[metric], first = at(rows, 0, c)?.[metric];
+        const d = r.vi > 0 && v != null && first > 0 ? v / first - 1 : null;
+        const m = model ? at(model, r.vi, c)?.[metric] : null;
+        const range = x?.[metric + "_range"];
+        return h("div", { class: "sim-rcell", title: range && x.turns > 1 ? `${x.turns} rounds: ${f(range[0])} to ${f(range[1])}` : "" },
+          h("span", { class: v != null && v === best[c] ? "sim-best" : "" }, f(v)),
+          d != null && Math.abs(d) >= 0.03 ? h("span", { class: "sim-delta " + ((d > 0) === up ? "good" : "bad"), title: `against ${variants[0]?.name}` }, signed(d, (z) => pct(z))) : null,
+          model ? h("div", { class: "small muted" }, m == null ? "" : `model ${f(m)}`) : null);
+      } });
+    }
+    cols.push({ key: "hedges", label: `Hedges/s at ${fmt.n(top)}`, num: true, sortable: false, render: (r) => { const x = at(rows, r.vi, top); return x?.hedges_per_s == null ? "–" : fmt.n(x.hedges_per_s, 1); } });
+    cols.push({ key: "copies", label: `By copy at ${fmt.n(top)}`, title: `How shard 0's reads spread over its copies, at ${clientsText(top)}`, num: true, sortable: false, render: (r) => { const x = at(rows, r.vi, top); return x?.by_copy?.length ? x.by_copy.map((s) => pct(s)).join(" · ") : "–"; } });
+    return table(cols, { rows: variants.map((v, vi) => ({ ...v, vi })), compact: true });
+  }
+  function metricsSeg(rows) {
+    const has = (k) => rows?.some((r) => r[k] != null);
+    const opts = RMETRICS.filter(([k]) => k !== "after_write_p99_ms" || has(k));
+    if (!opts.some(([k]) => k === rmetric)) rmetric = "p99_ms";
+    return seg(opts, rmetric, (v) => { rmetric = v; drawBody(); }, { "aria-label": "Measure shown" });
+  }
+  function bestList(best, variants) {
+    const nm = (i) => (i == null ? "–" : variants[i]?.name || "–");
+    return h("ul", { class: "small dim", style: { margin: 0, paddingLeft: "18px" } }, (best || []).map((b) => h("li", {}, `${clientsText(b.clients)}: lowest p99 ${nm(b.p99)}; lowest p99.9 ${nm(b.p999)}; most throughput ${nm(b.qps)}.`)));
+  }
+  function previewView() {
+    const a = rprev, faults = view.routing?.faults || [];
+    const faultSel = h("select", { class: "select sm", "aria-label": "What if", style: { maxWidth: "260px" } }, faults.map((x) => h("option", { value: x.fault, selected: x.fault === rfault }, FAULT_NOTE[x.fault] || x.fault)));
+    faultSel.onchange = () => { rfault = faultSel.value; preview(); };
+    const tools = h("div", { class: "row nw", style: { gap: "8px" } }, h("span", { class: "small muted", style: { whiteSpace: "nowrap" } }, "What if"), faultSel);
+    if (!a) return card({ title: "Choosing a copy, by the model", tools, body: rprevErr ? failure(rprevErr, "The model") : h("div", { class: "small muted", style: { padding: "30px 0", textAlign: "center" } }, "Running the model…") });
+    const s = a.setup;
+    return card({
+      title: "Choosing a copy, by the model", sub: `${fmt.n(s.shards)} ${s.shards === 1 ? "shard" : "shards"} of ${fmt.n(s.copies)} copies, ${FAULT_NOTE[a.scenario.fault] || a.scenario.fault}${a.scenario.after_write > 0 ? `, ${pct(a.scenario.after_write)} of reads right after a write` : ""}`, tools,
+      body: h("div", { class: "stack" },
+        h("div", { class: "row between", style: { gap: "8px", flexWrap: "wrap" } }, metricsSeg(a.rows), h("span", { class: "small muted" }, rprevBusy ? "Running the model…" : `${fmt.n(a.scenario.seconds)} s simulated a cell, ${a.scenario.seeds} seeds, in ${fmt.n(a.ms)} ms`)),
+        rprevErr ? h("div", { class: "error" }, rprevErr.message) : null,
+        routeTable({ variants: a.variants, clients: a.clients, rows: a.rows, metric: rmetric }),
+        bestList(a.best, a.variants),
+        h("div", { class: "sim-note small" }, icon("info"), h("span", {}, a.trust)),
+        h("div", { class: "small muted" }, `Calibration: ${s.source}.`)),
+    });
+  }
+  function routingReport(r) {
+    const R = r.routing, vs = R.variants, cs = R.clients, top = cs[cs.length - 1];
+    const f = metricFmt("p99_ms");
+    const at = (vi, c) => R.measured.find((x) => x.variant === vi && x.clients === c);
+    const b = R.best.find((x) => x.clients === top);
+    const headline = b?.p99 != null
+      ? `At ${clientsText(top)}, ${vs[b.p99].name} had the lowest p99 (${f(at(b.p99, top)?.p99_ms)})${b.p99 !== 0 ? `, against ${f(at(0, top)?.p99_ms)} for ${vs[0].name}` : ""}; ${b.qps != null ? `${vs[b.qps].name} answered the most (${fmt.si(at(b.qps, top)?.qps)}/s).` : ""}`
+      : "No setting finished a turn.";
+    const errs = (k) => { const xs = (R.compare || []).map((e) => Math.abs(e[k])).filter(Number.isFinite).sort((x, y) => x - y); return xs.length ? xs[Math.floor(xs.length / 2)] / 100 : null; };
+    const qe = errs("qps_error_pct"), pe = errs("p99_error_pct");
+    const head = h("div", { class: "banner sim-verdict info" },
+      h("div", { class: "grow" },
+        h("div", { class: "row", style: { gap: "8px" } }, h("span", { class: "big" }, "Choosing a copy, measured"), h("span", { class: "small muted" }, [r.label, r.cluster?.text, fmt.datetime(r.finished_ms)].filter(Boolean).join(" · "))),
+        h("div", {}, headline)));
+    const main = card({
+      title: "Each setting on this cluster", sub: `the median of ${R.rounds} ${R.rounds === 1 ? "round" : "rounds"} of ${fmt.n(R.step_s)} s, the model's under it`,
+      tools: metricsSeg(R.measured),
+      body: h("div", { class: "stack" },
+        routeTable({ variants: vs, clients: cs, rows: R.measured, model: R.model?.rows, metric: rmetric }),
+        bestList(R.best, vs),
+        qe != null ? h("div", { class: "small dim" }, `The model, calibrated by this run's own measurements, was off by a median ${pct(qe)} on throughput and ${pct(pe)} on p99 here.`) : null,
+        r.cluster?.shared_host ? h("div", { class: "sim-note small" }, icon("info"), h("span", {}, "These copies share a machine, so they take cores from each other; the model gives each copy a machine of its own, so expect it to be further off here.")) : null),
+    });
+    const turns = card({ title: "Turns", sub: "each setting at each level, in the order they ran", flush: true, body: turnsTable(R.turns) });
+    const notes = card({ title: "How it was measured", body: h("div", { class: "stack small dim", style: { gap: "6px" } },
+      h("p", { style: { margin: 0 } }, "Each setting ran through a coordinator of its own, made for the test on this cluster's copies, with this coordinator's other settings. At each level the clients each sent the mix's next request when the last was answered (a closed loop), for two seconds untimed and then a turn timed. The settings took turns, each round starting at another, so a slow minute of the cluster falls on more than one. The cells are the medians over the rounds, their range in the tooltip."),
+      h("p", { style: { margin: 0 } }, `Reads right after a write: ${pct(R.after_write)} of requests wrote a row and read it back as the write answered. Shard 0's reads by copy are the answers each copy gave the test's coordinator.`),
+      h("p", { style: { margin: 0 } }, "This coordinator's settings did not change: set them under Settings, Search.")) });
+    return h("div", { class: "stack" }, head, main, turns, notes);
+  }
+  function turnsTable(turns) {
+    const t = table([
+      { key: "name", label: "Setting", render: (t) => h("b", {}, t.name) },
+      { key: "clients", label: "Clients", num: true, render: (t) => fmt.n(t.clients) },
+      { key: "round", label: "Round", num: true, render: (t) => String((t.round ?? 0) + 1) },
+      { key: "qps", label: "Throughput", num: true, render: (t) => (t.qps == null ? "–" : fmt.si(t.qps) + "/s") },
+      { key: "p50_ms", label: "p50", num: true, render: (t) => fmt.ms(t.p50_ms) },
+      { key: "p99_ms", label: "p99", num: true, render: (t) => fmt.ms(t.p99_ms) },
+      { key: "p999_ms", label: "p99.9", num: true, render: (t) => fmt.ms(t.p999_ms) },
+      { key: "hedges_per_s", label: "Hedges/s", num: true, render: (t) => (t.hedges_per_s == null ? "–" : fmt.n(t.hedges_per_s, 1)) },
+      { key: "errors", label: "Errors", num: true, render: (t) => (t.error ? h("span", { class: "sim-bad", title: t.error }, "failed") : fmt.n(t.errors || 0)) },
+    ], { rows: turns, compact: true, maxHeight: "340px" });
+    t.classList.add("sim-turns");
+    return t;
   }
 
   function kpi(label, value, unit, sub) {

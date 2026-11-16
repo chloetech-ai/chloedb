@@ -105,7 +105,7 @@ fn node(n: &Node) -> pb::Node {
         Node::Aggregate { input, keys, aggs } => N::Aggregate(Box::new(pb::Aggregate {
             input: boxed(input),
             keys: keys.iter().map(ex).collect(),
-            aggs: aggs.iter().map(|a| pb::Agg { func: agg_fn(a.func) as i32, arg: a.arg.as_ref().map(ex), fraction: a.func.percentile().map_or(0.0, |(p, _)| p) }).collect(),
+            aggs: aggs.iter().map(|a| pb::Agg { func: agg_fn(a.func) as i32, arg: a.arg.as_ref().map(ex), fraction: a.func.fraction().unwrap_or(0.0) }).collect(),
         })),
         Node::Filter { input, cond } => N::Filter(Box::new(pb::Filter { input: boxed(input), cond: bex(cond) })),
         Node::Sort { input, keys } => N::Sort(Box::new(pb::Sort { input: boxed(input), keys: keys.iter().map(sort_key).collect() })),
@@ -129,6 +129,7 @@ fn node(n: &Node) -> pb::Node {
             kind: match kind {
                 JoinKind::Inner => pb::JoinKind::Inner,
                 JoinKind::Left => pb::JoinKind::Left,
+                JoinKind::Full => pb::JoinKind::Full,
                 JoinKind::AsOf => pb::JoinKind::AsOf,
             } as i32,
             keys: keys.iter().map(|k| pb::JoinKey { left: Some(ex(&k.left)), right: Some(ex(&k.right)), left_links: k.left_links, right_links: k.right_links }).collect(),
@@ -258,6 +259,7 @@ fn from_agg_fn(n: i32, fraction: Option<f64>) -> Result<AggFn, ApiError> {
         pb::AggFn::CountDistinct => AggFn::CountDistinct,
         pb::AggFn::PercentileCont => AggFn::PercentileCont(fraction()?),
         pb::AggFn::PercentileDisc => AggFn::PercentileDisc(fraction()?),
+        pb::AggFn::ApproxPercentile => AggFn::ApproxPercentile(fraction()?),
     })
 }
 
@@ -271,6 +273,7 @@ fn agg_fn(f: AggFn) -> pb::AggFn {
         AggFn::CountDistinct => pb::AggFn::CountDistinct,
         AggFn::PercentileCont(_) => pb::AggFn::PercentileCont,
         AggFn::PercentileDisc(_) => pb::AggFn::PercentileDisc,
+        AggFn::ApproxPercentile(_) => pb::AggFn::ApproxPercentile,
     }
 }
 
@@ -373,6 +376,7 @@ fn expr(e: &Expr) -> E {
                 Func::DatePart => pb::Func::DatePart,
                 Func::Strftime => pb::Func::Strftime,
                 Func::Hash => pb::Func::Hash,
+                Func::DateBin => pb::Func::DateBin,
             } as i32,
             args: args.iter().map(ex).collect(),
         }),
@@ -577,6 +581,7 @@ fn from_node_in(n: pb::Node) -> Result<Node, ApiError> {
             let kind = match en::<pb::JoinKind>(j.kind, "join kind")? {
                 pb::JoinKind::Inner => JoinKind::Inner,
                 pb::JoinKind::Left => JoinKind::Left,
+                pb::JoinKind::Full => JoinKind::Full,
                 pb::JoinKind::AsOf => JoinKind::AsOf,
             };
             let keys = j
@@ -735,6 +740,7 @@ fn from_expr(e: E) -> Result<Expr, ApiError> {
                 pb::Func::DatePart => Func::DatePart,
                 pb::Func::Strftime => Func::Strftime,
                 pb::Func::Hash => Func::Hash,
+                pb::Func::DateBin => Func::DateBin,
             };
             Expr::Call { func, args: from_exprs(c.args)? }
         }

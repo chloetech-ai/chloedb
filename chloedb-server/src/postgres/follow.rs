@@ -126,7 +126,7 @@ fn pg(e: wire::Error) -> ApiError {
     // A slot still held by the connection of a follower just gone (or of
     // another): its walsender lets go of it soon.
     let again = e.io || e.is("55006");
-    ApiError { status: if again { 503 } else { 400 }, message: e.message }
+    ApiError { code: None, status: if again { 503 } else { 400 }, message: e.message }
 }
 
 /// A table as the follower writes it: a Postgres relation and its Strata table.
@@ -440,12 +440,12 @@ impl Follower {
         }
         if r.get(0, "plugin") != Some("pgoutput") || r.get(0, "database") != Some(self.cfg.database.as_str()) {
             return Err(ApiError {
-                status: 409,
+                code: None, status: 409,
                 message: format!("slot {} is another's (plugin {:?}, database {:?}): give this follower another (--slot)", self.slot, r.get(0, "plugin"), r.get(0, "database")),
             });
         }
         if let Some(pid) = r.get(0, "active_pid") {
-            return Err(ApiError { status: 409, message: format!("slot {} is in use by another connection (process {pid}): is another follower of {} running?", self.slot, self.o.name) });
+            return Err(ApiError { code: None, status: 409, message: format!("slot {} is in use by another connection (process {pid}): is another follower of {} running?", self.slot, self.o.name) });
         }
         Ok(Some(SlotState { lost: r.get(0, "wal_status") == Some("lost") }))
     }
@@ -648,7 +648,7 @@ impl Follower {
         let pk = have.primary_key.map(|k| have.fields[k].name.clone());
         if !pk.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(&key)) {
             return Err(ApiError {
-                status: 409,
+                code: None, status: 409,
                 message: format!("table {} here is keyed by {}, and {} by {key}: drop it here, or make it with the key {key}", rel.table, pk.unwrap_or_else(|| "nothing".into()), rel.shown),
             });
         }
@@ -677,7 +677,7 @@ impl Follower {
     }
 
     fn schema(&self, table: &str) -> Result<Arc<Schema>, ApiError> {
-        self.tables.get(&table.to_ascii_lowercase()).cloned().ok_or_else(|| ApiError { status: 409, message: format!("table {table} is gone from ChloeDB: copy again (--copy)") })
+        self.tables.get(&table.to_ascii_lowercase()).cloned().ok_or_else(|| ApiError { code: None, status: 409, message: format!("table {table} is gone from ChloeDB: copy again (--copy)") })
     }
 
     /// Writes `ops` until Strata takes them.
@@ -695,14 +695,14 @@ impl Follower {
                     tokio::time::sleep(wait).await;
                     wait = (wait * 2).min(Duration::from_secs(5));
                 }
-                Err(e) => return Err(ApiError { status: e.status, message: format!("writing to ChloeDB: {}", e.message) }),
+                Err(e) => return Err(ApiError { code: None, status: e.status, message: format!("writing to ChloeDB: {}", e.message) }),
             }
         };
         self.stats.writes += 1;
         self.stats.skipped += j["skipped"].as_u64().unwrap_or(0);
         if let Some(c) = &self.o.crash_after {
             if c.load(Ordering::SeqCst) > 0 && c.fetch_sub(1, Ordering::SeqCst) == 1 {
-                return Err(ApiError { status: 500, message: "stopped, as a test asked".into() });
+                return Err(ApiError { code: None, status: 500, message: "stopped, as a test asked".into() });
             }
         }
         if let Some(s) = j["seq_nos"].as_array() {
@@ -936,11 +936,11 @@ impl Follower {
                     }
                     match tokio::time::timeout(POLL_EVERY, rx.recv()).await {
                         Ok(Some(b)) => b,
-                        Ok(None) => return Err(ApiError { status: 503, message: "the stream ended".into() }),
+                        Ok(None) => return Err(ApiError { code: None, status: 503, message: "the stream ended".into() }),
                         Err(_) => continue,
                     }
                 }
-                Err(_) => return Err(ApiError { status: 503, message: "the stream ended".into() }),
+                Err(_) => return Err(ApiError { code: None, status: 503, message: "the stream ended".into() }),
             };
             let b = b.map_err(pg)?;
             match pgoutput::frame(&b).map_err(pg)? {
@@ -1060,7 +1060,7 @@ impl Follower {
 
     /// The relation a change names, as this session's stream described it.
     fn rel(&self, oid: u32) -> Result<Arc<Rel>, ApiError> {
-        self.rels.get(&oid).cloned().ok_or_else(|| ApiError { status: 503, message: format!("a change of relation {oid}, which the stream did not describe first") })
+        self.rels.get(&oid).cloned().ok_or_else(|| ApiError { code: None, status: 503, message: format!("a change of relation {oid}, which the stream did not describe first") })
     }
 
     /// Adds an operation of the open transaction, writing a step of it

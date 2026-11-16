@@ -1,7 +1,11 @@
 """Placeholder for ChloeDB; see the README."""
 
 raise ImportError(
-    "chloedb 0.0.2 on PyPI is a placeholder that holds the name for ChloeDB (https://github.com/chloetech-ai/chloedb); "
-    "it has no code. Install a release from GitHub instead, as https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/python.md#install says: "
-    "pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v<version> (the newest at https://github.com/chloetech-ai/chloedb/releases)"
+    "This is chloedb 0.0.3, a placeholder that holds the name on PyPI for ChloeDB "
+    "(https://github.com/chloetech-ai/chloedb), not ChloeDB itself. "
+    "pip picked it because ChloeDB has no wheel for this platform or this Python: its wheels are for "
+    "CPython 3.10 or later on Linux x86_64 and aarch64 (glibc 2.28 or later) and macOS 11 or later. "
+    "Elsewhere (Windows: use WSL 2; Alpine; an older Python), build it from source, which needs Rust and a C compiler: "
+    "git clone https://github.com/chloetech-ai/chloedb && pip install --upgrade ./chloedb/chloedb-py "
+    "(see https://chloetech-ai.github.io/chloedb/site/docs/python.html#from-source)."
 )

@@ -301,6 +301,49 @@ async fn a_backtest_replays_a_rule_over_the_load_kept() {
     assert_eq!(j["fired"].as_array().map(Vec::len), Some(1), "{j}");
 }
 
+/// With no log store, a backtest covers what memory holds and says so,
+/// rather than refusing its default day; `from` and `to` are epoch
+/// milliseconds or ISO 8601 text, anything else refused; `rule` may be a
+/// rule's id.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_backtest_without_a_log_store_covers_memory_and_reads_iso_times() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(dir.path()));
+    let base = http(svc.clone()).await;
+    let t = chloedb_server::telemetry::now_ms();
+    for i in 0..30u64 {
+        let mut s = chloedb_server::telemetry::Sample { ts_ms: t - (30 - i) * 2000, ..Default::default() };
+        s.gauges.insert("write_queue", 5.0);
+        svc.series.add(s);
+    }
+    let rule = json!({"id": "w", "name": "w", "metric": "write_queue", "op": ">", "threshold": 1.0});
+    // The default (a day) is more than memory holds: it covers memory.
+    let (status, j) = call(&base, "POST", "/v1/alerts/backtest", Some(json!({"rule": rule.clone()}))).await;
+    assert_eq!((status, j["source"].as_str()), (200, Some("memory")), "{j}");
+    let note = j["note"].as_str().unwrap_or_default();
+    assert!(note.contains("no log store") && note.contains("by default"), "{j}");
+    assert!(j["from"].as_u64().is_some_and(|f| f >= t - 62_000), "from is memory's first point: {j}");
+    assert_eq!(j["fired"].as_array().map(Vec::len), Some(1), "{j}");
+    // ISO 8601 text is a time, the same as its milliseconds.
+    let iso = chloedb::timestamp::format((t as i64 - 3_600_000) * 1000);
+    let (status, j) = call(&base, "POST", "/v1/alerts/backtest", Some(json!({"rule": rule.clone(), "from": iso, "to": chloedb::timestamp::format(t as i64 * 1000)}))).await;
+    assert_eq!(status, 200, "{j}");
+    assert!(j["note"].as_str().is_some_and(|n| !n.contains("by default")), "{j}");
+    let (status, j) = call(&base, "POST", "/v1/alerts/backtest", Some(json!({"rule": rule.clone(), "from": (t - 50_000).to_string()}))).await;
+    assert_eq!(status, 200, "{j}");
+    assert_eq!(j["from"].as_u64(), Some(t - 50_000), "within memory, as asked: {j}");
+    assert!(j["note"].is_null(), "{j}");
+    // Garbage is refused, not taken for the default.
+    let (status, j) = call(&base, "POST", "/v1/alerts/backtest", Some(json!({"rule": rule, "from": "yesterday-ish"}))).await;
+    assert_eq!(status, 400, "{j}");
+    assert!(j["error"].as_str().unwrap_or_default().contains("ISO 8601"), "{j}");
+    // A rule's id names one of the server's rules.
+    let (status, j) = call(&base, "POST", "/v1/alerts/backtest", Some(json!({"rule": "p99-jump"}))).await;
+    assert_eq!(status, 200, "{j}");
+    let (status, j) = call(&base, "POST", "/v1/alerts/backtest", Some(json!({"rule": "no-such-rule"}))).await;
+    assert_eq!(status, 400, "{j}");
+}
+
 // ---------------------------------------------------- a cluster's copies
 
 /// A port free now, of a block of 20 this test process takes alone.

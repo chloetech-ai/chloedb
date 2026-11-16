@@ -42,6 +42,20 @@ header .meta b { color: var(--text); font-weight: 600; }
 header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); display: inline-block; margin-right: 5px; }
 header .dot.busy { background: var(--warn); animation: pulse 1s infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
+.ver { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.ver[hidden] { display: none; }
+.ver .chip { border-radius: 10px; padding: 1px 8px; border: 1px solid var(--line); }
+.ver .chip.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.ver .chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+.ver .chip.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, transparent); }
+.ver button { padding: 2px 9px; font-size: 12px; }
+.ver button.linkish { border: none; background: none; color: var(--accent); padding: 2px 4px; }
+.verlog { position: fixed; top: 52px; right: 16px; width: min(640px, calc(100vw - 32px)); max-height: 60vh; z-index: 30; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+.verlog[hidden] { display: none; }
+.verlog .head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.verlog .head span { flex: 1; }
+.verlog pre { margin: 0; padding: 10px 12px; overflow: auto; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; }
 .find { position: relative; margin-left: auto; }
 .find input { width: 260px; }
 .sugg { position: absolute; top: calc(100% + 4px); left: 0; min-width: 100%; max-width: 480px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,.12); z-index: 20; display: none; padding: 3px 0; }
@@ -205,8 +219,13 @@ main { flex: 1; min-height: 0; height: auto; grid-template-rows: minmax(0, 1fr);
 <header>
   <h1>ChloeCtx Inspector</h1>
   <div class="meta" id="meta"></div>
+  <div class="ver" id="ver" hidden></div>
   <div class="find"><input id="find" class="mono" placeholder="Find an entity or file" autocomplete="off" spellcheck="false" title="Completes the names of entities and the paths of files that records link to, most linked first"></div>
 </header>
+<div class="verlog" id="verlog" hidden>
+  <div class="head"><span id="verlog-title">Update</span><button id="verlog-close">Close</button></div>
+  <pre id="verlog-text"></pre>
+</div>
 <main>
   <section id="chat">
     <div id="chatbar">
@@ -892,6 +911,71 @@ async function poll() {
   setTimeout(poll, S.busy ? 600 : 1500);
 }
 
+// ------------------------------------------------------------------ version (chloectx ui)
+// The version this server runs and whether the checkout it was built from
+// has a newer one; Update runs `chloectx upgrade` (pull, build, install).
+// The demo's server has no /api/version, and the element stays hidden.
+const VER = {v: null, timer: null};
+async function loadVersion(check = "") {
+  let v;
+  try {
+    const r = await fetch(`/api/version${check ? "?check=" + check : ""}`);
+    if (!r.ok) return;
+    v = await r.json();
+  } catch { return; }
+  VER.v = v;
+  renderVersion();
+  const u = v.update;
+  if (u && u.running && !VER.timer) VER.timer = setInterval(() => loadVersion(), 2000);
+  if ((!u || !u.running) && VER.timer) { clearInterval(VER.timer); VER.timer = null; }
+}
+
+function renderVersion() {
+  const v = VER.v, el = $("#ver");
+  if (!v) return;
+  const s = v.standing, u = v.update;
+  const build = v.build ? v.build.slice(0, 10) : "";
+  const title = [`ChloeCtx ${v.version}`, build && `built from ${v.build}`, v.source && `checkout: ${v.source}`, s && `compared with ${s.upstream}`,
+    v.fetched_at && `last fetched ${fmtDate(v.fetched_at)}`].filter(Boolean).join("\n");
+  let status;
+  if (u && u.running) status = `<span class="chip warn">updating…</span><button class="linkish" id="ver-log">output</button>`;
+  else if (u && u.installed_new) status = `<span class="chip ok" title="${esc(u.installed || "")}">updated</span><button class="linkish" id="ver-log">restart chloectx ui to use it</button>`;
+  else if (u && u.exit === 0) status = `<span class="chip ok">up to date</span><button class="linkish" id="ver-log">output</button>`;
+  else if (u && u.exit != null) status = `<span class="chip bad">update failed</span><button class="linkish" id="ver-log">output</button><button id="ver-update">Retry</button>`;
+  else if (!s) status = `<span class="chip" title="This build does not know the checkout it came from, so it cannot compare. Reinstall from a checkout with ./install.sh.">version check unavailable</span>`;
+  else if (s.behind === 0) status = `<span class="chip ok" title="${esc(v.line || "")}">up to date</span><button class="linkish" id="ver-check" title="Fetch ${esc(s.upstream)} and compare again">check</button>`;
+  else status = `<span class="chip warn" title="${esc(v.line || "")}">${s.behind} update${s.behind === 1 ? "" : "s"}</span><button class="primary" id="ver-update" title="Runs chloectx upgrade: pulls ${esc(s.upstream)}, builds and installs (several minutes)">Update</button>`;
+  el.innerHTML = `<span title="${esc(title)}">ChloeCtx <b>${esc(v.version)}</b>${build ? ` · <span class="mono">${esc(build)}</span>` : ""}</span>${status}`;
+  el.hidden = false;
+  const on = (id, f) => { const b = $("#" + id); if (b) b.onclick = f; };
+  on("ver-check", async () => { $("#ver-check").textContent = "checking…"; await loadVersion("force"); });
+  on("ver-update", startUpdate);
+  on("ver-log", showUpdateLog);
+  if (!$("#verlog").hidden) showUpdateLog();
+}
+
+async function startUpdate() {
+  if (!confirm("Update ChloeCtx now?\n\nThis runs chloectx upgrade: it pulls the checkout, builds a release (several minutes) and installs it. ChloeCtx's daemons stop and start again with the new version on the next hook.")) return;
+  const r = await fetch("/api/update", {method: "POST", headers: {"X-ChloeCtx-UI": "1"}});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(j.error || `update refused (${r.status})`); return; }
+  await loadVersion();
+  showUpdateLog();
+}
+
+function showUpdateLog() {
+  const u = VER.v && VER.v.update;
+  if (!u) return;
+  $("#verlog-title").textContent = u.running ? "Updating ChloeCtx…"
+    : u.installed_new ? `Installed ${u.installed}${u.exit === 0 ? "" : ", but chloectx doctor reported a problem (below)"}. Restart chloectx ui to use it; new Claude Code sessions use it on their own.`
+    : u.exit === 0 ? "ChloeCtx was already up to date."
+    : `The update failed (exit ${u.exit}); nothing new was installed.`;
+  const pre = $("#verlog-text"), atEnd = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  pre.textContent = u.log || "";
+  if (atEnd) pre.scrollTop = pre.scrollHeight;
+  $("#verlog").hidden = false;
+}
+
 // ------------------------------------------------------------------ knowledge
 async function loadKnowledge() {
   const r = rowsAsObjects(await sql(`SELECT id, session, kind, tag, turn, seq, ts, text, links FROM memory WHERE kind IN (${KNOWLEDGE.map(q1).join(", ")}) ORDER BY seq DESC LIMIT 400`));
@@ -1452,7 +1536,10 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") $("#drawer")
 setExample(0);
 if (document.body.classList.contains("browse")) $("#log").innerHTML = `<p class="hint">Opening the store (its daemon may need a moment to start)…</p>`;
 else emptyChat();
+$("#verlog-close").onclick = () => { $("#verlog").hidden = true; };
 loadInfo().then(poll);
+// The last check at once, then a fresh one (it fetches at most every ten minutes).
+loadVersion().then(() => loadVersion("1"));
 </script>
 </body>
 </html>

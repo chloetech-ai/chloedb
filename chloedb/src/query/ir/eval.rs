@@ -186,7 +186,7 @@ pub fn eval(e: &Expr, row: &Row) -> Result<Value> {
             let x = eval(expr, row)?;
             match eval(pattern, row)? {
                 Value::Str(p) => {
-                    let fold = |s: &str| if *case_insensitive { s.to_lowercase() } else { s.to_string() };
+                    let fold = |s: &str| if *case_insensitive { fold_case(s) } else { s.to_string() };
                     let p: Vec<char> = fold(&p).chars().collect();
                     any(&x, |v| Ok(if let Value::Str(s) = v { Some(like(&fold(s).chars().collect::<Vec<_>>(), &p)) } else { None }))?
                 }
@@ -453,6 +453,7 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
             Ok(if r.is_nan() { Value::Null } else { Value::Float(r) })
         }
         Func::DateTrunc | Func::DatePart | Func::Strftime => dates(func, &one, args.get(1).unwrap_or(&Value::Null)),
+        Func::DateBin => date_bin(&one, args.get(1).unwrap_or(&Value::Null), args.get(2)),
         Func::Hash => hash(&one, args.get(1).unwrap_or(&Value::Int(0))),
         // With the kernel similarity() uses, so the two agree to the bit.
         Func::Dot => match (vector(&one)?, vector(args.get(1).unwrap_or(&Value::Null))?) {
@@ -533,6 +534,43 @@ fn dates(func: Func, how: &Value, t: &Value) -> Result<Value> {
     })
 }
 
+/// A TIMESTAMP argument of `func`: a TIMESTAMP, or ISO 8601 text of one;
+/// `None` for NULL.
+fn time_arg(func: Func, t: &Value) -> Result<Option<i64>> {
+    Ok(match t {
+        Value::Null => None,
+        Value::Timestamp(m) => Some(*m),
+        Value::Str(s) => Some(crate::timestamp::parse(s).ok_or_else(|| err(format!("{}: {} is not a time (ISO 8601: '2026-11-05' or '2026-11-05T07:30:00Z')", func.name(), sv(t))))?),
+        v => return Err(err(format!("{} takes a TIMESTAMP, not {}", func.name(), sv(v)))),
+    })
+}
+
+/// The width of `date_bin`'s buckets, in microseconds, from its text.
+pub(crate) fn stride(width: &str) -> Result<i64> {
+    crate::timestamp::parse_stride(width).ok_or_else(|| {
+        err(format!("date_bin's width is a whole number of a fixed unit ('5 minutes', '1 hour', '30s', '250ms', '1 day', '1 week'), not {width:?}; months and years are date_trunc's"))
+    })
+}
+
+/// `date_bin(width, t [, origin])` ([`Func::DateBin`]): NULL for a NULL
+/// argument.
+fn date_bin(width: &Value, t: &Value, origin: Option<&Value>) -> Result<Value> {
+    let width = match width {
+        Value::Null => return Ok(Value::Null),
+        Value::Str(s) => stride(s)?,
+        v => return Err(err(format!("date_bin's first argument is text, a width ('5 minutes'), not {}", sv(v)))),
+    };
+    let origin = match origin {
+        None => 0,
+        Some(o) => match time_arg(Func::DateBin, o)? {
+            Some(o) => o,
+            None => return Ok(Value::Null),
+        },
+    };
+    let Some(micros) = time_arg(Func::DateBin, t)? else { return Ok(Value::Null) };
+    crate::timestamp::bin(micros, width, origin).map(Value::Timestamp).ok_or_else(|| err(format!("date_bin of {}: the start is outside the times a TIMESTAMP holds", sv(t))))
+}
+
 /// A vector argument: a vector, or a list of numbers as a parameter
 /// gives one; `None` for NULL.
 fn vector(v: &Value) -> Result<Option<std::borrow::Cow<'_, [f32]>>> {
@@ -542,6 +580,22 @@ fn vector(v: &Value) -> Result<Option<std::borrow::Cow<'_, [f32]>>> {
         Value::List(xs) if xs.iter().all(|x| matches!(x, Value::Int(_) | Value::Float(_))) => Some(xs.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect()),
         v => return Err(err(format!("dot takes vectors, not {}", sv(&v)))),
     })
+}
+
+/// `s` as `ILIKE` compares it: each character by itself lowercased to one
+/// character (the first of its lowercase: a capital `İ` is an `i`), and a
+/// final sigma as the other sigma. `str::to_lowercase` lowercases a capital
+/// sigma by where its word ends, so a pattern's `Σ` before a `%` or `_`
+/// (which are not letters) was always final, and a value's in the middle of
+/// a word never: `'ΟΔΟΣΑ' ILIKE 'ΟΔΟΣ%'` did not hold. PostgreSQL folds a
+/// character at a time too.
+pub(crate) fn fold_case(s: &str) -> String {
+    s.chars()
+        .map(|c| match c.to_lowercase().next().unwrap_or(c) {
+            'ς' => 'σ',
+            c => c,
+        })
+        .collect()
 }
 
 /// SQL LIKE: `%` any run, `_` one character. Greedy matching that backs

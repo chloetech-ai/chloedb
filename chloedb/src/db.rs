@@ -33,9 +33,11 @@ use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, 
 use crate::value::{Document, Value};
 use crate::vector::VectorReader;
 
+mod recommend;
 mod rollup;
 mod writes;
-pub use rollup::RefreshStats;
+pub use recommend::{RecommendSql, Recommended};
+pub use rollup::{RefreshStats, RollupHealth};
 pub use writes::{Footprints, WriteOp, WriteStats, GROUP_OPS};
 
 /// What [`Db::sql`] returns.
@@ -45,6 +47,39 @@ pub enum SqlResult {
     /// Documents inserted, updated or deleted (0 for `CREATE TABLE` and
     /// `DROP TABLE`).
     Written(u64),
+}
+
+/// The end of the error of a write whose table was altered (or dropped and
+/// created again) after the write was bound and before it ran
+/// ([`Db::write_prepared`]): bound again, it runs.
+const ALTERED: &str = "while the statement ran; run it again";
+
+/// How many times a write whose table was altered as it ran is bound again
+/// and run ([`altered_while_running`]) before its error is answered: each
+/// time lost is an `ALTER TABLE` that committed meanwhile.
+pub const ALTERED_TRIES: usize = 10;
+
+/// Whether the error `message` says that the write's table was altered
+/// after the write was bound, so that the same statement bound again may
+/// run: an `ALTER TABLE` raced it.
+pub fn altered_while_running(message: &str) -> bool {
+    message.contains(ALTERED)
+}
+
+/// Refuses a derived field of table `table` whose dictionary
+/// (`dict:<table>.<field>`) is a field of that table itself: every write
+/// changes the dictionary it reads, so each would read the table's values
+/// again before it is written (audit 4, X-C2). Checked when a table is
+/// made or a column added, so that a database that holds one still opens.
+fn no_self_dictionary(table: &str, f: &crate::schema::Field) -> Result<()> {
+    let Some(d) = f.derive.as_ref().filter(|d| d.model.starts_with(crate::content::DICT)) else { return Ok(()) };
+    match crate::content::DictEntities::new(&d.model, crate::text::Analyzer::default()) {
+        Ok(dict) if dict.table.eq_ignore_ascii_case(table) => Err(Error::Schema(format!(
+            "field {}: model {} is a dictionary of {table} itself, which each write to {table} would read again: keep the names in a table of their own (CREATE TABLE names (name KEYWORD PRIMARY KEY)) and name it",
+            f.name, d.model
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// An INSERT, UPDATE or DELETE bound to its table, with the vectors it
@@ -142,7 +177,7 @@ pub fn key_value(schema: &Schema, pk: usize, key: &Value) -> Result<Value> {
     match (&f.ty, key) {
         (FieldType::Keyword, Value::Str(_)) | (FieldType::Int, Value::Int(_)) => Ok(key.clone()),
         (FieldType::Int, Value::Str(s)) => s.trim().parse::<i64>().map(Value::Int).map_err(|_| Error::Query(format!("{s:?} is not a key of {}: its key {} is an INT", schema.table, f.name))),
-        _ => Err(Error::Query(format!("{key:?} is not a key of {}: its key {} is {}", schema.table, f.name, if f.ty == FieldType::Int { "an INT" } else { "a KEYWORD" }))),
+        _ => Err(Error::Query(format!("{} is not a key of {}: its key {} is {}", crate::query::hint::sql_value(key), schema.table, f.name, if f.ty == FieldType::Int { "an INT" } else { "a KEYWORD" }))),
     }
 }
 
@@ -219,9 +254,29 @@ pub struct Db {
     function_ddl: std::sync::Mutex<()>,
     /// The gazetteers of keyword fields query understanding read
     /// ([`crate::query::understand`]), by table, field and analyzer, with
-    /// the stamp of the table's snapshot they were read from.
-    gazetteers: std::sync::Mutex<HashMap<(String, String, crate::text::Analyzer), (u64, Arc<crate::query::understand::Gazetteer>)>>,
+    /// the stamp of the table's snapshot they were read from and when.
+    gazetteers: std::sync::Mutex<HashMap<crate::query::understand::Key, ReadGazetteer>>,
+    /// A lock per gazetteer being read, so that one caller reads it while
+    /// the others wait for it, or use the one before ([`Db::gazetteers_at`]).
+    gazetteer_reads: std::sync::Mutex<HashMap<crate::query::understand::Key, Arc<std::sync::Mutex<()>>>>,
+    /// Each rollup's lock, held by its refresh, and how its refreshes went
+    /// ([`Db::rollup_health`]).
+    rollups: rollup::Rollups,
 }
+
+/// A gazetteer [`Db::gazetteers_at`] read: the stamp of its table's
+/// snapshot, and when.
+struct ReadGazetteer {
+    stamp: u64,
+    at: std::time::Instant,
+    g: Arc<crate::query::understand::Gazetteer>,
+}
+
+/// How long a query's understanding may use a gazetteer read before its
+/// table's last writes ([`Db::gazetteers_at`]): a table written 20 times
+/// a second is not read again for each query (audit 4, X-C1). A derived
+/// field's dictionary is always the one of its table as it is.
+pub const GAZETTEER_FRESH: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The model of an embedded VECTOR field, and the field it was set for: it
 /// serves a field of that name, in a table of that name, with the same
@@ -284,6 +339,7 @@ impl Db {
         let db = Db::wrap(Database::open(path, with_source(opts))?);
         db.open_codebooks(&crate::embed::models_dir());
         db.open_content_models();
+        db.refresh_feeds();
         Ok(db)
     }
 
@@ -310,6 +366,8 @@ impl Db {
             functions: std::sync::Mutex::new(None),
             function_ddl: std::sync::Mutex::new(()),
             gazetteers: std::sync::Mutex::new(HashMap::new()),
+            gazetteer_reads: std::sync::Mutex::new(HashMap::new()),
+            rollups: rollup::Rollups::default(),
         }
     }
 
@@ -452,6 +510,9 @@ impl Db {
                 t.commit()?;
             }
         }
+        if !matches!(change, function::Change::Nothing) {
+            self.refresh_feeds();
+        }
         Ok(change)
     }
 
@@ -509,6 +570,9 @@ impl Db {
     /// same place (a model it cannot open leaves the vectors to the writes).
     pub fn create_table(&self, mut schema: Schema) -> Result<()> {
         let name = schema.table.clone();
+        for f in &schema.fields {
+            no_self_dictionary(&name, f)?;
+        }
         let dir = self.models.read().unwrap_or_else(|e| e.into_inner()).clone();
         let models = dir.clone().unwrap_or_else(crate::embed::models_dir);
         crate::sid::resolve(&mut schema, &models)?;
@@ -529,6 +593,11 @@ impl Db {
     /// its as a new table's columns do, after [`Db::open_embedders`].
     pub fn alter_table(&self, table: &str, alters: &[Alter]) -> Result<()> {
         let before = self.table(table)?;
+        for a in alters {
+            if let Alter::AddField(f) = a {
+                no_self_dictionary(&before.table, f)?;
+            }
+        }
         self.storage.alter_table(table, alters)?;
         let after = self.table(table)?;
         self.columns_changed(&before, &after);
@@ -601,6 +670,7 @@ impl Db {
         let before = self.catalog();
         let r = self.storage.apply_shipped(prev, txns);
         self.tables_changed(&before);
+        self.refresh_feeds();
         r
     }
 
@@ -611,6 +681,7 @@ impl Db {
         let before = self.catalog();
         let r = self.storage.install_copy(copy);
         self.tables_changed(&before);
+        self.refresh_feeds();
         r
     }
 
@@ -1047,8 +1118,9 @@ impl Db {
         let snap = self.snapshot();
         for d in dicts {
             let Some(t) = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(&d.table)).map(|s| s.table.clone()) else { continue };
-            if let Ok(g) = self.gazetteers_at(&snap, &[(t.clone(), d.field.clone(), d.analyzer)], &self.exec) {
-                if let Some(g) = g.get(&(t, d.field.clone(), d.analyzer)) {
+            let need = crate::query::understand::Need::listed((t, d.field.clone(), d.analyzer));
+            if let Ok(g) = self.gazetteers_at(&snap, std::slice::from_ref(&need), &self.exec, true) {
+                if let Some(g) = g.get(&need.key) {
                     d.set(g.clone());
                 }
             }
@@ -1417,6 +1489,14 @@ impl Db {
     /// [`crate::query::compound::MAX_ROWS`] rows each; its answer is held
     /// to [`ExecOptions::max_rows`].
     pub fn query_at(&self, snap: &Snapshot, sql: &str, params: &Params, opts: &ExecOptions) -> Result<ResultSet> {
+        // A statement that nests deep runs on a thread with the stack for
+        // it, its planning stops at its deadline as its run does, and it
+        // is held to its budget.
+        crate::query::budget::guarded(sql, opts, |opts| self.query_at_here(snap, sql, params, opts))
+    }
+
+    /// [`Db::query_at`] on this thread.
+    fn query_at_here(&self, snap: &Snapshot, sql: &str, params: &Params, opts: &ExecOptions) -> Result<ResultSet> {
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
@@ -1442,14 +1522,21 @@ impl Db {
     /// looked at for the features it may call), as a step of another reads
     /// it ([`crate::query::pack`]): without printing it and parsing it again.
     fn query_parsed_at(&self, snap: &Snapshot, sql: &str, q: Arc<qsql::Parsed>, params: &Params, opts: &ExecOptions) -> Result<ResultSet> {
+        // `recommend(...)`: the items a recommender ranks for a user, as
+        // `ranked(...)` of their keys, or `FROM recommend(...)`'s rows.
+        if crate::query::recommend::may_recommend(sql) {
+            if let Some(rs) = self.recommend_query(snap, &q.query, params, opts)? {
+                return Ok(rs);
+            }
+        }
         // Understood words (`bm25(.., understand => 'boost')`): the
         // dictionaries of the table's keyword fields, then the query with
         // the conditions the words name.
         if crate::query::understand::may_understand(sql) {
             if let Some(u) = crate::query::understand::plan(&q.query, params)? {
                 let catalog: Vec<Arc<Schema>> = snap.schemas().map(|s| Arc::new(s.clone())).collect();
-                let gaz = self.gazetteers_at(snap, &u.needs(&catalog)?, opts)?;
-                let (rewritten, made) = u.finish(&catalog, &gaz, params, |c| Ok(crate::query::understand::count_of(&self.query_at(snap, c, &Params::new(), opts)?)))?;
+                let gaz = self.gazetteers_at(snap, &u.needs(&catalog)?, opts, false)?;
+                let (rewritten, made) = u.finish(&catalog, &gaz, params, |c| Ok(crate::query::understand::counts_of(&self.query_at(snap, c, &Params::new(), opts)?)))?;
                 let mut rs = self.query_at(snap, &rewritten.to_string(), params, opts)?;
                 rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
                 return Ok(rs);
@@ -1494,21 +1581,49 @@ impl Db {
     }
 
     /// The gazetteers `needs` names ([`crate::query::understand`]), read
-    /// once per version of their table.
-    fn gazetteers_at(&self, snap: &Snapshot, needs: &[(String, String, crate::text::Analyzer)], opts: &ExecOptions) -> Result<crate::query::understand::Gazetteers> {
+    /// once per version of their table, each by one caller at a time: the
+    /// others wait for it, or, unless `exact`, use the one read before,
+    /// which they also use for [`GAZETTEER_FRESH`] after it was read
+    /// though the table took writes since (stale while it is read again).
+    /// `exact` (a derived field's dictionary, in a write) takes the one of
+    /// the table as it is.
+    fn gazetteers_at(&self, snap: &Snapshot, needs: &[crate::query::understand::Need], opts: &ExecOptions, exact: bool) -> Result<crate::query::understand::Gazetteers> {
         let mut out = crate::query::understand::Gazetteers::new();
-        for key in needs {
+        for need in needs {
+            let key = &need.key;
             let stamp = snap.table(&key.0).map_or(0, |t| t.stamp());
-            if let Some((s, g)) = self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
-                if *s == stamp {
-                    out.insert(key.clone(), g.clone());
-                    continue;
-                }
+            // The one read before, when it holds enough values: whether it
+            // is of this version, and it.
+            let cached = || {
+                let all = self.gazetteers.lock().unwrap_or_else(|e| e.into_inner());
+                all.get(key).filter(|c| need.met_by(&c.g)).map(|c| (c.stamp == stamp || (!exact && c.at.elapsed() < GAZETTEER_FRESH), c.g.clone()))
+            };
+            let before = cached();
+            if let Some((true, g)) = &before {
+                out.insert(key.clone(), g.clone());
+                continue;
             }
-            let sql = crate::query::understand::dictionary_sql(&key.0, &key.1);
-            let rs = self.query_at(snap, &sql, &Params::new(), &ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(opts.memory.as_ref()), ..opts.clone() })?;
-            let g = Arc::new(crate::query::understand::Gazetteer::build(&key.1, &rs, key.2));
-            self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), (stamp, g.clone()));
+            let lock = self.gazetteer_reads.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_default().clone();
+            let _reading = match lock.try_lock() {
+                Ok(g) => g,
+                Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    // Another caller reads it: the one before, or wait.
+                    if let (Some((_, g)), false) = (&before, exact) {
+                        out.insert(key.clone(), g.clone());
+                        continue;
+                    }
+                    lock.lock().unwrap_or_else(|e| e.into_inner())
+                }
+            };
+            // Read by the caller this one waited for.
+            if let Some((true, g)) = cached() {
+                out.insert(key.clone(), g);
+                continue;
+            }
+            let rs = self.query_at(snap, &need.sql(), &Params::new(), &ExecOptions { max_rows: None, memory: crate::query::memory::own_read_budget(opts.memory.as_ref()), ..opts.clone() })?;
+            let g = Arc::new(need.build(&rs));
+            self.gazetteers.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), ReadGazetteer { stamp, at: std::time::Instant::now(), g: g.clone() });
             out.insert(key.clone(), g);
         }
         Ok(out)
@@ -1516,8 +1631,8 @@ impl Db {
 
     /// The gazetteers `needs` names, as of now: what a server that runs
     /// plans rather than SQL passes [`crate::query::understand::Understanding::finish`].
-    pub fn gazetteers(&self, needs: &[(String, String, crate::text::Analyzer)]) -> Result<crate::query::understand::Gazetteers> {
-        self.gazetteers_at(&self.snapshot(), needs, &self.exec)
+    pub fn gazetteers(&self, needs: &[crate::query::understand::Need]) -> Result<crate::query::understand::Gazetteers> {
+        self.gazetteers_at(&self.snapshot(), needs, &self.exec, false)
     }
 
     /// What the words of `text` say for `field` (a TEXT field) of `table`:
@@ -1529,9 +1644,9 @@ impl Db {
         let snap = self.snapshot();
         let schema = snap.schemas().find(|s| s.table.eq_ignore_ascii_case(table)).cloned().ok_or_else(|| Error::Query(format!("no table {table}")))?;
         let needs = crate::query::understand::needs_of(&schema, field, opts)?;
-        let gaz = self.gazetteers_at(&snap, &needs, &self.exec)?;
+        let gaz = self.gazetteers_at(&snap, &needs, &self.exec, false)?;
         let mut u = crate::query::understand::understand_in(&schema, field, text, opts, &gaz)?;
-        let counts = u.checks().iter().map(|c| Ok(crate::query::understand::count_of(&self.query_at(&snap, c, &Params::new(), &self.exec)?))).collect::<Result<Vec<_>>>()?;
+        let counts = u.checks().iter().map(|c| Ok(crate::query::understand::counts_of(&self.query_at(&snap, c, &Params::new(), &self.exec)?))).collect::<Result<Vec<_>>>()?;
         u.confirm(&counts);
         Ok(u)
     }
@@ -1540,7 +1655,14 @@ impl Db {
     /// its rows taken to fill the budget, and the receipt of how they were
     /// chosen. A query without the clause is an error.
     pub fn pack(&self, sql: &str, params: &Params) -> Result<crate::query::pack::Packed> {
-        self.pack_at(&self.snapshot(), sql, params, &self.exec)?.ok_or_else(|| Error::Query("the query has no PACK n TOKENS clause".into()))
+        self.pack_with(sql, params, &self.exec)
+    }
+
+    /// [`Db::pack`] with `opts` (its deadline, cancel flag, memory and
+    /// statement budget), planned as every statement is.
+    pub fn pack_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<crate::query::pack::Packed> {
+        let snap = self.snapshot();
+        crate::query::budget::guarded(sql, opts, |opts| self.pack_at(&snap, sql, params, opts))?.ok_or_else(|| Error::Query("the query has no PACK n TOKENS clause".into()))
     }
 
     /// [`Db::pack`] against a given snapshot, `None` for a query without
@@ -1690,13 +1812,26 @@ impl Db {
     /// `CREATE OR REPLACE RANK PROFILE`, while the profile is the one it was
     /// measured against, and marks it `applied`.
     pub fn apply_proposal(&self, id: &str, force: bool) -> Result<()> {
-        use crate::autopilot as ap;
-        let row = self.proposal(id, false)?;
-        let s = |k: &str| row.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let now = self.snapshot().table(&s("target")).and_then(|t| t.rank_profile(&s("profile")).map(|p| p.hash()));
-        let statement = ap::check_apply(&row, now.as_deref(), force)?;
+        let row = self.proposal(id, true)?;
+        let statement = self.proposal_statement(&row, force)?;
         self.sql(&statement, &Params::new())?;
         self.set_proposal_status(id, "applied")
+    }
+
+    /// The statement that applies kept proposal row `row` (with its
+    /// proof), once [`crate::autopilot::check_apply`] took it and its proof,
+    /// made again on one snapshot now ([`crate::autopilot::reprove`]), still
+    /// proposes it ([`crate::autopilot::check_reproof`]; `force` applies it
+    /// whatever the verdict, never a ranking but the profile's own).
+    pub fn proposal_statement(&self, row: &serde_json::Value, force: bool) -> Result<String> {
+        use crate::autopilot as ap;
+        let s = |k: &str| row.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let snap = self.snapshot();
+        let now = snap.table(&s("target")).and_then(|t| t.rank_profile(&s("profile")).cloned());
+        let (candidate, statement) = ap::check_apply(row, now.as_ref(), force)?;
+        let again = ap::reprove(self, &snap, &self.exec, &ap::Options::of_proposal(row)?, &candidate)?;
+        ap::check_reproof(row, &again, force)?;
+        Ok(statement)
     }
 
     /// Marks kept proposal `id` `dismissed` (or another status).
@@ -1776,6 +1911,13 @@ impl Db {
     /// [`Db::query_leaf`] with `opts`, as [`Db::query_with`].
     #[cfg(feature = "datafusion")]
     pub fn query_leaf_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<Leaf> {
+        // Planned as every statement is (finding X-B12).
+        crate::query::budget::guarded(sql, opts, |opts| self.query_leaf_here(sql, params, opts))
+    }
+
+    /// [`Db::query_leaf_with`] on this thread.
+    #[cfg(feature = "datafusion")]
+    fn query_leaf_here(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<Leaf> {
         let snap = self.snapshot();
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
             return self.json_paths_at(&snap, &call, params, opts).map(|p| Leaf::Rows(p.to_result()));
@@ -1884,8 +2026,19 @@ impl Db {
     /// [`Db::sql`], a SELECT run with `opts` (its deadline, cancel flag and
     /// memory budget); any other statement runs as [`Db::sql`] runs it.
     pub fn sql_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
+        // A statement that nests deep runs on a thread with the stack for
+        // it, its planning stops at its deadline as its run does, and it
+        // is held to its budget.
+        crate::query::budget::guarded(sql, opts, |opts| self.sql_with_here(sql, params, opts))
+    }
+
+    /// [`Db::sql_with`] on this thread.
+    fn sql_with_here(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
         if let Some(st) = crate::query::classify::parse_statement(sql)? {
             return self.classifier_statement(&st, opts);
+        }
+        if let Some(st) = crate::query::recommend::parse_statement(sql)? {
+            return self.recommender_statement(&st, opts);
         }
         // `CREATE ROLLUP`, `REFRESH ROLLUP`, `DROP ROLLUP`.
         if let Some(st) = crate::query::rollup::parse_statement(sql)? {
@@ -1913,8 +2066,12 @@ impl Db {
         }
         let catalog = self.catalog();
         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+        // A write is held to its budget's shape as written (a query, once
+        // written out, as it plans).
+        crate::query::compound::check_statement(sql, params)?;
         match bind_command(sql, &tables, params)? {
             Command::Query => self.query_with(sql, params, opts).map(SqlResult::Rows),
+            Command::ShowTables => Ok(SqlResult::Rows(qsql::table_list(&tables.iter().map(|t| t.table.as_str()).collect::<Vec<_>>()))),
             Command::Explain { json } => {
                 let sqlparser::ast::Statement::Explain { statement, .. } = qsql::parse_one(sql)? else { unreachable!("bound as EXPLAIN") };
                 let plan = self.explain_statement(&statement, params)?;
@@ -1942,11 +2099,16 @@ impl Db {
             }
             Command::DropTable { tables, opts } => {
                 let names: Vec<&str> = tables.iter().map(|t| t.as_str()).collect();
+                // A rollup's table may not lose the table it reads; one
+                // dropped as a table loses its definition too.
+                let gone = self.rollups_dropped_with(&names)?;
                 self.drop_tables(&names, opts)?;
+                self.forget_rollups(&gone)?;
                 Ok(SqlResult::Written(0))
             }
             Command::AlterTable { table, alters } => {
                 if let Some(t) = table.filter(|_| !alters.is_empty()) {
+                    self.check_rollups_alter(&t, &alters)?;
                     self.alter_table(&t, &alters)?;
                 }
                 Ok(SqlResult::Written(0))
@@ -1987,7 +2149,17 @@ impl Db {
             Command::Write { table, write } => {
                 let schema = catalog.iter().find(|t| t.table == table).expect("bound to a table of the catalog");
                 let write = Plan::of_write(schema, &write).to_write(schema)?;
-                self.write_queued(writes::Job::Sql(self.prepare(schema.clone(), write)?)).map(|(n, _)| SqlResult::Written(n))
+                let mut r = self.write_queued(writes::Job::Sql(self.prepare(schema.clone(), write)?));
+                // An ALTER TABLE committed between binding the statement and
+                // writing it: it is bound again, to the table as it is now.
+                for _ in 0..ALTERED_TRIES {
+                    if !r.as_ref().is_err_and(|e| altered_while_running(&e.to_string())) {
+                        break;
+                    }
+                    let Some(p) = self.prepare_write_here(sql, params)? else { break };
+                    r = self.write_queued(writes::Job::Sql(p));
+                }
+                r.map(|(n, _)| SqlResult::Written(n))
             }
         }
     }
@@ -1998,7 +2170,16 @@ impl Db {
     /// SELECT (`WITH`, a subquery, a join, `SELECT DISTINCT`) plans into
     /// operators over single-table queries ([`crate::query::compound`]).
     pub fn explain(&self, sql: &str, params: &Params) -> Result<Plan> {
-        self.explain_statement(&qsql::parse_one(sql)?, params)
+        self.explain_with(sql, params, &self.exec)
+    }
+
+    /// [`Db::explain`] planned under `opts`' deadline, cancel flag and
+    /// statement budget, as the statement would run (finding X-B12).
+    pub fn explain_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<Plan> {
+        crate::query::budget::guarded(sql, opts, |_| {
+            crate::query::compound::check_statement(sql, params)?;
+            self.explain_statement(&qsql::parse_one(sql)?, params)
+        })
     }
 
     /// `CREATE CLASSIFIER`, which trains on the table's rows and keeps the
@@ -2138,6 +2319,20 @@ impl Db {
     /// writer lock: a model is slow, and every other write waits while the
     /// lock is held. `None` for any other statement. [`Db::sql`] does both.
     pub fn prepare_write(&self, sql: &str, params: &Params) -> Result<Option<PreparedWrite>> {
+        self.prepare_write_with(sql, params, &self.exec)
+    }
+
+    /// [`Db::prepare_write`], bound under `opts`' deadline, cancel flag
+    /// and statement budget, on the stack a deep statement needs
+    /// (finding X-B12).
+    pub fn prepare_write_with(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<Option<PreparedWrite>> {
+        crate::query::budget::guarded(sql, opts, |_| {
+            crate::query::compound::check_statement(sql, params)?;
+            self.prepare_write_here(sql, params)
+        })
+    }
+
+    fn prepare_write_here(&self, sql: &str, params: &Params) -> Result<Option<PreparedWrite>> {
         let catalog = self.catalog();
         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
         let Command::Write { table, write } = bind_command(sql, &tables, params)? else { return Ok(None) };
@@ -2267,7 +2462,7 @@ impl Db {
         let schema = &*p.schema;
         let mut tt = t.table(&schema.table)?;
         if tt.schema() != schema {
-            return Err(Error::Query(format!("table {} was altered, or dropped and created again, while the statement ran; run it again", schema.table)));
+            return Err(Error::Query(format!("table {} was altered, or dropped and created again, {ALTERED}", schema.table)));
         }
         let models = self.write_models_of(schema);
         let derivers = self.derivers_of(schema);
@@ -2317,7 +2512,7 @@ impl Db {
                         let pk = pk()?;
                         let mut seen = HashSet::new();
                         if let Some(d) = docs.iter().find(|d| !seen.insert(Part::of(&d[pk]))) {
-                            return Err(Error::Query(format!("ON CONFLICT DO UPDATE: key {:?} comes twice; a statement updates a row once", d[pk])));
+                            return Err(Error::Query(format!("ON CONFLICT DO UPDATE: key {} comes twice; a statement updates a row once", crate::query::hint::sql_value(&d[pk]))));
                         }
                         let (live, mut new): (Vec<Document>, Vec<Document>) = docs.into_iter().partition(|d| snap.find(&d[pk]).is_some());
                         derive_known(&derivers, schema, &mut new, &p.derived, &files)?;

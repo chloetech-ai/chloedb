@@ -29,6 +29,54 @@ pub const ENGINE: &str = "ironcalc 0.9.1";
 
 pub type Engine = UserModel<'static>;
 
+/// A cell as shown, the one formatter of the grid, CSV, search, filters
+/// and the values charts read: IronCalc's formats, except a number in the
+/// General format, which IronCalc writes with nine fixed decimals
+/// (`226159459.830000013`, `4.127118644`); here it is [`general`].
+pub trait Shown {
+    fn shown(&self, sheet: u32, row: i32, col: i32) -> Result<String, String>;
+}
+
+impl Shown for Model<'_> {
+    fn shown(&self, sheet: u32, row: i32, col: i32) -> Result<String, String> {
+        if let Ok(CellValue::Number(v)) = self.get_cell_value_by_index(sheet, row, col) {
+            if self.get_style_for_cell(sheet, row, col)?.num_fmt.eq_ignore_ascii_case("general") {
+                return Ok(general(v));
+            }
+        }
+        self.get_formatted_cell_value(sheet, row, col)
+    }
+}
+
+impl Shown for UserModel<'_> {
+    fn shown(&self, sheet: u32, row: i32, col: i32) -> Result<String, String> {
+        self.get_model().shown(sheet, row, col)
+    }
+}
+
+/// A number in the General format, as Excel shows it: rounded to 15
+/// significant digits (what a double holds for sure), then the shortest
+/// text that reads back as that (`226159459.83`, `4.12711864406780`
+/// as `4.1271186440678`); an exponent past 10^15 and under 10^-9.
+pub fn general(v: f64) -> String {
+    if !v.is_finite() {
+        return if v.is_nan() { "#NUM!".into() } else { "#DIV/0!".into() };
+    }
+    if v == 0.0 {
+        return "0".into();
+    }
+    let r: f64 = format!("{v:.14e}").parse().unwrap_or(v);
+    if (1e-9..1e15).contains(&r.abs()) {
+        return format!("{r}");
+    }
+    let e = format!("{r:e}");
+    match e.split_once('e') {
+        Some((m, x)) if x.starts_with('-') => format!("{m}E-{:02}", x[1..].parse::<i32>().unwrap_or(0)),
+        Some((m, x)) => format!("{m}E+{:02}", x.parse::<i32>().unwrap_or(0)),
+        None => e,
+    }
+}
+
 /// A new workbook of one empty sheet.
 pub fn new_engine(name: &str) -> Engine {
     let mut m = Model::new_empty("Book", "en", "UTC", LANG).expect("an empty workbook");
@@ -274,7 +322,7 @@ fn spill_type(v: &SpillValue) -> (&'static str, Option<f64>) {
 /// The row of one cell of sheet (by index) `sheet`.
 pub fn stored(model: &Model, sheet: u32, row: i32, col: i32, cell: &Cell) -> Stored {
     let wb = &model.workbook;
-    let text = model.get_formatted_cell_value(sheet, row, col).unwrap_or_default();
+    let text = model.shown(sheet, row, col).unwrap_or_default();
     let content = || model.get_localized_cell_content(sheet, row, col).unwrap_or_default();
     let formula = || model.get_cell_formula(sheet, row, col).ok().flatten().unwrap_or_default();
     match cell {
@@ -388,6 +436,13 @@ pub struct Ext {
     pub filters: Vec<SheetFilter>,
     #[serde(default)]
     pub next: u64,
+    /// The key that made it (its name), which may change it
+    /// ([`crate::caller`]); `None` for a workbook from before owners.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Whether keys limited to tables other than its owner's may open it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared: bool,
 }
 
 /// A sheet's filter: its area (the first row names the columns) and what
@@ -622,6 +677,7 @@ impl Book {
             "id": self.id, "name": self.name(), "source": self.source, "created_ms": self.created_ms,
             "version": self.version, "sheets": sheets, "names": names,
             "charts": self.ext.charts, "queries": self.ext.queries, "filters": self.ext.filters,
+            "owner": self.ext.owner, "shared": self.ext.shared,
             "can_undo": self.engine.can_undo(), "can_redo": self.engine.can_redo(),
             "unsaved": self.unsaved,
         })
@@ -705,7 +761,7 @@ impl Book {
 
     fn cell_json(&self, sheet: u32, row: i32, col: i32, cell: &Cell, has_cf: bool, styles: &mut StyleMap) -> Value {
         let model = self.model();
-        let shown = model.get_formatted_cell_value(sheet, row, col).unwrap_or_default();
+        let shown = model.shown(sheet, row, col).unwrap_or_default();
         let s = cell.get_style();
         styles.of_cell(&self.engine, sheet, row, col, s);
         let (t, formula, spill) = match cell {
@@ -779,7 +835,7 @@ impl Book {
             let mut cells: Vec<(i32, i32)> = ws.sheet_data.cells().map(|(r, c, _)| (r, c)).collect();
             cells.sort();
             for (r, c) in cells {
-                let shown = model.get_formatted_cell_value(si, r, c).unwrap_or_default();
+                let shown = model.shown(si, r, c).unwrap_or_default();
                 let text = if formulas { self.engine.get_cell_content(si, r, c).unwrap_or_default() } else { shown.clone() };
                 if text.is_empty() {
                     continue;
@@ -805,7 +861,7 @@ impl Book {
         for r in r0..=r1 {
             let mut row = Vec::new();
             for c in c0..=c1 {
-                let shown = model.get_formatted_cell_value(sheet, r, c).unwrap_or_default();
+                let shown = model.shown(sheet, r, c).unwrap_or_default();
                 let n = match model.get_cell_value_by_index(sheet, r, c) {
                     Ok(CellValue::Number(n)) => Some(n),
                     Ok(CellValue::Boolean(b)) => Some(b as u8 as f64),
@@ -1030,11 +1086,11 @@ mod tests {
         let mut back = engine_of(wb).unwrap();
         back.evaluate();
         for (s, r, c) in [(0, 1, 1), (0, 2, 2), (0, 3, 2), (0, 4, 2), (0, 5, 2), (0, 6, 3), (0, 8, 1), (0, 9, 1), (1, 1, 1)] {
-            assert_eq!(back.get_formatted_cell_value(s, r, c).unwrap(), m.get_formatted_cell_value(s, r, c).unwrap(), "{s}!{r},{c}");
+            assert_eq!(back.shown(s, r, c).unwrap(), m.shown(s, r, c).unwrap(), "{s}!{r},{c}");
             assert_eq!(back.get_cell_content(s, r, c).unwrap(), m.get_cell_content(s, r, c).unwrap(), "{s}!{r},{c}");
         }
-        assert_eq!(back.get_formatted_cell_value(0, 4, 2).unwrap(), "1550.5");
-        assert_eq!(back.get_formatted_cell_value(1, 1, 1).unwrap(), "3101");
+        assert_eq!(back.shown(0, 4, 2).unwrap(), "1550.5");
+        assert_eq!(back.shown(1, 1, 1).unwrap(), "3101");
         assert!(back.get_cell_style(0, 1, 1).unwrap().font.b);
         assert_eq!(back.get_column_width(0, 1).unwrap(), m.get_column_width(0, 1).unwrap());
         assert_eq!(back.get_frozen_rows_count(0).unwrap(), 1);

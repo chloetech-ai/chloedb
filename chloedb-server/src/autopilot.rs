@@ -31,6 +31,54 @@ use crate::keys::Principal;
 use crate::service::{After, Service};
 use crate::ApiError;
 
+/// Whether `table` is one of the autopilot's own tables: its proposals
+/// ([`autopilot::PROPOSALS`]) and its judgments ([`autopilot::JUDGMENTS`]).
+pub fn own_table(table: &str) -> bool {
+    table.eq_ignore_ascii_case(autopilot::PROPOSALS) || table.eq_ignore_ascii_case(autopilot::JUDGMENTS)
+}
+
+/// Refuses (403) a change of one of the autopilot's own tables
+/// ([`own_table`]) by a credential below admin scope (`admin` false). A
+/// proposal is applied by an admin, as a rank profile every reader's
+/// queries rank by, and its grades decide its verdict: a writer who could
+/// write a row of either could have an admin's Apply promote the
+/// writer's own rows (audit 4, N-C1). Checked on every statement
+/// ([`crate::service::Service::sql_in`]) and every write
+/// ([`may_write_ops`]).
+pub fn may_change(admin: bool, table: &str, what: &str) -> Result<(), ApiError> {
+    if admin || !own_table(table) {
+        return Ok(());
+    }
+    Err(ApiError {
+        code: Some("scope_refused"),
+        status: 403,
+        message: format!("{what} of {table} is refused: the relevance autopilot's proposals and judgments are written by an admin key (POST /v1/relevance/autopilot keeps proposals; grades are written with an admin key)"),
+    })
+}
+
+/// [`may_change`] for each of write operations `ops`, from the request
+/// being served ([`crate::service::below_admin`]), `default` naming the
+/// table of one that names none.
+pub fn may_write_ops(ops: &[Json], default: impl Fn() -> Option<String>) -> Result<(), ApiError> {
+    if !crate::service::below_admin() {
+        return Ok(());
+    }
+    let mut default_checked = false;
+    for op in ops {
+        match op["table"].as_str() {
+            Some(t) => may_change(false, t, "a write")?,
+            None if !default_checked => {
+                default_checked = true;
+                if let Some(t) = default() {
+                    may_change(false, &t, "a write")?;
+                }
+            }
+            None => {}
+        }
+    }
+    Ok(())
+}
+
 const COORDINATOR: &str = "the relevance autopilot replays queries on one snapshot of a database: run it on a single server or on each shard's server, not on a coordinator";
 
 fn db(svc: &Service) -> Result<Arc<Db>, ApiError> {
@@ -85,7 +133,7 @@ pub async fn run(svc: &Arc<Service>, who: &Principal, mut b: Json) -> Result<Jso
         let now = chloedb::timestamp::now();
         let (mut docs, mut errors, mut used) = (Vec::new(), Vec::new(), None);
         for (qid, (query, keys)) in by {
-            let req = JudgeReq { table: report.table.clone(), query: query.clone(), keys: keys.iter().map(|k| json!(k)).collect(), fields: Vec::new(), model: model.clone(), api_key: api_key.clone() };
+            let req = JudgeReq { table: report.table.clone(), query: query.clone(), keys: keys.iter().map(|k| json!(k)).collect(), fields: Vec::new(), model: model.clone(), api_key: api_key.clone(), who: Some(who.clone()) };
             let j = match judge::run(svc, req).await {
                 Ok(j) => j,
                 // No key, or the model refused: the report stands as measured.
@@ -137,7 +185,7 @@ pub async fn list(svc: &Arc<Service>) -> Result<Json, ApiError> {
 
 /// A proposal with its proof as JSON.
 async fn one(db: Arc<Db>, id: String) -> Result<Json, ApiError> {
-    let mut p = blocking(move || db.proposal(&id, true)).await.map_err(|e| if e.message.contains("no proposal ") { ApiError { status: 404, message: e.message } } else { e })?;
+    let mut p = blocking(move || db.proposal(&id, true)).await.map_err(|e| if e.message.contains("no proposal ") { ApiError { code: None, status: 404, message: e.message } } else { e })?;
     if let Some(s) = p.get("proof").and_then(|s| s.as_str()) {
         p["proof"] = serde_json::from_str(s).unwrap_or(Json::Null);
     }
@@ -150,13 +198,14 @@ pub async fn get(svc: &Arc<Service>, id: String) -> Result<Json, ApiError> {
 }
 
 /// `POST /v1/relevance/proposals/:id/apply`: its statement, while the
-/// profile is the one it was measured against ([`autopilot::check_apply`]).
+/// profile is the one it was measured against, it moves only the
+/// profile's numbers ([`autopilot::check_apply`]) and its proof, made
+/// again now, proposes it ([`Db::proposal_statement`]).
 pub async fn apply(svc: &Arc<Service>, who: &Principal, id: String, force: bool) -> Result<Json, ApiError> {
     let db = db(svc)?;
     let row = one(db.clone(), id.clone()).await?;
-    let s = |k: &str| row.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let now = db.snapshot().table(&s("target")).and_then(|t| t.rank_profile(&s("profile")).map(|p| p.hash()));
-    let statement = autopilot::check_apply(&row, now.as_deref(), force)?;
+    let d = db.clone();
+    let statement = blocking(move || d.proposal_statement(&row, force)).await?;
     svc.sql(who, &statement, &Params::new(), After::Any, 0).await?;
     status(svc, who, &id, "applied").await?;
     one(db, id).await

@@ -310,6 +310,16 @@ pub struct CheckpointStats {
     pub seconds: f64,
 }
 
+/// What [`Database::zero_free_pages`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct FreeZeroed {
+    /// Free pages written with zeros, in bytes.
+    pub zeroed_bytes: u64,
+    /// Freed pages left as they were, because a live snapshot could still
+    /// read them, in bytes: a later call zeros them once it is gone.
+    pub pending_bytes: u64,
+}
+
 /// Space use of the file and the WAL.
 #[derive(Clone, Debug, Serialize)]
 pub struct FileStats {
@@ -413,9 +423,17 @@ pub struct Database {
     /// it ([`Database::try_writer`]).
     background_waiting: AtomicUsize,
     background_holding: AtomicUsize,
+    /// Extents written in the one file zero the rest of their last page
+    /// ([`Database::set_zero_page_tails`]); `zeroing` counts calls of
+    /// [`Database::zero_free_pages`] running, which do too.
+    zero_tails: AtomicBool,
+    zeroing: AtomicUsize,
     /// Told the term and number of each numbered transaction once it is
     /// committed ([`Database::on_commit`]).
     commit_hook: RwLock<Option<CommitHook>>,
+    /// The recommenders whose counts each transaction's new events feed
+    /// at commit ([`Database::set_feeds`]).
+    feeds: RwLock<Arc<Vec<crate::query::recommend::Def>>>,
     /// The codebooks of semantic-ID fields ([`Database::set_codebook`]).
     codebooks: RwLock<Vec<Coded>>,
     /// The cold tier, with [`DbOptions::cold`].
@@ -600,6 +618,22 @@ impl std::io::Write for ImageOut<'_> {
     fn flush(&mut self) -> std::io::Result<()> {
         self.drain()
     }
+}
+
+/// Writes zeros from `end` to the end of its page in `file`, past the
+/// last byte of an extent written in the database's one file: the page
+/// may be reused, and what an older extent left past the new one's end
+/// (a forgotten record's segment, under a manifest written there) would
+/// otherwise stay in the file ([`Database::zero_free_pages`]). Nothing
+/// reads those bytes. Only when [`Database::set_zero_page_tails`] is on,
+/// or while `zero_free_pages` runs: otherwise the file's bytes are what
+/// they were (the format fixtures compare them byte for byte).
+fn zero_page_tail(file: &File, end: u64) -> std::io::Result<()> {
+    let tail = (PAGE - end % PAGE) % PAGE;
+    if tail == 0 {
+        return Ok(());
+    }
+    io::write_at(file, &vec![0u8; tail as usize], end)
 }
 
 /// The background merger's settings and wake-ups ([`Database::spawn_merger`]).
@@ -1117,7 +1151,10 @@ impl Database {
             flusher: Mutex::new(None),
             background_waiting: AtomicUsize::new(0),
             background_holding: AtomicUsize::new(0),
+            zero_tails: AtomicBool::new(false),
+            zeroing: AtomicUsize::new(0),
             commit_hook: RwLock::new(None),
+            feeds: RwLock::new(Arc::new(Vec::new())),
             codebooks: RwLock::new(Vec::new()),
             cold: None,
             offloading: Mutex::new(HashSet::new()),
@@ -1480,7 +1517,10 @@ impl Database {
             flusher: Mutex::new(None),
             background_waiting: AtomicUsize::new(0),
             background_holding: AtomicUsize::new(0),
+            zero_tails: AtomicBool::new(false),
+            zeroing: AtomicUsize::new(0),
             commit_hook: RwLock::new(None),
+            feeds: RwLock::new(Arc::new(Vec::new())),
             codebooks: RwLock::new(Vec::new()),
             cold,
             offloading: Mutex::new(HashSet::new()),
@@ -1922,6 +1962,15 @@ impl Database {
     /// Ends hold `id` ([`Database::hold_log`]).
     pub fn release_log(&self, id: u64) {
         lock(&self.state).ship.release(id);
+    }
+
+    /// The recommenders whose counts every transaction of this database
+    /// updates at commit from the rows it inserts into their events
+    /// tables ([`crate::query::recommend::feed`]), in place of any before.
+    /// A replica's replay of a primary's transactions feeds none: they
+    /// carry the counts their primary wrote.
+    pub fn set_feeds(&self, feeds: Vec<crate::query::recommend::Def>) {
+        *self.feeds.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(feeds);
     }
 
     /// Has `f` told the term and number of each numbered transaction once
@@ -2903,9 +2952,10 @@ impl Database {
             conform(schema, &mut doc)?;
             self.fill_sids(&t, &mut doc, &mut ties, &[])?;
             if let Some(pk) = pk {
-                let dup = !seen.insert(Key::of(&doc[pk]).expect("validated key"))
-                    || (check_existing && lock(&self.state).find_live(t.pos, &doc[pk]).is_some());
-                if dup {
+                if !seen.insert(Key::of(&doc[pk]).expect("validated key")) {
+                    return Err(Error::Schema(crate::query::hint::repeated_key(schema, &doc[pk])));
+                }
+                if check_existing && lock(&self.state).find_live(t.pos, &doc[pk]).is_some() {
                     return Err(Error::Schema(crate::query::hint::duplicate_key(schema, &doc[pk])));
                 }
             }
@@ -3019,7 +3069,7 @@ impl Database {
                 for d in 0..file.n_docs() as DocId {
                     let k = keys.key(d);
                     if !seen.insert(Key::of(&k).ok_or_else(|| corrupt("bad key"))?) || st.find_live(0, &k).is_some() {
-                        return Err(Error::Schema(format!("{}: duplicate primary key {k:?}", path.display())));
+                        return Err(Error::Schema(format!("{}: duplicate primary key {}", path.display(), crate::query::hint::sql_value(&k))));
                     }
                 }
             }
@@ -3065,7 +3115,22 @@ impl Database {
     /// written and before it is installed; the merge is given up when it
     /// returns false (tests write, check and fail there).
     #[doc(hidden)]
-    pub fn merge_with(&self, policy: &MergePolicy, mut between: impl FnMut() -> bool) -> Result<MergeStats> {
+    pub fn merge_with(&self, policy: &MergePolicy, between: impl FnMut() -> bool) -> Result<MergeStats> {
+        self.merge_within(policy, None, between)
+    }
+
+    /// [`Database::merge`] of only the segments `only` says yes to (by
+    /// segment id, [`SegmentView::id`]): those of the rows a forget
+    /// deleted, rewritten alone without them (with
+    /// `max_deleted_ratio: 0.0` and a `merge_factor` no tier reaches),
+    /// rather than every segment with any deleted row. The others are
+    /// left as they are, so the cost is the size of those segments, not of
+    /// the table.
+    pub fn merge_only(&self, policy: &MergePolicy, only: &dyn Fn(u64) -> bool) -> Result<MergeStats> {
+        self.merge_within(policy, Some(only), || true)
+    }
+
+    fn merge_within(&self, policy: &MergePolicy, only: Option<&dyn Fn(u64) -> bool>, mut between: impl FnMut() -> bool) -> Result<MergeStats> {
         let source = self.opts.doc_source.clone().ok_or_else(|| Error::Schema("merging needs DbOptions::doc_source".into()))?;
         // A database that cannot commit would build the merged segment
         // only to throw it away.
@@ -3081,7 +3146,7 @@ impl Database {
             let mut rounds = 2 * n + 1;
             while rounds > 0 {
                 rounds -= 1;
-                let Some(claim) = self.claim_merge(table, policy, None) else { break };
+                let Some(claim) = self.claim_merge(table, policy, None, only) else { break };
                 self.merge_group(&claim, source.as_ref(), pacer, &mut between, &mut stats)?;
             }
         }
@@ -3173,14 +3238,14 @@ impl Database {
         }
         let tables: Vec<u32> = lock(&self.state).tables.iter().map(|t| t.id).collect();
         let first = m.next_table.fetch_add(1, Ordering::Relaxed);
-        (0..tables.len()).find_map(|i| self.claim_merge(tables[(first + i) % tables.len()], &m.policy, m.budget))
+        (0..tables.len()).find_map(|i| self.claim_merge(tables[(first + i) % tables.len()], &m.policy, m.budget, None))
     }
 
     /// Claims the next group of `table`'s segments that `policy` selects
     /// among those no running merge holds, cut to fit what is left of
     /// `budget` and the record of interrupted merges ([`MergeRecord`]).
     /// The merge is recorded as running until the claim is dropped.
-    fn claim_merge(&self, table: u32, policy: &MergePolicy, budget: Option<u64>) -> Option<MergeClaim<'_>> {
+    fn claim_merge(&self, table: u32, policy: &MergePolicy, budget: Option<u64>, only: Option<&dyn Fn(u64) -> bool>) -> Option<MergeClaim<'_>> {
         // The snapshot is taken under the lock that claims are given up
         // under: a merge installed (and its claim given up) after a snapshot
         // taken before the lock would leave its inputs, gone by then, to
@@ -3220,7 +3285,7 @@ impl Database {
             f.extend(lock(&self.offloading).iter().copied());
             f
         };
-        let (group, cut) = policy.select_within(&infos, |id| m.claimed(id) || frozen.contains(&id), cap, threads, spill);
+        let (group, cut) = policy.select_within(&infos, |id| m.claimed(id) || frozen.contains(&id) || only.is_some_and(|f| !f(id)), cap, threads, spill);
         let mut group = group?;
         let memory = merge_memory(&infos.iter().filter(|s| group.contains(&s.id)).copied().collect::<Vec<_>>(), threads, spill);
         // It fits the budget alone: it waits for running merges to finish.
@@ -3587,6 +3652,9 @@ impl Database {
             let mut out = ImageOut { file: f, at: base, buf: Vec::with_capacity(IMAGE_CHUNK), pacer, crc: crc32fast::Hasher::new() };
             sections.write_to(&mut out)?;
             out.drain()?;
+            if self.dir.is_none() && self.zeroes_tails() {
+                zero_page_tail(f, out.at)?;
+            }
             match self.dir {
                 // The database's one file, shared with every other writer:
                 // a failed sync poisons the handle, as in a commit.
@@ -3879,6 +3947,82 @@ impl Database {
             idle = if moved > 0 || shrank || wait > 0 { 0 } else { idle + 1 };
         }
         Ok(before.saturating_sub(lock(&self.state).meta.page_count) * PAGE)
+    }
+
+    /// Makes every extent written in the database's one file write zeros
+    /// over the rest of its last page (off by default): a page freed by a
+    /// rewrite and reused by a smaller extent (a manifest) keeps no bytes
+    /// of what it held. A store that forgets what it held turns it on
+    /// ([`Database::zero_free_pages`] turns it on while it runs). Costs a
+    /// write of at most a page per extent; nothing in the format changes.
+    pub fn set_zero_page_tails(&self, on: bool) {
+        self.zero_tails.store(on, Ordering::Release);
+    }
+
+    fn zeroes_tails(&self) -> bool {
+        self.zero_tails.load(Ordering::Acquire) || self.zeroing.load(Ordering::Acquire) > 0
+    }
+
+    /// Writes zeros over the file's free pages, so that what deleted rows
+    /// and rewritten segments left there cannot be read back from the
+    /// file (a forget of a secret: [`Database::merge_only`] rewrites the
+    /// segment without it, and its old pages are free but hold its
+    /// bytes until a later write reuses them). Pages a commit freed are
+    /// reusable two commits on, so this commits three times (versions that
+    /// change nothing) first; pages a live snapshot can still reach, here
+    /// or in a reader's process, are left, and counted in
+    /// [`FreeZeroed::pending_bytes`]. It holds the writer lock while it
+    /// writes, which costs the size of the free pages, not of the file.
+    /// A database in directory layout frees a segment by removing its
+    /// file: nothing to do. The file's length is unchanged.
+    pub fn zero_free_pages(&self) -> Result<FreeZeroed> {
+        struct On<'a>(&'a AtomicUsize);
+        impl Drop for On<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+        self.zeroing.fetch_add(1, Ordering::AcqRel);
+        let _on = On(&self.zeroing);
+        let mut wal = self.try_writer()?;
+        self.check_poisoned()?;
+        if self.dir.is_some() {
+            return Ok(FreeZeroed::default());
+        }
+        // A segment a merge replaced is freed by the commit after the one
+        // that installed the merge, once nothing reads it, and its pages
+        // are reusable two commits after that: three commits that change
+        // nothing. What the last two free is their own metadata.
+        let mut first = 0;
+        for i in 0..3 {
+            let vw = VersionWriter::begin(self);
+            let c = vw.commit(&mut wal)?;
+            self.publish(c, |_| {})?;
+            if i == 0 {
+                first = lock(&self.state).meta.txn;
+            }
+        }
+        // Merges reserve pages from the free runs without the writer lock,
+        // under the state's: it is held while the zeros are written.
+        let st = lock(&self.state);
+        let held: u64 = st.freelist.pending().iter().filter(|p| p.freed_at <= first).map(|p| p.pages).sum();
+        let mut out = FreeZeroed { pending_bytes: held * PAGE, ..Default::default() };
+        let zeros = vec![0u8; (256 * PAGE) as usize];
+        for (start, len) in st.freelist.runs() {
+            let (mut at, end) = (start * PAGE, (start + len) * PAGE);
+            while at < end {
+                let n = (end - at).min(zeros.len() as u64);
+                io::write_at(&self.file, &zeros[..n as usize], at)?;
+                at += n;
+            }
+            out.zeroed_bytes += len * PAGE;
+        }
+        drop(st);
+        if out.zeroed_bytes > 0 {
+            io::sync(&self.file)?;
+        }
+        drop(wal);
+        Ok(out)
     }
 
     /// The size of the WAL, sealed files included.
@@ -4950,7 +5094,7 @@ impl TableRef {
         let pk = self.primary_key()?;
         match (&self.schema.fields[pk].ty, key) {
             (FieldType::Keyword, Value::Str(_)) | (FieldType::Int, Value::Int(_)) => Ok(Key::of(key).unwrap()),
-            _ => Err(Error::Schema(format!("{key:?} is not a value of primary key {}", self.schema.fields[pk].name))),
+            _ => Err(Error::Schema(format!("{} is not a value of primary key {}", crate::query::hint::sql_value(key), self.schema.fields[pk].name))),
         }
     }
 }
@@ -5157,7 +5301,12 @@ impl<'a> WriteTxn<'a> {
             let key = Key::of(&doc[pk]).expect("validated key");
             self.drop_expired(t, &key, &doc[pk])?;
             if self.is_live(t, &key, &doc[pk]) {
-                return Err(Error::Schema(crate::query::hint::duplicate_key(&t.schema, &doc[pk])));
+                // A key this transaction inserted, which no row had before.
+                let repeated = self.keys.iter().find(|(id, _)| *id == t.id).is_some_and(|(_, k)| k.written.contains_key(&key)) && lock(&self.db.state).find_live(t.pos, &doc[pk]).is_none();
+                return Err(Error::Schema(match repeated {
+                    true => crate::query::hint::repeated_key(&t.schema, &doc[pk]),
+                    false => crate::query::hint::duplicate_key(&t.schema, &doc[pk]),
+                }));
             }
             let doc = Arc::new(doc);
             let k = self.keys(t.id);
@@ -5375,12 +5524,50 @@ impl<'a> WriteTxn<'a> {
     /// Commits, and returns the transaction's sequence number when the
     /// database numbers its writes ([`Database::start_seq_no`]); `None`
     /// then only for a transaction that wrote nothing.
-    pub fn commit_seq(self) -> Result<Option<u64>> {
+    pub fn commit_seq(mut self) -> Result<Option<u64>> {
+        // A replay (`now` none) carries the counts its primary fed.
+        if self.now.is_some() {
+            let feeds = self.db.feeds.read().unwrap_or_else(|e| e.into_inner()).clone();
+            for d in feeds.iter() {
+                crate::query::recommend::feed(&mut self, d)?;
+            }
+        }
         let WriteTxn { db, mut wal, ops, .. } = self;
         db.commit_ops(&mut wal, ops)
     }
 
     pub fn rollback(self) {}
+
+    /// The schema of table `name` and the rows this transaction inserted
+    /// into it that no row of their key had before it (an upsert that
+    /// replaced a row, or an insert after this transaction deleted its
+    /// key, is left out); `None` when there is no such table.
+    pub(crate) fn fresh_rows(&self, name: &str) -> Option<(Arc<Schema>, Vec<Arc<Document>>)> {
+        let t = self.db.table_ref(Some(name)).ok()?;
+        let pk = t.schema.primary_key;
+        let mut deleted: HashSet<Key> = HashSet::new();
+        let mut out = Vec::new();
+        for (id, op) in &self.ops {
+            if *id != t.id {
+                continue;
+            }
+            match op {
+                Op::Delete(k) => {
+                    if let Some(k) = Key::of(k) {
+                        deleted.insert(k);
+                    }
+                }
+                Op::Insert(doc) => {
+                    if pk.and_then(|p| Key::of(&doc[p])).is_some_and(|k| deleted.contains(&k)) {
+                        continue;
+                    }
+                    out.push(doc.clone());
+                }
+                _ => {}
+            }
+        }
+        Some((t.schema, out))
+    }
 
     /// Writes a primary's logged operations, which must apply here as they
     /// did there ([`Database::apply_shipped`]).
@@ -5393,13 +5580,13 @@ impl<'a> WriteTxn<'a> {
                 Op::Insert(doc) => self.insert_as(&t, Arc::unwrap_or_clone(doc), Pooling::None).map_err(|e| differs(format!("inserts a row it cannot ({e})")))?,
                 Op::Delete(key) => {
                     if !self.delete_in(&t, &key)? {
-                        return Err(differs(format!("deletes {key:?}, which no row here has")));
+                        return Err(differs(format!("deletes {}, which no row here has", crate::query::hint::sql_value(&key))));
                     }
                 }
                 Op::Set { key, field, value } => {
                     let name = t.schema.fields.get(field as usize).map(|f| f.name.clone()).ok_or_else(|| differs(format!("sets field #{field}")))?;
                     if !self.set_in(&t, &key, &name, value)? {
-                        return Err(differs(format!("sets {name} of {key:?}, which no row here has")));
+                        return Err(differs(format!("sets {name} of {}, which no row here has", crate::query::hint::sql_value(&key))));
                     }
                 }
                 op @ Op::Profile { .. } => self.ops.push((t.id, op)),
@@ -5599,6 +5786,9 @@ impl<'a> VersionWriter<'a> {
         let page = self.fl.alloc(pages_for(bytes.len()));
         self.grow()?;
         io::write_at(&self.db.file, bytes, page * PAGE)?;
+        if self.db.zeroes_tails() {
+            zero_page_tail(&self.db.file, page * PAGE + bytes.len() as u64)?;
+        }
         self.bytes_written += bytes.len() as u64;
         Ok(Extent { page, len: bytes.len() as u64 })
     }
@@ -5772,6 +5962,9 @@ impl<'a> VersionWriter<'a> {
         // a mapping of the same file can deadlock in the kernel.
         let bytes = map[e.range()].to_vec();
         io::write_at(&self.db.file, &bytes, page * PAGE)?;
+        if self.db.zeroes_tails() {
+            zero_page_tail(&self.db.file, page * PAGE + bytes.len() as u64)?;
+        }
         self.bytes_written += e.len;
         self.fl.defer(self.txn, e);
         let to = Extent { page, len: e.len };
@@ -5919,6 +6112,9 @@ impl<'a> VersionWriter<'a> {
             let page = self.fl.alloc_low(pages_for(mbytes.len()));
             self.grow()?;
             io::write_at(&db.file, &mbytes, page * PAGE)?;
+            if db.zeroes_tails() {
+                zero_page_tail(&db.file, page * PAGE + mbytes.len() as u64)?;
+            }
             self.bytes_written += mbytes.len() as u64;
             Extent { page, len: mbytes.len() as u64 }
         } else {
@@ -5928,6 +6124,9 @@ impl<'a> VersionWriter<'a> {
         let (freelist, fbytes) = place_freelist(&mut self.fl, &reserved, self.meta_low);
         self.grow()?;
         io::write_at(&db.file, &fbytes, freelist.page * PAGE)?;
+        if db.zeroes_tails() {
+            zero_page_tail(&db.file, freelist.page * PAGE + fbytes.len() as u64)?;
+        }
         self.bytes_written += fbytes.len() as u64;
         // A failed sync of the file is fatal for the handle: the kernel may
         // have dropped dirty pages of any writer on it (a merge's image

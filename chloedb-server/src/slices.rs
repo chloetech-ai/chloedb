@@ -209,7 +209,7 @@ impl Slices {
         let path = self.dir_of(table)?.join("manifest.json");
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ApiError { status: 404, message: format!("table {table} has no slice (build it with POST /v1/admin/slices)") }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ApiError { code: None, status: 404, message: format!("table {table} has no slice (build it with POST /v1/admin/slices)") }),
             Err(e) => return Err(ApiError::internal(e)),
         };
         let m = Manifest::from_json(&text)?;

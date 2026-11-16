@@ -66,6 +66,9 @@ fn listed(j: &Json) -> Vec<String> {
 async fn starts_empty_then_serves_its_first_table(url: &str) {
     let (s, j) = call(url, "GET", "/v1/tables", None).await;
     assert_eq!((s, listed(&j)), (200, Vec::<String>::new()), "{j}");
+    // ONB-11: the sizes of every table, kept 30 s, list none yet...
+    let (s, j) = call(url, "GET", "/v1/index/tables", None).await;
+    assert_eq!((s, listed(&j)), (200, Vec::<String>::new()), "{j}");
     let (s, j) = call(url, "POST", "/v1/write", Some(json!({"ops": [{"op": "upsert", "doc": {"id": "x"}}]}))).await;
     assert_eq!(s, 400, "{j}");
     assert!(j["error"].as_str().unwrap().contains("no tables yet"), "{j}");
@@ -84,6 +87,9 @@ async fn starts_empty_then_serves_its_first_table(url: &str) {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(names, ["snapshots"]);
+    // ...and a table made since is listed at once, not after 30 s.
+    let (s, j) = call(url, "GET", "/v1/index/tables", None).await;
+    assert_eq!((s, listed(&j)), (200, vec!["snapshots".to_string()]), "{j}");
     let (s, j) = call(url, "GET", "/v1/schema", None).await;
     assert_eq!((s, j["table"].as_str()), (200, Some("snapshots")), "{j}");
 
@@ -97,6 +103,88 @@ async fn starts_empty_then_serves_its_first_table(url: &str) {
     // The placeholder takes no writes even by name.
     let (s, j) = call(url, "POST", "/v1/write", Some(json!({"ops": [{"op": "upsert", "table": chloedb::schema::PLACEHOLDER_TABLE, "doc": {"id": "x"}}]}))).await;
     assert_eq!(s, 400, "{j}");
+}
+
+/// PLT-2: the apps a server starts (Sheets, ChloeCtx, the crawler) make
+/// their tables before anyone else; a request that names no table goes to
+/// the first table people made, never to an app's own state (Sheets'
+/// workbooks, ChloeCtx's spaces, the app engine's settings), and to a
+/// crawl's only while there is no other.
+async fn the_apps_tables_are_not_the_first(url: &str) {
+    for ddl in [
+        "CREATE TABLE sheets_books (id KEYWORD PRIMARY KEY, name TEXT)",
+        "CREATE TABLE sheets_cells (id KEYWORD PRIMARY KEY, v TEXT)",
+        "CREATE TABLE ctx_spaces (id KEYWORD PRIMARY KEY, name TEXT)",
+        "CREATE TABLE sa_settings (id KEYWORD PRIMARY KEY, name TEXT)",
+    ] {
+        let (s, j) = call(url, "POST", "/v1/sql", Some(json!({"sql": ddl}))).await;
+        assert_eq!(s, 200, "{ddl}: {j}");
+    }
+    let mut names = Vec::new();
+    for _ in 0..50 {
+        names = listed(&call(url, "GET", "/v1/tables", None).await.1);
+        if names.len() == 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(names.len(), 4, "{names:?}");
+    let (s, j) = call(url, "POST", "/v1/write", Some(json!({"ops": [{"op": "insert", "doc": {"id": "x1", "name": "my note"}}]}))).await;
+    assert!(s == 400 && j["error"].as_str().unwrap().contains("no tables yet"), "{s} {j}");
+    let (s, j) = call(url, "GET", "/v1/schema", None).await;
+    assert_eq!(s, 400, "{j}");
+    // A crawl's table is the data a crawl was asked for: requests naming
+    // none go to it while it is the only one (`chloedb-crawl --local`).
+    let (s, j) = call(url, "POST", "/v1/sql", Some(json!({"sql": "CREATE TABLE crawl_example_com (id KEYWORD PRIMARY KEY, title TEXT)"}))).await;
+    assert_eq!(s, 200, "{j}");
+    let mut first = None;
+    for _ in 0..50 {
+        let (s, j) = call(url, "GET", "/v1/schema", None).await;
+        if s == 200 {
+            first = j["table"].as_str().map(String::from);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(first.as_deref(), Some("crawl_example_com"));
+    // The first table people made takes them from then on.
+    let (s, j) = call(url, "POST", "/v1/sql", Some(json!({"sql": "CREATE TABLE notes (id KEYWORD PRIMARY KEY, name TEXT, n INT)"}))).await;
+    assert_eq!(s, 200, "{j}");
+    let mut first = None;
+    for _ in 0..50 {
+        first = call(url, "GET", "/v1/schema", None).await.1["table"].as_str().map(String::from);
+        if first.as_deref() == Some("notes") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(first.as_deref(), Some("notes"));
+    let (s, j) = call(url, "POST", "/v1/write", Some(json!({"ops": [{"op": "insert", "doc": {"id": "x1", "name": "my note", "n": 3}}]}))).await;
+    assert_eq!(s, 200, "{j}");
+    for (table, n) in [("notes", 1), ("sheets_books", 0), ("crawl_example_com", 0)] {
+        let (s, j) = call(url, "POST", "/v1/query", Some(json!({"sql": format!("SELECT COUNT(*) FROM {table}")}))).await;
+        assert_eq!((s, j["rows"][0][0].as_u64()), (200, Some(n)), "{table}: {j}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_gives_requests_naming_no_table_to_its_own_first_not_the_apps() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = http(empty(dir.path(), "apps.strata")).await;
+    the_apps_tables_are_not_the_first(&url).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cluster_gives_requests_naming_no_table_to_its_own_first_not_the_apps() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut shards = Vec::new();
+    for i in 0..2 {
+        shards.push(grpc(empty(dir.path(), &format!("a{i}.strata"))).await);
+    }
+    let c = Coordinator::connect(shards).await.unwrap();
+    let schema = c.schema.clone();
+    let url = http(service(Backend::Cluster(Arc::new(c)), schema)).await;
+    the_apps_tables_are_not_the_first(&url).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

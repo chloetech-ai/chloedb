@@ -17,7 +17,7 @@ use chloedb_server::auth::{self, Access, Secret, Tls};
 use chloedb_server::keys::Principal;
 use chloedb_server::replication::{Acks, Follow, Primary, PrimaryOptions};
 use chloedb_server::service::{shard_of, After, AgentConfig, Backend, QueryReq, Replication, Service, MAX_LEASES};
-use chloedb_server::coord::{CoordOptions, Coordinator};
+use chloedb_server::coord::{CoordOptions, Coordinator, Route};
 use chloedb_server::slots::{self, SlotMap};
 use chloedb_server::{demo, json as js, pb, server};
 use tokio::net::TcpListener;
@@ -229,6 +229,18 @@ async fn http_answers_like_the_embedded_database() {
     assert_eq!((status, d["values"][0].as_str()), (200, Some("de")), "{d}");
     let (status, e) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "builtin:nope", "text": "x"})).await;
     assert_eq!(status, 400, "{e}");
+    // A dictionary's names in a text, read from its table now, and a
+    // classifier's label, as derived fields of them would hold them.
+    let (_, one) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT category FROM products WHERE id = 'p0000042'"})).await;
+    let category = one["rows"][0][0].as_str().unwrap().to_string();
+    let (status, d) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "dict:products.category", "text": format!("anything in {category} today"), "table": "products", "field": "body"})).await;
+    assert_eq!((status, d["many"].as_bool()), (200, Some(true)), "{d}");
+    assert!(d["values"].as_array().unwrap().iter().any(|v| v.as_str() == Some(category.as_str())), "{d}");
+    let (status, d) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "classifier:cat", "text": "waterproof hiking boots"})).await;
+    assert_eq!(status, 200, "{d}");
+    assert!(d["values"].as_array().unwrap().len() <= 1 && !d["top"].as_array().unwrap().is_empty(), "{d}");
+    let (status, e) = post(&c, &format!("{base}/v1/derive/preview"), json!({"model": "dict:nope.name", "text": "x"})).await;
+    assert_eq!(status, 400, "{e}");
     // A table's own synonym list, by SQL; listed; used by synonyms => 1.
     let rainproof = json!({"sql": "SELECT COUNT(*) FROM products WHERE MATCH(body, 'rainproof', synonyms => 1)"});
     let (status, e) = post(&c, &format!("{base}/v1/query"), rainproof.clone()).await;
@@ -265,9 +277,14 @@ async fn rollups_over_http() {
     assert_eq!(status, 200, "{r}");
     let (status, r) = post(&c, &format!("{base}/v1/sql"), sql("CREATE ROLLUP logs_5m ON logs AS SELECT date_bin('5 minutes', ts), service, COUNT(*), SUM(latency)")).await;
     assert_eq!(status, 200, "{r}");
-    // Folded by the refresher, not by the statement.
+    // A short table's rollup is filled by the statement, which says so;
+    // the refresher then has nothing to fold.
+    assert_eq!(r["columns"], json!(["rollup", "made", "filled", "buckets_folded", "rows_written", "note"]), "{r}");
+    assert_eq!((r["rows"][0][1].as_bool(), r["rows"][0][2].as_bool(), r["rows"][0][3].as_i64()), (Some(true), Some(true), Some(2)), "{r}");
     let s = svc.clone();
-    assert_eq!(tokio::task::spawn_blocking(move || s.refresh_rollups_due(false)).await.unwrap().unwrap(), 2);
+    assert_eq!(tokio::task::spawn_blocking(move || s.refresh_rollups_due(false)).await.unwrap().unwrap().iter().map(|(_, r)| r.as_ref().unwrap().folded).sum::<u64>(), 0);
+    let (status, r) = post(&c, &format!("{base}/v1/sql"), sql("CREATE ROLLUP IF NOT EXISTS logs_5m ON logs AS SELECT date_bin('5 minutes', ts), service, COUNT(*), SUM(latency)")).await;
+    assert_eq!((status, r["rows"][0][1].as_bool()), (200, Some(false)), "{r}");
     let read = "SELECT bucket, service, count, sum_latency FROM logs_5m ORDER BY bucket, service";
     let (status, r) = post(&c, &format!("{base}/v1/query"), sql(read)).await;
     assert_eq!((status, r["rows"].as_array().map(Vec::len)), (200, Some(2)), "{r}");
@@ -283,9 +300,18 @@ async fn rollups_over_http() {
     let (status, _) = post(&c, &format!("{base}/v1/sql"), sql("INSERT INTO logs (ts, service, latency) VALUES ('2026-11-01T10:06:00Z', 'b', 1)")).await;
     assert_eq!(status, 200);
     let s = svc.clone();
-    assert_eq!(tokio::task::spawn_blocking(move || s.refresh_rollups_due(false)).await.unwrap().unwrap(), 1);
+    assert_eq!(tokio::task::spawn_blocking(move || s.refresh_rollups_due(false)).await.unwrap().unwrap().iter().map(|(_, r)| r.as_ref().unwrap().folded).sum::<u64>(), 1);
     let (_, r) = post(&c, &format!("{base}/v1/query"), sql(read)).await;
     assert_eq!(r["rows"][1][2].as_i64(), Some(2), "{r}");
+    // The rollup's table says what it reads and how its refreshes went.
+    let t: Json = c.get(format!("{base}/v1/tables")).send().await.unwrap().json().await.unwrap();
+    let roll = t["tables"].as_array().unwrap().iter().find(|t| t["table"] == "logs_5m").unwrap()["rollup"].clone();
+    assert!(roll["of"] == "logs" && roll["experimental"] == true && roll["last_refresh"].is_string() && roll["last_error"].is_null(), "{roll}");
+    let logs = t["tables"].as_array().unwrap().iter().find(|t| t["table"] == "logs").unwrap()["rollup"].clone();
+    assert!(logs.is_null(), "{logs}");
+    // Its table may not go while the rollup reads it.
+    let (status, r) = post(&c, &format!("{base}/v1/sql"), sql("DROP TABLE logs")).await;
+    assert!(status == 400 && r.to_string().contains("read by rollup logs_5m"), "{status} {r}");
     let (status, r) = post(&c, &format!("{base}/v1/sql"), sql("DROP ROLLUP logs_5m")).await;
     assert_eq!(status, 200, "{r}");
     let (status, _) = post(&c, &format!("{base}/v1/query"), sql(read)).await;
@@ -427,7 +453,7 @@ async fn grouped_writes_fail_alone() {
         statuses.push(r.await.unwrap());
     }
     assert_eq!(statuses.iter().filter(|&&s| s == 200).count(), 56, "{statuses:?}");
-    assert_eq!(statuses.iter().filter(|&&s| s == 400).count(), 8, "{statuses:?}");
+    assert_eq!(statuses.iter().filter(|&&s| s == 409).count(), 8, "{statuses:?}");
     assert_eq!(sold(&post(&c, &format!("{base}/v1/query"), count).await.1), sold0 + 56);
 }
 
@@ -486,7 +512,7 @@ async fn grouped_sql_writes_fail_alone_and_lose_no_update() {
         statuses.push(r.await.unwrap());
     }
     assert_eq!(statuses.iter().filter(|&&s| s == 200).count(), 56, "{statuses:?}");
-    assert_eq!(statuses.iter().filter(|&&s| s == 400).count(), 8, "{statuses:?}");
+    assert_eq!(statuses.iter().filter(|&&s| s == 409).count(), 8, "{statuses:?}");
     assert_eq!(sold("p0000004".into()).await, hot0 + 16);
     for i in (1..64).step_by(4) {
         assert_eq!(sold(key(i)).await, before[i] + 1, "{}", key(i));
@@ -538,7 +564,7 @@ async fn retries_apply_once_and_adds_read_earlier_ops() {
     assert_eq!(status, 422);
     // A request that failed is not remembered, so its retry runs.
     let bad = json!([{"op": "insert", "doc": {"id": "n9", "title": "again"}}]);
-    assert_eq!(post(&c, &url, json!({"ops": bad, "idempotency_key": "req-3"})).await.0, 400);
+    assert_eq!(post(&c, &url, json!({"ops": bad, "idempotency_key": "req-3"})).await.0, 409);
     let (status, _) = post(&c, &url, json!({"ops": [{"op": "delete", "key": "n9"}], "idempotency_key": "req-4"})).await;
     assert_eq!(status, 200);
     let (status, r) = post(&c, &url, json!({"ops": bad, "idempotency_key": "req-3"})).await;
@@ -1689,13 +1715,14 @@ async fn a_read_that_names_a_write_skips_a_replica_that_would_not_wait() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // No hedges: each read goes to one copy, and to the next on a failure.
-    let c = Coordinator::connect_with(vec![format!("{ru}|{pu}")], CoordOptions { hedge: Duration::from_secs(60), ..Default::default() }).await.unwrap();
+    // No hedges: each read goes to one copy, and to the next on a failure;
+    // in turn, whatever each costs.
+    let c = Coordinator::connect_with(vec![format!("{ru}|{pu}")], CoordOptions { hedge: Duration::from_secs(60), route: Route::RoundRobin, ..Default::default() }).await.unwrap();
     let coord = cluster(c);
     let sold = |after: Vec<u64>| {
         let coord = coord.clone();
         async move {
-            let q = QueryReq { sql: "SELECT sold FROM products WHERE id = 'p0000003'".into(), after: After::Shards(after), ..Default::default() };
+            let q = QueryReq { sql: "SELECT sold FROM products WHERE id = 'p0000003'".into(), after: After::Shards(after, Vec::new()), ..Default::default() };
             coord.query(q).await.unwrap().rs.rows[0][0].as_i64().unwrap()
         }
     };
@@ -3499,6 +3526,45 @@ async fn explain_gives_the_plan_ir() {
     same(compound, &want, &got);
 }
 
+/// `/v1/explain` plans whatever `/v1/sql` runs (UIA-3): a `GROUP BY` over
+/// `date_trunc(...)`, the form the app engine's prompt teaches and its
+/// TREND screens compile to, which the binder of single-table queries
+/// does not take, is explained by its plan rather than refused, with the
+/// rows the query returns.
+#[tokio::test(flavor = "multi_thread")]
+async fn explain_plans_the_group_by_forms_sql_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = create(dir.path(), "g.strata", |i| i < 50);
+    let base = http(service(db, "http://unused"), None).await;
+    let c = chloedb_server::http_client().build().unwrap();
+    let (status, r) = post(&c, &format!("{base}/v1/sql"), json!({ "sql": "CREATE TABLE walks (id KEYWORD PRIMARY KEY, dog KEYWORD, km INT, day TIMESTAMP, price FLOAT, paid BOOL)" })).await;
+    assert_eq!(status, 200, "{r}");
+    let days = ["2026-11-02T10:00:00Z", "2026-11-03T10:00:00Z", "2026-11-10T10:00:00Z", "2026-12-01T10:00:00Z"];
+    let ops: Vec<Json> = (0..8)
+        .map(|i| {
+            let (dog, day, price, paid) = (["rex", "ada"][i % 2], days[i % 4], 10.0 + i as f64, i % 2 == 0);
+            json!({"op": "insert", "table": "walks", "doc": {"id": format!("w{i}"), "dog": dog, "km": i % 3, "day": day, "price": price, "paid": paid}})
+        })
+        .collect();
+    let (status, r) = post(&c, &format!("{base}/v1/write"), json!({ "ops": ops })).await;
+    assert_eq!(status, 200, "{r}");
+    for sql in [
+        "SELECT date_trunc('week', day) AS p, SUM(price) AS v FROM walks GROUP BY date_trunc('week', day) ORDER BY p DESC LIMIT 500",
+        "SELECT date_trunc('day', day) AS p, COUNT(*) AS n FROM walks GROUP BY date_trunc('day', day) ORDER BY p LIMIT 500",
+        "SELECT date_trunc('month', day) AS p, AVG(price) AS v FROM walks GROUP BY date_trunc('month', day) ORDER BY p LIMIT 500",
+        "SELECT dog, COUNT(*) AS n FROM walks GROUP BY dog ORDER BY n DESC LIMIT 500",
+        "SELECT km, MAX(price) AS top FROM walks GROUP BY km HAVING COUNT(*) > 1 ORDER BY km LIMIT 500",
+        "SELECT paid, COUNT(DISTINCT dog) AS dogs FROM walks GROUP BY paid ORDER BY paid LIMIT 500",
+    ] {
+        let (status, ran) = post(&c, &format!("{base}/v1/sql"), json!({ "sql": sql })).await;
+        assert_eq!(status, 200, "{sql}: {ran}");
+        let (status, e) = post(&c, &format!("{base}/v1/explain"), json!({ "sql": sql })).await;
+        assert_eq!(status, 200, "{sql}: {e}");
+        assert_eq!(e["rows"].as_u64(), ran["rows"].as_array().map(|r| r.len() as u64), "{sql}: {e} {ran}");
+        assert!(e["logical"].as_str().is_some_and(|l| !l.is_empty()) && e["ir"].is_object(), "{sql}: {e}");
+    }
+}
+
 /// Conditional writes: with `--seq-no` each row has the sequence number of
 /// its last write (`seq_no()`), a write answers its own, and an operation
 /// with `if_seq_no` applies only while the row still has that number,
@@ -3728,7 +3794,7 @@ async fn conditional_writes_through_a_coordinator() {
     // a read cannot name one.
     let w = replicated.write_ops(vec![json!({"op": "set", "key": "p0000003", "field": "sold", "value": 8})], None).await.unwrap();
     assert!(w.seq_no.is_none() && w.seq_nos.is_empty(), "{w:?}");
-    let read = |after: Vec<u64>| QueryReq { sql: "SELECT sold FROM products WHERE id = 'p0000003'".into(), after: After::Shards(after), ..Default::default() };
+    let read = |after: Vec<u64>| QueryReq { sql: "SELECT sold FROM products WHERE id = 'p0000003'".into(), after: After::Shards(after, Vec::new()), ..Default::default() };
     let e = replicated.query(read(vec![0, 1])).await.err().unwrap();
     assert!(e.status == 400 && e.message.contains("whose replicas each number their own writes"), "{}", e.message);
     assert!(replicated.query(read(vec![0, 0])).await.is_ok());

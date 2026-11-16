@@ -1,4 +1,9 @@
-# ChloeDB
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/chloedb-wordmark-on-dark.svg">
+    <img src="docs/assets/brand/chloedb-wordmark-on-light.svg" alt="ChloeDB" height="64">
+  </picture>
+</h1>
 
 **Search, data and recommendations in one embedded database.**
 
@@ -66,7 +71,7 @@ More in [the server guide](docs/chloedb/server.md).
 | language | install | guide |
 |---|---|---|
 | Python | `pip install chloedb` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md), [LangChain, LangGraph and LlamaIndex](docs/guide/frameworks.md) |
-| JavaScript (Node, Bun, Deno) | the tarball for your platform from a `chloedb-js-v0.3.0` release | [JavaScript](docs/chloedb/javascript.md) |
+| JavaScript (Node, Bun, Deno) | the tarball for your platform from a `chloedb-js-v0.3.5` release | [JavaScript](docs/chloedb/javascript.md) |
 | Java and JDBC | `cd chloedb-java && mvn install` (builds from source) | [Java](docs/chloedb/java.md) |
 | Rust | the `chloedb` crate in [`chloedb/`](chloedb/), by path | [Design](docs/chloedb/index.md) |
 
@@ -100,7 +105,7 @@ The same methods work against a server: replace `chloedb.open(...)` with `chloed
 | **Ranking** | Any expression of scores and columns, rerank phases, rank profiles, LightGBM and XGBoost models, cross-encoders, and `PACK n TOKENS` to fill a model's context budget. |
 | **Recommendations** | Sequence models, counted next items and bought-together walks, mixed with business rules in the same query. |
 | **Data in and out** | [SQLite](docs/chloedb/sqlite.md) and [Parquet](docs/chloedb/parquet.md) in and out (local files or S3), and [following a Postgres database](docs/chloedb/postgres.md) by logical replication. |
-| **Compatible APIs** | HTTP JSON, gRPC, [the OpenSearch API](docs/chloedb/opensearch.md) for apps written for OpenSearch or Elasticsearch, and [MCP](docs/chloedb/server.md#agents-over-mcp) for Claude Code and other agents. |
+| **Compatible APIs** | HTTP JSON, gRPC, [the OpenSearch API](docs/chloedb/opensearch.md) for apps written for OpenSearch or Elasticsearch, and [MCP](docs/chloedb/server.md#agents-over-mcp) for Claude Code and other agents (table-limited keys: see [server.md](docs/chloedb/server.md#security), which says which routes take them). |
 | **A cluster** | Shards behind a coordinator, replicas with automatic failover, and a [Kubernetes operator](docs/chloedb/server.md#on-kubernetes). |
 | **Operations** | A command center in every server, Prometheus metrics, query profiles, and an on-call agent that proposes fixes for an admin to approve. |
 
@@ -123,7 +128,14 @@ Claude Code forgets. A long session is compacted into a summary, and a new sessi
 
 *The ChloeCtx inspector. Left: a new session is asked what was decided earlier and answers from the briefing ChloeCtx injected. Right: the records the hooks stored and the notes a small model distilled from the first session.*
 
-Install it on macOS or Linux (WSL 2 on Windows). You need Rust (stable), a C compiler and the [Claude Code](https://claude.com/claude-code) CLI, signed in:
+The quickest way is the Claude Code plugin, which downloads a prebuilt `chloectx` on its first session ([how it works](docs/chloectx/setup.md#as-a-claude-code-plugin)):
+
+```text
+/plugin marketplace add chloetech-ai/chloedb
+/plugin install chloectx@chloedb
+```
+
+Or install it from a checkout on macOS or Linux (WSL 2 on Windows). You need Rust (stable), a C compiler and the [Claude Code](https://claude.com/claude-code) CLI, signed in:
 
 ```sh
 git clone https://github.com/chloetech-ai/chloedb && cd chloedb

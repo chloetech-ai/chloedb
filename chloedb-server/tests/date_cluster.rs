@@ -95,6 +95,8 @@ async fn date_functions_through_a_coordinator_answer_as_one_database() {
         "SELECT EXTRACT(dow FROM at) AS dow, COUNT(*) FROM snaps GROUP BY dow HAVING COUNT(*) > 10",
         "SELECT strftime('%Y-%m', at) AS m, SUM(total) FROM snaps WHERE item <> 'item3' GROUP BY m",
         "SELECT date_part('hour', at) AS h, COUNT(*) AS n FROM snaps GROUP BY h ORDER BY n DESC, h LIMIT 3",
+        "SELECT time_bucket('6 hours', at) AS b, item, COUNT(*) FROM snaps GROUP BY b, item",
+        "SELECT id, time_bucket(INTERVAL '90 minutes', at) FROM snaps WHERE item = 'item1'",
         // Values of the shards' rows, and a filter over them.
         "SELECT id, date_trunc('month', at), strftime('%F %T', at), EXTRACT(epoch FROM at) FROM snaps WHERE item = 'item1'",
         "SELECT id FROM snaps WHERE EXTRACT(dow FROM at) = 0 AND item = 'item2'",

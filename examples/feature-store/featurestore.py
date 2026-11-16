@@ -86,7 +86,7 @@ class Chloe:
                 time.sleep(0.3 * (attempt + 1))
                 continue
             if r.status >= 300:
-                raise ChloeError(r.status, data.decode(errors="replace")[:500])
+                raise ChloeError(r.status, data.decode(errors="replace"))
             return json.loads(data) if data else {}
 
     def sql(self, q):
@@ -101,6 +101,21 @@ class Chloe:
     def rows(self, q, params=None):
         return self.query(q, params)["rows"]
 
+    def rows_all(self, q, params=None, page=5000):
+        """Every row `q` answers, a page at a time (a scroll, on the one
+        version it started on): a training set is more rows than the
+        server's window (--max-result-window, 10,000 by default) as soon as
+        the demo runs beside a server of its own settings (UIA-2)."""
+        b = {"sql": q, "objects": True, "timeout_ms": 120000, "page_size": page}
+        if params:
+            b["params"] = params
+        r = self.call("POST", "/v1/query", b)
+        rows = list(r["rows"])
+        while r.get("cursor"):
+            r = self.call("POST", "/v1/query", {"cursor": r["cursor"], "objects": True, "timeout_ms": 120000})
+            rows.extend(r["rows"])
+        return rows
+
     def write(self, ops):
         return self.call("POST", "/v1/write", {"ops": ops})
 
@@ -112,8 +127,15 @@ class Chloe:
 
 
 class ChloeError(Exception):
+    """A refusal or failure of the server: its status, and its `error`
+    (the whole body when it is not ChloeDB's JSON)."""
+
     def __init__(self, status, text):
-        super().__init__(f"{status}: {text}")
+        try:
+            message = json.loads(text).get("error") or text
+        except (ValueError, AttributeError):
+            message = text
+        super().__init__(message[:500])
         self.status = status
 
 
@@ -342,9 +364,18 @@ def pct(v, p):
     return s[min(len(s) - 1, int(p * len(s)))]
 
 
+# Impressions kept (the shoppers write about a hundred a second), and those
+# a model is trained on by default: training reads its whole window, so a
+# demo left running for a day must not train on the day (DAP-12).
+KEEP_MIN = 180
+TRAIN_MIN = 30
+
+
 class App:
-    def __init__(self, db, rate=12.0, backfill_min=12):
+    def __init__(self, db, rate=12.0, backfill_min=12, keep_min=KEEP_MIN):
         self.db = db
+        self.keep_min = keep_min
+        self.last_prune = 0
         self.world = World()
         self.rate = rate
         self.running = True
@@ -353,7 +384,7 @@ class App:
         self.model = None  # the deployed model, as a row (dict) with "m"
         self.changed = {"user": set(), "item": set(), "uc": set()}
         self.counts = {"impressions": 0, "clicks": 0, "writes": 0, "snap_rows": 0, "trend_runs": 0, "requests": 0}
-        self.serve_ms = Ring(2000)      # (t, total, fetch, transform, score)
+        self.serve_ms = Ring(2000)      # (t, total, fetch, transform, score, rows read by key)
         self.write_ms = Ring(2000)      # (t, ms, ops)
         self.fresh_ms = Ring(600)       # (t, ms): a click written to visible in the features
         self.jobs = Ring(200)           # {t, job, ms, rows}
@@ -366,7 +397,20 @@ class App:
         self.last_snap = 0
         self.stop = threading.Event()
         self.wf = wfm.Runner(db)
+        self.wf.readers.append(self.models_reading)
         self.wf_status = "starting"
+
+    def models_reading(self, wf):
+        """The deployed model, when it reads workflow `wf`'s table: deleting
+        the workflow would drop the table every ranking reads."""
+        m = self.model
+        if not m or not m.get("spec"):
+            return []
+        spec = json.loads(m["spec"])
+        used = {f.split(".", 1)[0] for f in spec.get("features", [])}
+        if any(j["workflow"] == wf and wf in used for j in spec.get("joins", [])):
+            return [f"the deployed model {m.get('name') or m['id']}"]
+        return []
 
     # -- setup
 
@@ -442,7 +486,7 @@ class App:
         items = self.world.items
         if model is None:
             ids = random.sample([it["id"] for it in items], K)
-            return {"items": [{"id": i, "score": None} for i in ids], "model": "random", "ms": {"fetch": 0, "transform": 0, "score": 0, "total": (time.perf_counter() - t0) * 1000}}
+            return {"items": [{"id": i, "score": None} for i in ids], "model": "random", "ms": {"fetch": 0, "transform": 0, "score": 0, "total": (time.perf_counter() - t0) * 1000}, "rows": 0}
         if model.get("spec"):
             return self.rank_workflows(user_id, model, explain, t0)
         keys = [it["id"] for it in items]
@@ -475,7 +519,8 @@ class App:
                           "features": dict(zip(FEATURES, x)), "contrib": dict(zip(FEATURES, contributions(m, x)))})
             out.append(e)
         ms = {"fetch": (t2 - t1) * 1000, "transform": (t3 - t2) * 1000, "score": (t4 - t3) * 1000, "total": (t4 - t0) * 1000}
-        return {"items": out, "model": model["id"], "ms": ms, "candidates": len(items)}
+        # Rows read by key: the shopper's, two of each product's, one of each category's.
+        return {"items": out, "model": model["id"], "ms": ms, "candidates": len(items), "rows": 1 + len(io) + len(tr) + len(ucs)}
 
     def context(self, user_id, it):
         """What the shop knows of a request for each product: the columns of
@@ -489,6 +534,7 @@ class App:
         ctxs = [self.context(user_id, it) for it in items]
         t1 = time.perf_counter()
         got = {}
+        n_rows = 0
         for j in spec["joins"]:
             cols = [f.split(".", 1)[1] for f in feats if f.split(".", 1)[0] == j["workflow"]]
             if not cols:
@@ -497,6 +543,7 @@ class App:
                 raise ValueError(f"the shop does not know {j['on']} before an impression")
             keys = sorted({str(c[j["on"]]) for c in ctxs})
             got[j["workflow"]] = (j["on"], dict(zip(keys, self.db.get(wfm.target(j["workflow"]), keys, cols))))
+            n_rows += len(keys)
         t2 = time.perf_counter()
         X = []
         for c in ctxs:
@@ -522,7 +569,7 @@ class App:
                           "features": dict(zip(feats, x)), "contrib": dict(zip(feats, contributions(m, x)))})
             out.append(e)
         ms = {"fetch": (t2 - t1) * 1000, "transform": (t3 - t2) * 1000, "score": (t4 - t3) * 1000, "total": (t4 - t0) * 1000}
-        return {"items": out, "model": model["id"], "ms": ms, "candidates": len(items), "reads": len(got)}
+        return {"items": out, "model": model["id"], "ms": ms, "candidates": len(items), "reads": len(got), "rows": n_rows}
 
     def session_ops(self, now, ranked, user=None):
         w = self.world
@@ -623,7 +670,7 @@ class App:
 
     def shoppers(self, count_rates=True):
         last_rate = time.time()
-        n_imp, n_clk, n_req = self.counts["impressions"], self.counts["clicks"], 0
+        n_imp, n_clk = self.counts["impressions"], self.counts["clicks"]
         req0 = self.counts["requests"]
         while not self.stop.is_set():
             if not self.running:
@@ -633,9 +680,8 @@ class App:
                 t = time.perf_counter()
                 user = self.world.r.choices(self.world.users, self.world.weights)[0]
                 ranked = self.rank(user["id"])
-                self.serve_ms.add((int(time.time() * 1000), ranked["ms"]["total"], ranked["ms"]["fetch"], ranked["ms"]["transform"], ranked["ms"]["score"]))
+                self.serve_ms.add((int(time.time() * 1000), ranked["ms"]["total"], ranked["ms"]["fetch"], ranked["ms"]["transform"], ranked["ms"]["score"], ranked["rows"]))
                 self.counts["requests"] += 1
-                n_req = self.counts["requests"] - req0
                 now = int(time.time() * 1000)
                 ops = self.session_ops(now, ranked if ranked["model"] != "random" else None, user)
                 self.write(ops, now)
@@ -653,9 +699,12 @@ class App:
                 continue
             if time.time() - last_rate >= 1:
                 dt = time.time() - last_rate
-                self.rates.add((int(time.time() * 1000), (self.counts["impressions"] - n_imp) / dt, (self.counts["clicks"] - n_clk) / dt, n_req / dt))
-                n_imp, n_clk, n_req, last_rate = self.counts["impressions"], self.counts["clicks"], 0, time.time()
-                req0 = self.counts["requests"]
+                # Every shopper thread's requests of the window, as the
+                # impressions are (DAP-15: those made by the other threads
+                # while this one slept were never counted).
+                req = self.counts["requests"]
+                self.rates.add((int(time.time() * 1000), (self.counts["impressions"] - n_imp) / dt, (self.counts["clicks"] - n_clk) / dt, (req - req0) / dt))
+                n_imp, n_clk, req0, last_rate = self.counts["impressions"], self.counts["clicks"], req, time.time()
 
     def jobs_loop(self):
         while not self.stop.is_set():
@@ -667,16 +716,23 @@ class App:
                     self.snapshot(now)
                 if self.wf_status == "live":
                     self.wf.tick(now)
+                if self.keep_min and now - self.last_prune >= 60_000:
+                    self.prune(now)
             except Exception as e:
                 self.error = f"jobs: {e}"
             time.sleep(0.25)
+
+    def prune(self, now):
+        """Lets the impressions older than `keep_min` go."""
+        self.last_prune = now
+        self.db.sql(f"DELETE FROM fs_impressions WHERE ts < {now - self.keep_min * 60_000}")
 
     # -- training
 
     def training_set(self, leaky, since, until):
         sql = LEAKY_SQL if leaky else ASOF_SQL
         t0 = time.perf_counter()
-        rows = self.db.rows(sql, {"since": since, "until": until})
+        rows = self.db.rows_all(sql, {"since": since, "until": until})
         return rows, (time.perf_counter() - t0) * 1000, sql
 
     def train(self, leaky=False, minutes=None):
@@ -686,7 +742,7 @@ class App:
         had then (the ASOF JOIN's), which is the truth."""
         now = int(time.time() * 1000)
         cut = now - 60_000
-        since = 0 if not minutes else now - minutes * 60_000
+        since = now - int(minutes or TRAIN_MIN) * 60_000
         rows, build_ms, sql = self.training_set(leaky, since, cut)
         if len(rows) < 200:
             raise ValueError(f"only {len(rows)} impressions to train on")
@@ -751,14 +807,15 @@ class App:
         true_sql = self.wf_training_sql(spec, False)
         now = int(time.time() * 1000)
         cut = now - 60_000
-        # Only impressions every joined workflow has history for.
-        since = 0
+        # Only impressions every joined workflow has history for, of the
+        # last TRAIN_MIN minutes.
+        since = now - TRAIN_MIN * 60_000
         for j in spec["joins"]:
             r = self.db.rows(f"SELECT MIN(ts) AS t FROM {wfm.target(j['workflow'])}_hist")[0]
             since = max(since, r["t"] or now)
         vec = lambda r: [float(r.get(f.replace(".", "__"))) if isinstance(r.get(f.replace(".", "__")), (int, float)) else 0.0 for f in feats]
         t0 = time.perf_counter()
-        rows = self.db.rows(sql, {"since": since, "until": cut})
+        rows = self.db.rows_all(sql, {"since": since, "until": cut})
         build_ms = (time.perf_counter() - t0) * 1000
         if len(rows) < 200:
             raise ValueError(f"only {len(rows)} impressions to train on")
@@ -766,8 +823,8 @@ class App:
         t0 = time.perf_counter()
         m = train_lr(X, y)
         train_ms = (time.perf_counter() - t0) * 1000
-        hold_own = self.db.rows(sql, {"since": cut, "until": now})
-        hold_true = self.db.rows(true_sql, {"since": cut, "until": now})
+        hold_own = self.db.rows_all(sql, {"since": cut, "until": now})
+        hold_true = self.db.rows_all(true_sql, {"since": cut, "until": now})
         n = 1 + self.db.rows("SELECT COUNT(*) AS n FROM fs_models")[0]["n"]
         row = {"id": f"m{now}", "created": now, "name": f"{'wf-leaky' if leaky else 'wf'}-v{n}", "join_kind": "latest (leaks)" if leaky else "asof",
                "features": json.dumps(feats), "weights": json.dumps(m), "train_rows": len(rows),
@@ -830,6 +887,10 @@ class App:
 
     def deploy(self, mid):
         m = self.load_model(mid) if mid != "random" else None
+        if m and m.get("spec"):
+            gone = [j["workflow"] for j in json.loads(m["spec"]).get("joins", []) if j["workflow"] not in self.wf.specs]
+            if gone:
+                raise ValueError(f"{m.get('name') or mid} reads {', '.join(gone)}, which no longer exist{'s' if len(gone) == 1 else ''}: train a model on the workflows there are")
         ops = [{"op": "set", "table": "fs_models", "key": r["id"], "field": "deployed", "value": 1 if r["id"] == mid else 0}
                for r in self.db.rows("SELECT id FROM fs_models")]
         if ops:
@@ -862,7 +923,9 @@ class App:
             "now": now, "phase": self.phase, "running": self.running, "rate": self.rate, "error": self.error,
             "counts": self.counts, "model": self.model and self.model_view(self.model),
             "serve": {"p50": pct([x[1] for x in recent], 0.5), "p99": pct([x[1] for x in recent], 0.99),
-                      "fetch_p50": pct([x[2] for x in recent], 0.5), "n": len(recent)},
+                      "fetch_p50": pct([x[2] for x in recent], 0.5), "n": len(recent),
+                      # Rows read by key by the last request (0: the random order reads none).
+                      "rows": recent[-1][5] if recent else None},
             "write": {"p50": pct([x[1] for x in writes], 0.5), "p99": pct([x[1] for x in writes], 0.99)},
             "fresh": {"p50": pct(fresh, 0.5), "p99": pct(fresh, 0.99)},
             "rates": {"impressions": last[1], "clicks": last[2], "requests": last[3]},
@@ -1044,7 +1107,7 @@ ICON = '<path d="M4 6h16M4 12h10M4 18h6"/><circle cx="18" cy="15" r="3"/><path d
 
 def manifest():
     return {"name": "features", "title": "Feature store", "description": "A shop ranked by a model on live features: streaming and batch transforms, point-in-time training sets, models as rows, serving by key",
-            "icon_svg": ICON, "view": "ui/view.js", "version": VERSION}
+            "icon_svg": ICON, "view": "ui/view.js", "version": VERSION, "maturity": "demo"}
 
 
 def handler(app, token):
@@ -1178,7 +1241,10 @@ def handler(app, token):
                     return self.send(200, measured())
                 return self.send(404, {"error": f"no {p}"})
             except ChloeError as e:
-                return self.send(502, {"error": str(e)})
+                # The server's refusal of the request is the request's (a
+                # 400 stays one), in its own words; a refusal of the demo's
+                # own key, or a failure, is a bad gateway.
+                return self.send(e.status if e.status in (400, 404, 409, 422) else 502, {"error": str(e)})
             except (KeyError, ValueError, wfm.SpecError) as e:
                 return self.send(400, {"error": str(e)})
             except Exception as e:  # noqa: BLE001
@@ -1249,6 +1315,7 @@ def main(argv=None):
     s.add_argument("--port", type=int, default=7700, help="with --local, the server's port (default 7700)")
     s.add_argument("--server-bin", help="with --local, the chloedb-server program")
     s.add_argument("--rate", type=float, default=12, help="shopper sessions a second (default 12)")
+    s.add_argument("--keep", type=int, default=KEEP_MIN, help=f"minutes of impressions kept (default {KEEP_MIN}; 0 keeps them all); a model trains on the last {TRAIN_MIN}")
     s.add_argument("--backfill", type=int, default=12, help="minutes of history to make on a new database (default 12)")
     a = ap.parse_args(argv)
 
@@ -1259,7 +1326,10 @@ def main(argv=None):
     if a.local:
         os.makedirs(a.local, exist_ok=True)
         token = secrets.token_urlsafe(24)
-        env = dict(os.environ, CHLOEDB_APP_TOKEN_FEATURES=token)
+        # The demo alone: the server starts none of the apps it would start
+        # beside it otherwise (chloectx, with its model download), as the
+        # crawler's and the sheets' --local do.
+        env = dict(os.environ, CHLOEDB_APP_TOKEN_FEATURES=token, CHLOEDB_START_APPS="off")
         env.pop("CHLOEDB_APPS", None)
         url = f"http://127.0.0.1:{a.port}"
         cmd = [find_server(a.server_bin), "--db", os.path.join(a.local, "features.chloedb"), "--listen", f"127.0.0.1:{a.port}",
@@ -1272,7 +1342,7 @@ def main(argv=None):
     else:
         ap.error("serve needs --local DIR or --server URL")
     db = Chloe(url, a.key or os.environ.get("CHLOEDB_KEY"))
-    app = App(db, rate=a.rate, backfill_min=a.backfill)
+    app = App(db, rate=a.rate, backfill_min=a.backfill, keep_min=a.keep)
     srv = ThreadingHTTPServer((host, int(port)), handler(app, token))
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()

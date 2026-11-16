@@ -91,7 +91,7 @@ impl Service {
         {
             let mut st = self.scrubs.state();
             if st.running {
-                return Err(ApiError { status: 409, message: "a scrub runs already: wait for it (GET /v1/health says when it ends)".into() });
+                return Err(ApiError { code: None, status: 409, message: "a scrub runs already: wait for it (GET /v1/health says when it ends)".into() });
             }
             st.running = true;
         }

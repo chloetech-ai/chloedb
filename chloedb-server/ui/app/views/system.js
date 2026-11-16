@@ -22,7 +22,7 @@ let active = null;
 
 export default {
   id: "system", title: "Settings", icon: "system", group: "Change",
-  keywords: "settings flags spec statefulset write acks failover hedge timeout slow limits resources memory cores volume storage token coordinators upkeep verify compare replicas checkpoint backup vacuum check snapshot lease reset statistics process limits segments merges config metrics prometheus disk",
+  keywords: "settings flags spec statefulset write acks failover hedge adaptive route routing least cost round robin caught up timeout slow limits resources memory cores volume storage token coordinators upkeep verify compare replicas checkpoint backup vacuum check snapshot lease reset statistics process limits segments merges config metrics prometheus disk",
   render, onParams: (r) => active?.onParams(r),
 };
 
@@ -408,6 +408,9 @@ function render(page, r) {
         case "spec:writeAcks": return L.acks ? [L.acks, "the primaries say"] : null;
         case "args:--verify-every-s": return rep?.verify_every_s != null ? [rep.verify_every_s, "the primaries say"] : null;
         case "cargs:--hedge-ms": return state.cluster?.hedge_ms != null ? [state.cluster.hedge_ms, "this coordinator says"] : null;
+        case "cargs:--route": return state.cluster?.route ? [state.cluster.route, "this coordinator says"] : null;
+        case "cargs:--hedge-adaptive": return state.cluster?.hedge_adaptive != null ? [state.cluster.hedge_adaptive, "this coordinator says"] : null;
+        case "cargs:--prefer-caught-up": return state.cluster?.prefer_caught_up != null ? [state.cluster.prefer_caught_up, "this coordinator says"] : null;
         // What each copy runs with (NEW-cluster-admin-5), from its own limits.
         case "args:--slow-ms": return each((r) => r.detail?.limits ? r.detail.limits.slow_ms ?? 0 : null, (x) => (x ? x + " ms" : "off"));
         case "args:--max-concurrent": return each((r) => r.detail?.limits?.max_concurrent, String);
@@ -667,7 +670,9 @@ function render(page, r) {
       const rows = OPS().map((op) => {
         const res = results.get(`${id()}:${op.id}`);
         const busy = running.has(op.id);
-        const no = op.no || (!canAdmin() && op.id !== "snapshot" ? needsAdmin : null);
+        // Bounded operations (a checkpoint, a verify, a reset) an ops key may run too: the catalog says.
+        const route = `POST ${op.path || (op.id === "checkpoint" ? "/v1/admin/checkpoint" : "")}`;
+        const no = op.no || (op.id !== "snapshot" && !can("admin", route) ? needs("admin", route) : null);
         return h("div", { class: "cc-op" + (no ? " off" : "") },
           h("div", { class: "cc-op-ic" }, icon(op.ic)),
           h("div", { class: "cc-op-t" },

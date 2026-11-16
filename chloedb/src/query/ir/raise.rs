@@ -130,6 +130,9 @@ impl<'a> Raise<'a> {
     /// `strftime(format, field)` of an indexed single-valued TIMESTAMP
     /// field.
     fn time_of(&self, e: &Expr) -> Result<Option<TimeCol>> {
+        if let Expr::Call { func: Func::DateBin, args } = e {
+            return self.bin_of(args).map(Some);
+        }
         let Expr::Call { func: func @ (Func::DateTrunc | Func::DatePart | Func::Strftime), args } = e else { return Ok(None) };
         let (Some(Expr::Lit(Value::Str(how))), Some(Expr::Field(f)), 2) = (args.first(), args.get(1), args.len()) else {
             return Err(err(format!("a Search's {} reads a TIMESTAMP field, with the first argument given as text", func.name())));
@@ -147,6 +150,26 @@ impl<'a> Raise<'a> {
             _ => TimeOf::Format(how.clone()),
         };
         Ok(Some(TimeCol { field, of }))
+    }
+
+    /// `date_bin(width, field [, origin])` of an indexed single-valued
+    /// TIMESTAMP field, its width given as text and its origin as a
+    /// TIMESTAMP or text of one.
+    fn bin_of(&self, args: &[Expr]) -> Result<TimeCol> {
+        let shape = || err("a Search's date_bin reads a TIMESTAMP field, with the width given as text ('5 minutes') and the origin as a TIMESTAMP");
+        let (Some(Expr::Lit(Value::Str(width))), Some(Expr::Field(f))) = (args.first(), args.get(1)) else { return Err(shape()) };
+        let origin = match args.get(2) {
+            None => 0,
+            Some(Expr::Lit(Value::Timestamp(o))) => *o,
+            Some(Expr::Lit(Value::Str(o))) => crate::timestamp::parse(o).ok_or_else(|| err(format!("date_bin's origin {o:?} is not a time (ISO 8601: '2026-11-05' or '2026-11-05T07:30:00Z')")))?,
+            Some(_) => return Err(shape()),
+        };
+        let field = self.field(*f)?;
+        let fld = &self.schema.fields[field];
+        if fld.logical != Some(crate::schema::Logical::Timestamp) || fld.multi || !fld.indexed {
+            return Err(err(format!("a Search's date_bin reads an indexed TIMESTAMP field of one value, not {}", fld.name)));
+        }
+        Ok(TimeCol { field, of: TimeOf::Bin { width: super::eval::stride(width)?, origin } })
     }
 
     fn table(&self, t: &str) -> Result<()> {
@@ -357,7 +380,7 @@ impl<'a> Raise<'a> {
         // A day, week or month a time is in is a time.
         for (t, (_, p)) in types.iter_mut().zip(&projection) {
             if let Projection::Time(i) = p {
-                if matches!(self.times[*i].of, TimeOf::Trunc(_)) {
+                if matches!(self.times[*i].of, TimeOf::Trunc(_) | TimeOf::Bin { .. }) {
                     *t = Some(crate::schema::Logical::Timestamp);
                 }
             }

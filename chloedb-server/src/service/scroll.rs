@@ -127,7 +127,7 @@ impl Drop for Taken {
 }
 
 fn gone() -> ApiError {
-    ApiError { status: 404, message: "no such cursor: it was read to its last page, closed, or not read for its keep-alive (keep_alive_ms)".into() }
+    ApiError { code: None, status: 404, message: "no such cursor: it was read to its last page, closed, or not read for its keep-alive (keep_alive_ms)".into() }
 }
 
 impl Service {
@@ -164,7 +164,7 @@ impl Service {
             drop(open);
             scroll.end();
             return Err(ApiError {
-                status: 429,
+                code: None, status: 429,
                 message: format!(
                     "the open scrolls hold {holding} rows of the {} they may hold together (--max-scroll-rows), and this one would hold {held}: close some, or try again when they end",
                     self.max_scroll_rows

@@ -4,17 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Receipts and chloectx blame · ChloeDB docs</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
 <meta name="description" content="ChloeCtx puts records from earlier work into an agent&#x27;s context: on every prompt, after a compaction, and when the agent calls memorysearch. Each of those recalls now writes a receipt, and the store is kept as a…">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="../assets/site.css?v=422dc3d3ad">
-<link rel="stylesheet" href="../assets/docs.css?v=7225920d45">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
 </head>
 <body class="docs">
 <!-- Written by docs/site/scripts/build_docs.py from docs/chloectx/receipts.md: edit that file and run the script, not this page. -->
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a>
+  <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
   <nav class="nav" aria-label="Site">
     <a href="../features.html">Features</a>
     <a href="../scale.html">Laptop to cloud</a>
@@ -45,6 +48,7 @@
       <a href="rag.html">Retrieval for RAG</a>
       <a href="agent-memory.html">Memory for an agent</a>
       <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
       <span class="h">Clients</span>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
@@ -54,9 +58,11 @@
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="runbooks.html">Runbooks</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">Apps</span>
@@ -78,6 +84,7 @@
       <span class="eyebrow">Apps</span>
       <h1>Receipts and chloectx blame</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/receipts.md">docs/chloectx/receipts.md</a>.</p>
+      <p class="doc-version">These docs follow main (0.3.5, unreleased). The latest release is 0.3.4 (<a href="v0.3.4/index.html">its docs</a>); what is newer is marked "since 0.3.5".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#what-a-receipt-holds">What a receipt holds</a></li><li><a href="#kept-snapshots">Kept snapshots</a></li><li><a href="#commands">Commands</a></li><li><a href="#in-the-command-center">In the command center</a></li><li><a href="#how-blame-finds-the-edit">How blame finds the edit</a></li><li><a href="#forgetting-and-redaction">Forgetting and redaction</a></li></ol></details>
     <div class="doc-body">
@@ -187,24 +194,42 @@ since the last one.</p>
   it that no merge has replaced since, and writes the rest. The live store
   is a single file, which a directory snapshot cannot share bytes with, so
   the first snapshot is a full copy, and every segment a merge writes is
-  copied again by the next snapshot while older ones keep its inputs.
-  Taken after every turn (<code>min_interval_secs: 0</code>), each flush also makes a
-  small segment the store's merges rewrite several times more; a week of
-  daily use then takes several times the store's size. <code>chloectx stats</code>
-  shows the bytes of receipts and snapshots (<code>receipts</code>, <code>snapshots</code>,
-  <code>total_bytes</code>).</li>
+  copied again by the next snapshot while older ones keep its inputs. The
+  store's smallest merge tier spans up to 8,000 live rows, so each
+  snapshot's flush makes a small segment that is merged again and again
+  within it, and each snapshot keeps one of those outputs. With no budget,
+  a simulation of the merge policy at 50 turns a day, 60 records a turn
+  and hourly snapshots over an 8-hour day (the fourth audit, not a
+  measurement) gave snapshots of about 3 times the store after a week
+  (143 MB beside 46.5 MB) and 4 times after 30 days (1.16 GB beside
+  279 MB); taken after every turn (<code>min_interval_secs: 0</code>), about 10
+  times after a week. On a file system where hard links fail (some
+  network and FUSE mounts, exFAT), every snapshot is a full copy, and
+  <code>chloectx doctor</code> says so.</li>
 </ul>
-<p>Automatic snapshots older than <code>keep_days</code>, or past the newest <code>max_auto</code>,
-are dropped when the daemon starts and before each new one, whatever the
+<p>So the automatic snapshots are kept to a budget: at most the store's size
+(<code>budget_store_ratio</code>, 1.0; at least 32 MB; <code>max_bytes</code> sets one in bytes,
+and 0 for both sets none), counting each file once however many snapshots
+link it, and counting named snapshots too, which are never dropped for it.
+Past it, the oldest automatic ones go, never the newest. Automatic
+snapshots older than 3 days are thinned to the last of each day
+(<code>daily_after_days</code>; 0 keeps them as taken). Those older than <code>keep_days</code>
+(30), or past the newest <code>max_auto</code> (2,000), are dropped too. All of this
+runs when the daemon starts and before each new snapshot, whatever the
 settings say now. Anything under <code>snapshots/</code> that no snapshot owns (a
 checkpoint a stopped daemon left half written) is removed when the daemon
-starts.</p>
+starts. <code>chloectx stats</code> shows the bytes of the store, the receipts and the
+snapshots, and the budget (<code>receipts</code>, <code>snapshots</code>, <code>total_bytes</code>), and
+<code>chloectx doctor</code> says them in one line, <code>disk</code>.</p>
 <p>A receipt replays exactly on the snapshot kept at its commit: the replay
 runs the same retrieval code (<code>receipt::retrieve</code>, which the recall itself
 runs) with the receipt's inputs, and must give the same rows, scores and
 decisions. When no snapshot was kept at that commit (a recall that showed
 nothing, or one inside <code>min_interval_secs</code>), it replays on the nearest
-later one and says so. It is also replayed on today's store, which shows
+later one and says so. With hourly snapshots that is most receipts: about
+one in six replays exactly at 6 recalls an hour, and the rest on the next
+snapshot, whose store holds the records written since; after 3 days only
+the last snapshot of each day is left, and after the budget fills, fewer. It is also replayed on today's store, which shows
 what has changed since: a record superseded, deleted or outranked.</p>
 <p><code>chloectx snapshot keep NAME</code> keeps one by name, until <code>chloectx snapshot
 drop NAME</code>; <code>chloectx snapshot list</code> lists them.</p>
@@ -235,16 +260,19 @@ can be used to read a file elsewhere.</p>
 the person reading its transcript) can ask why a record ranked where it did.</p>
 <h2 id="in-the-command-center">In the command center<a class="anchor" href="#in-the-command-center" aria-label="Link to this section">#</a></h2>
 <p>ChloeCtx's page in ChloeDB's command center (<code>chloedb-server --app
-chloectx=URL</code>, then Apps → ChloeCtx) has two tabs for these, beside Context
-and Seen before:</p>
+chloectx=URL</code>, then Apps → ChloeCtx) lists every space it can read; a
+Claude Code store of the machine the app runs on opens with three more
+tabs (Receipts, Blame, Snapshots and capsules) beside Overview, Ask, Memories, Sessions, Graph and Connect
+(<code>#/app/chloectx/store/&lt;store&gt;/receipts</code>, <code>…/blame/&lt;path:line&gt;</code>):</p>
 <ul>
-<li><strong>Receipts</strong>: pick a project's store, then the newest receipts (when, the
-  session and turn, which recall, the gate's decision, records and tokens
-  shown, the commit). Open one for its candidates (rank, score with a bar,
+<li><strong>Receipts</strong>: the store's newest receipts (when, which recall, what it
+  was for, records and tokens shown, the gate's decision, the session and
+  turn). Open one for its candidates (rank, score with a bar,
   BM25, cosine, tokens, decision), the query and the gate, the text the
   agent was shown, and the replay on the kept snapshot and on today's
-  store. Below the list, the kept snapshots: keep one by name, drop a named
-  one.</li>
+  store. The kept snapshots are under <strong>Snapshots and capsules</strong>: keep one
+  by name, drop a named one, or cut a capsule (pick the kinds of record)
+  with the <code>claude mcp add</code> line that mounts it.</li>
 <li><strong>Blame</strong>: type <code>path:line</code>. It shows the line, its commit, the edit, the
   prompt and the tool calls before it, the notes from the turn, each
   receipt of what memory had recalled before the edit (with what has become
@@ -285,6 +313,18 @@ behind them, under the app's prefix (<code>/v1/apps/chloectx</code>):</p>
 <td><code>GET</code>, <code>POST {name}</code> <code>/v1/local/:store/snapshots</code>, <code>DELETE /v1/local/:store/snapshots/:name</code></td>
 <td>the kept snapshots; keep one; drop one</td>
 </tr>
+<tr>
+<td><code>GET</code>, <code>POST {title?, kinds?, since_days?}</code> <code>/v1/local/:store/capsules</code></td>
+<td>the capsules cut from the store, newest first; one cut, its manifest and folder</td>
+</tr>
+<tr>
+<td><code>GET /v1/local/:store/overview</code>, <code>/sessions</code>, <code>/records</code>, <code>/notes[/:id]</code>, <code>/graph</code>, <code>POST /v1/local/:store/ask</code></td>
+<td>what the other tabs read, as a team space's calls of the same names answer (<a href="chloectx-app.html#spaces-and-what-each-shows">the app</a>)</td>
+</tr>
+<tr>
+<td><code>GET /v1/local/:store/stats</code></td>
+<td><code>chloectx stats --json</code></td>
+</tr>
 </tbody>
 </table></div>
 <h2 id="how-blame-finds-the-edit">How blame finds the edit<a class="anchor" href="#how-blame-finds-the-edit" aria-label="Link to this section">#</a></h2>
@@ -310,11 +350,17 @@ tool's output; the web for <code>WebFetch</code> and <code>WebSearch</code>).</p
 forgotten record (their rows keep ids and scores, and lose the record's
 text hash), removes a forgotten prompt from the query of the receipts it
 was asked as, rewrites the store's segments that held the record without
-it, and only then drops every automatic snapshot, with no snapshot taken
-meanwhile, so no snapshot taken afterwards holds its bytes. Named
-snapshots are kept and listed, for you to drop. The rewritten segments'
-old pages are free in the store's file until later writes reuse them;
-<code>chloectx redact</code> rewrites the whole file.
+drops every automatic snapshot, and rewrites the store's segments that
+held the record without it, with no snapshot taken until that is done, so
+no snapshot taken afterwards holds its bytes. Only the segments that held
+it are rewritten (those whose live rows fell with the delete, and those a
+flush or a merge wrote since that still hold it, marked deleted), not every
+segment with an older delete, and then the free pages of the store's file,
+where the old segments were, are written with zeros
+(<code>Database::zero_free_pages</code>); pages an open snapshot still reads are left,
+and said. <code>memory_forget</code> answers before the rewrite, which runs after the
+answer, and <code>chloectx forget</code> waits for it. Named snapshots are kept and
+listed, for you to drop.
 <code>chloectx redact</code> redacts the receipts as it does the records, and drops
 the automatic snapshots too. Replays of the receipts before then can no
 longer be exact.</p>
@@ -327,13 +373,17 @@ longer be exact.</p>
 </div></main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div class="brand"><a class="mark" href="../index.html"><i><b></b><b></b><b></b><b></b></i>ChloeDB</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div class="brand"><a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
   <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
   <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="../assets/site.js?v=142c29c3e0"></script>
-<script>if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;</script>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
 
 </body>
 </html>

@@ -23,7 +23,7 @@ Twelve books, one JSON object a line:
 {"id": "b12", "title": "Tides of Glass", "author": "Ana Ruiz", "genres": ["fantasy", "romance"], "year": 2011, "rating": 4.0, "description": "A glassblower falls for a sea witch who trades storms for memories."}
 ```
 
-A table with a primary key, text to search, keywords and numbers to filter on, and a vector that ChloeDB computes from the title and description with a small embedding model. Fetch the model once (it is about 130 MB, kept in `~/.local/share/strata/models`, or wherever `CHLOEDB_MODELS` says):
+A table with a primary key, text to search, keywords and numbers to filter on, and a vector that ChloeDB computes from the title and description with a small embedding model. Fetch the model once (it is about 130 MB, kept in `~/.local/share/chloedb/models`, or wherever `CHLOEDB_MODELS` says; a machine with `~/.local/share/strata/models` from before the rename keeps using that):
 
 ```sh
 chloedb-server fetch-model potion-retrieval-32M

@@ -17,6 +17,7 @@ Complete programs for common jobs. Each one runs, as written, every time the cod
 <a href="rag.md"><b>Retrieval for RAG</b><span>Chunk documents, search them by words and meaning, and hand a model the passages with their sources.</span></a>
 <a href="agent-memory.md"><b>Memory for an agent</b><span>Remember turns and facts, recall what matters to a new message, and keep facts current.</span></a>
 <a href="crawl-to-search.md"><b>Crawl a site into search</b><span>Point the crawler at a site, get a table with its fields, and search it.</span></a>
+<a href="logs.md"><b>Search your logs</b><span>Send syslog and OpenTelemetry logs to a table, and find the last 15 minutes' errors, a flapping interface, an IP.</span></a>
 </div>
 
 ## Use it from

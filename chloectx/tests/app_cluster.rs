@@ -318,17 +318,60 @@ fn app_in_a_cluster() {
     assert_eq!(new["supersedes"], json!([old["id"]]));
     let gone = app.post("/v1/spaces/billing/notes", json!({"kind": "fact", "text": "The old mailer sends the dunning emails every day."}));
     assert_eq!(app.try_post("/v1/spaces/billing/notes", json!({"kind": "mood", "text": "happy"})).0, 400);
-    let (s, _) = http.call("DELETE", &format!("{app_url}/v1/spaces/billing/notes/{}", gone["id"].as_str().unwrap()), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    let (s, retired) = http.call("DELETE", &format!("{app_url}/v1/spaces/billing/notes/{}", gone["id"].as_str().unwrap()), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
     assert_eq!(s, 200);
+    // APC-22: nothing replaced it, so it is retired, not superseded.
+    assert_eq!(retired["tag"], "retired", "{retired}");
+    assert_eq!(app.get(&format!("/v1/spaces/billing/notes/{}", gone["id"].as_str().unwrap()))["later"], json!([]));
     let live = texts(&app.get("/v1/spaces/billing/notes"));
     assert_eq!(live.len(), 2, "{live:?}");
     assert!(live.iter().any(|t| t.contains("1000 EUR")) && !live.iter().any(|t| t.contains("500 EUR need") || t.contains("old mailer")), "{live:?}");
     assert_eq!(texts(&app.get("/v1/spaces/billing/notes?all=1")).len(), 4);
+    // A space's counts: every record, and the notes a context still shows.
+    let listed = app.get("/v1/spaces");
+    let billing = listed["spaces"].as_array().unwrap().iter().find(|s| s["name"] == "billing").unwrap();
+    assert_eq!((billing["by_kind"]["decision"].as_i64(), billing["by_kind"]["fact"].as_i64()), (Some(2), Some(1)), "{billing}");
+    assert_eq!((billing["live_by_kind"]["decision"].as_i64(), billing["live_by_kind"]["fact"].as_i64(), billing["live_by_kind"]["preference"].as_i64()), (Some(1), None, Some(1)), "{billing}");
     let h = app.get(&format!("/v1/spaces/billing/notes/{}", old["id"].as_str().unwrap()));
     assert_eq!(h["note"]["tag"], "superseded");
     assert_eq!(h["later"][0]["id"], new["id"], "{h}");
     let h = app.get(&format!("/v1/spaces/billing/notes/{}", new["id"].as_str().unwrap()));
     assert_eq!(h["earlier"][0]["id"], old["id"], "{h}");
+
+    // The space as an MCP server, for an agent whose key is limited to its
+    // table (the grants chloedb-server sends in x-chloedb-tables).
+    let auth = format!("Bearer {TOKEN}");
+    let mcp = |space: &str, grants: &str, body: Value| http.call("POST", &format!("{app_url}/v1/spaces/{space}/mcp"), Some(&body), &[("authorization", &auth), ("x-chloedb-tables", grants)]);
+    let (s, init) = mcp("billing", "ctx_billing=admin", json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}}));
+    assert_eq!((s, init["result"]["protocolVersion"].as_str(), init["result"]["serverInfo"]["name"].as_str()), (200, Some("2025-06-18"), Some("chloectx-billing")), "{init}");
+    assert_eq!(mcp("billing", "ctx_billing=admin", json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).0, 202);
+    let (_, listed) = mcp("billing", "ctx_billing=admin", json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
+    let names: Vec<&str> = listed["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+    assert_eq!(names, ["ask", "remember", "notes"], "{listed}");
+    let call = |grants: &str, name: &str, args: Value| mcp("billing", grants, json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": name, "arguments": args}})).1;
+    let asked = call("ctx_billing=admin", "ask", json!({"question": "Who approves a refund of 700 EUR?"}));
+    let text = asked["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("1000 EUR") && text.contains(new["id"].as_str().unwrap()), "{asked}");
+    let kept = call("ctx_billing=admin", "remember", json!({"kind": "fact", "text": "Finance closes the books on the third working day."}));
+    assert!(kept["result"]["content"][0]["text"].as_str().unwrap_or("").starts_with("Kept as "), "{kept}");
+    let listed = call("ctx_billing=admin", "notes", json!({"kind": "fact"}));
+    assert!(listed["result"]["content"][0]["text"].as_str().unwrap_or("").contains("third working day"), "{listed}");
+    // A reader asks and may not write; another space, or the app's other
+    // routes, are not its key's.
+    let refused = call("ctx_billing=read", "remember", json!({"kind": "fact", "text": "x"}));
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    assert_eq!(mcp("payroll", "ctx_billing=admin", json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list"})).0, 403);
+    // The synced projects it lists are those whose tables it reads: none.
+    let (s, mem) = http.call("GET", &format!("{app_url}/v1/memory"), None, &[("authorization", &auth), ("x-chloedb-tables", "ctx_billing=admin")]);
+    assert_eq!((s, mem["projects"].as_array().map(|a| a.len())), (200, Some(0)), "{mem}");
+    // A key for operations reads no Claude Code sessions (X-F1).
+    assert_eq!(http.call("GET", &format!("{app_url}/v1/memory"), None, &[("authorization", &auth), ("x-chloedb-scope", "read"), ("x-chloedb-role", "ops")]).0, 403);
+    assert_eq!(http.call("POST", &format!("{app_url}/v1/spaces"), Some(&json!({"name": "other"})), &[("authorization", &auth), ("x-chloedb-tables", "ctx_*=admin")]).0, 403);
+    let (_, mine) = http.call("GET", &format!("{app_url}/v1/spaces"), None, &[("authorization", &auth), ("x-chloedb-tables", "ctx_billing=read")]);
+    assert_eq!(mine["spaces"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect::<Vec<_>>(), ["billing"], "{mine}");
+    // Retire the fact the agent kept, for the counts below.
+    let id = kept["result"]["content"][0]["text"].as_str().unwrap().trim_start_matches("Kept as ").trim_end_matches('.').to_string();
+    assert_eq!(http.call("DELETE", &format!("{app_url}/v1/spaces/billing/notes/{id}"), None, &[("authorization", &auth)]).0, 200);
 
     // A context within a budget: the current version, with what it changed;
     // the old one left out, and why.
@@ -346,6 +389,13 @@ fn app_in_a_cluster() {
     // GET asks the same.
     let g = app.get("/v1/spaces/billing/ask?q=refund+approver&budget=500");
     assert!(g["items"].as_array().unwrap().iter().any(|i| i["id"] == new["id"]), "{g}");
+    // APC-23: a budget out of range is refused, not changed in silence.
+    for q in ["budget=50", "budget=60000", "budget=lots"] {
+        let (s, j) = http.call("GET", &format!("{app_url}/v1/spaces/billing/ask?q=refund&{q}"), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+        assert_eq!(s, 400, "{q}: {j}");
+        assert!(j["error"].as_str().unwrap_or("").contains("200 to 50000"), "{j}");
+    }
+    assert_eq!(app.try_post("/v1/spaces/billing/ask", json!({"question": "Who approves refunds?", "budget": 50})).0, 400);
 
     // An exchange, distilled by the model into a note.
     let x = app.post("/v1/spaces/billing/exchanges", json!({"user": "Stop sending dunning emails every day; day 1, 4 and 10 is enough.", "assistant": "Changed the schedule to day 1, 4 and 10."}));
@@ -354,6 +404,28 @@ fn app_in_a_cluster() {
     wait_for("the distillation", 60, || app.get("/v1/info")["distill"]["done"] == 1);
     assert_eq!(app.get("/v1/info")["distill"]["notes"], 1);
     assert!(texts(&app.get("/v1/spaces/billing/notes")).iter().any(|t| t.contains("day 1, 4 and 10")));
+
+    // What the inspector reads: the space's overview, its sessions, a session's records.
+    let ov = app.get("/v1/spaces/billing/overview");
+    assert_eq!(ov["live"]["rule"], 1, "{ov}");
+    assert!(ov["rules"].as_array().unwrap().iter().any(|n| n["text"].as_str().unwrap().contains("customer's currency")), "{ov}");
+    let changed = ov["changes"].as_array().unwrap();
+    assert!(changed.iter().any(|c| c["id"] == new["id"] && c["was"][0]["text"].as_str().unwrap().contains("500 EUR")), "{ov}");
+    assert!(!ov["decisions"].as_array().unwrap().iter().any(|n| n["id"] == old["id"]), "a replaced decision is not current: {ov}");
+    let ss = app.get("/v1/spaces/billing/sessions");
+    let talk = ss["sessions"].as_array().unwrap().iter().find(|s| s["turns"] == 1).unwrap_or_else(|| panic!("{ss}"));
+    assert!(talk["title"].as_str().unwrap().starts_with("Stop sending dunning emails"), "{ss}");
+    let session = talk["session"].as_str().unwrap();
+    let rs = app.get(&format!("/v1/spaces/billing/records?session={session}"));
+    let kinds: Vec<&str> = rs["records"].as_array().unwrap().iter().map(|r| r["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"prompt") && kinds.contains(&"answer"), "{rs}");
+    let g = app.get("/v1/spaces/billing/graph");
+    let gn = g["nodes"].as_array().unwrap();
+    assert!(gn.iter().any(|n| n["id"] == new["id"] && n["current"] == true) && gn.iter().any(|n| n["id"] == old["id"] && n["current"] == false), "{g}");
+    assert!(gn.iter().any(|n| n["type"] == "entity" && n["label"] == "refunds"), "{g}");
+    assert!(g["edges"].as_array().unwrap().iter().any(|e| e["s"] == new["id"] && e["t"] == old["id"] && e["label"] == "supersedes"), "{g}");
+    let found = app.get("/v1/spaces/billing/records?q=dunning");
+    assert!(!found["records"].as_array().unwrap().is_empty(), "{found}");
 
     // Incidents: recorded, a better fix replacing one, matched to a text.
     let first = app.post("/v1/incidents", json!({"title": "Search p99 jumped during a large merge", "symptom": "search p99 over 300 ms on one shard", "cause": "a merge of the largest segments took the page cache", "fix": "restarted the shard", "alert": "p99"}));
@@ -366,6 +438,37 @@ fn app_in_a_cluster() {
     assert_eq!(list["incidents"].as_array().unwrap().len(), 3, "{list}");
     let m = app.get("/v1/incidents/match?q=write+rejects+on+shard+2+queue+full");
     assert_eq!(m["matches"][0]["title"], "Writes refused after a replica fell behind", "{m}");
+
+    // A team's own incidents space, dated by when the incident happened,
+    // matched from a selection of log lines; then deleted with its table.
+    assert_eq!(app.try_post("/v1/spaces", json!({"name": "netops", "kind": "graph"})).0, 400);
+    let team = app.post("/v1/spaces", json!({"name": "netops", "title": "Network incidents", "kind": "incidents"}));
+    assert_eq!(team["kind"], "incidents", "{team}");
+    let flap = app.post("/v1/incidents", json!({"space": "netops", "title": "Gi0/1 on core-rtr-02 flapped and BGP to 10.0.12.2 dropped", "symptom": "LINK-3-UPDOWN on GigabitEthernet0/1 every few seconds, BGP hold time expired, CRC errors climbing", "cause": "a dirty fibre connector", "fix": "cleaned and reseated the connector", "when": "2026-09-14T03:10:00Z"}));
+    assert_eq!((flap["space"].as_str(), flap["ts"].as_i64()), (Some("netops"), Some(1_789_344_000 + 3 * 3600 + 600)), "{flap}");
+    assert_eq!(app.try_post("/v1/incidents", json!({"space": "billing", "title": "x", "fix": "y"})).0, 400, "a notes space keeps no incidents");
+    assert_eq!(app.try_post("/v1/spaces/billing/notes", json!({"text": "x", "when": "someday"})).0, 400);
+    let dated = app.post("/v1/spaces/billing/notes", json!({"kind": "fact", "text": "The September invoice run was late by a day.", "when": "2026-09-30"}));
+    assert_eq!(dated["ts"], 1_790_726_400, "{dated}");
+    let lines = ["%LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to down", "%BGP-5-ADJCHANGE: neighbor 10.0.12.2 Down BGP Notification sent (hold time expired)", "%LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to up"];
+    let m = app.post("/v1/incidents/match", json!({"lines": lines}));
+    assert_eq!((m["matches"][0]["id"].as_str(), m["matches"][0]["space"].as_str()), (flap["id"].as_str(), Some("netops")), "{m}");
+    assert!(m["spaces"].as_array().unwrap().iter().any(|s| s == "netops") && m["spaces"].as_array().unwrap().iter().any(|s| s == "incidents"), "{m}");
+    let only = app.post("/v1/incidents/match", json!({"lines": lines, "space": "incidents"}));
+    assert!(only["matches"].as_array().unwrap().iter().all(|i| i["space"] == "incidents"), "{only}");
+    assert_eq!(app.get("/v1/incidents?space=netops")["incidents"].as_array().unwrap().len(), 1);
+    assert_eq!(app.get("/v1/incidents")["incidents"].as_array().unwrap().len(), 4, "every incidents space");
+    let (s, j) = http.call("DELETE", &format!("{app_url}/v1/spaces/netops"), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 200, "{j}");
+    assert_eq!(j["table"], "ctx_netops", "{j}");
+    let (_, tables) = http.call("GET", &format!("{coord}/v1/tables"), None, &[]);
+    assert!(!tables.to_string().contains("\"ctx_netops\""), "the table is dropped: {tables}");
+    assert!(app.get("/v1/spaces")["spaces"].as_array().unwrap().iter().all(|s| s["name"] != "netops"));
+    let (s, _) = http.call("DELETE", &format!("{app_url}/v1/spaces/netops"), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 404);
+    // The billing note dated in September stays where it was written.
+    let (s, _) = http.call("DELETE", &format!("{app_url}/v1/spaces/billing/notes/{}", dated["id"].as_str().unwrap()), None, &[("authorization", &format!("Bearer {TOKEN}"))]);
+    assert_eq!(s, 200);
 
     // A model drafts an incident from a postmortem; nothing is kept.
     let d = app.post("/v1/incidents/draft", json!({"text": "Postmortem: on Tuesday shard 2 ran out of disk while we re-embedded..."}));
@@ -456,7 +559,7 @@ fn app_in_a_cluster() {
     let again = app.post("/v1/spaces/billing/notes", json!({"kind": "fact", "text": "Chargebacks arrive as webhooks and are matched by the invoice number."}));
     let all = app.get("/v1/spaces/billing/notes?all=1");
     assert_eq!(all["notes"].as_array().unwrap().iter().filter(|n| n["id"] == again["id"]).count(), 1, "a new id: {again}");
-    assert_eq!(texts(&all).len(), 6, "{all}");
+    assert_eq!(texts(&all).len(), 8, "the agent's retired fact and the dated note too: {all}");
     drop(procs);
 }
 
@@ -539,6 +642,28 @@ fn local_stores_through_the_app() {
     let b = app.get("/v1/local/proj-test/blame?target=src%2Fretry.rs%3A2");
     assert_eq!(b["edit"]["session"], "s2", "{b}");
     assert!(b["receipts"].as_array().unwrap().iter().any(|r| r["source"] == "briefing"), "{b}");
+
+    // What the inspector reads of a store: its overview, sessions, records, notes and an answer.
+    let ov = app.get("/v1/local/proj-test/overview");
+    assert_eq!(ov["live"]["decision"], 1, "{ov}");
+    assert!(ov["decisions"][0]["text"].as_str().unwrap().contains("fixed 2 second"), "{ov}");
+    let ss = app.get("/v1/local/proj-test/sessions");
+    let titles: Vec<&str> = ss["sessions"].as_array().unwrap().iter().filter_map(|s| s["title"].as_str()).collect();
+    assert!(titles.contains(&"How should payment retries back off?"), "{ss}");
+    let rs = app.get("/v1/local/proj-test/records?session=s2");
+    assert!(rs["records"].as_array().unwrap().iter().any(|r| r["kind"] == "tool_call"), "{rs}");
+    let notes = app.get("/v1/local/proj-test/notes");
+    let id = notes["notes"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(app.get(&format!("/v1/local/proj-test/notes/{id}"))["note"]["id"], json!(id));
+    let a = app.post("/v1/local/proj-test/ask", json!({"question": "how do payment retries back off?", "budget": 1000}));
+    assert!(a["items"].as_array().unwrap().iter().any(|i| i["id"] == json!(id)), "{a}");
+    let g = app.get("/v1/local/proj-test/graph");
+    assert!(g["nodes"].as_array().unwrap().iter().any(|n| n["id"] == json!(id) && n["type"] == "note"), "{g}");
+    // A capsule cut from it, then listed.
+    let cut = app.post("/v1/local/proj-test/capsules", json!({"title": "Retries"}));
+    assert!(cut["records"].as_i64().unwrap() >= 1 && cut["title"] == "Retries", "{cut}");
+    let caps = app.get("/v1/local/proj-test/capsules");
+    assert_eq!(caps["capsules"].as_array().unwrap().len(), 1, "{caps}");
 
     let k = app.post("/v1/local/proj-test/snapshots", json!({"name": "before-release"}));
     assert!(k["text"].as_str().unwrap().starts_with("kept before-release"), "{k}");

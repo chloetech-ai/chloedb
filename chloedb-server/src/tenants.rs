@@ -96,7 +96,7 @@ impl From<TenantError> for ApiError {
             TenantError::Exists | TenantError::NotWriter => 409,
             TenantError::InDoubt(_) => 503,
         };
-        ApiError { status, message: e.to_string() }
+        ApiError { code: None, status, message: e.to_string() }
     }
 }
 
@@ -130,7 +130,7 @@ impl Kind {
         let catalog = db.catalog();
         let tables: Vec<&chloedb::schema::Schema> = catalog.iter().map(|t| &**t).collect();
         match bind_command(sql, &tables, params) {
-            Ok(Command::Query | Command::Explain { .. }) => Kind::Read,
+            Ok(Command::Query | Command::Explain { .. } | Command::ShowTables) => Kind::Read,
             Ok(_) => Kind::Write,
             Err(_) if starts_as_read(sql) => Kind::Read,
             Err(_) => Kind::Write,
@@ -147,7 +147,7 @@ fn read_only(db: &Db, sql: &str, params: &Params) -> chloedb::Result<SqlResult> 
     let tables: Vec<&chloedb::schema::Schema> = catalog.iter().map(|t| &**t).collect();
     match bind_command(sql, &tables, params)? {
         Command::Query => db.query(sql, params).map(SqlResult::Rows),
-        Command::Explain { .. } => db.sql(sql, params),
+        Command::Explain { .. } | Command::ShowTables => db.sql(sql, params),
         _ => Err(chloedb::Error::Query("this statement writes: send it again".into())),
     }
 }

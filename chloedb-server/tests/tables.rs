@@ -307,11 +307,14 @@ async fn three_shards_answer_like_one_database() {
     let e = coord.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17})], None).await.unwrap_err();
     assert!(e.status == 400 && e.message.contains("\"routing\""), "{}", e.message);
     let other = if usr == "u0" { "u1" } else { "u0" };
-    let w = coord.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17, "routing": other})], None).await.unwrap();
-    // u0's shard may be the row's too.
+    // u0's shard may be the row's too; another shard has no such row, and
+    // says so rather than delete nothing.
     let elsewhere = map.shard_of(&chloedb::Value::Str(other.into())) != map.shard_of(&chloedb::Value::Str(usr.clone()));
-    assert_eq!(w.rows, !elsewhere as u64);
-    let w = coord.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17, "routing": usr})], None).await.unwrap();
+    match coord.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17, "routing": other})], None).await {
+        Ok(w) => assert!(!elsewhere && w.rows == 1, "{w:?}"),
+        Err(e) => assert!(elsewhere && e.status == 404 && e.message.contains(other), "{}", e.message),
+    }
+    let w = coord.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17, "routing": usr, "if_missing": "skip"})], None).await.unwrap();
     assert_eq!(w.rows, elsewhere as u64);
     whole.write_ops(vec![json!({"op": "delete", "table": "events", "key": 17})], None).await.unwrap();
     // SQL deletes reach every shard.
@@ -425,8 +428,11 @@ async fn every_table_over_http_and_grpc() {
     assert_eq!((events["table"].as_str(), events["shard_by"].as_str(), events["short"]["shard_by"].as_str()), (Some("events"), Some("usr"), Some("usr")));
     let first: Json = c.get(format!("{h}/v1/schema")).send().await.unwrap().json().await.unwrap();
     assert_eq!((first["table"].as_str(), first["shard_by"].is_null()), (Some("items"), true));
+    // A table there is none of is not found (PRF-9).
     let r = c.get(format!("{h}/v1/schema?table=nope")).send().await.unwrap();
-    assert_eq!(r.status().as_u16(), 400);
+    assert_eq!(r.status().as_u16(), 404);
+    let j: Json = r.json().await.unwrap();
+    assert_eq!(j["error_code"], "table_not_found", "{j}");
 
     // Rows of each table: operations that name it, an import, SQL.
     let (items, _, events) = rows();

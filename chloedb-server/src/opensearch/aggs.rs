@@ -11,7 +11,7 @@
 use futures::future::BoxFuture;
 use serde_json::{json, Map, Value as Json};
 
-use super::dsl::{add_units, compile, date_math, num, Ctx, Target};
+use super::dsl::{add_units, compile, date_math, negated, num, Ctx, Target};
 use super::mapping::{ident, lit, Index, Kind};
 use super::{Os, OsError};
 
@@ -206,24 +206,24 @@ fn one<'a>(os: &'a Os, ix: &'a Index, pred: Option<String>, spec: &'a Json) -> B
             "range" | "date_range" => return ranges(os, ix, &cx, pred.clone(), &body, subs.as_ref(), kind == "date_range").await,
             "filters" => {
                 let fs = body.get("filters").ok_or_else(|| OsError::parsing("[filters] requires filters"))?;
-                let mut named: Vec<(Option<String>, Option<String>)> = Vec::new();
+                let mut named: Vec<(Option<String>, &Json, Option<String>)> = Vec::new();
                 let mut cx2 = Ctx::new(ix);
                 match fs {
                     Json::Object(m) => {
                         for (k, q) in m {
-                            named.push((Some(k.clone()), compile(q, &mut cx2)?.pred));
+                            named.push((Some(k.clone()), q, compile(q, &mut cx2)?.pred));
                         }
                     }
                     Json::Array(a) => {
                         for q in a {
-                            named.push((None, compile(q, &mut cx2)?.pred));
+                            named.push((None, q, compile(q, &mut cx2)?.pred));
                         }
                     }
                     _ => return Err(OsError::parsing("[filters] is an object or an array of queries")),
                 }
                 let mut buckets_obj = Map::new();
                 let mut buckets_arr = Vec::new();
-                for (name, p) in &named {
+                for (name, _, p) in &named {
                     let p2 = match p {
                         Some(p) => with(&pred, p.clone()),
                         None => pred.clone(),
@@ -237,8 +237,17 @@ fn one<'a>(os: &'a Os, ix: &'a Index, pred: Option<String>, spec: &'a Json) -> B
                     }
                 }
                 if body.get("other_bucket").and_then(Json::as_bool) == Some(true) || body.get("other_bucket_key").is_some() {
-                    let others: Vec<String> = named.iter().filter_map(|(_, p)| p.clone()).map(|p| format!("NOT ({p})")).collect();
-                    let p2 = if others.is_empty() { Some(super::dsl::NONE.to_string()) } else { with(&pred, others.join(" AND ")) };
+                    // The documents none of the filters matches, a document
+                    // without a filter's field among them ([`Ctx::known`]);
+                    // none when a filter matches every document.
+                    let mut others = Vec::new();
+                    for (_, q, _) in &named {
+                        match negated(&mut cx2, |cx| compile(q, cx))?.pred {
+                            Some(p) => others.push(format!("NOT ({p})")),
+                            None => others.push(super::dsl::NONE.to_string()),
+                        }
+                    }
+                    let p2 = if others.is_empty() { pred.clone() } else { with(&pred, others.join(" AND ")) };
                     let b = bucket(os, ix, p2, Map::new(), subs.as_ref()).await?;
                     let key = body.get("other_bucket_key").and_then(Json::as_str).unwrap_or("_other_").to_string();
                     if matches!(fs, Json::Object(_)) {
@@ -544,9 +553,14 @@ async fn composite(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
     Ok(out)
 }
 
-/// An interval: a calendar unit (`date_trunc`), or a fixed length.
+/// An interval: a calendar unit (`date_trunc`), a fixed length of time
+/// (`date_bin`), or a fixed length of numbers.
 enum Interval {
     Calendar(chloedb::timestamp::Unit),
+    /// A date histogram's `fixed_interval` of whole microseconds, its
+    /// buckets counted from the offset: `date_bin`, which the columns
+    /// group by.
+    Bin(i64),
     /// Microseconds (dates) or the field's units (numbers).
     Fixed(f64),
 }
@@ -584,7 +598,15 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
             (Some(c), _) => Interval::Calendar(calendar_unit(c).ok_or_else(|| OsError::parsing(format!("The supplied interval [{c}] could not be parsed as a calendar interval.")))?),
             (None, Some(f)) => match calendar_unit(f).filter(|u| matches!(u, Unit::Second | Unit::Minute | Unit::Hour | Unit::Day)) {
                 Some(u) => Interval::Calendar(u),
-                None => Interval::Fixed(super::dsl::duration_secs(f).ok_or_else(|| OsError::parsing(format!("failed to parse setting [date_histogram.fixedInterval] with value [{f}] as a time value")))? * 1e6),
+                None => {
+                    let micros = super::dsl::duration_secs(f).ok_or_else(|| OsError::parsing(format!("failed to parse setting [date_histogram.fixedInterval] with value [{f}] as a time value")))? * 1e6;
+                    if micros <= 0.0 {
+                        return Err(OsError::parsing(format!("[date_histogram.fixedInterval] must be positive, not [{f}]")));
+                    }
+                    // Whole microseconds (all but a sub-microsecond `0.5ms`-like
+                    // fraction) are a date_bin; the rest as numbers.
+                    if micros.fract() == 0.0 && micros < 9.0e15 { Interval::Bin(micros as i64) } else { Interval::Fixed(micros) }
+                }
             },
             (None, None) => return Err(OsError::parsing("[date_histogram] requires calendar_interval or fixed_interval")),
         }
@@ -616,7 +638,7 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
     for (j, (k, v)) in values.iter().enumerate() {
         // Over the table itself for calendar buckets, over the value
         // carried through for fixed ones.
-        let over = if matches!(interval, Interval::Calendar(_)) { v.clone() } else { format!("m{j}") };
+        let over = if matches!(interval, Interval::Calendar(_) | Interval::Bin(_)) { v.clone() } else { format!("m{j}") };
         let cols = metric_cols_of(k, &over);
         at.push((metric_cols.len(), cols.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>()));
         metric_cols.extend(cols.into_iter().map(|(_, c)| c));
@@ -625,6 +647,11 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
     // Bucket keys: microseconds for dates, the values for numbers.
     let sql = match &interval {
         Interval::Calendar(u) => format!("SELECT date_trunc('{}', {x}), COUNT(*){extra} FROM {}{} GROUP BY 1 ORDER BY 1", u.name(), ix.table, where_of(&p)),
+        Interval::Bin(w) => {
+            // Buckets from the offset (a whole number of microseconds, as the key is).
+            let origin = if offset == 0.0 { String::new() } else { format!(", {}", lit(&chloedb::timestamp::format(offset.round() as i64))) };
+            format!("SELECT date_bin('{}', {x}{origin}), COUNT(*){extra} FROM {}{} GROUP BY 1 ORDER BY 1", chloedb::timestamp::stride_text(*w), ix.table, where_of(&p))
+        }
         Interval::Fixed(i) => {
             let v = if dates { format!("EXTRACT(epoch FROM {x}) * 1000000") } else { x.clone() };
             let carried: String = values.iter().enumerate().map(|(j, (_, v))| format!(", {v} AS m{j}")).collect();
@@ -644,7 +671,7 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
     let mut got: Vec<(f64, i64, Vec<Json>)> = Vec::new();
     for row in &r.rows {
         let k = match (&interval, row.first()) {
-            (Interval::Calendar(_), Some(v)) => v.as_str().and_then(chloedb::timestamp::parse).map(|t| t as f64),
+            (Interval::Calendar(_) | Interval::Bin(_), Some(v)) => v.as_str().and_then(chloedb::timestamp::parse).map(|t| t as f64),
             (_, Some(v)) => v.as_f64(),
             _ => None,
         };
@@ -657,12 +684,14 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
     let next = |k: f64| -> f64 {
         match &interval {
             Interval::Calendar(u) => add_units(k as i64, *u, 1) as f64,
+            Interval::Bin(w) => k + *w as f64,
             Interval::Fixed(i) => k + i,
         }
     };
     let align = |v: f64| -> f64 {
         match &interval {
             Interval::Calendar(u) => chloedb::timestamp::trunc(v as i64, *u).unwrap_or(v as i64) as f64,
+            Interval::Bin(w) => chloedb::timestamp::bin(v as i64, *w, offset.round() as i64).unwrap_or(v as i64) as f64,
             Interval::Fixed(i) => ((v - offset) / i).floor() * i + offset,
         }
     };

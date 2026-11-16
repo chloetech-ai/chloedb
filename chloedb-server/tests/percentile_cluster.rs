@@ -3,7 +3,10 @@
 //! "percentiles"), each shard sends a group's values as runs of equal
 //! ones, and the coordinator takes the percentile of them all; over a join
 //! or a WITH, the operators compute them over the rows the shards return.
-//! Each answer is the one database's of the same rows.
+//! `approx_percentile` (plan feature "approx_percentiles") travels as each
+//! shard's sketch, which merge exactly, and `date_bin` (plan feature
+//! "date_bin") groups on the shards. Each answer is the one database's of
+//! the same rows.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -96,8 +99,14 @@ async fn percentiles_through_a_coordinator_answer_as_one_database() {
         "SELECT item, MEDIAN(total), AVG(total), PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY qty), PERCENTILE_CONT(0.1) WITHIN GROUP (ORDER BY qty) FROM snaps GROUP BY item",
         "SELECT MEDIAN(total), PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY at), PERCENTILE_CONT(1) WITHIN GROUP (ORDER BY total) FROM snaps",
         "SELECT qty, MEDIAN(total) AS m FROM snaps WHERE qty < 20 GROUP BY qty HAVING MEDIAN(total) > 110 ORDER BY m DESC, qty LIMIT 5",
+        // Sketches merged, by fixed-width time buckets too.
+        "SELECT item, approx_percentile(total, 0.5), approx_percentile(qty, 0.99), COUNT(*) FROM snaps GROUP BY item",
+        "SELECT date_bin('6 hours', at) AS b, approx_percentile(total, 0.9), MEDIAN(total) FROM snaps GROUP BY b",
+        "SELECT date_bin('90 minutes', at, '2026-08-01T00:20:00Z') AS b, COUNT(*), MAX(qty) FROM snaps WHERE qty > 10 GROUP BY b ORDER BY b DESC LIMIT 20",
+        "SELECT approx_percentile(total, 0.25) FROM snaps",
         // The operators', over the rows the shards return.
         "WITH t AS (SELECT item, total FROM snaps WHERE total < 1000) SELECT item, MEDIAN(total), PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY total) FROM t GROUP BY item",
+        "WITH t AS (SELECT item, total, at FROM snaps WHERE total < 1000) SELECT item, date_bin('1 day', at) AS d, approx_percentile(total, 0.75) FROM t GROUP BY item, d",
     ] {
         let want = sorted(local(&one, q));
         assert!(!want.is_empty(), "{q}");

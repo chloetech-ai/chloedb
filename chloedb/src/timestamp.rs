@@ -168,6 +168,57 @@ pub fn trunc(micros: i64, unit: Unit) -> Option<i64> {
     start.checked_mul(MICROS_PER_DAY)
 }
 
+/// The units a [`bin`] width is written in, as [`parse_stride`] reads
+/// them: microseconds each, largest first.
+const STRIDE_UNITS: [(i64, &str); 7] = [
+    (604_800_000_000, "weeks"),
+    (86_400_000_000, "days"),
+    (3_600_000_000, "hours"),
+    (60_000_000, "minutes"),
+    (1_000_000, "seconds"),
+    (1_000, "milliseconds"),
+    (1, "microseconds"),
+];
+
+/// The width of a `date_bin` bucket, in microseconds: a whole number and
+/// a fixed unit, `'5 minutes'`, `'1 hour'`, `'30s'`, `'15m'`, `'250ms'`,
+/// `'2 days'`, `'1 week'`; `None` for anything else, or a width that is
+/// not positive. Months and years are not a fixed width: `date_trunc`
+/// takes those.
+pub fn parse_stride(text: &str) -> Option<i64> {
+    let t = text.trim();
+    let digits = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
+    let n: i64 = t[..digits].parse().ok()?;
+    let unit = match t[digits..].trim().to_ascii_lowercase().as_str() {
+        "us" | "µs" | "usec" | "usecs" | "microsecond" | "microseconds" => 1,
+        "ms" | "msec" | "msecs" | "millisecond" | "milliseconds" => 1_000,
+        "s" | "sec" | "secs" | "second" | "seconds" => 1_000_000,
+        "m" | "min" | "mins" | "minute" | "minutes" => 60_000_000,
+        "h" | "hr" | "hrs" | "hour" | "hours" => 3_600_000_000,
+        "d" | "day" | "days" => MICROS_PER_DAY,
+        "w" | "week" | "weeks" => 7 * MICROS_PER_DAY,
+        _ => return None,
+    };
+    n.checked_mul(unit).filter(|&w| w > 0)
+}
+
+/// A width in microseconds as [`parse_stride`] reads it back, in the
+/// largest unit it is a whole number of: `'5 minutes'`, `'90 seconds'`.
+pub fn stride_text(width: i64) -> String {
+    let (u, name) = STRIDE_UNITS.into_iter().find(|(u, _)| width % u == 0).unwrap_or((1, "microseconds"));
+    format!("{} {name}", width / u)
+}
+
+/// The start of the bucket of `width` microseconds that `micros` is in,
+/// buckets counted from `origin` (`date_bin`, as PostgreSQL's): `origin +
+/// ⌊(micros − origin) / width⌋ · width`. `None` when the start is outside
+/// the integers.
+pub fn bin(micros: i64, width: i64, origin: i64) -> Option<i64> {
+    let d = (micros as i128) - (origin as i128);
+    let start = (origin as i128) + d.div_euclid(width as i128) * width as i128;
+    i64::try_from(start).ok()
+}
+
 /// A part of a time that `EXTRACT` and `date_part` read, in UTC, as
 /// PostgreSQL names them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -371,6 +422,109 @@ impl Cursor<'_> {
     }
 }
 
+/// A length of time, as SQL's `INTERVAL '15 minutes'` writes it: months
+/// (a month or a year has no fixed length) and microseconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Interval {
+    pub months: i64,
+    pub micros: i64,
+}
+
+impl Interval {
+    /// The interval `text` writes: numbers each followed by a unit
+    /// (`'15 minutes'`, `'1 day 12 hours'`, `'-2 weeks'`, `'90s'`), or a
+    /// number in the unit `leading` names (`INTERVAL '15' MINUTE`). Units
+    /// are microseconds, milliseconds, seconds, minutes, hours, days,
+    /// weeks, months and years, singular or plural, and their short forms
+    /// (`us`, `ms`, `s`, `sec`, `min`, `h`, `hr`, `d`, `w`, `mon`, `y`).
+    pub fn parse(text: &str, leading: Option<&str>) -> Result<Interval, String> {
+        let usage = "an interval is numbers each with a unit, such as '15 minutes', '1 day 12 hours' or '90 seconds' (units: microseconds, milliseconds, seconds, minutes, hours, days, weeks, months, years)";
+        let mut words: Vec<String> = Vec::new();
+        // `90s`, `15min`: a number joined to its unit.
+        for w in text.split_whitespace() {
+            let w = w.trim_end_matches(',');
+            match w.find(|c: char| c.is_ascii_alphabetic()) {
+                Some(i) if i > 0 && w[..i].parse::<f64>().is_ok() => {
+                    words.push(w[..i].to_string());
+                    words.push(w[i..].to_string());
+                }
+                _ => words.push(w.to_string()),
+            }
+        }
+        if let Some(unit) = leading {
+            if words.len() != 1 {
+                return Err(format!("INTERVAL '{text}' {unit}: the text is one number of {unit}s"));
+            }
+            words.push(unit.to_string());
+        }
+        if words.is_empty() || words.len() % 2 != 0 {
+            return Err(format!("INTERVAL '{text}': {usage}"));
+        }
+        let mut out = Interval::default();
+        for pair in words.chunks(2) {
+            let n: f64 = pair[0].parse().map_err(|_| format!("INTERVAL '{text}': {} is not a number; {usage}", pair[0]))?;
+            if !n.is_finite() {
+                return Err(format!("INTERVAL '{text}': {usage}"));
+            }
+            let unit = pair[1].to_ascii_lowercase();
+            let micros_per = match unit.as_str() {
+                "microsecond" | "microseconds" | "us" | "usec" | "usecs" => 1.0,
+                "millisecond" | "milliseconds" | "ms" | "msec" | "msecs" => 1e3,
+                "second" | "seconds" | "s" | "sec" | "secs" => 1e6,
+                "minute" | "minutes" | "m" | "min" | "mins" => 6e7,
+                "hour" | "hours" | "h" | "hr" | "hrs" => 3.6e9,
+                "day" | "days" | "d" => MICROS_PER_DAY as f64,
+                "week" | "weeks" | "w" => 7.0 * MICROS_PER_DAY as f64,
+                "month" | "months" | "mon" | "mons" => {
+                    out.months = out.months.checked_add(whole(n, text)?).ok_or_else(|| format!("INTERVAL '{text}' is too long"))?;
+                    continue;
+                }
+                "year" | "years" | "y" | "yr" | "yrs" => {
+                    out.months = whole(n, text)?.checked_mul(12).and_then(|m| out.months.checked_add(m)).ok_or_else(|| format!("INTERVAL '{text}' is too long"))?;
+                    continue;
+                }
+                u => return Err(format!("INTERVAL '{text}': {u} is not a unit; {usage}")),
+            };
+            let us = (n * micros_per).round();
+            if us.abs() > 9.0e18 {
+                return Err(format!("INTERVAL '{text}' is too long"));
+            }
+            out.micros = out.micros.checked_add(us as i64).ok_or_else(|| format!("INTERVAL '{text}' is too long"))?;
+        }
+        Ok(out)
+    }
+
+    pub fn negated(self) -> Interval {
+        Interval { months: -self.months, micros: -self.micros }
+    }
+
+    /// `micros` plus this interval: its months on the calendar first (a
+    /// day past the new month's end is its last day, as in PostgreSQL:
+    /// January 31 plus a month is February 28 or 29), then its fixed time.
+    /// `None` outside the times a TIMESTAMP holds.
+    pub fn add_to(self, micros: i64) -> Option<i64> {
+        let mut t = micros;
+        if self.months != 0 {
+            let days = t.div_euclid(MICROS_PER_DAY);
+            let within = t.rem_euclid(MICROS_PER_DAY);
+            let (y, m, d) = civil_from_days(days);
+            let total = (y.checked_mul(12)?).checked_add(m - 1)?.checked_add(self.months)?;
+            let (ny, nm) = (total.div_euclid(12), total.rem_euclid(12) + 1);
+            let nd = d.min(days_in_month(ny, nm));
+            t = days_from_civil(ny, nm, nd).checked_mul(MICROS_PER_DAY)?.checked_add(within)?;
+        }
+        t.checked_add(self.micros)
+    }
+}
+
+/// A whole number of months or years.
+fn whole(n: f64, text: &str) -> Result<i64, String> {
+    match n.fract() == 0.0 && n.abs() < 1e12 {
+        true => Ok(n as i64),
+        false => Err(format!("INTERVAL '{text}': months and years are whole numbers (a month has no fixed length); write days or hours for a part")),
+    }
+}
+
 fn is_leap(y: i64) -> bool {
     y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
 }
@@ -411,6 +565,36 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strides_read_and_bins_count_from_the_origin() {
+        assert_eq!(parse_stride("5 minutes"), Some(300_000_000));
+        assert_eq!(parse_stride(" 15m "), Some(900_000_000));
+        assert_eq!(parse_stride("250ms"), Some(250_000));
+        assert_eq!(parse_stride("1 HOUR"), Some(3_600_000_000));
+        assert_eq!(parse_stride("2d"), Some(2 * MICROS_PER_DAY));
+        assert_eq!(parse_stride("1 week"), Some(7 * MICROS_PER_DAY));
+        for bad in ["0 minutes", "-5 minutes", "1 month", "5", "minutes", "1.5 hours", "99999999999999999 weeks"] {
+            assert_eq!(parse_stride(bad), None, "{bad}");
+        }
+        for w in [1, 1_000, 300_000_000, 90_000_000, MICROS_PER_DAY, 7 * MICROS_PER_DAY, 123_456_789] {
+            assert_eq!(parse_stride(&stride_text(w)), Some(w), "{}", stride_text(w));
+        }
+        assert_eq!(stride_text(300_000_000), "5 minutes");
+        let t = parse("2026-11-13T02:07:31.5Z").unwrap();
+        assert_eq!(bin(t, 300_000_000, 0), parse("2026-11-13T02:05:00Z"));
+        // From an origin of :02:30, five-minute buckets start at :02:30 and :07:30.
+        assert_eq!(bin(t, 300_000_000, parse("2000-01-01T00:02:30Z").unwrap()), parse("2026-11-13T02:07:30Z"));
+        // Before 1970 and before the origin, the bucket below.
+        assert_eq!(bin(-1, 60_000_000, 0), Some(-60_000_000));
+        assert_eq!(bin(5, 10, 100), Some(0));
+        assert_eq!(bin(i64::MIN, 60_000_000, 0), None);
+        // A daily bin is date_trunc('day').
+        for t in [0, -1, 1_234_567_890_123_456, -987_654_321_000] {
+            assert_eq!(bin(t, MICROS_PER_DAY, 0), trunc(t, Unit::Day));
+            assert_eq!(bin(t, 60_000_000, 0), trunc(t, Unit::Minute));
+        }
+    }
 
     const DAY: i64 = MICROS_PER_DAY;
 

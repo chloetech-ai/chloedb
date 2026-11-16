@@ -177,12 +177,16 @@ async fn kube_api() -> (Arc<Mutex<KubeApi>>, String) {
 }
 
 /// What every cluster gets applied, in order, before its own objects.
-const OPERATOR: [&str; 6] = [
+const OPERATOR: [&str; 9] = [
     "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/strataclusters.strata.chloetech.ai",
     "/api/v1/namespaces/strata-system",
     "/api/v1/namespaces/strata-system/serviceaccounts/strata-operator",
     "/apis/rbac.authorization.k8s.io/v1/clusterroles/strata-operator",
     "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/strata-operator",
+    // Secrets written only in the namespace `strata` (audit N-D9).
+    "/apis/rbac.authorization.k8s.io/v1/clusterroles/strata-operator-secrets",
+    "/api/v1/namespaces/strata",
+    "/apis/rbac.authorization.k8s.io/v1/namespaces/strata/rolebindings/strata-operator-secrets",
     "/apis/apps/v1/namespaces/strata-system/deployments/strata-operator",
 ];
 

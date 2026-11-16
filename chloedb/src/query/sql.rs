@@ -148,6 +148,17 @@ pub enum Command {
     /// ([`crate::query::ir`]), as lines of text or as JSON, made when it
     /// runs ([`crate::db::Db::explain`]).
     Explain { json: bool },
+    /// `SHOW TABLES`: the names of the database's tables, those ChloeDB
+    /// keeps for itself left out ([`table_list`]).
+    ShowTables,
+}
+
+/// The answer of `SHOW TABLES` over tables named `names`: a row each, of
+/// one column, `name`, in the order given, without the tables ChloeDB
+/// keeps for itself ([`hint::internal_table`]).
+pub fn table_list<S: AsRef<str>>(names: &[S]) -> crate::query::exec::ResultSet {
+    let rows = names.iter().map(|n| n.as_ref()).filter(|n| !hint::internal_table(n)).map(|n| vec![Value::Str(n.to_string())]).collect();
+    crate::query::exec::ResultSet { columns: vec!["name".into()], rows, keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() }
 }
 
 /// Parses one statement.
@@ -166,6 +177,7 @@ pub(crate) fn parse_one(sql_text: &str) -> Result<sql::Statement> {
 pub(crate) fn parse_query(sql_text: &str) -> Result<Box<sql::Query>> {
     match parse_one(sql_text)? {
         sql::Statement::Query(q) => Ok(q),
+        sql::Statement::ShowTables { .. } => Err(err("SHOW TABLES runs as a statement, not as a query: POST /v1/sql (db.sql in code) answers it, and GET /v1/tables lists the tables with their columns")),
         _ => Err(err("only SELECT is supported")),
     }
 }
@@ -255,6 +267,13 @@ pub(crate) fn bind_statement(stmt: &sql::Statement, tables: &[&Schema], params: 
     let write = |schema: &Schema, write: Write| Command::Write { table: schema.table.clone(), write };
     Ok(match stmt {
         sql::Statement::Query(_) => Command::Query,
+        // ONB-16: the first statement many type. Its other forms (FULL,
+        // FROM a database, LIKE) are refused as before.
+        sql::Statement::ShowTables { terse: false, history: false, extended: false, full: false, external: false, show_options }
+            if show_options.show_in.is_none() && show_options.starts_with.is_none() && show_options.limit.is_none() && show_options.limit_from.is_none() && show_options.filter_position.is_none() =>
+        {
+            Command::ShowTables
+        }
         sql::Statement::Explain { describe_alias: _, analyze, verbose, query_plan: _, estimate, statement, format, options } => {
             if *analyze || *verbose || *estimate {
                 return Err(err("EXPLAIN shows a statement's plan without running it: ANALYZE, VERBOSE and ESTIMATE are not supported (POST /v1/explain runs a query and reports what it did)"));
@@ -349,12 +368,12 @@ pub(crate) fn bind_statement(stmt: &sql::Statement, tables: &[&Schema], params: 
 /// same: the tables and their columns are in `GET /v1/tables`.
 fn unsupported_statement(stmt: &sql::Statement, tables: &[&Schema]) -> String {
     let supported = "ChloeDB runs SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, ALTER TABLE, DROP TABLE, CREATE RANK PROFILE, DROP RANK PROFILE, CREATE FUNCTION, DROP FUNCTION and EXPLAIN";
-    let names: Vec<&str> = tables.iter().map(|t| t.table.as_str()).collect();
+    let names: Vec<&str> = tables.iter().map(|t| t.table.as_str()).filter(|t| !hint::internal_table(t)).collect();
     let listing = if names.is_empty() { String::new() } else { format!(" (the tables are {})", hint::listing(&names, 20)) };
     let first = word_of(stmt);
     match stmt {
         sql::Statement::ShowTables { .. } | sql::Statement::ShowDatabases { .. } | sql::Statement::ShowSchemas { .. } | sql::Statement::ShowObjects(_) => {
-            format!("{first} is not a statement ChloeDB runs: GET /v1/tables lists the tables and their columns{listing}, and so does the SQL workbench's sidebar")
+            format!("{first} is not a statement ChloeDB runs: SHOW TABLES lists the tables' names, GET /v1/tables the tables and their columns{listing}, and so does the SQL workbench's sidebar")
         }
         sql::Statement::ShowColumns { .. } | sql::Statement::ExplainTable { .. } | sql::Statement::ShowCreate { .. } => format!(
             "{first} is not a statement ChloeDB runs: GET /v1/tables gives each table's columns and the CREATE TABLE that makes it{listing}; SELECT * FROM t LIMIT 0 names the columns a query returns"
@@ -645,7 +664,8 @@ fn coerce(field: &Field, v: Value) -> Result<Value> {
         (FieldType::Int, Value::Int(x)) => Ok(Value::Int(x)),
         (FieldType::Int, Value::Bool(b)) => Ok(Value::Int(b as i64)),
         (FieldType::Float, v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_))) => Ok(Value::Float(v.as_f64().unwrap())),
-        (FieldType::Int, Value::Float(x)) => Err(err(format!("{} is an INT field: give it a whole number from {} to {}, not {x}", field.name, i64::MIN, i64::MAX))),
+        // `2.0` is the whole number 2; `2.5` is refused.
+        (FieldType::Int, Value::Float(x)) => crate::ingest::whole(field, x).map(Value::Int).map_err(|_| err(format!("{} is an INT field: give it a whole number from {} to {}, not {x}", field.name, i64::MIN, i64::MAX))),
         (FieldType::Int | FieldType::Float, v) => Err(err(format!("{} is {} {} field: give it a number, not {} {}", field.name, a_or_an(&hint::type_of(field)), hint::type_of(field), hint::kind_of(&v), hint::sql_value(&v)))),
         (_, v) => Err(err(format!("{} is {} {} field, which does not take {} {}", field.name, a_or_an(&hint::type_of(field)), hint::type_of(field), hint::kind_of(&v), hint::sql_value(&v)))),
     }
@@ -877,6 +897,7 @@ pub(crate) fn bind_query(q: &sql::Query, schema: &Schema, params: &Params) -> Re
 /// [`bind_query`] in a database of `tables`, whose edge tables its walks
 /// may follow.
 pub(crate) fn bind_query_in(q: &sql::Query, schema: &Schema, tables: &[&Schema], params: &Params) -> Result<Select> {
+    super::compound::check_planning()?;
     Binder { tables, ..Binder::new(schema, params) }.query(q)
 }
 
@@ -933,17 +954,21 @@ pub fn with_features(sql_text: &str) -> Result<String> {
     Ok(q.to_string())
 }
 
-/// Whether `sql_text` is one SELECT ranked by an ORDER BY, whose top rows
-/// [`with_features`] explains.
+/// Whether `sql_text` is one SELECT whose ORDER BY ranks rows, whose top
+/// rows [`with_features`] explains: a column or a ranking (`bm25(..)`,
+/// `similarity(..)`, a rank profile) orders the rows of one table. A query
+/// that groups, aggregates, or sorts by a value it computes (`ORDER BY
+/// price * sold`, `ORDER BY revenue` naming `SUM(..) AS revenue`) has no
+/// ranking values to show, and its `hits` are only its first rows.
 pub fn ranks(sql_text: &str) -> bool {
     ranked_query(sql_text).is_some()
 }
 
-/// `sql_text` when it is one SELECT ranked by an ORDER BY.
+/// `sql_text` when it is one SELECT ranked by an ORDER BY ([`ranks`]).
 pub(crate) fn ranked_query(sql_text: &str) -> Option<sql::Query> {
     let mut stmts = super::parse::parse(sql_text).ok()?;
     let [sql::Statement::Query(q)] = stmts.as_mut_slice() else { return None };
-    (matches!(q.body.as_ref(), sql::SetExpr::Select(_)) && q.order_by.is_some()).then(|| (**q).clone())
+    super::compound::ranks_rows(q).then(|| (**q).clone())
 }
 
 /// Adds `score()` and `features()` to the columns of a query from
@@ -988,6 +1013,11 @@ struct Binder<'a> {
     guards: RefCell<Vec<(Guard, Option<Pred>, bool)>>,
     /// Whether `ORDER BY` is being bound.
     ordering: Cell<bool>,
+    /// The `fuzzy` option of each `MATCH` bound so far, by field and text:
+    /// a `bm25` of the same field and text without its own takes it, so
+    /// that ranking the rows a forgiving `MATCH` found does not score the
+    /// misspelt words as written and drop every row (found by the Swarm).
+    match_fuzzy: RefCell<Vec<(usize, String, Value)>>,
 }
 
 impl<'a> Binder<'a> {
@@ -1002,6 +1032,7 @@ impl<'a> Binder<'a> {
             tables: &[],
             guards: RefCell::new(Vec::new()),
             ordering: Cell::new(false),
+            match_fuzzy: RefCell::new(Vec::new()),
         }
     }
 
@@ -1642,6 +1673,8 @@ impl<'a> Binder<'a> {
         let (arg, p) = match (name, args.as_slice()) {
             ("median", [x]) => (*x, 0.5),
             ("median", _) => return Err(err("MEDIAN takes one field: MEDIAN(price)")),
+            ("approx_percentile", [x, p]) => (*x, self.number(p).ok_or_else(|| err(format!("{upper}: the fraction is a number from 0 to 1, not {}", self.described(p))))?),
+            ("approx_percentile", _) => return Err(err("APPROX_PERCENTILE takes a field and a fraction from 0 to 1: approx_percentile(latency, 0.99)")),
             (_, [x, p]) => (*x, self.number(p).ok_or_else(|| err(format!("{upper}: the fraction is a number from 0 to 1, not {}", self.described(p))))?),
             _ => return Err(err(format!("{upper}(p) WITHIN GROUP (ORDER BY field): p, from 0 to 1, of one field's values"))),
         };
@@ -1649,6 +1682,7 @@ impl<'a> Binder<'a> {
         let field = self.field_of(arg)?;
         let fld = &self.schema.fields[field];
         let cont = name != "percentile_disc";
+        let approx = name == "approx_percentile";
         let numeric = matches!(fld.ty, FieldType::Int | FieldType::Float);
         if !numeric || (cont && fld.logical.is_some()) {
             let nums = hint::fields_where(self.schema, |f| matches!(f.ty, FieldType::Int | FieldType::Float) && f.logical.is_none());
@@ -1657,7 +1691,7 @@ impl<'a> Binder<'a> {
                 fld.name,
                 fld.name,
                 hint::type_of(fld),
-                if cont { "interpolates between" } else { "picks one of" },
+                if approx { "sketches" } else if cont { "interpolates between" } else { "picks one of" },
                 if nums.is_empty() { String::new() } else { format!(": {}", hint::listing(&nums, 6)) },
                 if cont && fld.logical == Some(Logical::Timestamp) { "; PERCENTILE_DISC picks one of a TIMESTAMP's times" } else { "" }
             )));
@@ -1665,7 +1699,13 @@ impl<'a> Binder<'a> {
         if !fld.indexed {
             return Err(err(format!("{}: aggregates read the field's column, and it is not indexed", fld.name)));
         }
-        let func = if cont { AggFn::PercentileCont(p) } else { AggFn::PercentileDisc(p) };
+        let func = if approx {
+            AggFn::ApproxPercentile(p)
+        } else if cont {
+            AggFn::PercentileCont(p)
+        } else {
+            AggFn::PercentileDisc(p)
+        };
         Ok(Projection::Agg { func, of: Col::Field(field) })
     }
 
@@ -1887,6 +1927,12 @@ impl<'a> Binder<'a> {
                         let field = self.searched_field(field, "bm25")?;
                         let text = self.literal(text)?.as_str().ok_or_else(|| err("bm25 text must be a string"))?.to_string();
                         let mut opts = opts;
+                        if !opts.contains_key("fuzzy") {
+                            let key = text.trim().to_lowercase();
+                            if let Some((_, _, z)) = self.match_fuzzy.borrow().iter().find(|(f, t, _)| *f == field && *t == key) {
+                                opts.insert("fuzzy".into(), z.clone());
+                            }
+                        }
                         Expand::from_opts(&opts).map_err(err)?;
                         crate::query::exec::plain_syntax(&opts)?;
                         // Expansion is a rewrite before the plan
@@ -1986,7 +2032,7 @@ impl<'a> Binder<'a> {
                         None if matches!(n, "random" | "rand") => Err(err(format!("ORDER BY {n}() is not supported: rows come in the order of a score or a column; for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0"))),
                         // Values of a row that the row evaluator computes,
                         // not a ranking with scores.
-                        None if matches!(n, "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "json_extract") => Err(err(format!(
+                        None if matches!(n, "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "date_bin" | "json_extract") => Err(err(format!(
                             "{n}() is a value of each row, which a ranking with scores does not take: order by it on its own (ORDER BY {n}(...), a score after it), or select it and order by its name"
                         ))),
                         None => Err(err(format!(
@@ -2080,16 +2126,30 @@ impl<'a> Binder<'a> {
         let vector = match self.literal(v) {
             Ok(Value::Str(s)) if serde_json::from_str::<Vec<f32>>(&s).is_err() => {
                 let fld = &self.schema.fields[field];
-                let embedded = match &fld.embed {
-                    Some(e) => format!("{} holds {}'s embeddings of {}; ", fld.name, e.model, e.from.join(" and ")),
-                    None => String::new(),
-                };
-                return Err(err(format!(
-                    "similarity({}, ...) takes a vector, and {} is text. {embedded}give the text as a parameter for the server to embed, \"params\": {{\"q\": {{\"embed\": \"some words\"}}}} with similarity({}, :q) (in the SQL workbench, pick “embed text” for :q), or a vector of {dim} numbers as a JSON array",
-                    fld.name,
-                    self.described(v),
-                    fld.name
-                )));
+                // Text is embedded only by a field's own model: a field of
+                // none takes a vector, which no other table's model makes
+                // with its dimensions.
+                return Err(err(match &fld.embed {
+                    Some(e) => format!(
+                        "similarity({}, ...) takes a vector, and {} is text. {} holds {}'s embeddings of {}; give the text as a parameter for the server to embed, \"params\": {{\"q\": {{\"embed\": \"some words\", \"table\": \"{}\", \"field\": \"{}\"}}}} with similarity({}, :q) (in the SQL workbench, pick “embed text” for :q), or a vector of {dim} numbers as a JSON array",
+                        fld.name,
+                        self.described(v),
+                        fld.name,
+                        e.model,
+                        e.from.join(" and "),
+                        self.schema.table,
+                        fld.name,
+                        fld.name
+                    ),
+                    None => format!(
+                        "similarity({}, ...) takes a vector, and {} is text. {} is embedded by no model (it has no OPTIONS(embed = ..., model = ...)), so text is not searched against it: give a vector of {dim} numbers as a JSON array, the vector of a stored row (\"params\": {{\"q\": {{\"vector_of\": \"<key>\", \"table\": \"{}\", \"field\": \"{}\"}}}}), or embed('<model>', :q) by a model of {dim} dimensions",
+                        fld.name,
+                        self.described(v),
+                        fld.name,
+                        self.schema.table,
+                        fld.name
+                    ),
+                }));
             }
             _ => self.vector(v)?,
         };
@@ -2276,10 +2336,12 @@ impl<'a> Binder<'a> {
                 // A NULL is kept: `x IN (1, NULL)` is UNKNOWN where x is not
                 // 1, so `NOT IN` holds for no row ([`Pred::three_valued`]).
                 let mut values = Vec::with_capacity(list.len());
-                for v in list {
+                for (i, v) in list.iter().enumerate() {
+                    super::compound::check_planning_every(i)?;
                     match as_list(self.literal(v)?) {
                         Ok(xs) => {
-                            for x in xs {
+                            for (j, x) in xs.into_iter().enumerate() {
+                                super::compound::check_planning_every(j)?;
                                 values.push(self.compared(f, x)?);
                             }
                         }
@@ -2314,6 +2376,9 @@ impl<'a> Binder<'a> {
                     None => text.clone(),
                 };
                 let p = Pred::Match { field, query, expand };
+                if let Some(z) = opts.get("fuzzy") {
+                    self.match_fuzzy.borrow_mut().push((field, text.trim().to_lowercase(), z.clone()));
+                }
                 self.guard(&mut guarded, || GuardSite::Match { field, text, expand }, need, Some(&p), "MATCH")?;
                 p
             }
@@ -2348,7 +2413,15 @@ impl<'a> Binder<'a> {
                     Some(sql::Value::SingleQuotedString(c)) if c.chars().count() == 1 => c.chars().next(),
                     Some(c) => return Err(err(format!("LIKE's ESCAPE takes one character, not {c}"))),
                 };
-                let pattern = self.literal(pattern)?;
+                let pattern = match self.literal(pattern)? {
+                    // A NULL pattern matches no value, nor does NOT LIKE it:
+                    // UNKNOWN, as `f IN (NULL)` is.
+                    Value::Null => {
+                        let p = Pred::In { field: f, values: vec![Value::Null] };
+                        return Ok(if *negated { Pred::Not(Box::new(p)) } else { p });
+                    }
+                    p => p,
+                };
                 let pattern = pattern.as_str().ok_or_else(|| err("LIKE's pattern must be text"))?;
                 let p = match like_prefix(pattern, escape)? {
                     LikePrefix::Exact(v) => Pred::In { field: f, values: vec![Value::Str(v)] },
@@ -2437,13 +2510,24 @@ impl<'a> Binder<'a> {
                 Err(v) => return Err(err(format!("{op} takes a list of values, not {} (one value: {}{} ARRAY[...])", hint::sql_value(&v), field.name, op))),
             },
         };
+        // Each value once, found in a set: a search of the values kept
+        // so far for each was quadratic, 2·10⁸ comparisons for a list of
+        // 20,000 ids before the query started (finding N-B4).
         let mut values: Vec<Value> = Vec::with_capacity(items.len());
-        for v in items {
+        let (mut texts, mut ints) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+        for (i, v) in items.into_iter().enumerate() {
+            // The deadline, a thousand values apart (finding X-B3).
+            super::compound::check_planning_every(i)?;
             if v == Value::Null {
                 return Err(err(format!("{op}'s list holds a NULL, which no value of {} equals", field.name)));
             }
             let v = self.compared(f, v)?;
-            if !values.contains(&v) {
+            let new = match &v {
+                Value::Str(s) => texts.insert(s.clone()),
+                Value::Int(i) => ints.insert(*i),
+                v => !values.contains(v),
+            };
+            if new {
                 values.push(v);
             }
         }
@@ -2747,7 +2831,11 @@ impl<'a> Binder<'a> {
                     Some(sql::Value::SingleQuotedString(c)) if c.chars().count() == 1 => c.chars().next(),
                     Some(c) => return Err(err(format!("LIKE's ESCAPE takes one character, not {c}"))),
                 };
-                let pattern = self.literal(pattern)?;
+                let pattern = match self.literal(pattern)? {
+                    // UNKNOWN for every value, as `IN (NULL)` is.
+                    Value::Null => return Ok(Some(not(*negated, Pred::Path { field, path, test: PathTest::In(vec![Value::Null]) }))),
+                    p => p,
+                };
                 let pattern = pattern.as_str().ok_or_else(|| err("LIKE's pattern must be text"))?;
                 let p = match like_prefix(pattern, escape)? {
                     LikePrefix::Exact(v) => PathTest::In(vec![Value::Str(v)]),
@@ -2865,7 +2953,13 @@ impl<'a> Binder<'a> {
             return if terms { Ok(None) } else { Err(err(format!("LIKE on {}'s substring index does not take ESCAPE", fld.name))) };
         }
         let what = if ci { "ILIKE" } else { "LIKE" };
-        let pattern = self.literal(pattern)?;
+        let pattern = match self.literal(pattern)? {
+            // A NULL pattern matches no value, nor does NOT LIKE it (finding
+            // N-B10): UNKNOWN, as `f IN (NULL)` is, on a field with the
+            // index as on one without.
+            Value::Null => return Ok(Some(Pred::In { field: f, values: vec![Value::Null] })),
+            p => p,
+        };
         let pattern = pattern.as_str().ok_or_else(|| err(format!("{what}'s pattern must be text")))?;
         if terms && like_prefix(pattern, None).is_ok() {
             return Ok(None);
@@ -2880,9 +2974,41 @@ impl<'a> Binder<'a> {
     fn literal(&self, e: &Expr) -> Result<Value> {
         match e {
             Expr::Nested(x) => self.literal(x),
+            Expr::Cast { expr, data_type, format: None, .. } if is_date(data_type) => day_of(cast_value(self.literal(expr)?, CastTo::Timestamp)?, &|| e.to_string()),
             Expr::Cast { expr, data_type, format: None, .. } => cast_value(self.literal(expr)?, CastTo::of(data_type)?),
+            // `TIMESTAMP '2026-10-01'`, `DATE '2026-10-01'`.
+            Expr::TypedString(sql::TypedString { data_type, value, .. }) => match &value.value {
+                sql::Value::SingleQuotedString(s) | sql::Value::DoubleQuotedString(s) => cast_value(Value::Str(s.clone()), CastTo::of(data_type)?),
+                _ => Err(err(format!("{e} is not a value here"))),
+            },
             // The statement's time, as text a TIMESTAMP takes.
             e if is_now(e) => Ok(Value::Str(crate::timestamp::format(self.now))),
+            // `CURRENT_DATE`: the start of the statement's day (UTC).
+            e if is_today(e) => day_of(Value::Timestamp(self.now), &|| e.to_string()),
+            // `DATE('2026-11-02 13:00')`: the start of that day.
+            Expr::Function(f) if fname(f) == "date" && func_args(f).len() == 1 => day_of(cast_value(self.literal(func_args(f)[0])?, CastTo::Timestamp)?, &|| e.to_string()),
+            // A time moved by an interval (`now() - INTERVAL '2 hours'`), a
+            // value the statement computes once: an index's range still
+            // serves `at > now() - INTERVAL '15 minutes'`.
+            e if interval_shift(e).is_some() => {
+                let (t, iv) = interval_shift(e).expect("an interval")?;
+                let base = time_of(&self.literal(t)?, &|| e.to_string())?;
+                let at = iv.add_to(base).ok_or_else(|| err(format!("{e} is outside the times a TIMESTAMP holds")))?;
+                Ok(Value::Str(crate::timestamp::format(at)))
+            }
+            e if time_plus_number(e).is_some() => Err(time_plus_number(e).expect("an error")),
+            Expr::Interval(_) => Err(err(format!("{e} is a length of time: add it to a time or subtract it from one (now() - {e})"))),
+            // `date_trunc('day', now())`: the start of a time's day, a value.
+            Expr::Function(f) if fname(f) == "date_trunc" && func_args(f).len() == 2 => {
+                let args = func_args(f);
+                let unit = match self.literal(args[0])? {
+                    Value::Str(u) => crate::timestamp::Unit::parse(&u).ok_or_else(|| err(format!("{e}: {u:?} is not a unit of date_trunc")))?,
+                    _ => return Err(err(format!("{e}: date_trunc's unit is text, such as 'day'"))),
+                };
+                let t = time_of(&self.literal(args[1])?, &|| e.to_string())?;
+                let at = crate::timestamp::trunc(t, unit).ok_or_else(|| err(format!("{e} is outside the times a TIMESTAMP holds")))?;
+                Ok(Value::Str(crate::timestamp::format(at)))
+            }
             Expr::Value(v) => match &v.value {
                 sql::Value::Number(s, _) => {
                     Ok(s.parse::<i64>().map(Value::Int).or_else(|_| s.parse::<f64>().map(Value::Float)).map_err(|_| err("bad number"))?)
@@ -3331,6 +3457,107 @@ pub(crate) fn is_now(e: &Expr) -> bool {
         }
         Expr::Identifier(id) => id.quote_style.is_none() && now(&id.value),
         _ => false,
+    }
+}
+
+/// Whether `e` is the day of the statement, `CURRENT_DATE`: the start of
+/// today (UTC), as `date_trunc('day', now())` is.
+pub(crate) fn is_today(e: &Expr) -> bool {
+    match e {
+        Expr::Function(f) => {
+            f.name.to_string().eq_ignore_ascii_case("current_date")
+                && match &f.args {
+                    sql::FunctionArguments::None => true,
+                    sql::FunctionArguments::List(l) => l.args.is_empty(),
+                    _ => false,
+                }
+        }
+        Expr::Identifier(id) => id.quote_style.is_none() && id.value.eq_ignore_ascii_case("current_date"),
+        _ => false,
+    }
+}
+
+/// Whether `ty` is `DATE`: a time cut to the start of its day, as
+/// `date_trunc('day', t)` cuts it (ChloeDB keeps it a TIMESTAMP).
+pub(crate) fn is_date(ty: &sql::DataType) -> bool {
+    matches!(ty, sql::DataType::Date)
+}
+
+/// The start of the day of time `v` (UTC), as a TIMESTAMP; NULL stays NULL.
+pub(crate) fn day_of(v: Value, what: &dyn Fn() -> String) -> Result<Value> {
+    if matches!(v, Value::Null) {
+        return Ok(Value::Null);
+    }
+    let t = time_of(&v, what)?;
+    let at = crate::timestamp::trunc(t, crate::timestamp::Unit::Day).ok_or_else(|| err(format!("{} is outside the times a TIMESTAMP holds", what())))?;
+    Ok(Value::Timestamp(at))
+}
+
+/// The interval `e` writes (`INTERVAL '15 minutes'`, `INTERVAL '15'
+/// MINUTE`), if it is one.
+pub(crate) fn interval(e: &Expr) -> Option<Result<crate::timestamp::Interval>> {
+    let Expr::Interval(iv) = strip_nested(e) else { return None };
+    let text = match iv.value.as_ref() {
+        Expr::Value(v) => match &v.value {
+            sql::Value::SingleQuotedString(s) | sql::Value::DoubleQuotedString(s) => s.clone(),
+            sql::Value::Number(n, _) => n.clone(),
+            _ => return Some(Err(err(format!("{e}: an interval is written as text, INTERVAL '15 minutes'")))),
+        },
+        _ => return Some(Err(err(format!("{e}: an interval is written as text, INTERVAL '15 minutes'")))),
+    };
+    if iv.last_field.is_some() {
+        return Some(Err(err(format!("{e}: write the interval with its units, INTERVAL '1 day 2 hours'"))));
+    }
+    let leading = iv.leading_field.as_ref().map(|f| f.to_string().to_ascii_lowercase());
+    Some(crate::timestamp::Interval::parse(&text, leading.as_deref()).map_err(err))
+}
+
+/// `time ± INTERVAL '...'` (or `INTERVAL '...' + time`): the time and the
+/// interval it is moved by, negated for a minus.
+pub(crate) fn interval_shift(e: &Expr) -> Option<Result<(&Expr, crate::timestamp::Interval)>> {
+    let Expr::BinaryOp { left, op, right } = strip_nested(e) else { return None };
+    let (time, iv, minus) = match (op, interval(left), interval(right)) {
+        (BinaryOperator::Plus | BinaryOperator::Minus, None, Some(iv)) => (left.as_ref(), iv, *op == BinaryOperator::Minus),
+        (BinaryOperator::Plus, Some(iv), None) => (right.as_ref(), iv, false),
+        (_, Some(_), Some(_)) => return Some(Err(err(format!("{e}: an interval moves a time (now() - INTERVAL '1 hour'); intervals are not added to each other")))),
+        (_, Some(_), _) | (_, _, Some(_)) => return Some(Err(err(format!("{e}: an interval is added to a time or subtracted from it (now() - INTERVAL '1 hour', at + INTERVAL '2 days')")))),
+        _ => return None,
+    };
+    Some(iv.map(|iv| (time, if minus { iv.negated() } else { iv })))
+}
+
+/// Whether `e` writes a time as a value: `now()`, a `TIMESTAMP '...'` or
+/// `CAST('...' AS TIMESTAMP)`, `date_trunc` of one, or one moved by an
+/// interval.
+pub(crate) fn is_time_value(e: &Expr) -> bool {
+    match strip_nested(e) {
+        e if is_now(e) || is_today(e) => true,
+        Expr::Function(f) if fname(f) == "date" && func_args(f).len() == 1 => true,
+        Expr::TypedString(sql::TypedString { data_type, .. }) | Expr::Cast { data_type, .. } => matches!(CastTo::of(data_type), Ok(CastTo::Timestamp)),
+        Expr::Function(f) if fname(f) == "date_trunc" => true,
+        e => interval_shift(e).is_some(),
+    }
+}
+
+/// Why `now() - 3600` is refused: a number added to a time could count
+/// seconds or microseconds.
+pub(crate) fn time_plus_number(e: &Expr) -> Option<Error> {
+    let Expr::BinaryOp { left, op: op @ (BinaryOperator::Plus | BinaryOperator::Minus), right } = strip_nested(e) else { return None };
+    let number = |x: &Expr| matches!(strip_nested(x), Expr::Value(v) if matches!(v.value, sql::Value::Number(..)));
+    let (time, n) = match (is_time_value(left) && number(right), is_time_value(right) && number(left)) {
+        (true, _) => (left, right),
+        (_, true) => (right, left),
+        _ => return None,
+    };
+    Some(err(format!("{e}: a number added to a time could be seconds or microseconds; write the unit with INTERVAL: {time} {op} INTERVAL '{n} seconds'")))
+}
+
+/// The microseconds of a time a value holds: a TIMESTAMP, or ISO 8601 text.
+pub(crate) fn time_of(v: &Value, what: &dyn Fn() -> String) -> Result<i64> {
+    match v {
+        Value::Timestamp(t) => Ok(*t),
+        Value::Str(s) => crate::timestamp::parse(s).ok_or_else(|| err(format!("{}: {s:?} is not a time (ISO 8601: '2026-10-01', '2026-10-01T12:30:00Z')", what()))),
+        v => Err(err(format!("{}: {v:?} is not a time", what()))),
     }
 }
 

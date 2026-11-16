@@ -34,7 +34,11 @@
 //! tables runs as one within a table does.
 
 use super::function::FunctionSet;
+use super::budget::Budget;
 use std::cell::RefCell;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::time::Instant;
 use std::collections::HashSet;
 
 use sqlparser::ast::{self as sql, BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, SelectItem, TableFactor, UnaryOperator};
@@ -57,6 +61,10 @@ use crate::value::Value;
 /// subquery, a `WITH` result).
 pub const MAX_ROWS: usize = 1_000_000;
 
+/// The name a SELECT of no table's one row has in its plan: a count of
+/// the first table that reads none of its rows (PRF-12).
+pub const NO_TABLE: &str = "one row of no table";
+
 fn err(m: impl Into<String>) -> Error {
     Error::Query(m.into())
 }
@@ -65,11 +73,16 @@ fn err(m: impl Into<String>) -> Error {
 const NATIVE: [&str; 14] = ["match", "bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "reachable", "path", "hops", "score", "now", "near"];
 /// Score functions, which order a side's scan.
 const SCORES: [&str; 8] = ["bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops"];
-pub(crate) const AGGREGATES: [&str; 8] = ["count", "sum", "avg", "min", "max", "median", "percentile_cont", "percentile_disc"];
+pub(crate) const AGGREGATES: [&str; 9] = ["count", "sum", "avg", "min", "max", "median", "percentile_cont", "percentile_disc", "approx_percentile"];
+/// Statistical aggregates, which [`stats_as_sums`] writes as sums and
+/// counts: every path that aggregates (a shard's partial groups among
+/// them) computes those.
+pub(crate) const STATS: [&str; 9] = ["stddev", "stddev_samp", "stddev_pop", "variance", "var_samp", "var_pop", "covar_samp", "covar_pop", "corr"];
 /// The percentiles among the aggregates: `MEDIAN(x)`, and `PERCENTILE_CONT(x,
 /// p)` as `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` parses
-/// ([`super::parse`]), and `PERCENTILE_DISC` alike.
-pub(crate) const PERCENTILES: [&str; 3] = ["median", "percentile_cont", "percentile_disc"];
+/// ([`super::parse`]), and `PERCENTILE_DISC` alike, and
+/// `approx_percentile(x, p)`.
+pub(crate) const PERCENTILES: [&str; 4] = ["median", "percentile_cont", "percentile_disc", "approx_percentile"];
 /// Functions whose value a ranking computes (a score, a graph's, a model's,
 /// a set function's, a row's sequence number), not the row evaluator.
 const RANKING: [&str; 18] = [
@@ -129,7 +142,7 @@ pub(crate) fn needs(q: &sql::Query, schema: &Schema) -> bool {
         TableFactor::Table { name, .. } if is_table(name, schema) => {}
         _ => return true,
     }
-    if orders_by_text(q, s, schema) || orders_by_row_values(q, s) || filters_rows(s, schema) || orders_by_several(q, s, schema) {
+    if orders_by_text(q, s, schema) || orders_by_row_values(q, s) || filters_rows(s, schema) || orders_by_several(q, s, schema) || aggregates_rows(q, s, schema) {
         return true;
     }
     let mut found = false;
@@ -269,7 +282,8 @@ fn joins_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
                 sql::JoinOperator::Join(sql::JoinConstraint::On(on))
                 | sql::JoinOperator::Inner(sql::JoinConstraint::On(on))
                 | sql::JoinOperator::Left(sql::JoinConstraint::On(on))
-                | sql::JoinOperator::LeftOuter(sql::JoinConstraint::On(on)) => walk_mut(on, f),
+                | sql::JoinOperator::LeftOuter(sql::JoinConstraint::On(on))
+                | sql::JoinOperator::FullOuter(sql::JoinConstraint::On(on)) => walk_mut(on, f),
                 sql::JoinOperator::AsOf { match_condition, constraint } => {
                     walk_mut(match_condition, f);
                     if let sql::JoinConstraint::On(on) = constraint {
@@ -610,6 +624,39 @@ fn needs_rows(c: &Expr, schema: &Schema) -> bool {
 
 /// Whether a SELECT over one table filters by an [`of_rows_filter`]
 /// condition: then the row evaluator filters the scan's rows.
+/// Whether a SELECT aggregates a stored column that the executor's
+/// aggregates do not read, which take INT, FLOAT, KEYWORD and TIMESTAMP
+/// columns: `COUNT(body)`, `COUNT(DISTINCT title)` and `MIN(title)` of a
+/// TEXT column, or of a column kept without an index. The row evaluator
+/// aggregates its stored values.
+fn aggregates_rows(q: &sql::Query, s: &sql::Select, schema: &Schema) -> bool {
+    let mut found = false;
+    let mut check = |e: &Expr| {
+        walk(e, &mut |x| {
+            let Expr::Function(f) = x else { return };
+            if !is_aggregate(f) || PERCENTILES.contains(&fname(f).as_str()) {
+                return;
+            }
+            let name = match func_args(f).as_slice() {
+                [Expr::Identifier(id)] => id.value.clone(),
+                [Expr::CompoundIdentifier(ids)] => ids.last().expect("a name").value.clone(),
+                _ => return,
+            };
+            found |= schema.field(&name).is_some_and(|fd| fd.stored && !fd.multi && (matches!(fd.ty, FieldType::Text { .. }) || (!fd.indexed && matches!(fd.ty, FieldType::Keyword | FieldType::Int | FieldType::Float))));
+        })
+    };
+    for item in &s.projection {
+        if let SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } = item {
+            check(e);
+        }
+    }
+    s.having.iter().for_each(&mut check);
+    if let Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) = &q.order_by {
+        es.iter().for_each(|o| check(&o.expr));
+    }
+    found
+}
+
 fn filters_rows(s: &sql::Select, schema: &Schema) -> bool {
     s.selection.as_ref().is_some_and(|w| split_and(w).iter().any(|c| of_rows_filter(c, schema)))
 }
@@ -742,7 +789,7 @@ fn orders_by_row_values(q: &sql::Query, s: &sql::Select) -> bool {
         }
         walk(&o.expr, &mut |x| {
             found |= match x {
-                Expr::Function(f) => matches!(fname(f).as_str(), "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime"),
+                Expr::Function(f) => matches!(fname(f).as_str(), "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "date_bin" | "time_bucket"),
                 Expr::Extract { .. } => true,
                 _ => false,
             }
@@ -835,6 +882,220 @@ fn func_args_mut(f: &mut sql::Function) -> Vec<&mut Expr> {
         .collect()
 }
 
+/// Writes every `agg(x) FILTER (WHERE c)` of `q` (and its subqueries, `WITH`
+/// queries and set operations' arms) as the aggregate of the values the
+/// condition keeps, `agg(CASE WHEN c THEN x END)`: an aggregate skips the
+/// NULL the other rows give, so the two are one in SQL. `COUNT(*) FILTER
+/// (WHERE c)` is `COUNT(CASE WHEN c THEN 1 END)`. A percentile's fraction
+/// stays as written; `CORR(y, x)` takes the condition on both values.
+/// FILTER on a call that is not an aggregate is refused, and a window's
+/// aggregate refuses it where it is bound ([`window_fn`]).
+pub(crate) fn filters_as_case(q: &mut sql::Query) -> Result<()> {
+    let mut failed = None;
+    let mut rewrite = |e: &mut Expr| {
+        let Expr::Function(f) = e else { return };
+        if f.filter.is_none() || f.over.is_some() {
+            return;
+        }
+        let name = fname(f);
+        if !AGGREGATES.contains(&name.as_str()) && !STATS.contains(&name.as_str()) {
+            failed.get_or_insert_with(|| err(format!("{name}(..) FILTER (WHERE ..): FILTER applies to an aggregate ({}), and {name} is not one", AGGREGATES.join(", ").to_uppercase())));
+            return;
+        }
+        let cond = *f.filter.take().expect("a FILTER");
+        let case = |x: Expr| Expr::Case {
+            case_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
+            end_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
+            operand: None,
+            conditions: vec![sql::CaseWhen { condition: Expr::Nested(Box::new(cond.clone())), result: x }],
+            else_result: None,
+        };
+        let FunctionArguments::List(list) = &mut f.args else {
+            failed.get_or_insert_with(|| err(format!("{name}(..) FILTER (WHERE ..) names no value to aggregate")));
+            return;
+        };
+        // Which arguments are values: a percentile's second is its fraction.
+        let values = match name.as_str() {
+            "percentile_cont" | "percentile_disc" => 1,
+            _ => list.args.len(),
+        };
+        for a in list.args.iter_mut().take(values) {
+            match a {
+                FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => *a = FunctionArg::Unnamed(FunctionArgExpr::Expr(case(Expr::value(sql::Value::Number("1".into(), false))))),
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(x)) => *x = case(x.clone()),
+                _ => {
+                    failed.get_or_insert_with(|| err(format!("{name}(..) FILTER (WHERE ..): the aggregate's value is an expression")));
+                }
+            }
+        }
+        if list.args.is_empty() {
+            // `COUNT()`, as `COUNT(*)`.
+            list.args.push(FunctionArg::Unnamed(FunctionArgExpr::Expr(case(Expr::value(sql::Value::Number("1".into(), false))))));
+        }
+    };
+    keep_names(q, &|e| {
+        let mut found = false;
+        walk(e, &mut |x| found |= matches!(x, Expr::Function(f) if f.filter.is_some() && f.over.is_none()));
+        found
+    });
+    filters_in(q, &mut rewrite);
+    failed.map_or(Ok(()), Err)?;
+    stats_as_sums(q)
+}
+
+/// Writes `STDDEV(x)`, `VARIANCE(x)` (and their `_SAMP` and `_POP` forms),
+/// `COVAR_SAMP(y, x)`, `COVAR_POP(y, x)` and `CORR(y, x)` as the sums and
+/// counts they are computed from, in one pass over the values (the sum of
+/// squares less the square of the sum over n): `COUNT`, `SUM` and
+/// arithmetic, which every path that aggregates computes, a shard's
+/// partial groups among them. As in PostgreSQL, the sample forms (and
+/// `STDDEV`, `VARIANCE`) are NULL for fewer than two values, the
+/// population forms for none, and `CORR` when either variable does not
+/// vary; `COVAR` and `CORR` take the rows where both values are there.
+fn stats_as_sums(q: &mut sql::Query) -> Result<()> {
+    let is_stat = |x: &Expr| matches!(x, Expr::Function(f) if f.over.is_none() && STATS.contains(&fname(f).as_str()));
+    keep_names(q, &|e| {
+        let mut found = false;
+        walk(e, &mut |x| found |= is_stat(x));
+        found
+    });
+    let mut failed = None;
+    let mut rewrite = |e: &mut Expr| {
+        if !is_stat(e) {
+            return;
+        }
+        let Expr::Function(f) = &*e else { return };
+        let name = fname(f);
+        match stat_sql(f, &name).and_then(|text| super::parse::parse_expr(&text)) {
+            Ok(x) => *e = Expr::Nested(Box::new(x)),
+            Err(x) => {
+                failed.get_or_insert(x);
+            }
+        }
+    };
+    filters_in(q, &mut rewrite);
+    failed.map_or(Ok(()), Err)
+}
+
+/// The SQL of a statistical aggregate's call `f` ([`stats_as_sums`]).
+fn stat_sql(f: &sql::Function, name: &str) -> Result<String> {
+    let upper = name.to_uppercase();
+    if matches!(&f.args, FunctionArguments::List(l) if l.duplicate_treatment == Some(sql::DuplicateTreatment::Distinct)) {
+        return Err(err(format!("{upper}(DISTINCT ..) is not supported")));
+    }
+    if !f.within_group.is_empty() {
+        return Err(err(format!("{upper}(..) takes no WITHIN GROUP")));
+    }
+    let args = func_args(f);
+    let two = matches!(name, "covar_samp" | "covar_pop" | "corr");
+    let (y, x) = match (two, args.as_slice()) {
+        (false, [x]) => (None, format!("({x})")),
+        (true, [y, x]) => (Some(format!("({y})")), format!("({x})")),
+        (false, _) => return Err(err(format!("{upper} takes one value: {upper}(price)"))),
+        (true, _) => return Err(err(format!("{upper} takes two values, y and x: {upper}(rating, price)"))),
+    };
+    // Sum of squared deviations: Σa·b − Σa·Σb / n.
+    let dev = |a: &str, b: &str, n: &str| format!("(SUM({a} * {b} * 1.0) - SUM({a} * 1.0) * SUM({b} * 1.0) / {n})");
+    let nonneg = |v: String| format!("(CASE WHEN {v} < 0 THEN 0.0 ELSE {v} END)");
+    Ok(match y {
+        None => {
+            let n = format!("COUNT({x})");
+            let ss = nonneg(dev(&x, &x, &n));
+            let (var, least) = match name {
+                "var_pop" | "stddev_pop" => (format!("{ss} / {n}"), 0),
+                _ => (format!("{ss} / ({n} - 1)"), 1),
+            };
+            let var = format!("CASE WHEN {n} > {least} THEN {var} END");
+            match name.starts_with("stddev") {
+                true => format!("sqrt({var})"),
+                false => var,
+            }
+        }
+        Some(y) => {
+            // The pairs with both values.
+            let (xp, yp) = (format!("(CASE WHEN {y} IS NOT NULL THEN {x} END)"), format!("(CASE WHEN {x} IS NOT NULL THEN {y} END)"));
+            let n = format!("COUNT({xp})");
+            let sxy = dev(&xp, &yp, &n);
+            match name {
+                "covar_pop" => format!("CASE WHEN {n} > 0 THEN {sxy} / {n} END"),
+                "covar_samp" => format!("CASE WHEN {n} > 1 THEN {sxy} / ({n} - 1) END"),
+                _ => {
+                    let (sxx, syy) = (dev(&xp, &xp, &n), dev(&yp, &yp, &n));
+                    format!("CASE WHEN {n} > 1 AND {sxx} > 0 AND {syy} > 0 THEN {sxy} / sqrt({sxx} * {syy}) END")
+                }
+            }
+        }
+    })
+}
+
+/// Names each column of `q`'s SELECTs (its set operations' arms, `WITH`
+/// queries and derived tables too) that `rewritten` says a rewrite will
+/// change, by its SQL as written, the name it has without an alias.
+fn keep_names(q: &mut sql::Query, rewritten: &dyn Fn(&Expr) -> bool) {
+    fn body(b: &mut sql::SetExpr, rewritten: &dyn Fn(&Expr) -> bool) {
+        match b {
+            sql::SetExpr::SetOperation { left, right, .. } => {
+                body(left, rewritten);
+                body(right, rewritten);
+            }
+            sql::SetExpr::Query(q) => keep_names(q, rewritten),
+            sql::SetExpr::Select(s) => {
+                for item in &mut s.projection {
+                    if let SelectItem::UnnamedExpr(e) = item {
+                        if rewritten(e) {
+                            let alias = sql::Ident::with_quote('"', super::sql::name_of(e));
+                            *item = SelectItem::ExprWithAlias { expr: e.clone(), alias };
+                        }
+                    }
+                }
+                for t in &mut s.from {
+                    if let TableFactor::Derived { subquery, .. } = &mut t.relation {
+                        keep_names(subquery, rewritten);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(w) = &mut q.with {
+        for cte in &mut w.cte_tables {
+            keep_names(&mut cte.query, rewritten);
+        }
+    }
+    body(&mut q.body, rewritten);
+}
+
+/// [`query_mut`] over `q` and every arm of its set operations.
+fn filters_in(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
+    fn body(b: &mut sql::SetExpr, f: &mut dyn FnMut(&mut Expr)) {
+        match b {
+            sql::SetExpr::SetOperation { left, right, .. } => {
+                body(left, f);
+                body(right, f);
+            }
+            sql::SetExpr::Query(q) => filters_in(q, f),
+            sql::SetExpr::Select(_) => {}
+            _ => {}
+        }
+    }
+    if let Some(w) = &mut q.with {
+        for cte in &mut w.cte_tables {
+            filters_in(&mut cte.query, f);
+        }
+    }
+    if matches!(q.body.as_ref(), sql::SetExpr::Select(_)) {
+        // `query_mut` reads the WITH queries too: once is enough.
+        let with = q.with.take();
+        query_mut(q, f);
+        q.with = with;
+    } else {
+        body(&mut q.body, f);
+        if let Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) = &mut q.order_by {
+            es.iter_mut().for_each(|o| walk_mut(&mut o.expr, f));
+        }
+    }
+}
+
 fn is_star(f: &sql::Function) -> bool {
     matches!(&f.args, FunctionArguments::List(l) if l.args.iter().any(|a| matches!(a, FunctionArg::Unnamed(FunctionArgExpr::Wildcard)))) || func_args(f).is_empty()
 }
@@ -848,7 +1109,9 @@ pub fn plan(sql_text: &str, schema: &Schema, params: &Params) -> Result<ir::Plan
 
 /// [`plan`] of a query that may read any of the tables of `catalog`.
 pub fn plan_in(sql_text: &str, catalog: &[&Schema], params: &Params) -> Result<ir::Plan> {
-    plan_query(&*parse(sql_text)?, catalog, params)
+    let q = parse(sql_text)?;
+    check_budget(&q, params)?;
+    plan_query(&q, catalog, params)
 }
 
 /// A table's rank profile by name, the table and the name in any case
@@ -866,6 +1129,100 @@ pub type Profiles<'a> = &'a dyn Fn(&str, &str) -> Option<RankProfile>;
 /// does.
 pub fn plan_read(sql_text: &str, catalog: &[&Schema], params: &Params, profiles: Profiles) -> Result<ir::Plan> {
     plan_read_calling(sql_text, catalog, params, profiles, &FunctionSet::default())
+}
+
+/// The limits of the plans made on one thread ([`planning_under`]).
+#[derive(Clone, Default)]
+struct Planning {
+    deadline: Option<Instant>,
+    cancel: Option<Arc<AtomicBool>>,
+    /// The statement's budget ([`super::budget`]).
+    budget: Budget,
+    /// When the plan's `plan_ms` runs out, and the budget.
+    plan_by: Option<(Instant, u64)>,
+}
+
+thread_local! {
+    /// The deadline, cancel flag and budget of the plans made on this
+    /// thread ([`planning_under`]).
+    static PLANNING: RefCell<Planning> = RefCell::new(Planning::default());
+}
+
+/// `f`, whose plans ([`plan_read_calling`] and the rest) stop with
+/// [`Error::Timeout`] once `opts`' deadline passes, its cancel flag is
+/// set or its budget's `plan_ms` runs out from now, and are refused once
+/// written out past its budget's `nodes`, `depth` or `list`
+/// ([`super::budget`]): a statement whose planning takes long (thousands
+/// of `WITH` results, say) gives up when its query would, rather than
+/// holding a thread past the caller's wait.
+pub fn planning_under<T>(opts: &ExecOptions, f: impl FnOnce() -> T) -> T {
+    struct Restore(Planning);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let before = std::mem::take(&mut self.0);
+            PLANNING.with(|p| *p.borrow_mut() = before);
+        }
+    }
+    let now = Planning {
+        deadline: opts.deadline,
+        cancel: opts.cancel.clone(),
+        budget: opts.budget,
+        plan_by: opts.budget.plan_ms.map(|ms| (Instant::now() + std::time::Duration::from_millis(ms), ms)),
+    };
+    let _restore = Restore(PLANNING.with(|p| p.replace(now)));
+    f()
+}
+
+/// The budget of the statement being planned on this thread
+/// ([`planning_under`]).
+pub(crate) fn planning_budget() -> Budget {
+    PLANNING.with(|p| p.borrow().budget)
+}
+
+/// [`Error::Timeout`] once the plan being made ran past the deadline or
+/// its budget's `plan_ms`, or was cancelled ([`planning_under`]).
+pub(crate) fn check_planning() -> Result<()> {
+    PLANNING.with(|p| {
+        let p = p.borrow();
+        if p.cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Err(Error::Timeout("the query was cancelled while it was planned".into()));
+        }
+        let now = Instant::now();
+        if let Some((_, ms)) = p.plan_by.filter(|(by, _)| now >= *by) {
+            return Err(Error::Timeout(format!("the statement took more than {ms} ms to plan, its budget (plan_ms): write it with fewer WITH results, set operations or calls, or raise the budget")));
+        }
+        match p.deadline {
+            Some(d) if now >= d => Err(Error::Timeout("the query ran past its deadline while it was planned".into())),
+            _ => Ok(()),
+        }
+    })
+}
+
+/// [`check_planning`] every 1,024 calls of `n` (a loop over values as
+/// a statement binds).
+pub(crate) fn check_planning_every(n: usize) -> Result<()> {
+    match n % 1024 {
+        1023 => check_planning(),
+        _ => Ok(()),
+    }
+}
+
+/// A query error when statement `sql` as written (a write, which calls
+/// no stored function) is past the shape the budget of the statement
+/// being planned allows; nothing is parsed when it bounds none.
+pub(crate) fn check_statement(sql_text: &str, params: &Params) -> Result<()> {
+    super::budget::check_text(&planning_budget(), sql_text, params)
+}
+
+/// A query error when `q`, written out, is past the shape the budget of
+/// the statement being planned allows ([`super::budget::check_shape`]).
+fn check_budget(q: &sql::Query, params: &Params) -> Result<()> {
+    let b = planning_budget();
+    if b.is_none() {
+        return Ok(());
+    }
+    check_planning()?;
+    super::budget::check_shape(&b, q, params)
 }
 
 /// [`plan_read`] of a query that may call the stored functions of
@@ -906,6 +1263,8 @@ fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles
         let table = super::tables::read_by(&q).first().cloned().unwrap_or_default();
         return Ok(super::profile::mark(plan_read_query(&q, catalog, params, &|_, _| None, functions)?, &table, &r));
     }
+    // Written out, the statement is held to its budget.
+    check_budget(q, params)?;
     let schema = match super::tables::read_by(q).first() {
         None => *catalog.first().ok_or_else(|| err("the database has no tables"))?,
         Some(t) => catalog.iter().copied().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| err(hint::no_table(t, catalog.iter().map(|s| s.table.as_str()))))?,
@@ -955,6 +1314,23 @@ pub fn run(sql_text: &str, schema: &Schema, params: &Params, runner: &mut ops::R
 /// them.
 pub fn run_checked(sql_text: &str, schema: &Schema, params: &Params, runner: &mut ops::Runner, opts: &ExecOptions) -> Result<ResultSet> {
     ops::run(&plan(sql_text, schema, params)?, schema, runner, opts)
+}
+
+/// `q` without its `WITH`, copied without copying the `WITH`'s queries.
+fn without_with(q: &sql::Query) -> sql::Query {
+    let sql::Query { with: _, body, order_by, limit_clause, fetch, locks, for_clause, settings, format_clause, pipe_operators } = q;
+    sql::Query {
+        with: None,
+        body: body.clone(),
+        order_by: order_by.clone(),
+        limit_clause: limit_clause.clone(),
+        fetch: fetch.clone(),
+        locks: locks.clone(),
+        for_clause: for_clause.clone(),
+        settings: settings.clone(),
+        format_clause: format_clause.clone(),
+        pipe_operators: pipe_operators.clone(),
+    }
 }
 
 /// A query's plan, its columns, and the table whose rows its rows are
@@ -1114,6 +1490,7 @@ impl<'a> Planner<'a> {
     }
 
     fn query(&self, q: &sql::Query) -> Result<Planned> {
+        check_planning()?;
         let mark = self.ctes.borrow().len();
         let r = self.scoped(q);
         self.ctes.borrow_mut().truncate(mark);
@@ -1126,6 +1503,8 @@ impl<'a> Planner<'a> {
             return Ok(p);
         }
         let mut defs = Vec::new();
+        // The query without its `WITH`, copied once (not once per `WITH`).
+        let rest = without_with(q);
         if let Some(w) = &q.with {
             if w.recursive {
                 return Err(err("WITH RECURSIVE is not supported: REACHABLE and PATH traverse links"));
@@ -1134,9 +1513,7 @@ impl<'a> Planner<'a> {
                 // Rerank phases over the `WITH` results from this one on,
                 // which may read those before (a user's history).
                 if i > 0 {
-                    let mut rest = q.clone();
-                    rest.with.as_mut().expect("WITH").cte_tables.drain(..i);
-                    if let Some(p) = self.phased(&rest)? {
+                    if let Some(p) = self.phased_in(&w.cte_tables[i..], &rest)? {
                         return Ok(Planned { node: ir::Node::With { ctes: defs, input: Box::new(p.node) }, ..p });
                     }
                 }
@@ -1155,9 +1532,7 @@ impl<'a> Planner<'a> {
                 defs.push(ir::Cte { name, input: p.node });
             }
         }
-        let mut q = q.clone();
-        q.with = None;
-        let body = self.body(&q)?;
+        let body = self.body(&rest)?;
         Ok(match defs.is_empty() {
             true => body,
             false => Planned { node: ir::Node::With { ctes: defs, input: Box::new(body.node) }, ..body },
@@ -1184,11 +1559,20 @@ impl<'a> Planner<'a> {
     /// bind so, which plans as the table restricted to the `WITH` result's
     /// keys ([`Planner::over_rows`]).
     fn phased(&self, q: &sql::Query) -> Result<Option<Planned>> {
-        let Some(w) = q.with.as_ref().filter(|w| !w.recursive && w.cte_tables.iter().all(|c| c.alias.columns.is_empty())) else { return Ok(None) };
-        let mut body = q.clone();
-        body.with = None;
+        match q.with.as_ref().filter(|w| !w.recursive) {
+            Some(w) => self.phased_in(&w.cte_tables, &without_with(q)),
+            None => Ok(None),
+        }
+    }
+
+    /// [`Planner::phased`] of the query `body` (with no `WITH` of its own)
+    /// after the `WITH` results `ctes`.
+    fn phased_in(&self, ctes: &[sql::Cte], body: &sql::Query) -> Result<Option<Planned>> {
+        if ctes.is_empty() || ctes.iter().any(|c| !c.alias.columns.is_empty()) {
+            return Ok(None);
+        }
         // The first `WITH`, its table and alias.
-        let first = &w.cte_tables[0].query;
+        let first = &ctes[0].query;
         let Some((s0, name)) = one_table(first) else { return Ok(None) };
         let Some(schema) = self.table(&name).filter(|_| self.cte(&name).is_none()) else { return Ok(None) };
         let simple = |s: &sql::Select| s.distinct.is_none() && s.having.is_none() && matches!(&s.group_by, sql::GroupByExpr::Expressions(es, _) if es.is_empty());
@@ -1198,9 +1582,9 @@ impl<'a> Planner<'a> {
         // Each later step: what it projects, ranks by and cuts, its
         // columns named without the `WITH` it reads.
         let mut steps: Vec<(Vec<SelectItem>, sql::OrderByExpr, Option<sql::LimitClause>)> = Vec::new();
-        let reads: Vec<&sql::Query> = w.cte_tables[1..].iter().map(|c| c.query.as_ref()).chain(std::iter::once(&body)).collect();
+        let reads: Vec<&sql::Query> = ctes[1..].iter().map(|c| c.query.as_ref()).chain(std::iter::once(body)).collect();
         for (i, r) in reads.iter().enumerate() {
-            let read = &w.cte_tables[i].alias.name.value;
+            let read = &ctes[i].alias.name.value;
             let Some((s, from)) = one_table(r) else { return Ok(None) };
             let alias = match &s.from[0].relation {
                 TableFactor::Table { alias, .. } => alias.as_ref().map(|a| a.name.value.clone()),
@@ -1270,7 +1654,7 @@ impl<'a> Planner<'a> {
         // alias, or a `WITH` result's.
         let mut names = from_names(first);
         for (i, r) in reads.iter().enumerate() {
-            names.push(w.cte_tables[i].alias.name.value.to_ascii_lowercase());
+            names.push(ctes[i].alias.name.value.to_ascii_lowercase());
             names.extend(from_names(r));
         }
         let fields = schema.fields.iter().map(|f| f.name.clone()).collect();
@@ -1347,8 +1731,11 @@ impl<'a> Planner<'a> {
     /// Why a SELECT with no table, or with several after FROM, is refused,
     /// and what to write instead.
     fn from_hint(&self, s: &sql::Select) -> String {
-        let tables: Vec<&str> = self.catalog.iter().map(|t| t.table.as_str()).collect();
+        let tables: Vec<&str> = self.catalog.iter().map(|t| t.table.as_str()).filter(|t| !hint::internal_table(t)).collect();
         let first = tables.first().copied().unwrap_or("t");
+        if s.from.is_empty() && tables.is_empty() {
+            return "this SELECT reads a table, and the database has none yet: CREATE TABLE or an import makes one".to_string();
+        }
         if s.from.is_empty() {
             return format!(
                 "a SELECT reads a table: add FROM and one of the database's tables ({}). A value of no table is a column of any of them: SELECT {} FROM {first} LIMIT 1",
@@ -1394,10 +1781,16 @@ impl<'a> Planner<'a> {
             b => return Err(err(format!("this form of query is not supported: {b}"))),
         };
         // SELECT 1, SELECT now(): values of no table, one row of them, as
-        // the one row a count of a table gives.
+        // the one row a count of a table gives. The count reads none of
+        // the table's rows, and the plan names it for what it is (PRF-12):
+        // Explain and Queries show no search of the table's rows. SELECT *
+        // of no table has no columns to give.
         if s.from.is_empty() && s.selection.is_none() && s.group_by == sql::GroupByExpr::Expressions(vec![], vec![]) && s.having.is_none() {
+            if s.projection.iter().any(|i| matches!(i, SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..))) {
+                return Err(err("SELECT * of no table has no columns to give: name the values (SELECT 1 + 1), or add FROM and a table"));
+            }
             if let Some(first) = self.catalog.first() {
-                let one = format!("SELECT COUNT(*) FROM {}", sql::Ident::with_quote('"', first.table.as_str()));
+                let one = format!("SELECT COUNT(*) AS {} FROM {} WHERE FALSE", sql::Ident::with_quote('"', NO_TABLE), sql::Ident::with_quote('"', first.table.as_str()));
                 let Some(sql::Statement::Query(one)) = super::parse::parse(&one)?.into_iter().next() else { return Err(err("a query of one row")) };
                 let mut q = q.clone();
                 if let sql::SetExpr::Select(s) = q.body.as_mut() {
@@ -1462,31 +1855,44 @@ impl<'a> Planner<'a> {
         }
         match body.as_ref() {
             sql::SetExpr::Query(_) => self.side(body),
-            sql::SetExpr::SetOperation { op, set_quantifier, left, right } => {
-                let all = match set_quantifier {
-                    sql::SetQuantifier::All => true,
-                    sql::SetQuantifier::Distinct | sql::SetQuantifier::None => false,
-                    by_name => return Err(err(format!("{op} {by_name} is not supported: select the columns in the same order on both sides"))),
-                };
-                let kind = match op {
-                    sql::SetOperator::Union => ir::SetOp::Union,
-                    sql::SetOperator::Intersect => ir::SetOp::Intersect,
-                    sql::SetOperator::Except | sql::SetOperator::Minus => ir::SetOp::Except,
-                };
-                let l = self.side(left)?;
-                let r = self.side(right)?;
-                if l.columns.len() != r.columns.len() {
-                    return Err(err(format!(
-                        "{}: the query before it selects {} column{} and the one after {}; both sides of a {} select as many",
-                        kind.name(),
-                        l.columns.len(),
-                        if l.columns.len() == 1 { "" } else { "s" },
-                        r.columns.len(),
-                        kind.name()
-                    )));
+            sql::SetExpr::SetOperation { .. } => {
+                // `a UNION b UNION c ...` parses left-deep: its queries are
+                // planned from the first on, along the chain rather than
+                // down it, so that a long chain neither recurses once per
+                // query nor copies the queries before each.
+                let mut chain = Vec::new();
+                let mut first = body.as_ref();
+                while let sql::SetExpr::SetOperation { op, set_quantifier, left, right } = first {
+                    chain.push((op, set_quantifier, right.as_ref()));
+                    first = left;
                 }
-                let multi = l.multi.iter().zip(&r.multi).map(|(a, b)| *a || *b).collect();
-                Ok(Planned { node: ir::Node::SetOp { op: kind, all, left: Box::new(l.node), right: Box::new(r.node) }, columns: l.columns, keyed: None, multi })
+                let mut l = self.side(first)?;
+                for (op, set_quantifier, right) in chain.into_iter().rev() {
+                    let all = match set_quantifier {
+                        sql::SetQuantifier::All => true,
+                        sql::SetQuantifier::Distinct | sql::SetQuantifier::None => false,
+                        by_name => return Err(err(format!("{op} {by_name} is not supported: select the columns in the same order on both sides"))),
+                    };
+                    let kind = match op {
+                        sql::SetOperator::Union => ir::SetOp::Union,
+                        sql::SetOperator::Intersect => ir::SetOp::Intersect,
+                        sql::SetOperator::Except | sql::SetOperator::Minus => ir::SetOp::Except,
+                    };
+                    let r = self.side(right)?;
+                    if l.columns.len() != r.columns.len() {
+                        return Err(err(format!(
+                            "{}: the query before it selects {} column{} and the one after {}; both sides of a {} select as many",
+                            kind.name(),
+                            l.columns.len(),
+                            if l.columns.len() == 1 { "" } else { "s" },
+                            r.columns.len(),
+                            kind.name()
+                        )));
+                    }
+                    let multi = l.multi.iter().zip(&r.multi).map(|(a, b)| *a || *b).collect();
+                    l = Planned { node: ir::Node::SetOp { op: kind, all, left: Box::new(l.node), right: Box::new(r.node) }, columns: l.columns, keyed: None, multi };
+                }
+                Ok(l)
             }
             _ => unreachable!("a set operation or a query"),
         }
@@ -1528,7 +1934,8 @@ impl<'a> Planner<'a> {
                 || reads_paths(&q, &s)
                 || windowed(&q, &s)
                 || filters_rows(&s, schema)
-                || orders_by_several(&q, &s, schema) =>
+                || orders_by_several(&q, &s, schema)
+                || aggregates_rows(&q, &s, schema) =>
             {
                 return self.join(&q, &s)
             }
@@ -1863,7 +2270,7 @@ impl<'a> Planner<'a> {
             before.extend(es.iter());
         }
         for j in s.from.iter().flat_map(|t| &t.joins) {
-            if let sql::JoinOperator::Join(sql::JoinConstraint::On(on)) | sql::JoinOperator::Inner(sql::JoinConstraint::On(on)) | sql::JoinOperator::Left(sql::JoinConstraint::On(on)) | sql::JoinOperator::LeftOuter(sql::JoinConstraint::On(on)) = &j.join_operator {
+            if let sql::JoinOperator::Join(sql::JoinConstraint::On(on)) | sql::JoinOperator::Inner(sql::JoinConstraint::On(on)) | sql::JoinOperator::Left(sql::JoinConstraint::On(on)) | sql::JoinOperator::LeftOuter(sql::JoinConstraint::On(on)) | sql::JoinOperator::FullOuter(sql::JoinConstraint::On(on)) = &j.join_operator {
                 before.push(on);
             }
             if let sql::JoinOperator::AsOf { match_condition, constraint } = &j.join_operator {
@@ -1933,6 +2340,7 @@ impl<'a> Planner<'a> {
             let (kind, c) = match &j.join_operator {
                 sql::JoinOperator::Join(c) | sql::JoinOperator::Inner(c) => (ir::JoinKind::Inner, c),
                 sql::JoinOperator::Left(c) | sql::JoinOperator::LeftOuter(c) => (ir::JoinKind::Left, c),
+                sql::JoinOperator::FullOuter(c) => (ir::JoinKind::Full, c),
                 sql::JoinOperator::AsOf { constraint, .. } => (ir::JoinKind::AsOf, constraint),
                 o => return Err(err(unsupported_join(o)))?,
             };
@@ -1980,12 +2388,15 @@ impl<'a> Planner<'a> {
         let in_memory = |i: usize| matches!(srcs[i].kind, SrcKind::Rows(_));
         let table = |i: usize| srcs[i].kind.schema();
 
+        // A full join keeps the rows of both sides that match none, so no
+        // condition of WHERE or ON filters the scans it joins.
+        let full_at: Option<usize> = srcs.iter().rposition(|s| s.join.as_ref().is_some_and(|(k, _)| *k == ir::JoinKind::Full));
         // WHERE: each condition naming one scanned side goes to its scan.
         let mut pushed: Vec<Vec<Expr>> = vec![Vec::new(); srcs.len()];
         let mut residual: Vec<Expr> = Vec::new();
         for c in s.selection.iter().flat_map(split_and) {
             let at = sides.of(&c)?;
-            let left_join_right = |i: usize| srcs[i].join.as_ref().is_some_and(|(k, _)| matches!(k, ir::JoinKind::Left | ir::JoinKind::AsOf));
+            let left_join_right = |i: usize| srcs[i].join.as_ref().is_some_and(|(k, _)| *k != ir::JoinKind::Inner) || full_at.is_some_and(|f| i <= f);
             match at.as_slice() {
                 [i] if !in_memory(*i) && !left_join_right(*i) && !of_rows(&c) && !table(*i).is_some_and(|t| of_rows_filter(&c, t)) => pushed[*i].push(c),
                 _ => residual.push(c),
@@ -2011,7 +2422,8 @@ impl<'a> Planner<'a> {
                         continue;
                     }
                 }
-                if at == [i] && !in_memory(i) && !table(i).is_some_and(|t| of_rows_filter(&c, t)) {
+                let full = srcs[i].join.as_ref().is_some_and(|(k, _)| *k == ir::JoinKind::Full);
+                if at == [i] && !full && !in_memory(i) && !table(i).is_some_and(|t| of_rows_filter(&c, t)) {
                     pushed[i].push(c);
                 } else if at.iter().any(|&x| x > i) {
                     return Err(err(format!("ON of {} names a table joined later", srcs[i].alias)));
@@ -2104,6 +2516,7 @@ impl<'a> Planner<'a> {
         // A window reads all the rows, so none drive (and its order is
         // its own).
         let driver_order = !grouped
+            && full_at.is_none()
             && !windowed(q, s)
             && !matches!(s.distinct, Some(sql::Distinct::Distinct))
             && match order.first() {
@@ -2370,7 +2783,7 @@ fn grouped_first(n: &ir::Node, sort: &[ir::SortKey], catalog: &[&Schema]) -> Opt
                 let fl = lt.fields.get(f as usize)?;
                 let typed = match a.func {
                     AggFn::Count | AggFn::CountDistinct => matches!(fl.ty, FieldType::Keyword | FieldType::Int | FieldType::Float),
-                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) => matches!(fl.ty, FieldType::Int | FieldType::Float),
+                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) | AggFn::ApproxPercentile(_) => matches!(fl.ty, FieldType::Int | FieldType::Float),
                 };
                 if !plain(fl) || !typed {
                     return None;
@@ -2661,7 +3074,7 @@ pub(crate) fn query_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
 }
 
 /// [`walk`], changing the expressions, and into subqueries.
-fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+pub(crate) fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     f(e);
     match e {
         Expr::Nested(x) | Expr::UnaryOp { expr: x, .. } | Expr::IsNull(x) | Expr::IsNotNull(x) | Expr::Cast { expr: x, .. } | Expr::Extract { expr: x, .. } => walk_mut(x, f),
@@ -2708,13 +3121,12 @@ fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     }
 }
 
-/// Why a join other than `JOIN` and `LEFT JOIN` is refused, and what to
+/// Why a join other than `JOIN`, `LEFT JOIN` and `FULL JOIN` is refused, and what to
 /// write instead.
 fn unsupported_join(o: &sql::JoinOperator) -> String {
     use sql::JoinOperator as J;
     match o {
         J::Right(_) | J::RightOuter(_) => "RIGHT JOIN is not supported: swap the two tables and use LEFT JOIN (a RIGHT JOIN b ON ... is b LEFT JOIN a ON ...)".into(),
-        J::FullOuter(_) => "FULL JOIN is not supported: JOIN and LEFT JOIN are; a FULL JOIN is the rows of a LEFT JOIN b UNION those of b LEFT JOIN a".into(),
         J::CrossJoin(_) => "CROSS JOIN is not supported: join with JOIN ... ON an equality of the two tables' columns".into(),
         J::Semi(_) | J::LeftSemi(_) | J::RightSemi(_) => "SEMI JOIN is not supported: WHERE x IN (SELECT ...) or EXISTS (SELECT ...) keeps the rows that have a match".into(),
         J::Anti(_) | J::LeftAnti(_) | J::RightAnti(_) => "ANTI JOIN is not supported: WHERE x NOT IN (SELECT ...) or NOT EXISTS (SELECT ...) keeps the rows without a match".into(),
@@ -2739,6 +3151,53 @@ fn is_score(e: &Expr) -> bool {
         }
     });
     found
+}
+
+/// Whether `q` ranks rows: one SELECT of one table, without groups,
+/// aggregates, `DISTINCT` or windows, whose first ORDER BY key (an alias
+/// or a position read as the column it names) is a column or calls a
+/// ranking function. Such a query's top rows have values they were ranked
+/// by ([`super::sql::with_features`]); any other ORDER BY sorts rows (or
+/// groups) by a value the row evaluator computes, and has none.
+pub(crate) fn ranks_rows(q: &sql::Query) -> bool {
+    let sql::SetExpr::Select(s) = q.body.as_ref() else { return false };
+    let Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) = &q.order_by else { return false };
+    let Some(first) = es.first() else { return false };
+    let grouped = !matches!(&s.group_by, sql::GroupByExpr::Expressions(g, _) if g.is_empty());
+    if s.from.len() != 1 || !s.from[0].joins.is_empty() || !matches!(s.from[0].relation, TableFactor::Table { .. }) || grouped || s.having.is_some() || s.distinct.is_some() || has_aggregate(s) {
+        return false;
+    }
+    let items: Vec<&Expr> = s
+        .projection
+        .iter()
+        .filter_map(|i| match i {
+            SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => Some(e),
+            _ => None,
+        })
+        .collect();
+    if items.iter().any(|e| has_window(e)) {
+        return false;
+    }
+    // The key, through an alias or a position.
+    let key = match &first.expr {
+        Expr::Identifier(id) => s
+            .projection
+            .iter()
+            .find_map(|i| match i {
+                SelectItem::ExprWithAlias { expr, alias } if alias.value.eq_ignore_ascii_case(&id.value) => Some(expr),
+                _ => None,
+            })
+            .unwrap_or(&first.expr),
+        Expr::Value(v) => match v.value.to_string().parse::<usize>() {
+            Ok(n) if (1..=s.projection.len()).contains(&n) => match &s.projection[n - 1] {
+                SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => e,
+                _ => return false,
+            },
+            _ => return false,
+        },
+        e => e,
+    };
+    matches!(key, Expr::Identifier(_) | Expr::CompoundIdentifier(_)) || ranks(key)
 }
 
 fn has_aggregate(s: &sql::Select) -> bool {
@@ -2952,6 +3411,30 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
             left: typed(x, Some(crate::json::Kind::Bool))?,
             right: Box::new(ir::Expr::Lit(Value::Bool(matches!(e, Expr::IsTrue(_))))),
         },
+        // A time moved by an interval: computed once when the time is a
+        // value (`now() - INTERVAL '1 hour'`), and over the rows when it is
+        // a column (`at + INTERVAL '2 days'`, in microseconds, which a
+        // month has no fixed number of).
+        e if super::sql::interval_shift(e).is_some() => {
+            let (t, iv) = super::sql::interval_shift(e).expect("an interval")?;
+            match go(t)? {
+                ir::Expr::Lit(Value::Null) => ir::Expr::Lit(Value::Null),
+                ir::Expr::Lit(v) => {
+                    let base = super::sql::time_of(&v, &|| e.to_string())?;
+                    ir::Expr::Lit(Value::Timestamp(iv.add_to(base).ok_or_else(|| err(format!("{e} is outside the times a TIMESTAMP holds")))?))
+                }
+                _ if iv.months != 0 => {
+                    return Err(err(format!("{e}: a month or a year has no fixed length, so it moves a time written as a value (now(), '2026-01-31'), not a column's; write days")))
+                }
+                x => ir::Expr::Arith { op: ArithOp::Add, left: Box::new(x), right: Box::new(ir::Expr::Lit(Value::Int(iv.micros))) },
+            }
+        }
+        e if super::sql::time_plus_number(e).is_some() => return Err(super::sql::time_plus_number(e).expect("an error")),
+        Expr::Interval(_) => return Err(err(format!("{e} is a length of time: add it to a time or subtract it from one (now() - {e})"))),
+        Expr::TypedString(sql::TypedString { data_type, value, .. }) => match &value.value {
+            sql::Value::SingleQuotedString(s) | sql::Value::DoubleQuotedString(s) => ir::Expr::Lit(super::sql::cast_value(Value::Str(s.clone()), CastTo::of(data_type)?)?),
+            _ => return Err(err(format!("unsupported expression: {e}"))),
+        },
         Expr::BinaryOp { left, op, right } => {
             use BinaryOperator as B;
             let cmp = match op {
@@ -3062,6 +3545,13 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
         },
         Expr::Function(_) if outer_field(e).is_some() => ir::Expr::Outer(outer_field(e).expect("a field")),
         e if super::sql::is_now(e) => ir::Expr::Lit(Value::Timestamp(crate::timestamp::now())),
+        e if super::sql::is_today(e) => ir::Expr::Lit(super::sql::day_of(Value::Timestamp(crate::timestamp::now()), &|| e.to_string())?),
+        // DATE(t): the start of t's day, as date_trunc('day', t) and
+        // CAST(t AS DATE) are.
+        Expr::Function(f) if fname(f) == "date" && f.over.is_none() && func_args(f).len() == 1 => match go(func_args(f)[0])? {
+            ir::Expr::Lit(v) => ir::Expr::Lit(super::sql::day_of(super::sql::cast_value(v, CastTo::Timestamp)?, &|| e.to_string())?),
+            x => ir::Expr::Call { func: Func::DateTrunc, args: vec![ir::Expr::Lit(Value::Str("day".into())), x] },
+        },
         Expr::Function(f) if fname(f) == "prefix" => {
             let [x, p] = func_args(f)[..] else { return Err(err("PREFIX(text, prefix) takes two arguments")) };
             ir::Expr::Prefix { expr: typed(x, Some(crate::json::Kind::Str))?, prefix: bx(p)?, edits: 0 }
@@ -3106,6 +3596,8 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 "date_trunc" => Func::DateTrunc,
                 "date_part" => Func::DatePart,
                 "strftime" => Func::Strftime,
+                "date_bin" => Func::DateBin,
+                "time_bucket" => Func::DateBin,
                 "hash" => Func::Hash,
                 n if Func::numeric(n).is_some() => Func::numeric(n).expect("a numeric function"),
                 n if NATIVE.contains(&n) => {
@@ -3114,7 +3606,24 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 n if AGGREGATES.contains(&n) => return Err(err(format!("{}(...) is an aggregate: it needs GROUP BY or a SELECT of aggregates, not a value of one row", n.to_uppercase()))),
                 n => return Err(err(unknown_function(n))),
             };
-            let args: Vec<ir::Expr> = func_args(f).into_iter().map(go).collect::<Result<_>>()?;
+            let mut args: Vec<ir::Expr> = Vec::new();
+            for (i, a) in func_args(f).into_iter().enumerate() {
+                args.push(match (func, i) {
+                    // date_bin(INTERVAL '5 minutes', t) (and time_bucket, its other
+                    // name): the width as the text the evaluator reads.
+                    (Func::DateBin, 0) => match super::sql::interval(a) {
+                        Some(iv) => {
+                            let iv = iv?;
+                            if iv.months != 0 || iv.micros <= 0 {
+                                return Err(err(format!("{e}: a bucket's width is a positive length of time without months or years, such as INTERVAL '5 minutes'")));
+                            }
+                            ir::Expr::Lit(Value::Str(crate::timestamp::stride_text(iv.micros)))
+                        }
+                        None => go(a)?,
+                    },
+                    _ => go(a)?,
+                });
+            }
             func.arity(args.len()).map_err(|a| err(format!("{}() takes {a}", func.name())))?;
             ir::Expr::Call { func, args }
         }
@@ -3122,8 +3631,12 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
         // rows by the arithmetic and functions that make the type.
         Expr::Cast { expr, data_type, format: None, .. } => {
             let to = CastTo::of(data_type)?;
+            let day = super::sql::is_date(data_type);
             match go(expr)? {
+                ir::Expr::Lit(v) if day => ir::Expr::Lit(super::sql::day_of(super::sql::cast_value(v, to)?, &|| e.to_string())?),
                 ir::Expr::Lit(v) => ir::Expr::Lit(super::sql::cast_value(v, to)?),
+                // A column's day: date_trunc('day', at).
+                x if day => ir::Expr::Call { func: Func::DateTrunc, args: vec![ir::Expr::Lit(Value::Str("day".into())), x] },
                 x => match to {
                     CastTo::Float => ir::Expr::Arith { op: ArithOp::Mul, left: Box::new(x), right: Box::new(ir::Expr::Lit(Value::Float(1.0))) },
                     CastTo::Int => ir::Expr::Call { func: Func::Round, args: vec![x] },
@@ -3134,7 +3647,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                     },
                     CastTo::Bool | CastTo::Timestamp => {
                         return Err(err(format!(
-                            "{e}: a column of the rows casts to INT, FLOAT or TEXT; BOOL and TIMESTAMP take a value, such as CAST('2026-11-02' AS TIMESTAMP)"
+                            "{e}: a column of the rows casts to INT, FLOAT, TEXT or DATE (its day, as date_trunc('day', at)); BOOL and TIMESTAMP take a value, such as CAST('2026-11-02' AS TIMESTAMP)"
                         )))
                     }
                 },
@@ -3157,7 +3670,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
 }
 
 /// What the row evaluator computes, for an error about what it does not.
-const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part, strftime and hash";
+const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part, strftime, time_bucket and hash";
 
 /// The part `EXTRACT(part FROM t)` names, as `date_part` takes it.
 pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
@@ -3173,15 +3686,15 @@ pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
 /// Why a function is not one the row evaluator knows: the one meant, if
 /// the name is near one, or what there is.
 fn unknown_function(n: &str) -> String {
-    const ROW_FUNCTIONS: [&str; 20] = [
-        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime", "hash",
+    const ROW_FUNCTIONS: [&str; 22] = [
+        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime", "date_bin", "time_bucket", "hash",
     ];
     let hint = match n {
         "substr" | "substring" | "left" | "right" | "trim" | "ltrim" | "rtrim" | "replace" | "concat" | "position" | "instr" | "strpos" | "split_part" | "reverse" => {
             "; to match part of a text, use LIKE '%part%' (ILIKE ignores case) or PREFIX(field, 'start'); to join texts, use ||"
         }
         "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "datediff" | "date_add" | "date_sub" | "dayofweek" | "weekday" => {
-            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + n or at - n, n in microseconds"
+            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), date_bin('5 minutes', at) (its bucket of a fixed width), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + n or at - n, n in microseconds"
         }
         "random" | "rand" => "; ORDER BY random() is not supported: for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0",
         "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",
@@ -3193,9 +3706,10 @@ fn unknown_function(n: &str) -> String {
         _ => "",
     };
     format!(
-        "unknown function {n}(){}: over rows ChloeDB computes {}{hint}",
-        hint::did_you_mean(n, ROW_FUNCTIONS),
-        ROW_FUNCTIONS.join(", ")
+        "unknown function {n}(){}: over rows ChloeDB computes {}, and over groups the aggregates {}{hint}",
+        hint::did_you_mean(n, ROW_FUNCTIONS.iter().chain(AGGREGATES.iter()).chain(STATS.iter()).copied()),
+        ROW_FUNCTIONS.join(", "),
+        AGGREGATES.iter().chain(STATS.iter()).map(|a| a.to_uppercase()).collect::<Vec<_>>().join(", ")
     )
 }
 
@@ -3262,7 +3776,11 @@ fn percentile(f: &sql::Function, name: &str, distinct: bool, params: &Params) ->
         _ => return Err(err(format!("{upper}(p) WITHIN GROUP (ORDER BY x): p, from 0 to 1, of one value of each row"))),
     };
     let p = Fraction::new(p).ok_or_else(|| err(format!("{upper}: the fraction is from 0 to 1, not {p}")))?;
-    Ok(if name == "percentile_disc" { AggFn::PercentileDisc(p) } else { AggFn::PercentileCont(p) })
+    Ok(match name {
+        "percentile_disc" => AggFn::PercentileDisc(p),
+        "approx_percentile" => AggFn::ApproxPercentile(p),
+        _ => AggFn::PercentileCont(p),
+    })
 }
 
 /// A window function's call: its text (how other expressions name it) and

@@ -52,10 +52,15 @@ const INSTRUCTIONS: &str = "ChloeDB is a search database with SQL: full text (BM
 Start with list_tables: it gives each table's CREATE TABLE statement. \
 ChloeDB SQL is its own dialect, not Postgres: MATCH(field, 'words') filters by text, ORDER BY bm25(field, 'words') DESC ranks by it, \
 similarity(vector_field, :p) ranks by meaning (bind :p in params as {\"embed\": \"some text\", \"field\": \"emb\"}), and search_docs finds the syntax of anything else. \
-query runs SELECT only; execute runs INSERT, UPDATE, DELETE, CREATE, ALTER and DROP; write sends rows as JSON. \
+query runs SELECT only; execute runs INSERT, UPDATE, DELETE, CREATE, ALTER and DROP; write sends rows as JSON; import loads many rows at once (a CSV file's text, JSON lines or objects) into a table. \
 check_sql parses and binds a statement against the tables without running it, and explain shows how a SELECT runs. \
 list_feedback and get_feedback read what people asked of the command center, with screenshots; update_feedback takes an item and marks it done. \
-The key you connect with decides what you may change (whoami): read, write, or admin for tables.";
+The key you connect with decides what you may change (whoami): read, write, or admin for tables. \
+With an admin, ops or propose key there are tools to operate the server too: health, cluster, alerts, events, queries, logs and audit read it; \
+plan_* and dry_run show what a change would do without making it; contain, cancel_query, silence_alert and ack_alert act at once, for a while, with a reason; \
+anything bigger is propose_change, which a person approves. runbook finds what to do for an alert or a problem.";
+
+mod ops_tools;
 
 /// What a tool's call does.
 enum Act {
@@ -66,6 +71,14 @@ enum Act {
     CheckSql(String),
     /// `search_docs`: found here.
     SearchDocs { query: String, limit: usize },
+    /// An operation of tier 1 and up ([`crate::ops`]): a route sent with
+    /// the reason the agent gave, which the audit log keeps.
+    Action { method: Method, path: String, body: Option<Json>, reason: String },
+    /// A runbook, found here ([`crate::runbooks`]).
+    Runbook { query: String },
+    /// `import`: rows as text, sent to `POST /v1/import` with their
+    /// content type.
+    Import { path: String, content_type: &'static str, data: Vec<u8>, create: Option<String> },
 }
 
 /// What a tool keeps of a route's answer.
@@ -235,6 +248,24 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "import",
+        title: "Import rows",
+        description: "Load many rows into a table at once: CSV or TSV text (the first line names the columns), JSON lines, a JSON array of objects as text in data, or the objects themselves in rows. The table must exist (list_tables shows it), or with create: true an admin key makes it first from the rows: types from the values (whole numbers INT, numbers FLOAT, true/false BOOL, ISO dates TIMESTAMP, longer text of several words TEXT, other text KEYWORD), the primary key a column named id (or key); the answer shows the CREATE TABLE it ran. Columns the table has not are skipped and named in the answer; a row with the key of one there replaces it. Answers how many rows it wrote. Needs a write key. For a few rows, write works too.",
+        schema: || json!({"type": "object", "properties": {
+            "table": {"type": "string"},
+            "format": {"type": "string", "enum": ["csv", "tsv", "jsonl", "json"], "description": "the format of data (default csv); rows are JSON"},
+            "data": {"type": "string", "description": "the rows as text, such as a CSV file's contents"},
+            "rows": {"type": "array", "items": {"type": "object"}, "description": "the rows as objects, in place of data"},
+            "empty": {"type": "string", "enum": ["default", "null", "text"], "description": "what an empty CSV cell is: the field's DEFAULT (the default), NULL, or empty text"},
+            "strict": {"type": "boolean", "description": "refuse a column the table does not have, rather than skip it"},
+            "create": {"type": "boolean", "description": "make the table from the rows when there is none (needs an admin key)"},
+            "key": {"type": "string", "description": "with create: the column that is the primary key (default a column named id; \"\" for none)"}
+        }, "required": ["table"]}),
+        read_only: false,
+        destructive: true,
+        act: import_act,
+    },
+    Tool {
         name: "get_rows",
         title: "Get rows by key",
         description: "Rows by their primary keys, in the order given (null for a key with no live row), without SQL.",
@@ -389,10 +420,23 @@ const TOOLS: &[Tool] = &[
     },
 ];
 
-/// `tools/list`'s answer.
+/// `tools/list`'s answer: every tool.
 pub fn tools_json() -> Json {
-    let tools: Vec<Json> = TOOLS
-        .iter()
+    tools_listed(TOOLS.iter().chain(ops_tools::OPS_TOOLS))
+}
+
+/// `tools/list`'s answer for `who`: the operations tools only for a key
+/// that may see the server's views ([`crate::ops::may`]).
+pub fn tools_for(who: Option<&crate::keys::Principal>) -> Json {
+    let ops = who.is_none_or(|w| crate::ops::may(w)["server_views"] == true);
+    match ops {
+        true => tools_json(),
+        false => tools_listed(TOOLS.iter()),
+    }
+}
+
+fn tools_listed<'a>(tools: impl Iterator<Item = &'a Tool>) -> Json {
+    let tools: Vec<Json> = tools
         .map(|t| {
             json!({
                 "name": t.name,
@@ -576,7 +620,38 @@ fn sections() -> &'static [Section] {
 }
 
 fn words(t: &str) -> Vec<String> {
-    t.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| w.len() > 1).map(|w| w.to_lowercase()).collect()
+    t.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| w.len() > 1).map(|w| stem(&w.to_lowercase())).collect()
+}
+
+/// A word without its plural's ending: `tables` is `table`, `queries`
+/// `query`, `boxes` `box`, so a question finds the heading of either.
+fn stem(w: &str) -> String {
+    if w.len() > 4 && w.ends_with("ies") {
+        return format!("{}y", &w[..w.len() - 3]);
+    }
+    if w.len() > 4 && ["ses", "xes", "ches", "shes"].iter().any(|e| w.ends_with(e)) {
+        return w[..w.len() - 2].to_string();
+    }
+    if w.len() > 3 && w.ends_with('s') && !w.ends_with("ss") && !w.ends_with("us") {
+        return w[..w.len() - 1].to_string();
+    }
+    w.to_string()
+}
+
+/// Words of a question that say nothing of what it is about.
+const STOPWORDS: &[&str] = &["the", "an", "of", "to", "in", "into", "for", "on", "and", "or", "with", "is", "are", "how", "do", "doe", "can", "my", "from", "by", "it", "this", "that", "what", "which", "example", "way", "use", "want", "need"];
+
+/// A question's words, without stopwords, and with the names ChloeDB
+/// gives what other databases call otherwise (a materialized view is a
+/// rollup).
+fn query_words(query: &str) -> Vec<String> {
+    let mut q: Vec<String> = words(query).into_iter().filter(|w| !STOPWORDS.contains(&w.as_str())).collect();
+    for (other, ours) in [("materialized", "rollup"), ("materialised", "rollup"), ("precompute", "rollup"), ("precomputed", "rollup"), ("today", "current_date")] {
+        if q.iter().any(|w| w == other) {
+            q.push(ours.to_string());
+        }
+    }
+    q
 }
 
 /// The sections that best match `query`: each query word scores by how
@@ -584,7 +659,10 @@ fn words(t: &str) -> Vec<String> {
 /// section (at most 5), and three times over in the heading.
 pub fn search_docs(query: &str, limit: usize) -> Json {
     let all = sections();
-    let mut q = words(query);
+    let mut q = query_words(query);
+    // Words side by side in the question (`create table`), which a
+    // section that has them side by side matches more than one with each.
+    let pairs: Vec<(String, String)> = q.windows(2).map(|w| (w[0].clone(), w[1].clone())).collect();
     q.sort();
     q.dedup();
     let texts: Vec<(Vec<String>, Vec<String>)> = all.iter().map(|s| (words(&s.heading), words(s.text))).collect();
@@ -602,7 +680,12 @@ pub fn search_docs(query: &str, limit: usize) -> Json {
                 let hf = h.iter().filter(|x| *x == w).count() as f64;
                 idf * (tf + 3.0 * hf)
             }).sum();
-            (score, i)
+            let side_by_side: f64 = pairs.iter().map(|(a, b)| {
+                let k = t.windows(2).filter(|w| w[0] == *a && w[1] == *b).count().min(5) as f64;
+                let both = q.iter().zip(&idf).filter(|(w, _)| *w == a || *w == b).map(|(_, f)| f).sum::<f64>();
+                k * both
+            }).sum();
+            (score + side_by_side, i)
         })
         .filter(|(s, _)| *s > 0.0)
         .collect();
@@ -632,11 +715,49 @@ fn clip(t: &str, max: usize) -> (&str, bool) {
     (&t[..end], true)
 }
 
+// ----- import
+
+/// The `import` tool's call: the route with its query string, and the rows.
+fn import_act(a: &Json) -> Result<Act, Failed> {
+    let table = s(a, "table")?;
+    let (format, data) = match (a.get("rows"), opt_s(a, "data")) {
+        (Some(Json::Array(rows)), None) if !rows.is_empty() => ("json", serde_json::to_vec(rows).map_err(|e| Failed::Arguments(e.to_string()))?),
+        (None | Some(Json::Null), Some(d)) => (opt_s(a, "format").unwrap_or("csv"), d.as_bytes().to_vec()),
+        (Some(_), Some(_)) => return Err(Failed::Arguments("send the rows in data (text) or in rows (objects), not both".into())),
+        _ => return Err(Failed::Arguments("the arguments need the rows: data, as text (a CSV file's contents), or rows, an array of objects".into())),
+    };
+    let create = match a.get("create").and_then(|v| v.as_bool()) {
+        Some(true) => {
+            let f = chloedb::ingest::Format::parse(format).ok_or_else(|| Failed::Arguments(format!("format is csv, tsv, jsonl or json, not {format:?}")))?;
+            Some(chloedb::ingest::create_for(table, &data, f, opt_s(a, "key")).map_err(|e| Failed::Arguments(format!("no table could be made from the rows: {e}")))?)
+        }
+        _ => None,
+    };
+    let content_type = match format.to_ascii_lowercase().as_str() {
+        "csv" => "text/csv",
+        "tsv" => "text/tab-separated-values",
+        "jsonl" | "ndjson" => "application/x-ndjson",
+        "json" => "application/json",
+        f => return Err(Failed::Arguments(format!("format is csv, tsv, jsonl or json, not {f:?}"))),
+    };
+    let mut path = format!("/v1/import?table={}", encode(table));
+    if let Some(e) = opt_s(a, "empty") {
+        path.push_str(&format!("&empty={}", encode(e)));
+    }
+    if a.get("strict").and_then(|v| v.as_bool()) == Some(true) {
+        path.push_str("&strict=true");
+    }
+    Ok(Act::Import { path, content_type, data, create })
+}
+
 // ----- check_sql
 
 /// What a statement would do, bound against the tables and not run.
 pub fn check_sql(sql: &str, tables: &[std::sync::Arc<chloedb::Schema>]) -> Result<Json, String> {
     use chloedb::query::sql::{bind_command, Command, Write};
+    if let Some(j) = check_own_statement(sql, tables)? {
+        return Ok(j);
+    }
     let refs: Vec<&chloedb::Schema> = tables.iter().map(|t| &**t).collect();
     let cmd = bind_command(sql, &refs, &chloedb::query::Params::default()).map_err(|e| e.to_string())?;
     Ok(match cmd {
@@ -663,7 +784,59 @@ pub fn check_sql(sql: &str, tables: &[std::sync::Arc<chloedb::Schema>]) -> Resul
         Command::DropRankProfile { table, name, .. } => json!({"statement": "drop rank profile", "table": table, "name": name, "needs": "an admin key"}),
         Command::Function(f) => json!({"statement": if matches!(f, chloedb::query::function::Statement::Drop { .. }) { "drop function" } else { "create function" }, "name": f.name(), "needs": "an admin key"}),
         Command::Explain { json } => json!({"statement": "explain", "json": json, "note": "run it with query: it answers the plan without running the statement"}),
+        Command::ShowTables => json!({"statement": "show tables", "note": "the names of the tables, a row each"}),
     })
+}
+
+/// The statements `execute` takes before SQL's own (as `POST /v1/sql`
+/// does, [`crate::service::Service::sql_in`]): rollups, classifiers,
+/// recommenders and a table's synonyms, checked against the tables.
+fn check_own_statement(sql: &str, tables: &[std::sync::Arc<chloedb::Schema>]) -> Result<Option<Json>, String> {
+    use chloedb::query::{classify, recommend, rollup, table_synonyms};
+    let find = |t: &str| tables.iter().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| format!("query error: no table {t}"));
+    if let Some(st) = rollup::parse_statement(sql).map_err(|e| e.to_string())? {
+        return Ok(Some(match st {
+            rollup::Statement::Create { rollup: r, if_not_exists } => {
+                let base = find(&r.base)?;
+                let columns = r.check(base).map_err(|e| e.to_string())?;
+                json!({
+                    "statement": "create rollup", "rollup": r.name, "table": base.table, "if_not_exists": if_not_exists,
+                    "exists": tables.iter().any(|t| t.table.eq_ignore_ascii_case(&r.name)),
+                    "columns": columns.iter().map(|(c, ty)| json!({"name": c, "type": ty})).collect::<Vec<_>>(),
+                    "needs": "an admin key not limited to tables",
+                    "note": "the rollup is a table of its own, filled a few seconds after it is made and kept up to date as rows come",
+                })
+            }
+            rollup::Statement::Drop { name, if_exists } => json!({"statement": "drop rollup", "rollup": name, "if_exists": if_exists, "needs": "an admin key not limited to tables"}),
+            rollup::Statement::Refresh { name, mode } => json!({"statement": "refresh rollup", "rollup": name, "full": mode != rollup::Refresh::Recent, "rebuild": mode == rollup::Refresh::Rebuild, "needs": "an admin key not limited to tables"}),
+        }));
+    }
+    if let Some(st) = classify::parse_statement(sql).map_err(|e| e.to_string())? {
+        return Ok(Some(match st {
+            classify::Statement::Create(c) => {
+                let schema = find(&c.table)?;
+                let model = c.check(schema).map_err(|e| e.to_string())?;
+                json!({"statement": "create classifier", "name": c.name, "table": schema.table, "field": c.field, "labels": c.labels, "embedded_by": model, "needs": "an admin key"})
+            }
+            classify::Statement::Drop { name, if_exists } => json!({"statement": "drop classifier", "name": name, "if_exists": if_exists, "needs": "an admin key"}),
+        }));
+    }
+    if let Some(st) = recommend::parse_statement(sql).map_err(|e| e.to_string())? {
+        return Ok(Some(match st {
+            recommend::Statement::Create { def, replace } => {
+                def.check(tables).map_err(|e| e.to_string())?;
+                json!({"statement": "create recommender", "name": def.name, "events": def.events, "replace": replace, "needs": "an admin key"})
+            }
+            recommend::Statement::Drop { name, if_exists } => json!({"statement": "drop recommender", "name": name, "if_exists": if_exists, "needs": "an admin key"}),
+        }));
+    }
+    if let Some(st) = table_synonyms::parse_statement(sql).map_err(|e| e.to_string())? {
+        let schema = find(st.table())?;
+        st.function_sql().map_err(|e| e.to_string())?;
+        let what = if matches!(st, table_synonyms::Statement::Create { .. }) { "create synonyms" } else { "drop synonyms" };
+        return Ok(Some(json!({"statement": what, "table": schema.table, "needs": "an admin key"})));
+    }
+    Ok(None)
 }
 
 // ----- the protocol
@@ -673,6 +846,9 @@ pub fn check_sql(sql: &str, tables: &[std::sync::Arc<chloedb::Schema>]) -> Resul
 pub struct Caller<'a> {
     pub headers: &'a HeaderMap,
     pub peer: Option<SocketAddr>,
+    /// Who sent the message, as the route's check found ([`crate::keys`]):
+    /// `tools/list` offers the operations tools to who may use them.
+    pub who: Option<&'a crate::keys::Principal>,
 }
 
 fn error(id: &Json, code: i64, message: impl Into<String>) -> Json {
@@ -739,7 +915,7 @@ pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, call
         "ping" | "logging/setLevel" => ok(&id, json!({})),
         "tools/list" => {
             svc.learn_functions().await;
-            let mut j = tools_json();
+            let mut j = tools_for(caller.who);
             if let Some(list) = j["tools"].as_array_mut() {
                 list.extend(saved_tools(&svc.functions()));
             }
@@ -773,7 +949,7 @@ async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &C
     if !args.is_object() {
         return Err(Failed::Arguments("arguments are an object".into()));
     }
-    let act = match TOOLS.iter().find(|t| t.name == name) {
+    let act = match TOOLS.iter().chain(ops_tools::OPS_TOOLS).find(|t| t.name == name) {
         Some(tool) => (tool.act)(args)?,
         None => {
             if name.starts_with(SAVED_PREFIX) {
@@ -786,6 +962,24 @@ async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &C
     let answer = match act {
         Act::CheckSql(sql) => check_sql(&sql, &svc.tables_listed().await).map_err(Failed::Call)?,
         Act::SearchDocs { query, limit } => search_docs(&query, limit),
+        Act::Runbook { query } => crate::runbooks::find(&query),
+        Act::Action { method, path, body, reason } => {
+            let router = router.ok_or_else(|| Failed::Call("the server is still starting".into()))?;
+            forward_with(router, caller, method, &path, body, &[("x-strata-reason", reason)]).await.map_err(Failed::Call)?
+        }
+        Act::Import { path, content_type, data, create } => {
+            let router = router.ok_or_else(|| Failed::Call("the server is still starting".into()))?;
+            let made = match &create {
+                Some(sql) => Some(forward(router, caller, Method::POST, "/v1/sql", Some(json!({"sql": sql}))).await.map_err(|e| Failed::Call(format!("{e} (the import would make the table with {sql})")))?),
+                None => None,
+            };
+            let mut j = forward_body(router, caller, Method::POST, &path, Some((content_type, data)), &[]).await.map_err(Failed::Call)?;
+            if let (Some(sql), Some(_)) = (create, made) {
+                // IF NOT EXISTS: a table that was there already is kept as it was.
+                j["create_table"] = json!(sql);
+            }
+            j
+        }
         Act::Route { method, path, body, shape } => {
             let router = router.ok_or_else(|| Failed::Call("the server is still starting".into()))?;
             let mut j = forward(router, caller, method, &path, body).await.map_err(Failed::Call)?;
@@ -803,6 +997,12 @@ async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &C
     let mut content = vec![json!({"type": "text", "text": text})];
     content.extend(image);
     Ok(content)
+}
+
+/// A header's value from any text: percent-encoded past ASCII, as
+/// `x-chloedb-reason` is read ([`crate::http`]'s `header_text`).
+pub(crate) fn encode_header(v: &str) -> String {
+    v.bytes().map(|b| if (0x20..0x7f).contains(&b) && b != b'%' { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
 }
 
 /// An MCP image content block of a `data:` URL's picture.
@@ -845,12 +1045,47 @@ fn shaped(mut j: Json, shape: Shape) -> Json {
 /// A request to this server's own routes, with the caller's credential:
 /// its JSON answer, or why it failed (`<status>: <error>`).
 pub(crate) async fn forward(router: &Router, caller: &Caller<'_>, method: Method, path: &str, body: Option<Json>) -> Result<Json, String> {
+    forward_with(router, caller, method, path, body, &[]).await
+}
+
+/// [`forward`], with headers of its own (`extra`, which win over the
+/// caller's).
+pub(crate) async fn forward_with(router: &Router, caller: &Caller<'_>, method: Method, path: &str, body: Option<Json>, extra: &[(&str, String)]) -> Result<Json, String> {
+    let body = body.map(|j| serde_json::to_vec(&j).map(|b| ("application/json", b))).transpose().map_err(|e| e.to_string())?;
+    forward_body(router, caller, method, path, body, extra).await
+}
+
+/// [`forward_with`], with a body of any content type.
+async fn forward_body(router: &Router, caller: &Caller<'_>, method: Method, path: &str, body: Option<(&str, Vec<u8>)>, extra: &[(&str, String)]) -> Result<Json, String> {
     use tower::ServiceExt;
     let mut b = Request::builder().method(method).uri(path);
-    for h in [header::AUTHORIZATION, header::HOST, header::USER_AGENT, header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH), header::HeaderName::from_static("x-forwarded-for"), header::HeaderName::from_static("x-strata-reason")] {
+    let passed = [
+        header::AUTHORIZATION,
+        header::HOST,
+        header::USER_AGENT,
+        header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH),
+        header::HeaderName::from_static("x-forwarded-for"),
+        header::HeaderName::from_static("x-strata-reason"),
+        // ops: what the agent says of itself, for the audit log.
+        header::HeaderName::from_static("x-strata-agent-model"),
+        header::HeaderName::from_static("x-strata-agent-session"),
+        header::HeaderName::from_static("x-strata-agent-run"),
+        // The change request an approval applies ([`crate::changes`]).
+        header::HeaderName::from_static("x-strata-change"),
+    ];
+    for h in passed {
+        if extra.iter().any(|(n, _)| *n == h.as_str()) {
+            continue;
+        }
         if let Some(v) = caller.headers.get(&h) {
             b = b.header(h, v.clone());
         }
+    }
+    for (n, v) in extra {
+        // A header's value is one line of visible text.
+        let v: String = v.chars().map(|c| if c.is_control() { ' ' } else { c }).take(500).collect();
+        let v = crate::mcp::encode_header(&v);
+        b = b.header(*n, v);
     }
     // Who the query log and Access name: the MCP client, as `mcp`.
     let app = caller.headers.get("x-strata-app").cloned().unwrap_or(HeaderValue::from_static("mcp"));
@@ -859,9 +1094,9 @@ pub(crate) async fn forward(router: &Router, caller: &Caller<'_>, method: Method
         b = b.header(crate::obs::HEADER, id.clone());
     }
     let body = match body {
-        Some(j) => {
-            b = b.header(header::CONTENT_TYPE, "application/json");
-            Body::from(serde_json::to_vec(&j).map_err(|e| e.to_string())?)
+        Some((content_type, bytes)) => {
+            b = b.header(header::CONTENT_TYPE, content_type);
+            Body::from(bytes)
         }
         None => Body::empty(),
     };
@@ -882,7 +1117,12 @@ pub(crate) async fn forward(router: &Router, caller: &Caller<'_>, method: Method
             None if bytes.is_empty() => status.canonical_reason().unwrap_or("no answer").to_string(),
             None => j.to_string(),
         };
-        return Err(format!("{}: {why}", status.as_u16()));
+        // errors: the code and what to do, for the model to act on.
+        let code = match j.get("error_code").and_then(|c| c.as_str()) {
+            Some(c) => format!(" [code {c}{}]", j.get("hint").and_then(|h| h.as_str()).map(|h| format!(": {h}")).unwrap_or_default()),
+            None => String::new(),
+        };
+        return Err(format!("{}: {why}{code}", status.as_u16()));
     }
     Ok(j)
 }
@@ -901,6 +1141,10 @@ pub async fn stdio(url: &str, key: Option<&str>, ca: Option<Vec<u8>>) -> Result<
     }
     let client = builder.build().map_err(|e| e.to_string())?;
     let endpoint = format!("{}/v1/mcp", url.trim_end_matches('/'));
+    // ops: this bridge is one agent's session, which the audit log names;
+    // the model, when the client's environment says it.
+    let session = format!("stdio-{}-{:x}", std::process::id(), crate::telemetry::now_ms());
+    let model = std::env::var("CHLOEDB_AGENT_MODEL").ok().filter(|m| !m.trim().is_empty()).map(|m| encode_header(m.trim()));
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();
     while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
@@ -908,7 +1152,10 @@ pub async fn stdio(url: &str, key: Option<&str>, ca: Option<Vec<u8>>) -> Result<
             continue;
         }
         let id = serde_json::from_str::<Json>(&line).ok().and_then(|m| m.get("id").cloned());
-        let mut r = client.post(&endpoint).header(header::CONTENT_TYPE, "application/json").header(header::ACCEPT, "application/json, text/event-stream").header("x-strata-app", "mcp-stdio");
+        let mut r = client.post(&endpoint).header(header::CONTENT_TYPE, "application/json").header(header::ACCEPT, "application/json, text/event-stream").header("x-strata-app", "mcp-stdio").header("x-chloedb-agent-session", &session);
+        if let Some(m) = &model {
+            r = r.header("x-chloedb-agent-model", m);
+        }
         if let Some(k) = key {
             r = r.bearer_auth(k);
         }
@@ -938,6 +1185,24 @@ pub async fn stdio(url: &str, key: Option<&str>, ca: Option<Vec<u8>>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn docs_search_finds_what_other_databases_call_otherwise() {
+        let first = |q: &str| search_docs(q, 3)["sections"][0]["section"].as_str().unwrap_or("").to_string();
+        for (q, want) in [
+            ("materialized view", "Rollups"),
+            ("precompute daily counts kept up to date", "Rollups"),
+            ("CREATE TABLE example", "Tables"),
+            ("import a CSV file into a table", "Loading a file"),
+            ("current date today", "Parts of times"),
+        ] {
+            let got = first(q);
+            assert!(got.contains(want), "{q:?} found {got:?}, not {want}");
+        }
+        assert_eq!(stem("queries"), "query");
+        assert_eq!(stem("tables"), "table");
+        assert_eq!(stem("class"), "class");
+    }
 
     #[test]
     fn docs_split_into_sections_and_search_finds_them() {
@@ -1001,7 +1266,7 @@ mod tests {
     fn every_tool_has_a_schema_of_an_object() {
         let j = tools_json();
         let tools = j["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), TOOLS.len());
+        assert_eq!(tools.len(), TOOLS.len() + ops_tools::OPS_TOOLS.len());
         for t in tools {
             assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         }

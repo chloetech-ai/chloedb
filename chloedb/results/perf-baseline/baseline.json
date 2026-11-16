@@ -1,0 +1,776 @@
+{
+  "meta": {
+    "debug_assertions": false,
+    "defaults": {
+      "memtable_max_docs": 10000,
+      "sync": true
+    },
+    "git": "24338daa",
+    "machine": "macos aarch64 / Apple M1 Pro / 10 cores",
+    "scale": 1.0
+  },
+  "metrics": {
+    "commit.nosync_1row.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0038
+    },
+    "commit.nosync_1row.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.006
+    },
+    "commit.nosync_1row.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.0083
+    },
+    "commit.nosync_1row.per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "commits/s",
+      "value": 227921.9526
+    },
+    "commit.sync_1row.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 5.1152
+    },
+    "commit.sync_1row.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 7.7966
+    },
+    "commit.sync_1row.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.5,
+      "unit": "ms",
+      "value": 9.7524
+    },
+    "commit.sync_1row.per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "commits/s",
+      "value": 187.6645
+    },
+    "commit.sync_batch1.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "rows/s",
+      "value": 192.2054
+    },
+    "commit.sync_batch1.txns_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "txn/s",
+      "value": 192.2054
+    },
+    "commit.sync_batch10.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "rows/s",
+      "value": 2120.715
+    },
+    "commit.sync_batch10.txns_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "txn/s",
+      "value": 212.0715
+    },
+    "commit.sync_batch100.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "rows/s",
+      "value": 17464.7279
+    },
+    "commit.sync_batch100.txns_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "txn/s",
+      "value": 174.6473
+    },
+    "commit.sync_batch1000.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "rows/s",
+      "value": 87376.3795
+    },
+    "commit.sync_batch1000.txns_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "txn/s",
+      "value": 87.3764
+    },
+    "flush.background_10k_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 51.4338
+    },
+    "flush.commit_while_sealed.p50_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.0058
+    },
+    "flush.commit_while_sealed.p95_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.0103
+    },
+    "flush.commit_while_sealed.p99_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 0.0121
+    },
+    "flush.explicit_10k_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 40.4901
+    },
+    "flush.segment_mb_10k": {
+      "better": "same",
+      "tolerance": 1.2,
+      "unit": "MB",
+      "value": 0.7287
+    },
+    "flush.wal_to_segment_ratio": {
+      "better": "same",
+      "tolerance": 1.2,
+      "unit": "x",
+      "value": 1.7943
+    },
+    "group.sync_8threads.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "rows/s",
+      "value": 893.383
+    },
+    "group.sync_8threads.writes_per_commit": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "writes",
+      "value": 4.898
+    },
+    "merge.beside_commit.max_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 16.5377
+    },
+    "merge.beside_commit.p50_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.0094
+    },
+    "merge.beside_commit.p95_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.0152
+    },
+    "merge.beside_commit.p99_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 0.02
+    },
+    "merge.query_1_segment.p50_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.0081
+    },
+    "merge.query_8_segments.p50_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.0157
+    },
+    "merge.text_8x1000.dropped": {
+      "better": "same",
+      "tolerance": 1.0,
+      "unit": "rows",
+      "value": 0.0
+    },
+    "merge.text_8x1000.ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 37.1777
+    },
+    "merge.text_8x1000.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.8,
+      "unit": "rows/s",
+      "value": 215182.7111
+    },
+    "merge.text_8x1000.segments_after": {
+      "better": "same",
+      "tolerance": 1.0,
+      "unit": "segments",
+      "value": 1.0
+    },
+    "merge.text_8x1000.write_amp": {
+      "better": "same",
+      "tolerance": 1.2,
+      "unit": "x",
+      "value": 0.8534
+    },
+    "merge.text_8x1000_30pct_overwritten.dropped": {
+      "better": "same",
+      "tolerance": 1.0,
+      "unit": "rows",
+      "value": 300.0
+    },
+    "merge.text_8x1000_30pct_overwritten.ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 44.284
+    },
+    "merge.text_8x1000_30pct_overwritten.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.8,
+      "unit": "rows/s",
+      "value": 173877.6985
+    },
+    "merge.text_8x1000_30pct_overwritten.segments_after": {
+      "better": "same",
+      "tolerance": 1.0,
+      "unit": "segments",
+      "value": 1.0
+    },
+    "merge.text_8x1000_30pct_overwritten.write_amp": {
+      "better": "same",
+      "tolerance": 1.2,
+      "unit": "x",
+      "value": 0.8389
+    },
+    "merge.vec128_flat_8x1000.dropped": {
+      "better": "same",
+      "tolerance": 1.0,
+      "unit": "rows",
+      "value": 0.0
+    },
+    "merge.vec128_flat_8x1000.ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 53.6291
+    },
+    "merge.vec128_flat_8x1000.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.8,
+      "unit": "rows/s",
+      "value": 149172.6744
+    },
+    "merge.vec128_flat_8x1000.segments_after": {
+      "better": "same",
+      "tolerance": 1.0,
+      "unit": "segments",
+      "value": 1.0
+    },
+    "merge.vec128_flat_8x1000.write_amp": {
+      "better": "same",
+      "tolerance": 1.2,
+      "unit": "x",
+      "value": 0.973
+    },
+    "merge.vec128_hnsw_8x1000.dropped": {
+      "better": "same",
+      "tolerance": 1.0,
+      "unit": "rows",
+      "value": 0.0
+    },
+    "merge.vec128_hnsw_8x1000.ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 474.4632
+    },
+    "merge.vec128_hnsw_8x1000.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.8,
+      "unit": "rows/s",
+      "value": 16861.1599
+    },
+    "merge.vec128_hnsw_8x1000.segments_after": {
+      "better": "same",
+      "tolerance": 1.0,
+      "unit": "segments",
+      "value": 1.0
+    },
+    "merge.vec128_hnsw_8x1000.write_amp": {
+      "better": "same",
+      "tolerance": 1.2,
+      "unit": "x",
+      "value": 0.9703
+    },
+    "query.memtable_10k.by_key.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.8,
+      "unit": "ms",
+      "value": 0.0078
+    },
+    "query.memtable_10k.by_key.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.0108
+    },
+    "query.memtable_10k.by_key.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.5,
+      "unit": "ms",
+      "value": 0.0117
+    },
+    "query.memtable_10k.first_text_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 23.164
+    },
+    "query.memtable_10k.text.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.8,
+      "unit": "ms",
+      "value": 0.0237
+    },
+    "query.memtable_10k.text.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.0271
+    },
+    "query.memtable_10k.text.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.5,
+      "unit": "ms",
+      "value": 0.0284
+    },
+    "query.segments_10k.by_key.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.8,
+      "unit": "ms",
+      "value": 0.0042
+    },
+    "query.segments_10k.by_key.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.0045
+    },
+    "query.segments_10k.by_key.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.5,
+      "unit": "ms",
+      "value": 0.0062
+    },
+    "query.segments_10k.first_text_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.1292
+    },
+    "query.segments_10k.text.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.8,
+      "unit": "ms",
+      "value": 0.0081
+    },
+    "query.segments_10k.text.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.0087
+    },
+    "query.segments_10k.text.p99_ms": {
+      "better": "lower",
+      "tolerance": 3.5,
+      "unit": "ms",
+      "value": 0.0097
+    },
+    "replay.10k.first_query_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 23.0507
+    },
+    "replay.10k.open_after_flush_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.4389
+    },
+    "replay.10k.open_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 2.6987
+    },
+    "replay.10k.replay_rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.8,
+      "unit": "rows/s",
+      "value": 3705534.5122
+    },
+    "replay.10k.wal_mb": {
+      "better": "same",
+      "tolerance": 1.1,
+      "unit": "MB",
+      "value": 1.3075
+    },
+    "replay.20k.first_query_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 45.6941
+    },
+    "replay.20k.open_after_flush_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.4198
+    },
+    "replay.20k.open_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 5.0018
+    },
+    "replay.20k.replay_rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.8,
+      "unit": "rows/s",
+      "value": 3998533.338
+    },
+    "replay.20k.wal_mb": {
+      "better": "same",
+      "tolerance": 1.1,
+      "unit": "MB",
+      "value": 2.6256
+    },
+    "replay.2k.first_query_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 5.3011
+    },
+    "replay.2k.open_after_flush_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.384
+    },
+    "replay.2k.open_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.7814
+    },
+    "replay.2k.replay_rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.8,
+      "unit": "rows/s",
+      "value": 2559590.4655
+    },
+    "replay.2k.wal_mb": {
+      "better": "same",
+      "tolerance": 1.1,
+      "unit": "MB",
+      "value": 0.2607
+    },
+    "replay.vec128_4k.first_query_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 10.9286
+    },
+    "replay.vec128_4k.open_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 2.482
+    },
+    "replay.vec128_4k.wal_mb": {
+      "better": "same",
+      "tolerance": 1.1,
+      "unit": "MB",
+      "value": 2.4946
+    },
+    "rss.peak_mb": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "MB",
+      "value": 111.4531
+    },
+    "sweep.max1000.commit_max_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 19.1084
+    },
+    "sweep.max1000.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0095
+    },
+    "sweep.max1000.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.0179
+    },
+    "sweep.max1000.p99_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 0.0259
+    },
+    "sweep.max1000.peak_memtable_rows": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "rows",
+      "value": 1998.0
+    },
+    "sweep.max1000.peak_wal_mb": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "MB",
+      "value": 0.3011
+    },
+    "sweep.max1000.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "rows/s",
+      "value": 28221.3063
+    },
+    "sweep.max1000.segments_at_end": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "segments",
+      "value": 36.0
+    },
+    "sweep.max10000.commit_max_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 21.6458
+    },
+    "sweep.max10000.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0036
+    },
+    "sweep.max10000.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.0058
+    },
+    "sweep.max10000.p99_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 0.0078
+    },
+    "sweep.max10000.peak_memtable_rows": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "rows",
+      "value": 12920.0
+    },
+    "sweep.max10000.peak_wal_mb": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "MB",
+      "value": 1.9591
+    },
+    "sweep.max10000.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "rows/s",
+      "value": 154149.9579
+    },
+    "sweep.max10000.segments_at_end": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "segments",
+      "value": 3.0
+    },
+    "sweep.max4096.commit_max_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 16.584
+    },
+    "sweep.max4096.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0043
+    },
+    "sweep.max4096.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.0082
+    },
+    "sweep.max4096.p99_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 0.0105
+    },
+    "sweep.max4096.peak_memtable_rows": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "rows",
+      "value": 6027.0
+    },
+    "sweep.max4096.peak_wal_mb": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "MB",
+      "value": 0.9139
+    },
+    "sweep.max4096.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "rows/s",
+      "value": 88196.4651
+    },
+    "sweep.max4096.segments_at_end": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "segments",
+      "value": 9.0
+    },
+    "sweep.max50000.commit_max_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 0.7133
+    },
+    "sweep.max50000.p50_ms": {
+      "better": "lower",
+      "tolerance": 1.6,
+      "unit": "ms",
+      "value": 0.0034
+    },
+    "sweep.max50000.p95_ms": {
+      "better": "lower",
+      "tolerance": 2.5,
+      "unit": "ms",
+      "value": 0.0048
+    },
+    "sweep.max50000.p99_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 0.0074
+    },
+    "sweep.max50000.peak_memtable_rows": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "rows",
+      "value": 39501.0
+    },
+    "sweep.max50000.peak_wal_mb": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "MB",
+      "value": 5.9791
+    },
+    "sweep.max50000.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.6,
+      "unit": "rows/s",
+      "value": 251219.3954
+    },
+    "sweep.max50000.segments_at_end": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "segments",
+      "value": 0.0
+    },
+    "threads.commit.max_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 16.7827
+    },
+    "threads.commit.p50_ms": {
+      "better": "lower",
+      "tolerance": 2.0,
+      "unit": "ms",
+      "value": 0.0038
+    },
+    "threads.commit.p95_ms": {
+      "better": "lower",
+      "tolerance": 3.0,
+      "unit": "ms",
+      "value": 0.0063
+    },
+    "threads.commit.p99_ms": {
+      "better": "lower",
+      "tolerance": 4.0,
+      "unit": "ms",
+      "value": 0.0083
+    },
+    "threads.merges_done": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "merges",
+      "value": 1.0
+    },
+    "threads.rows_per_s": {
+      "better": "higher",
+      "tolerance": 1.8,
+      "unit": "rows/s",
+      "value": 93545.4697
+    },
+    "threads.segments_at_end": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "segments",
+      "value": 9.0
+    },
+    "threads.segments_settled": {
+      "better": "lower",
+      "tolerance": 1.5,
+      "unit": "segments",
+      "value": 2.0
+    },
+    "wal.bytes_per_row_text_100row_commits": {
+      "better": "same",
+      "tolerance": 1.1,
+      "unit": "B",
+      "value": 136.655
+    },
+    "wal.bytes_per_row_text_1row_commits": {
+      "better": "same",
+      "tolerance": 1.1,
+      "unit": "B",
+      "value": 157.445
+    },
+    "wal.bytes_per_row_vec128": {
+      "better": "same",
+      "tolerance": 1.1,
+      "unit": "B",
+      "value": 674.445
+    }
+  }
+}

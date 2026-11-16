@@ -28,6 +28,14 @@ use chloedb_server::auth::{self, Access, Secret, Tls};
 use chloedb_server::obs;
 use chloedb_server::server::{self, Options};
 
+/// `println!` for a command's answer, which a closed pipe ends quietly
+/// ([`chloedb_server::print_out`]).
+macro_rules! out {
+    ($($t:tt)*) => {
+        chloedb_server::print_out(&format!($($t)*))
+    };
+}
+
 #[derive(Parser)]
 #[command(version, about = "ChloeDB over HTTP JSON and gRPC, with a query UI and an agent", args_conflicts_with_subcommands = true)]
 struct Args {
@@ -37,7 +45,8 @@ struct Args {
     /// --demo's, else with no tables (CREATE TABLE and imports add them).
     #[arg(long)]
     db: Option<PathBuf>,
-    /// Schema of a new database, as JSON.
+    /// Schema of a new database: a JSON file, or the JSON itself
+    /// (`--schema '{"table": "t", "key": "id", "fields": [...]}'`).
     #[arg(long)]
     schema: Option<PathBuf>,
     /// Create the demo product catalogue with this many products.
@@ -166,6 +175,24 @@ struct Args {
     /// at the query's deadline).
     #[arg(long, default_value_t = 0)]
     shard_timeout_ms: u64,
+    /// With --shards: how the replica of a shard asked first for a read is
+    /// chosen: least-cost (in turn, unless another costs clearly less by
+    /// its recent round trips, calls in flight, errors and reported load)
+    /// or round-robin (each in turn).
+    #[arg(long, default_value = "least-cost", value_parser = ["least-cost", "round-robin"])]
+    route: String,
+    /// With --shards: hedge a query after the replica asked has taken
+    /// longer than it usually does (its recent average round trip plus six
+    /// deviations; 2 ms at least, --hedge-ms at most), instead of after
+    /// --hedge-ms.
+    #[arg(long)]
+    hedge_adaptive: bool,
+    /// With --shards and --route least-cost: route a read that must see a
+    /// write (min_seq_nos) by each replica's round trips of such reads,
+    /// unless it is known to hold the write already. On by default;
+    /// --prefer-caught-up=false routes such reads as any other.
+    #[arg(long, default_value_t = true, num_args = 0..=1, require_equals = true, default_missing_value = "true", action = clap::ArgAction::Set)]
+    prefer_caught_up: bool,
     /// With --shards: answer without shards that have no replica answering,
     /// flagged "partial" (a request's "partial" overrides it).
     #[arg(long)]
@@ -301,6 +328,14 @@ struct Args {
     /// that would make more fails with 503 (0: no limit).
     #[arg(long, default_value_t = 600)]
     llm_per_minute: u64,
+    /// Model calls an API key may make a day (UTC) with this server's own
+    /// credentials: /v1/agent and the on-call agent a call a step,
+    /// /v1/judge a call a row, llm() a call a question it asks (answers
+    /// kept in memory are free); past it they answer 429 until the next
+    /// day. The --token, the cluster's token and callers that bring their
+    /// own api_key are not counted (0: no limit).
+    #[arg(long, env = "CHLOEDB_MODEL_CALLS_PER_KEY_DAY", default_value_t = chloedb_server::budget::DEFAULT_PER_DAY)]
+    model_calls_per_key_day: u64,
     /// Memory the running queries may hold together, in MiB: their groups,
     /// candidate rows, answers and joins; a query that needs more fails
     /// with 429 (default: a third of the cgroup memory limit, or of RAM;
@@ -317,6 +352,25 @@ struct Args {
     /// running (default: 64; 0: none kept). Every write moves the version on.
     #[arg(long)]
     answer_cache_mb: Option<usize>,
+    /// The longest SQL statement a request may send, in bytes; a longer
+    /// one is refused with a 400 query error before it is parsed (0: no
+    /// limit). A long list of values passed as a parameter does not count.
+    #[arg(long, default_value_t = chloedb::query::parse::STATEMENT_BYTES)]
+    max_statement_bytes: usize,
+    /// The most elements (words, values and symbols) a SQL statement a
+    /// request sends may hold, as ClickHouse's `max_ast_elements` bounds
+    /// (0: no limit).
+    #[arg(long, default_value_t = chloedb::query::parse::STATEMENT_ELEMENTS)]
+    max_statement_elements: usize,
+    /// What one statement may cost, checked once its stored functions and
+    /// rank profiles are written out and as it reads: `name=n` pairs apart
+    /// by commas, of `nodes` (expressions), `depth` (levels), `list`
+    /// (values in one list or list parameter), `plan_ms` (time to plan)
+    /// and `rows_read` (rows its scans and parts read), as in
+    /// `nodes=50000,rows_read=10000000`. A key's budget and a request's
+    /// `budget` may lower it, never raise it (default: none).
+    #[arg(long, default_value = "", value_parser = |s: &str| chloedb::query::budget::Budget::parse(s).map_err(|e| e.to_string()))]
+    statement_budget: chloedb::query::budget::Budget,
     /// Write requests the server holds at once (embedding, waiting for the
     /// writer, or being applied); more are refused with 429 (0: no limit).
     #[arg(long, default_value_t = 1024)]
@@ -509,14 +563,36 @@ struct Args {
     /// supervisor waits (30 s in Kubernetes).
     #[arg(long, env = "CHLOEDB_STOP_GRACE_MS", default_value_t = 20_000)]
     stop_grace_ms: u64,
-    /// The connections the HTTP listeners hold open at once; past it, new
-    /// ones wait to be accepted (0: three quarters of the open-file limit).
+    /// The connections each listener (HTTP, OpenSearch, gRPC) holds open
+    /// at once; past it, new ones wait to be accepted, but for a few kept
+    /// for /livez, /readyz and /v1/health (0: three quarters of the
+    /// open-file limit, for the listeners together).
     #[arg(long, env = "CHLOEDB_MAX_CONNECTIONS", default_value_t = 0)]
     max_connections: usize,
+    /// The connections one client address may hold of a listener's; a
+    /// client past it is closed at once (0: half of --max-connections).
+    /// Behind a proxy that keeps few connections to the server, the
+    /// default does; one that opens a connection per client may need
+    /// more.
+    #[arg(long, env = "CHLOEDB_MAX_CONNECTIONS_PER_CLIENT", default_value_t = 0)]
+    max_connections_per_client: usize,
     /// The longest a client may take to send a request's headers, and the
-    /// longest an idle connection stays open, in seconds.
+    /// longest an idle HTTP/1 connection stays open, in seconds.
     #[arg(long, env = "CHLOEDB_HEADER_TIMEOUT_SECS", default_value_t = 30)]
     header_timeout_secs: u64,
+    /// The longest any connection (HTTP/2 and gRPC too) stays open with
+    /// no request under way, in seconds (0: no limit).
+    #[arg(long, env = "CHLOEDB_IDLE_TIMEOUT_SECS", default_value_t = 300)]
+    idle_timeout_secs: u64,
+    /// The longest a request body may pause, in seconds; one that has
+    /// taken longer than this must also have averaged 1 KiB a second
+    /// (0: no limit). Not on gRPC.
+    #[arg(long, env = "CHLOEDB_BODY_TIMEOUT_SECS", default_value_t = 30)]
+    body_timeout_secs: u64,
+    /// The longest a write may wait for the client to read its answer, in
+    /// seconds, before its connection is closed (0: no limit).
+    #[arg(long, env = "CHLOEDB_WRITE_TIMEOUT_SECS", default_value_t = 60)]
+    write_timeout_secs: u64,
     /// Do not count how often each document is retrieved and each key
     /// asked for (the index inspector's reads; counted in memory by
     /// default, cheaply: see docs/chloedb/server.md).
@@ -529,7 +605,7 @@ struct Args {
     /// The cluster's environment ("production", "staging"...): the
     /// command center treats one starting with "prod" as production, and
     /// none too, except opened on this machine (localhost), where it is a
-    /// sandbox whose writes need no second ask.
+    /// sandbox whose writes are on without a reason asked.
     #[arg(long, env = "CHLOEDB_ENVIRONMENT")]
     environment: Option<String>,
     /// Where people reach this server's command center
@@ -593,6 +669,24 @@ struct Args {
     /// names (crawler,sheets,chloectx; looked for on the PATH too).
     #[arg(long, env = "CHLOEDB_START_APPS", default_value = "auto")]
     start_apps: String,
+    /// Whether this server runs its connectors' pulls on their schedules
+    /// (https://chloetech-ai.github.io/chloedb/site/docs/connectors.html): auto
+    /// (on a server of its own or a coordinator; never on a replica or a
+    /// shard) or off. Pushes are taken either way.
+    #[arg(long, env = "CHLOEDB_CONNECTORS", default_value = "auto")]
+    connectors: String,
+    /// Where the connectors' secrets are kept (default:
+    /// DB.connectors.json beside --db, readable by this user only; a
+    /// coordinator without one keeps them in memory, so give it one, or
+    /// name secrets as env:VARIABLE).
+    #[arg(long)]
+    connector_secrets: Option<PathBuf>,
+    /// The prefix of the environment variables a connector's secret may
+    /// name as env:VARIABLE (default CHLOEDB_CONNECTOR_SECRET_): the
+    /// others, this server's own tokens and keys among them, are never
+    /// read for a connector.
+    #[arg(long, env = "CHLOEDB_CONNECTOR_ENV_PREFIX")]
+    connector_env_prefix: Option<String>,
     /// A folder that holds each app's own token in a file of the app's
     /// name, read as it is sent (so a token written there later, as a
     /// Kubernetes Secret mounted there is, needs no restart).
@@ -642,9 +736,28 @@ enum Command {
         /// repository, owner/name.
         name: String,
         /// Where to put it (default: --models, $CHLOEDB_MODELS, or
-        /// ~/.local/share/strata/models).
+        /// ~/.local/share/chloedb/models).
         #[arg(long, env = "CHLOEDB_MODELS")]
         models: Option<PathBuf>,
+    },
+    /// Check this machine for the guides: this version against the latest
+    /// release, the Python package (ChloeDB or PyPI's placeholder), the
+    /// models folder, port 7700, and glibc against the prebuilt programs.
+    /// Changes nothing; exits 1 when a check fails.
+    Doctor {
+        /// The models folder to look in (default: $CHLOEDB_MODELS, or
+        /// ~/.local/share/chloedb/models).
+        #[arg(long, env = "CHLOEDB_MODELS")]
+        models: Option<PathBuf>,
+        /// The port the guides' servers listen on.
+        #[arg(long, default_value_t = 7700)]
+        port: u16,
+        /// Do not ask GitHub for the latest release.
+        #[arg(long)]
+        offline: bool,
+        /// The Python interpreter whose chloedb package to check.
+        #[arg(long, default_value = "python3")]
+        python: String,
     },
     /// Write a static (Model2Vec) model with its table in int8 (or f16):
     /// 4x (2x) smaller, ranking within 0.001 nDCG@10 of float32 on BEIR.
@@ -678,6 +791,51 @@ enum Command {
         /// system's.
         #[arg(long)]
         ca: Option<PathBuf>,
+    },
+    /// The command center in a terminal: the cluster's map, its health,
+    /// alerts, queries, logs, tables, SQL and timeline, read every two
+    /// seconds, and its changes (a handover, an alert acknowledged or
+    /// silenced, a query cancelled, a SQL write) sent to the routes the web
+    /// command center uses, with the same key. The key comes from
+    /// CHLOEDB_KEY or a prompt that does not echo it, never a flag. Through
+    /// a hub, URL is the connection's (https://hub:7700/c/prod) and the key
+    /// the hub's; `:ctx` lists its other connections. `?` lists the keys.
+    Cc {
+        /// The server's HTTP URL: a coordinator, a single server, or a
+        /// cluster through a hub (https://hub:7700/c/<connection>).
+        #[arg(env = "CHLOEDB_URL", default_value = "http://127.0.0.1:7700")]
+        url: String,
+        /// A CA certificate (PEM) to trust for an https URL, beside the
+        /// system's.
+        #[arg(long)]
+        ca: Option<PathBuf>,
+        /// Seconds between reads.
+        #[arg(long, default_value_t = 2.0)]
+        every: f64,
+    },
+    /// The API from a shell, for scripts and agents without MCP: one
+    /// request, its answer's JSON on stdout, and an exit code by what
+    /// happened (0 done, 1 failed, 2 refused for the key, 3 stale: look
+    /// again, 4 retry later, 5 not reached).
+    Admin {
+        /// The server's HTTP URL (a coordinator, or a single server).
+        #[arg(long, env = "CHLOEDB_URL", default_value = "http://127.0.0.1:7700")]
+        url: String,
+        /// The API key (or the server's token) to send as a bearer.
+        #[arg(long, env = "CHLOEDB_KEY", hide_env_values = true)]
+        key: Option<String>,
+        /// A CA certificate (PEM) to trust for an https URL.
+        #[arg(long)]
+        ca: Option<PathBuf>,
+        /// Why: sent as x-chloedb-reason, kept in the audit log (an
+        /// agent's change needs one).
+        #[arg(long, env = "CHLOEDB_REASON")]
+        reason: Option<String>,
+        /// Print the answer on one line.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        what: AdminCmd,
     },
     /// Make a running replica the primary of a new term (POST
     /// /v1/admin/promote), once a majority of its shard's copies vote for
@@ -898,7 +1056,8 @@ enum Command {
         /// The database.
         #[arg(long)]
         db: PathBuf,
-        /// Schema of a new database, as JSON. With SQLite files, schemas
+        /// Schema of a new database: a JSON file, or the JSON itself (a
+        /// value that starts with `{`). With SQLite files, schemas
         /// for the tables it creates, in place of the ones made from
         /// SQLite's: one, an array, or the output of --plan, edited. With
         /// Parquet files, the schema of the table they create (the output
@@ -981,12 +1140,86 @@ fn main() {
     // clap and the code read the old names, so the new ones are copied over
     // before the runtime starts any thread.
     chloedb::env::adopt_old_names();
-    run();
+    // As #[tokio::main] builds it, with a larger stack for each worker and
+    // blocking thread, where queries are planned and run: the statements
+    // the parser takes fit in 2 MiB, and this leaves room for more.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(chloedb::query::parse::QUERY_STACK)
+        .build()
+        .expect("start the tokio runtime")
+        .block_on(run());
 }
 
-#[tokio::main]
+/// The server's options by topic, for `--help`: every option of [`Args`]
+/// is under one (a test says so), so that the few a first run needs are
+/// not lost among the rest. `-h` lists the first topic's only.
+const HELP_TOPICS: &[(&str, &[&str])] = &[
+    ("Start", &[
+        "db", "schema", "demo", "models", "listen", "grpc", "token", "no_token", "log",
+        "start_apps"
+    ]),
+    ("Database", &[
+        "demo_shard", "copy_from", "no_backfill", "no_fetch_models", "directory",
+        "wal_drop_damaged", "recover", "verify_checksums", "seq_no", "idempotency_ttl_s",
+        "scrub_every_s", "scrub_mib_s", "synonyms", "backup_dir", "slices", "slices_rebuild_s",
+        "no_read_stats"
+    ]),
+    ("Merges and storage tiers", &[
+        "merge_threads", "merge_memory_mb", "merge_write_mb_per_sec", "merge_nice", "cold_store",
+        "cold_cache_gb", "cold_keep_local_gb", "cold_min_segment_mb", "cold_cache_dir"
+    ]),
+    ("Replication", &[
+        "replicas", "replica", "promote", "write_acks", "ship_log_mb", "verify_every_s",
+        "failover_after_ms"
+    ]),
+    ("Cluster: a coordinator and its shards", &[
+        "shards", "hedge_ms", "shard_timeout_ms", "route", "hedge_adaptive", "prefer_caught_up",
+        "partial", "stats_cache_terms", "write_every_copy", "kube_cluster", "coordinator_listen",
+        "local_shard", "cluster_token", "shard_ca", "slot_map", "peer_url", "cluster_name",
+        "node_name", "environment", "public_url", "image_repository"
+    ]),
+    ("Security", &[
+        "allow_host", "tls_cert", "tls_key", "keys", "audit_log", "trust_proxy", "redact_params"
+    ]),
+    ("Limits and timeouts", &[
+        "timeout_ms", "max_timeout_ms", "max_concurrent", "admission_wait_ms", "max_result_window",
+        "max_scroll_rows", "max_groups", "max_rerank", "llm_rows", "llm_per_minute",
+        "model_calls_per_key_day", "query_memory_mb", "filter_cache_mb", "answer_cache_mb",
+        "max_statement_bytes", "max_statement_elements", "statement_budget", "max_queued_writes", "max_body_mb", "max_connections", "max_connections_per_client",
+        "header_timeout_secs", "idle_timeout_secs", "body_timeout_secs", "write_timeout_secs",
+        "drain_ms", "stop_grace_ms"
+    ]),
+    ("Agent, models and media", &[
+        "model", "api_base", "media_fetch", "media_max_bytes", "media_store", "media_timeout_s"
+    ]),
+    ("Logs, alerts and health", &[
+        "log_format", "log_store", "log_retain", "log_store_mb", "log_queries", "slow_ms",
+        "otlp_retain", "alerts", "alert_webhook", "contain", "slo_error_ratio", "slo_p99_ms"
+    ]),
+    ("Apps, connectors, tenants and clouds", &[
+        "apps", "app_token", "app_token_dir", "connectors", "connector_secrets", "connector_env_prefix", "tenants",
+        "tenant_cache", "tenant_idle_s", "tenant_open_max", "opensearch_listen",
+        "opensearch_version", "aws_file", "digitalocean_file", "cloud_file", "hub_file",
+        "hub_device"
+    ]),
+];
+
+/// [`Args`]' command, its options under [`HELP_TOPICS`]' headings.
+fn args_command() -> clap::Command {
+    use clap::CommandFactory;
+    let mut cmd = Args::command();
+    for (i, (topic, ids)) in HELP_TOPICS.iter().enumerate() {
+        for id in *ids {
+            cmd = cmd.mut_arg(*id, |a| a.help_heading(*topic).hide_short_help(i > 0));
+        }
+    }
+    cmd.after_help("These are the options of a first run: --help lists all of them, by topic. Each command (import, admin, doctor, ...) has its own --help.")
+        .after_long_help("Each command (import, admin, doctor, ...) has its own --help.")
+}
+
 async fn run() {
-    let a = Args::parse();
+    let a = <Args as clap::FromArgMatches>::from_arg_matches(&args_command().get_matches()).unwrap_or_else(|e| e.exit());
     chloedb::query::llm::set_limits(chloedb::query::llm::Limits { rows: a.llm_rows, per_minute: (a.llm_per_minute > 0).then_some(a.llm_per_minute) });
     let format = obs::LogFormat::parse(&a.log_format).unwrap_or_else(|| {
         eprintln!("chloedb-server: --log-format is text or json, not {:?}", a.log_format);
@@ -1008,11 +1241,11 @@ async fn run() {
                 // Whether the store refuses a write whose condition fails:
                 // tenants are not safe in one that does not.
                 TenantsCommand::CheckStore { .. } => match chloedb::tenant::check_store(&*store) {
-                    Ok(()) => println!("{}: creates only what is absent, replaces only the version named, and reads its last write: tenants can be kept here", store.describe()),
+                    Ok(()) => out!("{}: creates only what is absent, replaces only the version named, and reads its last write: tenants can be kept here", store.describe()),
                     Err(e) => fail(&e.to_string()),
                 },
                 TenantsCommand::List { .. } => match chloedb::tenant::list(&*store) {
-                    Ok(ids) => ids.iter().for_each(|id| println!("{id}")),
+                    Ok(ids) => ids.iter().for_each(|id| out!("{id}")),
                     Err(e) => fail(&e.to_string()),
                 },
             }
@@ -1020,8 +1253,8 @@ async fn run() {
         }
         Some(Command::Upgrade { db }) => {
             match chloedb::upgrade::upgrade(db) {
-                Ok(Some(u)) => println!("copied {} rows of {} tables of {} into this version's format; the old database is {}", u.rows, u.tables, db.display(), u.old.display()),
-                Ok(None) => println!("{} needs no upgrade", db.display()),
+                Ok(Some(u)) => out!("copied {} rows of {} tables of {} into this version's format; the old database is {}", u.rows, u.tables, db.display(), u.old.display()),
+                Ok(None) => out!("{} needs no upgrade", db.display()),
                 Err(e) => fail(&format!("upgrade {}: {e}", db.display())),
             }
             return;
@@ -1034,6 +1267,17 @@ async fn run() {
             }
             return;
         }
+        Some(Command::Doctor { models, port, offline, python }) => {
+            let dir = models.clone().unwrap_or_else(chloedb::embed::models_dir);
+            let checks = chloedb_server::doctor::run(&chloedb_server::doctor::Options { models: &dir, port: *port, online: !offline, python }).await;
+            for c in &checks {
+                out!("{}", c.line());
+            }
+            if checks.iter().any(|c| c.level == chloedb_server::doctor::Level::Fail) {
+                std::process::exit(1);
+            }
+            return;
+        }
         Some(Command::QuantizeModel { model, to, to_type, models }) => {
             let from = match std::path::Path::new(model).is_dir() {
                 true => PathBuf::from(model),
@@ -1042,7 +1286,7 @@ async fn run() {
             let suffix = if to_type.eq_ignore_ascii_case("f16") { "f16" } else { "int8" };
             let to = to.clone().unwrap_or_else(|| from.with_file_name(format!("{}-{suffix}", from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())));
             match chloedb::embed::quantize_static(&from, &to, to_type) {
-                Ok(q) => println!("{}: {} rows of {} dimensions, {} MB (was {} MB)", to.display(), q.rows, q.dim, q.bytes_after >> 20, q.bytes_before >> 20),
+                Ok(q) => out!("{}: {} rows of {} dimensions, {} MB (was {} MB)", to.display(), q.rows, q.dim, q.bytes_after >> 20, q.bytes_before >> 20),
                 Err(e) => fail(&e.to_string()),
             }
             return;
@@ -1057,9 +1301,63 @@ async fn run() {
             }
             return;
         }
+        Some(Command::Cc { url, ca, every }) => {
+            let ca = match ca.as_ref().map(std::fs::read).transpose() {
+                Ok(c) => c,
+                Err(e) => fail(&format!("--ca: {e}")),
+            };
+            let every = std::time::Duration::from_secs_f64(every.clamp(0.25, 3600.0));
+            if let Err(e) = chloedb_server::cc::run(url, ca, every).await {
+                fail(&e);
+            }
+            return;
+        }
+        Some(Command::Admin { url, key, ca, reason, json, what }) => {
+            use chloedb_server::admin_cli::{self as cli, Call};
+            let ca = match ca.as_ref().map(std::fs::read).transpose() {
+                Ok(c) => c,
+                Err(e) => fail(&format!("--ca: {e}")),
+            };
+            let q = |base: &str, k: &str, v: &Option<String>| match v {
+                Some(v) => format!("{base}?{k}={}", chloedb_server::mcp::encode(v)),
+                None => base.to_string(),
+            };
+            let call = match what {
+                AdminCmd::Whoami => Ok(Call::get("/v1/whoami")),
+                AdminCmd::Health => Ok(Call::get("/v1/health/fleet")),
+                AdminCmd::Catalog { q: words } => Ok(Call::get(q("/v1/catalog", "q", words))),
+                AdminCmd::Jobs => Ok(Call::get("/v1/admin/jobs")),
+                AdminCmd::Audit { limit } => Ok(Call::get(format!("/v1/admin/audit?limit={limit}"))),
+                AdminCmd::Changes { id: None, state } => Ok(Call::get(q("/v1/admin/changes", "state", state))),
+                AdminCmd::Changes { id: Some(id), .. } => Ok(Call::get(format!("/v1/admin/changes/{}", chloedb_server::mcp::encode(id)))),
+                AdminCmd::Runbook { id } => Ok(Call::get(format!("/v1/runbooks?for={}", chloedb_server::mcp::encode(id)))),
+                AdminCmd::Call { method, path, body } => cli::call_of(method, path, body.as_deref()),
+                AdminCmd::Preview { method, path, body } => cli::call_of(method, path, body.as_deref()).map(|c| cli::previewed(&c)),
+                AdminCmd::Propose { method, path, body, what } => match reason.as_deref() {
+                    Some(r) if !r.trim().is_empty() => cli::call_of(method, path, body.as_deref()).map(|c| cli::proposed(&c, r, what.as_deref())),
+                    _ => Err("a change request says why: --reason".to_string()),
+                },
+            };
+            let call = call.unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(1)
+            });
+            let target = cli::Target { url: url.clone(), key: key.clone(), ca, reason: reason.clone() };
+            match cli::send(&target, &call).await {
+                Ok((status, answer)) => {
+                    let text = if *json { answer.to_string() } else { serde_json::to_string_pretty(&answer).unwrap_or_default() };
+                    out!("{text}");
+                    std::process::exit(cli::exit_code(status, &answer));
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(5);
+                }
+            }
+        }
         Some(Command::Promote { url, replicas, write_acks, force, token }) => {
             match server::promote(url, replicas, write_acks, *force, token.as_deref()).await {
-                Ok(j) => println!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
+                Ok(j) => out!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
                 Err(e) => fail(&e),
             }
             return;
@@ -1102,7 +1400,7 @@ async fn run() {
             };
             if *drop_slot {
                 match chloedb_server::postgres::drop_slot(o).await {
-                    Ok(j) => println!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
+                    Ok(j) => out!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
                     Err(e) => fail(&format!("follow-postgres {name}: {e}")),
                 }
                 return;
@@ -1126,14 +1424,14 @@ async fn run() {
                 wait: std::time::Duration::from_secs(*wait_s),
             };
             match chloedb_server::follow::switch_over(o).await {
-                Ok(j) => println!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
+                Ok(j) => out!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
                 Err(e) => fail(&format!("switch-over to {target}: {e}")),
             }
             return;
         }
         Some(Command::Operator { namespace, every_ms, no_crd, print_crd, kube_api, kube_token, kube_ca }) => {
             if *print_crd {
-                println!("{}", serde_json::to_string_pretty(&chloedb_server::operator::crd()).unwrap_or_default());
+                out!("{}", serde_json::to_string_pretty(&chloedb_server::operator::crd()).unwrap_or_default());
                 return;
             }
             let ca = kube_ca.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("--kube-ca {}: {e}", p.display()))));
@@ -1219,6 +1517,12 @@ async fn run() {
         let own_dir = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(|p| p.to_path_buf()));
         chloedb_server::app_procs::plan(&a.start_apps, &taken, &role, own_dir.as_deref()).unwrap_or_else(|e| fail(&e))
     };
+    // The connectors' pulls (crate::connectors): not on a replica or a shard.
+    let run_connectors = match a.connectors.as_str() {
+        "off" => false,
+        "auto" | "on" => !a.replica && !(cluster.is_some() && a.shards.is_empty() && a.replicas.is_empty()),
+        other => fail(&format!("--connectors is auto or off, not {other:?}")),
+    };
     let o = Options {
         db: a.db,
         schema: a.schema,
@@ -1245,8 +1549,11 @@ async fn run() {
             hedge: std::time::Duration::from_millis(a.hedge_ms),
             shard_timeout: (a.shard_timeout_ms > 0).then(|| std::time::Duration::from_millis(a.shard_timeout_ms)),
             partial: a.partial,
+            route: chloedb_server::coord::Route::parse(&a.route).unwrap_or_else(|| fail(&format!("--route is round-robin or least-cost, not {:?}", a.route))),
             stats_cache_terms: a.stats_cache_terms,
             write_every_copy: a.write_every_copy,
+            hedge_adaptive: a.hedge_adaptive,
+            prefer_caught_up: a.prefer_caught_up,
             token: cluster.clone().or_else(|| token.clone()),
             ca: a.shard_ca.as_ref().map(read),
             slots: a.slot_map.as_ref().map(|p| {
@@ -1266,6 +1573,9 @@ async fn run() {
         query_memory_mb: a.query_memory_mb,
         filter_cache_mb: a.filter_cache_mb,
         answer_cache_mb: a.answer_cache_mb,
+        max_statement_bytes: Some(a.max_statement_bytes),
+        max_statement_elements: Some(a.max_statement_elements),
+        statement_budget: a.statement_budget,
         max_queued_writes: a.max_queued_writes,
         max_body_mb: a.max_body_mb,
         otlp_retain: a.otlp_retain,
@@ -1298,6 +1608,9 @@ async fn run() {
         digitalocean_file: a.digitalocean_file,
         cloud_file: a.cloud_file,
         hub_file: a.hub_file,
+        connector_secrets: a.connector_secrets.clone(),
+        connector_env_prefix: a.connector_env_prefix.clone(),
+        connectors: run_connectors,
         hub_device: a.hub_device,
         contain: a.contain.clone().or_else(|| a.alerts.as_ref().map(|p| p.with_file_name("contain.json"))),
         alerts: a.alerts,
@@ -1357,6 +1670,7 @@ async fn run() {
             digitalocean_file: None,
             cloud_file: None,
             hub_file: None,
+            connector_secrets: o.connector_secrets.clone().or_else(|| o.db.as_deref().map(chloedb_server::connectors::Connectors::file_of)),
             alerts: None,
             contain: None,
             backup_dir: None,
@@ -1367,22 +1681,39 @@ async fn run() {
         (addr, local, co)
     });
     let o = match beside {
-        Some(_) => Options { shards: Vec::new(), ..o },
+        Some(_) => Options { shards: Vec::new(), connectors: false, ..o },
         None => o,
     };
     let coordinator = !o.shards.is_empty();
     server::set_drain(std::time::Duration::from_millis(a.drain_ms));
+    // ONB-13: every address is taken before the database is opened or
+    // made, so that one in use, or no address at all, leaves no files.
+    let http_l = take(&a.listen, "--listen").await;
+    let grpc_l = match a.grpc != "off" && !coordinator {
+        true => Some(take(&a.grpc, "--grpc").await),
+        false => None,
+    };
+    let opensearch_l = match &a.opensearch_listen {
+        Some(addr) => Some(take(addr, "--opensearch-listen").await),
+        None => None,
+    };
+    let beside_l = match &beside {
+        Some((addr, ..)) => Some(take(addr, "--coordinator-listen").await),
+        None => None,
+    };
     let svc = server::service(&o).await.unwrap_or_else(|e| fail(&e));
     svc.reads.set_on(!a.no_read_stats);
+    svc.model_budget.set_per_day(a.model_calls_per_key_day);
     if token.is_none() && cluster.is_none() && !svc.keys.is_empty() && !svc.keys.managed() {
         tracing::warn!("this server has no token and no admin key that never expires: once its admin keys expire, only starting it with --token manages it. Make an admin key without expires_days");
     }
-    let bind = |addr: &str| {
+    // A listener taken above, once the keys are known: an open server
+    // listens on this machine only.
+    let bind = |l: tokio::net::TcpListener, addr: &str| {
         let addr = addr.to_string();
         // API keys close a server as a token does.
         let open = token.is_none() && cluster.is_none() && svc.keys.is_empty() && !a.no_token;
         async move {
-            let l = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| fail(&format!("listen on {addr}: {e}")));
             let ip = l.local_addr().unwrap_or_else(|e| fail(&format!("listen on {addr}: {e}"))).ip();
             if open && !ip.is_loopback() {
                 fail(&format!("{addr} is reachable beyond this machine: set --token (or $CHLOEDB_TOKEN), make an API key, or pass --no-token to serve it open"));
@@ -1390,10 +1721,14 @@ async fn run() {
             (l, ip)
         }
     };
-    let (http, ip) = bind(&a.listen).await;
+    let (http, ip) = bind(http_l, &a.listen).await;
     let access = Access { token: token.clone(), cluster: cluster.clone(), hosts: auth::allowed_hosts(ip, &a.allow_host), tls, limits: auth::Limits {
         header_read: std::time::Duration::from_secs(a.header_timeout_secs.max(1)),
+        idle: std::time::Duration::from_secs(a.idle_timeout_secs),
+        body: std::time::Duration::from_secs(a.body_timeout_secs),
+        write: std::time::Duration::from_secs(a.write_timeout_secs),
         max_connections: a.max_connections,
+        per_client: a.max_connections_per_client,
         stop_grace: std::time::Duration::from_millis(a.stop_grace_ms),
     } };
     // fleet: a coordinator names itself to its shards, which tell the others.
@@ -1402,7 +1737,12 @@ async fn run() {
         chloedb_server::peers::start(&svc, chloedb_server::peers::own_url(a.peer_url.as_deref(), at, access.tls.is_some()));
     }
     let h = svc.health().await;
-    tracing::info!(table = %svc.schema.table, rows = %h["docs"], segments = %h["segments"], version = env!("CARGO_PKG_VERSION"), simd = %chloedb::simd::describe(), "serving");
+    // The tables served, not the one a database made with none starts
+    // with (ONB-16), and the rows of them all.
+    let names: Vec<String> = svc.catalog().iter().filter(|t| !chloedb::query::hint::internal_table(&t.table)).map(|t| t.table.clone()).collect();
+    let tables = if names.is_empty() { "none yet".to_string() } else { chloedb::query::hint::listing(&names, 10) };
+    let rows = if h["rows"].is_null() { &h["docs"] } else { &h["rows"] };
+    tracing::info!(tables = %tables, rows = %rows, segments = %h["segments"], version = env!("CARGO_PKG_VERSION"), simd = %chloedb::simd::describe(), "serving");
     let scheme = if access.tls.is_some() { "https" } else { "http" };
     let asks = if access.token.is_some() { " (it asks for the token)" } else { "" };
     tracing::info!("HTTP and UI on {scheme}://{}/{asks}", a.listen);
@@ -1411,8 +1751,8 @@ async fn run() {
     }
     let mut tasks = Vec::new();
     // A coordinator answers queries but is not itself a shard.
-    if a.grpc != "off" && !coordinator {
-        let (l, _) = bind(&a.grpc).await;
+    if let Some(l) = grpc_l {
+        let (l, _) = bind(l, &a.grpc).await;
         tracing::info!("gRPC on {}{}", a.grpc, if access.tls.is_some() { " (TLS)" } else { "" });
         let (svc, access) = (svc.clone(), access.clone());
         tasks.push(tokio::spawn(async move {
@@ -1425,8 +1765,8 @@ async fn run() {
     // coordinator (--coordinator-listen), for the cluster, once the
     // coordinator is up.
     let mut opensearch = None;
-    if let Some(addr) = &a.opensearch_listen {
-        let (l, ip) = bind(addr).await;
+    if let (Some(addr), Some(l)) = (&a.opensearch_listen, opensearch_l) {
+        let (l, ip) = bind(l, addr).await;
         let scheme = if access.tls.is_some() { "https" } else { "http" };
         tracing::info!("OpenSearch API on {scheme}://{addr}/ (version {})", a.opensearch_version);
         opensearch = Some((l, Access { hosts: auth::allowed_hosts(ip, &a.allow_host), ..access.clone() }, a.opensearch_version.clone()));
@@ -1436,16 +1776,17 @@ async fn run() {
             tasks.push(tokio::spawn(serve_opensearch(svc.clone(), l, os_access, version)));
         }
     }
-    if let Some((addr, url, mut co)) = beside {
+    if let (Some((addr, url, mut co)), Some(l)) = (beside, beside_l) {
         co.coord.local = Some(chloedb_server::coord::LocalShard { url, service: server::grpc_service(svc.clone(), &access) });
-        let (l, cip) = bind(&addr).await;
+        let (l, cip) = bind(l, &addr).await;
         let access = Access { hosts: auth::allowed_hosts(cip, &a.allow_host), ..access.clone() };
-        let (peer, no_read_stats) = (a.peer_url.clone(), a.no_read_stats);
+        let (peer, no_read_stats, model_calls) = (a.peer_url.clone(), a.no_read_stats, a.model_calls_per_key_day);
         // Its shards, this one among them, may answer only later: the
         // shard serves meanwhile.
         tasks.push(tokio::spawn(async move {
             let c = server::service(&co).await.unwrap_or_else(|e| fail(&format!("the coordinator: {e}")));
             c.reads.set_on(!no_read_stats);
+            c.model_budget.set_per_day(model_calls);
             let at = l.local_addr().unwrap_or_else(|e| fail(&format!("listen on {addr}: {e}")));
             chloedb_server::peers::start(&c, chloedb_server::peers::own_url(peer.as_deref(), at, access.tls.is_some()));
             tracing::info!("coordinator HTTP on {addr}, its own shard in-process");
@@ -1490,7 +1831,107 @@ async fn serve_opensearch(svc: std::sync::Arc<chloedb_server::service::Service>,
     }
 }
 
+/// What `chloedb-server admin` asks ([`chloedb_server::admin_cli`]).
+#[derive(Subcommand)]
+enum AdminCmd {
+    /// The key: its scope, role, and what it may do (`may`).
+    Whoami,
+    /// The fleet: its problems, each with what to do next.
+    Health,
+    /// The routes (with their scope, tier, dry run and MCP tool) and the
+    /// error codes; words narrow the routes by path.
+    Catalog { q: Option<String> },
+    /// What runs in the background: plans, moves, on-call runs, change
+    /// requests.
+    Jobs,
+    /// The latest entries of the audit log.
+    Audit {
+        #[arg(long, default_value_t = 50)]
+        limit: u64,
+    },
+    /// The change requests (or one, by id).
+    Changes {
+        id: Option<String>,
+        #[arg(long)]
+        state: Option<String>,
+    },
+    /// The runbook for an alert's rule or a fleet problem's id.
+    Runbook { id: String },
+    /// Any request: METHOD PATH [BODY] (JSON, `-` for stdin, `@file`).
+    Call { method: String, path: String, body: Option<String> },
+    /// The dry run of a change: METHOD PATH [BODY].
+    Preview { method: String, path: String, body: Option<String> },
+    /// File a change request for a person to approve: METHOD PATH [BODY]
+    /// with --reason.
+    Propose {
+        method: String,
+        path: String,
+        body: Option<String>,
+        /// What it does, in words (the dry run's, by default).
+        #[arg(long)]
+        what: Option<String>,
+    },
+}
+
 fn fail(msg: &str) -> ! {
     tracing::error!("{msg}");
     std::process::exit(1)
+}
+
+/// The listener of `addr`, given as `flag`, or the server stops saying
+/// why: an address that is no address, or one in use, named with what to
+/// do about it ([`listen_error`]).
+async fn take(addr: &str, flag: &str) -> tokio::net::TcpListener {
+    tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| fail(&listen_error(addr, flag, &e)))
+}
+
+/// Why `addr` (option `flag`) could not be listened on (ONB-13).
+fn listen_error(addr: &str, flag: &str, e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::AddrInUse => {
+            let port = addr.rsplit(':').next().unwrap_or(addr);
+            format!("listen on {addr}: the address is in use, by another chloedb-server or another program (lsof -i :{port} names it): stop it, or give {flag} another port")
+        }
+        std::io::ErrorKind::PermissionDenied => format!("listen on {addr}: {e} (a port below 1024 needs root: give {flag} a port of 1024 or more)"),
+        _ if addr.parse::<std::net::SocketAddr>().is_err() && !addr.contains(':') => format!("listen on {addr}: {flag} is a host and a port, such as 127.0.0.1:7700 ({e})"),
+        _ => format!("listen on {addr}: {e} ({flag} is a host and a port, such as 127.0.0.1:7700, a port up to 65535)"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A new option goes under a topic of `--help`, or it would be listed
+    /// apart from the rest, under "Options".
+    #[test]
+    fn every_option_is_under_a_help_topic() {
+        let mut cmd = super::args_command();
+        cmd.build();
+        let loose: Vec<String> = cmd
+            .get_arguments()
+            .filter(|a| !matches!(a.get_id().as_str(), "help" | "version") && a.get_help_heading().is_none())
+            .map(|a| a.get_id().to_string())
+            .collect();
+        assert!(loose.is_empty(), "options under no topic of HELP_TOPICS in main.rs: {loose:?}");
+        let mut seen = std::collections::HashSet::new();
+        for id in super::HELP_TOPICS.iter().flat_map(|(_, ids)| ids.iter()) {
+            assert!(seen.insert(id), "{id} is under two topics");
+        }
+    }
+
+    /// A coordinator routes by least cost and prefers copies that hold a
+    /// write for reads after it unless told otherwise, and each can be
+    /// turned off; `--prefer-caught-up` alone still means on.
+    #[test]
+    fn routing_defaults_and_their_off_switches() {
+        use clap::FromArgMatches;
+        let parse = |argv: &[&str]| super::Args::from_arg_matches(&super::args_command().try_get_matches_from(argv).unwrap()).unwrap();
+        let a = parse(&["chloedb-server"]);
+        assert_eq!((a.route.as_str(), a.prefer_caught_up, a.hedge_adaptive), ("least-cost", true, false));
+        let a = parse(&["chloedb-server", "--route", "round-robin", "--prefer-caught-up=false", "--hedge-adaptive"]);
+        assert_eq!((a.route.as_str(), a.prefer_caught_up, a.hedge_adaptive), ("round-robin", false, true));
+        assert!(parse(&["chloedb-server", "--prefer-caught-up"]).prefer_caught_up);
+        assert!(parse(&["chloedb-server", "--prefer-caught-up=true"]).prefer_caught_up);
+        let d = chloedb_server::coord::CoordOptions::default();
+        assert_eq!((d.route, d.prefer_caught_up, d.hedge_adaptive), (chloedb_server::coord::Route::LeastCost, true, false));
+    }
 }

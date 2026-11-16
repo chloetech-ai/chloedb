@@ -142,6 +142,10 @@ spec:
           env:
             - {name: STRATA_DATA, value: /beir}
             - {name: STRATA_TOKEN, valueFrom: {secretKeyRef: {name: strata-token, key: token, optional: true}}}
+            # Strata's shards, whose answer cache counters engine-compare run reads (in
+            # every layout a shard serves HTTP on 7700): a run with an
+            # answer from the cache fails (README.md, "No result caches").
+            - {name: CHLOEDB_COMPARE_METRICS_URLS, value: "http://strata-0.strata:7700,http://strata-1.strata:7700"}
           volumeMounts:
             - {name: beir, mountPath: /beir, readOnly: true}
             - {name: data, mountPath: /data}

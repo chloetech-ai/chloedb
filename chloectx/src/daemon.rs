@@ -143,6 +143,36 @@ pub struct Session {
     /// Failed commands followed until they pass ([`crate::fixes`]).
     #[serde(default)]
     pub fixes: crate::fixes::Tracker,
+    /// The folder the session runs in, as its hooks name it: a worktree of
+    /// the repository whose store this is, which may not be the folder the
+    /// daemon was started for ([`crate::paths::store_root`]). Its paths
+    /// are relative to it and its notes are checked against its files.
+    /// Empty for a session whose hooks predate it: the daemon's project.
+    #[serde(default)]
+    pub worktree: String,
+    /// The branch checked out in the worktree when its hooks last ran.
+    #[serde(default)]
+    pub branch: String,
+    /// Who wrote the current turn's prompt ([`crate::record::Source`]):
+    /// `user` unless Workbench said otherwise (`CHLOECTX_PROMPT_SOURCE`,
+    /// `CHLOECTX_PROMPT_LOG`).
+    #[serde(default)]
+    pub source: String,
+    /// The session's agent name, when Workbench gave one (`CHLOECTX_AGENT_NAME`).
+    #[serde(default)]
+    pub agent: String,
+    /// The end of the assistant's last answer: a prompt may answer a
+    /// question it asked (a rule asked for, [`crate::capture::standing_rule`]).
+    #[serde(default)]
+    pub prev_answer: String,
+    /// When each tool call of the turn was made, by `tool_use_id`, from the
+    /// transcript, kept until its result arrives ([`crate::report`]).
+    #[serde(skip)]
+    pub calls: HashMap<String, i64>,
+    /// What the window held when a turn's prompt came, before its recall:
+    /// the turn, and the records shown ([`crate::repeats::promote`]).
+    #[serde(skip)]
+    pub shown_before: (i64, HashSet<String>),
 }
 
 /// A query-understanding search started after a prompt (`async` mode).
@@ -161,6 +191,10 @@ struct State {
     sessions: HashMap<String, Session>,
     active: String,
 }
+
+/// One sync with the server at a time: a push, a pull, or a forget's
+/// deletes there (audit CTX-33).
+static SYNC_ONE: Mutex<()> = Mutex::new(());
 
 pub struct Daemon {
     pub paths: StorePaths,
@@ -190,6 +224,8 @@ pub struct Daemon {
     /// they win over the daemon's own, which may have been started from a
     /// shell or the MCP server without them.
     from_hooks: Mutex<(String, Option<crate::deep::DeepConfig>)>,
+    /// `CHLOECTX_DISTILL` as the hooks saw it: 0 unset, 1 on, 2 off.
+    hook_distill: std::sync::atomic::AtomicU8,
     last_activity: AtomicI64,
     /// Receipts of recalls: opened when they are on or the file exists
     /// (a forget or redact scrubs it while they are off), unset when its
@@ -207,10 +243,28 @@ pub struct Daemon {
     snapshots: crate::snapshots::Snapshots,
     /// A recall showed records since the last snapshot was kept.
     keep_pending: std::sync::atomic::AtomicBool,
+    /// Connections being answered, from the request read to the answer
+    /// written: shutdown waits for them before the exit, which would
+    /// close them unanswered.
+    serving: std::sync::atomic::AtomicUsize,
+    /// Shutdown is past the point where requests are handled: one that
+    /// comes is answered [`closing_answer`], and its client sends it to
+    /// the next daemon.
+    closing: std::sync::atomic::AtomicBool,
 }
 
 /// Work to do after the response is sent (so hooks return at once).
-type Deferred = Box<dyn FnOnce() + Send>;
+pub type Deferred = Box<dyn FnOnce() + Send>;
+
+/// Releases a [`crate::snapshots::Snapshots::hold`] when a forget fails
+/// before it hands the hold to its compaction.
+struct Held<'a>(&'a crate::snapshots::Snapshots);
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
 
 impl Daemon {
     pub fn open(dir: &Path, project: &str) -> Result<Daemon> {
@@ -219,6 +273,11 @@ impl Daemon {
         let cfg = Config::load(&paths.config);
         let embedder: Arc<dyn embed::Embedder> = Arc::from(embed::open(&cfg.embedder)?);
         let store = Arc::new(Store::open(&paths.db, embedder, StoreOptions { sync: cfg.sync, ..Default::default() })?);
+        // A forgotten record's bytes must leave the file: pages freed by a
+        // rewrite are zeroed, and so is the tail of every page written after.
+        if let Some(db) = store.db() {
+            db.storage().set_zero_page_tails(true);
+        }
         let state: State = std::fs::read_to_string(&paths.state).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let receipts = std::sync::OnceLock::new();
         if cfg.receipts.enabled || dir.join(crate::receipt::BOOK_FILE).exists() {
@@ -232,8 +291,9 @@ impl Daemon {
         let receipts_on = std::sync::atomic::AtomicBool::new(cfg.receipts.enabled);
         let snapshots = crate::snapshots::Snapshots::new(dir);
         Ok(Daemon { paths, project: project.to_string(), store, cfg, state: Mutex::new(state), dirty: Default::default(), pending: Default::default(), saving: Mutex::new(()),
-            logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), last_activity: AtomicI64::new(now()),
-            receipts, receipts_on, unsaved: Default::default(), deferred: Default::default(), no_hook_receipts: Default::default(), snapshots, keep_pending: Default::default() })
+            logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), hook_distill: Default::default(), last_activity: AtomicI64::new(now()),
+            receipts, receipts_on, unsaved: Default::default(), deferred: Default::default(), no_hook_receipts: Default::default(), snapshots, keep_pending: Default::default(),
+            serving: Default::default(), closing: Default::default() })
     }
 
     /// Wraps work to run after the answer, so that shutdown waits for it.
@@ -259,7 +319,7 @@ impl Daemon {
     /// receipts off must not keep the old ones for good.
     pub fn housekeep(&self) {
         let swept = self.snapshots.sweep();
-        let pruned = self.snapshots.prune(&self.cfg.receipts.snapshots).unwrap_or_else(|e| {
+        let pruned = self.snapshots.prune(&self.cfg.receipts.snapshots, self.store_bytes()).unwrap_or_else(|e| {
             self.log(&json!({"ts": now(), "error": e.to_string(), "event": "snapshot_prune"}));
             0
         });
@@ -274,6 +334,14 @@ impl Daemon {
         if swept + pruned + receipts > 0 {
             self.log(&json!({"ts": now(), "event": "housekeep", "snapshot_dirs_swept": swept, "snapshots_pruned": pruned, "receipts_pruned": receipts}));
         }
+    }
+
+    /// The size of the store's file and log, for the snapshots' budget.
+    fn store_bytes(&self) -> u64 {
+        self.store.db().map_or(0, |db| {
+            let fs = db.storage().file_stats();
+            fs.file_bytes + fs.wal_bytes
+        })
     }
 
     /// Whether receipts are written now.
@@ -341,7 +409,19 @@ impl Daemon {
             "ping" => Ok((json!({"ok": true, "pid": std::process::id(), "records": self.store.len()}), None)),
             "hook" => {
                 self.note_hook_settings(req);
-                self.hook(req.get("event").and_then(|v| v.as_str()).unwrap_or(""), req.get("payload").unwrap_or(&Json::Null))
+                let payload = req.get("payload").unwrap_or(&Json::Null);
+                let sid = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                self.note_worktree(sid, req);
+                if let Some(a) = req.get("agent").and_then(|v| v.as_str()).filter(|a| !a.is_empty()) {
+                    let mut st = self.state.lock().unwrap();
+                    if let crate::record::Source::Agent(n) = crate::record::Source::parse(&format!("agent:{a}")) {
+                        st.sessions.entry(sid.to_string()).or_default().agent = n;
+                    }
+                }
+                if req.get("event").and_then(|v| v.as_str()) == Some("UserPromptSubmit") {
+                    self.note_source(sid, req);
+                }
+                self.hook(req.get("event").and_then(|v| v.as_str()).unwrap_or(""), payload)
             }
             "search" => self.op_search(req).map(|r| (r, Some(self.after(|me| me.keep_after_recall())))),
             "receipts" => self.op_receipts(req).map(|r| (r, None)),
@@ -351,7 +431,8 @@ impl Daemon {
             "timeline" => self.op_timeline(req).map(|r| (r, None)),
             "sql" => self.op_sql(req).map(|r| (r, None)),
             "remember" => self.op_remember(req).map(|r| (r, None)),
-            "forget" => self.op_forget(req).map(|r| (r, None)),
+            "forget" => self.op_forget(req),
+            "find" => self.op_find(req).map(|r| (r, None)),
             "receipts_switch" => self.op_receipts_switch(req).map(|r| (r, None)),
             "redact" => self.op_redact(req).map(|r| (r, None)),
             "append" => self.op_append(req).map(|r| (r, None)),
@@ -363,10 +444,19 @@ impl Daemon {
             "inspect_embed" => crate::inspect::embed(&self.store, req).map(|r| (r, None)),
             "distill_backfill" => self.distill_backfill().map(|(t, n)| (json!({"turns": t, "items": n}), None)),
             "consolidate" => self.op_consolidate().map(|r| (r, None)),
+            "repeats" => {
+                let days = req.get("days").and_then(|v| v.as_i64()).unwrap_or(30).max(1);
+                crate::repeats::scan(&self.store, now() - days * 86_400, 20_000).map(|r| (r, None))
+            }
             "ask" => self.op_ask(req).map(|r| (r, None)),
+            // What `chloectx app --local-stores` shows of this store, as it
+            // shows a space of the cluster ([`crate::app::view`]).
+            "view" => crate::app::view::by_name(&self.store.pinned(), req).map(|r| (r, None)),
+            "capsule" => self.op_capsule(req).map(|r| (r, None)),
+            "report" => self.op_report(req).map(|r| (r, None)),
             "briefing" => {
                 let sid = req.get("session").and_then(|v| v.as_str()).unwrap_or("");
-                let mut ck = self.checker();
+                let mut ck = self.checker_in(&self.tree_of(req));
                 recall::briefing_checked(&self.store, sid, self.cfg.briefing_chars, now(), Some(&mut ck)).map(|(t, _)| (json!({"text": t}), None))
             }
             "sync" => self.op_sync(req).map(|r| (r, None)),
@@ -391,6 +481,17 @@ impl Daemon {
         }
         // What was recorded since the last push goes before the daemon does.
         let _ = self.sync_now(false);
+        // Requests were handled until now. From here each one is answered
+        // `closing`, not handled, and its client sends it to the next
+        // daemon, once this one is gone; the exit would otherwise close it
+        // unanswered (`chloectx sync setup`, which stops the daemon, then
+        // `chloectx sync push`: "EOF while parsing a value"). SeqCst with
+        // `serving` in [`serve`]: a request either sees `closing` or is
+        // counted here, and waited for.
+        self.closing.store(true, Ordering::SeqCst);
+        while (self.serving.load(Ordering::SeqCst) > 0 || self.pending.load(Ordering::Acquire) > 0 || self.deferred.load(Ordering::Acquire) > 0) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let _ = self.store.flush();
         self.save_receipts();
         if let Some(b) = self.receipts.get() {
@@ -398,6 +499,11 @@ impl Daemon {
         }
         self.save_state();
         let _ = std::fs::remove_file(&self.paths.socket);
+        // The connections made before the socket went, answered `closing`.
+        let last = Instant::now() + Duration::from_millis(500);
+        while self.serving.load(Ordering::SeqCst) > 0 && Instant::now() < last {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         std::process::exit(0);
     }
 
@@ -406,20 +512,25 @@ impl Daemon {
     /// project's records the server holds and the store lacks): the
     /// sync's state after, or `None` with no server set up. One at a time.
     pub fn sync_now(&self, pull: bool) -> Option<crate::sync::SyncState> {
-        static ONE: Mutex<()> = Mutex::new(());
-        let remote = crate::sync::remote(&crate::paths::home())?;
-        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
-        let mut st = crate::sync::load_state(&self.paths.dir, &remote.url);
+        // No server set up: done, without asking git what the project is.
+        crate::sync::remote(&crate::paths::home())?;
         let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        // Read each time: `chloectx sync setup` may have given the project a key since.
+        let remote = crate::sync::remote_for(&crate::paths::home(), &key)?;
+        let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = crate::sync::load_state(&self.paths.dir, &remote.url);
+        // The rows of records forgotten here go first (audit CTX-33): a
+        // server that did not answer a forget's delete is asked again.
+        let forgets = crate::sync::send_forgets(&remote, &key, &self.paths.dir);
         let pushed = crate::sync::push(&remote, &self.store, &key, &mut st);
         // What a pull stores keeps the server's sequence numbers, and the
         // next push sends again those past what was pushed: the same rows,
         // replaced by themselves. Taking them as pushed (pushed_seq set to
         // the store's last) also took as pushed whatever the hooks recorded
         // while the pull ran, which then never reached the server.
-        let pulled = if pull && pushed.is_ok() { Some(crate::sync::pull(&remote, &self.store, &key, &mut st)) } else { None };
-        st.last_error = match (&pushed, &pulled) {
-            (Err(e), _) | (_, Some(Err(e))) => e.to_string(),
+        let pulled = if pull && pushed.is_ok() { Some(crate::sync::pull(&remote, &self.store, &key, &mut st, &self.paths.dir)) } else { None };
+        st.last_error = match (&forgets, &pushed, &pulled) {
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Some(Err(e))) => e.to_string(),
             _ => String::new(),
         };
         let (p, g) = (pushed.as_ref().map_or(0, |n| *n), pulled.as_ref().and_then(|r| r.as_ref().ok()).copied().unwrap_or(0));
@@ -430,10 +541,53 @@ impl Daemon {
         Some(st)
     }
 
+    /// Deletes the sync server's rows of the records just forgotten (audit
+    /// CTX-33), between pushes: one that read a record before its delete
+    /// has sent it by then. What the forget says of them; nothing with no
+    /// server set up.
+    fn forget_on_server(&self) -> String {
+        // No server set up: nothing to delete, without asking git what the project is.
+        if crate::sync::remote(&crate::paths::home()).is_none() {
+            return String::new();
+        }
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        // The project's own key where it has one (`chloectx sync setup`), as a push uses.
+        let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else { return String::new() };
+        let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::sync::send_forgets(&remote, &key, &self.paths.dir) {
+            Ok(_) => "its row on the sync server deleted too (a machine that pulled it before keeps its copy)".into(),
+            Err(e) => {
+                self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "error": format!("forget: {e}")}));
+                format!("the sync server's row is not deleted yet ({e}): each push asks again, and a pull never brings it back here")
+            }
+        }
+    }
+
     /// `{"op": "sync", "what": "status" | "push" | "pull"}`.
     fn op_sync(&self, req: &Json) -> Result<Json> {
         let what = req.get("what").and_then(|v| v.as_str()).unwrap_or("status");
-        let Some(remote) = crate::sync::remote(&crate::paths::home()) else {
+        if what == "accept" {
+            let origins: Vec<String> = req.get("origins").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+            let by = crate::sync::accept(&crate::paths::home(), &self.store, &origins)?;
+            let mut text = String::new();
+            if by.is_empty() {
+                text = "No records from other machines wait to be accepted.".into();
+            }
+            for (o, n, some) in &by {
+                let done = origins.iter().any(|x| x == "*" || x == o);
+                text += &format!("{o}: {n} record{}{}\n", if *n == 1 { "" } else { "s" }, if done { ", accepted" } else { "" });
+                for t in some {
+                    text += &format!("    {}\n", crate::envelope::defuse(t));
+                }
+            }
+            if origins.is_empty() && !by.is_empty() {
+                text += "Accept a machine's records (its rules and decisions then reach the briefing): chloectx sync accept --origin ID, or --all";
+            }
+            let me = crate::sync::origin(&crate::paths::home());
+            return Ok(json!({"text": text.trim_end(), "this_machine": me, "pending": by.iter().map(|(o, n, _)| json!({"origin": o, "records": n})).collect::<Vec<_>>()}));
+        }
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else {
             return Ok(json!({"server": null, "note": "no server set up: chloectx sync setup --url URL"}));
         };
         let st = match what {
@@ -443,10 +597,9 @@ impl Daemon {
             w => return Err(err(format!("sync: unknown {w:?} (status, push or pull)"))),
         }
         .unwrap_or_default();
-        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
         let on_server = if what == "status" { remote.count(&key).map_err(|e| e.to_string()) } else { Err(String::new()) };
         Ok(json!({
-            "server": remote.url, "token": remote.has_token(), "project": self.project, "synced_as": key,
+            "server": remote.url, "token": remote.has_token(), "key_from": remote.key_from, "project": self.project, "synced_as": key,
             "local_records": self.store.len(), "last_seq": self.store.last_seq(),
             "pushed_seq": st.pushed_seq, "pushed": st.pushed, "pulled": st.pulled,
             "last_push": st.last_push, "last_pull": st.last_pull, "last_error": st.last_error,
@@ -503,7 +656,7 @@ impl Daemon {
                     }
                     s.last_prompts.clone()
                 });
-                let mut ck = self.checker();
+                let mut ck = self.checker_in(&self.tree(&sid));
                 let pinned = self.store.pinned();
                 let (mut text, shown) = recall::briefing_checked(&pinned, &sid, self.cfg.briefing_chars, now(), Some(&mut ck))?;
                 if !shown.is_empty() {
@@ -544,7 +697,7 @@ impl Daemon {
                     me.keep_after_recall();
                     // The checkout is looked at again (no fetch) every few hours.
                     if crate::version::cached(&home, crate::version::CHECK_EVERY).is_none() {
-                        crate::version::check(&home, false);
+                        crate::version::check(&home, None);
                     }
                 }))))
             }
@@ -556,6 +709,7 @@ impl Daemon {
                 let prompt = crate::redact::redact(&crate::envelope::clean(p.get("prompt").and_then(|v| v.as_str()).unwrap_or("")));
                 let (turn, recent) = self.with_session(&sid, |s| {
                     s.turn += 1;
+                    s.shown_before = (s.turn, s.injected.clone());
                     s.episode = EpisodeAcc { prompt: prompt.clone(), ..Default::default() };
                     s.episode_stored = false;
                     let recent: Vec<String> = s.last_prompts.iter().rev().take(2).rev().cloned().collect();
@@ -569,6 +723,13 @@ impl Daemon {
                 // storing it afterwards keeps the write (and the memtable
                 // rebuild it causes) off the prompt's critical path.
                 let mut text = self.recall_for(&sid, &prompt, false, "prompt")?.map(|x| x.0).unwrap_or_default();
+                // The previous turn's search, when it finished after that turn
+                // ended: offered now, once.
+                if let Some(t) = self.take_late_deep(&sid, turn - 1) {
+                    self.log(&json!({"ts": now(), "event": "deep_late", "session": sid, "turn": turn - 1, "chars": t.len()}));
+                    let t = format!("ChloeCtx's search for your previous request finished after that turn ended:\n{t}");
+                    text = if text.is_empty() { t } else { format!("{text}\n\n{t}") };
+                }
                 let deep = deep_cfg.wants(&prompt, self.store.len());
                 let deep_async = deep && mode == "async";
                 if deep && mode == "sync" {
@@ -598,7 +759,8 @@ impl Daemon {
                         if due {
                             me.keep_after_recall();
                         }
-                        if let Err(e) = me.store.append(&sid, turn, now(), capture::prompt_drafts(&prompt)) {
+                        let by = me.source_of(&sid);
+                        if let Err(e) = me.store.append(&sid, turn, now(), capture::prompt_drafts_by(&prompt, &by)) {
                             me.log(&json!({"ts": now(), "error": e.to_string(), "event": "UserPromptSubmit"}));
                         }
                         if !due {
@@ -619,6 +781,15 @@ impl Daemon {
                 ))
             }
             "PreToolUse" => {
+                // When the call was made, which its result's record notes.
+                if let Some(id) = p.get("tool_use_id").and_then(|v| v.as_str()).filter(|i| !i.is_empty()) {
+                    let mut st = self.state.lock().unwrap();
+                    let s = st.sessions.entry(sid.clone()).or_default();
+                    if s.calls.len() > 64 {
+                        s.calls.clear();
+                    }
+                    s.calls.insert(id.to_string(), now());
+                }
                 if !self.cfg.file_notes {
                     return Ok((json!({"output": null}), None));
                 }
@@ -627,7 +798,8 @@ impl Daemon {
                 if !matches!(tool, "Edit" | "MultiEdit" | "Write") || path.is_empty() {
                     return Ok((json!({"output": null}), None));
                 }
-                let rel = path.strip_prefix(&self.project).map(|x| x.trim_start_matches('/')).unwrap_or(path).to_string();
+                let tree = self.tree(&sid);
+                let rel = path.strip_prefix(tree.as_str()).map(|x| x.trim_start_matches('/')).unwrap_or(path).to_string();
                 let mut text = self.file_notes(&sid, &rel)?;
                 if self.cfg.next_files {
                     let next = self.next_file_notes(&sid, &rel, &text)?;
@@ -645,14 +817,18 @@ impl Daemon {
                 if event == "PostToolUseFailure" {
                     resp = json!({"is_error": true, "error": p.get("error").cloned().unwrap_or(resp)});
                 }
-                let project = self.project.clone();
+                let project = self.tree(&sid);
                 let fixes_on = self.cfg.error_fixes;
-                let (turn, ctx, fixed) = self.with_session(&sid, |s| {
+                let end = now();
+                let call_id = p.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let tpath = p.get("transcript_path").and_then(|v| v.as_str()).map(String::from);
+                let (turn, ctx, fixed, started) = self.with_session(&sid, |s| {
+                    let started = s.calls.remove(&call_id);
                     s.episode.add_tool(&tool, &input, &resp, &project);
                     let fixed = if fixes_on { s.fixes.observe(&tool, &input, &resp, &project) } else { Vec::new() };
-                    (s.turn, format!("Turn {} request: {}", s.turn, s.episode.prompt.chars().take(200).collect::<String>()), fixed)
+                    (s.turn, format!("Turn {} request: {}", s.turn, s.episode.prompt.chars().take(200).collect::<String>()), fixed, started)
                 });
-                let mut text = self.take_deep(&sid, turn, false).unwrap_or_default();
+                let mut text = self.take_deep(&sid, turn, Duration::ZERO, false).unwrap_or_default();
                 if fixes_on && tool == "Bash" {
                     let fix = self.fix_for(&sid, &resp);
                     if !fix.is_empty() {
@@ -662,7 +838,38 @@ impl Daemon {
                 Ok((
                     ctx_out(event, text),
                     Some(self.after(move |me| {
-                        let mut drafts: Vec<Draft> = capture::tool_drafts(&tool, &input, &resp, &project).into_iter().map(|d| d.ctx(ctx.clone())).collect();
+                        // A file the call read or changed is anchored: its
+                        // branch, commit and content hash now, so a later
+                        // recall into another worktree can tell its code
+                        // from this one's ([`anchor::Checker::label_record`]).
+                        let file = ["file_path", "notebook_path"].iter().find_map(|k| input.get(*k).and_then(|v| v.as_str())).unwrap_or("");
+                        let rel = file.strip_prefix(project.as_str()).map(|x| x.trim_start_matches('/')).unwrap_or("");
+                        let aline = if matches!(tool.as_str(), "Read" | "Edit" | "MultiEdit" | "Write" | "NotebookEdit") && !rel.is_empty() {
+                            anchor::of_file(Path::new(&project), rel).to_line()
+                        } else {
+                            String::new()
+                        };
+                        let agent = me.state.lock().unwrap().sessions.get(&sid).map(|s| s.agent.clone()).unwrap_or_default();
+                        let mut drafts: Vec<Draft> = capture::tool_drafts(&tool, &input, &resp, &project)
+                            .into_iter()
+                            .map(|d| {
+                                let mut c = ctx.clone();
+                                for extra in [d.ctx.as_str(), if d.kind == Kind::ToolCall || d.kind == Kind::ToolResult { aline.as_str() } else { "" }] {
+                                    if !extra.is_empty() {
+                                        c = format!("{c}\n{extra}");
+                                    }
+                                }
+                                let memo = d.tag == capture::MEMORY_FILE_TAG;
+                                let d = d.ctx(c);
+                                if memo { d.by(&crate::record::Source::Assistant(agent.clone())) } else { d }
+                            })
+                            .collect();
+                        // How long the call took: from its PreToolUse, else
+                        // from its message in the transcript.
+                        let started = started.or_else(|| tpath.as_deref().and_then(|t| crate::transcript::call_ts(Path::new(t), &call_id)));
+                        if let Some(t0) = started {
+                            capture::took(&mut drafts, end - t0);
+                        }
                         if !fixed.is_empty() {
                             let from = me.prompt_of(&sid, turn);
                             for f in &fixed {
@@ -674,7 +881,7 @@ impl Daemon {
                             }
                             me.log(&json!({"ts": now(), "event": "fix", "session": sid, "turn": turn, "fixes": fixed.len()}));
                         }
-                        if let Err(e) = me.store.append(&sid, turn, now(), drafts) {
+                        if let Err(e) = me.store.append(&sid, turn, end, drafts) {
                             me.log(&json!({"ts": now(), "error": e.to_string(), "event": "PostToolUse"}));
                         }
                         me.store.warm();
@@ -685,22 +892,33 @@ impl Daemon {
                 let answer = p.get("last_assistant_message").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let active = p.get("stop_hook_active").and_then(|v| v.as_bool()).unwrap_or(false);
                 let cur = self.with_session(&sid, |s| s.turn);
-                // A search still running for this turn: wait for it, and if it
-                // found records the turn did not see, ask the model once to
-                // reconsider with them.
+                // By default the end of a turn neither waits for a search
+                // still running nor asks the model to go on: what the search
+                // finds is offered at the next prompt (CTX-1: waiting held
+                // short turns ~10 s, and the block that followed made Claude
+                // answer twice). With `stop_recheck` turned on, it waits a few
+                // seconds at most and, when the search found records the turn
+                // did not see, asks the model once to check its answer
+                // against them, without repeating it.
                 if !active && mode == "async" && deep_cfg.stop_recheck {
-                    if let Some(t) = self.take_deep(&sid, cur, true) {
+                    if let Some(t) = self.take_deep(&sid, cur, deep_cfg.stop_wait(), true) {
                         self.log(&json!({"ts": now(), "event": "deep_recheck", "session": sid, "turn": cur, "chars": t.len()}));
                         let reason = format!(
-                            "{t}\n\nBefore you finish: if these records change your answer or your changes, make the corrections now and then give your complete answer again. If they change nothing, repeat your previous answer unchanged."
+                            "{t}\n\nChloeCtx found these records for this request after the turn's last tool call (`stop_recheck` is on). If one of them changes your answer or your changes, make the correction now and say in a sentence or two what changed. If none does, end your turn with one short line saying so; do not repeat your answer."
                         );
                         return Ok((json!({"output": {"decision": "block", "reason": reason}}), None));
                     }
                 }
-                let (turn, ep, first) = self.with_session(&sid, |s| {
+                let (turn, ep, first, ex) = self.with_session(&sid, |s| {
                     let first = !s.episode_stored;
                     s.episode_stored = true;
-                    (s.turn, s.episode.clone(), first)
+                    let ex = crate::distill::Exchange { by: Some(crate::record::Source::parse(&s.source)), agent: s.agent.clone(), prev_answer: s.prev_answer.clone() };
+                    if first {
+                        // Redacted: the state is a file too.
+                        let tail: Vec<char> = crate::redact::redact(&answer).chars().collect();
+                        s.prev_answer = tail[tail.len().saturating_sub(800)..].iter().collect();
+                    }
+                    (s.turn, s.episode.clone(), first, ex)
                 });
                 if !first {
                     return Ok((json!({"output": null}), None));
@@ -720,7 +938,7 @@ impl Daemon {
                         }
                         me.store.warm();
                         let files: Vec<String> = ep.files.iter().cloned().collect();
-                        me.distill_turn(&sid, turn, now(), &ep.prompt, &answer, &ep.commands, &files);
+                        me.distill_turn(&sid, turn, now(), &ep.prompt, &answer, &ep.commands, &files, &ex);
                     })),
                 ))
             }
@@ -741,12 +959,38 @@ impl Daemon {
             "PreCompact" => {
                 let tpath = p.get("transcript_path").and_then(|v| v.as_str()).map(String::from);
                 let (turn, prompt) = self.with_session(&sid, |s| (s.turn, s.episode.prompt.clone()));
+                // When it started, for `chloectx report`.
+                let started = capture::event_draft(event, p);
+                let at = now();
                 Ok((
                     json!({"output": null}),
                     Some(self.after(move |me| {
+                        if let Some(d) = started {
+                            if let Err(e) = me.store.append(&sid, turn, at, vec![d]) {
+                                me.log(&json!({"ts": now(), "error": e.to_string(), "event": "PreCompact"}));
+                            }
+                        }
                         if let Some(t) = &tpath {
                             let ctx = format!("Turn {turn} request: {}", prompt.chars().take(200).collect::<String>());
                             me.sync_narration(&sid, turn, t, "", &ctx);
+                        }
+                    })),
+                ))
+            }
+            // When the agent waited for the user (a permission prompt, an
+            // idle notice) and when a sub-agent finished: recorded for
+            // `chloectx report`, never shown ([`Kind::Event`]). Nothing is
+            // answered, so a sub-agent is never held back.
+            "Notification" | "SubagentStop" => {
+                let Some(draft) = capture::event_draft(event, p) else { return Ok((json!({"output": null}), None)) };
+                let turn = self.state.lock().unwrap().sessions.get(&sid).map_or(0, |s| s.turn);
+                let at = now();
+                let event = event.to_string();
+                Ok((
+                    json!({"output": null}),
+                    Some(self.after(move |me| {
+                        if let Err(e) = me.store.append(&sid, turn, at, vec![draft]) {
+                            me.log(&json!({"ts": now(), "error": e.to_string(), "event": event}));
                         }
                     })),
                 ))
@@ -765,8 +1009,8 @@ impl Daemon {
     /// already noted, replacements (the old item is marked superseded), and
     /// planned work it completed (marked done).
     #[allow(clippy::too_many_arguments)]
-    pub fn distill_turn(&self, sid: &str, turn: i64, ts: i64, prompt: &str, answer: &str, commands: &[String], files: &[String]) {
-        if !self.cfg.distill.active() || (prompt.trim().is_empty() && answer.trim().is_empty()) {
+    pub fn distill_turn(&self, sid: &str, turn: i64, ts: i64, prompt: &str, answer: &str, commands: &[String], files: &[String], ex: &crate::distill::Exchange) {
+        if !self.distill_cfg().active() || (prompt.trim().is_empty() && answer.trim().is_empty()) {
             return;
         }
         self.pending.fetch_add(1, Ordering::AcqRel);
@@ -787,20 +1031,40 @@ impl Daemon {
         known.sort_by_key(|r| -r.seq);
         let listed: Vec<(String, Kind, String)> = known.iter().rev().map(|r| (r.id.clone(), r.kind, r.text.clone())).collect();
         let t0 = Instant::now();
-        match crate::distill::distill(&self.distill_cfg(), prompt, answer, commands, &listed, ts) {
+        match crate::distill::distill_exchange(&self.distill_cfg(), prompt, answer, commands, &listed, ts, ex) {
             Ok(d) => {
+                // What the user said again, of their earlier requests and
+                // instructions most like this one ([`crate::repeats`]).
+                let before: Vec<Record> = if matches!(ex.by, None | Some(crate::record::Source::User)) { crate::repeats::said_before(&self.store, prompt, sid, turn).unwrap_or_default() } else { Vec::new() };
+                let checked = match crate::repeats::check(&self.distill_cfg(), prompt, &ex.prev_answer, &crate::repeats::listed(&before, sid)) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        self.log(&json!({"ts": now(), "event": "said_again", "session": sid, "turn": turn, "error": e.to_string()}));
+                        Default::default()
+                    }
+                };
                 let is_known = |id: &String| known.iter().any(|r| &r.id == id);
                 let replaced: Vec<String> = d.replaced.into_iter().filter(|id| is_known(id)).collect();
                 let done: Vec<String> = d.done.into_iter().filter(|id| known.iter().any(|r| &r.id == id && r.kind == Kind::Todo)).collect();
-                // Near-copies of what is noted (other than what they replace) add nothing.
+                // An instruction for this task that the user gave in
+                // another session too is a rule of every session now.
+                // One that says what a rule says is that rule anew.
+                let shown = {
+                    let st = self.state.lock().unwrap();
+                    st.sessions.get(sid).map(|s| if s.shown_before.0 == turn { s.shown_before.1.clone() } else { s.injected.clone() }).unwrap_or_default()
+                };
+                let promoted = crate::repeats::promote(d.drafts, &checked.again, sid, &shown, &before);
+                // Near-copies of what is noted (other than what they replace,
+                // or repeat) add nothing.
                 let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
-                let mut seen: Vec<HashSet<String>> = known.iter().filter(|r| !replaced.contains(&r.id)).map(|r| terms(&r.text)).collect();
+                let mut seen: Vec<HashSet<String>> = known.iter().filter(|r| !replaced.contains(&r.id) && !promoted.repeats.contains(&r.id)).map(|r| terms(&r.text)).collect();
                 let ctx = format!("Turn {turn} request: {}", prompt.chars().take(200).collect::<String>());
                 // Each note links to the turn it was written from.
                 let source = self.prompt_of(sid, turn);
-                let n = d.drafts.len();
+                let n = promoted.drafts.len();
                 let mut drafts = Vec::new();
-                for x in d.drafts {
+                let tree = self.tree(sid);
+                for x in promoted.drafts {
                     let t = terms(&x.text);
                     let dup = seen.iter().any(|s| {
                         let inter = s.intersection(&t).count() as f64;
@@ -810,8 +1074,10 @@ impl Daemon {
                     if !dup {
                         seen.push(t);
                         // Anchored to the code the note is about, as it is now.
-                        let a = anchor::make(Path::new(&self.project), &x.text, &x.files, files);
+                        let a = anchor::make(Path::new(&tree), &x.text, &x.files, files);
                         let ctx = if a.is_empty() { ctx.clone() } else { format!("{ctx}\n{}", a.to_line()) };
+                        // A rule's counts (its `Sessions:` line) go first.
+                        let ctx = if x.ctx.is_empty() { ctx } else { format!("{}\n{ctx}", x.ctx) };
                         let mut x = x.ctx(ctx);
                         if let Some(src) = &source {
                             x = x.link("from", src.clone());
@@ -820,20 +1086,37 @@ impl Daemon {
                     }
                 }
                 let kept = drafts.len();
-                if !drafts.is_empty() {
-                    if let Err(e) = self.store.append(sid, turn, ts, drafts) {
-                        self.log(&json!({"ts": now(), "error": e.to_string(), "event": "distill"}));
+                let stored = if drafts.is_empty() {
+                    Vec::new()
+                } else {
+                    match self.store.append(sid, turn, ts, drafts) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.log(&json!({"ts": now(), "error": e.to_string(), "event": "distill"}));
+                            Vec::new()
+                        }
                     }
-                }
-                for id in &replaced {
-                    let _ = self.store.retag(id, "superseded");
-                }
+                };
+                // A note is superseded only by a stored note that names it
+                // and says the same thing anew ([`successor_of`]); one whose
+                // replacement was dropped, or does not cover it, stays.
+                let replaced: Vec<String> = replaced
+                    .into_iter()
+                    .filter(|id| {
+                        let Some(old) = known.iter().find(|r| &r.id == id) else { return false };
+                        match successor_of(old, &stored) {
+                            Some(new) => self.store.supersede(id, &new).unwrap_or(false),
+                            None => false,
+                        }
+                    })
+                    .collect();
                 for id in &done {
                     let _ = self.store.retag(id, "done");
                 }
+                let repeated = crate::repeats::supersede_repeated(&self.store, &stored);
                 self.store.warm();
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "items": n, "kept": kept,
-                    "replaced": replaced, "done": done, "cost_usd": d.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
+                    "replaced": replaced, "done": done, "said_again": checked.again.len(), "said_again_dropped": checked.dropped.len(), "repeated": repeated, "cost_usd": d.cost_usd + checked.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
             }
             Err(e) => self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "error": e.to_string()})),
         }
@@ -885,6 +1168,12 @@ impl Daemon {
                 self.receipts_on.store(on, Ordering::Release);
             }
         }
+        if let Some(c) = req.get("claude").and_then(|v| v.as_str()) {
+            crate::llm::set_hook_cli(Path::new(c));
+        }
+        if let Some(on) = req.get("distill").and_then(|v| v.as_bool()) {
+            self.hook_distill.store(if on { 1 } else { 2 }, Ordering::Release);
+        }
         let model = req.get("distill_model").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let deep = req.get("deep").cloned().and_then(|d| serde_json::from_value::<crate::deep::DeepConfig>(d).ok());
         let mut h = self.from_hooks.lock().unwrap();
@@ -899,6 +1188,11 @@ impl Daemon {
     /// The distiller's settings, with the model the hooks asked for.
     fn distill_cfg(&self) -> crate::distill::DistillConfig {
         let mut c = self.cfg.distill.clone();
+        // CHLOECTX_DISTILL=0 in Claude Code's environment turns it off,
+        // whichever process started the daemon.
+        if self.hook_distill.load(Ordering::Acquire) == 2 {
+            c.enabled = false;
+        }
         let h = self.from_hooks.lock().unwrap();
         if !h.0.is_empty() && std::env::var("CHLOECTX_DISTILL_MODEL").map_or(true, |m| m.is_empty()) {
             c.model = h.0.clone();
@@ -911,8 +1205,91 @@ impl Daemon {
         self.from_hooks.lock().unwrap().1.clone().unwrap_or_else(|| self.cfg.deep.clone())
     }
 
-    fn checker(&self) -> Checker {
-        Checker::new(Path::new(&self.project))
+    /// A checker of notes against the files of `tree` (a worktree).
+    fn checker_in(&self, tree: &str) -> Checker {
+        Checker::new(Path::new(tree)).with_sessions(anchor::session_branches(&self.store))
+    }
+
+    /// The folder session `sid` runs in: the worktree its hooks named,
+    /// else the daemon's project.
+    fn tree(&self, sid: &str) -> String {
+        let st = self.state.lock().unwrap();
+        st.sessions.get(sid).map(|s| s.worktree.clone()).filter(|w| !w.is_empty()).unwrap_or_else(|| self.project.clone())
+    }
+
+    /// The folder a request came from (`worktree`, which the clients send),
+    /// else the daemon's project.
+    fn tree_of(&self, req: &Json) -> String {
+        req.get("worktree").and_then(|v| v.as_str()).filter(|w| !w.is_empty()).map(String::from).unwrap_or_else(|| self.project.clone())
+    }
+
+    /// Remembers the folder a session's hooks run in (they may come from
+    /// any worktree of the repository) and, when it is new for the session,
+    /// logs it with the branch checked out there.
+    fn note_worktree(&self, sid: &str, req: &Json) {
+        let Some(wt) = req.get("worktree").and_then(|v| v.as_str()).filter(|w| !w.is_empty()) else { return };
+        let changed = {
+            let mut st = self.state.lock().unwrap();
+            let s = st.sessions.entry(sid.to_string()).or_default();
+            let changed = s.worktree != wt;
+            if changed {
+                s.worktree = wt.to_string();
+            }
+            changed
+        };
+        // The branch is looked at on every hook (two small file reads): a
+        // session can switch it.
+        let (head, branch) = anchor::git_head(Path::new(wt));
+        let moved = {
+            let mut st = self.state.lock().unwrap();
+            let s = st.sessions.entry(sid.to_string()).or_default();
+            let moved = !branch.is_empty() && s.branch != branch;
+            if moved {
+                s.branch = branch.clone();
+            }
+            moved
+        };
+        if changed || moved {
+            self.dirty.store(true, Ordering::Release);
+            self.log(&json!({"ts": now(), "event": "worktree", "session": sid, "worktree": wt, "branch": branch, "head": head}));
+        }
+        if moved {
+            // Kept with the records, so that every record of the session
+            // has a branch and a commit: its session's at the time
+            // ([`anchor::Checker::with_sessions`]).
+            let turn = self.state.lock().unwrap().sessions.get(sid).map_or(0, |s| s.turn);
+            let d = Draft::new(Kind::Event, anchor::Anchor { head, branch, files: Vec::new(), idents: Vec::new() }.to_line()).tag(anchor::WORKTREE_TAG).ctx(format!("Worktree: {wt}"));
+            if let Err(e) = self.store.append(sid, turn, now(), vec![d]) {
+                self.log(&json!({"ts": now(), "error": e.to_string(), "event": "worktree"}));
+            }
+        }
+    }
+
+    /// Who wrote the prompt a hook carries: a source Workbench noted for
+    /// its text (`source`, from `CHLOECTX_PROMPT_LOG`), else for the
+    /// session's first prompt the source of the task it was started with
+    /// (`session_source`, `CHLOECTX_PROMPT_SOURCE`), else the user.
+    fn note_source(&self, sid: &str, req: &Json) {
+        let noted = req.get("source").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        let first = req.get("session_source").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        let mut st = self.state.lock().unwrap();
+        let s = st.sessions.entry(sid.to_string()).or_default();
+        // A coordinator's brief to the session (a relay) is that agent's
+        // instruction, as another agent's brief is, not the user's words.
+        let relay = req.get("payload").and_then(|p| p.get("prompt")).and_then(|v| v.as_str()).and_then(crate::envelope::relay_from);
+        let src = match (noted, first, relay) {
+            (Some(n), _, _) => n.to_string(),
+            (None, Some(f), _) if s.turn == 0 => f.to_string(),
+            (_, _, Some(from)) => format!("agent:{from}"),
+            _ => "user".to_string(),
+        };
+        s.source = crate::record::Source::parse(&src).as_str();
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    /// Who wrote the current turn's prompt.
+    fn source_of(&self, sid: &str) -> crate::record::Source {
+        crate::record::Source::parse(&self.state.lock().unwrap().sessions.get(sid).map(|s| s.source.clone()).unwrap_or_default())
     }
 
     /// Runs query understanding for a prompt of a session: the context
@@ -923,10 +1300,13 @@ impl Daemon {
             let s = st.sessions.get(sid).cloned().unwrap_or_default();
             (s.window_start, s.injected)
         };
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), ..Default::default() };
-        let project = Path::new(&self.project);
+        // What it puts into the prompt by itself quotes no third party
+        // (audit CTX-32): memory_search and memory_ask still find those.
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), first_party: true, ..Default::default() };
+        let tree = self.tree(sid);
+        let project = Path::new(&tree);
         let res = crate::deep::run(&self.store, &self.deep_cfg(), &self.distill_cfg(), prompt, recent, &filter, Some(project), now());
-        let text = crate::deep::format(&res, &shown, now(), Some(project));
+        let text = crate::deep::format(&res, &shown, now(), Some(self.checker_in(&tree)));
         let mut log = crate::deep::log_json(&res);
         log["ts"] = json!(now());
         log["event"] = json!("deep");
@@ -947,9 +1327,6 @@ impl Daemon {
         (text, Some(res))
     }
 
-    /// The finished search of `turn` not delivered yet, once. With `wait`,
-    /// waits for a running one (up to `stop_wait_secs`) and returns it only
-    /// when its confidence is high or medium.
     /// The id of a turn's prompt record, which notes and fixes link to.
     fn prompt_of(&self, sid: &str, turn: i64) -> Option<String> {
         self.store
@@ -968,7 +1345,7 @@ impl Daemon {
         if !capture::looks_like_error(resp, &text) {
             return String::new();
         }
-        let Some((sig, _)) = crate::fixes::signature(&text, &self.project) else { return String::new() };
+        let Some((sig, _)) = crate::fixes::signature(&text, &self.tree(sid)) else { return String::new() };
         // Not one the model was shown, nor one of this session's live window
         // (in its context already).
         let (shown, window) = self.with_session(sid, |s| (s.injected.clone(), s.window_start));
@@ -988,15 +1365,37 @@ impl Daemon {
         crate::fixes::render(&found)
     }
 
-    fn take_deep(&self, sid: &str, turn: i64, wait: bool) -> Option<String> {
-        let until = Instant::now() + Duration::from_secs(if wait { self.deep_cfg().stop_wait_secs } else { 0 });
+    /// A search of an earlier `turn` that finished after its turn ended and
+    /// was not delivered: its text, once, when the ranker was confident and
+    /// the session has not been shown all of its picks since.
+    fn take_late_deep(&self, sid: &str, turn: i64) -> Option<String> {
+        let ids = {
+            let jobs = self.deep_jobs.lock().unwrap();
+            let j = jobs.get(sid).filter(|j| j.turn == turn && j.done && !j.delivered && !j.text.is_empty())?;
+            j.ids.clone()
+        };
+        let seen = self.with_session(sid, |s| ids.iter().all(|i| s.injected.contains(i)));
+        if seen {
+            if let Some(j) = self.deep_jobs.lock().unwrap().get_mut(sid) {
+                j.delivered = true;
+            }
+            return None;
+        }
+        self.take_deep(sid, turn, Duration::ZERO, true)
+    }
+
+    /// The finished search of `turn` not delivered yet, once: waits up to
+    /// `wait` for one still running, and with `confident` returns it only
+    /// when the ranker's confidence is high or medium.
+    fn take_deep(&self, sid: &str, turn: i64, wait: Duration, confident: bool) -> Option<String> {
+        let until = Instant::now() + wait;
         loop {
             {
                 let mut jobs = self.deep_jobs.lock().unwrap();
                 let j = jobs.get_mut(sid).filter(|j| j.turn == turn && !j.delivered)?;
                 if j.done {
                     j.delivered = true;
-                    if j.text.is_empty() || (wait && !matches!(j.confidence.as_str(), "high" | "medium")) {
+                    if j.text.is_empty() || (confident && !matches!(j.confidence.as_str(), "high" | "medium")) {
                         return None;
                     }
                     let (text, ids) = (j.text.clone(), j.ids.clone());
@@ -1046,7 +1445,8 @@ impl Daemon {
         if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
             filter.exclude_window = Some((active.clone(), w));
         }
-        let project = Path::new(&self.project);
+        let tree = self.tree_of(req);
+        let project = Path::new(&tree);
         let distill = self.distill_cfg();
         let mut res = crate::deep::run(&self.store, &cfg, &distill, &q, &[], &filter, Some(project), now());
         // A question asked on purpose gets an answer even when the planner
@@ -1057,7 +1457,7 @@ impl Daemon {
             let r = crate::deep::rank(&self.store, &cfg, &distill, &q, &cands, &HashMap::new(), false, now());
             res.adopt(r, cands);
         }
-        let mut text = crate::deep::format(&res, &HashSet::new(), now(), Some(project));
+        let mut text = crate::deep::format(&res, &HashSet::new(), now(), Some(self.checker_in(&tree)));
         if text.is_empty() {
             text = format!("ChloeCtx found nothing relevant in memory ({} searches over {} candidates).", res.plan.queries.len() + 2, res.candidates.len());
         }
@@ -1104,7 +1504,7 @@ impl Daemon {
         let n = turns.len();
         for ((sid, turn), (p, a, c, ts, files)) in turns {
             if !p.trim().is_empty() {
-                self.distill_turn(&sid, turn, ts, p.trim(), a.trim(), &c, &files);
+                self.distill_turn(&sid, turn, ts, p.trim(), a.trim(), &c, &files, &crate::distill::Exchange::default());
             }
         }
         Ok((n, (self.store.len() - before) as usize))
@@ -1140,7 +1540,9 @@ impl Daemon {
             (s.window_start, s.injected, s.turn)
         };
         let query: String = prompt.chars().take(2000).collect();
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), ..Default::default() };
+        // A page, an issue or a mail read once is not recalled into later
+        // prompts as earlier work (audit CTX-32): memory_search finds it.
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), first_party: true, ..Default::default() };
         let t0 = Instant::now();
         // Knowledge that matches the prompt on its own text is shown even
         // when the gate holds back the rest: a request that does not sound
@@ -1153,7 +1555,7 @@ impl Daemon {
         let out = crate::receipt::retrieve(&store, &inputs)?;
         let decision = out.decision.unwrap_or(Decision::Skip);
         let mut parts = Vec::new();
-        let mut ck = self.checker();
+        let mut ck = self.checker_in(&self.tree(sid));
         if !out.known.is_empty() {
             parts.push(recall::fmt_knowledge_checked(&out.known, now(), Some(&mut ck)));
         }
@@ -1193,7 +1595,7 @@ impl Daemon {
             return None;
         }
         let book = self.receipts.get()?;
-        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64) + crate::clock_offset() * 1000;
         let r = crate::receipt::Receipt::new(book.next_id(ms), now(), sid, turn, source, store, inputs, out, text);
         let id = r.id.clone();
         self.unsaved.lock().unwrap().push(r);
@@ -1218,9 +1620,14 @@ impl Daemon {
         if !self.keep_pending.swap(false, Ordering::AcqRel) {
             return;
         }
+        // A forget is rewriting the store: the next recall keeps one.
+        if self.snapshots.held() {
+            self.keep_pending.store(true, Ordering::Release);
+            return;
+        }
         let Some(db) = self.store.db() else { return };
         let r = &self.cfg.receipts.snapshots;
-        if let Err(e) = self.snapshots.prune(r) {
+        if let Err(e) = self.snapshots.prune(r, self.store_bytes()) {
             self.log(&json!({"ts": now(), "error": e.to_string(), "event": "snapshot_prune"}));
         }
         if !self.receipts_on() {
@@ -1248,7 +1655,7 @@ impl Daemon {
             return Ok(String::new());
         }
         let kinds = vec![Kind::Error, Kind::Decision, Kind::Preference, Kind::Fact, Kind::Note, Kind::Episode];
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, ..Default::default() };
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, first_party: true, ..Default::default() };
         let mut where_ = filter.conds();
         where_.push("MATCH(files, :files)".into());
         let params = filter.params().set("files", Value::Str(terms.join(" AND ")));
@@ -1258,10 +1665,10 @@ impl Daemon {
             return Ok(String::new());
         }
         let mut s = format!("ChloeCtx notes on {rel} from earlier work (newest first):\n");
-        let mut ck = self.checker();
+        let mut ck = self.checker_in(&self.tree(sid));
         for r in recs.iter().take(2) {
             let snip: String = r.text.chars().take(500).collect();
-            let label = if r.kind.is_knowledge() { ck.check_record(&r).label() } else { String::new() };
+            let label = ck.label_record(&r);
             s += &format!("\n{}\n", recall::fmt_record_labeled(r, &snip, now(), &label));
         }
         Ok(s)
@@ -1280,16 +1687,17 @@ impl Daemon {
             nf.update(&self.store)?;
             nf.after(rel, 2, 1.0)
         };
-        let next: Vec<String> = next.into_iter().map(|(f, _)| f).filter(|f| Path::new(&self.project).join(f).exists()).collect();
+        let tree = self.tree(sid);
+        let next: Vec<String> = next.into_iter().map(|(f, _)| f).filter(|f| Path::new(&tree).join(f).exists()).collect();
         if next.is_empty() {
             return Ok(String::new());
         }
         let w = self.with_session(sid, |s| s.window_start);
         let kinds = vec![Kind::Error, Kind::Decision, Kind::Preference, Kind::Fact, Kind::Note];
-        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, ..Default::default() };
+        let filter = Filter { exclude_window: Some((sid.to_string(), w)), kinds, first_party: true, ..Default::default() };
         let mut s = format!("In earlier work, edits of {rel} were usually followed by edits of: {}.\n", next.join(", "));
         let mut shown = shown.to_string();
-        let mut ck = self.checker();
+        let mut ck = self.checker_in(&tree);
         for f in &next {
             let terms: Vec<String> = chloedb::text::analyze(f);
             if terms.is_empty() {
@@ -1302,7 +1710,7 @@ impl Daemon {
             let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| !shown.contains(&format!("[{}]", r.id))).collect();
             if let Some(r) = recs.iter().find(|r| r.kind.is_knowledge()).or(recs.first()).cloned() {
                 let snip: String = r.text.chars().take(300).collect();
-                let label = if r.kind.is_knowledge() { ck.check_record(&r).label() } else { String::new() };
+                let label = ck.label_record(&r);
                 let one = format!("\nChloeCtx note on {f}:\n{}\n", recall::fmt_record_labeled(&r, &snip, now(), &label));
                 shown += &one;
                 s += &one;
@@ -1422,7 +1830,19 @@ impl Daemon {
         if text.is_empty() {
             text = "No receipts yet.".into();
         }
-        let list: Vec<Json> = rs.iter().map(|r| json!({"id": r.id, "ts": r.ts, "session": r.session, "turn": r.turn, "source": r.source, "decision": r.decision, "shown": r.shown, "tokens": r.tokens, "txn": r.snapshot.txn})).collect();
+        // The rows each one showed, with their text as it is now (none
+        // when deleted since), for programs (`chloectx receipts --json`).
+        let mut ids: Vec<String> = rs.iter().flat_map(|r| r.rows.iter().filter(|x| x.shown()).map(|x| x.id.clone())).collect();
+        ids.sort();
+        ids.dedup();
+        let texts: std::collections::HashMap<String, String> = self.store.get(&ids)?.into_iter().map(|x| (x.id.clone(), x.text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(300).collect())).collect();
+        let list: Vec<Json> = rs
+            .iter()
+            .map(|r| {
+                let rows: Vec<Json> = r.rows.iter().filter(|x| x.shown()).map(|x| json!({"id": x.id, "kind": x.kind, "tag": x.tag, "rank": x.rank, "score": x.score, "decision": x.decision, "text": texts.get(&x.id)})).collect();
+                json!({"id": r.id, "ts": r.ts, "session": r.session, "turn": r.turn, "source": r.source, "decision": r.decision, "shown": r.shown, "rows": rows, "tokens": r.tokens, "txn": r.snapshot.txn, "query": r.inputs.query.chars().take(200).collect::<String>()})
+            })
+            .collect();
         Ok(json!({"text": text, "receipts": list}))
     }
 
@@ -1459,7 +1879,7 @@ impl Daemon {
         let target = req.get("target").and_then(|v| v.as_str()).ok_or_else(|| err("blame needs a target: path or path:line"))?;
         let replay = req.get("replay").and_then(|v| v.as_bool()).unwrap_or(true);
         self.save_receipts();
-        crate::blame::blame(&self.store, self.receipts.get(), &self.snapshots, &self.project, target, replay)
+        crate::blame::blame(&self.store, self.receipts.get(), &self.snapshots, &self.tree_of(req), target, replay)
     }
 
     /// `{"op": "snapshot", "what": "keep" | "list" | "drop", "name"?}`.
@@ -1493,10 +1913,9 @@ impl Daemon {
     /// After a record is forgotten or records are redacted: the receipts'
     /// copies of their text are scrubbed (whether receipts are on now or
     /// not), and the automatic snapshots, which hold the old text, are
-    /// dropped. For a forget, the store's segments that held the record
-    /// are first rewritten without it, with no snapshot being taken
-    /// meanwhile, so that no later snapshot copies its bytes. What it did,
-    /// in words.
+    /// dropped. A forget then rewrites the store's segments that held the
+    /// record ([`Daemon::compact_forgotten`]), no snapshot being taken
+    /// until it has. What it did, in words.
     fn scrub_history(&self, forgotten: Option<&crate::receipt::Forgotten>) -> String {
         let mut out = Vec::new();
         self.save_receipts();
@@ -1507,17 +1926,18 @@ impl Daemon {
                 Err(e) => out.push(format!("scrubbing the receipts failed: {e}")),
             }
         }
-        let compact = || -> Option<String> {
-            forgotten?;
-            let db = self.store.db()?;
-            match compact_deleted(db) {
-                Ok(_) => None,
-                Err(e) => Some(format!("compacting the store failed ({e}): the record's bytes stay in its file until a merge rewrites them")),
-            }
-        };
-        match self.snapshots.drop_automatic_after(compact) {
-            Ok((failed, dropped, named)) => {
-                out.extend(failed);
+        out.extend(self.drop_automatic(|| None));
+        out.join("; ")
+    }
+
+    /// Drops the automatic snapshots after `first` (run with no snapshot
+    /// being taken), in words: what `first` said, what was dropped, and
+    /// the named snapshots that still hold the old text.
+    fn drop_automatic(&self, first: impl FnOnce() -> Option<String>) -> Vec<String> {
+        let mut out = Vec::new();
+        match self.snapshots.drop_automatic_after(first) {
+            Ok((said, dropped, named)) => {
+                out.extend(said);
                 if dropped > 0 {
                     out.push(format!("{dropped} automatic snapshot{} dropped", if dropped == 1 { "" } else { "s" }));
                 }
@@ -1527,7 +1947,35 @@ impl Daemon {
             }
             Err(e) => out.push(format!("dropping the automatic snapshots failed: {e}")),
         }
-        out.join("; ")
+        out
+    }
+
+    /// The second half of a forget: the segments that held the forgotten
+    /// records are rewritten without them, and the file's free pages,
+    /// where their old copies were, are written with zeros
+    /// ([`compact_forgotten`]). No snapshot is taken from the forget's
+    /// start until this is done ([`crate::snapshots::Snapshots::hold`]),
+    /// which releases the hold. What went wrong, in words (empty when
+    /// nothing did).
+    fn compact_forgotten(&self, before: &SegmentsLive) -> String {
+        let said = self.drop_automatic(|| {
+            let db = self.store.db()?;
+            match compact_forgotten(db, before) {
+                Ok(c) if c.pending_bytes > 0 => Some(format!(
+                    "{} KB of the file's freed pages are still read by an open snapshot and keep their old bytes until the next forget or `chloectx redact`",
+                    c.pending_bytes.div_ceil(1024)
+                )),
+                Ok(_) => None,
+                Err(e) => Some(format!("compacting the store failed ({e}): the record's bytes stay in its file until a merge rewrites them")),
+            }
+        });
+        self.snapshots.release();
+        // What the answer said already (snapshots dropped) is no news.
+        let said: Vec<String> = said.into_iter().filter(|s| !s.contains("snapshot") || s.contains("open snapshot")).collect();
+        if !said.is_empty() {
+            self.log(&json!({"ts": now(), "event": "forget_compact", "said": said}));
+        }
+        said.join("; ")
     }
 
     fn op_timeline(&self, req: &Json) -> Result<Json> {
@@ -1540,11 +1988,20 @@ impl Daemon {
     fn op_sql(&self, req: &Json) -> Result<Json> {
         let sql = req.get("sql").and_then(|v| v.as_str()).unwrap_or("").trim();
         let rs = self.store.query_guarded(sql, &chloedb::query::Params::new(), &crate::sqlguard::Limits::TOOL)?;
+        if req.get("json").and_then(|v| v.as_bool()).unwrap_or(false) {
+            // The cells as JSON values, for programs (`chloectx sql --json`).
+            let rows: Vec<Json> = rs.rows.iter().take(1000).map(|r| Json::Array(r.iter().map(value_json).collect())).collect();
+            return Ok(json!({"text": rows_text(&rs), "columns": rs.columns, "rows": rows, "count": rs.rows.len()}));
+        }
         Ok(json!({"text": rows_text(&rs)}))
     }
 
     fn op_remember(&self, req: &Json) -> Result<Json> {
-        let kind = req.get("kind").and_then(|v| v.as_str()).and_then(Kind::parse).unwrap_or(Kind::Note);
+        // A kind that is not one is refused rather than stored as a note.
+        let kind = match req.get("kind").and_then(|v| v.as_str()).filter(|k| !k.is_empty()) {
+            None => Kind::Note,
+            Some(k) => Kind::parse(k).filter(|k| k.is_knowledge()).ok_or_else(|| err(format!("no kind {k:?}: a record to remember is a decision, preference, fact, todo or note")))?,
+        };
         let text = crate::redact::redact(req.get("text").and_then(|v| v.as_str()).unwrap_or("").trim());
         if text.is_empty() {
             return Err(err("text is empty"));
@@ -1553,38 +2010,186 @@ impl Daemon {
         let (sid, _) = self.active_session();
         let sid = if sid.is_empty() { "manual".to_string() } else { sid };
         let turn = self.with_session(&sid, |s| s.turn);
-        let mut replaced = None;
-        if let Some(old) = req.get("supersedes").and_then(|v| v.as_str()) {
-            if let Some(mut r) = self.store.get(&[old.to_string()])?.pop() {
-                r.tag = "superseded".into();
-                r.importance *= 0.3;
-                self.store.insert(&[r])?;
-                replaced = Some(old.to_string());
+        let old = match req.get("supersedes").and_then(|v| v.as_str()).filter(|o| !o.is_empty()) {
+            Some(o) => Some(self.store.get(&[o.to_string()])?.pop().ok_or_else(|| err(format!("no record {o} to supersede: nothing was stored")))?),
+            None => None,
+        };
+        // Who asks to keep it: `by` (the CLI says `user`: a person ran it,
+        // or Workbench for one); else the memory tool, which the session's
+        // agent calls.
+        let by = match req.get("by").and_then(|v| v.as_str()).filter(|b| !b.is_empty()) {
+            Some(b) => crate::record::Source::parse(b),
+            None => {
+                let agent = self.state.lock().unwrap().sessions.get(&sid).map(|s| s.agent.clone()).unwrap_or_default();
+                crate::record::Source::Assistant(agent)
             }
-        }
-        let a = anchor::make(Path::new(&self.project), &text, &files, &[]);
-        let mut d = Draft::new(kind, text).files(files).tag("remembered");
+        };
+        let a = anchor::make(Path::new(&self.tree_of(req)), &text, &files, &[]);
+        let mut d = Draft::new(kind, text).files(files).tag("remembered").by(&by);
         if !a.is_empty() {
             d = d.ctx(a.to_line());
         }
         // What it replaced, as a distilled replacement links it.
-        if let Some(old) = replaced {
-            d = d.link("supersedes", old);
+        if let Some(o) = &old {
+            d = d.link("supersedes", o.id.clone());
         }
         let recs = self.store.append(&sid, turn, now(), vec![d])?;
-        Ok(json!({"id": recs[0].id, "text": format!("Stored {} as {}.", kind.as_str(), recs[0].id)}))
+        let mut replaced = None;
+        if let Some(o) = &old {
+            if self.store.supersede(&o.id, &recs[0].id)? {
+                replaced = Some(o.id.clone());
+            }
+        }
+        let place = self.paths.dir.join("memory.strata");
+        Ok(json!({"id": recs[0].id, "supersedes": replaced, "store": place, "by": by.as_str(),
+            "text": format!("Stored {} as {}{} in ChloeCtx ({}), where Workbench and every later session see it.", kind.as_str(), recs[0].id,
+                replaced.as_ref().map(|o| format!(", replacing {o}")).unwrap_or_default(), place.display())}))
     }
 
-    fn op_forget(&self, req: &Json) -> Result<Json> {
-        let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let rec = self.store.get(&[id.to_string()])?.pop();
-        let found = self.store.delete(id)?;
-        if !found {
-            return Ok(json!({"text": format!("No record {id}.")}));
+    /// `{"op": "forget", "id": ID}`, or `{"op": "forget", "ids": [...]}` for
+    /// several at once: each record is deleted and scrubbed from the
+    /// receipts, and the automatic snapshots are dropped; the answer
+    /// (`deleted` and `missing`) goes then, and the segments that held the
+    /// records are rewritten without them after it, once for all, with no
+    /// snapshot taken until that is done. `"wait": true` answers only once
+    /// it is (`chloectx forget`); MCP's 20 s deadline is not spent on it.
+    fn op_forget(self: &Arc<Self>, req: &Json) -> Result<(Json, Option<Deferred>)> {
+        let ids: Vec<String> = match req.get("ids").and_then(|v| v.as_array()) {
+            Some(a) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            None => vec![req.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string()],
+        };
+        let wait = req.get("wait").and_then(|v| v.as_bool()).unwrap_or(false);
+        // Which segment holds how many live rows before the deletes: those
+        // whose count falls hold the forgotten records.
+        let before = self.store.db().map(|db| segments_live(db)).unwrap_or_default();
+        // No snapshot from here until the segments are rewritten.
+        self.snapshots.hold();
+        let held = Held(&self.snapshots);
+        // Noted as forgotten for the sync before they are deleted (audit
+        // CTX-33): a pull that runs meanwhile then either stores none of
+        // them again or stores them before the deletes, which remove them.
+        let present: Vec<String> = self.store.get(&ids)?.into_iter().map(|r| r.id).collect();
+        let mut noted = crate::sync::forget(&self.paths.dir, &present);
+        let (mut deleted, mut missing, mut forgotten) = (Vec::new(), Vec::new(), Vec::new());
+        for id in &ids {
+            let rec = self.store.get(&[id.clone()])?.pop();
+            if !self.store.delete(id)? {
+                missing.push(id.clone());
+                continue;
+            }
+            deleted.push(id.clone());
+            forgotten.push(crate::receipt::Forgotten { id: id.clone(), prompt: rec.filter(|r| r.kind == Kind::Prompt).map(|r| r.text) });
         }
-        let forgotten = crate::receipt::Forgotten { id: id.to_string(), prompt: rec.filter(|r| r.kind == Kind::Prompt).map(|r| r.text) };
-        let scrubbed = self.scrub_history(Some(&forgotten));
-        Ok(json!({"text": if scrubbed.is_empty() { format!("Deleted {id}.") } else { format!("Deleted {id}; {scrubbed}.") }}))
+        // The receipts are scrubbed of each record; the automatic snapshots
+        // are dropped once, after the last.
+        let mut scrubbed = Vec::new();
+        if let Some((last, rest)) = forgotten.split_last() {
+            if !rest.is_empty() {
+                self.save_receipts();
+                if let Some(b) = self.receipts.get() {
+                    let mut n = 0;
+                    for f in rest {
+                        match b.scrub(Some(f)) {
+                            Ok(k) => n += k,
+                            Err(e) => scrubbed.push(format!("scrubbing the receipts failed: {e}")),
+                        }
+                    }
+                    if n > 0 {
+                        scrubbed.push(format!("{n} receipt{} scrubbed of the others", if n == 1 { "" } else { "s" }));
+                    }
+                }
+            }
+            scrubbed.push(self.scrub_history(Some(last)));
+        }
+        // One a pull stored after the look above, and the sync server's
+        // rows go too.
+        let late: Vec<String> = deleted.iter().filter(|d| !present.contains(d)).cloned().collect();
+        if noted.is_ok() {
+            noted = crate::sync::forget(&self.paths.dir, &late);
+        }
+        if let Err(e) = noted {
+            scrubbed.push(format!("noting it forgotten for the sync failed ({e}): a pull may bring it back"));
+        }
+        let synced = !deleted.is_empty() && crate::sync::remote(&crate::paths::home()).is_some();
+        let mut later = None;
+        if !deleted.is_empty() {
+            // The hold passes to the compaction, which releases it.
+            std::mem::forget(held);
+            let what = if deleted.len() == 1 { "the segment that held it" } else { "the segments that held them" };
+            if wait {
+                let failed = self.compact_forgotten(&before);
+                scrubbed.push(if failed.is_empty() { format!("{what} rewritten without it") } else { failed });
+                if synced {
+                    scrubbed.push(self.forget_on_server());
+                }
+            } else {
+                later = Some(self.after(move |me| {
+                    me.compact_forgotten(&before);
+                    if synced {
+                        me.forget_on_server();
+                    }
+                }));
+                scrubbed.push(format!("{what} being rewritten"));
+                if synced {
+                    scrubbed.push("its row on the sync server being deleted (a pull never brings it back here)".into());
+                }
+            }
+        }
+        let scrubbed: Vec<String> = scrubbed.into_iter().filter(|s| !s.is_empty()).collect();
+        let text = match (deleted.as_slice(), missing.as_slice()) {
+            ([], [m]) => format!("No record {m}."),
+            ([], ms) => format!("No records {}.", ms.join(", ")),
+            (ds, ms) => {
+                let mut t = if ds.len() == 1 { format!("Deleted {}", ds[0]) } else { format!("Deleted {} records", ds.len()) };
+                if !scrubbed.is_empty() {
+                    t += &format!("; {}", scrubbed.join("; "));
+                }
+                if !ms.is_empty() {
+                    t += &format!("; no record {}", ms.join(", "));
+                }
+                t + "."
+            }
+        };
+        Ok((json!({"text": text, "deleted": deleted, "missing": missing}), later))
+    }
+
+    /// `{"op": "find", "text": TEXT}`: the records whose text or context
+    /// holds TEXT (whatever its case), and `{"op": "find", "ids": [...]}`:
+    /// those of the ids that exist; each with a snippet around the match,
+    /// for `chloectx forget --everywhere` to show before it forgets them.
+    fn op_find(&self, req: &Json) -> Result<Json> {
+        let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
+        let row = |r: &Record, at: Option<(&str, usize)>| {
+            let (field, snippet) = match at {
+                Some((f, i)) => (f, snippet_at(if f == "ctx" { &r.ctx } else { &r.text }, i, 160)),
+                None => ("text", snippet_at(&r.text, 0, 160)),
+            };
+            json!({"id": r.id, "kind": r.kind.as_str(), "session": r.session, "ts": r.ts, "field": field, "snippet": snippet})
+        };
+        if let Some(ids) = req.get("ids").and_then(|v| v.as_array()) {
+            let ids: Vec<String> = ids.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            let found: Vec<Json> = self.store.get(&ids)?.iter().map(|r| row(r, None)).collect();
+            return Ok(json!({"matches": found, "total": found.len()}));
+        }
+        let needle = req.get("text").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+        if needle.chars().count() < 3 {
+            return Err(err("give at least 3 characters to look for"));
+        }
+        let rs = self.store.query(&format!("SELECT id FROM memory LIMIT {}", self.store.len() + 1000))?;
+        let ids: Vec<String> = rs.rows.iter().filter_map(|r| r.first().and_then(|v| v.as_str()).map(String::from)).collect();
+        let (mut out, mut total) = (Vec::new(), 0usize);
+        for chunk in ids.chunks(500) {
+            for r in self.store.get(chunk)? {
+                let hit = find_ci(&r.text, &needle).map(|i| ("text", i)).or_else(|| find_ci(&r.ctx, &needle).map(|i| ("ctx", i)));
+                if let Some(at) = hit {
+                    total += 1;
+                    if out.len() < limit {
+                        out.push(row(&r, Some(at)));
+                    }
+                }
+            }
+        }
+        Ok(json!({"matches": out, "total": total}))
     }
 
     /// `{"op": "redact", "dry_run": bool}`, for a store written before
@@ -1700,9 +2305,9 @@ impl Daemon {
         }
 
         // The server's copies.
-        let sync = match crate::sync::remote(&crate::paths::home()) {
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        let sync = match crate::sync::remote_for(&crate::paths::home(), &key) {
             Some(remote) if !dry && !fixed.is_empty() => {
-                let key = crate::sync::project_key(&crate::paths::home(), &self.project);
                 match crate::sync::push_records(&remote, &key, &fixed) {
                     Ok(n) => json!({"server": remote.url, "replaced": n}),
                     Err(e) => json!({"server": remote.url, "error": e.to_string()}),
@@ -1783,6 +2388,60 @@ impl Daemon {
         Ok(json!({"dest": dest, "records": stats.live_docs, "bytes": stats.bytes_written, "txn": stats.txn, "seconds": stats.seconds}))
     }
 
+    /// `{"op": "capsule", "what": "list" | "cut", "title"?, "kinds"?, "since_days"?}`:
+    /// the capsules cut from this store (under its `capsules/`), or a new
+    /// one cut there from the store as it is now ([`crate::capsule::pack`]).
+    fn op_capsule(&self, req: &Json) -> Result<Json> {
+        let dir = self.paths.dir.join("capsules");
+        if req.get("what").and_then(|v| v.as_str()) == Some("cut") {
+            let kinds: Vec<Kind> = match req.get("kinds").and_then(|v| v.as_array()) {
+                Some(a) if !a.is_empty() => a.iter().filter_map(|k| k.as_str().and_then(Kind::parse)).collect(),
+                _ => crate::capsule::DEFAULT_KINDS.to_vec(),
+            };
+            if kinds.is_empty() {
+                return Err(err("no kind of record to pack"));
+            }
+            let title = req.get("title").and_then(|v| v.as_str()).map(str::trim).filter(|t| !t.is_empty()).map(String::from);
+            let since_ts = req.get("since_days").and_then(|v| v.as_f64()).filter(|d| *d > 0.0).map(|d| now() - (d * 86_400.0) as i64);
+            let slug: String = title.as_deref().unwrap_or("capsule").chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect::<String>().split('-').filter(|w| !w.is_empty()).take(6).collect::<Vec<_>>().join("-");
+            let out = dir.join(format!("{}-{}", if slug.is_empty() { "capsule".to_string() } else { slug }, crate::recall::fmt_time(now()).replace([' ', ':'], "-").chars().take(16).collect::<String>()));
+            crate::paths::create_private_dir(&dir)?;
+            let opts = crate::capsule::PackOptions { kinds, since_ts, title, ..Default::default() };
+            let m = crate::capsule::pack(&self.store.pinned(), &self.cfg.embedder, &self.project, &out, &opts)?;
+            let mut j = serde_json::to_value(&m)?;
+            j["dir"] = json!(out);
+            return Ok(j);
+        }
+        let mut list = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                if let Ok(m) = crate::capsule::manifest(&e.path()) {
+                    let mut j = serde_json::to_value(&m)?;
+                    j["dir"] = json!(e.path());
+                    list.push(j);
+                }
+            }
+        }
+        list.sort_by_key(|j| std::cmp::Reverse(j["created_ts"].as_i64().unwrap_or(0)));
+        Ok(json!({"dir": dir, "capsules": list}))
+    }
+
+    /// `chloectx report`: where the time went ([`crate::report`]), from the
+    /// records of the last `days` days; reads, writes nothing.
+    fn op_report(&self, req: &Json) -> Result<Json> {
+        let days = req.get("days").and_then(|v| v.as_f64()).filter(|d| *d > 0.0).unwrap_or(7.0);
+        let session = req.get("session").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+        let at = now();
+        let since = at - (days * 86_400.0) as i64;
+        let kinds = "'prompt', 'answer', 'episode', 'tool_call', 'tool_result', 'error', 'summary', 'event'";
+        let rs = self.store.query(&format!("SELECT {} FROM memory WHERE ts >= {since} AND kind IN ({kinds}) ORDER BY seq ASC LIMIT 10000000", crate::record::COLUMNS))?;
+        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).collect();
+        let worktrees: HashMap<String, String> = self.state.lock().unwrap().sessions.iter().map(|(k, s)| (k.clone(), s.worktree.clone())).collect();
+        let opts = crate::report::Options { project: self.project.clone(), days, session, now: at };
+        let r = crate::report::build(&recs, &worktrees, &opts);
+        Ok(json!({"text": crate::report::render(&r), "report": r}))
+    }
+
     fn op_stats(&self) -> Result<Json> {
         let db = self.store.db().ok_or_else(|| err("the store is a table of a ChloeDB server"))?;
         let fs = db.storage().file_stats();
@@ -1804,14 +2463,80 @@ impl Daemon {
             "snapshots": {
                 "automatic": snaps.iter().filter(|k| k.auto).count(), "named": snaps.iter().filter(|k| !k.auto).count(),
                 "bytes": self.snapshots.bytes(), "retention": self.cfg.receipts.snapshots,
+                "budget": self.cfg.receipts.snapshots.budget(fs.file_bytes + fs.wal_bytes),
+                "last_copied": snaps.iter().rev().find(|k| k.auto).is_some_and(|k| k.copied),
+                "newest": snaps.iter().rev().find(|k| k.auto).map(|k| k.ts),
             },
             "total_bytes": fs.file_bytes + fs.wal_bytes + receipt_file + receipt_wal + self.snapshots.bytes(),
+            // The model CLI as this daemon resolves it (its PATH is the one
+            // of whichever process started it), for doctor (CTX-3).
+            "claude": match crate::llm::resolve_cli(&self.distill_cfg().command) {
+                Ok(p) => json!({"path": p}),
+                Err(e) => json!({"error": e}),
+            },
+            "distill": self.distill_cfg().active(),
         }))
     }
 }
 
+/// The byte offset in `hay` where `needle` (already lowercase) starts,
+/// whatever the case of `hay`.
+fn find_ci(hay: &str, needle: &str) -> Option<usize> {
+    if hay.is_ascii() {
+        return hay.to_ascii_lowercase().find(needle);
+    }
+    // Lowercasing can change a character's length: each lowercase
+    // character keeps the offset of the one it came from.
+    let mut low = String::with_capacity(hay.len());
+    let mut from = Vec::with_capacity(hay.len());
+    for (i, c) in hay.char_indices() {
+        for l in c.to_lowercase() {
+            from.push((low.len(), i));
+            low.push(l);
+        }
+    }
+    let at = low.find(needle)?;
+    from.iter().rev().find(|(lo, _)| *lo <= at).map(|(_, i)| *i)
+}
+
+/// About `width` characters of `text` around byte offset `at`, on one line.
+fn snippet_at(text: &str, at: usize, width: usize) -> String {
+    let at = (0..=at.min(text.len())).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+    let before: Vec<char> = text[..at].chars().rev().take(width / 3).collect();
+    let start = at - before.iter().map(|c| c.len_utf8()).sum::<usize>();
+    let body: String = text[start..].chars().take(width).collect();
+    let mut s = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if start > 0 {
+        s = format!("…{s}");
+    }
+    if start + body.len() < text.len() {
+        s.push('…');
+    }
+    s
+}
+
 /// One hybrid search of `store`, as `memory_search` shows it: the first
 /// `limit` hits with a snippet each, their ids, and the search's evidence.
+/// The stored note that replaces `old`: one of `stored` that links to it
+/// with `supersedes` and says the same thing anew, sharing a fair part of
+/// its words (a replacement keeps what still holds, [`crate::distill`]).
+/// A note about something else that names `old` replaces nothing: half a
+/// ruling is not superseded by the other half.
+pub fn successor_of(old: &Record, stored: &[Record]) -> Option<String> {
+    let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
+    let o = terms(&old.text);
+    stored
+        .iter()
+        .filter(|r| r.linked("supersedes").any(|t| t == old.id))
+        .find(|r| {
+            let n = terms(&r.text);
+            let shared = o.intersection(&n).count() as f64;
+            let least = o.len().min(n.len()).max(1) as f64;
+            o.is_empty() || shared / least >= 0.3
+        })
+        .map(|r| r.id.clone())
+}
+
 pub fn search_text(store: &Store, q: &str, f: &Filter, rank: &RankParams, limit: usize) -> Result<(String, Vec<String>, Json)> {
     let (hits, ev) = recall::search(store, q, f, rank)?;
     let terms: HashSet<String> = chloedb::text::analyze_query(q).into_iter().collect();
@@ -1832,7 +2557,9 @@ pub fn search_text(store: &Store, q: &str, f: &Filter, rank: &RankParams, limit:
 pub fn timeline_text(store: &Store, id: &str, before: usize, after: usize) -> Result<String> {
     let store = store.pinned();
     let rec = store.get(&[id.to_string()])?.pop().ok_or_else(|| err(format!("no record {id}")))?;
-    let near = store.range(&rec.session, rec.seq - 200, rec.seq + 200)?;
+    // Events (notifications, sub-agents' ends) are not part of what was said.
+    let mut near = store.range(&rec.session, rec.seq - 200, rec.seq + 200)?;
+    near.retain(|r| r.kind != Kind::Event || r.id == rec.id);
     let at = near.iter().position(|r| r.id == rec.id).unwrap_or(0);
     let lo = at.saturating_sub(before);
     let hi = (at + after + 1).min(near.len());
@@ -1842,6 +2569,21 @@ pub fn timeline_text(store: &Store, id: &str, before: usize, after: usize) -> Re
         text += &format!("{}{}\n\n", if r.id == rec.id { ">> " } else { "" }, recall::fmt_record(r, &body, now()));
     }
     Ok(text)
+}
+
+/// A cell as JSON: numbers, text and lists as themselves, a timestamp as
+/// its text, a vector as its length (`"vector(384)"`).
+pub fn value_json(v: &chloedb::Value) -> Json {
+    match v {
+        chloedb::Value::Null => Json::Null,
+        chloedb::Value::Int(x) => json!(x),
+        chloedb::Value::Float(x) => json!(x),
+        chloedb::Value::Str(s) => json!(s),
+        chloedb::Value::Vector(v) => json!(format!("vector({})", v.len())),
+        chloedb::Value::List(xs) => Json::Array(xs.iter().map(value_json).collect()),
+        chloedb::Value::Bool(b) => json!(b),
+        chloedb::Value::Timestamp(t) => json!(chloedb::timestamp::format(*t)),
+    }
 }
 
 /// A result set as `memory_sql` shows it: a header, at most 100 rows of
@@ -1934,6 +2676,17 @@ pub fn serve(dir: &Path, project: &str) -> Result<()> {
         let Ok(stream) = conn else { continue };
         let d = daemon.clone();
         std::thread::spawn(move || {
+            // Counted until the answer is written (and the state saved),
+            // not through the work after it, which `deferred` counts: the
+            // shutdown a request asks for runs there, and waits for this.
+            struct Serving<'a>(&'a std::sync::atomic::AtomicUsize);
+            impl Drop for Serving<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+            d.serving.fetch_add(1, Ordering::SeqCst);
+            let serving = Serving(&d.serving);
             let mut reader = BufReader::new(match stream.try_clone() {
                 Ok(s) => s,
                 Err(_) => return,
@@ -1943,18 +2696,35 @@ pub fn serve(dir: &Path, project: &str) -> Result<()> {
                 return;
             }
             let req: Json = serde_json::from_str(&line).unwrap_or(Json::Null);
-            let (resp, deferred) = d.handle(&req);
+            let (resp, deferred) = if d.closing.load(Ordering::SeqCst) { (closing_answer(&req), None) } else { d.handle(&req) };
             let mut w = stream;
             let _ = writeln!(w, "{resp}");
             let _ = w.flush();
             drop(w);
             d.persist();
+            drop(serving);
             if let Some(f) = deferred {
                 f();
             }
         });
     }
     Ok(())
+}
+
+/// What a daemon that is shutting down answers a request it did not
+/// handle. A shutdown has what it asked for; any other request is sent
+/// again by [`request`], to the daemon started once this one is gone.
+fn closing_answer(req: &Json) -> Json {
+    if req.get("op").and_then(|v| v.as_str()) == Some("shutdown") {
+        json!({"ok": true, "closing": true})
+    } else {
+        json!({"error": "the daemon is shutting down and did not handle the request; send it again", "closing": true})
+    }
+}
+
+/// An answer [`closing_answer`] gave for a request to send again.
+fn is_closing(r: &Json) -> bool {
+    r.get("closing").and_then(|v| v.as_bool()) == Some(true) && r.get("error").is_some()
 }
 
 // ---------------------------------------------------------------- client
@@ -1968,42 +2738,170 @@ fn try_request(socket: &Path, req: &Json, deadline: Instant) -> std::io::Result<
     writeln!(w, "{req}")?;
     w.flush()?;
     let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
+    if BufReader::new(stream).read_line(&mut line)? == 0 {
+        // Not a JSON error ("EOF while parsing a value at line 1 column
+        // 0"): the daemon went away, or failed, while it had the request.
+        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "it closed the connection without answering (it stopped, or failed on the request)"));
+    }
     serde_json::from_str(&line).map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 /// Sends one request to the project's daemon, starting it if needed.
+/// `project` is the folder the request comes from: it travels with the
+/// request as `worktree` (the daemon serves every worktree of a
+/// repository), and the daemon is started for the folder its store is
+/// keyed by ([`crate::paths::store_root`]).
 pub fn request(dir: &Path, project: &str, req: &Json, timeout: Duration) -> Result<Json> {
     let paths = StorePaths::new(dir);
     let deadline = Instant::now() + timeout;
-    match try_request(&paths.socket, req, deadline) {
-        Ok(r) => return Ok(r),
-        Err(e) if !matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => return Err(err(format!("daemon: {e}"))),
-        Err(_) => {}
-    }
-    spawn(&paths, project)?;
+    let mut with_tree;
+    let req = if !project.is_empty() && req.is_object() && req.get("worktree").is_none() {
+        with_tree = req.clone();
+        with_tree["worktree"] = json!(project);
+        &with_tree
+    } else {
+        req
+    };
+    let gone = |e: &std::io::Error| matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused);
+    // A daemon is started when none listens: at first, and again after one
+    // went away under the request.
+    let mut start = true;
+    let mut first = true;
     loop {
         match try_request(&paths.socket, req, deadline) {
+            // A daemon shutting down, which did not handle the request: it
+            // goes to the next one, started once this one is gone.
+            Ok(r) if is_closing(&r) => {
+                if Instant::now() >= deadline {
+                    return Err(err(format!("daemon did not answer in time: {}", r["error"].as_str().unwrap_or("it was shutting down"))));
+                }
+                start = true;
+            }
             Ok(r) => return Ok(r),
+            // A daemon that died as the request reached it (CTX-16): a new one
+            // is started, as for one that is not there.
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => start = true,
+            Err(e) if first && !gone(&e) => {
+                let log = if e.kind() == std::io::ErrorKind::UnexpectedEof { format!("; its log: {}", paths.log.display()) } else { String::new() };
+                return Err(err(format!("daemon: {e}{log}")));
+            }
             Err(e) if Instant::now() >= deadline => return Err(err(format!("daemon did not answer in time: {e}"))),
-            Err(_) => std::thread::sleep(Duration::from_millis(15)),
+            Err(e) if start && gone(&e) => {
+                spawn(&paths, project)?;
+                (start, first) = (false, false);
+                continue;
+            }
+            Err(_) => {}
         }
+        first = false;
+        std::thread::sleep(Duration::from_millis(15));
     }
 }
 
-/// Rewrites the store's segments that hold deleted records, without them
-/// (after a forget): the memtable is flushed, each segment with a deleted
-/// row is merged alone, and the space freed is returned to the file system.
-/// Segments with no deleted row are left alone, unlike `optimize`, which
-/// merges the whole table. The pages the old segments were on are free but
-/// keep their bytes until a later write reuses them; `chloectx redact`
-/// rewrites the whole file for that.
-pub fn compact_deleted(db: &chloedb::db::Db) -> Result<chloedb::storage::MergeStats> {
-    db.storage().flush()?;
+/// A request to the store's daemon only when one runs: never starts one
+/// (and so never creates a store).
+pub fn request_running(dir: &Path, req: &Json, timeout: Duration) -> Result<Json> {
+    try_request(&StorePaths::new(dir).socket, req, Instant::now() + timeout).map_err(|e| err(format!("daemon: {e}")))
+}
+
+/// The live rows of each on-disk segment of the store, by segment id.
+pub type SegmentsLive = std::collections::HashMap<u64, u32>;
+
+/// [`SegmentsLive`] of `db` now.
+pub fn segments_live(db: &chloedb::db::Db) -> SegmentsLive {
+    let snap = db.storage().snapshot();
+    let names: Vec<String> = snap.schemas().map(|s| s.table.clone()).collect();
+    let mut out = SegmentsLive::new();
+    for n in names {
+        if let Some(t) = snap.table(&n) {
+            out.extend(t.segments().iter().filter(|v| !v.in_memory).map(|v| (v.id, v.n_live)));
+        }
+    }
+    out
+}
+
+/// The segments a forget rewrites: those with deleted rows whose live
+/// rows fell since `before`, or that are new since (the flush of what the
+/// memtable held, a merge installed meanwhile, which kept the deleted
+/// rows' bytes). Other segments' deleted rows are older than the forget
+/// and are left to the merges that take them anyway.
+fn forgotten_segments(db: &chloedb::db::Db, before: &SegmentsLive) -> std::collections::HashSet<u64> {
+    let snap = db.storage().snapshot();
+    let names: Vec<String> = snap.schemas().map(|s| s.table.clone()).collect();
+    let mut out = std::collections::HashSet::new();
+    for n in names {
+        let Some(t) = snap.table(&n) else { continue };
+        for v in t.segments().iter().filter(|v| !v.in_memory) {
+            let deleted = (v.n_live as usize) < v.file.n_docs();
+            if deleted && before.get(&v.id).is_none_or(|&was| v.n_live < was) {
+                out.insert(v.id);
+            }
+        }
+    }
+    out
+}
+
+/// What [`compact_forgotten`] did.
+#[derive(Debug, Default)]
+pub struct Compacted {
+    pub merge: chloedb::storage::MergeStats,
+    /// Freed bytes written with zeros.
+    pub zeroed_bytes: u64,
+    /// Freed bytes an open snapshot still reads, left as they were.
+    pub pending_bytes: u64,
+}
+
+/// After records were deleted (a forget): rewrites the segments that held
+/// them, and no others ([`forgotten_segments`]), so that no later
+/// checkpoint (a kept snapshot) copies their bytes, then writes zeros over
+/// the file's free pages, where the old segments were
+/// ([`chloedb::storage::Database::zero_free_pages`]). The cost is the
+/// size of those segments and of the free pages, not of the file.
+///
+/// The store's background merger is woken by the flush and may claim a
+/// segment that held a record; a merge here leaves the segments another
+/// one holds alone, and until that merge is installed the old segment,
+/// record and all, is the one a checkpoint copies. So this returns only
+/// once no merge is running and no such segment is left: a merge
+/// installed meanwhile wrote a new segment that still holds the record,
+/// marked deleted, which is then rewritten too.
+pub fn compact_forgotten(db: &chloedb::db::Db, before: &SegmentsLive) -> Result<Compacted> {
+    let wait = Duration::from_secs(60);
+    let s = db.storage();
+    s.flush()?;
     let policy = chloedb::storage::MergePolicy { merge_factor: 1 << 40, max_deleted_ratio: 0.0, ..Default::default() };
-    let stats = db.storage().merge(&policy)?;
-    db.storage().vacuum()?;
-    Ok(stats)
+    let deadline = Instant::now() + wait;
+    let mut out = Compacted::default();
+    loop {
+        while s.merge_status().running > 0 {
+            if Instant::now() >= deadline {
+                return Err(err(format!("a background merge still holds the store's segments after {} s", wait.as_secs())));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let targets = forgotten_segments(db, before);
+        if targets.is_empty() {
+            // And no merge started meanwhile on one of them.
+            if s.merge_status().running == 0 {
+                break;
+            }
+            continue;
+        }
+        let m = s.merge_only(&policy, &|id| targets.contains(&id))?;
+        out.merge.merges += m.merges;
+        out.merge.segments_in += m.segments_in;
+        out.merge.docs_merged += m.docs_merged;
+        out.merge.docs_dropped += m.docs_dropped;
+        out.merge.bytes_written += m.bytes_written;
+        out.merge.seconds += m.seconds;
+        if Instant::now() >= deadline {
+            return Err(err(format!("the segments that held the record were not all rewritten within {} s", wait.as_secs())));
+        }
+    }
+    let z = s.zero_free_pages()?;
+    out.zeroed_bytes = z.zeroed_bytes;
+    out.pending_bytes = z.pending_bytes;
+    Ok(out)
 }
 
 /// Replaces the store's file with a fresh copy of its live rows, after a
@@ -2078,7 +2976,8 @@ fn spawn(paths: &StorePaths, project: &str) -> Result<()> {
     let exe: PathBuf = std::env::current_exe()?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(&paths.log)?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(["serve", "--dir"]).arg(&paths.dir).arg("--project").arg(project);
+    let root = if project.is_empty() { PathBuf::new() } else { crate::paths::store_root(Path::new(project)) };
+    cmd.args(["serve", "--dir"]).arg(&paths.dir).arg("--project").arg(&root);
     cmd.stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
     // SAFETY: setsid is async-signal-safe; it detaches the daemon from the hook's session.
     unsafe {

@@ -46,7 +46,7 @@ t.read(|db| db.sql("SELECT id FROM notes WHERE MATCH(body, 'harbour')", &Params:
 let other = Tenant::open(store, "agent-7", TenantOptions::new("/var/cache/elsewhere"))?;
 match other.write(|db| db.sql("INSERT INTO notes VALUES (2, 'two')", &Params::new())) {
     Ok(_) => {}                                   // this node is the writer now
-    Err(TenantError::NotWriter) => { /* another node wrote first: nothing was committed, try again */ }
+    Err(TenantError::NotWriter) => { /* another node wrote first: nothing was committed, wait a moment and try again */ }
     Err(e) => return Err(e.into()),
 }
 ```
@@ -72,8 +72,14 @@ transaction it holds is in `HEAD`'s history), and fetches only the
 transactions after it. Otherwise it starts from the base.
 
 A write fails in one of three ways. `NotWriter`: another node committed
-first, nothing was written, and the handle has loaded the tenant again.
-`InDoubt`: the store did not answer and could not be asked again, so the
+first, nothing was written, and the handle has loaded the tenant again;
+wait a random while before trying again, longer after each refusal in a
+row (up to a few times what the refused write took). A node that is not
+the writer takes the tenant with one put of `HEAD` and commits with a
+second, and a node that takes the tenant between the two refuses the
+first node's commit: nodes that try again at once can take it from each
+other for as long as they keep trying, with none committing, when the
+store's puts are slow. `InDoubt`: the store did not answer and could not be asked again, so the
 write may or may not be there. Anything else: not committed. The writes
 that shared its commit fail with it, the same way.
 

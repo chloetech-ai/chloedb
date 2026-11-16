@@ -70,11 +70,11 @@ pub async fn call(svc: &Arc<Service>, name: &str, method: reqwest::Method, path:
     let b = body.map(|b| reqwest::Body::from(b.to_string())).unwrap_or_else(|| reqwest::Body::from(""));
     let r = svc.hub.forward(name, method, path, &h, b, k.as_ref()).await?;
     let status = r.status().as_u16();
-    let raw = axum::body::to_bytes(r.into_body(), 16 << 20).await.map_err(|e| ApiError { status: 502, message: format!("{name}'s answer: {e}") })?;
+    let raw = axum::body::to_bytes(r.into_body(), 16 << 20).await.map_err(|e| ApiError { code: None, status: 502, message: format!("{name}'s answer: {e}") })?;
     let j: Json = serde_json::from_slice(&raw).unwrap_or_else(|_| json!({"error": String::from_utf8_lossy(&raw).chars().take(300).collect::<String>()}));
     if !(200..300).contains(&status) {
         let why = j["error"].as_str().map(String::from).unwrap_or_else(|| j.to_string());
-        return Err(ApiError { status: if status >= 500 { 502 } else { status }, message: format!("{name}: {why}") });
+        return Err(ApiError { code: None, status: if status >= 500 { 502 } else { status }, message: format!("{name}: {why}") });
     }
     Ok(j)
 }
@@ -109,8 +109,8 @@ pub async fn follow(svc: &Arc<Service>, who: &Principal, a: &Ask) -> Result<Json
         return Err(ApiError::bad(format!("{} cannot follow itself", a.follower)));
     }
     let hub = &svc.hub;
-    let f = hub.get(&a.follower).ok_or_else(|| ApiError { status: 404, message: format!("no connection {} in the book", a.follower) })?;
-    let s = hub.get(&a.source).ok_or_else(|| ApiError { status: 404, message: format!("no connection {} in the book", a.source) })?;
+    let f = hub.get(&a.follower).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no connection {} in the book", a.follower) })?;
+    let s = hub.get(&a.source).ok_or_else(|| ApiError { code: None, status: 404, message: format!("no connection {} in the book", a.source) })?;
     let name = a.name.clone().unwrap_or_else(|| a.source.clone());
     if !crate::service::follow_name_ok(&name) {
         return Err(ApiError::bad(format!("{name:?} is not a name the follower can know the source by: 1 to 64 letters, digits, '.', '_' or '-' (give name)")));
@@ -181,13 +181,13 @@ pub async fn follow(svc: &Arc<Service>, who: &Principal, a: &Ask) -> Result<Json
         return Ok(out);
     }
     if !refused.is_empty() {
-        return Err(ApiError { status: 409, message: refused.join("; ") });
+        return Err(ApiError { code: None, status: 409, message: refused.join("; ") });
     }
     let url = url.expect("no refusal: a URL").0;
     if hub_writes_secret {
-        let k = crate::copy::kube_for(svc, &a.follower).await?.ok_or_else(|| ApiError { status: 409, message: format!("{} has no Kubernetes API here", a.follower) })?;
+        let k = crate::copy::kube_for(svc, &a.follower).await?.ok_or_else(|| ApiError { code: None, status: 409, message: format!("{} has no Kubernetes API here", a.follower) })?;
         let made = call(svc, &a.source, reqwest::Method::POST, "/v1/admin/keys", Some(&json!({"name": format!("follow {}", a.follower), "scope": "feed", "owner": format!("hub {}", hub.device), "note": format!("{} follows {} with it (set up from the hub)", a.follower, a.source)}))).await?;
-        let key = made["secret"].as_str().ok_or_else(|| ApiError { status: 502, message: format!("{} made a key but answered no secret", a.source) })?;
+        let key = made["secret"].as_str().ok_or_else(|| ApiError { code: None, status: 502, message: format!("{} made a key but answered no secret", a.source) })?;
         let obj = json!({
             "apiVersion": "v1", "kind": "Secret", "type": "Opaque",
             "metadata": {"name": secret, "namespace": ns, "labels": {"app.kubernetes.io/instance": cluster, "app.kubernetes.io/component": "follow-key"}},
@@ -198,7 +198,7 @@ pub async fn follow(svc: &Arc<Service>, who: &Principal, a: &Ask) -> Result<Json
             if let Some(id) = made["key"]["id"].as_str() {
                 let _ = call(svc, &a.source, reqwest::Method::DELETE, &format!("/v1/admin/keys/{id}"), None).await;
             }
-            return Err(ApiError { status: 502, message: format!("{}'s Kubernetes API: the Secret {ns}/{secret}: {e}", a.follower) });
+            return Err(ApiError { code: None, status: 502, message: format!("{}'s Kubernetes API: the Secret {ns}/{secret}: {e}", a.follower) });
         }
         out["key"] = json!({"id": made["key"]["id"], "name": made["key"]["name"]});
     }

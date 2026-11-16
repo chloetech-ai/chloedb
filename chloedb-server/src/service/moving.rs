@@ -257,7 +257,7 @@ impl Service {
             match held.as_mut() {
                 Some(f) => f.id = id,
                 None => {
-                    let late = || ApiError { status: 503, message: format!("the writes under way to the moving slots did not commit within {} s", FREEZE_WAIT.as_secs()) };
+                    let late = || ApiError { code: None, status: 503, message: format!("the writes under way to the moving slots did not commit within {} s", FREEZE_WAIT.as_secs()) };
                     let deadline = tokio::time::Instant::now() + FREEZE_WAIT;
                     let g = tokio::time::timeout_at(deadline, self.moving.gate.clone().write_owned()).await.map_err(|_| late())?;
                     // And those that looked at the map before the slots
@@ -348,7 +348,7 @@ impl Service {
         self.is_writer()?;
         let Some(mask) = self.moving.mask() else { return Ok(0) };
         if !self.moving.drained(tokio::time::Instant::now() + FREEZE_WAIT).await {
-            return Err(ApiError { status: 503, message: format!("the writes under way here did not commit within {} s: clean up again", FREEZE_WAIT.as_secs()) });
+            return Err(ApiError { code: None, status: 503, message: format!("the writes under way here did not commit within {} s: clean up again", FREEZE_WAIT.as_secs()) });
         }
         let mut deleted = 0;
         loop {
