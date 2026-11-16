@@ -290,7 +290,17 @@ fn serve(
             hn: hn.filter(|h| !h.is_empty()).map(|h| api::Hn::new(&h)),
             started: std::time::Instant::now(),
             latest: std::sync::Mutex::new(None),
+            topics: tokio::sync::Mutex::new(None),
         });
+        // Rising's topic list takes seconds to sum: made once at the start.
+        {
+            let svc = svc.clone();
+            tokio::spawn(async move {
+                let trace = chloedb_gh::strata::Trace::new();
+                let c = chloedb_gh::pages::Ctx { db: &svc.db, trace: &trace };
+                svc.topics(&c).await;
+            });
+        }
         tracing::info!(listen = %listener.local_addr()?, strata = %url, token = svc.token.is_some(), public = svc.public, hn = svc.hn.is_some(), "chloedb-gh serves");
         axum::serve(listener, api::router(svc).into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(async {
             let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("a signal handler");

@@ -151,9 +151,12 @@ const CSS = `
 .gx-hero p { color: var(--text-2); font-size: 16px; margin: 12px auto 0; max-width: 700px; }
 .gx-count { display: inline-flex; flex-direction: column; align-items: center; margin: 20px auto 2px; padding: 12px 26px 11px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow-1); text-decoration: none; color: inherit; }
 .gx-count[hidden] { display: none; }
+.gx-pick { font: inherit; font-size: 13px; color: var(--text); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 5px 8px; margin-right: 8px; max-width: 200px; }
+.gx-pick:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
 .gx-count:hover { border-color: var(--line-2); }
 .gx-count b { font-size: clamp(28px, 7.5vw, 44px); line-height: 1.1; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--accent); }
 .gx-count span { margin-top: 4px; font-size: 13.5px; color: var(--text-2); }
+.gx-count small { margin-top: 3px; font-size: 11.5px; color: var(--muted); }
 .gx-stats { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px 26px; margin: 18px 0 6px; color: var(--muted); font-size: 13px; }
 .gx-stats b { color: var(--text); font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; margin-right: 4px; }
 .gx-try { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; margin: 16px auto 4px; max-width: 920px; }
@@ -677,7 +680,7 @@ async function home(app, main, alive) {
   const s = app.status || (app.status = await app.api("/v1/status").catch(() => null));
   if (!alive()) return;
   const ct = main.querySelector("#gx-count");
-  if (s?.events) { fill(ct, h("b", {}, fmt(s.events)), h("span", {}, `public GitHub events indexed, from 12 Feb 2011 to ${dmy(j.latest)}`)); ct.hidden = false; }
+  if (s?.events) { fill(ct, h("b", {}, fmt(s.events)), h("span", {}, `public GitHub events indexed, from 12 Feb 2011 to ${dmy(j.latest)}`), h("small", {}, "on 4 machines, each 4 vCPU, 8 GB RAM and a local SSD (DigitalOcean s-4vcpu-8gb-amd)")); ct.hidden = false; }
   if (s) fill(st, h("span", {}, h("b", {}, short(s.repos)), "repos with 2+ stars"), h("span", {}, h("b", {}, short(s.people)), "people"), h("span", {}, h("b", {}, "2011"), "since"), h("span", {}, "newest ", h("b", {}, iso(j.latest))));
   fill(main.querySelector("#c1"), sec("Breaking out this week", h("a", { href: app.href("rising") }, "All rising")),
     j.rising.length ? h("ul", { class: "gx-list" }, j.rising.slice(0, 8).map((r) => repoItem(app, r, {
@@ -832,19 +835,27 @@ async function personPage(app, main, login, alive) {
 // ---------------------------------------------------------------- rising
 
 async function risingPage(app, main, rest, alive) {
+  // rising/DAYS/TOPIC/DAY: a topic ("all" for every one), then a day.
   const days = Number(rest[0] || 7);
-  const at = rest[1] || "";
+  const topic = rest[1] && rest[1] !== "all" ? rest[1].toLowerCase() : "";
+  const at = rest[2] || "";
   fill(main, skel(10));
-  const j = await app.api(`/v1/rising?days=${days}${at ? `&at=${enc(at)}` : ""}`);
+  const j = await app.api(`/v1/rising?days=${days}${at ? `&at=${enc(at)}` : ""}${topic ? `&topic=${enc(topic)}` : ""}`);
   if (!alive()) return;
+  const to = (d, t) => (at ? app.go("rising", String(d), t || "all", at) : t ? app.go("rising", String(d), t) : app.go("rising", String(d)));
+  const names = (j.topics || []).map((t) => t.topic);
+  if (topic && !names.includes(topic)) names.unshift(topic);
+  const pick = h("select", { class: "gx-pick", "aria-label": "Topic", onchange: (e) => to(days, e.target.value) },
+    h("option", { value: "" }, "All topics"), names.map((n) => h("option", { value: n, selected: n === topic }, n)));
   fill(main,
-    h("div", { class: "gx-head" }, h("span", { class: "t" }, "Repos whose stars jumped in the ", h("b", {}, days === 1 ? "last day" : `last ${days} days`), ` to ${dmy(j.at)}, against the four weeks before`), h("span", { class: "sp" }),
-      h("div", { class: "gx-seg" }, [[1, "Day"], [7, "Week"], [30, "Month"]].map(([d, t]) => h("button", { class: days === d ? "on" : "", onclick: () => app.go("rising", String(d)) }, t)))),
+    h("div", { class: "gx-head" }, h("span", { class: "t" }, "Repos ", topic ? ["about ", h("b", {}, topic), " "] : "", "whose stars jumped in the ", h("b", {}, days === 1 ? "last day" : `last ${days} days`), ` to ${dmy(j.at)}, against the four weeks before`), h("span", { class: "sp" }),
+      pick,
+      h("div", { class: "gx-seg" }, [[1, "Day"], [7, "Week"], [30, "Month"]].map(([d, t]) => h("button", { class: days === d ? "on" : "", onclick: () => to(d, topic) }, t)))),
     j.repos.length ? h("ul", { class: "gx-list" }, j.repos.map((r) => repoItem(app, r, {
       extra: [h("span", { class: "up" }, `+${fmt(r.window)} ★`), h("span", {}, `${r.spike}× usual`)],
       spark: spark(r.daily, { w: 110, hgt: 22 }),
       why: whyLine(r.why),
-    }))) : h("div", { class: "gx-empty" }, "No stars in the window yet."));
+    }))) : h("div", { class: "gx-empty" }, topic ? `No repo with the topic “${topic}” among the window's 5,000 most starred.` : "No stars in the window yet."));
 }
 
 // ---------------------------------------------------------------- trends

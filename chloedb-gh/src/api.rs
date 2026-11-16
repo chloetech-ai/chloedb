@@ -135,6 +135,9 @@ pub struct Service {
     /// The newest day in the archive, and the most starred repos, kept a
     /// few minutes.
     pub latest: Mutex<Option<(Instant, i64, Vec<i64>)>>,
+    /// The topics with the most stars in the last 12 months, for Rising's
+    /// picker, kept 12 hours.
+    pub topics: tokio::sync::Mutex<Option<(Instant, Vec<Value>)>>,
 }
 
 pub type Shared = Arc<Service>;
@@ -345,6 +348,24 @@ macro_rules! ctx {
 }
 
 impl Service {
+    /// The 80 topics with the most stars in the last 12 months (worked
+    /// out once and kept 12 hours: the sum reads every topic's months).
+    pub async fn topics(&self, c: &crate::pages::Ctx<'_>) -> Vec<Value> {
+        let mut kept = self.topics.lock().await;
+        if let Some((at, list)) = kept.as_ref() {
+            if at.elapsed() < Duration::from_secs(12 * 3600) {
+                return list.clone();
+            }
+        }
+        let since = crate::pages::months_back(now_s() as i64, 12);
+        let rows = c.soft_within("the topics with the most stars, last 12 months", "SELECT topic, SUM(stars) AS s FROM gh_topic_months WHERE month >= :m GROUP BY topic ORDER BY s DESC LIMIT 80", json!({"m": since}), 60_000).await;
+        let list: Vec<Value> = rows.iter().map(|r| json!({"topic": r.s("topic"), "stars": r.i("s")})).collect();
+        if !list.is_empty() {
+            *kept = Some((Instant::now(), list.clone()));
+        }
+        list
+    }
+
     /// Counts a request from `who` in minute `minute`: false past
     /// `per_minute` of them.
     pub fn admit(&self, who: &str, minute: u64) -> bool {
@@ -503,6 +524,8 @@ async fn person(State(svc): State<Shared>, Path(login): Path<String>) -> Answer 
 struct RisingParams {
     at: Option<String>,
     days: Option<i64>,
+    #[serde(default)]
+    topic: String,
 }
 
 async fn rising(State(svc): State<Shared>, Query(a): Query<RisingParams>) -> Answer {
@@ -510,7 +533,11 @@ async fn rising(State(svc): State<Shared>, Query(a): Query<RisingParams>) -> Ans
     ctx!(svc, trace, c);
     let (latest, _) = svc.latest().await;
     let at = day_of(&a.at, latest);
-    let v = pages::rising(&c, at, a.days.unwrap_or(7).clamp(1, 90), svc.hn.as_ref()).await?;
+    let topic = a.topic.trim().to_lowercase();
+    let topic = (!topic.is_empty() && topic.len() <= 60).then_some(topic);
+    let mut v = pages::rising_about(&c, at, a.days.unwrap_or(7).clamp(1, 90), svc.hn.as_ref(), topic.as_deref()).await?;
+    v["topic"] = json!(topic);
+    v["topics"] = json!(svc.topics(&c).await);
     done(&trace, v, t0)
 }
 
@@ -629,6 +656,7 @@ mod public_tests {
             hn: None,
             started: Instant::now(),
             latest: Mutex::new(None),
+            topics: tokio::sync::Mutex::new(None),
         }
     }
 

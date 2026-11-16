@@ -580,9 +580,32 @@ pub async fn person(c: &Ctx<'_>, login: &str) -> Result<Value> {
 /// The repos whose stars jumped in the `days` days to `at` (a day), against
 /// the four weeks before, with what may explain it.
 pub async fn rising(c: &Ctx<'_>, at: i64, days: i64, hn: Option<&crate::api::Hn>) -> Result<Value> {
+    rising_about(c, at, days, hn, None).await
+}
+
+/// The repos most starred in a window that have `topic` among their topics:
+/// of the window's [`TOPIC_POOL`] most starred repos.
+pub const TOPIC_POOL: usize = 5000;
+
+/// Whether a repo's topics (as kept: `a,b,c`) hold `topic` itself, not
+/// only its words (`machine-learning` is not `machine-learning-algorithms`).
+pub fn has_topic(topics: &str, topic: &str) -> bool {
+    topics.split(',').any(|t| t.trim().eq_ignore_ascii_case(topic))
+}
+
+/// As [`rising`], of the repos with `topic` when given.
+pub async fn rising_about(c: &Ctx<'_>, at: i64, days: i64, hn: Option<&crate::api::Hn>, topic: Option<&str>) -> Result<Value> {
     let a0 = at - days * DAY;
     let b0 = a0 - 28 * DAY;
-    let recent = c.rows("stars in the window, by repo", "SELECT repo, SUM(stars) AS s FROM gh_stars_daily WHERE day > :a0 AND day <= :a1 GROUP BY repo ORDER BY s DESC LIMIT 400", json!({"a0": a0, "a1": at})).await?;
+    let recent = match topic {
+        None => c.rows("stars in the window, by repo", "SELECT repo, SUM(stars) AS s FROM gh_stars_daily WHERE day > :a0 AND day <= :a1 GROUP BY repo ORDER BY s DESC LIMIT 400", json!({"a0": a0, "a1": at})).await?,
+        Some(t) => {
+            let pool = c.rows("stars in the window, by repo", format!("SELECT repo, SUM(stars) AS s FROM gh_stars_daily WHERE day > :a0 AND day <= :a1 GROUP BY repo ORDER BY s DESC LIMIT {TOPIC_POOL}"), json!({"a0": a0, "a1": at})).await?;
+            let about = c.rows("those with the topic", format!("SELECT repo, topics FROM gh_repos WHERE repo IN (:ids) AND MATCH(topics, :t) LIMIT {TOPIC_POOL}"), json!({"ids": ids(&pool, "repo"), "t": t})).await?;
+            let keep: std::collections::HashSet<i64> = about.iter().filter(|r| has_topic(&r.s("topics"), t)).map(|r| r.i("repo")).collect();
+            pool.into_iter().filter(|r| keep.contains(&r.i("repo"))).take(400).collect()
+        }
+    };
     let rids = ids(&recent, "repo");
     let (base, info, rel, daily) = tokio::join!(
         c.soft("their stars in the four weeks before", "SELECT repo, SUM(stars) AS b FROM gh_stars_daily WHERE repo IN (:ids) AND day > :b0 AND day <= :a0 GROUP BY repo", json!({"ids": rids, "a0": a0, "b0": b0})),
@@ -944,4 +967,15 @@ async fn futures_join<F: std::future::Future<Output = (String, i64)>>(
         out.push((k, json!(v)));
     }
     out
+}
+
+#[cfg(test)]
+mod topic_tests {
+    #[test]
+    fn a_topic_is_one_of_the_list_not_a_word_of_one() {
+        assert!(super::has_topic("classification,machine-learning,python", "machine-learning"));
+        assert!(super::has_topic("ai, LLM", "llm"));
+        assert!(!super::has_topic("machine-learning-algorithms,optimization", "machine-learning"));
+        assert!(!super::has_topic("", "llm"));
+    }
 }
