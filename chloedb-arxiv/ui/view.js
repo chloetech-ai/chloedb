@@ -218,6 +218,43 @@ const CSS = `
 .ax-wq { font-size: 22px; font-weight: 650; line-height: 1.3; margin: 0 0 6px; letter-spacing: -0.01em; }
 .ax-wacts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }
 .ax-p .why { font-size: 13px; color: var(--text-2); margin-top: 4px; }
+.ax-claim { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+@media (max-width: 760px) { .ax-claim { grid-template-columns: 1fr; } }
+.ax-claim h3 { display: flex; align-items: baseline; gap: 8px; font-size: 15px; margin: 6px 0 2px; }
+.ax-claim h3 .n { font-size: 12.5px; color: var(--muted); font-weight: 500; }
+.ax-claim h3 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.ax-side { border: 1px solid var(--line); border-left: 4px solid var(--line-2); border-radius: 12px; padding: 12px 14px; margin: 10px 0; background: var(--surface); }
+.ax-side.for { border-left-color: var(--good); }
+.ax-side.against { border-left-color: var(--crit); }
+.ax-side.mixed { border-left-color: var(--warn); }
+.ax-side .t { font-weight: 620; color: var(--text); text-decoration: none; line-height: 1.35; overflow-wrap: anywhere; }
+.ax-side .t:hover { color: var(--accent); }
+.ax-side .m { font-size: 12.5px; color: var(--muted); margin: 3px 0 6px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.ax-side blockquote { margin: 6px 0 4px; padding: 2px 0 2px 10px; border-left: 2px solid var(--line-2); font-size: 13.5px; line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
+.ax-side .why { font-size: 12.5px; color: var(--text-2); }
+.ax-bal { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--line); margin: 10px 0 4px; }
+.ax-bal span { display: block; height: 100%; }
+.ax-ballab { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted); }
+.ax-ballab b { color: var(--text); font-weight: 650; }
+.ax-ballab select { font: 12.5px var(--sans); padding: 3px 8px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text-2); }
+.ax-cform { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 6px; }
+.ax-cform input { flex: 1 1 320px; min-width: 0; box-sizing: border-box; font: 15px/1.4 var(--sans); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); }
+.ax-cform select { font: 14px var(--sans); padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text); }
+.ax-others { font-size: 13px; color: var(--text-2); margin-top: 16px; }
+.ax-others summary { cursor: pointer; color: var(--muted); }
+.ax-others li { margin: 3px 0; }
+.ax-rw { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 6px 18px 14px; margin-top: 12px; }
+.ax-rw .ax-tabs { margin: 4px 0 10px; }
+.ax-rw p { font-size: 14.5px; line-height: 1.65; margin: 0 0 12px; color: var(--text); }
+.ax-rw p b { font-weight: 650; }
+.ax-rw sup a { text-decoration: none; }
+.ax-rw pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.55 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 0; max-height: 560px; overflow: auto; }
+.ax-rw .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; font-size: 12.5px; color: var(--muted); }
+.ax-rw ol.refs { font-size: 13px; color: var(--text-2); padding-left: 22px; margin: 4px 0 0; }
+.ax-rw ol.refs li { margin: 3px 0; }
+.ax-keys { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 2px; }
+.ax-keys .ax-chip { font: 12px var(--mono); }
+.ax-keys .ax-chip.miss { border-style: dashed; color: var(--muted); }
 .ax-co { border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 10px 0; background: var(--surface); }
 .ax-co .top { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
 .ax-co .nm { font-size: 16px; font-weight: 650; color: var(--text); text-decoration: none; }
@@ -287,6 +324,22 @@ const CSS = `
 .ax-kpi .l { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .ax-tldr { border-left: 3px solid var(--accent); padding: 8px 14px; background: var(--accent-soft); border-radius: 0 8px 8px 0; margin: 10px 0; font-size: 14.5px; max-width: 820px; }
 .ax-tldr b { color: var(--accent); }
+.ax-lc { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; font-size: 12.5px; color: var(--text-2); }
+.ax-lc .lift { font-weight: 650; color: var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 1px 7px; }
+.ax-hib table { border-collapse: collapse; font-size: 13px; margin: 6px 0; }
+.ax-hib th, .ax-hib td { text-align: left; padding: 4px 12px 4px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+.ax-hib th { font-weight: 600; color: var(--muted); font-size: 12px; }
+.ax-hib .wrap { overflow-x: auto; }
+.ax-lvl { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; vertical-align: middle; }
+.ax-lvl button { border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer; }
+.ax-lvl button + button { border-left: 1px solid var(--line); }
+.ax-lvl button.on { background: var(--accent); color: #fff; }
+.ax-explain .hd { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.ax-terms { margin: 8px 0 0; display: grid; grid-template-columns: minmax(110px, max-content) 1fr; gap: 4px 12px; font-size: 13.5px; }
+.ax-terms dt { font-weight: 600; color: var(--text); }
+.ax-terms dd { margin: 0; color: var(--text-2); }
+.ax-terms .from { display: block; font-size: 12px; color: var(--muted); }
+@media (max-width: 640px) { .ax-terms { grid-template-columns: 1fr; } .ax-terms dd { margin-bottom: 6px; } }
 .ax-earlier { margin: 8px 0 0; padding-left: 20px; font-size: 13.5px; }
 .ax-earlier li { margin: 2px 0; }
 .ax-earlier .n { color: var(--muted); font-size: 12.5px; }
@@ -710,7 +763,7 @@ function render(el, ctx) {
   }
   drawSql();
 
-  const PAGES = [["", "Search"], ["hot", "Rising"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["code", "Code"], ["labs", "Labs"], ["foryou", "For you"], ["feeds", "Feeds"], ["watch", "Questions"], ["library", "Library"], ["cite", "What to cite"], ["reviewers", "Reviewers"], ["about", "How it works"]];
+  const PAGES = [["", "Search"], ["hot", "Rising"], ["classics", "Likely classics"], ["born", "New topics"], ["gaps", "Gaps"], ["spread", "Spread"], ["trends", "Trends"], ["atlas", "Atlas"], ["code", "Code"], ["labs", "Labs"], ["foryou", "For you"], ["feeds", "Feeds"], ["watch", "Questions"], ["claim", "For and against"], ["library", "Library"], ["cite", "What to cite"], ["related", "Related work"], ["reviewers", "Reviewers"], ["about", "How it works"]];
   function drawNav(page) {
     fill(nav, ...PAGES.map(([p, t]) => h("a", { href: app.href(p), class: (page === p || (p === "" && ["search", "paper", "author", "topic", "concept", "category", "venue"].includes(page))) || (p === "feeds" && ["feed", "issue"].includes(page)) ? "on" : "" }, t)), h("span", { class: "sp" }), live);
   }
@@ -777,6 +830,8 @@ function render(el, ctx) {
         case "author": return await authorPage(app, main, arg, alive);
         case "collab": return await collabPage(app, main, arg, alive);
         case "reviewers": return await reviewersPage(app, main, arg, alive);
+        case "claim": return await claimPage(app, main, arg, alive);
+        case "related": return await relatedPage(app, main, arg, alive);
         case "code": return await codePage(app, main, arg, alive);
         case "labs": return await labsPage(app, main, arg, alive);
         case "lab": return await labPage(app, main, arg, alive);
@@ -786,6 +841,7 @@ function render(el, ctx) {
         case "venue": return await scopePage(app, main, "venue", arg, alive);
         case "trends": return await trendsPage(app, main, arg, alive);
         case "hot": return await hotPage(app, main, arg, alive);
+        case "classics": return await classicsPage(app, main, arg, alive);
         case "gaps": return await gapsPage(app, main, arg, alive);
         case "born": return await bornPage(app, main, arg, alive);
         case "spread": return await spreadPage(app, main, arg, alive);
@@ -902,18 +958,34 @@ function answerCard(app, a, und) {
       break;
     case "reading_list":
       kids.push(...(a.steps || []).map((s) => h("div", { style: { marginTop: "8px" } }, h("h5", { style: { margin: "6px 0 0", fontSize: "11px", textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)" } }, s.step), paperList(app, s.papers, { compact: true }))));
+      kids.push(h("div", { style: { marginTop: "10px" } }, h("a", { class: "ax-btn", href: app.href("related", (a.steps || []).flatMap((s) => s.papers.map((p) => p.id)).join(",")) }, "Write related work from this list")));
       break;
     case "summary": {
       const slot = h("div", {}, h("div", { class: "ax-prog" }, h("div")), h("div", { style: { color: "var(--muted)", fontSize: "13px" } }, "Reading the most relevant abstracts and writing a summary with every claim cited…"));
       kids[0].lastChild.textContent = "written by a model from the abstracts below, each claim cited";
-      kids.push(slot);
-      app.api(`/v1/summary?q=${enc(a.subject)}`, { timeout: 90000 }).then((s) => {
-        fill(slot, s.answer ? richText(app, s.answer, s.sources) : h("div", { class: "ax-empty" }, s.note || "No summary."), s.sources && s.sources.length ? h("details", {}, h("summary", { style: { cursor: "pointer", color: "var(--muted)", fontSize: "12.5px", marginTop: "6px" } }, `${s.sources.length} sources${s.kept ? " · kept from before" : ""}`), h("div", { class: "ax-src" }, s.sources.map((x) => [h("span", {}, `[${x.n}]`), h("a", { href: app.href("paper", x.id) }, `${x.title} (${x.year})`)]))) : null);
-      }).catch((e) => fill(slot, h("div", { class: "ax-err" }, String(e.message || e))));
+      const lvlBar = h("div", { style: { margin: "4px 0 8px", fontSize: "12.5px", color: "var(--muted)", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } });
+      kids.push(lvlBar, slot);
+      const write = (level) => {
+        fill(lvlBar, "Written for", levelSwitch(level, write));
+        fill(slot, h("div", { class: "ax-prog" }, h("div")), h("div", { style: { color: "var(--muted)", fontSize: "13px" } }, "Reading the most relevant abstracts and writing a summary with every claim cited…"));
+        app.api(`/v1/summary?q=${enc(a.subject)}${level ? `&level=${level}` : ""}`, { timeout: 90000 }).then((s) => {
+          fill(slot, s.answer ? richText(app, s.answer, s.sources) : h("div", { class: "ax-empty" }, s.note || "No summary."), s.sources && s.sources.length ? h("details", {}, h("summary", { style: { cursor: "pointer", color: "var(--muted)", fontSize: "12.5px", marginTop: "6px" } }, `${s.sources.length} sources${s.kept ? " · kept from before" : ""}`), h("div", { class: "ax-src" }, s.sources.map((x) => [h("span", {}, `[${x.n}]`), h("a", { href: app.href("paper", x.id) }, `${x.title} (${x.year})`)]))) : null);
+        }).catch((e) => fill(slot, h("div", { class: "ax-err" }, String(e.message || e))));
+      };
+      write(myLevel());
       break;
     }
   }
   return h("div", { class: "ax-ans" }, kids);
+}
+
+// The reader's level, kept in this browser: summaries, explanations and new feeds follow it.
+const LEVELS = [["student", "Student"], ["practitioner", "Practitioner"], ["expert", "Expert"]];
+const FEED_AUDIENCE = { student: "students", practitioner: "machine learning engineers", expert: "researchers" };
+function myLevel() { try { return localStorage.getItem("ax_level") || ""; } catch { return ""; } }
+function setLevel(l) { try { localStorage.setItem("ax_level", l); } catch {} }
+function levelSwitch(cur, pick) {
+  return h("span", { class: "ax-lvl", role: "group", "aria-label": "Explain for" }, LEVELS.map(([k, t]) => h("button", { class: k === cur ? "on" : "", "aria-pressed": k === cur ? "true" : "false", onclick: () => { setLevel(k); pick(k); } }, t)));
 }
 
 function understood(app, und, q, search) {
@@ -963,6 +1035,7 @@ async function searchPage(app, main, q, alive, search) {
             h("a", { class: "ax-btn", href: app.href("search", `summarize ${j.understood.text}`) }, "✦ Summarize the research"),
             h("a", { class: "ax-btn", href: app.href("search", `reading list for ${j.understood.text}`) }, "Reading list"),
             h("a", { class: "ax-btn", href: app.href("trends", j.understood.text) }, "Trend over the years"),
+            j.understood.text.split(/\s+/).length >= 3 ? h("a", { class: "ax-btn", href: app.href("claim", j.understood.text) }, "For and against") : null,
             h("a", { class: "ax-btn", href: app.href("search", `first papers on ${j.understood.text}`) }, "Where it began"),
             h("a", { class: "ax-btn", href: app.href("feed", "new", j.understood.text) }, "Make a weekly feed of it"))) : null);
     }
@@ -1017,6 +1090,24 @@ async function paperPage(app, main, id, alive) {
       fill(tldr, h("div", { class: "ax-tldr" }, h("b", {}, "TL;DR "), n.tldr || "", n.why ? h("div", { style: { marginTop: "4px", color: "var(--text-2)" } }, n.why) : null, n.results && n.results.length ? h("ul", { style: { margin: "6px 0 0", paddingLeft: "18px" } }, n.results.map((r) => h("li", {}, r))) : null));
     } catch (e) { fill(tldr, h("div", { class: "ax-err" }, String(e.message || e))); }
   } }, "✦ TL;DR");
+  const expl = h("div");
+  let explSeq = 0;
+  const explain = async (level) => {
+    const me = ++explSeq;
+    const head = h("div", { class: "hd" }, h("b", {}, `Explained for ${level === "expert" ? "an expert" : `a ${level}`}`), levelSwitch(level, explain));
+    fill(expl, h("div", { class: "ax-tldr ax-explain" }, head, h("div", { class: "ax-prog" }, h("div"))));
+    try {
+      const t = await app.api(`/v1/explain/${id}?level=${level}`, { timeout: 60000 });
+      if (me !== explSeq) return;
+      const n = t.note || {};
+      const terms = (n.terms || []).filter((x) => x && x.term);
+      fill(expl, h("div", { class: "ax-tldr ax-explain" }, head,
+        h("div", {}, n.explain || ""),
+        terms.length ? h("dl", { class: "ax-terms" }, terms.map((x) => [h("dt", {}, x.term), h("dd", {}, x.meaning || "", h("span", { class: "from" }, x.from ? (x.from.here ? "This paper is the earliest of its most cited on arXiv. " : ["From ", h("a", { href: app.href("paper", x.from.id) }, x.from.title), ` (${x.from.year}, ${fmt(x.from.cites)} citations). `]) : null, h("a", { href: app.href("search", `who coined ${x.term}`) }, "Who coined it?")))])) : null,
+        h("div", { style: { marginTop: "6px", fontSize: "12px", color: "var(--muted)" } }, "Written by a model from the abstract. A term's paper is the earliest of its most cited papers on arXiv, the one the field credits; Who coined it reads the sense and its first uses too.")));
+    } catch (e) { if (me === explSeq) fill(expl, h("div", { class: "ax-err" }, String(e.message || e))); }
+  };
+  const explBtn = h("button", { class: "ax-btn", title: "The paper explained for a student, a practitioner or an expert, each hard term with the paper that brought it in", onclick: () => explain(myLevel() || "practitioner") }, "✦ Explain at my level");
   const novel = h("div");
   const novelBtn = h("button", { class: "ax-btn", title: "The three earlier papers closest to it, and what it adds to them", onclick: async () => {
     novelBtn.disabled = true;
@@ -1066,9 +1157,9 @@ async function paperPage(app, main, id, alive) {
           h("a", { class: "ax-btn", href: j.links.abs, target: "_blank", rel: "noopener" }, "arXiv"),
           p.code ? h("a", { class: "ax-btn", href: p.code, target: "_blank", rel: "noopener" }, "Code") : null,
           p.hf ? h("a", { class: "ax-btn", href: p.hf, target: "_blank", rel: "noopener" }, "🤗 Hugging Face") : null,
-          tldrBtn, novelBtn, saveBtn,
+          tldrBtn, explBtn, novelBtn, saveBtn,
           h("a", { class: "ax-btn", href: app.href("reviewers", id) }, "Who could review it")),
-        tldr, novel,
+        tldr, expl, novel,
         h("div", { class: "abs" }, p.abstract),
         h("div", { class: "tags" }, (j.techniques || []).map((x) => conceptChip(app, x.id, x.name, "technique")), (j.domains || []).map((x) => conceptChip(app, x.id, x.name, "domain")))),
       tabs, tabBody),
@@ -1233,6 +1324,181 @@ async function reviewersPage(app, main, id, alive) {
     aside));
 }
 
+// ------------------------------------------------------------ for and against
+
+const CLAIMS = ["Scaling laws hold for dense retrieval", "LLMs can self-correct their reasoning without external feedback", "Chain-of-thought prompting helps small language models", "Dense retrieval beats BM25 out of domain", "Mixture-of-experts models are harder to fine-tune than dense models", "Weight decay improves generalization in transformers"];
+
+async function claimPage(app, main, arg, alive) {
+  const m = /^(\d{4})\/(.+)$/.exec(arg || "");
+  const since = m ? Number(m[1]) : 0;
+  const claim = (m ? m[2] : arg || "").trim();
+  const input = h("input", { type: "text", maxlength: 240, value: claim, placeholder: "A claim, in a sentence: “weight decay improves generalization in transformers”", "aria-label": "Claim" });
+  const sel = h("select", { "aria-label": "Papers from" }, [[0, "Any year"], [2020, "Since 2020"], [2023, "Since 2023"], [2025, "Since 2025"]].map(([v, t]) => h("option", { value: v, selected: v === since }, t)));
+  const go = () => { const c = input.value.trim(); if (c) app.go("claim", ...(Number(sel.value) ? [sel.value] : []), c); };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  const head = h("div", { class: "ax-ph" },
+    h("div", { class: "ey" }, "For and against"),
+    h("h1", {}, claim ? claim : "What the papers say about a claim"),
+    claim ? null : h("div", { class: "au" }, "State a claim and get the papers whose results support it and those that contradict it, each with the sentence of its abstract that says so."),
+    h("div", { class: "ax-cform" }, input, sel, h("button", { class: "ax-btn pri", onclick: go }, claim ? "Ask again" : "Read the papers")),
+    h("div", { class: "ax-wex" }, "Try", CLAIMS.filter((c) => c !== claim).slice(0, claim ? 3 : 6).map((c) => h("button", { onclick: () => app.go("claim", c) }, c))));
+  const aside = h("aside", {},
+    h("div", { class: "ax-card" }, h("h4", {}, "How it works"),
+      h("div", { style: { fontSize: "13px", color: "var(--text-2)", lineHeight: "1.55" } },
+        h("p", {}, "The 40 papers nearest the claim are found by the words of its subject and by its meaning, and a language model reads their abstracts against it, ten to a call, all at once (llm() on the server)."),
+        h("p", {}, "A paper counts for or against only with a sentence of its abstract that shows it, checked against the abstract word for word; a sentence the model made up is dropped. Mixed means it holds in some settings and not others."),
+        h("p", {}, "The model can misread a paper, so read the sentence. Abstracts say less than papers, and arXiv is not peer review. An answer is kept, so asking again is instant."))));
+  if (!claim) {
+    fill(main, h("div", { class: "ax-grid two" }, h("section", {}, head), aside));
+    input.focus();
+    return;
+  }
+  const body = h("div", {}, h("div", { class: "s", style: { fontSize: "13px", color: "var(--muted)", margin: "10px 0" } }, "Reading the 40 nearest papers against the claim, about ten seconds…"), skel(6));
+  fill(main, h("div", { class: "ax-grid two" }, h("section", {}, head, body), aside));
+  let j;
+  try { j = await app.api(`/v1/claim?q=${enc(claim)}${since ? `&since=${since}` : ""}`); }
+  catch (e) { if (alive()) fill(body, h("div", { class: "ax-err" }, String(e.message || e))); return; }
+  if (!alive()) return;
+  const n = { for: j.for.length, against: j.against.length, mixed: j.mixed.length };
+  const spoke = n.for + n.against + n.mixed;
+  const order = { nearest: (a) => a, cited: (a) => [...a].sort((x, y) => y.cites - x.cites), newest: (a) => [...a].sort((x, y) => y.year - x.year) };
+  let how = "nearest";
+  const card = (p, side) => h("div", { class: `ax-side ${side}` },
+    h("a", { class: "t", href: app.href("paper", p.id) }, p.title),
+    h("div", { class: "m" }, `${p.authors} · ${p.year}`, p.cites ? ` · ${fmt(p.cites)} citations` : "", catChip(app, p.pcat), p.code ? h("span", { class: "ax-badge code" }, "code") : null),
+    h("blockquote", {}, p.quote),
+    p.why ? h("div", { class: "why" }, p.why) : null);
+  const col = (side, title, color) => h("div", {},
+    h("h3", {}, h("span", { class: "dot", style: { background: color } }), title, h("span", { class: "n" }, `${n[side]} ${n[side] === 1 ? "paper" : "papers"}`)),
+    n[side] ? order[how](j[side]).map((p) => card(p, side)) : h("div", { class: "ax-empty" }, side === "for" ? "None of the nearest papers supports it." : "None of the nearest papers contradicts it."));
+  const lists = h("div", {});
+  const draw = () => fill(lists,
+    h("div", { class: "ax-claim" }, col("for", "For", "var(--good)"), col("against", "Against", "var(--crit)")),
+    n.mixed ? h("div", { style: { marginTop: "8px" } }, h("div", { class: "ax-claim", style: { gridTemplateColumns: "1fr" } }, col("mixed", "Holds only in some settings", "var(--warn)"))) : null);
+  const sorter = h("select", { "aria-label": "Order", onchange: (e) => { how = e.target.value; draw(); } }, [["nearest", "Nearest the claim"], ["cited", "Most cited"], ["newest", "Newest"]].map(([v, t]) => h("option", { value: v }, t)));
+  const pct = (k) => `${(100 * n[k]) / Math.max(1, spoke)}%`;
+  fill(body,
+    h("div", { class: "s", style: { fontSize: "13px", color: "var(--muted)", margin: "10px 0 2px" } },
+      `Read the ${fmt(j.read)} papers nearest the claim${since ? ` since ${since}` : ""}: ${fmt(spoke)} speak to it, ${fmt(j.none)} do not`,
+      j.dropped ? `, ${fmt(j.dropped)} left out for a sentence not in their abstract` : "",
+      j.kept ? ` · read earlier${j.at ? `, ${day(j.at)}` : ""}` : ` · ${((j.ms || j.took_ms || 0) / 1000).toFixed(1)} s`),
+    spoke ? h("div", {},
+      h("div", { class: "ax-bal", role: "img", "aria-label": `${n.for} for, ${n.against} against, ${n.mixed} mixed` },
+        h("span", { style: { width: pct("for"), background: "var(--good)" } }), h("span", { style: { width: pct("mixed"), background: "var(--warn)" } }), h("span", { style: { width: pct("against"), background: "var(--crit)" } })),
+      h("div", { class: "ax-ballab" }, h("span", {}, h("b", {}, fmt(n.for)), " for"), h("span", {}, h("b", {}, fmt(n.mixed)), " mixed"), h("span", {}, h("b", {}, fmt(n.against)), " against"), h("span", { class: "sp", style: { flex: "1" } }), sorter)) : null,
+    spoke ? lists : h("div", { class: "ax-empty", style: { marginTop: "12px" } }, "None of the nearest papers tests this claim. Try stating it with the words papers would use."),
+    (j.others || []).length ? h("details", { class: "ax-others" }, h("summary", {}, `Read but not about the claim (${j.others.length})`),
+      h("ul", {}, j.others.map((o) => h("li", {}, h("a", { href: app.href("paper", o.id) }, o.title), ` · ${o.year}`)))) : null);
+  if (spoke) draw();
+}
+
+// ------------------------------------------------------------- related work
+
+// A related-work section's LaTeX shown as a page: \paragraph{} in bold and
+// \cite{} as numbered links to the papers, numbered by first citation.
+function latexPreview(app, latex, papers, cited) {
+  const by = Object.fromEntries((papers || []).map((p) => [p.key, p]));
+  const num = Object.fromEntries((cited || []).map((k, i) => [k, i + 1]));
+  const wrap = h("div", {});
+  for (const para of String(latex || "").split(/\n\s*\n/)) {
+    let t = esc(para.trim()).replace(/\\([%&_#$])/g, "$1").replace(/~/g, " ").replace(/``|''/g, "\"");
+    t = t.replace(/\\paragraph\{([^}]*)\}/g, "<b>$1</b>");
+    t = t.replace(/\\cite[pt]?\{([^}]*)\}/g, (m, keys) => "[" + keys.split(",").map((k) => { k = k.trim(); const p = by[k]; return p ? `<a href="${app.href("paper", p.id)}" title="${esc(p.title)}">${num[k] || "?"}</a>` : ""; }).filter(Boolean).join(", ") + "]");
+    t = t.replace(/\\emph\{([^}]*)\}|\\textit\{([^}]*)\}/g, (m, a, b) => `<i>${a || b}</i>`);
+    if (t) wrap.append(h("p", { html: t }));
+  }
+  return wrap;
+}
+
+async function relatedPage(app, main, arg, alive) {
+  const given = (arg || "").split(/[,\s]+/).filter(Boolean);
+  const box = h("textarea", { maxlength: 6000, placeholder: "arXiv ids or links, one per line (2 to 30). Or start from your library.", "aria-label": "Papers" });
+  box.value = given.join("\n");
+  const about = h("input", { type: "text", maxlength: 600, placeholder: "Your paper in a sentence or two (optional): the section then says how your work differs", "aria-label": "Your paper" });
+  const write = h("button", { class: "ax-btn pri" }, "Write the section");
+  const lib = h("button", { class: "ax-btn" }, "Use my library");
+  const msg = h("span", { class: "s", style: { fontSize: "12.5px", color: "var(--muted)" } });
+  const list = h("div", {});
+  const out = h("div", {});
+  const aside = h("aside", {},
+    h("div", { class: "ax-card" }, h("h4", {}, "How it works"),
+      h("div", { style: { fontSize: "13px", color: "var(--text-2)", lineHeight: "1.55" } },
+        h("p", {}, "BibTeX is made from the papers' rows with no model: authors surname first, the venue when one is known, and the arXiv identifiers. Each key is the first author's surname, the year and the title's first word."),
+        h("p", {}, "The section is written by a model from the papers' abstracts (llm() on the server), grouped by theme, citing each paper by its key. A citation of a key not in the list is taken out, and any paper the text leaves uncited is named."),
+        h("p", {}, "It is a first draft from abstracts: check each sentence against the papers before it goes in yours."))));
+  const ids = () => box.value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+  let papers = [], bibtex = "";
+  const copy = (text, b) => { navigator.clipboard?.writeText(text).then(() => { const was = b.textContent; b.textContent = "Copied"; setTimeout(() => (b.textContent = was), 1200); }).catch(() => {}); };
+  const bibFile = () => { const a = h("a", { href: URL.createObjectURL(new Blob([bibtex], { type: "application/x-bibtex" })), download: "related.bib" }); document.body.append(a); a.click(); a.remove(); };
+  const drawList = (missing) => fill(list, papers.length ? h("div", {},
+    h("div", { class: "s", style: { fontSize: "12.5px", color: "var(--muted)", marginTop: "8px" } }, `${papers.length} papers found${missing ? `, ${missing} not on arXiv here` : ""}`),
+    h("div", { class: "ax-keys" }, papers.map((p) => h("a", { class: "ax-chip", href: app.href("paper", p.id), title: p.title }, p.key)))) : null);
+  async function loadBib() {
+    const want = ids();
+    if (!want.length) { papers = []; bibtex = ""; drawList(0); return; }
+    const j = await app.api(`/v1/related/bib?ids=${enc(want.join(","))}`);
+    if (!alive()) return;
+    papers = j.papers; bibtex = j.bibtex;
+    drawList(Math.max(0, want.length - papers.length));
+    if (!out.firstChild && bibtex) showBib();
+  }
+  function showBib() {
+    const b = h("button", { class: "ax-btn", onclick: (e) => copy(bibtex, e.target) }, "Copy BibTeX");
+    fill(out, h("div", { class: "ax-rw" }, h("div", { class: "ax-tabs" }, h("button", { class: "on" }, "BibTeX")),
+      h("div", { class: "bar" }, b, h("button", { class: "ax-btn", onclick: bibFile }, "Download related.bib"), "Made from the papers' rows, no model"),
+      h("pre", {}, bibtex)));
+  }
+  function show(j) {
+    papers = j.papers; bibtex = j.bibtex;
+    const panes = {
+      Section: () => h("div", {}, latexPreview(app, j.latex, j.papers, j.cited),
+        h("ol", { class: "refs" }, (j.cited || []).map((k) => { const p = j.papers.find((x) => x.key === k); return p ? h("li", {}, `${String(p.authors).replace(/\.$/, "")}. `, h("a", { href: app.href("paper", p.id) }, p.title), `. ${p.year}.`) : null; }))),
+      LaTeX: () => h("div", {}, h("div", { class: "bar" }, h("button", { class: "ax-btn", onclick: (e) => copy(j.latex, e.target) }, "Copy LaTeX"), "Paste under \\section{Related Work}; it cites with \\cite{}"), h("pre", {}, j.latex)),
+      BibTeX: () => h("div", {}, h("div", { class: "bar" }, h("button", { class: "ax-btn", onclick: (e) => copy(j.bibtex, e.target) }, "Copy BibTeX"), h("button", { class: "ax-btn", onclick: bibFile }, "Download related.bib")), h("pre", {}, j.bibtex)),
+    };
+    let on = "Section";
+    const tabs = h("div", { class: "ax-tabs" });
+    const pane = h("div", {});
+    const draw = () => { fill(tabs, Object.keys(panes).map((k) => h("button", { class: k === on ? "on" : "", onclick: () => { on = k; draw(); } }, k))); fill(pane, panes[on]()); };
+    draw();
+    const unc = (j.uncited || []).map((k) => j.papers.find((p) => p.key === k)).filter(Boolean);
+    fill(out, h("div", { class: "ax-rw" }, tabs,
+      h("div", { class: "bar" }, `${(j.cited || []).length} of ${j.papers.length} papers cited`, j.kept ? ` · written earlier${j.at ? `, ${day(j.at)}` : ""}` : ` · written in ${((j.ms || 0) / 1000).toFixed(1)} s`, j.model ? ` · ${String(j.model).replace(/^anthropic\//, "")}` : ""),
+      unc.length ? h("div", { class: "ax-err", style: { marginBottom: "10px" } }, "Not cited by the text: ", unc.map((p, i) => [i ? ", " : "", h("a", { href: app.href("paper", p.id) }, p.title)])) : null,
+      pane));
+  }
+  write.onclick = async () => {
+    write.disabled = true;
+    fill(msg, "Reading the abstracts and writing, about ten seconds…");
+    try {
+      const j = await app.api("/v1/related", { body: { text: box.value, about: about.value }, timeout: 120000 });
+      if (!alive()) return;
+      fill(msg, "");
+      show(j);
+    } catch (e) { fill(msg, h("span", { class: "ax-err" }, String(e.message || e))); }
+    write.disabled = false;
+  };
+  lib.onclick = async () => {
+    const j = await app.api(`/v1/library?user=${enc(app.user)}`);
+    const have = (j.papers || []).map((p) => p.id).slice(0, 30);
+    if (!have.length) { fill(msg, "Your library is empty: save papers with ☆ on their pages."); return; }
+    box.value = have.join("\n");
+    fill(out); loadBib();
+  };
+  let t;
+  box.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => { fill(out); loadBib(); }, 500); });
+  fill(main, h("div", { class: "ax-grid two" },
+    h("section", {},
+      h("div", { class: "ax-ph" },
+        h("div", { class: "ey" }, "Related work"),
+        h("h1", {}, "From a reading list to a related-work section"),
+        h("div", { class: "au" }, "Name the papers you would cite, and get their BibTeX at once and a related-work section in LaTeX that cites every one of them, grouped by theme."),
+        h("div", { class: "ax-rform" }, box, about, h("div", { class: "row" }, write, lib, msg))),
+      list, out),
+    aside));
+  if (given.length) loadBib();
+}
+
 // -------------------------------------------- topic, concept, category, venue
 
 async function scopePage(app, main, kind, id, alive) {
@@ -1342,6 +1608,62 @@ async function hotPage(app, main, arg, alive) {
   fill(people,
     h("div", { class: "s", style: { fontSize: "12.5px", color: "var(--muted)", margin: "-4px 0 10px" } }, `People whose first paper on arXiv is at most five years old, by the citations to their papers of the span (two cited papers or more, of 20 authors or fewer)${days < 365 ? "; citations take a year to gather, so this looks back a year" : ""}.`),
     (pj.people || []).length ? h("div", { class: "ax-rps" }, pj.people.map(card)) : h("div", { class: "ax-empty" }, "No one stands out in this span yet."));
+}
+
+// -------------------------------------------------------------- classics
+
+const CLASSIC_SPANS = [[91, "3 months"], [182, "6 months"], [365, "1 year"], [548, "18 months"]];
+const CLASSIC_SORTS = [["p", "Most likely"], ["early", "Most cited early"], ["new", "Newest"]];
+const REASON = (n) => {
+  if (n.startsWith("cited in its first")) return "cited early";
+  return ({ "authors' best record": "its authors' earlier papers are well cited", "authors' earlier papers": "its authors have published a lot", "first author's record": "its first author's record", "last author's record": "its last author's record", "team size": "its team size", code: "code released", survey: "a survey", dataset: "a dataset", benchmark: "a benchmark", tool: "a tool", "category growth": "its category was growing", "technique growth": "its techniques were growing fast", "has a named technique": "uses a named technique" })[n] || n;
+};
+const WINDOW_NAME = { 0: "no citations yet", 90: "its first 3 months", 182: "its first 6 months", 365: "its first year" };
+
+async function classicsPage(app, main, arg, alive) {
+  // "#/classics/<area>/<days>/<sort>", "all" for all of arXiv.
+  const [a0, d0, s0] = (arg || "").split("/");
+  const area = a0 && a0 !== "all" ? a0 : "";
+  const days = CLASSIC_SPANS.some(([d]) => String(d) === d0) ? Number(d0) : 548;
+  const sort = CLASSIC_SORTS.some(([k]) => k === s0) ? s0 : "p";
+  const on = { borderColor: "var(--accent)", color: "var(--accent)" };
+  const out = h("div", {}, skel(8));
+  const areaRow = h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "6px 0 4px" } });
+  fill(main, h("div", {},
+    h("div", { class: "ax-ph" }, h("h1", {}, "Likely classics"), h("div", { class: "au" }, "Recent papers that look, in their first months, like the papers that went on to be the most cited 1% of their year and area. Each is judged only on what was known then: who cited it early, its authors' earlier work, how fast its field was growing, and whether it shares code.")),
+    h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "10px 0 2px" } }, h("span", { style: { fontSize: "12.5px", color: "var(--muted)", alignSelf: "center", marginRight: "2px" } }, "Posted in the last"), CLASSIC_SPANS.map(([d, t]) => h("a", { href: app.href("classics", area || "all", d, sort), style: d === days ? on : {} }, t))),
+    areaRow,
+    h("div", { class: "ax-try ax-row", style: { justifyContent: "flex-start", margin: "4px 0 12px" } }, h("span", { style: { fontSize: "12.5px", color: "var(--muted)", alignSelf: "center", marginRight: "2px" } }, "Order"), CLASSIC_SORTS.map(([k, t]) => h("a", { href: app.href("classics", area || "all", days, k), style: k === sort ? on : {} }, t))),
+    out));
+  const j = await app.api(`/v1/classics?area=${enc(area)}&days=${days}&sort=${sort}`);
+  if (!alive()) return;
+  const counts = Object.fromEntries((j.areas || []).map((x) => [x.area, x.n]));
+  const total = (j.areas || []).reduce((s, x) => s + x.n, 0);
+  fill(areaRow, AREAS.filter(([k]) => !k || counts[k]).map(([k, t]) => h("a", { href: app.href("classics", k || "all", days, sort), style: area === k ? on : {} }, t, h("span", { style: { color: "var(--muted)", marginLeft: "5px" } }, fmt(k ? counts[k] : total)))));
+  const m = j.model || {};
+  const item = (r) => {
+    const li = paperItem(app, r, {});
+    const c = r.classic || {};
+    li.append(h("div", { class: "ax-lc" },
+      h("span", { class: "lift", title: `A ${(c.p * 100).toFixed(1)}% chance of ending among the most cited 1% of its year and area, against 1% for any paper` }, `${c.lift >= 10 ? Math.round(c.lift) : Number(c.lift).toFixed(1)}× the usual chance`),
+      c.win ? h("span", {}, `cited ${fmt(c.early)} ${c.early === 1 ? "time" : "times"} on arXiv in ${WINDOW_NAME[c.win]}`) : h("span", {}, "judged before citations count"),
+      (c.why || []).length ? h("span", {}, "Weighed most: ", c.why.map(REASON).join(", ")) : null));
+    return li;
+  };
+  const rows = j.papers || [];
+  const ev = (w) => ((m.models || {})[w] || {}).eval || {};
+  const pct = (x) => `${Math.round((x || 0) * 100)}%`;
+  fill(out,
+    rows.length ? h("ul", { class: "ax-list" }, rows.map(item)) : h("div", { class: "ax-empty" }, "No likely classics here yet."),
+    m.models ? h("details", { class: "ax-hib", style: { marginTop: "18px" } },
+      h("summary", { style: { cursor: "pointer", fontWeight: 600 } }, "How it's built"),
+      h("div", { style: { fontSize: "13.5px", color: "var(--text-2)", maxWidth: "820px" } },
+        h("p", {}, `A logistic regression for each window of early citations, trained on the papers posted ${m.train[0]} to ${m.train[1]} and checked on ${m.test}. A chance is how often the ${m.test} papers it scored the same did end in the most cited 1% of their year and area (Crossref's count now). A citing paper is dated by its arXiv posting. The authors' records count their earlier papers on arXiv, with those papers' citations as counted now, so a record can include citations that came after.`),
+        h("p", {}, `Crossref's citations run to about ${day(m.horizon + "T00:00:00Z")}, so a paper is judged by the longest window that ends by then; one posted less than three months before that, or after, is judged without citations. ${fmt(m.judged)} papers posted since ${day(m.since + "T00:00:00Z")} were judged, and ${fmt(m.kept)} have three times the usual chance or more.`),
+        h("div", { class: "wrap" }, h("table", {},
+          h("tr", {}, ["Judged on", `${m.test} papers checked`, "Of its top 1%, in the real top 1%", "The same for a simple ranking", "AUC"].map((t) => h("th", {}, t))),
+          ["0", "90", "182", "365"].filter((w) => (m.models || {})[w]).map((w) => h("tr", {}, h("td", {}, w === "0" ? "No citations" : `Citations in ${WINDOW_NAME[w].replace("its ", "the ")}`), h("td", {}, fmt(ev(w).papers)), h("td", {}, pct(ev(w).p_at_1)), h("td", { title: `Ranked by ${m.models[w].simple}` }, pct(ev(w).simple_p_at_1)), h("td", {}, Number(ev(w).auc || 0).toFixed(3)))))),
+        h("p", { style: { fontSize: "12.5px", color: "var(--muted)" } }, `Any paper has a 1% chance. The simple ranking orders by ${(m.models["90"] || m.models["0"]).simple}. Made ${day(m.made)} by tools/classics.py from the rows ChloeDB holds.`))) : null);
 }
 
 // ------------------------------------------------------------------ labs
@@ -1861,20 +2183,29 @@ async function libraryPage(app, main, alive) {
   fill(main, skel(8));
   const j = await app.api(`/v1/library?user=${enc(app.user)}`);
   if (!alive()) return;
-  fill(main, h("div", { style: { maxWidth: "900px" } }, h("div", { class: "ax-ph" }, h("h1", {}, "Library"), h("div", { class: "au" }, "The papers you saved, kept under this browser's reader id.")), paperList(app, j.papers)));
+  const ids = (j.papers || []).map((p) => p.id);
+  fill(main, h("div", { style: { maxWidth: "900px" } }, h("div", { class: "ax-ph" }, h("h1", {}, "Library"), h("div", { class: "au" }, "The papers you saved, kept under this browser's reader id."),
+    ids.length >= 2 ? h("div", { class: "acts" }, h("a", { class: "ax-btn", href: app.href("related", ids.slice(0, 30).join(",")) }, "Write related work from these"), h("a", { class: "ax-btn", href: app.href("related", ids.slice(0, 30).join(",")) }, "BibTeX")) : null), paperList(app, j.papers)));
 }
 
 // ----------------------------------------------------------------- feeds
 
+// Team feeds this browser holds the link of: feed id → the link's key.
+function teamKeys() { try { return JSON.parse(localStorage.getItem("ax_teams") || "{}") || {}; } catch { return {}; } }
+function setTeamKey(id, key) { const t = teamKeys(); if (key) t[id] = key; else delete t[id]; try { localStorage.setItem("ax_teams", JSON.stringify(t)); } catch {} }
+
 async function feedsPage(app, main, alive) {
   fill(main, skel(6));
-  const [mine, pub] = await Promise.all([app.api(`/v1/feeds?user=${enc(app.user)}`), app.ctx.api("/v1/feeds").catch(() => ({ feeds: [] }))]);
+  const keys = teamKeys();
+  const [mine, pub, team] = await Promise.all([app.api(`/v1/feeds?user=${enc(app.user)}`), app.ctx.api("/v1/feeds").catch(() => ({ feeds: [] })),
+    Promise.all(Object.entries(keys).slice(0, 30).map(([id, k]) => app.ctx.api(`/v1/feeds/${enc(id)}?team=${enc(k)}`).then((j) => (j.member ? { id, name: j.config.name, updated: (j.issues[0] || {}).made || "" } : (setTeamKey(id, null), null))).catch(() => null))).then((r) => r.filter(Boolean))]);
   if (!alive()) return;
   const row = (f) => h("li", { class: "ax-p compact" }, h("div", { class: "ttl" }, h("a", { href: app.href("feed", f.id) }, f.name)), h("div", { class: "meta" }, `updated ${ago(f.updated)}`, h("a", { href: `feeds/${f.id}/rss.xml`, target: "_blank" }, "RSS")));
   fill(main, h("div", { style: { maxWidth: "900px" } },
     h("div", { class: "ax-ph" }, h("h1", {}, "Feeds"), h("div", { class: "au" }, "A weekly digest of arXiv written for you, like the best research newsletters: say what you care about in your own words, and every week it picks the papers that matter most to you and writes a paragraph on each, with who it is from, what it does and what it found.")),
     h("div", { class: "acts", style: { display: "flex", gap: "8px", margin: "12px 0" } }, h("a", { class: "ax-btn pri", href: app.href("feed", "new") }, "+ New feed"), h("a", { class: "ax-btn", href: app.href("feed", "example") }, "Start from “Recommender systems weekly”")),
     sec("Your feeds"), (mine.feeds || []).length ? h("ul", { class: "ax-list" }, mine.feeds.map(row)) : h("div", { class: "ax-empty" }, "None yet."),
+    team.length ? [sec("Your team's feeds"), h("ul", { class: "ax-list" }, team.map(row))] : null,
     (pub.feeds || []).length ? [sec("Shared feeds"), h("ul", { class: "ax-list" }, pub.feeds.map(row))] : null));
 }
 
@@ -1907,20 +2238,25 @@ function slider(label, min, max, step, get, set, onChange, fmtv = (v) => v) {
 async function studioPage(app, main, arg, alive) {
   const [id0, ...seedWords] = arg.split("/");
   let feedId = id0 === "new" || id0 === "example" ? "" : id0;
+  // "#/feed/<id>/team/<key>": the team's link, kept in this browser.
+  if (feedId && seedWords[0] === "team" && seedWords[1]) { setTeamKey(feedId, seedWords[1]); history.replaceState(null, "", app.href("feed", feedId)); }
+  const teamKey = feedId ? teamKeys()[feedId] || "" : "";
   fill(main, skel(10));
-  let cfg, issues = [], owner = app.user;
+  let cfg, issues = [], owner = app.user, member = false, teamLink = "", shared = false;
   if (feedId) {
-    const j = await app.api(`/v1/feeds/${enc(feedId)}`);
-    cfg = j.config; issues = j.issues || []; owner = j.owner;
+    const j = await app.api(`/v1/feeds/${enc(feedId)}?user=${enc(app.user)}&team=${enc(teamKey)}`);
+    cfg = j.config; issues = j.issues || []; owner = j.owner; member = !!j.member; teamLink = j.team || ""; shared = !!j.shared;
   } else if (id0 === "example") {
     cfg = (await app.ctx.api("/v1/feeds/example")).config;
   } else {
     cfg = (await app.ctx.api("/v1/feeds/example")).config;
     const topic = seedWords.join("/");
     Object.assign(cfg, { name: topic ? `${topic.replace(/\b\w/, (c) => c.toUpperCase())} weekly` : "My arXiv digest", tagline: topic ? `The week's most useful papers on ${topic}` : "", interests: topic ? [topic] : [], categories: [] });
+    if (FEED_AUDIENCE[myLevel()]) cfg.audience = FEED_AUDIENCE[myLevel()];
   }
   if (!alive()) return;
   const mine = owner === app.user;
+  const canEdit = mine || member;
   const preview = h("div", { class: "ax-prev" }, skel(8));
   const status = h("div");
   let ptimer, pseq = 0;
@@ -1942,20 +2278,38 @@ async function studioPage(app, main, arg, alive) {
   const nameIn = h("input", { type: "text", value: cfg.name, oninput: (e) => { cfg.name = e.target.value; } });
   const tagIn = h("input", { type: "text", value: cfg.tagline, oninput: (e) => { cfg.tagline = e.target.value; } });
   const audIn = h("select", { onchange: (e) => { cfg.audience = e.target.value; } }, ["practitioners and researchers", "machine learning engineers", "researchers", "executives and investors", "students"].map((a) => h("option", { value: a, selected: cfg.audience === a ? "" : null }, a)));
-  const saveBtn = h("button", { class: "ax-btn", disabled: !mine && !!feedId }, feedId ? "Save" : "Save feed");
+  const saveBtn = h("button", { class: "ax-btn", disabled: !canEdit && !!feedId }, feedId ? "Save" : "Save feed");
+  // The owner shares the feed with a team by a link; whoever opens it can change it and write its issues.
+  const teamBox = h("div");
+  const linkOf = (k) => new URL(app.href("feed", feedId, "team", k), location.href.split("#")[0]).href;
+  const drawTeam = () => {
+    if (!feedId) return fill(teamBox);
+    if (!mine) return fill(teamBox, member ? h("div", { class: "ax-card", style: { fontSize: "13px" } }, "Shared with your team by link: you can change this feed and write its issues.") : null);
+    if (!teamLink) return fill(teamBox, h("button", { class: "ax-btn", onclick: async () => { const r = await app.api(`/v1/feeds/${enc(feedId)}/team`, { body: { user: app.user } }); teamLink = r.team; drawTeam(); } }, "Share with your team"));
+    const url = linkOf(teamLink);
+    const copy = h("button", { class: "ax-btn" }, "Copy team link");
+    copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(url); copy.textContent = "Copied ✓"; } catch { copy.textContent = url; } });
+    fill(teamBox, h("div", { class: "ax-card", style: { fontSize: "13px" } },
+      h("div", { style: { marginBottom: "6px" } }, "Shared with your team: whoever opens this link can change the feed and write its issues, with no sign-in. It stays yours."),
+      h("input", { type: "text", readonly: "", value: url, style: { width: "100%", fontFamily: "var(--mono)", fontSize: "12px", marginBottom: "6px" }, onfocus: (e) => e.target.select() }),
+      h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, copy, h("button", { class: "ax-btn", onclick: async () => { await app.api(`/v1/feeds/${enc(feedId)}/team`, { body: { user: app.user, off: true } }); teamLink = ""; drawTeam(); } }, "Stop sharing"))));
+  };
+  drawTeam();
   const writeBtn = h("button", { class: "ax-btn pri" }, "✦ Write this week's issue");
   saveBtn.onclick = async () => {
-    const j = await app.api("/v1/feeds", { body: { id: feedId, user: app.user, config: cfg } });
-    if (!feedId) { feedId = j.id; history.replaceState(null, "", app.href("feed", feedId)); }
+    let j;
+    try { j = await app.api("/v1/feeds", { body: { id: feedId, user: app.user, config: cfg, team: teamKey } }); } catch (e) { fill(status, h("div", { class: "ax-err" }, String(e.message || e))); throw e; }
+    fill(status);
+    if (!feedId) { feedId = j.id; history.replaceState(null, "", app.href("feed", feedId)); drawTeam(); }
     saveBtn.textContent = "Saved ✓"; setTimeout(() => (saveBtn.textContent = "Save"), 1500);
   };
   writeBtn.onclick = async () => {
     if (!feedId) await saveBtn.onclick();
-    else await app.api("/v1/feeds", { body: { id: feedId, user: app.user, config: cfg } });
+    else if (canEdit) await app.api("/v1/feeds", { body: { id: feedId, user: app.user, config: cfg, team: teamKey } });
     writeBtn.disabled = true;
     fill(status, h("div", { class: "ax-card" }, h("div", { class: "ax-prog" }, h("div")), h("div", { class: "step", style: { fontSize: "13px", color: "var(--text-2)" } }, "Starting…")));
     try {
-      const { job } = await app.api(`/v1/feeds/${enc(feedId)}/issue`, { body: { user: app.user } });
+      const { job } = await app.api(`/v1/feeds/${enc(feedId)}/issue`, { body: { user: app.user, team: teamKey } });
       for (;;) {
         await new Promise((r) => setTimeout(r, 1500));
         const s = await app.ctx.api(`/v1/jobs/${job}`);
@@ -1992,7 +2346,10 @@ async function studioPage(app, main, arg, alive) {
     h("div", { class: "ax-f" }, h("label", {}, "Written for"), audIn),
     h("div", { class: "ax-f" }, h("label", {}, "Extras"), checks([["tools", "Tools"], ["benchmarks", "Benchmarks"], ["surveys", "Surveys"]], cfg.extras, changed)),
     h("div", { class: "ax-f" }, h("label", { class: "ax-check" }, h("label", { class: cfg.affiliations ? "on" : "", onclick: (e) => { e.preventDefault(); cfg.affiliations = !cfg.affiliations; e.currentTarget.classList.toggle("on"); } }, "Say who each paper is from (reads its arXiv page)"))),
-    h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, saveBtn, writeBtn, feedId ? h("a", { class: "ax-btn", href: `feeds/${feedId}/rss.xml`, target: "_blank" }, "RSS") : null));
+    h("div", { class: "ax-f" }, h("label", { class: "ax-check" }, h("label", { class: cfg.weekly ? "on" : "", onclick: (e) => { e.preventDefault(); cfg.weekly = !cfg.weekly; e.currentTarget.classList.toggle("on"); } }, "Write an issue every Monday on its own")),
+      h("small", { style: { color: "var(--muted)", fontSize: "12px" } }, "Each new issue goes to the feed's RSS, so a feed reader gets it on Monday. Save to start; at most three of your feeds.")),
+    h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, saveBtn, writeBtn, feedId ? rssButtons(`feeds/${feedId}/rss.xml`) : null),
+    teamBox);
   fill(main, h("div", {},
     h("div", { class: "ax-ph" }, h("div", { class: "ey" }, h("a", { href: app.href("feeds") }, "Feeds"), "→", feedId ? "Studio" : "New feed"), h("h1", {}, "Feed studio"), h("div", { class: "au" }, "Every change re-picks the papers at once (no model is called for the preview). Writing an issue reads each paper's full text on arXiv, explains it, and copies the figures that explain it best; arXiv asks programs to read a page every 15 seconds, so an issue of 10 papers takes about ten minutes, and a paper read once is kept.")),
     h("div", { class: "ax-studio" }, form,
@@ -2000,6 +2357,14 @@ async function studioPage(app, main, arg, alive) {
         issues.length ? h("div", { class: "ax-card" }, h("h4", {}, "Issues"), h("div", { class: "ax-people" }, issues.map((i) => [h("a", { href: app.href("issue", i.id) }, i.title), h("span", { class: "n" }, ago(i.made))]))) : null,
         sec("Preview of the next issue"), preview))));
   runPreview();
+}
+
+// A feed's RSS: open it, or copy its address for a feed reader.
+function rssButtons(path) {
+  const url = new URL(path, location.href.split("#")[0]).href;
+  const copy = h("button", { class: "ax-btn", title: url }, "Copy RSS address");
+  copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(url); copy.textContent = "Copied ✓"; } catch { copy.textContent = url; } });
+  return [h("a", { class: "ax-btn", href: url, target: "_blank", rel: "noopener" }, "RSS"), copy];
 }
 
 // A figure's image, copied from the paper's page and kept: fetched as JSON

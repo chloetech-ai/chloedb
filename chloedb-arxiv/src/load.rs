@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use crate::strata::Strata;
 
-pub const ORDER: [&str; 13] = ["ax_authors", "ax_papers", "ax_topics", "ax_concepts", "ax_cats", "ax_venues", "ax_complete", "ax_labs", "ax_lab_papers", "ax_cites", "ax_coauthors", "ax_events", "ax_feeds"];
+pub const ORDER: [&str; 15] = ["ax_authors", "ax_papers", "ax_topics", "ax_concepts", "ax_cats", "ax_venues", "ax_complete", "ax_labs", "ax_lab_papers", "ax_classics", "ax_cites", "ax_coauthors", "ax_events", "ax_feeds", "ax_notes"];
 
 /// The rows of the graph's nodes a line of papers or people gives: its key.
 fn node_line(line: &[u8]) -> Option<Vec<u8>> {

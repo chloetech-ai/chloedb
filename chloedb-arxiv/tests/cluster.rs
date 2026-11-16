@@ -351,6 +351,76 @@ async fn two_servers_every_page() {
     assert!(rv["people"].as_array().unwrap().iter().all(|p| p["id"] != "ada recsys"), "{rv}");
     assert!(get(&http, &app, "/v1/labs/of/2401.00001").await["labs"].as_array().unwrap().is_empty());
 
+    // For and against: a claim of one word is refused, and a kept answer
+    // is served as it was kept (no model runs here).
+    let r = http.get(format!("{}/v1/claim?q=scaling", app.url)).bearer_auth(TOKEN).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+    let kept = json!({"claim": "transformers help sequential recommendation", "since": 0, "for": [{"id": rec_id(3), "title": "t", "quote": "q", "why": "w"}], "against": [], "mixed": [], "read": 1, "none": 0, "others": [], "dropped": 0, "kept": false});
+    let doc = json!({"id": "claim:transformers help sequential recommendation", "paper": "", "style": "claim", "text": kept.to_string(), "model": "m", "at": "2026-11-16T00:00:00Z", "ms": 1.0});
+    let w = http.post(format!("http://127.0.0.1:{graph}/v1/write")).bearer_auth(TOKEN).json(&json!({"ops": [{"op": "upsert", "table": "ax_notes", "doc": doc}]})).send().await.unwrap();
+    assert!(w.status().is_success(), "{}", w.text().await.unwrap());
+    let c = get(&http, &app, "/v1/claim?q=Transformers%20help%20sequential%20recommendation!").await;
+    assert_eq!(c["kept"], true, "{c}");
+    assert_eq!(c["for"][0]["id"], rec_id(3), "{c}");
+
+    // Explain at my level: a kept explanation is served for its level with
+    // no model, and an unknown level is read as a practitioner's.
+    let note = json!({"explain": "Kept for a student.", "terms": [{"term": "attention", "meaning": "m"}]});
+    let doc = json!({"id": format!("explain:practitioner:{}", rec_id(2)), "paper": rec_id(2), "style": "explain-practitioner", "text": note.to_string(), "model": "m", "at": "2026-11-16T00:00:00Z", "ms": 1.0});
+    let w = http.post(format!("http://127.0.0.1:{graph}/v1/write")).bearer_auth(TOKEN).json(&json!({"ops": [{"op": "upsert", "table": "ax_notes", "doc": doc}]})).send().await.unwrap();
+    assert!(w.status().is_success(), "{}", w.text().await.unwrap());
+    let e = get(&http, &app, &format!("/v1/explain/{}?level=wizard", rec_id(2))).await;
+    assert_eq!((e["kept"].clone(), e["level"].clone(), e["note"]["explain"].clone()), (json!(true), json!("practitioner"), json!("Kept for a student.")), "{e}");
+
+    // Weekly feeds: a reader's three write themselves, a fourth is refused,
+    // and one that does not is saved as before.
+    for i in 0..3 {
+        let f = post(&http, &app, "/v1/feeds", json!({"user": "reader-weekly", "config": {"name": format!("w{i}"), "interests": ["recommendation"], "weekly": true}})).await;
+        assert!(f["id"].as_str().is_some(), "{f}");
+    }
+    let r = http.post(format!("{}/v1/feeds", app.url)).bearer_auth(TOKEN).json(&json!({"user": "reader-weekly", "config": {"name": "w3", "weekly": true}})).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+    let f = post(&http, &app, "/v1/feeds", json!({"user": "reader-weekly", "config": {"name": "by hand"}})).await;
+    assert_eq!(get(&http, &app, &format!("/v1/feeds/{}", f["id"].as_str().unwrap())).await["config"]["weekly"], false);
+
+    // Team feeds: another reader changes a feed only with its team link's
+    // key, the feed stays its owner's, and a dropped link stops working.
+    let f = post(&http, &app, "/v1/feeds", json!({"user": "reader-owner", "config": {"name": "ours"}})).await;
+    let fid = f["id"].as_str().unwrap().to_string();
+    let save = |team: &str| http.post(format!("{}/v1/feeds", app.url)).bearer_auth(TOKEN).json(&json!({"id": fid, "user": "reader-mate", "team": team, "config": {"name": "ours, changed"}})).send();
+    assert_eq!(save("").await.unwrap().status().as_u16(), 403);
+    let key = post(&http, &app, &format!("/v1/feeds/{fid}/team"), json!({"user": "reader-owner"})).await["team"].as_str().unwrap().to_string();
+    assert_eq!(key.len(), 32);
+    assert_eq!(save(&key).await.unwrap().status().as_u16(), 200);
+    let o = get(&http, &app, &format!("/v1/feeds/{fid}?user=reader-owner")).await;
+    assert_eq!((o["owner"].clone(), o["config"]["name"].clone(), o["team"].clone()), (json!("reader-owner"), json!("ours, changed"), json!(key)), "{o}");
+    assert_eq!(get(&http, &app, &format!("/v1/feeds/{fid}?team={key}")).await["member"], true);
+    let other = get(&http, &app, &format!("/v1/feeds/{fid}?team=nope")).await;
+    assert_eq!((other["member"].clone(), other["team"].clone()), (json!(false), Value::Null));
+    post(&http, &app, &format!("/v1/feeds/{fid}/team"), json!({"user": "reader-owner", "off": true})).await;
+    assert_eq!(save(&key).await.unwrap().status().as_u16(), 403);
+
+    // Likely classics: a judged paper is listed with its judgement and the
+    // paper's row, under the models' card.
+    let row = json!({"id": rec_id(4), "p": 0.2, "lift": 18.5, "win": 182, "early": 7, "record_cites": 900, "area": "cs", "pcat": "cs.IR", "created": chrono::Utc::now().to_rfc3339(), "why": ["cited in its first 182 days", "code"]});
+    let w = http.post(format!("http://127.0.0.1:{search}/v1/write")).bearer_auth(TOKEN).json(&json!({"ops": [{"op": "upsert", "table": "ax_classics", "doc": row}]})).send().await.unwrap();
+    assert!(w.status().is_success(), "{}", w.text().await.unwrap());
+    let card = json!({"id": "classics:model", "paper": "", "style": "model", "text": json!({"horizon": "2026-03-01", "models": {}}).to_string(), "model": "", "at": "2026-11-16T00:00:00Z", "ms": 0.0});
+    let w = http.post(format!("http://127.0.0.1:{graph}/v1/write")).bearer_auth(TOKEN).json(&json!({"ops": [{"op": "upsert", "table": "ax_notes", "doc": card}]})).send().await.unwrap();
+    assert!(w.status().is_success(), "{}", w.text().await.unwrap());
+    let lc = get(&http, &app, "/v1/classics?area=cs&days=91").await;
+    assert_eq!((lc["papers"][0]["id"].clone(), lc["papers"][0]["classic"]["lift"].clone(), lc["model"]["horizon"].clone()), (json!(rec_id(4)), json!(18.5), json!("2026-03-01")), "{lc}");
+    assert_eq!(get(&http, &app, "/v1/classics?area=math").await["papers"].as_array().unwrap().len(), 0);
+
+    // Related work: a list's BibTeX with no model, keyed by surname, year and
+    // title word; a list of one paper is refused.
+    let b = get(&http, &app, &format!("/v1/related/bib?ids={},{},nope", rec_id(1), rec_id(2))).await;
+    assert_eq!(b["papers"].as_array().unwrap().len(), 2, "{b}");
+    let bib = b["bibtex"].as_str().unwrap();
+    assert!(bib.matches("archivePrefix = {arXiv}").count() == 2 && bib.contains(&format!("eprint = {{{}}}", rec_id(1))), "{bib}");
+    let r = http.post(format!("{}/v1/related", app.url)).bearer_auth(TOKEN).json(&json!({"text": rec_id(1)})).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+
     // The pages of trends, rising, gaps, new topics, spread, code, labs and home answer too.
     for path in ["/v1/home", "/v1/trends?q=recommendation,quantum", "/v1/hot", "/v1/hot/people", "/v1/gaps", "/v1/born", "/v1/spread", "/v1/code", "/v1/labs", "/v1/labs/find?q=university", "/v1/feeds/example", "/app.json"] {
         get(&http, &app, path).await;

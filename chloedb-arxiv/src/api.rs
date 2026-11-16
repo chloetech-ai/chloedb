@@ -26,7 +26,7 @@ use crate::digest::{self, Config, Pages};
 use crate::live::Live;
 use crate::search::{self, Ctx, Request as SearchReq};
 use crate::strata::{RowExt, Strata, Trace};
-use crate::{answer, ask, born, code, collab, gaps, labs, spread, pages, schema, understand, watch};
+use crate::{answer, ask, born, claims, classics, code, collab, related, gaps, labs, spread, pages, schema, understand, watch};
 
 pub const VIEW: &str = include_str!("../ui/view.js");
 pub const INDEX: &str = include_str!("../ui/index.html");
@@ -101,7 +101,12 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/suggest", get(suggest))
         .route("/v1/paper/*id", get(paper))
         .route("/v1/tldr/*id", get(tldr))
+        .route("/v1/explain/*id", get(explain))
         .route("/v1/new/*id", get(novelty))
+        .route("/v1/claim", get(claim_sides))
+        .route("/v1/classics", get(likely_classics))
+        .route("/v1/related", post(related_write))
+        .route("/v1/related/bib", get(related_bib))
         .route("/v1/author/:id", get(author))
         .route("/v1/collab/:id", get(collaborators))
         .route("/v1/reviewers", post(reviewers_for_text))
@@ -134,6 +139,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/feeds/preview", post(preview))
         .route("/v1/feeds/:id", get(feed))
         .route("/v1/feeds/:id/issue", post(make_issue))
+        .route("/v1/feeds/:id/team", post(feed_team))
         .route("/v1/jobs/:id", get(job))
         .route("/v1/issue/:id", get(issue))
         .route("/v1/figure/*id", get(figure))
@@ -157,7 +163,7 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
 fn public_ok(method: &Method, path: &str) -> bool {
     method == Method::GET
         || (method == Method::POST
-            && (path == "/v1/event" || path == "/v1/cite" || path == "/v1/feeds" || path == "/v1/feeds/preview" || (path.starts_with("/v1/feeds/") && path.ends_with("/issue")) || path == "/v1/watches" || path == "/v1/reviewers" || (path.starts_with("/v1/watches/") && path.ends_with("/delete"))))
+            && (path == "/v1/event" || path == "/v1/cite" || path == "/v1/feeds" || path == "/v1/feeds/preview" || (path.starts_with("/v1/feeds/") && (path.ends_with("/issue") || path.ends_with("/team"))) || path == "/v1/watches" || path == "/v1/reviewers" || path == "/v1/related" || (path.starts_with("/v1/watches/") && path.ends_with("/delete"))))
 }
 
 async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response {
@@ -357,6 +363,12 @@ struct Q {
     cat: String,
     #[serde(default)]
     area: String,
+    /// An order of a list: likely classics by chance (`p`), by early citations or newest.
+    #[serde(default)]
+    sort: String,
+    /// The key of a feed's team link.
+    #[serde(default)]
+    team: String,
     #[serde(default)]
     user: String,
     #[serde(default)]
@@ -369,6 +381,20 @@ struct Q {
     t: String,
     #[serde(default)]
     d: String,
+    /// For and against: papers from this year on.
+    #[serde(default)]
+    since: Option<i64>,
+    /// A list of papers: arXiv ids, separated by commas.
+    #[serde(default)]
+    ids: String,
+    /// The reader's level: student, practitioner or expert.
+    #[serde(default)]
+    level: String,
+}
+
+/// A known reader level, or "" for none.
+fn level_of(s: &str) -> &'static str {
+    ask::LEVELS.iter().copied().find(|l| *l == s).unwrap_or("")
 }
 
 /// Completions as a search is typed: questions the grammar reads, phrases
@@ -475,6 +501,97 @@ async fn novelty(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     }
     let v = ask::novelty(&c, &id, &svc.model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
     done(&trace, v, t0)
+}
+
+/// A paper explained at a reader's level, its hard terms linked to the papers that brought them in.
+async fn explain(State(svc): State<Shared>, Path(id): Path<String>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let level = match level_of(&a.level) {
+        "" => "practitioner",
+        l => l,
+    };
+    let kept = c.gsoft("a kept explanation?", "SELECT id FROM ax_notes WHERE id = :k", json!({"k": format!("explain:{level}:{}", understand::clean_id(&id))})).await;
+    if kept.is_empty() {
+        svc.spend(1)?;
+    }
+    let v = ask::explain(&c, &id, level, &svc.model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    done(&trace, v, t0)
+}
+
+/// Likely classics: recent papers judged like the most cited of their year
+/// and area were in their first months (`?area=&days=&sort=p|early|new`).
+async fn likely_classics(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = classics::list(&c, &a.area, a.days.unwrap_or(548), &a.sort, 60).await;
+    done(&trace, v, t0)
+}
+
+/// The papers for and against a claim stated in a sentence.
+async fn claim_sides(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let claim = a.q.split_whitespace().collect::<Vec<_>>().join(" ");
+    let words = claim.split(' ').count();
+    if claim.chars().count() > 240 || !(3..=40).contains(&words) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "state a claim in a sentence of 3 to 40 words: q=".into()));
+    }
+    let since = a.since.filter(|y| *y > 0).map(|y| y.clamp(1990, 2100)).unwrap_or(0);
+    if !claims::is_kept(&c, &claim, since).await {
+        svc.spend(claims::READ.div_ceil(claims::PER_CALL))?;
+    }
+    let v = claims::sides(&c, &claim, since, &svc.model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+struct RelatedBody {
+    #[serde(default)]
+    ids: Vec<String>,
+    /// Ids written in a text, as pasted.
+    #[serde(default)]
+    text: String,
+    /// The reader's own paper, in a sentence or two.
+    #[serde(default)]
+    about: String,
+}
+
+fn list_ids(ids: &[String], text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in ids.iter().map(|i| understand::clean_id(i)).chain(related::ids_in(text)) {
+        if !id.is_empty() && !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// A related-work section in LaTeX from a list of papers, with its BibTeX.
+async fn related_write(State(svc): State<Shared>, Json(b): Json<RelatedBody>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let ids = list_ids(&b.ids, &b.text);
+    if ids.len() < 2 || ids.len() > related::MOST {
+        return Err(ApiError(StatusCode::BAD_REQUEST, format!("name 2 to {} papers by their arXiv ids", related::MOST)));
+    }
+    let about: String = b.about.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(600).collect();
+    if !related::is_kept(&c, &ids, &about).await {
+        svc.spend(1)?;
+    }
+    let v = related::write(&c, &ids, &about, &svc.issue_model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    done(&trace, v, t0)
+}
+
+/// The BibTeX of a list of papers (no model).
+async fn related_bib(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let ids: Vec<String> = list_ids(&[], &a.ids).into_iter().take(200).collect();
+    let rows = related::papers(&c, &ids).await;
+    let (keys, bibtex) = related::bib(&rows);
+    let papers: Vec<Value> = rows.iter().zip(&keys).map(|(r, k)| json!({"id": r.s("id"), "key": k, "title": r.s("title")})).collect();
+    done(&trace, json!({"papers": papers, "bibtex": bibtex}), t0)
 }
 
 async fn author(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
@@ -833,11 +950,12 @@ async fn summary(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     if q.len() < 2 {
         return Err(ApiError(StatusCode::BAD_REQUEST, "name a topic".into()));
     }
-    let kept = c.gsoft("a kept summary?", "SELECT id FROM ax_answers WHERE id = :k AND answer != ''", json!({"k": ask::key(q)})).await;
+    let level = level_of(&a.level);
+    let kept = c.gsoft("a kept summary?", "SELECT id FROM ax_answers WHERE id = :k AND answer != ''", json!({"k": ask::summary_key(q, level)})).await;
     if kept.is_empty() || a.fresh == Some(1) {
         svc.spend(1)?;
     }
-    let v = ask::summary(&c, q, &svc.model, a.fresh == Some(1)).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    let v = ask::summary(&c, q, &svc.model, a.fresh == Some(1), level).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
     done(&trace, v, t0)
 }
 
@@ -908,22 +1026,43 @@ struct FeedBody {
     config: Config,
     #[serde(default)]
     public: bool,
+    /// The key of the feed's team link: who holds it changes the feed.
+    #[serde(default)]
+    team: String,
+}
+
+/// Whether `key` is the key of the feed's team link.
+async fn in_team(c: &Ctx<'_>, feed: &str, key: &str) -> bool {
+    !key.is_empty() && c.gsoft("the feed's team link", "SELECT link FROM ax_teams WHERE id = :f", json!({"f": feed})).await.first().is_some_and(|r| r.s("link") == key)
 }
 
 async fn save_feed(State(svc): State<Shared>, Json(b): Json<FeedBody>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
     let u = user_id(&b.user)?;
-    let id = if b.id.is_empty() { format!("f{}", crate::live::now().to_string() + &u[..4]) } else { b.id.clone() };
-    // A feed is changed by its owner only.
+    // A new feed's id: the time to the nanosecond, so two saved in one second are two feeds.
+    let id = if b.id.is_empty() { format!("f{:x}{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0), &u[..4]) } else { b.id.clone() };
+    // A feed is changed by its owner, or by its team through the link; it stays its owner's.
+    let mut owner = u.clone();
     if !b.id.is_empty() {
         let was = c.gsoft("whose feed it is", "SELECT owner FROM ax_feeds WHERE id = :f", json!({"f": id})).await;
-        if was.first().is_some_and(|r| r.s("owner") != u) {
-            return Err(ApiError(StatusCode::FORBIDDEN, "that feed is someone else's".into()));
+        if let Some(r) = was.first().filter(|r| r.s("owner") != u) {
+            if !in_team(&c, &id, &b.team).await {
+                return Err(ApiError(StatusCode::FORBIDDEN, "that feed is someone else's".into()));
+            }
+            owner = r.s("owner");
+        }
+    }
+    // A reader's feeds that write themselves are few: each reads arxiv.org and calls the model weekly.
+    if b.config.weekly {
+        let mine = c.gsoft("your feeds", "SELECT id, config FROM ax_feeds WHERE owner = :u LIMIT 200", json!({"u": owner})).await;
+        let weekly = mine.iter().filter(|r| r.s("id") != id && serde_json::from_str::<Config>(&r.s("config")).is_ok_and(|c| c.weekly)).count();
+        if weekly >= digest::WEEKLY_PER_READER {
+            return Err(ApiError(StatusCode::BAD_REQUEST, format!("at most {} of a reader's feeds write their issues on their own", digest::WEEKLY_PER_READER)));
         }
     }
     let now = chrono::Utc::now().to_rfc3339();
-    svc.graph.upsert("ax_feeds", vec![json!({"id": id, "owner": u, "name": b.config.name, "config": serde_json::to_string(&b.config).unwrap_or_default(), "created": now, "updated": now, "public": b.public})]).await?;
+    svc.graph.upsert("ax_feeds", vec![json!({"id": id, "owner": owner, "name": b.config.name, "config": serde_json::to_string(&b.config).unwrap_or_default(), "created": now, "updated": now, "public": b.public})]).await?;
     done(&trace, json!({"id": id}), t0)
 }
 
@@ -933,12 +1072,54 @@ async fn load_feed(c: &Ctx<'_>, id: &str) -> Result<(Config, serde_json::Map<Str
     Ok((cfg, row))
 }
 
-async fn feed(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+async fn feed(State(svc): State<Shared>, Path(id): Path<String>, Query(a): Query<Q>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
     let (cfg, row) = load_feed(&c, &id).await?;
-    let issues = c.gsoft("its issues", "SELECT id, vol, title, since, until, made, papers FROM ax_issues WHERE feed = :f ORDER BY vol DESC LIMIT 100", json!({"f": id})).await;
-    done(&trace, json!({"id": id, "owner": row.s("owner"), "public": row.get("public"), "config": cfg, "issues": issues}), t0)
+    let (issues, team) = tokio::join!(
+        c.gsoft("its issues", "SELECT id, vol, title, since, until, made, papers FROM ax_issues WHERE feed = :f ORDER BY vol DESC LIMIT 100", json!({"f": id})),
+        c.gsoft("its team link", "SELECT link FROM ax_teams WHERE id = :f", json!({"f": id})),
+    );
+    let key = team.first().map(|r| r.s("link")).unwrap_or_default();
+    let owner = row.s("owner");
+    // The owner sees the team link's key, to share it again; a holder of it is a member.
+    let is_owner = !a.user.is_empty() && a.user == owner;
+    let member = is_owner || (!key.is_empty() && a.team == key);
+    done(&trace, json!({"id": id, "owner": owner, "public": row.get("public"), "config": cfg, "issues": issues, "shared": !key.is_empty(), "member": member, "team": if is_owner { json!(key) } else { Value::Null }}), t0)
+}
+
+#[derive(serde::Deserialize)]
+struct TeamBody {
+    user: String,
+    /// Stop sharing: the link's key no longer works.
+    #[serde(default)]
+    off: bool,
+}
+
+/// The owner shares a feed with a team by a link (a new key each time it
+/// is made after being dropped), or stops sharing it.
+async fn feed_team(State(svc): State<Shared>, Path(id): Path<String>, Json(b): Json<TeamBody>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let u = user_id(&b.user)?;
+    let (_, row) = load_feed(&c, &id).await?;
+    if row.s("owner") != u {
+        return Err(ApiError(StatusCode::FORBIDDEN, "only the feed's owner shares it".into()));
+    }
+    if b.off {
+        svc.graph.sql_params("DELETE FROM ax_teams WHERE id = :f", json!({"f": id})).await?;
+        return done(&trace, json!({"id": id, "team": Value::Null}), t0);
+    }
+    let have = c.gsoft("its team link", "SELECT link FROM ax_teams WHERE id = :f", json!({"f": id})).await;
+    let key = match have.first().map(|r| r.s("link")).filter(|k| !k.is_empty()) {
+        Some(k) => k,
+        None => {
+            let k = crate::random_token();
+            svc.graph.upsert("ax_teams", vec![json!({"id": id, "link": k, "owner": u, "created": chrono::Utc::now().to_rfc3339()})]).await?;
+            k
+        }
+    };
+    done(&trace, json!({"id": id, "team": key}), t0)
 }
 
 #[derive(serde::Deserialize)]
@@ -967,6 +1148,9 @@ struct IssueBody {
     until: String,
     #[serde(default)]
     user: String,
+    /// The key of the feed's team link.
+    #[serde(default)]
+    team: String,
 }
 
 /// A figure's image an issue shows, as JSON (its type and its bytes in
@@ -990,10 +1174,10 @@ async fn make_issue(State(svc): State<Shared>, Path(id): Path<String>, body: Opt
     let b = body.map(|b| b.0).unwrap_or_default();
     let (cfg, row) = load_feed(&c, &id).await?;
     if svc.token.is_some() && row.s("owner") != b.user && svc.public {
-        // In public, only the owner writes a feed's issues.
+        // In public, only the owner and its team write a feed's issues.
         let u = user_id(&b.user)?;
-        if row.s("owner") != u {
-            return Err(ApiError(StatusCode::FORBIDDEN, "only the feed's owner writes its issues".into()));
+        if row.s("owner") != u && !in_team(&c, &id, &b.team).await {
+            return Err(ApiError(StatusCode::FORBIDDEN, "only the feed's owner and its team write its issues".into()));
         }
     }
     svc.spend(cfg.papers.clamp(1, 30))?;
@@ -1166,6 +1350,35 @@ async fn watch_rss(State(svc): State<Shared>, Path(id): Path<String>, headers: H
 /// Checks every standing question each hour against the papers of the
 /// last week (the live feed brings them in rounds, and a paper can arrive
 /// days after the date it carries), within the day's allowance.
+/// Writes each weekly feed's issue once a week, from Monday 06:00 UTC: an
+/// hourly round takes the feeds due, longest waiting first, a few at a
+/// time, while the day's model calls last.
+pub async fn issue_rounds(svc: Shared) {
+    tokio::time::sleep(Duration::from_secs(300)).await;
+    loop {
+        let trace = Trace::new();
+        let c = Ctx { db: &svc.db, g: &svc.graph, trace: &trace };
+        let (rows, last) = tokio::join!(
+            c.gsoft("the feeds", "SELECT id, config FROM ax_feeds LIMIT 5000", Value::Null),
+            c.gsoft("each feed's last issue", "SELECT feed, MAX(made) AS m FROM ax_issues GROUP BY feed", Value::Null),
+        );
+        let feeds: Vec<(String, Config)> = rows.iter().filter_map(|r| serde_json::from_str::<Config>(&r.s("config")).ok().map(|c| (r.s("id"), c))).collect();
+        let last: HashMap<String, String> = last.iter().map(|r| (r.s("feed"), r.s("m"))).collect();
+        for id in digest::due(&feeds, &last, chrono::Utc::now()) {
+            let Some((_, cfg)) = feeds.iter().find(|(f, _)| *f == id) else { continue };
+            if let Err(e) = svc.spend(cfg.papers.clamp(1, 30)) {
+                tracing::warn!("weekly issues wait for tomorrow: {}", e.1);
+                break;
+            }
+            match digest::write_issue(&c, &svc.pages, &id, cfg, &svc.issue_model, None, &|_| {}).await {
+                Ok(v) => eprintln!("chloedb-arxiv: weekly issue {} of feed {id}", v["id"].as_str().unwrap_or("")),
+                Err(e) => tracing::warn!("weekly issue of feed {id}: {e}"),
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+    }
+}
+
 pub async fn watch_rounds(svc: Shared) {
     tokio::time::sleep(Duration::from_secs(120)).await;
     loop {

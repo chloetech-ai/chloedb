@@ -80,14 +80,19 @@ pub async fn llm(c: &Ctx<'_>, what: &str, model: &str, instructions: &str, quest
 }
 
 /// A topic summed up from its papers, kept or written now.
-pub async fn summary(c: &Ctx<'_>, q: &str, model: &str, fresh: bool) -> Result<Value, String> {
-    let k = key(q);
+/// The key a topic's summary is kept under, for a reader's level ("" for the usual one).
+pub fn summary_key(q: &str, level: &str) -> String {
+    if level.is_empty() { key(q) } else { format!("{}|{level}", key(q)) }
+}
+
+pub async fn summary(c: &Ctx<'_>, q: &str, model: &str, fresh: bool, level: &str) -> Result<Value, String> {
+    let k = summary_key(q, level);
     if !fresh {
         let kept = c.gsoft("a kept summary", "SELECT answer, sources, model, at, ms FROM ax_answers WHERE id = :k", json!({"k": k})).await;
         // An empty one (kept before empty answers were refused) is written again.
         if let Some(r) = kept.first().filter(|r| !r.s("answer").trim().is_empty()) {
             let sources: Value = serde_json::from_str(&r.s("sources")).unwrap_or(Value::Null);
-            return Ok(json!({"question": q, "answer": r.s("answer"), "sources": sources, "model": r.s("model"), "at": r.s("at"), "kept": true, "ms": r.f("ms")}));
+            return Ok(json!({"question": q, "level": level, "answer": r.s("answer"), "sources": sources, "model": r.s("model"), "at": r.s("at"), "kept": true, "ms": r.f("ms")}));
         }
     }
     let mut p = understand::parse(q, chrono::Utc::now().timestamp());
@@ -98,12 +103,13 @@ pub async fn summary(c: &Ctx<'_>, q: &str, model: &str, fresh: bool) -> Result<V
         return Ok(json!({"question": q, "answer": "", "sources": [], "note": "No papers speak to this."}));
     }
     let topic = crate::answer::subject(&p);
-    let answer = llm(c, "the summary (llm() on the server)", model, SUMMARY, &format!("Topic: {topic}"), &format!("Abstracts:\n\n{}", context(&taken)), 3000).await?;
+    let instructions = if level.is_empty() { SUMMARY.to_string() } else { format!("{SUMMARY} {}", level_note(level)) };
+    let answer = llm(c, "the summary (llm() on the server)", model, &instructions, &format!("Topic: {topic}"), &format!("Abstracts:\n\n{}", context(&taken)), 3000).await?;
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     let sources: Vec<Value> = taken.iter().enumerate().map(|(i, r)| json!({"n": i + 1, "id": r.s("id"), "title": r.s("title"), "authors": crate::answer::first_author(r), "year": r.i("year"), "cites": r.i("cites")})).collect();
     let at = chrono::Utc::now().to_rfc3339();
     let _ = c.g.upsert("ax_answers", vec![json!({"id": k, "kind": "summary", "question": q, "answer": answer, "sources": serde_json::to_string(&sources).unwrap_or_default(), "model": model, "at": at, "ms": ms})]).await;
-    Ok(json!({"question": q, "answer": answer, "sources": sources, "model": model, "at": at, "kept": false, "ms": ms}))
+    Ok(json!({"question": q, "level": level, "answer": answer, "sources": sources, "model": model, "at": at, "kept": false, "ms": ms}))
 }
 
 /// A paper's TL;DR, kept or written now.
@@ -122,6 +128,84 @@ pub async fn tldr(c: &Ctx<'_>, id: &str, model: &str) -> Result<Value, String> {
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     let _ = c.g.upsert("ax_notes", vec![json!({"id": k, "paper": id, "style": "tldr", "text": v.to_string(), "model": model, "at": chrono::Utc::now().to_rfc3339(), "ms": ms})]).await;
     Ok(json!({"id": id, "note": v, "model": model, "kept": false, "ms": ms}))
+}
+
+/// The readers a paper is explained for.
+pub const LEVELS: &[&str] = &["student", "practitioner", "expert"];
+
+/// How to write for a reader at a level.
+pub fn level_note(level: &str) -> &'static str {
+    match level {
+        "student" => "The reader is a student new to the field: use plain words, define every technical term in passing, and give an everyday analogy when one makes the idea clear.",
+        "practitioner" => "The reader is an engineer who might use this: say what it does, what it needs to be applied (data, compute, code), its results with their numbers, and when to choose it over the usual approach.",
+        _ => "The reader is a researcher in the field: be precise and technical, name how it departs from prior methods, give the key evidence with its numbers, and state assumptions and limits.",
+    }
+}
+
+pub const EXPLAIN: &str = "You explain an arXiv paper from its title and abstract to one reader, at their level. \
+Answer with JSON only: {\"explain\": \"4 to 6 sentences: the problem, why it matters, the idea, and what was found, with a number if the abstract gives one\", \
+\"terms\": [{\"term\": \"a hard term from the abstract, as written there\", \"meaning\": \"at most 20 words, at the reader's level\"}]}. \
+List the terms this reader is least likely to know, each a name of a method, model, concept or measure used in the abstract: 3 to 5 for a student, 2 to 4 for a practitioner, and for an expert 0 to 3, only ones new in this paper or particular to a narrow subfield. \
+Use only what the abstract says; no hype, no preamble.";
+
+/// The paper the field credits with a term, as Who coined it reads it:
+/// among the 30 most cited papers that use it as a phrase, the earliest
+/// with a quarter of the top count (and 20) or more. None when the words
+/// were in use before arXiv began, so its first papers here would mislead.
+pub async fn coined(c: &Ctx<'_>, term: &str) -> Option<Value> {
+    let term = term.replace('"', "");
+    let words = term.split_whitespace().count();
+    if words == 0 || words > 6 {
+        return None;
+    }
+    let p = json!({"p": format!("\"{term}\"")});
+    let (rows, early) = tokio::join!(
+        c.soft("its most cited papers", "SELECT id, title, year, cites, created FROM ax_papers WHERE (MATCH(title, :p) OR MATCH(abstract, :p)) ORDER BY cites DESC LIMIT 30", p.clone()),
+        c.soft("its uses before 1994", "SELECT COUNT(*) AS n FROM ax_papers WHERE (MATCH(title, :p) OR MATCH(abstract, :p)) AND year <= 1993", p),
+    );
+    if early.first().map(|r| r.i("n")).unwrap_or(0) >= 5 {
+        return None;
+    }
+    let top = rows.first().map(|r| r.i("cites")).unwrap_or(0);
+    let mut credited: Vec<&Row> = rows.iter().filter(|r| r.i("cites") * 4 >= top && r.i("cites") >= 20).collect();
+    credited.sort_by_key(|r| r.s("created"));
+    credited.first().map(|r| json!({"id": r.s("id"), "title": r.s("title"), "year": r.i("year"), "cites": r.i("cites"), "created": r.s("created")}))
+}
+
+/// A paper explained for a reader at a level, its hard terms each with the
+/// paper that brought it in; kept or written now.
+pub async fn explain(c: &Ctx<'_>, id: &str, level: &str, model: &str) -> Result<Value, String> {
+    let id = understand::clean_id(id);
+    let k = format!("explain:{level}:{id}");
+    let kept = c.gsoft("a kept explanation", "SELECT text, model, at FROM ax_notes WHERE id = :k", json!({"k": k})).await;
+    if let Some(r) = kept.first().filter(|r| !r.s("text").trim().is_empty()) {
+        let v: Value = serde_json::from_str(&r.s("text")).unwrap_or(Value::Null);
+        return Ok(json!({"id": id, "level": level, "note": v, "model": r.s("model"), "kept": true}));
+    }
+    let row = c.soft("the paper", "SELECT id, title, abstract, created FROM ax_papers WHERE id = :id", json!({"id": id})).await.into_iter().next().ok_or("no such paper")?;
+    let t0 = std::time::Instant::now();
+    let text = llm(c, "the explanation (llm() on the server)", model, EXPLAIN, &format!("{}\nTitle: {}", level_note(level), row.s("title")), &format!("Abstract: {}", row.s("abstract")), 1500).await?;
+    let mut v = json_in(&text).unwrap_or(json!({"explain": text.trim(), "terms": []}));
+    // Each term with the paper that brought it in, when that paper came before this one.
+    let terms: Vec<Value> = v["terms"].as_array().cloned().unwrap_or_default().into_iter().take(5).collect();
+    let found = futures_util::future::join_all(terms.iter().map(|t| coined(c, t["term"].as_str().unwrap_or("")))).await;
+    let created = row.s("created");
+    let terms: Vec<Value> = terms
+        .into_iter()
+        .zip(found)
+        .map(|(mut t, f)| {
+            // Credited to a later paper is no origin; to this one, it is said so.
+            if let Some(mut f) = f.filter(|f| f["created"].as_str().unwrap_or("~") <= created.as_str()) {
+                f["here"] = json!(f["id"] == json!(id));
+                t["from"] = f;
+            }
+            t
+        })
+        .collect();
+    v["terms"] = json!(terms);
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let _ = c.g.upsert("ax_notes", vec![json!({"id": k, "paper": id, "style": format!("explain-{level}"), "text": v.to_string(), "model": model, "at": chrono::Utc::now().to_rfc3339(), "ms": ms})]).await;
+    Ok(json!({"id": id, "level": level, "note": v, "model": model, "kept": false, "ms": ms}))
 }
 
 /// The three earlier papers closest to one: the nearest by meaning that
