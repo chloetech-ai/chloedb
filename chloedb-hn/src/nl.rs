@@ -515,7 +515,21 @@ pub fn describe(a: &Ask, only: Option<&str>) -> String {
                 "least_comments" => "fewest comments first".to_string(),
                 other => other.to_string(),
             };
-            if *one { format!("the one {what} answer: {s}") } else { s }
+            if *one {
+                let thing = if only == Some("comment") { "comment" } else { "story" };
+                match by.as_str() {
+                    "comments" if only == Some("comment") => "the comment with the most replies".to_string(),
+                    "comments" => format!("the {thing} with the most comments"),
+                    "points" => format!("the {thing} with the most points"),
+                    "date" => format!("the newest {thing}"),
+                    "old" => format!("the first {thing}"),
+                    "least_points" => format!("the {thing} with the fewest points"),
+                    "least_comments" => format!("the {thing} with the fewest comments"),
+                    _ => format!("one {thing}: {s}"),
+                }
+            } else {
+                format!("{what}, {s}")
+            }
         }
         Ask::Count => format!("how many {what}"),
         Ask::People { by } => match by.as_str() {
