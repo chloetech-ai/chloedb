@@ -286,7 +286,7 @@ GROUP BY p.brand ORDER BY reviews DESC LIMIT 10;</pre></div>
     <div class="block-head center">
       <span class="eyebrow">Benchmarks</span>
       <h2>First overall when one system has to do it all</h2>
-      <p>Fourteen kinds of query against thirteen search engines and databases, with the same CPUs and memory for each and the answers checked. ChloeDB's numbers are from its build of 7 November, the others' from their newest runs, of 3 to 6 November, on other nodes; in the one run with every engine on the same day, ChloeDB is also first at 1M, 156 points against Elasticsearch's 284.</p>
+      <p>Fourteen kinds of query against thirteen search engines and databases, with the same CPUs and memory for each and the answers checked. At 1M every engine ran on 16 November, ChloeDB 0.3.5 among them, with every result cache off: ChloeDB is first with 130 points, against Elasticsearch's 268. At 10M ChloeDB, Elasticsearch and OpenSearch ran again that day, the others on 3 November.</p>
     </div>
     <div class="tiles">
       <a href="bench-10m.html" data-overall="cloud-10m" data-mode="tile"></a>
@@ -336,9 +336,9 @@ EOF</pre>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js?v=376b5cfc2f"></script>
+<script src="assets/bench-data.js?v=9baf0c46d1"></script>
 <script src="assets/site.js?v=699f360f4f"></script>
-<script src="assets/bench.js?v=c61344792b"></script>
+<script src="assets/bench.js?v=cc795d625d"></script>
 <script src="assets/sims.js?v=8a3133bd4a"></script>
 </body>
 </html>
