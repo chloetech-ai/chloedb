@@ -131,13 +131,32 @@ def github(a):
 def ours(a):
     queries = load_queries(a.queries)
     token = os.environ.get("CHLOEDB_GH_TOKEN", "")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    def get(path):
+        req = urllib.request.Request(a.url.rstrip("/") + path, headers=headers)
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.load(r)
+
+    # Answers GitHub's search no longer finds by the name written (renamed
+    # since): their ids from the names each repo had in the archive.
+    ids = read_json("answers.json", {})
+    for n in sorted({n for q in queries for n in q["answers"]} - set(ids)):
+        try:
+            d = get("/v1/repo/" + urllib.parse.quote(n))
+        except urllib.error.HTTPError:
+            d = {}
+        if d.get("found"):
+            r = d["repo"]
+            ids[n] = {"id": r["repo"], "full_name": r["name"], "stars": r.get("stars"), "via": "the archive's names"}
+            print(f"ours: {n} is {r['name']} (id {r['repo']})", flush=True)
+        else:
+            print(f"ours: {n} not in the archive either", flush=True)
+    write_json("answers.json", ids)
     got = {}
     for q in queries:
-        url = a.url.rstrip("/") + "/v1/search?" + urllib.parse.urlencode({"q": q["q"]})
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"} if token else {})
         t0 = time.time()
-        with urllib.request.urlopen(req, timeout=120) as r:
-            d = json.load(r)
+        d = get("/v1/search?" + urllib.parse.urlencode({"q": q["q"]}))
         got[q["q"]] = {"total": d.get("total"), "ms": round((time.time() - t0) * 1000), "took_ms": d.get("took_ms"), "top": [{"id": it["repo"], "name": it["name"], "stars": it.get("stars")} for it in d.get("repos", [])[:10]]}
     write_json(a.out, got)
     print(f"ours: {len(got)} queries into results/{a.out}", flush=True)
@@ -182,13 +201,14 @@ def score(a):
 
     every, untuned = summary(rows), summary([r for r in rows if not r["tuned"]])
     lines = ["# The explorer's search against GitHub's", ""]
-    lines.append(f"{len(rows)} searches written as a person looking for a kind of project would type them, each with the repos that answer it (bench/queries.tsv). A search scores when one of its answers is in the first ten.")
+    lines.append(f"{len(rows)} searches written as a person looking for a kind of project would type them, each with the repos that answer it (bench/queries.tsv). A search scores when one of its answers is in the first ten. The explorer's time is the whole request to its API inside the cluster; GitHub's is over the internet and paced under its limit, so it is not compared.")
     lines.append("")
     lines.append("| | searches | answer first | answer in top 10 | MRR@10 | no results | median time |")
     lines.append("|---|---|---|---|---|---|---|")
     for label, s in (("all", every), ("without the six tuned on", untuned)):
         for e, v in s.items():
-            lines.append(f"| {e}, {label} | {v['n']} | {v['at1']:.0%} | {v['at10']:.0%} | {v['mrr']:.3f} | {v['empty']} | {v['ms']} ms |")
+            ms = f"{v['ms']} ms" if e == "Explorer" else "not comparable"
+            lines.append(f"| {e}, {label} | {v['n']} | {v['at1']:.0%} | {v['at10']:.0%} | {v['mrr']:.3f} | {v['empty']} | {ms} |")
     lines.append("")
     lines.append("| search | GitHub search | Explorer |")
     lines.append("|---|---|---|")

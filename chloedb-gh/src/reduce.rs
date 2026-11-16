@@ -459,6 +459,47 @@ pub fn run(o: Opts) -> Result<()> {
     Ok(())
 }
 
+const STAR_ROWS: usize = 4 << 20;
+
+/// A file of star rows (repo, actor, actor_k, t), and the buffer emptied.
+fn write_stars(
+    dir: &std::path::Path,
+    rows: &mut Vec<(i64, i64, i64)>,
+    n: &mut usize,
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    write_parquet(
+        &dir.join(format!("{:05}.parquet", *n)),
+        vec![
+            (
+                "repo",
+                Arc::new(rows.iter().map(|r| r.0).collect::<Int64Array>()) as ArrayRef,
+            ),
+            (
+                "actor",
+                Arc::new(rows.iter().map(|r| r.1).collect::<Int64Array>()) as ArrayRef,
+            ),
+            (
+                "actor_k",
+                Arc::new(
+                    rows.iter()
+                        .map(|r| Some(r.1.to_string()))
+                        .collect::<StringArray>(),
+                ) as ArrayRef,
+            ),
+            (
+                "t",
+                Arc::new(rows.iter().map(|r| r.2).collect::<Int64Array>()) as ArrayRef,
+            ),
+        ],
+    )?;
+    *n += 1;
+    rows.clear();
+    Ok(())
+}
+
 /// The kept repos' months from the events, a file a month, and the
 /// shard's sums by language and topic.
 fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
@@ -468,6 +509,13 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
     let mut month = i64::MIN;
     let mut cur: FxHashMap<i64, Month> = FxHashMap::default();
     let mut people: FxHashSet<(i64, i64)> = FxHashSet::default();
+    // Every star of a kept repo again, with the person as a keyword too:
+    // gh_stars answers "what did these people star" from each value's list
+    // of rows, where gh_events (in repo order) would read every row.
+    let stars_dir = o.out.join("stars").join(format!("s{sh}"));
+    std::fs::create_dir_all(&stars_dir)?;
+    let mut stars: Vec<(i64, i64, i64)> = Vec::with_capacity(STAR_ROWS);
+    let mut star_files = 0usize;
     let mut by_lang: FxHashMap<(i64, String), Month> = FxHashMap::default();
     let mut by_topic: FxHashMap<(i64, String), Month> = FxHashMap::default();
     let mut rows = 0u64;
@@ -548,6 +596,14 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
                         month = m;
                     }
                 }
+                if k == "star" {
+                    if let Some(a) = at_i(actors, i).filter(|a| *a != 0) {
+                        stars.push((repo, a, t));
+                        if stars.len() >= STAR_ROWS {
+                            write_stars(&stars_dir, &mut stars, &mut star_files)?;
+                        }
+                    }
+                }
                 let c = cur.entry(repo).or_default();
                 match k {
                     "star" => c.stars += 1,
@@ -572,6 +628,8 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
         }
     }
     flush(month, &mut cur, &mut people)?;
+    write_stars(&stars_dir, &mut stars, &mut star_files)?;
+    eprintln!("reduce s{sh}: {star_files} files of stars by person");
     eprintln!(
         "reduce s{sh}: months from {rows} events ({:.0} s)",
         t0.elapsed().as_secs_f64()

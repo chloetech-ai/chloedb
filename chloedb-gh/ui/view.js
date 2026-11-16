@@ -940,6 +940,7 @@ async function weeklyPage(app, main, at, alive) {
 
 const TABLE_ABOUT = {
   gh_events: "every public event since 2011: when, what kind, which repo, who; placed on shards by repo and sorted by it",
+  gh_stars: "every star again, with who gave it as a keyword: \"what else did these people star\" reads each person's own list rather than every event",
   gh_stars_daily: "the stars and forks each repo got each day",
   gh_repos: "each repo with two stars or more: its name, description, topics, language, and a vector of what it does",
   gh_repo_names: "the names repos had before",

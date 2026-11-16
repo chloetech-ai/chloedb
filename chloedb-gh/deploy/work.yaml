@@ -82,3 +82,22 @@ spec:
     resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 6Gi}}
     volumeMounts: [{name: work, mountPath: /work}]
   volumes: [{name: work, hostPath: {path: /mnt/chloedb/gh, type: DirectoryOrCreate}}]
+---
+# What GitHub's search says of each repo with 50+ stars (chloedb-gh
+# api-meta): anonymous, at most 10 calls a minute from this node's address,
+# about a day for the whole walk. It goes on where it stopped (out/
+# api-done-0.txt) when the pod starts again, and outlives the load's pods.
+apiVersion: v1
+kind: Pod
+metadata: {name: gh-meta, namespace: strata, labels: {app: gh-meta}}
+spec:
+  nodeSelector: {chloedb/gh-shard: "1"}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+  restartPolicy: OnFailure
+  containers:
+  - name: meta
+    image: python:3.13-slim-trixie
+    command: ["sh", "-c", "exec /work/bin/chloedb-gh-api api-meta --out /work/out --part 0/1 --gap 7 >> /work/apimeta.log 2>&1"]
+    resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 1Gi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/chloedb/gh, type: Directory}}]

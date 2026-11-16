@@ -88,6 +88,12 @@ pub async fn logins(c: &Ctx<'_>, actors: &[i64]) -> HashMap<i64, String> {
 }
 
 /// Repos by id, as the page lists them.
+/// People's ids as gh_stars' keyword values (an `IN` there reads each
+/// value's own rows).
+pub fn keys(ids: &[i64]) -> Vec<String> {
+    ids.iter().map(i64::to_string).collect()
+}
+
 pub async fn repos_of(c: &Ctx<'_>, what: &str, ids: &[i64]) -> HashMap<i64, Row> {
     if ids.is_empty() {
         return HashMap::new();
@@ -252,7 +258,7 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
     let (recent, ever, gazers) = tokio::join!(
         c.soft("who did the work this last year", format!("SELECT actor, COUNT(*) AS n FROM gh_events WHERE repo = :id AND t > :since AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 30"), json!({"id": id, "since": year_ago})),
         c.soft("who did the work ever", format!("SELECT actor, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE repo = :id AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 30"), p.clone()),
-        c.soft("its latest stargazers", "SELECT actor FROM gh_events WHERE repo = :id AND kind = 'star' ORDER BY t DESC LIMIT 1500", p.clone()),
+        c.soft("its latest stargazers", "SELECT actor FROM gh_stars WHERE repo = :id ORDER BY t DESC LIMIT 1500", p.clone()),
     );
     let mut people: Vec<i64> = ids(&recent, "actor");
     people.extend(ids(&ever, "actor"));
@@ -270,7 +276,7 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
             if gz.len() < 20 {
                 return Vec::new();
             }
-            c.soft("what the same people starred", "SELECT repo, COUNT(*) AS n FROM gh_events WHERE kind = 'star' AND actor IN (:a) GROUP BY repo ORDER BY n DESC LIMIT 60", json!({"a": gz})).await
+            c.soft("what the same people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:a) GROUP BY repo ORDER BY n DESC LIMIT 60", json!({"a": keys(&gz)})).await
         },
     );
     let co_ids: Vec<i64> = ids(&co, "repo").into_iter().filter(|x| *x != id).collect();
@@ -518,7 +524,7 @@ pub async fn person(c: &Ctx<'_>, login: &str) -> Result<Value> {
         c.soft("what they did", "SELECT kind, COUNT(*) AS n FROM gh_events WHERE actor = :a GROUP BY kind ORDER BY n DESC LIMIT 30", p.clone()),
         c.soft("year by year", format!("SELECT t - t % {YEAR} AS y, COUNT(*) AS n FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY y ORDER BY y LIMIT 40"), p.clone()),
         c.soft("where they work", format!("SELECT repo, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY repo ORDER BY n DESC LIMIT 24"), p.clone()),
-        c.soft("what they starred lately", "SELECT repo, t FROM gh_events WHERE actor = :a AND kind = 'star' ORDER BY t DESC LIMIT 24", p.clone()),
+        c.soft("what they starred lately", "SELECT repo, t FROM gh_stars WHERE actor_k = :k ORDER BY t DESC LIMIT 24", json!({"k": a.to_string()})),
     );
     let mut rids = ids(&repos, "repo");
     rids.extend(ids(&stars, "repo"));
@@ -725,7 +731,7 @@ pub async fn for_you(c: &Ctx<'_>, login: &str) -> Result<Value> {
     };
     let a = w.i("actor");
     let (starred, worked) = tokio::join!(
-        c.soft("what they starred", "SELECT repo, t FROM gh_events WHERE actor = :a AND kind = 'star' ORDER BY t DESC LIMIT 200", json!({"a": a})),
+        c.soft("what they starred", "SELECT repo, t FROM gh_stars WHERE actor_k = :k ORDER BY t DESC LIMIT 200", json!({"k": a.to_string()})),
         c.soft("where they work", format!("SELECT repo, COUNT(*) AS n FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY repo ORDER BY n DESC LIMIT 10"), json!({"a": a})),
     );
     let mut seeds = ids(&starred, "repo");
@@ -738,12 +744,18 @@ pub async fn for_you(c: &Ctx<'_>, login: &str) -> Result<Value> {
     if seeds.is_empty() {
         return Ok(json!({"found": true, "login": w.s("login"), "seeds": [], "picks": []}));
     }
-    let nb = c.soft("people who starred the same repos", "SELECT actor FROM gh_events WHERE repo IN (:s) AND kind = 'star' ORDER BY t DESC LIMIT 3000", json!({"s": seeds})).await;
+    let nb = c
+        .soft(
+            "people who starred the same repos",
+            "SELECT actor FROM gh_stars WHERE repo IN (:s) ORDER BY t DESC LIMIT 3000",
+            json!({"s": seeds}),
+        )
+        .await;
     let nb: Vec<i64> = ids(&nb, "actor").into_iter().filter(|x| *x != a).collect();
     let cand = if nb.is_empty() {
         Vec::new()
     } else {
-        c.soft("what those people starred", "SELECT repo, COUNT(*) AS n FROM gh_events WHERE kind = 'star' AND actor IN (:p) GROUP BY repo ORDER BY n DESC LIMIT 400", json!({"p": nb})).await
+        c.soft("what those people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:p) GROUP BY repo ORDER BY n DESC LIMIT 400", json!({"p": keys(&nb)})).await
     };
     let cids: Vec<i64> = ids(&cand, "repo")
         .into_iter()
@@ -849,6 +861,7 @@ pub async fn home(c: &Ctx<'_>, latest: i64, hn: Option<&crate::api::Hn>) -> Resu
 pub async fn scale(c: &Ctx<'_>) -> Value {
     let tables = [
         "gh_events",
+        "gh_stars",
         "gh_stars_daily",
         "gh_repos",
         "gh_repo_names",
