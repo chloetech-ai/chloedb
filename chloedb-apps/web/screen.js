@@ -234,6 +234,9 @@ window.__sa_numbers = (() => {
     const fail = (where, e) => {
       const err = new Error(`${where}: ${e && e.message ? e.message : e}`);
       err.__cap = e && e.__cap;
+      // A refusal and a call nobody answered stay what they are (frame.js).
+      if (e && e.refused) err.refused = true;
+      if (e && e.transient) err.transient = true;
       return err;
     };
     // The value of v in scope s: expressions evaluated, objects and arrays walked.
@@ -304,7 +307,8 @@ window.__sa_numbers = (() => {
         if (r && typeof r.then === 'function') await r;
       } catch (e) {
         if (e && e.auth && again && await askSignIn()) return run(fn, args, where, false);
-        if (!(e && (e.refused || e.auth))) report(fail(where, e)); app.toast(e && e.message ? e.message : String(e)); if (e && e.refused) window.__sa_refusal = e.message;
+        if (e && e.transient) app.toast('No answer from the app just now. Try again in a moment.');
+        else { if (!(e && (e.refused || e.auth))) report(fail(where, e)); app.toast(e && e.message ? e.message : String(e)); if (e && e.refused) window.__sa_refusal = e.message; }
       }
       if (window.__sa_refusal) refusals.set(where, String(window.__sa_refusal));
       window.__sa_refusal = null;
@@ -320,11 +324,23 @@ window.__sa_numbers = (() => {
       for (const [k, v] of Object.entries(props || {})) out[k] = typeof v === 'function' && /^on[A-Z]/.test(k) ? (...args) => run(v, args, `${where}.${k}`) : v;
       return out;
     };
+    // A visitor who may only look (a published app's choice, app.access) is
+    // not offered what would write: forms, and the buttons and row actions
+    // that add, change or remove (their code writes, or their label says so:
+    // Edit opens a form that is not there). The server refuses such a write
+    // anyway; this keeps it from being offered.
+    const readOnly = app.access === 'look';
+    const WRITES = /\bapp\.(insert|update|remove|call|upload|email)\s*\(/;
+    const WRITE_LABEL = /^(add|new|edit|delete|remove|archive|discard|trash|create)\b/i;
+    const writes = (doV, label) => readOnly && ((isExpr(doV) && WRITES.test(String(SRC[doV.$e] || ''))) || (typeof doV === 'function' && WRITES.test(String(doV))) || WRITE_LABEL.test(String(label || '').trim()));
     // A preview (drawn while the model still writes the app) has no tables
     // or components yet: what fails stays quiet.
     const preview = !!spec.preview;
     function report(e) {
       if (preview) return;
+      // Not the screen's fault: a refusal is said where it happened, and a
+      // call nobody answered is asked again (load).
+      if (e && (e.refused || e.transient)) return;
       const key = String(e && e.message);
       if (reported.has(key)) return;
       reported.add(key);
@@ -348,13 +364,18 @@ window.__sa_numbers = (() => {
           const def = typeof q === 'string' ? { sql: q } : q || {};
           // An expression for sql gives the SELECT to run (one that depends on
           // state), or the rows themselves.
+          // A query that names :today and gives it no value gets the day here.
+          const bind = (sql, p) => (/:today\b/.test(sql) && (p.today === undefined || p.today === null) ? { ...p, today: app.today() } : p);
           if (isExpr(def.sql)) {
             const sql = await val(def.sql, s, where);
             if (typeof sql !== 'string') return sql;
-            return await app.sql(sql, val(def.params || {}, s, `${where}.params`));
+            return await app.sql(sql, bind(sql, val(def.params || {}, s, `${where}.params`)));
           }
-          return await app.sql(def.sql, val(def.params || {}, s, `${where}.params`));
+          return await app.sql(def.sql, bind(String(def.sql || ''), val(def.params || {}, s, `${where}.params`)));
         } catch (e) {
+          // Nobody answered (the network, the engine restarting): what was
+          // shown stays, and the data is asked for again shortly.
+          if (e && e.transient) { missed = true; return data[name]; }
           // Rows only a signed-in person may read: the screen asks them to sign in.
           if (/^Sign in first/.test(String(e && e.message))) { refused = true; return []; }
           report(fail(where, e)); return [];
@@ -365,6 +386,20 @@ window.__sa_numbers = (() => {
       // A front page stays public: what a visitor may not read stays out of it, and no wall hides the storefront.
       gated = refused && !isFront && !me;
       refused = false;
+      retryLoad(missed);
+    }
+    // After a read nobody answered: again in 2 s, then 4, 8... up to 30 s,
+    // until one is answered; the person is told once (frame.js).
+    let retryIn = 0;
+    let retryTimer = 0;
+    let missed = false;
+    function retryLoad(was) {
+      missed = false;
+      if (!was) { if (retryIn && window.__sa_offline) window.__sa_offline(false); retryIn = 0; return; }
+      if (!retryIn && window.__sa_offline) window.__sa_offline(true);
+      retryIn = Math.min(30000, retryIn ? retryIn * 2 : 2000);
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => { refresh().catch(() => {}); }, retryIn);
     }
     function compute() {
       lets = {};
@@ -444,7 +479,7 @@ window.__sa_numbers = (() => {
         if (b.chips !== undefined) return chips(b, s, path);
         if (b.input !== undefined) return input(b, s, path);
         if (b.button !== undefined) return button(b, s, path);
-        if (b.form !== undefined) return folded(b, s, path);
+        if (b.form !== undefined) return readOnly ? null : folded(b, s, path);
         if (b.checks !== undefined) return checks(b, s, path);
         if (b.table !== undefined) return table(b, s, path);
         if (b.code !== undefined) return code(b, s, path);
@@ -516,6 +551,7 @@ window.__sa_numbers = (() => {
     const asks = (q, fn) => !!q && !/\bapp\.remove\(/.test(String(fn));
 
     function button(b, s, path) {
+      if (writes(b.do, T(b.button, s, path))) return null;
       const fn = val(b.do, s, `${path}.do`);
       const btn = h('button', { class: b.class || null, type: 'button', onclick: async () => {
         if (asks(b.confirm, fn) && !confirm(T(b.confirm, s, path))) return;
@@ -769,10 +805,12 @@ window.__sa_numbers = (() => {
       const given = b.columns !== undefined ? val(b.columns, s, `${path}.columns`) : null;
       const cols = (Array.isArray(given) && given.length ? given : Object.keys(rows[0]).filter((k) => k !== 'id' && k !== 'created').map((key) => ({ key }))).map((c) => (typeof c === 'string' ? { key: c } : c));
       const fns = cols.map((c, i) => (c.value !== undefined ? val(c.value, s, `${path}.columns[${i}].value`) : null));
-      const acts = (b.actions || []).map((a, i) => ({ ...a, fn: val(a.do, s, `${path}.actions[${i}].do`) }));
+      const acts = (b.actions || []).map((a, i) => ({ ...a, fn: val(a.do, s, `${path}.actions[${i}].do`) })).filter((a) => !writes(a.do, T(a.label, s, path)));
       const onRow = b.onRow !== undefined ? val(b.onRow, s, `${path}.onRow`) : null;
       const cell = (c, fn, r) => {
         let v = typeof fn === 'function' ? fn(r) : fn !== null ? fn : r[c.key];
+        // A tick in a row writes when it changes: one a visitor who may only look cannot change.
+        if (readOnly && v instanceof HTMLInputElement && v.type === 'checkbox') v.disabled = true;
         if (v instanceof Node) return v;
         if (c.format && FORMAT[c.format]) v = FORMAT[c.format](v);
         if (Array.isArray(v)) v = v.join(', ');
@@ -902,6 +940,13 @@ window.__sa_numbers = (() => {
       const half = ref >= 0 && HALF.test(name(cols[ref], ref));
       return { raw, tick, badge, numeric, title, ref, fig, half };
     }
+    const money = (t, c) => /^[-−]?\s*[$€£¥₹]|[$€£¥₹]$|\b(USD|EUR|GBP)\b/.test(t) || /money|currency|price/i.test(String(c?.format || ''));
+    // A number by its column's name: "Every (days)" and 3 is "Every 3 days",
+    // "Reorder at" and 200 "Reorder at 200".
+    const figPhrase = (head, t) => {
+      const m = /^(.*?)\s*\(([^)]+)\)\s*$/.exec(String(head || ''));
+      return m && m[1] ? `${m[1]} ${t} ${m[2]}` : head ? `${head} ${t}` : t;
+    };
     // One row's parts as text: its state and tone, and its other words,
     // short: names as they are, numbers and dates with their column's name
     // ("Reorder at 200").
@@ -915,7 +960,7 @@ window.__sa_numbers = (() => {
         if (!t) return null;
         // a change says its sign, as the table's column does ("+$5,400")
         if (R.numeric[i] && (c.change === true || c.format === 'change') && (NUM.parseNum(R.raw(c, i, r)) || 0) > 0 && !/^\+/.test(t)) t = `+${t}`;
-        return R.numeric[i] || c.format ? `${heads[i]} ${t}` : t;
+        return R.numeric[i] || c.format ? figPhrase(heads[i], t) : t;
       }).filter(Boolean).slice(0, phone.matches ? 2 : 4);
       return { text, state, tone, sub };
     }
@@ -985,9 +1030,10 @@ window.__sa_numbers = (() => {
 
     // Native, on a phone: a table's rows as cells of grouped lists, a group
     // per state (the worst first: out, then low, then the rest), each cell
-    // an icon in the state's color (or the row's initials), its name, one
-    // line of detail led by its number when its state needs doing, and on
-    // the right its next step, or its number.
+    // the row's initials in the state's color, its name, one line of detail
+    // (led by its number when the number is what needs doing: "None left",
+    // "$650 owed"; else the number by its column's words, "Every 3 days"),
+    // and on the right its next step, or its number.
     const TONE_ORDER = ['bad', 'warn', 'info', '', 'ok'];
     const NEEDS_DOING = /\b(out|low|overdue|late|due|unpaid|owed|owing|missing|expired|expiring|failed|reorder|to order|urgent|behind|blocked)\b/i;
     const GLYPH = { bad: '✕', warn: '!', ok: '✓', info: '•' };
@@ -1023,7 +1069,8 @@ window.__sa_numbers = (() => {
       };
       return h('div', { class: 'rgroups' }, groups.map((g) => h('section', { class: 'rgroup' },
         g.key ? h('h3', { class: 'rgroup-t' }, cap(g.key)) : null,
-        h('div', { class: 'rgroup-list' }, g.items.map(({ r, text, tone, sub }) => {
+        h('div', { class: 'rgroup-list' }, g.items.map(({ r, text, tone, sub: sub0 }) => {
+          let sub = sub0;
           const who = rowName(r);
           const name = (R.title >= 0 ? text(R.title) : '') || who || 'Untitled';
           const figText = R.fig >= 0 ? text(R.fig).trim() : '';
@@ -1031,8 +1078,13 @@ window.__sa_numbers = (() => {
           // "None left", "4 left" for a count of things; "$650 owed" for the rest.
           const figName = String(heads[R.fig] || '').toLowerCase();
           const counted = /(stock|qty|quantity|on hand|left|remaining|units|count|in store)/.test(figName);
-          const leadText = !figText ? '' : counted ? (Number(R.raw(cols[R.fig], R.fig, r)) === 0 ? 'None left' : `${figText} left`) : `${figText} ${figName}`.trim();
+          // The number leads only when it is what needs doing: a count left, an
+          // amount ("$650 owed"), a column named for it ("Days overdue").
+          // Otherwise it is said by its column's words ("Every 3 days").
+          const pointed = counted || money(figText, cols[R.fig]) || NEEDS_DOING.test(figName);
+          const leadText = !figText || !pointed ? '' : counted ? (Number(R.raw(cols[R.fig], R.fig, r)) === 0 ? 'None left' : `${figText} left`) : `${figText} ${figName}`.trim();
           const lead = needs && leadText ? h('span', { class: 'lead' }, leadText) : null;
+          if (figText && !pointed) sub = [figPhrase(heads[R.fig], figText), ...sub].slice(0, 4);
           const { main, more, tap } = rowActions(acts, r, who, s, path, (l) => `rc-pill${SOFT.test(l) ? ' soft' : ''}`, !onRow);
           const open = onRow ? () => run(onRow, [r], `${path}.onRow`) : tap;
           const tickEl = tickOf(R, r, cols, fns, heads, cell, who);
@@ -1042,10 +1094,13 @@ window.__sa_numbers = (() => {
           const icon = tickEl ? h('label', { class: 'tap rc-tick' }, tickEl)
             : month ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, month.year ? h('small', null, `’${month.year.slice(2)}`) : null, h('b', { class: 'rc-mon' }, month.mon[0].toUpperCase() + month.mon.slice(1)))
             : day ? h('span', { class: 'rc-icon rc-day', 'aria-hidden': 'true' }, h('small', null, day.mon), h('b', null, String(day.day)))
-            // initials only for a name of a person or a firm ("Bramble & Co"), never "1D" for "1-30 days"
-            : tone || /^\p{Lu}[\p{L}'’.-]*(\s+(&|and|\p{Lu}[\p{L}'’.-]*))+$/u.test(name) ? h('span', { class: `rc-icon${tone ? ` t-${tone}` : ''}`, 'aria-hidden': 'true' }, GLYPH[tone] || initials(name) || '•')
+            // a row named by a proper name ("Fern", "Bramble & Co") keeps its
+            // initials, its state the cell's color; never "1D" for "1-30 days":
+            // a row named otherwise shows its state's glyph, or nothing
+            : /^\p{Lu}[\p{L}'’.-]*(\s+(&|and|\p{Lu}[\p{L}'’.-]*))*$/u.test(name) ? h('span', { class: `rc-icon${tone ? ` t-${tone}` : ''}`, 'aria-hidden': 'true' }, initials(name) || GLYPH[tone] || '•')
+            : tone ? h('span', { class: `rc-icon t-${tone}`, 'aria-hidden': 'true' }, GLYPH[tone] || '•')
             : null;
-          const end = main || (figText && !lead ? h('span', { class: 'rc-val' }, figText) : null);
+          const end = main || (figText && pointed && !lead ? h('span', { class: 'rc-val' }, figText) : null);
           return h('div', { class: `rcell${tone ? ` t-${tone}` : ''}${tickEl && tickEl.checked ? ' done' : ''}${open ? ' tappable' : ''}${icon ? '' : ' noicon'}`,
             onclick: open ? (e) => { if (!e.target.closest('button, summary, input, label, a')) open(); } : null },
             icon,
@@ -1127,7 +1182,7 @@ window.__sa_numbers = (() => {
         try {
           if (row) { await app.remove(table, row.id, { undo: false }); has.delete(key(it, day)); }
           else { has.set(key(it, day), await app.insert(table, { ...(b.fields || {}), [itemCol]: it.id, [dayCol]: day, ...(skipCol ? { [skipCol]: skip } : {}) })); }
-        } catch (e) { report(fail(path, e)); }
+        } catch (e) { if (e && (e.refused || e.transient)) app.toast(e.transient ? 'No answer from the app just now. Try again in a moment.' : e.message); report(fail(path, e)); }
         btn.disabled = false;
         await refresh();
       };
@@ -1135,7 +1190,7 @@ window.__sa_numbers = (() => {
         const st = stateOf(it, ymd(d));
         const now = k === n - 1;
         const btn = h('button', { type: 'button', class: `check${now ? ' today' : ' past'}${st === 'done' ? ' on' : st === 'skip' ? ' skip' : ''}`, 'data-age': String(n - 1 - k), 'aria-pressed': String(st === 'done'),
-          'aria-label': `${nameOf(it)}, ${label(d)}${st === 'skip' ? ', skipped' : ''}`, title: `${label(d)}${st === 'skip' ? ' (skipped)' : ''}`, onclick: () => toggle(it, d, btn) },
+          'aria-label': `${nameOf(it)}, ${label(d)}${st === 'skip' ? ', skipped' : ''}`, title: `${label(d)}${st === 'skip' ? ' (skipped)' : ''}`, disabled: readOnly, onclick: () => toggle(it, d, btn) },
           h('span', { class: st === 'skip' ? 'dash' : 'mark', 'aria-hidden': 'true' }));
         return btn;
       };

@@ -20,8 +20,9 @@ import { repairRequest, lookSuggestions } from './look.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
 import { Changes, joinAsks } from './changes.mjs';
 import { useTableFunctions, useFunctionReads } from './sql.mjs';
-import { MODEL, spend, useSpendFile, checkProvider, withProvider } from './llm.mjs';
-import { newId } from './store.mjs';
+import { MODEL, spend, useSpendFile, buildScope, checkProvider, withProvider } from './llm.mjs';
+import { explainFailure } from './failures.mjs';
+import { newId, shortName, firstBuildStatus } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { appScript } from './source.mjs';
 import { provenance } from './provenance.mjs';
@@ -171,7 +172,19 @@ const scheduler = new Scheduler({ engine, reach, log });
 if (process.env.STRATA_APPS_SCHEDULES !== 'off') scheduler.start();
 // Beside a cluster, who may use the studio (login.mjs): chloedb-server with
 // its app token, and browsers it hands a login to.
-const login = new Login({ store: engine.store, appToken: process.env.STRATA_APP_TOKEN, publicUrl: process.env.STRATA_APPS_PUBLIC_URL, log });
+// An agent's MCP server (mcp.mjs) signs in with the agent token:
+// STRATA_APPS_AGENT_TOKEN, or DATA/agent.token, made on first start and
+// readable by its owner only (audit 4, X-G7).
+async function agentToken() {
+  if (process.env.STRATA_APPS_AGENT_TOKEN) return process.env.STRATA_APPS_AGENT_TOKEN.trim();
+  const file = path.join(DATA, 'agent.token');
+  try { const t = (await readFile(file, 'utf8')).trim(); if (t) return t; } catch { /* made below */ }
+  await mkdir(DATA, { recursive: true });
+  await writeFile(file, `${randomBytes(32).toString('base64url')}\n`, { mode: 0o600, flag: 'wx' }).catch(() => {});
+  await chmod(file, 0o600).catch(() => {});
+  return (await readFile(file, 'utf8').catch(() => '')).trim() || null;
+}
+const login = new Login({ store: engine.store, appToken: process.env.STRATA_APP_TOKEN, agentToken: await agentToken(), publicUrl: process.env.STRATA_APPS_PUBLIC_URL, log });
 useSelfCookie(login.selfCookie);
 if (login.on) log(`the studio needs a login, handed over by the command center${login.publicUrl ? `; it is reached at ${login.publicUrl}` : ' (set STRATA_APPS_PUBLIC_URL to say where browsers reach it)'}`);
 // Apps open to the public (publish.mjs): /a/<id>, and <name>.<domain> with a domain.
@@ -371,7 +384,8 @@ async function runRequest(req, extra = {}) {
   // The build's steps as the studio draws them (read, plan, write, store),
   // with when each began, and the pieces being written at once.
   const split = SPLIT === 'always' || (SPLIT === 'first' && first);
-  const state = { id: req.id, text: req.text, source: req.source, lines, t0: Date.now(), first, split, steps: [], pieces: [], expect: expected[first ? 'first' : 'change'] };
+  // stop: aborts every model call of this build (POST .../stop).
+  const state = { id: req.id, text: req.text, source: req.source, lines, t0: Date.now(), first, split, steps: [], pieces: [], expect: expected[first ? 'first' : 'change'], stop: new AbortController() };
   running.set(req.app, state);
   // A line sent with {replace: true} takes the place of the previous such
   // line (the model's running count), so the log does not fill with them.
@@ -387,20 +401,25 @@ async function runRequest(req, extra = {}) {
   try {
     // A build that names its provider (codex, agy) has its model calls go there.
     if (extra.provider) log(`[${req.app}] ${req.id} built with the ${extra.provider} provider`);
-    const out = req.source === 'component' ? await useSharedVersion(engine, req.app, extra.cap, progress)
-      : await withProvider(extra.provider, () => forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress));
+    const out = await buildScope.run({ signal: state.stop.signal }, () => (req.source === 'component' ? useSharedVersion(engine, req.app, extra.cap, progress)
+      : withProvider(extra.provider, () => forge(engine, req.app, extra.candidate ? { ...req, candidate: true } : req, progress))));
+    if (state.stop.signal.aborted) throw Object.assign(new Error('stopped by its owner'), { stopped: true });
     await engine.store.putRequest({ ...req, status: 'done', comp: out.n, summary: out.summary, log: lines.map((l) => l.line).join('\n'), ms: out.ms, cost: out.cost });
     if (out.trace) { await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost }); learnExpected().catch(() => {}); }
     if (extra.candidate) await evolver.built(extra.candidate, out).catch((e) => log(`candidate ${extra.candidate}: ${e.message}`));
     broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary, candidate: extra.candidate || null });
     if (!extra.candidate) recommender.soon(req.app, { delay: 20000, reason: 'build', force: true });
     engine.changes?.soon();
-  } catch (e) {
-    progress(`Failed: ${e.message}`);
-    await engine.store.putRequest({ ...req, status: 'failed', error: e.message.slice(0, 2000), log: lines.map((l) => l.line).join('\n'), cost: e.cost || 0 });
-    if (e.trace) await saveTrace(req, e.trace, lines, { status: 'failed', error: e.message.slice(0, 500), cost: e.cost || 0 });
+  } catch (err) {
+    // Stopped by its owner: whatever the forge made of the stop, it is a stop.
+    const stopped = state.stop.signal.aborted;
+    const e = stopped ? Object.assign(new Error('stopped by its owner'), { cost: err.cost, trace: err.trace }) : err;
+    const status = stopped ? 'stopped' : 'failed';
+    progress(stopped ? 'Stopped' : `Failed: ${e.message}`);
+    await engine.store.putRequest({ ...req, status, error: e.message.slice(0, 2000), log: lines.map((l) => l.line).join('\n'), cost: e.cost || 0 });
+    if (e.trace) await saveTrace(req, e.trace, lines, { status, error: e.message.slice(0, 500), cost: e.cost || 0 });
     if (extra.candidate) await evolver.failed(extra.candidate, e.message).catch(() => {});
-    broadcast('failed', { app: req.app, request: req.id, error: e.message, candidate: extra.candidate || null });
+    broadcast('failed', { app: req.app, request: req.id, error: e.message, stopped, said: explainFailure(e.message, { stopped }), candidate: extra.candidate || null });
   } finally {
     running.delete(req.app);
     // A first build that gave no art direction: designs from the description.
@@ -621,7 +640,7 @@ async function appState(appId) {
   const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: withSample(c), sql: c.sql, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
   const run = running.get(appId);
   return {
-    app: { ...view.app, currency: (await store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description), locale: (await store.setting(appId, 'locale').catch(() => null)) || null },
+    app: { ...view.app, name: nameOf(view.app), currency: (await store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description), locale: (await store.setting(appId, 'locale').catch(() => null)) || null },
     design: await store.designs(appId),
     version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '', trying: view.comp.n !== head ? view.comp.n : null, live: head },
     evolve,
@@ -640,7 +659,8 @@ async function appState(appId) {
     suggestions: await store.suggestions(appId),
     // (versions built to try and not kept are listed with their candidates)
     versions: (await store.compositions(appId)).filter((c) => !unkept.has(Number(c.n)) || Number(c.n) === head),
-    requests: await store.requests(appId, 30),
+    // A failed or stopped request says why in a plain sentence (said), its error kept for the details.
+    requests: (await store.requests(appId, 30)).map((r) => (r.status === 'failed' || r.status === 'stopped' ? { ...r, said: explainFailure(r.error, { stopped: r.status === 'stopped' }) } : r)),
     running: run ? { id: run.id, text: run.text, source: run.source, lines: run.lines.map((l) => l.line), ...buildState(run) } : null,
     drawn: drawnOf.get(appId) || null,
     reach: await reachOf(appId, view),
@@ -681,7 +701,12 @@ function mayRead(view, table, role) {
   try { decide(t.spec, 'read', { role: role || 'visitor', user: role ? { id: 'someone' } : null, company: role ? 'some' : null }); return true; } catch { return false; }
 }
 
-async function publicState(appId, role = null) {
+// An app's name as shown. One with no version yet that is still called by
+// the first 40 characters of its description (as apps were named before
+// shortName) is shown by a short name instead.
+const nameOf = (a) => (!Number(a.head) && a.name && String(a.description || '').startsWith(String(a.name).trim()) && String(a.name).trim().length >= 30 ? shortName(a.description) : a.name);
+
+async function publicState(appId, access, role = null) {
   const view = await engine.view(appId);
   const head = Number(view.app.head);
   const withSample = await samplesFor(appId);
@@ -689,6 +714,9 @@ async function publicState(appId, role = null) {
   const reachNow = await reachOf(appId, view).catch(() => null);
   return {
     public: true,
+    // What visitors may do with its data (publish.mjs): the page offers no
+    // write a visitor who may only look would be refused.
+    access: access || 'look',
     app: { id: appId, name: view.app.name, currency: (await engine.store.setting(appId, 'currency').catch(() => null)) || currencyOf([], view.app?.description), locale: (await engine.store.setting(appId, 'locale').catch(() => null)) || null },
     design: await engine.store.designs(appId),
     version: { n: view.comp.n, summary: '', request: '', trying: null, live: head },
@@ -718,11 +746,21 @@ const routes = [
   ['POST', /^\/api\/handoff$/, async (b, m, url, cx) => login.handoff(cx.req, String(b.next || ''))],
   ['GET', /^\/api\/status$/, async () => ({ model: MODEL, strata: strataUrl, cluster: ON_CLUSTER, feed: engine.feed, keys: appKeys.status(), data: child ? DATA : null, autorepair: AUTOREPAIR,
     login: login.on ? { publicUrl: login.publicUrl } : null,
-    spend: spend.cap ? { usd: Math.round(spend.usd * 100) / 100, cap: spend.cap, asksUsd: Math.round(spend.asksUsd * 100) / 100, asksCap: spend.asksCap, calls: spend.calls, refused: spend.refused, since: spend.since } : null })],
+    spend: spend.cap ? { usd: Math.round(spend.usd * 100) / 100, cap: spend.cap, asksUsd: Math.round(spend.asksUsd * 100) / 100, asksToday: Math.round(spend.asksDayUsd * 100) / 100, asksCap: spend.asksCap, calls: spend.calls, refused: spend.refused, since: spend.since } : null })],
   ['GET', /^\/api\/apps$/, async (b, m, url, cx) => {
     const costs = await engine.store.costs();
     // A key limited to tables lists the apps whose tables it reads.
-    return { apps: (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id) && (!cx.builder || cx.builder.app === a.id)).map((a) => ({ ...a, cost: costs.get(a.id) || { usd: 0, builds: 0 } })) };
+    const apps = (await engine.store.listApps()).filter((a) => sees(cx.caller, a.id) && (!cx.builder || cx.builder.app === a.id));
+    // Each app's state: live (a version), building, or failed (its first
+    // build did not go through and none is running): the gallery said
+    // "building" for ever of an app whose first build failed.
+    const status = async (a) => {
+      if (Number(a.head)) return 'live';
+      if (running.has(a.id) || waiting.has(a.id)) return 'building';
+      const [last] = await engine.store.requests(a.id, 1).catch(() => []);
+      return firstBuildStatus(last, Date.now());
+    };
+    return { apps: await Promise.all(apps.map(async (a) => ({ ...a, name: nameOf(a), status: await status(a), cost: costs.get(a.id) || { usd: 0, builds: 0 } }))) };
   }],
   // The events since ?after=N (see broadcast), for one app with ?app=.
   ['GET', /^\/api\/events$/, async (b, m, url) => waitEvents(Number(url.searchParams.get('after')) || 0, url.searchParams.get('app') || null,
@@ -745,7 +783,7 @@ const routes = [
     const provider = checkProvider(b.provider);
     // A name given is the app's for good (the plan's name does not replace it).
     const given = String(b.name || '').trim().slice(0, 60);
-    const name = given || description.split(/[.\n]/)[0].slice(0, 40);
+    const name = given || shortName(description);
     const app = await engine.store.createApp({ name, description });
     if (given) await engine.store.putSetting(app, 'named', '1');
     // Its three designs are made beside the first build, from the art
@@ -754,7 +792,7 @@ const routes = [
     const request = await submit(app, description, 'user', provider ? { provider } : {});
     return { app, request: request.id };
   }],
-  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id, (await cx.user(id))?.role || null) : appState(id))],
+  ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id], url, cx) => (cx.public ? publicState(id, cx.access, (await cx.user(id))?.role || null) : appState(id))],
   // Renamed by its owner: the name stays (a later plan does not rename it).
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/rename$/, async (b, [id]) => {
     const name = String(b.name || '').trim().replace(/\s+/g, ' ');
@@ -845,6 +883,15 @@ const routes = [
     const r = await submit(id, taken ? withHint(text, taken) : text, source, provider ? { provider } : {});
     return { request: r.id };
   }],
+  // Stop the build running for this app: its model calls are killed at once
+  // and the request ends "stopped" (requests queued after it go on).
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/stop$/, async (b, [id]) => {
+    const run = running.get(id);
+    if (!run || (b.request && b.request !== run.id)) return { stopped: false };
+    log(`[${id}] stopped by its owner`);
+    run.stop.abort();
+    return { stopped: true, request: run.id };
+  }],
   // Reads and writes: for the app's people (the public path) under the
   // tables' declared access (access.mjs, ctx.as); the studio has every row.
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/sql$/, async (b, [id], url, cx) => ({ rows: await engine.sql(id, b.sql, b.params, { user: await cx.user(id), as: await cx.as(id), company: await cx.company(id) }) })],
@@ -862,6 +909,9 @@ const routes = [
     if (cx.public && !user) throw Object.assign(new Error('Sign in first'), { status: 401 });
     return { member: await services.addToCompany(id, b.company, cx.public ? user.id : null, b) };
   }],
+  // A company that invited the signed-in person (an admin added them on the
+  // app's page): they join it themselves.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies\/join$/, async (b, [id], url, cx) => ({ member: await services.joinCompany(id, b.company, (await cx.user(id))?.id) })],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/companies\/members\/remove$/, async (b, [id], url, cx) => {
     const user = await cx.user(id);
     if (cx.public && !user) throw Object.assign(new Error('Sign in first'), { status: 401 });
@@ -927,7 +977,7 @@ const routes = [
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/email$/, async (b, [id], url, cx) => {
     const user = await cx.user(id);
     if (!user) throw Object.assign(new Error('email: sign in to send email from this app'), { status: 401 });
-    return { email: await services.email(id, b, user.id) };
+    return { email: await services.email(id, b, user.id, { sender: cx.public ? await cx.as(id) : null }) };
   }],
   // What people did in the app, in its own words, for the Activity view.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/activity$/, async (b, [id], url, cx) => {
@@ -991,6 +1041,7 @@ const routes = [
     // open and leave name a screen (leave with the time spent on it); abandon
     // is a form typed into and closed unsaved; an action is anything else an
     // app records (a search with the words and how many rows they found).
+    // A beacon sends no headers: the studio's says it is the owner's in its body.
     const kind = ['open', 'leave', 'abandon'].includes(b.kind) ? b.kind : 'action';
     const detail = kind === 'action' ? `${String(b.action || '').slice(0, 60)}${b.detail ? ` ${String(b.detail).slice(0, 200)}` : ''}` : String(b.detail || '');
     const where = cx.where(b.session);
@@ -998,7 +1049,7 @@ const routes = [
     const q = kind === 'action' && /^(search|filter)$/.test(String(b.action || '')) ? (b.q ?? b.detail) : null;
     // The device: as the page says, else as its browser does.
     const device = ['phone', 'tablet', 'computer'].includes(b.device) ? b.device : /iPad|Tablet/i.test(cx.req.headers['user-agent'] || '') ? 'tablet' : /Mobi|Android|iPhone/i.test(cx.req.headers['user-agent'] || '') ? 'phone' : cx.req.headers['user-agent'] ? 'computer' : null;
-    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n, ...where, taps: null, screen, tbl: b.table, q, results: b.results, ms: b.ms, device });
+    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n, ...where, taps: null, screen, tbl: b.table, q, results: b.results, ms: b.ms, device, src: cx.owner || (!cx.public && b.owner === true) ? 'owner' : null });
     noteActivity(id);
     return { ok: true };
   }],
@@ -1120,9 +1171,10 @@ const server = http.createServer(async (req, res) => {
     // asks to be treated as a visitor (never the other way round).
     const stranger = !refused ? strangerOf(req) : null;
     const seen = stranger ? await publish.allows(req, url, stranger) : null;
-    if (seen?.denied) return send(res, 403, { error: seen.denied });
+    // A refusal, not an error: the page says it and records nothing (refused).
+    if (seen?.denied) return send(res, 403, { error: seen.denied, refused: true });
     const open = seen || (login.on && refused ? await publish.allows(req, url) : !login.on ? await publish.allows(req, url) : null);
-    if (refused && open?.denied) return send(res, 403, { error: open.denied });
+    if (refused && open?.denied) return send(res, 403, { error: open.denied, refused: true });
     if (refused && open) {
       refused = null;
       if (!open.file) {
@@ -1256,8 +1308,12 @@ const server = http.createServer(async (req, res) => {
       return { role: user ? user.role || 'member' : 'visitor', user, company: user ? await companyOf(appId) : null };
     };
     const who = async (appId) => (await personOf(appId))?.id || visitorOf(req);
-    const writer = async (appId) => ({ user: await personOf(appId), who: await who(appId), visitor: !!cx0.public, ownRows: cx0.access === 'add', ...where(), pub: !!cx0.public, as: await asOf(appId), company: await companyOf(appId) });
-    const cx = { ...cx0, req, res, where, user: personOf, who, as: asOf, company: companyOf, writer };
+    // The app's owner trying it: the studio (which says so, x-sa-owner) or
+    // the command center (through chloedb-server), never a published app's
+    // visitor. Usage tells their events apart from people's (src "owner").
+    const owner = !cx0.public && (login.fromServer(req) || req.headers['x-sa-owner'] === '1');
+    const writer = async (appId) => ({ user: await personOf(appId), who: await who(appId), visitor: !!cx0.public, ownRows: cx0.access === 'add', ...where(), pub: !!cx0.public, as: await asOf(appId), company: await companyOf(appId), owner });
+    const cx = { ...cx0, req, res, where, user: personOf, who, as: asOf, company: companyOf, writer, owner };
     // ?v=N runs a request on version N of the app (a version built to try).
     const v = Number(url.searchParams.get('v')) || null;
     for (const [method, re, fn] of routes) {

@@ -287,7 +287,7 @@ export function designVars(input, which = 'light') {
     '--fill-solid': fillSolid,
     '--head': mix(p.card, p.fg, isDark ? 0.03 : 0.025),
     '--accent-soft': rgba(p.accent, isDark ? 0.2 : 0.12),
-    '--seg-on': isDark ? mix(p.card, p.fg, 0.14) : 'var(--card)',
+    '--seg-on': isDark ? mix(p.card, p.fg, 0.2) : 'var(--card)',
     '--shadow': shadow,
     '--g1': d.gradient[0], '--g2': d.gradient[1], '--g3': d.gradient[2],
     '--slow': d.motion === 'lively' ? '.6' : '1', '--play': d.motion === 'still' ? 'paused' : 'running', '--rv': d.motion === 'still' ? '0' : '1',

@@ -127,6 +127,29 @@ async fn parameters_read_the_queried_table_and_no_other() {
     assert_eq!((s, &j["rows"][0][0]), (200, &json!("b")), "{j}");
 }
 
+/// ONB-16: SHOW TABLES through /v1/sql answers the tables' names, without
+/// ChloeDB's own, and for a key limited to tables those it reads alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn show_tables_names_the_tables_a_key_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let (base, _svc) = start(dir.path(), Vec::new()).await;
+    ok(&base, "CREATE TABLE swarm_x (id KEYWORD PRIMARY KEY, title TEXT)").await;
+    ok(&base, "CREATE FUNCTION bump(x INT) RETURNS INT AS :x + 1").await;
+    let names = |j: &Json| j["rows"].as_array().unwrap().iter().map(|r| r[0].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let (s, j) = call(&base, "POST", "/v1/sql", ROOT, Some(json!({"sql": "SHOW TABLES"}))).await;
+    assert_eq!((s, &j["columns"]), (200, &json!(["name"])), "{j}");
+    let mut all = names(&j);
+    all.sort();
+    assert_eq!(all, ["products", "swarm_x"], "{j}");
+    let k = key(&base, json!({"name": "swarm", "tables": {"swarm_*": "read"}})).await;
+    let (s, j) = call(&base, "POST", "/v1/sql", Some(&k), Some(json!({"sql": "show tables"}))).await;
+    assert_eq!((s, names(&j)), (200, vec!["swarm_x".to_string()]), "{j}");
+    // /v1/query takes queries alone, and says where SHOW TABLES goes.
+    let (s, j) = call(&base, "POST", "/v1/query", ROOT, Some(json!({"sql": "SHOW TABLES"}))).await;
+    assert_eq!(s, 400, "{j}");
+    assert!(j["error"].as_str().unwrap().contains("/v1/sql"), "{j}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_limited_key_uses_its_own_tables_routes() {
     let dir = tempfile::tempdir().unwrap();
@@ -238,11 +261,18 @@ async fn presets_are_grants_and_routes() {
         (json!({"name": "a4", "preset": "analyst", "prefix": "x_*", "tables": {"y": "read"}}), "leave them out"),
         (json!({"name": "a5", "scope": "admin", "routes": ["fleet"]}), "limited to tables"),
         (json!({"name": "a6", "tables": {"x_*": "read"}, "routes": ["everything"]}), "not a group"),
+        // A misspelt field is refused, not left out: without its limits the
+        // key would read every table.
+        (json!({"name": "a7", "presett": "oncall", "prefix": "logs_*"}), "\"presett\" is not a field of a key"),
+        (json!({"name": "a8", "tabels": {"logs_*": "write"}}), "\"tabels\" is not a field of a key"),
+        (json!({"name": "a9", "prefix": "logs_*"}), "prefix is the tables of a preset"),
     ] {
         let (s, j) = call(&base, "POST", "/v1/admin/keys", ROOT, Some(body.clone())).await;
         assert_eq!(s, 400, "{body}: {j}");
         assert!(j["error"].as_str().unwrap().contains(why), "{body}: {j}");
     }
+    let (_, listed) = call(&base, "GET", "/v1/admin/keys", ROOT, None).await;
+    assert!(!listed.to_string().contains("\"a7\"") && !listed.to_string().contains("\"a8\""), "a refused key is not made: {listed}");
     // Given by hand, as a preset gives them.
     let (s, made) = call(&base, "POST", "/v1/admin/keys", ROOT, Some(json!({"name": "ops2", "tables": {"logs_*": "write"}, "routes": ["fleet"]}))).await;
     assert_eq!((s, &made["key"]["allow"]["routes"]), (200, &json!(["fleet"])), "{made}");
@@ -369,9 +399,25 @@ async fn an_app_token_narrowed_to_a_callers_tables() {
     let reader = key(&base, json!({"name": "reader", "scope": "read"})).await;
     assert_eq!(status(as_(&reader, "*=admin", "CREATE TABLE ana_z (id KEYWORD PRIMARY KEY)").await.unwrap()), 403);
     assert_eq!(status(as_(&reader, "*=admin", "SELECT id FROM products LIMIT 1").await.unwrap()), 200);
-    // A key limited to tables cannot narrow itself into other grants.
+    // A key limited to tables cannot narrow itself into other grants: it
+    // keeps, on each table, the lower of its scope and the caller's.
     let limited = key(&base, json!({"name": "lim", "tables": {"ana_*": "read"}})).await;
     assert_eq!(status(as_(&limited, "*=admin", "SELECT id FROM products LIMIT 1").await.unwrap()), 403);
+    assert_eq!(status(as_(&limited, "*=admin", "SELECT id FROM ana_x LIMIT 1").await.unwrap()), 200);
+    assert_eq!(status(as_(&limited, "*=admin", "INSERT INTO ana_x (id, n) VALUES ('b', 1)").await.unwrap()), 403);
+    // A key like the one a server gives Sheets (DAT-5): the root's call
+    // through it makes Sheets' tables and reads the rest; a writer's
+    // writes them and makes none; a caller of other tables reads only
+    // those.
+    let sheets = key(&base, json!({"name": "sheets-like", "tables": {"ana_*": "admin", "*": "read"}})).await;
+    assert_eq!(status(as_(&sheets, "*=admin", "CREATE TABLE ana_w (id KEYWORD PRIMARY KEY)").await.unwrap()), 200);
+    assert_eq!(status(as_(&sheets, "*=admin", "SELECT id FROM products LIMIT 1").await.unwrap()), 200);
+    assert_eq!(status(as_(&sheets, "*=admin", "CREATE TABLE other_w (id KEYWORD PRIMARY KEY)").await.unwrap()), 403);
+    assert_eq!(status(as_(&sheets, "*=write", "INSERT INTO ana_x (id, n) VALUES ('c', 1)").await.unwrap()), 200);
+    assert_eq!(status(as_(&sheets, "*=write", "CREATE TABLE ana_v (id KEYWORD PRIMARY KEY)").await.unwrap()), 403);
+    assert_eq!(status(as_(&sheets, "*=write", "INSERT INTO products (id) VALUES ('p-new')").await.unwrap()), 403);
+    assert_eq!(status(as_(&sheets, "ana_x=write", "SELECT id FROM products LIMIT 1").await.unwrap()), 403);
+    assert_eq!(status(as_(&sheets, "ana_x=write", "SELECT id FROM ana_x LIMIT 1").await.unwrap()), 200);
     // A bad grant is refused, not ignored.
     assert_eq!(status(as_("root-token", "ana_x=sometimes", "SELECT 1").await.unwrap()), 400);
 }

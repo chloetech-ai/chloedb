@@ -103,8 +103,11 @@ each other in a graph that ChloeDB walks.
   the owner, each including the ones after it; WHERE keeps a person to their
   own rows or their company's. The engine holds every read and write of the
   app's people to it (`/sql`, `/insert`, `/update`, `/remove`, and `/call`,
-  whose functions and rules run as the person who called them; triggers and
-  schedules run as the app): a read of a table they may not see is a 401
+  whose functions and rules run as the person who called them, as do the
+  triggers their writes set off, unless the app marks a trigger to run as the
+  app with `"as": "app"` or `RUNS AS APP` in its CREATE RULE, for a total over
+  everyone's rows; schedules, and triggers of the studio's writes, run as the
+  app): a read of a table they may not see is a 401
   ("Sign in first: ...") for a visitor and a 403 for a member; a scoped read
   gets the scope's condition joined to the WHERE of every SELECT that reads
   the table (so MATCH, bm25 and joins keep working on its scan); an add
@@ -115,16 +118,26 @@ each other in a graph that ChloeDB walks.
   names one with nobody signed in is refused as a 401 "Sign in first", not
   sent to ChloeDB unbound. Companies are the engine's, never the app's:
   `sa_companies` and `sa_memberships`, a person making one becomes its admin
-  and adds people who have an account (`GET/POST /api/apps/<id>/companies`,
-  `POST .../companies/members {company, email, role}`,
-  `.../companies/members/remove`; the studio lists every company with its
-  members by `GET .../companies?all=1`; `app.companies()`, `app.company()`,
-  `app.createCompany(name)`, `app.useCompany(id)`, `app.addToCompany(...)` in
-  views), and the one a person works in now is the `x-sa-company` header's
-  when they belong to it, else their first. A table with no ALLOW statement is
-  as tables were before (open to whoever the publish choice lets in), so apps
-  built before keep working; the studio (the builder, not the public path)
-  has every row. A request that asks for signed-in people only, roles or
+  and invites people who have an account, who join it themselves
+  (`GET/POST /api/apps/<id>/companies`, `POST .../companies/members {company,
+  email, role}`, `POST .../companies/join {company}`,
+  `.../companies/members/remove`; `app.companies()` (an invitation not taken
+  is listed with `invited` and no role), `app.company()`,
+  `app.createCompany(name)`, `app.useCompany(id)`, `app.addToCompany(...)`,
+  `app.joinCompany(id)` in views; the studio adds people at once), and the
+  one a person works in now is the `x-sa-company` header's when they belong
+  to it, else their first. Company scope keeps companies apart from each
+  other, not from their own admins: a company's admins decide who is in it,
+  and anyone signed in may make companies of their own. In an app that
+  declares no access at all, a table is as tables were before (open to
+  whoever the publish choice lets in), so apps built before keep working;
+  once any table of the app declares access, a table with no ALLOW statement
+  is read by everyone and written only by the app's owner. The studio (the
+  builder, not the public path) has every row. A visitor's rows are dated by
+  the engine (`created` is not theirs to give). A person on the public path
+  emails only the app's own people (its members' addresses), from a view or
+  through a function or trigger their action runs; the app's admins and
+  owner, the studio and schedules email anyone. A request that asks for signed-in people only, roles or
   companies fails the build's checks until the plan declares access for every
   table. On a laptop with no login every caller is the studio, so access
   applies to a published app's public beside a cluster and to "See it as a
@@ -196,7 +209,14 @@ each other in a graph that ChloeDB walks.
   search.
 - **It repairs itself.** A view or function that fails at run time is sent
   back to the forge with its error, once per version, and the fixed version
-  replaces it while the app stays open.
+  replaces it while the app stays open. A call nobody answered (the network,
+  the engine restarting) is not a failure of the code: the view says so and
+  reads again, and nothing is repaired; nor is a refusal (a rule's, or a
+  visitor's access).
+- **A build can be stopped.** Stop beside a running build (`POST
+  /api/apps/<id>/stop`) kills its model calls at once; "Stop and try again"
+  is offered once it has taken twice as long as builds here do. A failed
+  build says what went wrong in a sentence, its error under Details.
 - **Everything is live.** The engine follows ChloeDB's feed of committed
   writes, so every open window sees new rows and new versions as they land,
   whoever wrote them (another window, a trigger, another client of the
@@ -235,12 +255,16 @@ on `127.0.0.1:7730`. The engine gives each app a key of its own
 | `STRATA_APPS_CLAUDE` | the Claude Code binary (default `claude`) |
 | `STRATA_APPS_EFFORT` | the model's effort level (default: the model's own) |
 | `STRATA_APPS_PLAN_EFFORT` | the effort of a first version's plan, its longest answer (default `low`: about half the thinking of `medium`, the pages as good) |
-| `STRATA_APPS_PROVIDER` | the CLI that answers: `claude` (default, Claude Code), `codex` (`codex exec`, read-only sandbox, no tools, no user config; it reports no cost, so its answers count $0) or `agy` (refused for now: no checked single-prompt mode). `POST /api/apps` and `POST /api/apps/:id/requests` take a `provider` of their own for that build only |
+| `STRATA_APPS_PROVIDER` | the CLI that answers: `claude` (default, Claude Code), `codex` (`codex exec`, read-only sandbox, no tools, no user config; off unless turned on, below) or `agy` (refused for now: no checked single-prompt mode). `POST /api/apps` and `POST /api/apps/:id/requests` take a `provider` of their own for that build only |
+| `STRATA_APPS_CODEX_ON=1` | turn the `codex` provider on (`STRATA_APPS_PROVIDER=codex` does too). It is off by default because it answers with this machine's own Codex sign-in, which the engine cannot scope; a build that asks for it otherwise is refused with a 400 |
 | `STRATA_APPS_CODEX`, `STRATA_APPS_CODEX_MODEL` | the Codex binary (default `codex`) and its model (default: Codex's own); the `claude-*` model settings go to claude only |
+| `STRATA_APPS_CODEX_USD_PER_MTOK` | what a Codex answer costs, from the tokens it reports, in US dollars per million tokens as `input,cached input,output` (default `1.25,0.125,10`); it counts against `STRATA_APPS_SPEND_CAP_USD` like Claude's. Stop stops a Codex build as it does a Claude one |
+| `STRATA_APPS_CHILD_ENV` | more variables, separated by commas, to pass to the model's CLI. `claude -p` and `codex exec` start with a reduced environment: PATH, HOME, the user, locale, temporary folder, proxy and certificate settings, and the CLI's own (`ANTHROPIC_*` and `CLAUDE_*`, the cloud's with `CLAUDE_CODE_USE_BEDROCK` or `_VERTEX`; `OPENAI_*` and `CODEX_*`), never the engine's tokens |
+| `STRATA_APPS_AGENT_TOKEN` | the agent token the MCP server signs in with (below); unset, the engine makes one in `DATA/agent.token`, readable by its owner only |
 | `STRATA_APPS_AGY`, `STRATA_APPS_AGY_MODEL` | the same for Antigravity's `agy`, kept for when it is wired |
 | `STRATA_APPS_LIBRARY` | the built-in library's folder (default `library/`) |
 | `STRATA_APPS_SPLIT` | `first` (default): first versions are planned, then written piece by piece at once; `always`: changes too; `off`: one answer holds the plan and all the code |
-| `STRATA_APPS_IDLE_S`, `STRATA_APPS_TIMEOUT_S` | a build stops when the model writes nothing for this many seconds (default 180), or after this many in all (default 1200) |
+| `STRATA_APPS_IDLE_S`, `STRATA_APPS_TIMEOUT_S` | a build stops when the model writes nothing for this many seconds (default 90), or after this many in all (default 1200); its owner can stop it at any time |
 | `STRATA_APPS_AUTOREPAIR=0` | do not send failing capabilities back to the forge |
 | `STRATA_APPS_SCREEN_MODEL` | the model for the plan step and for changes, which write the screens and rules (default `claude-sonnet-5-5`; set it to `claude-opus-5-5` for Opus everywhere); code views, functions and repairs keep `STRATA_APPS_MODEL` |
 | `STRATA_APPS_RULES=off`, `STRATA_APPS_TESTS=off` | functions and triggers only as JavaScript; no tests in plans |
@@ -258,7 +282,7 @@ on `127.0.0.1:7730`. The engine gives each app a key of its own
 | `STRATA_APPS_PHOTOS=builtin` | photos from the built-in set only (no Wikimedia Commons) |
 | `STRATA_APPS_PHOTO_CACHE` | where found photos and searches are cached (default `photo-cache/` beside the data) |
 | `STRATA_APPS_SPEND_CAP_USD` | stop the model once the engine has spent this much, in US dollars, counted from what Claude Code reports and kept in `DATA/spend.json` across restarts; apps' own questions (`app.ask`) have a share of it of their own and builds and checks the rest, so that one never stops the other |
-| `STRATA_APPS_ASK_CAP_USD`, `STRATA_APPS_ASK_USD_PER_DAY` | that share for apps' own questions (default a quarter of `STRATA_APPS_SPEND_CAP_USD`), and what one app's questions may cost in a day (default $2), whatever its count of questions |
+| `STRATA_APPS_ASK_CAP_USD`, `STRATA_APPS_ASK_USD_PER_DAY` | what all the apps' own questions may cost in a day (default a quarter of `STRATA_APPS_SPEND_CAP_USD`, and $20 with no cap; 0 is no daily stop), and what one app's questions may cost in a day (default $2), whatever its count of questions |
 | `STRATA_APPS_ASK_MODEL`, `STRATA_APPS_ASKS_PER_DAY`, `STRATA_APPS_FETCHES_PER_DAY` | apps' own model (`app.ask`, default `claude-haiku-5-5`), the questions an app may ask it each day unless its owner sets another number (default 200), and the pages an app may fetch each day (default 1000); see [A model and the web](../docs/chloedb/apps.md#a-model-and-the-web-per-app) |
 | `STRATA_APPS_SECRET_KEY` | what apps' secrets (API keys) are sealed with; without it the engine makes a key in `DATA/secret.key` (mode 0600) on first start. Beside a cluster, set it from a Kubernetes secret so a new pod can open them |
 | `STRATA_APPS_SCHEDULES=off` | do not run apps' schedules (sources included) in this engine |
@@ -358,7 +382,7 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | | |
 |---|---|
 | `engine/server.mjs` | HTTP API, live updates (server-sent events), the request queue, repairs, suggestions from use |
-| `engine/mcp.mjs` | the engine as an MCP server over stdio, for an agent (Claude Code, Codex, any MCP client): `node engine/mcp.mjs --url http://127.0.0.1:7730`, each tool a call to the HTTP API (`app_create`, `app_request` and `app_wait`, `screen_edit`, read-only `data_query`, versions, library, publish) |
+| `engine/mcp.mjs` | the engine as an MCP server over stdio, for an agent (Claude Code, Codex, any MCP client): `node engine/mcp.mjs --url http://127.0.0.1:7730`, each tool a call to the HTTP API (`app_create`, `app_request` and `app_wait`, `screen_edit`, read-only `data_query`, versions, library, publish). It signs in with the engine's agent token (`STRATA_APPS_AGENT_TOKEN`, or the file `--token-file` names, by default `DATA/agent.token`) and does not start without one; `publish` asks for `confirm: true` at every access |
 | `engine/forge.mjs` | the forge: the prompt, the context it reads from ChloeDB (the app's code, tables, sample rows, what you did, library matches), the checks, and applying a plan as the next version |
 | `engine/engine.mjs` | the runtime: SQL, inserts, updates, removes and function calls on an app's data; triggers; events; following ChloeDB's feed |
 | `engine/store.mjs` | the system tables in ChloeDB and the app's tables |

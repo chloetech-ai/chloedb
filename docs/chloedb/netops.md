@@ -1,5 +1,7 @@
 # chloedb-netops: network operations on ChloeDB
 
+> **A demo.** chloedb-netops shows what ChloeDB can do; it is not part of ChloeDB's releases or their promises. It is tested on a train of its own (the `Demos` workflow, `.github/workflows/demos.yml`), outside CI's required check, so a fault in it does not hold a ChloeDB release, and the command center marks it as a demo ([compatibility](../compatibility.md#demos)).
+
 `chloedb-netops` is a network operations center kept in ChloeDB: the inventory, the topology, a point a minute of telemetry, device logs, alerts, incidents, changes, configurations, runbooks, and agents that work an incident and say what they looked at. It comes with a simulated carrier network, *Meridian* (10 sites, 64 devices, 120 links, 12 services), and a simulator that writes each minute of it and breaks it in six ways, so the whole app can be used, and its agents checked, without a network of your own.
 
 It is there to show what one database does for an operations team when search, SQL, graphs and time all live in it:
@@ -20,7 +22,7 @@ Like [the crawler](crawler.md) and [the spreadsheets](sheets.md), it is a progra
 
 ## Run it
 
-Build both programs, then start chloedb-netops with a server of its own:
+Build both programs, then start chloedb-netops with a server of its own (releases after 0.3.2 carry it prebuilt too: the installer's `--with netops` puts it beside the server, which it then finds without `--server-bin`):
 
 ```bash
 (cd chloedb-server && cargo build --release)
@@ -41,7 +43,7 @@ chloedb-server ... --app netops=http://netops-host:7840   # with CHLOEDB_APP_TOK
 
 The key needs admin scope on the tables `netops_*` (a key [limited to tables](server.md#security), `netops_*=admin`, is enough: the app touches no other table). `--token` (or `CHLOEDB_NETOPS_TOKEN`) is the bearer token its API requires; the server sends its `CHLOEDB_APP_TOKEN` ([apps](server.md#apps)). Requests that carry an `Origin` header are refused, so a page on another site cannot reach the app even from inside the network.
 
-On a coordinator over shards the graph steps (`REACHABLE`, `ppr`, `PATH`), which a coordinator does not answer yet, are walked by the app over the same links table; every page says which of the two it used.
+On a coordinator over shards the graph steps (`REACHABLE`, `ppr`, `PATH`), which a coordinator does not answer yet, are walked by the app over the same links table; every page says which of the two it used. The app knows a coordinator from its `/v1/health`, or from the first graph statement it refuses, and then sends it none.
 
 `--no-simulate` turns the simulator off: the app reads its network from the inventory tables and writes no telemetry of its own ([your own network](#your-own-network)).
 
@@ -95,7 +97,7 @@ Each page has a **SQL** button that lists the queries behind what it shows, with
 
 ![The whole network: regions and metros, coloured by what is broken inside them](../assets/img/netops-map.png)
 
-The backbone of 64 devices is what a carrier's core is. What it carries is far more: metro hubs with their routers and power plants, street cabinets, cell sites and business parks, and the ONTs, radios and customer routers behind them. The simulator makes that estate too (`--estate N`, about 200,000 objects by default, `0` for none): 18 kinds of object in `netops_estate_nodes`, what feeds what in `netops_estate_edges` (an edge table, upstream to downstream), and two months of faults and changes on every object in `netops_estate_events`. A few dozen faults are kept going, some of them caused by a change a few minutes before.
+The backbone of 64 devices is what a carrier's core is. What it carries is far more: metro hubs with their routers and power plants, street cabinets, cell sites and business parks, and the ONTs, radios and customer routers behind them. The simulator makes that estate too (`--estate N`, about 200,000 objects by default, `0` for none): 18 kinds of object in `netops_estate_nodes`, what feeds what in `netops_estate_edges` (an edge table, upstream to downstream), and two months of faults and changes on every object in `netops_estate_events`. A few dozen faults are kept going, some of them caused by a change a few minutes before. Two alert rules watch it (`estate-outage` and `estate-degraded`, SQL over the two tables like the others): an access node, a hub router or a hub's power plant that is down or degraded with objects behind it raises an alert, grouped by its hub; a down one with 20 or more behind it is major and opens an incident, which the estate's agent works (what it reported, how far it reaches and which customers, a change before it, who is on call) and proposes sending field services. The degraded ones wait on **My shift**, and **Diagnose** lists them under the backbone's layers. Pasting an object's id into the search opens it.
 
 The Map page draws all of it without ever asking for all of it. Places are boxes, one inside the other: a region holds its metros, a metro its core devices and its hubs, a hub its routers, its power plant and its sites, and a site its access node and what is behind it. A box shows a name and a count until there is room for what is inside it, and then it is divided by layer: the backbone in a band along a metro's top, aggregation and power along a hub's, the premises under a site's access node. Shapes say what a thing is: a cell site is a circle with its sectors around the tower, a business park a box with its corners cut, a router a diamond, a power plant or a tower a triangle.
 
@@ -109,7 +111,7 @@ A click on an object also lights what it hangs from and what depends on it, and 
 
 ### The box above every page, and the assistant
 
-The box has two modes, **Search** and **Ask** (Tab switches them when the box is empty), and a chip that says where it looks: the object picked, the place the map shows, or everywhere (a click on the chip searches everywhere). As it is typed, `/v1/suggest` completes it from the tables, from what was typed before the word, and from where the person is:
+The box has two modes, **Search** and **Ask** (the buttons before the box switch them; Tab completes the suggestion chosen with the arrows, or moves on to the page), and a chip that says where it looks: the object picked, the place the map shows, or everywhere (a click on the chip searches everywhere). As it is typed, `/v1/suggest` completes it from the tables, from what was typed before the word, and from where the person is:
 
 | typed | completed with | how |
 |---|---|---|
@@ -153,11 +155,11 @@ The same conditions run a second time grouped by place, so the map shows the mat
 
 ![A sentence read into conditions, the one statement it became, and the matches by place](../assets/img/netops-map-search.png)
 
-A sentence becomes a plan, and only a plan becomes SQL: every value in it is one the estate has or a parameter. Two readers make plans. With `--rewrite-model` (default `anthropic/claude-haiku-5-5`, empty for none) the app asks the server's own [`llm()`](query-language.md#language-models-llm) to rewrite the question, over the row it was saved as in `netops_searches`; the model is told the plan's shape and what it may name, and its answer is checked field by field. When the server has no model (no key, no network), a reader of fixed vocabulary answers instead, and the page says which of them read the sentence. The model's path is covered by a unit test of the checking, not by a run against a model: this build was only run where the server had none.
+A sentence becomes a plan, and only a plan becomes SQL: every value in it is one the estate has or a parameter. Two readers make plans. With `--rewrite-model` (default `anthropic/claude-haiku-5-5`, empty for none) the app asks the server's own [`llm()`](query-language.md#language-models-llm) to rewrite the question, over the row it was saved as in `netops_searches`; the model is told the plan's shape and what it may name, and its answer is checked field by field. When the server has no model (no key, no network), a reader of fixed vocabulary answers instead, and the page says which of them read the sentence. The fixed reader lists the words it took nothing from beside the count, which is then the answer to the rest of the question; an id, a place or a name the estate does not have refuses the question rather than being dropped from it ("ag9-zzz is not an object of the estate", "Did you mean London?"), and a place one letter off is read and said. A customer is matched by its whole name when the question gives it ("Northwind Energy"), and "this week", "this month" and "this year" start on their first day. The model's path is covered by a unit test of the checking, not by a run against a model: this build was only run where the server had none.
 
 Measured on one server in a 4-vCPU cloud container, with 170,337 objects, 173,133 links and about 470,000 events: the estate is written in about 25 seconds; a window is read in 10 to 75 ms depending on how much is in it; the eight queries behind one object take about 17 ms together; the statement above takes 5 to 10 ms, a walk of the 20,000 objects behind one aggregation router with a condition 22 to 30 ms, and "not changed in the last month" about 290 ms.
 
-On a cluster of shards the range queries, the grouping and the subquery run through the coordinator as they are. A coordinator does not walk graphs yet, so the walks are done by the app over the estate it made, and the page says so.
+On a cluster of shards the range queries, the grouping and the subquery run through the coordinator as they are. A coordinator does not walk graphs yet, so the walks are done by the app over the estate it made, and the page says so. The rows a walk reached are then read by key, at most 400 keys a statement, when there are up to 1,600 of them; a larger walk is read as plain queries over the hubs, metros or regions that hold it, 10,000 rows a page, and the app keeps the rows its walk reached. A search counts its matches by place in the app and reads its first 300 in full by key, so no statement names thousands of keys.
 
 ## Where is it broken
 

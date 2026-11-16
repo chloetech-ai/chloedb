@@ -311,6 +311,40 @@ pub fn kept_role(db: &Path) -> Result<(Option<KeptRole>, bool), String> {
     Ok((k.role, k.replaced_by.is_some()))
 }
 
+/// A copy of the shard that holds more than an empty database: its URL,
+/// the newest term it knows and its last transaction's number
+/// ([`copies_holding`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Holding {
+    pub url: String,
+    pub term: u64,
+    pub seq: u64,
+}
+
+/// N-E2, a primary's half: asks each of `copies` what it holds, with a
+/// vote of no term (a pre-vote, which none grants or keeps; each answer
+/// carries the newest term the copy knows and its last transaction), and
+/// answers those that hold a transaction (a new database is at term 1
+/// already, and a new term begins with a transaction of its own). A
+/// server started as a primary by its flags on an empty database with no part kept beside it
+/// asks this first: a copy holding more means the shard served before, so
+/// this server lost its volume (or is new to it), and made the primary of
+/// term 1 it would ship an empty database to copies that hold the shard's
+/// data. A copy that does not answer in `timeout` is left out, as on a
+/// first start whose copies are not up yet.
+pub async fn copies_holding(copies: &[String], token: Option<&Secret>, ca: Option<&[u8]>, timeout: Duration) -> Vec<Holding> {
+    let req = pb::VoteRequest { candidate: format!("starting-{}", new_id()), pre: true, ..Default::default() };
+    let asks = copies.iter().map(|url| {
+        let req = req.clone();
+        async move {
+            let mut c = coord::client(url, token, ca).ok()?;
+            let a = tokio::time::timeout(timeout, c.vote(req)).await.ok()?.ok()?.into_inner();
+            (a.last_seq > 0).then(|| Holding { url: url.clone(), term: a.term.max(a.last_term), seq: a.last_seq })
+        }
+    });
+    futures::future::join_all(asks).await.into_iter().flatten().collect()
+}
+
 /// What `path` keeps ([`Kept`]), or a new id, kept there.
 fn open_kept(path: Option<&Path>) -> Result<Kept, String> {
     let Some(path) = path else { return Ok(Kept::new(new_id())) };
@@ -356,6 +390,54 @@ fn conflict(message: String) -> ApiError {
 fn beside(db: &Path, what: &str) -> PathBuf {
     let name = db.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     db.with_file_name(format!(".{name}.{what}-{}", new_id()))
+}
+
+/// Removes the copies of the database at `db` that a transfer left beside
+/// it ([`beside`]: a primary's `.<name>.copy-<id>`, the checkpoint it
+/// writes first, `..<name>.copy-<id>.checkpoint-<id>`, and a replica's
+/// `.<name>.restore-<id>`, each with its log and readers' folder) when its
+/// server was killed during it: [`Removed`] runs only when the transfer
+/// ends. A copy is the whole database, so a server that was stopped during
+/// a few of them kept several times its data on its volume, which nothing
+/// showed or removed (LIV-7). Called once the database is open (its
+/// writer's lock taken), when no transfer runs. Answers the files removed
+/// and their bytes.
+pub fn sweep_copies(db: &Path) -> (usize, u64) {
+    let Some(name) = db.file_name().map(|n| n.to_string_lossy().into_owned()) else { return (0, 0) };
+    let dir = db.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let Ok(entries) = std::fs::read_dir(dir) else { return (0, 0) };
+    let ours = |f: &str| [format!(".{name}.copy-"), format!(".{name}.restore-"), format!("..{name}.copy-")].iter().any(|p| f.starts_with(p.as_str()));
+    let (mut n, mut bytes) = (0, 0u64);
+    for e in entries.flatten() {
+        let f = e.file_name().to_string_lossy().into_owned();
+        if !ours(&f) {
+            continue;
+        }
+        let p = e.path();
+        let size = |p: &Path| -> u64 {
+            fn walk(p: &Path) -> u64 {
+                match std::fs::symlink_metadata(p) {
+                    Ok(m) if m.is_dir() => std::fs::read_dir(p).into_iter().flatten().flatten().map(|e| walk(&e.path())).sum(),
+                    Ok(m) => m.len(),
+                    Err(_) => 0,
+                }
+            }
+            walk(p)
+        };
+        let len = size(&p);
+        let r = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        match r {
+            Ok(()) => {
+                n += 1;
+                bytes += len;
+            }
+            Err(e) => tracing::warn!(path = %p.display(), error = %e, "could not remove a copy of the database a transfer left"),
+        }
+    }
+    if n > 0 {
+        tracing::warn!(db = %db.display(), files = n, bytes, "removed copies of the database that transfers left when the server was stopped during them");
+    }
+    (n, bytes)
 }
 
 /// Removes the copy at its path, and its log, when dropped.
@@ -826,7 +908,7 @@ impl Primary {
                 let count = |a: Option<&AtomicU64>| a.map_or(0, |a| a.load(Ordering::Relaxed));
                 let mut j = json!({
                     "url": p.url, "seq_no": p.acked, "behind": last.saturating_sub(p.acked), "in_sync": p.in_sync,
-                    "copying": p.copying, "copies": p.copies,
+                    "copying": p.copying, "copies": p.copies, "answered": p.answered.is_some(),
                     "verifications": count(f.map(|f| &f.verifications)), "divergences": count(f.map(|f| &f.divergences)),
                     "verify_failures": count(f.map(|f| &f.verify_failures)), "member": p.member, "txn_mismatches": p.mismatches,
                 });
@@ -1199,7 +1281,9 @@ impl Follow {
     /// A replica started with `--replica`, as [`Self::open`]: on a database
     /// that had no part in replication yet, it is one of its shard's first
     /// copies, which count among the copies a majority is counted of from
-    /// the start, as Raft's first members do ([`shard::Replica::open`]).
+    /// the start, as Raft's first members do, but vote only for a copy that
+    /// heard from no primary either until one calls them: a replica whose
+    /// volume was lost starts so too ([`shard::Replica::open`], N-E2).
     pub fn open_first(db: Arc<Db>, file: Option<&Path>) -> Result<Follow, String> {
         Follow::open_as(db, file, true)
     }
@@ -1260,6 +1344,7 @@ impl Follow {
     pub async fn vote(&self, r: &pb::VoteRequest, sticky: Duration) -> Result<pb::VoteResponse, ApiError> {
         let _one = self.one.lock().await;
         let n = self.numbering()?;
+        self.core().saw_vote(r);
         let (a, save) = self.core().vote(r, &n, Instant::now(), sticky);
         if let Some(k) = save {
             self.keep(k, "the vote")?;
@@ -1279,7 +1364,8 @@ impl Follow {
     /// copies that granted it refuse the primary of an older term from then.
     ///
     /// It asks for the term after the newest it knows or a copy told it
-    /// ([`shard::Replica::heard`]). On its own (not a `handover`), each
+    /// ([`shard::Replica::heard`]), and only as a copy a primary counted
+    /// ([`shard::Replica::counted`]). On its own (not a `handover`), each
     /// round ends once its answers decide it ([`shard::Campaign::decided`]):
     /// it waits for no copy that is down.
     ///
@@ -1291,6 +1377,7 @@ impl Follow {
     /// it. Refused, the primary is fenced and does not step down, and with
     /// two copies the shard is left with no primary.
     pub async fn campaign(&self, copies: &[String], opts: &PrimaryOptions, handover: bool, first: &[String]) -> Result<Elected, ApiError> {
+        self.core().counted()?;
         let c = self.core().campaign(&self.numbering()?, handover);
         let early = (!handover && first.is_empty()).then_some(&c);
         let t = c.tally(copies, self.ask(c.ask(self.numbering()?.last(), true), copies, opts, early).await);
@@ -1382,6 +1469,12 @@ impl Follow {
             self.reads_refused.fetch_add(1, Ordering::Relaxed);
         }
         r
+    }
+
+    /// Counts a read refused for its write's term ([`crate::service`]'s
+    /// `holds_term`), with those refused for its number.
+    pub fn refused_a_read(&self) {
+        self.reads_refused.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The latest version, once it holds transaction `seq`, waiting for it
@@ -1527,8 +1620,8 @@ impl Follow {
     /// What it does with a call from `primary` of `term` before it applies
     /// anything ([`shard::Replica::take`]): `Some` answer to give at once,
     /// or `None` once it follows that primary (kept beside the database).
-    fn take(&self, term: u64, primary: &str, member: bool, config: (u64, u32), n: &Numbering) -> Result<Option<pb::ReplicateResponse>, ApiError> {
-        let take = self.core().take(term, primary, member, config, n)?;
+    fn take(&self, term: u64, primary: &str, config: (u64, u32), n: &Numbering) -> Result<Option<pb::ReplicateResponse>, ApiError> {
+        let take = self.core().take(term, primary, config, n)?;
         match take {
             Take::Answer(a) => Ok(Some(a)),
             Take::Apply { kept } => {
@@ -1545,7 +1638,7 @@ impl Follow {
     pub async fn replicate(&self, r: pb::ReplicateRequest) -> Result<pb::ReplicateResponse, ApiError> {
         let _one = self.one.lock().await;
         let n = self.numbering()?;
-        if let Some(a) = self.take(r.term, &r.primary, r.member, (r.config, r.copies), &n)? {
+        if let Some(a) = self.take(r.term, &r.primary, (r.config, r.copies), &n)? {
             return Ok(a);
         }
         // Nothing else writes here: the transaction the call follows, when
@@ -1581,7 +1674,14 @@ impl Follow {
             self.applied.fetch_add(count, Ordering::Relaxed);
         }
         let db_term = self.db.storage().numbering().map_or(0, |n| n.term);
-        self.core().applied(r.term, r.behind, r.global_checkpoint, applied, db_term)
+        let a = self.core().applied(r.term, r.behind, r.global_checkpoint, applied, db_term)?;
+        // A member from the first call that finds it caught up (N-E2).
+        let joined = self.core().joined(r.member);
+        if let Some(k) = joined {
+            save_kept(&k, self.file.as_deref()).map_err(|e| ApiError::internal(format!("keep that this replica counts among its shard's copies: {e}")))?;
+            self.core().took(Some(k), Instant::now());
+        }
+        Ok(a)
     }
 
     /// Its digests at the version a call from its primary pinned
@@ -1627,7 +1727,7 @@ impl Follow {
         let first = chunks.message().await.map_err(cut)?.ok_or_else(|| ApiError::bad("the copy is empty"))?;
         let one = self.one.clone().lock_owned().await;
         let n = self.numbering()?;
-        if let Some(a) = self.take(first.term, &first.primary, false, (first.config, 0), &n)? {
+        if let Some(a) = self.take(first.term, &first.primary, (first.config, 0), &n)? {
             return Ok(a);
         }
         // Its rows are behind its primary's log, or differ: no reads
@@ -1702,7 +1802,7 @@ impl Follow {
     /// Whether it serves reads now: its primary's last call reached the
     /// primary's last transaction.
     pub fn serves_reads(&self) -> bool {
-        self.core().serves_reads
+        self.core().reads_open()
     }
 
     /// The transaction it holds under a term and number as another than
@@ -1716,11 +1816,12 @@ impl Follow {
     /// What `/v1/health` shows of replication.
     pub async fn health(&self) -> Json {
         let core = self.core().clone();
+        let reads_open = core.reads_open();
         let kept = core.kept;
         let n = self.db.storage().numbering().unwrap_or_default();
         let mut h = json!({
             "role": "replica", "id": kept.id, "term": n.term, "seq_no": n.seq, "global_checkpoint": core.global_checkpoint,
-            "restores": self.restores.load(Ordering::Relaxed), "serves_reads": core.serves_reads,
+            "restores": self.restores.load(Ordering::Relaxed), "serves_reads": reads_open,
             "read_waits": self.read_waits.load(Ordering::Relaxed), "reads_refused": self.reads_refused.load(Ordering::Relaxed),
             "digests": self.digests.load(Ordering::Relaxed), "txn_mismatches": core.mismatches,
         });
@@ -1756,5 +1857,34 @@ impl Follow {
             Family::one("chloedb_replica_digests_total", "counter", "Digests of its rows this replica computed for its primary to compare (Verify).", self.digests.load(Ordering::Relaxed) as f64),
             Family::one("chloedb_replica_txn_mismatches_total", "counter", "Calls of its primary this replica refused for holding another transaction under the term and number they follow (it is then sent a copy of the primary).", mismatches as f64),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// LIV-7: a server stopped during a transfer left its copy of the
+    /// database beside it, and the next start kept it: a replica held five
+    /// times its data. The next start removes those, and nothing else.
+    #[test]
+    fn a_start_removes_the_copies_transfers_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("db.strata");
+        let write = |name: &str, n: usize| std::fs::write(dir.path().join(name), vec![7u8; n]).unwrap();
+        write("db.strata", 10);
+        write("db.strata-wal", 10);
+        write(".db.strata.restore-00ab", 1000);
+        write(".db.strata.restore-00ab-wal", 10);
+        write(".db.strata.copy-00cd", 500);
+        write("..db.strata.copy-00cd.checkpoint-0001", 300);
+        write(".other.strata.copy-00ef", 50);
+        std::fs::create_dir(dir.path().join(".db.strata.restore-00ab-readers")).unwrap();
+        write(".db.strata.restore-00ab-readers/WRITER", 5);
+        assert_eq!(sweep_copies(&db), (5, 1815));
+        let mut left: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, [".other.strata.copy-00ef", "db.strata", "db.strata-wal"]);
+        assert_eq!(sweep_copies(&db), (0, 0));
     }
 }

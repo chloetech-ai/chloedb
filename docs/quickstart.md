@@ -15,12 +15,7 @@ Pick one. Each gives you a `chloedb-server` program, prebuilt (a download of abo
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh
 ```
 
-**Homebrew**, on macOS or Linux:
-
-```sh
-# install
-brew install chloetech-ai/tap/chloedb
-```
+**Homebrew** is not available yet: there is no tap to install from. Use the install script above, which works on the same Macs and Linux machines.
 
 **Docker**: skip to [ChloeDB in Docker](#chloedb-in-docker) below, which runs the same steps against the image.
 
@@ -28,7 +23,7 @@ brew install chloetech-ai/tap/chloedb
 
 ```sh
 # install
-v=0.3.2 p=macos-arm64
+v=0.3.5 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz && mkdir -p ~/.local/bin && mv chloedb-server-$p/chloedb-server ~/.local/bin/
 ```
@@ -41,7 +36,7 @@ chloedb-server --version
 
 ## 2. Start it
 
-A database is one file. Give the server a path that does not exist yet and it creates an empty database there; it listens on `127.0.0.1:7700`, which only this machine can reach.
+A database is a file, with its write-ahead log and the server's own logs beside it (`quickstart.chloedb-wal`, `quickstart.chloedb.logs`). Give the server a path that does not exist yet and it creates an empty database there; it listens on `127.0.0.1:7700`, which only this machine can reach.
 
 ```sh
 mkdir -p chloedb-quickstart && cd chloedb-quickstart
@@ -124,7 +119,7 @@ EOF
 
 ## 5. Open the command center
 
-Open [http://127.0.0.1:7700](http://127.0.0.1:7700) in a browser. In the command center, **Start here** walks through the first steps and ticks each one off once it is done. **Tables** lists `products`: its page searches it from one box (by words, by meaning, or both), shows its rows, how full each field is, and what uses it, and **Save as a saved search** keeps the query as a stored function that SQL, HTTP, Python, JavaScript and agents (over MCP) all call. The **SQL workbench** runs any SQL you type and shows the plan the planner chose; **Ask** (Ctrl+J) answers a question in words by querying the tables, with an Anthropic API key (the server's, or one you give the tab). The older query console is still at [/classic](http://127.0.0.1:7700/classic). With `--demo 20000`, a new database starts with a catalogue of 20,000 products to try it on; here a second server, on port 7710, so that both run at once:
+Open [http://127.0.0.1:7700](http://127.0.0.1:7700) in a browser. The command center opens on **Start here**, which walks through the first steps and ticks each one off once it is done; once they are, the same address opens **Home**, the server's health. If the crawler, Sheets or ChloeCtx were installed beside `chloedb-server` (`install.sh --with`), the server started them too, as [apps](chloedb/server.md#apps-the-server-starts) (unless it was given `--start-apps off`), and their tables (`crawl_*`, `sheets_*`, `ctx_*`) are listed apart from yours, under Tables of apps. **Tables** lists `products`: its page searches it from one box (by words, by meaning, or both), shows its rows, how full each field is, and what uses it, and **Save as a saved search** keeps the query as a stored function that SQL, HTTP, Python, JavaScript and agents (over MCP) all call. The **SQL workbench** runs any SQL you type and shows the plan the planner chose; **Ask** (Ctrl+J) answers a question in words by querying the tables, with an Anthropic API key (the server's, or one you give the tab). The older query console is still at [/classic](http://127.0.0.1:7700/classic). With `--demo 20000`, a new database starts with a catalogue of 20,000 products to try it on; here a second server, on port 7710, so that both run at once:
 
 ```sh
 chloedb-server --db demo.chloedb --demo 20000 --listen 127.0.0.1:7710 --grpc off > demo.log 2>&1 &
@@ -181,7 +176,7 @@ The image `ghcr.io/chloetech-ai/chloedb-server` (Linux, x86-64 and arm64) keeps 
 ```sh
 # install
 docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
-  ghcr.io/chloetech-ai/chloedb-server:0.3.2
+  ghcr.io/chloetech-ai/chloedb-server:0.3.5
 ```
 
 Then every request sends the token, and the console asks for it once:

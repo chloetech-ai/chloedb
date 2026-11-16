@@ -20,7 +20,9 @@ export default {
 
 const HEALTH = {
   ok: ["ok", "ok"],
+  warning: ["warn", "warning"],
   failing: ["failing", "failing"],
+  invalid: ["failing", "invalid"],
   stale: ["warn", "stale"],
   running: ["info", "running"],
   pending: ["pending", "not run yet"],
@@ -39,7 +41,13 @@ const TEMPLATES = {
   http_json: { config: { url: "https://api.example.com/items?since={cursor}", records: "$.items", cursor: "updated_at", headers: { Authorization: "Bearer {secret:token}" } }, secrets: { token: "" } },
 };
 
-const every_text = (c) => (!c.pulls ? "pushed" : c.every_s >= 3600 ? `every ${fmt.n(c.every_s / 3600, 1)} h` : c.every_s >= 60 ? `every ${fmt.n(c.every_s / 60, 1)} min` : `every ${c.every_s} s`);
+// A kind that pulls with no schedule (every_s 0) runs by hand (DAP-18).
+const every_text = (c, kinds) => {
+  if (c.pulls) return every_pull(c);
+  const k = (kinds || []).find((x) => x.kind === c.kind);
+  return k?.pull ? (k.push ? "pushed, or by hand" : "by hand") : "pushed";
+};
+const every_pull = (c) => (c.every_s >= 3600 ? `every ${fmt.n(c.every_s / 3600, 1)} h` : c.every_s >= 60 ? `every ${fmt.n(c.every_s / 60, 1)} min` : `every ${c.every_s} s`);
 const healthPill = (c) => { const [st, text] = HEALTH[c.health] || ["info", c.health]; return pill(st, text); };
 const pretty = (j) => JSON.stringify(j, null, 2);
 
@@ -66,16 +74,17 @@ function render(page) {
         h("td", { class: "mono small" }, tableLink(c.target)),
         h("td", {}, healthPill(c), st.failures > 1 ? h("span", { class: "small dim" }, ` ×${st.failures}`) : null),
         h("td", { class: "small", style: { whiteSpace: "nowrap" } }, st.last_run_ms ? fmt.ago(st.last_run_ms) : "never", last ? h("div", { class: "dim" }, `${fmt.plural(last.rows_ || 0, "row")} · ${took(last.took_ms)}`) : null),
-        h("td", { class: "num small" }, fmt.si(st.rows_total || 0)),
-        h("td", { class: "small dim", style: { whiteSpace: "nowrap" } }, every_text(c)),
-        h("td", { class: st.last_error ? "small error" : "small", style: { maxWidth: "260px", overflowWrap: "anywhere" } }, st.last_error ? st.last_error.slice(0, 160) : ""));
+        h("td", { class: "num small", title: `${fmt.n(st.rows_total || 0)} rows written by ${fmt.plural(st.runs || 0, "run")}: a row upserted again counts each time, so it can be more than the rows of ${c.target}` }, fmt.si(st.rows_total || 0)),
+        h("td", { class: "small dim", style: { whiteSpace: "nowrap" } }, every_text(c, v.kinds)),
+        st.last_error ? h("td", { class: "small error", style: { minWidth: "200px", maxWidth: "260px", overflowWrap: "anywhere" } }, st.last_error.slice(0, 160))
+          : h("td", { class: st.last_warning ? "small warn" : "small", style: { minWidth: "200px", maxWidth: "260px", overflowWrap: "anywhere" } }, st.last_warning ? st.last_warning.slice(0, 160) : ""));
     });
     clear(main, card({
       title: "Connectors", sub: `${fmt.plural(cs.length, "connector")} · configs in ${v.tables.configs}, runs in ${v.tables.runs}`,
       tools: h("button", { class: "btn sm", onclick: load }, icon("refresh"), "Refresh"),
       flush: true,
       body: cs.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
-        h("thead", {}, h("tr", {}, h("th", {}, "connector"), h("th", {}, "target"), h("th", {}, "health"), h("th", {}, "last run"), h("th", { class: "num" }, "rows"), h("th", {}, "schedule"), h("th", {}, "last error"))),
+        h("thead", {}, h("tr", {}, h("th", {}, "connector"), h("th", {}, "target"), h("th", {}, "health"), h("th", {}, "last run"), h("th", { class: "num", title: "Rows written by every run so far (upserts counted each time), not the rows of the table" }, "rows written"), h("th", {}, "schedule"), h("th", {}, "last error"))),
         h("tbody", {}, rows)))
         : empty("streams", "No connectors yet", "Add one: Prometheus rollups, Jira or ServiceNow tickets and changes, Oxidized configs, carriers' emails, Alertmanager or any webhook, any REST API."),
     }), sourcesCard());
@@ -102,7 +111,7 @@ function render(page) {
     const target = h("input", { class: "input mono", autocomplete: "off", spellcheck: "false" });
     const everyIn = h("input", { class: "input mono", type: "number", min: "10", style: { width: "110px" } });
     const conf = h("textarea", { class: "input mono", rows: 9, spellcheck: "false", style: { width: "100%", resize: "vertical" } });
-    const secrets = h("textarea", { class: "input mono", rows: 3, spellcheck: "false", style: { width: "100%", resize: "vertical" } });
+    const secrets = h("textarea", { class: "input mono", rows: 3, spellcheck: "false", "data-secret": "secrets", style: { width: "100%", resize: "vertical" } });
     const about = h("div", { class: "small dim" });
     const note = h("div");
     const fill = () => {
@@ -185,6 +194,7 @@ function render(page) {
     const cols = [...new Set((t.rows || []).flatMap((r) => Object.keys(r)))];
     return h("div", { class: "stack", style: { gap: "6px" } },
       h("div", { class: "small" }, h("b", {}, fmt.plural(t.records, "record")), ` read in ${took(t.took_ms)}`, t.target_exists ? ` · rows fitted to ${t.target}` : ` · ${t.target} does not exist yet: it is made with the connector`, t.more ? " · more to read" : ""),
+      t.warning ? h("div", { class: "small warn" }, icon("warn"), " ", t.warning) : null,
       t.dropped?.length ? h("div", { class: "small warn" }, icon("warn"), ` not columns of ${t.target}, left out: `, h("span", { class: "mono" }, t.dropped.join(", "))) : null,
       (t.errors || []).length ? h("div", { class: "small error" }, t.errors.slice(0, 3).join(" · ")) : null,
       cols.length ? h("div", { class: "tbl-wrap", style: { maxHeight: "260px" } }, h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, cols.map((c) => h("th", {}, c)))),
@@ -200,8 +210,8 @@ function render(page) {
       : `curl -sS -X POST ${url} \\\n  -H "Authorization: Bearer ${secret}" \\\n  -H "Content-Type: application/json" -d '{"id": "1", "msg": "hello"}'`;
     modal({ title: `The push key of ${c.name}`, wide: true, body: h("div", { class: "stack", style: { gap: "10px" } },
       h("div", { class: "small" }, "Shown once. It may write ", h("b", { class: "mono" }, c.target), " and nothing else; revoke or rotate it here or in Access and audit."),
-      h("div", { class: "row", style: { gap: "6px" } }, h("span", { class: "mono small", style: { wordBreak: "break-all" } }, secret), h("button", { class: "btn sm", onclick: () => copy(secret, "Key copied") }, icon("copy"), "Copy")),
-      h("pre", { class: "code small" }, curl), h("button", { class: "btn sm", onclick: () => copy(curl, "Copied") }, icon("copy"), "Copy the snippet")) });
+      h("div", { class: "row", style: { gap: "6px" } }, h("span", { class: "mono small", style: { wordBreak: "break-all" }, "data-secret": "key" }, secret), h("button", { class: "btn sm", onclick: () => copy(secret, "Key copied") }, icon("copy"), "Copy")),
+      h("pre", { class: "code small", "data-secret": "key" }, curl), h("button", { class: "btn sm", onclick: () => copy(curl, "Copied") }, icon("copy"), "Copy the snippet")) });
   }
 
   async function open(name) {
@@ -248,20 +258,23 @@ function render(page) {
     const runs = (c.runs || []).map((r) => h("tr", {},
       h("td", { class: "small", style: { whiteSpace: "nowrap" } }, r.started ? fmt.datetime(Date.parse(r.started)) : "–"),
       h("td", { class: "small" }, r.trigger),
-      h("td", {}, r.ok ? pill("ok", "ok") : pill("failing", "failed")),
+      h("td", {}, !r.ok ? pill("failing", "failed") : r.warning ? pill("warn", "warning") : pill("ok", "ok")),
       h("td", { class: "num small" }, fmt.n(r.records || 0)), h("td", { class: "num small" }, fmt.n(r.rows_ || 0)),
       h("td", { class: "num small" }, took(r.took_ms)),
-      h("td", { class: r.error ? "small error" : "small", style: { maxWidth: "300px", overflowWrap: "anywhere" } }, r.error || (r.dropped?.length ? h("span", { class: "dim" }, `left out: ${r.dropped.join(", ")}`) : ""))));
+      h("td", { class: r.error ? "small error" : r.warning ? "small warn" : "small", style: { maxWidth: "300px", overflowWrap: "anywhere" } }, r.error || r.warning || (r.dropped?.length ? h("span", { class: "dim" }, `left out: ${r.dropped.join(", ")}`) : ""))));
     const facts = [
-      ["Kind", kindTitle(c.kind)], ["Target", h("span", { class: "mono" }, tableLink(c.target))], ["Health", healthPill(c)], ["Schedule", every_text(c)],
+      ["Kind", kindTitle(c.kind)], ["Target", h("span", { class: "mono" }, tableLink(c.target))], ["Health", healthPill(c)], ["Schedule", every_text(c, v.kinds)],
       ["Runs", fmt.n(st.runs || 0)], ["Rows written", fmt.n(st.rows_total || 0)], ["Last ok", st.last_ok_ms ? fmt.ago(st.last_ok_ms) : "never"],
       ["Cursor", h("span", { class: "mono small", style: { wordBreak: "break-all" } }, (st.cursor || "–").slice(0, 120))],
       ["Secrets", c.secrets?.length ? h("span", { class: "mono" }, c.secrets.join(", ")) : "none"],
+      ["Changed", c.updated_ms ? `${fmt.ago(c.updated_ms)}${c.updated_by ? ` by ${c.updated_by}` : ""}` : "–"],
       c.push ? ["Push to", h("span", { class: "mono small" }, `POST ${c.push.url}`)] : null,
     ].filter(Boolean);
     const d = drawer({ title: name, sub: `${kindTitle(c.kind)} into ${c.target}`, wide: true, body: h("div", { class: "stack", style: { gap: "14px" } },
       h("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } }, runBtn, dry, toggleBtn, keyBtn, del),
+      c.invalid ? h("div", { class: "banner bad dt-banner" }, icon("bad"), h("div", { class: "small" }, `This config does not run: ${c.invalid}. Change it here, or delete it.`)) : null,
       st.last_error ? h("div", { class: "banner bad dt-banner" }, icon("bad"), h("div", { class: "small" }, st.last_error)) : null,
+      !st.last_error && st.last_warning ? h("div", { class: "banner warn dt-banner" }, icon("warn"), h("div", { class: "small" }, `The last run went through, but: ${st.last_warning}`)) : null,
       out,
       h("table", { class: "t compact" }, h("tbody", {}, facts.map(([k, x]) => h("tr", {}, h("td", { class: "dim small", style: { width: "130px" } }, k), h("td", {}, x))))),
       card({ title: "Last runs", flush: true, body: runs.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ["started", "trigger", "result", "records", "rows", "took", "error"].map((x) => h("th", {}, x)))), h("tbody", {}, runs))) : empty("clock", "No runs yet") }),
@@ -273,6 +286,7 @@ function render(page) {
     return h("div", { class: "stack small", style: { gap: "4px" } },
       r.ok ? h("div", {}, pill("ok", "ok"), ` ${fmt.plural(r.records, "record")} read, ${fmt.plural(r.rows, "row")} written in ${took(r.took_ms)}`, r.more ? " · more to read: it runs again at once" : "")
         : h("div", { class: "error" }, r.error),
+      r.warning ? h("div", { class: "warn" }, icon("warn"), " ", r.warning) : null,
       r.dropped?.length ? h("div", { class: "warn" }, "Left out (not columns of the target): ", h("span", { class: "mono" }, r.dropped.join(", "))) : null,
       r.skipped ? h("div", { class: "warn" }, `${fmt.plural(r.skipped, "record")} made no row: ${r.first_skip || ""}`) : null);
   }

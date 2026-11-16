@@ -162,6 +162,15 @@ function coerce(type, v, col) {
   }
 }
 
+// Whether an error a browser reported says only that a call was not
+// answered: the browser's own words for a failed fetch, the command center's
+// ("no answer: the network failed..."), a proxy's 502 to 504, an engine or a
+// server not answering. Not a fault of the app's code, so never a repair.
+const UNANSWERED = /\b(no answer\b|failed to fetch|networkerror|network error|load failed|the network failed|does not answer|is not answering|not answering|bad gateway|service unavailable|gateway time-?out|econnreset|econnrefused|socket hang up|the answer was cut off|too many requests)/i;
+export function unanswered(message) {
+  return UNANSWERED.test(String(message || '').split('\n')[0]);
+}
+
 export class Engine extends EventEmitter {
   constructor(strata, { log = console.log } = {}) {
     super();
@@ -286,8 +295,9 @@ export class Engine extends EventEmitter {
     const names = view.tables.map((t) => t.spec.name);
     const who = ctx.as ? await this.withLinks(appId, ctx.as, view) : null;
     const specs = new Map(view.tables.map((t) => [t.spec.name, t.spec]));
+    const closed = view.tables.some((t) => rulesOf(t.spec));
     const scope = who ? (name) => {
-      const d = decide(specs.get(name), 'read', who);
+      const d = decide(specs.get(name), 'read', who, { closed });
       return d.all ? null : { sql: (alias, o) => scopeSql(d.scope, alias, o) };
     } : null;
     const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t), { scope });
@@ -319,12 +329,14 @@ export class Engine extends EventEmitter {
   async insert(appId, table, fields, ctx = {}) {
     const spec = await this.tableSpec(appId, table);
     if (ctx.as) ctx = { ...ctx, as: await this.withLinks(appId, ctx.as) };
-    fields = this.mayWrite(spec, 'add', fields, ctx);
+    fields = await this.mayWrite(appId, spec, 'add', fields, ctx);
     if (ctx.visitor) checkVisitorWrite(await this.view(appId), spec, fields);
     const doc = this.makeDoc(spec, fields);
     for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
     doc.id = fields?.id ? String(fields.id) : newId(10);
-    if (fields?.created) doc.created = coerce('timestamp', fields.created, 'created');
+    // When a row was made is the engine's to say for a visitor (audit 4,
+    // X-G2): a page cannot date its rows before or after everyone else's.
+    if (fields?.created && !ctx.visitor) doc.created = coerce('timestamp', fields.created, 'created');
     const db = await this.dbOf(appId);
     await db.write([{ op: 'insert', table: physical(appId, table), doc }]);
     const [row] = await db.get(physical(appId, table), [doc.id]);
@@ -340,11 +352,11 @@ export class Engine extends EventEmitter {
     const [old] = await db.get(physical(appId, table), [String(id)]);
     if (!old) throw new Error(`no row ${id} in ${table}`);
     if (ctx.visitor) checkVisitorWrite(await this.view(appId), spec, fields);
-    this.mayChange(spec, 'change', old, ctx);
-    if (ctx.ownRows && !rulesOf(spec)) await this.ownedBy(appId, table, old.id, ctx.who);
+    await this.mayChange(appId, spec, 'change', old, ctx);
+    if (ctx.ownRows && !(await this.declares(appId, spec))) await this.ownedBy(appId, table, old.id, ctx.who);
     const changes = this.makeDoc(spec, fields, { partial: true });
     const doc = { ...old, ...changes, id: old.id };
-    this.mayChange(spec, 'change', doc, ctx, { moved: true });
+    await this.mayChange(appId, spec, 'change', doc, ctx, { moved: true });
     for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
     await db.write([{ op: 'upsert', table: physical(appId, table), doc }]);
     this.announce('data', { app: appId, tables: [table] });
@@ -357,8 +369,8 @@ export class Engine extends EventEmitter {
     if (ctx.as) ctx = { ...ctx, as: await this.withLinks(appId, ctx.as) };
     const db = await this.dbOf(appId);
     const [old] = await db.get(physical(appId, table), [String(id)]);
-    this.mayChange(spec, 'remove', old, ctx);
-    if (ctx.ownRows && !rulesOf(spec)) await this.ownedBy(appId, table, String(id), ctx.who);
+    await this.mayChange(appId, spec, 'remove', old, ctx);
+    if (ctx.ownRows && !(await this.declares(appId, spec))) await this.ownedBy(appId, table, String(id), ctx.who);
     await db.write([{ op: 'delete', table: physical(appId, table), key: String(id) }]);
     this.announce('data', { app: appId, tables: [table] });
     if (old) await this.after(appId, table, 'delete', old, ctx);
@@ -370,18 +382,30 @@ export class Engine extends EventEmitter {
   // A write by one of the app's people (ctx.as), against the table's
   // declared access: an add under a scope gets the scope's columns filled
   // (and is refused when it names someone else). Answers the fields to write.
-  mayWrite(spec, action, fields, ctx) {
+  async mayWrite(appId, spec, action, fields, ctx) {
     if (!ctx.as) return fields;
-    const d = decide(spec, action, ctx.as);
+    const d = decide(spec, action, ctx.as, { closed: await this.closed(appId) });
     return d.all ? fields : fillScope(fields, d.scope, ctx.as, spec.name);
+  }
+
+  // Whether the app declares access on any of its tables: then a table that
+  // declares none is read-only to its people (access.mjs, CLOSED).
+  async closed(appId) {
+    return (await this.view(appId)).tables.some((t) => rulesOf(t.spec));
+  }
+
+  // Whether this table's access is declared, by its own statements or (in
+  // an app that declares access elsewhere) by the closed default.
+  async declares(appId, spec) {
+    return !!rulesOf(spec) || (await this.closed(appId));
   }
 
   // A change or remove of row `row` by one of the app's people: allowed on
   // the table, and the row in their scope (with moved, the row as it would
   // be stored: a change cannot move a row out of the scope).
-  mayChange(spec, action, row, ctx, { moved = false } = {}) {
+  async mayChange(appId, spec, action, row, ctx, { moved = false } = {}) {
     if (!ctx.as) return;
-    const d = decide(spec, action, ctx.as);
+    const d = decide(spec, action, ctx.as, { closed: await this.closed(appId) });
     if (d.all || !row) return;
     if (!inScope(row, d.scope, ctx.as)) {
       throw Object.assign(new Error(moved ? `You cannot give ${spec.name} rows to someone else (${d.scope.map((t) => t.col).join(' or ')})` : `You can ${action} only your own rows of ${spec.name}`), { status: 403, refused: 'access' });
@@ -411,11 +435,16 @@ export class Engine extends EventEmitter {
     // make it, then it runs with the app's rights (its reads and writes are
     // not held to the caller's), as a SECURITY DEFINER procedure does.
     // The person stays its user (:user_id), and who added a row stays theirs.
+    // The person on the public path whose action led here (sender) stays
+    // known either way, even in a trigger that runs as the app: what it may
+    // email follows them (services.email, audit 4, X-G5).
     const definer = !!fn.spec?.callers && (ctx.as || ctx.visitor);
     if (definer) mayCall(fn.spec.callers, String(fn.title || slug).toLowerCase(), ctx.as || { role: 'visitor', user: null });
+    const pub = !!(ctx.pub || ctx.visitor);
+    const sender = ctx.sender || ctx.as || (pub ? { role: 'visitor', user: null } : null);
     const inner = definer
-      ? { depth, by: fn.id, user, test: !!ctx.test, visitor: false, pub: false, ...(ctx.who ? { who: ctx.who } : {}) }
-      : { depth, by: fn.id, user, test: !!ctx.test, visitor: !!ctx.visitor, pub: !!(ctx.pub || ctx.visitor), ...(ctx.as ? { as: ctx.as } : {}), ...(ctx.who ? { who: ctx.who } : {}) };
+      ? { depth, by: fn.id, user, test: !!ctx.test, visitor: false, pub: false, ...(ctx.who ? { who: ctx.who } : {}), ...(sender ? { sender } : {}) }
+      : { depth, by: fn.id, user, test: !!ctx.test, visitor: !!ctx.visitor, pub, ...(ctx.as ? { as: ctx.as } : {}), ...(ctx.who ? { who: ctx.who } : {}), ...(sender ? { sender } : {}) };
     const services = () => {
       if (!this.services) throw new Error('this engine runs without services (people, files, email, places)');
       return this.services;
@@ -440,7 +469,11 @@ export class Engine extends EventEmitter {
         case 'call': return (await this.call(appId, args[0], args[1], inner)).result;
         case 'people': return services().people(appId);
         // A rule's email goes once its writes are stored, so a rule that stops sends none.
-        case 'email': if (batch) { const msg = args[0]; batch.later(() => services().email(appId, msg, fn.id)); return { queued: true }; } return services().email(appId, args[0], fn.id);
+        case 'email': {
+          const opts = sender ? { sender } : {};
+          if (batch) { const msg = args[0]; batch.later(() => services().email(appId, msg, fn.id, opts)); return { queued: true }; }
+          return services().email(appId, args[0], fn.id, opts);
+        }
         case 'geocode': return services().geocode(args[0]);
         case 'files': return services().fileInfo(appId, args[0]);
         case 'ask': return reach().ask(appId, args[0], args[1] || {}, { test: inner.test });
@@ -457,7 +490,7 @@ export class Engine extends EventEmitter {
       if (batch && !ctx.batch) out = await this.exclusive(appId, async () => { const r = await rule(); await batch.commit(); return r; });
       else if (fn.spec.rule) out = await rule();
       else out = await runFunction(fn.code, input, host, { user, helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
-      if (!ctx.depth && !ctx.test) this.store.track(appId, 'call', fn.id, slug, { person: ctx.who || user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, ms: out.ms, taps: ctx.taps }).catch(() => {});
+      if (!ctx.depth && !ctx.test) this.store.track(appId, 'call', fn.id, slug, { person: ctx.who || user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, ms: out.ms, taps: ctx.taps, src: ctx.owner ? 'owner' : null }).catch(() => {});
       return out;
     } catch (e) {
       // A rule's refusal ("Only 2 left") is for the person, not a repair.
@@ -500,7 +533,7 @@ export class Engine extends EventEmitter {
     return {
       insert: async (table, fields) => {
         const spec = await this.tableSpec(appId, table);
-        fields = this.mayWrite(spec, 'add', fields, ctx);
+        fields = await this.mayWrite(appId, spec, 'add', fields, ctx);
         const doc = this.makeDoc(spec, fields);
         for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
         doc.id = fields?.id ? String(fields.id) : newId(10);
@@ -513,10 +546,10 @@ export class Engine extends EventEmitter {
         const spec = await this.tableSpec(appId, table);
         const old = await current(table, String(id));
         if (!old) throw new Error(`no row ${id} in ${table}`);
-        this.mayChange(spec, 'change', old, ctx);
+        await this.mayChange(appId, spec, 'change', old, ctx);
         const changes = this.makeDoc(spec, fields, { partial: true });
         const doc = { ...old, ...changes, id: old.id };
-        this.mayChange(spec, 'change', doc, ctx, { moved: true });
+        await this.mayChange(appId, spec, 'change', doc, ctx, { moved: true });
         for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
         ops.push({ op: 'upsert', table: physical(appId, table), doc });
         rows.set(key(table, doc.id), doc);
@@ -526,7 +559,7 @@ export class Engine extends EventEmitter {
       remove: async (table, id) => {
         const spec = await this.tableSpec(appId, table);
         const old = await current(table, String(id));
-        this.mayChange(spec, 'remove', old, ctx);
+        await this.mayChange(appId, spec, 'remove', old, ctx);
         ops.push({ op: 'delete', table: physical(appId, table), key: String(id) });
         rows.set(key(table, String(id)), null);
         if (old) events.push([table, 'delete', old]);
@@ -550,7 +583,7 @@ export class Engine extends EventEmitter {
   // and deletes only the rows they added: the insert recorded with them as
   // its person. Throws a 403 otherwise.
   async ownedBy(appId, table, rid, who) {
-    const rows = who ? await this.db.query("SELECT person FROM sa_events WHERE app = :a AND kind = 'insert' AND tbl = :t AND rid = :r LIMIT 1", { a: appId, t: table, r: String(rid) }).catch(() => []) : [];
+    const rows = who ? await this.db.query("SELECT person FROM sa_events WHERE app = :a AND kind = 'insert' AND tbl = :t AND rid = :r ORDER BY ts LIMIT 1", { a: appId, t: table, r: String(rid) }).catch(() => []) : [];
     if (!rows.length || rows[0].person !== String(who).slice(0, 40)) {
       throw Object.assign(new Error('You can change only what you added yourself'), { status: 403 });
     }
@@ -565,7 +598,7 @@ export class Engine extends EventEmitter {
     // A build's own checks (checks.mjs, ctx.test) are not anyone's use of the app.
     if (!ctx.depth && !ctx.test) {
       const detail = event === 'update' && ctx.changed ? `${table}: ${ctx.changed.join(', ')}` : table;
-      const where = { person: ctx.who || ctx.user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, tbl: table, rid: row?.id, fields: event === 'update' ? ctx.changed : null, taps: ctx.taps };
+      const where = { person: ctx.who || ctx.user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, tbl: table, rid: row?.id, fields: event === 'update' ? ctx.changed : null, taps: ctx.taps, src: ctx.owner ? 'owner' : null };
       const tracked = Promise.resolve(this.dbOf(appId)).then((db) => rowLabel(db, appId, table, row, tablesOf(view))).catch(() => null)
         .then((label) => this.store.track(appId, event, '', detail, { ...where, label })).catch(() => {});
       // A visitor's insert is how their own rows are told (ownedBy): kept before the answer.
@@ -577,7 +610,10 @@ export class Engine extends EventEmitter {
       if (!on || on.table !== table || ![].concat(on.event || 'insert').includes(event)) continue;
       if (fn.id === ctx.by) continue;
       // A trigger's failure is the function's, not the write's: the write stands.
-      const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null, test: !!ctx.test, visitor: !!ctx.visitor, pub: !!(ctx.pub || ctx.visitor) })
+      // A trigger runs as the person whose write fired it (their access
+      // holds), unless the app marks it to run as the app (audit 4, X-G4).
+      const as = ctx.as && fn.spec.as !== 'app' ? { as: ctx.as } : {};
+      const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null, test: !!ctx.test, visitor: !!ctx.visitor, pub: !!(ctx.pub || ctx.visitor), ...as, ...(ctx.sender || ctx.as ? { sender: ctx.sender || ctx.as } : {}) })
         .catch((e) => this.log(`trigger ${fn.id}: ${e.message}`));
       this.pending.add(run);
       run.finally(() => this.pending.delete(run));
@@ -601,7 +637,12 @@ export class Engine extends EventEmitter {
 
   // An error a view's frame reports (POST /api/apps/<id>/error). From code
   // the app no longer runs it is stale; from a visitor it is only recorded.
+  // One that says a call was not answered (the network, the engine or
+  // the server restarting: unanswered()) is no fault of the code: it is
+  // neither recorded nor repaired. A browser of an older runtime still
+  // sends them.
   async browserError(appId, capId, message, { visitor = false } = {}) {
+    if (unanswered(message)) return { stale: false, sent: false, transient: true };
     const live = await this.store.resolve(appId).catch(() => null);
     if (!live?.comp.caps.includes(capId)) return { stale: true };
     this.reportError(appId, capId, String(message || '').slice(0, 1500), 'in the browser', { visitor });

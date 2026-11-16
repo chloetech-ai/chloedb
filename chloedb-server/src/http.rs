@@ -14,7 +14,7 @@
 //! | `POST /v1/sql` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?, log?}` | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/rank_log/export` | `{table?, since?, until?, events?, history?, window?, grades?}` | NDJSON: one record per logged row ([`chloedb::rank_log::export`]) |
 //! | `POST /v1/rank_log/interleaving` | the export's body | `{pairs: [{variants, requests, acted, wins, ties, delta, p}], took_ms}`: which of two interleaved rankings the users preferred ([`chloedb::rank_log::Credit`]) |
-//! | `POST /v1/write` | `{ops: [...]}` (see `proto/strata.proto`; each op writes the first table, or its `table`) | `{written, seq_no?, seq_nos?}` |
+//! | `POST /v1/write` | `{ops: [...]}` (see `proto/strata.proto`; each op writes the first table, or its `table`) | `{written, seq_no?, seq_term?, seq_nos?, seq_terms?}`: a read that passes them back as `min_seq_no(s)` and `min_seq_term(s)` sees the write from any copy |
 //! | `GET /v1/kv/:table/:key?min_seq_no=n` | | `{table, key, found, row?, seq_no?}`: the row with that primary key, read without SQL, as `SELECT *` answers it ([`Service::get_rows`]); 404 when no live row has it (or it has expired) |
 //! | `POST /v1/kv/get` | `{keys, table?, columns?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{table, columns, rows, seq_nos, took_ms}`: per key, in their order, its row as an object (null for none) and its number, of `columns` alone when given; a coordinator asks each key's shard |
 //! | `PUT /v1/kv/:table/:key?if_seq_no=n` | the row's fields as an object (the key may be left out) | `{written, seq_no?}`: the row written in place of any with the key (an upsert; with `if_seq_no`, only while the row's number is that) |
@@ -77,7 +77,7 @@
 //! | `GET /v1/timeseries?since=ms` | | `{interval_ms, points}`: rates and gauges every few seconds, the last hour ([`crate::telemetry::Series`]) |
 //! | `GET /v1/timeseries?from=&to=` | | the same over any range: memory's points when it holds `from`, else a point a minute from the log store's `load` (`source`) |
 //! | `GET /v1/index/reads?table=` | | this server's read counts of a table (a coordinator's own, which the others merge into `/v1/index`'s `reads_from`) |
-//! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, its skew, writes and reads a minute, growth over a day and a week, and copies behind; kept 30 s ([`crate::inspect::tables`]) |
+//! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, on a coordinator its bytes on every copy, its skew, writes and reads a minute, growth over a day and a week, and copies behind, with the totals of all tables; kept 30 s ([`crate::inspect::tables`]) |
 //! | `POST /v1/admin/scrub`, `POST /v1/admin/copies/scrub` | `{rate_mib_s?}`, `{url}` | reads every segment of the database (of a copy, on a coordinator) against its checksum while writes go on, and answers `{scrub: {txn, segments, bytes, damaged, seconds}}`; 409 while one runs ([`crate::service::scrub`]) |
 //! | `POST /v1/admin/copies/verify`, `POST /v1/admin/copies/checkpoint` | `{url, timeout_ms?}`, `{url, name, layout?, link_from?}` | on a coordinator, of a copy (its URL or short name): its shard's primary compares the replicas' rows with its own (`{replicas: [{url, in_sync, compared, differing_slots, first_differing_slot, seq_no, error}]}`), or the copy writes a checkpoint into its own `--backup-dir` (`{checkpoint}`) |
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
@@ -96,7 +96,7 @@
 //! | `GET /v1/events?from=&to=&kind=&limit=`, `POST /v1/events/notes` | `{text, ts_ms?, where?}` | what happened, the newest first: copies down and back, new primaries, changes, notes ([`crate::events`]) |
 //! | `GET /v1/health/fleet` | | `{status, headline, since_ms, checks, problems, coordinators}`: whether the cluster is all right and what is wrong first ([`crate::fleet`]) |
 //! | `GET /v1/admin/model-budget` | | the model calls each API key made today with the server's credentials, by key id, and how many it may (`per_day`, [`crate::budget`]) |
-//! | `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/:id`, `POST /v1/admin/keys/:id/rotate` | `{name, scope, expires_days?, owner?, note?}`, rotate `{grace_minutes?}` | the API keys, how many were revoked, and how the last merge of keys went with each server of the cluster (`peers`, [`crate::keysync`]); a new one's secret is answered once; each key with its owner, note and last address, and the revoked ones (who revoked them, when); a rotation answers a new key of the same name and scope, the old one expiring after the grace (60 min) |
+//! | `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/:id`, `POST /v1/admin/keys/:id/rotate`, `POST /v1/admin/keys/:id/budget` | `{name, scope, expires_days?, owner?, note?, budget?}`, rotate `{grace_minutes?}`, budget `{nodes?, depth?, list?, plan_ms?, rows_read?}` (lowers it) | the API keys, how many were revoked, and how the last merge of keys went with each server of the cluster (`peers`, [`crate::keysync`]); a new one's secret is answered once; each key with its owner, note and last address, and the revoked ones (who revoked them, when); a rotation answers a new key of the same name and scope, the old one expiring after the grace (60 min) |
 //! | `GET /v1/admin/keys/clients?hours=24` | | which clients sent each key over the last `hours` (1 to 168): by key id, each client's app, client, address, calls, failed calls, first and last; every query counts, not a sample; on a coordinator every coordinator's summed, each client naming the `coordinators` it went through (`coordinators` says which answered; `local=1` for this one's); `since_ms`: from when every coordinator counted |
 //! | `GET /v1/admin/audit?kind=&from=&to=&who=&q=&limit=n` | | the changes, notes and refused requests, the newest first, with `kind` (change, note, refusal), who, addr, client, reason, object, before and after; older than memory holds from the log store's `audit`; on a coordinator every coordinator's, each entry naming its `coordinator` (`coordinators` says which answered; `local=1` for this one's) |
 //! | `GET /v1/alerts`, `PUT /v1/alerts/rules` | `{rules}` | the alert rules with their states and the latest changes ([`crate::alerts`]); `brief=1`: each rule's state, and of those not ok what the bell shows; on a coordinator the PUT answers how many copies took them (`pushed`) |
@@ -111,7 +111,8 @@
 //!
 //! With a token or a cluster token set, or an API key made, every route but
 //! `/`, `/livez`, `/readyz` and `/v1/health` needs `Authorization: Bearer
-//! <token or key>`, and a key the scope of its route ([`route_scope`]). Every route checks the `Host` header
+//! <token or key>`, and a key the scope of its route ([`route_scope`]); a
+//! coordinator answers `/v1/health` without one with `{status}` alone. Every route checks the `Host` header
 //! and, on a request that can change something, the `Origin` header
 //! ([`crate::auth`]).
 
@@ -205,7 +206,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
     // Two copies deep: a dry run or change request a tool files makes
     // requests of its own (a plan, a count of rows), through the copy
     // below it, which files none.
-    let copy = |app: &App| api(app).route("/v1/health", get(health)).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
+    let copy = |app: &App| api(app).route("/v1/health", get(health)).fallback(no_route).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
     let inner = copy(&app);
     let tools = copy(&App { mcp: Some(inner), ..app.clone() });
     // connectors: their runs write through the same routes and checks.
@@ -223,12 +224,55 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         // page, whose calls go to /c/<name>/v1/...
         .route("/c/:name", get(ui::index))
         .merge(api)
+        .fallback(no_route)
         // One stack, outermost first, put on each route once: each layer
         // put on its own wraps the routes in another boxed service, and
         // each request then clones every box inside the layer it passes
         // (some 40 allocations a request, with five layers).
         .layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY)).layer(compression()))
         .with_state(app)
+}
+
+/// A path no route matches: the API's error, not an empty 404.
+async fn no_route(method: axum::http::Method, uri: axum::http::Uri) -> ApiError {
+    ApiError::coded(404, "not_found", format!("no route matches {method} {} (GET /v1/catalog lists the API's routes)", uri.path()))
+}
+
+/// An error answered before a handler ran, by axum (a body that is not
+/// JSON, no JSON content type, a body over its limit, a method the route
+/// does not take): plain text or nothing, made the API's error shape
+/// ([`crate::errors`]) with its sentence, so a client reads every error
+/// alike. Other answers are left as they are.
+async fn json_error(res: Response, max_body: usize) -> Response {
+    let status = res.status().as_u16();
+    if !matches!(status, 400 | 405 | 411 | 413 | 415 | 422) {
+        return res;
+    }
+    let ct = res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !(ct.is_empty() || ct.starts_with("text/plain")) {
+        return res;
+    }
+    let allow = res.headers().get(header::ALLOW).cloned();
+    let (parts, body) = res.into_parts();
+    let text = match axum::body::to_bytes(body, 64 << 10).await {
+        Ok(b) => String::from_utf8_lossy(&b).trim().to_string(),
+        Err(_) => String::new(),
+    };
+    let message = match status {
+        405 => format!("the route does not take this method{}", allow.as_ref().and_then(|a| a.to_str().ok()).map_or(String::new(), |a| format!(": it takes {a}"))),
+        413 => format!(
+            "the request's body is larger than the route takes: {} MiB for rows (/v1/write, /v1/import and the like; --max-body-mb), {} MiB for any other route",
+            max_body >> 20,
+            crate::service::SMALL_BODY >> 20
+        ),
+        _ if text.is_empty() => parts.status.canonical_reason().unwrap_or("refused").to_string(),
+        _ => text,
+    };
+    let mut r = ApiError { code: None, status, message }.into_response();
+    if let Some(a) = allow {
+        r.headers_mut().insert(header::ALLOW, a);
+    }
+    r
 }
 
 /// The API's routes, behind [`auth`].
@@ -421,7 +465,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/connectors/:name", get(connectors_one).post(connectors_update).delete(connectors_delete))
         .route("/v1/admin/connectors/:name/run", post(connectors_run))
         .route("/v1/admin/connectors/:name/key", post(connectors_rotate))
-        .route("/v1/connectors/:name/push", post(connectors_push).layer(rows.clone()))
+        .route("/v1/connectors/:name/push", post(connectors_push).layer(DefaultBodyLimit::max(app.svc.max_body.min(crate::connectors::PUSH_BODY_MAX))))
         .route("/v1/routes", get(routes))
         .route("/v1/whoami", get(whoami))
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
@@ -452,6 +496,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/events", get(events_list))
         .route("/v1/events/notes", post(events_note))
         .route("/v1/admin/keys/:id/rotate", post(rotate_key))
+        .route("/v1/admin/keys/:id/budget", post(lower_key_budget))
         .route("/v1/load", get(copies_load))
         .route("/v1/admin/kube/versions", get(kube_versions))
         .route("/v1/admin/plan", post(admin_plan))
@@ -470,6 +515,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/simulator", get(sim_view).post(sim_start))
         .route("/v1/admin/simulator/stop", post(sim_stop))
         .route("/v1/admin/simulator/predict", post(sim_predict))
+        .route("/v1/admin/simulator/routing", post(sim_routing))
         .route("/v1/admin/simulator/runs/:id", get(sim_report))
         .route("/v1/admin/simulator/table", axum::routing::delete(sim_drop))
         // ----- end core
@@ -508,7 +554,7 @@ async fn observe(State(app): State<App>, req: Request, next: Next) -> Response {
     let peer = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0);
     let caller = caller_of(req.headers(), peer, &app.svc.trusted_proxies);
     let ui = caller.command_center();
-    let (mut res, deadline) = match browsers(&app, &req) {
+    let (res, deadline) = match browsers(&app, &req) {
         Some(refused) => (refused, None),
         None => {
             let inner = keys::calling(caller, obs::scope(Some(id.clone()), next.run(req)));
@@ -517,6 +563,7 @@ async fn observe(State(app): State<App>, req: Request, next: Next) -> Response {
             telemetry::traced(telemetry::Trace::new(), run).instrument(span.clone()).await
         }
     };
+    let mut res = if res.status().as_u16() >= 400 { json_error(res, app.svc.max_body).await } else { res };
     let secs = t0.elapsed().as_secs_f64();
     let status = res.status().as_u16();
     // The command center's own requests are not the clients' traffic
@@ -526,6 +573,10 @@ async fn observe(State(app): State<App>, req: Request, next: Next) -> Response {
     }
     if let Ok(v) = header::HeaderValue::from_str(&id) {
         res.headers_mut().insert(obs::HEADER, v);
+    }
+    // A feature with no compatibility promise yet says so (crate::catalog::EXPERIMENTAL).
+    if let Some(f) = crate::catalog::experimental(route) {
+        res.headers_mut().insert(header::HeaderName::from_static(crate::catalog::EXPERIMENTAL_HEADER), header::HeaderValue::from_static(f));
     }
     close_when_draining(&mut res);
     let _in = span.enter();
@@ -902,13 +953,28 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     let refused = match &who {
         None => Some(ApiError { code: None, status: 401, message: "missing or wrong token".into() }),
         Some(_) if narrowing.is_some() => narrowing,
+        // A connector's push key writes its table and reads nothing, an
+        // app's included.
+        Some(w) if w.push_only() && !crate::scoped::push_route_ok(&method, route) => Some(ApiError {
+            code: Some("scope_refused"),
+            status: 403,
+            message: format!("{method} {route} is not for {:?}, a connector's push key: it writes its table through the connector's push, and reads nothing", w.name),
+        }),
         // A key limited to tables calls the routes that check them, and no
         // other ([`crate::scoped`]).
         Some(_) if app_grants => None,
         Some(w) if w.limited() && !crate::scoped::route_ok(&method, route) && !w.allowed_route(&method, route) => w.may_server(&format!("{method} {route}")).err(),
         // A key for operations: the server's views, and for `ops` the
         // bounded actions ([`crate::ops::role_may`]).
-        Some(w) if w.scope < need && !crate::ops::role_may(w.role, &method, route) => w.may(need, &format!("{method} {route}")).err(),
+        Some(w) if w.scope < need && !crate::ops::role_may(w.role, &method, route) => w.may_by_role(need, &format!("{method} {route}"), crate::ops::role_may(Some(keys::Role::Ops), &method, route)).err(),
+        // A tier 3 action (it loses data or costs money) is never an
+        // agent's alone, whatever its key (audit X-D2): it files a change
+        // request, which a person applies with their own key.
+        Some(w) if agent_tier_refused(w, &method, route) => Some(ApiError::coded(
+            403,
+            "change_request_required",
+            format!("{method} {route} loses data or costs money (tier 3): an agent does not do it alone, even with an admin key. Dry run it (POST /v1/admin/changes/preview) and file a change request (POST /v1/admin/changes) for a person to approve"),
+        )),
         // An agent says why it changes the server: the audit log keeps it.
         Some(w) if agent_needs_reason(w, &method, route) => Some(ApiError::coded(
             400,
@@ -942,7 +1008,9 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
             }
             let follow: Option<Arc<str>> = follow.map(Into::into);
             let own = who.as_ref().is_some_and(|w| w.root);
-            telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(own, keys::noting_change(next.run(req))))).await
+            let scope = who.as_ref().map_or(Scope::Feed, |w| if w.root || w.limited() { Scope::Admin } else { w.scope });
+            let run = Box::pin(crate::service::SCOPE.scope(scope, keys::noting_change(next.run(req))));
+            telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(own, run))).await
         }
     };
     let status = res.status().as_u16();
@@ -956,7 +1024,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // cloud's plan or check) changes nothing: a read too.
     let plan = matches!(
         route,
-        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/admin/simulator/predict" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
+        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/admin/simulator/predict" | "/v1/admin/simulator/routing" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
             // alerts agent: a rule replayed.
             | "/v1/alerts/backtest"
     );
@@ -1042,6 +1110,15 @@ fn agent_needs_reason(w: &Principal, method: &axum::http::Method, route: &str) -
         && caller.as_ref().is_none_or(|c| c.reason.as_deref().is_none_or(|r| r.trim().is_empty()))
 }
 
+/// Whether a request is an agent's tier 3 action ([`crate::ops::tier`]),
+/// which it files as a change request instead. SQL is judged by its
+/// statement, in [`sql`] ([`crate::changes::sql_tier`]). An approved
+/// change is applied with the approver's own key and headers that name no
+/// agent ([`crate::changes::applying`]), so it is not refused here.
+fn agent_tier_refused(w: &Principal, method: &axum::http::Method, route: &str) -> bool {
+    crate::ops::tier(method, route) >= 3 && crate::ops::is_agent(w, keys::caller().as_ref())
+}
+
 /// Why a request failed on the client's side (4xx), for [`auth`] to log.
 #[derive(Clone)]
 struct ClientError(Arc<str>);
@@ -1051,6 +1128,13 @@ struct ClientError(Arc<str>);
 struct Audited(String);
 
 /// The answer `j`, with what the audit log says of it.
+/// The statement budget a request's body asks for (`"budget": {"nodes":
+/// 1000, ...}` or `"budget": "nodes=1000"`, [`chloedb::query::budget`]),
+/// within its key's and the server's; none when it asks for none.
+fn body_budget(b: &Json) -> Result<chloedb::query::budget::Budget, ApiError> {
+    Ok(b.get("budget").map(chloedb::query::budget::Budget::from_json).transpose()?.unwrap_or_default())
+}
+
 fn audited(j: Json, detail: String) -> Response {
     let mut r = AxJson(j).into_response();
     r.extensions_mut().insert(Audited(detail));
@@ -1131,6 +1215,9 @@ fn who(req_who: Option<axum::Extension<Principal>>) -> Principal {
 /// Refuses statement `sql` for a key limited to tables when it names a
 /// table the key may not read ([`crate::scoped::check_reads`]).
 async fn reads_ok(app: &App, who: &Principal, sql: &str) -> Result<(), ApiError> {
+    // Before a limited key's tables are read from the statement, which
+    // parses it.
+    app.svc.statement_fits(sql)?;
     if !who.limited() {
         return Ok(());
     }
@@ -1302,8 +1389,32 @@ fn body_str<'a>(b: &'a Json, k: &str) -> Result<&'a str, ApiError> {
     b.get(k).and_then(|v| v.as_str()).ok_or_else(|| ApiError::bad(format!("the body needs a string {k:?}")))
 }
 
-fn body_u64(b: &Json, k: &str) -> u64 {
-    b.get(k).and_then(|v| v.as_u64()).unwrap_or(0)
+/// The whole number `k` of body `b`, 0 when it is missing or null; refused
+/// when it is anything else (`"100"`, `-1`, `1e15`), rather than read as
+/// missing.
+fn body_u64(b: &Json, k: &str) -> Result<u64, ApiError> {
+    match b.get(k) {
+        None | Some(Json::Null) => Ok(0),
+        Some(v) => v.as_u64().ok_or_else(|| ApiError::bad(format!("{k} is a whole number from 0{}, not {}", if k.ends_with("_ms") { " (milliseconds)" } else { "" }, crate::obs::truncate(&v.to_string(), 40)))),
+    }
+}
+
+/// The fields of a query's body (`POST /v1/query`).
+const QUERY_FIELDS: &[&str] = &["sql", "params", "timeout_ms", "shard", "stats", "snapshot", "partial", "min_seq_no", "min_seq_nos", "min_seq_term", "min_seq_terms", "profile", "trace", "steps", "page_size", "keep_alive_ms", "cursor", "format", "log", "objects", "reason"];
+
+/// A sentence for each field of body `b` that is not one of `known` (a
+/// misspelt `timeout_ms` would otherwise go unnoticed), for an answer's
+/// `warnings`.
+fn unknown_fields(b: &Json, known: &[&str]) -> Vec<String> {
+    b.as_object().map_or_else(Vec::new, |o| o.keys().filter(|k| !known.contains(&k.as_str())).map(|k| format!("{k:?} is not a field of this request: it was left out (the fields are {})", known.join(", "))).collect())
+}
+
+/// `j` with `warnings` for the fields of `b` that are not `known`.
+fn warn_unknown(j: &mut Json, b: &Json, known: &[&str]) {
+    let w = unknown_fields(b, known);
+    if !w.is_empty() {
+        j["warnings"] = json!(w);
+    }
 }
 
 /// The writes a read must see ([`After`]): the body's `min_seq_no`, the
@@ -1320,12 +1431,31 @@ fn after(b: &Json) -> Result<After, ApiError> {
         Some(Json::Array(a)) => a.iter().map(|v| seq(v, "each of min_seq_nos")).collect::<Result<_, _>>()?,
         Some(_) => return Err(ApiError::bad("min_seq_nos is a list of sequence numbers, one per shard, as a coordinator's write answers seq_nos")),
     };
-    After::of(min, mins)
+    // X-E1: the terms of those writes, as their answers gave them.
+    let term = match b.get("min_seq_term") {
+        None | Some(Json::Null) => 0,
+        Some(v) => v.as_u64().ok_or_else(|| ApiError::bad("min_seq_term is a term: a whole number from 0, as a server's write answers seq_term"))?,
+    };
+    let terms = match b.get("min_seq_terms") {
+        None | Some(Json::Null) => Vec::new(),
+        Some(Json::Array(a)) => a.iter().map(|v| v.as_u64().ok_or_else(|| ApiError::bad("each of min_seq_terms is a term: a whole number from 0"))).collect::<Result<_, _>>()?,
+        Some(_) => return Err(ApiError::bad("min_seq_terms is a list of terms, one per shard, as a coordinator's write answers seq_terms")),
+    };
+    After::termed(min, mins, term, terms)
 }
 
-async fn health(State(app): State<App>) -> Response {
+async fn health(State(app): State<App>, headers: axum::http::HeaderMap) -> Response {
     let h = app.svc.health().await;
     let code = if matches!(h["status"].as_str(), Some("down" | "failing")) { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK };
+    // A coordinator's health names its copies' internal addresses, roles
+    // and counts (LIV-19): a request without a credential it takes reads
+    // whether it is up, and no more. The route still takes no credential.
+    if app.svc.coordinator().is_ok() {
+        let token = header_str(&headers, header::AUTHORIZATION).or_else(|| header_str(&headers, header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH)));
+        if app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), token).is_none() {
+            return (code, AxJson(json!({"status": h["status"]}))).into_response();
+        }
+    }
     (code, AxJson(h)).into_response()
 }
 
@@ -1372,7 +1502,8 @@ async fn schema(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
             if who.limited() {
                 who.may_table(Scope::Read, t, "a table's schema")?;
             }
-            app.svc.table(t).await?
+            // A table there is none of is not found, as a row is.
+            app.svc.table(t).await.map_err(|e| if e.status == 400 && crate::errors::code_of(&e) == "table_not_found" { ApiError { status: 404, ..e } } else { e })?
         }
         // A key limited to tables: the first table it may read, rather than
         // a refusal of one it did not name.
@@ -1493,6 +1624,18 @@ fn table_json(svc: &crate::service::Service, s: &chloedb::schema::Schema) -> Jso
             "field": f.name, "from": d.from, "model": d.model,
             "loaded": svc.local_db().map(|db| db.deriver_in(&s.table, &f.name).is_some()),
         }))).collect::<Vec<_>>(),
+        // A rollup's table (experimental): the table it reads, and how its
+        // refreshes on this server went.
+        "rollup": svc.local_db().and_then(|db| {
+            let r = db.rollup(&s.table).ok().flatten()?;
+            let h = db.rollup_health(&s.table).unwrap_or_default();
+            Some(json!({
+                "of": r.base, "experimental": true,
+                "last_refresh": h.last_refresh.map(chloedb::timestamp::format),
+                "last_error": h.last_error.as_ref().map(|(_, e)| e), "failed_at": h.last_error.as_ref().map(|(t, _)| chloedb::timestamp::format(*t)),
+                "failures": h.failures,
+            }))
+        }),
     })
 }
 
@@ -1525,14 +1668,16 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
     };
     if given("cursor") {
         let cursor = b["cursor"].as_str().ok_or_else(|| ApiError::bad("cursor is the string a scroll's last page answered"))?;
-        if let Some(k) = ["sql", "params", "page_size", "log", "shard", "stats", "snapshot", "min_seq_no", "min_seq_nos", "profile", "partial"].into_iter().find(|k| given(k)) {
+        if let Some(k) = ["sql", "params", "page_size", "log", "shard", "stats", "snapshot", "min_seq_no", "min_seq_nos", "min_seq_term", "min_seq_terms", "profile", "partial"].into_iter().find(|k| given(k)) {
             return Err(ApiError::bad(format!("a scroll's next page takes its cursor alone (with format, keep_alive_ms or timeout_ms), not {k}: the query and its version are those it started with")));
         }
-        let a = app.svc.scroll_next(cursor, &crate::service::scroll_owner(&who), keep_alive, body_u64(&b, "timeout_ms"), None).await?;
+        let a = app.svc.scroll_next(cursor, &crate::service::scroll_owner(&who), keep_alive, body_u64(&b, "timeout_ms")?, None).await?;
         if arrow {
             return arrow_answer(a).await;
         }
-        return Ok(AxJson(answer_of(&b, &a)?).into_response());
+        let mut j = answer_of(&b, &a)?;
+        warn_unknown(&mut j, &b, QUERY_FIELDS);
+        return Ok(AxJson(j).into_response());
     }
     if who.limited() {
         // A shard's query is a coordinator's, not for a key limited to
@@ -1560,15 +1705,16 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
     let req = QueryReq {
         sql: body_str(&b, "sql")?.to_string(),
         params: app.svc.params_for(b.get("params"), Some(body_str(&b, "sql")?), &who).await?,
-        timeout_ms: body_u64(&b, "timeout_ms"),
+        timeout_ms: body_u64(&b, "timeout_ms")?,
         shard: b.get("shard").and_then(|v| v.as_bool()).unwrap_or(false),
         stats,
-        snapshot: body_u64(&b, "snapshot"),
+        snapshot: body_u64(&b, "snapshot")?,
         partial: b.get("partial").and_then(|v| v.as_bool()),
         after: after(&b)?,
         profile: b.get("profile").and_then(|v| v.as_bool()) == Some(true),
         scroll: page.map(|page| crate::service::ScrollAsk { page, keep_alive, owner: crate::service::scroll_owner(&who) }),
         who: Some(who.clone()),
+        budget: body_budget(&b)?,
         ..Default::default()
     };
     // The answer cache knows the query by its SQL and the statistics it
@@ -1611,6 +1757,7 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
     if b.get("trace").and_then(|v| v.as_bool()) == Some(true) || b.get("profile").and_then(|v| v.as_bool()) == Some(true) {
         j["trace"] = json!(telemetry::trace().map(|t| t.spans()).unwrap_or_default());
     }
+    warn_unknown(&mut j, &b, QUERY_FIELDS);
     Ok(AxJson(j).into_response())
 }
 
@@ -1681,12 +1828,7 @@ async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: 
         j["teams"] = json!(served.teams);
     }
     let mut l = json!({"rows": w.rows});
-    if let Some(s) = w.seq_no {
-        l["seq_no"] = json!(s);
-    }
-    if !w.seq_nos.is_empty() {
-        l["seq_nos"] = json!(w.seq_nos);
-    }
+    seq_json(&mut l, &app.svc.termed(w));
     j["logged"] = l;
     Ok(AxJson(j))
 }
@@ -1993,7 +2135,7 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, head
     let w = who(w);
     let params = app.svc.params_for(b.get("params"), b.get("sql").and_then(Json::as_str), &w).await?;
     if let Some(log) = b.get("log") {
-        let req = QueryReq { sql: body_str(&b, "sql")?.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms"), after: after(&b)?, who: Some(w.clone()), ..Default::default() };
+        let req = QueryReq { sql: body_str(&b, "sql")?.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms")?, after: after(&b)?, who: Some(w.clone()), ..Default::default() };
         return logged(&app, &w, req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
     }
     let statement = body_str(&b, "sql")?;
@@ -2011,7 +2153,7 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, head
         audit_ui_write(statement, None, None);
     }
     let key = body_key(&b, &headers)?;
-    let (r, partial) = crate::coord::with_partial(app.svc.sql_in(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms"), None, key)).await;
+    let (r, partial) = crate::coord::with_partial(app.svc.sql_budgeted(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms")?, None, key, body_budget(&b)?)).await;
     match r {
         Ok(SqlAnswer::Rows(mut a)) => {
             hide_hosts(&w, &mut a.rs.stats.steps);
@@ -2019,7 +2161,7 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, head
         }
         Ok(SqlAnswer::Written { w, took_ms }) => {
             audit_ui_write(statement, Some(w.rows as u64), None);
-            Ok(AxJson(written(w, took_ms)).into_response())
+            Ok(AxJson(written(app.svc.termed(w), took_ms)).into_response())
         }
         Err(e) => {
             if writes {
@@ -2036,7 +2178,7 @@ fn body_key(b: &Json, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
     let key = match (b.get("idempotency_key"), headers.get("idempotency-key")) {
         (Some(Json::String(k)), _) => Some(k.clone()),
         (Some(_), _) => return Err(ApiError::bad("idempotency_key is a string")),
-        (None, Some(h)) => Some(h.to_str().map_err(|_| ApiError::bad("the Idempotency-Key header is not text"))?.to_string()),
+        (None, Some(h)) => Some(h.to_str().map_err(|_| ApiError::bad("the Idempotency-Key header is visible ASCII alone (letters, digits, - and the like): send non-ASCII text percent-encoded, or a UUID"))?.to_string()),
         (None, None) => None,
     };
     if key.as_ref().is_some_and(|k| k.is_empty() || k.len() > 256) {
@@ -2052,7 +2194,11 @@ fn body_key(b: &Json, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
 /// (`idempotency_key`; [`crate::coord::with_partial`]).
 fn write_failed(e: ApiError, partial: Option<Json>) -> Response {
     let Some(partial) = partial else { return e.into_response() };
-    let mut body = json!({"error": e.message, "partial": true, "shards": partial["shards"]});
+    // The error's shape (`error_code`, `retryable`, `hint`), with what was
+    // written: whether to send it again matters most here.
+    let mut body = crate::errors::answer(&e);
+    body["partial"] = json!(true);
+    body["shards"] = partial["shards"].clone();
     if let Some(k) = partial.get("idempotency_key") {
         body["idempotency_key"] = k.clone();
     }
@@ -2130,13 +2276,26 @@ fn written(w: Written, took_ms: f64) -> Json {
     if w.skipped > 0 {
         j["skipped"] = json!(w.skipped);
     }
+    seq_json(&mut j, &w);
+    j
+}
+
+/// A write's numbers in its answer: `seq_no` and `seq_term` from a server,
+/// `seq_nos` and `seq_terms` from a coordinator. A read passes them back
+/// as `min_seq_no(s)` and `min_seq_term(s)` (X-E1).
+fn seq_json(j: &mut Json, w: &Written) {
     if let Some(s) = w.seq_no {
         j["seq_no"] = json!(s);
+    }
+    if let Some(t) = w.seq_term {
+        j["seq_term"] = json!(t);
     }
     if !w.seq_nos.is_empty() {
         j["seq_nos"] = json!(w.seq_nos);
     }
-    j
+    if !w.seq_terms.is_empty() {
+        j["seq_terms"] = json!(w.seq_terms);
+    }
 }
 
 /// What a write's operations found ([`crate::service::Receipt`]):
@@ -2184,12 +2343,12 @@ fn strict_ops(ops: &mut [Json]) {
 async fn run_plan(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let plan = chloedb::query::ir::Plan::from_json(b.get("plan").ok_or_else(|| ApiError::bad("the body needs a \"plan\""))?)?;
     let who = who(w);
-    match app.svc.run_plan(&who, plan, after(&b)?, body_u64(&b, "timeout_ms")).await? {
+    match app.svc.run_plan(&who, plan, after(&b)?, body_u64(&b, "timeout_ms")?).await? {
         SqlAnswer::Rows(mut a) => {
             hide_hosts(&who, &mut a.rs.stats.steps);
             Ok(AxJson(answer_of(&b, &a)?))
         }
-        SqlAnswer::Written { w, took_ms } => Ok(AxJson(written(w, took_ms))),
+        SqlAnswer::Written { w, took_ms } => Ok(AxJson(written(app.svc.termed(w), took_ms))),
     }
 }
 
@@ -2245,7 +2404,7 @@ async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, he
     match r {
         Ok(w) => {
             note(Some(w.rows as u64), None);
-            Ok(AxJson(written(w, t0.elapsed().as_secs_f64() * 1e3)).into_response())
+            Ok(AxJson(written(app.svc.termed(w), t0.elapsed().as_secs_f64() * 1e3)).into_response())
         }
         Err(e) => {
             note(None, partial.as_ref().map(|p| &p["shards"]));
@@ -2264,6 +2423,13 @@ fn after_of_query(q: &std::collections::HashMap<String, String>) -> Result<After
     if let Some(v) = q.get("min_seq_nos") {
         let ns: Vec<u64> = v.split(',').map(|x| x.trim().parse::<u64>()).collect::<Result<_, _>>().map_err(|_| ApiError::bad("min_seq_nos is sequence numbers joined by commas, one per shard"))?;
         b["min_seq_nos"] = json!(ns);
+    }
+    if let Some(v) = q.get("min_seq_term") {
+        b["min_seq_term"] = json!(v.parse::<u64>().map_err(|_| ApiError::bad("min_seq_term is a term: a whole number from 0"))?);
+    }
+    if let Some(v) = q.get("min_seq_terms") {
+        let ts: Vec<u64> = v.split(',').map(|x| x.trim().parse::<u64>()).collect::<Result<_, _>>().map_err(|_| ApiError::bad("min_seq_terms is terms joined by commas, one per shard"))?;
+        b["min_seq_terms"] = json!(ts);
     }
     after(&b)
 }
@@ -2287,7 +2453,10 @@ async fn kv_one(State(app): State<App>, w: Option<axum::Extension<Principal>>, a
     table_ok(&app, &who(w), Some(&table), Scope::Read, "a read by key").await?;
     let t0 = Instant::now();
     let timeout_ms = q.get("timeout_ms").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let got = app.svc.get_rows(Some(&table), vec![chloedb::value::Value::Str(key.clone())], None, &after_of_query(&q)?, timeout_ms, true).await?;
+    // The key as the table's key is typed: an INT key's text that is not
+    // a number says so, not that a query is invalid.
+    let k = js::param(&path_key(&*app.svc.table(&table).await?, &key)?)?;
+    let got = app.svc.get_rows(Some(&table), vec![k], None, &after_of_query(&q)?, timeout_ms, true).await?;
     let took_ms = t0.elapsed().as_secs_f64() * 1e3;
     Ok(match got.rows.into_iter().next().flatten() {
         Some((row, seq_no)) => AxJson(json!({"table": got.table, "key": key, "found": true, "row": key_row(&got.columns, &row), "seq_no": seq_no, "took_ms": took_ms})).into_response(),
@@ -2313,7 +2482,7 @@ async fn kv_get(State(app): State<App>, w: Option<axum::Extension<Principal>>, A
         Some(_) => return Err(ApiError::bad("columns is an array of the names of columns")),
     };
     table_ok(&app, &who(w), table, Scope::Read, "a read by key").await?;
-    let got = app.svc.get_rows(table, keys, columns, &after(&b)?, body_u64(&b, "timeout_ms"), true).await?;
+    let got = app.svc.get_rows(table, keys, columns, &after(&b)?, body_u64(&b, "timeout_ms")?, true).await?;
     Ok(AxJson(KeyRowsJson { got: &got, took_ms: t0.elapsed().as_secs_f64() * 1e3 }).into_response())
 }
 
@@ -2372,7 +2541,7 @@ impl serde::Serialize for KeyRowsJson<'_> {
 
 /// The idempotency key of a write: the `Idempotency-Key` header.
 fn idempotency(headers: &HeaderMap) -> Result<Option<String>, ApiError> {
-    let key = headers.get("idempotency-key").map(|h| h.to_str().map(str::to_string).map_err(|_| ApiError::bad("the Idempotency-Key header is not text"))).transpose()?;
+    let key = headers.get("idempotency-key").map(|h| h.to_str().map(str::to_string).map_err(|_| ApiError::bad("the Idempotency-Key header is visible ASCII alone (letters, digits, - and the like): send non-ASCII text percent-encoded, or a UUID"))).transpose()?;
     if key.as_ref().is_some_and(|k| k.is_empty() || k.len() > 256) {
         return Err(ApiError::bad("an idempotency key has 1 to 256 characters"));
     }
@@ -2413,7 +2582,7 @@ async fn kv_put(
     let mut op = json!({"op": "upsert", "table": schema.table, "doc": doc});
     if_seq_no(&mut op, &q)?;
     let w = app.svc.write_ops(vec![op], idempotency(&headers)?).await?;
-    Ok(AxJson(written(w, t0.elapsed().as_secs_f64() * 1e3)))
+    Ok(AxJson(written(app.svc.termed(w), t0.elapsed().as_secs_f64() * 1e3)))
 }
 
 /// `DELETE /v1/kv/:table/:key`: deletes the row with that key.
@@ -2433,7 +2602,7 @@ async fn kv_delete(
         op["routing"] = json!(r);
     }
     let w = app.svc.write_ops(vec![op], idempotency(&headers)?).await?;
-    let mut j = written(w, t0.elapsed().as_secs_f64() * 1e3);
+    let mut j = written(app.svc.termed(w), t0.elapsed().as_secs_f64() * 1e3);
     j["deleted"] = json!(j["written"].as_u64().unwrap_or(0) > 0);
     Ok(AxJson(j))
 }
@@ -2518,8 +2687,13 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
         Some(e) => chloedb::ingest::EmptyCell::parse(e).ok_or_else(|| ApiError::bad(format!("empty is default, null or text, not {e:?}")))?,
     };
     let opts = crate::service::ImportOpts { strict: flag(&q, "strict", false)?, empty };
-    let (w, skipped) = app.svc.import(q.get("table").map(String::as_str), body, format, opts).await?;
+    let (w, skipped, ragged) = app.svc.import(q.get("table").map(String::as_str), body, format, opts).await?;
     let mut j = json!({"written": w.rows, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3});
+    // Rows of a CSV or TSV file with more or fewer values than its header
+    // (?strict=true refuses them).
+    if ragged > 0 {
+        j["ragged_rows"] = json!(ragged);
+    }
     if let Some(r) = receipt_json(&w) {
         j["receipt"] = r;
     }
@@ -2877,12 +3051,7 @@ async fn flush(svc: &Arc<Service>, s: &mut Stream, batch: &mut Vec<Json>, read: 
         Ok(w) => {
             *done = read;
             let mut j = json!({"batch": s.batches, "ops": n, "written": w.rows, "skipped": w.skipped, "lines": read});
-            if let Some(q) = w.seq_no {
-                j["seq_no"] = json!(q);
-            }
-            if !w.seq_nos.is_empty() {
-                j["seq_nos"] = json!(w.seq_nos);
-            }
+            seq_json(&mut j, &svc.termed(w));
             let offsets = s.offsets();
             if !offsets.is_empty() {
                 j["offsets"] = Json::Object(offsets.into_iter().map(|(n, o)| (n, json!(o))).collect());
@@ -3072,10 +3241,11 @@ fn source_json(s: chloedb::db::Source) -> Json {
 
 /// Whether a statement would run on this deployment, without running it
 /// ([`crate::sql_check`]): `{runs, deployment, kind, error?, notes}`.
-async fn sql_check(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+async fn sql_check(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
     let params = app.svc.params(None, b.get("params")).await?;
-    Ok(AxJson(crate::sql_check::check(&app.svc, sql, &params)))
+    let budget = app.svc.budget_for(Some(&who(w)), body_budget(&b)?);
+    Ok(AxJson(app.svc.sql_check(sql, &params, body_u64(&b, "timeout_ms")?, budget).await?))
 }
 
 /// A schema validated, in both JSON forms and as the `CREATE TABLE`
@@ -3225,14 +3395,26 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
     // A compound query is operators over single-table queries; what each
     // of those ran is in "plan".
     let profiles = |t: &str, n: &str| app.svc.rank_profile(t, n);
-    // The plan names the files of its ranking models.
-    let plan = app.svc.open_ranking_models(std::sync::Arc::new(chloedb::query::compound::plan_read_calling(sql, &tables, &params, &profiles, &app.svc.functions())?), false)?;
+    // The plan names the files of its ranking models. It is made as the
+    // query's would be: off the request's thread when it may take long,
+    // stopped at the deadline, within the statement's budget (X-B12).
+    let budget = body_budget(&b)?;
+    let timeout_ms = body_u64(&b, "timeout_ms")?;
+    let plan = app.svc.open_ranking_models(std::sync::Arc::new(app.svc.plan_for_explain(sql, &params, timeout_ms, app.svc.budget_for(Some(&who), budget)).await?), false)?;
     let logical = match plan.root.uses_operators() {
         true => "a compound query: operators over single-table queries (\"tree\"), whose runs are in \"plan\"".to_string(),
         false => {
             let schema = tables.iter().find(|t| t.table.eq_ignore_ascii_case(plan.table())).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", plan.table())))?;
-            // A query by a rank profile binds as written out.
-            format!("{:#?}", chloedb::query::bind(&chloedb::query::profile::written_out(sql, &profiles)?, schema, &params)?)
+            // A query by a rank profile binds as written out. The binder
+            // of single-table queries takes less than the planner (a
+            // `GROUP BY date_trunc(...)`, UIA-3): a statement the plan was
+            // made for is explained by the plan's own tree then, never
+            // refused, since `/v1/sql` runs it.
+            let bound = chloedb::query::profile::written_out(sql, &profiles).map_err(ApiError::from).and_then(|w| chloedb::query::bind(&w, schema, &params).map_err(ApiError::from));
+            match bound {
+                Ok(q) => format!("{q:#?}"),
+                Err(_) => format!("{:#?}", plan.root),
+            }
         }
     };
     let (ir, tree) = (plan.to_json()?, json!(plan.explain(&tables)));
@@ -3241,12 +3423,12 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
     // A query the hits cannot be shown for (one that orders groups, or by
     // a column it computes) is explained without them, and says why.
     let mut no_hits = None;
-    let hits = match body_u64(&b, "hits") {
+    let hits = match body_u64(&b, "hits")? {
         0 => None,
         _ if !chloedb::query::sql::ranks(sql) => None,
         n => {
             let asked = match chloedb::query::sql::with_features(sql) {
-                Ok(sql) => app.svc.query(QueryReq { sql, params: params.clone(), timeout_ms: body_u64(&b, "timeout_ms"), ..Default::default() }).await,
+                Ok(sql) => app.svc.query(QueryReq { sql, params: params.clone(), timeout_ms, who: Some(who.clone()), budget, ..Default::default() }).await,
                 Err(e) => Err(ApiError::from(e)),
             };
             match asked {
@@ -3263,7 +3445,7 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
             }
         }
     };
-    let mut a = app.svc.query(QueryReq { sql: sql.into(), params, timeout_ms: body_u64(&b, "timeout_ms"), profile: b.get("profile").and_then(|v| v.as_bool()) == Some(true),         ..Default::default() }).await?;
+    let mut a = app.svc.query(QueryReq { sql: sql.into(), params, timeout_ms, profile: b.get("profile").and_then(|v| v.as_bool()) == Some(true), who: Some(who.clone()), budget, ..Default::default() }).await?;
     hide_hosts(&who, &mut a.rs.stats.steps);
     let mut out = json!({
         "kind": a.kind,
@@ -3361,7 +3543,7 @@ async fn sid_next(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     };
     let sql = format!("SELECT COUNT(*) FROM {}{filter}", chloedb::query::sql::ident(&table));
     let params = app.svc.params(None, b.get("params")).await?;
-    let next = app.svc.sid_next(&sql, None, &params, field, &prefixes, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
+    let next = app.svc.sid_next(&sql, None, &params, field, &prefixes, &after(&b)?, body_u64(&b, "timeout_ms")?).await?;
     let next: Vec<Json> = prefixes
         .iter()
         .zip(next)
@@ -3372,7 +3554,7 @@ async fn sid_next(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 
 async fn term_stats(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let params = app.svc.params(None, b.get("params")).await?;
-    let (stats, snapshot, version) = app.svc.term_stats(body_str(&b, "sql")?, None, &params, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
+    let (stats, snapshot, version) = app.svc.term_stats(body_str(&b, "sql")?, None, &params, &after(&b)?, body_u64(&b, "timeout_ms")?).await?;
     Ok(AxJson(json!({"stats": stats, "snapshot": snapshot, "version": version})))
 }
 
@@ -3381,7 +3563,7 @@ async fn term_stats(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 /// a coordinator's by its shards' counts ([`crate::service::Service::correct`]).
 async fn correct(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let (table, field, text) = (body_str(&b, "table")?.to_string(), body_str(&b, "field")?.to_string(), body_str(&b, "text")?.to_string());
-    let c = app.svc.correct(&table, &field, &text, body_u64(&b, "timeout_ms")).await?;
+    let c = app.svc.correct(&table, &field, &text, body_u64(&b, "timeout_ms")?).await?;
     Ok(AxJson(serde_json::to_value(c).map_err(ApiError::internal)?))
 }
 
@@ -3460,8 +3642,8 @@ async fn derive_preview(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res 
         let d = chloedb::content::DictEntities::new(model, analyzer).map_err(|e| ApiError::bad(e.to_string()))?;
         let dict = schema_of(&d.table)?;
         let f = dict.field(&d.field).filter(|f| f.ty == chloedb::schema::FieldType::Keyword).ok_or_else(|| ApiError::bad(format!("{}.{} is not a KEYWORD field", dict.table, d.field)))?;
-        let key = (dict.table.clone(), f.name.clone(), analyzer);
-        if let Some(g) = app.svc.gazetteers(std::slice::from_ref(&key), None).await?.get(&key) {
+        let need = chloedb::query::understand::Need::listed((dict.table.clone(), f.name.clone(), analyzer));
+        if let Some(g) = app.svc.gazetteers(std::slice::from_ref(&need), None).await?.get(&need.key) {
             d.set(g.clone());
         }
         return Ok(AxJson(json!({"model": model, "many": true, "values": d.of(text)})));
@@ -3755,6 +3937,12 @@ async fn sim_stop(State(app): State<App>) -> Result<Response, ApiError> {
 /// `POST /v1/admin/simulator/predict`: other shapes, by a report's model.
 async fn sim_predict(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     Ok(AxJson(crate::traffic::run::predict(&app.svc, &b)?))
+}
+
+/// `POST /v1/admin/simulator/routing`: the ways of choosing a shard's
+/// copy, compared by the model ([`crate::traffic::run::routing_preview`]).
+async fn sim_routing(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::traffic::run::routing_preview(&app.svc, b).await?))
 }
 
 /// `GET /v1/admin/simulator/runs/:id`: a report kept.
@@ -4929,7 +5117,7 @@ async fn log_filter(State(app): State<App>, w: Option<axum::Extension<Principal>
 async fn log_query(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
     let params = app.svc.params(None, b.get("params")).await?;
-    let timeout = app.svc.timeout_of(body_u64(&b, "timeout_ms"));
+    let timeout = app.svc.timeout_of(body_u64(&b, "timeout_ms")?);
     let local = match b.get("scope").and_then(|v| v.as_str()) {
         None | Some("cluster") => false,
         Some("local") => true,
@@ -6228,9 +6416,32 @@ async fn rotate_key(State(app): State<App>, w: Option<axum::Extension<Principal>
     Ok(audited(json!({"key": key.json(), "secret": secret, "old": old.json()}), detail))
 }
 
+/// `POST /v1/admin/keys/:id/budget {"rows_read": 1000000, ...}`: lowers
+/// the statement budget of key `:id` (its id or name) and of the keys it
+/// made ([`keys::Keys::lower_budget`]); answers the budget it has now.
+async fn lower_key_budget(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let asked = chloedb::query::budget::Budget::from_json(&b)?;
+    let Some(now) = app.svc.keys.lower_budget(&id, asked)? else { return Err(ApiError { code: None, status: 404, message: format!("no key {id}") }) };
+    let by = keys::audit_name(&who(w));
+    keys::note_change(keys::Change { object: Some(format!("key {id}")), after: Some(json!({"budget": now})), ..Default::default() });
+    tracing::info!(key = %id, by = %by, budget = %now.spec(), "API key budget lowered");
+    Ok(audited(json!({"key": id, "budget": now}), format!("lowered the statement budget of key {id} to {}", if now.is_none() { "none".to_string() } else { now.spec() })))
+}
+
 /// `{"name": ..., "scope": "feed" | "read" | "write" | "admin",
 /// "expires_days": n}`: a new key; its secret is in this answer only.
 async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    // A misspelt field would otherwise be left out without a word, and a
+    // key without its limits reads every table: refuse what is not a
+    // field of a key.
+    const FIELDS: &[&str] = &["name", "scope", "tables", "routes", "apps", "preset", "prefix", "expires_days", "expires_minutes", "agent", "owner", "note", "on_behalf_of", "reason", "budget"];
+    let Json::Object(fields) = &b else { return Err(ApiError::bad("a key is a JSON object: {\"name\": ..., \"scope\": ...}")) };
+    if let Some(k) = fields.keys().find(|k| !FIELDS.contains(&k.as_str())) {
+        return Err(ApiError::bad(format!("{k:?} is not a field of a key: {}", FIELDS.join(", "))));
+    }
+    if b.get("prefix").is_some_and(|p| !p.is_null()) && b.get("preset").is_none_or(Json::is_null) {
+        return Err(ApiError::bad("prefix is the tables of a preset: give a \"preset\" (GET /v1/whoami lists them), or limit the key with \"tables\": {\"team_*\": \"write\"}"));
+    }
     let name = body_str(&b, "name")?;
     // `"tables": {"crawl_*": "admin", "*": "read"}`: a key limited to
     // those ([`keys::Grant`]), whose scope is the most they give (and no
@@ -6277,13 +6488,15 @@ async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<R
     // A shard, or a copy in replication, whose callers send no credential.
     let in_cluster = app.svc.slots().is_some() || app.svc.role() != crate::pb::Role::Standalone;
     let text = |k: &str| b.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(|v| v.chars().take(200).collect::<String>());
-    let more = keys::AgentKey { role, agent, on_behalf_of: text("on_behalf_of"), allow: Some(allow) };
+    // What one statement it sends may cost ([`chloedb::query::budget`]).
+    let budget = b.get("budget").map(chloedb::query::budget::Budget::from_json).transpose()?.filter(|b| !b.is_none());
+    let more = keys::AgentKey { role, agent, on_behalf_of: text("on_behalf_of"), allow: Some(allow), budget };
     let (key, secret) = app.svc.keys.create_full(name, scope, tables, expires, text("owner"), text("note"), more, app.guarded(), in_cluster)?;
     let scope = key.scope_name();
     let limits = key.tables.as_deref().map(keys::grants_json);
     keys::note_change(keys::Change {
         object: Some(format!("key {}", key.name)),
-        after: Some(json!({"id": key.id, "scope": scope, "tables": limits, "allow": key.allow.as_ref().map(keys::Allow::json), "owner": key.owner, "expires_ms": key.expires_ms, "agent": key.agent, "on_behalf_of": key.on_behalf_of})),
+        after: Some(json!({"id": key.id, "scope": scope, "tables": limits, "allow": key.allow.as_ref().map(keys::Allow::json), "owner": key.owner, "expires_ms": key.expires_ms, "agent": key.agent, "on_behalf_of": key.on_behalf_of, "budget": key.budget})),
         ..Default::default()
     });
     tracing::info!(key = %key.id, name = %key.name, scope, limited = key.tables.is_some(), agent = key.agent, "API key created");

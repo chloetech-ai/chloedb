@@ -113,7 +113,9 @@ export function logTables(ts) {
 function sourcePicker(current) {
   const sel = h("select", { class: "select sm", title: "Whose lines: the servers' own, or a table with a time and a message (otel_logs, your events)", "aria-label": "Lines of" }, h("option", { value: "" }, "The servers' own lines"));
   catalogTables().then((ts) => {
-    for (const x of logTables(ts)) sel.append(h("option", { value: x.table, selected: x.table === current }, `Table ${x.table}`));
+    // Your own tables first; an app's says whose it is (LIV-12).
+    const all = logTables(ts).map((x) => ({ ...x, o: ownerOf(x.table) })).sort((a, b) => !!a.o - !!b.o);
+    for (const x of all) sel.append(h("option", { value: x.table, selected: x.table === current }, `Table ${x.table}${x.o ? ` (${x.o.owner})` : ""}`));
     sel.value = current || "";
     if (sel.options.length < 2) sel.remove();
   }).catch(() => sel.remove());
@@ -835,7 +837,7 @@ async function levelsDrawer(ctx) {
     h("td", { class: "small" }, x.expires_ms ? `goes back at ${when(x.expires_ms, { sec: false })}${x.default ? ` to ${x.default}` : ""}${x.set_by ? ` · set by ${x.set_by}` : ""}` : x.filter ? (perServer ? "from the command line" : "until changed back") : ""),
     h("td", {}, (() => {
       const b = h("button", { class: "btn xs", onclick: () => change(x) }, "Change…");
-      if (!can("admin")) { b.disabled = true; b.title = needs("admin"); }
+      if (!can("admin", "PUT /v1/logs/filter")) { b.disabled = true; b.title = needs("admin", "PUT /v1/logs/filter"); }
       else if (x.url && !perServer) { b.disabled = true; b.title = "This server sets only its own level: a newer chloedb-server sets another server's"; }
       else if (x.down) { b.disabled = true; b.title = "It does not answer"; }
       return b;

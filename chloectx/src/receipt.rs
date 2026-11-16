@@ -76,6 +76,9 @@ pub struct FilterSpec {
     pub since_ts: Option<i64>,
     pub until_ts: Option<i64>,
     pub session: Option<String>,
+    /// [`Filter::first_party`]; a receipt from before it read every record.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub first_party: bool,
 }
 
 impl FilterSpec {
@@ -86,6 +89,7 @@ impl FilterSpec {
             since_ts: f.since_ts,
             until_ts: f.until_ts,
             session: f.session.clone(),
+            first_party: f.first_party,
         }
     }
 
@@ -96,6 +100,7 @@ impl FilterSpec {
             since_ts: self.since_ts,
             until_ts: self.until_ts,
             session: self.session.clone(),
+            first_party: self.first_party,
         }
     }
 }
@@ -281,8 +286,16 @@ pub fn retrieve(store: &Store, inp: &Inputs) -> Result<Outcome> {
     let mut shown = skip.clone();
     if !hits.is_empty() && matches!(decision, Decision::Inject | Decision::Brief) {
         let params = if weak { PackParams::brief() } else { inp.pack.clone() };
-        let (packed, w) = recall::pack_explained(&hits, &inp.query, &skip, &params);
+        // A weak match shows a few records with nothing around them: none
+        // of a turn whose decision was changed since.
+        let stale = if weak { recall::superseded_turns(&store, &hits)? } else { HashSet::new() };
+        let fresh: Vec<Hit> = hits.iter().filter(|h| !stale.contains(&h.record.id)).cloned().collect();
+        let (packed, w) = recall::pack_explained(&fresh, &inp.query, &skip, &params);
         why = w;
+        for id in stale {
+            why.insert(id.clone(), "skip: its turn was superseded".into());
+            shown.insert(id);
+        }
         if !packed.is_empty() {
             shown.extend(packed.iter().map(|(r, _)| r.id.clone()));
             ids.extend(packed.iter().map(|(r, _)| r.id.clone()));

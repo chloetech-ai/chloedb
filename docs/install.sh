@@ -12,6 +12,7 @@
 #   ctx      chloectx, ChloeCtx: long-term memory for Claude Code (then
 #            `chloectx install --project DIR`; see docs/chloectx/setup.md)
 #   all      the three
+#   netops   chloedb-netops, the network operations app (releases after 0.3.2; not in all)
 #
 # It downloads the newest chloedb-server release for this machine from
 # GitHub (Linux x86_64 and aarch64 with glibc 2.35 or later, macOS arm64 and
@@ -49,12 +50,39 @@ fail() {
   exit 1
 }
 have() { command -v "$1" > /dev/null 2>&1; }
+# The header above, as --help: a heredoc, since with `curl ... | sh` there
+# is no file to read it from.
+usage() {
+  cat << 'USAGE'
+Install ChloeDB's server, prebuilt (no Rust, no C compiler), into ~/.local/bin:
+
+  curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh
+  curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl,sheets,ctx
+
+Options:
+  --with LIST   programs of the same release to install beside the server:
+                crawl (chloedb-crawl), sheets (chloedb-sheets),
+                ctx (chloectx, memory for Claude Code), or all (the three);
+                netops (chloedb-netops, network operations) by name
+  -h, --help    this text
+
+Settings (after the pipe: curl ... | CHLOEDB_VERSION=0.3.5 sh):
+  CHLOEDB_VERSION       the version to install; the newest release by default
+  CHLOEDB_WITH          the programs --with names, when it is not given
+  CHLOEDB_INSTALL_DIR   where to put the programs (default ~/.local/bin)
+  CHLOEDB_RELEASES_URL  where the release archives are (default GitHub's)
+
+It checks each download against the release's SHA-256 and changes nothing
+outside the install folder. Platforms: Linux x86_64 and aarch64 (glibc 2.35
+or later), macOS 11 or later on arm64 and x86_64.
+USAGE
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --with) [ $# -gt 1 ] || fail "--with needs a list: crawl,sheets,ctx or all"; WITH="$2"; shift 2 ;;
     --with=*) WITH="${1#--with=}"; shift ;;
-    -h | --help) sed -n '2,40p' "$0" 2> /dev/null || true; exit 0 ;;
+    -h | --help) usage; exit 0 ;;
     *) fail "unknown option $1 (--with crawl,sheets,ctx is the one there is)" ;;
   esac
 done
@@ -65,8 +93,9 @@ for w in $(printf '%s' "$WITH" | tr ',' ' '); do
     crawl | chloedb-crawl) EXTRA="$EXTRA chloedb-crawl" ;;
     sheets | chloedb-sheets) EXTRA="$EXTRA chloedb-sheets" ;;
     ctx | chloectx) EXTRA="$EXTRA chloectx" ;;
+    netops | chloedb-netops) EXTRA="$EXTRA chloedb-netops" ;;
     all) EXTRA="$EXTRA chloedb-crawl chloedb-sheets chloectx" ;;
-    *) fail "--with $w: the programs are crawl, sheets, ctx (or all)" ;;
+    *) fail "--with $w: the programs are crawl, sheets, ctx (or all), and netops" ;;
   esac
 done
 
@@ -164,7 +193,7 @@ install_program() {
   url="$RELEASES_URL/chloedb-server-v$VERSION/$name.tar.gz"
   say "Installing $prog $VERSION for $platform"
   say "  from $url"
-  fetch "$url" "$tmp/$name.tar.gz" || fail "could not download $url (is $VERSION a released version, and does it have $prog? see https://github.com/$REPO/releases)"
+  fetch "$url" "$tmp/$name.tar.gz" || fail "could not download $url (is $VERSION a released version, and does it have $prog? Releases have chloedb-crawl, chloedb-sheets and chloectx from 0.3.2, chloedb-netops in releases after 0.3.2; see https://github.com/$REPO/releases, or build it from source: https://github.com/$REPO#quick-start)"
   fetch "$url.sha256" "$tmp/$name.tar.gz.sha256" || fail "could not download $url.sha256"
   want=$(cut -d' ' -f1 < "$tmp/$name.tar.gz.sha256")
   got=$(sha256 "$tmp/$name.tar.gz")
@@ -204,10 +233,10 @@ say "Try it: a demo catalogue of 20,000 products, with the query console at http
 say "  $bin --demo 20000 --db demo.chloedb"
 say "Then a first search, from another terminal:"
 say "  curl -s 127.0.0.1:7700/v1/sql -H 'content-type: application/json' -d '{\"sql\": \"SELECT title FROM products WHERE MATCH(body, '\\''waterproof jacket'\\'') LIMIT 5\"}'"
-say "The five-minute guide: https://chloetech-ai.github.io/chloedb/site/docs/quickstart.html"
+say "The five-minute guide: https://chloetech.ai/site/docs/quickstart.html"
 if "$INSTALL_DIR/chloedb-server" doctor --help > /dev/null 2>&1; then
   say "Something in the way? $bin doctor checks the version, the Python package, the models and port 7700."
 fi
 case " $EXTRA " in
-  *" chloectx "*) say "ChloeCtx for Claude Code: $INSTALL_DIR/chloectx fetch-model && $INSTALL_DIR/chloectx install --project /absolute/path/to/a/project (see https://chloetech-ai.github.io/chloedb/site/docs/chloectx-setup.html)" ;;
+  *" chloectx "*) say "ChloeCtx for Claude Code: $INSTALL_DIR/chloectx fetch-model && $INSTALL_DIR/chloectx install --project /absolute/path/to/a/project (see https://chloetech.ai/site/docs/chloectx-setup.html)" ;;
 esac

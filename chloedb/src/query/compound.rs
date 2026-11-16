@@ -34,7 +34,11 @@
 //! tables runs as one within a table does.
 
 use super::function::FunctionSet;
+use super::budget::Budget;
 use std::cell::RefCell;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::time::Instant;
 use std::collections::HashSet;
 
 use sqlparser::ast::{self as sql, BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, SelectItem, TableFactor, UnaryOperator};
@@ -56,6 +60,10 @@ use crate::value::Value;
 /// Rows one part of a compound query reads at most (a side of a join, a
 /// subquery, a `WITH` result).
 pub const MAX_ROWS: usize = 1_000_000;
+
+/// The name a SELECT of no table's one row has in its plan: a count of
+/// the first table that reads none of its rows (PRF-12).
+pub const NO_TABLE: &str = "one row of no table";
 
 fn err(m: impl Into<String>) -> Error {
     Error::Query(m.into())
@@ -1101,7 +1109,9 @@ pub fn plan(sql_text: &str, schema: &Schema, params: &Params) -> Result<ir::Plan
 
 /// [`plan`] of a query that may read any of the tables of `catalog`.
 pub fn plan_in(sql_text: &str, catalog: &[&Schema], params: &Params) -> Result<ir::Plan> {
-    plan_query(&*parse(sql_text)?, catalog, params)
+    let q = parse(sql_text)?;
+    check_budget(&q, params)?;
+    plan_query(&q, catalog, params)
 }
 
 /// A table's rank profile by name, the table and the name in any case
@@ -1119,6 +1129,100 @@ pub type Profiles<'a> = &'a dyn Fn(&str, &str) -> Option<RankProfile>;
 /// does.
 pub fn plan_read(sql_text: &str, catalog: &[&Schema], params: &Params, profiles: Profiles) -> Result<ir::Plan> {
     plan_read_calling(sql_text, catalog, params, profiles, &FunctionSet::default())
+}
+
+/// The limits of the plans made on one thread ([`planning_under`]).
+#[derive(Clone, Default)]
+struct Planning {
+    deadline: Option<Instant>,
+    cancel: Option<Arc<AtomicBool>>,
+    /// The statement's budget ([`super::budget`]).
+    budget: Budget,
+    /// When the plan's `plan_ms` runs out, and the budget.
+    plan_by: Option<(Instant, u64)>,
+}
+
+thread_local! {
+    /// The deadline, cancel flag and budget of the plans made on this
+    /// thread ([`planning_under`]).
+    static PLANNING: RefCell<Planning> = RefCell::new(Planning::default());
+}
+
+/// `f`, whose plans ([`plan_read_calling`] and the rest) stop with
+/// [`Error::Timeout`] once `opts`' deadline passes, its cancel flag is
+/// set or its budget's `plan_ms` runs out from now, and are refused once
+/// written out past its budget's `nodes`, `depth` or `list`
+/// ([`super::budget`]): a statement whose planning takes long (thousands
+/// of `WITH` results, say) gives up when its query would, rather than
+/// holding a thread past the caller's wait.
+pub fn planning_under<T>(opts: &ExecOptions, f: impl FnOnce() -> T) -> T {
+    struct Restore(Planning);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let before = std::mem::take(&mut self.0);
+            PLANNING.with(|p| *p.borrow_mut() = before);
+        }
+    }
+    let now = Planning {
+        deadline: opts.deadline,
+        cancel: opts.cancel.clone(),
+        budget: opts.budget,
+        plan_by: opts.budget.plan_ms.map(|ms| (Instant::now() + std::time::Duration::from_millis(ms), ms)),
+    };
+    let _restore = Restore(PLANNING.with(|p| p.replace(now)));
+    f()
+}
+
+/// The budget of the statement being planned on this thread
+/// ([`planning_under`]).
+pub(crate) fn planning_budget() -> Budget {
+    PLANNING.with(|p| p.borrow().budget)
+}
+
+/// [`Error::Timeout`] once the plan being made ran past the deadline or
+/// its budget's `plan_ms`, or was cancelled ([`planning_under`]).
+pub(crate) fn check_planning() -> Result<()> {
+    PLANNING.with(|p| {
+        let p = p.borrow();
+        if p.cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Err(Error::Timeout("the query was cancelled while it was planned".into()));
+        }
+        let now = Instant::now();
+        if let Some((_, ms)) = p.plan_by.filter(|(by, _)| now >= *by) {
+            return Err(Error::Timeout(format!("the statement took more than {ms} ms to plan, its budget (plan_ms): write it with fewer WITH results, set operations or calls, or raise the budget")));
+        }
+        match p.deadline {
+            Some(d) if now >= d => Err(Error::Timeout("the query ran past its deadline while it was planned".into())),
+            _ => Ok(()),
+        }
+    })
+}
+
+/// [`check_planning`] every 1,024 calls of `n` (a loop over values as
+/// a statement binds).
+pub(crate) fn check_planning_every(n: usize) -> Result<()> {
+    match n % 1024 {
+        1023 => check_planning(),
+        _ => Ok(()),
+    }
+}
+
+/// A query error when statement `sql` as written (a write, which calls
+/// no stored function) is past the shape the budget of the statement
+/// being planned allows; nothing is parsed when it bounds none.
+pub(crate) fn check_statement(sql_text: &str, params: &Params) -> Result<()> {
+    super::budget::check_text(&planning_budget(), sql_text, params)
+}
+
+/// A query error when `q`, written out, is past the shape the budget of
+/// the statement being planned allows ([`super::budget::check_shape`]).
+fn check_budget(q: &sql::Query, params: &Params) -> Result<()> {
+    let b = planning_budget();
+    if b.is_none() {
+        return Ok(());
+    }
+    check_planning()?;
+    super::budget::check_shape(&b, q, params)
 }
 
 /// [`plan_read`] of a query that may call the stored functions of
@@ -1159,6 +1263,8 @@ fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles
         let table = super::tables::read_by(&q).first().cloned().unwrap_or_default();
         return Ok(super::profile::mark(plan_read_query(&q, catalog, params, &|_, _| None, functions)?, &table, &r));
     }
+    // Written out, the statement is held to its budget.
+    check_budget(q, params)?;
     let schema = match super::tables::read_by(q).first() {
         None => *catalog.first().ok_or_else(|| err("the database has no tables"))?,
         Some(t) => catalog.iter().copied().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| err(hint::no_table(t, catalog.iter().map(|s| s.table.as_str()))))?,
@@ -1208,6 +1314,23 @@ pub fn run(sql_text: &str, schema: &Schema, params: &Params, runner: &mut ops::R
 /// them.
 pub fn run_checked(sql_text: &str, schema: &Schema, params: &Params, runner: &mut ops::Runner, opts: &ExecOptions) -> Result<ResultSet> {
     ops::run(&plan(sql_text, schema, params)?, schema, runner, opts)
+}
+
+/// `q` without its `WITH`, copied without copying the `WITH`'s queries.
+fn without_with(q: &sql::Query) -> sql::Query {
+    let sql::Query { with: _, body, order_by, limit_clause, fetch, locks, for_clause, settings, format_clause, pipe_operators } = q;
+    sql::Query {
+        with: None,
+        body: body.clone(),
+        order_by: order_by.clone(),
+        limit_clause: limit_clause.clone(),
+        fetch: fetch.clone(),
+        locks: locks.clone(),
+        for_clause: for_clause.clone(),
+        settings: settings.clone(),
+        format_clause: format_clause.clone(),
+        pipe_operators: pipe_operators.clone(),
+    }
 }
 
 /// A query's plan, its columns, and the table whose rows its rows are
@@ -1367,6 +1490,7 @@ impl<'a> Planner<'a> {
     }
 
     fn query(&self, q: &sql::Query) -> Result<Planned> {
+        check_planning()?;
         let mark = self.ctes.borrow().len();
         let r = self.scoped(q);
         self.ctes.borrow_mut().truncate(mark);
@@ -1379,6 +1503,8 @@ impl<'a> Planner<'a> {
             return Ok(p);
         }
         let mut defs = Vec::new();
+        // The query without its `WITH`, copied once (not once per `WITH`).
+        let rest = without_with(q);
         if let Some(w) = &q.with {
             if w.recursive {
                 return Err(err("WITH RECURSIVE is not supported: REACHABLE and PATH traverse links"));
@@ -1387,9 +1513,7 @@ impl<'a> Planner<'a> {
                 // Rerank phases over the `WITH` results from this one on,
                 // which may read those before (a user's history).
                 if i > 0 {
-                    let mut rest = q.clone();
-                    rest.with.as_mut().expect("WITH").cte_tables.drain(..i);
-                    if let Some(p) = self.phased(&rest)? {
+                    if let Some(p) = self.phased_in(&w.cte_tables[i..], &rest)? {
                         return Ok(Planned { node: ir::Node::With { ctes: defs, input: Box::new(p.node) }, ..p });
                     }
                 }
@@ -1408,9 +1532,7 @@ impl<'a> Planner<'a> {
                 defs.push(ir::Cte { name, input: p.node });
             }
         }
-        let mut q = q.clone();
-        q.with = None;
-        let body = self.body(&q)?;
+        let body = self.body(&rest)?;
         Ok(match defs.is_empty() {
             true => body,
             false => Planned { node: ir::Node::With { ctes: defs, input: Box::new(body.node) }, ..body },
@@ -1437,11 +1559,20 @@ impl<'a> Planner<'a> {
     /// bind so, which plans as the table restricted to the `WITH` result's
     /// keys ([`Planner::over_rows`]).
     fn phased(&self, q: &sql::Query) -> Result<Option<Planned>> {
-        let Some(w) = q.with.as_ref().filter(|w| !w.recursive && w.cte_tables.iter().all(|c| c.alias.columns.is_empty())) else { return Ok(None) };
-        let mut body = q.clone();
-        body.with = None;
+        match q.with.as_ref().filter(|w| !w.recursive) {
+            Some(w) => self.phased_in(&w.cte_tables, &without_with(q)),
+            None => Ok(None),
+        }
+    }
+
+    /// [`Planner::phased`] of the query `body` (with no `WITH` of its own)
+    /// after the `WITH` results `ctes`.
+    fn phased_in(&self, ctes: &[sql::Cte], body: &sql::Query) -> Result<Option<Planned>> {
+        if ctes.is_empty() || ctes.iter().any(|c| !c.alias.columns.is_empty()) {
+            return Ok(None);
+        }
         // The first `WITH`, its table and alias.
-        let first = &w.cte_tables[0].query;
+        let first = &ctes[0].query;
         let Some((s0, name)) = one_table(first) else { return Ok(None) };
         let Some(schema) = self.table(&name).filter(|_| self.cte(&name).is_none()) else { return Ok(None) };
         let simple = |s: &sql::Select| s.distinct.is_none() && s.having.is_none() && matches!(&s.group_by, sql::GroupByExpr::Expressions(es, _) if es.is_empty());
@@ -1451,9 +1582,9 @@ impl<'a> Planner<'a> {
         // Each later step: what it projects, ranks by and cuts, its
         // columns named without the `WITH` it reads.
         let mut steps: Vec<(Vec<SelectItem>, sql::OrderByExpr, Option<sql::LimitClause>)> = Vec::new();
-        let reads: Vec<&sql::Query> = w.cte_tables[1..].iter().map(|c| c.query.as_ref()).chain(std::iter::once(&body)).collect();
+        let reads: Vec<&sql::Query> = ctes[1..].iter().map(|c| c.query.as_ref()).chain(std::iter::once(body)).collect();
         for (i, r) in reads.iter().enumerate() {
-            let read = &w.cte_tables[i].alias.name.value;
+            let read = &ctes[i].alias.name.value;
             let Some((s, from)) = one_table(r) else { return Ok(None) };
             let alias = match &s.from[0].relation {
                 TableFactor::Table { alias, .. } => alias.as_ref().map(|a| a.name.value.clone()),
@@ -1523,7 +1654,7 @@ impl<'a> Planner<'a> {
         // alias, or a `WITH` result's.
         let mut names = from_names(first);
         for (i, r) in reads.iter().enumerate() {
-            names.push(w.cte_tables[i].alias.name.value.to_ascii_lowercase());
+            names.push(ctes[i].alias.name.value.to_ascii_lowercase());
             names.extend(from_names(r));
         }
         let fields = schema.fields.iter().map(|f| f.name.clone()).collect();
@@ -1600,8 +1731,11 @@ impl<'a> Planner<'a> {
     /// Why a SELECT with no table, or with several after FROM, is refused,
     /// and what to write instead.
     fn from_hint(&self, s: &sql::Select) -> String {
-        let tables: Vec<&str> = self.catalog.iter().map(|t| t.table.as_str()).collect();
+        let tables: Vec<&str> = self.catalog.iter().map(|t| t.table.as_str()).filter(|t| !hint::internal_table(t)).collect();
         let first = tables.first().copied().unwrap_or("t");
+        if s.from.is_empty() && tables.is_empty() {
+            return "this SELECT reads a table, and the database has none yet: CREATE TABLE or an import makes one".to_string();
+        }
         if s.from.is_empty() {
             return format!(
                 "a SELECT reads a table: add FROM and one of the database's tables ({}). A value of no table is a column of any of them: SELECT {} FROM {first} LIMIT 1",
@@ -1647,10 +1781,16 @@ impl<'a> Planner<'a> {
             b => return Err(err(format!("this form of query is not supported: {b}"))),
         };
         // SELECT 1, SELECT now(): values of no table, one row of them, as
-        // the one row a count of a table gives.
+        // the one row a count of a table gives. The count reads none of
+        // the table's rows, and the plan names it for what it is (PRF-12):
+        // Explain and Queries show no search of the table's rows. SELECT *
+        // of no table has no columns to give.
         if s.from.is_empty() && s.selection.is_none() && s.group_by == sql::GroupByExpr::Expressions(vec![], vec![]) && s.having.is_none() {
+            if s.projection.iter().any(|i| matches!(i, SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..))) {
+                return Err(err("SELECT * of no table has no columns to give: name the values (SELECT 1 + 1), or add FROM and a table"));
+            }
             if let Some(first) = self.catalog.first() {
-                let one = format!("SELECT COUNT(*) FROM {}", sql::Ident::with_quote('"', first.table.as_str()));
+                let one = format!("SELECT COUNT(*) AS {} FROM {} WHERE FALSE", sql::Ident::with_quote('"', NO_TABLE), sql::Ident::with_quote('"', first.table.as_str()));
                 let Some(sql::Statement::Query(one)) = super::parse::parse(&one)?.into_iter().next() else { return Err(err("a query of one row")) };
                 let mut q = q.clone();
                 if let sql::SetExpr::Select(s) = q.body.as_mut() {
@@ -1715,31 +1855,44 @@ impl<'a> Planner<'a> {
         }
         match body.as_ref() {
             sql::SetExpr::Query(_) => self.side(body),
-            sql::SetExpr::SetOperation { op, set_quantifier, left, right } => {
-                let all = match set_quantifier {
-                    sql::SetQuantifier::All => true,
-                    sql::SetQuantifier::Distinct | sql::SetQuantifier::None => false,
-                    by_name => return Err(err(format!("{op} {by_name} is not supported: select the columns in the same order on both sides"))),
-                };
-                let kind = match op {
-                    sql::SetOperator::Union => ir::SetOp::Union,
-                    sql::SetOperator::Intersect => ir::SetOp::Intersect,
-                    sql::SetOperator::Except | sql::SetOperator::Minus => ir::SetOp::Except,
-                };
-                let l = self.side(left)?;
-                let r = self.side(right)?;
-                if l.columns.len() != r.columns.len() {
-                    return Err(err(format!(
-                        "{}: the query before it selects {} column{} and the one after {}; both sides of a {} select as many",
-                        kind.name(),
-                        l.columns.len(),
-                        if l.columns.len() == 1 { "" } else { "s" },
-                        r.columns.len(),
-                        kind.name()
-                    )));
+            sql::SetExpr::SetOperation { .. } => {
+                // `a UNION b UNION c ...` parses left-deep: its queries are
+                // planned from the first on, along the chain rather than
+                // down it, so that a long chain neither recurses once per
+                // query nor copies the queries before each.
+                let mut chain = Vec::new();
+                let mut first = body.as_ref();
+                while let sql::SetExpr::SetOperation { op, set_quantifier, left, right } = first {
+                    chain.push((op, set_quantifier, right.as_ref()));
+                    first = left;
                 }
-                let multi = l.multi.iter().zip(&r.multi).map(|(a, b)| *a || *b).collect();
-                Ok(Planned { node: ir::Node::SetOp { op: kind, all, left: Box::new(l.node), right: Box::new(r.node) }, columns: l.columns, keyed: None, multi })
+                let mut l = self.side(first)?;
+                for (op, set_quantifier, right) in chain.into_iter().rev() {
+                    let all = match set_quantifier {
+                        sql::SetQuantifier::All => true,
+                        sql::SetQuantifier::Distinct | sql::SetQuantifier::None => false,
+                        by_name => return Err(err(format!("{op} {by_name} is not supported: select the columns in the same order on both sides"))),
+                    };
+                    let kind = match op {
+                        sql::SetOperator::Union => ir::SetOp::Union,
+                        sql::SetOperator::Intersect => ir::SetOp::Intersect,
+                        sql::SetOperator::Except | sql::SetOperator::Minus => ir::SetOp::Except,
+                    };
+                    let r = self.side(right)?;
+                    if l.columns.len() != r.columns.len() {
+                        return Err(err(format!(
+                            "{}: the query before it selects {} column{} and the one after {}; both sides of a {} select as many",
+                            kind.name(),
+                            l.columns.len(),
+                            if l.columns.len() == 1 { "" } else { "s" },
+                            r.columns.len(),
+                            kind.name()
+                        )));
+                    }
+                    let multi = l.multi.iter().zip(&r.multi).map(|(a, b)| *a || *b).collect();
+                    l = Planned { node: ir::Node::SetOp { op: kind, all, left: Box::new(l.node), right: Box::new(r.node) }, columns: l.columns, keyed: None, multi };
+                }
+                Ok(l)
             }
             _ => unreachable!("a set operation or a query"),
         }

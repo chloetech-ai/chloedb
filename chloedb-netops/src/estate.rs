@@ -87,7 +87,7 @@ pub struct Estate {
     pub edges: Vec<(u32, u32, &'static str)>,
     index: HashMap<String, u32>,
     down: Vec<Vec<u32>>,
-    up: Vec<Vec<u32>>,
+    pub up: Vec<Vec<u32>>,
     /// Between metros: how many backbone links.
     pub trunks: Vec<(String, String, usize)>,
     /// The radius of a hub and of a site, for choosing the level of detail.
@@ -522,7 +522,7 @@ impl Estate {
         self.walk(i, 8, cap, true, false)
     }
 
-    fn walk(&self, from: u32, hops: usize, cap: usize, down: bool, up: bool) -> Vec<u32> {
+    pub fn walk(&self, from: u32, hops: usize, cap: usize, down: bool, up: bool) -> Vec<u32> {
         self.walk_hops(from, hops, cap, down, up).into_iter().map(|(i, _)| i).collect()
     }
 
@@ -588,11 +588,19 @@ pub async fn ensure(e: &Engine) -> Result<()> {
     let mut done = 0usize;
     let mut rng = Rng::new(31);
     const PART: usize = 5000;
+    // Said as the map says it: the objects, without the places that hold them.
+    let places = est.nodes.len() - objects;
+    let objects_text = format!("{} objects and {} places", thousands(objects), thousands(places));
     for (what, n) in [("objects", est.nodes.len()), ("links", est.edges.len()), ("two months of faults and changes", objects)] {
         let mut from = 0;
         while from < n {
             let to = (from + PART).min(n);
-            e.phase(&format!("Writing the estate: {n} {what}"), 0.97 * done as f64 / total);
+            let text = match what {
+                "objects" => objects_text.clone(),
+                "links" => format!("{} links", thousands(n)),
+                _ => format!("two months of faults and changes on {} objects", thousands(objects)),
+            };
+            e.phase(&format!("Writing the estate: {text}"), 0.97 * done as f64 / total);
             match what {
                 "objects" => e.db.upsert(NODES, est.node_rows(from..to, &mut rng)).await?,
                 "links" => e.db.upsert(EDGES, est.edge_rows(from..to)).await?,
@@ -652,6 +660,298 @@ pub async fn minute(e: &Engine, m: i64) -> Result<()> {
     }
     est.live.lock().unwrap_or_else(|p| p.into_inner()).extend(started);
     Ok(())
+}
+
+// ---- outages in the estate, as the shift sees them
+
+/// The hub an object of the estate sits in (its own id for a hub), which
+/// is what its alerts are grouped by: from the estate this app made, or
+/// read off the id (`olt-s03-h12-lon` is in `h12-lon`).
+pub fn hub_of(est: Option<&Estate>, id: &str) -> Option<String> {
+    if let Some(est) = est {
+        if let Some(i) = est.find(id) {
+            let n = &est.nodes[i as usize];
+            let a = n.anc[2];
+            if a != NONE {
+                return Some(est.nodes[a as usize].id.clone());
+            }
+            if n.kind == "hub" {
+                return Some(n.id.clone());
+            }
+            return None;
+        }
+    }
+    let parts: Vec<&str> = id.split('-').collect();
+    let k = parts.iter().position(|p| p.len() == 3 && p.starts_with('h') && p[1..].chars().all(|c| c.is_ascii_digit()))?;
+    (k + 1 < parts.len()).then(|| parts[k..].join("-"))
+}
+
+const LAYER_RANK: &[&str] = &["power", "aggregation", "access", "premises"];
+
+/// The estate's agent: an incident whose alerts are on objects behind the
+/// backbone. The object says what is wrong with it (its `reason`); what is
+/// left to find is how far it reaches (a walk along the edges, and the
+/// customers on what it reaches) and whether a change came before it, on it
+/// or on what it hangs from. Every step is a query, kept as the other
+/// agents keep theirs.
+pub async fn diagnose(e: &Engine, incident: &str, m: i64) -> Result<()> {
+    use crate::agents::{quoted, Run};
+    if !e.st().open.contains_key(incident) {
+        return Ok(());
+    }
+    let mut run = Run::new(e, "estate", incident, incident, m);
+    let alerts = run.q("Read the incident's alerts", "SELECT entity, severity, reading, summary, started FROM netops_alerts\nWHERE incident = :id AND status IN ('firing', 'silenced')\nORDER BY reading DESC LIMIT 50", json!({"id": incident})).await;
+    let mut ids: Vec<String> = alerts.iter().map(|a| a.s("entity")).collect();
+    ids.dedup();
+    run.finding(format!("{} alert{} on {}.", alerts.len(), if alerts.len() == 1 { "" } else { "s" }, ids.join(", ")));
+    if ids.is_empty() {
+        run.think("Conclude", "Nothing is firing: the objects came back before the agent looked.");
+        run.finish("done", "Nothing firing", 0.0).await?;
+        return Ok(());
+    }
+    let objs = run.q("What the objects report now", &format!("SELECT id, kind, layer, name, state, reason, since, hub, metro, region, vendor, model, os_version FROM {NODES}\nWHERE id IN ({}) LIMIT 50", quoted(&ids)), json!({})).await;
+    // The root is one that is down before one that is only degraded (a
+    // slow router does not take down what it feeds); among those, the one
+    // highest up: a hub's power before its routers, a router before what it
+    // feeds; then the one with the most behind it.
+    let rank = |r: &Row| LAYER_RANK.iter().position(|l| *l == r.s("layer")).unwrap_or(9);
+    let reading = |r: &Row| alerts.iter().find(|a| a.s("entity") == r.s("id")).map_or(0.0, |a| a.f("reading"));
+    let mut sorted: Vec<&Row> = objs.iter().collect();
+    sorted.sort_by(|a, b| (a.s("state") != "down").cmp(&(b.s("state") != "down")).then(rank(a).cmp(&rank(b))).then(reading(b).total_cmp(&reading(a))));
+    let Some(root) = sorted.first().map(|r| (*r).clone()) else {
+        run.think("Conclude", "None of the alerting objects is in the estate's tables.");
+        run.finish("done", "The objects were not found", 0.0).await?;
+        return Ok(());
+    };
+    let rid = root.s("id");
+    run.finding(format!("{rid} ({}, {}) is {}: {}", root.s("kind"), root.s("layer"), root.s("state"), root.s("reason")));
+
+    // How far it reaches.
+    let seeds = if ids.len() == 1 { quoted(&ids) } else { format!("({})", quoted(&ids)) };
+    let sql = format!("SELECT kind, state, customer, COUNT(*) AS n FROM {NODES}\nWHERE REACHABLE({EDGES}, {seeds}, hops => 3, dir => 'out', through => layer != 'core')\nGROUP BY kind, state, customer LIMIT 2000");
+    let walked = || -> Vec<Row> {
+        let Some(est) = &e.estate else { return Vec::new() };
+        let hit: HashSet<u32> = est.live.lock().unwrap_or_else(|p| p.into_inner()).iter().flat_map(|f| std::iter::once(f.root).chain(f.hit.iter().copied())).collect();
+        let mut by: HashMap<(String, String, String), i64> = HashMap::new();
+        let mut seen = HashSet::new();
+        for id in &ids {
+            let Some(i) = est.find(id) else { continue };
+            for j in est.walk(i, 3, 20_000, true, false) {
+                if seen.insert(j) {
+                    let n = &est.nodes[j as usize];
+                    *by.entry((n.kind.to_string(), if hit.contains(&j) { "impacted".into() } else { "ok".into() }, n.customer.clone())).or_default() += 1;
+                }
+            }
+        }
+        by.into_iter().map(|((kind, state, customer), n)| json!({"kind": kind, "state": state, "customer": customer, "n": n}).as_object().cloned().unwrap_or_default()).collect()
+    };
+    let behind = run.graph("What depends on them: a walk along the edges, by kind, state and customer", sql, walked).await;
+    let total: i64 = behind.iter().map(|r| r.i("n")).sum();
+    let hit: i64 = behind.iter().filter(|r| r.s("state") != "ok").map(|r| r.i("n")).sum();
+    let mut firms: Vec<(String, i64)> = Vec::new();
+    for r in behind.iter().filter(|r| !r.s("customer").is_empty()) {
+        match firms.iter_mut().find(|f| f.0 == r.s("customer")) {
+            Some(f) => f.1 += r.i("n"),
+            None => firms.push((r.s("customer"), r.i("n"))),
+        }
+    }
+    firms.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    run.finding(format!("{total} objects depend on them, {hit} of them not ok now; {} business customer{} behind them{}.", firms.len(), if firms.len() == 1 { "" } else { "s" },
+        if firms.is_empty() { String::new() } else { format!(": {}", firms.iter().take(5).map(|f| f.0.clone()).collect::<Vec<_>>().join(", ")) }));
+
+    // What came before it: a change on it or on what it hangs from.
+    let mut near: Vec<String> = ids.clone();
+    if let Some(est) = &e.estate {
+        if let Some(i) = est.find(&rid) {
+            near.extend(est.up[i as usize].iter().map(|j| est.nodes[*j as usize].id.clone()).filter(|x| !x.contains("--")));
+        }
+    }
+    near.sort();
+    near.dedup();
+    let events = run.q("Changes and faults on them, and on what they hang from, in the last two hours", &format!("SELECT ts, node, event, cause, text, author, ticket FROM {EVENTS}\nWHERE node IN ({}) AND ts >= :since\nORDER BY ts DESC LIMIT 30", quoted(&near)), json!({"since": iso(m - 7200)})).await;
+    let fault = events.iter().find(|ev| ev.s("event") == "fault" && ev.s("node") == rid);
+    let change = events.iter().find(|ev| ev.s("event") == "change" && fault.is_none_or(|f| ev.s("ts") <= f.s("ts")));
+    run.finding(match change {
+        Some(c) => format!("{} on {} at {} by {}: {}.", c.s("ticket"), c.s("node"), &c.s("ts").get(11..16).unwrap_or(""), c.s("author"), c.s("text")),
+        None => "No change on them or on what they hang from in the last two hours.".into(),
+    });
+    let cause = fault.map(|f| f.s("cause")).filter(|c| !c.is_empty()).unwrap_or_else(|| "unknown".into());
+
+    // Who is on call.
+    let oncall = run.q("Who is on call", "SELECT team, person FROM netops_oncall\nWHERE role = 'primary' AND starts <= :now AND ends > :now LIMIT 20", json!({"now": iso(m)})).await;
+    let person = oncall.iter().find(|o| o.s("team") == "Backbone NOC").or(oncall.first()).map(|o| o.s("person")).unwrap_or_else(|| "the NOC".into());
+    run.finding(format!("{person} is primary."));
+
+    let down = root.s("state") == "down";
+    let reason = root.s("reason");
+    let title = format!("{} {rid}: {}", if down { "Outage at" } else { "Degraded:" }, reason.split(':').next().unwrap_or(&reason).trim());
+    let mut text = format!("{rid} reports: {}.", reason.trim_end_matches('.'));
+    if let Some(c) = change {
+        text += &format!(" It follows {} on {} by {} ({}).", c.s("ticket"), c.s("node"), c.s("author"), c.s("text"));
+    }
+    let severity = if hit >= 100 || firms.len() >= 5 { "sev2" } else { "sev3" };
+    let (who, them) = if ids.len() == 1 { (format!("{rid} alerts"), "it") } else { (format!("{} objects of the estate alert", ids.len()), "them") };
+    let summary = format!("{who} in {}: {total} object{} depend on {them}, {hit} not ok now{}.", root.s("hub"), if total == 1 { "" } else { "s" },
+        if firms.is_empty() { String::new() } else { format!(", with {} business customer{} behind {them} ({}{})", firms.len(), if firms.len() == 1 { "" } else { "s" }, firms.iter().take(3).map(|f| f.0.clone()).collect::<Vec<_>>().join(", "), if firms.len() > 3 { " and others" } else { "" }) });
+    run.think("Conclude", format!("{text} {summary}"));
+    {
+        let mut st = e.st();
+        if let Some(o) = st.open.get_mut(incident) {
+            for (k, v) in [("title", json!(title)), ("summary", json!(summary)), ("root_kind", json!("estate")), ("root_entity", json!(rid)), ("root_cause", json!(text)), ("confidence", json!(0.9)),
+                ("category", json!("estate")), ("runbook", json!("rb-estate-outage")), ("severity", json!(severity)), ("commander", json!(person)), ("customers", json!(firms.len()))] {
+                o.row.insert(k.into(), v);
+            }
+            if o.row.s("status") == "investigating" {
+                o.row.insert("status".into(), json!("identified"));
+            }
+        }
+    }
+    e.save_incident(incident).await?;
+    e.timeline(incident, m, "agent", "Estate agent", &format!("{text} {summary} Paged {person}."), &run.id).await?;
+    // What a person can do from here: send someone, with what was found.
+    let action = format!("{incident}:ticket:{}", rid.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', ""));
+    let have = e.db.query("SELECT id FROM netops_actions WHERE id = :id", json!({"id": action})).await?;
+    if have.is_empty() {
+        e.db.upsert("netops_actions", vec![json!({"id": action, "run": run.id, "incident": incident, "kind": "ticket", "title": format!("Dispatch field services to {rid}"),
+            "detail": format!("{text} {total} objects depend on it{}. Our reference: {incident}.", if firms.is_empty() { String::new() } else { format!(", among them {}", firms.iter().take(5).map(|f| f.0.clone()).collect::<Vec<_>>().join(", ")) }),
+            "command": "", "target": rid, "risk": "low", "status": "proposed", "proposed": iso(crate::sim::now()), "decided_by": "", "result": ""})]).await?;
+    }
+    run.finish("done", &format!("{title} ({cause})"), 0.9).await?;
+    Ok(())
+}
+
+/// A count with its thousands separated: 170,337.
+pub fn thousands(n: usize) -> String {
+    let d = n.to_string();
+    let mut out = String::new();
+    for (k, c) in d.chars().enumerate() {
+        if k > 0 && (d.len() - k) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+// ---- walking where the server does not (a coordinator)
+
+/// The most keys one statement names in `id IN (...)`: about 10,000
+/// characters of ids.
+pub const MAX_KEYS: usize = 400;
+/// Up to this many keys a walk is read by key, `MAX_KEYS` at a time, the
+/// batches at once; a larger one is read by the places that hold it.
+pub const BY_KEY: usize = 4 * MAX_KEYS;
+/// The most rows a walk's places are read for, a page at a time.
+pub const PLACE_ROWS: usize = 50_000;
+/// The rows of one page: as many as a query returns.
+const PAGE: usize = 10_000;
+/// The most places a condition on them names.
+const MAX_PLACES: usize = 60;
+
+/// The rows a walk found, read without a graph statement.
+pub struct Among {
+    pub rows: Vec<Row>,
+    /// How the rows were read, for the trace's reader.
+    pub how: &'static str,
+    /// Whether the read stopped at `PLACE_ROWS`, so that some are missing.
+    pub cut: bool,
+}
+
+impl Estate {
+    /// A condition on the places that hold every one of `set`: their hubs,
+    /// else their metros, else their regions, the first of those lists that
+    /// is short. `None` when none is (or the set is empty).
+    pub fn places_of(&self, set: &[u32]) -> Option<String> {
+        if set.is_empty() {
+            return None;
+        }
+        for (level, col) in [(2, "hub"), (1, "metro"), (0, "region")] {
+            let mut names: Vec<&str> = Vec::new();
+            let mut covered = true;
+            for &i in set {
+                let id = self.anc_ids(i)[level];
+                if id.is_empty() {
+                    covered = false;
+                    break;
+                }
+                if !names.contains(&id) {
+                    names.push(id);
+                    if names.len() > MAX_PLACES {
+                        covered = false;
+                        break;
+                    }
+                }
+            }
+            if covered {
+                names.sort_unstable();
+                return Some(format!("{col} IN ({})", names.iter().map(|n| format!("'{n}'")).collect::<Vec<_>>().join(", ")));
+            }
+        }
+        None
+    }
+
+    /// An object's region, metro, hub and site, as its row has them.
+    pub fn places(&self, i: u32) -> [&str; 4] {
+        self.anc_ids(i)
+    }
+}
+
+/// The rows of `cols` (which name `id`) among the objects of `set` that
+/// meet `cond`, read without a graph statement and without naming more
+/// than [`MAX_KEYS`] keys in one: by key in batches when the set is small,
+/// otherwise one plain query over the places that hold the set, whose rows
+/// the app keeps when they are in the set.
+pub(crate) async fn among(q: &Q, what: &str, est: &Estate, set: &[u32], cols: &str, cond: &str, params: Value) -> std::result::Result<Among, crate::api::ApiError> {
+    let and = if cond.trim().is_empty() { String::new() } else { format!("\n  AND {cond}") };
+    if set.is_empty() {
+        return Ok(Among { rows: Vec::new(), how: "by key", cut: false });
+    }
+    if set.len() <= BY_KEY {
+        let mut jobs = tokio::task::JoinSet::new();
+        let batches: Vec<&[u32]> = set.chunks(MAX_KEYS).collect();
+        let n = batches.len();
+        for (k, batch) in batches.into_iter().enumerate() {
+            let list = batch.iter().map(|&i| format!("'{}'", est.nodes[i as usize].id)).collect::<Vec<_>>().join(", ");
+            let sql = format!("SELECT {cols} FROM {NODES}\nWHERE id IN ({list}){and}\nLIMIT {}", batch.len());
+            let title = if n == 1 { format!("{what} (walked by the app, read by key)") } else { format!("{what} (walked by the app, read by key, {} of {n})", k + 1) };
+            let (db, trace, params) = (q.e.db.clone(), q.trace.clone(), params.clone());
+            jobs.spawn(async move { (k, db.traced(&trace, &title, &sql, params).await) });
+        }
+        let mut parts: Vec<(usize, Vec<Row>)> = Vec::new();
+        while let Some(done) = jobs.join_next().await {
+            let (k, r) = done.map_err(|e| bad(format!("a read stopped: {e}")))?;
+            parts.push((k, r?));
+        }
+        parts.sort_by_key(|p| p.0);
+        return Ok(Among { rows: parts.into_iter().flat_map(|p| p.1).collect(), how: "by key", cut: false });
+    }
+    let place = est.places_of(set);
+    let wh = match &place {
+        Some(p) => format!("{p}{and}"),
+        None if and.is_empty() => "layer != 'container'".to_string(),
+        None => cond.to_string(),
+    };
+    // Pages by the rows' number, as a query returns at most 10,000 rows.
+    let sql = format!("SELECT {cols}, num FROM {NODES}\nWHERE {wh}\n  AND num > :after\nORDER BY num LIMIT {PAGE}");
+    let inside: HashSet<u32> = set.iter().copied().collect();
+    let (mut rows, mut read, mut cut, mut after) = (Vec::new(), 0, false, -1);
+    for page in 1.. {
+        let mut p = params.clone();
+        p["after"] = json!(after);
+        let got = q.rows(&format!("{what} (walked by the app: the rows of the places that hold the walk, kept here when the walk reached them{})", if page > 1 { format!(", page {page}") } else { String::new() }), &sql, p).await?;
+        let n = got.len();
+        read += n;
+        after = got.last().map_or(after, |r| r.i("num"));
+        rows.extend(got.into_iter().filter(|r| est.find(&r.s("id")).is_some_and(|i| inside.contains(&i))));
+        if n < PAGE {
+            break;
+        }
+        if read >= PLACE_ROWS {
+            cut = true;
+            break;
+        }
+    }
+    Ok(Among { rows, how: "by place", cut })
 }
 
 // ---- the map
@@ -765,6 +1065,29 @@ struct NodeQ {
 
 const SEEN: &str = "id, kind, layer, name, state, reason, since, x, y, latency_ms";
 
+/// How many of the faults that read most like one are counted in how such
+/// faults ended.
+const ENDED_LIKE: usize = 100;
+
+/// Cleared faults grouped by cause, the most frequent first: how many, how
+/// long on average and at the longest.
+fn ended_by_cause(rows: &[Row]) -> Vec<Value> {
+    let mut by: Vec<(String, usize, f64, f64)> = Vec::new();
+    for r in rows {
+        let (cause, m) = (r.s("cause"), r.f("minutes"));
+        match by.iter_mut().find(|b| b.0 == cause) {
+            Some(b) => {
+                b.1 += 1;
+                b.2 += m;
+                b.3 = b.3.max(m);
+            }
+            None => by.push((cause, 1, m, m)),
+        }
+    }
+    by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    by.into_iter().take(8).map(|(cause, n, sum, longest)| json!({"cause": cause, "n": n, "minutes": round(sum / n as f64, 1), "longest": longest})).collect()
+}
+
 /// One object: what is wrong with it, what it hangs from and where that
 /// chain is broken, what depends on it, what else near it is in trouble,
 /// what was changed on it and around it, and how this ended before.
@@ -797,10 +1120,13 @@ async fn node(State(svc): State<Shared>, Query(a): Query<NodeQ>) -> Answer {
         rows.sort_by_key(|r| (r.i("hop"), r.s("id")));
         rows
     };
-    let upstream: Vec<Row> = match e.db.traced(&q.trace, if core { "Its neighbours in the backbone (REACHABLE, one hop)" } else { "What it hangs from, nearest first (REACHABLE against the edges)" }, &up_sql, json!({})).await {
-        Ok(rows) => rows,
-        Err(err) => {
-            let (Some(est), Some(i)) = (&e.estate, at) else { return Err(err.into()) };
+    // A coordinator does not walk graphs: once the app knows, it sends no
+    // graph statement and walks its own copy of the estate, reading the
+    // rows it reaches by key or by their places.
+    let upstream: Vec<Row> = match q.graph(if core { "Its neighbours in the backbone (REACHABLE, one hop)" } else { "What it hangs from, nearest first (REACHABLE against the edges)" }, &up_sql, json!({})).await? {
+        Some(rows) => rows,
+        None => {
+            let (Some(est), Some(i)) = (&e.estate, at) else { return Err(bad("this server does not walk graphs, and the app has no copy of the estate to walk")) };
             engine = "app";
             let ids: Vec<(u32, usize)> = if core { est.walk_hops(i, 1, 40, true, true).into_iter().filter(|(j, _)| est.nodes[*j as usize].layer == "core").collect() } else { est.walk_hops(i, 6, 40, false, true) };
             let (list, hop) = in_memory(ids);
@@ -812,12 +1138,20 @@ async fn node(State(svc): State<Shared>, Query(a): Query<NodeQ>) -> Answer {
     let downstream: Vec<Row> = if engine == "sql" {
         q.rows("What depends on it, by kind and state (REACHABLE along the edges, grouped)", &down_sql, json!({})).await?
     } else {
+        // The walk gives each object's kind; the rows that are not ok, read
+        // for the walk's places, give the states (NET-22: not all "").
         let est = e.estate.as_ref().expect("checked");
-        let mut by: HashMap<&str, i64> = HashMap::new();
-        for j in est.below(at.expect("checked"), 200_000).into_iter().filter(|j| est.nodes[*j as usize].layer != "core") {
-            *by.entry(est.nodes[j as usize].kind).or_default() += 1;
+        let below: Vec<u32> = est.below(at.expect("checked"), 200_000).into_iter().filter(|j| est.nodes[*j as usize].layer != "core").collect();
+        let hurt = among(&q, "What depends on it that is not ok", est, &below, "id, state", "state != 'ok'", json!({})).await?;
+        let state: HashMap<String, String> = hurt.rows.iter().map(|r| (r.s("id"), r.s("state"))).collect();
+        let mut by: HashMap<(&str, String), i64> = HashMap::new();
+        for j in &below {
+            let n = &est.nodes[*j as usize];
+            *by.entry((n.kind, state.get(n.id.as_str()).cloned().unwrap_or_else(|| "ok".into()))).or_default() += 1;
         }
-        by.into_iter().map(|(k, n)| json!({"kind": k, "state": "", "n": n}).as_object().cloned().unwrap_or_default()).collect()
+        let mut rows: Vec<Row> = by.into_iter().map(|((k, st), n)| json!({"kind": k, "state": st, "n": n}).as_object().cloned().unwrap_or_default()).collect();
+        rows.sort_by(|a, b| b.i("n").cmp(&a.i("n")).then(a.s("kind").cmp(&b.s("kind"))).then(a.s("state").cmp(&b.s("state"))));
+        rows
     };
     // What else is in trouble within three hops, either way.
     let near_sql = format!("SELECT {SEEN}, hops() AS hop FROM {NODES}\nWHERE REACHABLE({EDGES}, '{id}', hops => 3, dir => 'both', through => layer != 'core') AND state != 'ok'\nORDER BY hops(), id LIMIT 40");
@@ -825,8 +1159,12 @@ async fn node(State(svc): State<Shared>, Query(a): Query<NodeQ>) -> Answer {
         q.rows("Trouble within three hops, either way (REACHABLE and a condition)", &near_sql, json!({})).await?
     } else {
         let est = e.estate.as_ref().expect("checked");
-        let (list, hop) = in_memory(est.walk_hops(at.expect("checked"), 3, 3000, true, true));
-        with_hops(q.rows("Trouble within three hops (walked by the app)", &format!("SELECT {SEEN} FROM {NODES}\nWHERE id IN ({list}) AND state != 'ok' LIMIT 40"), json!({})).await?, &hop)
+        let walked = est.walk_hops(at.expect("checked"), 3, 20_000, true, true);
+        let set: Vec<u32> = walked.iter().map(|w| w.0).collect();
+        let hop: HashMap<String, usize> = walked.iter().map(|&(i, d)| (est.nodes[i as usize].id.clone(), d)).collect();
+        let mut rows = with_hops(among(&q, "Trouble within three hops", est, &set, SEEN, "state != 'ok'", json!({})).await?.rows, &hop);
+        rows.truncate(40);
+        rows
     };
     // The neighbourhood whose history matters: itself, what it hangs from,
     // and what is one hop away.
@@ -890,7 +1228,11 @@ async fn node(State(svc): State<Shared>, Query(a): Query<NodeQ>) -> Answer {
     if let Some(w) = &words {
         let p = json!({"q": w, "kind": kind, "id": cause["id"].as_str().unwrap_or(&id)});
         before["like"] = json!(q.soft("Faults that read like this one, on the same kind of object (BM25)", &format!("SELECT ts, node, cause, text, metro, hub, x, y FROM {EVENTS}\nWHERE event = 'fault' AND kind = :kind AND node != :id\nORDER BY bm25(text, :q) DESC LIMIT 5"), p.clone()).await);
-        before["ended"] = json!(q.soft("How long such faults lasted, by cause", &format!("SELECT cause, COUNT(*) AS n, AVG(minutes) AS minutes, MAX(minutes) AS longest FROM {EVENTS}\nWHERE event = 'clear' AND kind = :kind\nGROUP BY cause ORDER BY n DESC LIMIT 8"), p).await);
+        // Only the faults that read like this one: the clearings whose text
+        // holds at least half of its words, the closest hundred, by cause.
+        let cleared = q.soft("How the faults that read like this one ended (BM25, at least half of its words)", &format!("SELECT cause, minutes FROM {EVENTS}\nWHERE event = 'clear' AND kind = :kind\nORDER BY bm25(text, :q, min => '50%') DESC LIMIT {ENDED_LIKE}"), p).await;
+        before["matched"] = json!(cleared.len());
+        before["ended"] = json!(ended_by_cause(&cleared));
     }
     let mut total = 0;
     let mut not_ok = 0;
@@ -902,4 +1244,35 @@ async fn node(State(svc): State<Shared>, Query(a): Query<NodeQ>) -> Answer {
     }
     q.done(json!({"node": n, "engine": engine, "incident": own, "cause": cause, "suspect": suspect, "upstream": upstream, "downstream": {"rows": downstream, "total": total, "not_ok": not_ok},
         "near": near, "history": history, "changes": changes, "before": before}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts_are_said_with_their_thousands() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1000), "1,000");
+        assert_eq!(thousands(170_337), "170,337");
+        assert_eq!(thousands(1_234_567), "1,234,567");
+    }
+
+    /// A walk is read by the places that hold it: the hub of what hangs
+    /// from one hub router, the metro of what a metro's backbone carries.
+    #[test]
+    fn a_walk_is_held_by_its_hubs_or_its_metro() {
+        let est = Estate::build(&World::build(), 4000);
+        let hr = est.find("hr1-h01-ams").expect("a hub router");
+        let below = est.below(hr, 100_000);
+        assert!(!below.is_empty());
+        assert_eq!(est.places_of(&below).as_deref(), Some("hub IN ('h01-ams')"));
+        let ag = est.find("ag1-ams").expect("an aggregation router");
+        let all = est.walk(ag, 6, 100_000, true, false);
+        let place = est.places_of(&all).expect("a place holds it");
+        assert!(place.starts_with("hub IN (") || place == "metro IN ('m-ams')", "{place}");
+        assert!(all.iter().all(|&i| est.places(i)[1] == "m-ams" || est.nodes[i as usize].layer == "core"));
+        assert_eq!(est.places_of(&[]), None);
+    }
 }

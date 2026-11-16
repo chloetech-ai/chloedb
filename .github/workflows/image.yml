@@ -9,7 +9,10 @@ name: Image
 #
 # A run of CI on main that passed publishes the commit it tested as `latest`
 # and as its full sha: a commit whose CI failed or was cancelled is never
-# published, so a cluster that follows `latest` runs only tested code. Only
+# published, and the next run tests its change again (CI's job `changes`
+# takes a push's change from the newest commit whose run passed, so a
+# documentation change after a failed run is no longer a pass of the code
+# before it), so a cluster that follows `latest` runs only tested code. Only
 # CI's runs of this repository's main count (a push, the nightly run or a
 # run by hand): a pull request from a fork whose branch is also called
 # `main` starts a CI run whose head branch is `main` too, and must not
@@ -100,7 +103,7 @@ jobs:
           ref: ${{ env.SHA }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - if: env.PUSH == 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -130,7 +133,7 @@ jobs:
       packages: write
     steps:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

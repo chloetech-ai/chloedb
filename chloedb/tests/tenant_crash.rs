@@ -60,6 +60,41 @@ impl Rng {
     }
 }
 
+/// How long a worker waits after the tenant refused its write ("another
+/// node wrote first"), before it tries again: a random while, up to 1, 2,
+/// 4 or 8 times what the refused call took (which is what the store's puts
+/// take now) as the refusals in a row grow.
+///
+/// A node that is not the writer takes the tenant with one replacement of
+/// `HEAD` and commits with a second, and a node that takes it between the
+/// two refuses the first node's commit. Nodes that try again at once can
+/// take it from each other for as long as they try when a put of `HEAD`
+/// is slow: with each fsync 2 ms longer, none of 700 writes of three nodes
+/// was acknowledged in 6 s, and four blackboard workers did none of 40
+/// tasks in a minute (on CI's on-demand runner, none of 562). A client of
+/// a tenant that several nodes write backs off, as any client of a
+/// compare-and-swap does.
+struct Backoff {
+    rng: Rng,
+    in_a_row: u32,
+}
+
+impl Backoff {
+    fn new() -> Backoff {
+        Backoff { rng: Rng(std::process::id() as u64 * 0x9E37_79B9_7F4A_7C15 | 1), in_a_row: 0 }
+    }
+
+    fn refused(&mut self, took: Duration) {
+        self.in_a_row = (self.in_a_row + 1).min(4);
+        let took = took.as_micros() as u64 + 100;
+        std::thread::sleep(Duration::from_micros(self.rng.below(took << (self.in_a_row - 1))));
+    }
+
+    fn reset(&mut self) {
+        self.in_a_row = 0;
+    }
+}
+
 /// What a worker says it does: one whole line per `write`, so that a
 /// kill leaves whole lines.
 struct Said(std::fs::File);
@@ -137,7 +172,7 @@ fn ids(t: &Tenant) -> BTreeSet<i64> {
 
 /// A worker of `writes`: inserts rows of its own ids, one a write, and
 /// says `try`, then `ack`, `nack` (refused: another node wrote first) or
-/// `doubt` for each.
+/// `doubt` for each, and backs off after a refusal ([`Backoff`]).
 fn write_rows(dir: &Path, n: usize, run: usize, mut said: Said) {
     let t = loop {
         match Tenant::open(store(dir), "t", TenantOptions::new(dir.join(format!("node{n}")))) {
@@ -147,9 +182,11 @@ fn write_rows(dir: &Path, n: usize, run: usize, mut said: Said) {
             Err(e) => panic!("open: {e}"),
         }
     };
+    let mut backoff = Backoff::new();
     for i in 0..i64::MAX {
         let id = (n as i64) * 1_000_000_000 + (run as i64) * 1_000_000 + i;
         said.say(format!("try {id}"));
+        let began = Instant::now();
         let wrote = t.write(|db: &Db| -> Result<()> { db.sql(&format!("INSERT INTO notes VALUES ({id}, 'row {id}')"), &Params::new()).map(|_| ()) });
         match wrote {
             Ok(()) => said.say(format!("ack {id}")),
@@ -157,12 +194,17 @@ fn write_rows(dir: &Path, n: usize, run: usize, mut said: Said) {
             Err(TenantError::InDoubt(_)) => said.say(format!("doubt {id}")),
             Err(e) => panic!("write {id}: {e}"),
         }
+        match wrote {
+            Err(TenantError::NotWriter) => backoff.refused(began.elapsed()),
+            _ => backoff.reset(),
+        }
     }
 }
 
 /// A worker of `board`: claims a task, works on it for a moment, and
 /// completes it, each call with a key and sent again until it is
-/// answered; says `done <task>` for each task it was told is done.
+/// answered (backing off after a refusal, [`Backoff`]); says
+/// `done <task>` for each task it was told is done.
 fn work_tasks(dir: &Path, n: usize, run: usize, mut said: Said) {
     let t = loop {
         match Tenant::open(store(dir), "t", TenantOptions::new(dir.join(format!("node{n}")))) {
@@ -172,11 +214,16 @@ fn work_tasks(dir: &Path, n: usize, run: usize, mut said: Said) {
         }
     };
     let me = Board::new(&t, &format!("w{n}")).unwrap();
-    fn again<T>(call: impl Fn() -> std::result::Result<T, BoardError>) -> std::result::Result<T, String> {
+    let mut backoff = Backoff::new();
+    fn again<T>(backoff: &mut Backoff, call: impl Fn() -> std::result::Result<T, BoardError>) -> std::result::Result<T, String> {
         loop {
+            let began = Instant::now();
             match call() {
-                Ok(x) => return Ok(x),
-                Err(BoardError::Tenant(TenantError::NotWriter | TenantError::InDoubt(_))) => continue,
+                Ok(x) => {
+                    backoff.reset();
+                    return Ok(x);
+                }
+                Err(BoardError::Tenant(TenantError::NotWriter | TenantError::InDoubt(_))) => backoff.refused(began.elapsed()),
                 Err(BoardError::Refused(why)) => return Err(why),
                 Err(e) => panic!("{e}"),
             }
@@ -184,14 +231,14 @@ fn work_tasks(dir: &Path, n: usize, run: usize, mut said: Said) {
     }
     for i in 0..i64::MAX {
         let key = format!("w{n}-{run}-{i}");
-        let tasks = again(|| me.claim(1, 1, Some(&key))).unwrap();
+        let tasks = again(&mut backoff, || me.claim(1, 1, Some(&key))).unwrap();
         let Some(task) = tasks.first() else {
             std::thread::sleep(Duration::from_millis(20));
             continue;
         };
         said.say(format!("claimed {}", task.id));
         std::thread::sleep(Duration::from_millis(5 + (i as u64 * 7 + n as u64 * 13) % 40));
-        match again(|| me.complete(&task.id, &format!("by w{n}, run {run}"), Some(&key))) {
+        match again(&mut backoff, || me.complete(&task.id, &format!("by w{n}, run {run}"), Some(&key))) {
             Ok(_) => said.say(format!("done {}", task.id)),
             // Its lease passed while it worked, and another has the task.
             Err(why) => said.say(format!("late {} {why}", task.id)),

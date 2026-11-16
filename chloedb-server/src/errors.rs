@@ -55,7 +55,7 @@ pub const CODES: &[Code] = &[
     c("table_not_found", false, "list the tables the key may read (GET /v1/tables, or the list_tables tool)", "schemas"),
     c("column_not_found", false, "describe the table (GET /v1/schema?table=..., or the describe_table tool) for its fields", "schemas"),
     c("query_invalid", false, "the statement does not parse or bind: check it with check_sql, and look up the syntax with search_docs", "http-api"),
-    c("schema_invalid", false, "the schema is refused as the error says (POST /v1/schema/check checks one)", "schemas"),
+    c("schema_invalid", false, "the schema is refused as the error says (check_sql, or POST /v1/schema/check, checks one without making it)", "schemas"),
     c("idempotency_conflict", false, "this idempotency key was used for another request: send a new key", "writes-from-many-clients"),
     c("contained", true, "a contain rule limits or refuses these queries for a while (GET /v1/admin/contain); wait, or ask an operator", "who-sends-the-queries-and-containing-them"),
     c("overloaded", true, "the server is busy: send it again after Retry-After seconds", "limits"),
@@ -120,10 +120,20 @@ pub fn code_of(e: &ApiError) -> &'static str {
     }
 }
 
+/// A query that matches more rows than a query returns
+/// (`--max-result-window`): it parses and binds, so its code's hint
+/// (`query_invalid`, "does not parse or bind") misleads; the code stays.
+const ROW_CAP: (&str, &str, &str) = (
+    "the most a query returns",
+    "the query matches more rows than one answer holds (--max-result-window): add a LIMIT, or read every row a page at a time (page_size, then each page's cursor)",
+    "reading-past-the-window-scrolls",
+);
+
 /// The fields an error's answer carries beside `error`.
 pub fn fields(e: &ApiError) -> Json {
     let code = code_of(e);
     match lookup(code) {
+        Some(c) if c.code == "query_invalid" && e.message.contains(ROW_CAP.0) => json!({"error_code": c.code, "retryable": c.retryable, "hint": ROW_CAP.1, "docs": format!("{DOCS}#{}", ROW_CAP.2)}),
         Some(c) => json!({"error_code": c.code, "retryable": c.retryable, "hint": c.hint, "docs": format!("{DOCS}#{}", c.docs)}),
         None => json!({"error_code": code, "retryable": false}),
     }
@@ -190,6 +200,18 @@ mod tests {
         assert_eq!(classify(400, "query error: no such column: price"), "column_not_found");
         assert_eq!(classify(403, "POST /v1/sql needs a key with the admin scope; \"bot\" has read"), "scope_refused");
         assert_eq!(classify(429, "refused by contain rule c1"), "contained");
+    }
+
+    /// UIA-2: a query past the window parses and binds; its hint says to
+    /// add a LIMIT or read it in pages, under the code it always had.
+    #[test]
+    fn a_query_past_the_window_is_told_to_page() {
+        let e = ApiError::bad("query error: the query matches more than 10000 rows, the most a query returns; add a LIMIT");
+        let j = answer(&e);
+        assert_eq!(j["error_code"], "query_invalid");
+        assert!(j["hint"].as_str().unwrap().contains("page_size") && !j["hint"].as_str().unwrap().contains("parse"), "{j}");
+        assert!(j["docs"].as_str().unwrap().ends_with("#reading-past-the-window-scrolls"), "{j}");
+        assert!(answer(&ApiError::bad("query error: expected FROM"))["hint"].as_str().unwrap().contains("parse"));
     }
 
     #[test]

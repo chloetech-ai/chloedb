@@ -50,7 +50,18 @@ fn seeded_runs_keep_the_protocols_promises() {
 /// with the bug put back s0 sends s1 a third copy, ending at 94, 6 ms
 /// before the network cuts s0 off, and nothing is lost: it passed by that
 /// timing. The tests of late copies below find the bug again.
-const FOUND: &[u64] = &[624036738];
+///
+/// 624144435 (found on 14 November 2026, main at 7984b237, and
+/// 0.3.2) was the checker's mistake, not the protocol's: s1, promoted by
+/// hand at 67 ms, waited the call's timeout (10 s) for the answer of s0,
+/// cut off, and won term 2 at 10,084 ms with votes given at 80 ms, after
+/// terms 3 and 4 had begun; s2, the primary of term 4, had acknowledged a
+/// client's retry of write 12 at 9,921 ms as transaction 10 of term 1,
+/// which s1 lacked. The checker asked a primary of term 2 to hold every
+/// write acknowledged as a transaction of an older term, rather than by a
+/// primary of an older term: s1 served nothing, as Raft's stale leader
+/// cannot, and stepped down 20 ms later, on its first call to s2.
+const FOUND: &[u64] = &[624036738, 624144435];
 
 #[test]
 fn seeds_the_nightly_run_found_keep_the_protocols_promises() {
@@ -85,6 +96,67 @@ fn late_copies_are_refused_and_lose_nothing() {
 #[test]
 fn a_late_copy_installed_is_found_again() {
     let r = finds_with(Bug::InstallsALateCopy, 1000, Config::late_copies).expect("a seed that loses an acknowledged write to a late copy");
+    assert!(r.violations.iter().any(|v| v.contains("is not held by")), "{:?}", r.violations);
+}
+
+/// Finding N-E2: a replica that loses its volume as its primary stops,
+/// while the shard's third copy is behind (`Config::lost_volume`). It
+/// starts again empty with the same `--replica`, and must not elect the
+/// copy that is behind: no seed loses a write or fails to settle.
+#[test]
+fn a_replica_that_lost_its_volume_elects_no_copy_behind() {
+    let lost = std::sync::atomic::AtomicU64::new(0);
+    let failed = std::sync::Mutex::new(Vec::new());
+    sim::on_seeds(0..400, jobs(), &|seed| {
+        let r = sim::run(Config::lost_volume(seed), false);
+        lost.fetch_add(r.stats.lost_volumes, std::sync::atomic::Ordering::Relaxed);
+        if !r.ok() {
+            failed.lock().unwrap().push(r);
+        }
+    });
+    let failed = failed.into_inner().unwrap();
+    assert!(failed.is_empty(), "{} of 400 seeds with a lost volume broke a promise:{}", failed.len(), explain(&failed));
+    let lost = lost.into_inner();
+    assert!(lost > 200, "only {lost} volumes were lost in 400 seeds: the setup no longer tests them");
+}
+
+/// The bug of N-E2 put back: the replica's vote elects the copy behind,
+/// and the writes it lacks are lost; or, having forgotten the vote it gave
+/// in a term, it votes in that term again, for another copy.
+#[test]
+fn a_lost_volume_that_votes_is_found_again() {
+    let r = finds_with(Bug::VotesWithALostVolume, 1000, Config::lost_volume).expect("a seed that loses an acknowledged write to a replica that lost its volume");
+    assert!(r.violations.iter().any(|v| v.contains("is not held by") || v.contains("both began it")), "{:?}", r.violations);
+}
+
+/// The follow-up to N-E2 that TLC found (spec/replication): the replica
+/// that loses its volume, started again empty, learns the shard's
+/// membership from its primary's first call, and the primary stops while
+/// it catches up and the third copy is behind (`Config::uncounted_candidate`).
+/// It asks for no votes until a primary counts it: no seed loses a write
+/// or fails to settle.
+#[test]
+fn a_replica_that_lost_its_volume_asks_for_no_votes_until_counted() {
+    let lost = std::sync::atomic::AtomicU64::new(0);
+    let failed = std::sync::Mutex::new(Vec::new());
+    sim::on_seeds(0..400, jobs(), &|seed| {
+        let r = sim::run(Config::uncounted_candidate(seed), false);
+        lost.fetch_add(r.stats.lost_volumes, std::sync::atomic::Ordering::Relaxed);
+        if !r.ok() {
+            failed.lock().unwrap().push(r);
+        }
+    });
+    let failed = failed.into_inner().unwrap();
+    assert!(failed.is_empty(), "{} of 400 seeds with an uncounted candidate broke a promise:{}", failed.len(), explain(&failed));
+    let lost = lost.into_inner();
+    assert!(lost > 200, "only {lost} volumes were lost in 400 seeds: the setup no longer tests them");
+}
+
+/// That bug put back: the replica that lost its volume is elected with
+/// the vote of the copy behind, and the writes both lack are lost.
+#[test]
+fn an_uncounted_candidate_is_found_again() {
+    let r = finds_with(Bug::CampaignsUncounted, 1000, Config::uncounted_candidate).expect("a seed that loses an acknowledged write to a candidate no primary counted");
     assert!(r.violations.iter().any(|v| v.contains("is not held by")), "{:?}", r.violations);
 }
 

@@ -6,7 +6,7 @@ import { sqlFunctionsDoc } from './sqlfns.mjs';
 import vm from 'node:vm';
 import path from 'node:path';
 import { ask, parseAnswer, MODEL } from './llm.mjs';
-import { checkFunction } from './sandbox.mjs';
+import { checkFunction, evalExpression } from './sandbox.mjs';
 import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical, briefOf } from './store.mjs';
 import { SHARED, sharedRefs, appNode } from './graph.mjs';
 import { Trace, planDecisions } from './trace.mjs';
@@ -82,12 +82,13 @@ The engine enforces who may read and write a table, on the server, for every rea
 - WRITE is add, change and remove; ALL is read and write. members are people signed in to the app; admins are the ones its owner made admins (and the owner); each includes the ones after it (TO members lets admins and the owner too). everyone includes visitors who are not signed in.
 - WHERE keeps a person to their own rows (owner_id = :user_id) or their company's (company_id = :company_id): reads see only those rows, an add fills the column with the person's id (or their company's) when the row leaves it out, and changes and removes reach only those rows. The column is a keyword column of the table: add it in "tables" when the table lacks it.
 - WHERE <column> IN (SELECT <column> FROM <link table> WHERE <column> = :user_id) keeps people to the rows of what they belong to, through a table that links people to things (a person on an account, a parent and a child, a client and their case): ALLOW READ ON tickets TO members WHERE account IN (SELECT account FROM members_of WHERE person = :user_id). The link table holds one row per person and thing (its person column a PERSON field, so the owner picks the name); the owner (or admins) adds those rows on a screen of their own, and that is how someone is put on an account. An add under it must name one of their things; nothing is filled in.
-- A table with no ALLOW statement is open to whoever reaches the app. Once a table has one, only what its statements allow goes through. The app's builder (the studio) always sees every row.
+- In an app that declares no access at all, a table is open to whoever reaches the app. Once any table of the app has an ALLOW statement, a table with none is read by everyone and written by the app's owner only: give every table the app's people write its statements. Once a table has one, only what its statements allow goes through. The app's builder (the studio) always sees every row.
+- A trigger (a function or rule with "on") runs as the person whose write fired it: their access holds for what it reads and writes. A trigger that must reach rows that person may not (a total over everyone's orders, a counter on a table only the owner writes) runs as the app: "as": "app" on the function (RUNS AS APP before AS in a CREATE RULE); then let it write only what everyone may see.
 - Statements for a table replace the ones it had: give all of a table's statements together.
 - A function people call says who may: ALLOW CALL ON <function> TO everyone | members | admins | owner. It is the app's own code acting for them: the engine checks the call against that, then runs it with the app's rights, so a visitor's order may lower a stock no visitor may change and a member's booking may take a place they may not edit. Its refusals (REQUIRE) and a call by someone not allowed are said to the person. Keep what such a function does to what its callers should be able to cause.
 - Examples. Only signed-in people read or change the data: ALLOW ALL ON invoices TO members. Everyone reads the menu, the owner edits it: ALLOW READ ON dishes TO everyone, ALLOW WRITE ON dishes TO owner. Each person sees their own notes: ALLOW ALL ON notes TO members WHERE owner_id = :user_id. Admins see everything: ALLOW ALL ON notes TO admins.
-- Companies (workspaces): the engine keeps which company each person works in (not a table of the app: never make one). In a view: app.companies() -> [{id, name, role}], app.company() -> the id of the one they work in now or null, app.createCompany(name) (they become its admin), app.useCompany(id), app.addToCompany(company, email, role) (an admin adds someone who has an account; role 'member' or 'admin'). A table each company keeps to itself has a company_id keyword column and ALLOW ALL ON t TO members WHERE company_id = :company_id.
-- In SQL, :user_id, :user_email, :user_name and :company_id are bound by the engine to the signed-in person and their company (never pass them yourself); a query that names one when nobody is signed in is refused with "Sign in first", and the app then asks the person to sign in at that moment.
+- Companies (workspaces): the engine keeps which company each person works in (not a table of the app: never make one). In a view: app.companies() -> [{id, name, role, invited}], app.company() -> the id of the one they work in now or null, app.createCompany(name) (they become its admin), app.useCompany(id), app.addToCompany(company, email, role) (an admin invites someone who has an account; role 'member' or 'admin'), app.joinCompany(id) (a person joins a company that invited them: app.companies() lists it with invited set and role null until they do; offer them a Join button). A table each company keeps to itself has a company_id keyword column and ALLOW ALL ON t TO members WHERE company_id = :company_id.
+- In SQL, :user_id, :user_email, :user_name and :company_id are bound by the engine to the signed-in person and their company (never pass them yourself); a query that names one when nobody is signed in is refused with "Sign in first", so a screen that needs a person shows app.signIn first.
 
 Whenever the request says who may see or change data (only signed-in people, the owner, admins, roles, each person's or each company's own data), declare access for every table of the app, including the ones that stay open (ALLOW READ ON t TO everyone): a build that asks for it and declares none is refused.
 
@@ -181,7 +182,7 @@ Every app gets these from the runtime. In views and components each call returns
 - People. app.me() -> the signed-in person {id, name, email, role} or null. app.signIn(email, password), app.signUp({email, name, password}) and app.signOut(): every view of the app starts again afterwards, seeing the new person. app.people() -> the app's members [{id, name, email, role}] (functions too). One account works in every app here; the first person to sign in to an app is its owner, the others are members. In a function, app.user is the person whose action led to the call, or null. To record who did something, keep the person's id in a keyword column (author, assignee) and show names from app.people(). Use the shared components for this (ui.signIn, ui.userMenu, ui.avatar, ui.peoplePicker). A screen anyone may open shows its content, never a sign-in form before it: when an action there needs someone signed in (the engine refuses it until then), the app asks them to sign in at that moment and then carries the action on; a screen kept to members gets its own sign-in page. Who may read or write a table is declared in "access" (see Access) and enforced by the engine; lib.access only decides what a screen shows. An app that only one person uses needs none of it.
 - Files. app.upload(file) takes a File from <input type="file"> or a drop (a FileList or an array uploads each) and returns {id, name, type, size, url}; files are at most 15 MB. Keep the id in a keyword column, or a keyword[] for several. app.fileUrl(id) is the URL to show it (an img's src, a link); app.fileUrl(id, {download: true}) downloads it. app.files(ids) -> [{id, name, type, size, url}] (functions too). The shared ui.uploader, ui.image, ui.gallery, ui.imageViewer and ui.fileList do the rest.
 - Card payments. app.pay({table, id, amount: '<column>', status: '<column>', description}) asks for a card payment of a row of <table> that has an amount to charge: amount names the row's column holding it (in the app's currency), status the column set when it is paid (left out, no column changes). It resolves to {url, mode, amount, currency}; the payer pays on that hosted page, opened from a tap (a "Pay by card" button: window.open(url)); the app never sees or stores card details, so never add card fields. Only the one who added the row (or the owner) may ask. When the card provider confirms it, the status column becomes 'paid' (a bool one true); until the owner connects a provider the page is in test mode, says so, and a payment there sets it to 'paid (test)', never 'paid': screens show it as it is. A request to take card payments for rows people add uses it: add the row (a rule that checks it), then app.pay for the new row, then the button.
-- Email. app.email({to, subject, text}) puts a plain-text email in the app's outbox and returns {id, status} (functions too; from a view only when someone is signed in). At most 10 recipients, and 30 emails an hour per app. Without a mail server the outbox holds it (status "held"): tell the person it is queued, never that it was delivered.
+- Email. app.email({to, subject, text}) puts a plain-text email in the app's outbox and returns {id, status} (functions too; from a view only when someone is signed in). At most 10 recipients, and 30 emails an hour per app. On a published app, what a visitor or member sets off (from a view, or a function or trigger their action runs) goes only to the app's own people (its members' emails); its admins and owner write to anyone. Without a mail server the outbox holds it (status "held"): tell the person it is queued, never that it was delivered.
 - Places. app.geocode(address) -> up to 5 matches [{label, lat, lng}] (functions too). app.tiles is the URL template of map tiles; ui.map and ui.locationPicker use it, with lib.geo for distances.
 - A model. app.ask(prompt, {json, system, web}) -> the model's answer as text, or as a JSON value with json: true (functions too). A small, quick model answers in a few seconds; the same question gets the same kept answer at no cost, and each app has a daily number of questions. Use it for what needs judgement over words and no query or code can do: summarize notes, sort a message into one of the app's categories, pull fields out of pasted text, draft a reply, suggest tags or a next step. Never for what SQL, an "=expression" or a helper computes (totals, dates, sorting, search). Put the data it needs in the prompt (the rows, as short text or JSON), say exactly what to answer, and keep the answer in a column when it is worth keeping, so it is asked once. Call it on a person's tap (a button, or a function a button calls) or in a trigger on insert, never on every load, and show "Thinking..." while it answers. {web: true} lets the model search the web for current facts (prices, opening hours, news, a product's details): slower, 10 to 40 seconds, and its sources come in the last line. Never as the person types: suggestions as they type come from the app's own rows at once (ui.combobox with the rows as its options, matched as they type); a lookup that asks the model or the web for what the rows lack goes in the combobox's onSearch, asked only when typing pauses and shown below the instant matches when it answers.
 - The web. app.fetch(url, {method, json, headers, secret}) -> {ok, status, url, type, json, text, title, body} (functions too): public pages and APIs over http and https (JSON comes parsed in json; an HTML page's readable words in text and its title in title). Addresses on this machine or its network are refused; at most 2 MB and 10 seconds; GET answers are kept for 10 minutes. Prefer an API that answers JSON over reading a page. Write each address in full in the code ('https://api.example.com/v1/...'): the owner allows each host the app reads from, and separately each one it sends to (method 'POST'), and sees them listed from the code. An API that needs a key: never write the key, a token or a password in the code or ask the person to type one into a form; pass {secret: 'weather'} (a short name for it) and the engine adds the key the owner keeps under that name to the request. Say in the view, in one line, where the owner sets it when the call answers that the secret is missing.
@@ -610,6 +611,7 @@ export function editCode(plan, code, view) {
           for (const k of ['title', 'description']) if (item[k] === undefined) item[k] = cur[k];
           if (kind === 'view' && item.order === undefined) item.order = cur.spec.order;
           if (kind === 'function' && item.on === undefined) item.on = cur.spec.on || undefined;
+          if (kind === 'function' && item.as === undefined && cur.spec.as) item.as = cur.spec.as;
           if (kind === 'function' && item.every === undefined && !cur.spec.rule) item.every = cur.spec.every || undefined;
         }
       }
@@ -798,10 +800,11 @@ export function rulesToCode(plan, code) {
 export async function dryRunScreens(db, appId, names, plan) {
   const problems = [];
   const today = new Date().toISOString().slice(0, 10);
-  const nothing = new Proxy(() => null, { get: () => nothing, apply: () => null });
-  const guess = (x, state) => {
+  // Worked out in QuickJS (sandbox.mjs), never in the engine's own process:
+  // the expression is the model's (or an editor's) code (audit 4, X-G1).
+  const guess = async (x, state) => {
     if (typeof x !== 'string' || !x.startsWith('=')) return x;
-    try { return new Function('s', `with (s) { return (${x.slice(1)}\n); }`)({ state, today, params: {}, app: { today: () => today, now: () => new Date().toISOString(), me: () => null }, lib: nothing }) ?? null; } catch { return null; }
+    return (await evalExpression(x.slice(1), { state, today })) ?? null;
   };
   for (const v of plan.views || []) {
     if (!v || !v.screen) continue;
@@ -810,7 +813,9 @@ export async function dryRunScreens(db, appId, names, plan) {
       const sql = typeof q === 'string' ? q : q && q.sql;
       if (typeof sql !== 'string' || sql.startsWith('=')) continue;
       const params = {};
-      for (const [k, x] of Object.entries((q && typeof q === 'object' && q.params) || {})) params[k] = guess(x, state);
+      for (const [k, x] of Object.entries((q && typeof q === 'object' && q.params) || {})) params[k] = await guess(x, state);
+      // :today is the screen's own, as a CREATE SCREEN's query has it (screen.js binds it).
+      if (/:today\b/.test(sql) && params.today == null) params.today = today;
       // A parameter worked out from what only the running screen has (its
       // data, a helper) cannot be known here: such a query is not run, so
       // that a right query is never sent back as wrong.
@@ -1216,7 +1221,7 @@ export async function buildContext(engine, appId, request) {
     const views = view.views.slice().sort((a, b) => (a.spec.order ?? 99) - (b.spec.order ?? 99))
       .map((v) => `<view slug="${v.slug}" title="${v.title}" order="${v.spec.order ?? ''}" id="${v.id}"${v.spec.statement ? ' format="statement"' : v.spec.screen ? ' format="screen"' : ''}>\n${v.spec.statement || (v.spec.screen ? screenLines(v.code) : v.code)}\n</view>`);
     parts.push(`## Views\n${views.some((v) => v.includes('format="statement"')) ? 'A view with format="statement" is a screen written as a CREATE SCREEN statement, its source. To change it, give "edits" in its plan entry ([{"old": "text copied exactly from the statement, occurring once", "new": "..."}]), or a new statement in its code block when most of it changes.\n\n' : ''}${views.some((v) => v.includes('format="screen"')) ? 'A view with format="screen" is a screen, shown one part per line after its path. To change it, give "patch" (operations on those paths) or its whole "screen" in its plan entry; to turn it into a code view, give a code block and no "screen".\n\n' : ''}${SCREENS && view.views.some((v) => !v.spec.screen) ? 'To change a view or function written in JavaScript a little (a color, a label, a line of logic), give "edits" in its plan entry instead of a code block: [{"old": "text copied exactly from its code, occurring once", "new": "its replacement"}]. Give a whole code block only when most of it changes.\n\n' : ''}${views.join('\n\n') || '(none)'}`);
-    const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}'${f.spec.every && !f.spec.rule ? ` every="${everyWords(f.spec.every).replace(/^every /, '')}"` : ''} id="${f.id}"${f.spec.statement ? ' format="rule-statement"' : f.spec.rule ? ' format="rule"' : ''}>\n${f.description && !f.spec.rule ? `// ${f.description}\n` : ''}${f.spec.statement || f.code}\n</function>`);
+    const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}'${f.spec.as === 'app' ? ' as="app"' : ''}${f.spec.every && !f.spec.rule ? ` every="${everyWords(f.spec.every).replace(/^every /, '')}"` : ''} id="${f.id}"${f.spec.statement ? ' format="rule-statement"' : f.spec.rule ? ' format="rule"' : ''}>\n${f.description && !f.spec.rule ? `// ${f.description}\n` : ''}${f.spec.statement || f.code}\n</function>`);
     parts.push(`## Functions\n${view.functions.some((f) => f.spec.statement) ? 'A function with format="rule-statement" is a rule written as a CREATE RULE statement, its source. To change it, give "edits" in its plan entry ([{"old": "text copied exactly from the statement, occurring once", "new": "..."}]), or a new statement in its code block.\n\n' : ''}${view.functions.some((f) => f.spec.rule && !f.spec.statement) ? `A function with format="rule" is a rule (JSON). To change it, ${RULE_SQL ? 'give a CREATE RULE statement in its code block' : 'give its whole "rule" in its plan entry'}; to turn it into JavaScript, give a code block and no "rule".\n\n` : ''}${fns.join('\n\n') || '(none)'}`);
     // Code only for the pieces this app wrote: the others (built-in, or from
     // another app) are used by their props, and their code is long.
@@ -2086,7 +2091,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   let third = false;
   let merged = null;
   for (let attempt = 1; attempt <= (third ? 3 : 2); attempt++) {
-    progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
+    progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`, { step: attempt === 1 ? 'plan' : 'fix' });
     const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
     const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, effort: PLAN_EFFORT, onWrite: tee(writing(progress, 'The model'), previewer(view, progress), attempt === 1 ? planWatcher(onPlan) : null, attempt === 1 && !parallel ? planWatcher(startEarly) : null, attempt === 1 && sideSeed ? tablesWatcher(startSeed) : null) });
     tr.call(span, answer, system.length + planPrompt.length);
@@ -2180,8 +2185,12 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     const t0 = Date.now();
     let last = 0;
     const done = [];
+    // A plan whose pieces are all screens written as JSON has none to write.
+    if (!pieces.length) return;
     for (const pc of pieces) board.set(pc.slug, { label: pc.label.replace(/^(view|function) /, ''), kind: pc.label.split(' ')[0], state: notes.has(pc.slug) ? 'again' : 'writing', chars: 0 });
-    progress(`Writing ${pieces.length === 1 ? pieces[0].label : `${pieces.length} pieces at once: ${pieces.map((p) => p.label).join(', ')}`}`, { step: 'write', pieces: shown() });
+    // Writing again what the checks found is a step of its own (fix), so the
+    // estimate counts it rather than calling the build late.
+    progress(`Writing ${pieces.length === 1 ? pieces[0].label : `${pieces.length} pieces at once: ${pieces.map((p) => p.label).join(', ')}`}`, { step: notes.size ? 'fix' : 'write', pieces: shown() });
     await pool(pieces, 8, async (pc) => {
       const fix = notes.get(pc.slug);
       const span = tr.start(fix ? 'fix' : 'write', fix ? `${pc.label}, again` : pc.label, { piece: pc.slug, ...(fix ? { problems: fix.problems.slice(0, 4) } : {}) });
@@ -2352,7 +2361,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const small = !split && smallChange(request.text, view);
   for (let attempt = 1; attempt <= (small ? 3 : 2) && !split; attempt++) {
     const model = small && attempt === 1 ? SMALL_MODEL : SCREEN_MODEL;
-    progress(attempt === 1 ? `Asking the model (${model}${small ? ', for a small change' : ''}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model${small && attempt === 2 ? ` (${SCREEN_MODEL})` : ''} again to fix: ${problems.slice(0, 3).join('; ')}`, { step: 'plan' });
+    progress(attempt === 1 ? `Asking the model (${model}${small ? ', for a small change' : ''}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model${small && attempt === 2 ? ` (${SCREEN_MODEL})` : ''} again to fix: ${problems.slice(0, 3).join('; ')}`, { step: attempt === 1 ? 'plan' : 'fix' });
     const span = tr.start('model', attempt === 1 ? (view.comp.n ? 'The model plans and writes the change' : 'The model plans and writes the first version') : 'The model answers again, to fix problems', { model });
     answer = await ask({ system, prompt: attemptPrompt, model, onWrite: tee(writing(progress), previewer(view, progress)) });
     tr.call(span, answer, system.length + attemptPrompt.length);
@@ -2520,7 +2529,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
       // version's, and a patched screen keeps its earlier ones.
       const patterns = kind === 'view' && item.screen ? [...new Set([...(item.patched !== undefined ? view.views.find((x) => x.slug === item.slug)?.spec?.patterns || [] : []), ...(item.patterns || [])])] : [];
       const callers = kind === 'function' ? callsOf.get(item.slug) || view.functions.find((f) => f.slug === item.slug)?.spec?.callers || null : null;
-      const spec = kind === 'view' ? { order: item.order ?? 50, ...audienceOf(item, view), ...(item.gate ? { gate: item.gate } : {}), ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.every ? { every: item.every } : {}), ...(item.source ? { source: true } : {}), ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}), ...(callers ? { callers } : {}) };
+      const spec = kind === 'view' ? { order: item.order ?? 50, ...audienceOf(item, view), ...(item.gate ? { gate: item.gate } : {}), ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.on && item.as === 'app' ? { as: 'app' } : {}), ...(item.every ? { every: item.every } : {}), ...(item.source ? { source: true } : {}), ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}), ...(callers ? { callers } : {}) };
       const id = await store.putCapability({ app: appId, slug: item.slug, kind, title: item.title || item.slug, description: item.description || '',
         code: code[item.slug], spec, forked_from: item.forked_from || null, author: request.source === 'repair' ? 'repair' : 'forge' });
       caps.set(`${kind}/${item.slug}`, id);

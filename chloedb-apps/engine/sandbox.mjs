@@ -59,6 +59,45 @@ export async function checkFunction(code) {
   return problems;
 }
 
+// Works out one expression (a screen's PARAMS `= ...`, as the build check
+// guesses it before the screen ever runs) in a fresh QuickJS interpreter:
+// no Node, no host functions, a deadline and a memory limit. `scope` is
+// plain data (JSON); `state`, `today`, `params` and `app.today/now/me` are
+// what the screen's first state offers, and `lib.<anything>` is a function
+// that gives null. The answer comes back as JSON, or undefined when the
+// expression fails, runs out of time or gives something JSON cannot hold.
+// (Audit 4, X-G1: this used to be `new Function` in the engine's own process.)
+export async function evalExpression(expr, scope = {}, { timeoutMs = 200, memoryBytes = 16 * 1024 * 1024 } = {}) {
+  if (typeof expr !== 'string' || expr.length > 4096) return undefined;
+  syncModule ||= await newQuickJSWASMModule();
+  const vm = syncModule.newContext();
+  try {
+    vm.runtime.setMemoryLimit(memoryBytes);
+    vm.runtime.setMaxStackSize(256 * 1024);
+    vm.runtime.setInterruptHandler(shouldInterruptAfterDeadline(Date.now() + timeoutMs));
+    const today = String(scope.today || new Date().toISOString().slice(0, 10));
+    const program = `(function () {
+const __s = JSON.parse(${JSON.stringify(JSON.stringify({ state: scope.state ?? {}, params: scope.params ?? {}, today }))});
+const nothing = new Proxy(function () { return null; }, { get: () => nothing, apply: () => null });
+const s = { state: __s.state, params: __s.params, today: __s.today, lib: nothing,
+  app: { today: () => __s.today, now: () => new Date().toISOString(), me: () => null } };
+const __v = (function (s) { with (s) { return (${expr}\n); } })(s);
+if (__v instanceof Promise || typeof __v === 'function') return undefined;
+return JSON.stringify(__v === undefined ? null : __v);
+})()`;
+    const res = vm.evalCode(program, 'param.js');
+    if (res.error) { res.error.dispose(); return undefined; }
+    const out = vm.dump(res.value);
+    res.value.dispose();
+    if (typeof out !== 'string') return undefined;
+    return JSON.parse(out);
+  } catch {
+    return undefined;
+  } finally {
+    vm.dispose();
+  }
+}
+
 // Runs `code`'s run(input, app). `host(method, args)` answers app calls.
 // `helpers` are the shared helpers the app pins, available as lib.<name>.
 // `user` is the signed-in person whose action led to the call, or null.

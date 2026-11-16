@@ -5,9 +5,9 @@
 // server holds anything that matters. Home sends a server without tables
 // of its own here.
 
-import { h, icon, clear, api, card, fmt, toast, gate, can, copy, store } from "../core.js";
-import { state, isSandbox, isProduction, environment, clusterName, isCoordinator } from "../data.js";
-import { tables, invalidate } from "../catalog.js";
+import { h, icon, clear, api, card, fmt, toast, gate, can, copy, store, bus } from "../core.js";
+import { state, isSandbox, isProduction, environment, clusterName, isCoordinator, kubeInfo, managed, specName } from "../data.js";
+import { tables, invalidate, isTestModel } from "../catalog.js";
 import { isMine, firstMine } from "../owners.js";
 import { useFromCode } from "./saved.js";
 import { quoteName } from "../sqledit.js";
@@ -64,7 +64,10 @@ function render(page) {
     if (!alive) return;
     const mine = ts.filter((t) => isMine(t.table));
     const first = firstMine(mine);
-    const meaning = mine.find((t) => (t.short?.fields || []).some((f) => f.type === "vector" && f.embed));
+    // A test model (hash:N) hashes words: vectors, but no meaning.
+    const embeds = (t, real) => (t.short?.fields || []).some((f) => f.type === "vector" && f.embed && isTestModel(f.embed.model) !== real);
+    const meaning = mine.find((t) => embeds(t, true));
+    const testOnly = !meaning && mine.find((t) => embeds(t, false));
     const steps = [
       { done: mine.length > 0, title: "Put your data in", what: mine.length ? `${fmt.plural(mine.length, "table")} of yours: ${mine.slice(0, 4).map((t) => t.table).join(", ")}${mine.length > 4 ? "…" : ""}.` : "A CSV, JSON, Parquet or SQLite file becomes a table: its fields are found from the file, and text is searchable at once.",
         act: [gate(h("a", { class: "btn primary", href: "#/import" }, icon("import"), "Import a file"), "write"),
@@ -72,14 +75,16 @@ function render(page) {
           gate(h("a", { class: "btn ghost", href: "#/connectors", title: "Keep data coming from Prometheus, Jira, ServiceNow, Oxidized, a mailbox or a webhook" }, icon("streams"), "Or connect a system"), "admin")] },
       { done: !!first && !!store.get(`table.search.${first.table}`, null)?.q, title: "Search it", what: "Type a question: rows with some of its words come back, the ones with all of them first. No query language needed.",
         act: [first ? h("a", { class: "btn", href: `#/table/${encodeURIComponent(first.table)}?tab=search` }, icon("search"), `Search ${first.table}`) : null] },
-      { done: !!meaning, title: "Search by meaning", what: meaning ? `${meaning.table} has vectors: its search finds rows that say the same thing in other words.` : "One click gives a table vectors from its text, so that \"can I keep a book longer\" finds \"How do I renew a book?\".",
-        act: [first ? h("a", { class: "btn", href: `#/table/${encodeURIComponent((meaning || first).table)}?tab=search` }, icon("sparkle"), meaning ? "Try it" : "Add meaning") : null] },
+      { done: !!meaning, title: "Search by meaning", what: meaning ? `${meaning.table} has vectors: its search finds rows that say the same thing in other words.` : testOnly ? `${testOnly.table} has vectors from a test model, which hashes words and knows no meaning: pick a real model for it in Models.` : "One click gives a table vectors from its text, so that \"can I keep a book longer\" finds \"How do I renew a book?\".",
+        act: [testOnly ? h("a", { class: "btn", href: "#/models" }, icon("sparkle"), "Change the model") : first ? h("a", { class: "btn", href: `#/table/${encodeURIComponent((meaning || first).table)}?tab=search` }, icon("sparkle"), meaning ? "Try it" : "Add meaning") : null] },
       { done: fns.length > 0, title: "Save a search, call it from code", what: fns.length ? `${fmt.plural(fns.length, "saved search", "saved searches")}: ${fns.slice(0, 3).map((f) => f.name).join(", ")}.` : "A search you save is a stored function: one definition that SQL, an HTTP call, Python, JavaScript and agents all call.",
         act: [h("a", { class: "btn", href: "#/saved" }, icon("bookmark"), "Saved searches")] },
       { done: false, optional: true, title: "Give an agent the tools", what: "The server speaks MCP: an agent lists the tables, searches, and calls your saved searches as tools (fn_<name>), with the key you give it.",
         act: [h("button", { class: "btn", onclick: () => copy(`claude mcp add --transport http chloedb ${location.origin}/v1/mcp --header "Authorization: Bearer $CHLOEDB_TOKEN"`, "Command copied: run it where Claude Code runs") }, icon("copy"), "Copy the Claude Code command"), h("a", { class: "btn ghost", href: "#/access?tab=keys&new=1" }, icon("key"), "Make a read key for it")] },
     ];
     const n = steps.filter((s) => s.done).length;
+    // Its steps done, a bare address opens Home again (main.js).
+    store.set("start.done", n >= steps.filter((s) => !s.optional).length);
     clear(body,
       h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Start here"), h("p", {}, `${clusterName() || location.host}: your data, searchable by words and by meaning, from any language or agent. ${n} of ${steps.filter((s) => !s.optional).length} steps done.`))),
       modeCard(),
@@ -88,18 +93,27 @@ function render(page) {
         h("div", { class: "grow stack", style: { gap: "4px" } }, h("b", {}, s.title, s.optional ? h("span", { class: "small muted" }, " · when you are ready") : null), h("div", { class: "small dim" }, s.what), h("div", { class: "row", style: { gap: "8px", marginTop: "4px", flexWrap: "wrap" } }, s.act))))),
       first ? card({ title: "From your code", sub: `the first rows of ${first.table}, from anywhere`, body: useFromCode({ sql: `SELECT * FROM ${quoteName(first.table)} LIMIT 5`, params: {} }) }) : null,
       card({ title: "Before it holds anything that matters", sub: "what a sandbox leaves open", body: h("ul", { class: "start-prod" },
-        h("li", {}, h("b", {}, "Name the environment"), ": start the server with ", h("code", {}, "--environment production"), " (or staging), so that this page asks before writes and drops."),
-        h("li", {}, h("b", {}, "Close it with keys"), ": ", h("code", {}, "--token"), " for the server's own, then ", h("a", { href: "#/access?tab=keys" }, "API keys"), " per person, app and agent, limited to their tables."),
+        h("li", {}, h("b", {}, "Name the environment"), ": ", setHow("--environment", "spec.environment", "production"), ", so that this page asks before writes and drops."),
+        h("li", {}, h("b", {}, "Close it with keys"), ": ", managed() ? [h("code", {}, "spec.tokenSecret"), " for the cluster's own token"] : [h("code", {}, "--token"), " for the server's own"], ", then ", h("a", { href: "#/access?tab=keys" }, "API keys"), " per person, app and agent, limited to their tables."),
         h("li", {}, h("b", {}, "Keep the audit log on disk"), " and ", h("b", {}, "send alerts somewhere"), ": ", h("a", { href: "#/home" }, "Home"), "'s readiness card lists what is set and what is not.")) }));
+  }
+
+  /** How to set one thing, where this cluster takes it: the StrataCluster's spec under the operator, else a flag. */
+  function setHow(flag, field, value) {
+    return managed() ? ["set ", h("code", {}, `${field}: ${value}`), ` (or staging) in the StrataCluster ${specName()}`] : ["start the server with ", h("code", {}, `${flag} ${value}`), " (or staging)"];
   }
 
   function modeCard() {
     const env = environment();
-    if (isSandbox()) return h("div", { class: "mode-card sandbox" }, icon("check"), h("div", {}, h("b", {}, "Sandbox"), h("div", { class: "small" }, "No environment is set and this page is opened on this machine: writes, imports and drops run without a second ask. Nothing here is treated as production.")));
-    if (env == null && isProduction()) return h("div", { class: "mode-card prod" }, icon("lock"), h("div", {}, h("b", {}, "Treated as production"), h("div", { class: "small" }, "No environment is set and this page is not on localhost, so writes in the workbench wait for a check. Start the server with --environment dev (or staging) if it holds nothing that matters.")));
-    return h("div", { class: "mode-card" + (isProduction() ? " prod" : "") }, icon(isProduction() ? "lock" : "info"), h("div", {}, h("b", {}, `Environment: ${env}`), h("div", { class: "small" }, isProduction() ? "Production: writes and drops ask first and are kept in the audit log." : "Not production: writes run without a second ask.")));
+    if (isSandbox()) return h("div", { class: "mode-card sandbox" }, icon("check"), h("div", {}, h("b", {}, "Sandbox"), h("div", { class: "small" }, "No environment is set and this page is opened on this machine: writes, imports and drops are on without asking for a reason first, and a write in the SQL workbench still shows the rows it changes before it runs. Nothing here is treated as production.")));
+    // LIV-10: the same advice as below, for a cluster run by hand or by the operator.
+    if (env == null && isProduction()) return h("div", { class: "mode-card prod" }, icon("lock"), h("div", {}, h("b", {}, "Treated as production"), h("div", { class: "small" }, "No environment is set and this page is not on localhost, so writes in the workbench wait for a check. Name the environment to say what it is (", managed() ? [h("code", {}, "spec.environment"), ` in the StrataCluster ${specName()}`] : h("code", {}, "--environment NAME"), "): production keeps the checks; staging or dev drops them, for a cluster that holds nothing that matters.")));
+    return h("div", { class: "mode-card" + (isProduction() ? " prod" : "") }, icon(isProduction() ? "lock" : "info"), h("div", {}, h("b", {}, `Environment: ${env}`), h("div", { class: "small" }, isProduction() ? "Production: writes and drops ask first and are kept in the audit log." : "Not production: writes are on without asking for a reason first, and a write in the SQL workbench still shows the rows it changes before it runs.")));
   }
 
+  kubeInfo();
   draw();
-  return () => { alive = false; };
+  // Its advice names the spec once the server says an operator runs it.
+  const off = bus.on("kube", () => { if (alive) draw(); });
+  return () => { alive = false; off(); };
 }

@@ -9,9 +9,12 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import readline from 'node:readline';
+import os from 'node:os';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { readOnlySql, TOOLS } from '../engine/mcp.mjs';
 
 const MCP = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'engine', 'mcp.mjs');
+const TOKEN = 'agent-token-for-the-test';
 
 // The stub engine: records each call, answers like the real routes.
 function stubEngine() {
@@ -23,8 +26,10 @@ function stubEngine() {
     for await (const c of req) raw += c;
     const url = new URL(req.url, 'http://x');
     const body = raw ? JSON.parse(raw) : undefined;
-    calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body });
+    calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body, auth: req.headers.authorization });
     const send = (code, j) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(j)); };
+    // The engine's login (login.mjs): the agent token, or nothing.
+    if (req.headers.authorization !== `Bearer ${TOKEN}`) return send(401, { error: 'that bearer token is not this engine\'s' });
     const p = url.pathname;
     if (p === '/api/apps' && req.method === 'GET') return send(200, { apps: [{ id: 'abc123', name: 'Counter', head: 2, created: 't', cost: { usd: 0, builds: 1 }, extra: 'x' }] });
     if (p === '/api/apps' && req.method === 'POST') return send(200, { app: 'new1', request: 'r9' });
@@ -58,8 +63,10 @@ function stubEngine() {
 }
 
 // The MCP server as a child process; rpc(method, params) sends one request.
-function spawnMcp(url) {
-  const child = spawn(process.execPath, [MCP, '--url', url], { stdio: ['pipe', 'pipe', 'pipe'] });
+function spawnMcp(url, { token = TOKEN, args = [] } = {}) {
+  const env = { ...process.env, STRATA_APPS_AGENT_TOKEN: token };
+  if (token === null) delete env.STRATA_APPS_AGENT_TOKEN;
+  const child = spawn(process.execPath, [MCP, '--url', url, ...args], { stdio: ['pipe', 'pipe', 'pipe'], env });
   const waiting = new Map();
   const lines = [];
   readline.createInterface({ input: child.stdout }).on('line', (l) => {
@@ -110,7 +117,7 @@ test('MCP: the protocol over stdio, and each tool as a call to the engine', asyn
   const made = await m.tool('app_create', { description: 'A simple counter with a plus button', provider: 'codex' });
   assert.equal(made.isError, false);
   assert.deepEqual(body(made), { app: 'new1', request: 'r9' });
-  assert.deepEqual(stub.calls.at(-1), { method: 'POST', path: '/api/apps', query: {}, body: { description: 'A simple counter with a plus button', provider: 'codex' } });
+  assert.deepEqual(stub.calls.at(-1), { method: 'POST', path: '/api/apps', query: {}, auth: `Bearer ${TOKEN}`, body: { description: 'A simple counter with a plus button', provider: 'codex' } });
   assert.equal((await m.tool('app_create', { description: 'x', provider: 'gpt' })).isError, true);
 
   const st = body(await m.tool('app_state', { app: 'abc123' }));
@@ -144,7 +151,7 @@ test('MCP: the protocol over stdio, and each tool as a call to the engine', asyn
 
   assert.match(body(await m.tool('piece_source', { app: 'abc123' })).sql, /CREATE TABLE/);
   assert.deepEqual(body(await m.tool('screen_edit', { app: 'abc123', slug: 'home', statement: 'CREATE SCREEN home ...', note: 'relabel' })), { n: 3 });
-  assert.deepEqual(stub.calls.at(-1), { method: 'POST', path: '/api/apps/abc123/screens/home', query: {}, body: { statement: 'CREATE SCREEN home ...', note: 'relabel' } });
+  assert.deepEqual(stub.calls.at(-1), { method: 'POST', path: '/api/apps/abc123/screens/home', query: {}, auth: `Bearer ${TOKEN}`, body: { statement: 'CREATE SCREEN home ...', note: 'relabel' } });
   assert.equal((await m.tool('screen_edit', { app: 'abc123', slug: '../x', statement: 's' })).isError, true);
 
   assert.deepEqual(body(await m.tool('data_query', { app: 'abc123', sql: 'SELECT n FROM counts' })), { rows: [{ n: 1 }] });
@@ -160,7 +167,16 @@ test('MCP: the protocol over stdio, and each tool as a call to the engine', asyn
   assert.deepEqual(body(await m.tool('library_search', { q: 'kanban board' })), { capabilities: [{ slug: 'kanban' }] });
   assert.equal(stub.calls.at(-1).query.q, 'kanban board');
 
-  assert.deepEqual(body(await m.tool('publish', { app: 'abc123', access: 'look' })), { on: true, access: 'look' });
+  // Publishing puts the app on the internet: confirm at every access.
+  const np = stub.calls.length;
+  for (const access of ['look', 'add']) {
+    const no = await m.tool('publish', { app: 'abc123', access });
+    assert.equal(no.isError, true, access);
+    assert.match(no.content[0].text, /confirm: true/);
+  }
+  assert.equal(stub.calls.length, np, 'refused before it is sent');
+  assert.deepEqual(body(await m.tool('publish', { app: 'abc123', access: 'look', confirm: true })), { on: true, access: 'look' });
+  assert.deepEqual(body(await m.tool('publish', { app: 'abc123', access: 'look', on: false })), { on: false, access: 'look' }, 'unpublishing needs no confirm');
   const n2 = stub.calls.length;
   const change = await m.tool('publish', { app: 'abc123', access: 'change' });
   assert.equal(change.isError, true);
@@ -171,6 +187,32 @@ test('MCP: the protocol over stdio, and each tool as a call to the engine', asyn
 
   // Only protocol on stdout.
   for (const l of m.lines) assert.equal(JSON.parse(l).jsonrpc, '2.0');
+  // Every call carried the agent token.
+  assert.ok(stub.calls.length > 10 && stub.calls.every((c) => c.auth === `Bearer ${TOKEN}`));
+});
+
+test('MCP: it does not start without the agent token, and a wrong one is the engine\'s refusal', async (t) => {
+  const none = spawn(process.execPath, [MCP, '--url', 'http://127.0.0.1:9', '--token-file', path.join(os.tmpdir(), `sa-no-token-${process.pid}`)], { stdio: ['pipe', 'pipe', 'pipe'], env: (({ STRATA_APPS_AGENT_TOKEN, ...rest }) => rest)(process.env) });
+  let err = '';
+  none.stderr.on('data', (d) => { err += d; });
+  const code = await new Promise((ok) => none.on('close', ok));
+  assert.equal(code, 2);
+  assert.match(err, /no agent token/);
+
+  // From a file, as the engine writes it.
+  const stub = await stubEngine();
+  t.after(() => stub.srv.close());
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'sa-mcp-token-'));
+  writeFileSync(path.join(dir, 'agent.token'), `${TOKEN}\n`, { mode: 0o600 });
+  const fromFile = spawnMcp(stub.url, { token: null, args: ['--token-file', path.join(dir, 'agent.token')] });
+  t.after(() => fromFile.child.kill());
+  assert.equal((await fromFile.tool('app_list', {})).isError, false);
+
+  const wrong = spawnMcp(stub.url, { token: 'stale' });
+  t.after(() => wrong.child.kill());
+  const r = await wrong.tool('app_list', {});
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /401/);
 });
 
 test('MCP: an engine that is not there is a tool error, not a crash', async (t) => {

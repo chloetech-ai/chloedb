@@ -101,6 +101,27 @@ fn judge_device(r: &Row, sessions_before: Option<i64>) -> Vec<(&'static str, &'s
     out
 }
 
+/// Fewer failed requests than this in five minutes say nothing about a
+/// service's objective, whatever share of its requests they are.
+const SERVICE_FLOOR: f64 = 5.0;
+
+/// What a service's last five minutes say against its objective: (state,
+/// reading), or nothing while it keeps to it. A miss counts once it is
+/// above the share of requests the objective lets fail, and by at least
+/// SERVICE_FLOOR requests; five times the share is broken.
+pub fn judge_service(s: &crate::world::Service, errors: f64, requests: f64, p95: f64) -> Option<(&'static str, String)> {
+    let budget = 1.0 - s.slo;
+    let rate = errors / requests.max(1.0);
+    let failing = rate > budget && errors >= SERVICE_FLOOR;
+    let slow = s.latency_slo_ms > 0.0 && p95 > s.latency_slo_ms;
+    if !failing && !slow {
+        return None;
+    }
+    let state = if failing && rate > 5.0 * budget { "bad" } else { "warn" };
+    let reading = if failing { format!("{:.2}% failing (objective {:.2}%)", rate * 100.0, s.slo * 100.0) } else { format!("p95 {p95:.0} ms (objective {:.0} ms)", s.latency_slo_ms) };
+    Some((state, reading))
+}
+
 async fn where_(State(svc): State<Shared>) -> Answer {
     let q = Q::new(&svc);
     let e = q.e.clone();
@@ -111,6 +132,16 @@ async fn where_(State(svc): State<Shared>) -> Answer {
     let services = q.rows("Each service, last five minutes", "SELECT service, SUM(errors) AS errors, SUM(requests) AS requests, MAX(latency_p95) AS p95 FROM netops_service_metrics\nWHERE ts >= :since\nGROUP BY service LIMIT 500", json!({"since": iso(m - 300)})).await?;
     let alerts = q.rows("What fires now", "SELECT entity, rule_name, severity, incident, acked_by FROM netops_alerts\nWHERE status = 'firing' LIMIT 2000", json!({})).await?;
     let changes = q.rows("Changes carried out in the last six hours", "SELECT id, title, devices, executed FROM netops_changes\nWHERE executed >= :since AND executed <= :now\nORDER BY executed DESC LIMIT 100", json!({"since": iso(m - 6 * 3600), "now": iso(m)})).await?;
+    // The estate behind the backbone: what its rules fire on now, the worst first.
+    let mut estate: Vec<(u8, i64, Value)> = e.st().alerts.values()
+        .filter(|a| a.s("entity_kind") == "estate" && a.s("status") == "firing")
+        .map(|a| {
+            let rank = match a.s("severity").as_str() { "critical" => 0, "major" => 1, _ => 2 };
+            (rank, -a.f("reading") as i64, json!({"entity": a.s("entity"), "rule": a.s("rule_name"), "severity": a.s("severity"), "summary": a.s("summary"), "incident": a.s("incident")}))
+        })
+        .collect();
+    estate.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    let estate: Vec<Value> = estate.into_iter().take(50).map(|x| x.2).collect();
     let alert_of = |entity: &str| alerts.iter().find(|a| a.s("entity") == entity);
     let change_of = |devs: &[&str]| changes.iter().find(|c| c.list("devices").iter().any(|d| devs.contains(&d.as_str()))).map(|c| json!({"id": c.s("id"), "title": c.s("title"), "executed": c.s("executed")}));
 
@@ -155,12 +186,7 @@ async fn where_(State(svc): State<Shared>) -> Answer {
             *totals.entry(("services", site.to_string())).or_default() += 1;
         }
         let Some(row) = services.iter().find(|x| x.s("service") == s.id) else { continue };
-        let (errors, requests) = (row.f("errors"), row.f("requests").max(1.0));
-        let rate = errors / requests;
-        let slow = s.latency_slo_ms > 0.0 && row.f("p95") > s.latency_slo_ms;
-        if rate > (1.0 - s.slo) || slow {
-            let state = if rate > 5.0 * (1.0 - s.slo) { "bad" } else { "warn" };
-            let reading = if rate > (1.0 - s.slo) { format!("{:.2}% failing (objective {:.2}%)", rate * 100.0, s.slo * 100.0) } else { format!("p95 {:.0} ms (objective {:.0} ms)", row.f("p95"), s.latency_slo_ms) };
+        if let Some((state, reading)) = judge_service(s, row.f("errors"), row.f("requests"), row.f("p95")) {
             let al = alert_of(s.id);
             // A service is drawn at each site it runs in where something below is broken, or at all of them.
             let hit: Vec<&&str> = s.sites.iter().filter(|site| off.iter().any(|o| o["col"] == **site && o["state"] == "bad")).collect();
@@ -229,7 +255,7 @@ async fn where_(State(svc): State<Shared>) -> Answer {
     }
     off.sort_by_key(|o| (LAYERS.iter().position(|l| o["layer"] == l.0).unwrap_or(9), std::cmp::Reverse(rank(o["state"].as_str().unwrap_or("")))));
     q.done(json!({"at": iso(m), "layers": LAYERS.iter().map(|l| json!({"id": l.0, "name": l.1, "what": l.2})).collect::<Vec<_>>(), "cols": cols, "cells": cells, "offenders": off, "start": start,
-        "changes": changes.iter().map(|c| json!({"id": c.s("id"), "title": c.s("title"), "executed": c.s("executed"), "devices": c.list("devices")})).collect::<Vec<_>>(), "firing": alerts.len()}))
+        "changes": changes.iter().map(|c| json!({"id": c.s("id"), "title": c.s("title"), "executed": c.s("executed"), "devices": c.list("devices")})).collect::<Vec<_>>(), "firing": alerts.len(), "estate": estate}))
 }
 
 /// A device for whatever names one end of a trace: a device, a customer
@@ -258,8 +284,8 @@ async fn trace(State(svc): State<Shared>, Query(p): Query<HashMap<String, String
         return Err(bad("from and to are each a device, a customer (name, id, circuit) or a site"));
     };
     let sql = "SELECT id, hops() AS hop FROM netops_devices\nWHERE PATH(netops_links, :a, :b, dir => 'both', max_hops => 12)\nORDER BY hops()";
-    let (devs, engine): (Vec<String>, &str) = match e.db.traced(&q.trace, "Shortest path over the links table", sql, json!({"a": from, "b": to})).await {
-        Ok(rows) if !rows.is_empty() => (rows.iter().map(|r| r.s("id")).collect(), "sql"),
+    let (devs, engine): (Vec<String>, &str) = match q.graph("Shortest path over the links table", sql, json!({"a": from, "b": to})).await.ok().flatten() {
+        Some(rows) if !rows.is_empty() => (rows.iter().map(|r| r.s("id")).collect(), "sql"),
         _ => (e.graph.path(&from, &to), "app"),
     };
     if devs.is_empty() {
@@ -387,15 +413,17 @@ async fn investigate(State(svc): State<Shared>, Query(p): Query<HashMap<String, 
     seeds.truncate(40);
     let s = seedsql(&seeds);
     let sql = format!("SELECT id, ppr(netops_links, {s}) AS score FROM netops_devices\nORDER BY ppr(netops_links, {s}) DESC LIMIT 6");
-    let (suspects, engine): (Vec<Value>, &str) = match e.db.traced(&q.trace, "The devices everything alerting is closest to (personalised PageRank over the links table)", &sql, json!({})).await {
-        Ok(rows) => (rows.into_iter().map(Value::Object).collect(), "sql"),
-        Err(_) => (e.graph.ppr(&seeds).into_iter().take(6).map(|(id, v)| json!({"id": id, "score": v})).collect(), "app"),
+    // A coordinator does not walk graphs: the app walks its own copy of the
+    // backbone instead, and sends neither statement.
+    let (suspects, engine): (Vec<Value>, &str) = match q.graph("The devices everything alerting is closest to (personalised PageRank over the links table)", &sql, json!({})).await.ok().flatten() {
+        Some(rows) => (rows.into_iter().map(Value::Object).collect(), "sql"),
+        None => (e.graph.ppr(&seeds).into_iter().take(6).map(|(id, v)| json!({"id": id, "score": v})).collect(), "app"),
     };
     let d = seedsql(&devices);
     let sql = format!("SELECT id, hops() AS h FROM netops_devices\nWHERE REACHABLE(netops_links, {d}, hops => 2, dir => 'both')\nORDER BY hops(), id LIMIT 200");
-    let near: Vec<(String, i64)> = match e.db.traced(&q.trace, "Devices within two hops (REACHABLE over the links table)", &sql, json!({})).await {
-        Ok(rows) => rows.iter().map(|r| (r.s("id"), r.i("h"))).collect(),
-        Err(_) => e.graph.reach(&devices, 2).into_iter().map(|(id, h)| (id, h as i64)).collect(),
+    let near: Vec<(String, i64)> = match q.graph("Devices within two hops (REACHABLE over the links table)", &sql, json!({})).await.ok().flatten() {
+        Some(rows) => rows.iter().map(|r| (r.s("id"), r.i("h"))).collect(),
+        None => e.graph.reach(&devices, 2).into_iter().map(|(id, h)| (id, h as i64)).collect(),
     };
     let services = q.rows("Services that ride on it (INT[] overlap)", &format!("SELECT id, name, tier, revenue_per_min, customers FROM netops_services\nWHERE device_nums && [{nums}]\nORDER BY tier LIMIT 20"), json!({})).await?;
     let one_hop: Vec<String> = devices.iter().cloned().chain(near.iter().filter(|x| x.1 == 1).map(|x| x.0.clone())).collect();
@@ -453,4 +481,44 @@ async fn investigate(State(svc): State<Shared>, Query(p): Query<HashMap<String, 
 
     q.done(json!({"kind": kind, "id": id, "title": title, "now": now, "symptom": symptom, "alerts": mine.iter().map(|a| json!({"rule": a.s("rule_name"), "severity": a.s("severity"), "incident": a.s("incident")})).collect::<Vec<_>>(),
         "incident": mine.iter().map(|a| a.s("incident")).find(|i| !i.is_empty()).unwrap_or_default(), "lenses": lens.out, "at": iso(m)}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::telemetry::{effects, service_points};
+    use crate::world::World;
+
+    /// A calm network keeps to every objective, so Diagnose can say so: the
+    /// simulator's background errors stay inside each service's budget in
+    /// every five minutes of a day, by day and by night.
+    #[test]
+    fn a_calm_network_misses_no_objective() {
+        let w = World::build();
+        let t0 = 1_800_000_000 / 60 * 60;
+        let mut sums: Vec<std::collections::VecDeque<(f64, f64, f64)>> = vec![Default::default(); w.services.len()];
+        for k in 0..24 * 60 {
+            let t = t0 + k * 60;
+            for (i, p) in service_points(&w, &effects(&w, &[], t), t).iter().enumerate() {
+                let win = &mut sums[i];
+                win.push_back((p["errors"].as_f64().unwrap(), p["requests"].as_f64().unwrap(), p["latency_p95"].as_f64().unwrap()));
+                if win.len() > 5 {
+                    win.pop_front();
+                }
+                let (e, r, p95) = win.iter().fold((0.0, 0.0, 0.0f64), |a, x| (a.0 + x.0, a.1 + x.1, a.2.max(x.2)));
+                let s = &w.services[i];
+                assert!(judge_service(s, e, r, p95).is_none(), "{} at minute {k}: {:?} ({e} of {r} failed, p95 {p95})", s.id, judge_service(s, e, r, p95));
+            }
+        }
+    }
+
+    #[test]
+    fn a_few_failed_requests_are_not_a_miss_but_a_burn_is() {
+        let w = World::build();
+        let wave = w.services.iter().find(|s| s.id == "wave").unwrap();
+        assert!(judge_service(wave, 2.0, 1000.0, 10.0).is_none(), "two failures are noise, whatever the share");
+        assert_eq!(judge_service(wave, 30.0, 100_000.0, 10.0).unwrap().0, "warn", "three times the budget");
+        assert_eq!(judge_service(wave, 300.0, 100_000.0, 10.0).unwrap().0, "bad", "thirty times the budget");
+        assert_eq!(judge_service(wave, 0.0, 100_000.0, 500.0).unwrap().1, "p95 500 ms (objective 40 ms)");
+    }
 }

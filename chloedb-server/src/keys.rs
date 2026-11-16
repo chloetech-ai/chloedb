@@ -254,6 +254,9 @@ pub fn preset(name: &str, prefix: &str) -> Result<(Vec<Grant>, Allow), ApiError>
     Ok((grants, allow))
 }
 
+/// The start of a connector's push key's name ([`Principal::push_only`]).
+pub const PUSH_KEY_PREFIX: &str = "connector:";
+
 impl Principal {
     pub fn open() -> Principal {
         Principal::admin("open", true)
@@ -286,6 +289,16 @@ impl Principal {
             true => Ok(()),
             false => Err(ApiError { code: Some("scope_refused"), status: 403, message: format!("{what} needs a key with the {} scope; {:?} has {}", need.name(), self.name, self.scope_name()) }),
         }
+    }
+
+    /// Refuses (403) a route a key for operations does not reach (CCW-11):
+    /// it names the least key that would, `ops` when that role reaches the
+    /// route (`ops_would`), and the change request a person approves, so
+    /// that an agent does not ask for an admin key it does not need.
+    pub fn may_by_role(&self, need: Scope, what: &str, ops_would: bool) -> Result<(), ApiError> {
+        let Some(role) = self.role.filter(|_| self.scope < need) else { return self.may(need, what) };
+        let least = if ops_would && role < Role::Ops { "an ops key".to_string() } else { format!("a key with the {} scope", need.name()) };
+        Err(ApiError { code: Some("scope_refused"), status: 403, message: format!("{what} needs {least} ({:?} is {}), or a change request (POST /v1/admin/changes) for a person to approve", self.name, role.name()) })
     }
 
     /// The scope as keys are made with it: `ops` or `propose` for a key
@@ -343,6 +356,15 @@ impl Principal {
     /// A key limited to some tables ([`Grant`]).
     pub fn limited(&self) -> bool {
         self.tables.is_some()
+    }
+
+    /// A connector's push key (`connector:<name>`, limited to its target,
+    /// made by [`crate::connectors`]): it writes its table and reads
+    /// nothing, not even that table ([`crate::scoped::push_route_ok`]), so
+    /// that the key a sending system holds, if it leaks, reads no alert or
+    /// ticket. Known by its name, which only narrows what a key may do.
+    pub fn push_only(&self) -> bool {
+        self.tables.is_some() && self.name.starts_with(PUSH_KEY_PREFIX)
     }
 
     /// What this credential may do to table `table`: its scope, or for a
@@ -427,18 +449,21 @@ impl Principal {
     /// [`AS_TABLES`] gives them), each no wider than its scope: what an
     /// app runs for a caller (a sheet's query) is then checked as the
     /// caller's key would be, by the tables it reads and writes. It only
-    /// ever narrows: a key already limited to tables cannot narrow itself
-    /// again (its own grants are what count), and the narrowed credential
-    /// is never the root.
+    /// ever narrows: a key already limited to tables (the key a server
+    /// gives each app it starts, [`crate::app_procs::grants`]) keeps, on
+    /// each table, the lower of its own scope there and the caller's, and
+    /// nothing where either has none ([`intersect`]; DAT-5: refusing such
+    /// a key refused every caller of the crawler and Sheets a server
+    /// starts); the narrowed credential is never the root.
     pub fn narrowed(&self, grants: &str) -> Result<Principal, ApiError> {
-        if self.limited() {
-            return Err(ApiError { code: None, status: 403, message: format!("{AS_TABLES} narrows a key of every table; the key {:?} is limited to tables already", self.name) });
-        }
         let mut g = Vec::new();
         for s in grants.split(',').filter(|s| !s.trim().is_empty()) {
             let mut x = Grant::parse(s)?;
             x.scope = x.scope.min(self.scope);
             g.push(x);
+        }
+        if let Some(own) = &self.tables {
+            g = intersect(own, &g);
         }
         let mut p = self.clone();
         p.scope = widest(&g).min(self.scope);
@@ -463,6 +488,45 @@ pub fn granted(grants: &[Grant], table: &str) -> Option<Scope> {
         .filter(|g| g.covers(table))
         .map(|g| if own && g.table.ends_with('*') { g.scope.min(Scope::Read) } else { g.scope })
         .max()
+}
+
+/// Grants that give on each table the lower of what `a` and `b` give there
+/// ([`granted`]), and nothing where either gives nothing: each grant of
+/// `a` with each of `b` that names tables in common gives those, at the
+/// lower of the two scopes. (The most of such lows on a table is the low
+/// of the two mosts.) A table of [`NAMED_TO_WRITE`] that only one side
+/// names, the other covering it by a pattern, is read only, as it is on
+/// that side.
+pub fn intersect(a: &[Grant], b: &[Grant]) -> Vec<Grant> {
+    let mut out: Vec<Grant> = Vec::new();
+    for x in a {
+        for y in b {
+            let Some(table) = common(&x.table, &y.table) else { continue };
+            let mut scope = x.scope.min(y.scope);
+            let by_pattern = x.table.ends_with('*') || y.table.ends_with('*');
+            if !table.ends_with('*') && by_pattern && NAMED_TO_WRITE.iter().any(|t| t.eq_ignore_ascii_case(&table)) {
+                scope = scope.min(Scope::Read);
+            }
+            match out.iter_mut().find(|g| g.table == table) {
+                Some(g) => g.scope = g.scope.max(scope),
+                None => out.push(Grant { table, scope }),
+            }
+        }
+    }
+    out
+}
+
+/// The tables two grants' names both cover, as one name (a table's, or a
+/// prefix and `*`), if any.
+fn common(a: &str, b: &str) -> Option<String> {
+    match (a.strip_suffix('*'), b.strip_suffix('*')) {
+        (None, None) => (a == b).then(|| a.to_string()),
+        (Some(p), None) => b.starts_with(p).then(|| b.to_string()),
+        (None, Some(q)) => a.starts_with(q).then(|| a.to_string()),
+        (Some(p), Some(q)) if p.starts_with(q) => Some(a.to_string()),
+        (Some(p), Some(q)) if q.starts_with(p) => Some(b.to_string()),
+        _ => None,
+    }
 }
 
 /// Grants as the API shows them: `{"crawl_*": "admin"}`.
@@ -593,6 +657,12 @@ pub struct Key {
     pub agent: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<String>,
+    /// What one statement it sends may cost ([`chloedb::query::budget`]):
+    /// a request may ask for less, never more, and the server's
+    /// `--statement-budget` holds as well. A key another key made has its
+    /// maker's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<chloedb::query::budget::Budget>,
 }
 
 /// What a key made for an agent or for operations has beyond a plain key
@@ -604,6 +674,8 @@ pub struct AgentKey {
     pub on_behalf_of: Option<String>,
     /// What a key limited to tables reaches beyond them ([`Allow`]).
     pub allow: Option<Allow>,
+    /// Its statement budget ([`Key::budget`]).
+    pub budget: Option<chloedb::query::budget::Budget>,
 }
 
 impl Key {
@@ -639,6 +711,9 @@ impl Key {
         }
         if let Some(p) = &self.parent {
             j["parent"] = json!(p);
+        }
+        if let Some(b) = self.budget.filter(|b| !b.is_none()) {
+            j["budget"] = json!(b);
         }
         j
     }
@@ -785,6 +860,15 @@ impl KeySet {
                         x.on_behalf_of = k.on_behalf_of.clone();
                         changed = true;
                     }
+                    // Its budget is the tighter of the two (one lowered on
+                    // either side; a server from before budgets drops it).
+                    if let Some(b) = k.budget {
+                        let tighter = x.budget.unwrap_or_default().within(b);
+                        if x.budget != Some(tighter) {
+                            x.budget = Some(tighter);
+                            changed = true;
+                        }
+                    }
                     // And without the key that made it.
                     if x.parent.is_none() && k.parent.is_some() {
                         x.parent = k.parent.clone();
@@ -890,6 +974,35 @@ impl Keys {
         self.lock().keys.is_empty()
     }
 
+    /// The statement budget of key `id` ([`Key::budget`]); none for a key
+    /// it does not hold.
+    pub fn budget_of(&self, id: &str) -> chloedb::query::budget::Budget {
+        self.lock().keys.iter().find(|k| k.id == id).and_then(|k| k.budget).unwrap_or_default()
+    }
+
+    /// Lowers key `id`'s statement budget (its id or name) to within
+    /// `budget`, and that of every key it made; `None` when it holds no
+    /// such key, else the budget it has now. A budget is lowered, never
+    /// raised, as an expiry is brought nearer: the servers of a cluster
+    /// merge a key's budgets to the tighter ([`KeySet::merged`]), so a
+    /// raise would not reach them. A key that needs more is a new key.
+    pub fn lower_budget(&self, id: &str, budget: chloedb::query::budget::Budget) -> Result<Option<chloedb::query::budget::Budget>, ApiError> {
+        let mut set = self.lock();
+        let mut next = set.clone();
+        let Some(k) = next.keys.iter_mut().find(|k| k.id == id || k.name == id) else { return Ok(None) };
+        let now = k.budget.unwrap_or_default().within(budget);
+        k.budget = Some(now).filter(|b| !b.is_none());
+        let kid = k.id.clone();
+        for c in next.keys.iter_mut().filter(|c| c.parent.as_deref() == Some(kid.as_str())) {
+            c.budget = Some(c.budget.unwrap_or_default().within(now)).filter(|b| !b.is_none());
+        }
+        self.save(&next)?;
+        *set = next;
+        drop(set);
+        self.changed.notify_one();
+        Ok(Some(now))
+    }
+
     pub fn list(&self) -> Vec<Json> {
         let mut out: Vec<Json> = self.lock().keys.iter().map(Key::json).collect();
         out.extend(self.ephemeral().iter().map(|k| {
@@ -934,7 +1047,7 @@ impl Keys {
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
         let scope = widest(&tables);
-        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true, false), last_used_ms: 0, owner: Some(name.to_string()), note: Some(note), last_addr: None, tables: Some(tables), parent: None, role: None, agent: false, on_behalf_of: None, allow: None };
+        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true, false), last_used_ms: 0, owner: Some(name.to_string()), note: Some(note), last_addr: None, tables: Some(tables), parent: None, role: None, agent: false, on_behalf_of: None, allow: None, budget: None };
         let mut e = self.ephemeral();
         e.retain(|k| k.name != name);
         e.push(key);
@@ -1093,6 +1206,7 @@ impl Keys {
             agent: more.agent || more.role.is_some(),
             on_behalf_of: more.on_behalf_of.map(|p| p.trim().to_string()),
             allow,
+            budget: more.budget.filter(|b| !b.is_none()),
         };
         let mut next = set.clone();
         next.keys.push(key.clone());
@@ -1166,7 +1280,7 @@ impl Keys {
         let full = format!("sk_{id}_{secret}");
         let now = now_ms();
         let scope = widest(&tables);
-        let key = Key { id, name: full_name, scope, created_ms: now, expires_ms: parent.expires_ms, sha256: stored_digest(&secret, true, true), last_used_ms: 0, owner: Some(parent.name.clone()), note, last_addr: None, tables: Some(tables), parent: Some(parent_id), role: None, agent: parent.agent, on_behalf_of: parent.on_behalf_of.clone(), allow: None };
+        let key = Key { id, name: full_name, scope, created_ms: now, expires_ms: parent.expires_ms, sha256: stored_digest(&secret, true, true), last_used_ms: 0, owner: Some(parent.name.clone()), note, last_addr: None, tables: Some(tables), parent: Some(parent_id), role: None, agent: parent.agent, on_behalf_of: parent.on_behalf_of.clone(), allow: None, budget: parent.budget };
         let mut next = set.clone();
         next.keys.retain(|k| !before.iter().any(|b| b.id == k.id));
         for b in before {
@@ -1623,6 +1737,50 @@ impl Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn limited_to(name: &str, grants: &[(&str, Scope)]) -> Principal {
+        let g: Vec<Grant> = grants.iter().map(|(t, s)| Grant::new(t, *s).unwrap()).collect();
+        Principal { name: name.into(), key: Some("k1".into()), scope: widest(&g), root: false, tables: Some(g.into()), role: None, agent: false, on_behalf_of: None, allow: None }
+    }
+
+    /// DAT-5: the key a server gives an app it starts is limited to the
+    /// app's tables, and narrowed to a caller's tables it keeps on each
+    /// table the lower of the two scopes, and nothing where either has
+    /// none: never wider than the app's key, nor than the caller's.
+    #[test]
+    fn a_limited_key_narrowed_to_a_callers_tables_keeps_what_both_give() {
+        use Scope::{Admin, Read, Write};
+        let sheets = limited_to("app:sheets", &[("sheets_*", Admin), ("*", Read)]);
+        let at = |p: &Principal, t: &str| p.table_scope(t);
+        // The root: what the app's key gives.
+        let root = sheets.narrowed("*=admin").unwrap();
+        assert_eq!((at(&root, "sheets_books"), at(&root, "docs"), root.scope, root.root), (Some(Admin), Some(Read), Admin, false));
+        // A writer: writes Sheets' tables, makes none, reads the rest.
+        let writer = sheets.narrowed("*=write").unwrap();
+        assert_eq!((at(&writer, "sheets_cells"), at(&writer, "docs"), writer.scope), (Some(Write), Some(Read), Write));
+        // A key of some tables: only those, at the lower scope.
+        let some = sheets.narrowed("sheets_*=write,docs=read").unwrap();
+        assert_eq!((at(&some, "sheets_books"), at(&some, "docs"), at(&some, "other")), (Some(Write), Some(Read), None));
+        // A prefix within the app's, and one around it.
+        let team = sheets.narrowed("sheets_team_*=admin,team_*=admin").unwrap();
+        assert_eq!((at(&team, "sheets_team_a"), at(&team, "sheets_books"), at(&team, "team_x")), (Some(Admin), None, Some(Read)));
+        // A reader cannot write through the app.
+        let reader = sheets.narrowed("*=read").unwrap();
+        assert_eq!((at(&reader, "sheets_books"), reader.scope), (Some(Read), Read));
+        // Nothing in common: no table at all.
+        let crawler = limited_to("app:crawler", &[("crawl_*", Admin)]);
+        let none = crawler.narrowed("docs=admin").unwrap();
+        assert_eq!((at(&none, "docs"), at(&none, "crawl_x")), (None, None));
+        let root = crawler.narrowed("*=admin").unwrap();
+        assert_eq!((at(&root, "crawl_example_com"), at(&root, "docs")), (Some(Admin), None));
+        // A table an admin's grant by a pattern only reads stays read
+        // only when the caller names it.
+        let wide = limited_to("app:x", &[("*", Admin)]);
+        let named = wide.narrowed(&format!("{}=admin", chloedb::autopilot::PROPOSALS)).unwrap();
+        assert_eq!(at(&named, chloedb::autopilot::PROPOSALS), Some(Read));
+        // A bad grant is refused, not ignored.
+        assert!(sheets.narrowed("docs=sometimes").is_err());
+    }
 
     #[test]
     fn a_rotated_key_lives_as_long_as_the_old_one_did_from_now() {

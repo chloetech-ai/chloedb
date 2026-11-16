@@ -57,21 +57,35 @@ pub fn no_column(schema: &Schema, name: &str) -> String {
     format!("no such column: {name} in {}{}; its columns are {}", schema.table, did_you_mean(name, names.iter().copied()), listing(&names, 30))
 }
 
-/// "no such table: x (did you mean y?); the tables are a, b". It starts
-/// with "no such table", which a coordinator looks for to ask its shards
-/// for their tables again.
+/// Whether table `name` is one ChloeDB keeps for itself: the first table
+/// of a database made with no tables ([`crate::schema::PLACEHOLDER_TABLE`])
+/// or a system table (`_functions`, `_sources`). Messages that list the
+/// tables and `SHOW TABLES` leave them out, as `GET /v1/tables` does.
+pub fn internal_table(name: &str) -> bool {
+    name.eq_ignore_ascii_case(crate::schema::PLACEHOLDER_TABLE) || crate::storage::manifest::system_id(name).is_some()
+}
+
+/// "no such table: x (did you mean y?); the tables are a, b", the tables
+/// ChloeDB keeps for itself left out ([`internal_table`]). It starts with
+/// "no such table", which a coordinator looks for to ask its shards for
+/// their tables again.
 pub fn no_table<'a>(name: &str, tables: impl IntoIterator<Item = &'a str>) -> String {
     let tables: Vec<&str> = tables.into_iter().collect();
     if tables.is_empty() {
         return format!("no such table: {name}");
     }
+    let shown: Vec<&str> = tables.iter().copied().filter(|t| !internal_table(t)).collect();
     let lower = name.to_ascii_lowercase();
     let schemas = if ["information_schema", "pg_", "sqlite_", "sys."].iter().any(|p| lower.starts_with(p)) {
         "; ChloeDB has no system tables: GET /v1/tables lists the tables and their columns"
     } else {
         ""
     };
-    format!("no such table: {name}{}; the database's tables are {}{schemas}", did_you_mean(name, tables.iter().copied()), listing(&tables, 30))
+    let near = did_you_mean(name, tables.iter().copied());
+    if shown.is_empty() {
+        return format!("no such table: {name}{near}; the database has no tables yet (CREATE TABLE or an import makes one){schemas}");
+    }
+    format!("no such table: {name}{near}; the database's tables are {}{schemas}", listing(&shown, 30))
 }
 
 /// Why a row whose key `key` a table already holds is refused, and the
@@ -173,6 +187,17 @@ mod tests {
         assert_eq!(did_you_mean("zzzz", names), "");
     }
 
+    /// CCB-22, ONB-16: the tables ChloeDB keeps for itself are not listed
+    /// as the user's.
+    #[test]
+    fn no_table_lists_the_users_tables() {
+        let m = no_table("book", ["_placeholder", "books", "docs", "_functions", "_sources"]);
+        assert_eq!(m, "no such table: book (did you mean books?); the database's tables are books, docs");
+        assert_eq!(no_table("t", ["_placeholder"]), "no such table: t; the database has no tables yet (CREATE TABLE or an import makes one)");
+        assert_eq!(no_table("t", []), "no such table: t");
+        assert!(internal_table("_PLACEHOLDER") && internal_table("_functions") && !internal_table("_mine") && !internal_table("books"));
+    }
+
     #[test]
     fn values_as_sql() {
         assert_eq!(sql_value(&Value::Str("it's".into())), "'it''s'");
@@ -206,11 +231,19 @@ pub fn of_answer(sql: &str, rows: usize, zero_scores: bool) -> Option<String> {
             let words: Vec<&str> = q.split_whitespace().collect();
             let plain = words.len() >= 2
                 && words.iter().all(|w| w.chars().all(|c| c.is_alphanumeric() || c == '\'') && !["AND", "OR", "NOT", "NEAR"].contains(w));
-            if !plain || !matches!(tokens.get(i + 5), Some(Token::RParen)) {
+            if !plain || !matches!(tokens.get(i + 5), Some(Token::RParen | Token::Comma)) {
                 continue;
             }
+            // The call's options, to its closing parenthesis.
+            let end = tokens[i + 5..].iter().position(|t| *t == Token::RParen).map_or(tokens.len(), |n| i + 5 + n);
+            let fuzzy = tokens[i + 5..end].iter().any(|t| word(t, "fuzzy"));
+            let typos = if fuzzy {
+                String::from(" (fuzzy => 'auto' corrects a word only when the index has no such word and a near one is in more rows)")
+            } else {
+                format!(", and MATCH({field}, '{q}', fuzzy => 'auto') forgives typos")
+            };
             return Some(format!(
-                "MATCH({field}, '{q}') holds for a row that has every one of its {} words, and no row has them all: MATCH({field}, '{}') finds rows with any of them, MATCH({field}, '{q}', min => 2) rows with two, and ORDER BY bm25({field}, '{q}') DESC ranks rows by them",
+                "MATCH({field}, '{q}') holds for a row that has every one of its {} words, and no row has them all: MATCH({field}, '{}') finds rows with any of them, MATCH({field}, '{q}', min => 2) rows with two, ORDER BY bm25({field}, '{q}') DESC ranks rows by them{typos}",
                 words.len(),
                 words.join(" OR "),
             ));

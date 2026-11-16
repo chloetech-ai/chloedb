@@ -32,15 +32,24 @@ function h(tag, props, ...children) {
 // row they opened, then the form they gave up on) is told apart from the next.
 const SESSION = (() => { try { const k = 'sa-session'; return sessionStorage.getItem(k) || (sessionStorage.setItem(k, Math.random().toString(36).slice(2, 12)), sessionStorage.getItem(k)); } catch { return Math.random().toString(36).slice(2, 12); } })();
 
+// A call that failed: refused (a rule's refusal, or a visitor's access: 401,
+// 403) or transient (nobody answered: the network, the engine restarting
+// behind a proxy, too many requests), told apart from the app's own errors.
+const TRANSIENT = new Set([408, 429, 502, 503, 504]);
+const failed = (res, data) => Object.assign(new Error(data.error || res.statusText || `HTTP ${res.status}`), { status: res.status },
+  data.refused || res.status === 401 || res.status === 403 ? { refused: true } : {}, TRANSIENT.has(res.status) ? { transient: true } : {});
+const unanswered = () => Object.assign(new Error('No answer from the app (the connection, or it is restarting)'), { transient: true });
+
 // The company the app's person works in now (app.useCompany), sent with
 // every call so rows scoped by :company_id are that company's.
 const companyHeader = () => (S.company ? { 'x-sa-company': S.company } : {});
 async function api(method, url, body, more) {
-  const headers = { 'x-sa-session': SESSION, ...AS_STRANGER, ...companyHeader(), ...(more || {}) };
+  const headers = { 'x-sa-session': SESSION, ...OWNER, ...AS_STRANGER, ...companyHeader(), ...(more || {}) };
   if (body) headers['content-type'] = 'application/json';
-  const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  let res;
+  try { res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined }); } catch { throw unanswered(); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status }, data.refused ? { refused: true } : {});
+  if (!res.ok) throw failed(res, data);
   return data;
 }
 
@@ -76,6 +85,9 @@ if (BARE) document.body.classList.add('bare');
 // owner is weighing, whatever this browser's studio session.
 const STRANGER = BARE ? (new URLSearchParams(location.search).get('stranger') || null) : null;
 const AS_STRANGER = STRANGER ? { 'x-sa-as': 'visitor', 'x-sa-access': STRANGER } : {};
+// The studio is its apps' owner trying them: what it does is not counted as
+// people's use (Usage, src "owner"); an app on its own page (BARE) is.
+const OWNER = BARE ? {} : { 'x-sa-owner': '1' };
 if (STRANGER) {
   addEventListener('DOMContentLoaded', () => {
     const said = { look: 'visitors can only look', add: 'visitors can look and add, and change only what they added', change: 'anyone can change anything' }[STRANGER] || '';
@@ -192,7 +204,7 @@ function connect() {
     S.previewView = null;
     renderFrames();
     if (d.candidate) note(`A change built from your use did not go through: ${d.error}`);
-    else S.failed = { text: S.runningText, error: d.error, lines: S.lines.slice() };
+    else S.failed = { text: S.runningText, error: d.error, said: d.said, lines: S.lines.slice() };
     S.lines = [];
     S.build = null;
     S.runningText = '';
@@ -283,7 +295,7 @@ async function renderHome() {
     list.replaceChildren(...(apps.length ? apps.map((a) => h('a', { class: 'appcard', href: `#/app/${a.id}` },
       h('div', { class: 'name' }, a.name),
       h('div', { class: 'desc' }, a.description),
-      h('div', { class: 'meta' }, h('span', { class: 'pill' }, a.head ? `v${a.head}` : 'building'), h('span', ago(a.created)))))
+      h('div', { class: 'meta' }, h('span', { class: 'pill' }, Number(a.head) ? `v${a.head}` : a.status === 'failed' ? 'did not build' : 'building'), h('span', ago(a.created)))))
       : [h('div', { class: 'hint' }, 'None yet. Describe one above, or pick an example.')]));
   } catch (e) { list.replaceChildren(h('div', { class: 'err' }, e.message)); }
 }
@@ -1023,7 +1035,7 @@ function leaveView(beacon) {
   S.viewSince = 0;
   if (!S.appId || !slug || !at) return;
   const prev = S.app?.views.find((x) => x.slug === slug);
-  const body = { kind: 'leave', detail: slug, cap: prev?.id || '', ms: Date.now() - at, session: SESSION };
+  const body = { kind: 'leave', detail: slug, cap: prev?.id || '', ms: Date.now() - at, session: SESSION, ...(BARE ? {} : { owner: true }) };
   if (beacon) { try { navigator.sendBeacon(`/api/apps/${S.appId}/track${atV()}`, new Blob([JSON.stringify(body)], { type: 'application/json' })); } catch {} }
   else {
     api('POST', `/api/apps/${S.appId}/track${atV()}`, body).catch(() => {});
@@ -1105,7 +1117,10 @@ function srcdoc(view, params, components, helpers, design = S.designCss) {
       : noClose(view.code);
   // the app's other screens, for a front page's header to offer them
   const others = (S.app?.views || []).filter((x) => x.slug !== view.slug && !isDetailOnly(x, S.app.views)).map((x) => ({ slug: x.slug, title: x.title, for: x.spec?.for || null }));
-  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, locale: S.app?.app?.locale || null, labels: S.app?.labels || [], screens: others, lone: BARE && (S.app?.views || []).length === 1 ? view.title || null : null, members: (S.app?.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate) || (S.app?.functions || []).some((f) => (f.callers || f.spec?.callers) === 'members'), origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6) }).replace(/</g, '\\u003c');
+  // A visitor's access (a published app's page, or "See it as a stranger"):
+  // the frame offers no write it would be refused. None for the owner.
+  const access = S.app?.public ? S.app.access || 'look' : null;
+  const boot = JSON.stringify({ slug: view.slug, cap: view.id, app: S.appId, currency: S.app?.app?.currency || null, locale: S.app?.app?.locale || null, labels: S.app?.labels || [], screens: others, lone: BARE && (S.app?.views || []).length === 1 ? view.title || null : null, members: (S.app?.views || []).some((x) => x.spec?.for === 'members' || !!x.spec?.gate) || (S.app?.functions || []).some((f) => (f.callers || f.spec?.callers) === 'members'), origin: location.origin, params: params || {}, name: S.app?.name || '', views: (S.app?.views || []).map((x) => x.title).filter(Boolean).slice(0, 6), access }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
@@ -1235,7 +1250,15 @@ function renderFrames() {
   document.body.classList.toggle('front-view', BARE && !!v?.spec?.screen && /"page"\s*:\s*"front"|"body"\s*:\s*\[\s*\{\s*"nav"\s*:/.test(v.code || ''));
   box.querySelector('.viewerr')?.remove();
   const err = S.errors.get(S.view);
-  if (err) {
+  if (err && S.app?.public) {
+    // A visitor of a published app: nothing of how it is made, and nothing
+    // that asks the studio (which a visitor may not use), only a way to
+    // start the screen again.
+    box.append(h('div', { class: 'viewerr' },
+      h('div', { class: 'msg' }, h('b', 'Something went wrong on this screen. '), 'Try again; if it keeps happening, tell whoever shared the app.'),
+      h('button', { class: 'btn small', onclick: () => { S.frames.get(S.view)?.iframe.remove(); S.frames.delete(S.view); S.errors.delete(S.view); renderFrames(); } }, 'Try again'),
+      h('button', { class: 'btn small ghost', onclick: () => { S.errors.delete(S.view); renderFrames(); } }, 'Dismiss')));
+  } else if (err) {
     box.append(h('div', { class: 'viewerr' },
       h('div', { class: 'msg' }, h('b', 'This view hit an error. '), err.message, err.repairing ? h('div', { class: 'hint' }, h('span', { class: 'spin' }), ' The engine is repairing it; the fixed version replaces this one when it is ready.') : null),
       !err.repairing ? h('button', { class: 'btn small', onclick: () => ask(`The view "${v?.title}" shows this error: ${err.message}. Fix it.`) }, 'Ask to fix') : null,
@@ -1287,13 +1310,22 @@ function signInScreen(over = false) {
     over ? h('button', { class: 'btn ghost small', type: 'button', onclick: () => $('#signinover')?.remove() }, 'Not now') : null));
 }
 
+// A build that did not go through, in a plain sentence (the engine's said),
+// its error folded under Details.
+function failedNote(said, error) {
+  const t = said || { title: 'The build did not go through.', hint: '' };
+  return [h('div', { class: 'line bad' }, h('b', t.title), t.hint ? ` ${t.hint}` : ''),
+    error && t.title !== 'Stopped.' ? h('details', h('summary', { class: 'hint' }, 'Details'), h('div', { class: 'line' }, error)) : null];
+}
+
 function buildingScreen() {
   const st = S.app;
-  const failed = !st.running && st.requests.find((r) => r.status === 'failed');
+  const last = st.requests[0];
+  const failed = !st.running && last && ['failed', 'stopped'].includes(last.status) ? last : null;
   return h('div', { class: 'building' }, h('div', { class: 'box' },
     h('h2', failed && !S.lines.length ? 'The first version did not build' : 'Building the first version'),
     h('p', { class: 'hint' }, st.app.description),
-    progressBox() || (failed ? h('div', { class: 'log' }, h('div', { class: 'line bad' }, failed.error), h('button', { class: 'btn small', style: 'align-self:start;margin-top:6px', onclick: () => ask(st.app.description) }, 'Try again')) : h('div', { class: 'hint' }, 'Waiting for the engine...'))));
+    progressBox() || (failed ? h('div', { class: 'log' }, failedNote(failed.said, failed.error), h('button', { class: 'btn small', style: 'align-self:start;margin-top:6px', onclick: () => ask(st.app.description) }, 'Try again')) : h('div', { class: 'hint' }, 'Waiting for the engine...'))));
 }
 
 // A build's progress: a bar that moves at the pace builds here usually go
@@ -1303,12 +1335,14 @@ const STEP_LABELS = {
   read: () => 'Read the app and the library',
   plan: (b) => b.first ? 'Plan the app' : stepKeys(b).includes('write') ? 'Plan the change' : 'Write the change',
   write: (b) => b.first ? 'Write the screens and rules' : 'Write the pieces',
+  fix: () => 'Fix what the checks found',
   store: () => 'Check it and store it in ChloeDB',
 };
 
 function stepKeys(b) {
   const seen = new Set((b?.steps || []).map((x) => x.key));
-  return ['read', 'plan', 'write', 'store'].filter((k) => k !== 'write' || seen.has(k) || b?.split);
+  // fix: a round of fixes the checks asked for, counted once it starts
+  return ['read', 'plan', 'write', 'fix', 'store'].filter((k) => (k !== 'write' || seen.has(k) || b?.split) && (k !== 'fix' || seen.has(k)));
 }
 
 // How far the build is (0..1), how long it has run and about how long is
@@ -1318,10 +1352,10 @@ function stepKeys(b) {
 function buildPace(b) {
   const elapsed = (b.elapsed || 0) + (Date.now() - b.at);
   const keys = stepKeys(b);
-  const exp = (k) => Math.max(200, b.expect?.[k] || (k === 'write' ? 9000 : k === 'plan' ? 15000 : 1500));
+  const exp = (k) => Math.max(200, b.expect?.[k] || (k === 'write' ? 9000 : k === 'plan' || k === 'fix' ? 15000 : 1500));
   const total = keys.reduce((a, k) => a + exp(k), 0);
   const cur = b.steps.at(-1);
-  if (!cur) return { f: 0.01, elapsed, left: total, slow: false };
+  if (!cur) return { f: 0.01, elapsed, left: total, slow: false, late: elapsed > 2 * total };
   const i = Math.max(0, keys.indexOf(cur.key));
   const before = keys.slice(0, i).reduce((a, k) => a + exp(k), 0);
   const after = keys.slice(i + 1).reduce((a, k) => a + exp(k), 0);
@@ -1330,7 +1364,8 @@ function buildPace(b) {
   let within = t < e ? 0.85 * t / e : 0.85 + 0.15 * (1 - Math.exp(-(t - e) / e));
   if (cur.key === 'write' && b.pieces?.length) within = Math.max(within, b.pieces.filter((p) => p.state === 'done').length / b.pieces.length * 0.95);
   const f = Math.min(0.97, (before + within * e) / total);
-  return { f, elapsed, left: Math.max(0, e - t) + after, slow: t > e * 1.6 };
+  // late: twice what the whole build usually takes (offer to start it again)
+  return { f, elapsed, left: Math.max(0, e - t) + after, slow: t > e * 1.6, late: elapsed > 2 * total };
 }
 
 const bsecs = (ms) => ms < 950 ? 'under 1 s' : ms < 10000 ? `${Math.max(1, Math.round(ms / 1000))} s` : ms < 90000 ? `${Math.round(ms / 5000) * 5} s` : `${Math.round(ms / 60000)} min`;
@@ -1373,7 +1408,19 @@ function progressBox() {
     h('div', { class: 'bmeta' }, paceText(b)),
     steps, pieces,
     h('div', { class: `bnow${/^Failed/.test(now) ? ' bad' : ''}` }, now),
+    BARE ? null : h('div', { class: 'row', style: 'display:flex;gap:6px' },
+      h('button', { class: 'btn small ghost', title: 'Stop this build: the model stops at once and the app stays as it is', onclick: () => stopBuild(false) }, 'Stop'),
+      b && buildPace(b).late ? h('button', { class: 'btn small', title: 'It is taking twice as long as builds here usually do', onclick: () => stopBuild(true) }, 'Stop and try again') : null),
     log);
+}
+
+async function stopBuild(again) {
+  const text = S.runningText;
+  try {
+    const out = await api('POST', `/api/apps/${S.appId}/stop`, S.runningId ? { request: S.runningId } : {});
+    if (!out.stopped) { toast('Nothing is being built right now'); return; }
+    if (again && text) await ask(text);
+  } catch (e) { toast(e.message); }
 }
 
 // Moves the bars and the times between the engine's reports.
@@ -1431,7 +1478,9 @@ function renderPanel() {
 
 function changeTab(draft) {
   const st = S.app;
-  const ta = h('textarea', { placeholder: st.version.n ? 'Ask for any change: "add a due date and sort by it", "show a chart of this week", "let me import a list"...' : 'Waiting for the first version...', value: draft });
+  const firstFailed = !st.version.n && !S.lines.length && ['failed', 'stopped'].includes(st.requests?.[0]?.status);
+  const ta = h('textarea', { placeholder: st.version.n ? 'Ask for any change: "add a due date and sort by it", "show a chart of this week", "let me import a list"...'
+    : firstFailed ? 'Describe the app again, in other words if you like, to build its first version...' : 'Waiting for the first version...', value: draft });
   const send = h('button', { class: 'btn primary', onclick: submit }, 'Send');
   async function submit() {
     const text = ta.value.trim();
@@ -1445,7 +1494,7 @@ function changeTab(draft) {
   const prog = progressBox();
   if (prog) out.push(prog);
   else if (S.failed) {
-    out.push(h('div', { class: 'log' }, h('div', { class: 'req' }, 'This change did not go through'), h('div', { class: 'line bad' }, S.failed.error),
+    out.push(h('div', { class: 'log' }, h('div', { class: 'req' }, 'This change did not go through'), failedNote(S.failed.said, S.failed.error),
       h('div', { class: 'row', style: 'display:flex;gap:6px;margin-top:6px' }, h('button', { class: 'btn small', onclick: () => ask(S.failed.text) }, 'Try again'), h('button', { class: 'btn small ghost', onclick: () => { S.failed = null; renderPanel(); } }, 'Dismiss'))));
   } else if (st.version.n && st.version.summary && !st.version.trying) {
     out.push(h('div', { class: 'where' }, h('b', `Version ${st.version.n}: `), st.version.summary));
@@ -1790,9 +1839,10 @@ function showEmail(o) {
 async function upload(base, file) {
   if (!(file instanceof Blob)) throw new Error('app.upload takes a File (from an <input type="file"> or a drop)');
   const q = new URLSearchParams({ name: file.name || 'file', type: file.type || 'application/octet-stream' });
-  const res = await fetch(`${base}/files?${q}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream', ...AS_STRANGER }, body: file });
+  let res;
+  try { res = await fetch(`${base}/files?${q}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream', ...AS_STRANGER }, body: file }); } catch { throw unanswered(); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status }, data.refused ? { refused: true } : {});
+  if (!res.ok) throw failed(res, data);
   return { ...data.file, url: location.origin + data.file.url };
 }
 
@@ -1818,8 +1868,9 @@ window.addEventListener('message', async (e) => {
     if (!['sql', 'me', 'people', 'files'].includes(m.method)) { e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, error: 'a preview changes nothing' }, '*'); return; }
     entry = { slug: 'preview', preview: true };
   }
-  // auth: the engine wants someone signed in (401), so the screen can ask then
-  const reply = (value, error, refused, auth) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused, ...(auth ? { auth: true } : {}) }, '*');
+  // auth: the engine wants someone signed in (401), so the screen can ask then;
+  // transient: nobody answered (the screen asks again shortly)
+  const reply = (value, error, refused, auth, transient) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused, ...(auth ? { auth: true } : {}), transient }, '*');
   const base = `/api/apps/${S.appId}`;
   // Writes and calls name the screen they were made on, and the taps (in the
   // app and on its tabs) since the write before.
@@ -1866,6 +1917,7 @@ window.addEventListener('message', async (e) => {
         case 'createCompany': value = (await api('POST', `${base}/companies`, { name: a })).company; S.company = value.id; authChanged(); break;
         case 'useCompany': S.company = a || null; value = (await api('GET', `${base}/companies`, null, companyHeader())).current; authChanged(); break;
         case 'addToCompany': value = (await api('POST', `${base}/companies/members`, { company: a, email: b, role: c || 'member' })).member; break;
+        case 'joinCompany': value = (await api('POST', `${base}/companies/join`, { company: a })).member; S.company = value.company; authChanged(); break;
         case 'files': value = (await api('POST', `${base}/files/info`, { ids: a })).files.map((f) => ({ ...f, url: location.origin + f.url })); break;
         case 'email': value = (await api('POST', `${base}/email`, a)).email; break;
         case 'pay': { const pmt = (await api('POST', `${base}/pay`, a)).payment; value = { ...pmt, url: location.origin + pmt.url }; break; }
@@ -1892,7 +1944,7 @@ window.addEventListener('message', async (e) => {
       renderApp();
     }
   } catch (err) {
-    if (m.kind === 'rpc') reply(undefined, err.message, !!err.refused, err.status === 401);
+    if (m.kind === 'rpc') reply(undefined, err.message, !!err.refused, err.status === 401, !!err.transient);
   }
 });
 

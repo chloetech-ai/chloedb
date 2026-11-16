@@ -214,7 +214,7 @@ async fn replicas_hold_what_their_primary_wrote() {
     let seq3 = pdb.storage().seq_of(None, &Value::Str("p0000003".into())).unwrap().unwrap();
     let w = p.write_ops(vec![json!({"op": "add", "key": "p0000003", "field": "sold", "value": 1, "if_seq_no": seq3})], None).await.unwrap();
     holds(w.seq_no.unwrap());
-    let (n, _) = p.import(None, axum::body::Bytes::from("id,title,price\nc1,Copper kettle,12.5\nc2,Iron pan,30\n"), chloedb::ingest::Format::Csv, Default::default()).await.unwrap();
+    let (n, _, _) = p.import(None, axum::body::Bytes::from("id,title,price\nc1,Copper kettle,12.5\nc2,Iron pan,30\n"), chloedb::ingest::Format::Csv, Default::default()).await.unwrap();
     assert_eq!(n.rows, 2);
     holds(last(&pdb));
     // Writers at once, which the writer groups into shared transactions. Each
@@ -856,6 +856,41 @@ async fn sold_3(svc: &Arc<Service>, after: After, timeout_ms: u64) -> Result<i64
     Ok(a.rs.rows[0][0].as_i64().unwrap())
 }
 
+/// X-E1: a read that names its write's term is served only by a copy
+/// whose transaction of that number is of that term. Numbers are reused
+/// across a failover, so a copy holding a deposed primary's transaction
+/// under the write's number holds the number and not the write: a replica
+/// refuses (503, the coordinator then asks the primary), a primary or a
+/// server alone refuses (409). A write's answer gives the term.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_after_a_write_checks_the_writes_term() {
+    let dir = tempfile::tempdir().unwrap();
+    let (pdb, rdb) = (create(dir.path(), "p.strata"), create(dir.path(), "r.strata"));
+    let mut r = service(rdb.clone(), Duration::from_secs(10));
+    r.set_replication(Replication::Replica(Arc::new(Follow::open(rdb.clone(), None).unwrap())));
+    let r = Arc::new(r);
+    let ur = grpc(r.clone()).await;
+    let p = primary(pdb.clone(), None, ships_to(&[&ur], Acks::All), Duration::from_secs(5));
+    until("the replica serves reads", || async { r.health().await["replication"]["serves_reads"] == true }).await;
+    let w = p.termed(p.write_ops(vec![set("p0000003", "sold", json!(1001))], None).await.unwrap());
+    let (n, term) = (w.seq_no.unwrap(), w.seq_term.expect("a numbered write answers its term"));
+    assert_eq!(term, 1);
+    // Its own term: served by both copies.
+    assert_eq!(sold_3(&r, After::Seq(n, term), 0).await.unwrap(), 1001);
+    assert_eq!(sold_3(&p, After::Seq(n, term), 0).await.unwrap(), 1001);
+    // The same number of a newer term is another write, which neither holds.
+    let e = sold_3(&r, After::Seq(n, term + 1), 0).await.unwrap_err();
+    assert!(e.status == 503 && e.message.contains(&format!("transaction {n} is of term 1")) && e.message.contains("read from the shard's primary"), "{}", e.message);
+    let e = sold_3(&p, After::Seq(n, term + 1), 0).await.unwrap_err();
+    assert!(e.status == 409 && e.message.contains("not in this server's history"), "{}", e.message);
+    // Without a term, by its number alone, as before.
+    assert_eq!(sold_3(&r, After::Seq(n, 0), 0).await.unwrap(), 1001);
+    assert!(After::termed(0, vec![], 2, vec![]).is_err(), "a term names a number's write");
+    assert!(After::termed(5, vec![], 0, vec![1]).is_err(), "a server's number takes min_seq_term");
+    assert!(After::termed(0, vec![5], 0, vec![1, 1]).is_err(), "no more terms than numbers");
+    assert_eq!(After::termed(0, vec![5, 0], 0, vec![2]).unwrap(), After::Shards(vec![5, 0], vec![2]));
+}
+
 /// A replica serves reads once its primary's call reached the primary's
 /// last transaction, and refuses them while it catches up. A read that
 /// names a write's sequence number sees it: a replica waits until it has
@@ -890,7 +925,7 @@ async fn a_replica_serves_reads_once_caught_up_and_waits_for_a_write() {
     assert_eq!(sold_3(&r, After::Any, 0).await.unwrap(), sold, "a read that names no write reads what the replica holds");
     let waiting = tokio::spawn({
         let r = r.clone();
-        async move { sold_3(&r, After::Seq(n), 0).await }
+        async move { sold_3(&r, After::Seq(n, 0), 0).await }
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(sold_3(&r, After::Any, 0).await.unwrap(), sold, "the replica's one query slot serves a read meanwhile");
@@ -902,27 +937,27 @@ async fn a_replica_serves_reads_once_caught_up_and_waits_for_a_write() {
     let hold = stall(&rdb);
     let m = p.write_ops(vec![set("p0000003", "sold", json!(1002))], None).await.unwrap().seq_no.unwrap();
     let t0 = Instant::now();
-    let e = sold_3(&r, After::Seq(m), 0).await.unwrap_err();
+    let e = sold_3(&r, After::Seq(m, 0), 0).await.unwrap_err();
     assert!(e.status == 503 && e.message.contains(&format!("must see transaction {m}, which it has not applied in time: read from the primary")), "{}", e.message);
     assert!((replication::READ_WAIT..Duration::from_secs(3)).contains(&t0.elapsed()), "{:?}", t0.elapsed());
     // Within the read's deadline when that comes first.
     let t0 = Instant::now();
-    assert_eq!(sold_3(&r, After::Seq(m), 200).await.unwrap_err().status, 503);
+    assert_eq!(sold_3(&r, After::Seq(m, 0), 200).await.unwrap_err().status, 503);
     assert!(t0.elapsed() < Duration::from_millis(800), "{:?}", t0.elapsed());
-    assert_eq!(stats(&r, After::Seq(m)).await.unwrap_err().status, 503, "statistics wait for it too");
+    assert_eq!(stats(&r, After::Seq(m, 0)).await.unwrap_err().status, 503, "statistics wait for it too");
     // Over gRPC as well, as a coordinator asks.
     let mut g = pb::strata_client::StrataClient::connect(ur.clone()).await.unwrap();
     let ask = pb::QueryRequest { sql: "SELECT id FROM products ORDER BY bm25(body, 'kettle') DESC LIMIT 3".into(), protocol: 5, min_seq_no: m, timeout_ms: 200, ..Default::default() };
     assert_eq!(g.term_stats(ask.clone()).await.unwrap_err().code(), tonic::Code::Unavailable);
     assert_eq!(g.query(ask).await.unwrap_err().code(), tonic::Code::Unavailable);
-    assert_eq!(sold_3(&p, After::Seq(m), 0).await.unwrap(), 1002);
+    assert_eq!(sold_3(&p, After::Seq(m, 0), 0).await.unwrap(), 1002);
     drop(hold);
-    assert_eq!(sold_3(&r, After::Seq(m), 0).await.unwrap(), 1002);
-    assert!(stats(&r, After::Seq(m)).await.is_ok());
+    assert_eq!(sold_3(&r, After::Seq(m, 0), 0).await.unwrap(), 1002);
+    assert!(stats(&r, After::Seq(m, 0)).await.is_ok());
 
     // A primary holds every write it answered, so a number past its last
     // was not committed there: refused, by every kind of read.
-    let past = After::Seq(m + 10);
+    let past = After::Seq(m + 10, 0);
     let e = sold_3(&p, past.clone(), 0).await.unwrap_err();
     assert!(e.status == 409 && e.message.contains(&format!("transaction {} was not committed here", m + 10)), "{}", e.message);
     assert_eq!(stats(&p, past.clone()).await.unwrap_err().status, 409);
@@ -931,31 +966,31 @@ async fn a_replica_serves_reads_once_caught_up_and_waits_for_a_write() {
     let plan = chloedb::query::ir::Plan::bind("SELECT sold FROM products WHERE id = 'p0000003'", &p.schema, &Params::new()).unwrap();
     assert!(matches!(p.run_plan(&Principal::open(), plan.clone(), past.clone(), 0).await, Err(e) if e.status == 409));
     assert!(matches!(p.sql(&Principal::open(), "SELECT sold FROM products WHERE id = 'p0000003'", &Params::new(), past.clone(), 0).await, Err(e) if e.status == 409));
-    match r.run_plan(&Principal::open(), plan, After::Seq(m), 0).await.unwrap() {
+    match r.run_plan(&Principal::open(), plan, After::Seq(m, 0), 0).await.unwrap() {
         SqlAnswer::Rows(a) => assert_eq!(a.rs.rows[0][0], Value::Int(1002)),
         SqlAnswer::Written { .. } => panic!("a read"),
     }
     // A write sees every write before it, as SQL or as a plan.
     let update = "UPDATE products SET sold = 0 WHERE id = 'p0000003'";
-    let e = p.sql(&Principal::open(), update, &Params::new(), After::Seq(m), 0).await.err().unwrap();
+    let e = p.sql(&Principal::open(), update, &Params::new(), After::Seq(m, 0), 0).await.err().unwrap();
     assert!(e.status == 400 && e.message.contains("are for reads"), "{}", e.message);
     let chloedb::query::Command::Write { write, .. } = chloedb::query::bind_command(update, &[&p.schema], &Params::new()).unwrap() else { panic!() };
-    let e = p.run_plan(&Principal::open(), chloedb::query::ir::Plan::of_write(&p.schema, &write), After::Seq(m), 0).await.err().unwrap();
+    let e = p.run_plan(&Principal::open(), chloedb::query::ir::Plan::of_write(&p.schema, &write), After::Seq(m, 0), 0).await.err().unwrap();
     assert!(e.status == 400 && e.message.contains("are for reads"), "{}", e.message);
     // A lease keeps the version it pinned.
     let (lease, _) = r.lease().unwrap();
     let k = p.write_ops(vec![set("p0000003", "sold", json!(1003))], None).await.unwrap().seq_no.unwrap();
     until("the replica applied it", || async { last(&rdb) >= k }).await;
-    let e = r.query(QueryReq { sql: "SELECT sold FROM products".into(), snapshot: lease, after: After::Seq(k), ..Default::default() }).await.err().unwrap();
+    let e = r.query(QueryReq { sql: "SELECT sold FROM products".into(), snapshot: lease, after: After::Seq(k, 0), ..Default::default() }).await.err().unwrap();
     assert!(e.status == 409 && e.message.contains(&format!("keeps a version holding transactions up to {m}, before {k}")), "{}", e.message);
     // A server's read takes its own number, not a coordinator's.
-    let e = sold_3(&r, After::Shards(vec![k]), 0).await.unwrap_err();
+    let e = sold_3(&r, After::Shards(vec![k], Vec::new()), 0).await.unwrap_err();
     assert!(e.status == 400 && e.message.contains("min_seq_nos is a coordinator's"), "{}", e.message);
     assert!(After::of(k, vec![k]).unwrap_err().message.contains("not both"));
     let plain = Db::create(&dir.path().join("plain.strata"), demo::schema(N), options(0)).unwrap();
     plain.set_embedder("emb", Arc::new(chloedb::embed::HashEmbedder { dim: demo::DIM })).unwrap();
     plain.load((0..N).map(|i| demo::product(i, 7))).unwrap();
-    let e = sold_3(&Arc::new(service(Arc::new(plain), Duration::from_secs(5))), After::Seq(1), 0).await.unwrap_err();
+    let e = sold_3(&Arc::new(service(Arc::new(plain), Duration::from_secs(5))), After::Seq(1, 0), 0).await.unwrap_err();
     assert!(e.status == 400 && e.message.contains("start the server with --seq-no"), "{}", e.message);
 
     // A call that finds it behind stops its reads until one reaches the
@@ -1040,7 +1075,7 @@ async fn a_read_through_a_coordinator_sees_the_write_it_names() {
     };
     let w = coord.write_ops(both.iter().map(|k| set(k, "sold", json!(900_001))).collect(), None).await.unwrap();
     assert!(w.seq_no.is_none() && w.seq_nos.len() == 2 && w.seq_nos.iter().all(|&s| s > 0), "{w:?}");
-    assert_eq!(read(After::Shards(w.seq_nos.clone()), 900_001).await.unwrap(), both);
+    assert_eq!(read(After::Shards(w.seq_nos.clone(), Vec::new()), 900_001).await.unwrap(), both);
 
     // No replica can apply the next write: every read that names it sees
     // it, from the primary when a replica refuses it after a second. The
@@ -1052,7 +1087,7 @@ async fn a_read_through_a_coordinator_sees_the_write_it_names() {
     // A ranked read asks the shards' statistics first, on the snapshot its
     // query then reads: both see the write.
     for _ in 0..3 {
-        let q = QueryReq { sql: "SELECT id, sold FROM products ORDER BY bm25(body, 'built') DESC LIMIT 300".into(), after: After::Shards(w.seq_nos.clone()), ..Default::default() };
+        let q = QueryReq { sql: "SELECT id, sold FROM products ORDER BY bm25(body, 'built') DESC LIMIT 300".into(), after: After::Shards(w.seq_nos.clone(), Vec::new()), ..Default::default() };
         let t0 = Instant::now();
         let a = coord.query(q).await.unwrap();
         assert!(t0.elapsed() < Duration::from_millis(1800), "{:?}", t0.elapsed());
@@ -1061,7 +1096,7 @@ async fn a_read_through_a_coordinator_sees_the_write_it_names() {
     }
     for _ in 0..3 {
         let t0 = Instant::now();
-        assert_eq!(read(After::Shards(w.seq_nos.clone()), 900_002).await.unwrap(), both);
+        assert_eq!(read(After::Shards(w.seq_nos.clone(), Vec::new()), 900_002).await.unwrap(), both);
         assert!(t0.elapsed() < Duration::from_millis(1800), "{:?}", t0.elapsed());
     }
     for (r, _) in &replicas {
@@ -1072,15 +1107,15 @@ async fn a_read_through_a_coordinator_sees_the_write_it_names() {
     // An UPDATE goes to every shard, and answers each shard's number.
     let w = written_all(coord.sql(&Principal::open(), "UPDATE products SET sold = 900003 WHERE id = 'p0000003' OR id = 'p0000004'", &Params::new(), After::Any, 0).await.unwrap());
     assert!(w.seq_nos.len() == 2 && w.rows == 2, "{w:?}");
-    assert_eq!(read(After::Shards(w.seq_nos), 900_003).await.unwrap(), ["p0000003", "p0000004"]);
+    assert_eq!(read(After::Shards(w.seq_nos, Vec::new()), 900_003).await.unwrap(), ["p0000003", "p0000004"]);
 
     // A coordinator takes one number per shard.
-    let e = read(After::Seq(1), 0).await.unwrap_err();
+    let e = read(After::Seq(1, 0), 0).await.unwrap_err();
     assert!(e.status == 400 && e.message.contains("a coordinator takes min_seq_nos"), "{}", e.message);
-    let e = read(After::Shards(vec![1, 1, 1]), 0).await.unwrap_err();
+    let e = read(After::Shards(vec![1, 1, 1], Vec::new()), 0).await.unwrap_err();
     assert!(e.status == 400 && e.message.contains("min_seq_nos has 3 numbers, and the coordinator 2 shards"), "{}", e.message);
     // Past a primary's last: never committed there.
-    let e = read(After::Shards(vec![0, 1_000_000]), 0).await.unwrap_err();
+    let e = read(After::Shards(vec![0, 1_000_000], Vec::new()), 0).await.unwrap_err();
     assert!(e.status == 409 && e.message.contains("was not committed here"), "{}", e.message);
 }
 
@@ -1442,6 +1477,37 @@ async fn the_server_starts_as_a_primary_or_a_replica() {
     assert!(e.contains("not the coordinator"), "{e}");
 }
 
+/// N-E2, a primary's half: a server started as its shard's primary by its
+/// flags on a volume that was lost (an empty database, nothing kept beside
+/// it) asks its replicas first. One holds the shard's transactions, so
+/// without automatic failover the server does not start, and with it it
+/// starts as a replica that is not one of the shard's first copies; its
+/// copies then elect the one holding the data. A first start, whose
+/// replicas hold nothing, makes it the primary as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_primary_started_on_a_lost_volume_does_not_ship_it_over_its_replicas() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = |name: &str| server::Options { db: Some(dir.path().join(name)), demo: Some(20), seq_no: true, timeout_ms: 5000, ..Default::default() };
+    let r = server::service(&server::Options { replica: true, ..opts("r.strata") }).await.unwrap();
+    let ur = grpc(r.clone()).await;
+    let primary = |name: &str, failover_after_ms: u64| server::Options { replicas: vec![ur.clone()], write_acks: Acks::Majority, failover_after_ms, ..opts(name) };
+    let p = server::service(&primary("p.strata", 0)).await.unwrap();
+    assert_eq!(p.role(), pb::Role::Primary, "a first start: the replica holds nothing");
+    for v in [1, 2, 3] {
+        p.write_ops(vec![set("p0000001", "sold", json!(v))], None).await.unwrap();
+    }
+    assert_eq!(last(r.local_db().unwrap()), 3);
+    drop(p);
+    // The primary's volume is lost: it starts again on an empty one.
+    let e = server::service(&primary("p-lost.strata", 0)).await.err().expect("refused without failover");
+    assert!(e.contains("lost its volume") && e.contains("holds transactions up to 3 (term 1)") && e.contains("--replica"), "{e}");
+    assert!(!replication::file_of(&dir.path().join("p-lost.strata")).exists(), "it keeps no part it did not take");
+    let q = server::service(&primary("p-lost2.strata", 1000)).await.unwrap();
+    assert_eq!(q.role(), pb::Role::Replica, "with failover: a replica, so the copy holding the data is elected");
+    assert_ne!(kept(dir.path(), "p-lost2.strata")["member"], json!(true), "not a first copy: it counts once caught up");
+    assert_eq!(last(r.local_db().unwrap()), 3, "the replica kept its transactions");
+}
+
 /// What `<db>.replication` beside database `name` in `dir` holds.
 fn kept(dir: &Path, name: &str) -> Json {
     serde_json::from_slice(&std::fs::read(replication::file_of(&dir.join(name))).unwrap()).unwrap()
@@ -1452,16 +1518,20 @@ fn kept(dir: &Path, name: &str) -> Json {
 /// started with --replica on a database that had no part in replication
 /// yet. So if the first primary stops before any replica heard from it,
 /// the replicas still elect another (the simulator's
-/// `waits-for-a-first-call`). A server made a replica to join a serving
-/// shard (Configure) grants no vote until it caught up with a primary.
+/// `waits-for-a-first-call`), if they heard from no primary either: a
+/// replica that lost its volume starts as a first copy too (N-E2). A
+/// server made a replica to join a serving shard (Configure) grants no
+/// vote until it caught up with a primary.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_shards_first_copies_vote_from_the_start() {
     let dir = tempfile::tempdir().unwrap();
     let opts = |name: &str| server::Options { db: Some(dir.path().join(name)), demo: Some(20), seq_no: true, timeout_ms: 5000, ..Default::default() };
     let r = server::service(&server::Options { replica: true, ..opts("r.strata") }).await.unwrap();
     assert_eq!(kept(dir.path(), "r.strata")["member"], json!(true));
-    let a = r.vote(ask(2, "x", (9, 9), false)).await.unwrap();
+    let a = r.vote(ask(2, "x", (0, 0), false)).await.unwrap();
     assert!(a.granted, "{a:?}");
+    let a = r.vote(ask(3, "x", (9, 9), false)).await.unwrap();
+    assert!(!a.granted && a.reason.contains("may have lost its volume"), "{a:?}");
     let p = server::service(&server::Options { replicas: vec!["http://127.0.0.1:1".into()], ..opts("p.strata") }).await.unwrap();
     assert_eq!(p.role(), pb::Role::Primary);
     assert_eq!(kept(dir.path(), "p.strata")["member"], json!(true), "a primary counts itself, as a replica once it starts again");
@@ -1475,6 +1545,63 @@ async fn a_shards_first_copies_vote_from_the_start() {
     let a = again.vote(&ask(2, "x", (9, 9), false), Duration::ZERO).await.unwrap();
     assert!(!a.granted && a.reason.contains("has not caught up with a primary"), "{a:?}");
     assert_eq!(kept(dir.path(), "j.strata")["member"], Json::Null);
+}
+
+/// N-E2: a replica started with --replica loses its volume, its database
+/// and the part it keeps beside it, and starts again with the same flag
+/// on an empty database, as one of its shard's first copies. Its primary
+/// still counts it a member. It votes for no copy that heard from a
+/// primary (one behind could be elected without the writes it
+/// acknowledged), and counts itself a member again once a call of its
+/// primary finds it caught up.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replica_that_lost_its_volume_votes_once_it_caught_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let vol = dir.path().join("volume");
+    std::fs::create_dir(&vol).unwrap();
+    let file = |dir: &Path, name: &str| replication::file_of(&dir.join(name));
+    let first = |db: Arc<Db>, file: &Path| {
+        let mut svc = service(db.clone(), Duration::from_secs(10));
+        svc.set_replication(Replication::Replica(Arc::new(Follow::open_first(db, Some(file)).unwrap())));
+        Arc::new(svc)
+    };
+    let (u, addr) = nobody().await;
+    let rdb = create(&vol, "r.strata");
+    let r = first(rdb.clone(), &file(&vol, "r.strata"));
+    let served = tokio::spawn(server::serve_grpc(r.clone(), TcpListener::bind(addr).await.unwrap(), Access::default()));
+    let pdb = create(dir.path(), "p.strata");
+    let p = primary(pdb.clone(), Some(&file(dir.path(), "p.strata")), ships_to(&[&u], Acks::Majority), Duration::from_secs(5));
+    for v in 1..=3 {
+        p.write_ops(vec![set("p0000001", "sold", json!(v))], None).await.unwrap();
+    }
+    assert_eq!(last(&rdb), 3, "acknowledged by a majority: the replica holds them");
+    assert_eq!(kept(&vol, "r.strata")["member"], json!(true));
+
+    // The volume is lost, and the server starts again with --replica.
+    served.abort();
+    let _ = served.await;
+    drop((r, rdb));
+    std::fs::remove_dir_all(&vol).unwrap();
+    std::fs::create_dir(&vol).unwrap();
+    let rdb = create(&vol, "r.strata");
+    let r = first(rdb.clone(), &file(&vol, "r.strata"));
+    assert_eq!((last(&rdb), &kept(&vol, "r.strata")["member"]), (0, &json!(true)), "a first copy, empty");
+    assert_eq!(follower(&p, 0).await["member"], json!(true), "its primary counts it a member still");
+    // A copy that heard from the primary and lacks the writes it had
+    // acknowledged asks for its vote: refused.
+    let behind = pb::VoteRequest { config: 1, copies: 3, ..ask(2, "behind", (1, 1), false) };
+    let a = r.vote(behind).await.unwrap();
+    assert!(!a.granted && a.reason.contains("may have lost its volume"), "{a:?}");
+
+    // Its primary calls it again: it is sent what it lacks, and counts
+    // itself a member once caught up.
+    let served = tokio::spawn(server::serve_grpc(r.clone(), TcpListener::bind(addr).await.unwrap(), Access::default()));
+    until("the replica holds the writes again and counts itself a member", || async { last(&rdb) == 3 && kept(&vol, "r.strata")["member"] == json!(true) }).await;
+    until("its primary counts it in sync", || async { follower(&p, 0).await["in_sync"] == json!(true) }).await;
+    assert!(kept(&vol, "r.strata")["follows"].is_object(), "{}", kept(&vol, "r.strata"));
+    p.write_ops(vec![set("p0000001", "sold", json!(4))], None).await.unwrap();
+    assert_eq!(last(&rdb), 4);
+    served.abort();
 }
 
 /// A replica is made the primary of a new term by hand. It refuses while a
@@ -2146,7 +2273,7 @@ async fn reads_after_a_write_go_to_copies_that_hold_it_with_prefer_caught_up() {
             let w = coord.write_ops(vec![set(&key, "sold", json!(800_000 + i))], None).await.unwrap();
             let t = Instant::now();
             let sql = format!("SELECT id FROM products WHERE sold = {} LIMIT 10", 800_000 + i);
-            let a = coord.query(QueryReq { sql, after: After::Shards(w.seq_nos.clone()), ..Default::default() }).await.unwrap();
+            let a = coord.query(QueryReq { sql, after: After::Shards(w.seq_nos.clone(), Vec::new()), ..Default::default() }).await.unwrap();
             let ids: Vec<String> = a.rs.rows.iter().map(|r| r[0].as_str().unwrap().to_string()).collect();
             assert_eq!(ids, [key], "the read sees its write");
             slow += (t.elapsed() > Duration::from_millis(30)) as usize;
@@ -2212,7 +2339,7 @@ async fn ranked_reads_after_a_write_with_kept_statistics_go_to_copies_that_hold_
         let w = coord.write_ops(vec![set(k, "sold", json!(v))], None).await.unwrap();
         let t = Instant::now();
         let sql = format!("SELECT id FROM products WHERE MATCH(body, 'kettle') AND sold = {v} ORDER BY bm25(body, 'kettle') DESC LIMIT 5");
-        let a = coord.query(QueryReq { sql, after: After::Shards(w.seq_nos.clone()), ..Default::default() }).await.unwrap();
+        let a = coord.query(QueryReq { sql, after: After::Shards(w.seq_nos.clone(), Vec::new()), ..Default::default() }).await.unwrap();
         let ids: Vec<String> = a.rs.rows.iter().map(|r| r[0].as_str().unwrap().to_string()).collect();
         assert_eq!(ids, [k.clone()], "the read sees its write");
         slow += (t.elapsed() > Duration::from_millis(30)) as usize;

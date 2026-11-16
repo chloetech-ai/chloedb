@@ -4,10 +4,11 @@
 //! Builds `--shards` databases of synthetic text (an INT key and a TEXT
 //! field `body` of 12 Zipf words of 5,000), copies each `--copies` times
 //! and serves every copy over gRPC on localhost, in this process. A fresh
-//! coordinator (default `CoordOptions`, only `route` changed: a 100 ms
-//! hedge, kept BM25 statistics) is connected for each run, warmed up, then
-//! timed for `--seconds` at each `--concurrency`, the two routes taking
-//! turns, `--rounds` times. Scenarios (`--scenarios`):
+//! coordinator (default `CoordOptions`, with the config's `route`, and
+//! adaptive hedges and `prefer_caught_up` off unless the config names
+//! them: a 100 ms hedge, kept BM25 statistics) is connected for each run,
+//! warmed up, then timed for `--seconds` at each `--concurrency`, the two
+//! routes taking turns, `--rounds` times. Scenarios (`--scenarios`):
 //!
 //! * `equal`: the copies alike (the control).
 //! * `slow`: copy 0 of shard 0 behind a delay line adding `--delay-ms` to
@@ -133,6 +134,14 @@ struct Args {
     /// `--lag-ms` late), which the primary ships replica 1 through.
     #[arg(long)]
     late_link: Option<String>,
+    /// Configurations to run instead of each scenario's own, by label,
+    /// comma-separated: `round-robin`, `round-robin adaptive`,
+    /// `least-cost`, `least-cost adaptive`, `least-cost no-load`,
+    /// `least-cost prefer`. For copies slowed outside the bench (with
+    /// `--external`, under `equal`), which then names no configurations
+    /// of its own.
+    #[arg(long, value_delimiter = ',')]
+    configs: Vec<String>,
 }
 
 const WORDS: usize = 5_000;
@@ -377,7 +386,7 @@ async fn drive(svcs: &[Arc<Service>], coords: &[Arc<Coordinator>], queries: Arc<
                     };
                     let t = Instant::now();
                     let sql = format!("SELECT id, body FROM t WHERE id = {key}");
-                    let ok = match svc.query(QueryReq { sql, after: After::Shards(written.seq_nos), ..Default::default() }).await {
+                    let ok = match svc.query(QueryReq { sql, after: After::Shards(written.seq_nos, written.seq_terms), ..Default::default() }).await {
                         Ok(a) => a.rs.rows.first().and_then(|r| r.get(1)).and_then(|v| v.as_str()) == Some(body.as_str()),
                         Err(_) => false,
                     };
@@ -663,11 +672,29 @@ async fn main() {
             .collect(),
     );
 
-    let base = CoordOptions { stats_cache_terms: a.stats_cache_terms.unwrap_or(CoordOptions::default().stats_cache_terms), ..Default::default() };
+    // Each config turns on what its label names and nothing else, whatever
+    // CoordOptions's defaults are.
+    let base = CoordOptions { stats_cache_terms: a.stats_cache_terms.unwrap_or(CoordOptions::default().stats_cache_terms), hedge_adaptive: false, prefer_caught_up: false, ..Default::default() };
     let rr = CoordOptions { route: Route::RoundRobin, ..base.clone() };
     let lc = CoordOptions { route: Route::LeastCost, ..base.clone() };
+    let adaptive = |o: &CoordOptions| CoordOptions { hedge_adaptive: true, ..o.clone() };
+    let every: Vec<(&'static str, CoordOptions)> = vec![
+        ("round-robin", rr.clone()),
+        ("round-robin adaptive", adaptive(&rr)),
+        ("least-cost", lc.clone()),
+        ("least-cost adaptive", adaptive(&lc)),
+        ("least-cost no-load", CoordOptions { route_load: false, ..lc.clone() }),
+        ("least-cost prefer", CoordOptions { prefer_caught_up: true, ..lc.clone() }),
+    ];
+    let chosen: Vec<(&'static str, CoordOptions)> = a
+        .configs
+        .iter()
+        .map(|l| every.iter().find(|(k, _)| *k == l.trim()).cloned().unwrap_or_else(|| panic!("no configuration {l:?}: {:?}", every.iter().map(|(k, _)| *k).collect::<Vec<_>>())))
+        .collect();
     let configs = |scenario: &str| -> Vec<(&'static str, CoordOptions)> {
-        let adaptive = |o: &CoordOptions| CoordOptions { hedge_adaptive: true, ..o.clone() };
+        if !chosen.is_empty() {
+            return chosen.clone();
+        }
         match scenario {
             "equal" | "stall" => vec![("round-robin", rr.clone()), ("round-robin adaptive", adaptive(&rr)), ("least-cost", lc.clone()), ("least-cost adaptive", adaptive(&lc))],
             "busy" => vec![("round-robin", rr.clone()), ("least-cost", lc.clone()), ("least-cost no-load", CoordOptions { route_load: false, ..lc.clone() })],

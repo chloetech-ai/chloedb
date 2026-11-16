@@ -1,4 +1,9 @@
-# ChloeDB
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/chloedb-wordmark-on-dark.svg">
+    <img src="docs/assets/brand/chloedb-wordmark-on-light.svg" alt="ChloeDB" height="64">
+  </picture>
+</h1>
 
 **Search, data and recommendations in one embedded database.**
 
@@ -66,7 +71,7 @@ More in [the server guide](docs/chloedb/server.md).
 | language | install | guide |
 |---|---|---|
 | Python | `pip install chloedb` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md), [LangChain, LangGraph and LlamaIndex](docs/guide/frameworks.md) |
-| JavaScript (Node, Bun, Deno) | the tarball for your platform from a `chloedb-js-v0.3.2` release | [JavaScript](docs/chloedb/javascript.md) |
+| JavaScript (Node, Bun, Deno) | the tarball for your platform from a `chloedb-js-v0.3.5` release | [JavaScript](docs/chloedb/javascript.md) |
 | Java and JDBC | `cd chloedb-java && mvn install` (builds from source) | [Java](docs/chloedb/java.md) |
 | Rust | the `chloedb` crate in [`chloedb/`](chloedb/), by path | [Design](docs/chloedb/index.md) |
 
@@ -123,7 +128,14 @@ Claude Code forgets. A long session is compacted into a summary, and a new sessi
 
 *The ChloeCtx inspector. Left: a new session is asked what was decided earlier and answers from the briefing ChloeCtx injected. Right: the records the hooks stored and the notes a small model distilled from the first session.*
 
-Install it on macOS or Linux (WSL 2 on Windows). You need Rust (stable), a C compiler and the [Claude Code](https://claude.com/claude-code) CLI, signed in:
+The quickest way is the Claude Code plugin, which downloads a prebuilt `chloectx` on its first session ([how it works](docs/chloectx/setup.md#as-a-claude-code-plugin)):
+
+```text
+/plugin marketplace add chloetech-ai/chloedb
+/plugin install chloectx@chloedb
+```
+
+Or install it from a checkout on macOS or Linux (WSL 2 on Windows). You need Rust (stable), a C compiler and the [Claude Code](https://claude.com/claude-code) CLI, signed in:
 
 ```sh
 git clone https://github.com/chloetech-ai/chloedb && cd chloedb

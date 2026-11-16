@@ -34,7 +34,7 @@
 //! | `POST /v1/spaces/:s/notes` | `{kind, text, replaces?, entities?, session?, ts?}` | the note; `replaces` marks the older one superseded |
 //! | `GET /v1/spaces/:s/notes?kind=&limit=&all=` | | `{notes}`, the newest first (live ones unless `all=1`) |
 //! | `GET /v1/spaces/:s/notes/:id` | | the note and its history: what it replaced and what replaced it |
-//! | `DELETE /v1/spaces/:s/notes/:id` | | the note, retired (superseded by nothing) |
+//! | `DELETE /v1/spaces/:s/notes/:id` | | the note, retired: tagged `retired`, which no context shows (nothing replaced it) |
 //! | `POST /v1/spaces/:s/exchanges` | `{user, assistant, session?, ts?, distill?}` | the two messages stored; notes follow when a model is set |
 //! | `GET /v1/spaces/:s/ask?q=&budget=`, `POST` the same | `{question, budget?}` | `{context, tokens, ms, items, left_out}` |
 //! | `GET /v1/incidents`, `POST /v1/incidents` | `{title, symptom, cause, fix, alert?, when?, replaces?}` | `{incidents}`; the incident |
@@ -423,7 +423,7 @@ impl App {
                 }
             }
             // The notes a context still shows: not replaced, retired or done.
-            let live = self.cluster.query(&format!("SELECT kind, COUNT(*) FROM {} WHERE tag NOT IN ('superseded', 'done') GROUP BY kind LIMIT 50", table_of(&name)), &Default::default()).map(|c| c.rows).unwrap_or_default();
+            let live = self.cluster.query(&format!("SELECT kind, COUNT(*) FROM {} WHERE tag NOT IN ('superseded', 'retired', 'done') GROUP BY kind LIMIT 50", table_of(&name)), &Default::default()).map(|c| c.rows).unwrap_or_default();
             let live: serde_json::Map<String, Json> = live.iter().filter_map(|c| Some((c.first()?.as_str()?.to_string(), json!(c.get(1)?.as_i64()?)))).collect();
             out.push(json!({"name": name, "title": s(1), "description": s(2), "kind": s(3), "created": r.get(4).and_then(|v| v.as_i64()).unwrap_or(0), "table": table_of(&name), "records": total, "by_kind": by, "live_by_kind": live}));
         }
@@ -439,7 +439,7 @@ impl App {
             return Err(bad("a note needs \"text\""));
         }
         let (kind, tag) = note_kind(b["kind"].as_str().unwrap_or("note")).ok_or_else(|| bad("kind is decision, rule, fact, todo or note"))?;
-        let tag = b["tag"].as_str().filter(|t| !t.is_empty() && *t != "superseded").unwrap_or(tag);
+        let tag = b["tag"].as_str().filter(|t| !t.is_empty() && !crate::record::closed_tag(t)).unwrap_or(tag);
         let entities: Vec<String> = b["entities"].as_array().into_iter().flatten().filter_map(|e| e.as_str().map(str::to_string)).take(12).collect();
         let mut d = Draft::new(kind, text).tag(tag).entities(entities);
         let replaces = b["replaces"].as_str().filter(|s| !s.is_empty());
@@ -478,11 +478,12 @@ impl App {
         Ok(json!({"deleted": name, "table": table_of(name), "kind": row["kind"]}))
     }
 
-    /// Retires a note: superseded by nothing.
+    /// Retires a note: tagged `retired`, which no context shows. Nothing
+    /// replaced it, so it is not `superseded`.
     pub fn retire(&self, space: &str, id: &str) -> Answer {
         let store = self.space(space)?;
         let mut r = store.get(&[id.to_string()])?.pop().ok_or_else(|| Fail(404, format!("no note {id} in {space}")))?;
-        r.tag = "superseded".into();
+        r.tag = crate::record::RETIRED.into();
         store.insert(&[r.clone()])?;
         Ok(record_json(&r))
     }
@@ -589,13 +590,14 @@ impl App {
             .0
             .into_iter()
             .map(|h| h.record)
-            .filter(|r| r.tag != "superseded" && r.tag != "done")
+            .filter(|r| !crate::record::closed_tag(&r.tag) && r.tag != "done")
             .map(|r| (r.id, r.kind, r.text))
             .collect();
         let prompt = distill::prompt_for(user, assistant, &[], &known, first.ts);
         let reply = self.model.complete(distill::SYSTEM, &prompt)?;
         let d = distill::parse(&reply.text);
-        let drafts: Vec<Draft> = d.drafts.into_iter().map(|x| x.link("from", first.id.clone())).collect();
+        // Who said each item, and one-off instructions kept to their task.
+        let drafts: Vec<Draft> = distill::attribute(d.drafts, user, &distill::Exchange::default()).into_iter().map(|x| x.link("from", first.id.clone())).collect();
         let n = drafts.len();
         let new = store.append(&first.session, first.turn, first.ts, drafts)?;
         // What the new notes replace, and planned work now done.
@@ -620,6 +622,9 @@ impl App {
         let store = self.space(space)?;
         if question.trim().is_empty() {
             return Err(bad("ask needs a question (q)"));
+        }
+        if !BUDGETS.contains(&budget) {
+            return Err(bad(format!("budget is 200 to 50000 tokens, not {budget}")));
         }
         let mut j = view::ask(&store, question, budget)?;
         j["space"] = json!(space);
@@ -663,7 +668,7 @@ impl App {
         j["id"] = json!(r.id);
         j["space"] = json!(space);
         j["ts"] = json!(r.ts);
-        j["live"] = json!(r.tag != "superseded");
+        j["live"] = json!(!crate::record::closed_tag(&r.tag));
         // The fixes it replaced, newest first.
         let mut earlier = Vec::new();
         let mut next: Vec<String> = r.linked("supersedes").map(String::from).collect();
@@ -832,7 +837,7 @@ impl App {
         let mut rules: Vec<(Record, f64)> = Vec::new();
         for space in spaces {
             let store = self.incidents_of(space)?;
-            rules.extend(store.vector_top(&qv, 20, &Filter { kinds: vec![Kind::Preference], ..Default::default() })?.into_iter().filter(|(r, c)| *c >= 0.3 && r.tag != "superseded"));
+            rules.extend(store.vector_top(&qv, 20, &Filter { kinds: vec![Kind::Preference], ..Default::default() })?.into_iter().filter(|(r, c)| *c >= 0.3 && !crate::record::closed_tag(&r.tag)));
         }
         rules.sort_by(|a, b| b.1.total_cmp(&a.1));
         let rules: Vec<Record> = rules.into_iter().map(|(r, _)| r).take(3).collect();
@@ -950,6 +955,28 @@ impl App {
     }
 }
 
+/// The budgets a context may be asked with, in tokens: one outside is
+/// refused, not changed in silence.
+pub const BUDGETS: std::ops::RangeInclusive<usize> = 200..=50_000;
+
+/// The budget a request gives, as `?budget=` or a body's `budget`: 4,000
+/// when it gives none; a value that is not a whole number is refused.
+fn budget_of(raw: Option<String>) -> std::result::Result<usize, Fail> {
+    match raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        None => Ok(4000),
+        Some(s) => s.parse::<usize>().map_err(|_| bad(format!("budget is 200 to 50000 tokens, not {s:?}"))),
+    }
+}
+
+/// A body's `budget`, as [`budget_of`] reads it.
+fn body_budget(b: &Json) -> std::result::Result<usize, Fail> {
+    budget_of(match &b["budget"] {
+        Json::Null => None,
+        Json::String(s) => Some(s.clone()),
+        v => Some(v.to_string()),
+    })
+}
+
 /// A token budget as the context's parameters: the defaults hold about
 /// 4,000 tokens, scaled to `budget`.
 pub fn params_for(budget: usize) -> ContextParams {
@@ -1007,6 +1034,9 @@ pub struct Caller {
     /// A key limited to tables: each grant's table (a name, or a prefix and
     /// `*`) and scope.
     tables: Option<Vec<(String, u8)>>,
+    /// A key for operations (`propose`, `ops`: `x-chloedb-role`), which
+    /// reads tables as a read key does but not Claude Code's sessions.
+    role: Option<String>,
 }
 
 fn level(scope: &str) -> u8 {
@@ -1032,7 +1062,28 @@ impl Caller {
                 })
                 .collect()
         });
-        Caller { scope, tables }
+        let role = req.header("x-chloedb-role").map(|r| r.trim().to_ascii_lowercase()).filter(|r| !r.is_empty());
+        Caller { scope, tables, role }
+    }
+
+    /// Refuses a key for operations what holds Claude Code sessions'
+    /// transcripts: the synced memory and this machine's stores. An on-call
+    /// agent's key reads the cluster's tables, not people's sessions.
+    fn not_ops(&self, what: &str) -> std::result::Result<(), Fail> {
+        match &self.role {
+            Some(r) => Err(Fail(403, format!("{what} reads Claude Code sessions' transcripts, which a key for operations (role {r}) does not: use a read key limited to the project's table"))),
+            None => Ok(()),
+        }
+    }
+
+    /// Refuses (403) a read of synced table `table`.
+    pub(crate) fn may_read(&self, table: &str, what: &str) -> std::result::Result<(), Fail> {
+        self.may(1, Some(table), what)
+    }
+
+    /// Whether it may read table `table`.
+    pub(crate) fn reads_table(&self, table: &str) -> bool {
+        self.on(table) >= 1
     }
 
     /// What it may do to table `table`.
@@ -1093,6 +1144,9 @@ fn allowed(caller: &Caller, m: &str, p: &[&str], req: &Request) -> std::result::
             None => None,
         })
     };
+    if matches!(p, ["v1", "memory" | "local", ..]) {
+        caller.not_ops(&format!("{m} {}", req.path))?;
+    }
     let incidents = table_of(&named()?.unwrap_or_else(|| INCIDENTS.to_string()));
     let (need, table): (u8, Option<String>) = match (m, p) {
         ("GET", ["v1", "info"]) | ("GET", ["v1", "spaces"]) => return Ok(()),
@@ -1104,7 +1158,9 @@ fn allowed(caller: &Caller, m: &str, p: &[&str], req: &Request) -> std::result::
         ("GET", ["v1", "spaces", s, "notes" | "overview" | "sessions" | "records" | "graph", ..]) | ("GET" | "POST", ["v1", "spaces", s, "ask"]) | ("GET", ["v1", "spaces", s, "apps"]) | ("GET", ["v1", "spaces", s, "apps", "estimate"]) => (1, Some(table_of(s))),
         ("POST", ["v1", "spaces", s, "notes"]) | ("DELETE", ["v1", "spaces", s, "notes", _]) | ("POST", ["v1", "spaces", s, "exchanges"]) => (2, Some(table_of(s))),
         ("GET", ["v1", "incidents", ..]) => (1, Some(incidents)),
-        ("GET", ["v1", "memory", ..]) => (1, Some("chloectx_memory".to_string())),
+        // Each project's table is checked as the call reads it (the list
+        // shows the projects the caller reads).
+        ("GET", ["v1", "memory", ..]) => return Ok(()),
         ("POST", ["v1", "incidents"]) | ("POST", ["v1", "incidents", "draft"]) => (2, Some(incidents)),
         // Asking a store of this machine reads it.
         ("GET", _) | ("POST", ["v1", "local", _, "ask"]) => (1, None),
@@ -1156,6 +1212,13 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
     let num = |k: &str, d: usize| req.param(k).and_then(|v| v.parse().ok()).unwrap_or(d);
     let caller = Caller::of(req);
     allowed(&caller, m, &p, req)?;
+    // A synced project is read from its table, which the caller must read.
+    if let ("GET", ["v1", "memory", _]) = (m, p.as_slice()) {
+        let project = req.param("project").unwrap_or("");
+        if let Some(t) = app.memory_table(project)? {
+            caller.may_read(&t, &format!("{m} {} of project {project}", req.path))?;
+        }
+    }
     match (m, p.as_slice()) {
         ("GET", ["v1", "info"]) => Ok(app.info()),
         ("GET", ["v1", "spaces"]) => {
@@ -1166,7 +1229,15 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
             }
             Ok(j)
         }
-        ("GET", ["v1", "memory"]) => app.memory(),
+        ("GET", ["v1", "memory"]) => app.memory(&caller),
+        // A project's table, for the Inspector's setup to make it and a key.
+        ("GET", ["v1", "memory", "table"]) => {
+            let project = req.param("project").unwrap_or("").trim().to_string();
+            if project.is_empty() {
+                return Err(bad("which project? (?project=owner/name, as `chloectx sync status` says it syncs)"));
+            }
+            Ok(json!({"project": project, "table": crate::sync::table_for(&project), "create": crate::sync::create_for(&project)}))
+        }
         ("GET", ["v1", "memory", "sessions"]) => app.memory_sessions(req.param("project").unwrap_or("")),
         ("GET", ["v1", "memory", "notes"]) => app.memory_notes(req.param("project").unwrap_or(""), req.param("kind"), req.param("all").is_some_and(|v| v == "1" || v == "true")),
         ("GET", ["v1", "memory", "overview"]) => app.memory_overview(req.param("project").unwrap_or("")),
@@ -1201,10 +1272,10 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         ("GET", ["v1", "spaces", s, "graph"]) => app.space_view(s, &json!({"what": "graph"})),
         ("GET", ["v1", "spaces", s, "sessions"]) => app.space_view(s, &json!({"what": "sessions"})),
         ("GET", ["v1", "spaces", s, "records"]) => app.space_view(s, &view_args(req, "records")),
-        ("GET", ["v1", "spaces", s, "ask"]) => app.ask(s, req.param("q").unwrap_or(""), num("budget", 4000)),
+        ("GET", ["v1", "spaces", s, "ask"]) => app.ask(s, req.param("q").unwrap_or(""), budget_of(req.param("budget").map(String::from))?),
         ("POST", ["v1", "spaces", s, "ask"]) => {
             let b = body_json(req)?;
-            app.ask(s, b["question"].as_str().or(b["q"].as_str()).unwrap_or(""), b["budget"].as_u64().map_or(4000, |n| n as usize))
+            app.ask(s, b["question"].as_str().or(b["q"].as_str()).unwrap_or(""), body_budget(&b)?)
         }
         ("GET", ["v1", "incidents"]) => app.incidents(&incident_spaces(app, &caller, req.param("space"))?),
         ("POST", ["v1", "incidents"]) => {
@@ -1248,7 +1319,11 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         ("GET", ["v1", "local", st, "notes", id]) => app.local_rpc(st, &json!({"op": "view", "what": "history", "id": id}), 60),
         ("POST", ["v1", "local", st, "ask"]) => {
             let b = body_json(req)?;
-            app.local_rpc(st, &json!({"op": "view", "what": "ask", "question": b["question"].as_str().or(b["q"].as_str()).unwrap_or(""), "budget": b["budget"].as_u64().unwrap_or(4000)}), 60)
+            let budget = body_budget(&b)?;
+            if !BUDGETS.contains(&budget) {
+                return Err(bad(format!("budget is 200 to 50000 tokens, not {budget}")));
+            }
+            app.local_rpc(st, &json!({"op": "view", "what": "ask", "question": b["question"].as_str().or(b["q"].as_str()).unwrap_or(""), "budget": budget}), 60)
         }
         ("GET", ["v1", "local", st, "capsules"]) => app.local_rpc(st, &json!({"op": "capsule", "what": "list"}), 30),
         ("POST", ["v1", "local", st, "capsules"]) => {
@@ -1527,6 +1602,33 @@ mod tests {
         assert!(check("POST", "/v1/spaces", &[], r#"{"name": "x"}"#).is_ok());
         let c = Caller::of(&request("GET", "/v1/spaces", &own, ""));
         assert!(c.reads("ops_a") && !c.reads("other"));
+    }
+
+    #[test]
+    fn keys_for_operations_read_no_sessions_and_a_project_key_reads_its_project() {
+        // X-F1: an on-call agent's `ops` key read every synced transcript,
+        // and with --local-stores every session on the machine.
+        let ops = [("x-chloedb-scope", "read"), ("x-chloedb-role", "ops")];
+        let propose = [("x-chloedb-scope", "read"), ("x-chloedb-role", "propose")];
+        for h in [&ops[..], &propose[..]] {
+            for p in ["/v1/memory", "/v1/memory/sessions?project=acme/web", "/v1/memory/records?project=acme/web", "/v1/local", "/v1/local/x/overview"] {
+                assert_eq!(check("GET", p, h, ""), Err(403), "{p} {h:?}");
+            }
+            // The spaces are the cluster's tables, read as before.
+            assert!(check("GET", "/v1/spaces/any/notes", h, "").is_ok());
+        }
+        let reader = [("x-chloedb-scope", "read")];
+        assert!(check("GET", "/v1/memory", &reader, "").is_ok());
+        assert!(check("GET", "/v1/local", &reader, "").is_ok());
+        // A key limited to one project's table passes the gate; the route
+        // checks the table the project is read from.
+        let t = crate::sync::table_for("acme/web");
+        let grant = format!("{t}=write");
+        let project_key = [("x-chloedb-scope", "write"), ("x-chloedb-tables", grant.as_str())];
+        assert!(check("GET", "/v1/memory/overview?project=acme/web", &project_key, "").is_ok());
+        let c = Caller::of(&request("GET", "/v1/memory", &project_key, ""));
+        assert!(c.reads_table(&t) && !c.reads_table(&crate::sync::table_for("acme/payroll")) && !c.reads_table(crate::sync::TABLE));
+        assert_eq!(c.may_read(&crate::sync::table_for("acme/payroll"), "GET").map_err(|f| f.0), Err(403));
     }
 
     #[test]

@@ -27,8 +27,9 @@
 //! [`HEDGE_SHARE`] of calls. A replica that refuses a query because too
 //! many are running is not relieved by asking its sibling, which would
 //! only be loaded more: the query fails (or leaves the shard out of a
-//! partial answer). A replica that failed, or was outrun, is asked last
-//! for [`CoordOptions::cool_off`]. With
+//! partial answer). A replica that failed, or was outrun after it had
+//! [`CoordOptions::hedge`] to answer, is asked last for
+//! [`CoordOptions::cool_off`]. With
 //! [`CoordOptions::partial`], a query whose shard has no replica answering
 //! is answered from the other shards and says which are missing, and the
 //! queries of the next second leave that shard out without asking it.
@@ -126,7 +127,8 @@ pub use moves::{plan_even, MOVE_SLOTS};
 pub struct CoordOptions {
     /// Ask another replica of a shard when one has not answered after this.
     pub hedge: Duration,
-    /// Ask a replica that failed or was outrun last, for this long.
+    /// Ask a replica that failed, or was outrun after it had
+    /// [`Self::hedge`] to answer, last, for this long.
     pub cool_off: Duration,
     /// Give up on a shard after this long (`None`: at the query's deadline).
     pub shard_timeout: Option<Duration>,
@@ -171,7 +173,7 @@ pub struct CoordOptions {
     pub hedge_adaptive: bool,
     /// With [`Route::LeastCost`]: cost a replica for a read that must see a
     /// write (`min_seq_nos`) by its round trips of such reads, unless it is
-    /// known to hold the write (`--prefer-caught-up`).
+    /// known to hold the write (`--prefer-caught-up`). On by default.
     pub prefer_caught_up: bool,
     /// With [`Route::LeastCost`]: count the load each replica reported in
     /// the coordinator's survey. On by default; off only to measure what
@@ -186,11 +188,15 @@ pub struct CoordOptions {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Route {
     /// Each in turn, those in their cool-off (failed or outrun) last.
-    #[default]
     RoundRobin,
     /// In turn too, unless another costs clearly less, by what this
     /// coordinator observed of each (round trip, calls in flight, errors,
-    /// refusals) and the load each reported ([`crate::cores::route`]).
+    /// refusals) and the load each reported ([`crate::cores::route`]);
+    /// those in their cool-off last, unless every one is. The default: on
+    /// copies alike it cut p99 by about a third against
+    /// [`Route::RoundRobin`] at 16 and 64 clients, and it asks a slow or
+    /// busy copy less.
+    #[default]
     LeastCost,
 }
 
@@ -225,9 +231,9 @@ impl Default for CoordOptions {
             stats_cache_terms: STATS_CACHE_TERMS,
             local: None,
             write_every_copy: false,
-            route: Route::RoundRobin,
+            route: Route::LeastCost,
             hedge_adaptive: false,
-            prefer_caught_up: false,
+            prefer_caught_up: true,
             route_load: true,
         }
     }
@@ -838,7 +844,7 @@ struct Read {
     /// The slot map's epoch, sent from protocol 4.
     epoch: u64,
     /// The write each shard's answer must see ([`Coordinator::after`]).
-    after: Vec<u64>,
+    after: Mins,
     /// Ask each shard for its steps' CPU time (`QueryRequest.profile`).
     profile: bool,
     /// Ask each shard to answer without its steps (`QueryRequest.skip_steps`).
@@ -855,11 +861,11 @@ impl Read {
             (true, Some(p)) => Some(plan_pb::to_pb_plan(p)),
             (true, None) => Some(plan_pb::to_pb_plan(&typed()?)),
         };
-        Ok(Read { sql: sql.to_string(), params: params_to_pb(params), plan_json: plan_json(given)?, plan, epoch, after: Vec::new(), profile: false, skip_steps: false })
+        Ok(Read { sql: sql.to_string(), params: params_to_pb(params), plan_json: plan_json(given)?, plan, epoch, after: Mins::default(), profile: false, skip_steps: false })
     }
 
     /// The read, seeing the writes `after` names, one per shard.
-    fn after(self, after: Vec<u64>) -> Read {
+    fn after(self, after: Mins) -> Read {
         Read { after, ..self }
     }
 
@@ -875,20 +881,39 @@ impl Read {
 
     /// The number of the write shard `i`'s answer must see (0: none).
     fn min(&self, i: usize) -> u64 {
-        self.after.get(i).copied().unwrap_or(0)
+        self.after.seq(i)
     }
 
     /// The request to shard `i` in `protocol`. A server before protocol 5
     /// passes over `min_seq_no` ([`Coordinator::reads_after`]).
     fn request(&self, protocol: u32, i: usize) -> pb::QueryRequest {
-        let min_seq_no = self.min(i);
+        let (min_seq_no, min_seq_term) = (self.min(i), self.after.term(i));
         match (&self.plan, protocol >= 2) {
             (Some(plan), true) => {
                 let epoch = if protocol >= 4 { self.epoch } else { 0 };
-                pb::QueryRequest { sql: self.sql.clone(), protocol, plan: Some(plan.clone()), epoch, min_seq_no, profile: self.profile, skip_steps: self.skip_steps, ..Default::default() }
+                pb::QueryRequest { sql: self.sql.clone(), protocol, plan: Some(plan.clone()), epoch, min_seq_no, min_seq_term, profile: self.profile, skip_steps: self.skip_steps, ..Default::default() }
             }
-            _ => pb::QueryRequest { sql: self.sql.clone(), params: self.params.clone(), plan_json: self.plan_json.clone(), protocol: 1, min_seq_no, profile: self.profile, skip_steps: self.skip_steps, ..Default::default() },
+            _ => pb::QueryRequest { sql: self.sql.clone(), params: self.params.clone(), plan_json: self.plan_json.clone(), protocol: 1, min_seq_no, min_seq_term, profile: self.profile, skip_steps: self.skip_steps, ..Default::default() },
         }
+    }
+}
+
+/// The write each shard's answer must see ([`Coordinator::after`]): its
+/// number, and its term when the client gave it (X-E1; 0: not given),
+/// one per shard (fewer: 0 for the rest).
+#[derive(Clone, Debug, Default)]
+struct Mins {
+    seqs: Vec<u64>,
+    terms: Vec<u64>,
+}
+
+impl Mins {
+    fn seq(&self, i: usize) -> u64 {
+        self.seqs.get(i).copied().unwrap_or(0)
+    }
+
+    fn term(&self, i: usize) -> u64 {
+        self.terms.get(i).copied().unwrap_or(0)
     }
 }
 
@@ -1050,6 +1075,18 @@ tokio::task_local! {
     /// What a write did on each shard when it failed on some after others
     /// took it ([`with_partial`]).
     static PARTIAL: std::cell::RefCell<Option<Json>>;
+}
+
+tokio::task_local! {
+    /// Set for a plan's run, in the background, when whoever applied or
+    /// resumed it holds the cluster's token ([`Coordinator::may_admit`]).
+    pub static ADMITTING: bool;
+}
+
+/// Why a server is not added for the request being served: adding one
+/// sends it the cluster's token (audit CLU-3).
+pub fn admit_refused(what: &str) -> ApiError {
+    ApiError::coded(403, "cluster_token_required", format!("{what} takes the cluster's token: the coordinator sends it to the server it adds, so a key or the admin token may not name one (on Kubernetes the operator adds them with the clusterTokenSecret)"))
 }
 
 /// Runs `f`, and answers with it what a write through a coordinator did
@@ -1411,17 +1448,18 @@ fn refuses_reads(s: &tonic::Status) -> bool {
 /// started with another `--cluster-token`: the coordinator sends every
 /// replica the same one, and the others take it.
 fn try_elsewhere(s: &tonic::Status) -> bool {
-    !matches!(
-        s.code(),
-        Code::InvalidArgument
-            | Code::NotFound
-            | Code::AlreadyExists
-            | Code::PermissionDenied
-            | Code::FailedPrecondition
-            | Code::OutOfRange
-            | Code::Unimplemented
-            | Code::ResourceExhausted
-    )
+    !crate::too_deep_to_decode(s)
+        && !matches!(
+            s.code(),
+            Code::InvalidArgument
+                | Code::NotFound
+                | Code::AlreadyExists
+                | Code::PermissionDenied
+                | Code::FailedPrecondition
+                | Code::OutOfRange
+                | Code::Unimplemented
+                | Code::ResourceExhausted
+        )
 }
 
 /// How a call to a replica ended, for what is kept of the replica
@@ -1460,6 +1498,8 @@ fn token_refused(mut j: Json, e: &tonic::Status) -> Json {
 struct Wrote {
     rows: u64,
     seq_no: u64,
+    /// The term of that transaction (0: a shard before the field).
+    seq_term: u64,
     skipped: u64,
     /// What its operations found, from a shard of [`RECEIPT_PROTOCOL`].
     receipt: Option<crate::service::Receipt>,
@@ -1894,9 +1934,9 @@ impl Coordinator {
             true => t.replicas[i][r].stats.hedge_ms().map_or(self.opts.hedge, |ms| Duration::from_secs_f64(ms / 1e3).clamp(HEDGE_FLOOR, self.opts.hedge.max(HEDGE_FLOOR))),
             false => self.opts.hedge,
         };
-        // When each asked replica was asked: one outrun before --hedge-ms
-        // by an adaptive hedge was slower than usual, not failing, and is
-        // not put in its cool-off.
+        // When each asked replica was asked: one outrun less than
+        // --hedge-ms after it was asked was not given its time, or was
+        // slower than usual, not failing, and is not put in its cool-off.
         let mut asked_at = Vec::new();
         pending.push(launch(order[0], false));
         asked.push(order[0]);
@@ -1913,11 +1953,13 @@ impl Coordinator {
                         // Replicas still working were outrun (and those that
                         // failed are avoided already).
                         for (k, &other) in asked.iter().enumerate().filter(|&(_, &o)| o != r && !passed.contains(&o)) {
-                            // Outrun before --hedge-ms by an adaptive hedge, or
-                            // while waiting for a write it is not known to hold
-                            // (--prefer-caught-up): slower than usual, or
-                            // behind, not failing.
-                            let early = self.opts.hedge_adaptive && asked_at[k].elapsed() < self.opts.hedge;
+                            // Outrun less than --hedge-ms after it was asked
+                            // (a hedge the copy asked before it outran, or an
+                            // adaptive hedge), or while waiting for a write it
+                            // is not known to hold (--prefer-caught-up): not
+                            // given its time, slower than usual, or behind,
+                            // not failing.
+                            let early = asked_at[k].elapsed() < self.opts.hedge;
                             let behind = self.opts.prefer_caught_up && self.opts.route == Route::LeastCost && min > 0 && t.replicas[i][other].stats.held() < min;
                             if !early && !behind {
                                 self.avoid(t, i, other);
@@ -2024,11 +2066,11 @@ impl Coordinator {
     /// The number of the write each shard's answer must see: `min_seq_nos`
     /// as the coordinator's writes answer them (`seq_nos`), one per shard
     /// (fewer: 0 for the rest).
-    fn after(&self, t: &Topology, after: &After) -> Result<Vec<u64>, ApiError> {
-        let mins = match after {
-            After::Any => return Ok(Vec::new()),
-            After::Seq(_) => return Err(ApiError::bad("a coordinator takes min_seq_nos, one sequence number per shard, as its writes answer seq_nos; min_seq_no is a server's")),
-            After::Shards(v) => v,
+    fn after(&self, t: &Topology, after: &After) -> Result<Mins, ApiError> {
+        let (mins, terms) = match after {
+            After::Any => return Ok(Mins::default()),
+            After::Seq(..) => return Err(ApiError::bad("a coordinator takes min_seq_nos, one sequence number per shard, as its writes answer seq_nos; min_seq_no is a server's")),
+            After::Shards(v, terms) => (v, terms),
         };
         if mins.len() > t.replicas.len() {
             return Err(ApiError::bad(format!("min_seq_nos has {} numbers, and the coordinator {} shards", mins.len(), t.replicas.len())));
@@ -2036,7 +2078,7 @@ impl Coordinator {
         if let Some(i) = (0..mins.len()).find(|&i| mins[i] > 0 && !self.numbered_alike(t, i)) {
             return Err(ApiError::bad(format!("min_seq_nos names a write on shard {i}, whose replicas each number their own writes: its write answers 0 there")));
         }
-        Ok(mins.clone())
+        Ok(Mins { seqs: mins.clone(), terms: terms.clone() })
     }
 
     fn named(&self, url: &str, s: tonic::Status) -> ApiError {
@@ -2169,16 +2211,16 @@ impl Coordinator {
         let calls = asked.iter().enumerate().filter(|(_, a)| !a.is_empty()).map(|(i, a)| async move {
             let pb_keys: Vec<pb::Value> = a.iter().map(|&j| crate::grpc::to_pb(&keys[j])).collect();
             let got = self
-                .call(t, i, start, None, after.get(i).copied().unwrap_or(0), deadline, |r, mut c| {
+                .call(t, i, start, None, after.seq(i), deadline, |r, mut c| {
                     let pb_keys = pb_keys.clone();
                     async move {
                         let p = self.speak(t, i, r, &mut c, PROTOCOL).await?;
                         if p < GET_PROTOCOL {
                             return Err(tonic::Status::unimplemented(format!("it speaks protocol {p}, and reads by key need {GET_PROTOCOL}: upgrade it")));
                         }
-                        let min_seq_no = after.get(i).copied().unwrap_or(0);
+                        let min_seq_no = after.seq(i);
                         self.reads_after(t, i, r, min_seq_no)?;
-                        c.get(pb::GetRequest { table: schema.table.clone(), keys: pb_keys, timeout_ms: ms_left(deadline), protocol: p, epoch: t.epoch(), min_seq_no, ..Default::default() }).await
+                        c.get(pb::GetRequest { table: schema.table.clone(), keys: pb_keys, timeout_ms: ms_left(deadline), protocol: p, epoch: t.epoch(), min_seq_no, min_seq_term: after.term(i), ..Default::default() }).await
                     }
                 })
                 .await?;
@@ -2240,12 +2282,12 @@ impl Coordinator {
         let after = &self.after(t, after)?;
         let (sql, params) = (&call.sql(), &params_to_pb(params));
         let calls = (0..t.replicas.len()).map(|i| async move {
-            self.call(t, i, start, None, after.get(i).copied().unwrap_or(0), deadline, |r, mut c| async move {
+            self.call(t, i, start, None, after.seq(i), deadline, |r, mut c| async move {
                 let p = self.speak(t, i, r, &mut c, PROTOCOL).await?;
-                let min_seq_no = after.get(i).copied().unwrap_or(0);
+                let min_seq_no = after.seq(i);
                 self.reads_after(t, i, r, min_seq_no)?;
                 let epoch = if p >= 4 { t.epoch() } else { 0 };
-                c.query(pb::QueryRequest { sql: sql.clone(), params: params.clone(), protocol: p, epoch, min_seq_no, timeout_ms: ms_left(deadline), ..Default::default() }).await
+                c.query(pb::QueryRequest { sql: sql.clone(), params: params.clone(), protocol: p, epoch, min_seq_no, min_seq_term: after.term(i), timeout_ms: ms_left(deadline), ..Default::default() }).await
             })
             .await
         });
@@ -2944,7 +2986,7 @@ impl Coordinator {
         for a in join_all(calls).await {
             let a = a?.into_inner();
             let receipt = a.receipt.then_some(crate::service::Receipt { inserted: a.inserted, replaced: a.replaced, updated: a.updated, deleted: a.deleted, collapsed: a.collapsed, not_found: a.not_found });
-            written.get_or_insert(Wrote { rows: a.written, seq_no: a.seq_no.filter(|_| one).unwrap_or(0), skipped: a.skipped, receipt });
+            written.get_or_insert(Wrote { rows: a.written, seq_no: a.seq_no.filter(|_| one).unwrap_or(0), seq_term: a.seq_term.filter(|_| one).unwrap_or(0), skipped: a.skipped, receipt });
         }
         Ok(written.unwrap_or_default())
     }
@@ -2954,6 +2996,7 @@ impl Coordinator {
     /// one is 0).
     fn written(&self, t: &Topology, shards: Vec<(usize, Wrote)>) -> Written {
         let mut seq_nos = vec![0; t.replicas.len()];
+        let mut seq_terms = vec![0; t.replicas.len()];
         let (mut rows, mut skipped) = (0, 0);
         // Known while every shard written said what it found.
         let mut receipt = Some(crate::service::Receipt::default());
@@ -2962,6 +3005,7 @@ impl Coordinator {
             rows += w.rows;
             skipped += w.skipped;
             seq_nos[i] = w.seq_no;
+            seq_terms[i] = w.seq_term;
             match (&mut receipt, &w.receipt) {
                 (Some(all), Some(r)) => all.add(r),
                 _ => receipt = None,
@@ -2984,8 +3028,11 @@ impl Coordinator {
         if seq_nos.iter().all(|&s| s == 0) {
             seq_nos.clear();
         }
+        if seq_nos.is_empty() || seq_terms.iter().all(|&t| t == 0) {
+            seq_terms.clear();
+        }
         parts.sort_by_key(|p| p.shard);
-        Written { rows, seq_nos, skipped, receipt: receipt.filter(|_| !parts.is_empty()), shards: parts, ..Default::default() }
+        Written { rows, seq_nos, seq_terms, skipped, receipt: receipt.filter(|_| !parts.is_empty()), shards: parts, ..Default::default() }
     }
 
     /// An INSERT goes to the shards of its documents' keys (or their
@@ -3331,7 +3378,12 @@ impl Coordinator {
                     let refs: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
                     let profiles = self.rank_profiles();
                     let profile = |t: &str, n: &str| profiles.iter().find(|(pt, p)| pt.eq_ignore_ascii_case(t) && p.name.eq_ignore_ascii_case(n)).map(|(_, p)| p.clone());
-                    chloedb::query::compound::plan_read_calling(&f.def.body, &refs, &params, &profile, &self.functions()).map_err(|e| ApiError::bad(format!("query error: the body of {} does not plan: {e}", f.def.name)))?;
+                    // Planned as a statement is (X-B12): with the stack a
+                    // deep body needs, and stopped at a deadline.
+                    let opts = chloedb::query::exec::ExecOptions { deadline: Some(std::time::Instant::now() + std::time::Duration::from_secs(10)), ..Default::default() };
+                    let functions = self.functions();
+                    chloedb::query::budget::guarded(&f.def.body, &opts, |_| chloedb::query::compound::plan_read_calling(&f.def.body, &refs, &params, &profile, &functions))
+                        .map_err(|e| ApiError::bad(format!("query error: the body of {} does not plan: {e}", f.def.name)))?;
                 }
                 Some(Statement::Create { def: f.def.clone(), replace: true, at: Some(f.version) })
             }
@@ -4124,6 +4176,7 @@ impl Coordinator {
             "role": "coordinator", "status": status, "at_ms": wall, "shards": shards, "slot_epoch": t.epoch(), "slot_count": crate::slots::SLOTS,
             "protocol": t.protocol(), "retries": self.retries.load(Ordering::Relaxed), "hedges": self.hedges.load(Ordering::Relaxed),
             "hedge_ms": self.opts.hedge.as_millis() as u64,
+            "route": self.opts.route.name(), "hedge_adaptive": self.opts.hedge_adaptive, "prefer_caught_up": self.opts.prefer_caught_up,
             "changes": self.can_change(t),
             "shards_by_state": by_state, "copies": {"total": copies, "down": copies_down},
         })
@@ -4158,6 +4211,10 @@ impl Coordinator {
         let now = self.now_ms();
         let mut shards = Vec::new();
         let (mut docs, mut segments, mut all_up, mut every_shard) = (0, 0, true, true);
+        // LIV-13: the rows of every table, summed over the shards from the
+        // health each copy sends (`docs` counts the first table only); none
+        // when a shard does not say (an older server).
+        let mut tables: Option<serde_json::Map<String, Json>> = Some(Default::default());
         for (i, answers) in join_all(calls).await.into_iter().enumerate() {
             let mut replicas = Vec::new();
             // Counted from a replica that is "ok", else from any answering:
@@ -4167,10 +4224,13 @@ impl Coordinator {
                 let mut j = match a {
                     Ok(Ok(h)) => {
                         let h = h.into_inner();
-                        if h.status == "ok" {
-                            counted.get_or_insert((h.docs, h.segments));
+                        let per_table = || serde_json::from_str::<Json>(&h.detail).ok().and_then(|d| d["health"]["tables"].as_object().cloned());
+                        if h.status == "ok" && counted.is_none() {
+                            counted = Some((h.docs, h.segments, per_table()));
                         }
-                        answering.get_or_insert((h.docs, h.segments));
+                        if answering.is_none() {
+                            answering = Some((h.docs, h.segments, per_table()));
+                        }
                         json!({"url": r.url, "status": h.status, "docs": h.docs, "segments": h.segments, "txn": h.txn})
                     }
                     Ok(Err(e)) => token_refused(json!({"url": r.url, "status": "down", "error": e.message()}), &e),
@@ -4187,11 +4247,22 @@ impl Coordinator {
                 replicas.push(j);
             }
             let counted = counted.or(answering);
-            every_shard &= counted.is_some();
-            let (d, s) = counted.unwrap_or((0, 0));
+            let answered = counted.is_some();
+            every_shard &= answered;
+            // A shard that does not answer: its rows are not known, nor the sum.
+            let (d, s, per_table) = counted.unwrap_or((0, 0, None));
+            match (tables.as_mut(), per_table) {
+                (Some(all), Some(these)) => {
+                    for (t, n) in these {
+                        let sum = all.get(&t).and_then(Json::as_u64).unwrap_or(0) + n.as_u64().unwrap_or(0);
+                        all.insert(t, json!(sum));
+                    }
+                }
+                _ => tables = None,
+            }
             docs += d;
             segments += s;
-            let status = if counted.is_none() { "down" } else { "ok" };
+            let status = if answered { "ok" } else { "down" };
             let mut shard = json!({"url": t.shards[i], "status": status, "docs": d, "segments": s});
             // Two copies taking writes, each in its own term: the older
             // has not heard of the newer yet.
@@ -4213,10 +4284,15 @@ impl Coordinator {
             shards.push(shard);
         }
         let status = if all_up { "ok" } else if every_shard { "degraded" } else { "down" };
-        json!({
+        let mut h = json!({
             "status": status, "role": "coordinator", "docs": docs, "segments": segments, "txn": 0, "shards": shards,
             "retries": self.retries.load(Ordering::Relaxed), "hedges": self.hedges.load(Ordering::Relaxed), "protocol": t.protocol(), "slot_epoch": t.epoch(),
-        })
+        });
+        if let Some(tables) = tables {
+            h["rows"] = json!(tables.values().filter_map(Json::as_u64).sum::<u64>());
+            h["tables"] = Json::Object(tables);
+        }
+        h
     }
 }
 
@@ -4348,17 +4424,31 @@ impl Coordinator {
         let _one = self.changing.lock().await;
         let lease = self.lease.get();
         let mut doubt = self.doubt.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut kept = None;
         if let Some(l) = lease {
             // The map another coordinator, or this one before it started
             // again, left in doubt: the newer of it and this one's own.
-            let kept = l.take(crate::operator::lease::WAIT, &crate::operator::now_ms).await?;
+            kept = l.take(crate::operator::lease::WAIT, &crate::operator::now_ms).await?;
             if kept.as_ref().map_or(0, |m| m.epoch) > doubt.as_ref().map_or(0, |m| m.epoch) {
-                doubt = kept;
+                doubt = kept.clone();
             }
         }
-        let r = self.change_held(f, first, doubt, lease).await;
+        let (mut change, step) = core::Change::new(first, doubt);
+        let r = self.change_held(f, &mut change, step, lease).await;
         if let Some(l) = lease {
-            let left = self.doubt.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            // The newest map a server may hold, which the next change gives
+            // again first unless the servers it reaches hold it: the one
+            // this change left in doubt, and also the map it made, the map
+            // in doubt it gave again and a server took, and the one the
+            // Lease kept as it began (of two of one epoch, the later in
+            // that list). With only the map in doubt kept, a change that
+            // was made while a server did not answer left nothing there,
+            // and the next, on a coordinator that reached only that server,
+            // made a second map of the epoch (TLC, spec/clustermap
+            // `LeaseRacing`).
+            let own = self.doubt.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let made = r.as_ref().ok().map(|(m, _)| m.clone());
+            let left = [kept, change.redone().cloned(), own, made].into_iter().flatten().max_by_key(|m| m.epoch);
             if let Err(e) = l.release(left.as_ref(), crate::operator::now_ms()).await {
                 // The map it last kept there stays in doubt: given again,
                 // which is safe, by the next change.
@@ -4368,9 +4458,9 @@ impl Coordinator {
         r
     }
 
-    /// A [`Self::change`], with the Lease held when there is one.
-    async fn change_held(&self, f: impl Fn(&SlotMap) -> Result<SlotMap, String>, first: &[String], doubt: Option<SlotMap>, lease: Option<&crate::operator::lease::MapLease>) -> Result<(SlotMap, Vec<String>), ApiError> {
-        let (mut change, mut step) = core::Change::new(first, doubt);
+    /// A [`Self::change`] from its first step, with the Lease held when
+    /// there is one.
+    async fn change_held(&self, f: impl Fn(&SlotMap) -> Result<SlotMap, String>, change: &mut core::Change, mut step: core::ChangeStep, lease: Option<&crate::operator::lease::MapLease>) -> Result<(SlotMap, Vec<String>), ApiError> {
         let mut t = self.topo();
         // The epoch of the map last given to a server, which may hold it.
         let mut given = 0;
@@ -4463,7 +4553,29 @@ impl Coordinator {
     /// no rows (unless `force`) and no slot map, and serve the cluster's
     /// first table: of a cluster that began with no tables, the
     /// placeholder, which a server made with no tables serves.
+    /// Whether the request being served may add a server to the cluster:
+    /// the coordinator dials it with the cluster's token, before it knows
+    /// what answers there (audit CLU-3), so only the holder of that token
+    /// names one (the token of a coordinator with no cluster token; anyone
+    /// on an open cluster, which has no token to give away). A plan's run
+    /// may when whoever applied or resumed it did ([`ADMITTING`]); the
+    /// process's own work, outside any request, may.
+    pub fn may_admit(&self) -> bool {
+        if self.opts.token.is_none() {
+            return true;
+        }
+        match ADMITTING.try_with(|a| *a) {
+            Ok(a) => a,
+            // Every request over HTTP or gRPC says whether it is the
+            // cluster's own ([`crate::service::OWN`]).
+            Err(_) => crate::service::OWN.try_with(|o| *o).unwrap_or(true),
+        }
+    }
+
     async fn admit(&self, url: &str, force: bool) -> Result<(Client, Said), ApiError> {
+        if !self.may_admit() {
+            return Err(admit_refused(&format!("adding {url} to the cluster")));
+        }
         let t = self.topo();
         if let Some(i) = t.replicas.iter().position(|rs| rs.iter().any(|r| r.url == url)) {
             return Err(ApiError::bad(format!("{url} serves shard {i} already")));

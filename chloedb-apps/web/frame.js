@@ -15,9 +15,31 @@
 
   const text = (e) => (e && (e.stack || e.message)) || String(e);
   let reported = 0;
+  // A call the network, a restarting engine or a busy server did not answer
+  // (transient) is no fault of the view's code: it is said to the person and
+  // tried again, never reported as an error (which could start a repair).
+  // offline(true) keeps the note until offline(false) (a screen reading
+  // again until it is answered); offline() shows it for a few seconds.
+  let offlineTimer = 0;
+  const offline = (on) => {
+    let el = document.querySelector('.__toast.__offline');
+    if (on === false) { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement('div');
+      el.className = '__toast __offline';
+      el.setAttribute('role', 'status');
+      el.textContent = 'No answer from the app just now (the connection, or it is restarting). Trying again…';
+      document.body.append(el);
+    }
+    clearTimeout(offlineTimer);
+    if (on !== true) offlineTimer = setTimeout(() => el.remove(), 4000);
+  };
+  window.__sa_offline = offline;
   const report = (e) => {
-    // A rule's refusal ("Only 2 left") is an answer for the person, not a bug.
+    // A rule's refusal ("Only 2 left") is an answer for the person, not a bug;
+    // so is a call this visitor may not make ("read-only for visitors").
     if (e && e.refused) return;
+    if (e && e.transient) { offline(); return; }
     if (reported++ > 3) return;
     const message = e && e.message ? e.message : String(e);
     console.error(e);
@@ -47,7 +69,8 @@
   // next write): how many taps it takes to do something is a measure of use.
   document.addEventListener('click', (e) => { if (e.isTrusted && !pickingNow && e.target !== document.documentElement && e.target !== document.body) post({ kind: 'tap' }); }, true);
   window.addEventListener('error', (e) => report(e.error || e.message));
-  window.addEventListener('unhandledrejection', (e) => report(e.reason));
+  // A refusal no code caught is still said to the person, quietly.
+  window.addEventListener('unhandledrejection', (e) => { if (e.reason && e.reason.refused && e.reason.message) app.toast(e.reason.message); report(e.reason); });
 
   // The design's look (--look: native, plain, bold) as an attribute the stylesheet
   // and the screen renderer read; a screen draws again when it changes.
@@ -78,7 +101,7 @@
         // refusal and only says it ("Could not book: Sign in first"). Reads
         // never do: a page that reads what it may not shows what it can.
         if (m.auth && ['call', 'insert', 'update', 'remove', 'pay'].includes(p.method) && typeof window.__sa_askSignIn === 'function') window.__sa_askSignIn();
-        p.reject(Object.assign(new Error(m.error), m.refused ? { refused: true } : {}, m.auth ? { auth: true } : {}));
+        p.reject(Object.assign(new Error(m.error), m.refused ? { refused: true } : {}, m.auth ? { auth: true } : {}, m.transient ? { transient: true } : {}));
       }
       else p.resolve(m.value);
     } else if (m.kind === 'design') {
@@ -357,6 +380,10 @@
     // the app's locale ("es-ES"), or undefined for the browser's
     locale: LOCALE,
     view: SA.slug,
+    // What this person may do with the app's data: null for its owner (all
+    // of it), else a published app's choice for visitors: 'look' (read
+    // only), 'add' (add, and change what they added) or 'change'.
+    access: SA.access || null,
     // people: one account for every app on this engine
     me: () => rpc('me', []),
     // (a sign-in or out is told to the page: 'sa-signed' on window, its user)
@@ -377,6 +404,8 @@
     createCompany: (name) => rpc('createCompany', [String(name || '')]),
     useCompany: (id) => rpc('useCompany', [String(id || '')]),
     addToCompany: (company, email, role) => rpc('addToCompany', [String(company || ''), String(email || ''), role || 'member']),
+    // a company that invited the person (app.companies() lists it with invited)
+    joinCompany: (id) => rpc('joinCompany', [String(id || '')]),
     // files: upload(File | FileList | File[]) -> {id, name, type, size, url}
     upload: (f) => (f && typeof f.length === 'number' && !(f instanceof Blob) ? Promise.all(Array.from(f).map(one)) : one(f)),
     fileUrl: (id, opts) => (!id ? '' : /^(https?:|data:|blob:)/.test(String(id)) ? String(id) : `${files}${encodeURIComponent(id)}${opts && opts.download ? '?download' : ''}`),

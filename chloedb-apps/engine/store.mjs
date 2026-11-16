@@ -31,10 +31,12 @@ const SYSTEM_TABLES = {
   // What people do in an app, one row per thing done: the kind (open, leave,
   // action, abandon, insert, update, delete, call, error), where (the browser
   // tab's session, the screen) and what (the table and row written, the fields
-  // changed, the words searched for and how many rows they found, how long).
+  // changed, the words searched for and how many rows they found, how long),
+  // and whose it was: src "owner" for the app's owner trying it in the studio
+  // or the command center, which Usage leaves out of its people by default.
   sa_events: `CREATE TABLE sa_events (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, kind KEYWORD, cap KEYWORD,
     detail TEXT, person KEYWORD, v INT, session KEYWORD, screen KEYWORD, tbl KEYWORD, rid KEYWORD, fields KEYWORD,
-    q KEYWORD, results INT, ms INT, label TEXT, taps INT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+    q KEYWORD, results INT, ms INT, label TEXT, taps INT, src KEYWORD, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   // A suggestion from use names the pattern of use it answers (signal) and
   // what should change in people's use if it works (measure, JSON).
   sa_suggestions: `CREATE TABLE sa_suggestions (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, text TEXT, why TEXT,
@@ -97,7 +99,7 @@ const ADDED_COLUMNS = {
   // The UX brief, as JSON: who, job, often, device, first, glance.
   sa_apps: ['ux TEXT'],
   // device: phone, tablet or computer, as the page or its browser says.
-  sa_events: ['person KEYWORD', 'v INT', 'session KEYWORD', 'screen KEYWORD', 'tbl KEYWORD', 'rid KEYWORD', 'fields KEYWORD', 'q KEYWORD', 'results INT', 'ms INT', 'label TEXT', 'taps INT', 'device KEYWORD'],
+  sa_events: ['person KEYWORD', 'v INT', 'session KEYWORD', 'screen KEYWORD', 'tbl KEYWORD', 'rid KEYWORD', 'fields KEYWORD', 'q KEYWORD', 'results INT', 'ms INT', 'label TEXT', 'taps INT', 'device KEYWORD', 'src KEYWORD'],
   // The recommender's (recommend.mjs): the source it came from (basis), its
   // score, and the change it implies (implies, JSON: kind, what, and a hint for the build).
   sa_suggestions: ['signal KEYWORD', 'measure TEXT', 'basis KEYWORD', 'confidence FLOAT', 'implies TEXT'],
@@ -139,6 +141,32 @@ const sameJson = (a, b) => { try { return JSON.stringify(canon(JSON.parse(a))) =
 const GRAPH_COLS = 'id, kind, app, slug, title, description, live, version, links';
 // A node as the graph's REACHABLE queries above select it.
 const nodeRow = ({ id, kind, app, slug, title, hops }) => ({ id, kind, app, slug, title, hops });
+
+// A short name for an app from its description, until its first plan names
+// it (and for good when that build fails): the words before a colon or a
+// dash, else the first clause, without "A"/"An"/"The" in front, cut at a
+// word, at most 40 characters. "A tiny reading list: links with a title"
+// is "Tiny reading list".
+export function shortName(description) {
+  const first = String(description || '').trim().split(/[.\n!?]/)[0];
+  let s = (first.split(/\s*[:;–—]\s*|\s+-\s+/)[0] || first).split(/,\s*/)[0].trim();
+  if (s.length < 3) s = first.trim();
+  s = s.replace(/^(an?|the|my|our)\s+/i, '');
+  if (s.length > 40) { const cut = s.slice(0, 41); s = /\s/.test(cut) ? cut.replace(/\s+\S*$/, '') : s.slice(0, 40); }
+  for (let k = 0; k < 3; k++) s = s.replace(/[\s,;:–—-]+$/, '').replace(/\s+(and|or|with|of|for|the|an?|to|in|on|my|at|by)$/i, '');
+  return s ? s[0].toUpperCase() + s.slice(1) : 'New app';
+}
+
+// What an app with no version yet is, from its last request: building
+// while it is queued or running, failed once it failed or was stopped, or
+// when it still says running long after any build could (the engine stopped
+// in the middle of it).
+export function firstBuildStatus(last, now = Date.now(), staleMs = 30 * 60 * 1000) {
+  if (!last) return 'building';
+  if (last.status === 'failed' || last.status === 'stopped') return 'failed';
+  if ((last.status === 'queued' || last.status === 'running') && now - new Date(last.created).getTime() > staleMs) return 'failed';
+  return 'building';
+}
 
 export class Store {
   constructor(strata, log = () => {}) {
@@ -837,7 +865,7 @@ export class Store {
   // label: the name of the row written ("Monstera"), kept with the event so
   // that a removed row is still told by its name. taps: on a write or a run,
   // the taps in the app since the one before it (engine/measures.mjs).
-  async track(app, kind, cap, detail, { person = null, v = null, session = null, screen = null, tbl = null, rid = null, fields = null, q = null, results = null, ms = null, label = null, taps = null, device = null } = {}) {
+  async track(app, kind, cap, detail, { person = null, v = null, session = null, screen = null, tbl = null, rid = null, fields = null, q = null, results = null, ms = null, label = null, taps = null, device = null, src = null } = {}) {
     const doc = { id: newId(12), app, kind, cap: cap || '', detail: detail ? String(detail).slice(0, 500) : '' };
     const word = (x, n) => { const t = String(x ?? '').trim(); return t ? t.slice(0, n) : null; };
     const num = (x) => (x === null || x === undefined || x === '' || !Number.isFinite(Number(x)) ? null : Math.max(0, Math.round(Number(x))));
@@ -846,6 +874,7 @@ export class Store {
       // The fields changed, sorted: the same change on row after row is the same value.
       fields: word(Array.isArray(fields) ? [...fields].sort().join(',') : fields, 200),
       q: word(q === null || q === undefined ? null : String(q).toLowerCase().replace(/\s+/g, ' '), 120), results: num(results), ms: num(ms), label: word(label, 120), taps: num(taps), device: ['phone', 'tablet', 'computer'].includes(device) ? device : null,
+      src: src === 'owner' ? 'owner' : null,
     };
     for (const [k, x] of Object.entries(more)) if (x !== null) doc[k] = x;
     await this.db.write([{ op: 'insert', table: 'sa_events', doc }]);
@@ -854,7 +883,7 @@ export class Store {
   // The events since a time (ISO; all of them without one), newest first.
   async events(app, { since = null, limit = 5000 } = {}) {
     const n = Math.max(1, Math.min(10000, Math.floor(limit)));
-    return this.db.query(`SELECT kind, cap, detail, person, v, session, screen, tbl, rid, fields, q, results, ms, label, taps, ts FROM sa_events WHERE app = :a${since ? ' AND ts >= :since' : ''} ORDER BY ts DESC LIMIT ${n}`, since ? { a: app, since } : { a: app });
+    return this.db.query(`SELECT kind, cap, detail, person, v, session, screen, tbl, rid, fields, q, results, ms, label, taps, src, ts FROM sa_events WHERE app = :a${since ? ' AND ts >= :since' : ''} ORDER BY ts DESC LIMIT ${n}`, since ? { a: app, since } : { a: app });
   }
 
   async recentEvents(app, limit = 200) {

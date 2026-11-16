@@ -31,6 +31,18 @@ const CSS = `
 .no-head h1 { margin: 0; font-size: 20px; letter-spacing: -.01em; }
 .no-head .sub { color: var(--muted); font-size: 12.5px; }
 .no-head .tools { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.no-hmenu { display: none; }
+@media (max-width: 600px) {
+  .no-head { flex-wrap: nowrap; gap: 8px; margin-bottom: 8px; }
+  .no-head h1 { font-size: 17px; white-space: nowrap; }
+  .no-head .sub { display: none; }
+  .no-head .tools { flex-wrap: nowrap; }
+  .no-head .tools > :not(.no-hmenu) { display: none; }
+  .no-head .no-hmenu { display: inline-flex; }
+  .no-root .tabs { margin-bottom: 10px; }
+}
+.no-root .tabs .no-more { margin-left: auto; position: sticky; right: 0; background: var(--bg, var(--surface)); }
+.no-root .tabs .no-more .i { width: 14px; height: 14px; }
 .no-synth { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px dashed var(--line-2); color: var(--text-2); }
 .no-sim { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
 .no-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 12px; margin-bottom: 14px; }
@@ -315,6 +327,10 @@ const CSS = `
 .no-map-zoom { position: absolute; right: 12px; top: 10px; display: flex; gap: 4px; }
 .no-map-legend { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-2); background: color-mix(in srgb, var(--surface) 88%, transparent); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 10px; max-width: 60%; }
 .no-map-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+.no-map-foot { position: absolute; left: 12px; right: 12px; bottom: 10px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; pointer-events: none; }
+.no-map-foot-row { display: flex; width: 100%; justify-content: space-between; align-items: flex-end; gap: 6px 8px; flex-wrap: wrap; pointer-events: none; }
+.no-map-foot .no-map-legend, .no-map-foot .no-map-stats { position: static; pointer-events: auto; }
+.no-map-foot .no-map-stats { margin-left: auto; text-align: right; }
 .no-map-stats { position: absolute; right: 12px; bottom: 10px; font-size: 11.5px; color: var(--text-2); background: color-mix(in srgb, var(--surface) 88%, transparent); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 10px; font-variant-numeric: tabular-nums; }
 .no-map-tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line-2, var(--line)); border-radius: var(--r-sm); padding: 6px 10px; font-size: 12px; max-width: 250px; box-shadow: 0 4px 14px rgba(0,0,0,.12); z-index: 2; }
 .no-map-side { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow-y: auto; min-width: 0; padding-bottom: 12px; }
@@ -343,6 +359,7 @@ const CSS = `
 .no-map-hist > div.fault { border-left-color: var(--crit); }
 .no-map-hist .when { color: var(--muted); font-variant-numeric: tabular-nums; }
 .no-map-read { display: grid; gap: 5px; font-size: 12.5px; }
+.no-map-partial { margin: 10px 14px 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); border-left-width: 3px; background: color-mix(in srgb, var(--warn) 9%, var(--surface)); border-radius: 6px; font-size: 12.5px; line-height: 1.45; }
 .no-map-read > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; }
 .no-map-read .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); font-weight: 700; padding-top: 2px; }
 .no-map-side > .btn.ghost { margin: 8px 8px 0; }
@@ -360,7 +377,9 @@ const CSS = `
 const T = (x) => (x ? Date.parse(x) : null);
 const SEV = { critical: "bad", major: "serious", minor: "warn", sev1: "bad", sev2: "serious", sev3: "warn" };
 const STATUS = { investigating: ["warn", "Investigating"], identified: ["info", "Cause identified"], mitigated: ["ok", "Mitigated"], resolved: ["good", "Resolved"] };
-const KIND = { fiber_cut: "Fibre cut", bad_change: "Bad change", optic_degrade: "Failing optic", ddos: "DDoS", cpu_bug: "Software defect", power: "Power", "": "Unknown", capacity: "Capacity" };
+const KIND = { fiber_cut: "Fibre cut", bad_change: "Bad change", optic_degrade: "Failing optic", ddos: "DDoS", cpu_bug: "Software defect", power: "Power", "": "Unknown", capacity: "Capacity", estate: "Estate outage" };
+/** What a page asks for first, for the pages a deep link opens most. */
+const FIRST = { "": "/v1/shift", diagnose: "/v1/where", network: "/v1/overview", incidents: "/v1/incidents", alerts: "/v1/alerts?status=firing", customers: "/v1/customers", carriers: "/v1/maintenance", services: "/v1/services", devices: "/v1/devices", agents: "/v1/agents", data: "/v1/data", leadership: "/v1/leadership", topology: "/v1/topology", changes: "/v1/changes" };
 const PAGES = [["", "My shift"], ["map", "Map"], ["dash", "Dashboards"], ["diagnose", "Diagnose"], ["network", "Network"], ["incidents", "Incidents"], ["alerts", "Alerts"], ["changes", "Changes"], ["customers", "Customers"], ["carriers", "Carriers"], ["topology", "Topology"], ["services", "Services"], ["explore", "Explore"], ["devices", "Devices"], ["agents", "Agents"], ["data", "Data"]];
 const gbps = (bps) => (bps == null ? "–" : bps >= 1e12 ? (bps / 1e12).toFixed(2) + " Tb/s" : bps >= 1e9 ? (bps / 1e9).toFixed(1) + " Gb/s" : (bps / 1e6).toFixed(0) + " Mb/s");
 const pct = (v, d = 0) => (v == null || Number.isNaN(v) ? "–" : (v * 100).toFixed(d) + "%");
@@ -385,14 +404,31 @@ function render(el, ctx) {
   const tabs = h("div", { class: "tabs", role: "tablist" });
   const body = h("div");
   const synth = h("span", { class: "no-synth", title: "Everything on these pages is made up: a simulated carrier network, written into ChloeDB tables every minute" }, "synthetic data");
+  // On a phone the header's actions fold into one menu, so the page starts on the first screen.
+  const headMenu = h("button", { class: "btn sm no-hmenu", title: "The view, the simulator and the SQL", "aria-label": "Menu", "aria-haspopup": "menu" }, C.icon("menu"));
+  headMenu.onclick = () => {
+    const page = (current || [])[0] || "", sim = app.status?.sim;
+    C.menu(headMenu, [
+      page === "leadership" ? { label: "Engineer view", icon: "user", onclick: () => app.go() } : { label: "Leadership view", icon: "overview", onclick: () => app.go("leadership") },
+      sim?.simulate && sim.fault_active ? { label: `End the fault (${sim.fault_phase})`, icon: "stop", onclick: async () => { try { await ctx.api("/v1/sim/end", { body: {} }); C.toast("The fault was repaired; its alerts clear within a few minutes", "ok"); poll(); } catch (e) { C.toast(e.message, "bad"); } } } : null,
+      sim?.simulate ? { label: "Inject a fault…", icon: "bolt", onclick: () => injectMenu(app, headMenu) } : null,
+      { label: sqlN.textContent, icon: "sql", onclick: () => showSql(app) },
+    ].filter(Boolean));
+  };
   el.append(h("div", { class: "no-head" }, h("h1", {}, "Network operations"), sub, synth,
-    h("div", { class: "tools" }, alt, simEl, injectBtn, sqlBtn)), h("div", { class: "no-cmdrow" }, cmd.el, agentBtn), tabs, body);
+    h("div", { class: "tools" }, alt, simEl, injectBtn, sqlBtn, headMenu)), h("div", { class: "no-cmdrow" }, cmd.el, agentBtn), tabs, body);
   el.classList.add("no-root");
   assistant(app, el);
 
+  // The page opened first asks for its answer beside /v1/status rather than after it: one round trip less on a deep link.
+  const pre = new Map(), opened = Date.now();
+  const firstPath = FIRST[(ctx.path() || [])[0] || ""];
+  if (firstPath && !(ctx.path() || [])[1]) { const p = ctx.api(firstPath); p.catch(() => {}); pre.set(firstPath, p); }
   /** The app's API, keeping the queries each answer says it ran. */
   app.call = async (path, opts) => {
-    const j = await ctx.api(path, opts);
+    const early = !opts && pre.get(path);
+    if (early) pre.delete(path);
+    const j = early && Date.now() - opened < 10000 ? await early.catch(() => ctx.api(path, opts)) : await ctx.api(path, opts);
     if (j && Array.isArray(j.queries)) {
       app.queries.set(path.split("?")[0], j.queries);
       let n = 0, ms = 0;
@@ -416,20 +452,42 @@ function render(el, ctx) {
     const main = el.closest("main");
     if (main) main.scrollTop = 0;
     const page = path[0] || "";
-    for (const b of tabs.children) b.setAttribute("aria-selected", String(b.dataset.p === page));
+    for (const b of tabs.querySelectorAll("button[data-p]")) b.setAttribute("aria-selected", String(b.dataset.p === page));
     tabs.style.display = page === "leadership" ? "none" : "";
+    fitTabs();
     drawAlt(page);
     if (!ready) return;
     if (page !== "map") app.map = null;
+    app.wherePage?.(page);
     const f = { "": shiftPage, map: mapPage, dash: dashPage, diagnose: diagnosePage, network: overviewPage, customers: customersPage, carriers: carriersPage, leadership: leadershipPage, incidents: path[1] ? incidentRoom : incidentsPage, topology: topologyPage, alerts: alertsPage, changes: changesPage, services: servicesPage, explore: explorePage, devices: devicesPage, agents: agentsPage, data: dataPage }[page] || shiftPage;
     stop = f(body, app, path);
+  };
+  // The tabs that do not fit go into a "More" menu at the end of the row, the page in view always shown.
+  const more = h("button", { class: "no-more", "aria-haspopup": "menu", title: "The other pages" }, "More", h("span", { class: "n", hidden: true }), C.icon("down"));
+  const fitTabs = () => {
+    const btns = [...tabs.querySelectorAll("button[data-p]")];
+    for (const b of btns) b.style.display = "";
+    more.style.display = "none";
+    if (!tabs.clientWidth || tabs.scrollWidth <= tabs.clientWidth + 1) return;
+    more.style.display = "";
+    const page = (current || [])[0] || "";
+    for (let k = btns.length - 1; k >= 0 && tabs.scrollWidth > tabs.clientWidth + 1; k--) if (btns[k].dataset.p !== page) btns[k].style.display = "none";
+    const rest = btns.filter((b) => b.style.display === "none");
+    const flagged = rest.filter((b) => b.querySelector(".n")).length;
+    const n = more.querySelector(".n");
+    n.hidden = !flagged; n.textContent = String(flagged);
+    more.title = `The other pages: ${rest.map((b) => b.dataset.label).join(", ")}`;
+    more.onclick = () => C.menu(more, rest.map((b) => ({ label: b.dataset.label + (b.querySelector(".n") ? ` (${b.querySelector(".n").textContent})` : ""), onclick: () => b.click() })));
   };
   const drawTabs = (st) => {
     const badge = { map: st?.estate?.broken || 0, diagnose: st?.open_incidents ? "!" : 0, incidents: st?.open_incidents || 0, alerts: st?.firing || 0, "": st?.waiting || 0, carriers: st?.notices || 0 };
     const page = (current || [])[0] || "";
-    tabs.replaceChildren(...PAGES.map(([p, label]) => h("button", { role: "tab", dataset: { p }, "aria-selected": String(p === page), onclick: () => app.go(...(p ? [p] : [])) }, label, badge[p] ? h("span", { class: "n", style: p === "incidents" ? { background: "var(--crit-soft)", color: "var(--crit-ink)" } : null }, String(badge[p])) : null)));
+    tabs.replaceChildren(...PAGES.map(([p, label]) => h("button", { role: "tab", dataset: { p, label }, "aria-selected": String(p === page), onclick: () => app.go(...(p ? [p] : [])) }, label, badge[p] ? h("span", { class: "n", style: p === "incidents" ? { background: "var(--crit-soft)", color: "var(--crit-ink)" } : null }, String(badge[p])) : null)), more);
+    fitTabs();
   };
   drawTabs(null);
+  const tabsSeen = typeof ResizeObserver === "function" ? new ResizeObserver(() => fitTabs()) : null;
+  tabsSeen?.observe(tabs);
   const setup = h("div", { class: "no-setup" });
   const poll = async () => {
     let st;
@@ -449,6 +507,7 @@ function render(el, ctx) {
       setup.replaceChildren(C.icon("db", "lg"), h("h2", {}, "Building the network"), h("div", { class: "dim" }, st.phase + "…"), h("div", { class: "bar" }, h("i", { style: { width: Math.round(st.progress * 100) + "%" } })),
         h("div", { class: "small muted" }, st.error || "Creating 39 tables, a month of history, the last hours of telemetry, and the estate behind the backbone with two months of its faults and changes. This takes about a minute."));
       if (!setup.isConnected) body.replaceChildren(setup);
+      pre.clear();
       return;
     }
     if (!ready) { ready = true; show(ctx.path()); }
@@ -457,7 +516,7 @@ function render(el, ctx) {
   const stopPoll = C.every(5000, poll, true, { always: true });
   current = ctx.path();
   ctx.onPath(show);
-  return () => { stopPoll(); app.agent?.stop(); try { stop?.(); } catch (e) { console.warn(e); } };
+  return () => { stopPoll(); tabsSeen?.disconnect(); app.agent?.stop(); try { stop?.(); } catch (e) { console.warn(e); } };
 }
 
 // ---------------------------------------------------------------- shared pieces
@@ -515,14 +574,17 @@ function logLines(app, lines, mark) {
   return h("div", { class: "no-log" }, lines.map((l) => h("div", { class: "ln s" + (l.sev ?? 6) }, h("span", { class: "muted", title: l.ts }, C.when(T(l.ts))), h("span", {}, l.device ? h("a", { class: "no-link", onclick: () => deviceDrawer(app, l.device) }, l.device) : (l.severity || "")), h("span", { class: "m" }, hl(l.message)))));
 }
 
-/** An agent's steps: what it asked, what it found, and the SQL on a click. */
-function steps(app, list) {
+/** An agent's steps: what it asked, what it found, and the SQL on a click.
+ * `open`, when given, is a Set of the steps shown open, kept by the caller so
+ * that a step stays open when the list is drawn again. */
+function steps(app, list, open) {
   const { h, C } = app;
   if (!list.length) return C.empty("agent", "No steps kept");
   return h("div", {}, list.map((st) => {
     const code = st.sql_text ? C.sqlBlock(st.sql_text) : null;
-    if (code) code.style.display = "none";
-    const top = h("div", { class: "top", title: st.sql_text ? "Show the SQL" : null, onclick: () => { if (code) code.style.display = code.style.display === "none" ? "" : "none"; } },
+    const key = `${st.n}:${st.tool}:${st.title}`;
+    if (code && !open?.has(key)) code.style.display = "none";
+    const top = h("div", { class: "top", title: st.sql_text ? "Show the SQL" : null, onclick: () => { if (!code) return; const show = code.style.display === "none"; code.style.display = show ? "" : "none"; if (open) { if (show) open.add(key); else open.delete(key); } } },
       h("span", { class: "n" }, st.n), h("span", { class: "no-tool " + st.tool }, st.tool === "reason" ? "think" : st.tool), h("b", {}, st.title),
       h("span", { class: "small muted", style: { whiteSpace: "nowrap" } }, st.tool === "reason" ? "" : `${C.fmt.n(st.row_count)} rows · ${C.fmt.ms(st.ms)}`));
     return h("div", { class: "no-step" }, top, st.detail ? h("div", { class: "find" }, st.detail) : null, code);
@@ -714,6 +776,16 @@ function mapLegend(app, mode) {
 /** replaceChildren that takes nested lists and skips what is absent. */
 function put(el, ...kids) { el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false)); }
 
+/** Draw into el only when what it shows changed: a page that refreshes keeps
+ * what was opened, scrolled or hovered in a piece whose rows are the same. */
+function putIf(el, rows, build) {
+  const sig = JSON.stringify(rows ?? null);
+  if (el._sig === sig) return false;
+  el._sig = sig;
+  put(el, build());
+  return true;
+}
+
 
 /** Fetch a path now and every `ms`; draw(answer, first). Returns its stop. */
 function live(app, el, path, draw, ms = 15000) {
@@ -751,7 +823,7 @@ function actionCard(app, a, after) {
   const decide = async (yes, btn) => {
     btn.disabled = true;
     try {
-      const r = await app.ctx.api(`/v1/actions/${encodeURIComponent(a.id)}/${yes ? "approve" : "reject"}`, { body: { who: "You" }, timeout: 60000 });
+      const r = await app.ctx.api(`/v1/actions/${encodeURIComponent(a.id)}/${yes ? "approve" : "reject"}`, { body: {}, timeout: 60000 });
       C.toast(yes ? (r.result || "Approved and carried out") : "Rejected", yes ? "ok" : "info", 6000);
       await app.poll();
       after?.();
@@ -759,7 +831,12 @@ function actionCard(app, a, after) {
   };
   const open = a.status === "proposed";
   const state = { executed: ["ok", "carried out"], done: ["ok", "done"], approved: ["ok", "approved"], rejected: ["disabled", "rejected"], expired: ["disabled", "no longer needed"], failed: ["bad", "failed"] }[a.status] || ["info", a.status];
-  const yes = h("button", { class: "btn sm primary", onclick: () => decide(true, yes) }, C.icon("check"), "Approve and run");
+  // A high-risk action is carried out on a second, deliberate click.
+  const approve = async () => {
+    if (a.risk === "high" && !(await C.confirm({ title: `Run a high-risk action: ${a.title}?`, body: a.command ? `It runs ${a.command.split("\n").length > 1 ? "these commands" : "this command"} on the network now: ${a.command.split("\n")[0]}${a.command.split("\n").length > 1 ? " …" : ""}` : "It is carried out on the network now.", ok: "Approve and run", danger: true }))) return;
+    decide(true, yes);
+  };
+  const yes = h("button", { class: "btn sm primary", onclick: approve }, C.icon("check"), "Approve and run");
   const no = h("button", { class: "btn sm", onclick: () => decide(false, no) }, "Reject");
   return h("div", { class: "no-act" + (open ? "" : " done") },
     h("div", { class: "row between" }, h("b", {}, a.title), h("span", { class: "row nw", style: { gap: "6px" } }, a.risk ? riskPill(app, a.risk) : null, open ? null : C.pill(state[0], state[1]))),
@@ -919,10 +996,15 @@ function incidentRoom(body, app, path) {
   const map = topoMap(app, { mode: "live" });
   const causeEl = h("div"), actionsEl = h("div"), chartsEl = h("div", { class: "no-mini" }), stepsEl = h("div"), rcptEl = h("div"), logsEl = h("div");
   const replayEl = h("div"), keyEl = h("div");
+  // The right column, a holder per card, each drawn again only when its rows change.
+  const R = Object.fromEntries(["timeline", "alerts", "blast", "change", "runbook", "similar", "judgments"].map((k) => [k, h("div")]));
+  right.append(...Object.values(R));
+  const openSteps = new Set();
   const mapCard = C.card({ title: "Where it is", sub: "the devices the incident touches, their neighbours dimmed", body: [replayEl, map, mapLegend(app, "live")] });
   const stepsSub = h("span", { class: "sub" });
   const board = boardCard(app, id);
-  left.append(C.card({ title: "Likely cause", sub: "from the root-cause agent", body: [causeEl, keyEl] }), C.card({ title: "Proposed actions", sub: "nothing runs without an approval, unless autopilot is on", body: actionsEl }), board.el, mapCard,
+  const causeCard = C.card({ title: "Likely cause", sub: "from the root-cause agent", body: [causeEl, keyEl] });
+  left.append(causeCard, C.card({ title: "Proposed actions", sub: "nothing runs without an approval, unless autopilot is on", body: actionsEl }), board.el, mapCard,
     C.card({ title: "Around the incident", sub: "half an hour before it, to now", body: chartsEl }),
     C.card({ title: "How the agent got there", sub: stepsSub, body: stepsEl }),
     C.card({ title: "What the agent was shown", sub: "its brief, packed to a token budget; a click on a row shows the text", body: rcptEl }),
@@ -992,7 +1074,7 @@ function incidentRoom(body, app, path) {
       body: h("div", { class: "stack" }, h("label", { class: "stack", style: { gap: "4px" } }, h("span", { class: "small dim" }, "Runbook"), sel), h("label", { class: "stack", style: { gap: "4px" } }, h("span", { class: "small dim" }, "How well it worked"), grade)), foot: ok });
     ok.onclick = async () => {
       ok.disabled = true;
-      try { await app.ctx.api(`/v1/incidents/${id}/close`, { body: { who: "You", runbook: sel.value, grade: +grade.value }, timeout: 60000 }); d.close(); C.toast(i.resolved ? "Recorded" : "Closed. A postmortem draft was written.", "ok"); await app.poll(); stop.run(); }
+      try { await app.ctx.api(`/v1/incidents/${id}/close`, { body: { runbook: sel.value, grade: +grade.value }, timeout: 60000 }); d.close(); C.toast(i.resolved ? "Recorded" : "Closed. A postmortem draft was written.", "ok"); await app.poll(); stop.run(); }
       catch (e) { C.toast(e.message, "bad"); ok.disabled = false; }
     };
   }
@@ -1000,7 +1082,7 @@ function incidentRoom(body, app, path) {
   const stop = live(app, body, `/v1/incidents/${id}`, (j) => {
     inc = j;
     const i = j.incident, open = !i.resolved;
-    const act = async (what, okText) => { try { await app.ctx.api(`/v1/incidents/${id}/${what}`, { body: { who: "You" }, timeout: 120000 }); C.toast(okText, "ok"); stop.run(); } catch (e) { C.toast(e.message, "bad", 6000); } };
+    const act = async (what, okText) => { try { await app.ctx.api(`/v1/incidents/${id}/${what}`, { body: {}, timeout: 120000 }); C.toast(okText, "ok"); stop.run(); } catch (e) { C.toast(e.message, "bad", 6000); } };
     put(head, h("div", { class: "no-hero" + (open ? "" : " calm") },
       h("div", {}, h("div", { class: "row", style: { gap: "8px", marginBottom: "6px" } }, app.link("Incidents", "incidents"), h("span", { class: "muted" }, "/"), h("span", { class: "mono small" }, i.id), sevPill(app, i.severity), statusPill(app, i.status), h("span", { class: "chip" }, KIND[i.category] || i.category)),
         h("h2", {}, i.title), h("p", {}, i.summary),
@@ -1015,15 +1097,17 @@ function incidentRoom(body, app, path) {
     const rc = j.runs.filter((r) => r.agent === "root-cause").pop();
     const last = j.steps[j.steps.length - 1];
     const because = last && last.tool === "reason" && last.detail.includes("Because:") ? last.detail.split("Because:")[1].split(";").map((x) => x.trim().replace(/\.$/, "")).filter(Boolean) : [];
-    put(causeEl, i.root_cause ? h("div", {}, h("div", { class: "no-cause" }, i.root_cause),
+    putIf(causeEl, [i.root_cause, i.confidence, because, rc], () => i.root_cause ? h("div", {}, h("div", { class: "no-cause" }, i.root_cause),
       h("div", { class: "no-conf", style: { marginTop: "10px" } }, h("div", { class: "meter" }, h("i", { style: { width: i.confidence * 100 + "%", background: i.confidence >= 0.8 ? "var(--good)" : i.confidence >= 0.5 ? "var(--warn)" : "var(--crit)" } })), h("b", {}, pct(i.confidence) + " confident")),
       because.length ? h("ul", { class: "no-why" }, because.map((b) => h("li", {}, b))) : null,
       rc ? runFacts(app, rc) : null)
       : C.empty("agent", "No cause named yet", "The agent runs when the incident opens and again as alerts arrive."));
-    if (!keyEl.firstChild) put(keyEl, h("button", { class: "btn xs", style: { marginTop: "10px" }, title: "The simulator knows what it broke. The agent is never shown this.", onclick: () => checkKey(i) }, C.icon("eye"), "Check against the simulator's answer key"));
+    // The estate's outages are worked by its own agent, and the simulator keeps no answer key for them.
+    if (i.root_kind === "estate") { const sub = causeCard.querySelector(".sub"); if (sub) sub.textContent = "from the estate's agent"; put(keyEl); }
+    else if (!keyEl.firstChild) put(keyEl, h("button", { class: "btn xs", style: { marginTop: "10px" }, title: "The simulator knows what it broke. The agent is never shown this.", onclick: () => checkKey(i) }, C.icon("eye"), "Check against the simulator's answer key"));
     stepsSub.textContent = rc ? `${rc.queries ?? j.steps.length - 1} queries, ${C.fmt.ms(rc.ms)} in the database. Click a step for its SQL.` : "";
     // Actions.
-    put(actionsEl, j.actions.length ? j.actions.map((a) => actionCard(app, a, () => stop.run())) : C.empty("bolt", "No actions proposed"));
+    putIf(actionsEl, j.actions, () => j.actions.length ? j.actions.map((a) => actionCard(app, a, () => stop.run())) : C.empty("bolt", "No actions proposed"));
     focusMap();
     // Charts: rebuilt only when the set of series changes.
     const mark = () => [{ t: T(i.started), label: "detected" }, i.resolved ? { t: T(i.resolved), label: "resolved" } : null].filter(Boolean);
@@ -1047,24 +1131,24 @@ function incidentRoom(body, app, path) {
       for (const r of rows) { const t = T(r.ts); const p = at.get(t) || { t }; p[r[c.key]] = c.get(r); at.set(t, p); }
       c.ch.update([...at.values()].sort((a, b) => a.t - b.t));
     }
-    put(stepsEl, steps(app, j.steps));
-    put(rcptEl, receipt(app, j.receipts));
-    put(logsEl, logLines(app, j.logs));
+    // What was opened or scrolled stays so: a piece is drawn again only when its rows change.
+    putIf(stepsEl, j.steps, () => steps(app, j.steps, openSteps));
+    putIf(rcptEl, j.receipts, () => receipt(app, j.receipts));
+    putIf(logsEl, j.logs, () => logLines(app, j.logs));
     // The right column.
-    put(right, 
-      C.card({ title: "Timeline", body: timeline(app, j.timeline) }),
-      C.card({ title: "Alerts", sub: `${j.alerts.length} grouped into this incident`, body: h("ul", { class: "no-list" }, j.alerts.map((a) => h("li", {}, h("div", { class: "row between nw" }, h("b", { class: "ellipsis" }, a.rule_name), sevPill(app, a.severity)),
-        h("div", { class: "small muted" }, h("a", { class: "no-link", onclick: () => (a.entity_kind === "link" ? linkDrawer(app, a.entity) : a.entity_kind === "device" ? deviceDrawer(app, a.entity) : a.entity_kind === "service" ? serviceDrawer(app, a.entity) : null) }, a.entity), ` · ${C.fmt.n(a.reading)} ${a.unit} against ${C.fmt.n(a.threshold)} · ${a.status === "firing" ? "firing since " + hhmm(T(a.started)) : "cleared " + hhmm(T(a.ended))}`)))) }),
-      C.card({ title: "Blast radius", sub: "one graph walk from the alerting devices", body: [
+    putIf(R.timeline, j.timeline, () => C.card({ title: "Timeline", body: timeline(app, j.timeline) }));
+    putIf(R.alerts, j.alerts, () => C.card({ title: "Alerts", sub: `${j.alerts.length} grouped into this incident`, body: h("ul", { class: "no-list" }, j.alerts.map((a) => h("li", {}, h("div", { class: "row between nw" }, h("b", { class: "ellipsis" }, a.rule_name), sevPill(app, a.severity)),
+        h("div", { class: "small muted" }, h("a", { class: "no-link", onclick: () => (a.entity_kind === "link" ? linkDrawer(app, a.entity) : a.entity_kind === "device" ? deviceDrawer(app, a.entity) : a.entity_kind === "service" ? serviceDrawer(app, a.entity) : null) }, a.entity), ` · ${C.fmt.n(a.reading)} ${a.unit} against ${C.fmt.n(a.threshold)} · ${a.status === "firing" ? "firing since " + hhmm(T(a.started)) : "cleared " + hhmm(T(a.ended))}`)))) }));
+    putIf(R.blast, [j.blast, j.customers], () => C.card({ title: "Blast radius", sub: "one graph walk from the alerting devices", body: [
         h("div", { class: "no-sec" }, "Services that ride on them"), h("ul", { class: "no-list" }, j.blast.map((s) => h("li", { class: "row between nw" }, h("a", { class: "no-link", onclick: () => serviceDrawer(app, s.id) }, s.name, h("span", { class: "muted small" }, ` · tier ${s.tier} · ${s.customers} customers`)), h("span", { class: "num small" }, money(s.revenue_per_min) + "/min")))),
-        j.customers.length ? [h("div", { class: "no-sec" }, "Customers attached there"), h("ul", { class: "no-list" }, j.customers.slice(0, 6).map((c) => h("li", { class: "row between nw" }, h("span", { class: "ellipsis" }, c.name, h("span", { class: "muted small" }, ` · ${c.tier} · ${c.device}`)), h("span", { class: "num small" }, money(c.mrr) + "/mo"))))] : null] }),
-      j.change ? C.card({ title: "The change", sub: j.change.id, body: [h("b", {}, j.change.title), h("div", { class: "small dim", style: { margin: "4px 0 8px" } }, j.change.description),
-        kv(app, [["Owner", j.change.owner], ["Approved by", j.change.approver], ["Executed", C.when(T(j.change.executed))], ["Risk declared", j.change.risk], ["Roll back with", j.change.rollback_plan]]), h("div", { class: "no-sec" }, "What it changed"), diffBlock(app, j.change.diff)] }) : null,
-      j.runbook ? C.card({ title: "Runbook", sub: `${j.runbook.id} · closed ${j.runbook.wins} of the ${j.runbook.uses} incidents it was used on`, body: [h("b", {}, j.runbook.title), h("div", { class: "small", style: { whiteSpace: "pre-wrap", marginTop: "6px", color: "var(--text-2)", lineHeight: 1.5 } }, j.runbook.body)],
-        foot: h("button", { class: "btn sm", onclick: () => closeDrawer(i, j.runbook, j.similar) }, C.icon("check"), "It worked") }) : null,
-      C.card({ title: "It looks like", sub: "past incidents, by words and meaning", body: j.similar.length ? h("ul", { class: "no-list" }, j.similar.map((s) => h("li", {}, h("a", { class: "no-link", href: app.ctx.href("incidents", s.id) }, s.title),
-        h("div", { class: "small muted" }, `${s.id} · ${KIND[s.category] || s.category} · ${C.fmt.ago(T(s.started))} · resolved in ${mins(s.mttr_min)}${s.runbook ? " with " + s.runbook : ""}`)))) : C.empty("search", "Nothing similar") }),
-      j.judgments.length ? C.card({ title: "Judgments", sub: "who said which runbook worked", body: h("ul", { class: "no-list" }, j.judgments.map((g) => h("li", { class: "small" }, `${g.judge || g.who || "Someone"}: ${g.runbook || g.doc_id} graded ${g.grade}`))) }) : null);
+        j.customers.length ? [h("div", { class: "no-sec" }, "Customers attached there"), h("ul", { class: "no-list" }, j.customers.slice(0, 6).map((c) => h("li", { class: "row between nw" }, h("span", { class: "ellipsis" }, c.name, h("span", { class: "muted small" }, ` · ${c.tier} · ${c.device}`)), h("span", { class: "num small" }, money(c.mrr) + "/mo"))))] : null] }));
+    putIf(R.change, j.change, () => j.change ? C.card({ title: "The change", sub: j.change.id, body: [h("b", {}, j.change.title), h("div", { class: "small dim", style: { margin: "4px 0 8px" } }, j.change.description),
+        kv(app, [["Owner", j.change.owner], ["Approved by", j.change.approver], ["Executed", C.when(T(j.change.executed))], ["Risk declared", j.change.risk], ["Roll back with", j.change.rollback_plan]]), h("div", { class: "no-sec" }, "What it changed"), diffBlock(app, j.change.diff)] }) : null);
+    putIf(R.runbook, [j.runbook, j.similar, i.resolved], () => j.runbook ? C.card({ title: "Runbook", sub: `${j.runbook.id} · closed ${j.runbook.wins} of the ${j.runbook.uses} incidents it was used on`, body: [h("b", {}, j.runbook.title), h("div", { class: "small", style: { whiteSpace: "pre-wrap", marginTop: "6px", color: "var(--text-2)", lineHeight: 1.5 } }, j.runbook.body)],
+        foot: h("button", { class: "btn sm", onclick: () => closeDrawer(i, j.runbook, j.similar) }, C.icon("check"), "It worked") }) : null);
+    putIf(R.similar, j.similar, () => C.card({ title: "It looks like", sub: "past incidents, by words and meaning", body: j.similar.length ? h("ul", { class: "no-list" }, j.similar.map((s) => h("li", {}, h("a", { class: "no-link", href: app.ctx.href("incidents", s.id) }, s.title),
+        h("div", { class: "small muted" }, `${s.id} · ${KIND[s.category] || s.category} · ${C.fmt.ago(T(s.started))} · resolved in ${mins(s.mttr_min)}${s.runbook ? " with " + s.runbook : ""}`)))) : C.empty("search", "Nothing similar") }));
+    putIf(R.judgments, j.judgments, () => j.judgments.length ? C.card({ title: "Judgments", sub: "who said which runbook worked", body: h("ul", { class: "no-list" }, j.judgments.map((g) => h("li", { class: "small" }, `${g.judge || g.who || "Someone"}: ${g.runbook || g.doc_id} graded ${g.grade}`))) }) : null);
   }, 12000);
   return () => { stop(); stopTopo(); stopReplay(); board.stop(); };
 }
@@ -1187,7 +1271,7 @@ function alertsPage(body, app) {
       { key: "incident", label: "Incident", render: (r) => r.incident ? app.link(r.incident, "incidents", r.incident) : h("span", { class: "muted" }, "–") },
       ...(tab === "firing" ? [{ key: "acked_by", label: "Owner", render: (r) => r.silenced ? h("span", { class: "chip", title: "Silenced by " + r.silenced }, "silenced") : r.acked_by ? h("span", { class: "small" }, r.acked_by) : h("span", { class: "muted small" }, "nobody") },
         { key: "id", label: "", sortable: false, render: (r) => h("span", { class: "row nw", style: { gap: "4px", justifyContent: "flex-end" } },
-          r.silenced ? null : r.acked_by ? h("button", { class: "btn xs ghost", onclick: (e) => { e.stopPropagation(); act(`/v1/alerts/${encodeURIComponent(r.id)}/unack`, { who: WHO }, "Handed back"); } }, "Hand back") : h("button", { class: "btn xs", onclick: (e) => { e.stopPropagation(); act(`/v1/alerts/${encodeURIComponent(r.id)}/ack`, { who: WHO }, "Acknowledged: it is yours now"); } }, "Acknowledge"),
+          r.silenced ? null : r.acked_by ? h("button", { class: "btn xs ghost", onclick: (e) => { e.stopPropagation(); act(`/v1/alerts/${encodeURIComponent(r.id)}/unack`, {}, "Handed back"); } }, "Hand back") : h("button", { class: "btn xs", onclick: (e) => { e.stopPropagation(); act(`/v1/alerts/${encodeURIComponent(r.id)}/ack`, {}, "Acknowledged: it is yours now"); } }, "Acknowledge"),
           r.silenced || !["device", "link"].includes(r.entity_kind) ? null : h("button", { class: "btn xs ghost", onclick: (e) => { e.stopPropagation(); silenceDrawer(app, r.entity_kind, r.entity, () => stop.run()); } }, "Silence")) }] : []),
     ], { rows: j.alerts, compact: true, sortKey: "started", desc: true }) : C.empty("okc", tab === "firing" ? "Nothing is firing" : "Nothing resolved yet", tab === "firing" ? "Every rule came back empty a minute ago." : null) }));
     const ph = charts.timeChart({ height: 130, fmt: C.fmt.n, series: [{ name: "Alerts opened", color: "var(--s7)", area: true, get: (p) => p.n, fmt: C.fmt.n }] });
@@ -1210,7 +1294,7 @@ function ruleDrawer(app, rule, after) {
   const inp = (v, attrs = {}) => h("input", { class: "input", value: v ?? "", disabled: ro || null, ...attrs });
   const sel = (v, options) => { const s = h("select", { class: "select", disabled: ro || null }, options.map((o) => h("option", { value: o }, o))); s.value = v; return s; };
   const name = inp(rule?.name, { placeholder: "Chassis running hot" }), desc = inp(rule?.description, { placeholder: "What it means when this fires" });
-  const sev = sel(rule?.severity || "minor", ["critical", "major", "minor"]), kind = sel(rule?.entity_kind || "device", ["device", "link", "service", "site"]), cmp = sel(rule?.cmp || ">", [">", "<", ">=", "<="]);
+  const sev = sel(rule?.severity || "minor", ["critical", "major", "minor"]), kind = sel(rule?.entity_kind || "device", ["device", "link", "service", "site"]), cmp = sel(rule?.cmp || ">", [">", ">=", "<", "<=", "=", "!="]);
   const thr = inp(rule?.threshold ?? 60, { type: "number", step: "any" }), unit = inp(rule?.unit ?? "°C"), win = inp(rule?.window_s ?? 180, { type: "number", min: 60, step: 60 });
   const sql = h("textarea", { class: "input mono", rows: 9, spellcheck: "false", style: { width: "100%", fontSize: "12.5px", resize: "vertical" }, readOnly: ro || null }, rule?.sql_text || RULE_EXAMPLE);
   const out = h("div");
@@ -1218,9 +1302,11 @@ function ruleDrawer(app, rule, after) {
   test.onclick = async () => {
     test.disabled = true;
     try {
-      const r = await app.ctx.api("/v1/rules/test", { body: { sql: sql.value, window_s: +win.value }, timeout: 60000 });
+      const r = await app.ctx.api("/v1/rules/test", { body: { sql: sql.value, window_s: +win.value, cmp: cmp.value, threshold: +thr.value }, timeout: 60000 });
       const q = (r.queries || [])[0];
-      put(out, r.error ? h("div", { class: "error" }, r.error) : h("div", {}, h("div", { class: "small", style: { margin: "8px 0" } }, h("b", {}, r.count === 0 ? "Nothing would fire right now." : `${r.count} ${r.count === 1 ? "alert" : "alerts"} would fire right now.`), q ? h("span", { class: "muted" }, ` ${C.fmt.ms(q.ms)}`) : null, r.note ? h("div", { style: { color: "var(--crit-ink)" } }, r.note) : null),
+      const n = r.firing ?? r.count;
+      const kept = r.count > n ? ` (${r.count} ${r.count === 1 ? "row" : "rows"} returned; ${r.count - n} with v not ${cmp.value} ${C.fmt.n(+thr.value)})` : "";
+      put(out, r.error ? h("div", { class: "error" }, r.error) : h("div", {}, h("div", { class: "small", style: { margin: "8px 0" } }, h("b", {}, n === 0 ? "Nothing would fire right now." : `${n} ${n === 1 ? "alert" : "alerts"} would fire right now.`), kept, q ? h("span", { class: "muted" }, ` ${C.fmt.ms(q.ms)}`) : null, r.note ? h("div", { style: { color: "var(--crit-ink)" } }, r.note) : null),
         r.rows.length ? C.table(Object.keys(r.rows[0]).map((k) => ({ key: k, label: k, num: typeof r.rows[0][k] === "number", render: (x) => (typeof x[k] === "number" ? C.fmt.n(Math.round(x[k] * 100) / 100) : String(x[k])) })), { rows: r.rows, compact: true, maxHeight: "220px" }) : null));
     } catch (e) { put(out, h("div", { class: "error" }, e.message)); }
     test.disabled = false;
@@ -1228,7 +1314,7 @@ function ruleDrawer(app, rule, after) {
   const save = h("button", { class: "btn primary" }, "Save the rule");
   const del = !isNew && !ro ? h("button", { class: "btn danger", onclick: async () => { try { await app.ctx.api(`/v1/rules/${rule.id}/delete`, { body: {} }); d.close(); after(); } catch (e) { C.toast(e.message, "bad"); } } }, C.icon("trash"), "Delete") : null;
   const d = C.drawer({ title: isNew ? "New alert rule" : rule.name, sub: ro ? "A built-in rule: it can be switched off, and copied into a rule of your own." : "A SELECT that returns entity and v. :since is the start of the window.", wide: true,
-    body: h("div", { class: "stack" }, h("div", { class: "grid g2" }, f("Name", name), f("What it means", desc)), h("div", { class: "grid g3" }, f("Severity", sev), f("About a", kind), f("Window, seconds", win)), h("div", { class: "grid g3" }, f("Fires when v is", cmp), f("Threshold (shown on the alert)", thr), f("Unit", unit)), f("SQL", sql),
+    body: h("div", { class: "stack" }, h("div", { class: "grid g2" }, f("Name", name), f("What it means", desc)), h("div", { class: "grid g3" }, f("Severity", sev), f("About a", kind), f("Window, seconds", win)), h("div", { class: "grid g3" }, f("Fires when v is", cmp), f("Threshold: each row fires when its v passes it", thr), f("Unit", unit)), f("SQL", sql),
       rule ? facts(app, [["last run", C.fmt.ms(rule.last_ms)], ["rows", String(rule.last_rows)], ["firing", String(rule.firing)], rule.runbook ? ["runbook", rule.runbook] : null]) : null, out),
     foot: [test, ro ? null : save, del] });
   save.onclick = async () => {
@@ -1283,7 +1369,7 @@ async function changeDrawer(app, id, clashes) {
   const btn = h("button", { class: "btn primary" }, C.icon("agent"), "Assess the risk");
   const acts = h("span", { class: "row", style: { gap: "8px" } });
   C.drawer({ title: id, sub: "A change request", wide: true, body: [body, riskEl], foot: h("div", { class: "row between", style: { width: "100%" } }, btn, acts) });
-  const doit = async (action, ok) => { try { await app.ctx.api(`/v1/changes/${id}/${action}`, { body: { who: WHO }, timeout: 60000 }); C.toast(ok, "ok"); load(); app.poll?.(); } catch (e) { C.toast(e.message, "bad", 7000); } };
+  const doit = async (action, ok) => { try { await app.ctx.api(`/v1/changes/${id}/${action}`, { body: {}, timeout: 60000 }); C.toast(ok, "ok"); load(); app.poll?.(); } catch (e) { C.toast(e.message, "bad", 7000); } };
   const showRisk = (run) => {
     const r = run.result || {};
     const color = r.score >= 70 ? "var(--crit)" : r.score >= 40 ? "var(--warn)" : "var(--good)";
@@ -1629,10 +1715,9 @@ function dataPage(body, app) {
 
 // ---------------------------------------------------------------- the shift
 
-const WHO = "You";
 const utc = (iso) => (iso ? iso.slice(11, 16) : "");
 const dayUtc = (iso) => (iso ? new Date(Date.parse(iso)).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }) : "");
-const windowText = (a, b) => `${dayUtc(a)} ${utc(a)} to ${utc(b)} UTC`;
+const windowText = (a, b) => `${dayUtc(a)} ${utc(a)} to ${dayUtc(b) !== dayUtc(a) ? dayUtc(b) + " " : ""}${utc(b)} UTC`;
 const WORK = { approval: ["Approve", "bolt"], incident: ["Incident", "alerts"], change: ["Change", "clock"], maintenance: ["Carrier", "route"], alert: ["Alert", "alerts"], ticket: ["Ticket", "logs"], silence: ["Silence", "clock"], note: ["Note", "copy"] };
 
 /** Opens what a worklist row or a lookup hit points at. */
@@ -1646,6 +1731,8 @@ function openThing(app, kind, id) {
   if (kind === "maintenance") return app.go("carriers");
   if (kind === "site") return app.go("topology");
   if (kind === "logs") return app.go("explore", "logs");
+  if (kind === "object") { if (app.map) app.map.open(id); else { app.pending = { open: id }; app.go("map", id); } return null; }
+  if (kind === "estate-customer") { const asked = `${id} customer routers`; if (app.map) app.map.ask(asked); else { app.pending = { ask: asked }; app.go("map"); } return null; }
   return null;
 }
 
@@ -1655,10 +1742,10 @@ function shiftPage(body, app) {
   const note = h("textarea", { class: "input", rows: 2, placeholder: "Leave a note for the next shift: what to watch, what not to touch, who to call", "aria-label": "A note for the next shift" });
   const addNote = async () => {
     if (!note.value.trim()) return;
-    try { await app.ctx.api("/v1/shift/notes", { body: { who: WHO, body: note.value.trim() } }); note.value = ""; C.toast("Left for the next shift", "ok"); stop.run(); } catch (e) { C.toast(e.message, "bad"); }
+    try { await app.ctx.api("/v1/shift/notes", { body: { body: note.value.trim() } }); note.value = ""; C.toast("Left for the next shift", "ok"); stop.run(); } catch (e) { C.toast(e.message, "bad"); }
   };
   body.append(h("div", { class: "no-cols wide" }, h("div", { class: "no-col" }, brief, C.card({ title: "What waits for you", sub: "most urgent first; each row is a row of a table, and a click away from where it is handled", body: work, flush: true })), side));
-  const act = async (path, okText) => { try { await app.ctx.api(path, { body: { who: WHO }, timeout: 60000 }); C.toast(okText, "ok"); stop.run(); app.poll(); } catch (e) { C.toast(e.message, "bad", 6000); } };
+  const act = async (path, okText) => { try { await app.ctx.api(path, { body: {}, timeout: 60000 }); C.toast(okText, "ok"); stop.run(); app.poll(); } catch (e) { C.toast(e.message, "bad", 6000); } };
   const stop = live(app, body, "/v1/shift", (j) => {
     const lead = j.oncall.filter((o) => o.role === "primary");
     const urgent = j.work.filter((w) => w.urgency === 1).length;
@@ -1698,6 +1785,9 @@ async function lookupDrawer(app, q) {
   const d = C.drawer({ title: q, sub: "Looked up in the inventory, the customers, the sessions and the logs", body });
   try {
     const j = await app.call("/v1/lookup?q=" + encodeURIComponent(q));
+    // An id pasted from a ticket names one object of the estate: open it where it is.
+    const exact = j.hits.filter((x) => x.exact);
+    if (exact.length === 1 && j.hits.length === 1) { d.close?.(); openThing(app, "object", exact[0].id); return; }
     const state = (x) => !x ? null : C.pill(x.state === "bad" ? "bad" : x.state === "warn" ? "warn" : "ok", x.state === "bad" ? (x.incident || "incident") : x.state === "warn" ? `${x.alerts} alert${x.alerts === 1 ? "" : "s"}` : "healthy");
     put(body, j.hits.length ? j.hits.map((x) => h("div", { class: "no-hit", style: { cursor: "pointer" }, onclick: () => { d.close?.(); openThing(app, x.kind, x.id); } },
       h("div", { class: "row between nw" }, h("span", {}, h("span", { class: "chip", style: { marginRight: "8px" } }, x.kind), h("b", {}, x.title)), state(x.health)), h("div", { class: "x" }, x.sub)))
@@ -1712,18 +1802,25 @@ const STATE_COLOR = { ok: "var(--good)", warn: "var(--warn)", bad: "var(--crit)"
 
 function diagnosePage(body, app, path) {
   const { h, C, charts } = app;
-  const hero = h("div"), grid = h("div"), listEl = h("div"), inv = h("div"), side = h("div", { class: "no-col" });
+  const hero = h("div"), grid = h("div"), listEl = h("div"), inv = h("div"), estateEl = h("div"), side = h("div", { class: "no-col" });
+  // The investigation, and a note above it when what it is about has moved on.
+  const invNote = h("div"), invBody = h("div");
+  inv.append(invNote, invBody);
   body.append(hero, h("div", { class: "no-cols wide" }, h("div", { class: "no-col" }, C.card({ title: "The stack, by place", sub: "customers at the top, power at the bottom: a fault shows on its own layer and on every layer above it", body: [grid, listEl] }), inv), side));
   let sel = null, picked = null, last = null, auto = true;
+  // What the card investigates: whether the page picked it (auto), whether it was the start then, and when.
+  let pickedAuto = false, pickedStart = false, pickedAt = 0;
+  const keyOf = (o) => (o ? `${o.kind}:${o.id}` : "");
   const openIt = (o) => o.kind === "link" ? linkDrawer(app, o.id) : o.kind === "device" ? deviceDrawer(app, o.id) : o.kind === "service" ? serviceDrawer(app, o.id) : app.go("customers", o.id);
 
   // One broken thing, asked five ways of the same database.
-  const investigate = async (o) => {
-    picked = o;
+  const investigate = async (o, how = {}) => {
     if (o.kind === "customer") { app.go("customers", o.id); return; }
-    put(inv, C.card({ title: `Investigating ${o.id}`, body: h("div", { class: "muted" }, "Asking the graph, the logs, the history and the past…") }));
+    picked = o; pickedAuto = !!how.auto; pickedStart = how.start ?? keyOf(o) === keyOf(last?.start?.first); pickedAt = Date.now();
+    put(invNote);
+    put(invBody, C.card({ title: `Investigating ${o.id}`, body: h("div", { class: "muted" }, "Asking the graph, the logs, the history and the past…") }));
     let j;
-    try { j = await app.call(`/v1/investigate?kind=${o.kind}&id=${encodeURIComponent(o.id)}`); } catch (e) { put(inv, C.failure(e, "The investigation")); return; }
+    try { j = await app.call(`/v1/investigate?kind=${o.kind}&id=${encodeURIComponent(o.id)}`); } catch (e) { if (picked === o) put(invBody, C.failure(e, "The investigation")); return; }
     if (picked !== o) return;
     const L = Object.fromEntries(j.lenses.map((l) => [l.id, l]));
     const total = j.lenses.reduce((a, l) => a + l.ms, 0), nq = j.lenses.reduce((a, l) => a + l.queries, 0);
@@ -1735,7 +1832,7 @@ function diagnosePage(body, app, path) {
     const fields = j.kind === "link" ? [["loss", "Loss", (v) => v.toFixed(2) + "%"], ["rx_dbm", "Receive power", (v) => v.toFixed(1) + " dBm"], ["util", "Load", (v) => pct(v)], ["errors", "Errors", (v) => C.fmt.n(v)]]
       : j.kind === "device" ? [["cpu", "CPU", (v) => v.toFixed(0) + "%"], ["bgp_up", "BGP sessions", (v) => String(v)], ["temp_c", "Temperature", (v) => v.toFixed(0) + " °C"]]
       : [["errors", "Failing requests", (v) => C.fmt.n(v)], ["latency_p95", "p95 latency", (v) => v.toFixed(0) + " ms"]];
-    put(inv, C.card({ title: j.title, sub: j.now.length ? j.now.join(" · ") : "nothing wrong with it in the last three minutes",
+    put(invBody, C.card({ title: j.title, sub: j.now.length ? j.now.join(" · ") : "nothing wrong with it in the last three minutes",
       tools: h("span", { class: "row nw", style: { gap: "6px" } }, j.incident ? h("button", { class: "btn xs primary", onclick: () => app.go("incidents", j.incident) }, `Open ${j.incident}`) : null, h("button", { class: "btn xs", onclick: () => openIt(o) }, "Open it")),
       body: [
         h("div", { class: "no-lenses" },
@@ -1771,9 +1868,17 @@ function diagnosePage(body, app, path) {
         h("div", { class: "row", style: { gap: "8px", marginBottom: "4px" } }, C.pill(s.state === "bad" ? "bad" : "warn", "start here"), h("span", { class: "small muted" }, `the lowest layer where something is ${s.state === "bad" ? "broken" : "worn"} · as of ${utc(j.at)} UTC`)),
         h("h2", {}, `${s.layer_name}, ${colName}: ${f.id} ${f.reading}`),
         h("p", {}, `${f.where}${f.circuit ? ` · circuit ${f.circuit} from ${f.provider}` : ""}. `, s.above.length ? `What shows on ${s.above.join(", ")} above it most likely follows from this.` : "Nothing above it is affected yet.", f.change ? ` ${f.change.id} was carried out here ${C.fmt.ago(T(f.change.executed))}.` : "")),
-        h("div", { class: "row", style: { gap: "8px" } }, f.incident ? h("button", { class: "btn", onclick: () => app.go("incidents", f.incident) }, `Open ${f.incident}`) : null, h("button", { class: "btn primary", onclick: () => { auto = false; investigate(f); } }, C.icon("search"), "Investigate"))));
-      if (auto && !picked) investigate(f);
+        h("div", { class: "row", style: { gap: "8px" } }, f.incident ? h("button", { class: "btn", onclick: () => app.go("incidents", f.incident) }, `Open ${f.incident}`) : null, h("button", { class: "btn primary", onclick: () => { auto = false; investigate(f, { start: true }); } }, C.icon("search"), "Investigate"))));
     } else put(hero, h("div", { class: "no-hero calm" }, h("div", {}, h("h2", {}, "Nothing is broken on any layer"), h("p", {}, `Every link, device and service was inside its limits in the last three minutes (as of ${utc(j.at)} UTC). Trace a path on the right, or inject a fault at the top to see this page work.`))));
+    // The investigation follows the start while the page picks it; one picked by hand stays, marked when it has moved on.
+    const startKey = keyOf(s?.first);
+    if (s && auto && (!picked || (pickedAuto && keyOf(picked) !== startKey))) investigate(s.first, { auto: true, start: true });
+    else if (picked) {
+      const pk = keyOf(picked), broken = j.offenders.some((o) => keyOf(o) === pk);
+      const why = !broken ? `${picked.id} is no longer broken` : pickedStart && pk !== startKey ? `${picked.id} is no longer where to start` : "";
+      putIf(invNote, [why, startKey, pickedAt], () => why ? h("div", { class: "banner no-stale", style: { marginBottom: "8px", borderColor: "var(--warn)" } }, C.icon("clock"), h("span", {}, ` This investigation is as of ${utc(new Date(pickedAt).toISOString())} UTC: ${why}${s ? `; the start now is ${s.first.id}` : "; nothing is broken on any layer now"}. `),
+        h("span", { class: "row nw", style: { gap: "6px", display: "inline-flex" } }, h("button", { class: "btn xs", onclick: () => investigate(picked, { auto: pickedAuto, start: false }) }, C.icon("refresh"), "Investigate it again"), s ? h("button", { class: "btn xs primary", onclick: () => { auto = true; investigate(s.first, { auto: true, start: true }); } }, `Investigate ${s.first.id}`) : null)) : null);
+    }
     const layers = [...j.layers].reverse();
     put(grid, h("div", { class: "no-stack", style: { gridTemplateColumns: `170px repeat(${j.cols.length}, minmax(44px, 1fr))` } },
       h("span", {}), j.cols.map((c) => h("span", { class: "ch", title: c.city }, c.name)),
@@ -1792,13 +1897,17 @@ function diagnosePage(body, app, path) {
         { key: "change", label: "Changed", sortable: false, render: (r) => r.change ? h("a", { class: "no-link small", onclick: (e) => { e.stopPropagation(); changeDrawer(app, r.change.id); } }, `${r.change.id}, ${C.fmt.ago(T(r.change.executed))}`) : h("span", { class: "muted small" }, "no") },
         { key: "incident", label: "Incident", sortable: false, render: (r) => r.incident ? app.link(r.incident, "incidents", r.incident) : h("span", { class: "muted small" }, r.alert ? "alerting" : "no alert") },
       ], { rows: shown.slice(0, 14), compact: true, onRow: (r) => { auto = false; investigate(r); } })] : null);
-    if (!side.childElementCount) put(side, traceCard(app, s ? s.first : null), C.card({ title: "Changes, last six hours", sub: "the first thing to rule out", body: j.changes.length ? h("ul", { class: "no-list" }, j.changes.slice(0, 6).map((c) => h("li", { style: { cursor: "pointer" }, onclick: () => changeDrawer(app, c.id) }, h("div", { class: "row between nw" }, h("b", { class: "ellipsis" }, c.title), h("span", { class: "small muted", style: { whiteSpace: "nowrap" } }, C.fmt.ago(T(c.executed)))), h("div", { class: "small muted" }, `${c.id} · ${c.devices.slice(0, 3).join(", ")}`)))) : h("div", { class: "dim" }, "None carried out.") }),
+    // The estate behind the backbone: its outages are the shift's too, and the map shows where.
+    const est = j.estate || [];
+    put(estateEl, est.length ? C.card({ title: "Behind the backbone", sub: `${est.length} object${est.length === 1 ? "" : "s"} of the estate alerting`, tools: app.link("Map", "map"), body: h("ul", { class: "no-list" }, est.slice(0, 6).map((a) => h("li", { style: { cursor: "pointer" }, onclick: () => openThing(app, "object", a.entity) },
+      h("div", { class: "row between nw" }, h("b", { class: "mono small ellipsis" }, a.entity), a.incident ? app.link(a.incident, "incidents", a.incident) : C.pill(a.severity === "minor" ? "warn" : "bad", a.severity)), h("div", { class: "small muted ellipsis", title: a.summary }, a.summary.replace(/^[^:]*: [^:]*: /, ""))))) }) : null);
+    if (!side.childElementCount) put(side, estateEl, traceCard(app, s ? s.first : null), C.card({ title: "Changes, last six hours", sub: "the first thing to rule out", body: j.changes.length ? h("ul", { class: "no-list" }, j.changes.slice(0, 6).map((c) => h("li", { style: { cursor: "pointer" }, onclick: () => changeDrawer(app, c.id) }, h("div", { class: "row between nw" }, h("b", { class: "ellipsis" }, c.title), h("span", { class: "small muted", style: { whiteSpace: "nowrap" } }, C.fmt.ago(T(c.executed)))), h("div", { class: "small muted" }, `${c.id} · ${c.devices.slice(0, 3).join(", ")}`)))) : h("div", { class: "dim" }, "None carried out.") }),
       C.card({ title: "How to read this page", body: h("div", { class: "small dim stack" }, h("div", {}, h("b", {}, "Start at the bottom. "), "A dark optic is a down link, a lost adjacency, a failing service and a customer on the phone. The lowest layer that is broken is the cause; the rest are its symptoms."),
         h("div", {}, h("b", {}, "Then ask one thing five ways. "), "Investigate walks the topology graph, finds its log lines by substring on every device, checks what changed, searches past incidents by meaning, and shows its last hour. All of it is SQL against one database."),
         h("div", {}, h("b", {}, "Or follow a path. "), "Trace walks from a customer or a device to another, hop by hop, and marks the hop where it goes wrong.")) }));
   };
   const stop = live(app, body, "/v1/where", draw, 20000);
-  if (path[1] && path[2]) { auto = false; investigate({ kind: path[1], id: decodeURIComponent(path[2]) }); }
+  if (path[1] && path[2]) { auto = false; investigate({ kind: path[1], id: decodeURIComponent(path[2]) }, { start: false }); }
   return stop;
 }
 
@@ -1847,9 +1956,9 @@ function boardCard(app, id) {
   const add = async (text) => {
     const q = (text ?? ask.value).trim();
     if (!q) return;
-    try { const j = await app.ctx.api(`/v1/incidents/${id}/panels`, { body: { ask: q, who: WHO } }); ask.value = ""; C.toast(`Added for everyone in the room: ${j.understood}`, "ok"); run(); } catch (e) { C.toast(e.message, "bad", 9000); }
+    try { const j = await app.ctx.api(`/v1/incidents/${id}/panels`, { body: { ask: q } }); ask.value = ""; C.toast(`Added for everyone in the room: ${j.understood}`, "ok"); run(); } catch (e) { C.toast(e.message, "bad", 9000); }
   };
-  const act = async (p, action, ok) => { try { await app.ctx.api(`/v1/incidents/${id}/panels/${encodeURIComponent(p.id)}/${action}`, { body: { who: WHO } }); if (ok) C.toast(ok, "ok"); run(); } catch (e) { C.toast(e.message, "bad"); } };
+  const act = async (p, action, ok) => { try { await app.ctx.api(`/v1/incidents/${id}/panels/${encodeURIComponent(p.id)}/${action}`, { body: {} }); if (ok) C.toast(ok, "ok"); run(); } catch (e) { C.toast(e.message, "bad"); } };
   ask.addEventListener("keydown", (e) => { if (e.key === "Enter") add(); });
   const cell = (v) => v == null ? "–" : typeof v === "number" ? (Number.isInteger(v) ? v.toLocaleString("en-US") : v.toFixed(Math.abs(v) < 10 ? 2 : 1)) : /^\d{4}-\d\d-\d\dT/.test(v) ? `${v.slice(5, 10)} ${v.slice(11, 16)}` : Array.isArray(v) ? v.join(", ") : String(v);
   const lines = (p) => {
@@ -1981,14 +2090,32 @@ function carriersPage(body, app) {
     const ta = h("textarea", { class: "input mono", rows: 12, placeholder: "Paste the carrier's email here. It needs one of our circuit ids and a start and an end such as 2026-11-14 01:00 UTC." });
     const out = h("div", { style: { marginTop: "10px" } });
     const btn = h("button", { class: "btn primary" }, "Read it");
-    const d = C.drawer({ title: "A carrier's notice", sub: "Read into a row of netops_maintenance, then checked against the other plane, the change calendar and the capacity left", body: [ta, out], foot: btn });
+    const save = h("button", { class: "btn primary", style: { display: "none" } }, "Save it");
+    const d = C.drawer({ title: "A carrier's notice", sub: "Read into a row of netops_maintenance, then checked against the other plane, the change calendar and the capacity left", body: [ta, out], foot: [btn, save] });
+    // Read first and show what was read: the window is what collisions and
+    // "in progress" are computed from, so a person confirms it before it is kept.
+    let read = "";
+    ta.oninput = () => { if (ta.value !== read) { save.style.display = "none"; btn.className = "btn primary"; } };
     btn.onclick = async () => {
-      try { const n = await app.ctx.api("/v1/maintenance/parse", { body: { text: ta.value } }); C.toast(`${n.id}: ${n.provider} on ${n.circuit}, ${windowText(n.window_start, n.window_end)}`, "ok", 6000); d.close?.(); stop.run(); }
+      try {
+        const n = await app.ctx.api("/v1/maintenance/parse", { body: { text: ta.value, save: false } });
+        read = ta.value;
+        put(out, h("div", { class: "no-act" }, h("div", { class: "small dim" }, "Read as:"),
+          facts(app, [["carrier", n.provider], ["circuit", n.circuit], ["link", n.link], ["starts", `${n.window_start.replace("T", " ").replace(":00Z", "")} UTC`], ["ends", `${n.window_end.replace("T", " ").replace(":00Z", "")} UTC`], ["impact", n.impact], ["their reference", n.reference || "none found"]]),
+          (n.notes || []).map((x) => h("div", { class: "small", style: { color: "var(--warn)" } }, C.icon("warn"), " ", x)),
+          h("div", { class: "small muted", style: { marginTop: "6px" } }, "If this is right, save it; if not, correct the Start and End lines of the text and read it again.")));
+        save.style.display = ""; btn.className = "btn";
+      } catch (e) { save.style.display = "none"; put(out, h("div", { class: "banner", style: { borderColor: "var(--crit)" } }, e.message)); }
+    };
+    save.onclick = async () => {
+      save.disabled = true;
+      try { const n = await app.ctx.api("/v1/maintenance/parse", { body: { text: read } }); C.toast(`${n.id}: ${n.provider} on ${n.circuit}, ${windowText(n.window_start, n.window_end)}`, "ok", 6000); d.close?.(); stop.run(); }
       catch (e) { put(out, h("div", { class: "banner", style: { borderColor: "var(--crit)" } }, e.message)); }
+      save.disabled = false;
     };
   };
   body.append(h("div", { class: "row between", style: { marginBottom: "12px" } }, h("div", { class: "dim" }, "Carriers' maintenance notices, each matched to the circuit it names and checked for what it collides with."), h("button", { class: "btn sm primary", onclick: paste }, C.icon("plus"), "Paste a notice")), h("div", { class: "no-cols wide" }, list, side));
-  const act = async (id, what, okText) => { try { await app.ctx.api(`/v1/maintenance/${id}/${what}`, { body: { who: WHO }, timeout: 60000 }); C.toast(okText, "ok", 6000); stop.run(); } catch (e) { C.toast(e.message, "bad", 6000); } };
+  const act = async (id, what, okText) => { try { await app.ctx.api(`/v1/maintenance/${id}/${what}`, { body: {}, timeout: 60000 }); C.toast(okText, "ok", 6000); stop.run(); } catch (e) { C.toast(e.message, "bad", 6000); } };
   const stop = live(app, body, "/v1/maintenance", (j) => {
     const now = T(j.at);
     const ahead = j.notices.filter((n) => n.status !== "completed" && T(n.window_end) > now).sort((a, b) => T(a.window_start) - T(b.window_start));
@@ -2030,7 +2157,7 @@ function silenceDrawer(app, kind, matcher, after) {
   const hrs = h("select", { class: "input" }, [[0.5, "30 minutes"], [1, "1 hour"], [2, "2 hours"], [4, "4 hours"], [12, "12 hours"], [24, "A day"]].map(([v, t]) => h("option", { value: v, selected: v === 2 }, t)));
   const btn = h("button", { class: "btn primary" }, "Silence");
   const d = C.drawer({ title: `Silence ${matcher}`, sub: `Alerts on this ${kind} are still recorded, but page nobody and open no incident until it ends`, body: h("div", { class: "stack" }, h("label", {}, h("div", { class: "small muted" }, "Reason"), reason), h("label", {}, h("div", { class: "small muted" }, "For"), hrs)), foot: btn });
-  btn.onclick = async () => { try { await app.ctx.api("/v1/silences", { body: { kind, matcher, reason: reason.value, hours: +hrs.value, who: WHO } }); C.toast(`${matcher} is silenced`, "ok"); d.close?.(); after?.(); } catch (e) { C.toast(e.message, "bad", 6000); } };
+  btn.onclick = async () => { try { await app.ctx.api("/v1/silences", { body: { kind, matcher, reason: reason.value, hours: +hrs.value } }); C.toast(`${matcher} is silenced`, "ok"); d.close?.(); after?.(); } catch (e) { C.toast(e.message, "bad", 6000); } };
 }
 
 function silencesCard(app, j, after) {
@@ -2076,7 +2203,7 @@ function leadershipPage(body, app) {
     const cannot = j.risk.failover.filter((f) => !f.survives);
     note.textContent = `${j.days} days of records; measured rates over the ${j.kept_hours} hours of telemetry kept`;
     put(kpis,
-      kpi(app, "Services on target", `${met}/${j.services.length}`, "for the period"),
+      kpi(app, "Services on target", `${met}/${j.services.length}`, `measured over ${j.kept_hours} h, incidents over ${j.days} days`),
       kpi(app, "Incidents", String(inc.count), `${inc.sev1} sev1 · ${j.days} days`),
       kpi(app, "Time to detect", Math.round(inc.ttd) + " s", "mean"),
       kpi(app, "Time to resolve", mins(inc.mttr), "mean"),
@@ -2085,14 +2212,14 @@ function leadershipPage(body, app) {
       kpi(app, "Changes as planned", total ? pct(ch.completed / total) : "–", `${ch.rolled_back} of ${total} rolled back`),
       kpi(app, "Spans that cannot fail over", `${cannot.length}/${j.risk.failover.length}`, "at their measured peak"));
     put(main,
-      C.card({ title: "Are we meeting what we sold?", sub: "each service against its objective; the budget is the failure its objective allows", flush: true, body: C.table([
+      C.card({ title: "Are we meeting what we sold?", sub: `each service against its objective, over two windows: the rate and the budget it spent over the ${j.kept_hours} h of telemetry kept, and the minutes of incidents over ${j.days} days against what the objective allows`, flush: true, body: C.table([
         { key: "name", label: "Service", render: (r) => h("span", {}, h("b", {}, r.name), " ", h("span", { class: "muted small" }, `tier ${r.tier} · ${r.owner}`)) },
         { key: "slo_target", label: "Objective", num: true, render: (r) => (r.slo_target * 100).toFixed(2) + "%" },
-        { key: "success", label: "Measured", num: true, render: (r) => h("span", { style: r.met ? null : { color: "var(--crit-ink)", fontWeight: 600 } }, (r.success * 100).toFixed(3) + "%") },
-        { key: "budget_used", label: "Error budget spent", render: (r) => h("span", { class: "row nw", style: { gap: "8px" } }, bar(r.budget_used), h("span", { class: "small" }, pct(r.budget_used))), sort: (r) => r.budget_used },
-        { key: "degraded_min", label: "Incident minutes", num: true, render: (r) => h("span", { title: `its objective allows ${r.allowed_min} minutes over the period`, style: r.period_used > 1 ? { color: "var(--crit-ink)", fontWeight: 600 } : null }, `${Math.abs(r.degraded_min)} of ${r.allowed_min}`), sort: (r) => r.period_used },
+        { key: "success", label: `Measured, last ${j.kept_hours} h`, num: true, render: (r) => h("span", { style: r.met ? null : { color: "var(--crit-ink)", fontWeight: 600 } }, (r.success * 100).toFixed(3) + "%") },
+        { key: "budget_used", label: `Budget spent, last ${j.kept_hours} h`, render: (r) => h("span", { class: "row nw", style: { gap: "8px" } }, bar(r.budget_used), h("span", { class: "small" }, pct(r.budget_used))), sort: (r) => r.budget_used },
+        { key: "degraded_min", label: `Incident minutes, ${j.days} days`, num: true, render: (r) => h("span", { title: `its objective allows ${r.allowed_min} minutes in ${j.days} days`, style: r.period_used > 1 ? { color: "var(--crit-ink)", fontWeight: 600 } : null }, `${Math.abs(r.degraded_min)} of ${r.allowed_min}`), sort: (r) => r.period_used },
         { key: "customers", label: "Customers", num: true },
-        { key: "revenue_exposed", label: "Revenue exposed", num: true, render: (r) => money(Math.abs(r.revenue_exposed)) },
+        { key: "revenue_exposed", label: `Revenue exposed, ${j.days} days`, num: true, render: (r) => money(Math.abs(r.revenue_exposed)) },
       ], { rows: j.services, compact: true, sortKey: "degraded_min", desc: true, onRow: (r) => serviceDrawer(app, r.id) }) }),
       h("div", { class: "no-cols even" },
         C.card({ title: "What incidents cost", sub: "a week at a time", body: [trend, inc.by_change.length ? h("div", { class: "small", style: { marginTop: "8px" } }, h("b", {}, `${inc.by_change.length} began with a change: `), inc.by_change.map((x, i) => [i ? ", " : "", app.link(x.incident, "incidents", x.incident), " (", h("a", { class: "no-link", onclick: () => changeDrawer(app, x.change) }, x.change), ")"])) : null,
@@ -2141,6 +2268,8 @@ const MAP_EXAMPLES = [
   "customer routers in Frankfurt changed in the last month about QoS with high latency",
   "hub routers that failed in the last month about a line card",
 ];
+/** "3 access switches", "1 OLT": a kind's name for a count of it. */
+const kindsOf = (kind, n) => { const name = (KIND_NAME[kind] || kind).toLowerCase().replace(/^olt$/, "OLT").replace(/^ont$/, "ONT"); return n === 1 ? name : name + (/(s|x|ch|sh)$/.test(name) ? "es" : "s"); };
 const KIND_NAME = { region: "Region", metro: "Metro", hub: "Hub", site: "Site", core: "Core router", border: "Border router", agg: "Aggregation router", firewall: "Firewall", spine: "Spine switch", leaf: "Leaf switch", "hub-router": "Hub router", power: "Power plant", olt: "OLT", cell: "Cell site router", switch: "Access switch", ont: "ONT", radio: "Radio", cpe: "Customer router" };
 const STATE_PILL = { ok: "ok", down: "bad", degraded: "warn", impacted: "serious" };
 const fms = (v) => (v == null ? "–" : v >= 100 ? v.toFixed(0) + " ms" : v.toFixed(1) + " ms");
@@ -2163,10 +2292,13 @@ function mapPage(body, app, path) {
   const zoomBtn = (label, title, fn) => h("button", { class: "btn sm", title, onclick: fn }, label);
   const legend = h("div", { class: "no-map-legend" },
     [["var(--crit)", "down or incident"], ["var(--warn)", "degraded"], ["var(--serious)", "behind a fault"], ["var(--accent)", "search match"]].map(([c, t]) => h("span", {}, h("i", { style: { background: c } }), t)));
-  const shapes = h("div", { class: "no-map-legend", style: { bottom: "42px", maxWidth: "none", flexWrap: "nowrap", whiteSpace: "nowrap" } },
+  const shapes = h("div", { class: "no-map-legend", style: { maxWidth: "none", flexWrap: "nowrap", whiteSpace: "nowrap" } },
     [["■", "backbone"], ["◆", "router"], ["▼", "power"], ["●", "OLT, ONT"], ["▲", "cell, sector"], ["▢", "switch, CPE"]].map(([c, t]) => h("span", {}, h("b", { style: { marginRight: "4px" } }, c), t)));
-  const stage = h("div", { class: "no-map-stage" }, canvas, crumbs, shapes,
-    h("div", { class: "no-map-zoom" }, zoomBtn("+", "Zoom in", () => zoomBy(1.8)), zoomBtn("−", "Zoom out", () => zoomBy(1 / 1.8)), zoomBtn("Fit", "The whole network", () => fit(true))), legend, stats, tip);
+  // The legends and the counts share one footer, so that a long count
+  // goes to a line of its own rather than over the legend.
+  const stage = h("div", { class: "no-map-stage" }, canvas, crumbs,
+    h("div", { class: "no-map-zoom" }, zoomBtn("+", "Zoom in", () => zoomBy(1.8)), zoomBtn("−", "Zoom out", () => zoomBy(1 / 1.8)), zoomBtn("Fit", "The whole network", () => fit(true))),
+    h("div", { class: "no-map-foot" }, shapes, h("div", { class: "no-map-foot-row" }, legend, stats)), tip);
   body.append(h("div", { class: "no-map" },
     h("div", { class: "no-map-bar", style: { display: "none" } }, input, askBtn),
     h("div", { class: "no-map-eg" }, h("span", { class: "muted small" }, "Try:"), MAP_EXAMPLES.map((q) => h("button", { class: "chip", onclick: () => { input.value = q; app.bar?.set(q, "search"); ask(q); } }, q))),
@@ -2231,6 +2363,20 @@ function mapPage(body, app, path) {
     loadTimer = setTimeout(load, 140);
     drawCrumbs();
   };
+  const inBox = (x0, y0, x1, y1) => !shown.box || (x1 >= shown.box[0] && x0 <= shown.box[2] && y1 >= shown.box[1] && y0 <= shown.box[3]);
+  const changedIn = (was, now) => {
+    if (!was || !shown.box) return true;
+    const key = (f) => `${f.id}|${f.state}|${f.since}`;
+    const before = new Set((was.faults || []).map(key)), after = new Set((now.faults || []).map(key));
+    for (const f of [...(was.faults || []).filter((f) => !after.has(key(f))), ...(now.faults || []).filter((f) => !before.has(key(f)))]) if (inBox(f.x, f.y, f.x, f.y)) return true;
+    for (const id of new Set([...Object.keys(was.places || {}), ...Object.keys(now.places || {})])) {
+      const c = cont.get(id);
+      if (!c || c.kind !== "hub" || JSON.stringify(was.places?.[id]) === JSON.stringify(now.places?.[id])) continue;
+      if (inBox(c.x - c.w / 2, c.y - c.h / 2, c.x + c.w / 2, c.y + c.h / 2)) return true;
+    }
+    return false;
+  };
+  let loadedAt = 0;
   const load = async (force) => {
     if (dead || !base) return;
     const t = tier();
@@ -2243,6 +2389,7 @@ function mapPage(body, app, path) {
       const j = await app.call(`/v1/map/view?x0=${box[0].toFixed(3)}&y0=${box[1].toFixed(3)}&x1=${box[2].toFixed(3)}&y1=${box[3].toFixed(3)}&t=${t}`);
       if (dead || seq !== loadSeq) return;
       shown = { nodes: j.nodes, edges: j.edges, t, box, ms: j.queries.reduce((a, q) => a + q.ms, 0), cut: j.cut };
+      loadedAt = Date.now();
       draw();
     } catch (e) { console.warn(e); }
   };
@@ -2521,9 +2668,39 @@ function mapPage(body, app, path) {
     Object.assign(view, { k, tx: px - wx(px) * k, ty: py - wy(py) * k });
     draw(); moved();
   }, { passive: false });
-  canvas.addEventListener("pointerdown", (e) => { const [px, py] = pos(e); drag = { px, py, tx: view.tx, ty: view.ty, moved: false }; canvas.setPointerCapture(e.pointerId); });
+  // Two fingers pinch: the place under their middle stays under it while the scale follows their distance.
+  const fingers = new Map();
+  let pinch = null;
+  const pair = () => { const [a, b] = [...fingers.values()]; return { d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, mx: (a[0] + b[0]) / 2, my: (a[1] + b[1]) / 2 }; };
+  canvas.addEventListener("pointerdown", (e) => {
+    const [px, py] = pos(e);
+    fingers.set(e.pointerId, [px, py]);
+    canvas.setPointerCapture(e.pointerId);
+    if (fingers.size === 2) {
+      const q = pair();
+      cancelAnimationFrame(anim);
+      pinch = { d: q.d, k: view.k, wx: wx(q.mx), wy: wy(q.my) };
+      drag = null; tip.style.display = "none";
+      return;
+    }
+    if (fingers.size === 1) drag = { px, py, tx: view.tx, ty: view.ty, moved: false };
+  });
+  const lift = (e) => {
+    fingers.delete(e.pointerId);
+    if (pinch && fingers.size < 2) { pinch = null; drag = null; moved(); return true; }
+    return !!pinch;
+  };
+  canvas.addEventListener("pointercancel", (e) => { lift(e); drag = null; });
   canvas.addEventListener("pointermove", (e) => {
     const [px, py] = pos(e);
+    if (fingers.has(e.pointerId)) fingers.set(e.pointerId, [px, py]);
+    if (pinch) {
+      if (fingers.size < 2) return;
+      const q = pair(), k = Math.max(fitK * 0.6, Math.min(base ? 260 / base.site_r : 400, pinch.k * q.d / pinch.d));
+      Object.assign(view, { k, tx: q.mx - pinch.wx * k, ty: q.my - pinch.wy * k });
+      draw();
+      return;
+    }
     if (drag) {
       if (Math.hypot(px - drag.px, py - drag.py) > 3) drag.moved = true;
       if (drag.moved) { cancelAnimationFrame(anim); view.tx = drag.tx + px - drag.px; view.ty = drag.ty + py - drag.py; draw(); }
@@ -2539,6 +2716,7 @@ function mapPage(body, app, path) {
     tip.style.left = Math.min(W - 260, px + 14) + "px"; tip.style.top = Math.min(H - 50, py + 14) + "px";
   });
   canvas.addEventListener("pointerup", (e) => {
+    if (lift(e)) return;
     const d = drag; drag = null;
     if (!d) return;
     if (d.moved) { moved(); return; }
@@ -2563,7 +2741,7 @@ function mapPage(body, app, path) {
       h("div", { class: "no-map-head" }, h("h3", {}, "Where it is red"), h("div", { class: "muted small" }, base ? `${C.fmt.n(base.objects)} objects and ${C.fmt.n(base.links)} links in ChloeDB tables. Zoom in, or click anything.` : "")),
       h("div", { class: "no-map-kpis" }, [[hot.incidents.length, "open incidents"], [faults.length, "broken objects"], [C.fmt.n(behind), "behind them"]].map(([n, l]) => h("div", {}, h("b", {}, String(n)), h("span", {}, l)))),
       hot.incidents.length ? sec("Incidents on the backbone", null, hot.incidents.map((i) => h("a", { class: "no-map-row", onclick: () => { const m = cont.get(i.metros[0]); if (m) flyToPlace(m); } }, dot("down"), h("span", { class: "t" }, h("b", {}, i.title), h("span", {}, `${i.id} · ${i.severity} · ${i.devices.slice(0, 3).join(", ")}`)), h("button", { class: "btn xs", onclick: (e) => { e.stopPropagation(); app.go("incidents", i.id); } }, "Open")))) : null,
-      sec("Broken now", "state IN ('down', 'degraded')", faults.length ? faults.slice(0, 60).map((f) => row(f, f.name === f.id ? f.id : `${f.name}`, `${f.reason} · ${where(f)} · ${C.fmt.ago(T(f.since))}`, () => { flyToNode(f); select(f.id); })) : h("div", { class: "muted small" }, "Nothing is broken right now.")));
+      sec("Broken now", "state IN ('down', 'degraded')", faults.length ? faults.slice(0, 60).map((f) => row(f, f.name === f.id ? f.id : `${f.name} (${f.id})`, `${f.reason} · ${where(f)} · ${C.fmt.ago(T(f.since))}`, () => { flyToNode(f); select(f.id); })) : h("div", { class: "muted small" }, "Nothing is broken right now.")));
   };
 
   const select = async (id) => {
@@ -2577,7 +2755,10 @@ function mapPage(body, app, path) {
     const detailP = app.call(`/v1/map/detail?id=${encodeURIComponent(id)}`);
     detailP.then((d) => { if (!dead && sel && sel.id === id && app.autoLight !== false) { light(id, d.below, true); } }).catch(() => {});
     draw();
-    const n = j.node, qms = (i) => (j.queries[i] ? C.fmt.ms(j.queries[i].ms) : "");
+    // Each part's time, found by what it read: the app's walk on a
+    // coordinator reads in other steps than REACHABLE does.
+    const n = j.node, qms = (re) => { const qs = j.queries.filter((x) => re.test(x.what || "")); return qs.length ? C.fmt.ms(Math.max(...qs.map((x) => x.ms))) : ""; };
+    const sqlWalk = j.engine !== "app";
     const cause = j.cause && j.cause.id ? j.cause : null;
     const elsewhere = cause && cause.id !== n.id;
     const goto = (o) => { flyToNode(o); select(o.id); };
@@ -2595,17 +2776,17 @@ function mapPage(body, app, path) {
       cause || j.suspect ? h("div", { class: "no-map-verdict" + (cause ? "" : " calm") },
         cause ? h("div", {}, h("b", {}, elsewhere ? `The trouble is ${cause.hop} ${cause.hop === 1 ? "hop" : "hops"} up: ${cause.id}` : "The trouble starts here"), h("div", { class: "small" }, cause.incident ? `${cause.incident.id}: ${cause.incident.title}` : cause.reason), elsewhere ? h("button", { class: "btn xs", style: { marginTop: "6px" }, onclick: () => goto(cause) }, "Go to it") : null) : null,
         j.suspect ? h("div", { class: "small", style: { marginTop: cause ? "8px" : 0 } }, h("b", {}, `Changed ${j.suspect.minutes_before} min before it began: `), `${j.suspect.text} (${j.suspect.author}, ${j.suspect.ticket}, on ${j.suspect.node === n.id ? "this object" : j.suspect.node})`) : null) : null,
-      sec(n.layer === "core" ? "Its neighbours in the backbone" : "What it hangs from", `REACHABLE against the edges · ${qms(1)}`,
+      sec(n.layer === "core" ? "Its neighbours in the backbone" : "What it hangs from", `${sqlWalk ? "REACHABLE against the edges" : "walked by the app, read by key"} · ${qms(/^(Its neighbours|What it hangs from)/)}`,
         j.upstream.length ? j.upstream.map((u) => row(u, u.id, `${u.hop} ${u.hop === 1 ? "hop" : "hops"} · ${KIND_NAME[u.kind] || u.kind}${u.state !== "ok" ? " · " + u.state : ""}`, () => goto(u))) : h("div", { class: "muted small" }, "Nothing above it.")),
-      sec("What depends on it", `REACHABLE along the edges, grouped · ${qms(2)}`,
+      sec("What depends on it", `${sqlWalk ? "REACHABLE along the edges, grouped" : "walked by the app, states read by key or place"} · ${qms(/^What depends on it/)}`,
         j.downstream.total ? [h("div", { class: "small" }, h("b", {}, C.fmt.n(j.downstream.total)), " objects", j.downstream.not_ok ? [", ", h("b", { style: { color: "var(--crit-ink)" } }, C.fmt.n(j.downstream.not_ok)), " of them not ok"] : null),
-          h("div", { style: { marginTop: "6px" } }, Object.entries(byKind).sort((a, b) => b[1].n - a[1].n).map(([kd, b]) => h("span", { class: "chip", style: { marginRight: "4px" } }, `${C.fmt.n(b.n)} ${(KIND_NAME[kd] || kd).toLowerCase()}${b.n === 1 ? "" : "s"}`)))] : h("div", { class: "muted small" }, n.layer === "core" ? "The backbone carries everyone: see Diagnose for its services and customers." : "Nothing is behind it.")),
-      j.near.length ? sec("Trouble within three hops", `REACHABLE both ways AND state != 'ok' · ${qms(3)}`, j.near.slice(0, 8).map((o) => row(o, o.name === o.id ? o.id : `${o.name} (${o.id})`, `${o.hop} ${o.hop === 1 ? "hop" : "hops"} · ${o.state} · ${o.reason}`, () => goto(o))), j.near.length > 8 ? h("div", { class: "muted small" }, `and ${j.near.length - 8} more`) : null) : null,
-      sec("Changes and faults, here and around it", `events of the walk's rows, 30 days · ${qms(5)}`,
+          h("div", { style: { marginTop: "6px" } }, Object.entries(byKind).sort((a, b) => b[1].n - a[1].n).map(([kd, b]) => h("span", { class: "chip", style: { marginRight: "4px" } }, `${C.fmt.n(b.n)} ${kindsOf(kd, b.n)}`)))] : h("div", { class: "muted small" }, n.layer === "core" ? "The backbone carries everyone: see Diagnose for its services and customers." : "Nothing is behind it.")),
+      j.near.length ? sec("Trouble within three hops", `${sqlWalk ? "REACHABLE both ways AND state != 'ok'" : "walked by the app, state != 'ok'"} · ${qms(/^Trouble within three hops/)}`, j.near.slice(0, 8).map((o) => row(o, o.name === o.id ? o.id : `${o.name} (${o.id})`, `${o.hop} ${o.hop === 1 ? "hop" : "hops"} · ${o.state} · ${o.reason}`, () => goto(o))), j.near.length > 8 ? h("div", { class: "muted small" }, `and ${j.near.length - 8} more`) : null) : null,
+      sec("Changes and faults, here and around it", `events of the walk's rows, 30 days · ${qms(/^Changes and faults on it/)}`,
         j.history.length ? h("div", { class: "no-map-hist" }, j.history.slice(0, 14).map((e) => h("div", { class: e.event }, h("span", { class: "when" }, C.fmt.ago(T(e.ts))), h("span", {}, h("b", {}, e.event === "change" ? "Change" : "Fault"), " ", e.text, h("span", { class: "muted" }, ` · ${e.relation === "this object" ? "here" : e.node + ", " + e.relation}${e.author ? " · " + e.author : ""}${e.ticket ? " · " + e.ticket : ""}`))))) : h("div", { class: "muted small" }, "Nothing in thirty days."),
         j.changes.length ? h("div", { class: "small", style: { marginTop: "6px" } }, "Backbone changes that name it: ", j.changes.map((c) => app.link(c.id, "changes")).flatMap((a, i) => (i ? [", ", a] : [a]))) : null),
       j.before.words ? sec("How this went before", `BM25 over ${C.fmt.n((base.events || []).reduce((a, e) => a + e.n, 0))} events`,
-        ended.length ? h("div", { class: "small" }, `On ${(KIND_NAME[j.before.kind] || j.before.kind).toLowerCase()}s, faults cleared in: `, ended.map((e) => `${mins(e.minutes)} (${e.cause}, ${C.fmt.n(e.n)} times)`).join(", ")) : null,
+        ended.length ? h("div", { class: "small" }, `On ${kindsOf(j.before.kind, 2)}, faults cleared in: `, ended.map((e) => `${mins(e.minutes)} (${e.cause}, ${C.fmt.n(e.n)} times)`).join(", ")) : null,
         (j.before.like || []).map((e) => h("a", { class: "no-map-row", onclick: () => goto({ id: e.node, x: e.x, y: e.y }) }, dot("ok"), h("span", { class: "t" }, h("b", {}, e.node), h("span", {}, `${C.fmt.ago(T(e.ts))} · ${e.text}`))))) : null,
       j.engine !== "sql" ? h("div", { class: "muted small" }, "The walks ran in the app: a coordinator does not walk graphs yet.") : null);
     // The panel becomes tabs: the walk above is the overview.
@@ -2632,7 +2813,7 @@ function mapPage(body, app, path) {
     askBtn.disabled = true;
     put(side, h("div", { class: "no-map-head" }, h("h3", {}, "Searching"), h("div", { class: "muted small" }, text)));
     let j;
-    try { j = await app.call(`/v1/map/ask?q=${encodeURIComponent(text)}`); } catch (e) { put(side, C.failure(e, "The search")); askBtn.disabled = false; return; }
+    try { j = await app.call("/v1/map/ask", { body: { q: text } }); } catch (e) { put(side, C.failure(e, "The search")); askBtn.disabled = false; return; }
     askBtn.disabled = false;
     if (dead) return;
     found = { ...j, ids: new Set(j.rows.map((r) => r.id)) };
@@ -2650,9 +2831,10 @@ function mapPage(body, app, path) {
     const kinds = { column: "column", substring: "substring index", reading: "reading", events: "events", graph: "graph" };
     put(side,
       h("div", { class: "no-map-head" },
-        h("div", { class: "row nw between" }, h("h3", {}, j.understood ? `${C.fmt.n(j.total)} ${j.total === 1 ? "match" : "matches"}` : "Not understood"), h("button", { class: "btn xs", onclick: () => { found = null; input.value = ""; draw(); drawTrouble(); } }, "Clear")),
+        h("div", { class: "row nw between" }, h("h3", {}, j.understood ? `${C.fmt.n(j.total)} ${j.total === 1 ? "match" : "matches"}${j.partial ? ", for part of it" : ""}` : j.refused ? "Not answered" : "Not understood"), h("button", { class: "btn xs", onclick: () => { found = null; input.value = ""; draw(); drawTrouble(); } }, "Clear")),
         h("div", { class: "small", style: { marginTop: "2px" } }, `“${j.asked}”`),
         h("div", { class: "muted small", style: { marginTop: "4px" }, title: j.note || "" }, j.reader === "model" ? "Read by the server's model, through llm()" : `Read by the fixed reader${j.note ? ": " + j.note.replace(/ \(.*$/, "") : ""}`)),
+      askCaveat(h, j),
       j.understood ? sec("How it was read", null, h("div", { class: "no-map-read" }, j.read.map((r) => h("div", {}, h("span", { class: "k" }, kinds[r.kind] || r.kind), h("span", {}, h("b", {}, r.text), h("span", { class: "muted" }, " · " + r.how)))))) : h("div", { class: "small", style: { padding: "0 14px" } }, j.hint),
       j.sql ? sec("One statement", `${C.fmt.ms(j.queries.find((q) => q.what.startsWith("The search"))?.ms || 0)}`, C.sqlBlock(j.sql + `\n-- ${JSON.stringify(j.params)}`)) : null,
       j.rows.length ? sec(j.total > j.rows.length ? `The first ${j.rows.length}` : "The matches", "click one to go to it",
@@ -2676,7 +2858,10 @@ function mapPage(body, app, path) {
     for (const c of base.containers) cont.set(c.id, c);
     resize();
     fit(false);
-    stopHot = live(app, side, "/v1/map/hot", (j) => { hot = j; draw(); drawTrouble(); if (tier() >= 3) load(true); }, 10000);
+    // What is broken comes every 10 s; the window is asked again only when
+    // something in it changed (a fault in it, or a hub it covers counting
+    // differently), and at the latest every five minutes.
+    stopHot = live(app, side, "/v1/map/hot", (j) => { const was = hot; hot = j; draw(); drawTrouble(); if (tier() >= 3 && (changedIn(was, j) || Date.now() - loadedAt > 300000)) load(true); }, 10000);
     const pend = app.pending; app.pending = null;
     if (pend?.ask) ask((input.value = pend.ask));
     else if (pend?.open || path[1]) open(pend?.open || path[1]);
@@ -2757,7 +2942,7 @@ function inspectorTabs(app, j, detailP, overview, hooks) {
       j.downstream.total ? h("li", { class: "below" }, `${C.fmt.n(j.downstream.total)} below it`, j.downstream.not_ok ? h("span", { style: { color: "var(--crit-ink)" } }, ` · ${C.fmt.n(j.downstream.not_ok)} not ok`) : null) : null);
     return [sec("How it is connected", "REACHABLE against the edges and along them", chain,
       h("div", { class: "row", style: { gap: "6px", marginTop: "8px" } }, h("button", { class: "btn xs" + (lit ? " primary" : ""), onclick: () => { hooks.toggleLight(); drawBody(); } }, C.icon("layers"), lit ? "Lit on the map: clear" : "Light it on the map"), h("span", { class: "muted small" }, lit ? `${C.fmt.n(lit)} objects lit, the rest dimmed` : ""))),
-      Object.keys(byKind).length ? sec("What depends on it", null, h("div", {}, Object.entries(byKind).sort((a, b) => b[1].n - a[1].n).map(([kd, b]) => h("span", { class: "chip", style: { margin: "0 4px 4px 0" } }, `${C.fmt.n(b.n)} ${(KIND_NAME[kd] || kd).toLowerCase()}${b.n === 1 ? "" : "s"}`, b.bad ? h("b", { style: { color: "var(--crit-ink)" } }, ` · ${C.fmt.n(b.bad)}`) : null)))) : null,
+      Object.keys(byKind).length ? sec("What depends on it", null, h("div", {}, Object.entries(byKind).sort((a, b) => b[1].n - a[1].n).map(([kd, b]) => h("span", { class: "chip", style: { margin: "0 4px 4px 0" } }, `${C.fmt.n(b.n)} ${kindsOf(kd, b.n)}`, b.bad ? h("b", { style: { color: "var(--crit-ink)" } }, ` · ${C.fmt.n(b.bad)}`) : null)))) : null,
       (d.customers || []).length ? sec("Customers behind it", "REACHABLE, grouped by customer", h("div", { class: "no-cust" }, d.customers.slice(0, 12).map((c) => h("div", {}, h("span", {}, c.customer), h("span", { class: "muted" }, `${c.n} ${c.n === 1 ? "site" : "sites"}`), c.hurt ? h("b", { style: { color: "var(--crit-ink)" } }, `${c.hurt} hurt`) : h("span")))) ) : null,
       (j.near || []).length ? sec("Trouble within three hops", null, j.near.slice(0, 8).map((o) => h("a", { class: "no-map-row", onclick: () => hooks.go(o) }, h("i", { class: "no-map-dot", style: { background: o.state === "down" ? "var(--crit)" : o.state === "degraded" ? "var(--warn)" : "var(--serious)" } }), h("span", { class: "t" }, h("b", {}, o.id), h("span", {}, `${o.hop} ${o.hop === 1 ? "hop" : "hops"} · ${o.state}`))))) : null];
   };
@@ -2804,7 +2989,10 @@ function whereState(app) {
     if (patch.sel || patch.place) app.where.off = false;
     if (JSON.stringify([app.where.place?.id, app.where.sel?.id]) !== before) for (const f of subs) f(app.where);
   };
-  app.scope = () => (app.where.off ? null : app.where.place);
+  app.wherePage = (page) => { app.page = page; for (const f of subs) f(app.where); };
+  // The place in view is the map's: it narrows the map and the dashboards
+  // that follow it, and no other page's search.
+  app.scope = () => (app.where.off || !["map", "dash"].includes(app.page) ? null : app.where.place);
   app.target = () => (app.where.off ? null : app.where.sel);
 }
 
@@ -2817,7 +3005,7 @@ function whereState(app) {
  */
 function cmdBar(app, opts = {}) {
   const { h, C } = app;
-  let mode = opts.mode || "search", items = [], at = -1, seq = 0, timer = 0, lastQ = null, open = false;
+  let mode = opts.mode || "search", items = [], itemsFor = null, at = -1, seq = 0, timer = 0, lastQ = null, open = false;
   const scopeEl = h("button", { class: "no-scope", type: "button", title: "Where the search looks: the place in view, or the object picked. Click to search everywhere." });
   const input = h("input", { class: "no-cmd-in", type: "search", autocomplete: "off", spellcheck: "false", role: "combobox", "aria-autocomplete": "list", "aria-expanded": "false", "aria-label": "Search the network, or ask" });
   const modeSeg = h("div", { class: "no-cmd-mode", role: "tablist" });
@@ -2839,7 +3027,7 @@ function cmdBar(app, opts = {}) {
     placeholder();
   };
   const drawMode = () => modeSeg.replaceChildren(...[["search", "Search", "search"], ["ask", "Ask", "sparkle"]].map(([m, label, ic]) =>
-    h("button", { type: "button", role: "tab", "aria-selected": String(mode === m), title: m === "ask" ? "Ask the assistant (Tab switches)" : "Search and filter (Tab switches)", onclick: () => setMode(m) }, C.icon(ic), h("span", {}, label))));
+    h("button", { type: "button", role: "tab", "aria-selected": String(mode === m), title: m === "ask" ? "Ask the assistant" : "Search and filter", onclick: () => setMode(m) }, C.icon(ic), h("span", {}, label))));
   const setMode = (m) => { mode = m; drawMode(); placeholder(); lastQ = null; fetchSoon(0); input.focus(); };
   scopeEl.onclick = () => { if (app.where.off) app.where.off = false; else app.where.off = true; drawScope(); lastQ = null; if (open) fetchSoon(0); };
 
@@ -2876,6 +3064,7 @@ function cmdBar(app, opts = {}) {
     try { j = await app.ctx.api(`/v1/suggest?${params}`); } catch (e) { console.warn(e); return; }
     if (my !== seq || document.activeElement !== input) return;
     items = j.items || [];
+    itemsFor = q;
     at = items.length && q.trim() ? 0 : -1;
     drawList(j);
     show(true);
@@ -2908,13 +3097,19 @@ function cmdBar(app, opts = {}) {
       return;
     }
     if (e.key === "Tab" && !e.shiftKey) {
-      if (open && at >= 0 && items[at]) { e.preventDefault(); pick(at, false); return; }
-      if (!opts.compact && !input.value.trim()) { e.preventDefault(); setMode(mode === "ask" ? "search" : "ask"); }
+      // Tab completes the suggestion chosen with the arrows, and otherwise
+      // leaves the box (UIA-1, WCAG 2.1.2: it used to switch Search and Ask
+      // in an empty box, so focus never left it); the Search | Ask buttons
+      // before the box switch the mode.
+      if (open && at >= 0 && items[at]) { e.preventDefault(); pick(at, false); }
       return;
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      const it = open && at >= 0 ? items[at] : null;
+      // Completions of something else than what is in the box now (it was
+      // pasted, or typed faster than they came) are not what Enter means.
+      const it = open && at >= 0 && itemsFor === input.value ? items[at] : null;
+      if (itemsFor !== input.value) { clearTimeout(timer); seq++; }
       if (it && it.partial) { pick(at, false); return; }
       if (it) { pick(at, true); return; }
       submit(null);
@@ -2937,10 +3132,11 @@ function run(app, text, it) {
   }
   const page = (app.ctx.path() || [])[0] || "";
   const sentence = text.split(/\s+/).length >= 2 || /:/.test(text) || (it && it.kind !== "history");
-  if (!sentence && page !== "map") { lookupDrawer(app, text); return; }
+  // One word is looked up (an id from a ticket opens what it names); on the map, a word that is not an id is searched for.
+  if (!sentence && (page !== "map" || /[a-z].*-.*\d|\d.*-.*[a-z]/i.test(text))) { lookupDrawer(app, text); return; }
   // A kind: or state: filter reads as words the map's reader knows; the place in view narrows it.
   const s = app.scope();
-  let asked = text.replace(/\bkind:([\w-]+)/g, (_, k) => KIND_NAME[k] ? KIND_NAME[k].toLowerCase() + "s" : k).replace(/\bstate:not-?ok\b/g, "that are not ok").replace(/\bstate:(\w+)/g, "that are $1").replace(/\bvendor:(\S+)/g, "$1").replace(/\bin:(\S+)/g, (_, m) => "in " + m.replace(/-/g, " "));
+  let asked = text.replace(/\bkind:([\w-]+)/g, (_, k) => KIND_NAME[k] ? kindsOf(k, 2) : k).replace(/\bstate:not-?ok\b/g, "that are not ok").replace(/\bstate:(\w+)/g, "that are $1").replace(/\bvendor:(\S+)/g, "$1").replace(/\bin:(\S+)/g, (_, m) => "in " + m.replace(/-/g, " "));
   const t = app.target();
   if (t && !/\b(behind|under)\b/.test(asked) && it?.kind !== "history" && /^(everything|all|what|objects?)\b/i.test(asked)) asked += ` behind ${t.id}`;
   else if (s && !/\bin [A-Z]/.test(asked) && !/\bbehind\b/.test(asked) && !/\bh\d\d-/.test(asked)) asked += placeWords(s);
@@ -3071,23 +3267,31 @@ function intentOf(text) {
   return "";
 }
 
-const ID_RE = /\b((?:[a-z]+\d*-)+[a-z0-9]+(?:--[a-z0-9-]+)?)\b/g;
+// An id: a word that starts with a letter, then parts after dashes (cpe-019-s09-h02-waw, cr1-par--cr1-fra).
+const ID_RE = /\b([a-z][a-z0-9]*(?:-[a-z0-9]+)+(?:--[a-z0-9-]+)?)\b/g;
 
 /** One answer: its paragraphs, its buttons and the queries it ran. */
 async function answer(app, text, hooks) {
   const { h, C } = app;
   const queries = [];
-  const call = async (path) => { const j = await app.ctx.api(path); if (j?.queries) queries.push(...j.queries); return j; };
+  const call = async (path, opts) => { const j = await app.ctx.api(path, opts); if (j?.queries) queries.push(...j.queries); return j; };
   const lower = text.toLowerCase();
   // The object asked about: one named in the question, or the one picked.
   let id = null;
   for (const m of text.matchAll(ID_RE)) if (/\d/.test(m[1]) || /^(cr|br|ag|fw|sp|lf)\d/.test(m[1])) { id = m[1]; break; }
+  const named = id;
   const t = app.target();
-  if (!id && t && !/\b(network|everywhere|incidents)\b/.test(lower) && !/\bin (the )?[A-Z]/.test(text)) id = t.id;
   const intent = intentOf(text);
   const show = (oid) => h("button", { class: "btn xs", onclick: () => { if (app.map) app.map.open(oid); else { app.pending = { open: oid }; app.go("map", oid); } } }, C.icon("node"), "Show on the map");
   const p = (...kids) => h("p", {}, ...kids);
   const place = app.scope();
+
+  // The shift's own questions, about no object: what fires, and a customer by name.
+  if (/\balerts?\b/.test(lower) && !/\brules?\b/.test(lower)) return alertsAnswer(app, call, queries, named);
+  const who = await customerIn(app, text);
+  const forWho = who ? await customerAnswer(app, call, queries, who) : null;
+  if (forWho) return forWho;
+  if (!id && t && !/\b(network|everywhere|incidents)\b/.test(lower) && !/\bin (the )?[A-Z]/.test(text)) id = t.id;
 
   if (id && intent) {
     let j;
@@ -3124,7 +3328,7 @@ async function answer(app, text, hooks) {
       for (const r of j.downstream.rows) { const b = (byKind[r.kind] ||= { n: 0, bad: 0 }); b.n += r.n; if (r.state && r.state !== "ok") b.bad += r.n; }
       const body = [p(h("b", {}, `${C.fmt.n(j.downstream.total)} objects depend on ${n.id}`), j.downstream.not_ok ? `, ${C.fmt.n(j.downstream.not_ok)} not ok now.` : ", all ok now.")];
       const kinds = Object.entries(byKind).sort((a, b) => b[1].n - a[1].n).slice(0, 5);
-      if (kinds.length) body.push(h("ul", { class: "no-ag-ul" }, kinds.map(([k, b]) => h("li", {}, `${C.fmt.n(b.n)} ${(KIND_NAME[k] || k).toLowerCase()}${b.n === 1 ? "" : "s"}${b.bad ? `, ${C.fmt.n(b.bad)} not ok` : ""}`))));
+      if (kinds.length) body.push(h("ul", { class: "no-ag-ul" }, kinds.map(([k, b]) => h("li", {}, `${C.fmt.n(b.n)} ${kindsOf(k, b.n)}${b.bad ? `, ${C.fmt.n(b.bad)} not ok` : ""}`))));
       if (cust.length) body.push(p(h("b", {}, `${cust.length}${cust.length >= 20 ? "+" : ""} customers behind ${cause && cause.id !== n.id ? cause.id : "it"}: `), cust.slice(0, 6).map((c) => `${c.customer} (${c.n} ${c.n === 1 ? "site" : "sites"}${c.hurt ? `, ${c.hurt} hurt` : ""})`).join(", "), cust.length > 6 ? "…" : "", "."));
       else body.push(p("No customer sits behind it."));
       return { body, acts: [show(n.id), h("button", { class: "btn xs", onclick: () => app.map?.light(n.id, d.below) }, C.icon("layers"), "Light them on the map")], queries, how: "REACHABLE along the edges, grouped by kind and by customer" };
@@ -3139,7 +3343,7 @@ async function answer(app, text, hooks) {
         if (cause && cause.id !== n.id) steps.push(`Work on ${cause.id}, not on ${n.id}: it is ${cause.hop} ${cause.hop === 1 ? "hop" : "hops"} up and is ${cause.state}.`);
         if (j.suspect) steps.push(`Check the change ${j.suspect.minutes_before} min before it began (${j.suspect.ticket || j.suspect.text}) and roll it back if it touched ${j.suspect.node}.`);
         const ended = (j.before?.ended || [])[0];
-        if (ended) steps.push(`Faults like this on ${(KIND_NAME[j.before.kind] || j.before.kind).toLowerCase()}s most often were ${ended.cause} and cleared in ${mins(ended.minutes)} on average (${C.fmt.n(ended.n)} times).`);
+        if (ended) steps.push(`Of the ${C.fmt.n(j.before.matched ?? ended.n)} faults on ${kindsOf(j.before.kind, 2)} that read most like this one, ${C.fmt.n(ended.n)} were ${ended.cause} and cleared in ${mins(ended.minutes)} on average.`);
         if (j.incident || cause?.incident) steps.push(`It is part of ${(j.incident || cause.incident).id}: post in its room rather than opening a new one.`);
         else if (j.downstream.not_ok >= 20) steps.push(`${C.fmt.n(j.downstream.not_ok)} objects behind it are not ok: open an incident and tell the customers' account teams.`);
       }
@@ -3153,7 +3357,7 @@ async function answer(app, text, hooks) {
       const body = [];
       if (!b.words) body.push(p(`${n.id} has had no fault to compare in thirty days.`));
       else {
-        body.push(p(`Faults on ${(KIND_NAME[b.kind] || b.kind).toLowerCase()}s that read like “${b.words}”:`));
+        body.push(p(`The ${b.matched != null ? C.fmt.n(b.matched) + " " : ""}faults on ${kindsOf(b.kind, 2)} that read most like “${b.words}”, by how they ended:`));
         if ((b.ended || []).length) body.push(h("ul", { class: "no-ag-ul" }, b.ended.slice(0, 5).map((e) => h("li", {}, `${e.cause}: ${C.fmt.n(e.n)} times, cleared in ${mins(e.minutes)} on average, ${mins(e.longest)} at the longest`))));
         if ((b.like || []).length) body.push(p(h("b", {}, "The closest: "), b.like.slice(0, 3).map((e) => `${e.node} ${C.fmt.ago(T(e.ts))} (${e.text})`).join("; "), "."));
       }
@@ -3191,14 +3395,94 @@ async function answer(app, text, hooks) {
   if (/customers?/.test(lower) && /affected|hurt/.test(lower)) asked = `customer routers${where} that are not ok`;
   else if (/\bchanged?\b/.test(lower) && /\b(last|today|hour|day|week)\b/.test(lower) && !/\b(olt|cell|switch|router|ont|cpe|radio)/i.test(lower)) asked = `everything changed in the last ${/week/.test(lower) ? "week" : "day"}${where}`;
   else if (where && !/\bin [A-Z]/.test(asked)) asked += where;
-  const j = await call(`/v1/map/ask?q=${encodeURIComponent(asked)}`);
+  const j = await call("/v1/map/ask", { body: { q: asked } });
+  if (j.refused) return { body: [p(j.hint)], queries };
+  // What changed: the backbone's change calendar as well as the estate's events.
+  const changedIn = /^everything changed in the last (day|week)/.exec(asked);
+  const backbone = changedIn ? await backboneChanges(app, call, changedIn[1] === "week" ? 7 : 1) : null;
   if (!j.understood) return { body: [p(`I did not understand that. ${j.hint || ""}`), p("I can answer, about the object picked: what is wrong and why, what changed before it started, who is affected, what to do, how it went before, what depends on it; or search the network in a sentence.")], queries };
   const body = [p(h("b", {}, `${C.fmt.n(j.total)} ${j.total === 1 ? "match" : "matches"}`), ` for “${j.asked}”, read as: ${j.read.map((r) => r.text).join(", ")}.`)];
+  if (backbone) body.unshift(...backbone);
+  const caveat = askCaveat(h, j);
+  if (caveat) body.push(caveat);
   if (j.rows.length) body.push(h("ul", { class: "no-ag-ul" }, j.rows.slice(0, 6).map((r) => h("li", {}, h("a", { class: "no-link", onclick: () => app.map ? app.map.open(r.id) : app.go("map", r.id) }, r.id), ` · ${KIND_NAME[r.kind] || r.kind} · ${r.state}${r.latency_ms ? " · " + fms(r.latency_ms) : ""}`))));
   return { body, acts: [h("button", { class: "btn xs", onclick: () => { if (app.map) app.map.ask(asked); else { app.pending = { ask: asked }; app.go("map"); } } }, C.icon("search"), "Show them on the map")], queries, how: "the sentence became one statement" };
 }
 
+/** What fires now, the worst first; about one object when the question names one. */
+async function alertsAnswer(app, call, queries, named) {
+  const { h, C } = app;
+  const j = await call("/v1/alerts?status=firing");
+  const rank = { critical: 0, major: 1, minor: 2 };
+  const all = (j.alerts || []).filter((a) => !named || a.entity === named || (a.entity || "").split("--").includes(named)).sort((a, b) => (rank[a.severity] ?? 3) - (rank[b.severity] ?? 3) || T(b.started) - T(a.started));
+  const by = {};
+  for (const a of all) by[a.severity] = (by[a.severity] || 0) + 1;
+  const counts = Object.entries(by).sort((a, b) => (rank[a[0]] ?? 3) - (rank[b[0]] ?? 3)).map(([s, n]) => `${n} ${s}`).join(", ");
+  const of = named ? ` on ${named}` : "";
+  const body = [h("p", {}, h("b", {}, all.length ? `${all.length} ${all.length === 1 ? "alert is" : "alerts are"} firing${of}` : `No alert is firing${of}.`), all.length ? `: ${counts}.` : "")];
+  if (all.length) body.push(h("ul", { class: "no-ag-ul" }, all.slice(0, 6).map((a) => h("li", {}, h("b", {}, a.rule_name), ` on ${a.entity} · ${a.severity} · since ${hhmm(T(a.started))}`, a.incident ? h("span", {}, " · ", app.link(a.incident, "incidents", a.incident)) : h("span", { class: "muted" }, " · no incident"), a.acked_by ? h("span", { class: "muted" }, ` · acknowledged by ${a.acked_by}`) : null))));
+  const unowned = all.filter((a) => !a.acked_by && !a.incident).length;
+  if (unowned) body.push(h("p", {}, `${unowned} of them ${unowned === 1 ? "has" : "have"} neither an owner nor an incident.`));
+  return { body, acts: [h("button", { class: "btn xs", onclick: () => app.go("alerts") }, C.icon("alerts"), "Open Alerts")], queries, how: "netops_alerts WHERE status = 'firing'" };
+}
+
+/** A customer the question names: one of the backbone's, by its whole name, or one of the estate's ("Is Northwind Energy affected?"). */
+async function customerIn(app, text) {
+  const lower = text.toLowerCase();
+  try { app.customerList ||= (await app.ctx.api("/v1/customers")).customers || []; } catch { app.customerList = []; }
+  const c = [...app.customerList].sort((a, b) => b.name.length - a.name.length).find((c) => lower.includes(c.name.toLowerCase()));
+  if (c) return { backbone: c };
+  const m = /\b(?:[Cc]ustomer\s+|(?:[Ii]s|[Aa]re|[Ww]as|[Ww]ere|[Hh]ow (?:is|are)|[Ww]hat about)\s+)((?:[A-Z][\w&'.-]*)(?:\s+[A-Z][\w&'.-]*){0,3})(?:'s)?\b/.exec(text);
+  if (!m || /^(The|It|This|That|Anything|Everything|Anyone|Everyone|There|What|Which|Who)\b/.test(m[1])) return null;
+  if (!/^customer\s/i.test(m[0]) && !/\b(affected|hurt|impacted|ok|okay|down|fine|up|having|broken|degraded|trouble|issues?)\b/i.test(text)) return null;
+  return { estate: m[1], said: /^customer\s/i.test(m[0]) };
+}
+
+async function customerAnswer(app, call, queries, who) {
+  const { h, C } = app;
+  if (who.backbone) {
+    const c = who.backbone;
+    const j = await call(`/v1/customers/${encodeURIComponent(c.id)}`);
+    const body = [h("p", {}, h("b", {}, j.headline || `${c.name}: ${j.verdict}`), ` (${c.name} attaches at ${c.device}, ${c.site.toUpperCase()}, ${c.tier}).`)];
+    if ((j.reasons || []).length) body.push(h("ul", { class: "no-ag-ul" }, j.reasons.slice(0, 5).map((r) => h("li", {}, typeof r === "string" ? r : r.text || r.reason || JSON.stringify(r)))));
+    if ((j.incidents || []).length) body.push(h("p", {}, `Incidents that touch it: ${j.incidents.slice(0, 3).map((i) => i.id).join(", ")}.`));
+    return { body, acts: [h("button", { class: "btn xs", onclick: () => app.go("customers", c.id) }, C.icon("user"), `Open ${c.name}`)], queries, how: "the customer's check: its path, its services, alerts, incidents and changes" };
+  }
+  const name = who.estate;
+  const [bad, all] = await Promise.all([call(`/v1/map/ask?q=${encodeURIComponent(`${name} sites that are not ok`)}`), call(`/v1/map/ask?q=${encodeURIComponent(`customer ${name}`)}`)]);
+  // A name the estate does not know is a customer only when the question says so; else it is asked as any other question.
+  if (bad.refused || all.refused || !bad.understood || !all.understood || !bad.plan?.customer) return who.said ? { body: [h("p", {}, bad.hint || all.hint || bad.refused || `I could not find a customer called ${name}.`)], queries } : null;
+  const body = [h("p", {}, h("b", {}, bad.total ? `${name}: ${C.fmt.n(bad.total)} of its ${C.fmt.n(all.total)} sites are not ok now` : `${name} is not affected now`), bad.total ? "." : `: all ${C.fmt.n(all.total)} of its sites are ok.`)];
+  const caveat = askCaveat(h, bad);
+  if (caveat) body.push(caveat);
+  if (bad.rows.length) body.push(h("ul", { class: "no-ag-ul" }, bad.rows.slice(0, 6).map((r) => h("li", {}, h("a", { class: "no-link", onclick: () => app.map ? app.map.open(r.id) : app.go("map", r.id) }, r.id), ` · ${KIND_NAME[r.kind] || r.kind} · ${r.state}${r.reason ? " · " + r.reason : ""}`))));
+  const asked = `${name} sites that are not ok`;
+  return { body, acts: bad.total ? [h("button", { class: "btn xs", onclick: () => { if (app.map) app.map.ask(asked); else { app.pending = { ask: asked }; app.go("map"); } } }, C.icon("search"), "Show them on the map")] : [], queries, how: "the customer's sites in the estate, and those not ok" };
+}
+
+/** The backbone's changes carried out in the last days, for "what changed": the estate's are its events. */
+async function backboneChanges(app, call, days) {
+  const { h } = app;
+  let j;
+  try { j = await call("/v1/changes"); } catch { return null; }
+  const since = Date.now() - days * 86400e3;
+  const done = (j.changes || []).filter((c) => c.executed && T(c.executed) >= since && T(c.executed) <= Date.now()).sort((a, b) => T(b.executed) - T(a.executed));
+  const out = [h("p", {}, h("b", {}, done.length ? `On the backbone, ${done.length} ${done.length === 1 ? "change was" : "changes were"} carried out in the last ${days === 1 ? "day" : "week"}` : `No change was carried out on the backbone in the last ${days === 1 ? "day" : "week"}.`), done.length ? ":" : "")];
+  if (done.length) out.push(h("ul", { class: "no-ag-ul" }, done.slice(0, 5).map((c) => h("li", {}, h("a", { class: "no-link", onclick: () => changeDrawer(app, c.id) }, c.id), ` ${c.title} · ${c.status.replace("_", " ")} · ${hhmm(T(c.executed))}`))));
+  out.push(h("p", { class: "muted" }, "In the estate behind it:"));
+  return out;
+}
+
 // ---------------------------------------------------------------- dashboards
+
+/** What a search did not read, or read from a near spelling: the count is then not the answer to the whole question. */
+function askCaveat(h, j) {
+  const ignored = j.ignored || [], corrected = j.corrected || [];
+  if (!j.understood || (!ignored.length && !corrected.length)) return null;
+  return h("div", { class: "no-map-partial" },
+    ignored.length ? h("div", {}, h("b", {}, "Not read: "), ignored.map((w) => `“${w}”`).join(", "), ". The count leaves out what they ask for; say it another way, or name a kind, place, state, reading or event.") : null,
+    corrected.map((c) => h("div", {}, `Read “${c.from}” as ${c.to}.`)));
+}
 
 /** Panels over the backbone's telemetry and the estate, for the place in view or everywhere. */
 function dashPage(body, app) {

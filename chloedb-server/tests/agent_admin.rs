@@ -85,6 +85,8 @@ async fn role_keys_act_by_tier_with_reasons_and_caps() {
     assert_eq!(s, 200, "{j}");
     let (s, j) = call(&base, "POST", "/v1/write", &ops, &[], Some(json!({"rows": [{"id": "x"}]}))).await;
     assert_eq!((s, j["error_code"].as_str()), (403, Some("scope_refused")), "{j}");
+    // Beyond what ops reaches: the scope the route needs, and the change request.
+    assert!(j["error"].as_str().unwrap().contains("needs a key with the write scope") && j["error"].as_str().unwrap().contains("is ops"), "{j}");
     assert!(j["hint"].as_str().unwrap().contains("change request"), "{j}");
     assert!(j["docs"].as_str().unwrap().starts_with("https://"), "{j}");
 
@@ -92,6 +94,9 @@ async fn role_keys_act_by_tier_with_reasons_and_caps() {
     let rule = json!({"match": {"fingerprint": "ab12"}, "action": "refuse", "expires_s": 600});
     let (s, j) = call(&base, "POST", "/v1/admin/contain", &propose, &[("x-chloedb-reason", "x")], Some(rule.clone())).await;
     assert_eq!((s, j["error_code"].as_str()), (403, Some("scope_refused")), "{j}");
+    // CCW-11: it names the least key that would do (ops, not admin), and the change request.
+    let said = j["error"].as_str().unwrap();
+    assert!(said.contains("needs an ops key") && said.contains("is propose") && said.contains("POST /v1/admin/changes") && !said.contains("admin scope"), "{j}");
     let (s, j) = call(&base, "POST", "/v1/admin/contain", &ops, &[], Some(rule.clone())).await;
     assert_eq!((s, j["error_code"].as_str()), (400, Some("reason_required")), "{j}");
     let mut long = rule.clone();
@@ -221,6 +226,21 @@ async fn agents_find_routes_tools_jobs_events_and_runbooks() {
     let (_, c) = call(&base, "GET", "/v1/catalog?q=contain", &read, &[], None).await;
     assert!(c["routes"].as_array().unwrap().iter().all(|r| r["path"].as_str().unwrap().contains("contain")), "{c}");
 
+    // Experimental features: marked in the catalog, and their answers say so.
+    let oncall = routes.iter().find(|r| r["method"] == "GET" && r["path"] == "/v1/admin/oncall").unwrap();
+    assert_eq!(oncall["experimental"], "oncall", "{oncall}");
+    assert!(contain.get("experimental").is_none(), "{contain}");
+    let marked = |path: &'static str| {
+        let base = base.clone();
+        async move {
+            let r = chloedb_server::http_client().build().unwrap().get(format!("{base}{path}")).bearer_auth(ROOT).send().await.unwrap();
+            r.headers().get("x-chloedb-experimental").map(|v| v.to_str().unwrap().to_string())
+        }
+    };
+    assert_eq!(marked("/v1/admin/oncall").await.as_deref(), Some("oncall"));
+    assert_eq!(marked("/v1/admin/hub").await.as_deref(), Some("hub"));
+    assert_eq!(marked("/v1/health").await, None);
+
     // The operations tools are listed to a role key, not to a read key.
     let list = |auth: String| {
         let base = base.clone();
@@ -268,4 +288,69 @@ async fn agents_find_routes_tools_jobs_events_and_runbooks() {
     let (s, ev) = tokio::time::timeout(Duration::from_secs(10), waiter).await.unwrap().unwrap();
     assert_eq!(s, 200, "{ev}");
     assert!(!ev["events"].as_array().unwrap().is_empty(), "{ev}");
+}
+
+/// Audit X-D2: a tier 3 route (it loses data or costs money) is refused to
+/// an agent whatever its key, outside SQL too, with a reason or without;
+/// a person's key, without an agent's headers, still calls it.
+#[tokio::test(flavor = "multi_thread")]
+async fn agents_never_act_alone_at_tier_3() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = start(dir.path()).await;
+    let agent_admin = key(&base, json!({"name": "admin-bot", "scope": "admin", "agent": true})).await;
+    let (s, made) = call(&base, "POST", "/v1/admin/keys", ROOT, &[], Some(json!({"name": "spare", "scope": "read"}))).await;
+    assert_eq!(s, 200, "{made}");
+    let spare = made["key"]["id"].as_str().unwrap().to_string();
+    let why = ("x-chloedb-reason", "it is not used any more");
+    let revoke = format!("/v1/admin/keys/{spare}");
+    for (method, path, auth, headers) in [
+        ("DELETE", revoke.as_str(), agent_admin.as_str(), vec![why]),
+        ("POST", "/v1/admin/vacuum", agent_admin.as_str(), vec![why]),
+        ("POST", "/v1/admin/hold-writes", agent_admin.as_str(), vec![why]),
+        ("DELETE", "/v1/admin/shards/0", agent_admin.as_str(), vec![why]),
+        // A person's key through an agent's headers is an agent's request.
+        ("DELETE", revoke.as_str(), ROOT, vec![why, ("x-chloedb-agent-session", "s1")]),
+        ("DELETE", revoke.as_str(), ROOT, vec![why, ("x-chloedb-app", "mcp")]),
+    ] {
+        let (s, j) = call(&base, method, path, auth, &headers, Some(json!({}))).await;
+        assert_eq!((s, j["error_code"].as_str()), (403, Some("change_request_required")), "{method} {path}: {j}");
+    }
+    // The key is still there; a person revokes it.
+    let (s, j) = call(&base, "DELETE", &revoke, ROOT, &[], None).await;
+    assert_eq!(s, 200, "{j}");
+    // Tier 2 with a reason is still an admin agent's to do.
+    let (s, j) = call(&base, "PUT", "/v1/synonyms", &agent_admin, &[why], Some(json!({"synonyms": []}))).await;
+    assert_ne!(j["error_code"].as_str(), Some("change_request_required"), "{s} {j}");
+}
+
+/// Audit X-D1: a change request carries no credential and makes none: the
+/// routes that make or show a key's secret, or take another cluster's or
+/// a cloud's, are refused as targets, and so is a body holding one; what
+/// role keys read of change requests holds no secret.
+#[tokio::test(flavor = "multi_thread")]
+async fn change_requests_carry_no_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = start(dir.path()).await;
+    let propose = key(&base, json!({"name": "planner-bot", "scope": "propose"})).await;
+    for (method, path, body) in [
+        ("POST", "/v1/admin/keys", json!({"name": "mine", "scope": "admin"})),
+        ("POST", "/v1/admin/keys/k1/rotate", json!({})),
+        ("POST", "/v1/keys/own", json!({"name": "mine"})),
+        ("POST", "/v1/admin/hub/connections", json!({"name": "other", "urls": ["https://x"], "key": "sk_x"})),
+        ("PUT", "/v1/admin/aws/credentials", json!({"access_key_id": "AKIA", "secret_access_key": "s"})),
+        ("PUT", "/v1/admin/digitalocean/token", json!({"token": "dop_v1_x"})),
+        ("POST", "/v1/admin/connectors", json!({"name": "c", "kind": "http"})),
+        ("POST", "/v1/admin/connectors/c/key", json!({})),
+    ] {
+        let (s, j) = call(&base, "POST", "/v1/admin/changes", &propose, &[], Some(json!({"method": method, "path": path, "body": body, "reason": "x"}))).await;
+        assert_eq!((s, j["error_code"].as_str()), (403, Some("scope_refused")), "{method} {path}: {j}");
+        assert!(j["error"].as_str().unwrap().contains("credential"), "{j}");
+    }
+    // A body with a credential in it, for a route that takes none.
+    let (s, j) = call(&base, "POST", "/v1/admin/changes", &propose, &[], Some(json!({"method": "PUT", "path": "/v1/alerts/routes", "body": {"routes": [{"name": "pager", "url": "https://x", "headers": {"Authorization": "Bearer abc"}}]}, "reason": "page me"}))).await;
+    assert_eq!((s, j["error_code"].as_str()), (400, Some("bad_request")), "{j}");
+    assert!(j["error"].as_str().unwrap().contains("Authorization"), "{j}");
+    // Nothing was filed.
+    let (_, list) = call(&base, "GET", "/v1/admin/changes", &propose, &[], None).await;
+    assert!(!list.to_string().contains("sk_x") && !list.to_string().contains("dop_v1_x") && !list.to_string().contains("Bearer"), "{list}");
 }

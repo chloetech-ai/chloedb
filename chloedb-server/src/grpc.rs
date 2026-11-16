@@ -246,6 +246,8 @@ pub fn write_response(w: crate::service::Written) -> pb::WriteResponse {
         written: w.rows,
         seq_no: w.seq_no,
         seq_nos: w.seq_nos,
+        seq_term: w.seq_term,
+        seq_terms: w.seq_terms,
         skipped: w.skipped,
         receipt: w.receipt.is_some(),
         inserted: r.inserted,
@@ -297,7 +299,7 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         plan: plan.map(Arc::new),
         hold: r.hold,
         release: r.release,
-        after: After::of(r.min_seq_no, r.min_seq_nos)?,
+        after: After::termed(r.min_seq_no, r.min_seq_nos, r.min_seq_term, r.min_seq_terms)?,
         // A coordinator's query that asked for its steps' CPU time; a shard
         // also measures it when set to for every query.
         profile: r.profile,
@@ -316,6 +318,9 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         who: None,
         // A client's, held to the server's limits.
         own_read: false,
+        // The server's and the caller's key's statement budget
+        // ([`Service::budget_for`]); a gRPC request asks for none of its own.
+        budget: Default::default(),
     })
 }
 
@@ -456,7 +461,9 @@ impl Grpc {
         // The call itself, on the heap: a query's future is many kilobytes,
         // and each wrapper below would otherwise move it again (a shard's
         // query spent an eighth of its time copying it).
-        let call = Box::pin(f(self.0.clone(), who.clone(), req.into_inner()));
+        // The credential's scope ([`crate::service::SCOPE`]).
+        let scope = if who.root || who.limited() { Scope::Admin } else { who.scope };
+        let call = Box::pin(crate::service::SCOPE.scope(scope, f(self.0.clone(), who.clone(), req.into_inner())));
         let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), call)));
         let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(who.root, call)));
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
@@ -540,7 +547,7 @@ impl pb::strata_server::Strata for Grpc {
         self.serve("TermStats", req, |svc, _who, r| async move {
             svc.check_epoch(r.epoch)?;
             let plan = request_plan(r.protocol, r.plan, &r.plan_json)?;
-            let after = After::of(r.min_seq_no, r.min_seq_nos)?;
+            let after = After::termed(r.min_seq_no, r.min_seq_nos, r.min_seq_term, r.min_seq_terms)?;
             let (stats, snapshot, version) = svc.term_stats(&r.sql, plan.as_ref(), &params_from_pb(r.params), &after, r.timeout_ms as u64).await?;
             Ok(pb::TermStatsResponse { stats_json: json_bytes(&stats), snapshot, version })
         })
@@ -551,7 +558,7 @@ impl pb::strata_server::Strata for Grpc {
         self.serve("GuardCounts", req, |svc, _who, r| async move {
             svc.check_epoch(r.epoch)?;
             let plan = request_plan(r.protocol, r.plan, &r.plan_json)?;
-            let after = After::of(r.min_seq_no, r.min_seq_nos)?;
+            let after = After::termed(r.min_seq_no, r.min_seq_nos, r.min_seq_term, r.min_seq_terms)?;
             let (need, counts) = svc.guard_counts(&r.sql, plan.as_ref(), &params_from_pb(r.params), &after, r.timeout_ms as u64).await?;
             Ok(pb::GuardCountsResponse { need: need as u32, counts })
         })
@@ -563,7 +570,7 @@ impl pb::strata_server::Strata for Grpc {
             let q = r.query.unwrap_or_default();
             svc.check_epoch(q.epoch)?;
             let plan = request_plan(q.protocol, q.plan, &q.plan_json)?;
-            let after = After::of(q.min_seq_no, q.min_seq_nos)?;
+            let after = After::termed(q.min_seq_no, q.min_seq_nos, q.min_seq_term, q.min_seq_terms)?;
             let next = svc.sid_next(&q.sql, plan.as_ref(), &params_from_pb(q.params), &r.field, &r.prefixes, &after, q.timeout_ms as u64).await?;
             let next = next.into_iter().map(|cs| {
                 let (codes, counts) = cs.into_iter().unzip();
@@ -613,7 +620,7 @@ impl pb::strata_server::Strata for Grpc {
                     crate::service::SqlAnswer::Rows(_) => return Err(ApiError::bad("Write takes INSERT, UPDATE or DELETE; use Query")),
                 }
             };
-            Ok(write_response(w))
+            Ok(write_response(svc.termed(w)))
         })
         .await
     }
@@ -635,6 +642,7 @@ impl pb::strata_server::Strata for Grpc {
         let svc = self.0.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let span = tracing::info_span!("request", id = %id, method = "WriteStream");
+        let scope = if who.root || who.limited() { Scope::Admin } else { who.scope };
         let run = async move {
             let t0 = Instant::now();
             let mut s = Stream::default();
@@ -656,7 +664,7 @@ impl pb::strata_server::Strata for Grpc {
                 .await;
                 match r {
                     Ok(w) => {
-                        let r = pb::WriteResponse { offsets: s.offsets().into_iter().collect(), ..write_response(w) };
+                        let r = pb::WriteResponse { offsets: s.offsets().into_iter().collect(), ..write_response(svc.termed(w)) };
                         if tx.send(Ok(r)).await.is_err() {
                             break;
                         }
@@ -675,7 +683,7 @@ impl pb::strata_server::Strata for Grpc {
             tracing::debug!(batches = s.batches, written = s.written, skipped = s.skipped, "stream ended");
             svc.metrics.grpc("WriteStream", code, t0.elapsed().as_secs_f64());
         };
-        tokio::spawn(run.instrument(span));
+        tokio::spawn(crate::service::SCOPE.scope(scope, run).instrument(span));
         Ok(Response::new(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))))
     }
 
@@ -838,7 +846,7 @@ impl pb::strata_server::Strata for Grpc {
     async fn get(&self, req: Request<pb::GetRequest>) -> Result<Response<pb::GetResponse>, Status> {
         self.serve("Get", req, |svc, _who, r| async move {
             svc.check_epoch(r.epoch)?;
-            let after = After::of(r.min_seq_no, r.min_seq_nos)?;
+            let after = After::termed(r.min_seq_no, r.min_seq_nos, r.min_seq_term, r.min_seq_terms)?;
             let table = Some(r.table).filter(|t| !t.is_empty());
             let keys = r.keys.into_iter().map(from_pb).collect();
             // A coordinator's read names the protocol it speaks; it counts

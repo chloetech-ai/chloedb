@@ -8,8 +8,16 @@
 //
 // --url (or STRATA_APPS_URL) is the engine; nothing is written to stdout but
 // protocol messages (logs go to stderr).
+//
+// It signs in with the engine's agent token, sent as a bearer token on every
+// call (audit 4, X-G7), and does not start without one: STRATA_APPS_AGENT_TOKEN,
+// or the file --token-file names (default: the engine's DATA/agent.token,
+// which the engine writes on its first start, readable by its owner only;
+// DATA is STRATA_APPS_DATA or chloedb-apps/data, as for the engine).
 
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline';
 
 export const PROTOCOL_VERSION = '2025-06-18';
@@ -51,14 +59,16 @@ export function readOnlySql(sql) {
 }
 
 // The engine's HTTP API.
-export function client(base, { fetchFn = fetch } = {}) {
+// token: the engine's agent token, sent as a bearer token.
+export function client(base, { fetchFn = fetch, token } = {}) {
   const root = String(base).replace(/\/+$/, '');
+  const auth = token ? { authorization: `Bearer ${token}` } : {};
   return async function call(method, pathname, body) {
     let res;
     try {
       res = await fetchFn(`${root}${pathname}`, {
         method,
-        headers: body !== undefined ? { 'content-type': 'application/json' } : {},
+        headers: body !== undefined ? { ...auth, 'content-type': 'application/json' } : { ...auth },
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
     } catch (e) {
@@ -115,8 +125,8 @@ export const TOOLS = [
     inputSchema: { type: 'object', properties: { app: APP, n: { type: 'integer', description: 'Version number (from version_list).' } }, required: ['app', 'n'] } },
   { name: 'library_search', description: 'Search the shared library of pieces (screens, components, helpers, patterns) other apps use, or ask how pieces fit together.',
     inputSchema: { type: 'object', properties: { q: str('Words to search for, or a question.') }, required: ['q'] } },
-  { name: 'publish', description: 'Open the app to the public. access: look (read only), add (visitors add their own rows) or change (visitors change any row; needs confirm: true). on: false unpublishes.',
-    inputSchema: { type: 'object', properties: { app: APP, access: { type: 'string', enum: ACCESS }, on: { type: 'boolean', description: 'Default true.' }, confirm: { type: 'boolean', description: 'Required for access change.' } }, required: ['app', 'access'] } },
+  { name: 'publish', description: 'Open the app to anyone on the internet. access: look (read only), add (visitors add their own rows) or change (visitors change any row). Publishing at any access needs confirm: true, set only once the person you work for has said to publish; on: false unpublishes and needs no confirm.',
+    inputSchema: { type: 'object', properties: { app: APP, access: { type: 'string', enum: ACCESS }, on: { type: 'boolean', description: 'Default true.' }, confirm: { type: 'boolean', description: 'Required to publish (on: true), at any access.' } }, required: ['app', 'access'] } },
 ];
 
 const enc = encodeURIComponent;
@@ -212,7 +222,13 @@ export async function callTool(call, name, a = {}, opts = {}) {
     case 'publish': {
       const id = appId(a.app);
       if (!ACCESS.includes(a.access)) bad(`access is one of ${ACCESS.join(', ')}`);
-      if (a.access === 'change' && a.confirm !== true) bad('access "change" lets any visitor change or remove any row: call again with confirm: true if that is meant');
+      // Publishing opens the app to the internet: never without confirm, at
+      // any access (audit 4, X-G7 and X-G9). Unpublishing is always allowed.
+      if (a.on !== false && a.confirm !== true) {
+        bad(a.access === 'change'
+          ? 'access "change" puts the app on the internet and lets any visitor change or remove any row: call again with confirm: true only if the person you work for asked for that'
+          : `publishing puts the app on the internet (access "${a.access}"): call again with confirm: true only if the person you work for asked for that`);
+      }
       return call('POST', `/api/apps/${id}/publish`, { on: a.on !== false, access: a.access });
     }
     default: bad(`no tool ${name}`);
@@ -264,8 +280,8 @@ export function server({ call, log = (m) => process.stderr.write(`${m}\n`), wait
 }
 
 // stdio: one JSON message per line in, one per line out.
-export function serveStdio({ url, input = process.stdin, output = process.stdout, log } = {}) {
-  const handle = server({ call: client(url), log });
+export function serveStdio({ url, token, input = process.stdin, output = process.stdout, log } = {}) {
+  const handle = server({ call: client(url, { token }), log });
   const rl = readline.createInterface({ input, crlfDelay: Infinity });
   const write = (m) => { if (m) output.write(`${JSON.stringify(m)}\n`); };
   let open = 0;
@@ -292,9 +308,24 @@ function argOf(name, fallback) {
   return eq ? eq.slice(name.length + 3) : fallback;
 }
 
+// The agent token: STRATA_APPS_AGENT_TOKEN, or the file named, or the
+// engine's DATA/agent.token. null when there is none.
+export function agentToken({ env = process.env, file } = {}) {
+  if (env.STRATA_APPS_AGENT_TOKEN && env.STRATA_APPS_AGENT_TOKEN.trim()) return { token: env.STRATA_APPS_AGENT_TOKEN.trim(), from: 'STRATA_APPS_AGENT_TOKEN' };
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const f = path.resolve(file || path.join(env.STRATA_APPS_DATA || path.join(root, 'data'), 'agent.token'));
+  try { const t = readFileSync(f, 'utf8').trim(); if (t) return { token: t, from: f }; } catch { /* none */ }
+  return { token: null, from: f };
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const url = argOf('url', process.env.STRATA_APPS_URL || 'http://127.0.0.1:7730');
   try { new URL(url); } catch { process.stderr.write(`--url ${url} is not a URL\n`); process.exit(2); }
-  process.stderr.write(`chloedb-apps MCP server for ${url}\n`);
-  serveStdio({ url });
+  const { token, from } = agentToken({ file: argOf('token-file', undefined) });
+  if (!token) {
+    process.stderr.write(`chloedb-apps MCP server: no agent token. Start the engine once (it writes ${from}), point --token-file at that file, or set STRATA_APPS_AGENT_TOKEN to its contents.\n`);
+    process.exit(2);
+  }
+  process.stderr.write(`chloedb-apps MCP server for ${url}, signed in with the agent token from ${from}\n`);
+  serveStdio({ url, token });
 }

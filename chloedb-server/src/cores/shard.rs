@@ -60,6 +60,12 @@ pub struct Kept {
     /// carries a digest meanwhile, started again too, as it cannot tell
     /// once its log no longer holds that transaction.
     pub differs: Option<SeqNo>,
+    /// The primary that called it first as one of its shard's first
+    /// copies ([`Kept::first_only`]), until a call finds it caught up
+    /// ([`Replica::joined`]): no member meanwhile, it grants that primary
+    /// its vote, and no other copy, so that a shard whose first primary
+    /// stepped down before its first copies caught up elects it again.
+    pub called_first: Option<String>,
 }
 
 impl Kept {
@@ -73,6 +79,20 @@ impl Kept {
     /// one of the shard's first copies.
     pub fn first(&self) -> bool {
         self.role.is_none() && self.follows.is_none() && self.replaced_by.is_none()
+    }
+
+    /// Whether it is a member only as one of its shard's first copies
+    /// ([`Replica::open`]) and no primary has called it since: it follows
+    /// none and knows no membership a primary numbered. A replica whose
+    /// volume was lost, database and part together, and that starts again
+    /// with the same `--replica`, is such a copy too, with an empty log
+    /// (finding N-E2): it grants a vote only to a candidate that, like it,
+    /// has heard from no primary ([`decide`]), and stops counting itself a
+    /// member at the first call of a primary, until a call finds it caught
+    /// up ([`Replica::take`], [`Replica::joined`]), granting a vote
+    /// meanwhile to that primary alone ([`Kept::called_first`]).
+    pub fn first_only(&self) -> bool {
+        self.member && self.role == Some(KeptRole::Replica) && self.follows.is_none() && self.replaced_by.is_none() && self.config.is_none()
     }
 
     /// The newest term it knows of, besides the database's `term`: of the
@@ -118,6 +138,9 @@ impl Kept {
         }
         if let Some(at) = self.differs {
             j["differs"] = json!({"term": at.term, "seq_no": at.seq});
+        }
+        if let Some(p) = &self.called_first {
+            j["called_first"] = json!(p);
         }
         match &self.role {
             None => {}
@@ -165,7 +188,8 @@ impl Kept {
             Json::Null => None,
             d => Some(SeqNo { term: d["term"].as_u64().ok_or("no term of the transaction that differs")?, seq: d["seq_no"].as_u64().ok_or("no number of the transaction that differs")? }),
         };
-        Ok(Kept { id, follows, replaced_by, role, voted, member, config, differs })
+        let called_first = j["called_first"].as_str().map(String::from);
+        Ok(Kept { id, follows, replaced_by, role, voted, member, config, differs, called_first })
     }
 }
 
@@ -196,8 +220,35 @@ pub fn decide(kept: &Kept, term: u64, last: SeqNo, r: &pb::VoteRequest) -> pb::V
     if (r.last_term, r.last_seq) < (last.term, last.seq) {
         return no(format!("it holds transactions up to {} of term {}, past the candidate's last ({} of term {})", last.seq, last.term, r.last_seq, r.last_term));
     }
-    if !kept.member {
+    // A first copy that a primary called and that has not caught up yet
+    // grants that primary its vote, which holds whatever this copy may
+    // have acknowledged before it lost its volume (N-E2): without it, a
+    // shard whose first primary stepped down before its first copies
+    // caught up could elect no primary.
+    if !kept.member && kept.called_first.as_deref() != Some(r.candidate.as_str()) {
         return no("it has not caught up with a primary since it joined its shard, so it grants no votes".into());
+    }
+    // A candidate that heard from no primary and holds nothing, asking a
+    // copy that did: it may have lost its volume (N-E2), and the copy
+    // asked may lack writes it had acknowledged. (A candidate of an older
+    // server, which numbers no membership, holds transactions.)
+    if r.config == 0 && (r.last_term, r.last_seq) == (0, 0) && kept.config_version() > 0 {
+        return no(format!(
+            "the candidate has heard from no primary and holds no transaction, while this copy knows version {} of the shard's membership: the candidate may have lost its volume",
+            kept.config_version()
+        ));
+    }
+    // A first copy cannot tell a first start from one on a volume that
+    // lost its database (N-E2); a candidate that heard from a primary, or
+    // holds what it does not, shows that the shard had one.
+    if kept.first_only() && (r.config > 0 || (r.last_term, r.last_seq) != (last.term, last.seq)) {
+        return no(format!(
+            "it started as one of its shard's first copies and no primary has called it since, while the candidate {}: it may have lost its volume, so it grants no vote until a primary has called it and it has caught up",
+            match r.config > 0 {
+                true => format!("knows version {} of the shard's membership", r.config),
+                false => format!("holds transactions up to {} of term {}", r.last_seq, r.last_term),
+            }
+        ));
     }
     // The candidate may count a majority of copies that are no longer the
     // shard's, while a primary given the newer membership counts another.
@@ -328,6 +379,11 @@ pub struct Replica {
     /// How many calls it refused for holding another transaction than its
     /// primary's under the term and number they follow ([`Self::follows`]).
     pub mismatches: u64,
+    /// The newest term a vote request named, granted or not
+    /// ([`Self::saw_vote`]): until a primary of that term or a newer one
+    /// calls, it serves no reads, since that term may have a primary
+    /// already whose writes it does not hold (X-E1).
+    pub asked_term: u64,
 }
 
 impl Replica {
@@ -337,14 +393,17 @@ impl Replica {
     /// copies, which count among the copies a majority is counted of from
     /// the start, as Raft's first members do: the primary started with
     /// them counts them so, and if it stopped before any of them heard from
-    /// it, they could otherwise never elect another. A replica that joins a
-    /// serving shard counts once it caught up ([`Self::take`]).
+    /// it, they could otherwise never elect another. Until a primary calls
+    /// it, it votes only for a copy that has heard from none either
+    /// ([`Kept::first_only`]): it may be a replica that lost its volume. A
+    /// replica that joins a serving shard, or a first copy once a primary
+    /// called it, counts once a call finds it caught up ([`Self::joined`]).
     pub fn open(kept: Kept, now: Instant, flags: bool) -> (Replica, Option<Kept>) {
         let member = kept.member || (flags && kept.first());
         let next = Kept { role: Some(KeptRole::Replica), member, ..kept.clone() };
         let save = (next != kept).then_some(next);
         let kept = save.clone().unwrap_or(kept);
-        (Replica { kept, called_at: None, serves_reads: false, opened: now, global_checkpoint: 0, heard: 0, voted_at: None, mismatches: 0 }, save)
+        (Replica { kept, called_at: None, serves_reads: false, opened: now, global_checkpoint: 0, heard: 0, voted_at: None, mismatches: 0, asked_term: 0 }, save)
     }
 
     /// How long since its primary last called or it granted a vote
@@ -362,6 +421,32 @@ impl Replica {
     /// kept, fences the primary it just elected.
     pub fn granted(&mut self, now: Instant) {
         self.voted_at = Some(now);
+    }
+
+    /// It was asked for a vote of `r` (not a pre-vote, which asks only
+    /// whether it would): a term newer than the one its primary ships in
+    /// may have a primary already, whose writes it does not hold. It stops
+    /// serving reads until a primary of that term or a newer one calls
+    /// (X-E1); a read then goes to another copy or the primary.
+    pub fn saw_vote(&mut self, r: &pb::VoteRequest) {
+        let following = self.kept.follows.as_ref().map_or(0, |f| f.1);
+        if !r.pre && r.term > following && r.term > self.asked_term {
+            self.asked_term = r.term;
+        }
+    }
+
+    /// Whether a vote request of a newer term than its primary's holds its
+    /// reads ([`Self::saw_vote`]). Apart from `serves_reads`, which says it
+    /// is caught up (and so a member, [`Self::joined`]): a refused vote of
+    /// another copy must not keep it from joining.
+    fn read_hold(&self) -> bool {
+        self.asked_term > self.kept.follows.as_ref().map_or(0, |f| f.1)
+    }
+
+    /// Whether it serves reads now: caught up with its primary, and no
+    /// vote of a newer term than its primary's holds them.
+    pub fn reads_open(&self) -> bool {
+        self.serves_reads && !self.read_hold()
     }
 
     /// Answers vote `r` ([`decide`]) at `n`, and what to keep (the vote)
@@ -382,10 +467,13 @@ impl Replica {
     /// `Replicate` or the first chunk of a `Restore`), at `n`: an older
     /// term than it knows is answered with its own, and a second primary of
     /// the term it follows is refused (409); otherwise it follows that
-    /// primary, counting itself a member once a call says so (`member`),
-    /// and keeping the membership the call names (`config`: its version
-    /// and copies) when newer than the one it knows.
-    pub fn take(&self, term: u64, primary: &str, member: bool, config: (u64, u32), n: &Numbering) -> Result<Take, ApiError> {
+    /// primary, keeping the membership the call names (`config`: its
+    /// version and copies) when newer than the one it knows. A first copy
+    /// that no primary called yet ([`Kept::first_only`]) stops counting
+    /// itself a member: it counts again once a call finds it caught up
+    /// ([`Self::joined`]), as a copy that joined does, and grants a vote
+    /// meanwhile to that primary alone ([`Kept::called_first`]).
+    pub fn take(&self, term: u64, primary: &str, config: (u64, u32), n: &Numbering) -> Result<Take, ApiError> {
         let kept = &self.kept;
         // A term it voted in counts: the primary of an older one lost.
         let newest = kept.newest(n.term);
@@ -401,8 +489,10 @@ impl Replica {
             Some((_, t)) if *t == term => None,
             _ => Some(Kept { follows: Some((primary.to_string(), term)), replaced_by: None, role: Some(KeptRole::Replica), ..kept.clone() }),
         };
-        if member && !kept.member {
-            next.get_or_insert_with(|| kept.clone()).member = true;
+        if kept.first_only() {
+            let k = next.get_or_insert_with(|| kept.clone());
+            k.member = false;
+            k.called_first = Some(primary.to_string());
         }
         if let Some(k) = next.as_ref().unwrap_or(kept).heard_config(config.0, config.1) {
             next = Some(k);
@@ -433,6 +523,17 @@ impl Replica {
             }
             Applied::Mismatch { seq, term } => pb::ReplicateResponse { matched: false, seq, term, replica_term, ..Default::default() },
         })
+    }
+
+    /// What to keep once it answered a call of a primary that counts it a
+    /// member (`member`, as the call says) with [`Self::applied`]: that it
+    /// is a member, from the first call that finds it caught up (applied,
+    /// and not behind), and grants votes from then. Not before: a replica
+    /// that lost its volume and starts again empty may be counted a member
+    /// by a primary that has not noticed, and its vote could elect a copy
+    /// without the writes it had acknowledged (N-E2).
+    pub fn joined(&self, member: bool) -> Option<Kept> {
+        (member && !self.kept.member && self.serves_reads).then(|| Kept { member: true, called_first: None, ..self.kept.clone() })
     }
 
     /// Whether call `r`, which it took ([`Self::take`]), at `n`, follows
@@ -506,8 +607,11 @@ impl Replica {
     /// until a call finds it behind, it fails to apply one or it installs
     /// a copy. Refused otherwise (503), as it is catching up.
     pub fn readable(&self) -> Result<(), ApiError> {
-        if self.serves_reads {
+        if self.reads_open() {
             return Ok(());
+        }
+        if self.serves_reads {
+            return Err(unavailable(format!("a copy asked this replica for a vote in term {}, newer than its primary's: that term may have a primary already, so it serves no reads until one calls it; read from another copy or the primary", self.asked_term)));
         }
         let why = match self.called_at {
             None => "its primary has not called since it started",
@@ -520,6 +624,24 @@ impl Replica {
     /// it knows or heard of; a `handover` is a promotion asked by hand.
     pub fn campaign(&self, n: &Numbering, handover: bool) -> Campaign {
         Campaign { id: self.kept.id.clone(), term: self.kept.newest(n.term).max(self.heard) + 1, handover, config: self.kept.config_version(), copies: self.kept.config_copies() }
+    }
+
+    /// Whether it may ask to be elected: only as a copy a primary counted
+    /// among those a majority is counted of, or as one of its shard's
+    /// first copies ([`Kept::member`]), as Raft's learners do not. A copy
+    /// that joined, or lost its volume and started again empty, and that
+    /// no primary has found caught up since, may lack writes a majority
+    /// acknowledged, and a member lacking them too, behind, would grant it
+    /// its vote: TLC found that lose an acknowledged write in nine steps,
+    /// the candidate having learned the shard's membership from a call it
+    /// could not apply (spec/replication, `MembersCampaign`).
+    pub fn counted(&self) -> Result<(), ApiError> {
+        match self.kept.member {
+            true => Ok(()),
+            false => Err(conflict(
+                "this replica is not counted among its shard's copies (it joined, or started again on an empty volume, and no primary has found it caught up since), so it asks for no votes: it may lack writes its shard acknowledged".to_string(),
+            )),
+        }
     }
 
     /// The copies answered a round of its campaign `t`: the newest term
@@ -1149,7 +1271,7 @@ impl Primary {
         }
         self.fenced = term;
         tracing::error!(term = mine, replaced_by = term, "a primary of a newer term replaced this one, which takes no more writes and serves no reads");
-        self.kept = Kept { id: self.id.clone(), follows: None, replaced_by: Some(term), role: Some(KeptRole::Replica), voted: self.kept.voted.clone(), member: true, config: self.kept.config, differs: None };
+        self.kept = Kept { id: self.id.clone(), follows: None, replaced_by: Some(term), role: Some(KeptRole::Replica), voted: self.kept.voted.clone(), member: true, config: self.kept.config, differs: None, called_first: None };
         self.changed();
         Some(self.kept.clone())
     }
@@ -1734,6 +1856,31 @@ impl Primary {
 
 #[cfg(test)]
 mod tests {
+    /// X-E1: a vote request of a newer term than the replica's primary
+    /// ships in, granted or not, stops its reads until a primary of that
+    /// term (or a newer one) calls; the old primary's calls do not bring
+    /// them back. A pre-vote does not stop them.
+    #[test]
+    fn a_replica_asked_to_vote_in_a_newer_term_serves_no_reads_until_its_primary_calls() {
+        let now = Instant::now();
+        let (mut r, _) = Replica::open(Kept { id: "r".into(), follows: Some(("p".into(), 1)), role: Some(KeptRole::Replica), ..Kept::default() }, now, false);
+        let at = Applied::At(chloedb::storage::SeqNo { term: 1, seq: 200 });
+        r.applied(1, false, 0, Ok(at), 1).unwrap();
+        assert!(r.readable().is_ok());
+        r.saw_vote(&ask(2, "x", (1, 150), true));
+        assert!(r.readable().is_ok(), "a pre-vote changes nothing");
+        r.saw_vote(&ask(2, "x", (1, 150), false));
+        assert!(r.readable().is_err(), "term 2 may have a primary already");
+        r.applied(1, false, 0, Ok(at), 1).unwrap();
+        assert!(r.readable().is_err(), "the primary of term 1 does not bring reads back");
+        assert!(r.serves_reads, "it is caught up (and so may join the shard): only its reads are held");
+        r.kept.follows = Some(("x".into(), 2));
+        r.applied(2, false, 0, Ok(at), 2).unwrap();
+        assert!(r.readable().is_ok(), "term 2's primary called and it caught up");
+        r.saw_vote(&ask(2, "y", (1, 150), false));
+        assert!(r.readable().is_ok(), "its primary's own term is not newer");
+    }
+
     #[test]
     fn a_copy_that_did_not_run_waits_a_delay_before_it_asks() {
         let after = Duration::from_millis(600);
@@ -1771,6 +1918,7 @@ mod tests {
             member: true,
             config: Some((3, 2)),
             differs: Some(SeqNo { term: 3, seq: 7 }),
+            called_first: Some("b".into()),
         };
         assert_eq!(Kept::from_json(&k.to_json()).unwrap(), k);
         assert_eq!(k.newest(2), 5);
@@ -1853,18 +2001,18 @@ mod tests {
         // call it refuses for its term, which fences that primary.
         let kept = Kept { id: "d".into(), member: true, follows: Some(("p".into(), 2)), role: Some(KeptRole::Replica), config: Some((3, 2)), ..Kept::default() };
         let (r, _) = Replica::open(kept, Instant::now(), false);
-        let e = r.take(5, "b", true, (1, 3), &at).unwrap_err();
+        let e = r.take(5, "b", (1, 3), &at).unwrap_err();
         assert!(e.status == 409 && e.message.contains("is not followed"), "{}", e.message);
-        assert!(matches!(r.take(5, "e", true, (3, 2), &at), Ok(Take::Apply { kept: Some(k) }) if k.follows == Some(("e".into(), 5))));
-        assert!(matches!(r.take(5, "e", true, (4, 3), &at), Ok(Take::Apply { kept: Some(k) }) if k.config == Some((4, 3))));
+        assert!(matches!(r.take(5, "e", (3, 2), &at), Ok(Take::Apply { kept: Some(k) }) if k.follows == Some(("e".into(), 5))));
+        assert!(matches!(r.take(5, "e", (4, 3), &at), Ok(Take::Apply { kept: Some(k) }) if k.config == Some((4, 3))));
         // A primary that numbers no membership (0), and a replica that
         // knows none, are as before.
-        assert!(matches!(r.take(5, "old", true, (0, 0), &at), Ok(Take::Apply { .. })));
+        assert!(matches!(r.take(5, "old", (0, 0), &at), Ok(Take::Apply { .. })));
         let (fresh, _) = Replica::open(Kept::new("f".into()), Instant::now(), false);
-        assert!(matches!(fresh.take(5, "b", true, (1, 3), &at), Ok(Take::Apply { .. })));
+        assert!(matches!(fresh.take(5, "b", (1, 3), &at), Ok(Take::Apply { .. })));
         // A copy's first chunk names no copies: the version alone is not
         // kept from it.
-        assert!(matches!(fresh.take(5, "b", false, (7, 0), &at), Ok(Take::Apply { kept: Some(k) }) if k.config.is_none()));
+        assert!(matches!(fresh.take(5, "b", (7, 0), &at), Ok(Take::Apply { kept: Some(k) }) if k.config.is_none()));
     }
 
     #[test]
@@ -1889,12 +2037,20 @@ mod tests {
         let (mut r, save) = Replica::open(Kept::new("r".into()), t0, false);
         assert_eq!(save.unwrap().role, Some(KeptRole::Replica));
         let at = n(2, 4, &[(1, 1), (2, 3)]);
-        let Ok(Take::Apply { kept }) = r.take(2, "p", true, (0, 0), &at) else { panic!() };
+        let Ok(Take::Apply { kept }) = r.take(2, "p", (0, 0), &at) else { panic!() };
         let kept = kept.unwrap();
-        assert_eq!((kept.follows.clone(), kept.member), (Some(("p".into(), 2)), true));
+        assert_eq!((kept.follows.clone(), kept.member), (Some(("p".into(), 2)), false));
         r.took(Some(kept), t0);
-        assert!(r.take(2, "q", true, (0, 0), &at).is_err(), "a second primary of term 2");
-        let Ok(Take::Answer(a)) = r.take(1, "old", false, (0, 0), &at) else { panic!() };
+        // A member once a call that counts it one finds it caught up.
+        r.applied(2, true, 0, Ok(Applied::At(SeqNo { term: 2, seq: 3 })), 2).unwrap();
+        assert!(r.joined(true).is_none(), "behind its primary");
+        r.applied(2, false, 0, Ok(Applied::At(SeqNo { term: 2, seq: 4 })), 2).unwrap();
+        assert!(r.joined(false).is_none(), "a call that does not count it one");
+        let kept = r.joined(true).expect("caught up");
+        assert!(kept.member);
+        r.took(Some(kept), t0);
+        assert!(r.take(2, "q", (0, 0), &at).is_err(), "a second primary of term 2");
+        let Ok(Take::Answer(a)) = r.take(1, "old", (0, 0), &at) else { panic!() };
         assert_eq!((a.matched, a.replica_term, a.seq, a.term), (false, 2, 4, 2));
         // Its primary called a moment ago: no vote but a handover.
         let (v, _) = r.vote(&ask(3, "x", (2, 4), false), &at, t0 + Duration::from_millis(10), Duration::from_secs(1));
@@ -1956,17 +2112,77 @@ mod tests {
         // Started with --replica on a database that had no part yet.
         let (r, save) = Replica::open(Kept::new("r".into()), t0, true);
         assert!(save.is_some_and(|k| k.member && k.role == Some(KeptRole::Replica)));
-        assert!(r.vote(&ask(2, "x", (1, 0), false), &at, long_ago, Duration::from_secs(1)).0.granted, "a first copy");
+        assert!(r.vote(&ask(2, "x", (0, 0), false), &at, long_ago, Duration::from_secs(1)).0.granted, "a first copy, for a copy that heard from no primary either");
         // A server made a replica of a serving shard (Configure), or one
         // that was a replica before: none until a primary says it caught up.
         for (kept, flags) in [(Kept::new("r".into()), false), (Kept { follows: Some(("p".into(), 1)), role: Some(KeptRole::Replica), ..Kept::new("r".into()) }, true)] {
             let (r, save) = Replica::open(kept, t0, flags);
             assert!(!save.is_some_and(|k| k.member) && !r.kept.member);
-            assert!(!r.vote(&ask(2, "x", (1, 0), false), &at, long_ago, Duration::from_secs(1)).0.granted, "a copy that joined");
+            assert!(!r.vote(&ask(2, "x", (0, 0), false), &at, long_ago, Duration::from_secs(1)).0.granted, "a copy that joined");
         }
         // The primary counts itself one, as a replica once it starts again.
         let (p, save) = Primary::new(Kept::new("p".into()), &["r".into()], Opts::of(&PrimaryOptions::default()), true);
         assert!(save.is_some_and(|k| k.member) && p.kept.member);
+    }
+
+    /// N-E2: a replica whose volume was lost starts again with the same
+    /// `--replica`, empty, as a first copy. It votes for no candidate that
+    /// heard from a primary or holds what it does not, and, once a primary
+    /// that still counts it a member calls it, it counts itself none, and
+    /// asks for no votes, until a call finds it caught up.
+    #[test]
+    fn a_first_copy_that_may_have_lost_its_volume_votes_for_no_copy_with_a_past() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_secs(60);
+        let sticky = Duration::from_secs(1);
+        let empty = n(0, 0, &[]);
+        let (mut r, save) = Replica::open(Kept::new("r1".into()), t0, true);
+        assert!(save.is_some_and(|k| k.first_only()) && r.kept.first_only());
+        assert!(r.counted().is_ok(), "a first copy may ask to be elected (Bug::WaitsForAFirstCall)");
+        // The copy behind at 90, which followed the shard's primary.
+        let behind = pb::VoteRequest { config: 1, copies: 3, ..ask(2, "r2", (1, 90), false) };
+        let v = r.vote(&behind, &empty, later, sticky).0;
+        assert!(!v.granted && v.reason.contains("may have lost its volume"), "{}", v.reason);
+        assert!(!r.vote(&ask(2, "r2", (1, 90), false), &empty, later, sticky).0.granted, "it holds transactions this one never had");
+        assert!(!r.vote(&pb::VoteRequest { config: 1, copies: 3, ..ask(2, "r2", (0, 0), false) }, &empty, later, sticky).0.granted, "it heard from a primary");
+        // A first copy that heard from no primary either: the first
+        // primary stopped before it called any (Bug::WaitsForAFirstCall).
+        assert!(r.vote(&ask(2, "r2", (0, 0), false), &empty, later, sticky).0.granted);
+        // The primary, which counts it a member still, calls it: it follows
+        // that primary, and is no member while it is sent a copy.
+        let Ok(Take::Apply { kept }) = r.take(1, "p", (1, 3), &empty) else { panic!() };
+        let kept = kept.expect("what it keeps");
+        assert!(!kept.member && !kept.first_only() && kept.follows == Some(("p".into(), 1)));
+        assert_eq!(kept.called_first.as_deref(), Some("p"));
+        assert_eq!(Kept::from_json(&kept.to_json()).unwrap(), kept, "kept across a restart");
+        r.took(Some(kept), t0);
+        assert!(r.joined(true).is_none(), "not caught up");
+        // Nor does it ask to be elected (Bug::CampaignsUncounted): its
+        // vote is the primary's alone, and a member behind it would elect
+        // it without what the primary acknowledged.
+        let e = r.counted().unwrap_err();
+        assert!(e.status == 409 && e.message.contains("asks for no votes"), "{}", e.message);
+        let v = r.vote(&ask(2, "r2", (0, 0), false), &empty, later, sticky).0;
+        assert!(!v.granted && v.reason.contains("not caught up"), "{}", v.reason);
+        let v = r.vote(&pb::VoteRequest { config: 1, copies: 3, ..ask(2, "r2", (1, 2), false) }, &empty, later, sticky).0;
+        assert!(!v.granted && v.reason.contains("not caught up"), "a copy that is not the primary that called it: {}", v.reason);
+        // That primary stepped down before this copy caught up, and asks
+        // to be elected again: granted, so that the shard elects a primary.
+        let v = r.vote(&pb::VoteRequest { config: 1, copies: 3, ..ask(2, "p", (1, 2), false) }, &empty, later, sticky).0;
+        assert!(v.granted, "{}", v.reason);
+        // The copy installed, a call finds it caught up: a member again.
+        let at = n(1, 100, &[(1, 1)]);
+        r.applied(1, false, 100, Ok(Applied::At(SeqNo { term: 1, seq: 100 })), 1).unwrap();
+        let kept = r.joined(true).expect("caught up");
+        assert!(kept.member && !kept.first_only() && kept.called_first.is_none());
+        r.took(Some(kept), t0);
+        assert!(r.counted().is_ok());
+        assert!(r.vote(&behind, &at, later, sticky).0.reason.contains("past the candidate's last"));
+        assert!(r.vote(&ask(2, "p", (1, 100), false), &at, later, sticky).0.granted);
+        // As the copy asked: a candidate that heard from no primary and
+        // holds nothing may be one that lost its volume.
+        let v = r.vote(&ask(3, "lost", (0, 0), false), &n(1, 0, &[]), later, sticky).0;
+        assert!(!v.granted && v.reason.contains("may have lost its volume"), "{}", v.reason);
     }
 
     fn opts() -> Opts {
@@ -2186,8 +2402,8 @@ mod tests {
     fn a_candidate_of_an_older_membership_is_refused_and_counts_the_newest() {
         let t0 = Instant::now();
         let at = n(1, 2, &[(1, 1)]);
-        let (r, _) = Replica::open(Kept { member: true, ..Kept::new("b".into()) }, t0, false);
-        let Ok(Take::Apply { kept }) = r.take(1, "a", true, (2, 4), &at) else { panic!() };
+        let (r, _) = Replica::open(Kept { member: true, follows: Some(("a".into(), 1)), ..Kept::new("b".into()) }, t0, false);
+        let Ok(Take::Apply { kept }) = r.take(1, "a", (2, 4), &at) else { panic!() };
         let kept = kept.unwrap();
         assert_eq!(kept.config, Some((2, 4)));
         let old = pb::VoteRequest { config: 1, copies: 3, ..ask(2, "c", (1, 2), false) };

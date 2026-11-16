@@ -3,7 +3,7 @@
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.3.0). The
+(November 2026, every crate and package at version 0.3.5). The
 [changelog](../CHANGELOG.md) says what changed.
 
 ChloeDB is pre-1.0: the statements below are the current behaviour, which
@@ -55,6 +55,19 @@ build exactly as long as it uses only features that build knows, and an
 older build that meets a newer feature refuses the file by name rather than
 misreading it. Starting to use a feature cannot be undone.
 
+**Rollups.** A rollup made by 0.3.3 or later keys its rows by number,
+where one made by 0.3.1 or 0.3.2 keys them by text. 0.3.3 reads and
+refreshes both. 0.3.2 reads the new kind but cannot refresh it, so its
+definition carries the option `needs_chloedb_0_3_3`, which 0.3.2 refuses
+by name ("no option needs_chloedb_0_3_3"): a refresh by 0.3.2 fails with
+that message rather than leaving the rollup's newest buckets stale. Open a
+database whose rollups 0.3.3 made with 0.3.3 or later.
+A rollup made by 0.3.4 or later that counts a field's values (`COUNT(f)`,
+or `AVG(f)`, which keeps `count_f` so that its mean skips NULLs) has a
+column 0.3.3 does not write; its definition carries `needs_chloedb_0_3_4`,
+which 0.3.3 refuses by name in the same way. 0.3.4 refreshes a rollup made
+before with `AVG(f)` as it was made, without `count_f`.
+
 **Databases from before field ids.** A database written before field ids
 (format 1, 2, or 3 without `field_ids`) no longer opens for use. `upgrade()`
 (`chloedb.upgrade(path)` in Python, `upgrade(path)` in JavaScript;
@@ -92,7 +105,7 @@ server of their own commit.
 **Not promised.** A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.0), and keeps it between releases: name a
+version of the last release (0.3.5), and keeps it between releases: name a
 build from a commit after a release by its commit.
 
 ## A cluster of mixed versions
@@ -102,7 +115,7 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
 `MIN_PROTOCOL` 1, `PROTOCOL` 21; [the list of what each adds](chloedb/server.md)).
 
 - When a coordinator or a peer connects it calls `Hello` with the range it
-  speaks (1 to 20) and the server answers its own range, the plan version
+  speaks (1 to 21) and the server answers its own range, the plan version
   it reads (plan IR version 1) and the plan features it has. The two use
   the highest protocol both speak; if the ranges do not meet the connection
   is refused, naming both ranges. A coordinator asks again every minute and
@@ -128,6 +141,20 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   (`FULL JOIN`): a coordinator counts and writes strictly only
   through shards of 21, and a 0.3.1 shard refuses a full join by name, so
   upgrade the shards before the coordinator.
+  0.3.4 keeps the shard protocol at 21 and adds no plan feature: the terms
+  a read after a write passes back (`min_seq_term`, `min_seq_terms`) are
+  new fields that a 0.3.3 server leaves out, reading by the number alone,
+  so 0.3.3 and 0.3.4 mix in either order. A key's statement budget is
+  kept by 0.3.4 only: a 0.3.3 server admits the key without it, so give
+  keys budgets once every server runs 0.3.4.
+  0.3.5 keeps the shard protocol at 21 and adds no plan feature and no
+  field, so 0.3.4 and 0.3.5 mix in either order. One step is ordered: a
+  0.3.5 coordinator of a cluster with a cluster token adds a server (a
+  shard, a copy, or a plan's step that adds one) only with that token, and
+  answers an API key or the admin token 403 `cluster_token_required`. On
+  Kubernetes, upgrade the operator before the coordinators: the 0.3.5
+  operator adds servers with its `clusterTokenSecret`, and an older one
+  sends the admin token.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
@@ -188,6 +215,44 @@ and the app engine in `chloedb-apps/`. The default models directory is
 before); a machine that has the old folder and no `~/.local/share/chloedb`
 keeps using it, as a machine that already has ChloeCtx's old folder,
 `~/.local/share/engram`, does.
+
+## Experimental features
+
+These parts of chloedb-server work and are documented, but carry no
+compatibility promise yet: their routes, settings and what they store may
+change in any release, including a patch release, with no upgrade path
+promised. Each answer of their routes carries the header
+`x-chloedb-experimental: <feature>`, `GET /v1/catalog` marks their routes
+(`"experimental": "<feature>"`, and the features under `experimental`), and
+the command center marks their pages.
+
+| feature | routes | what it is |
+|---|---|---|
+| `cloud` | `/v1/admin/cloud/*`, `/v1/admin/aws/*`, `/v1/admin/digitalocean/*` | [clusters made on AWS or DigitalOcean](chloedb/server.md#in-the-cloud) from the command center |
+| `hub` | `/v1/admin/hub/*`, `/c/<name>/` | [the hub](chloedb/server.md#many-clusters-from-one-command-center): a book of other clusters, and calls forwarded to them |
+| `autoscale` | `/v1/admin/kube/autoscale/*`, `/v1/admin/autoscale/*`, the `StrataCluster`'s `spec.autoscale` | [the operator's autoscaler](chloedb/server.md#autoscaling) |
+| `oncall` | `/v1/admin/oncall/*` | [the on-call agent](chloedb/server.md#the-on-call-agent) |
+
+The list is `EXPERIMENTAL` in `chloedb-server/src/catalog.rs`. A feature
+leaves it when its shape is settled; the changelog says so.
+
+## Demos
+
+These apps show what ChloeDB can do and are not part of its releases or
+their promises:
+
+- `chloedb-netops`, network operations on a simulated carrier network;
+- `chloedb-swarm`, simulated users, an internal test instrument;
+- `examples/feature-store`, a shop ranked on features ChloeDB keeps;
+- `examples/parley`, a social network of LLM agents.
+
+They are on a release train of their own. CI's required check, `CI result`,
+does not test them, and a change only under them runs nothing there; the
+`Demos` workflow (`.github/workflows/demos.yml`) tests them against a
+chloedb-server of the same commit, on a pull request that touches one and
+every night. A fault in a demo does not hold a ChloeDB release, and fixing
+one does not wait for the engine's tests. An app whose manifest says
+`"maturity": "demo"` is marked as a demo in the command center.
 
 ## Not promised yet
 
