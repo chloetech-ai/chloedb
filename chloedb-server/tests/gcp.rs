@@ -29,6 +29,11 @@ pub const REFRESH: &str = "1//refresh-token-never-shown-0123456789";
 pub const SOURCE: &str = "ya29.source-token-never-shown-abcdef";
 pub const TOKEN: &str = "ya29.deployer-token-never-shown-012345";
 pub const DEPLOYER: &str = "chloedb-deployer@chloedb.iam.gserviceaccount.com";
+/// The coordinators' own Kubernetes token, and the pool's token Google's
+/// Security Token Service gives for it.
+pub const K8S_TOKEN: &str = "eyJhbGciOiJSUzI1NiJ9.kubernetes-token-never-shown.sig";
+pub const FEDERATED: &str = "ya29.federated-token-never-shown-6789";
+pub const AUDIENCE: &str = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/chloedb/providers/k8s-e2e";
 pub const CLUSTER: &str = "/container/v1/projects/chloedb/locations/us-central1-a/clusters/strata-search";
 
 const MACHINE_TYPES: &str = include_str!("fixtures/gcp/machine-types.json");
@@ -78,9 +83,19 @@ pub async fn google(State(g): State<Arc<Mutex<Google>>>, method: Method, Origina
         }
         return ok(json!({"access_token": SOURCE, "expires_in": 3599, "token_type": "Bearer"}));
     }
+    if path == "/sts/v1/token" {
+        let form = form(&body);
+        assert_eq!(form["grant_type"], "urn:ietf:params:oauth:grant-type:token-exchange");
+        assert_eq!(form["requested_token_type"], "urn:ietf:params:oauth:token-type:access_token");
+        assert_eq!((form["audience"].as_str(), form["subject_token_type"].as_str(), form["scope"].as_str()), (AUDIENCE, "urn:ietf:params:oauth:token-type:jwt", "https://www.googleapis.com/auth/cloud-platform"));
+        if form["subject_token"] != K8S_TOKEN {
+            return (StatusCode::BAD_REQUEST, json!({"error": "invalid_grant", "error_description": "The audience in ID Token does not match the expected audience."}).to_string()).into_response();
+        }
+        return ok(json!({"access_token": FEDERATED, "issued_token_type": "urn:ietf:params:oauth:token-type:access_token", "token_type": "Bearer", "expires_in": 3600}));
+    }
     if let Some(rest) = path.strip_prefix("/iamcredentials/v1/projects/-/serviceAccounts/") {
         assert_eq!(method, Method::POST);
-        assert_eq!(auth, SOURCE, "impersonation is asked with the person's own token");
+        assert!(auth == SOURCE || auth == FEDERATED, "impersonation is asked with the person's own token, or the pool's");
         let b: Json = serde_json::from_slice(&body).unwrap();
         assert_eq!(b["scope"], json!(["https://www.googleapis.com/auth/cloud-platform"]));
         if rest != format!("{DEPLOYER}:generateAccessToken") {
@@ -138,7 +153,9 @@ pub async fn google(State(g): State<Arc<Mutex<Google>>>, method: Method, Origina
         ("POST", "/container/v1/projects/chloedb/locations/us-central1-a/clusters") => {
             let b: Json = serde_json::from_slice(&body).unwrap();
             let c = &b["cluster"];
-            assert_eq!((c["name"].as_str(), c["initialClusterVersion"].as_str(), c["releaseChannel"]["channel"].as_str()), (Some("strata-search"), Some("1.36.5-gke.2370000"), Some("UNSPECIFIED")), "{b}");
+            assert_eq!((c["name"].as_str(), c["initialClusterVersion"].as_str(), c["releaseChannel"]["channel"].as_str()), (Some("strata-search"), Some("1.36.4-gke.2377000"), Some("REGULAR")), "{b}");
+            assert_eq!(c["nodePools"][0]["management"]["autoUpgrade"], true, "{b}");
+            assert_eq!(c["maintenancePolicy"]["window"]["maintenanceExclusions"]["chloedb-hold"]["maintenanceExclusionOptions"]["scope"], "NO_MINOR_OR_NODE_UPGRADES", "{b}");
             assert_eq!((c["workloadIdentityConfig"]["workloadPool"].as_str(), c["network"].as_str(), c["resourceLabels"]["strata"].as_str()), (Some("chloedb.svc.id.goog"), Some("default"), Some("chloedb")), "{b}");
             assert!(c["resourceLabels"]["strata-owner"].is_string(), "who asked for it, as a label: {b}");
             let pool = &c["nodePools"][0];
@@ -193,6 +210,33 @@ pub async fn google(State(g): State<Arc<Mutex<Google>>>, method: Method, Origina
         }
         (m, p) => panic!("Google was not asked for {m} {p}"),
     }
+}
+
+/// A form body's fields, percent-decoded.
+fn form(body: &[u8]) -> std::collections::HashMap<String, String> {
+    let decode = |s: &str| {
+        let b = s.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            match b[i] {
+                b'%' if i + 2 < b.len() => {
+                    out.push(u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap(), 16).unwrap());
+                    i += 3;
+                }
+                b'+' => {
+                    out.push(b' ');
+                    i += 1;
+                }
+                c => {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+        }
+        String::from_utf8(out).unwrap()
+    };
+    String::from_utf8_lossy(body).split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (decode(k), decode(v))).collect()
 }
 
 pub async fn listen() -> (TcpListener, String) {
@@ -298,6 +342,7 @@ async fn the_google_cloud_view_signs_in_without_keys_and_plans_from_googles_pric
     assert_eq!(status, 200, "{j}");
     let s = parse(&j);
     assert_eq!((s["saved"]["project"].as_str(), s["saved"]["region"].as_str(), s["saved"]["account"].as_str(), s["project"]["from"].as_str()), (Some("chloedb"), Some("us-central1"), Some(DEPLOYER), Some("stored")), "{j}");
+    assert_eq!(s["saved"]["number"], "123456789012", "the project's number, not Compute's id for it: {j}");
     answers.push(j);
     let kept = std::fs::read_to_string(&file).unwrap();
     answers.push(kept);
@@ -324,7 +369,7 @@ async fn the_google_cloud_view_signs_in_without_keys_and_plans_from_googles_pric
     assert!((m["usd_hour"].as_f64().unwrap() - (4.0 * 0.027502 + 32.0 * 0.003686)).abs() < 1e-9, "{m}");
     assert_eq!((m["vcpu"].as_u64(), m["memory_gib"].as_f64(), m["max_pods"].as_u64()), (Some(4), Some(32.0), Some(110)), "{m}");
     assert!(cat["machines"].as_array().unwrap().iter().all(|m| !["t2a-standard-4", "g2-standard-4", "n4-standard-4", "c3-standard-4-lssd", "n1-highmem-96"].contains(&m["type"].as_str().unwrap())), "{j}");
-    assert_eq!((cat["default_version"].as_str(), cat["networks"].as_array().map(Vec::len), cat["missing"].as_array().map(Vec::len)), (Some("1.36.5-gke.2370000"), Some(1), Some(0)), "{j}");
+    assert_eq!((cat["default_version"].as_str(), cat["networks"].as_array().map(Vec::len), cat["missing"].as_array().map(Vec::len)), (Some("1.36.4-gke.2377000"), Some(1), Some(0)), "{j}");
     assert!(cat["recommended"].as_array().unwrap().iter().any(|r| r == "n2d-highmem-4"), "{j}");
     answers.push(j);
     let (status, j) = call(&base, "GET", "/v1/admin/gcp/machines?region=mars1", root, None).await;
@@ -381,5 +426,88 @@ async fn the_google_cloud_view_signs_in_without_keys_and_plans_from_googles_pric
     answers.push(j);
     for a in &answers {
         assert!(!a.contains(TOKEN) && !a.contains(SOURCE) && !a.contains(REFRESH), "{a}");
+    }
+}
+
+/// The file `gcloud iam workload-identity-pools create-cred-config` writes
+/// for a Kubernetes token in `token`, in `dir`.
+pub fn federation_file(dir: &Path, token: &Path) -> PathBuf {
+    let p = dir.join("credentials.json");
+    let j = json!({
+        "universe_domain": "googleapis.com", "type": "external_account", "audience": AUDIENCE,
+        "subject_token_type": "urn:ietf:params:oauth:token-type:jwt", "token_url": "https://sts.googleapis.com/v1/token",
+        "service_account_impersonation_url": format!("https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{DEPLOYER}:generateAccessToken"),
+        "credential_source": {"file": token.display().to_string(), "format": {"type": "text"}},
+    });
+    std::fs::write(&p, j.to_string()).unwrap();
+    p
+}
+
+/// A coordinator on a Kubernetes cluster outside Google Cloud: with no
+/// credentials, the view gives the commands that set up federation for
+/// its own account; with the federation's file, its Kubernetes token is
+/// exchanged at the Security Token Service and impersonates the deployer,
+/// no token reaching an answer; a token not there, or one Google refuses,
+/// says what to fix.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cluster_outside_google_reaches_it_through_federation() {
+    let (seen, api) = google_api("http://127.0.0.1:1").await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("a.strata"), demo::schema(10), DbOptions::default()).unwrap();
+    let schema = (*db.schema()).clone();
+    let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent, 4, Duration::from_secs(10));
+    let adc = dir.path().join("credentials.json");
+    svc.gcp = Arc::new(Gcp::memory().with_endpoint(&api).with_adc(Some(adc.clone())).with_kube_cluster("strata/e2e"));
+    let svc = Arc::new(svc);
+    let (l, base) = listen().await;
+    let access = Access { token: Some(Secret::new("root-token")), ..Default::default() };
+    tokio::spawn(server::serve_http(svc.clone(), l, access));
+    let root = Some("root-token");
+
+    // No credentials yet: how this cluster's account gets them.
+    let (status, j) = call(&base, "GET", "/v1/admin/gcp", root, None).await;
+    assert_eq!(status, 200, "{j}");
+    let s = parse(&j);
+    assert_eq!(s["credentials"]["source"], "none", "{j}");
+    let f = &s["federation"];
+    assert_eq!((f["account"].as_str(), f["provider"].as_str(), f["configured"].as_bool()), (Some("e2e-coordinator"), Some("k8s-e2e"), Some(false)), "{j}");
+    let commands = f["commands"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect::<Vec<_>>().join("\n");
+    assert!(commands.contains("PROJECT=PROJECT") && commands.contains("subject/system:serviceaccount:strata:e2e-coordinator") && commands.contains("patch stratacluster e2e"), "{commands}");
+
+    // The federation's file, and the token Kubernetes keeps in its file.
+    let token = dir.path().join("token");
+    federation_file(dir.path(), &token);
+    let (_, j) = call(&base, "GET", "/v1/admin/gcp", root, None).await;
+    let s = parse(&j);
+    let c = &s["credentials"];
+    assert_eq!((c["kind"].as_str(), c["service_account"].as_str(), c["pool"].as_str(), c["provider"].as_str()), (Some("external_account"), Some(DEPLOYER), Some("chloedb"), Some("k8s-e2e")), "{j}");
+    assert_eq!(c["token_file"]["present"], false, "{j}");
+    assert_eq!(s["project"], json!({"id": "chloedb", "from": "the impersonated service account"}), "{j}");
+    assert_eq!(s["federation"]["configured"], true, "{j}");
+    assert!(s["federation"]["commands"][1].as_str().unwrap().contains(DEPLOYER), "{j}");
+
+    // No token in its file: says where it should be.
+    let (status, j) = call(&base, "PUT", "/v1/admin/gcp/project", root, Some(json!({"project": "chloedb"}))).await;
+    assert!(status == 400 && j.contains("is not there") && j.contains("gcpFederation"), "{status} {j}");
+
+    // A token Google's Security Token Service refuses.
+    std::fs::write(&token, "eyJhbGciOiJSUzI1NiJ9.another-audience.sig\n").unwrap();
+    let (status, j) = call(&base, "PUT", "/v1/admin/gcp/project", root, Some(json!({"project": "chloedb"}))).await;
+    assert!(status == 400 && j.contains("refused the federation's token") && j.contains("does not match the expected audience") && j.contains("provider k8s-e2e"), "{status} {j}");
+
+    // Its own token: exchanged, then the deployer's, kept while it lasts.
+    std::fs::write(&token, format!("{K8S_TOKEN}\n")).unwrap();
+    let (status, j) = call(&base, "PUT", "/v1/admin/gcp/project", root, Some(json!({"project": "chloedb", "region": "us-central1"}))).await;
+    assert_eq!(status, 200, "{j}");
+    assert_eq!(parse(&j)["saved"]["account"], DEPLOYER, "{j}");
+    let (status, j2) = call(&base, "GET", "/v1/admin/gcp/machines", root, None).await;
+    assert_eq!(status, 200, "{j2}");
+    let calls = seen.lock().unwrap().calls.clone();
+    let tokens: Vec<&String> = calls.iter().filter(|c| c.starts_with("POST /sts/") || c.starts_with("POST /iamcredentials/")).collect();
+    assert_eq!(tokens, [&"POST /sts/v1/token".to_string(), &"POST /sts/v1/token".to_string(), &format!("POST /iamcredentials/v1/projects/-/serviceAccounts/{DEPLOYER}:generateAccessToken")], "{calls:?}");
+    let (_, audit) = call(&base, "GET", "/v1/admin/audit", root, None).await;
+    for a in [&j, &j2, &audit] {
+        assert!(!a.contains(K8S_TOKEN) && !a.contains(FEDERATED) && !a.contains(TOKEN), "{a}");
     }
 }

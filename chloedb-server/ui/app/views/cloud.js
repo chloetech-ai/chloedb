@@ -22,7 +22,7 @@ import { state } from "../data.js";
 
 export default {
   id: "cloud", title: "Cloud setup", icon: "cloud", group: "Change",
-  keywords: "cloud aws amazon eks digitalocean doks droplet google gcp gke gcloud compute engine workload identity kubernetes k8s credentials access key token region instance instances machine machines size sizes ec2 graviton price prices cost spot quota limit cloudformation template deploy",
+  keywords: "cloud aws amazon eks digitalocean doks droplet google gcp gke gcloud compute engine workload identity federation kubernetes k8s credentials access key token region instance instances machine machines size sizes ec2 graviton price prices cost spot quota limit cloudformation template deploy",
   render, onParams,
 };
 
@@ -371,15 +371,23 @@ function render(page, r) {
 
   /** Google Cloud: the sign-in this server's calls use (never a key), and the project it keeps. */
   function drawGoogle() {
-    const k = key(), c = status?.credentials || {};
+    const k = key(), c = status?.credentials || {}, fed = status?.federation;
     const signIn = "gcloud auth application-default login --impersonate-service-account NAME@PROJECT.iam.gserviceaccount.com";
+    // Workload identity federation: how a coordinator on a Kubernetes
+    // cluster outside Google Cloud acts as a service account, with no key.
+    const federation = fed ? h("details", { open: !k }, h("summary", { class: "small" }, fed.configured ? "How this cluster's federation was set up" : `From this cluster (${fed.namespace}/${fed.cluster}), with no key`),
+      h("div", { class: "stack", style: { marginTop: "6px" } },
+        h("div", { class: "small" }, "This server runs on Kubernetes outside Google Cloud. Google can trust the token Kubernetes gives its account, ", h("span", { class: "mono" }, `${fed.namespace}/${fed.account}`), ", through the workload identity pool ", h("span", { class: "mono" }, fed.pool), ", and let it act as a service account. Someone who may change the project's IAM runs these once, with kubectl pointed at this cluster; ChloeDB runs none of them:"),
+        cmds(fed.commands),
+        h("div", { class: "small dim" }, "The last command restarts the coordinators with their token in ", h("span", { class: "mono" }, fed.token_file), ". Set DEPLOYER to the service account that may make GKE clusters first."))) : null;
     if (!k) {
       clear(creds, card({
         title: "Sign-in", sub: "no Google Cloud credentials where this server runs",
         tools: [h("button", { class: "btn sm", onclick: () => load() }, icon("refresh"), "Check again")],
         body: h("div", { class: "stack" },
           c.refused ? h("div", { class: "error small" }, c.refused) : null,
-          h("div", {}, "ChloeDB takes no service account key. Sign in with gcloud where this server runs, acting as a service account that may make GKE clusters:"),
+          fed ? federation : null,
+          h("div", {}, fed ? "Or, on a laptop: ChloeDB takes no service account key. Sign in with gcloud where the server runs, acting as a service account that may make GKE clusters:" : "ChloeDB takes no service account key. Sign in with gcloud where this server runs, acting as a service account that may make GKE clusters:"),
           cmds([signIn]),
           h("div", { class: "small dim" }, "Your own account needs the Service Account Token Creator role on that service account. On a Compute Engine VM or in a GKE pod with Workload Identity, the server uses the metadata server's account instead, with nothing to sign in."),
           c.file ? h("div", { class: "small dim" }, "It reads ", h("span", { class: "mono" }, c.file), ".") : null),
@@ -390,7 +398,8 @@ function render(page, r) {
     const resizeHere = k.credentials === "metadata" && k.cluster ? h("button", { class: "btn sm", title: "The node pool of the GKE cluster this server runs in", onclick: () => resizeGke({ cluster: k.cluster, cloud_id: "", node_hour: null }) }, icon("server"), "This cluster's nodes…") : null;
     const rows = [
       h("dt", {}, "Calls as"), h("dd", {}, k.what || k.service_account || "–"),
-      k.file ? [h("dt", {}, "Sign-in"), h("dd", { class: "mono small" }, k.file)] : null,
+      k.file ? [h("dt", {}, k.kind === "external_account" ? "Federation" : "Sign-in"), h("dd", { class: "mono small" }, k.file)] : null,
+      k.token_file ? [h("dt", {}, "Token"), h("dd", {}, h("span", { class: "mono small" }, k.token_file.path), k.token_file.present ? null : h("span", { class: "small", style: { color: "var(--crit-ink)" } }, " · not there: the coordinators need gcpFederation"))] : null,
       h("dt", {}, "Project"), h("dd", {}, k.project ? h("span", { class: "mono" }, k.project) : "none yet", k.projectFrom && k.projectFrom !== "stored" ? h("span", { class: "small dim" }, ` · from ${k.projectFrom}`) : null),
       k.region ? [h("dt", {}, "Region"), h("dd", {}, k.region)] : null,
       k.saved_ms ? [h("dt", {}, "Saved"), h("dd", {}, `${fmt.ago(k.saved_ms)} by ${k.by}`)] : null,
@@ -398,7 +407,7 @@ function render(page, r) {
     ];
     if (!editing && k.project) {
       clear(creds, card({
-        title: "Google Cloud", sub: k.credentials === "metadata" ? "the metadata server's account" : "gcloud's sign-in, no key",
+        title: "Google Cloud", sub: k.credentials === "metadata" ? "the metadata server's account" : k.kind === "external_account" ? "workload identity federation, no key" : "gcloud's sign-in, no key",
         tools: [
           resizeHere,
           h("button", { class: "btn sm", onclick: () => { editing = true; drawCreds(); } }, icon("edit"), k.source === "stored" ? "Change" : "Save the project here"),
@@ -407,7 +416,9 @@ function render(page, r) {
         body: h("div", { class: "stack" },
           h("dl", { class: "kv" }, rows),
           k.kind === "authorized_user" ? h("div", { class: "small", style: { color: "var(--warn-ink)" } }, "These are your own credentials, not a service account's: sign in again with --impersonate-service-account so that what this server does is done, and logged, as that account.") : null,
-          h("div", { class: "small dim" }, "This server keeps no Google credentials: each call takes a short-lived token from the sign-in above. Saving and forgetting the project are in the audit log.")),
+          k.kind === "external_account" && !k.service_account ? h("div", { class: "small", style: { color: "var(--warn-ink)" } }, "The pool's principal calls Google itself, impersonating no service account: GKE and most of Compute Engine need roles granted to it directly.") : null,
+          h("div", { class: "small dim" }, k.kind === "external_account" ? "This server keeps no Google credentials: each call takes a short-lived token, exchanged for the one Kubernetes gives its account. Saving and forgetting the project are in the audit log." : "This server keeps no Google credentials: each call takes a short-lived token from the sign-in above. Saving and forgetting the project are in the audit log."),
+          federation),
       }));
       return;
     }
@@ -431,7 +442,7 @@ function render(page, r) {
     clear(creds, card({
       title: "Google Cloud", sub: "the project to plan in",
       body: h("div", { class: "stack" },
-        h("dl", { class: "kv" }, rows.slice(0, 2)),
+        h("dl", { class: "kv" }, rows.slice(0, 4)),
         f,
         h("div", { class: "small dim" }, "Google checks that the sign-in may read the project (compute.projects.get) before it is kept. Only its id and region are kept here."),
         h("details", {}, h("summary", { class: "small" }, "What the service account needs"),
@@ -519,7 +530,7 @@ function render(page, r) {
         m("CPUS_ALL_REGIONS", q(cat.project_quotas, "CPUS_ALL_REGIONS"), need, "vCPUs"),
         m(`IN_USE_ADDRESSES in ${cat.region}`, q(cat.quotas, "IN_USE_ADDRESSES"), plan ? nodesMost : null, "addresses"),
       ];
-      prices = [`${fmt.n(cat.machines.length)} machine types GKE takes here, ${cat.priced ? `prices from Google's price list ${fmt.ago(cat.at_ms)}` : "with no prices (the Cloud Billing Catalog did not answer)"}. GKE ${usd(cat.gke_hour, 2)}/h a cluster, balanced disks ${usd(cat.pd_balanced_gb_month, 2)} a GiB-month, a node's public IPv4 address ${usd(cat.ipv4_hour)}/h. GKE ${(cat.versions || []).slice(0, 3).join(", ")}, no release channel.`,
+      prices = [`${fmt.n(cat.machines.length)} machine types GKE takes here, ${cat.priced ? `prices from Google's price list ${fmt.ago(cat.at_ms)}` : "with no prices (the Cloud Billing Catalog did not answer)"}. GKE ${usd(cat.gke_hour, 2)}/h a cluster, balanced disks ${usd(cat.pd_balanced_gb_month, 2)} a GiB-month, a node's public IPv4 address ${usd(cat.ipv4_hour)}/h. GKE ${(cat.versions || []).slice(0, 3).join(", ")}, Regular channel, upgrades held 90 days.`,
         cat.networks && !cat.networks.length ? " The project has no VPC network: make one (gcloud compute networks create default --subnet-mode=auto) before a cluster." : ""].join("");
     } else if (cat) {
       const free = cat.droplet_limit != null && cat.droplets != null ? cat.droplet_limit - cat.droplets : null;

@@ -573,8 +573,18 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         svc.digitalocean = Arc::new(crate::digitalocean::DigitalOcean::open(file)?);
     }
     let gcp = o.gcp_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::gcp::Gcp::file_of));
-    if let Some(file) = gcp {
-        svc.gcp = Arc::new(crate::gcp::Gcp::open(file)?);
+    let kube_cluster = o.kube_cluster.as_deref().filter(|c| !c.is_empty() && !o.shards.is_empty());
+    if gcp.is_some() || kube_cluster.is_some() {
+        let mut g = match gcp {
+            Some(file) => crate::gcp::Gcp::open(file)?,
+            None => crate::gcp::Gcp::memory(),
+        };
+        // The StrataCluster this coordinator runs in: the view says how its
+        // account reaches Google Cloud with no key.
+        if let Some(c) = kube_cluster {
+            g = g.with_kube_cluster(c);
+        }
+        svc.gcp = Arc::new(g);
     }
     let cloud = o.cloud_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::cloud::clusters::Clusters::file_of));
     if let Some(file) = cloud {

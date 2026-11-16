@@ -189,7 +189,9 @@ impl Made {
     /// cost so far and how to reach it.
     pub fn view(&self) -> Json {
         let end = self.ended_ms.unwrap_or_else(now_ms);
-        let hours = end.saturating_sub(self.created_ms) as f64 / 3_600_000.0;
+        // A cluster the cloud never made cost nothing.
+        let made = self.cloud_id.is_some() || !matches!(self.phase, Phase::Deleted | Phase::Failed);
+        let hours = if made { end.saturating_sub(self.created_ms) as f64 / 3_600_000.0 } else { 0.0 };
         let connect: Vec<String> = match (self.provider.as_str(), &self.cloud_id) {
             ("aws", _) => vec![format!("aws eks update-kubeconfig --region {} --name {}", self.region, self.cluster)],
             ("digitalocean", Some(id)) => vec![format!("doctl kubernetes cluster kubeconfig save {id}")],
@@ -933,6 +935,9 @@ mod tests {
         assert!(again.get(&f.id).is_none());
         let v = again.get(&m.id).unwrap().view();
         assert!(v.get("request").is_none() && v.get("objects").is_none() && v["cost_so_far"].as_f64().unwrap() > 0.0, "{v}");
+        let mut never = made(Phase::Deleted);
+        never.ended_ms = Some(never.created_ms + 3_600_000);
+        assert_eq!(never.view()["cost_so_far"], 0.0, "the cloud made nothing");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -374,16 +374,19 @@ pub fn recommended(machines: &[Machine]) -> Vec<&Machine> {
     machines.iter().filter(|m| (m.family == "n2" || m.family == "n2d") && m.kind == "memory" && (2..=8).contains(&m.vcpu) && m.usd_hour.is_some()).collect()
 }
 
-/// GKE's versions a cluster with no release channel may start on
-/// (`validMasterVersions`, newest first) and the one a plan takes: GKE's
-/// default when it is one of them, else the newest of the default's minor
-/// version (the default is a channel's, and need not be offered without
-/// one), else the newest.
+/// The release channel a plan's clusters are in: GKE takes a new
+/// project's cluster only in one (no channel is for existing customers).
+pub const CHANNEL: &str = "REGULAR";
+
+/// GKE's versions a cluster in [`CHANNEL`] may start on (the channel's
+/// `validVersions`, newest first) and the one a plan takes: the channel's
+/// default, else the newest.
 pub fn versions(server: &Json) -> (Vec<String>, Option<String>) {
-    let v: Vec<String> = server["validMasterVersions"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-    let default = server["defaultClusterVersion"].as_str().unwrap_or_default();
-    let minor = default.splitn(3, '.').take(2).collect::<Vec<_>>().join(".") + ".";
-    let pick = v.iter().find(|x| x.as_str() == default).or_else(|| v.iter().find(|x| minor.len() > 2 && x.starts_with(&minor))).or_else(|| v.first()).cloned();
+    let strs = |a: &Json| a.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect::<Vec<_>>()).unwrap_or_default();
+    let Some(ch) = server["channels"].as_array().and_then(|c| c.iter().find(|c| c["channel"] == CHANNEL)) else { return (Vec::new(), None) };
+    let v = strs(&ch["validVersions"]);
+    let default = ch["defaultVersion"].as_str().unwrap_or_default();
+    let pick = v.iter().find(|x| x.as_str() == default).or_else(|| v.first()).cloned();
     (v, pick)
 }
 
@@ -490,9 +493,11 @@ pub(crate) mod tests {
         assert_eq!(cat.cpu_metric("n2d"), "N2D_CPUS");
         assert_eq!((cat.cpu_metric("e2").as_str(), cat.cpu_metric("n1").as_str()), ("E2_CPUS", "CPUS"));
         assert!(cat.project_quota("CPUS_ALL_REGIONS").is_some());
-        // GKE's default is a release channel's; without one, the newest of its minor.
-        assert_eq!(cat.default_version.as_deref(), Some("1.36.5-gke.2370000"));
-        assert_eq!(cat.versions[0], "1.37.2-gke.1325000");
+        // The Regular channel's default, of its own versions (not the
+        // ones of no channel, which a new project may not take).
+        assert_eq!(cat.default_version.as_deref(), Some("1.36.4-gke.2377000"));
+        assert_eq!(cat.versions, ["1.37.1-gke.1552000", "1.36.5-gke.1982000", "1.36.4-gke.2377000"]);
+        assert_eq!(versions(&serde_json::json!({"validMasterVersions": ["1.36.5-gke.2370000"]})), (Vec::new(), None), "no channel, no version");
         // Without prices, every machine is still there, unpriced.
         let unpriced = machines("us-central1", &[("us-central1-a".into(), serde_json::from_str(MACHINE_TYPES).unwrap())], None).0;
         assert!(unpriced.len() == cat.machines.len() && unpriced.iter().all(|m| m.usd_hour.is_none()));

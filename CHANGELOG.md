@@ -84,11 +84,23 @@ columns, imports at once, killed, of damaged, locked and WAL files:
   GKE's versions, the project's quotas and networks; **Check with Google
   Cloud** also says which permissions the credentials hold. A cluster may
   be zonal or regional, on Spot nodes and with GKE's autoscaler, and
-  **Nodes…** resizes a made one (`POST /v1/admin/gcp/nodes`).
+  **Nodes…** resizes a made one (`POST /v1/admin/gcp/nodes`). Clusters
+  are in the Regular release channel (GKE refuses a new project's cluster
+  with none), with an exclusion that holds minor and node upgrades for 90
+  days, so the copies restart only when asked.
 - The operator's `coordinatorAccountAnnotations` annotates the
   coordinators' service account; a cluster planned on GKE uses it for
   Workload Identity, so its own command center can act as the deployer's
   service account once the plan's one binding is made.
+- A command center on another cloud's Kubernetes (DigitalOcean's, EKS)
+  reaches Google Cloud with no key too, through **workload identity
+  federation**: the server reads a federation's file (`external_account`),
+  exchanges the token Kubernetes gives the coordinators' account at
+  Google's Security Token Service and impersonates the service account;
+  the operator's new `gcpFederation` mounts the token and the file. The
+  Cloud view gives the commands that set it up for its own cluster, which
+  ChloeDB never runs. Files that run a program for their token, take AWS's
+  own credentials, or send tokens anywhere but Google's APIs are refused.
 
 ### Replication
 

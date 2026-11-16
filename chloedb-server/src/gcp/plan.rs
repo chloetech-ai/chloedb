@@ -248,9 +248,10 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
     }
     let version = if p.version.is_empty() { cat.default_version.clone().or_else(|| cat.versions.first().cloned()).ok_or("GKE offers no version here")? } else { p.version.clone() };
     if !cat.versions.contains(&version) {
-        return Err(format!("GKE offers {} in {}, not {version}", cat.versions.iter().take(6).cloned().collect::<Vec<_>>().join(", "), cat.region));
+        return Err(format!("GKE's {} channel offers {} in {}, not {version}", super::catalog::CHANNEL.to_lowercase(), cat.versions.iter().take(6).cloned().collect::<Vec<_>>().join(", "), cat.region));
     }
     let wi = identity(p, cat)?;
+    let (hold_from, hold_until) = hold(crate::telemetry::now_ms());
     let network = if p.network.is_empty() { "default" } else { p.network.as_str() };
     let name_ok = |n: &str| !n.is_empty() && n.len() <= 63 && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
     if !name_ok(network) || (!p.subnetwork.is_empty() && !name_ok(&p.subnetwork)) {
@@ -345,9 +346,9 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
             "workloadMetadataConfig": {"mode": "GKE_METADATA"},
             "shieldedInstanceConfig": {"enableSecureBoot": true, "enableIntegrityMonitoring": true},
         },
-        // No surprise restarts of the copies: the nodes are upgraded when
-        // asked, as on DOKS (auto_upgrade false).
-        "management": {"autoUpgrade": false, "autoRepair": true},
+        // A channel's nodes upgrade themselves (GKE requires it there);
+        // the cluster's exclusion keeps them from doing so for HOLD_DAYS.
+        "management": {"autoUpgrade": true, "autoRepair": true},
         "upgradeSettings": {"maxSurge": 1, "maxUnavailable": 0},
     });
     if p.max_nodes > p.nodes {
@@ -357,8 +358,15 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
         "name": name,
         "description": "A ChloeDB cluster, made by chloedb-server's cloud view",
         "initialClusterVersion": version,
-        // No release channel: GKE upgrades the nodes only when asked.
-        "releaseChannel": {"channel": "UNSPECIFIED"},
+        // GKE takes a new project's cluster only in a release channel. No
+        // surprise restarts of the copies all the same: an exclusion of
+        // minor and node upgrades (the control plane still takes its
+        // patches) for HOLD_DAYS, the nodes upgraded when asked meanwhile.
+        "releaseChannel": {"channel": super::catalog::CHANNEL},
+        "maintenancePolicy": {"window": {"maintenanceExclusions": {HOLD_NAME: {
+            "startTime": hold_from, "endTime": hold_until,
+            "maintenanceExclusionOptions": {"scope": "NO_MINOR_OR_NODE_UPGRADES"},
+        }}}},
         "resourceLabels": {"strata": "chloedb", "strata-cluster": label(&name)},
         "locations": zones,
         "workloadIdentityConfig": {"workloadPool": format!("{project}.svc.id.goog")},
@@ -373,7 +381,7 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
 
     let loc_flag = format!("--project {project} --location {location}");
     let mut create = format!(
-        "gcloud container clusters create {name} {loc_flag} --cluster-version {version} --release-channel None --no-enable-autoupgrade --machine-type {} --num-nodes {per_zone} --disk-type pd-balanced --disk-size {} --workload-pool {project}.svc.id.goog --network {network} --labels strata=chloedb",
+        "gcloud container clusters create {name} {loc_flag} --cluster-version {version} --release-channel regular --add-maintenance-exclusion-name {HOLD_NAME} --add-maintenance-exclusion-start {hold_from} --add-maintenance-exclusion-end {hold_until} --add-maintenance-exclusion-scope no_minor_or_node_upgrades --machine-type {} --num-nodes {per_zone} --disk-type pd-balanced --disk-size {} --workload-pool {project}.svc.id.goog --network {network} --labels strata=chloedb",
         m.name, p.boot_gb
     );
     if !p.subnetwork.is_empty() {
@@ -469,6 +477,23 @@ pub fn cost(p: &Plan, m: &Machine, cat: &Catalog, copies: u32) -> Json {
     })
 }
 
+/// The name of the exclusion that holds a cluster's upgrades.
+pub const HOLD_NAME: &str = "chloedb-hold";
+
+/// How long it holds them: well inside a minor version's support, which
+/// such an exclusion may not outlast.
+pub const HOLD_DAYS: u64 = 90;
+
+/// When a cluster made at `now_ms` holds its upgrades from and until
+/// (RFC 3339, UTC).
+pub fn hold(now_ms: u64) -> (String, String) {
+    let rfc = |ms: u64| {
+        let a = crate::aws::sig::amz_date(ms);
+        format!("{}-{}-{}T{}:{}:{}Z", &a[0..4], &a[4..6], &a[6..8], &a[9..11], &a[11..13], &a[13..15])
+    };
+    (rfc(now_ms), rfc(now_ms + HOLD_DAYS * 86_400_000))
+}
+
 /// What Google is asked to check before a plan is made: whether its
 /// machine type, zones and version are offered, the quotas fit, and (when
 /// Resource Manager answers) which of the permissions it needs the
@@ -483,7 +508,7 @@ pub fn checks(p: &Plan, cat: &Catalog, held: Option<&[String]>) -> Vec<Json> {
         cat.region == p.region && m.is_some(),
     );
     let version = if p.version.is_empty() { cat.default_version.clone().unwrap_or_default() } else { p.version.clone() };
-    check(format!("GKE offers {version} with no release channel"), cat.versions.contains(&version));
+    check(format!("GKE's {} channel offers {version}", super::catalog::CHANNEL.to_lowercase()), cat.versions.contains(&version));
     if let Some(m) = m {
         let most = f64::from(p.max_nodes.max(p.nodes));
         let vcpus = f64::from(m.vcpu) * most;
@@ -539,12 +564,17 @@ mod tests {
         let cat = catalog();
         let p = Plan { cluster: json!({"shards": 2, "replicas": 2}), nodes: 2, machine: "n2d-highmem-4".into(), ..Plan::default() };
         let j = plan(&p, &cat).unwrap();
-        assert_eq!((j["cluster_name"].as_str(), j["location"].as_str(), j["version"].as_str()), (Some("strata-search"), Some("us-central1-a"), Some("1.36.5-gke.2370000")));
+        assert_eq!((j["cluster_name"].as_str(), j["location"].as_str(), j["version"].as_str()), (Some("strata-search"), Some("us-central1-a"), Some("1.36.4-gke.2377000")));
         assert_eq!(j["cluster"]["storage"]["storageClassName"], "standard-rwo");
         let r = &j["request"]["cluster"];
         assert_eq!(r["workloadIdentityConfig"]["workloadPool"], "chloedb.svc.id.goog");
         let pool = &r["nodePools"][0];
-        assert_eq!((pool["initialNodeCount"].as_u64(), pool["config"]["machineType"].as_str(), pool["management"]["autoUpgrade"].as_bool()), (Some(2), Some("n2d-highmem-4"), Some(false)));
+        assert_eq!((pool["initialNodeCount"].as_u64(), pool["config"]["machineType"].as_str(), pool["management"]["autoUpgrade"].as_bool()), (Some(2), Some("n2d-highmem-4"), Some(true)));
+        assert_eq!(r["releaseChannel"]["channel"], "REGULAR");
+        let x = &r["maintenancePolicy"]["window"]["maintenanceExclusions"]["chloedb-hold"];
+        assert_eq!(x["maintenanceExclusionOptions"]["scope"], "NO_MINOR_OR_NODE_UPGRADES");
+        assert!(x["startTime"].as_str().unwrap().ends_with('Z') && x["startTime"].as_str() < x["endTime"].as_str(), "{x}");
+        assert_eq!(hold(1_763_270_400_000), ("2025-11-16T05:20:00Z".to_string(), "2026-02-14T05:20:00Z".to_string()));
         assert!(pool.get("autoscaling").is_none());
         assert_eq!(r["resourceLabels"]["strata"], "chloedb");
         // 2 × the machine, GKE's fee, 4 × 10 + 2 × 30 GiB of disk, 2 addresses.
@@ -560,7 +590,7 @@ mod tests {
         assert_eq!(j["identity"]["member"], "serviceAccount:chloedb.svc.id.goog[strata/search-coordinator]");
         let manifests = j["manifests"]["cluster"].as_str().unwrap();
         assert!(manifests.contains("iam.gke.io/gcp-service-account") && manifests.contains("\"kind\": \"StrataCluster\""), "{manifests}");
-        assert!(j["commands"][0].as_str().unwrap().starts_with("gcloud container clusters create strata-search --project chloedb --location us-central1-a --cluster-version 1.36.5-gke.2370000"), "{}", j["commands"][0]);
+        assert!(j["commands"][0].as_str().unwrap().starts_with("gcloud container clusters create strata-search --project chloedb --location us-central1-a --cluster-version 1.36.4-gke.2377000 --release-channel regular --add-maintenance-exclusion-name chloedb-hold"), "{}", j["commands"][0]);
         assert!(j["teardown"][2].as_str().unwrap().ends_with("--quiet"));
         let none = plan(&Plan { workload_identity: "none".into(), ..p.clone() }, &cat).unwrap();
         assert!(none["identity"].is_null() && none["cluster"].get("coordinatorAccountAnnotations").is_none());
@@ -581,7 +611,9 @@ mod tests {
         assert_eq!((reg["location"].as_str(), reg["request"]["cluster"]["nodePools"][0]["initialNodeCount"].as_u64()), (Some("us-central1"), Some(1)));
         assert_eq!(reg["zones"], json!(["us-central1-a", "us-central1-b", "us-central1-c"]));
         assert!(plan(&Plan { regional: true, nodes: 4, ..p.clone() }, &cat).unwrap_err().contains("same number of nodes in each"));
-        assert!(plan(&Plan { version: "1.20.0-gke.1".into(), ..p.clone() }, &cat).unwrap_err().contains("GKE offers"));
+        assert!(plan(&Plan { version: "1.20.0-gke.1".into(), ..p.clone() }, &cat).unwrap_err().contains("regular channel offers"));
+        // A version of no channel only (GKE refuses it to a new project).
+        assert!(plan(&Plan { version: "1.36.5-gke.2370000".into(), ..p.clone() }, &cat).unwrap_err().contains("regular channel offers"));
         assert!(plan(&Plan { machine: "n4-standard-4".into(), ..p.clone() }, &cat).unwrap_err().contains("is not a machine type"));
         assert!(plan(&Plan { zone: "us-east1-b".into(), ..p.clone() }, &cat).unwrap_err().contains("is not a zone of us-central1"));
         assert!(plan(&Plan { max_nodes: 1, ..p.clone() }, &cat).unwrap_err().contains("max_nodes"));

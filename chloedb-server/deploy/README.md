@@ -51,6 +51,7 @@ kubectl -n strata port-forward svc/demo 7700  # http://127.0.0.1:7700
 | `clusterTokenSecret` | | a Secret whose key `token` is the cluster's own token (`--cluster-token`), which the servers and coordinators send each other and clients never hold; with it, the `tokenSecret` token goes to the coordinators alone, as the admin token (the operator's too), and may not make the calls between servers. Needs `tokenSecret` |
 | `secretEnv` | | environment variables of every server and coordinator taken from Secrets, `[{name, secret, key}]` (`key` defaults to `key`): the keys of models behind an API, `ANTHROPIC_API_KEY` for the agents, LLM fields and reranking, `OPENAI_API_KEY` and the like for hosted embeddings ([model keys](#model-keys)). Changing it restarts the copies one at a time |
 | `coordinatorAccountAnnotations` | | annotations of the coordinators' Kubernetes service account, `<cluster>-coordinator`, as `{name: value}`: on GKE, `iam.gke.io/gcp-service-account: NAME@PROJECT.iam.gserviceaccount.com` lets the coordinators act as that Google service account through Workload Identity, with no key ([on Google Cloud](#on-google-cloud)). Changing it restarts nothing |
+| `gcpFederation` | | `{configMap, key?, audience}`: on a cluster outside Google Cloud, workload identity federation for the coordinators: a token Kubernetes gives their account for `audience` (the audience the pool's provider allows) and the federation's file from the ConfigMap (`key`, default `credentials.json`), both mounted in `/var/run/secrets/gcp`, with `GOOGLE_APPLICATION_CREDENTIALS` set, so that the command center calls Google Cloud as a service account with no key ([docs](../../docs/chloedb/server.md#from-a-cluster-outside-google-cloud)). Changing it restarts the coordinators |
 | `coordinatorStorage` | | a volume for each coordinator (`size`, default `2Gi`; `storageClassName`), which keeps its history across restarts and rollouts: its log store (`--log-store /data/logs`: events, alert history, query statistics, table growth, which Timeline, Logs, Queries and Tables read), its audit log (`--audit-log /data/audit.jsonl`) and its alert rules and their states (`--alerts /data/alerts.json`); a flag `coordinatorArgs` gives itself is not given again. With it the coordinators run as a StatefulSet `<cluster>-coordinator`, each with a volume of its own, kept when the cluster or a coordinator goes; without it (the default) as a Deployment that keeps all of that in memory only, so that a rollout forgets it. Giving it or taking it away restarts the coordinators: the new ones start beside the old ones, which stop once the new ones serve. A StatefulSet restarts one coordinator before it starts the next, so run 2 `coordinators` or more with it: with one, the cluster's Service has none for the seconds it restarts |
 | `requireCopiesApart` | `false` | whether a shard's copies must run on different nodes: the scheduler is required to keep them apart (pod anti-affinity on `kubernetes.io/hostname`) rather than asked to prefer it. A copy then waits, unscheduled, for a node that runs none of its shard's other copies, so the cluster needs at least as many nodes as `replicas`, and one more for a rollout's extra copy of a shard of two (or `rollout.extraCopies: false`). Turning it on or off restarts the copies one at a time, each placed by the new rule. Off, the spread is preferred, so that a cluster of fewer nodes than copies still runs them all |
 | `image`, `imagePullPolicy`, `resources`, `coordinatorResources`, `args`, `coordinatorArgs` | `chloedb-server:dev` | the servers' image, containers and further arguments (`args` for every server, `coordinatorArgs` for every coordinator: `--hedge-ms 50`, `--partial`) |
@@ -371,8 +372,10 @@ which would otherwise stay and cost.
 ### On Google Cloud
 
 On Google Cloud the view writes the body of GKE's create request (a zonal
-cluster, or a regional one over three zones; no release channel and no
-automatic upgrades; Workload Identity; the Persistent Disk CSI driver; a node
+cluster, or a regional one over three zones; in the Regular release
+channel, which GKE requires of a new project's cluster, with an exclusion
+that holds minor and node upgrades for 90 days, so the copies restart only
+when asked; Workload Identity; the Persistent Disk CSI driver; a node
 pool `strata` of the machine type picked, on demand or Spot, with GKE's
 autoscaler if asked), the operator's manifest, and a `StrataCluster` sized for
 the machine picked, its volumes on GKE's own `standard-rwo` class (balanced
@@ -394,7 +397,9 @@ metadata server instead. With `gcloud` and `kubectl`:
 
 ```sh
 gcloud container clusters create strata-search --project my-project --location us-central1-a \
-  --cluster-version 1.36.5-gke.2370000 --release-channel None --no-enable-autoupgrade \
+  --cluster-version 1.36.4-gke.2377000 --release-channel regular \
+  --add-maintenance-exclusion-name chloedb-hold --add-maintenance-exclusion-start 2026-11-16T00:00:00Z \
+  --add-maintenance-exclusion-end 2027-02-14T00:00:00Z --add-maintenance-exclusion-scope no_minor_or_node_upgrades \
   --machine-type n2d-highmem-4 --num-nodes 3 --disk-type pd-balanced --disk-size 30 \
   --workload-pool my-project.svc.id.goog --network default --labels strata=chloedb
 gcloud container clusters get-credentials strata-search --project my-project --location us-central1-a
@@ -425,6 +430,15 @@ gcloud container clusters delete strata-search --project my-project --location u
 
 GKE's Persistent Disk driver made the copies' volumes, and deleting the
 cluster leaves them, so delete their claims first.
+
+A cluster on another cloud (DigitalOcean's, EKS) reaches Google Cloud the
+same way, with no key, through workload identity federation: a pool's
+provider trusts the token Kubernetes gives the coordinators' account, and
+`gcpFederation` mounts that token and the federation's file in the
+coordinators. The coordinators' command center gives the commands for its
+own account (Cloud setup, Google Cloud), and
+[the server's docs](../../docs/chloedb/server.md#from-a-cluster-outside-google-cloud)
+explain them.
 
 ## The fixed layout
 

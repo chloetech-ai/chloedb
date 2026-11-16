@@ -469,6 +469,17 @@ impl Cluster {
         env.push(json!({"name": "STRATA_DRAIN_MS", "value": DRAIN_MS.to_string()}));
         env.extend(self.place_env());
         env.extend(self.from_secrets());
+        // Workload identity federation: the coordinators' own token, for
+        // the pool's provider, beside the file that says how Google takes
+        // it; Kubernetes renews the token in its file.
+        if let Some(f) = &s.gcp_federation {
+            env.push(json!({"name": "GOOGLE_APPLICATION_CREDENTIALS", "value": format!("{}/credentials.json", super::GCP_FEDERATION_DIR)}));
+            volumes.push(json!({"name": "gcp-federation", "projected": {"sources": [
+                {"serviceAccountToken": {"audience": f.audience, "expirationSeconds": 3600, "path": "token"}},
+                {"configMap": {"name": f.config_map, "items": [{"key": f.key, "path": "credentials.json"}]}},
+            ]}}));
+            mounts.push(json!({"name": "gcp-federation", "mountPath": super::GCP_FEDERATION_DIR, "readOnly": true}));
+        }
         let mut container = json!({
             "name": "coordinator", "image": s.image, "args": args, "env": env,
             "ports": [{"name": "http", "containerPort": 7700}],
@@ -2308,6 +2319,41 @@ mod tests {
         }
     }
 
+
+    /// Workload identity federation: the coordinators get their own
+    /// token for the provider's audience and the federation's file in one
+    /// folder, and GOOGLE_APPLICATION_CREDENTIALS names it; the servers
+    /// get none of it, and a cluster without it keeps its pods.
+    #[test]
+    fn the_coordinators_get_a_token_for_googles_federation() {
+        let aud = "https://iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/chloedb/providers/k8s-orders";
+        let c = cluster(json!({"demo": 10, "gcpFederation": {"configMap": "orders-gcp", "audience": aud}}));
+        c.spec.check().unwrap();
+        let shards = vec![vec!["http://a:7701".to_string()]];
+        let pod = c.coordinator_workload(&shards, 1)["spec"]["template"]["spec"].clone();
+        let k = &pod["containers"][0];
+        let env = k["env"].as_array().unwrap();
+        assert!(env.contains(&json!({"name": "GOOGLE_APPLICATION_CREDENTIALS", "value": "/var/run/secrets/gcp/credentials.json"})), "{env:?}");
+        let v = pod["volumes"].as_array().unwrap().iter().find(|v| v["name"] == "gcp-federation").unwrap();
+        assert_eq!(v["projected"]["sources"][0]["serviceAccountToken"], json!({"audience": aud, "expirationSeconds": 3600, "path": "token"}));
+        assert_eq!(v["projected"]["sources"][1]["configMap"], json!({"name": "orders-gcp", "items": [{"key": "credentials.json", "path": "credentials.json"}]}));
+        assert!(k["volumeMounts"].as_array().unwrap().contains(&json!({"name": "gcp-federation", "mountPath": "/var/run/secrets/gcp", "readOnly": true})));
+        let plain = cluster(json!({"demo": 10}));
+        assert!(plain.coordinator_workload(&shards, 1)["spec"]["template"]["spec"]["volumes"].is_null());
+        assert_eq!(c.spec.server_config(), plain.spec.server_config(), "the servers restart for none of it");
+        assert_ne!(c.spec.coordinator_config(), plain.spec.coordinator_config(), "the coordinators do");
+        assert_eq!(plain.spec.version(), serde_json::from_value::<Spec>(json!({"demo": 10})).unwrap().version());
+        for bad in [
+            json!({"configMap": "Orders_GCP", "audience": aud}),
+            json!({"configMap": "orders-gcp", "audience": ""}),
+            json!({"configMap": "orders-gcp", "key": "a/b", "audience": aud}),
+        ] {
+            let s: Spec = serde_json::from_value(json!({"demo": 1, "gcpFederation": bad.clone()})).unwrap();
+            assert!(s.check().is_err(), "{bad}");
+        }
+        let twice: Spec = serde_json::from_value(json!({"demo": 1, "gcpFederation": {"configMap": "g", "audience": aud}, "secretEnv": [{"name": "GOOGLE_APPLICATION_CREDENTIALS", "secret": "x"}]})).unwrap();
+        assert!(twice.check().unwrap_err().contains("GOOGLE_APPLICATION_CREDENTIALS"));
+    }
 
     /// N-D4: an app's pod template names the id of the key its Secret
     /// holds, so that a new key (its tables changed) rolls the pod, which

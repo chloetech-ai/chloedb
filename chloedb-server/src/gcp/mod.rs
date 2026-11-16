@@ -15,6 +15,12 @@
 //!   `--impersonate-service-account` (each token is then the service
 //!   account's, for an hour, through IAM Credentials'
 //!   `generateAccessToken`);
+//! - workload identity federation, in the same file
+//!   (`external_account`): on a Kubernetes cluster outside Google Cloud
+//!   (DigitalOcean's, EKS, ...), a token Kubernetes gives the pod, which
+//!   Google's Security Token Service trusts through a pool's provider and
+//!   exchanges for a token of a service account ([`federation_commands`]
+//!   sets it up; the operator's `gcpFederation` mounts both);
 //! - the metadata server: the service account attached to a Compute
 //!   Engine VM, or on GKE the one Workload Identity binds to the pod's
 //!   Kubernetes account. A cluster this server made then manages itself
@@ -64,6 +70,129 @@ enum Adc {
     /// A service account a person's credentials impersonate
     /// (`impersonated_service_account`).
     Impersonated { source: Box<Adc>, url: String, email: String, delegates: Vec<String> },
+    /// Workload identity federation (`external_account`): a token from
+    /// `subject`, exchanged at Google's Security Token Service for one of
+    /// the pool's principal, which impersonates a service account when the
+    /// file names one.
+    External(Box<External>),
+}
+
+#[derive(Clone)]
+struct External {
+    /// The pool's provider:
+    /// `//iam.googleapis.com/projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER`.
+    audience: String,
+    subject_token_type: String,
+    token_url: String,
+    subject: Subject,
+    /// The service account's impersonation URL, its address, and how long
+    /// its tokens last (seconds).
+    impersonate: Option<(String, String, u64)>,
+    /// A workforce pool's project, which its calls are billed to.
+    user_project: Option<String>,
+}
+
+/// Where a federation's subject token is read: a file (a projected
+/// Kubernetes token), or a URL; the whole answer, or one field of it as
+/// JSON.
+#[derive(Clone)]
+enum Subject {
+    File { path: PathBuf, field: Option<String> },
+    Url { url: String, headers: Vec<(String, String)>, field: Option<String> },
+}
+
+impl Subject {
+    fn describe(&self) -> String {
+        match self {
+            Subject::File { path, .. } => format!("the file {}", path.display()),
+            Subject::Url { url, .. } => format!("the URL {url}"),
+        }
+    }
+}
+
+/// The pool and the provider of a federation's audience.
+pub fn pool_of(audience: &str) -> Option<(String, String)> {
+    let rest = audience.split("/workloadIdentityPools/").nth(1).or_else(|| audience.split("/workforcePools/").nth(1))?;
+    let (pool, provider) = rest.split_once("/providers/")?;
+    (!pool.is_empty() && !provider.is_empty()).then(|| (pool.to_string(), provider.to_string()))
+}
+
+/// Whether `url` is an https URL of one of Google's APIs: a federation's
+/// file names where its tokens go, and they go nowhere else.
+fn google_api_url(url: &str, service: &str) -> bool {
+    url.strip_prefix("https://").and_then(|r| r.split('/').next()).is_some_and(|host| host == format!("{service}.googleapis.com") || host.ends_with(&format!(".{service}.googleapis.com")) || host == format!("{service}.mtls.googleapis.com"))
+}
+
+/// A federation's file (`external_account`), as
+/// `gcloud iam workload-identity-pools create-cred-config` writes it.
+fn parse_external(j: &Json) -> Result<Adc, String> {
+    let s = |k: &str| j[k].as_str().unwrap_or_default().to_string();
+    let audience = s("audience");
+    if pool_of(&audience).is_none() {
+        return Err(format!("the federation's file names no pool's provider as its audience ({audience:?}): make it with gcloud iam workload-identity-pools create-cred-config"));
+    }
+    if let Some(u) = j["universe_domain"].as_str().filter(|u| *u != "googleapis.com") {
+        return Err(format!("the federation's file is for the universe {u:?}: only googleapis.com is supported"));
+    }
+    let subject_token_type = s("subject_token_type");
+    if subject_token_type.is_empty() {
+        return Err("the federation's file says no subject_token_type".into());
+    }
+    let token_url = Some(s("token_url")).filter(|u| !u.is_empty()).unwrap_or_else(|| "https://sts.googleapis.com/v1/token".into());
+    if !google_api_url(&token_url, "sts") {
+        return Err(format!("the federation's token_url {token_url:?} is not Google's Security Token Service (https://sts.googleapis.com): its tokens go nowhere else"));
+    }
+    let c = &j["credential_source"];
+    if c.get("executable").is_some() {
+        return Err("the federation's file runs a program for its token (credential_source.executable): ChloeDB runs none; give the token in a file (credential_source.file), such as a projected Kubernetes token".into());
+    }
+    if c.get("environment_id").is_some() {
+        return Err(format!(
+            "the federation's file takes the token from {} (credential_source.environment_id): not supported; on EKS or any Kubernetes cluster, give the pod's own token in a file (credential_source.file, the operator's gcpFederation)",
+            c["environment_id"].as_str().unwrap_or("a cloud's own credentials")
+        ));
+    }
+    let field = match c["format"]["type"].as_str().unwrap_or("text") {
+        "text" => None,
+        "json" => Some(c["format"]["subject_token_field_name"].as_str().filter(|f| !f.is_empty()).ok_or("the federation's file reads its token as JSON but names no subject_token_field_name")?.to_string()),
+        t => return Err(format!("the federation's token format {t:?} is not text or json")),
+    };
+    let subject = if let Some(f) = c["file"].as_str().filter(|f| !f.is_empty()) {
+        Subject::File { path: PathBuf::from(f), field }
+    } else if let Some(u) = c["url"].as_str().filter(|u| !u.is_empty()) {
+        let headers = c["headers"].as_object().map(|h| h.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect()).unwrap_or_default();
+        Subject::Url { url: u.to_string(), headers, field }
+    } else {
+        return Err("the federation's file says not where its token is (credential_source.file or url)".into());
+    };
+    let impersonate = match Some(s("service_account_impersonation_url")).filter(|u| !u.is_empty()) {
+        None => None,
+        Some(url) => {
+            if !google_api_url(&url, "iamcredentials") {
+                return Err(format!("the federation's service_account_impersonation_url {url:?} is not IAM Credentials' (https://iamcredentials.googleapis.com)"));
+            }
+            let email = impersonated_email(&url).ok_or_else(|| format!("the federation's file names no service account to impersonate ({url:?})"))?;
+            let lifetime = j["service_account_impersonation"]["token_lifetime_seconds"].as_u64().unwrap_or(3600);
+            if !(600..=43200).contains(&lifetime) {
+                return Err(format!("the federation's token_lifetime_seconds is {lifetime}: from 600 to 43200"));
+            }
+            Some((url, email, lifetime))
+        }
+    };
+    let user_project = Some(s("workforce_pool_user_project")).filter(|p| !p.is_empty());
+    Ok(Adc::External(Box::new(External { audience, subject_token_type, token_url, subject, impersonate, user_project })))
+}
+
+impl Adc {
+    /// The service account the calls are made as, if they are a service
+    /// account's.
+    fn service_account(&self) -> Option<String> {
+        match self {
+            Adc::Impersonated { email, .. } => Some(email.clone()),
+            Adc::External(x) => x.impersonate.as_ref().map(|(_, e, _)| e.clone()),
+            Adc::User { .. } => None,
+        }
+    }
 }
 
 /// The ADC file's credentials, or why they are not taken.
@@ -90,7 +219,8 @@ fn parse_adc(j: &Json) -> Result<Adc, String> {
             s("client_email"),
             Some(s("client_email")).filter(|e| !e.is_empty()).unwrap_or_else(|| "NAME@PROJECT.iam.gserviceaccount.com".into())
         )),
-        "external_account" | "external_account_authorized_user" => Err("the credentials file is a workload identity federation's (external_account): not supported yet; sign in with gcloud auth application-default login --impersonate-service-account".into()),
+        "external_account" => parse_external(j),
+        "external_account_authorized_user" => Err("the credentials file is a person's workforce identity sign-in (external_account_authorized_user): not supported; sign in with gcloud auth application-default login --impersonate-service-account, or give this server a workload identity federation's file".into()),
         "" => Err("the credentials file says no type: sign in again with gcloud auth application-default login".into()),
         t => Err(format!("credentials of the type {t:?} are not supported")),
     }
@@ -190,6 +320,51 @@ pub struct Gcp {
     prices: tokio::sync::Mutex<Option<Arc<catalog::Prices>>>,
     /// Calls made, `GET compute/...` each (tests).
     calls: Mutex<Vec<String>>,
+    /// The StrataCluster this server coordinates, as namespace and name.
+    kube_cluster: Option<(String, String)>,
+}
+
+/// The workload identity pool every ChloeDB cluster outside Google Cloud
+/// is a provider of.
+pub const FEDERATION_POOL: &str = "chloedb";
+
+/// Where the operator's `gcpFederation` mounts the coordinators' token.
+pub const FEDERATION_TOKEN: &str = "/var/run/secrets/gcp/token";
+
+/// The pool's provider of the Kubernetes cluster `name`: 4 to 32
+/// lower-case letters, digits and hyphens.
+pub fn provider_id(name: &str) -> String {
+    let mut id: String = format!("k8s-{name}").chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    id.truncate(32);
+    id.trim_end_matches('-').to_string()
+}
+
+/// What sets up workload identity federation for the StrataCluster
+/// `name` in `namespace`, so that its coordinators act as `deployer` in
+/// `project` with no key: shell commands for someone who may change the
+/// project's IAM, with kubectl pointed at that cluster. ChloeDB runs none
+/// of them. The cluster's signing keys are given to the provider
+/// (`--jwk-json-path`), so its issuer need not be reachable from Google;
+/// should the cluster change them, the provider's are updated the same way.
+pub fn federation_commands(project: &str, namespace: &str, name: &str, deployer: &str) -> Vec<String> {
+    let provider = provider_id(name);
+    let path = format!("projects/$NUMBER/locations/global/workloadIdentityPools/{FEDERATION_POOL}/providers/{provider}");
+    let audience = format!("https://iam.googleapis.com/{path}");
+    let patch = json!({"spec": {"gcpFederation": {"configMap": format!("{name}-gcp"), "audience": audience}}}).to_string().replace('"', "\\\"");
+    vec![
+        format!("PROJECT={project}"),
+        format!("DEPLOYER={deployer}"),
+        "NUMBER=$(gcloud projects describe $PROJECT --format='value(projectNumber)')".into(),
+        "gcloud services enable sts.googleapis.com iamcredentials.googleapis.com --project=$PROJECT".into(),
+        format!("gcloud iam workload-identity-pools describe {FEDERATION_POOL} --project=$PROJECT --location=global >/dev/null 2>&1 || gcloud iam workload-identity-pools create {FEDERATION_POOL} --project=$PROJECT --location=global --display-name='ChloeDB clusters'"),
+        "kubectl get --raw /openid/v1/jwks > cluster-jwks.json".into(),
+        "ISSUER=$(kubectl get --raw /.well-known/openid-configuration | jq -r .issuer)".into(),
+        format!("gcloud iam workload-identity-pools providers create-oidc {provider} --project=$PROJECT --location=global --workload-identity-pool={FEDERATION_POOL} --issuer-uri=\"$ISSUER\" --jwk-json-path=cluster-jwks.json --allowed-audiences=\"{audience}\" --attribute-mapping=google.subject=assertion.sub"),
+        format!("gcloud iam service-accounts add-iam-policy-binding $DEPLOYER --project=$PROJECT --role=roles/iam.workloadIdentityUser --member=\"principal://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/{FEDERATION_POOL}/subject/system:serviceaccount:{namespace}:{name}-coordinator\""),
+        format!("gcloud iam workload-identity-pools create-cred-config {path} --service-account=$DEPLOYER --credential-source-file={FEDERATION_TOKEN} --credential-source-type=text --output-file=credentials.json"),
+        format!("kubectl -n {namespace} create configmap {name}-gcp --from-file=credentials.json"),
+        format!("kubectl -n {namespace} patch stratacluster {name} --type=merge -p \"{patch}\""),
+    ]
 }
 
 impl Default for Gcp {
@@ -243,7 +418,14 @@ impl Gcp {
             catalogs: Mutex::new(HashMap::new()),
             prices: tokio::sync::Mutex::new(None),
             calls: Mutex::new(Vec::new()),
+            kube_cluster: None,
         }
+    }
+
+    /// The StrataCluster (`namespace/name`) this server coordinates.
+    pub fn with_kube_cluster(mut self, c: &str) -> Gcp {
+        self.kube_cluster = c.split_once('/').filter(|(n, c)| !n.is_empty() && !c.is_empty()).map(|(n, c)| (n.to_string(), c.to_string()));
+        self
     }
 
     /// The settings file of a database: `<db>.gcp.json`.
@@ -397,7 +579,7 @@ impl Gcp {
                 }
             }
         }
-        if let Some((_, Ok(Adc::Impersonated { email, .. }))) = self.read_adc() {
+        if let Some(email) = self.read_adc().and_then(|(_, r)| r.ok()).and_then(|a| a.service_account()) {
             if let Some(p) = project_of(&email) {
                 return Some((p, "the impersonated service account"));
             }
@@ -417,6 +599,11 @@ impl Gcp {
         match self.read_adc() {
             Some((_, Ok(Adc::Impersonated { email, .. }))) => Some(email),
             Some((_, Ok(Adc::User { .. }))) => Some("the person signed in with gcloud auth application-default login".into()),
+            Some((_, Ok(Adc::External(x)))) => Some(match (&x.impersonate, pool_of(&x.audience)) {
+                (Some((_, email, _)), _) => email.clone(),
+                (None, Some((pool, _))) => format!("the principal of the workload identity pool {pool}"),
+                (None, None) => "a workload identity pool's principal".into(),
+            }),
             Some((_, Err(_))) => None,
             None => self.metadata().await.map(|m| m.email),
         }
@@ -427,7 +614,7 @@ impl Gcp {
     /// a service account.
     pub async fn deployer(&self) -> Option<String> {
         match self.read_adc() {
-            Some((_, Ok(Adc::Impersonated { email, .. }))) => Some(email),
+            Some((_, Ok(a))) => a.service_account(),
             Some(_) => None,
             None => self.metadata().await.map(|m| m.email).filter(|e| e.contains('@')),
         }
@@ -448,6 +635,22 @@ impl Gcp {
                 "source": "adc", "kind": "authorized_user", "file": path.display().to_string(), "service_account": null,
                 "what": "your gcloud sign-in, as yourself (no service account impersonated)",
             }),
+            Some((path, Ok(Adc::External(x)))) => {
+                let (pool, provider) = pool_of(&x.audience).unwrap_or_default();
+                let email = x.impersonate.as_ref().map(|(_, e, _)| e.clone());
+                let token_file = match &x.subject {
+                    Subject::File { path, .. } => Some(json!({"path": path.display().to_string(), "present": path.exists()})),
+                    Subject::Url { .. } => None,
+                };
+                json!({
+                    "source": "adc", "kind": "external_account", "file": path.display().to_string(),
+                    "service_account": email, "pool": pool, "provider": provider, "subject": x.subject.describe(), "token_file": token_file,
+                    "what": match &email {
+                        Some(e) => format!("workload identity federation (pool {pool}, provider {provider}), impersonating {e}"),
+                        None => format!("workload identity federation (pool {pool}, provider {provider}), as the pool's principal"),
+                    },
+                })
+            }
             Some((path, Err(e))) => json!({"source": "none", "file": path.display().to_string(), "refused": e}),
             None => match self.metadata().await {
                 Some(m) => json!({
@@ -459,7 +662,22 @@ impl Gcp {
             },
         };
         let project = self.project().await.map(|(p, from)| json!({"id": p, "from": from}));
-        json!({"credentials": credentials, "project": project, "saved": saved, "file": file})
+        // On Kubernetes but not GKE: how the coordinators' own account
+        // reaches Google Cloud through workload identity federation.
+        let federation = match (&self.kube_cluster, credentials["source"].as_str(), credentials["kind"].as_str()) {
+            (Some((ns, name)), Some("none"), _) | (Some((ns, name)), _, Some("external_account")) => {
+                let p = project.as_ref().and_then(|p| p["id"].as_str()).unwrap_or("PROJECT").to_string();
+                let deployer = credentials["service_account"].as_str().map(String::from).unwrap_or_else(|| format!("NAME@{p}.iam.gserviceaccount.com"));
+                json!({
+                    "namespace": ns, "cluster": name, "account": format!("{name}-coordinator"),
+                    "pool": FEDERATION_POOL, "provider": provider_id(name), "token_file": FEDERATION_TOKEN,
+                    "configured": credentials["kind"] == "external_account",
+                    "commands": federation_commands(&p, ns, name, &deployer),
+                })
+            }
+            _ => Json::Null,
+        };
+        json!({"credentials": credentials, "project": project, "saved": saved, "file": file, "federation": federation})
     }
 
     /// An access token, from the cache while it lasts.
@@ -512,27 +730,117 @@ impl Gcp {
                 }
                 Adc::Impersonated { source, url, email, delegates } => {
                     let (src, _) = self.mint(source).await?;
-                    let url = self.rewrite(url);
-                    self.note("POST", &url);
-                    let body = json!({"scope": [SCOPE], "lifetime": "3600s", "delegates": delegates});
-                    let r = self.http.post(&url).bearer_auth(&src).header("content-type", "application/json").body(body.to_string()).send().await.map_err(|e| format!("IAM Credentials: {e}"))?;
-                    let status = r.status();
-                    let text = r.text().await.map_err(|e| format!("IAM Credentials: {e}"))?;
-                    if !status.is_success() {
-                        let why = error_text(&text);
-                        let hint = if status.as_u16() == 403 {
-                            format!(": your account needs Service Account Token Creator (roles/iam.serviceAccountTokenCreator) on {email}, and its project the IAM Service Account Credentials API (iamcredentials.googleapis.com)")
-                        } else {
-                            String::new()
-                        };
-                        return Err(format!("could not impersonate {email} ({status}: {why}){hint}"));
+                    let hint = format!("your account needs Service Account Token Creator (roles/iam.serviceAccountTokenCreator) on {email}, and its project the IAM Service Account Credentials API (iamcredentials.googleapis.com)");
+                    self.impersonate(&src, url, email, delegates, 3600, &hint).await
+                }
+                Adc::External(x) => {
+                    let subject = self.subject_token(&x.subject).await?;
+                    let federated = self.exchange(x, &subject).await?;
+                    match &x.impersonate {
+                        None => Ok(federated),
+                        Some((url, email, lifetime)) => {
+                            let hint = match pool_of(&x.audience) {
+                                Some((pool, _)) => format!("the pool {pool}'s principal needs Workload Identity User (roles/iam.workloadIdentityUser) on {email}, and the project the IAM Service Account Credentials API (iamcredentials.googleapis.com)"),
+                                None => format!("the federation's principal needs Workload Identity User (roles/iam.workloadIdentityUser) on {email}"),
+                            };
+                            self.impersonate(&federated.0, url, email, &[], *lifetime, &hint).await
+                        }
                     }
-                    let j: Json = serde_json::from_str(&text).map_err(|e| format!("IAM Credentials: {e}"))?;
-                    let t = j["accessToken"].as_str().filter(|t| !t.is_empty()).ok_or("IAM Credentials gave no access token")?;
-                    Ok((t.to_string(), now_ms() + 3600 * 1000))
                 }
             }
         })
+    }
+
+    /// A token of the service account `email`, made with the token `src`
+    /// through IAM Credentials' `generateAccessToken` at `url`.
+    async fn impersonate(&self, src: &str, url: &str, email: &str, delegates: &[String], lifetime: u64, hint: &str) -> Result<(String, u64), String> {
+        let url = self.rewrite(url);
+        self.note("POST", &url);
+        let body = json!({"scope": [SCOPE], "lifetime": format!("{lifetime}s"), "delegates": delegates});
+        let r = self.http.post(&url).bearer_auth(src).header("content-type", "application/json").body(body.to_string()).send().await.map_err(|e| format!("IAM Credentials: {e}"))?;
+        let status = r.status();
+        let text = r.text().await.map_err(|e| format!("IAM Credentials: {e}"))?;
+        if !status.is_success() {
+            let why = error_text(&text);
+            let hint = if status.as_u16() == 403 { format!(": {hint}") } else { String::new() };
+            return Err(format!("could not impersonate {email} ({status}: {why}){hint}"));
+        }
+        let j: Json = serde_json::from_str(&text).map_err(|e| format!("IAM Credentials: {e}"))?;
+        let t = j["accessToken"].as_str().filter(|t| !t.is_empty()).ok_or("IAM Credentials gave no access token")?;
+        Ok((t.to_string(), now_ms() + lifetime * 1000))
+    }
+
+    /// A federation's subject token, read now (a projected Kubernetes
+    /// token is renewed in its file as it nears its end).
+    async fn subject_token(&self, subject: &Subject) -> Result<String, String> {
+        let (text, field) = match subject {
+            Subject::File { path, field } => {
+                let t = tokio::fs::read_to_string(path).await.map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        format!("the federation's token file {} is not there: on Kubernetes, the operator's gcpFederation mounts the pod's token there", path.display())
+                    } else {
+                        format!("the federation's token file {}: {e}", path.display())
+                    }
+                })?;
+                (t, field)
+            }
+            Subject::Url { url, headers, field } => {
+                let mut r = self.http.get(url).timeout(Duration::from_secs(10));
+                for (k, v) in headers {
+                    r = r.header(k, v);
+                }
+                let res = r.send().await.map_err(|e| format!("the federation's token URL {url}: {e}"))?;
+                let status = res.status();
+                let t = res.text().await.map_err(|e| format!("the federation's token URL {url}: {e}"))?;
+                if !status.is_success() {
+                    return Err(format!("the federation's token URL {url} answered {status}"));
+                }
+                (t, field)
+            }
+        };
+        let token = match field {
+            None => text.trim().to_string(),
+            Some(f) => {
+                let j: Json = serde_json::from_str(&text).map_err(|e| format!("the federation's token, read as JSON: {e}"))?;
+                j[f.as_str()].as_str().unwrap_or_default().trim().to_string()
+            }
+        };
+        if token.is_empty() {
+            return Err(format!("the federation's token from {} is empty", subject.describe()));
+        }
+        Ok(token)
+    }
+
+    /// The subject token exchanged at Google's Security Token Service for
+    /// a token of the pool's principal.
+    async fn exchange(&self, x: &External, subject: &str) -> Result<(String, u64), String> {
+        let mut body = format!(
+            "grant_type={}&audience={}&scope={}&requested_token_type={}&subject_token={}&subject_token_type={}",
+            enc("urn:ietf:params:oauth:grant-type:token-exchange"),
+            enc(&x.audience),
+            enc(SCOPE),
+            enc("urn:ietf:params:oauth:token-type:access_token"),
+            enc(subject),
+            enc(&x.subject_token_type)
+        );
+        if let (Some(p), None) = (&x.user_project, &x.impersonate) {
+            body.push_str(&format!("&options={}", enc(&json!({"userProject": p}).to_string())));
+        }
+        let url = self.rewrite(&x.token_url);
+        self.note("POST", &url);
+        let r = self.http.post(&url).header("content-type", "application/x-www-form-urlencoded").body(body).send().await.map_err(|e| format!("Google's Security Token Service: {e}"))?;
+        let status = r.status();
+        let text = r.text().await.map_err(|e| format!("Google's Security Token Service: {e}"))?;
+        if !status.is_success() {
+            let provider = pool_of(&x.audience).map(|(p, v)| format!("the pool {p}'s provider {v}")).unwrap_or_else(|| "the pool's provider".into());
+            return Err(format!(
+                "Google's Security Token Service refused the federation's token ({status}: {}): {provider} must trust the token's issuer and its audience, and the project the Security Token Service API (sts.googleapis.com)",
+                error_text(&text)
+            ));
+        }
+        let j: Json = serde_json::from_str(&text).map_err(|e| format!("Google's Security Token Service: {e}"))?;
+        let t = j["access_token"].as_str().filter(|t| !t.is_empty()).ok_or("Google's Security Token Service gave no access token")?;
+        Ok((t.to_string(), now_ms() + j["expires_in"].as_u64().unwrap_or(3600) * 1000))
     }
 
     async fn metadata_token(&self) -> Result<(String, u64), String> {
@@ -601,7 +909,9 @@ impl Gcp {
         let region = if region.trim().is_empty() { "us-central1" } else { region.trim() };
         check_location(region)?;
         let j = self.get("compute", &format!("/compute/v1/projects/{project}")).await.map_err(|e| format!("Google Cloud did not let these credentials read the project {project}: {e}"))?;
-        let number = j["id"].as_str().map(str::to_string).or_else(|| j["id"].as_u64().map(|n| n.to_string())).unwrap_or_default();
+        // Compute's `id` is its own number for the project, not the
+        // project's: that one is in its default service account's address.
+        let number = j["defaultServiceAccount"].as_str().and_then(|a| a.strip_suffix("-compute@developer.gserviceaccount.com")).filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).unwrap_or_default().to_string();
         let account = self.account().await.unwrap_or_default();
         let s = Saved { project: project.into(), region: region.into(), account, number, saved_ms: now_ms(), by: by.into() };
         if let Some(path) = &self.file {
@@ -883,6 +1193,74 @@ mod tests {
         assert!(e.contains("takes no service account keys") && e.contains("--impersonate-service-account x@p.iam.gserviceaccount.com") && !e.contains("PRIVATE"), "{e}");
         assert!(parse_adc(&json!({"type": "external_account"})).is_err());
         assert!(parse_adc(&json!({"type": "authorized_user"})).is_err());
+    }
+
+    /// A federation's file, as gcloud iam workload-identity-pools
+    /// create-cred-config writes it for a Kubernetes token in a file.
+    fn federation(source: Json) -> Json {
+        json!({
+            "universe_domain": "googleapis.com", "type": "external_account",
+            "audience": "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/chloedb/providers/k8s-e2e",
+            "subject_token_type": "urn:ietf:params:oauth:token-type:jwt", "token_url": "https://sts.googleapis.com/v1/token",
+            "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/chloedb-deployer@chloedb.iam.gserviceaccount.com:generateAccessToken",
+            "credential_source": source,
+        })
+    }
+
+    #[test]
+    fn a_federations_file_is_read_and_what_it_cannot_do_refused() {
+        let file = federation(json!({"file": "/var/run/secrets/gcp/token", "format": {"type": "text"}}));
+        let Ok(Adc::External(x)) = parse_adc(&file) else { panic!("not read") };
+        assert!(matches!(&x.subject, Subject::File { path, field: None } if path == Path::new("/var/run/secrets/gcp/token")));
+        assert_eq!(x.impersonate.as_ref().map(|i| (i.1.as_str(), i.2)), Some(("chloedb-deployer@chloedb.iam.gserviceaccount.com", 3600)));
+        assert_eq!(pool_of(&x.audience), Some(("chloedb".to_string(), "k8s-e2e".to_string())));
+        assert_eq!(Adc::External(x).service_account().as_deref(), Some("chloedb-deployer@chloedb.iam.gserviceaccount.com"));
+        let json_field = federation(json!({"url": "http://169.254.169.254/token", "headers": {"Metadata": "True"}, "format": {"type": "json", "subject_token_field_name": "access_token"}}));
+        let Ok(Adc::External(x)) = parse_adc(&json_field) else { panic!("not read") };
+        assert!(matches!(&x.subject, Subject::Url { headers, field: Some(f), .. } if f == "access_token" && headers == &[("Metadata".to_string(), "True".to_string())]));
+        let mut direct = federation(json!({"file": "/t"}));
+        direct.as_object_mut().unwrap().remove("service_account_impersonation_url");
+        let Ok(Adc::External(x)) = parse_adc(&direct) else { panic!("not read") };
+        assert!(x.impersonate.is_none());
+        let refused = |source: Json, change: &dyn Fn(&mut Json), says: &str| {
+            let mut j = federation(source);
+            change(&mut j);
+            let e = parse_adc(&j).err().unwrap_or_else(|| panic!("taken: {j}"));
+            assert!(e.contains(says), "{e}");
+        };
+        let same = |_: &mut Json| {};
+        refused(json!({"executable": {"command": "/bin/sh -c id"}}), &same, "runs none");
+        refused(json!({"environment_id": "aws1", "region_url": "http://169.254.169.254/latest/meta-data/placement/availability-zone"}), &same, "aws1");
+        refused(json!({}), &same, "credential_source.file or url");
+        refused(json!({"file": "/t", "format": {"type": "json"}}), &same, "subject_token_field_name");
+        refused(json!({"file": "/t"}), &|j| j["token_url"] = json!("https://sts.example.com/v1/token"), "Security Token Service");
+        refused(json!({"file": "/t"}), &|j| j["token_url"] = json!("https://sts.googleapis.com.example.com/v1/token"), "Security Token Service");
+        refused(json!({"file": "/t"}), &|j| j["service_account_impersonation_url"] = json!("https://example.com/v1/projects/-/serviceAccounts/a@b.iam.gserviceaccount.com:generateAccessToken"), "IAM Credentials");
+        refused(json!({"file": "/t"}), &|j| j["audience"] = json!("chloedb"), "pool's provider");
+        refused(json!({"file": "/t"}), &|j| j["universe_domain"] = json!("example.com"), "universe");
+        refused(json!({"file": "/t"}), &|j| j["service_account_impersonation"] = json!({"token_lifetime_seconds": 86400}), "43200");
+        assert!(parse_adc(&json!({"type": "external_account_authorized_user"})).err().unwrap().contains("workforce"));
+    }
+
+    #[test]
+    fn the_federation_is_set_up_by_commands_chloedb_only_prints() {
+        assert_eq!(provider_id("e2e"), "k8s-e2e");
+        assert_eq!(provider_id("Search_East"), "k8s-search-east");
+        assert!(provider_id(&"a".repeat(40)).len() <= 32);
+        let c = federation_commands("chloedb", "strata", "e2e", "chloedb-deployer@chloedb.iam.gserviceaccount.com");
+        let all = c.join("\n");
+        assert!(c[0] == "PROJECT=chloedb" && c[1] == "DEPLOYER=chloedb-deployer@chloedb.iam.gserviceaccount.com", "{all}");
+        assert!(all.contains("--member=\"principal://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/chloedb/subject/system:serviceaccount:strata:e2e-coordinator\""), "{all}");
+        assert!(all.contains("--allowed-audiences=\"https://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/chloedb/providers/k8s-e2e\""), "{all}");
+        assert!(all.contains("--credential-source-file=/var/run/secrets/gcp/token --credential-source-type=text"), "{all}");
+        assert!(all.contains("--jwk-json-path=cluster-jwks.json"), "{all}");
+        // The patch is JSON once the shell has read it.
+        let last = c.last().unwrap();
+        let quoted = last.split_once("-p \"").unwrap().1.strip_suffix('"').unwrap().replace("\\\"", "\"");
+        let patch: Json = serde_json::from_str(&quoted).unwrap();
+        assert_eq!(patch["spec"]["gcpFederation"]["configMap"], "e2e-gcp");
+        assert_eq!(patch["spec"]["gcpFederation"]["audience"], "https://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/chloedb/providers/k8s-e2e");
+        assert!(!all.contains("keys create"), "no key is made");
     }
 
     #[test]

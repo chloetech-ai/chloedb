@@ -2300,7 +2300,7 @@ kubectl -n strata patch strata demo --type merge -p &#x27;{&quot;spec&quot;: {&q
 <h4 id="on-google-cloud">On Google Cloud<a class="anchor" href="#on-google-cloud" aria-label="Link to this section">#</a></h4>
 <p>The view reads the machine types GKE takes in a region, their prices, GKE's versions and the project's quotas from Google's APIs, with <strong>no key</strong>: ChloeDB refuses service account keys. Its calls use the credentials gcloud keeps where the server runs (application default credentials), and each takes an access token of an hour from them; on a Compute Engine VM or in a GKE pod, it asks the metadata server instead. Sign in as yourself, acting as a service account that may make GKE clusters (your account needs the Service Account Token Creator role on it):</p>
 <pre data-lang="sh">gcloud auth application-default login --impersonate-service-account chloedb-deployer@my-project.iam.gserviceaccount.com</pre>
-<p>The server then calls as <code>chloedb-deployer</code>, and the project's audit logs say so. Credentials of a key file (<code>service_account</code>) or of another cloud (<code>external_account</code>) are refused, and your own sign-in without <code>--impersonate-service-account</code> works but is warned of: its calls are made, and logged, as you.</p>
+<p>The server then calls as <code>chloedb-deployer</code>, and the project's audit logs say so. Credentials of a key file (<code>service_account</code>) are refused, and your own sign-in without <code>--impersonate-service-account</code> works but is warned of: its calls are made, and logged, as you. A server on a Kubernetes cluster outside Google Cloud uses <a href="#from-a-cluster-outside-google-cloud">workload identity federation</a> instead.</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
@@ -2311,7 +2311,7 @@ kubectl -n strata patch strata demo --type merge -p &#x27;{&quot;spec&quot;: {&q
 <tbody>
 <tr>
 <td><code>GET /v1/admin/gcp</code></td>
-<td>where the credentials come from (gcloud's file and the service account it impersonates, or the metadata server's account and, on GKE, the cluster it runs in), the project and where it was read from (saved here, <code>GOOGLE_CLOUD_PROJECT</code>, the impersonated account's address, or the metadata server), and the saved project; never a token. Asks Google nothing</td>
+<td>where the credentials come from (gcloud's file and the service account it impersonates, a federation's file with its pool, provider and token file, or the metadata server's account and, on GKE, the cluster it runs in), the project and where it was read from (saved here, <code>GOOGLE_CLOUD_PROJECT</code>, the impersonated account's address, or the metadata server), the saved project, and on a coordinator run by the operator outside GKE the commands that set up federation for its account (<code>federation</code>); never a token. Asks Google nothing</td>
 </tr>
 <tr>
 <td><code>PUT /v1/admin/gcp/project</code></td>
@@ -2327,7 +2327,7 @@ kubectl -n strata patch strata demo --type merge -p &#x27;{&quot;spec&quot;: {&q
 </tr>
 <tr>
 <td><code>GET /v1/admin/gcp/machines?region=</code></td>
-<td>the machine types a GKE node may be in the region (default the saved one, else <code>us-central1</code>), from the first three zones (E2, N1, N2, N2D, C2, C2D, C3, C3D and T2D, x86-64, without GPUs), each priced on demand and Spot from the Cloud Billing Catalog (a vCPU and a GiB of the family, so a shared-core E2 costs its share), GKE's versions without a release channel and the one a plan takes, the region's and the project's quotas, the project's VPC networks and the region's subnetworks, and what GKE's fee, a GiB-month of balanced and SSD Persistent Disk and a node's public IPv4 address cost; kept six hours (<code>&amp;fresh=1</code> fetches again)</td>
+<td>the machine types a GKE node may be in the region (default the saved one, else <code>us-central1</code>), from the first three zones (E2, N1, N2, N2D, C2, C2D, C3, C3D and T2D, x86-64, without GPUs), each priced on demand and Spot from the Cloud Billing Catalog (a vCPU and a GiB of the family, so a shared-core E2 costs its share), GKE's versions in the Regular release channel and the one a plan takes (its default), the region's and the project's quotas, the project's VPC networks and the region's subnetworks, and what GKE's fee, a GiB-month of balanced and SSD Persistent Disk and a node's public IPv4 address cost; kept six hours (<code>&amp;fresh=1</code> fetches again)</td>
 </tr>
 <tr>
 <td><code>POST /v1/admin/gcp/plan</code></td>
@@ -2354,6 +2354,29 @@ kubectl -n strata patch strata demo --type merge -p &#x27;{&quot;spec&quot;: {&q
   --project my-project --role roles/iam.workloadIdentityUser \
   --member &quot;serviceAccount:my-project.svc.id.goog[strata/search-coordinator]&quot;</pre>
 <p>With it, the new cluster's own command center reaches Google Cloud as that account with no laptop, to see and resize its nodes; without it the cluster runs as well, and reaches Google Cloud only through the server that made it.</p>
+<h5 id="from-a-cluster-outside-google-cloud">From a cluster outside Google Cloud</h5>
+<p>A command center on another cloud's Kubernetes (DigitalOcean's, EKS, a cluster of your own) reaches Google Cloud with no key through <a href="https://cloud.google.com/iam/docs/workload-identity-federation-with-kubernetes">workload identity federation</a>: Kubernetes gives the coordinators' account, <code>&lt;cluster&gt;-coordinator</code>, a token for a pool's provider; Google's Security Token Service trusts it, because the provider holds the cluster's signing keys, and exchanges it for a token that impersonates the service account. The credentials are then a federation's file (<code>"type": "external_account"</code>), which the server reads as it reads gcloud's: its token from a file (or a URL), exchanged at <code>sts.googleapis.com</code>, then <code>generateAccessToken</code> for the service account, an hour each. A file that runs a program for its token (<code>credential_source.executable</code>), that takes AWS's own credentials (<code>environment_id</code>), or that sends its tokens anywhere but Google's APIs is refused.</p>
+<p>On such a coordinator, <code>GET /v1/admin/gcp</code> gives the commands for its own account, and the Cloud view shows them. Someone who may change the project's IAM runs them once, with kubectl pointed at the cluster (for the StrataCluster <code>e2e</code> in <code>strata</code>):</p>
+<pre data-lang="sh">PROJECT=my-project
+DEPLOYER=chloedb-deployer@my-project.iam.gserviceaccount.com
+NUMBER=$(gcloud projects describe $PROJECT --format=&#x27;value(projectNumber)&#x27;)
+gcloud services enable sts.googleapis.com iamcredentials.googleapis.com --project=$PROJECT
+gcloud iam workload-identity-pools create chloedb --project=$PROJECT --location=global --display-name=&#x27;ChloeDB clusters&#x27;
+kubectl get --raw /openid/v1/jwks &gt; cluster-jwks.json
+ISSUER=$(kubectl get --raw /.well-known/openid-configuration | jq -r .issuer)
+gcloud iam workload-identity-pools providers create-oidc k8s-e2e --project=$PROJECT --location=global \
+  --workload-identity-pool=chloedb --issuer-uri=&quot;$ISSUER&quot; --jwk-json-path=cluster-jwks.json \
+  --allowed-audiences=&quot;https://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/chloedb/providers/k8s-e2e&quot; \
+  --attribute-mapping=google.subject=assertion.sub
+gcloud iam service-accounts add-iam-policy-binding $DEPLOYER --project=$PROJECT --role=roles/iam.workloadIdentityUser \
+  --member=&quot;principal://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/chloedb/subject/system:serviceaccount:strata:e2e-coordinator&quot;
+gcloud iam workload-identity-pools create-cred-config \
+  projects/$NUMBER/locations/global/workloadIdentityPools/chloedb/providers/k8s-e2e \
+  --service-account=$DEPLOYER --credential-source-file=/var/run/secrets/gcp/token --credential-source-type=text \
+  --output-file=credentials.json
+kubectl -n strata create configmap e2e-gcp --from-file=credentials.json
+kubectl -n strata patch stratacluster e2e --type=merge -p &quot;{\&quot;spec\&quot;:{\&quot;gcpFederation\&quot;:{\&quot;configMap\&quot;:\&quot;e2e-gcp\&quot;,\&quot;audience\&quot;:\&quot;https://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/chloedb/providers/k8s-e2e\&quot;}}}&quot;</pre>
+<p>The provider is given the cluster's signing keys (<code>--jwk-json-path</code>), so the cluster's issuer need not be reachable from Google; should the cluster change its keys, run <code>gcloud iam workload-identity-pools providers update-oidc</code> with them the same way. <code>credentials.json</code> holds no secret: only where the token is and which provider and service account it is for. The operator's <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/deploy/README.md"><code>gcpFederation</code></a> mounts the coordinators' token (renewed by Kubernetes) and the file in <code>/var/run/secrets/gcp</code> and sets <code>GOOGLE_APPLICATION_CREDENTIALS</code>, restarting the coordinators once. Only the binding's account, in that namespace of that cluster, may act as the service account, and each call is in the project's audit logs as the service account, through the pool.</p>
 <h4 id="making-it-from-the-view">Making it from the view<a class="anchor" href="#making-it-from-the-view" aria-label="Link to this section">#</a></h4>
 <p><strong>Create it</strong> makes the planned cluster with the saved key or token. The server asks the cloud for it, installs ChloeDB through the new cluster's own API, follows its copies until they answer, and deletes it when asked. The routes need the admin scope, and every change is audited with who asked (a new cluster also with its nodes and cost an hour):</p>
 <div class="doc-table"><table>

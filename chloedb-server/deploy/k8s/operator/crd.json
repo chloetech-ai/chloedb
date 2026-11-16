@@ -466,6 +466,28 @@
                     ],
                     "type": "object"
                   },
+                  "gcpFederation": {
+                    "description": "Workload identity federation for the coordinators on a cluster outside Google Cloud: a token Kubernetes gives their account for audience, and the federation's file from configMap, both mounted in /var/run/secrets/gcp, so that the command center calls Google Cloud as a service account with no key. Changing it restarts the coordinators.",
+                    "properties": {
+                      "audience": {
+                        "description": "The token's audience, one the pool's provider allows: https://iam.googleapis.com/projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER.",
+                        "type": "string"
+                      },
+                      "configMap": {
+                        "description": "The ConfigMap with the file gcloud iam workload-identity-pools create-cred-config wrote for the token file /var/run/secrets/gcp/token.",
+                        "type": "string"
+                      },
+                      "key": {
+                        "description": "Its key that holds the file (default credentials.json).",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "configMap",
+                      "audience"
+                    ],
+                    "type": "object"
+                  },
                   "image": {
                     "description": "The chloedb-server image of every server (default chloedb-server:dev).",
                     "type": "string"
