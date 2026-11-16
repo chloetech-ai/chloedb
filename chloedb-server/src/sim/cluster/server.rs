@@ -111,7 +111,7 @@ impl Server {
     fn give(&mut self, map: SlotMap, shard: usize, unheld: bool) -> Result<u64, ApiError> {
         if !unheld {
             let exported = self.exported.as_ref().filter(|(m, _)| self.held().and_then(|(h, s)| core::exporting(h, s)) == Some(m)).map(|(_, at)| *at);
-            core::flip_ok(self.held(), &map, shard, self.hold.covers(exported))?;
+            core::flip_ok(self.held(), &map, shard, self.hold.covers(exported), true)?;
         }
         match core::take(self.held(), self.since, &map, shard)? {
             Take::Held => return Ok(map.epoch),

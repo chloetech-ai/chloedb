@@ -43,9 +43,9 @@ pub(crate) struct Moving {
     pub(super) frozen: Arc<tokio::sync::Mutex<Option<Frozen>>>,
     holds: AtomicU64,
     /// The last export of slots moving from here: the move, the mask of
-    /// its slots, and the version exported, which the next export of
-    /// changes starts from.
-    exported: Arc<Mutex<Option<(Move, Arc<Mask>, Snapshot)>>>,
+    /// its slots, the version exported, which the next export of changes
+    /// starts from, and the term it was made in.
+    exported: Arc<Mutex<Option<(Move, Arc<Mask>, Snapshot, u64)>>>,
     /// The writes that passed no gate, from before they look at the map
     /// until they commit, by number ([`Self::enter`]); a hold waits for
     /// those that came before it.
@@ -62,6 +62,12 @@ pub(crate) struct Frozen {
     /// it again keeps: an export from then on holds every write to the
     /// moving slots.
     pub since: u64,
+    /// The term it began in. A hold or an export of another term covers
+    /// nothing: a primary that stepped down and was elected again, its
+    /// hold and export from before kept, would take the flip without the
+    /// writes another primary took meanwhile (TLC, spec/slots: a server
+    /// forgets its hold and export when it stops being the writer).
+    pub term: u64,
     _gate: tokio::sync::OwnedRwLockWriteGuard<()>,
 }
 
@@ -123,10 +129,11 @@ impl Moving {
 
     /// Whether writes to the slots of `m` (the move copying from this
     /// shard) have been held, since the shard's transaction `since`, from
-    /// before their last export ([`crate::cores::slots::Hold::covers`]).
-    pub(super) fn covers(&self, m: Option<&Move>, since: Option<u64>) -> bool {
+    /// before their last export ([`crate::cores::slots::Hold::covers`]),
+    /// both in `term`, the shard's now.
+    pub(super) fn covers(&self, m: Option<&Move>, since: Option<u64>, term: u64) -> bool {
         let exported = self.exported.lock().unwrap_or_else(|e| e.into_inner());
-        let at = exported.as_ref().filter(|(x, _, _)| Some(x) == m).map(|(_, _, snap)| snap.seq_no().unwrap_or(0));
+        let at = exported.as_ref().filter(|(x, _, _, t)| Some(x) == m && *t == term).map(|(_, _, snap, _)| snap.seq_no().unwrap_or(0));
         matches!((since, at), (Some(s), Some(e)) if s <= e)
     }
 
@@ -227,6 +234,19 @@ impl Service {
                 map.epoch
             )));
         }
+        // The flip is marked in this shard's log: the slots go to the
+        // other shard, which may already serve them, whatever map this
+        // server holds yet (a primary elected after its writer marked it).
+        if let Some(db) = self.local() {
+            let (flip, _) = super::feed::flip_mark(db)?;
+            if flip > map.epoch {
+                return Err(ApiError {
+                    code: None,
+                    status: 503,
+                    message: format!("the slots moving from this shard to shard {} are being given to it (the flip to cluster map epoch {flip} is marked in this shard's log): send the write again once the cluster map changes", m.to),
+                });
+            }
+        }
         Ok(Pass::Gate(g))
     }
 
@@ -253,7 +273,13 @@ impl Service {
         } else {
             self.moving_from_here()?;
             let id = self.moving.holds.fetch_add(1, Ordering::Relaxed) + 1;
+            let term = self.term();
             let mut held = self.moving.frozen.lock().await;
+            // A hold of an earlier term (this server stepped down and was
+            // elected again) begins again, since now.
+            if held.as_ref().is_some_and(|f| f.term != term) {
+                *held = None;
+            }
             match held.as_mut() {
                 Some(f) => f.id = id,
                 None => {
@@ -265,7 +291,7 @@ impl Service {
                     if !self.moving.drained(deadline).await {
                         return Err(late());
                     }
-                    *held = Some(Frozen { id, since: db.storage().seq_no().map_or(0, |s| s.seq), _gate: g });
+                    *held = Some(Frozen { id, since: db.storage().seq_no().map_or(0, |s| s.seq), term, _gate: g });
                 }
             }
             drop(held);
@@ -300,10 +326,11 @@ impl Service {
             return Err(ApiError::bad(format!("table {} has no primary key: rows are moved between shards by their keys", t.table)));
         }
         let numbered = db.storage().numbering().is_some();
+        let term = self.term();
         let prev = match changes {
             false => None,
             true => match &*self.moving.exported.lock().unwrap_or_else(|e| e.into_inner()) {
-                Some((pm, mask, snap)) if *pm == m && numbered => Some((mask.clone(), snap.clone())),
+                Some((pm, mask, snap, t)) if *pm == m && numbered && *t == term => Some((mask.clone(), snap.clone())),
                 _ => return Err(conflict("this shard has no export of the moving slots to follow (it restarted, or its primary changed): export every row again".into())),
             },
         };
@@ -326,7 +353,7 @@ impl Service {
             });
             let last = match r {
                 Ok(()) => {
-                    *exported.lock().unwrap_or_else(|e| e.into_inner()) = Some((m, mask, snap.clone()));
+                    *exported.lock().unwrap_or_else(|e| e.into_inner()) = Some((m, mask, snap.clone(), term));
                     Ok(pb::ExportSlotsChunk { last: true, seq_no: snap.seq_no().unwrap_or(0), frozen, rows: sent, ..Default::default() })
                 }
                 Err(e) => Err(e),
