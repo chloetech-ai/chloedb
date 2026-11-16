@@ -101,6 +101,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/suggest", get(suggest))
         .route("/v1/paper/*id", get(paper))
         .route("/v1/tldr/*id", get(tldr))
+        .route("/v1/explain/*id", get(explain))
         .route("/v1/new/*id", get(novelty))
         .route("/v1/claim", get(claim_sides))
         .route("/v1/related", post(related_write))
@@ -378,6 +379,14 @@ struct Q {
     /// A list of papers: arXiv ids, separated by commas.
     #[serde(default)]
     ids: String,
+    /// The reader's level: student, practitioner or expert.
+    #[serde(default)]
+    level: String,
+}
+
+/// A known reader level, or "" for none.
+fn level_of(s: &str) -> &'static str {
+    ask::LEVELS.iter().copied().find(|l| *l == s).unwrap_or("")
 }
 
 /// Completions as a search is typed: questions the grammar reads, phrases
@@ -483,6 +492,22 @@ async fn novelty(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
         svc.spend(1)?;
     }
     let v = ask::novelty(&c, &id, &svc.model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    done(&trace, v, t0)
+}
+
+/// A paper explained at a reader's level, its hard terms linked to the papers that brought them in.
+async fn explain(State(svc): State<Shared>, Path(id): Path<String>, Query(a): Query<Q>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let level = match level_of(&a.level) {
+        "" => "practitioner",
+        l => l,
+    };
+    let kept = c.gsoft("a kept explanation?", "SELECT id FROM ax_notes WHERE id = :k", json!({"k": format!("explain:{level}:{}", understand::clean_id(&id))})).await;
+    if kept.is_empty() {
+        svc.spend(1)?;
+    }
+    let v = ask::explain(&c, &id, level, &svc.model).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
     done(&trace, v, t0)
 }
 
@@ -908,11 +933,12 @@ async fn summary(State(svc): State<Shared>, Query(a): Query<Q>) -> Answer {
     if q.len() < 2 {
         return Err(ApiError(StatusCode::BAD_REQUEST, "name a topic".into()));
     }
-    let kept = c.gsoft("a kept summary?", "SELECT id FROM ax_answers WHERE id = :k AND answer != ''", json!({"k": ask::key(q)})).await;
+    let level = level_of(&a.level);
+    let kept = c.gsoft("a kept summary?", "SELECT id FROM ax_answers WHERE id = :k AND answer != ''", json!({"k": ask::summary_key(q, level)})).await;
     if kept.is_empty() || a.fresh == Some(1) {
         svc.spend(1)?;
     }
-    let v = ask::summary(&c, q, &svc.model, a.fresh == Some(1)).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    let v = ask::summary(&c, q, &svc.model, a.fresh == Some(1), level).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
     done(&trace, v, t0)
 }
 

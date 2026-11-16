@@ -363,6 +363,15 @@ async fn two_servers_every_page() {
     assert_eq!(c["kept"], true, "{c}");
     assert_eq!(c["for"][0]["id"], rec_id(3), "{c}");
 
+    // Explain at my level: a kept explanation is served for its level with
+    // no model, and an unknown level is read as a practitioner's.
+    let note = json!({"explain": "Kept for a student.", "terms": [{"term": "attention", "meaning": "m"}]});
+    let doc = json!({"id": format!("explain:practitioner:{}", rec_id(2)), "paper": rec_id(2), "style": "explain-practitioner", "text": note.to_string(), "model": "m", "at": "2026-11-16T00:00:00Z", "ms": 1.0});
+    let w = http.post(format!("http://127.0.0.1:{graph}/v1/write")).bearer_auth(TOKEN).json(&json!({"ops": [{"op": "upsert", "table": "ax_notes", "doc": doc}]})).send().await.unwrap();
+    assert!(w.status().is_success(), "{}", w.text().await.unwrap());
+    let e = get(&http, &app, &format!("/v1/explain/{}?level=wizard", rec_id(2))).await;
+    assert_eq!((e["kept"].clone(), e["level"].clone(), e["note"]["explain"].clone()), (json!(true), json!("practitioner"), json!("Kept for a student.")), "{e}");
+
     // Related work: a list's BibTeX with no model, keyed by surname, year and
     // title word; a list of one paper is refused.
     let b = get(&http, &app, &format!("/v1/related/bib?ids={},{},nope", rec_id(1), rec_id(2))).await;

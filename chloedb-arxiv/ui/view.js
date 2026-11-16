@@ -324,6 +324,16 @@ const CSS = `
 .ax-kpi .l { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .ax-tldr { border-left: 3px solid var(--accent); padding: 8px 14px; background: var(--accent-soft); border-radius: 0 8px 8px 0; margin: 10px 0; font-size: 14.5px; max-width: 820px; }
 .ax-tldr b { color: var(--accent); }
+.ax-lvl { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; vertical-align: middle; }
+.ax-lvl button { border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer; }
+.ax-lvl button + button { border-left: 1px solid var(--line); }
+.ax-lvl button.on { background: var(--accent); color: #fff; }
+.ax-explain .hd { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.ax-terms { margin: 8px 0 0; display: grid; grid-template-columns: minmax(110px, max-content) 1fr; gap: 4px 12px; font-size: 13.5px; }
+.ax-terms dt { font-weight: 600; color: var(--text); }
+.ax-terms dd { margin: 0; color: var(--text-2); }
+.ax-terms .from { display: block; font-size: 12px; color: var(--muted); }
+@media (max-width: 640px) { .ax-terms { grid-template-columns: 1fr; } .ax-terms dd { margin-bottom: 6px; } }
 .ax-earlier { margin: 8px 0 0; padding-left: 20px; font-size: 13.5px; }
 .ax-earlier li { margin: 2px 0; }
 .ax-earlier .n { color: var(--muted); font-size: 12.5px; }
@@ -946,14 +956,29 @@ function answerCard(app, a, und) {
     case "summary": {
       const slot = h("div", {}, h("div", { class: "ax-prog" }, h("div")), h("div", { style: { color: "var(--muted)", fontSize: "13px" } }, "Reading the most relevant abstracts and writing a summary with every claim cited…"));
       kids[0].lastChild.textContent = "written by a model from the abstracts below, each claim cited";
-      kids.push(slot);
-      app.api(`/v1/summary?q=${enc(a.subject)}`, { timeout: 90000 }).then((s) => {
-        fill(slot, s.answer ? richText(app, s.answer, s.sources) : h("div", { class: "ax-empty" }, s.note || "No summary."), s.sources && s.sources.length ? h("details", {}, h("summary", { style: { cursor: "pointer", color: "var(--muted)", fontSize: "12.5px", marginTop: "6px" } }, `${s.sources.length} sources${s.kept ? " · kept from before" : ""}`), h("div", { class: "ax-src" }, s.sources.map((x) => [h("span", {}, `[${x.n}]`), h("a", { href: app.href("paper", x.id) }, `${x.title} (${x.year})`)]))) : null);
-      }).catch((e) => fill(slot, h("div", { class: "ax-err" }, String(e.message || e))));
+      const lvlBar = h("div", { style: { margin: "4px 0 8px", fontSize: "12.5px", color: "var(--muted)", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } });
+      kids.push(lvlBar, slot);
+      const write = (level) => {
+        fill(lvlBar, "Written for", levelSwitch(level, write));
+        fill(slot, h("div", { class: "ax-prog" }, h("div")), h("div", { style: { color: "var(--muted)", fontSize: "13px" } }, "Reading the most relevant abstracts and writing a summary with every claim cited…"));
+        app.api(`/v1/summary?q=${enc(a.subject)}${level ? `&level=${level}` : ""}`, { timeout: 90000 }).then((s) => {
+          fill(slot, s.answer ? richText(app, s.answer, s.sources) : h("div", { class: "ax-empty" }, s.note || "No summary."), s.sources && s.sources.length ? h("details", {}, h("summary", { style: { cursor: "pointer", color: "var(--muted)", fontSize: "12.5px", marginTop: "6px" } }, `${s.sources.length} sources${s.kept ? " · kept from before" : ""}`), h("div", { class: "ax-src" }, s.sources.map((x) => [h("span", {}, `[${x.n}]`), h("a", { href: app.href("paper", x.id) }, `${x.title} (${x.year})`)]))) : null);
+        }).catch((e) => fill(slot, h("div", { class: "ax-err" }, String(e.message || e))));
+      };
+      write(myLevel());
       break;
     }
   }
   return h("div", { class: "ax-ans" }, kids);
+}
+
+// The reader's level, kept in this browser: summaries, explanations and new feeds follow it.
+const LEVELS = [["student", "Student"], ["practitioner", "Practitioner"], ["expert", "Expert"]];
+const FEED_AUDIENCE = { student: "students", practitioner: "machine learning engineers", expert: "researchers" };
+function myLevel() { try { return localStorage.getItem("ax_level") || ""; } catch { return ""; } }
+function setLevel(l) { try { localStorage.setItem("ax_level", l); } catch {} }
+function levelSwitch(cur, pick) {
+  return h("span", { class: "ax-lvl", role: "group", "aria-label": "Explain for" }, LEVELS.map(([k, t]) => h("button", { class: k === cur ? "on" : "", "aria-pressed": k === cur ? "true" : "false", onclick: () => { setLevel(k); pick(k); } }, t)));
 }
 
 function understood(app, und, q, search) {
@@ -1058,6 +1083,24 @@ async function paperPage(app, main, id, alive) {
       fill(tldr, h("div", { class: "ax-tldr" }, h("b", {}, "TL;DR "), n.tldr || "", n.why ? h("div", { style: { marginTop: "4px", color: "var(--text-2)" } }, n.why) : null, n.results && n.results.length ? h("ul", { style: { margin: "6px 0 0", paddingLeft: "18px" } }, n.results.map((r) => h("li", {}, r))) : null));
     } catch (e) { fill(tldr, h("div", { class: "ax-err" }, String(e.message || e))); }
   } }, "✦ TL;DR");
+  const expl = h("div");
+  let explSeq = 0;
+  const explain = async (level) => {
+    const me = ++explSeq;
+    const head = h("div", { class: "hd" }, h("b", {}, `Explained for ${level === "expert" ? "an expert" : `a ${level}`}`), levelSwitch(level, explain));
+    fill(expl, h("div", { class: "ax-tldr ax-explain" }, head, h("div", { class: "ax-prog" }, h("div"))));
+    try {
+      const t = await app.api(`/v1/explain/${id}?level=${level}`, { timeout: 60000 });
+      if (me !== explSeq) return;
+      const n = t.note || {};
+      const terms = (n.terms || []).filter((x) => x && x.term);
+      fill(expl, h("div", { class: "ax-tldr ax-explain" }, head,
+        h("div", {}, n.explain || ""),
+        terms.length ? h("dl", { class: "ax-terms" }, terms.map((x) => [h("dt", {}, x.term), h("dd", {}, x.meaning || "", h("span", { class: "from" }, x.from ? (x.from.here ? "This paper is the earliest of its most cited on arXiv. " : ["From ", h("a", { href: app.href("paper", x.from.id) }, x.from.title), ` (${x.from.year}, ${fmt(x.from.cites)} citations). `]) : null, h("a", { href: app.href("search", `who coined ${x.term}`) }, "Who coined it?")))])) : null,
+        h("div", { style: { marginTop: "6px", fontSize: "12px", color: "var(--muted)" } }, "Written by a model from the abstract. A term's paper is the earliest of its most cited papers on arXiv, the one the field credits; Who coined it reads the sense and its first uses too.")));
+    } catch (e) { if (me === explSeq) fill(expl, h("div", { class: "ax-err" }, String(e.message || e))); }
+  };
+  const explBtn = h("button", { class: "ax-btn", title: "The paper explained for a student, a practitioner or an expert, each hard term with the paper that brought it in", onclick: () => explain(myLevel() || "practitioner") }, "✦ Explain at my level");
   const novel = h("div");
   const novelBtn = h("button", { class: "ax-btn", title: "The three earlier papers closest to it, and what it adds to them", onclick: async () => {
     novelBtn.disabled = true;
@@ -1107,9 +1150,9 @@ async function paperPage(app, main, id, alive) {
           h("a", { class: "ax-btn", href: j.links.abs, target: "_blank", rel: "noopener" }, "arXiv"),
           p.code ? h("a", { class: "ax-btn", href: p.code, target: "_blank", rel: "noopener" }, "Code") : null,
           p.hf ? h("a", { class: "ax-btn", href: p.hf, target: "_blank", rel: "noopener" }, "🤗 Hugging Face") : null,
-          tldrBtn, novelBtn, saveBtn,
+          tldrBtn, explBtn, novelBtn, saveBtn,
           h("a", { class: "ax-btn", href: app.href("reviewers", id) }, "Who could review it")),
-        tldr, novel,
+        tldr, expl, novel,
         h("div", { class: "abs" }, p.abstract),
         h("div", { class: "tags" }, (j.techniques || []).map((x) => conceptChip(app, x.id, x.name, "technique")), (j.domains || []).map((x) => conceptChip(app, x.id, x.name, "domain")))),
       tabs, tabBody),
@@ -2136,6 +2179,7 @@ async function studioPage(app, main, arg, alive) {
     cfg = (await app.ctx.api("/v1/feeds/example")).config;
     const topic = seedWords.join("/");
     Object.assign(cfg, { name: topic ? `${topic.replace(/\b\w/, (c) => c.toUpperCase())} weekly` : "My arXiv digest", tagline: topic ? `The week's most useful papers on ${topic}` : "", interests: topic ? [topic] : [], categories: [] });
+    if (FEED_AUDIENCE[myLevel()]) cfg.audience = FEED_AUDIENCE[myLevel()];
   }
   if (!alive()) return;
   const mine = owner === app.user;
