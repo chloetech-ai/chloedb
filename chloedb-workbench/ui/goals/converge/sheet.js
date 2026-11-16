@@ -79,6 +79,7 @@ export async function openSheet(C, id) {
       ui.back ? backBox(f) : null,
       ui.edit ? editBox(f) : null,
       blockedBox(f),
+      scopeAskBox(f),
       queuedOf(f) ? h("p", { class: "cv-note" }, `Queued: ${queuedOf(f)}. It starts by itself when a slot frees.`) : null,
       ...stageParts(f, x),
       ui.events ? eventsBox(x) : null,
@@ -140,7 +141,7 @@ export async function openSheet(C, id) {
 
   function menu(f, anchor) {
     const items = [
-      ["Edit kind, component, severity", () => { ui.edit = !ui.edit; paint(d); sh.body.scrollTop = 0; }],
+      ["Edit the card", () => { ui.edit = !ui.edit; paint(d); sh.body.scrollTop = 0; }],
       [f.pinned ? "Unpin" : "Pin to the top", () => post(f.pinned ? "unpin" : "pin", {}, f.pinned ? "Unpinned" : "Pinned to the top")],
       f.state === "parked" ? ["Back in the flow", () => post("unpark", {}, "Back in the flow")] : f.state === "active" ? ["Park it", () => post("park", {}, "Parked: the autopilot leaves it alone")] : null,
       f.state === "active" ? ["Dismiss…", () => { ui.dismiss = true; paint(d); sh.body.scrollTop = 0; }, { danger: true }] : null,
@@ -179,11 +180,63 @@ export async function openSheet(C, id) {
     const names = [...new Set([...(C.S.d.components || []).map((c) => (typeof c === "string" ? c : c && c.name)), f.component].filter(Boolean))];
     const comp = h("select", { id: "cv-e-c", "aria-label": "Component", onchange: () => putF({ component: comp.value }, "Component changed") }, h("option", { value: "", selected: f.component ? null : true }, "No component"), names.map((c) => h("option", { value: c, selected: c === f.component ? true : null }, c)));
     const sev = h("select", { id: "cv-e-s", "aria-label": "Severity", onchange: () => putF({ severity: sev.value }, "Severity changed") }, [4, 3, 2, 1].map((k) => h("option", { value: SEV[k], selected: k === f.severity ? true : null }, SEV[k])));
-    return h("section", { class: "cv-note" }, h("div", { class: "cv-edit" },
-      h("div", { class: "cv-f" }, h("label", { for: "cv-e-k" }, C.KIND_LABEL), kind),
-      h("div", { class: "cv-f" }, h("label", { for: "cv-e-c" }, "Component"), comp),
-      h("div", { class: "cv-f" }, h("label", { for: "cv-e-s" }, "Severity"), sev)),
-      h("button", { class: "cv-btn quiet", type: "button", onclick: () => { ui.edit = false; paint(d); } }, "Done editing"));
+    // The card's context: what the agents work from. Kept while the sheet
+    // refreshes (ui.draft), saved together, told to the card's agent.
+    const dr = ui.draft || (ui.draft = { title: f.title || "", detail: f.detail || "", ...(f.scope && typeof f.scope === "object" ? { area: f.scope.area || "", files: (f.scope.files || []).join("\n"), root_cause: f.scope.root_cause || "", acceptance: f.scope.acceptance || "", size: f.scope.size || "M" } : {}) });
+    const hasPlan = "files" in dr;
+    const field = (k, label, el) => { el.id = `cv-e-${k}`; el.value = dr[k]; el.addEventListener("input", () => { dr[k] = el.value; }); return h("div", { class: "cv-f", style: { gridColumn: "1 / -1" } }, h("label", { for: el.id }, label), el); };
+    const ta = (rows) => h("textarea", { class: "cv-ta", rows: String(rows), style: { fontFamily: "var(--sans)", fontSize: "16px" } });
+    const inp = () => h("input", { class: "cv-in", type: "text", style: { fontSize: "16px" } });
+    const sizeSel = hasPlan ? h("select", { id: "cv-e-size", onchange: () => { dr.size = sizeSel.value; } }, ["S", "M", "L"].map((x) => h("option", { value: x, selected: x === (dr.size || "M").toUpperCase() ? true : null }, { S: "Small", M: "Medium", L: "Large" }[x]))) : null;
+    const save = h("button", { class: "cv-btn pri", type: "button", onclick: async () => {
+      const body = { title: dr.title.trim(), detail: dr.detail };
+      if (hasPlan) body.scope = { area: dr.area.trim(), files: dr.files.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean), root_cause: dr.root_cause.trim(), acceptance: dr.acceptance.trim(), size: dr.size || "M" };
+      save.disabled = true;
+      try {
+        const r = await C.api(`/api/converge/findings/${enc(id)}`, { method: "PUT", body });
+        const what = (r && r.edited) || [];
+        toast(!what.length ? "Nothing changed" : r.recheck ? `Saved: ${what.join(", ")}. The branch is checked again.` : f.agent ? `Saved: ${what.join(", ")}. The agent has the new version.` : `Saved: ${what.join(", ")}`);
+        ui.edit = false; ui.draft = null;
+      } catch (err) { toast(err.message || String(err)); save.disabled = false; }
+      await reload();
+    } }, "Save");
+    return h("section", { class: "cv-note" },
+      h("span", { class: "cv-label" }, "Edit the card"),
+      h("p", { class: "cv-meta" }, "The agents work from this. Saving tells the card's agent; a plan change while it is building checks the branch again."),
+      h("div", { class: "cv-edit" },
+        field("title", "Title", inp()),
+        field("detail", "What happened (and anything the agent should know)", ta(5)),
+        hasPlan ? field("files", "The plan's files (one path per line; a folder ends with /)", Object.assign(ta(3), { style: "font-family: var(--mono); font-size: 16px" })) : null,
+        hasPlan ? field("area", "Where", inp()) : null,
+        hasPlan ? field("root_cause", "Root cause", ta(2)) : null,
+        hasPlan ? field("acceptance", "Fixed when", ta(2)) : null,
+        hasPlan ? h("div", { class: "cv-f" }, h("label", { for: "cv-e-size" }, "Size"), sizeSel) : null,
+        h("div", { class: "cv-f" }, h("label", { for: "cv-e-k" }, C.KIND_LABEL), kind),
+        h("div", { class: "cv-f" }, h("label", { for: "cv-e-c" }, "Component"), comp),
+        h("div", { class: "cv-f" }, h("label", { for: "cv-e-s" }, "Severity"), sev)),
+      h("div", { style: { display: "flex", gap: "8px", marginTop: "8px" } },
+        h("button", { class: "cv-btn", type: "button", onclick: () => { ui.edit = false; ui.draft = null; paint(d); } }, "Cancel"), save));
+  }
+
+  // The fix agent asks to change the plan: one tap to approve.
+  function scopeAskBox(f) {
+    const a = f.scope_ask && typeof f.scope_ask === "object" ? f.scope_ask : null;
+    if (!a) return null;
+    const add = Array.isArray(a.add) ? a.add : [], rm = Array.isArray(a.remove) ? a.remove : [];
+    return h("section", { class: "cv-bsec" },
+      h("span", { class: "hd" }, `${a.by || "The fix agent"} asks to change the plan`),
+      add.length ? h("p", {}, h("b", {}, "Add: "), h("code", {}, add.join(", "))) : null,
+      rm.length ? h("p", {}, h("b", {}, "Remove: "), h("code", {}, rm.join(", "))) : null,
+      a.why ? h("p", {}, a.why) : null,
+      h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
+        h("button", { class: "cv-btn", type: "button", onclick: () => post("scope-no", {}, "Kept the plan: the agent stays inside it") }, "Keep the plan"),
+        h("button", { class: "cv-btn pri", type: "button", onclick: () => post("scope-ok", {}, "Plan changed: the branch is checked again") }, "Approve")));
+  }
+
+  // "changed outside the plan's files: a, b (…)": the files, to add with one tap.
+  function outsideFiles(p) {
+    const m = /outside the (?:plan's files|scope): ([^(]+)/.exec(p || "");
+    return m ? m[1].split(",").map((x) => x.trim()).filter(Boolean) : [];
   }
 
   function blockedBox(f) {
@@ -281,10 +334,18 @@ export async function openSheet(C, id) {
       item(st(has(/repro/), repro.length && green === repro.length), repro.length ? `Repro passes ${green} of ${repro.length}` : "Repro passes", has(/repro/)),
       item(fresh || !e || !e.tests || e.tests.note ? (has(/tests failed/i) ? "fail" : "todo") : e.tests.exit === 0 ? "done" : "fail", e && e.tests && e.tests.cmd ? `Tests pass (${e.tests.cmd})` : "Tests pass", has(/tests failed|test command/i) || (e && e.tests && e.tests.note) || null),
       item(fresh ? "todo" : has(/no test file/) || (e && !changed.some((p) => /test/i.test(p)) && !e.docs_only) ? "fail" : e ? "done" : "todo", "A test changed", has(/no test file/) || (e && !changed.some((p) => /test/i.test(p)) && !e.docs_only ? "no test file changed: add a regression test" : null)),
-      item(st(has(/outside the scope|no commits/), changed.length), "In scope", has(/outside the scope|no commits/)),
+      item(st(has(/outside the (scope|plan)|no commits/), changed.length), "Inside the plan's files", has(/outside the (scope|plan)|no commits/)),
       f.stage === "verify" ? item("run", "The persona replays it on the branch", null) : null);
     return [
       lc && probs.length ? h("div", { class: "cv-verdict bad" }, `Round ${lc.round || f.rounds || 1} of ${rounds} did not pass: ${probs[0]}`) : null,
+      (() => {
+        const out = outsideFiles(has(/outside the (scope|plan)/));
+        if (!out.length || f.scope_ask) return null;
+        const sc = f.scope && typeof f.scope === "object" ? f.scope : {};
+        return h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" } },
+          h("button", { class: "cv-btn pri", type: "button", onclick: () => putF({ scope: { ...sc, files: [...(sc.files || []), ...out] } }, `Added ${out.join(", ")} to the plan: checking the branch again`) }, `Add ${out.length > 1 ? `these ${out.length} files` : out[0].split("/").pop()} to the plan and check again`),
+          h("button", { class: "cv-btn quiet", type: "button", onclick: () => { ui.edit = true; paint(d); sh.body.scrollTop = 0; } }, "Edit the plan"));
+      })(),
       h("section", {}, h("span", { class: "cv-label" }, f.rounds ? `Checks · round ${Math.min(f.rounds + 1, rounds)} of ${rounds}` : "Checks"), list),
       lc && lc.agent_said ? h("section", {}, h("span", { class: "cv-label" }, "The fix agent said"), h("p", { class: "cv-note" }, lc.agent_said)) : null,
     ];

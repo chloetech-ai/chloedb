@@ -368,7 +368,7 @@ impl Default for Settings {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Scope {
     pub area: String,
@@ -396,6 +396,41 @@ pub struct Blocked {
 pub const BLOCKED_KINDS: [&str; 6] = ["credentials", "publish", "account", "external", "decision", "other"];
 
 /// What every agent is told about steps it cannot take.
+const SCOPE_HELP: &str = "If the fix truly needs a file the plan does not list, do not work around the plan: write .converge/scope_change.json, one JSON object {\"add\": [\"path/to/file.rs\"], \"remove\": [], \"why\": \"one sentence\"}, do not commit it, and stop. The person approves it with one tap.";
+
+/// A plan's file entry as a path: what comes before a note ("src/a.rs (fn x)" is src/a.rs).
+fn scope_path(entry: &str) -> &str {
+    let e = entry.trim().trim_matches('`');
+    let end = e.find(|c: char| c.is_whitespace() || c == '(' || c == ',' || c == ';').unwrap_or(e.len());
+    e[..end].trim_end_matches(':').trim_matches('`')
+}
+
+/// Whether a changed path is inside one of the plan's entries: the file
+/// itself, or under a directory entry ("src/" or "src"), or a glob's prefix.
+fn in_scope(changed: &str, files: &[String]) -> bool {
+    files.iter().map(|f| scope_path(f)).filter(|p| !p.is_empty()).any(|p| {
+        if let Some(prefix) = p.strip_suffix('*') {
+            return changed.starts_with(prefix);
+        }
+        let dir = p.trim_end_matches('/');
+        changed == p || changed.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// Reads (and removes) `.converge/scope_change.json`: the fix agent asks for files.
+fn read_scope_ask(wt: &Path, by: &str) -> Option<Json> {
+    let path = wt.join(".converge/scope_change.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    let v: Json = serde_json::from_str(text.trim()).ok().or_else(|| extract_json(&text))?;
+    let list = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).map(|x| scope_path(x).to_string()).filter(|x| !x.is_empty()).collect::<Vec<_>>()).unwrap_or_default();
+    let (add, remove) = (list("add"), list("remove"));
+    if add.is_empty() && remove.is_empty() {
+        return None;
+    }
+    Some(json!({ "add": add, "remove": remove, "why": one_line(v["why"].as_str().unwrap_or(""), 400), "by": by, "at": now_ms() }))
+}
+
 const BLOCKED_HELP: &str = "If the work needs something only a person can do or reach from outside this checkout (publishing a package or a release, credentials or tokens, account or repository settings, an outside service, or a decision that is the owner's), do not work around it: write .converge/blocked.json, one JSON object {\"kind\": \"credentials\" or \"publish\" or \"account\" or \"external\" or \"decision\", \"what\": \"one sentence: why you cannot do it\", \"you_do\": \"the exact step for the person, with the command if there is one\"}, do not commit it, and stop.";
 
 /// Reads `.converge/blocked.json` from an agent's worktree (a plain line
@@ -488,6 +523,9 @@ pub struct Finding {
     pub queued: Option<String>,
     /// Why the last develop check failed, and what the agent said.
     pub last_check: Option<Json>,
+    /// A plan change the fix agent asks for: `{add, remove, why, by, at}`,
+    /// waiting for your yes (`scope-ok`) or no (`scope-no`).
+    pub scope_ask: Option<Json>,
     /// How many times you talked to this card's agent (`talk`).
     pub talk_count: i64,
     /// The read-only agent started to answer you on this card, and its
@@ -1543,7 +1581,7 @@ fn prompt_for(role: &str, job: &Json) -> String {
             ) + if job["memory"] == true { "\n\nYou have memory of your earlier visits (memory_* tools); use it like a returning user would." } else { "" }
         }
         "scope" => format!(
-            "A user of the software in the current directory hit this problem:\n\nTitle: {}\nDetail: {}\nRepro script (fails while the problem is there):\n{}\n\nRead the code (do not change anything) and scope the fix. End your answer with one JSON object and nothing after it:\n{{\"area\": \"the component or folder\", \"files\": [\"paths a fix likely changes, including where its test goes\"], \"root_cause\": \"one or two sentences\", \"acceptance\": \"what must be true when it is fixed (the repro exits 0, plus ...)\", \"size\": \"S\" or \"M\" or \"L\"}}\n\nIf the fix needs a step only a person can take (publishing a package or a release, credentials, account or repository settings, an outside service, the owner's decision), add to that object \"blocked\": {{\"kind\": \"credentials\" or \"publish\" or \"account\" or \"external\" or \"decision\", \"what\": \"why an agent cannot do it\", \"you_do\": \"the exact step for the person\"}}.",
+            "A user of the software in the current directory hit this problem:\n\nTitle: {}\nDetail: {}\nRepro script (fails while the problem is there):\n{}\n\nRead the code (do not change anything) and scope the fix. End your answer with one JSON object and nothing after it:\n{{\"area\": \"the component or folder\", \"files\": [\"repository paths only, one per entry, a fix likely changes, including where its test goes (no notes or line numbers)\"], \"root_cause\": \"one or two sentences\", \"acceptance\": \"what must be true when it is fixed (the repro exits 0, plus ...)\", \"size\": \"S\" or \"M\" or \"L\"}}\n\nIf the fix needs a step only a person can take (publishing a package or a release, credentials, account or repository settings, an outside service, the owner's decision), add to that object \"blocked\": {{\"kind\": \"credentials\" or \"publish\" or \"account\" or \"external\" or \"decision\", \"what\": \"why an agent cannot do it\", \"you_do\": \"the exact step for the person\"}}.",
             job["finding"]["title"].as_str().unwrap_or(""),
             job["finding"]["detail"].as_str().unwrap_or(""),
             job["finding"]["repro"].as_str().unwrap_or("(none)")
@@ -1886,7 +1924,7 @@ fn dev_task(f: &Finding) -> String {
         cause = sc.root_cause,
         acc = sc.acceptance,
         repro = f.repro.clone().unwrap_or_default(),
-        help = BLOCKED_HELP
+        help = format!("{BLOCKED_HELP} {SCOPE_HELP}")
     )
 }
 
@@ -1965,6 +2003,15 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
     if let Some(b) = read_blocked(&wt, &agent_name) {
         return set_blocked(sup, &mut f, b);
     }
+    if let Some(ask) = read_scope_ask(&wt, &agent_name) {
+        let add: Vec<&str> = ask["add"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+        f.needs_you = Some(format!("{agent_name} asks to change the plan{}: approve or keep the plan", if add.is_empty() { String::new() } else { format!(" (add {})", add.join(", ")) }));
+        let st2 = f.stage.clone();
+        event(sup, &f, &st2, &st2, "scope_ask", false, &agent_name, f.needs_you.as_deref().unwrap_or(""), ask.clone());
+        f.scope_ask = Some(ask);
+        f.updated = now_ms();
+        return put_finding(sup, &f);
+    }
     let mut problems: Vec<String> = Vec::new();
     let dirty = git(&wt, &["status", "--porcelain"]).unwrap_or_default();
     if !dirty.trim().is_empty() {
@@ -2003,9 +2050,9 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
         problems.push("no test file changed: add a regression test".into());
     }
     let files = f.scope.as_ref().map(|s| s.files.clone()).unwrap_or_default();
-    let outside: Vec<&String> = if files.is_empty() { Vec::new() } else { changed.iter().filter(|c| !files.iter().any(|p| c.starts_with(p.trim_end_matches('*')) || c.to_lowercase().contains("test"))).collect() };
+    let outside: Vec<&String> = if files.is_empty() { Vec::new() } else { changed.iter().filter(|c| !in_scope(c, &files) && !c.to_lowercase().contains("test")).collect() };
     if !outside.is_empty() {
-        problems.push(format!("changed outside the scope: {}", outside.iter().map(|x| x.as_str()).collect::<Vec<_>>().join(", ")));
+        problems.push(format!("changed outside the plan's files: {} (if the fix needs them, ask with .converge/scope_change.json)", outside.iter().map(|x| x.as_str()).collect::<Vec<_>>().join(", ")));
     }
     let evidence = json!({ "base": base, "changed": changed, "docs_only": docs_only, "repro": runs.iter().map(|(c, o)| json!({ "exit": c, "output": o })).collect::<Vec<_>>(), "tests": tests, "round": f.rounds + 1 });
     if f.repro_hash.as_deref() != f.repro.as_deref().map(repro_hash).as_deref() {
@@ -3339,7 +3386,7 @@ fn start_chat(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &Finding, kind: &str, 
     let task = if kind == "scope" {
         let plan = f.scope.as_ref().map(|s| serde_json::to_string(s).unwrap()).unwrap_or_else(|| "(none yet)".into());
         format!(
-            "You talk with the person who owns this project about the plan to fix a problem a user hit ({head})\n\n{}\n\nThe plan now: {plan}\n\nThe person says: {text}\n\nAnswer them in a few sentences. If what they say changes the plan, end your answer with the whole revised plan as one JSON object and nothing after it: {{\"area\": \"the component or folder\", \"files\": [\"paths a fix likely changes\"], \"root_cause\": \"one or two sentences\", \"acceptance\": \"what must be true when it is fixed\", \"size\": \"S\" or \"M\" or \"L\"}}. Workbench takes it as the new plan. If the plan stays, end without JSON. Their next messages come as your next prompts.",
+            "You talk with the person who owns this project about the plan to fix a problem a user hit ({head})\n\n{}\n\nThe plan now: {plan}\n\nThe person says: {text}\n\nAnswer them in a few sentences. If what they say changes the plan, end your answer with the whole revised plan as one JSON object and nothing after it: {{\"area\": \"the component or folder\", \"files\": [\"repository paths only, one per entry (no notes)\"], \"root_cause\": \"one or two sentences\", \"acceptance\": \"what must be true when it is fixed\", \"size\": \"S\" or \"M\" or \"L\"}}. Workbench takes it as the new plan. If the plan stays, end without JSON. Their next messages come as your next prompts.",
             card_context(f)
         )
     } else {
@@ -4027,6 +4074,7 @@ async fn finding_put(State(app): State<App>, headers: HeaderMap, AxPath(id): AxP
     let app_lv = app.lv.clone();
     let out = blocking(move || {
         let mut f = get_finding(&sup, &id)?;
+        let before = f.clone();
         if let Some(x) = v["title"].as_str().map(str::trim).filter(|x| !x.is_empty()) {
             f.title = one_line(x, 200);
         }
@@ -4073,19 +4121,75 @@ async fn finding_put(State(app): State<App>, headers: HeaderMap, AxPath(id): AxP
         }
         f.score = score(&f);
         f.updated = now_ms();
+        let edited = context_edited(&before, &f);
+        let recheck = !edited.is_empty() && after_edit(&sup, &app_lv, &mut f, &before, &edited, &by);
         put_finding(&sup, &f)?;
-        if v["repro"].is_string() {
+        if v["repro"].is_string() || recheck {
             kick(&sup, &app_lv, &f.repo);
         }
-        Ok(json!({ "finding": f.to_json(&sup) }))
+        Ok(json!({ "finding": f.to_json(&sup), "edited": edited, "recheck": recheck }))
     })
     .await?;
     Ok(AxJson(out).into_response())
 }
 
+/// What of a card's context an edit changed, in words ("the plan's files").
+fn context_edited(a: &Finding, b: &Finding) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if a.title != b.title {
+        out.push("the title");
+    }
+    if a.detail != b.detail {
+        out.push("what happened");
+    }
+    let (sa, sb) = (a.scope.clone().unwrap_or_default(), b.scope.clone().unwrap_or_default());
+    if sa.files != sb.files {
+        out.push("the plan's files");
+    }
+    if sa.area != sb.area || sa.root_cause != sb.root_cause || sa.size != sb.size {
+        out.push("the plan");
+    }
+    if sa.acceptance != sb.acceptance {
+        out.push("how we know it is fixed");
+    }
+    out
+}
+
+/// After you edit a card's context: recorded on the card, told to the agent
+/// working on it, and a plan change in develop re-runs the branch's check
+/// (the rounds start over). Returns whether a check should run now.
+fn after_edit(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, before: &Finding, edited: &[&str], by: &str) -> bool {
+    let what = edited.join(", ");
+    let st = f.stage.clone();
+    let mut ev = json!({ "fields": edited });
+    if before.scope != f.scope {
+        ev["scope_before"] = serde_json::to_value(&before.scope).unwrap_or(Json::Null);
+        ev["scope_after"] = serde_json::to_value(&f.scope).unwrap_or(Json::Null);
+    }
+    event(sup, f, &st, &st, "edited", true, by, &format!("You edited {what}"), ev);
+    log(sup, &f.repo, "you", by, &format!("{}: you edited {what}", short(&f.title, 70)), json!({ "finding": f.id }), Json::Null);
+    let mut told = format!("The person who owns this project edited this card ({what}). Work from this version:\nTitle: {}\nWhat happened: {}", f.title, one_line(&f.detail, 1500));
+    if let Some(sc) = f.scope.as_ref() {
+        told.push_str(&format!("\nPlan: area {}; files {}; root cause: {}; fixed when: {}; size {}", sc.area, if sc.files.is_empty() { "(any)".into() } else { sc.files.join(", ") }, one_line(&sc.root_cause, 400), one_line(&sc.acceptance, 400), sc.size));
+    }
+    let plan_changed = edited.iter().any(|e| e.starts_with("the plan") || e.starts_with("how we know"));
+    let recheck = plan_changed && f.stage == "develop" && f.agent.as_deref().is_some_and(|a| agent_done(sup, a));
+    if recheck {
+        told.push_str("\nWorkbench checks your branch again against this plan now.");
+        f.rounds = 0;
+        f.needs_you = None;
+    }
+    for a in [f.agent.clone(), f.chat_agent.clone()].into_iter().flatten() {
+        if sup.is_running(&a) && !agent_done(sup, &a) {
+            let _ = crate::levels::steer(sup, lv, &a, &told);
+        }
+    }
+    recheck
+}
+
 async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, verb)): AxPath<(String, String)>, body: Bytes) -> ApiResult {
     let v: Json = if body.is_empty() { json!({}) } else { parse_body(&body)? };
-    if matches!(verb.as_str(), "approve" | "start" | "reproduce" | "dismiss" | "back" | "park" | "unpark" | "pin" | "unpin" | "pr" | "unblock") {
+    if matches!(verb.as_str(), "approve" | "start" | "reproduce" | "dismiss" | "back" | "park" | "unpark" | "pin" | "unpin" | "pr" | "unblock" | "scope-ok" | "scope-no") {
         user_only(&app, &headers)?;
     }
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
@@ -4138,6 +4242,36 @@ fn do_verb(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, verb: &str,
                 f.updated = now_ms();
                 put_finding(sup, f)?;
                 event(sup, f, &st, &st, "unblocked", true, "you", &format!("You did it: {}{}", b.you_do, note.as_deref().map(|n| format!(" ({n})")).unwrap_or_default()), json!({ "blocked": b, "note": note }));
+                kick(sup, lv, &f.repo);
+            }
+            "scope-ok" | "scope-no" => {
+                let Some(ask) = f.scope_ask.take() else { return Err(ApiError::conflict("the agent has not asked to change the plan")) };
+                let list = |k: &str| ask[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>()).unwrap_or_default();
+                let note = v["note"].as_str().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+                let st = f.stage.clone();
+                let said = if verb == "scope-ok" {
+                    let mut sc = f.scope.clone().unwrap_or_default();
+                    let remove = list("remove");
+                    sc.files.retain(|x| !remove.iter().any(|r| scope_path(x) == r.as_str()));
+                    for a in list("add") {
+                        if !sc.files.iter().any(|x| scope_path(x) == a.as_str()) {
+                            sc.files.push(a);
+                        }
+                    }
+                    f.scope = Some(sc);
+                    f.rounds = 0;
+                    event(sup, f, &st, &st, "scope_ok", true, "you", &format!("You approved the plan change: files {}", f.scope.as_ref().map(|s| s.files.join(", ")).unwrap_or_default()), ask.clone());
+                    format!("The person approved your plan change: the plan's files are now {}. Carry on and stop when done; Workbench checks the branch again.", f.scope.as_ref().map(|s| s.files.join(", ")).unwrap_or_default())
+                } else {
+                    event(sup, f, &st, &st, "scope_no", false, "you", "You kept the plan", json!({ "ask": ask, "note": note }));
+                    format!("The person kept the plan as it is{}. Keep the change inside the plan's files.", note.as_deref().map(|n| format!(": {n}")).unwrap_or_default())
+                };
+                f.needs_you = None;
+                if let Some(a) = f.agent.clone().filter(|a| sup.is_running(a)) {
+                    let _ = crate::levels::steer(sup, lv, &a, &said);
+                }
+                f.updated = now_ms();
+                put_finding(sup, f)?;
                 kick(sup, lv, &f.repo);
             }
             "unpark" => {
@@ -4899,6 +5033,32 @@ mod tests {
         assert_eq!(chloectx_stale(Some("0.3.3"), Some("0.3.5")).unwrap(), "ChloeCtx 0.3.3 is older than this checkout's 0.3.5: scope runs with it anyway; run `chloectx upgrade`");
         assert!(chloectx_stale(Some("0.10.0"), Some("0.9.1")).unwrap().contains("is newer than"));
         assert!(chloectx_stale(None, Some("0.3.5")).unwrap().starts_with("ChloeCtx is not installed"));
+    }
+
+    #[test]
+    fn a_plans_file_with_a_note_still_counts_as_in_scope() {
+        let files = vec!["chloedb-crawl/src/extract.rs (learn_template, line ~762; test learns_template_fields, line ~853)".to_string(), "`docs/`".to_string(), "src/cc/*".to_string(), "chloedb".to_string()];
+        assert_eq!(scope_path(&files[0]), "chloedb-crawl/src/extract.rs");
+        assert!(in_scope("chloedb-crawl/src/extract.rs", &files));
+        assert!(in_scope("docs/guide/index.md", &files));
+        assert!(in_scope("src/cc/view.rs", &files));
+        assert!(in_scope("chloedb/src/lib.rs", &files));
+        assert!(!in_scope("chloedb-crawl/src/extract.rs.bak", &files));
+        assert!(!in_scope("chloedb-server/src/main.rs", &files));
+        assert!(!in_scope("chloedb-crawl/src/fetch.rs", &files));
+    }
+
+    #[test]
+    fn an_agent_asks_to_change_the_plan_with_a_file() {
+        let dir = std::env::temp_dir().join(format!("cv-ask-{}", now_ms()));
+        std::fs::create_dir_all(dir.join(".converge")).unwrap();
+        std::fs::write(dir.join(".converge/scope_change.json"), r#"{"add": ["chloedb-crawl/src/extract.rs (the template)"], "why": "the bug is there"}"#).unwrap();
+        let ask = read_scope_ask(&dir, "Ada").unwrap();
+        assert_eq!(ask["add"], json!(["chloedb-crawl/src/extract.rs"]));
+        assert_eq!(ask["by"], "Ada");
+        assert!(!dir.join(".converge/scope_change.json").exists(), "read once");
+        assert!(read_scope_ask(&dir, "Ada").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
