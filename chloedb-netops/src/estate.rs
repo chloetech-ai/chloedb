@@ -35,7 +35,7 @@ pub const EDGES: &str = "netops_estate_edges";
 pub const EVENTS: &str = "netops_estate_events";
 /// Days of faults and changes written when the estate is made.
 pub const HISTORY_DAYS: i64 = 60;
-const NONE: u32 = u32::MAX;
+pub const NONE: u32 = u32::MAX;
 
 /// The people (and the pipeline) whose names are on changes.
 pub const OPERATORS: &[&str] = &["m.rossi", "a.khan", "j.muller", "s.dubois", "l.garcia", "t.nowak", "e.lindqvist", "automation"];
@@ -190,30 +190,166 @@ fn gear(kind: &str, n: usize) -> (&'static str, &'static str, &'static [&'static
 const FIRMS_A: &[&str] = &["Northwind", "Harbour", "Meridian", "Alder", "Kestrel", "Bluewater", "Ironbridge", "Saffron", "Lumen", "Cobalt", "Halcyon", "Redwood", "Castell", "Orchard", "Vantage", "Tidewater"];
 const FIRMS_B: &[&str] = &["Logistics", "Clinics", "Bank", "Foods", "Studios", "Pharma", "Hotels", "Retail", "Law", "Motors", "Schools", "Insurance", "Print", "Energy", "Labs", "Freight"];
 
-impl Estate {
-    /// The backbone of `w` and, behind each of its sites, about `size`
-    /// objects in all.
-    pub fn build(w: &World, size: usize) -> Estate {
-        let mut e = Estate { nodes: Vec::new(), edges: Vec::new(), index: HashMap::new(), down: Vec::new(), up: Vec::new(), trunks: Vec::new(), hub_r: f64::MAX, site_r: f64::MAX, classes: Default::default(), live: Mutex::new(Vec::new()) };
+/// What a hub holds when the simulator makes it: 12 sites of an access
+/// node and what is behind it.
+const SITES_PER_HUB: usize = 12;
+
+/// What the estate is made of, before it is laid out on the plane: made up
+/// by the simulator (`Plan::generate`), or read back from what the network
+/// reports (`crate::discover::estate_plan`). Each metro is a site of the
+/// backbone, by its id.
+#[derive(Default)]
+pub struct Plan {
+    pub metros: Vec<PlanMetro>,
+}
+
+pub struct PlanMetro {
+    pub site: String,
+    /// The backbone's devices at the site: their round trip, ms (the simulator's).
+    pub core_ms: HashMap<String, f64>,
+    pub hubs: Vec<PlanHub>,
+}
+
+pub struct PlanHub {
+    pub tag: String,
+    pub name: String,
+    pub routers: Vec<PlanObj>,
+    /// For each router, the backbone devices it hangs from.
+    pub uplinks: Vec<Vec<String>>,
+    pub power: Option<PlanObj>,
+    pub sites: Vec<PlanSite>,
+}
+
+pub struct PlanSite {
+    pub tag: String,
+    pub name: String,
+    /// olt, cell or switch.
+    pub kind: &'static str,
+    pub node: PlanObj,
+    /// The hub's routers (by their place in `routers`) it hangs from.
+    pub homes: Vec<usize>,
+    /// ont, radio or cpe.
+    pub behind_kind: &'static str,
+    pub behind: Vec<PlanObj>,
+}
+
+#[derive(Clone)]
+pub struct PlanObj {
+    pub id: String,
+    pub name: String,
+    pub vendor: &'static str,
+    pub model: &'static str,
+    pub version: String,
+    pub customer: String,
+    pub base_ms: f64,
+}
+
+/// The backbone's regions, west to east, each with its sites (by index).
+fn regions(w: &World) -> Vec<(&'static str, Vec<usize>)> {
+    let mut regions: Vec<(&'static str, Vec<usize>)> = Vec::new();
+    for (i, s) in w.sites.iter().enumerate() {
+        match regions.iter_mut().find(|r| r.0 == s.region) {
+            Some(r) => r.1.push(i),
+            None => regions.push((s.region, vec![i])),
+        }
+    }
+    let lon = |r: &(&str, Vec<usize>)| r.1.iter().map(|&i| w.sites[i].lon).sum::<f64>() / r.1.len() as f64;
+    regions.sort_by(|a, b| lon(a).total_cmp(&lon(b)));
+    regions
+}
+
+impl Plan {
+    /// The estate the simulator makes behind the sites of `w`: about `size`
+    /// objects in all, the same every time.
+    pub fn generate(w: &World, size: usize) -> Plan {
         let mut rng = Rng::new(77_041);
         let sites = w.sites.len().max(1);
-        // What a hub holds: 12 sites of an access node and what is behind it.
-        const SITES_PER_HUB: usize = 12;
         let per_metro = size / sites;
         let behind = (per_metro / SITES_PER_HUB).saturating_sub(3).clamp(3, 40);
         let per_hub = 4 + SITES_PER_HUB * (2 + behind * 5 / 6);
         let hubs = (per_metro as f64 / per_hub as f64).round().max(1.0) as usize;
-
-        // Regions in a row, west to east, each a disc that holds its metros.
-        let mut regions: Vec<(&str, Vec<usize>)> = Vec::new();
-        for (i, s) in w.sites.iter().enumerate() {
-            match regions.iter_mut().find(|r| r.0 == s.region) {
-                Some(r) => r.1.push(i),
-                None => regions.push((s.region, vec![i])),
+        let mut metros = Vec::new();
+        for (_, members) in regions(w) {
+            for si in members {
+                let site = &w.sites[si];
+                let devs: Vec<&crate::world::Device> = w.devices.iter().filter(|d| d.site == site.id).collect();
+                let mut core_ms = HashMap::new();
+                for d in &devs {
+                    core_ms.insert(d.id.clone(), round(rng.range(0.2, 0.9), 2));
+                }
+                let mut aggs: Vec<String> = devs.iter().filter(|d| d.role == "agg").map(|d| d.id.clone()).collect();
+                if aggs.is_empty() {
+                    aggs = devs.iter().map(|d| d.id.clone()).collect();
+                }
+                let n_hubs = ((hubs as f64) * (0.5 + 0.7 * site.weight)).round().max(1.0) as usize;
+                let mut list = Vec::new();
+                for hi in 0..n_hubs {
+                    let tag = format!("h{:02}-{}", hi + 1, site.id);
+                    let hub_name = format!("{} hub {}", site.name, hi + 1);
+                    let mut routers = Vec::new();
+                    for n in 0..2 {
+                        let (vendor, model, versions) = gear("hub-router", hi);
+                        let id = format!("hr{}-{tag}", n + 1);
+                        routers.push(PlanObj { name: id.clone(), id, vendor, model, version: versions[(hi * 3 + n) % versions.len()].to_string(), customer: String::new(), base_ms: round(rng.range(0.8, 2.6), 2) });
+                    }
+                    let (vendor, model, versions) = gear("power", hi);
+                    let power = PlanObj { id: format!("pw-{tag}"), name: format!("Power plant, {hub_name}"), vendor, model, version: versions[0].to_string(), customer: String::new(), base_ms: 0.0 };
+                    let mut sites = Vec::new();
+                    for s in 0..SITES_PER_HUB {
+                        let pick = rng.below(4);
+                        let (kind, behind_kind, label, count) = match pick {
+                            0 => ("cell", "radio", "Cell site", 3 + rng.below(4)),
+                            1 => ("switch", "cpe", "Business park", (behind * 2 / 3).max(3) + rng.below(behind / 3 + 1)),
+                            _ => ("olt", "ont", "Cabinet", (behind * 3 / 4).max(3) + rng.below(behind / 2 + 1)),
+                        };
+                        let stag = format!("s{:02}-{tag}", s + 1);
+                        let (vendor, model, versions) = gear(kind, hi + s);
+                        let id = format!("{kind}-{stag}");
+                        let node = PlanObj { name: id.clone(), id, vendor, model, version: versions[(hi + s * 5) % versions.len()].to_string(), customer: String::new(), base_ms: round(rng.range(2.5, 7.5), 2) };
+                        let homes = if s % 3 == 0 { vec![s % 2, (s + 1) % 2] } else { vec![s % 2] };
+                        let mut objs = Vec::new();
+                        for b in 0..count {
+                            let (vendor, model, versions) = gear(behind_kind, b + s);
+                            let customer = if behind_kind == "cpe" { format!("{} {}", FIRMS_A[rng.below(FIRMS_A.len())], FIRMS_B[rng.below(FIRMS_B.len())]) } else { String::new() };
+                            let id = format!("{behind_kind}-{:03}-{stag}", b + 1);
+                            let name = match behind_kind {
+                                "cpe" => format!("{customer}, customer router"),
+                                "radio" => format!("Sector {}", b + 1),
+                                _ => format!("ONT {}", b + 1),
+                            };
+                            let base = if behind_kind == "radio" { rng.range(9.0, 24.0) } else { rng.range(5.0, 16.0) };
+                            objs.push(PlanObj { id, name, vendor, model, version: versions[(b * 7 + s) % versions.len()].to_string(), customer, base_ms: round(base, 2) });
+                        }
+                        sites.push(PlanSite { tag: stag, name: format!("{label} {}, {hub_name}", s + 1), kind, node, homes, behind_kind, behind: objs });
+                    }
+                    list.push(PlanHub { tag, name: hub_name, uplinks: vec![aggs.clone(); routers.len()], routers, power: Some(power), sites });
+                }
+                metros.push(PlanMetro { site: site.id.to_string(), core_ms, hubs: list });
             }
         }
-        let lon = |r: &(&str, Vec<usize>)| r.1.iter().map(|&i| w.sites[i].lon).sum::<f64>() / r.1.len() as f64;
-        regions.sort_by(|a, b| lon(a).total_cmp(&lon(b)));
+        Plan { metros }
+    }
+
+    /// The objects it has, places and backbone left out.
+    pub fn objects(&self) -> usize {
+        self.metros.iter().flat_map(|m| &m.hubs).map(|h| h.routers.len() + usize::from(h.power.is_some()) + h.sites.iter().map(|s| 1 + s.behind.len()).sum::<usize>()).sum()
+    }
+}
+
+impl Estate {
+    /// The backbone of `w` and, behind each of its sites, about `size`
+    /// objects in all, as the simulator makes them.
+    pub fn build(w: &World, size: usize) -> Estate {
+        Estate::lay_out(w, &Plan::generate(w, size))
+    }
+
+    /// The backbone of `w` and what `plan` puts behind it, each object with
+    /// its place on the plane.
+    pub fn lay_out(w: &World, plan: &Plan) -> Estate {
+        let mut e = Estate { nodes: Vec::new(), edges: Vec::new(), index: HashMap::new(), down: Vec::new(), up: Vec::new(), trunks: Vec::new(), hub_r: f64::MAX, site_r: f64::MAX, classes: Default::default(), live: Mutex::new(Vec::new()) };
+        let by_site: HashMap<&str, &PlanMetro> = plan.metros.iter().map(|m| (m.site.as_str(), m)).collect();
+        // Regions in a row, west to east, each a disc that holds its metros.
+        let regions = regions(w);
         // Places are boxes, one inside the other, each with a strip along
         // its top for its name. Metros are all of a size; a region is as
         // wide as its metros side by side; regions fill two rows.
@@ -242,6 +378,7 @@ impl Estate {
             let rm = METRO;
             for (mi, &si) in members.iter().enumerate() {
                 let site = &w.sites[si];
+                let pm = by_site.get(site.id);
                 let (mx, my) = (rx - width(k) / 2.0 + GAP + METRO / 2.0 + mi as f64 * (METRO + GAP), ry + HEAD / 2.0);
                 let metro = e.add(Node::container(format!("m-{}", site.id), "metro", 1, site.name.to_string(), [region, NONE, NONE, NONE], mx, my, rm, rm));
                 // The site's own devices, in a ring at the centre.
@@ -249,14 +386,15 @@ impl Estate {
                 for (j, &di) in devs.iter().enumerate() {
                     let d = &w.devices[di];
                     let (cx, cy) = (mx - rm / 2.0 + rm * (j as f64 + 0.5) / devs.len() as f64, my - rm / 2.0 + 0.16 * rm);
-                    let i = e.add(Node { id: d.id.clone(), kind: d.role, layer: "core", tier: 3, name: d.id.clone(), anc: [region, metro, NONE, NONE], x: cx, y: cy, r: 0.0, w: 0.0, h: 0.0, vendor: d.vendor, model: d.model, version: d.os_version.clone(), customer: String::new(), base_ms: round(rng.range(0.2, 0.9), 2), children: 0 });
+                    let base_ms = pm.and_then(|m| m.core_ms.get(&d.id).copied()).unwrap_or(0.5);
+                    let i = e.add(Node { id: d.id.clone(), kind: d.role, layer: "core", tier: 3, name: d.id.clone(), anc: [region, metro, NONE, NONE], x: cx, y: cy, r: 0.0, w: 0.0, h: 0.0, vendor: d.vendor, model: d.model, version: d.os_version.clone(), customer: String::new(), base_ms, children: 0 });
                     core_at.insert(di, i);
                 }
-                let mut aggs: Vec<u32> = devs.iter().filter(|&&i| w.devices[i].role == "agg").map(|i| core_at[i]).collect();
-                if aggs.is_empty() {
-                    aggs = devs.iter().map(|i| core_at[i]).collect();
+                let hubs: &[PlanHub] = pm.map(|m| m.hubs.as_slice()).unwrap_or(&[]);
+                if hubs.is_empty() {
+                    continue;
                 }
-                let n_hubs = ((hubs as f64) * (0.5 + 0.7 * site.weight)).round().max(1.0) as usize;
+                let n_hubs = hubs.len();
                 // Hubs in a grid under the core's row.
                 let (area_w, area_h, top) = (0.94 * rm, 0.74 * rm, my - rm / 2.0 + 0.23 * rm);
                 let cols = ((n_hubs as f64 * area_w / area_h).sqrt().ceil() as usize).max(1);
@@ -264,72 +402,68 @@ impl Estate {
                 let (cw, ch) = (area_w / cols as f64, area_h / rows as f64);
                 let (hw, hh) = (cw * 0.9, ch * 0.9);
                 e.hub_r = e.hub_r.min(hw.min(hh) / 2.0);
-                for hi in 0..n_hubs {
+                for (hi, hub) in hubs.iter().enumerate() {
                     let (hx, hy) = (mx - area_w / 2.0 + cw * ((hi % cols) as f64 + 0.5), top + ch * ((hi / cols) as f64 + 0.5));
-                    let tag = format!("h{:02}-{}", hi + 1, site.id);
-                    let hub = e.add(Node::container(tag.clone(), "hub", 2, format!("{} hub {}", site.name, hi + 1), [region, metro, NONE, NONE], hx, hy, hw, hh));
-                    let anc = [region, metro, hub, NONE];
+                    let hub_i = e.add(Node::container(hub.tag.clone(), "hub", 2, hub.name.clone(), [region, metro, NONE, NONE], hx, hy, hw, hh));
+                    let anc = [region, metro, hub_i, NONE];
                     let mut routers = Vec::new();
-                    for n in 0..2 {
-                        let (vendor, model, versions) = gear("hub-router", hi);
-                        let i = e.add(Node { id: format!("hr{}-{tag}", n + 1), kind: "hub-router", layer: "aggregation", tier: 3, name: format!("hr{}-{tag}", n + 1), anc, x: hx + (n as f64 - 0.5) * 0.44 * hw, y: hy - hh / 2.0 + 0.2 * hh, r: 0.0, w: 0.0, h: 0.0, vendor, model, version: versions[(hi * 3 + n) % versions.len()].to_string(), customer: String::new(), base_ms: round(rng.range(0.8, 2.6), 2), children: 0 });
-                        for &up in &aggs {
-                            e.edges.push((up, i, "uplink"));
+                    let k = hub.routers.len();
+                    for (n, r) in hub.routers.iter().enumerate() {
+                        let dx = if k > 1 { (n as f64 - (k as f64 - 1.0) / 2.0) / (k as f64 - 1.0) * 0.44 * hw } else { 0.0 };
+                        let i = e.add(Node { id: r.id.clone(), kind: "hub-router", layer: "aggregation", tier: 3, name: r.name.clone(), anc, x: hx + dx, y: hy - hh / 2.0 + 0.2 * hh, r: 0.0, w: 0.0, h: 0.0, vendor: r.vendor, model: r.model, version: r.version.clone(), customer: String::new(), base_ms: r.base_ms, children: 0 });
+                        for up in hub.uplinks.get(n).into_iter().flatten() {
+                            if let Some(u) = e.find(up).filter(|&u| e.nodes[u as usize].layer == "core") {
+                                e.edges.push((u, i, "uplink"));
+                            }
                         }
                         routers.push(i);
                     }
-                    let (vendor, model, versions) = gear("power", hi);
-                    let pw = e.add(Node { id: format!("pw-{tag}"), kind: "power", layer: "power", tier: 3, name: format!("Power plant, {} hub {}", site.name, hi + 1), anc, x: hx, y: hy - hh / 2.0 + 0.2 * hh, r: 0.0, w: 0.0, h: 0.0, vendor, model, version: versions[0].to_string(), customer: String::new(), base_ms: 0.0, children: 0 });
-                    for &r in &routers {
-                        e.edges.push((pw, r, "power"));
+                    if let Some(p) = &hub.power {
+                        let pw = e.add(Node { id: p.id.clone(), kind: "power", layer: "power", tier: 3, name: p.name.clone(), anc, x: hx, y: hy - hh / 2.0 + 0.2 * hh, r: 0.0, w: 0.0, h: 0.0, vendor: p.vendor, model: p.model, version: p.version.clone(), customer: String::new(), base_ms: 0.0, children: 0 });
+                        for &r in &routers {
+                            e.edges.push((pw, r, "power"));
+                        }
                     }
                     // Its sites, four across, under the routers' row.
-                    let (sw_cell, sh_cell, s_top) = (0.94 * hw / 4.0, 0.68 * hh / (SITES_PER_HUB as f64 / 4.0).ceil(), hy - hh / 2.0 + 0.29 * hh);
+                    let per = hub.sites.len().max(1);
+                    let (sw_cell, sh_cell, s_top) = (0.94 * hw / 4.0, 0.68 * hh / (per as f64 / 4.0).ceil(), hy - hh / 2.0 + 0.29 * hh);
                     let (sw, sh) = (sw_cell * 0.9, sh_cell * 0.9);
                     e.site_r = e.site_r.min(sw.min(sh) / 2.0);
-                    for s in 0..SITES_PER_HUB {
+                    for (s, st) in hub.sites.iter().enumerate() {
                         let (sx, sy) = (hx - 0.47 * hw + sw_cell * ((s % 4) as f64 + 0.5), s_top + sh_cell * ((s / 4) as f64 + 0.5));
-                        let pick = rng.below(4);
-                        let (kind, behind_kind, label, count) = match pick {
-                            0 => ("cell", "radio", "Cell site", 3 + rng.below(4)),
-                            1 => ("switch", "cpe", "Business park", (behind * 2 / 3).max(3) + rng.below(behind / 3 + 1)),
-                            _ => ("olt", "ont", "Cabinet", (behind * 3 / 4).max(3) + rng.below(behind / 2 + 1)),
-                        };
-                        let stag = format!("s{:02}-{tag}", s + 1);
-                        let asite = e.add(Node::container(stag.clone(), "site", 3, format!("{label} {}, {} hub {}", s + 1, site.name, hi + 1), anc, sx, sy, sw, sh));
-                        let anc = [region, metro, hub, asite];
-                        let (vendor, model, versions) = gear(kind, hi + s);
-                        let node = e.add(Node { id: format!("{kind}-{stag}"), kind, layer: "access", tier: 3, name: format!("{kind}-{stag}"), anc, x: sx, y: if kind == "cell" { sy } else { sy - sh / 2.0 + 0.17 * sh }, r: 0.0, w: 0.0, h: 0.0, vendor, model, version: versions[(hi + s * 5) % versions.len()].to_string(), customer: String::new(), base_ms: round(rng.range(2.5, 7.5), 2), children: 0 });
-                        e.edges.push((routers[s % 2], node, "access"));
-                        if s % 3 == 0 {
-                            e.edges.push((routers[(s + 1) % 2], node, "access"));
+                        let asite = e.add(Node::container(st.tag.clone(), "site", 3, st.name.clone(), anc, sx, sy, sw, sh));
+                        let anc = [region, metro, hub_i, asite];
+                        let n = &st.node;
+                        let node = e.add(Node { id: n.id.clone(), kind: st.kind, layer: "access", tier: 3, name: n.name.clone(), anc, x: sx, y: if st.kind == "cell" { sy } else { sy - sh / 2.0 + 0.17 * sh }, r: 0.0, w: 0.0, h: 0.0, vendor: n.vendor, model: n.model, version: n.version.clone(), customer: String::new(), base_ms: n.base_ms, children: 0 });
+                        for &h in &st.homes {
+                            if let Some(&r) = routers.get(h) {
+                                e.edges.push((r, node, "access"));
+                            }
                         }
-                        for b in 0..count {
+                        let count = st.behind.len();
+                        for (b, o) in st.behind.iter().enumerate() {
                             // What is behind the access node, in a grid under it.
                             let (gw, gh) = (0.9 * sw, 0.6 * sh);
                             let gc = ((count as f64 * gw / gh).sqrt().ceil() as usize).max(1);
                             let gr = count.div_ceil(gc);
                             let (mut px, mut py) = (sx - gw / 2.0 + gw * ((b % gc) as f64 + 0.5) / gc as f64, sy - sh / 2.0 + 0.34 * sh + gh * ((b / gc) as f64 + 0.5) / gr as f64);
-                            if behind_kind == "radio" {
+                            if st.behind_kind == "radio" {
                                 // A cell site is a circle: its sectors stand around the tower.
                                 let a = std::f64::consts::TAU * (b as f64 / count as f64) - std::f64::consts::FRAC_PI_2;
                                 (px, py) = (sx + 0.33 * sw.min(sh) * a.cos(), sy + 0.33 * sw.min(sh) * a.sin());
                             }
-                            let (vendor, model, versions) = gear(behind_kind, b + s);
-                            let customer = if behind_kind == "cpe" { format!("{} {}", FIRMS_A[rng.below(FIRMS_A.len())], FIRMS_B[rng.below(FIRMS_B.len())]) } else { String::new() };
-                            let id = format!("{behind_kind}-{:03}-{stag}", b + 1);
-                            let name = match behind_kind {
-                                "cpe" => format!("{customer}, customer router"),
-                                "radio" => format!("Sector {}", b + 1),
-                                _ => format!("ONT {}", b + 1),
-                            };
-                            let base = if behind_kind == "radio" { rng.range(9.0, 24.0) } else { rng.range(5.0, 16.0) };
-                            let i = e.add(Node { id, kind: behind_kind, layer: "premises", tier: 4, name, anc, x: px, y: py, r: 0.0, w: 0.0, h: 0.0, vendor, model, version: versions[(b * 7 + s) % versions.len()].to_string(), customer, base_ms: round(base, 2), children: 0 });
+                            let i = e.add(Node { id: o.id.clone(), kind: st.behind_kind, layer: "premises", tier: 4, name: o.name.clone(), anc, x: px, y: py, r: 0.0, w: 0.0, h: 0.0, vendor: o.vendor, model: o.model, version: o.version.clone(), customer: o.customer.clone(), base_ms: o.base_ms, children: 0 });
                             e.edges.push((node, i, "drop"));
                         }
                     }
                 }
             }
+        }
+        if e.hub_r == f64::MAX {
+            e.hub_r = 0.0;
+        }
+        if e.site_r == f64::MAX {
+            e.site_r = 0.0;
         }
         // The backbone itself, and how many of its links join each pair of
         // metros (what is drawn before single links are).
@@ -520,6 +654,16 @@ impl Estate {
     /// What depends on `i` (never through the backbone), nearest first.
     pub fn below(&self, i: u32, cap: usize) -> Vec<u32> {
         self.walk(i, 8, cap, true, false)
+    }
+
+    /// What an object depends on, one hop up.
+    pub fn ups(&self, i: u32) -> &[u32] {
+        &self.up[i as usize]
+    }
+
+    /// What depends on an object, one hop down.
+    pub fn downs(&self, i: u32) -> &[u32] {
+        &self.down[i as usize]
     }
 
     pub fn walk(&self, from: u32, hops: usize, cap: usize, down: bool, up: bool) -> Vec<u32> {

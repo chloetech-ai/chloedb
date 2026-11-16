@@ -99,6 +99,14 @@ impl<'a> Run<'a> {
         }
     }
 
+    /// Runs a piece of evidence's own query, as a step: a claim that
+    /// something did not happen is made only when this returns nothing.
+    async fn check(&mut self, title: &str, ev: &Ev) -> Vec<Row> {
+        let rows = self.q(title, &ev.sql, ev.params.clone()).await;
+        self.finding(if rows.is_empty() { "None.".to_string() } else { format!("{} rows.", rows.len()) });
+        rows
+    }
+
     /// A step that is a conclusion, not a query.
     pub fn think(&mut self, title: &str, detail: impl Into<String>) {
         self.step("reason", title, "", &json!({}), 0, 0.0, &detail.into());
@@ -238,7 +246,100 @@ struct Cause {
     entity: String,
     title: String,
     text: String,
-    why: Vec<String>,
+    /// What happened, in order, told from the evidence.
+    story: String,
+    why: Vec<Ev>,
+}
+
+/// A piece of evidence: a claim, and the query that shows the rows behind
+/// it, kept (in `netops_evidence`) so that the page can run it again.
+#[derive(Clone)]
+struct Ev {
+    claim: String,
+    /// alert, log, metric, change, flow, advisory or history.
+    kind: &'static str,
+    sql: String,
+    params: Value,
+    /// What it points at: `device:cr1-ams`, `link:...`, `change:...`, `incident:...`, `site:...`.
+    refs: Vec<String>,
+    ts: Option<i64>,
+    /// The line or reading itself, as the agent saw it.
+    excerpt: String,
+    /// The claim is that the query returns nothing (no change ran, no loss of signal).
+    absent: bool,
+}
+
+fn proof(kind: &'static str, claim: impl Into<String>, sql: impl Into<String>, params: Value) -> Ev {
+    Ev { claim: claim.into(), kind, sql: sql.into(), params, refs: Vec::new(), ts: None, excerpt: String::new(), absent: false }
+}
+
+impl Ev {
+    fn refs(mut self, r: impl IntoIterator<Item = String>) -> Ev {
+        self.refs.extend(r);
+        self
+    }
+    fn at(mut self, t: i64) -> Ev {
+        self.ts = Some(t);
+        self
+    }
+    fn quote(mut self, s: impl Into<String>) -> Ev {
+        self.excerpt = s.into();
+        self
+    }
+    fn none(mut self) -> Ev {
+        self.absent = true;
+        self
+    }
+    fn row(&self, run: &str, incident: &str, n: usize, role: &str) -> Value {
+        let mut r = json!({"id": format!("{run}:{n:02}"), "run": run, "incident": incident, "n": n, "role": role, "kind": self.kind, "claim": self.claim,
+            "refs": self.refs, "excerpt": self.excerpt, "sql_text": self.sql, "params": self.params.to_string(), "absent": self.absent});
+        if let Some(t) = self.ts {
+            r["ts"] = json!(iso(t));
+        }
+        r
+    }
+}
+
+/// A time in a claim or a story, as a token the page shows in the reader's
+/// own time zone (`[[t:2026-11-16T00:03:00Z]]`); [`utc`] writes it out.
+fn tm(t: i64) -> String {
+    format!("[[t:{}]]", iso(t))
+}
+
+/// A claim or a story with its times written as UTC.
+fn utc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("[[t:") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 4..];
+        match after.find("]]") {
+            Some(j) => {
+                out.push_str(&format!("{} UTC", hhmm(parse_iso(&after[..j]))));
+                rest = &after[j + 2..];
+            }
+            None => {
+                out.push_str(&rest[i..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn and_list(xs: &[String]) -> String {
+    match xs {
+        [] => String::new(),
+        [a] => a.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+fn upper_first(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 fn between<'x>(s: &'x str, a: &str, b: &str) -> Option<&'x str> {
@@ -329,28 +430,101 @@ pub async fn root_cause(e: &Engine, incident: &str, m: i64) -> Result<Option<(St
         .find(|f| f.2 > 2.0 && sites.contains(&f.1) && of("udp-flood").contains(&f.1));
     run.finding(match &flood { Some(f) => format!("{:.1} Gb/s toward {} at {} from {} networks.", f.2, f.0, f.1.to_uppercase(), f.3), None => "No flood.".to_string() });
 
-    // The six causes, each scored by what the queries above returned.
+    // The six causes, each scored by what the queries above returned, and
+    // each with its evidence: a claim, and the query that shows the rows
+    // behind it, kept so the page can run it again. A claim that something
+    // did not happen is checked by running its own query first.
+    let first_alert = alerts.iter().map(|a| parse_iso(&a.s("started"))).min().unwrap_or(started);
+    let until = m + 60;
+    let win = json!({"a": iso(since), "b": iso(until)});
+    let hour = json!({"a": iso(started - 3600), "b": iso(m)});
+    let inc_p = json!({"incident": incident});
+    let at = |r: &Row, k: &str| parse_iso(&r.s(k));
+    let logs_sql = |devs: &[String], needle: &str| format!("SELECT ts, device, message FROM netops_syslog\nWHERE ts >= :a AND ts <= :b AND device IN ({}) AND message LIKE '%{needle}%'\nORDER BY ts LIMIT 50", quoted(devs));
+    let site_logs_sql = |site: &str, needle: &str| format!("SELECT ts, device, message FROM netops_syslog\nWHERE ts >= :a AND ts <= :b AND site = '{}' AND message LIKE '%{needle}%'\nORDER BY ts LIMIT 50", clean(site));
+    let alerts_sql = |rule: &str, entities: &[String]| format!("SELECT started, rule_name, entity, severity, reading, unit FROM netops_alerts\nWHERE incident = :incident AND rule = '{}'{}\nORDER BY started LIMIT 50", clean(rule), if entities.is_empty() { String::new() } else { format!(" AND entity IN ({})", quoted(entities)) });
+    let changes_sql = |devs: &[String]| {
+        let nums: Vec<String> = devs.iter().filter_map(|d| w.device(d).map(|x| x.num.to_string())).collect();
+        format!("SELECT id, title, executed, owner, devices FROM netops_changes\nWHERE executed >= :a AND executed <= :b AND device_nums && [{}]\nORDER BY executed DESC LIMIT 10", nums.join(", "))
+    };
+    let link_sql = "SELECT ts, rx_dbm, errors, util, up FROM netops_link_metrics\nWHERE link = :link AND ts >= :a AND ts <= :b\nORDER BY ts LIMIT 90";
+    let dev_refs = |devs: &[String]| devs.iter().map(|d| format!("device:{d}")).collect::<Vec<_>>();
+    let alert_at = |rule: &str, entity: &str| alerts.iter().filter(|a| a.s("rule") == rule && a.s("entity") == entity).map(|a| parse_iso(&a.s("started"))).min();
     let mut causes: Vec<Cause> = Vec::new();
     // A fibre cut: a link down with loss of signal at its ends.
     for l in of("link-down") {
         let Some(li) = w.link_by_id(&l) else { continue };
         let link = &w.links[li];
-        let ends = [&w.devices[link.a].id, &w.devices[link.b].id];
-        let seen = ends.iter().filter(|d| los.iter().any(|x| x.s("device") == ***d && x.s("message").contains(if **d == ends[0] { link.a_if.as_str() } else { link.z_if.as_str() }))).count();
+        let ends = vec![w.devices[link.a].id.clone(), w.devices[link.b].id.clone()];
+        let port = |k: usize| if k == 0 { link.a_if.as_str() } else { link.z_if.as_str() };
+        let dark: Vec<&Row> = los.iter().copied().filter(|x| (0..2).any(|k| x.s("device") == ends[k] && x.s("message").contains(port(k)))).collect();
+        let seen = (0..2).filter(|&k| dark.iter().any(|x| x.s("device") == ends[k] && x.s("message").contains(port(k)))).count();
         if seen == 0 {
             continue;
         }
         let (a, z) = (w.devices[link.a].site.to_uppercase(), w.devices[link.b].site.to_uppercase());
         let what = if link.circuit.is_empty() { format!("link {l}") } else { format!("circuit {} ({})", link.circuit, link.provider) };
+        let t_los = dark.iter().map(|x| at(x, "ts")).min().unwrap_or(started);
+        let t_last = dark.iter().map(|x| at(x, "ts")).max().unwrap_or(t_los);
+        let down = alert_at("link-down", &l).unwrap_or(first_alert);
+        let lost = if seen == 2 {
+            format!("both ends of {l}, {} {} and {} {}, logged loss of signal{}", ends[0], link.a_if, ends[1], link.z_if, if t_last - t_los <= 5 { " within seconds of each other".to_string() } else { format!(", {} s apart", t_last - t_los) })
+        } else {
+            format!("{} logged loss of signal on its end of {l}", dark[0].s("device"))
+        };
+        let mut why = vec![
+            proof("log", format!("{}{}.", upper_first(&lost), if seen == 2 { "" } else { " (the far end said nothing)" }), logs_sql(&ends, "loss of signal alarm set"), win.clone()).refs(dev_refs(&ends)).at(t_los).quote(dark[0].s("message")),
+            proof("alert", format!("The link-down alert on {l} fired at {}.", tm(down)), alerts_sql("link-down", std::slice::from_ref(&l)), inc_p.clone()).refs([format!("link:{l}")]).at(down),
+        ];
+        // The light before it went out: a failing optic dims first, a cut fibre goes dark at once.
+        let before = json!({"link": l, "a": iso(t_los - 31 * 60), "b": iso(t_los - 60)});
+        let light = run.q("The light on the link in the half hour before it went dark", "SELECT MIN(rx_dbm) AS low, MAX(rx_dbm) AS high, COUNT(*) AS n FROM netops_link_metrics\nWHERE link = :link AND ts >= :a AND ts <= :b AND up = 1", before.clone()).await;
+        let steady = light.first().filter(|r| r.i("n") >= 5 && r.f("high") - r.f("low") < 1.5).map(|r| (r.f("low"), r.f("high")));
+        run.finding(match steady { Some((lo, hi)) => format!("Steady, {lo:.1} to {hi:.1} dBm."), None => "Not steady, or not enough points.".to_string() });
+        if let Some((lo, hi)) = steady {
+            why.push(proof("metric", format!("The light on {l} was steady, {lo:.1} to {hi:.1} dBm, in the half hour before it went dark: a failing optic fades first, a cut fibre goes dark at once."), link_sql, json!({"link": l, "a": iso(t_los - 31 * 60), "b": iso(t_los + 5 * 60)})).refs([format!("link:{l}")]).at(t_los));
+        }
+        let quiet = proof("change", format!("No change ran on {} or {} in the hour before.", ends[0], ends[1]), changes_sql(&ends), hour.clone()).refs(dev_refs(&ends)).none();
+        let unchanged = run.check("Changes on the link's two routers in the hour before", &quiet).await.is_empty();
+        if unchanged {
+            why.push(quiet);
+        }
+        // Where its traffic went.
+        let mut moved = String::new();
+        if let Some(si) = link.sibling {
+            let s = &w.links[si];
+            let p = json!({"link": s.id, "a": iso(t_los - 30 * 60), "b": iso(until)});
+            let pts = run.q("The other plane's load, before and after", link_sql, p.clone()).await;
+            let mean = |xs: Vec<f64>| if xs.is_empty() { 0.0 } else { xs.iter().sum::<f64>() / xs.len() as f64 };
+            let was = mean(pts.iter().filter(|r| at(r, "ts") < t_los - 60).map(|r| r.f("util")).collect());
+            let now_ = pts.iter().filter(|r| at(r, "ts") > t_los).map(|r| r.f("util")).fold(0.0, f64::max);
+            run.finding(format!("{} went from {:.0}% to {:.0}% busy.", s.id, was * 100.0, now_ * 100.0));
+            if now_ > was + 0.08 {
+                moved = format!(" Its traffic moved to the other plane, {}, which went from {:.0}% to {:.0}% busy.", s.id, was * 100.0, now_ * 100.0);
+                why.push(proof("metric", format!("Its traffic moved to the other plane: {} went from {:.0}% to {:.0}% busy.", s.id, was * 100.0, now_ * 100.0), link_sql, p).refs([format!("link:{}", s.id)]).at(t_los));
+            }
+        }
+        let routers = match (unchanged, steady) {
+            (true, Some((_, hi))) => format!(" Neither router did anything first: no change ran on either in the hour before, and the light had been steady at about {hi:.1} dBm until it went out at once."),
+            (true, None) => " Neither router did anything first: no change ran on either in the hour before.".to_string(),
+            (false, Some((_, hi))) => format!(" The light had been steady at about {hi:.1} dBm until it went out at once."),
+            (false, None) => String::new(),
+        };
+        let place = if seen == 2 {
+            format!(" Light lost at both ends at the same moment, with working routers on either side, means it was lost between them: on {what} between {a} and {z}, a fibre cut or a failed amplifier on the span.")
+        } else {
+            format!(" Loss of signal on the link's port, with the link down, points at the span between {a} and {z} ({what}) rather than at a router.")
+        };
         causes.push(Cause {
             category: "fiber_cut", score: if seen == 2 { 0.93 } else { 0.7 }, kind: "link", entity: l.clone(),
             title: if link.plane.is_empty() { format!("Link {l} down: loss of signal") } else { format!("Backbone circuit {a}-{z} plane {} down: loss of signal", link.plane) },
-            text: format!("Loss of signal on {what}: both ends of {l} lost light at {}, which points at the span between {a} and {z} (a fibre cut or a failed amplifier), not at either router.", los.first().map(|x| hhmm(parse_iso(&x.s("ts")))).unwrap_or_default()),
-            why: vec![format!("link-down alert on {l}"), format!("loss-of-signal lines from {seen} of its 2 ends"), "no change on either router in the hour before".into()],
+            text: format!("Loss of signal on {what}: both ends of {l} lost light at {}, which points at the span between {a} and {z} (a fibre cut or a failed amplifier), not at either router.", hhmm(t_los)),
+            story: format!("At {} {lost}, and the link-down alert followed at {}.{moved}{routers}{place}", tm(t_los), tm(down)),
+            why,
         });
     }
     // Power: several devices at one site dark together.
-    let mut dark: HashMap<String, Vec<String>> = HashMap::new();
+    let mut dark: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for d in of("device-unreachable") {
         if let Some(x) = w.device(&d) {
             dark.entry(x.site.to_string()).or_default().push(d);
@@ -360,12 +534,32 @@ pub async fn root_cause(e: &Engine, incident: &str, m: i64) -> Result<Option<(St
         if ds.len() < 2 {
             continue;
         }
-        let survivors = pem.iter().filter(|x| w.device(&x.s("device")).is_some_and(|d| d.site == site)).count();
+        let s = site.to_uppercase();
+        let feed: Vec<&Row> = pem.iter().copied().filter(|x| w.device(&x.s("device")).is_some_and(|d| d.site == site)).collect();
+        let survivors = feed.len();
+        let t_dark = ds.iter().filter_map(|d| alert_at("device-unreachable", d)).min().unwrap_or(first_alert);
+        let mut why = vec![proof("alert", format!("{} devices at {s} became unreachable in the same minute: {}.", ds.len(), and_list(&ds)), alerts_sql("device-unreachable", ds), inc_p.clone()).refs(dev_refs(ds)).at(t_dark)];
+        let mut alive: Vec<String> = feed.iter().map(|x| x.s("device")).collect();
+        alive.sort();
+        alive.dedup();
+        if let Some(f) = feed.first() {
+            why.push(proof("log", format!("The devices still running there, {}, report a power supply input failure on feed A.", and_list(&alive)), site_logs_sql(site, "input failure"), win.clone()).refs(dev_refs(&alive)).at(at(f, "ts")).quote(f.s("message")));
+        }
+        let quiet = proof("change", format!("No change ran on the devices that went dark in the hour before."), changes_sql(ds), hour.clone()).refs(dev_refs(ds)).none();
+        let unchanged = run.check("Changes on the dark devices in the hour before", &quiet).await.is_empty();
+        if unchanged {
+            why.push(quiet);
+        }
         causes.push(Cause {
             category: "power", score: if survivors > 0 { 0.95 } else { 0.6 }, kind: "site", entity: site.clone(),
-            title: format!("Power feed A lost at {}", site.to_uppercase()),
-            text: format!("Loss of a power feed at {}: {} went dark in the same minute and the {survivors} devices that remain report a power supply input failure on feed A. A facilities fault, not a network one.", site.to_uppercase(), ds.join(", ")),
-            why: vec![format!("{} devices at one site unreachable together", ds.len()), format!("{survivors} power input failure lines from the survivors")],
+            title: format!("Power feed A lost at {s}"),
+            text: format!("Loss of a power feed at {s}: {} went dark in the same minute and the {survivors} devices that remain report a power supply input failure on feed A. A facilities fault, not a network one.", ds.join(", ")),
+            story: format!("At {} {} at {s} stopped answering in the same minute.{}{} Devices that share nothing but a building and a power feed do not go dark together for a network reason: {}",
+                tm(t_dark), and_list(&ds),
+                feed.first().map(|f| format!(" The devices there that kept running logged \"{}\": one of their two power supplies lost its input.", f.s("message"))).unwrap_or_default(),
+                if unchanged { " No change had run on them." } else { "" },
+                if survivors > 0 { format!("the site's feed A (PDU-A-{s}) is down, a facilities fault, and what is still up runs on feed B.") } else { format!("the likeliest cause is the site's power, a facilities fault; no device there has said so yet.") }),
+            why,
         });
     }
     // A change: BGP down on a device a change just touched.
@@ -380,23 +574,74 @@ pub async fn root_cause(e: &Engine, incident: &str, m: i64) -> Result<Option<(St
         let policy = undefined.iter().find(|x| x.s("device") == d);
         let sessions = of("bgp-session-down").contains(&d);
         let id = c.s("id");
+        let t_c = at(c, "executed");
+        let lead = (first_alert - t_c).max(0) / 60;
+        let mut why = vec![proof("change", format!("{id}, \"{}\", was committed on {d} at {} by {}, {lead} minutes before the first alert.", c.s("title"), tm(t_c), c.s("owner")), "SELECT id, title, executed, owner, approver, devices, diff FROM netops_changes\nWHERE id = :id", json!({"id": id})).refs([format!("change:{id}"), format!("device:{d}")]).at(t_c)];
+        if let Some(p) = policy {
+            why.push(proof("log", format!("Then {d} logged that its route policy names an object that does not exist, so the policy drops every route."), logs_sql(std::slice::from_ref(&d), "is not defined"), win.clone()).refs([format!("device:{d}")]).at(at(p, "ts")).quote(p.s("message")));
+        }
+        if sessions {
+            let t = alert_at("bgp-session-down", &d).unwrap_or(first_alert);
+            why.push(proof("alert", format!("Its BGP sessions dropped: the bgp-session-down alert on {d} fired at {}.", tm(t)), alerts_sql("bgp-session-down", std::slice::from_ref(&d)), inc_p.clone()).refs([format!("device:{d}")]).at(t));
+        }
+        let p = json!({"d": d, "a": iso(t_c - 30 * 60), "b": iso(until)});
+        let pts = run.q("Established BGP sessions on the router, before and after the change", "SELECT ts, bgp_up, bgp_updates, cpu FROM netops_device_metrics\nWHERE device = :d AND ts >= :a AND ts <= :b\nORDER BY ts LIMIT 120", p.clone()).await;
+        let was = pts.iter().filter(|r| at(r, "ts") < t_c).map(|r| r.i("bgp_up")).max();
+        let low = pts.iter().filter(|r| at(r, "ts") > t_c + 60).map(|r| r.i("bgp_up")).min();
+        let mut fell = String::new();
+        if let (Some(x), Some(y)) = (was, low) {
+            run.finding(format!("{x} before, {y} at the lowest after."));
+            if y < x {
+                fell = format!(" Its established BGP sessions fell from {x} to {y}.");
+                why.push(proof("metric", format!("Established BGP sessions on {d} fell from {x} to {y} after the commit."), "SELECT ts, bgp_up, bgp_updates, cpu FROM netops_device_metrics\nWHERE device = :d AND ts >= :a AND ts <= :b\nORDER BY ts LIMIT 120", p).refs([format!("device:{d}")]).at(t_c));
+            }
+        }
+        let only = changes.iter().filter(|x| x.list("devices").contains(&d)).count() == 1;
         causes.push(Cause {
             category: "bad_change", score: match (policy.is_some(), sessions) { (true, true) => 0.95, (true, false) => 0.75, _ => 0.66 }, kind: "change", entity: id.clone(),
             title: format!("BGP sessions down on {d} after change {id}"),
-            text: format!("Change {id} on {d}, committed at {} by {}: {}", hhmm(parse_iso(&c.s("executed"))), c.s("owner"), match policy {
+            text: format!("Change {id} on {d}, committed at {} by {}: {}", hhmm(t_c), c.s("owner"), match policy {
                 Some(p) => format!("the device logged \"{}\", so the policy drops every route it receives.", between(&p.s("message"), " : ", ";").unwrap_or("a policy error").trim()),
                 None => "its BGP sessions dropped within minutes of the commit.".to_string(),
             }),
-            why: vec![format!("BGP sessions not established on {d}"), format!("{id} executed on {d} {} minutes before the first alert", (started - parse_iso(&c.s("executed"))).max(0) / 60), if policy.is_some() { "a policy error in its log naming an undefined object".into() } else { "no policy error found in the log".into() }],
+            story: format!("At {} {} committed {id} (\"{}\") on {d}.{}{fell} {}{} Rolling back {id} should bring the sessions back.",
+                tm(t_c), c.s("owner"), c.s("title"),
+                policy.map(|p| format!(" At {} {d} logged: \"{}\".", tm(at(p, "ts")), p.s("message"))).unwrap_or_default(),
+                if policy.is_some() { "The policy the change installed names a prefix-set that does not exist, so the router evaluates it to drop and rejects every route its neighbours offer." } else { "Its BGP sessions dropped within minutes of the commit." },
+                if only { format!(" No other change ran on {d} in that hour.") } else { String::new() }),
+            why,
         });
     }
     // A flood.
     if let Some((net, site, gbps, networks)) = &flood {
+        let s = site.to_uppercase();
+        let t_f = alert_at("udp-flood", site).unwrap_or(m - 299);
+        let mut why = vec![proof("flow", format!("{gbps:.1} Gb/s of UDP from the ports of DNS, NTP, CLDAP, SSDP and memcached toward {net}, from {networks} networks at once, in the last five minutes."),
+            "SELECT ts, src_asn, src_name, dst_site, dst_net, dst_port, bytes, packets FROM netops_flows\nWHERE ts >= :a AND ts <= :b AND proto = 'udp' AND dst_net = :net AND dst_port IN (53, 123, 389, 1900, 11211)\nORDER BY bytes DESC LIMIT 50", json!({"a": iso(m - 299), "b": iso(until), "net": net})).refs([format!("site:{site}")]).at(t_f)];
+        if let Some(t) = alert_at("udp-flood", site) {
+            why.push(proof("alert", format!("The flood alert fired at {s} at {}.", tm(t)), alerts_sql("udp-flood", std::slice::from_ref(site)), inc_p.clone()).refs([format!("site:{site}")]).at(t));
+        }
+        let drops: Vec<&Row> = policer.iter().copied().filter(|x| w.device(&x.s("device")).is_some_and(|d| d.site == site)).collect();
+        if let Some(p) = drops.first() {
+            let mut borders: Vec<String> = drops.iter().map(|x| x.s("device")).collect();
+            borders.sort();
+            borders.dedup();
+            why.push(proof("log", format!("The {s} borders' policers are dropping the excess: {} violation lines.", drops.len()), site_logs_sql(site, "POLICER_VIOLATION"), win.clone()).refs(dev_refs(&borders)).at(at(p, "ts")).quote(p.s("message")));
+        }
+        let fw = of("fw-sessions");
+        if !fw.is_empty() {
+            why.push(proof("alert", format!("The firewalls behind them are filling their session tables: {}.", and_list(&fw)), alerts_sql("fw-sessions", &[]), inc_p.clone()).refs(dev_refs(&fw)));
+        }
+        let calm = of("link-down").is_empty() && changes.is_empty();
         causes.push(Cause {
             category: "ddos", score: if policer.is_empty() { 0.82 } else { 0.92 }, kind: "site", entity: site.clone(),
-            title: format!("UDP amplification attack on {net} via {}", site.to_uppercase()),
-            text: format!("Volumetric DDoS: {gbps:.1} Gb/s of UDP from DNS, NTP, SSDP and memcached reflectors in {networks} networks toward customer prefix {net}, entering at the {} borders.", site.to_uppercase()),
-            why: vec![format!("{gbps:.1} Gb/s from amplification ports toward one /24"), format!("{} policer violation lines on the borders", policer.len()), format!("firewall session alerts: {}", of("fw-sessions").len())],
+            title: format!("UDP amplification attack on {net} via {s}"),
+            text: format!("Volumetric DDoS: {gbps:.1} Gb/s of UDP from DNS, NTP, SSDP and memcached reflectors in {networks} networks toward customer prefix {net}, entering at the {s} borders."),
+            story: format!("From {} {gbps:.1} Gb/s of UDP arrived at the {s} borders aimed at {net}, one customer's prefix, from {networks} networks at once and from the source ports of DNS, NTP, CLDAP, SSDP and memcached: the answers of reflectors to requests nobody here sent.{}{}{} Traffic from many networks, from amplification ports, toward one prefix is a reflection attack on that customer.",
+                tm(t_f), if drops.is_empty() { String::new() } else { format!(" The borders' policers started dropping the excess ({} lines).", drops.len()) },
+                if fw.is_empty() { String::new() } else { " The firewalls behind them filled their session tables.".to_string() },
+                if calm { " Nothing in the network broke first: no link went down and no change ran." } else { "" }),
+            why,
         });
     }
     // A software defect: one router's CPU pegged, with scheduler slips.
@@ -413,7 +658,8 @@ pub async fn root_cause(e: &Engine, incident: &str, m: i64) -> Result<Option<(St
         }
     }
     for d in suspects {
-        let slips = slip.iter().filter(|x| x.s("device") == d).count();
+        let mine: Vec<&Row> = slip.iter().copied().filter(|x| x.s("device") == d).collect();
+        let slips = mine.len();
         let Some(dev) = w.device(&d) else { continue };
         let adv = run.q("Advisories that name this router's software version", "SELECT id, title, fixed_in, severity FROM netops_advisories\nWHERE os = :os AND affected = :v LIMIT 5", json!({"os": dev.os, "v": dev.os_version})).await;
         let hit = adv.iter().find(|a| a.s("title").contains("CPU")).or(adv.first());
@@ -422,11 +668,30 @@ pub async fn root_cause(e: &Engine, incident: &str, m: i64) -> Result<Option<(St
         if slips == 0 {
             continue;
         }
+        let t_s = mine.iter().map(|x| at(x, "ts")).min().unwrap_or(first_alert);
+        let mut why = vec![proof("log", format!("{d} logged {slips} scheduler slips: its routing process cannot keep its schedule."), logs_sql(std::slice::from_ref(&d), "scheduler slip"), win.clone()).refs([format!("device:{d}")]).at(t_s).quote(mine[0].s("message"))];
+        let hot = alerts.iter().find(|a| a.s("rule") == "device-cpu" && a.s("entity") == d);
+        if let Some(a) = hot {
+            why.push(proof("alert", format!("Its control-plane CPU crossed the threshold: {:.0}% at {}, on {d} alone.", a.f("reading"), tm(at(a, "started"))), alerts_sql("device-cpu", &[]), inc_p.clone()).refs([format!("device:{d}")]).at(at(a, "started")));
+        }
+        if let Some(a) = hit {
+            why.push(proof("advisory", format!("Advisory {} names {} {}, the software {d} runs: \"{}\", fixed in {}.", a.s("id"), dev.os, dev.os_version, a.s("title"), a.s("fixed_in")), "SELECT id, vendor, os, affected, fixed_in, severity, title, summary FROM netops_advisories\nWHERE id = :id", json!({"id": a.s("id")})).refs([format!("device:{d}")]));
+        }
+        let quiet = proof("change", format!("No change ran on {d} in the hour before."), changes_sql(std::slice::from_ref(&d)), hour.clone()).refs([format!("device:{d}")]).none();
+        let unchanged = run.check("Changes on the router in the hour before", &quiet).await.is_empty();
+        if unchanged {
+            why.push(quiet);
+        }
         causes.push(Cause {
             category: "cpu_bug", score: match (slips > 0, hit.is_some()) { (true, true) if cpu_alert.contains(&d) => 0.93, (true, true) => 0.8, (true, false) => 0.72, _ => 0.5 }, kind: "device", entity: d.clone(),
             title: format!("Routing process pegs CPU on {d}"),
             text: format!("Software defect on {d} ({} {}){}: the routing process is spinning, with {slips} scheduler slips logged, and its neighbours' BGP hold timers expire.", dev.os, dev.os_version, hit.map(|a| format!(", advisory {}", a.s("id"))).unwrap_or_default()),
-            why: vec![if cpu_alert.contains(&d) { format!("control-plane CPU above 85% on {d} alone") } else { format!("the routing process on {d} reports it cannot keep its schedule") }, format!("{slips} scheduler-slip lines"), hit.map(|a| format!("advisory {} names its version; fixed in {}", a.s("id"), a.s("fixed_in"))).unwrap_or_else(|| "no advisory names its version".into())],
+            story: format!("From {} the routing process on {d} began missing its schedule: {slips} scheduler slips in its log{}. {d} runs {} {}{}.{} A routing process that spins on one router, with nothing changed around it, is a defect in its software{}.",
+                tm(t_s), hot.map(|a| format!(", and its control-plane CPU reached {:.0}%", a.f("reading"))).unwrap_or_default(), dev.os, dev.os_version,
+                hit.map(|a| format!(", which advisory {} names: \"{}\", fixed in {}", a.s("id"), a.s("title"), a.s("fixed_in"))).unwrap_or_else(|| ", which no advisory names yet".to_string()),
+                if unchanged { " No change ran on it in the hour before." } else { "" },
+                if hit.is_some() { ", the one the advisory describes" } else { "" }),
+            why,
         });
     }
     // A failing optic: light fading over minutes, errors climbing.
@@ -439,14 +704,28 @@ pub async fn root_cause(e: &Engine, incident: &str, m: i64) -> Result<Option<(St
         if lost(link.a, &link.a_if) || lost(link.b, &link.z_if) {
             continue;
         }
-        let warn = rxlow.iter().find(|x| x.s("device") == w.devices[link.b].id || x.s("device") == w.devices[link.a].id);
-        let end = warn.map(|x| x.s("device")).unwrap_or_else(|| w.devices[link.b].id.clone());
-        let port = if end == w.devices[link.a].id { &link.a_if } else { &link.z_if };
+        let ends = vec![w.devices[link.a].id.clone(), w.devices[link.b].id.clone()];
+        let warn = rxlow.iter().find(|x| x.s("device") == ends[1] || x.s("device") == ends[0]);
+        let end = warn.map(|x| x.s("device")).unwrap_or_else(|| ends[1].clone());
+        let port = if end == ends[0] { &link.a_if } else { &link.z_if };
+        let other = if end == ends[0] { &ends[1] } else { &ends[0] };
+        let mut why = vec![proof("metric", format!("Receive power on {l} fell from {:.1} to {:.1} dBm over the last half hour, with {} input errors.", o.f("high"), o.f("low"), o.i("errors")), link_sql, json!({"link": l, "a": iso(started - 35 * 60), "b": iso(until)})).refs([format!("link:{l}")]).at(started)];
+        if let Some(x) = warn {
+            why.push(proof("log", format!("{end} warned that receive power on {port} is below its threshold."), logs_sql(std::slice::from_ref(&end), "Rx power low warning"), win.clone()).refs([format!("device:{end}")]).at(at(x, "ts")).quote(x.s("message")));
+        }
+        let lit = proof("log", format!("Neither end logged loss of signal: light still gets through the fibre."), logs_sql(&ends, "loss of signal alarm set"), win.clone()).refs(dev_refs(&ends)).none();
+        let intact = run.check("Loss of signal on either end of the link", &lit).await.is_empty();
+        if intact {
+            why.push(lit);
+        }
         causes.push(Cause {
             category: "optic_degrade", score: 0.62 + if o.i("errors") > 60 { 0.2 } else { 0.0 } + if warn.is_some() { 0.1 } else { 0.0 }, kind: "link", entity: l.clone(),
-            title: format!("Degrading optic on {end} toward {}", if end == w.devices[link.a].id { &w.devices[link.b].id } else { &w.devices[link.a].id }),
+            title: format!("Degrading optic on {end} toward {other}"),
             text: format!("Failing optic (or a contaminated connector) on {end} {port}: receive power on {l} fell from {:.1} to {:.1} dBm over the last half hour with {} input errors, and no loss-of-signal alarm, so the span itself is intact.", o.f("high"), o.f("low"), o.i("errors")),
-            why: vec![format!("receive power down {:.1} dB in 35 minutes", o.f("high") - o.f("low")), format!("{} CRC and framing errors", o.i("errors")), "no loss of signal on either end".into()],
+            story: format!("Over the last half hour receive power on {l} fell from {:.1} to {:.1} dBm and {} input errors piled up{}. The link is still up{}, so the fibre is intact and light gets through, dimmer each minute: the optic at {end} {port} is failing, or its connector is dirty. Left alone it starts to flap, then goes down.",
+                o.f("high"), o.f("low"), o.i("errors"), warn.map(|x| format!("; at {} {end} warned that it is below its threshold", tm(at(x, "ts")))).unwrap_or_default(),
+                if intact { " and neither end lost the signal" } else { "" }),
+            why,
         });
     }
     causes.sort_by(|a, b| b.score.total_cmp(&a.score));
@@ -528,7 +807,92 @@ pub async fn root_cause(e: &Engine, incident: &str, m: i64) -> Result<Option<(St
     let out = match best {
         Some(c) if c.score >= 0.5 => {
             let confidence = (c.score - 0.3 * second).clamp(0.2, 0.97);
-            run.think("Conclude", format!("{} Because: {}.{}", c.text, c.why.join("; "), if second > 0.0 { format!(" Next best explanation scored {:.2}.", second) } else { String::new() }));
+            // Why this one: its evidence, and the past incidents that turned out the same.
+            let mut why = c.why.clone();
+            let alike: Vec<String> = similar.iter().take(3).filter(|s| s.s("category") == c.category).map(|s| s.s("id")).collect();
+            if !alike.is_empty() {
+                why.push(proof("history", format!("{} of the 3 past incidents most like this one had the same cause: {}.", alike.len(), and_list(&alike)),
+                    format!("SELECT id, title, category, started, root_cause, runbook, mttr_min FROM netops_incidents\nWHERE id IN ({})\nORDER BY started DESC", quoted(&alike)), json!({})).refs(alike.iter().map(|i| format!("incident:{i}"))));
+            }
+            // Why not the others: the explanations that had some support, then
+            // each of the six this playbook tests that found none.
+            let mut against: Vec<Ev> = Vec::new();
+            for o in causes.iter().skip(1).take(3) {
+                if let Some(f) = o.why.first() {
+                    let mut x = f.clone();
+                    x.claim = format!("Also considered, with less behind it: {}. {}", o.title, f.claim);
+                    against.push(x);
+                }
+            }
+            let tested: HashSet<&str> = causes.iter().map(|x| x.category).collect();
+            let downs = of("link-down");
+            if !tested.contains("fiber_cut") {
+                against.push(if downs.is_empty() {
+                    proof("alert", "Not a fibre cut: no link went down.", alerts_sql("link-down", &[]), inc_p.clone()).none()
+                } else {
+                    // Links that went down with a device at one end went down with the device.
+                    let dk = of("device-unreachable");
+                    let with = downs.iter().all(|l| w.link_by_id(l).is_some_and(|i| dk.contains(&w.devices[w.links[i].a].id) || dk.contains(&w.devices[w.links[i].b].id)));
+                    let n = downs.len();
+                    proof("alert", format!("Not a fibre cut: {} went down, but {}.", if n == 1 { downs[0].clone() } else { format!("{n} links") },
+                        match (n, with) { (1, true) => "with the device at its end, not with a loss of signal on its ports", (1, false) => "with no loss of signal on its ports", (_, true) => "with the devices at their ends, not with a loss of signal on their ports", _ => "with no loss of signal on their ports" }),
+                        alerts_sql("link-down", &[]), inc_p.clone()).refs(downs.iter().map(|l| format!("link:{l}")))
+                });
+            }
+            if !tested.contains("power") {
+                let dk = of("device-unreachable");
+                against.push(match dk.len() {
+                    0 => proof("alert", "Not a power fault: no device became unreachable.", alerts_sql("device-unreachable", &[]), inc_p.clone()).none(),
+                    1 => proof("alert", format!("Not a power fault: only {} became unreachable, not several devices at one site.", dk[0]), alerts_sql("device-unreachable", &[]), inc_p.clone()).refs(dev_refs(&dk)),
+                    _ => proof("alert", format!("Not a power fault: {} became unreachable, but at different sites.", and_list(&dk)), alerts_sql("device-unreachable", &[]), inc_p.clone()).refs(dev_refs(&dk)),
+                });
+            }
+            if !tested.contains("bad_change") && !around.is_empty() {
+                let x = proof("change", "Not a change: none ran on these devices or their neighbours in the hour before.", changes_sql(&around), hour.clone());
+                against.push(if changes.is_empty() {
+                    x.none()
+                } else {
+                    let ids: Vec<String> = changes.iter().map(|c| c.s("id")).collect();
+                    let quiet = of("bgp-session-down").is_empty() && undefined.is_empty();
+                    Ev { claim: format!("Not a change: {} ran nearby, but {}.", and_list(&ids), if quiet { "no BGP session dropped and no policy error was logged" } else { "not on a router whose BGP sessions dropped" }), refs: ids.iter().map(|i| format!("change:{i}")).collect(), ..x }
+                });
+            }
+            if !tested.contains("ddos") && !sites.is_empty() {
+                let x = proof("flow", format!("Not an attack: UDP from amplification ports toward {} stayed under 2 Gb/s, and no flood alert fired.", sites.join(", ").to_uppercase()),
+                    format!("SELECT dst_site, dst_net, SUM(bytes) AS bytes, COUNT(DISTINCT src_asn) AS networks FROM netops_flows\nWHERE ts >= :a AND ts <= :b AND proto = 'udp' AND dst_site IN ({}) AND dst_port IN (53, 123, 389, 1900, 11211)\nGROUP BY dst_site, dst_net ORDER BY bytes DESC LIMIT 10", quoted(&sites)), json!({"a": iso(m - 299), "b": iso(m)}));
+                let most = run.check("UDP from amplification ports toward the incident's sites", &x).await.iter().map(|r| r.f("bytes") * 8.0 / 300.0 / 1e9).fold(0.0, f64::max);
+                if most < 2.0 && of("udp-flood").is_empty() {
+                    against.push(x);
+                }
+            }
+            if !tested.contains("cpu_bug") && !around.is_empty() {
+                let x = proof("log", "Not a software defect: no router around it logged a scheduler slip.", logs_sql(&around, "scheduler slip"), win.clone());
+                against.push(if slip.is_empty() { x.none() } else { Ev { claim: "Not a software defect: the scheduler slips logged nearby are not on a router that alerted.".into(), ..x } });
+            }
+            if !tested.contains("optic_degrade") {
+                against.push(if alert_links.is_empty() {
+                    proof("alert", "Not a failing optic: no link alerted.", "SELECT started, rule_name, entity, severity FROM netops_alerts\nWHERE incident = :incident AND entity_kind = 'link'\nORDER BY started LIMIT 50", inc_p.clone()).none()
+                } else {
+                    proof("metric", "Not a failing optic: no alerting link's light faded over minutes.", format!("SELECT link, MIN(rx_dbm) AS low, MAX(rx_dbm) AS high, SUM(errors) AS errors, MIN(up) AS up FROM netops_link_metrics\nWHERE ts >= :a AND ts <= :b AND link IN ({})\nGROUP BY link LIMIT 60", quoted(&alert_links)), json!({"a": iso(started - 35 * 60), "b": iso(m)}))
+                });
+            }
+            let mut story = c.story.clone();
+            if !alike.is_empty() {
+                story.push_str(&format!(" {} {} the same and had the same cause.", and_list(&alike), match alike.len() { 1 => "looked", 2 => "both looked", _ => "all looked" }));
+            }
+            if !runbook.is_empty() {
+                story.push_str(&format!(" Runbook {runbook} is the one for it."));
+            }
+            let claims: Vec<String> = why.iter().map(|x| utc(x.claim.trim_end_matches('.')).replace(';', ",")).collect();
+            run.think("Conclude", format!("{} Because: {}.{}", c.text, claims.join("; "), if second > 0.0 { format!(" Next best explanation scored {:.2}.", second) } else { String::new() }));
+            let mut kept = vec![proof("story", story, "", json!({})).row(&run.id, incident, 0, "story")];
+            for (k, x) in why.iter().enumerate() {
+                kept.push(x.row(&run.id, incident, k + 1, "for"));
+            }
+            for (k, x) in against.iter().enumerate() {
+                kept.push(x.row(&run.id, incident, why.len() + k + 1, "against"));
+            }
+            e.db.upsert("netops_evidence", kept).await?;
             let degraded: Vec<String> = of("service-errors").into_iter().chain(of("service-latency")).collect::<HashSet<_>>().into_iter().collect();
             let summary = format!("{} alerts on {} devices at {}.{} {}", alerts.len(), devices.len(), sites.join(", ").to_uppercase(),
                 if degraded.is_empty() { String::new() } else { format!(" Failing: {}.", degraded.join(", ")) }, c.text);

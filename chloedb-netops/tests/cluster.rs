@@ -187,11 +187,11 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     ran_sql(&ov, "overview");
     assert!(len(&ov["traffic"]) > 60 && len(&ov["services"]) == 12 && len(&ov["recent"]) > 0, "overview: {}", ov["at"]);
     let data = api.get("/v1/data").await;
-    assert_eq!(len(&data["tables"]), 39);
+    assert_eq!(len(&data["tables"]), 48);
     assert!(data["tables"].as_array().unwrap().iter().all(|t| t["rows"].as_i64().is_some()), "every table answers a count");
     // NET-21: each count is in the SQL the page shows.
     let counts = data["queries"].as_array().unwrap().iter().filter(|q| q["sql"].as_str().unwrap().starts_with("SELECT COUNT(*) AS n FROM netops_")).count();
-    assert_eq!(counts, 39, "every count is traced: {}", len(&data["queries"]));
+    assert_eq!(counts, 48, "every count is traced: {}", len(&data["queries"]));
 
     // The estate behind the backbone, as the map reads it: the places, what
     // is broken and where, a window at a level of detail, and one object
@@ -404,6 +404,25 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
         assert!(!inc["runbook"].is_null() && len(&inc["actions"]) > 0, "{sc}: a runbook and something to do");
         let run = inc["runs"].as_array().unwrap().iter().rfind(|r| r["agent"] == "root-cause").unwrap().clone();
         assert_eq!(run["verdict"], "correct", "{sc}: {run}");
+        // Why it is the cause: what happened, each claim with a query that
+        // shows the rows behind it (none, for a claim that something did not
+        // happen), and the other explanations it checked.
+        let ev = inc["evidence"].as_array().unwrap();
+        let role = |r: &str| ev.iter().filter(|x| x["role"] == r).collect::<Vec<_>>();
+        let story = role("story");
+        assert!(story.len() == 1 && story[0]["claim"].as_str().unwrap().len() > 120, "{sc}: what happened: {story:?}");
+        assert!(role("for").len() >= 2 && !role("against").is_empty(), "{sc}: evidence {ev:?}");
+        for x in role("for").into_iter().chain(role("against")) {
+            let id = x["id"].as_str().unwrap();
+            let back = api.get(&format!("/v1/evidence/{}", id.replace(':', "%3A"))).await;
+            ran_sql(&back, "evidence");
+            let rows = len(&back["rows"]);
+            if x["absent"] == true {
+                assert_eq!(rows, 0, "{sc}: {} says nothing happened, but its query finds rows: {}", x["claim"], back["rows"]);
+            } else if x["role"] == "for" {
+                assert!(rows > 0, "{sc}: {} has no rows behind it: {}", x["claim"], back["evidence"]["sql_text"]);
+            }
+        }
         ran_sql(&api.get(&format!("/v1/incidents/{id}/replay")).await, "replay");
 
         // While it is broken: the stack by place says where, lowest layer first,
@@ -618,6 +637,138 @@ async fn a_network_built_broken_diagnosed_and_read_back() {
     assert_eq!(notices["notices"].as_array().unwrap().len(), had + 1, "nothing invented for a real network");
     let data = api.get("/v1/data").await;
     assert!(data["sources"].as_array().unwrap().iter().any(|s| s["table_name"] == "netops_link_metrics" && s["status"] == "live"), "the source is seen arriving: {}", data["sources"]);
+    app.stop();
+}
+
+/// `--topology discovered`: the simulated network reports itself (BGP-LS,
+/// LLDP, SNMP, BMP, ONT tables) and the app builds its inventory from those
+/// rows alone; the rest of the app works on what it found. A restart reads
+/// the same network, and the made-up inventory is refused on its tables.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_network_read_back_from_what_it_reports() {
+    let Some(bin) = server_bin() else {
+        assert!(std::env::var_os("CHLOEDB_NETOPS_NEED_SERVER").is_none(), "no chloedb-server binary: build chloedb-server first, or set CHLOEDB_SERVER_BIN");
+        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::start_with(dir.path(), &bin, &["--topology", "discovered"]);
+    let api = Api::ready(&app.url).await;
+    let st = api.get("/v1/status").await;
+    assert_eq!(st["topology"], "discovered");
+    // Every device; every cable that is there (the two the inventory forgot
+    // too), and none of the two it kept after they were removed.
+    assert_eq!((st["network"]["sites"].as_i64(), st["network"]["devices"].as_i64(), st["network"]["links"].as_i64()), (Some(10), Some(64), Some(120)), "{st}");
+    assert!(st["estate"]["objects"].as_i64().unwrap() > 2000, "the estate was read back: {}", st["estate"]);
+
+    let d = api.get("/v1/discovery").await;
+    ran_sql(&d, "discovery");
+    let found = &d["summary"]["found"];
+    assert_eq!((found["devices"].as_i64(), found["links"].as_i64(), found["peers"].as_i64()), (Some(64), Some(120), Some(58)), "{}", d["summary"]);
+    assert_eq!(len(&d["feeds"]), 7);
+    assert!(d["feeds"].as_array().unwrap().iter().all(|f| f["rows"].as_i64().unwrap() > 0 && len(&f["sample"]) > 0), "every feed has rows: {}", d["feeds"]);
+    assert_eq!(len(&d["found"]), 10 + 64 + 120 + 58, "each site, device, link and session says how it was found");
+    assert!(len(&d["hubs"]) > 0 && d["hubs"].as_array().unwrap().iter().all(|h| h["how"].as_str().unwrap().contains("by LLDP")));
+    let how = |item: &str| d["found"].as_array().unwrap().iter().find(|r| r["item"] == item).map(|r| r["how"].as_str().unwrap().to_string()).unwrap_or_default();
+    assert!(how("br1-ams").contains("eBGP sessions in BMP") && how("fw1-ams").contains("firewall") && how("cr1-ams").contains("adjacent to routers at"), "{} / {}", how("br1-ams"), how("cr1-ams"));
+    assert!(how("ag1-lon--ag2-lon").contains("LLDP from both ends"), "a cable nobody recorded is found: {}", how("ag1-lon--ag2-lon"));
+    assert!(d["queries"].as_array().unwrap().iter().any(|q| q["what"].as_str().unwrap_or("").starts_with("Discovery: Read netops_lldp")), "the reads of the feeds are in the SQL shown");
+
+    // The roles the rest of the app works from were found, not given.
+    let topo = api.get("/v1/topology").await;
+    let role = |id: &str| topo["devices"].as_array().unwrap().iter().find(|x| x["id"] == id).map(|x| x["role"].as_str().unwrap().to_string()).unwrap_or_default();
+    assert_eq!([role("cr1-ams"), role("br1-ams"), role("ag1-ams"), role("fw1-ams"), role("sp1-ams"), role("lf1-ams"), role("br1-par")], ["core", "border", "agg", "firewall", "spine", "leaf", "border"]);
+    assert!(!topo["links"].as_array().unwrap().iter().any(|l| l["src"] == "cr1-sto" && l["dst"] == "cr2-waw"), "a removed link is not there");
+    let data = api.get("/v1/data").await;
+    assert!(data["sources"].as_array().unwrap().iter().any(|s| s["id"] == "bgp-ls") && !data["sources"].as_array().unwrap().iter().any(|s| s["name"] == "Inventory (NetBox)"), "the feeds are the sources: {}", data["sources"]);
+    let base = api.get("/v1/map/base").await;
+    ran_sql(&base, "the map's places");
+
+    // A fault on the discovered network is found and named as on the other.
+    api.post("/v1/sim/inject", json!({"scenario": "fiber_cut", "seed": 1})).await;
+    let open: Vec<Value> = api.get("/v1/overview").await["open"].as_array().unwrap().iter().filter(|i| i["category"] != "estate").cloned().collect();
+    assert_eq!(open.len(), 1, "one incident for one fault: {open:?}");
+    let id = open[0]["id"].as_str().unwrap().to_string();
+    let inc = api.get(&format!("/v1/incidents/{id}")).await;
+    let key = api.get(&format!("/v1/incidents/{id}/key")).await["key"].clone();
+    assert_eq!(inc["incident"]["root_entity"], key["truth_entity"], "the agent named {}; the fault was on {}", inc["incident"]["root_entity"], key["truth_entity"]);
+    app.stop();
+
+    // Again on the same tables: the same network, read again.
+    let app = App::start_with(dir.path(), &bin, &["--topology", "discovered"]);
+    let api = Api::ready(&app.url).await;
+    let again = api.get("/v1/discovery").await;
+    assert_eq!(again["summary"]["found"], d["summary"]["found"]);
+    app.stop();
+
+    // The made-up inventory is not written over a discovered network.
+    let mut wrong = App::start_with(dir.path(), &bin, &["--topology", "inventory"]);
+    let t0 = Instant::now();
+    let code = loop {
+        if let Some(c) = wrong.child.try_wait().unwrap() {
+            break c;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(60), "the inventory mode started on a discovered network");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(!code.success());
+}
+
+/// `--topology both`, the default: the listed network at the app's root and,
+/// under `/d/`, the same network read back from what it reports, in tables
+/// of its own (`netops_disc_*`), built the first time it is asked for. A
+/// fault on one is not on the other.
+#[tokio::test(flavor = "multi_thread")]
+async fn both_networks_served_side_by_side() {
+    let Some(bin) = server_bin() else {
+        assert!(std::env::var_os("CHLOEDB_NETOPS_NEED_SERVER").is_none(), "no chloedb-server binary: build chloedb-server first, or set CHLOEDB_SERVER_BIN");
+        eprintln!("skipped: no chloedb-server binary (build chloedb-server, or set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::start(dir.path(), &bin);
+    let api = Api::ready(&app.url).await;
+    let st = api.get("/v1/status").await;
+    assert_eq!((st["topology"].as_str(), &st["topologies"]), (Some("inventory"), &json!(["inventory", "discovered"])), "{st}");
+
+    // Asked for, it is built beside the first; its status says how far meanwhile.
+    let d = Api::ready(&format!("{}/d", app.url)).await;
+    let ds = d.get("/v1/status").await;
+    assert_eq!((ds["topology"].as_str(), &ds["topologies"]), (Some("discovered"), &json!(["inventory", "discovered"])), "{ds}");
+    assert_eq!((ds["network"]["sites"].as_i64(), ds["network"]["devices"].as_i64(), ds["network"]["links"].as_i64()), (Some(10), Some(64), Some(120)), "{ds}");
+    assert_eq!(api.get("/v1/status").await["topology"], "inventory", "the first is still the inventory's");
+
+    // Each in tables of its own.
+    let (a, b) = (api.get("/v1/data").await, d.get("/v1/data").await);
+    let names = |j: &Value| j["tables"].as_array().unwrap().iter().map(|t| t["table"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let rows = |j: &Value, t: &str| j["tables"].as_array().unwrap().iter().find(|x| x["table"] == t).and_then(|x| x["rows"].as_i64());
+    assert_eq!((names(&a).len(), names(&b).len()), (48, 48));
+    assert!(names(&a).iter().all(|n| n.starts_with("netops_") && !n.starts_with("netops_disc_")), "{:?}", names(&a));
+    assert!(names(&b).iter().all(|n| n.starts_with("netops_disc_")), "{:?}", names(&b));
+    assert_eq!((rows(&a, "netops_devices"), rows(&b, "netops_disc_devices")), (st["network"]["devices"].as_i64(), Some(64)));
+    assert_eq!(rows(&a, "netops_lldp"), Some(0), "the inventory's network wrote no feeds");
+    assert!(rows(&b, "netops_disc_lldp").unwrap() > 0);
+    let disc = d.get("/v1/discovery").await;
+    assert!(disc["feeds"].as_array().unwrap().iter().all(|f| f["name"].as_str().unwrap().starts_with("netops_disc_")), "{}", disc["feeds"]);
+    let topo = d.get("/v1/topology").await;
+    ran_sql(&topo, "the discovered topology");
+    assert!(topo["queries"].as_array().unwrap().iter().all(|q| q["sql"].as_str().unwrap().contains("netops_disc_")), "the SQL shown is the SQL run: {}", topo["queries"]);
+
+    // A fault on one network is not on the other.
+    d.post("/v1/sim/inject", json!({"scenario": "fiber_cut", "seed": 1})).await;
+    let open = |j: &Value| j["open"].as_array().unwrap().iter().filter(|i| i["category"] != "estate").count();
+    assert_eq!(open(&d.get("/v1/overview").await), 1);
+    assert_eq!(open(&api.get("/v1/overview").await), 0, "a fault on the discovered network is not on the inventory's");
+    app.stop();
+
+    // Again on the same tables: both as they were, the second read again.
+    let app = App::start(dir.path(), &bin);
+    let api = Api::ready(&app.url).await;
+    let t0 = Instant::now();
+    let d = Api::ready(&format!("{}/d", app.url)).await;
+    assert!(t0.elapsed() < Duration::from_secs(60), "the second network is read again, not built again: {:?}", t0.elapsed());
+    assert_eq!(d.get("/v1/discovery").await["summary"]["found"], disc["summary"]["found"]);
+    assert_eq!(api.get("/v1/status").await["topology"], "inventory");
     app.stop();
 }
 

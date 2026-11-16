@@ -223,6 +223,91 @@ fn distilled_knowledge_reaches_later_sessions() {
     assert!(!ctx.contains("[planned]"), "{ctx}");
 }
 
+/// An instruction the user gives for one task stays that session's; given
+/// again in another session it is a rule every later session is told, and
+/// a coordinator's brief relayed to a session is never the user's.
+#[test]
+fn an_instruction_said_in_two_sessions_becomes_a_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let check = dir.path().join("rule.txt");
+    let script = dir.path().join("fake-model.sh");
+    // The fake model writes its item, and asked what the request says
+    // again, says it says again everything it was shown.
+    let fake = r#"#!/bin/sh
+p=$(cat)
+case "$p" in
+*'<said_before>'*)
+  ids=$(printf '%s\n' "$p" | sed -n '/<said_before>/,/<\/said_before>/p' | sed -n 's/^\[\([^]]*\)\].*/\1/p' | sed 's/.*/\\"&\\"/' | paste -s -d, -)
+  printf '{"is_error":false,"total_cost_usd":0.001,"result":"{\\"said_again\\":[{\\"ids\\":[%s],\\"quote\\":\\"the CREATE statements in schema.sql\\",\\"rule\\":\\"%s\\"}]}"}' "$ids" "$(cat 'RULE')";;
+*) cat 'OUT';;
+esac
+"#;
+    std::fs::write(&script, fake.replace("RULE", &check.to_string_lossy()).replace("OUT", &out.to_string_lossy())).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let cfg = json!({"embedder": "hash:64", "sync": false, "briefing_chars": 4000, "distill": {"command": script, "model": "m"}});
+    std::fs::write(dir.path().join("config.json"), cfg.to_string()).unwrap();
+    let d = Arc::new(Daemon::open(dir.path(), "/proj").unwrap());
+    let model_says = |text: &str| {
+        let line = json!({"kind": "rule", "text": text, "said_by": "requester", "scope": "task"}).to_string();
+        std::fs::write(&out, json!({"is_error": false, "total_cost_usd": 0.001, "result": line}).to_string()).unwrap();
+        std::fs::write(&check, text).unwrap();
+    };
+    let turn = |sid: &str, prompt: &str| {
+        hook(&d, "SessionStart", json!({"session_id": sid, "source": "startup"}));
+        hook(&d, "UserPromptSubmit", json!({"session_id": sid, "prompt": prompt}));
+        hook(&d, "Stop", json!({"session_id": sid, "last_assistant_message": "Done."}));
+    };
+    let rules = || sql(&d, "SELECT text, tag FROM memory WHERE kind = 'preference' LIMIT 10");
+
+    // Once: a note for that task only.
+    model_says("Build the shop from the CREATE statements in schema.sql.");
+    turn("s1", "Build the shop from the CREATE statements in schema.sql, not from a mock.");
+    assert!(rules().is_empty(), "{:?}", rules());
+    let brief = hook(&d, "SessionStart", json!({"session_id": "s2", "source": "startup"}));
+    assert!(!brief.contains("Rules and conventions"), "{brief}");
+
+    // A coordinator's brief that says it again (and "never"), in either
+    // form a relay takes: the agent's words.
+    model_says("Build the shop from the CREATE statements in schema.sql.");
+    turn("s2", "<coordinator-relay><relay from=\"coordinator\"><note>Build the shop from the CREATE statements in schema.sql. Never touch production.</note></relay></coordinator-relay>");
+    turn("s2", "<relay from=\"coordinator\">\nBuild the shop from the CREATE statements in schema.sql, as before.\n</relay>");
+    assert!(rules().is_empty(), "{:?}", rules());
+    let p = sql(&d, "SELECT ctx, text FROM memory WHERE kind = 'prompt' AND session = 's2' LIMIT 5");
+    assert_eq!(p.len(), 2, "{p:?}");
+    assert!(p.iter().all(|r| r[0].as_str().unwrap().contains("By: agent:coordinator")), "{p:?}");
+    assert!(p.iter().all(|r| !r[1].as_str().unwrap().contains("<relay")), "{p:?}");
+
+    // The user, in another session: a rule, counted, every session told.
+    model_says("Build the shop from the SQL CREATE statements in schema.sql.");
+    turn("s3", "Again: build it from the CREATE statements in schema.sql.");
+    let r = rules();
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0][0], "Build the shop from the SQL CREATE statements in schema.sql (the user has said this in 2 sessions)");
+    assert_eq!(r[0][1], "repeated");
+    let first = sql(&d, "SELECT tag FROM memory WHERE kind = 'note' AND session = 's1' LIMIT 5");
+    assert_eq!(first[0][0], "superseded", "{first:?}");
+    let brief = hook(&d, "SessionStart", json!({"session_id": "s4", "source": "startup"}));
+    let rules_part = brief.split("Rules and conventions:").nth(1).unwrap_or("");
+    assert!(rules_part.contains("SQL CREATE statements in schema.sql (the user has said this in 2 sessions)"), "{brief}");
+
+    // Shown the rule, s4 still had to be told: said again after it was shown.
+    model_says("Build the shop from the CREATE statements in schema.sql, every table.");
+    turn("s4", "No: build it from the CREATE statements in schema.sql, every table.");
+    let r = sql(&d, "SELECT text, ctx FROM memory WHERE kind = 'preference' AND tag = 'repeated' LIMIT 10");
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0][0], "Build the shop from the CREATE statements in schema.sql, every table (the user has said this in 3 sessions)");
+    let ctx = r[0][1].as_str().unwrap();
+    assert!(ctx.starts_with("Sessions: 3\nSaid: 3\nSaid again: 1\nSaid again after it was shown: 1\nTurn 1 request:"), "{ctx}");
+
+    // `chloectx repeats` writes nothing and lists the rule kept.
+    let before = sql(&d, "SELECT COUNT(*) FROM memory LIMIT 1");
+    let r = call(&d, json!({"op": "repeats", "days": 30}));
+    assert_eq!(r["kept"], 1, "{r}");
+    assert_eq!((r["rules"][0]["sessions"].as_u64(), r["rules"][0]["said_again_after_shown"].as_u64()), (Some(3), Some(1)), "{r}");
+    assert_eq!(sql(&d, "SELECT COUNT(*) FROM memory LIMIT 1"), before);
+}
+
 /// `chloectx backup`: a copy of the store taken while the daemon serves,
 /// which a daemon opens with the same records, briefing and state.
 #[test]

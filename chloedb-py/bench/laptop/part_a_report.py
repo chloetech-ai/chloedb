@@ -101,7 +101,7 @@ def a1(dirs: list[tuple[str, str]]) -> str:
 
 
 def a2(dirs: list[tuple[str, str]]) -> str:
-    out = ["## A2: search (BEIR, bge-small 384-d vectors)", "", "Each cell is p50 / p99 on one thread, then nDCG@10 (vector: and recall@10 against exact search). Hybrid is RRF of BM25 and vectors at depth 100.", ""]
+    out = ["## A2: search (BEIR, Cohere embed-english-v3 1,024-d vectors)", "", "Each cell is p50 / p99 on one thread, then nDCG@10 (vector: and recall@10 against exact search). Hybrid is RRF of BM25 and vectors at depth 100.", ""]
     for c in A2_COLLECTIONS:
         rows = []
         n_docs = None

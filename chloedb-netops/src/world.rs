@@ -82,7 +82,7 @@ pub struct Site {
 /// A name read from a table, kept for the life of the process (the model's
 /// names are `&'static str`, as the simulator's are constants). Each distinct
 /// name is kept once.
-fn keep(s: &str) -> &'static str {
+pub(crate) fn keep(s: &str) -> &'static str {
     static KEPT: std::sync::Mutex<Option<std::collections::HashSet<&'static str>>> = std::sync::Mutex::new(None);
     let mut g = KEPT.lock().unwrap_or_else(|e| e.into_inner());
     let set = g.get_or_insert_with(Default::default);

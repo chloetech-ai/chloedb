@@ -519,10 +519,32 @@ pub fn history(w: &World, now: i64) -> History {
     h
 }
 
-pub fn source_rows(now: i64) -> Vec<Value> {
+/// Where the rows come from. A discovered network (`--topology discovered`)
+/// has no inventory feed: its records come from what it reports.
+pub fn source_rows(now: i64, discovered: bool) -> Vec<Value> {
     let s = |id: &str, name: &str, kind: &str, table: &str, via: &str, retention: &str, note: &str, snippet: &str| {
         json!({"id": id, "name": name, "kind": kind, "table_name": table, "via": via, "status": "simulated", "rate": 0.0, "lag_s": 0.0, "last_seen": iso(now), "retention": retention, "note": note, "snippet": snippet})
     };
+    let mut out = source_list(&s);
+    if discovered {
+        out.retain(|r| r["id"] != "inventory");
+        out.extend([
+            s("snmp", "SNMP: system group and interfaces", "feeds", "netops_snmp_system, netops_snmp_ifaces", "An SNMP poller (Telegraf's snmp input) walking the system group, ENTITY-MIB, ifXTable and ipAddrTable", "kept",
+              "sysName, sysDescr, sysObjectID and sysLocation say what each device is and where; the interfaces' names, speeds, descriptions and addresses tie the other feeds' ports together.",
+              "[[inputs.snmp]]\n  agents = [\"udp://10.10.0.10:161\"]\n  [[inputs.snmp.field]]\n    oid = \"SNMPv2-MIB::sysDescr.0\"\n  [[inputs.snmp.field]]\n    oid = \"SNMPv2-MIB::sysLocation.0\"\n# rows upserted into netops_snmp_system, keyed by the agent"),
+            s("lldp", "LLDP neighbours", "feeds", "netops_lldp", "The same poller walking LLDP-MIB's lldpRemTable (or gNMI's openconfig-lldp)", "kept", "Who is at the other end of each port: the cabling, as the devices see it.", ""),
+            s("bgp-ls", "BGP-LS", "feeds", "netops_bgpls_nodes, netops_bgpls_links", "A BGP-LS session from a route reflector to a collector (GoBGP, pmacct)", "kept",
+              "The IS-IS database: every router and adjacency, with the adjacency's bandwidth, delay and administrative group.", "gobgp global rib -a ls   # nodes and links, upserted by their router ids"),
+            s("bmp", "BMP", "feeds", "netops_bmp_peers", "BMP from each border router to a collector (OpenBMP, pmacct)", "kept", "Each router's BGP sessions and the routes it takes from each.", ""),
+            s("gpon", "ONT tables", "feeds", "netops_gpon_onts", "Each OLT's element manager, or its SNMP ONT table", "kept", "The ONTs on each PON port, with their serial numbers.", ""),
+            s("inventory", "Inventory, discovered", "records", "netops_devices, netops_links, netops_sites", "chloedb-netops, from the feeds above (the Discovery page)", "kept",
+              "Nobody writes these: sites, devices, links, roles and BGP sessions are read from the feeds, and each says how in netops_discovered.", ""),
+        ]);
+    }
+    out
+}
+
+fn source_list(s: &impl Fn(&str, &str, &str, &str, &str, &str, &str, &str) -> Value) -> Vec<Value> {
     vec![
         s("syslog", "Device syslog", "logs", "netops_syslog", "OpenTelemetry Collector, syslog receiver, OTLP out", "7 days",
           "In production this is a Collector with the syslog receiver writing OTLP to /v1/logs. Here the simulator writes the rows.",

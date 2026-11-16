@@ -72,7 +72,9 @@ Elasticsearch and Solr, 28 October 2026) are in
   one profile for documents and one for queries.
 - **Vectors**: HNSW, m 16, ef_construction 200, dot product. ChloeDB stores
   8-bit codes and re-scores the best 40 of an ef 64 search with the full
-  vectors; Elasticsearch gets the same (`int8_hnsw`, `num_candidates` 64,
+  vectors (the client sends `ef => 64` in every statement: ChloeDB's own
+  default beam is 200 since 10 November 2026, and runs before the fix
+  searched at that under the label 64); Elasticsearch gets the same (`int8_hnsw`, `num_candidates` 64,
   `rescore_vector.oversample` 4), and OpenSearch its equivalent
   (`knn_vector` in `on_disk` mode with 4x compression, which is 8-bit
   codes on the Lucene engine, `ef_search` 64, `rescore.oversample_factor`

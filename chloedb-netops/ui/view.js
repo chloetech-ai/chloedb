@@ -44,6 +44,17 @@ const CSS = `
 .no-root .tabs .no-more { margin-left: auto; position: sticky; right: 0; background: var(--bg, var(--surface)); }
 .no-root .tabs .no-more .i { width: 14px; height: 14px; }
 .no-synth { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px dashed var(--line-2); color: var(--text-2); }
+.no-found { border-style: solid; border-color: var(--accent); color: var(--accent); text-decoration: none; white-space: nowrap; }
+.no-found:hover { background: var(--accent-soft); }
+.no-feed { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.no-feed > div { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; background: var(--surface); min-width: 0; cursor: pointer; }
+.no-feed > div:hover { border-color: var(--line-2); }
+.no-feed .t { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.no-feed .t b { font-size: 13px; }
+.no-feed .n { font-variant-numeric: tabular-nums; font-weight: 600; }
+.no-feed pre { margin: 6px 0 0; font-size: 11px; line-height: 1.45; max-height: 92px; overflow: auto; white-space: pre; background: var(--surface-2); border-radius: var(--r-sm); padding: 6px 8px; font-family: var(--mono); }
+.no-rules { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.no-src { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--text-2); margin-right: 3px; white-space: nowrap; }
 .no-sim { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
 .no-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 12px; margin-bottom: 14px; }
 .no-kpis .card { margin: 0; }
@@ -107,6 +118,21 @@ const CSS = `
 .no-conf .meter { height: 10px; }
 .no-cause { font-size: 14.5px; line-height: 1.5; }
 .no-why { margin: 8px 0 0; padding-left: 18px; color: var(--text-2); font-size: 13px; }
+.no-story { margin: 4px 0 0; font-size: 13.5px; line-height: 1.6; }
+.no-proofs { margin: 4px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.no-proof { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 2px 10px; font-size: 13px; line-height: 1.45; }
+.no-proof > .k { grid-row: span 3; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); border: 1px solid var(--line-2); border-radius: 999px; padding: 1px 6px; height: fit-content; text-align: center; white-space: nowrap; }
+.no-proof.absent > .k { border-style: dashed; }
+.no-proof .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.no-proof .refs { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
+.no-quote { display: block; font-family: var(--mono); font-size: 11.5px; background: var(--surface-2); border-radius: var(--r-sm); padding: 4px 8px; overflow-x: auto; white-space: pre; color: var(--text-2); }
+.no-ref { font-family: var(--mono); font-size: 11.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--accent); text-decoration: none; cursor: pointer; white-space: nowrap; }
+.no-ref:hover { background: var(--accent-soft); }
+.no-ref.plain { color: var(--text-2); cursor: default; }
+.no-ref.plain:hover { background: none; }
+.no-against { margin-top: 12px; }
+.no-against > summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); font-weight: 600; }
+.no-against .no-proof { color: var(--text-2); }
 .no-key { margin-top: 10px; padding: 8px 10px; border-radius: var(--r-sm); border: 1px dashed var(--line-2); font-size: 12.5px; }
 .no-key.ok { border-color: var(--good); background: var(--good-soft); } .no-key.no { border-color: var(--crit); background: var(--crit-soft); }
 .no-budget { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--surface-3); }
@@ -380,16 +406,26 @@ const STATUS = { investigating: ["warn", "Investigating"], identified: ["info", 
 const KIND = { fiber_cut: "Fibre cut", bad_change: "Bad change", optic_degrade: "Failing optic", ddos: "DDoS", cpu_bug: "Software defect", power: "Power", "": "Unknown", capacity: "Capacity", estate: "Estate outage" };
 /** What a page asks for first, for the pages a deep link opens most. */
 const FIRST = { "": "/v1/shift", diagnose: "/v1/where", network: "/v1/overview", incidents: "/v1/incidents", alerts: "/v1/alerts?status=firing", customers: "/v1/customers", carriers: "/v1/maintenance", services: "/v1/services", devices: "/v1/devices", agents: "/v1/agents", data: "/v1/data", leadership: "/v1/leadership", topology: "/v1/topology", changes: "/v1/changes" };
-const PAGES = [["", "My shift"], ["map", "Map"], ["dash", "Dashboards"], ["diagnose", "Diagnose"], ["network", "Network"], ["incidents", "Incidents"], ["alerts", "Alerts"], ["changes", "Changes"], ["customers", "Customers"], ["carriers", "Carriers"], ["topology", "Topology"], ["services", "Services"], ["explore", "Explore"], ["devices", "Devices"], ["agents", "Agents"], ["data", "Data"]];
+const PAGES = [["", "My shift"], ["map", "Map"], ["dash", "Dashboards"], ["diagnose", "Diagnose"], ["network", "Network"], ["discovery", "Discovery"], ["incidents", "Incidents"], ["alerts", "Alerts"], ["changes", "Changes"], ["customers", "Customers"], ["carriers", "Carriers"], ["topology", "Topology"], ["services", "Services"], ["explore", "Explore"], ["devices", "Devices"], ["agents", "Agents"], ["data", "Data"]];
 const gbps = (bps) => (bps == null ? "–" : bps >= 1e12 ? (bps / 1e12).toFixed(2) + " Tb/s" : bps >= 1e9 ? (bps / 1e9).toFixed(1) + " Gb/s" : (bps / 1e6).toFixed(0) + " Mb/s");
 const pct = (v, d = 0) => (v == null || Number.isNaN(v) ? "–" : (v * 100).toFixed(d) + "%");
 const mins = (m) => (m == null ? "–" : m >= 90 ? (m / 60).toFixed(1) + " h" : Math.round(m) + " min");
 const cap = (mbps) => (mbps >= 1000 ? mbps / 1000 + "G" : mbps + "M");
 
-function render(el, ctx) {
+// Which network the page shows when the app serves both (`--topology both`):
+// the listed one at the app's root, the one read from its feeds under /d/.
+const NETWORK_KEY = "chloedb-netops.network";
+const savedNetwork = () => { try { return localStorage.getItem(NETWORK_KEY) || ""; } catch { return ""; } };
+const saveNetwork = (v) => { try { localStorage.setItem(NETWORK_KEY, v); } catch { /* the choice lasts as long as the page */ } };
+
+function render(el, host) {
+  // Every call of the app's API goes to the network in view: `base` is "" or "/d".
+  // It starts on the one chosen last time; an app that serves one network answers /d/ with a 404, and the page goes back to its root.
+  let base = savedNetwork() === "discovered" ? "/d" : "";
+  const ctx = Object.assign(Object.create(host), { api: (path, opts) => host.api(base + path, opts) });
   const C = ctx.core, { h } = C;
   el.append(h("style", {}, CSS));
-  const app = { ctx, C, h, s: C.s, charts: ctx.charts, queries: new Map(), status: null };
+  const app = { ctx, C, h, s: C.s, charts: ctx.charts, queries: new Map(), status: null, base };
   const sqlN = h("span", {}, "SQL");
   const sqlBtn = h("button", { class: "btn sm", title: "The queries behind this page", onclick: () => showSql(app) }, C.icon("sql"), sqlN);
   const simEl = h("span", { class: "no-sim" });
@@ -400,23 +436,27 @@ function render(el, ctx) {
   app.bar = cmd;
   const agentBtn = h("button", { class: "btn sm no-ag-btn", title: "The assistant: questions about what you are looking at, answered from the tables", onclick: () => app.agent.toggle() }, C.icon("sparkle"), h("span", { class: "lbl" }, "Assistant"));
   const alt = h("span");
+  const net = h("span", { style: { display: "none" } });
   const drawAlt = (page) => alt.replaceChildren(C.seg([["eng", "Engineer", "The shift: what waits, what is planned, what is broken"], ["lead", "Leadership", "The same tables from further away: reliability, risk, carriers, the team"]], page === "leadership" ? "lead" : "eng", (v) => app.go(...(v === "lead" ? ["leadership"] : []))));
   const tabs = h("div", { class: "tabs", role: "tablist" });
   const body = h("div");
   const synth = h("span", { class: "no-synth", title: "Everything on these pages is made up: a simulated carrier network, written into ChloeDB tables every minute" }, "synthetic data");
+  const found = h("a", { class: "no-synth no-found", href: ctx.href("discovery"), title: "Nobody listed this network: its sites, devices, links and roles were read back from what it reports (BGP-LS, LLDP, SNMP's sysDescr and sysLocation, BMP, the OLTs' ONT tables)", style: { display: "none" } }, "discovered from BGP-LS, LLDP and SNMP");
   // On a phone the header's actions fold into one menu, so the page starts on the first screen.
   const headMenu = h("button", { class: "btn sm no-hmenu", title: "The view, the simulator and the SQL", "aria-label": "Menu", "aria-haspopup": "menu" }, C.icon("menu"));
   headMenu.onclick = () => {
     const page = (current || [])[0] || "", sim = app.status?.sim;
+    const both = (app.status?.topologies || []).length > 1;
     C.menu(headMenu, [
+      both ? { label: base ? "Show the inventory's network" : "Show the network as it reports itself", icon: "route", onclick: () => pickNetwork(base ? "inventory" : "discovered") } : null,
       page === "leadership" ? { label: "Engineer view", icon: "user", onclick: () => app.go() } : { label: "Leadership view", icon: "overview", onclick: () => app.go("leadership") },
       sim?.simulate && sim.fault_active ? { label: `End the fault (${sim.fault_phase})`, icon: "stop", onclick: async () => { try { await ctx.api("/v1/sim/end", { body: {} }); C.toast("The fault was repaired; its alerts clear within a few minutes", "ok"); poll(); } catch (e) { C.toast(e.message, "bad"); } } } : null,
       sim?.simulate ? { label: "Inject a fault…", icon: "bolt", onclick: () => injectMenu(app, headMenu) } : null,
       { label: sqlN.textContent, icon: "sql", onclick: () => showSql(app) },
     ].filter(Boolean));
   };
-  el.append(h("div", { class: "no-head" }, h("h1", {}, "Network operations"), sub, synth,
-    h("div", { class: "tools" }, alt, simEl, injectBtn, sqlBtn, headMenu)), h("div", { class: "no-cmdrow" }, cmd.el, agentBtn), tabs, body);
+  el.append(h("div", { class: "no-head" }, h("h1", {}, "Network operations"), sub, synth, found,
+    h("div", { class: "tools" }, net, alt, simEl, injectBtn, sqlBtn, headMenu)), h("div", { class: "no-cmdrow" }, cmd.el, agentBtn), tabs, body);
   el.classList.add("no-root");
   assistant(app, el);
 
@@ -459,7 +499,7 @@ function render(el, ctx) {
     if (!ready) return;
     if (page !== "map") app.map = null;
     app.wherePage?.(page);
-    const f = { "": shiftPage, map: mapPage, dash: dashPage, diagnose: diagnosePage, network: overviewPage, customers: customersPage, carriers: carriersPage, leadership: leadershipPage, incidents: path[1] ? incidentRoom : incidentsPage, topology: topologyPage, alerts: alertsPage, changes: changesPage, services: servicesPage, explore: explorePage, devices: devicesPage, agents: agentsPage, data: dataPage }[page] || shiftPage;
+    const f = { "": shiftPage, map: mapPage, dash: dashPage, diagnose: diagnosePage, network: overviewPage, customers: customersPage, carriers: carriersPage, leadership: leadershipPage, incidents: path[1] ? incidentRoom : incidentsPage, topology: topologyPage, discovery: discoveryPage, alerts: alertsPage, changes: changesPage, services: servicesPage, explore: explorePage, devices: devicesPage, agents: agentsPage, data: dataPage }[page] || shiftPage;
     stop = f(body, app, path);
   };
   // The tabs that do not fit go into a "More" menu at the end of the row, the page in view always shown.
@@ -482,19 +522,55 @@ function render(el, ctx) {
   const drawTabs = (st) => {
     const badge = { map: st?.estate?.broken || 0, diagnose: st?.open_incidents ? "!" : 0, incidents: st?.open_incidents || 0, alerts: st?.firing || 0, "": st?.waiting || 0, carriers: st?.notices || 0 };
     const page = (current || [])[0] || "";
-    tabs.replaceChildren(...PAGES.map(([p, label]) => h("button", { role: "tab", dataset: { p, label }, "aria-selected": String(p === page), onclick: () => app.go(...(p ? [p] : [])) }, label, badge[p] ? h("span", { class: "n", style: p === "incidents" ? { background: "var(--crit-soft)", color: "var(--crit-ink)" } : null }, String(badge[p])) : null)), more);
+    // Discovery is a page of the network read from its feeds (--topology discovered) only.
+    tabs.replaceChildren(...PAGES.filter(([p]) => p !== "discovery" || st?.topology === "discovered").map(([p, label]) => h("button", { role: "tab", dataset: { p, label }, "aria-selected": String(p === page), onclick: () => app.go(...(p ? [p] : [])) }, label, badge[p] ? h("span", { class: "n", style: p === "incidents" ? { background: "var(--crit-soft)", color: "var(--crit-ink)" } : null }, String(badge[p])) : null)), more);
     fitTabs();
   };
   drawTabs(null);
   const tabsSeen = typeof ResizeObserver === "function" ? new ResizeObserver(() => fitTabs()) : null;
   tabsSeen?.observe(tabs);
   const setup = h("div", { class: "no-setup" });
+  // The switch between the two networks, shown when the app serves both.
+  const pickNetwork = (v) => {
+    const to = v === "discovered" ? "/d" : "";
+    saveNetwork(v);
+    if (to === base) return;
+    base = to; app.base = to;
+    try { stop?.(); } catch (e) { console.warn(e); }
+    stop = null; ready = false; app.status = null; app.map = null; app.customerList = null;
+    app.queries.clear(); pre.clear(); sqlN.textContent = "SQL";
+    sub.textContent = ""; found.style.display = "none";
+    setup.replaceChildren(C.icon("db", "lg"), h("h2", {}, v === "discovered" ? "Reading the network from what it reports" : "Opening the inventory's network"), h("div", { class: "dim" }, "…"));
+    body.replaceChildren(setup);
+    const page = (current || [])[0] || "";
+    // The other network has other incidents and changes: open the page, not the record.
+    if (page === "discovery" && !to) app.go(); else if ((current || [])[1]) app.go(page);
+    poll();
+  };
+  const drawNet = (st) => {
+    const both = (st?.topologies || []).length > 1;
+    net.style.display = both ? "" : "none";
+    if (!both) return;
+    const v = st.topology === "discovered" ? "discovered" : "inventory";
+    if (net.firstChild?.set) net.firstChild.set(v);
+    else net.replaceChildren(C.seg([["inventory", "Inventory", "The network as its inventory lists it: sites, devices and links written as rows, as from a NetBox"], ["discovered", "Discovered", "The same network read back from what it reports: BGP-LS, LLDP, SNMP's sysDescr and sysLocation, BMP and the OLTs' ONT tables, in tables of its own (netops_disc_*)"]], v, pickNetwork));
+  };
   const poll = async () => {
     let st;
-    try { st = await ctx.api("/v1/status"); } catch (e) { if (!ready) body.replaceChildren(C.failure(e, "Network operations")); return; }
+    const asked = base;
+    try { st = await ctx.api("/v1/status"); } catch (e) {
+      // An app that serves one network has no /d/: back to its own.
+      if (asked && e.status === 404) { base = ""; app.base = ""; pre.clear(); return poll(); }
+      if (!ready) body.replaceChildren(C.failure(e, "Network operations"));
+      return;
+    }
+    if (asked !== base) return;
     app.status = st;
+    drawNet(st);
     const n = st.network;
-    sub.textContent = `${n.name}: ${n.sites} sites, ${n.devices} devices, ${n.links} links, ${n.services} services`;
+    sub.textContent = `${n.name}${st.topology === "discovered" ? ", as it reports itself" : ""}: ${st.ready || n.devices ? `${n.sites} sites, ${n.devices} devices, ${n.links} links, ${n.services} services` : "being built"}`;
+    found.style.display = st.topology === "discovered" ? "" : "none";
+    app.discovered = st.topology === "discovered";
     drawTabs(st);
     const sim = st.sim;
     injectBtn.style.display = sim.simulate ? "" : "none";
@@ -504,8 +580,11 @@ function render(el, ctx) {
       : [h("span", { class: "dot ok" }), sim.next_fault_at ? `Calm. Next fault ${C.fmt.ago(T(sim.next_fault_at))}` : "Calm. No faults scheduled"]));
     if (st.error && ready) simEl.append(h("span", { class: "badge ac-bad", title: st.error }, "write error"));
     if (!st.ready) {
-      setup.replaceChildren(C.icon("db", "lg"), h("h2", {}, "Building the network"), h("div", { class: "dim" }, st.phase + "…"), h("div", { class: "bar" }, h("i", { style: { width: Math.round(st.progress * 100) + "%" } })),
-        h("div", { class: "small muted" }, st.error || "Creating 39 tables, a month of history, the last hours of telemetry, and the estate behind the backbone with two months of its faults and changes. This takes about a minute."));
+      const both = base === "/d";
+      setup.replaceChildren(C.icon("db", "lg"), h("h2", {}, both ? "Reading the network from what it reports" : "Building the network"), h("div", { class: "dim" }, st.phase + "…"), h("div", { class: "bar" }, h("i", { style: { width: Math.round(st.progress * 100) + "%" } })),
+        h("div", { class: "small muted" }, st.error || (both
+          ? "The simulated network writes what a collector would hear from it (BGP-LS, LLDP, SNMP, BMP and the OLTs' ONT tables), and the app reads its sites, devices, links and roles back from those rows alone, then gives it a month of history. It has 48 tables of its own (netops_disc_*), beside the inventory's. The first time takes a minute or two."
+          : "Creating 48 tables, a month of history, the last hours of telemetry, and the estate behind the backbone with two months of its faults and changes. This takes about a minute.")));
       if (!setup.isConnected) body.replaceChildren(setup);
       pre.clear();
       return;
@@ -619,14 +698,52 @@ function receipt(app, rows) {
 const POS = { nyc: [130, 250], ash: [175, 470], lon: [445, 235], ams: [655, 150], par: [525, 440], fra: [835, 325], mad: [395, 590], mil: [725, 560], sto: [935, 78], waw: [1080, 262] };
 const ROWS = [["core"], ["border", "agg"], ["firewall", "spine"], ["leaf"]];
 
-function layout(devices) {
+/**
+ * Where each site's box goes when nobody placed it: from the coordinates
+ * its devices give in sysLocation, west to east and north to south (half by
+ * rank, half by distance, so that one ocean does not squeeze a continent),
+ * then pushed apart until no two boxes overlap.
+ */
+function geoPlaces(sites, size) {
+  const list = sites.filter((x) => Number.isFinite(+x.lat) && Number.isFinite(+x.lon));
+  if (!list.length) return {};
+  const axis = (v) => {
+    const sorted = [...v].sort((a, b) => a - b), lo = sorted[0], hi = sorted[sorted.length - 1];
+    return v.map((x) => (list.length < 2 ? 0.5 : 0.5 * sorted.indexOf(x) / (list.length - 1) + 0.5 * (hi > lo ? (x - lo) / (hi - lo) : 0.5)));
+  };
+  const xs = axis(list.map((x) => +x.lon)), ys = axis(list.map((x) => -+x.lat));
+  const [x0, y0, x1, y1] = [130, 90, 1090, 600];
+  const p = list.map((x, i) => [x0 + xs[i] * (x1 - x0), y0 + ys[i] * (y1 - y0)]);
+  for (let round = 0; round < 300; round++) {
+    let moved = false;
+    for (let i = 0; i < p.length; i++) for (let j = i + 1; j < p.length; j++) {
+      const [wi, hi] = size[list[i].id] || [176, 124], [wj, hj] = size[list[j].id] || [176, 124];
+      const dx = p[j][0] - p[i][0], dy = p[j][1] - p[i][1];
+      const ox = (wi + wj) / 2 + 36 - Math.abs(dx), oy = (hi + hj) / 2 + 40 - Math.abs(dy);
+      if (ox <= 0 || oy <= 0) continue;
+      moved = true;
+      // Apart along the axis that needs the shorter push.
+      if (ox / (wi + wj) < oy / (hi + hj)) { const m = (ox / 2 + 1) * (dx < 0 ? -1 : 1); p[i][0] -= m; p[j][0] += m; }
+      else { const m = (oy / 2 + 1) * (dy < 0 ? -1 : 1); p[i][1] -= m; p[j][1] += m; }
+    }
+    for (let i = 0; i < p.length; i++) { const [w, hh] = size[list[i].id] || [176, 124]; p[i][0] = Math.min(1180 - w / 2 - 4, Math.max(40 + w / 2 + 4, p[i][0])); p[i][1] = Math.min(660 - hh / 2 - 4, Math.max(20 + hh / 2 + 4, p[i][1])); }
+    if (!moved) break;
+  }
+  return Object.fromEntries(list.map((x, i) => [x.id, p[i]]));
+}
+
+function layout(devices, sites, geo) {
   const pos = {}, pods = {};
   const by = {};
   for (const d of devices) (by[d.site] ||= []).push(d);
+  const rowsOf = (list) => ROWS.map((roles) => list.filter((d) => roles.includes(d.role)).sort((a, b) => roles.indexOf(a.role) - roles.indexOf(b.role) || a.id.localeCompare(b.id))).filter((r) => r.length);
+  const size = Object.fromEntries(Object.entries(by).map(([site, list]) => { const n = rowsOf(list).length; return [site, [n > 2 ? 176 : 128, n * 27 + 16]]; }));
+  // A network read from its feeds is drawn where its devices say they are; the made-up one where its boxes were placed by hand.
+  const places = geo || Object.keys(by).some((x) => !POS[x]) ? geoPlaces(sites || [], size) : POS;
   for (const [site, list] of Object.entries(by)) {
-    const rows = ROWS.map((roles) => list.filter((d) => roles.includes(d.role)).sort((a, b) => roles.indexOf(a.role) - roles.indexOf(b.role) || a.id.localeCompare(b.id))).filter((r) => r.length);
-    const w = rows.length > 2 ? 176 : 128, hgt = rows.length * 27 + 16;
-    const [cx, cy] = POS[site] || [600, 330];
+    const rows = rowsOf(list);
+    const [w, hgt] = size[site];
+    const [cx, cy] = places[site] || POS[site] || [600, 330];
     const x0 = cx - w / 2, y0 = cy - hgt / 2;
     pods[site] = { x: x0, y: y0, w, h: hgt, cx, cy };
     rows.forEach((row, r) => row.forEach((d, i) => { pos[d.id] = [x0 + w * (i + 1) / (row.length + 1), y0 + 21 + r * 27]; }));
@@ -651,7 +768,7 @@ function topoMap(app, opts = {}) {
     const d = last;
     if (!d) return;
     svg.replaceChildren();
-    const { pos, pods } = layout(d.devices);
+    const { pos, pods } = layout(d.devices, d.sites, app.discovered);
     const sites = Object.fromEntries(d.sites.map((x) => [x.id, x]));
     const metric = Object.fromEntries((d.metrics || []).map((m) => [m.link, m]));
     const alertDev = {}, alertLink = {};
@@ -844,6 +961,55 @@ function actionCard(app, a, after) {
     a.command ? h("pre", { class: "code" }, a.command) : null,
     a.result ? h("div", { class: "small", style: { marginTop: "6px" } }, C.icon("okc"), " ", a.result, a.decided_by ? h("span", { class: "muted" }, ` · ${a.decided_by}, ${C.fmt.ago(T(a.decided))}`) : null) : null,
     open ? h("div", { class: "row", style: { marginTop: "8px", gap: "8px" } }, yes, no, a.incident && after === undefined ? app.link(a.incident, "incidents", a.incident) : null) : null);
+}
+
+// ---- the evidence behind a cause
+
+/** The agent writes times as tokens ([[t:ISO]]); they are shown in the reader's own time zone. */
+const localTimes = (s) => String(s ?? "").replace(/\[\[t:([^\]]+)\]\]/g, (_, iso) => hhmm(T(iso)));
+
+const PROOF_KIND = { alert: "Alert", log: "Log", metric: "Reading", change: "Change", flow: "Flows", advisory: "Advisory", history: "History" };
+
+/** What a piece of evidence points at, as a link to it: `device:cr1-ams`, `link:…`, `change:…`, `incident:…`. */
+function refChip(app, ref) {
+  const { h } = app;
+  const [kind, ...rest] = String(ref).split(":"), id = rest.join(":");
+  const open = { device: () => deviceDrawer(app, id), link: () => linkDrawer(app, id), change: () => changeDrawer(app, id), incident: () => app.go("incidents", id), service: () => serviceDrawer(app, id) }[kind];
+  const label = kind === "site" ? id.toUpperCase() : id;
+  return open ? h("a", { class: "no-ref", title: `Open ${kind} ${id}`, onclick: (e) => { e.preventDefault(); open(); } }, label) : h("span", { class: "no-ref plain", title: kind }, label);
+}
+
+function proofItem(app, x) {
+  const { h } = app;
+  return h("li", { class: "no-proof" + (x.absent ? " absent" : "") },
+    h("span", { class: "k", title: x.absent ? "A check that came back empty" : null }, PROOF_KIND[x.kind] || x.kind),
+    h("span", {}, localTimes(x.claim)),
+    x.excerpt ? h("code", { class: "no-quote", title: x.excerpt }, x.excerpt) : null,
+    h("span", { class: "refs" }, (x.refs || []).slice(0, 8).map((r) => refChip(app, r)),
+      h("a", { class: "no-link small", href: "#", title: "Run its query again and see the rows", onclick: (e) => { e.preventDefault(); proofDrawer(app, x); } }, x.absent ? "the check, which finds nothing ›" : "the rows behind it ›")));
+}
+
+async function proofDrawer(app, x) {
+  const { h, C } = app;
+  const body = h("div", {}, h("div", { class: "muted" }, "Running its query again…"));
+  C.drawer({ title: localTimes(x.claim), sub: `${PROOF_KIND[x.kind] || x.kind} · the query the agent kept with this claim, run again now`, wide: true, body });
+  try {
+    const j = await app.call(`/v1/evidence/${encodeURIComponent(x.id)}`);
+    // The columns in the order the query names them; times in the reader's own zone.
+    const rows = j.rows || [], sel = (j.evidence.sql_text.match(/^SELECT\s+([\s\S]*?)\s+FROM\s/i) || [])[1] || "";
+    const named = sel.split(",").map((c) => c.trim().split(/\s+AS\s+/i).pop().trim());
+    const cols = rows.length ? [...named.filter((c) => c in rows[0]), ...Object.keys(rows[0]).filter((c) => !named.includes(c))] : [];
+    const stamp = /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?(\.\d+)?Z$/;
+    const cell = (v) => h("span", { class: "mono small", style: { whiteSpace: "nowrap" } }, Array.isArray(v) ? v.join(", ") : v == null ? "" : typeof v === "string" && stamp.test(v) ? new Date(T(v)).toLocaleTimeString("en-GB", { hour12: false }) : typeof v === "number" && !Number.isInteger(v) ? String(Math.round(v * 1000) / 1000) : String(v));
+    const params = j.evidence.params && Object.keys(j.evidence.params).length ? `\n-- ${JSON.stringify(j.evidence.params)}` : "";
+    put(body,
+      x.excerpt ? [h("div", { class: "no-sec" }, "As the agent saw it"), h("code", { class: "no-quote" }, x.excerpt)] : null,
+      (x.refs || []).length ? [h("div", { class: "no-sec" }, "What it points at"), h("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } }, x.refs.map((r) => refChip(app, r)))] : null,
+      h("div", { class: "no-sec" }, x.absent ? "The rows: none, which is what the claim says" : `The rows behind it · ${rows.length}`),
+      rows.length ? C.table(cols.map((c) => ({ key: c, label: c, sortable: false, render: (r) => cell(r[c]) })), { rows, compact: true })
+        : C.empty("db", "No rows", x.absent ? "The claim is that nothing of this kind happened in the window, and the query finds nothing." : "The rows may have aged out of the table's retention since."),
+      h("div", { class: "no-sec" }, "The query"), C.sqlBlock(j.evidence.sql_text + params));
+  } catch (e) { put(body, C.failure(e, "The evidence")); }
 }
 
 function runFacts(app, r) {
@@ -1093,13 +1259,18 @@ function incidentRoom(body, app, path) {
         open ? h("button", { class: "btn sm", title: "Run the root-cause agent again on the alerts as they are now", onclick: () => act("investigate", "Investigated again") }, C.icon("agent"), "Investigate again") : null,
         i.postmortem ? h("button", { class: "btn sm", onclick: () => C.drawer({ title: "Postmortem draft", sub: `${i.id} · written by the agent from the timeline when the incident resolved`, wide: true, body: h("div", { style: { whiteSpace: "pre-wrap", lineHeight: 1.55 } }, i.postmortem), foot: h("button", { class: "btn", onclick: () => C.copy(i.postmortem, "Postmortem copied") }, C.icon("copy"), "Copy") }) }, C.icon("note"), "Postmortem") : null,
         h("button", { class: "btn sm " + (open ? "primary" : ""), onclick: () => closeDrawer(i, j.runbook, j.similar) }, C.icon("check"), open ? "Close…" : "Record the runbook"))));
-    // Cause.
+    // Cause: what happened, why this is the cause (each claim with the rows behind it), and what it is not.
     const rc = j.runs.filter((r) => r.agent === "root-cause").pop();
     const last = j.steps[j.steps.length - 1];
     const because = last && last.tool === "reason" && last.detail.includes("Because:") ? last.detail.split("Because:")[1].split(";").map((x) => x.trim().replace(/\.$/, "")).filter(Boolean) : [];
-    putIf(causeEl, [i.root_cause, i.confidence, because, rc], () => i.root_cause ? h("div", {}, h("div", { class: "no-cause" }, i.root_cause),
+    const ev = j.evidence || [], story = ev.find((x) => x.role === "story");
+    const pro = ev.filter((x) => x.role === "for"), con = ev.filter((x) => x.role === "against");
+    putIf(causeEl, [i.root_cause, i.confidence, because, rc, ev], () => i.root_cause ? h("div", {}, h("div", { class: "no-cause" }, i.root_cause),
       h("div", { class: "no-conf", style: { marginTop: "10px" } }, h("div", { class: "meter" }, h("i", { style: { width: i.confidence * 100 + "%", background: i.confidence >= 0.8 ? "var(--good)" : i.confidence >= 0.5 ? "var(--warn)" : "var(--crit)" } })), h("b", {}, pct(i.confidence) + " confident")),
-      because.length ? h("ul", { class: "no-why" }, because.map((b) => h("li", {}, b))) : null,
+      story ? [h("div", { class: "no-sec" }, "What happened"), h("p", { class: "no-story" }, localTimes(story.claim))] : null,
+      pro.length ? [h("div", { class: "no-sec" }, "Why this is probably the cause"), h("ol", { class: "no-proofs" }, pro.map((x) => proofItem(app, x)))]
+        : because.length ? h("ul", { class: "no-why" }, because.map((b) => h("li", {}, b))) : null,
+      con.length ? h("details", { class: "no-against", open: true }, h("summary", {}, `What it is not: ${con.length} other ${con.length === 1 ? "explanation" : "explanations"} checked`), h("ul", { class: "no-proofs", style: { marginTop: "8px" } }, con.map((x) => proofItem(app, x)))) : null,
       rc ? runFacts(app, rc) : null)
       : C.empty("agent", "No cause named yet", "The agent runs when the incident opens and again as alerts arrive."));
     // The estate's outages are worked by its own agent, and the simulator keeps no answer key for them.
@@ -1690,7 +1861,7 @@ function dataPage(body, app) {
   body.append(kp, h("div", { class: "no-cols wide" }, h("div", { class: "no-col" }, C.card({ title: "Where the rows come from", sub: "each source says whether its rows are simulated or arriving, and what writes them on a real network", body: src, flush: true }), C.card({ title: "Tables", sub: "all of them ordinary ChloeDB tables: query them from the SQL page or any client", body: tbl, flush: true })), side));
   const stop = live(app, body, "/v1/data", (j) => {
     const rows = j.tables.reduce((a, t) => a + (t.rows || 0), 0), minute = Object.values(j.last_minute_rows).reduce((a, n) => a + n, 0), written = Object.values(j.written).reduce((a, n) => a + n, 0);
-    put(kp, kpi(app, "Tables", String(j.tables.length), "prefixed netops_"), kpi(app, "Rows", C.fmt.si(rows), "across all of them"), kpi(app, "Written a minute", C.fmt.n(minute), "telemetry, logs and flows"), kpi(app, "Written since start", C.fmt.si(written), C.fmt.ago(T(j.since))),
+    put(kp, kpi(app, "Tables", String(j.tables.length), `prefixed ${app.base ? "netops_disc_" : "netops_"}`), kpi(app, "Rows", C.fmt.si(rows), "across all of them"), kpi(app, "Written a minute", C.fmt.n(minute), "telemetry, logs and flows"), kpi(app, "Written since start", C.fmt.si(written), C.fmt.ago(T(j.since))),
       kpi(app, "Search by meaning", j.semantic ? "on" : "off", j.semantic ? j.model : "no embedding model on this server"), kpi(app, "Graph walks", j.graph === "sql" ? "in SQL" : "in the app", j.server.role === "coordinator" ? "a coordinator does not walk graphs yet" : "REACHABLE, ppr and PATH"));
     put(src, C.table([
       { key: "name", label: "Source", render: (r) => h("b", {}, r.name) }, { key: "kind", label: "Kind" }, { key: "via", label: "On a real network", sortable: false, render: (r) => h("span", { class: "ellipsis", style: { display: "block", maxWidth: "300px" }, title: r.via }, r.via) },
@@ -1711,6 +1882,102 @@ function dataPage(body, app) {
       C.card({ title: "The server", body: kv(app, [["Address", j.server.url], ["Role", j.server.role], ["History seeded", j.history_hours + " hours of telemetry, a month of incidents"], ["Embedding model", j.model || "none"]]) }));
   }, 20000);
   return stop;
+}
+
+// ---------------------------------------------------------------- discovery
+
+/** Each feed: its name, what it holds, and the fields a glance at one of its rows shows. */
+const FEEDS = {
+  netops_snmp_system: ["SNMP: system group", "sysName, sysDescr, sysObjectID and sysLocation, with ENTITY-MIB's model, serial and software", ["sys_name", "sys_descr", "sys_object_id", "sys_location", "model", "serial", "sw_rev"]],
+  netops_snmp_ifaces: ["SNMP: interfaces", "IF-MIB's names, speeds and descriptions (ifAlias), IP-MIB's addresses", ["agent", "if_name", "if_alias", "high_speed", "ip", "prefix_len"]],
+  netops_lldp: ["LLDP neighbours", "LLDP-MIB's lldpRemTable: who is at the other end of each port", ["agent", "local_port", "rem_sys_name", "rem_port", "rem_chassis", "rem_caps"]],
+  netops_bgpls_nodes: ["BGP-LS: nodes", "the IS-IS database's routers: router id, system id, hostname", ["id", "system_id", "hostname", "area", "protocol"]],
+  netops_bgpls_links: ["BGP-LS: links", "each adjacency, one a direction, with its TE attributes: bandwidth, delay, administrative group", ["local_node", "remote_node", "local_ip", "remote_ip", "igp_metric", "max_bw_mbps", "delay_us", "admin_group"]],
+  netops_bmp_peers: ["BMP: BGP sessions", "the sessions each router reports, and the routes it takes from each", ["router", "peer_ip", "peer_asn", "peer_desc", "state", "adj_rib_in"]],
+  netops_gpon_onts: ["GPON: ONT tables", "each OLT's ONTs on its PON ports, with their serials", ["agent", "pon_port", "ont_id", "serial", "model", "description"]],
+};
+const FOUND_KINDS = [["device", "Devices"], ["link", "Links"], ["site", "Sites"], ["peer", "BGP sessions"], ["hub", "Estate hubs"]];
+const RULES = [
+  ["Devices", "An SNMP agent whose sysLocation names a point of presence (CODE | City, CC | Region | lat,lon) is a device there. sysObjectID's enterprise number gives the vendor, sysDescr the operating system, ENTITY-MIB the model, serial and software. They are numbered in the order of their management addresses."],
+  ["Links", "An LLDP neighbour, or an IS-IS adjacency in BGP-LS, is a link; the two are one link when the adjacency's addresses are on the ports LLDP names (IP-MIB). Capacity and delay come from BGP-LS's TE attributes (else the port's speed), the plane from the administrative group, the carrier and circuit from the ports' descriptions."],
+  ["Roles", "Where a device sits says what it is: in the IS-IS database with eBGP sessions in BMP, a border router; adjacent to another site, a core router; any other IS-IS router, an aggregation router. Outside the IGP, a switch next to a firewall (sysDescr says so) is a spine, and the rest are leaves."],
+  ["Sites", "A fabric makes a site a data centre, two border routers a hub, and anything else a point of presence."],
+  ["The estate", "Hub routers are what LLDP shows hanging from the backbone, access nodes what hangs from hub routers. An OLT's ONTs come from its ONT table; a business park's customer routers and a cell site's radios from LLDP (a customer by the port's description). sysLocation names the hub and the site each belongs to."],
+  ["Not from the network", "What is sold and to whom (services and customers) is a business record, written beside the feeds. How loaded each link is and how fast each service answers is the simulator's physics, matched to what was found by name."],
+];
+
+function discoveryPage(body, app) {
+  const { h, C } = app;
+  if (!app.discovered) {
+    body.append(C.card({ title: "Discovery", body: C.empty("route", "This network was listed, not discovered", "Its sites, devices and links come from the inventory tables. " + ((app.status?.topologies || []).includes("discovered") ? "Switch the network at the top to Discovered to see the same network built only from what it reports: BGP-LS, LLDP, SNMP and BMP." : "Start the app with --topology both or discovered (or CHLOEDB_NETOPS_TOPOLOGY) to see it built only from what it reports: BGP-LS, LLDP, SNMP and BMP.")) }));
+    return () => {};
+  }
+  const kp = h("div", { class: "no-kpis" }), feeds = h("div", { class: "no-feed" }), found = h("div"), side = h("div", { class: "no-col" }), mapSub = h("span");
+  const map = topoMap(app, { mode: "live", onDevice: (id) => foundDrawer(app, last, "device", id) });
+  let kind = "device", q = "", last = null;
+  const search = h("input", { class: "input", type: "search", placeholder: "Find a device, link, site or hub", "aria-label": "Find", style: { maxWidth: "260px" }, oninput: () => { q = search.value.trim().toLowerCase(); drawFound(); } });
+  const seg = h("span");
+  body.append(kp, h("div", { class: "no-cols wide" },
+    h("div", { class: "no-col" },
+      C.card({ title: "The network, as it reports itself", sub: mapSub, tools: app.link("Topology", "topology"), body: [map, mapLegend(app, "live")] }),
+      C.card({ title: "What was found, and how", sub: "every site, device, link, session and hub, with the feeds that found it and the rule", tools: search, body: [h("div", { style: { padding: "0 0 8px" } }, seg), found] })),
+    side));
+  const drawFound = () => {
+    if (!last) return;
+    const all = kind === "hub" ? last.hubs : last.found.filter((r) => r.kind === kind);
+    const rows = q ? all.filter((r) => r.item.toLowerCase().includes(q) || r.how.toLowerCase().includes(q)) : all;
+    put(seg, C.seg(FOUND_KINDS.map(([k, label]) => [k, `${label} · ${C.fmt.n(k === "hub" ? last.hubs.length : last.found.filter((r) => r.kind === k).length)}`]), kind, (v) => { kind = v; drawFound(); }));
+    put(found, rows.length ? C.table([
+      { key: "item", label: { device: "Device", link: "Link", site: "Site", peer: "Session", hub: "Hub" }[kind], render: (r) => h("b", { class: "mono small", style: { whiteSpace: "nowrap" } }, r.item) },
+      { key: "sources", label: "Found in", sortable: false, render: (r) => h("span", { style: { whiteSpace: "nowrap" } }, (r.sources || []).map((x) => h("span", { class: "no-src" }, x))) },
+      { key: "how", label: "How", sortable: false, render: (r) => h("span", { class: "small dim" }, r.how) },
+    ], { rows, compact: true, maxHeight: "520px", onRow: (r) => foundDrawer(app, last, r.kind, r.item) }) : C.empty("search", "Nothing matches", q ? `No ${kind} names or says "${q}".` : "Discovery found none of these."));
+  };
+  const stop = live(app, body, "/v1/discovery", (j) => {
+    last = j;
+    const s = j.summary || {}, f = s.found || {}, rows = Object.values(s.rows || {}).reduce((a, n) => a + n, 0);
+    put(kp, kpi(app, "Sites", C.fmt.n(f.sites || 0), "named in sysLocation"), kpi(app, "Devices", C.fmt.n(f.devices || 0), "SNMP agents at a point of presence"), kpi(app, "Links", C.fmt.n(f.links || 0), "LLDP and IS-IS, merged"),
+      kpi(app, "BGP sessions", C.fmt.n(f.peers || 0), "from BMP"), kpi(app, "Estate objects", C.fmt.si(f.estate || 0), "behind the backbone"), kpi(app, "Feed rows read", C.fmt.si(rows), s.ms != null ? `in ${C.fmt.ms(s.ms)}, ${s.at ? C.fmt.ago(T(s.at)) : ""}` : ""));
+    mapSub.textContent = "each box where its devices' sysLocation puts it, each line a link LLDP or IS-IS reported; nobody placed or listed any of it";
+    put(feeds, j.feeds.map((x) => {
+      const [name, what, fields] = FEEDS[x.table] || [x.table, x.what, []];
+      // The sample row that says the most (a port with a description rather than a loopback, say).
+      const said = (r) => fields.filter((k) => r[k] != null && r[k] !== "" && r[k] !== 0).length;
+      const first = [...(x.sample || [])].sort((a, b) => said(b) - said(a))[0] || {};
+      const lines = fields.filter((k) => first[k] != null && first[k] !== "").map((k) => `${k}: ${Array.isArray(first[k]) ? first[k].join(", ") : first[k]}`);
+      return h("div", { onclick: () => feedDrawer(app, x), title: "Open its rows" }, h("div", { class: "t" }, h("b", {}, name), h("span", { class: "n" }, C.fmt.n(x.rows))), h("div", { class: "small muted mono" }, x.name || x.table), h("div", { class: "small dim", style: { marginTop: "4px" } }, what), lines.length ? h("pre", {}, lines.join("\n")) : null);
+    }));
+    put(side,
+      C.card({ title: "What the network reports", sub: "seven tables, as a collector would fill them; nothing else describes the network", body: feeds }),
+      C.card({ title: "The rules", sub: "how the feeds become an inventory, in the order they run", body: h("ol", { class: "no-rules small" }, RULES.map(([k, v]) => h("li", {}, h("b", {}, k + ". "), h("span", { class: "dim" }, v)))) }));
+    drawFound();
+  }, 60000);
+  const stopMap = live(app, body, "/v1/topology", (j) => map.update(j), 30000);
+  return () => { stop(); stopMap(); };
+}
+
+function foundDrawer(app, j, kind, item) {
+  const { h, C } = app;
+  const r = j && (kind === "hub" ? j.hubs : j.found).find((x) => x.kind === kind && x.item === item);
+  if (!r) return kind === "device" ? deviceDrawer(app, item) : null;
+  const open = kind === "device" ? h("button", { class: "btn sm", onclick: () => deviceDrawer(app, item) }, "Open the device") : kind === "link" ? h("button", { class: "btn sm", onclick: () => linkDrawer(app, item) }, "Open the link") : kind === "hub" ? h("button", { class: "btn sm", onclick: () => openThing(app, "object", item) }, "Open it on the map") : null;
+  C.drawer({ title: item, sub: `How this ${{ device: "device", link: "link", site: "site", peer: "BGP session", hub: "hub" }[kind]} was found`, wide: true, body: [
+    h("div", { style: { marginBottom: "8px" } }, (r.sources || []).map((x) => h("span", { class: "no-src" }, x))),
+    h("ul", { class: "no-why" }, r.how.split("; ").map((x) => h("li", {}, x))),
+    open ? h("div", { style: { marginTop: "12px" } }, open) : null,
+    h("div", { class: "no-sec" }, "Try"), C.sqlBlock(`SELECT kind, item, sources, how FROM netops_discovered\nWHERE id = '${kind}:${item.replace(/'/g, "''")}'`)] });
+  return null;
+}
+
+function feedDrawer(app, x) {
+  const { h, C } = app;
+  const [name, what] = FEEDS[x.table] || [x.table, x.what];
+  const cols = Object.keys((x.sample || [])[0] || {});
+  C.drawer({ title: name, sub: what, wide: true, body: [
+    kv(app, [["Table", x.name || x.table], ["Rows", C.fmt.n(x.rows)], ["On a real network", { netops_snmp_system: "an SNMP poller (Telegraf's snmp input, or a NetBox discovery job) walking the system group and ENTITY-MIB", netops_snmp_ifaces: "the same poller, walking ifXTable and ipAddrTable", netops_lldp: "the poller walking lldpRemTable, or gNMI's openconfig-lldp", netops_bgpls_nodes: "a BGP-LS session from a route reflector to a collector (GoBGP, pmacct, OpenBMP)", netops_bgpls_links: "the same BGP-LS session", netops_bmp_peers: "BMP from each border router to a collector (OpenBMP, pmacct)", netops_gpon_onts: "each OLT's management system, or SNMP's vendor ONT table" }[x.table] || ""]]),
+    h("div", { class: "no-sec" }, "A few rows"),
+    cols.length ? C.table(cols.map((c) => ({ key: c, label: c, sortable: false, render: (r) => h("span", { class: "mono small", style: { whiteSpace: "nowrap" } }, Array.isArray(r[c]) ? r[c].join(", ") : r[c] == null ? "" : String(r[c])) })), { rows: x.sample, compact: true }) : C.empty("db", "No rows"),
+    h("div", { class: "no-sec" }, "Try"), C.sqlBlock(`SELECT * FROM ${x.name || x.table} LIMIT 20`)] });
 }
 
 // ---------------------------------------------------------------- the shift

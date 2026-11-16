@@ -6,7 +6,7 @@
 import { h, useStyle, page, label, btn, bank, stateDot, icon } from "/levels/common.js";
 import { tabs, lv, gauge, fmtMs, fmtTok, fmtWhen, rich, repoQ, repoName, toast, failed, loading, seg, resultLine, saveDraft } from "./parts.js";
 
-const KIND = { storm: "Permission storm", auto_mode: "Auto mode", slow_hook: "Slow hook", unused: "Unused", redo: "Redo loop", corrected: "Corrected by you", missed_memory: "Missed memory" };
+const KIND = { storm: "Permission storm", auto_mode: "Auto mode", slow_hook: "Slow hook", unused: "Unused", redo: "Redo loop", corrected: "Corrected by you", missed_memory: "Missed memory", repeated: "Said again", broken_rule: "Broken rule" };
 const MODE_WORDS = { default: "asks", auto: "auto", acceptEdits: "accept edits", plan: "plan", bypassPermissions: "bypass", unknown: "–" };
 
 export function render(host, ctx) {
@@ -21,7 +21,7 @@ export function render(host, ctx) {
   return { unmount() { alive = false; } };
 }
 
-const KIND_WORD = { storm: "a permission storm", corrected: "your corrections", missed_memory: "missed memory", auto_mode: "auto mode's blocks", redo: "a redo loop", slow_hook: "a slow hook", unused: "unused tools" };
+const KIND_WORD = { storm: "a permission storm", corrected: "your corrections", repeated: "what you said again", broken_rule: "a rule broken though shown", missed_memory: "missed memory", auto_mode: "auto mode's blocks", redo: "a redo loop", slow_hook: "a slow hook", unused: "unused tools" };
 
 function draw(host, ctx, d, reload, rules) {
   const c = d.scorecard || {};
@@ -69,7 +69,7 @@ function draw(host, ctx, d, reload, rules) {
         h("td", { class: "r hx-num", "data-k": "sessions" }, String(f.sessions || 0)),
         h("td", { class: `r hx-num hx-cost ${f.tone || ""}`, "data-k": "cost" }, f.cost),
         h("td", { class: "r", "data-k": "level" }, lv(f.level)))))))
-      : h("div", { class: "pane" }, h("div", { class: "bd hx-mut" }, c.sessions ? "No storms, slow hooks, unused servers, redo loops, repeated corrections or missed memory in the window." : "Nothing counted yet.")));
+      : h("div", { class: "pane" }, h("div", { class: "bd hx-mut" }, c.sessions ? "No storms, slow hooks, unused servers, redo loops, repeated corrections, broken rules or missed memory in the window." : "Nothing counted yet.")));
 
   const hooks = (d.hooks || []).length ? h("section", { class: "hx-sec" },
     label("Hooks, timed", h("span", { class: "sp" }), lv("counted")),
