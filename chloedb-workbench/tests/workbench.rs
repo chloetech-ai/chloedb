@@ -7579,10 +7579,16 @@ fn converge_a_persona_plays_with_its_own_memory_only_when_asked() {
     };
     let envs = || std::fs::read_to_string(fd.join("env-play")).unwrap();
 
-    // Off by default: ChloeCtx is off for the run.
+    // Off by default: no memory, but a ChloeCtx home of its own for the run
+    // (a sandbox thrown away with it), so whatever ChloeCtx it runs never
+    // reads your stores or another project's.
     let v = play(json!({ "wait": true }));
     assert_eq!(v["run"]["use_memory"], false, "{v}");
-    assert!(envs().lines().last().unwrap().contains("home= disable=1"), "{}", envs());
+    let last = envs().lines().last().unwrap().to_string();
+    let run_id = v["run"]["id"].as_str().unwrap();
+    let sandbox = s.data.join("converge").join("runs").join(run_id).join("chloectx");
+    assert!(last.contains(&format!("home={} disable= source=", sandbox.display())), "{last}");
+    assert!(!sandbox.exists(), "thrown away with the run");
 
     // On for the persona (PUT or PATCH): its own store, ChloeCtx on, the prompt Workbench's.
     let (st, v) = s.put(&format!("/api/converge/personas/{pid}"), json!({ "use_memory": true }));
@@ -7605,7 +7611,8 @@ fn converge_a_persona_plays_with_its_own_memory_only_when_asked() {
     // One run's override: off this time.
     let v = play(json!({ "wait": true, "use_memory": false }));
     assert_eq!(v["run"]["use_memory"], false, "{v}");
-    assert!(envs().lines().last().unwrap().contains("disable=1"));
+    let last = envs().lines().last().unwrap().to_string();
+    assert!(last.contains("disable= source=") && last.contains("/chloectx") && !last.contains(&store.display().to_string()), "a sandbox, not its memory: {last}");
 
     // The feed says so; without a ChloeCtx it plays without memory and says why.
     let items = cv_activity(&s, &r);

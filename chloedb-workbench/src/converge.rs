@@ -1455,6 +1455,19 @@ pub struct Memory {
     pub prompt_log: PathBuf,
     /// `CHLOECTX_AGENT_NAME`, `CHLOECTX_PROMPT_SOURCE`, `CHLOECTX_PROMPT_LOG`.
     pub who: Json,
+    /// Wired into the run (hooks, server, tools); false: only a store of its
+    /// own for whatever ChloeCtx the persona runs itself (a sandbox).
+    pub wired: bool,
+}
+
+/// A persona that plays without memory still gets a ChloeCtx home of its
+/// own, empty and thrown away with the run: what it installs, records or
+/// asks lands there, never in your stores or another project's.
+fn sandbox_memory(run_dir: &Path) -> Memory {
+    let home = run_dir.join("chloectx");
+    let _ = std::fs::create_dir_all(&home);
+    let models = models_dir(std::env::var("CHLOECTX_MODELS").ok(), std::env::var("XDG_DATA_HOME").ok(), std::env::var("HOME").ok(), |p| p.is_dir());
+    Memory { home: Some(home), models: Some(models), settings: PathBuf::new(), mcp: PathBuf::new(), prompt_log: PathBuf::new(), who: Json::Null, wired: false }
 }
 
 /// ChloeCtx's models folder: `$CHLOECTX_MODELS`, else `chloectx/models`
@@ -1483,13 +1496,21 @@ pub const MEMORY_READ_TOOLS: [&str; 3] = ["mcp__chloectx__memory_search", "mcp__
 /// and only its read tools; every other call runs with ChloeCtx off. Both
 /// tell ChloeCtx the prompt is Workbench's, not the user's.
 pub fn claude_call(role: &str, model: &str, stream: bool, mem: Option<&Memory>) -> (Vec<String>, Vec<(String, String)>) {
-    let mem = mem.filter(|_| matches!(role, "play" | "scope"));
+    let mem = mem.filter(|m| matches!(role, "play" | "scope") && (m.wired || role == "play"));
     let mut args: Vec<String> = vec!["-p".into(), "--output-format".into(), if stream { "stream-json" } else { "json" }.into(), "--model".into(), model.to_string()];
     if stream {
         args.push("--verbose".into());
     }
     let mut envs: Vec<(String, String)> = Vec::new();
     match mem {
+        Some(m) if !m.wired => {
+            if let Some(h) = &m.home {
+                envs.push(("CHLOECTX_HOME".into(), h.to_string_lossy().to_string()));
+            }
+            if let Some(x) = &m.models {
+                envs.push(("CHLOECTX_MODELS".into(), x.to_string_lossy().to_string()));
+            }
+        }
         Some(m) => {
             args.extend(["--settings".into(), m.settings.to_string_lossy().to_string(), "--mcp-config".into(), m.mcp.to_string_lossy().to_string()]);
             if let Some(h) = &m.home {
@@ -1505,7 +1526,7 @@ pub fn claude_call(role: &str, model: &str, stream: bool, mem: Option<&Memory>) 
         None => envs.push(("CHLOECTX_DISABLE".into(), "1".into())),
     }
     // Last: --allowedTools takes every word after it (the prompt is on stdin).
-    let tools = match (role, mem) {
+    let tools = match (role, mem.filter(|m| m.wired)) {
         ("play", Some(_)) => "Bash Read Write Edit Glob Grep WebFetch mcp__chloectx__*".to_string(),
         ("play", None) => "Bash Read Write Edit Glob Grep WebFetch".to_string(),
         ("scope", Some(_)) => format!("Read Glob Grep {}", MEMORY_READ_TOOLS.join(" ")),
@@ -1537,7 +1558,7 @@ fn wire_memory(sup: &Supervisor, name: &str, dir: &Path, cwd: &Path, home: Optio
     let (sf, mf) = (dir.join("settings.json"), dir.join("mcp.json"));
     std::fs::write(&sf, serde_json::to_string_pretty(&settings).unwrap()).map_err(|e| e.to_string())?;
     std::fs::write(&mf, serde_json::to_string_pretty(&mcp).unwrap()).map_err(|e| e.to_string())?;
-    Ok(Memory { home, models, settings: sf, mcp: mf, prompt_log: who.log.clone(), who: who.env() })
+    Ok(Memory { home, models, settings: sf, mcp: mf, prompt_log: who.log.clone(), who: who.env(), wired: true })
 }
 
 /// The version a `--version` line names (`chloectx 0.3.4` → `0.3.4`).
@@ -1783,7 +1804,15 @@ fn shared_env(sup: &Supervisor, repo: &str) -> std::collections::BTreeMap<String
     let key = repo.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
     let dir = sup.cfg.data_dir.join("cargo-target").join(format!("{key:016x}"));
     let _ = std::fs::create_dir_all(&dir);
-    [("CARGO_TARGET_DIR".to_string(), dir.to_string_lossy().to_string())].into_iter().collect()
+    // Converge's agents keep their memory in a space of their own (one per
+    // repository): their sessions stay out of your stores and briefings, and
+    // yours out of theirs.
+    let ctx = sup.cfg.data_dir.join("converge").join("agents-memory").join(format!("{key:016x}"));
+    let _ = std::fs::create_dir_all(&ctx);
+    let mut env: std::collections::BTreeMap<String, String> = [("CARGO_TARGET_DIR".to_string(), dir.to_string_lossy().to_string()), ("CHLOECTX_HOME".to_string(), ctx.to_string_lossy().to_string())].into_iter().collect();
+    let models = models_dir(std::env::var("CHLOECTX_MODELS").ok(), std::env::var("XDG_DATA_HOME").ok(), std::env::var("HOME").ok(), |p| p.is_dir());
+    env.insert("CHLOECTX_MODELS".into(), models.to_string_lossy().to_string());
+    env
 }
 
 /// An agent in its own worktree writes `.converge/repro.sh`, with the fix
@@ -2241,6 +2270,7 @@ fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, persona_id: &str, finding: Opti
         },
     };
     run.use_memory = mem.is_some();
+    let mem = mem.or_else(|| Some(sandbox_memory(&run_dir)));
     if run.use_memory {
         put_run(sup, &run)?;
         log(sup, &pe.repo, "persona", &pe.name, &format!("{} remembers its earlier visits (its own memory)", pe.name), refs.clone(), json!({ "use_memory": true, "store": mem.as_ref().and_then(|m| m.home.as_ref()).map(|h| h.to_string_lossy().to_string()) }));
@@ -5205,7 +5235,7 @@ mod tests {
 
     #[test]
     fn a_persona_with_memory_gets_chloectx_and_others_do_not() {
-        let m = Memory { home: Some("/d/converge/memory/cp1".into()), models: Some("/h/.local/share/chloectx/models".into()), settings: "/d/run/settings.json".into(), mcp: "/d/run/mcp.json".into(), prompt_log: "/d/run/p.jsonl".into(), who: json!({ "CHLOECTX_AGENT_NAME": "Maya", "CHLOECTX_PROMPT_SOURCE": "workbench" }) };
+        let m = Memory { home: Some("/d/converge/memory/cp1".into()), models: Some("/h/.local/share/chloectx/models".into()), settings: "/d/run/settings.json".into(), mcp: "/d/run/mcp.json".into(), prompt_log: "/d/run/p.jsonl".into(), who: json!({ "CHLOECTX_AGENT_NAME": "Maya", "CHLOECTX_PROMPT_SOURCE": "workbench" }), wired: true };
         let env = |e: &[(String, String)], k: &str| e.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone());
         // Off (the default), and every role but play: ChloeCtx is off.
         for (role, mem) in [("play", None), ("scope", None), ("card", Some(&m)), ("personas", Some(&m))] {
@@ -5213,6 +5243,16 @@ mod tests {
             assert_eq!(env(&e, "CHLOECTX_DISABLE").as_deref(), Some("1"), "{role}");
             assert!(env(&e, "CHLOECTX_HOME").is_none() && !args.contains(&"--settings".to_string()) && !args.join(" ").contains("mcp__chloectx"), "{role} {args:?}");
         }
+        // Without memory a persona still gets a ChloeCtx home of its own (a
+        // sandbox): never yours, never another project's; not wired in.
+        let sb = sandbox_memory(Path::new("/tmp/cv-sandbox-test"));
+        let (args, e) = claude_call("play", "haiku", true, Some(&sb));
+        assert!(env(&e, "CHLOECTX_DISABLE").is_none(), "{e:?}");
+        assert_eq!(env(&e, "CHLOECTX_HOME").as_deref(), Some("/tmp/cv-sandbox-test/chloectx"));
+        assert!(!args.contains(&"--settings".to_string()) && !args.join(" ").contains("mcp__chloectx"), "{args:?}");
+        let (_, e) = claude_call("scope", "haiku", false, Some(&sb));
+        assert_eq!(env(&e, "CHLOECTX_DISABLE").as_deref(), Some("1"));
+        let _ = std::fs::remove_dir_all("/tmp/cv-sandbox-test");
         let (args, e) = claude_call("play", "haiku", true, Some(&m));
         assert!(env(&e, "CHLOECTX_DISABLE").is_none(), "{e:?}");
         assert_eq!(env(&e, "CHLOECTX_HOME").as_deref(), Some("/d/converge/memory/cp1"));
