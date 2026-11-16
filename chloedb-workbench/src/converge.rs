@@ -3660,8 +3660,38 @@ fn persona_json(sup: &Supervisor, p: &Persona) -> Json {
     v["live_at"] = json!(live.as_deref().and_then(live_of).and_then(|(_, at)| at));
     v["live_run"] = json!(live);
     v["repro_rate"] = json!(if p.reported == 0 { None } else { Some(p.reproduced as f64 / p.reported as f64) });
-    v["open"] = json!(findings_of(sup, &p.repo).iter().filter(|f| f.state == "active" && f.stage != "merged" && f.personas_hit.contains(&p.id)).count());
+    let fs = findings_of(sup, &p.repo);
+    let mine: Vec<&Finding> = fs.iter().filter(|f| f.personas_hit.contains(&p.id)).collect();
+    v["open"] = json!(mine.iter().filter(|f| f.state == "active" && f.stage != "merged").count());
+    // Its scores, for the ranking on the Personas tab.
+    // Found and reproduced count its runs' reports, and at least the
+    // findings it hit (a seeded or merged duplicate counts too).
+    let past_repro = mine.iter().filter(|f| STAGES.iter().position(|x| *x == f.stage).unwrap_or(0) >= 2).count() as i64;
+    v["found"] = json!(p.reported.max(mine.len() as i64));
+    v["reproduced"] = json!(p.reproduced.max(past_repro));
+    v["fixed"] = json!(mine.iter().filter(|f| f.stage == "merged").count());
+    v["blockers"] = json!(mine.iter().filter(|f| f.state == "active" && f.stage != "merged" && f.severity >= 4).count());
+    v["ease_avg"] = json!(mean(&p.ease_hist));
+    v["ease_trend"] = json!(ease_trend(&p.ease_hist));
+    v["cost_usd"] = json!(persona_cost(sup, &p.id));
     v
+}
+
+fn mean(xs: &[f64]) -> Option<f64> {
+    if xs.is_empty() { None } else { Some((xs.iter().sum::<f64>() / xs.len() as f64 * 100.0).round() / 100.0) }
+}
+
+/// The last run's ease against the one before it (None with fewer than two).
+fn ease_trend(xs: &[f64]) -> Option<f64> {
+    match xs {
+        [.., a, b] => Some(((b - a) * 100.0).round() / 100.0),
+        _ => None,
+    }
+}
+
+fn persona_cost(sup: &Supervisor, id: &str) -> f64 {
+    let rows = sup.db().query("SELECT SUM(cost_usd) AS c FROM cv_runs WHERE persona = :p", &Params::new().set("persona", s(id)).set("p", s(id))).unwrap_or_default();
+    rows.first().and_then(|r| r.first()).and_then(|x| match x { Value::Float(f) => Some(*f), Value::Int(i) => Some(*i as f64), _ => None }).map(|c| (c * 10000.0).round() / 10000.0).unwrap_or(0.0)
 }
 
 async fn settings_get(State(app): State<App>, Query(q): Query<RepoQ>) -> ApiResult {
@@ -4869,6 +4899,14 @@ mod tests {
         assert_eq!(chloectx_stale(Some("0.3.3"), Some("0.3.5")).unwrap(), "ChloeCtx 0.3.3 is older than this checkout's 0.3.5: scope runs with it anyway; run `chloectx upgrade`");
         assert!(chloectx_stale(Some("0.10.0"), Some("0.9.1")).unwrap().contains("is newer than"));
         assert!(chloectx_stale(None, Some("0.3.5")).unwrap().starts_with("ChloeCtx is not installed"));
+    }
+
+    #[test]
+    fn a_personas_ease_has_a_mean_and_a_trend() {
+        assert_eq!(mean(&[]), None);
+        assert_eq!(mean(&[2.0, 3.0, 4.0]), Some(3.0));
+        assert_eq!(ease_trend(&[3.0]), None);
+        assert_eq!(ease_trend(&[2.0, 4.0, 3.0]), Some(-1.0));
     }
 
     #[test]
