@@ -408,6 +408,11 @@ pub fn run(o: Opts) -> Result<()> {
         t0.elapsed().as_secs_f64()
     );
     drop(nm);
+    // The months need each repo's language and topics only.
+    for r in repos.values_mut() {
+        (r.name, r.description, r.homepage, r.license) = (None, None, None, None);
+    }
+    repos.shrink_to_fit();
     months(&o, &repos, t0)?;
     drop(repos);
     // Actors: the latest login, first and last seen.
@@ -518,8 +523,8 @@ fn write_stars(
     Ok(())
 }
 
-/// The kept repos' months from the events, a file a month, and the
-/// shard's sums by language and topic.
+/// The kept repos' months from the events, and the shard's sums by
+/// language and topic, a file a month.
 fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
     let sh = o.shard;
     let dir = o.out.join("repo_months").join(format!("s{sh}"));
@@ -534,8 +539,22 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
     std::fs::create_dir_all(&stars_dir)?;
     let mut stars: Vec<(i64, i64, i64)> = Vec::with_capacity(STAR_ROWS);
     let mut star_files = 0usize;
-    let mut by_lang: FxHashMap<(i64, String), Month> = FxHashMap::default();
-    let mut by_topic: FxHashMap<(i64, String), Month> = FxHashMap::default();
+    // A month's sums by language and topic are complete when the month is:
+    // each month's go to a file of its own, so that the topics of every
+    // month (tens of millions) are never held at once.
+    let mut by_lang: FxHashMap<String, Month> = FxHashMap::default();
+    let mut by_topic: FxHashMap<String, Month> = FxHashMap::default();
+    // These sums have no key of their own: `part` places them (shard_by),
+    // a value that falls on this shard.
+    let part = (0..)
+        .find(|p| crate::slots::shard(*p, o.shards) == sh)
+        .unwrap_or(0);
+    let (lang_dir, topic_dir) = (
+        o.out.join("lang_months").join(format!("s{sh}")),
+        o.out.join("topic_months").join(format!("s{sh}")),
+    );
+    std::fs::create_dir_all(&lang_dir)?;
+    std::fs::create_dir_all(&topic_dir)?;
     let mut rows = 0u64;
     let mut flush = |month: i64,
                      cur: &mut FxHashMap<i64, Month>,
@@ -555,7 +574,7 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
             m.repos = 1;
             let Some(r) = repos.get(repo) else { continue };
             if let Some(l) = &r.language {
-                by_lang.entry((month, l.clone())).or_default().add(m);
+                by_lang.entry(l.clone()).or_default().add(m);
             }
             for t in r
                 .topics
@@ -563,7 +582,7 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
                 .flat_map(|t| t.split(','))
                 .filter(|t| !t.is_empty())
             {
-                by_topic.entry((month, t.to_string())).or_default().add(m);
+                by_topic.entry(t.to_string()).or_default().add(m);
             }
         }
         let name = Utc
@@ -582,7 +601,32 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
             ),
         ];
         cols.extend(month_cols(&v));
-        write_parquet(&dir.join(format!("{name}.parquet")), cols)
+        write_parquet(&dir.join(format!("{name}.parquet")), cols)?;
+        for (map, d, key) in [
+            (&mut by_lang, &lang_dir, "language"),
+            (&mut by_topic, &topic_dir, "topic"),
+        ] {
+            let mut v: Vec<(String, Month)> = map.drain().collect();
+            v.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            let mut cols = vec![
+                (
+                    "part",
+                    Arc::new(Int64Array::from(vec![part; v.len()])) as ArrayRef,
+                ),
+                (
+                    "month",
+                    Arc::new(Int64Array::from(vec![month; v.len()])) as ArrayRef,
+                ),
+                (
+                    key,
+                    Arc::new(v.iter().map(|x| Some(x.0.as_str())).collect::<StringArray>())
+                        as ArrayRef,
+                ),
+            ];
+            cols.extend(month_cols(&v));
+            write_parquet(&d.join(format!("{name}.parquet")), cols)?;
+        }
+        Ok(())
     };
     for p in files(&o.inputs, "events", sh)? {
         let r = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&p)?)?
@@ -652,40 +696,6 @@ fn months(o: &Opts, repos: &FxHashMap<i64, Repo>, t0: Instant) -> Result<()> {
         "reduce s{sh}: months from {rows} events ({:.0} s)",
         t0.elapsed().as_secs_f64()
     );
-    for (table, map) in [("lang_months", by_lang), ("topic_months", by_topic)] {
-        let mut v: Vec<((i64, String), Month)> = map.into_iter().collect();
-        v.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let key = if table == "lang_months" {
-            "language"
-        } else {
-            "topic"
-        };
-        // These sums have no key of their own: `part` places them (shard_by),
-        // a value that falls on this shard.
-        let part = (0..)
-            .find(|p| crate::slots::shard(*p, o.shards) == sh)
-            .unwrap_or(0);
-        let mut cols = vec![
-            (
-                "part",
-                Arc::new(Int64Array::from(vec![part; v.len()])) as ArrayRef,
-            ),
-            (
-                "month",
-                Arc::new(v.iter().map(|x| x.0 .0).collect::<Int64Array>()) as ArrayRef,
-            ),
-            (
-                key,
-                Arc::new(
-                    v.iter()
-                        .map(|x| Some(x.0 .1.as_str()))
-                        .collect::<StringArray>(),
-                ) as ArrayRef,
-            ),
-        ];
-        cols.extend(month_cols(&v));
-        write_parquet(&o.out.join(table).join(format!("s{sh}.parquet")), cols)?;
-    }
     Ok(())
 }
 
