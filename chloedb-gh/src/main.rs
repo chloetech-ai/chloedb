@@ -82,6 +82,11 @@ enum Command {
         /// Keep repos with at least this many stars in the archive.
         #[arg(long, default_value_t = 2)]
         min_stars: i64,
+        /// Give repos with at least this many stars the text their vector
+        /// is made of (`etext`); the others have no vector, which keeps a
+        /// shard's vectors and graph within an 8 GB machine.
+        #[arg(long, default_value_t = 5)]
+        vec_min_stars: i64,
         #[arg(long, default_value_t = 4)]
         shards: usize,
     },
@@ -177,12 +182,14 @@ fn main() -> Result<()> {
             shard,
             out,
             min_stars,
+            vec_min_stars,
             shards,
         } => reduce::run(reduce::Opts {
             inputs,
             shard,
             out,
             min_stars,
+            vec_min_stars,
             shards,
         }),
         Command::ApiMeta {

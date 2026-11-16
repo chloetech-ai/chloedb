@@ -83,13 +83,16 @@
    "type": "int"
   },
   {
+   "name": "etext",
+   "type": "keyword",
+   "indexed": false
+  },
+  {
    "name": "emb",
    "type": "vector",
    "embed": {
     "from": [
-     "name",
-     "description",
-     "topics"
+     "etext"
     ],
     "model": "potion-retrieval-32M"
    }

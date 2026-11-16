@@ -36,6 +36,8 @@ pub struct Opts {
     pub shard: usize,
     pub out: PathBuf,
     pub min_stars: i64,
+    /// Repos with fewer stars get no `etext`, so no vector.
+    pub vec_min_stars: i64,
     pub shards: usize,
 }
 
@@ -349,6 +351,22 @@ pub fn run(o: Opts) -> Result<()> {
                 ("stars_api", n(&|r| r.stars_api)),
                 ("forks_api", n(&|r| r.forks_api)),
                 ("api_t", n(&|r| r.api_t)),
+                // What the vector embeds: name, description and topics, one
+                // a line, for the repos searched by meaning (`stars >= 5`).
+                (
+                    "etext",
+                    s(&|r| {
+                        (r.stars >= o.vec_min_stars).then(|| {
+                            [&r.name, &r.description, &r.topics]
+                                .into_iter()
+                                .flatten()
+                                .filter(|t| !t.is_empty())
+                                .map(String::as_str)
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                    }),
+                ),
             ],
         )?;
     }
