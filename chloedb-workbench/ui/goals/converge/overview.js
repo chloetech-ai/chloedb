@@ -571,7 +571,7 @@ export function board(C, needs, fl) {
     const you = active.filter((f) => needs.has(f.id)).length;
     const open = (S.colAll && S.colAll[col.k]) || !!step;
     const shown = open ? list : list.slice(0, N[col.k]);
-    const head = h("div", { class: "ov-colh" }, h("b", {}, col.n), you ? h("span", { class: "you" }, `✋ ${you} ${col.k === "merge" || col.k === "build" ? "ready" : "wait for you"}`) : h("span", {}, String(active.length)));
+    const head = h("div", { class: "ov-colh" }, h("b", {}, col.n), you ? h("span", { class: "you" }, `✋ ${you} ${(col.k === "merge" || col.k === "build") && active.filter((f) => needs.has(f.id)).every((f) => (f.stage === "review" && f.ci === "pass" && !f.conflict) || (f.stage === "prioritize" && !queuedOf(f))) ? "ready" : "wait for you"}`) : h("span", {}, String(active.length)));
     return h("section", { class: "ov-col", "aria-label": col.n }, head,
       shown.length ? shown.map((f) => boardCard(C, f, needs)) : h("p", { class: "ov-colempty" }, step && !step.stages?.some((x) => col.stages.includes(x)) ? "Not in this step" : "Nothing here"),
       list.length > shown.length ? h("button", { class: "ov-more", type: "button", onclick: () => { S.colAll = { ...(S.colAll || {}), [col.k]: true }; C.draw(); } }, `+ ${list.length - shown.length} more · `, h("b", {}, "show")) : null,

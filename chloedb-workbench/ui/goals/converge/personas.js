@@ -56,14 +56,18 @@ const CSS = `
 .pe-edit textarea { min-height: 90px; }
 .pe-mem { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-2); min-height: 36px; cursor: pointer; margin-left: auto; }
 .pe-retired { margin-top: 18px; }
+.pe-mem input { width: 18px; height: 18px; min-height: 0; margin: 0; flex: none; }
 @media (max-width: 1100px) { .pe-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) {
   .pe-make { grid-template-columns: minmax(0, 1fr); }
   .pe-way + .pe-way { border-left: 0; padding-left: 0; border-top: var(--hair) solid var(--line); padding-top: 14px; }
   .pe-grid { grid-template-columns: minmax(0, 1fr); }
 }
+.pe-root { display: flex; flex-direction: column; }
 @media (max-width: 640px) {
   .pe-head h1 { font-size: var(--fs-lg); }
+  .pe-head a { display: none; }
+  .pe-make { order: 3; margin-top: 18px; }
   .pe-acts .cv-btn, .pe-way .cv-btn { min-height: 44px; }
   .pe-fold > button, .pe-mem, .pe-head a, .pe-copy label { min-height: 44px; }
   .pe-copy label { align-items: center; }
@@ -268,7 +272,7 @@ export function personasScreen(C) {
   const live = ps.filter((p) => p.state !== "retired").sort(rank);
   const retired = ps.filter((p) => p.state === "retired");
   const st = C.settings();
-  return h("div", {},
+  return h("div", { class: "pe-root" },
     h("header", { class: "pe-head" }, h("a", { href: C.href("home") }, `‹ ${C.projName()}`), h("h1", {}, "Personas: who plays your product")),
     makePanel(C),
     h("div", { class: "pe-bar" }, h("span", { class: "pe-k" }, `${live.length} persona${live.length === 1 ? "" : "s"} · ranked by how hard they find it`), h("span", { class: "cv-sp" }),
