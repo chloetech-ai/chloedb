@@ -70,14 +70,14 @@ spec:
       containers:
       - name: app
         image: ubuntu:24.04
-        command: ["/work/bin/chloedb-img", "serve", "--strata", "http://img-server.strata.svc:7700", "--models", "/work/models", "--cache", "/work/cache", "--listen", "0.0.0.0:7870", "--public", "--per-minute", "600", "--photos-per-minute", "20", "--thumbs-per-minute", "600"]
+        command: ["/work/bin/chloedb-img", "serve", "--strata", "http://img-server.strata.svc:7700", "--models", "/work/models", "--cache", "/work/cache", "--listen", "0.0.0.0:7870", "--public", "--per-minute", "600", "--photos-per-minute", "20", "--thumbs-per-minute", "600", "--fetch-slots", "8"]
         env:
         - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: img-admin, key: token}}}
         - {name: CHLOEDB_IMG_TOKEN, valueFrom: {secretKeyRef: {name: e2e-admin, key: token}}}
         - {name: RUST_LOG, value: chloedb_img=info}
         ports: [{containerPort: 7870}]
         readinessProbe: {httpGet: {path: /healthz, port: 7870}, periodSeconds: 5}
-        resources: {requests: {cpu: "1", memory: 2560Mi}, limits: {memory: 4Gi}}
+        resources: {requests: {cpu: "1", memory: 3Gi}, limits: {memory: 6Gi}}
         volumeMounts: [{name: work, mountPath: /work}]
       volumes: [{name: work, hostPath: {path: /mnt/img/work, type: Directory}}]
 ---

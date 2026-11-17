@@ -22,6 +22,10 @@ pub const LARGE: u32 = 1600;
 /// Originals larger than this are not fetched (a few scans of maps and
 /// manuscripts run to hundreds of megapixels).
 pub const MAX_MP: f64 = 150.0;
+/// Megapixels decoded at once: a decoded picture takes about 7 bytes a
+/// pixel until its thumbnails are made, so a few large scans at once would
+/// take gigabytes; one of up to `MAX_MP` waits for room.
+pub const DECODE_MP: u32 = 200;
 pub const MAX_BYTES: usize = 120 << 20;
 
 /// Where a picture's file is and what to label its colors with.
@@ -42,6 +46,8 @@ pub struct Thumbs {
     making: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
     /// Downloads at once.
     slots: Arc<tokio::sync::Semaphore>,
+    /// Megapixels being decoded ([`DECODE_MP`]).
+    decode: Arc<tokio::sync::Semaphore>,
     /// Whether to look pictures from Commons up there.
     pub commons: bool,
     /// When Commons was last asked.
@@ -79,7 +85,7 @@ impl Thumbs {
             .user_agent("ImageExplorer/0.3 (https://img.chloetech.ai; built on ChloeDB)")
             .build()
             .expect("an HTTP client");
-        Thumbs { dir: dir.to_path_buf(), http, db, making: Mutex::new(HashMap::new()), slots: Arc::new(tokio::sync::Semaphore::new(slots.max(1))), commons, commons_last: tokio::sync::Mutex::new(std::time::Instant::now()), made: 0.into(), failed: 0.into() }
+        Thumbs { dir: dir.to_path_buf(), http, db, making: Mutex::new(HashMap::new()), slots: Arc::new(tokio::sync::Semaphore::new(slots.max(1))), decode: Arc::new(tokio::sync::Semaphore::new(DECODE_MP as usize)), commons, commons_last: tokio::sync::Mutex::new(std::time::Instant::now()), made: 0.into(), failed: 0.into() }
     }
 
     pub fn path(&self, id: &str, size: Size) -> PathBuf {
@@ -169,6 +175,8 @@ impl Thumbs {
             return Err(format!("{} MB", bytes.len() >> 20));
         }
         let sha1 = sha1_smol::Sha1::from(&bytes[..]).digest().to_string();
+        let need = (src.mp.ceil() as u32).clamp(1, DECODE_MP);
+        let _room = self.decode.clone().acquire_many_owned(need).await.map_err(|e| e.to_string())?;
         let (small, large, colors) = tokio::task::spawn_blocking(move || -> Result<_, String> {
             let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?.to_rgb8();
             let (w, h) = img.dimensions();
