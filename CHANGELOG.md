@@ -11,6 +11,19 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **The command center's Log explorer showed lines with no text** on
+  tables that are not logs: it took a table's first text column as each
+  line's words, and on HN's `hn_users` that is `about`, empty for most
+  people, so the lines were only times. A line is now its text column (a
+  log's message; another table's title before its body), moved to a fuller
+  one when most of the newest lines leave it empty, with the row's other
+  fields beside it when the table is not a log (no level or host column)
+  or the text is empty. The text, the time column and the fields can be
+  changed under the search box, and stay per table. Tables with a
+  `TIMESTAMP` and no text column (BGP updates, events, metrics) are listed
+  too, their lines their fields, and a word searched in them is a field's
+  exact value; a text column with no index of its words (a title kept
+  unindexed) is searched with `ILIKE` rather than `MATCH`.
 - **The app engine's builds failed at once on Linux with `spawn E2BIG`**
   (0 model calls), on the operator's pods too: the forge's system prompt
   grew to 152 KB in 0.3.6, past Linux's limit of 128 KiB on one argument,
