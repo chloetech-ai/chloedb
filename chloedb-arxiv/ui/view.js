@@ -437,6 +437,57 @@ const CSS = `
 .ax-prog { height: 4px; border-radius: 2px; background: var(--surface-3); overflow: hidden; margin: 8px 0; }
 .ax-prog div { height: 100%; background: var(--accent); width: 30%; animation: axprog 1.4s infinite ease-in-out; }
 @keyframes axprog { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+.ax-wr { max-width: 780px; }
+.ax-wr .stage { display: flex; gap: 26px; align-items: center; padding: 24px 22px; }
+.ax-wr .stack { position: relative; width: 82px; height: 104px; flex: none; }
+.ax-wr .sheet { position: absolute; inset: 0; border-radius: 7px; background: var(--surface); border: 1px solid var(--line-2); box-shadow: var(--shadow-2); overflow: hidden; padding: 14px 11px; }
+.ax-wr .sheet.back { transform: rotate(-7deg) translate(-7px, 3px); opacity: .7; }
+.ax-wr .sheet.mid { transform: rotate(4deg) translate(5px, 1px); opacity: .85; }
+.ax-wr .sheet i { display: block; height: 5px; border-radius: 3px; background: var(--surface-3); margin-bottom: 7px; }
+.ax-wr .sheet i:nth-child(1) { width: 62%; height: 7px; background: var(--line-2); }
+.ax-wr .sheet i:nth-child(4n) { width: 78%; }
+.ax-wr .sheet i:nth-child(5n) { width: 54%; }
+.ax-wr .sheet b { position: absolute; left: 0; right: 0; top: -22px; height: 22px; background: linear-gradient(180deg, transparent, var(--accent-soft) 45%, var(--accent-soft) 55%, transparent); animation: ax-scan 2.4s infinite ease-in-out; }
+.ax-wr .sheet em { position: absolute; right: 8px; bottom: 10px; width: 30px; height: 30px; border-radius: 50%; border: 3px solid var(--accent); background: color-mix(in srgb, var(--surface) 60%, transparent); animation: ax-lens 3.2s infinite ease-in-out; }
+.ax-wr .sheet em::after { content: ""; position: absolute; width: 12px; height: 3px; background: var(--accent); right: -10px; bottom: -4px; transform: rotate(45deg); border-radius: 2px; }
+.ax-wr.done .sheet b, .ax-wr.done .sheet em, .ax-wr.failed .sheet b, .ax-wr.failed .sheet em { animation: none; display: none; }
+.ax-wr .stamp { position: absolute; inset: 22px 8px auto; text-align: center; font: 700 12px var(--sans); letter-spacing: .08em; color: var(--good-ink); border: 2px solid var(--good-ink); border-radius: 5px; padding: 4px 0; transform: rotate(-9deg); background: var(--surface); }
+@keyframes ax-scan { 0% { top: -22px; } 100% { top: 100%; } }
+@keyframes ax-lens { 0%, 100% { transform: translate(0, 0); } 30% { transform: translate(-30px, -34px); } 65% { transform: translate(-6px, -58px); } }
+.ax-wr .what { flex: 1; min-width: 0; }
+.ax-wr .quip { font-size: 19px; font-weight: 600; line-height: 1.35; min-height: 52px; transition: opacity .35s; }
+.ax-wr .quip.out { opacity: 0; }
+.ax-wr .bar { height: 8px; border-radius: 4px; background: var(--surface-3); overflow: hidden; margin: 14px 0 7px; }
+.ax-wr .bar div { height: 100%; border-radius: 4px; background: var(--accent); transition: width .9s ease; }
+.ax-wr.done .bar div { background: var(--good); }
+.ax-wr .meta { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ax-wr .now { font-size: 13px; color: var(--text-2); margin-top: 8px; overflow-wrap: anywhere; }
+.ax-wr ol { list-style: none; margin: 4px 0 0; padding: 0; }
+.ax-wr li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 4px 8px; padding: 9px 8px; border-top: 1px solid var(--line); font-size: 13.5px; border-radius: 6px; }
+.ax-wr li .d { font: 12px var(--mono); color: var(--muted); padding-top: 1px; }
+.ax-wr li .s { grid-column: 2; font-size: 12px; color: var(--muted); }
+.ax-wr li.ok .d, .ax-wr li.ok .s { color: var(--good-ink); }
+.ax-wr li.on { background: var(--accent-soft); border-top-color: transparent; }
+.ax-wr li.on .d { color: var(--accent); }
+.ax-wr li.on .s { color: var(--text-2); }
+.ax-wr li.wait { color: var(--muted); }
+.ax-wr .foot { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+.ax-wrc { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.ax-wrc .bar { flex: 1 1 160px; height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+.ax-wrc .bar div { height: 100%; background: var(--accent); transition: width .9s ease; }
+.ax-wrc .t { flex: 1 1 100%; font-size: 12.5px; color: var(--text-2); overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .ax-wr .stage { gap: 16px; padding: 18px 14px; align-items: flex-start; }
+  .ax-wr .stack { width: 52px; height: 68px; margin-top: 4px; }
+  .ax-wr .sheet { padding: 9px 7px; border-radius: 5px; }
+  .ax-wr .sheet i { height: 3px; margin-bottom: 5px; }
+  .ax-wr .sheet em { width: 18px; height: 18px; border-width: 2px; right: 5px; bottom: 6px; animation-name: ax-lens-s; }
+  .ax-wr .sheet em::after { width: 7px; height: 2px; right: -6px; bottom: -3px; }
+  .ax-wr .stamp { inset: 14px 2px auto; font-size: 8px; padding: 2px 0; }
+  .ax-wr .quip { font-size: 16.5px; min-height: 66px; }
+}
+@keyframes ax-lens-s { 0%, 100% { transform: translate(0, 0); } 30% { transform: translate(-18px, -22px); } 65% { transform: translate(-4px, -38px); } }
+@media (prefers-reduced-motion: reduce) { .ax-wr .sheet b, .ax-wr .sheet em { animation: none; } .ax-wr .quip, .ax-wr .bar div, .ax-wrc .bar div { transition: none; } }
 .ax-sql { position: fixed; right: 18px; bottom: 16px; z-index: 20; }
 .ax-sql button { font: 12px var(--mono); padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); color: var(--text-2); cursor: pointer; box-shadow: var(--shadow-2); }
 .ax-sql button b { color: var(--accent); }
@@ -2235,6 +2286,203 @@ function slider(label, min, max, step, get, set, onChange, fmtv = (v) => v) {
   return h("div", { class: "ax-f" }, h("label", {}, label), h("div", { class: "row" }, r, val));
 }
 
+// Issues being written, kept in this browser by feed, so the studio picks
+// their progress up again after a reload or a visit elsewhere.
+function writeJobs() { try { return JSON.parse(localStorage.getItem("ax_jobs") || "{}") || {}; } catch { return {}; } }
+function setWriteJob(feed, job) { const t = writeJobs(); if (job) t[feed] = job; else delete t[feed]; try { localStorage.setItem("ax_jobs", JSON.stringify(t)); } catch {} }
+
+// Lines to read while an issue is written, by what the writer is doing;
+// {n} the papers, {c} the candidates, {f} the figure, {v} the volume.
+const QUIPS = {
+  any: [
+    "Skipping the Related Work section, like everyone else.",
+    "Translating LaTeX into English.",
+    "Counting how many times “novel” appears. Don't ask.",
+    "Looking for the code link that says “coming soon”.",
+    "Squinting at Table 3 so you don't have to.",
+    "Reading the appendix. Someone has to.",
+    "Asking Reviewer 2 to wait outside.",
+    "Untangling the notation in Section 3.",
+    "Finding out what the ablation actually ablated.",
+    "Checking that “state of the art” still means this week.",
+    "Counting the authors. Still counting.",
+    "Turning “we leave this to future work” into a to-do list.",
+    "Checking which bold number is bold for a reason.",
+    "Checking whether the y-axis starts at zero.",
+    "Reading the footnotes, where the honesty lives.",
+  ],
+  start: ["Sharpening the pencils.", "Clearing the desk for this week's papers."],
+  choose: [
+    "Sorting this week's arXiv into “read this” and “maybe next week”.",
+    "Weighing relevance, code and citations, just as you set them.",
+    "Reading every title in the span. Yes, every one.",
+  ],
+  chosen: [
+    "{c} candidates came in, {n} made the cut.",
+    "Shortlist ready: {n} papers. The rest live to be preprints another day.",
+  ],
+  read: [
+    "Waiting our turn at arxiv.org: one page every 15 seconds, as they ask.",
+    "Being a polite robot. arXiv appreciates it.",
+    "Knocking on arxiv.org's door, gently.",
+    "15 seconds between pages: just enough time to stretch.",
+    "Fetching the full text, not just the abstract.",
+  ],
+  explain: [
+    "Turning “we propose a novel framework” into what they actually did.",
+    "Explaining it as if you have a meeting in five minutes.",
+    "Separating the result from the press release.",
+    "Writing the takeaway, and the limits, because there are always limits.",
+    "Asking “compared to what?”, politely.",
+  ],
+  figure: [
+    "Picking the figure that explains it, not the one with the most colors.",
+    "Copying {f}. It earned its place.",
+    "Framing {f} for your wall.",
+  ],
+  write: ["Writing one tidy paragraph per paper.", "Trimming the adjectives.", "Keeping it short. You have papers to read."],
+  opening: ["Writing the opening. Every issue deserves a good first line.", "Finding the thread that ties this week together."],
+  save: ["Stapling Vol. {v} together.", "Licking the stamp."],
+};
+const WRITE_DOING = { read: "reading its page on arxiv.org", explain: "explaining it from its text", figure: "copying a figure", write: "writing its paragraph" };
+
+// How far an issue is, from 0 to 100, by the writer's phase and paper.
+function writePct(j) {
+  if (j.state === "done") return 100;
+  const fixed = { start: 1, choose: 3, chosen: 6, opening: 95, save: 98 }[j.phase];
+  if (fixed != null) return fixed;
+  if (!j.n) return 3;
+  const within = { read: 0, explain: 0.3, figure: 0.65, write: 0.4 }[j.phase] ?? 0;
+  return Math.min(94, 6 + (88 * ((j.i ?? 0) + within)) / j.n);
+}
+function minutesLeft(s) { return s < 50 ? "under a minute left" : `about ${Math.round(s / 60)} min left`; }
+function clock(s) { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+
+// The screen of an issue being written, and its line for the studio; it
+// asks the server how the job goes every 1.5 s while the page is open.
+function issueWriter(app, { feedId, job, name, vol, alive, onHide, onEnd }) {
+  let j = { state: "running", phase: "start", step: "starting" };
+  let shown = true, quipAt = 0, quipPhase = "", quip = "", stopped = false, opening = null, listSig = "", footSig = "";
+  const seen = [];
+  const t0 = Date.now();
+  const started = () => (j.started ? Date.parse(j.started) : t0);
+  const fillQuip = (q) => q.replaceAll("{n}", j.n || "the").replaceAll("{c}", fmt(j.candidates) || "Many").replaceAll("{f}", j.figure || "the figure").replaceAll("{v}", vol);
+  const nextQuip = () => {
+    const own = QUIPS[j.phase] || [];
+    const pool = (own.length && (quipPhase !== j.phase || Math.random() < 0.55) ? own : QUIPS.any).filter((q) => !seen.includes(q));
+    const q = pool.length ? pool[Math.floor(Math.random() * pool.length)] : QUIPS.any[0];
+    seen.push(q); if (seen.length > 12) seen.shift();
+    quipPhase = j.phase;
+    return fillQuip(q);
+  };
+  const sheets = h("div", { class: "stack", "aria-hidden": "true" },
+    h("div", { class: "sheet back" }), h("div", { class: "sheet mid" }),
+    h("div", { class: "sheet" }, Array.from({ length: 9 }, () => h("i")), h("b"), h("em")));
+  const quipEl = h("div", { class: "quip", "aria-live": "polite" });
+  const bar = h("div", { class: "bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100" }, h("div", { style: { width: "1%" } }));
+  const pctEl = h("span"), timeEl = h("span"), nowEl = h("div", { class: "now" });
+  const list = h("ol");
+  const foot = h("div", { class: "foot" });
+  const head = h("h1", {}, `Writing Vol. ${vol}`);
+  const screen = h("div", { class: "ax-wr" },
+    h("div", { class: "ax-ph" }, h("div", { class: "ey" }, h("a", { href: app.href("feeds") }, "Feeds"), h("span", {}, "→"), h("a", { href: "javascript:void 0", onclick: () => hide() }, name || "Studio"), h("span", {}, "→"), h("span", {}, "Writing")), head,
+      h("div", { class: "au" }, `${name || "Your feed"}: each paper's page is read on arxiv.org, explained and given its best figures. arXiv asks programs to read a page every 15 seconds, so this takes a few minutes, and pages read before are not read again.`)),
+    h("div", { class: "ax-card stage" }, sheets, h("div", { class: "what" }, quipEl, bar, h("div", { class: "meta" }, pctEl, timeEl), nowEl)),
+    h("div", { class: "ax-card" }, h("h4", {}, "This issue's papers"), list),
+    foot);
+  const cbar = h("div", { class: "bar" }, h("div", { style: { width: "1%" } }));
+  const ctext = h("div", { class: "t" });
+  const cbtn = h("button", { class: "ax-btn", onclick: () => (j.state === "done" ? app.go("issue", j.issue) : show()) }, "Show progress");
+  const chead = h("b", { style: { fontSize: "13px" } }, `Writing Vol. ${vol}`);
+  const compact = h("div", { class: "ax-card ax-wrc" }, chead, cbar, cbtn, ctext);
+  // Each paper's seconds, from the step log: from its first step to the next paper's.
+  const tookOf = (k) => {
+    const log = j.log || [];
+    const a = log.find((l) => l.i === k), b = log.find((l) => (l.i ?? -1) > k || l.phase === "opening" || l.phase === "save");
+    return a && b ? b.t - a.t : null;
+  };
+  const draw = () => {
+    const done = j.state === "done", failed = j.state === "failed";
+    screen.classList.toggle("done", done); screen.classList.toggle("failed", failed);
+    const pct = writePct(j);
+    bar.firstChild.style.width = cbar.firstChild.style.width = `${pct}%`;
+    bar.setAttribute("aria-valuenow", String(Math.round(pct)));
+    const el = (Date.now() - started()) / 1000;
+    pctEl.textContent = done ? "100%" : `${Math.round(pct)}%`;
+    // Time left: the server's guess until a paper is done, then the pace so far.
+    let left = j.left_s;
+    const first = (j.log || []).find((l) => l.i === 0);
+    if (!done && first && (j.i ?? 0) >= 1 && j.n) {
+      const at = { read: 0, explain: 0.3, figure: 0.65, write: 0.4 }[j.phase] ?? 1;
+      const papers = Math.min(j.n, (j.i ?? 0) + at);
+      const per = (el - first.t) / papers;
+      left = per * (j.n - papers) + (j.style === "full" && j.n > 1 ? 15 : 3);
+    }
+    timeEl.textContent = done ? `took ${clock(j.took_s ?? el)}` : failed ? "" : `${clock(el)} · ${left == null ? "working it out" : minutesLeft(left)}`;
+    const step = j.step ? j.step[0].toUpperCase() + j.step.slice(1) : "";
+    nowEl.textContent = failed ? "" : done ? `${(j.papers || []).length} papers ${j.style === "full" ? "read, explained and kept" : "written up and kept"}.` : step;
+    ctext.textContent = failed ? (j.error || "failed") : done ? "Fresh off the press." : step;
+    ctext.classList.toggle("ax-err", failed);
+    if (done) { chead.textContent = `Vol. ${vol} is ready ✓`; cbtn.textContent = `Read Vol. ${vol} →`; cbtn.classList.add("pri"); }
+    if (failed) { chead.textContent = `Vol. ${vol} was not written`; cbtn.remove(); }
+    if (done) { head.textContent = `Vol. ${vol} is ready`; fill(quipEl, "Fresh off the press. ✓"); }
+    else if (failed) { head.textContent = `Vol. ${vol} was not written`; fill(quipEl, h("span", { class: "ax-err", style: { display: "block", fontSize: "14px", fontWeight: 400 } }, j.error || "the writer stopped")); }
+    else if (Date.now() - quipAt > 5200 || (quipPhase !== j.phase && (QUIPS[j.phase] || []).length && Date.now() - quipAt > 1500)) {
+      quipAt = Date.now();
+      const q = nextQuip();
+      if (!quip) { quip = q; quipEl.textContent = q; }
+      else { quipEl.classList.add("out"); setTimeout(() => { quip = q; quipEl.textContent = q; quipEl.classList.remove("out"); }, 350); }
+    }
+    if (done) sheets.querySelector(".sheet:last-child").append(sheets.querySelector(".stamp") || h("div", { class: "stamp" }, `VOL. ${vol}`));
+    const ps = j.papers || [];
+    const on = ["read", "explain", "figure", "write"].includes(j.phase) ? j.i ?? -1 : -1;
+    const allDone = done || j.phase === "opening" || j.phase === "save";
+    // Drawn again only when it changed, so a click on a link is never lost.
+    const sig = `${j.state}|${j.phase}|${on}|${j.figure || ""}|${ps.length}|${(j.log || []).length}`;
+    if (sig !== listSig) { listSig = sig; fill(list, ps.length ? ps.map((p, k) => {
+      const ok = allDone || k < on, now = k === on;
+      const took = ok ? tookOf(k) : null;
+      return h("li", { class: ok ? "ok" : now ? "on" : "wait" },
+        h("span", { class: "d" }, ok ? "✓" : now ? "●" : `${k + 1}.`),
+        h("a", { href: app.href("paper", p.id), target: "_blank", rel: "noopener" }, p.title),
+        h("span", { class: "s" }, ok ? (took != null ? `done in ${clock(took)}` : "done") : now ? (j.phase === "figure" && j.figure ? `copying ${j.figure} from arxiv.org` : WRITE_DOING[j.phase]) : "waiting its turn"));
+    }) : h("li", { class: "wait" }, h("span", { class: "d" }, "…"), h("span", {}, j.phase === "start" || j.phase === "choose" ? "Choosing this week's papers…" : ""))); }
+    const fsig = `${j.state}|${shown}`;
+    if (fsig === footSig) return;
+    footSig = fsig;
+    fill(foot, done ? [h("button", { class: "ax-btn pri", onclick: () => app.go("issue", j.issue) }, `Read Vol. ${vol} →`), shown ? h("span", {}, "Opening it…") : null]
+      : failed ? [h("button", { class: "ax-btn", onclick: () => hide() }, "Back to the studio")]
+      : [h("button", { class: "ax-btn", onclick: () => hide() }, "Back to the studio"), h("span", {}, "You can leave this page: the issue keeps being written, and this screen comes back when you open the feed again.")]);
+  };
+  const show = () => { shown = true; onHide(false); draw(); };
+  const hide = () => { shown = false; onHide(true); draw(); };
+  const stop = () => { stopped = true; };
+  (async () => {
+    for (let errs = 0; !stopped && alive(); ) {
+      try {
+        const s = await app.ctx.api(`/v1/jobs/${job}`);
+        if (!alive() || stopped) return;
+        j = s; errs = 0;
+      } catch (e) {
+        // Three misses in a row: the writer is gone (the app restarted).
+        if (++errs >= 3) j = { ...j, state: "failed", error: "This issue's writer stopped (the app restarted). The pages it read are kept, so writing it again is quicker." };
+      }
+      draw();
+      if (j.state !== "running") {
+        setWriteJob(feedId, null);
+        onEnd(j);
+        if (j.state === "done" && shown) opening = setTimeout(() => { if (alive() && shown) app.go("issue", j.issue); }, 2600);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  })();
+  // The clock and the line move between answers too.
+  const tick = setInterval(() => { if (!alive() || stopped || j.state !== "running") { clearInterval(tick); return; } draw(); }, 1000);
+  draw();
+  return { screen, compact, stop: () => { stop(); clearTimeout(opening); } };
+}
+
 async function studioPage(app, main, arg, alive) {
   const [id0, ...seedWords] = arg.split("/");
   let feedId = id0 === "new" || id0 === "example" ? "" : id0;
@@ -2295,29 +2543,34 @@ async function studioPage(app, main, arg, alive) {
       h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, copy, h("button", { class: "ax-btn", onclick: async () => { await app.api(`/v1/feeds/${enc(feedId)}/team`, { body: { user: app.user, off: true } }); teamLink = ""; drawTeam(); } }, "Stop sharing"))));
   };
   drawTeam();
-  const writeBtn = h("button", { class: "ax-btn pri" }, "✦ Write this week's issue");
+  const writeBtn = h("button", { class: "ax-btn pri" }, feedId ? "✦ Write this week's issue" : "✦ Create feed and write Vol. 1");
   saveBtn.onclick = async () => {
     let j;
     try { j = await app.api("/v1/feeds", { body: { id: feedId, user: app.user, config: cfg, team: teamKey } }); } catch (e) { fill(status, h("div", { class: "ax-err" }, String(e.message || e))); throw e; }
     fill(status);
-    if (!feedId) { feedId = j.id; history.replaceState(null, "", app.href("feed", feedId)); drawTeam(); }
+    if (!feedId) { feedId = j.id; history.replaceState(null, "", app.href("feed", feedId)); drawTeam(); where.textContent = "Studio"; writeBtn.textContent = "✦ Write this week's issue"; }
     saveBtn.textContent = "Saved ✓"; setTimeout(() => (saveBtn.textContent = "Save"), 1500);
   };
-  writeBtn.onclick = async () => {
-    if (!feedId) await saveBtn.onclick();
-    else if (canEdit) await app.api("/v1/feeds", { body: { id: feedId, user: app.user, config: cfg, team: teamKey } });
+  // Writing an issue shows its own screen; "Back to the studio" keeps a line of it here.
+  let writer = null, page = null;
+  const startWriter = (job) => {
+    writer?.stop();
     writeBtn.disabled = true;
-    fill(status, h("div", { class: "ax-card" }, h("div", { class: "ax-prog" }, h("div")), h("div", { class: "step", style: { fontSize: "13px", color: "var(--text-2)" } }, "Starting…")));
+    writer = issueWriter(app, { feedId, job, name: cfg.name, vol: issues.length + 1, alive,
+      onHide: (hidden) => { if (hidden) { fill(main, page); fill(status, writer.compact); } else fill(main, writer.screen); window.scrollTo(0, 0); },
+      onEnd: (j) => { if (j.state !== "done") writeBtn.disabled = false; } });
+    fill(main, writer.screen);
+    window.scrollTo(0, 0);
+  };
+  writeBtn.onclick = async () => {
+    writeBtn.disabled = true;
     try {
+      if (!feedId) await saveBtn.onclick();
+      else if (canEdit) await app.api("/v1/feeds", { body: { id: feedId, user: app.user, config: cfg, team: teamKey } });
       const { job } = await app.api(`/v1/feeds/${enc(feedId)}/issue`, { body: { user: app.user, team: teamKey } });
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 1500));
-        const s = await app.ctx.api(`/v1/jobs/${job}`);
-        if (!alive()) return;
-        if (s.state === "running") { const st = status.querySelector(".step"); if (st) st.textContent = s.step; continue; }
-        if (s.state === "done") { app.go("issue", s.issue); return; }
-        fill(status, h("div", { class: "ax-err" }, s.error || "failed")); writeBtn.disabled = false; return;
-      }
+      if (!alive()) return;
+      setWriteJob(feedId, job);
+      startWriter(job);
     } catch (e) { fill(status, h("div", { class: "ax-err" }, String(e.message || e))); writeBtn.disabled = false; }
   };
   const w = cfg.weights || (cfg.weights = { relevance: 1, code: 0.25, citations: 0.15, authors: 0.2 });
@@ -2350,13 +2603,24 @@ async function studioPage(app, main, arg, alive) {
       h("small", { style: { color: "var(--muted)", fontSize: "12px" } }, "Each new issue goes to the feed's RSS, so a feed reader gets it on Monday. Save to start; at most three of your feeds.")),
     h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, saveBtn, writeBtn, feedId ? rssButtons(`feeds/${feedId}/rss.xml`) : null),
     teamBox);
-  fill(main, h("div", {},
-    h("div", { class: "ax-ph" }, h("div", { class: "ey" }, h("a", { href: app.href("feeds") }, "Feeds"), "→", feedId ? "Studio" : "New feed"), h("h1", {}, "Feed studio"), h("div", { class: "au" }, "Every change re-picks the papers at once (no model is called for the preview). Writing an issue reads each paper's full text on arXiv, explains it, and copies the figures that explain it best; arXiv asks programs to read a page every 15 seconds, so an issue of 10 papers takes about ten minutes, and a paper read once is kept.")),
+  const where = h("span", {}, feedId ? "Studio" : "New feed");
+  page = h("div", {},
+    h("div", { class: "ax-ph" }, h("div", { class: "ey" }, h("a", { href: app.href("feeds") }, "Feeds"), h("span", {}, "→"), where), h("h1", {}, "Feed studio"), h("div", { class: "au" }, "Every change re-picks the papers at once (no model is called for the preview). Writing an issue reads each paper's full text on arXiv, explains it, and copies the figures that explain it best; arXiv asks programs to read a page every 15 seconds, so an issue of 10 papers takes about ten minutes, and a paper read once is kept.")),
     h("div", { class: "ax-studio" }, form,
       h("div", {}, status,
         issues.length ? h("div", { class: "ax-card" }, h("h4", {}, "Issues"), h("div", { class: "ax-people" }, issues.map((i) => [h("a", { href: app.href("issue", i.id) }, i.title), h("span", { class: "n" }, ago(i.made))]))) : null,
-        sec("Preview of the next issue"), preview))));
+        sec("Preview of the next issue"), preview)));
+  fill(main, page);
   runPreview();
+  // An issue of this feed still being written (from this browser): its screen again.
+  const pending = feedId && writeJobs()[feedId];
+  if (pending) {
+    try {
+      const s = await app.ctx.api(`/v1/jobs/${pending}`);
+      if (!alive()) return;
+      if (s.state === "running") startWriter(pending); else setWriteJob(feedId, null);
+    } catch { setWriteJob(feedId, null); }
+  }
 }
 
 // A feed's RSS: open it, or copy its address for a feed reader.
