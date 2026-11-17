@@ -22,6 +22,12 @@ changes collect under "Unreleased".
   without Secrets in the namespace makes neither, and **Connections** says
   the book is in memory only. The coordinators' Role grants `get` and
   `patch` on that one Secret.
+- **A statement's page opened through the hub failed** with "a path the hub
+  forwards has no . or .. segment, ? or # in it", and **Profile it** with
+  it: the page's path is the statement's text, whose `?` the hub refused
+  once decoded. The hub now forwards the path as it came, still encoded, so
+  a `?` or `#` stays inside its segment, and still refuses a `.` or `..`
+  segment, as sent or once decoded.
 - **The app engine's builds failed at once on Linux with `spawn E2BIG`**
   (0 model calls), on the operator's pods too: the forge's system prompt
   grew to 152 KB in 0.3.6, past Linux's limit of 128 KiB on one argument,

@@ -119,6 +119,62 @@ async fn the_hub_forwards_with_each_connections_key() {
     assert_eq!(call("GET", &format!("{hub_url}/c/remote/v1/stats"), None, None).await.0, 404);
 }
 
+/// A path is forwarded as it came, still encoded: a statement's page,
+/// whose path is the statement's text (`... LIMIT ?`), reaches the cluster
+/// with its `?` and `#` in their segment, while a dot segment, encoded or
+/// not, is still refused (audit D-B9).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_statement_is_reached_through_the_hub_by_its_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let remote = service(dir.path(), "remote.strata");
+    let (_, secret) = remote.keys.create("hub-laptop", Scope::Admin, None, true, false).unwrap();
+    let (remote_url, _) = serve(remote.clone(), Access { token: Some(Secret::new("remote-root")), ..Access::default() }).await;
+    let hub = service(dir.path(), "hub.strata");
+    let (hub_url, _) = serve(hub.clone(), Access::default()).await;
+    let (s, j) = call("POST", &format!("{hub_url}/v1/admin/hub/connections"), None, Some(json!({"name": "remote", "url": remote_url, "key": secret}))).await;
+    assert_eq!(s, 201, "{j}");
+
+    let (s, j) = call("POST", &format!("{hub_url}/c/remote/v1/query"), None, Some(json!({"sql": "SELECT title FROM products WHERE id = 'hub-1' LIMIT 3"}))).await;
+    assert_eq!(s, 200, "{j}");
+    let (s, list) = call("GET", &format!("{hub_url}/c/remote/v1/queries/stats"), None, None).await;
+    assert_eq!(s, 200, "{list}");
+    let fp = list["statements"].as_array().unwrap().iter().filter_map(|x| x["fingerprint"].as_str()).find(|f| f.contains("products") && f.contains('?')).unwrap_or_else(|| panic!("the statement's shape: {list}")).to_string();
+    let mut url = reqwest::Url::parse(&format!("{hub_url}/c/remote/v1/queries/stats")).unwrap();
+    url.path_segments_mut().unwrap().push(&fp);
+    assert!(url.as_str().contains("%3F"), "{url}");
+    let (s, j) = call("GET", url.as_str(), None, None).await;
+    assert_eq!(s, 200, "{j}");
+    assert_eq!(j["statement"]["fingerprint"], fp.as_str(), "{j}");
+
+    // A # and a ? in a segment arrive there as they are: the cluster has no
+    // such statement, and says so with its text.
+    for (sent, seen) in [("a%23b", "a#b"), ("a%3Fb%3Dc", "a?b=c")] {
+        let (s, j) = call("GET", &format!("{hub_url}/c/remote/v1/queries/stats/{sent}"), None, None).await;
+        assert_eq!(s, 404, "{sent}: {j}");
+        assert!(j["error"].as_str().unwrap_or_default().contains(seen), "{sent}: {j}");
+    }
+    // A dot segment, as sent or once decoded, climbs nowhere. Sent as
+    // bytes: a URL library would resolve `%2e%2e` before sending it.
+    for bad in ["v1/%2e%2e/livez", "v1/%2E./livez", "v1/%252e%252e/livez", "v1/queries/stats/a%2F..%2F..%2Fadmin%2Fkeys", "v1/./stats", "v1/queries/stats/x/../../../livez"] {
+        let (s, head) = raw_get(&hub_url, &format!("/c/remote/{bad}")).await;
+        assert_eq!(s, 400, "{bad}: {head}");
+    }
+}
+
+/// A GET of `path` exactly as written, with no URL library in between to
+/// resolve its dot segments: the status and the answer's first line.
+async fn raw_get(base: &str, path: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let host = base.trim_start_matches("http://");
+    let mut c = tokio::net::TcpStream::connect(host).await.unwrap();
+    c.write_all(format!("GET {path} HTTP/1.1\r\nhost: {host}\r\nconnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    c.read_to_end(&mut out).await.unwrap();
+    let out = String::from_utf8_lossy(&out).to_string();
+    let status = out.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (status, out.lines().last().unwrap_or_default().to_string())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_self_signed_certificate_is_pinned_once_trusted() {
     let dir = tempfile::tempdir().unwrap();

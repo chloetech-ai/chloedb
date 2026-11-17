@@ -5981,15 +5981,21 @@ async fn hub_follow(State(app): State<App>, w: Option<axum::Extension<Principal>
 /// ([`crate::hub::Hub::forward`]). Strata's API and its health only.
 async fn hub_forward(State(app): State<App>, axum::extract::Path((name, rest)): axum::extract::Path<(String, String)>, req: Request) -> Result<Response, ApiError> {
     let rest = rest.trim_start_matches('/');
-    if !(rest.starts_with("v1/") || matches!(rest, "livez" | "readyz" | "metrics")) {
+    // The path as it came, still encoded, is what is forwarded: an encoded
+    // ? or # (a statement's text in /v1/queries/stats/<text>) stays part
+    // of its segment there, rather than starting a query. The router's
+    // decoded `rest` is checked too.
+    let raw = req.uri().path().strip_prefix(&format!("/c/{name}/")).map(|r| r.trim_start_matches('/')).ok_or_else(|| ApiError::bad("a path the hub forwards is /c/<name>/..."))?;
+    if !(raw.starts_with("v1/") || matches!(raw, "livez" | "readyz" | "metrics")) {
         return Err(ApiError { code: None, status: 404, message: format!("/c/{name}/ forwards ChloeDB's API (/v1/...), not /{rest}") });
     }
-    // The path as decoded: no dot segment (once or twice encoded) to climb
-    // out of /v1, and no ? or # to start a query (audit D-B9).
-    if rest.split('/').any(crate::apps::dot_segment) || rest.contains(['?', '#']) {
-        return Err(ApiError::bad("a path the hub forwards has no . or .. segment, ? or # in it"));
+    // No dot segment to climb out of /v1, as sent (`%2e%2e`, `%252e`...)
+    // or once the router decoded it (`a%2F..%2Fb`), and no ? or # that
+    // would start a query as sent (audit D-B9).
+    if raw.split('/').any(crate::apps::dot_segment) || rest.split('/').any(crate::apps::dot_segment) || raw.contains(['?', '#']) {
+        return Err(ApiError::bad("a path the hub forwards has no . or .. segment, encoded or not"));
     }
-    let path = format!("/{rest}{}", req.uri().query().map(|q| format!("?{q}")).unwrap_or_default());
+    let path = format!("/{raw}{}", req.uri().query().map(|q| format!("?{q}")).unwrap_or_default());
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).map_err(|_| ApiError::bad("an HTTP method the hub does not forward"))?;
     let headers = req.headers().clone();
     let body = reqwest::Body::wrap_stream(req.into_body().into_data_stream());
