@@ -41,17 +41,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <main>
 <div class="gutter head-band"><div class="wrap page-head">
     <nav class="subnav" aria-label="Benchmark pages"><a href="benchmarks.html">Overview</a><a href="bench-10m.html">10M, cloud</a><a href="bench-1m.html">1M, cloud</a><a href="bench-laptop.html">1M, laptop cluster</a><a href="bench-embedded.html" aria-current="page">No server</a><a href="bench-graph.html">Graph</a><a href="bench-method.html">How we test</a></nav>
-    <span class="eyebrow">No server · one file in an app · 16 November 2026</span>
+    <span class="eyebrow">No server · one file in an app · 17 November 2026</span>
     <h1>One file in your app, against what apps embed today</h1>
-    <p class="lede">Apps keep rows in SQLite, analytics in DuckDB, vectors in LanceDB or FAISS and search in Tantivy. ChloeDB does all of it in one file. Here ChloeDB 0.3.5 runs as a Python library against each, one at a time on one idle 8-vCPU node, all on 16 November.</p>
-    <p class="verdict"><b>First on hybrid and vector search, recommendations, list pages and reads beside a writer.</b> Behind SQLite on single-row work and price updates, DuckDB on aggregates and the heavy join, and Tantivy on BM25 over the three smaller collections.</p>
+    <p class="lede">Apps keep rows in SQLite, analytics in DuckDB, vectors in LanceDB or FAISS and search in Tantivy. ChloeDB does all of it in one file. Here ChloeDB from main of 17 November, with the write and typo fixes that go out in 0.3.8, runs as a Python library against each, one at a time on one idle 8-vCPU node, all on 17 November.</p>
+    <p class="verdict"><b>First on hybrid and vector search, list pages, reads beside a writer, single-row commits and the recommendation feed.</b> Behind SQLite on single-row reads and price updates, DuckDB on aggregates and the heavy join, FAISS on similar items at the median, and Tantivy on BM25 over the three smaller collections.</p>
     <dl class="atglance">
-      <div><dt>Machine</dt><dd>DigitalOcean 8 vCPU, Xeon Platinum 8168 at 2.70 GHz, 31 GiB</dd></div>
+      <div><dt>Machine</dt><dd>DigitalOcean 8 vCPU, Xeon Platinum 8358 at 2.60 GHz, 31 GiB</dd></div>
       <div><dt>Systems</dt><dd>SQLite with FTS5 and sqlite-vec, DuckDB with fts and vss, LanceDB, FAISS, Tantivy</dd></div>
       <div><dt>The app</dt><dd>A shop of 137,260 products and 4.6M reviews</dd></div>
       <div><dt>Search</dt><dd>Five BEIR collections, 3,633 to 522,931 documents</dd></div>
       <div><dt>Method</dt><dd>Medians over three timed passes at one client, throughput at four; every commit synced, as SQLite at FULL</dd></div>
-      <div><dt>This node</dt><dd>Slower than the earlier runs' Platinum 8358: the other systems took 1.16 to 1.42 times as long, and its disk syncs about five times slower</dd></div>
+      <div><dt>This node</dt><dd>The CPU of the 2 and 6 November runs, and a disk as quick to sync; on 16 November's Platinum 8168 the other systems took 1.12 to 1.34 times as long</dd></div>
     </dl>
     <nav class="toc" aria-label="Sections"><a href="#search">Search</a><a href="#app">The app</a><a href="#writes">Writes</a><a href="#recs">Recommendations</a><a href="#tantivy">Tantivy</a><a href="#behind">Behind</a><a href="#files">Raw data</a></nav>
   </div></div>
@@ -60,7 +60,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <div class="block-head">
       <span class="eyebrow">Search</span>
       <h2>Hybrid and vector search fastest on every collection</h2>
-      <p>Hybrid search is 4.1 to 18× faster than the next system, with nDCG@10 within 0.021 of the best, and as fast held to one thread; under a filter it is 13 to 23× faster. Vectors are 7.8 to 11× faster than DuckDB's, the next fastest, at recall@10 0.996 to 1.000. BM25 is 1.6 and 1.7× faster than Tantivy on trec-covid and quora, and Tantivy 1.1 to 1.4× faster on the three smaller collections. Under each bar: nDCG@10, or recall@10 for vectors.</p>
+      <p>Hybrid search is 4.5 to 24× faster than the next system, with nDCG@10 within 0.021 of the best, and as fast held to one thread; under a filter it is 14 to 27× faster. Vectors are 9.0 to 16× faster than the next system (DuckDB, or LanceDB on trec-covid), at recall@10 0.995 to 0.999, and at 64 candidates another 1.5 to 1.8× faster at 0.970 to 0.997. BM25 is 1.5 and 1.4× faster than Tantivy on trec-covid and quora, and Tantivy 1.2 to 1.3× faster on the three smaller collections. Under each bar: nDCG@10, or recall@10 for vectors.</p>
     </div>
     <div class="grid">
       <div data-chart="emb-a2-hybrid"></div>
@@ -69,14 +69,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <div data-chart="emb-a2-bm25"></div>
       <div data-chart="emb-a2-filtered-hybrid"></div>
     </div>
-    <p class="small muted">SQLite did not run on quora: three timed passes of its exact vector scans take about 9 hours. Its search rows are Debian's SQLite 3.40.1, its app and writes rows 3.53.1. Tantivy kept stopwords the others dropped; with the same stopwords its BM25 ties ChloeDB's on nDCG@10 (<a href="#tantivy">below</a>).</p>
+    <p class="small muted">SQLite did not run on quora: three timed passes of its exact vector scans take about 9 hours. Every SQLite row is 3.54.1, built on the node. Tantivy kept stopwords the others dropped; with the same stopwords its BM25 ties ChloeDB's on nDCG@10 (<a href="#tantivy">below</a>).</p>
   </div></section>
 
   <section class="gutter" id="app"><div class="wrap block">
     <div class="block-head">
       <span class="eyebrow">The app</span>
-      <h2>Pages and joins faster than SQLite; single rows slower</h2>
-      <p>ChloeDB is 7.2 to 7.9× faster than SQLite at filtered, sorted pages, 3.7 to 4.1× at the heavy join, 5.0 to 6.1× at reads beside a writer, and 2.5× and 171× at the two aggregates. SQLite reads one row in 11 µs, against ChloeDB's 30 µs by key. DuckDB is fastest at aggregates and the heavy join. This node's disk is slow to sync, so every system that syncs commits single rows slowly here: SQLite at FULL 933 a second, against 5,093 on 2 November's node.</p>
+      <h2>Pages, joins and single-row commits faster than SQLite; single-row reads slower</h2>
+      <p>ChloeDB is 7.8 to 8.3× faster than SQLite at filtered, sorted pages, 3.7× at the heavy join, 5.8 and 5.9× at reads beside a writer, and 2.8× and 180× at the two aggregates. It commits single rows 2.5× faster than SQLite at FULL (13,267 a second against 5,212) and 1.3× faster than at NORMAL, and deletes them 2.5× faster than at FULL; SQLite at FULL updates a price 2.3× faster. SQLite reads one row in 9 µs, against ChloeDB's 22 µs by key. DuckDB is fastest at aggregates and the heavy join.</p>
     </div>
     <div class="grid">
       <div data-chart="emb-a1-reads"></div>
@@ -88,20 +88,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <div class="block-head">
       <span class="eyebrow">Writes and streams</span>
       <h2>Indexed writes, and reads beside a stream</h2>
-      <p>With a text and a vector index, ChloeDB commits single rows 1.6× faster than SQLite at FULL (556 a second against 340), level with SQLite at NORMAL, and 2.7 to 6.5× faster than LanceDB and DuckDB. It takes 100-row batches fastest, LanceDB 10,000-row ones. SQLite at FULL updates prices 2.3× and vectors 2.5× faster. While 10,000 rows a second stream in, ChloeDB answers 5,758 reads a second, 8× DuckDB's and 14 to 16× SQLite's; SQLite keeps up with 7,087 to 7,327 of the 10,000 rows a second.</p>
+      <p>With a text and a vector index, ChloeDB commits single rows 5.3× faster than SQLite at FULL (3,737 a second against 711), 4.2× faster than at NORMAL, and 15 to 29× faster than LanceDB and DuckDB; with <code>sync=False</code>, which does not wait for the disk as SQLite at NORMAL does not, 7,397. It takes 100-row batches fastest, LanceDB 10,000-row ones. ChloeDB re-indexes a title 3.0× faster than SQLite at FULL, which updates prices 4.6× and vectors 2.0× faster. While 10,000 rows a second stream in, ChloeDB answers 8,699 reads a second, 16× SQLite's; SQLite keeps up with 8,758 (FULL) and 9,727 (NORMAL) of the 10,000 rows a second.</p>
     </div>
     <div class="grid">
       <div data-chart="emb-writes"></div>
       <div data-chart="emb-stream"></div>
     </div>
-    <p class="small muted">At 50,000 rows a second ChloeDB keeps up with 14,916 and answers 4,333 reads a second beside them; DuckDB keeps up with 44,533 and answers 314, and LanceDB with 49,869 and answers 2. LanceDB adds a fragment and a version with every write and nothing compacts during the run, so its updates take two thirds of a second each on average.</p>
+    <p class="small muted">At 50,000 rows a second ChloeDB keeps up with 19,662 and answers 4,971 reads a second beside them; SQLite at NORMAL keeps up with 12,969 and answers 143, and LanceDB with 49,998 and answers 2. DuckDB's stream stopped at its first rate: at 1,000 rows a second its commits fell 1.7 s behind in 15 and it wrote 873 a second, and a stream stops at the first rate a system misses by more than 10% (on 16 November it went on to 44,533 at 50,000). LanceDB adds a fragment and a version with every write and nothing compacts during the run, so its updates take more than half a second each on average.</p>
   </div></section>
 
   <section class="gutter" id="recs"><div class="wrap block">
     <div class="block-head">
       <span class="eyebrow">Recommendations</span>
       <h2>Similar items in under a millisecond, under filters</h2>
-      <p>ChloeDB answers similar items in 0.92 ms, level with FAISS beside SQLite (0.99 ms), at the 99th percentile in 2.0 ms against 13.6, and 2.9× as many a second on four threads; LanceDB takes 21× longer and sqlite-vec's exact scan 615×. ChloeDB's home feed fuses vectors with a PageRank walk in one statement: 8.5 ms, 4.7× faster than LanceDB's with the walk in app code.</p>
+      <p>ChloeDB answers similar items in 0.70 ms and FAISS beside SQLite in 0.59; at the 99th percentile ChloeDB takes 1.4 ms against FAISS's 8.7, and it answers 2.3× as many a second on four threads. LanceDB takes 21× longer than ChloeDB and sqlite-vec's exact scan 552×. ChloeDB's home feed fuses vectors with a PageRank walk in one statement: 7.8 ms, 3.9× faster than LanceDB's with the walk in app code.</p>
     </div>
     <div data-chart="emb-a3"></div>
   </div></section>
@@ -121,16 +121,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   <section class="gutter" id="behind"><div class="wrap block">
     <div class="block-head">
       <span class="eyebrow">Where ChloeDB is behind</span>
-      <h2>Single rows, aggregates, price updates and a fast stream</h2>
+      <h2>Single-row reads, aggregates, price updates and a fast stream</h2>
     </div>
     <ul class="gaps">
-      <li><b>Single rows.</b> SQLite reads one by id in 11 µs against ChloeDB's 47 through SQL (30 by key), and joins a user's reviews in 28 µs against 654.</li>
-      <li><b>Single-row commits.</b> 268 to 800 a second without indexes on this node, against SQLite's 933 to 1,340 at FULL. ChloeDB's log only grows, and on this disk a sync that grows a file takes twice one that overwrites; the 6 November build is as fast here.</li>
-      <li><b>Aggregates.</b> DuckDB counts reviews per brand in 8.1 ms and per month in 11.7, against ChloeDB's 51.3 and 27.3 (SQLite 135 and 4,676). DuckDB's heavy join takes 302 ms, ChloeDB's 899.</li>
-      <li><b>Price updates.</b> 528 a second without indexes against SQLite's 1,142 at FULL, and 552 with them against 1,286.</li>
-      <li><b>A fast stream.</b> At 50,000 rows a second ChloeDB keeps up with 14,916, against DuckDB's 44,533 and the 6 November build's 45,713 on its node.</li>
-      <li><b>BM25 on small collections.</b> Tantivy is 1.1 to 1.4× faster on scifact, nfcorpus and fiqa.</li>
-      <li><b>Against its 6 November build.</b> Its searches take 1.35 to 2.3 times as long as that build's did on 6 November's node (vectors 2.9, at higher recall), more than the other systems slowed (1.16 to 1.42); the two builds have not searched side by side on one node yet.</li>
+      <li><b>Single-row reads.</b> SQLite reads one by id in 9 µs against ChloeDB's 35 through SQL (22 by key), and joins a user's reviews in 25 µs against 551.</li>
+      <li><b>Aggregates.</b> DuckDB counts reviews per brand in 5.8 ms and per month in 10.8, against ChloeDB's 41.0 and 22.1 (SQLite 114 and 3,975). DuckDB's heavy join takes 227 ms, ChloeDB's 702.</li>
+      <li><b>Price updates.</b> 3,149 a second without indexes against SQLite's 7,149 at FULL, and 1,920 with them against 8,763. The time goes to planning and running the <code>UPDATE</code>, not to the sync: with <code>sync=False</code> ChloeDB updates 3,540 a second with indexes.</li>
+      <li><b>A fast stream.</b> At 50,000 rows a second ChloeDB keeps up with 19,662, against LanceDB's 49,998 and the 6 November build's 45,713 on its node.</li>
+      <li><b>Similar items at the median.</b> FAISS beside SQLite answers in 0.59 ms, ChloeDB in 0.70.</li>
+      <li><b>BM25 on small collections.</b> Tantivy is 1.2 to 1.3× faster on scifact, nfcorpus and fiqa.</li>
+      <li><b>Against its 6 November build.</b> Its searches take 1.32 times as long at the median as that build's did on 6 November's node. This node ran the other systems about 7% slower than 2 November's, and 6 November's ran the 2 November build 5 to 10% faster than 2 November's did, so about 1.1 to 1.2 of it came with the changes since 6 November, a little at a time. Vectors take 1.96 times as long at the default 200 candidates (recall@10 0.995 to 0.999, against 0.977 to 0.997) and 1.10 to 1.41 times at 64.</li>
     </ul>
   </div></section>
 
@@ -141,7 +141,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     </div>
     <ul class="files">
       <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb/results/laptop-2026-11/part-a-do/README.md">README.md</a>: machines, builds, caveats and every table</li>
-      <li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/laptop-2026-11/part-a-do/part-a-0.3.5">part-a-0.3.5/</a>: one JSON report per system and part (16 November), and <code>write-tests/</code>, the single-row write tests</li>
+      <li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/laptop-2026-11/part-a-do/part-a-1117">part-a-1117/</a>: one JSON report per system and part (17 November), and <code>server/</code>, chloedb-server 0.3.5 against the same build: the same answers, and every row there after a kill</li>
+      <li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/laptop-2026-11/part-a-do/part-a-0.3.5">part-a-0.3.5/</a>: 16 November's run, with ChloeDB 0.3.5 on a slower node, and <code>write-tests/</code>, the single-row write tests that found the log fix</li>
       <li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/laptop-2026-11/part-a-do/part-a">part-a/</a>: the 2 November run, with SQLite's quora row</li>
       <li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/laptop-2026-11/part-a-do/part-a-1106">part-a-1106/</a> and <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/laptop-2026-11/part-a-do/part-a-1106-check">part-a-1106-check/</a>: ChloeDB's 6 November build and its 2 November build on 6 November's node (README, "6 November")</li>
       <li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/laptop-2026-11/part-a-do/part-a-tantivy">part-a-tantivy/</a> and <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/laptop-2026-11/part-a-do/part-a-tantivy-2">part-a-tantivy-2/</a>: the Tantivy runs, each on its own node</li>
@@ -157,7 +158,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js?v=37458d7418"></script>
+<script src="assets/bench-data.js?v=c72ae1d5f9"></script>
 <script src="assets/site.js?v=699f360f4f"></script>
 <script src="assets/bench.js?v=cc795d625d"></script>
 </body>
