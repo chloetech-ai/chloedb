@@ -11,6 +11,16 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **In the command center, an app's screens kept to signed-in people were a
+  dead end**: since 0.3.6 such a screen opens with a sign-in entry (or
+  example rows under a sign-in bar), and the command center refused every
+  sign-in, since the engine's session cookie does not pass through
+  chloedb-server. The app engine now takes the key you signed in to the
+  command center with as one of the app's people (named after the key,
+  "Admin" for the server's own token, with no email or password; the
+  app's owner when nobody joined before, with its example rows), so
+  `app.me()` there is you and those screens open as they do for the owner.
+  A key that only reads still sees the app as a visitor does.
 - **The app engine's builds failed at once on Linux with `spawn E2BIG`**
   (0 model calls), on the operator's pods too: the forge's system prompt
   grew to 152 KB in 0.3.6, past Linux's limit of 128 KiB on one argument,

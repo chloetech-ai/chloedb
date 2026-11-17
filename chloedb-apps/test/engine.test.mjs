@@ -3831,3 +3831,76 @@ test('the owner\'s own tries of an app are told apart from people\'s, and Usage 
     child.kill();
   }
 });
+
+// Against a real chloedb-server and the engine's own server (skipped without one).
+test('the command center uses an app as the key it signed in with, one of its people, not as a visitor who cannot sign in', async (t) => {
+  const { findServerBinary, startServer } = await import('../engine/strata.mjs');
+  const { Store } = await import('../engine/store.mjs');
+  const { spawn } = await import('node:child_process');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return noServer(t);
+  const free = () => new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const dir = mkdtempSync(join(tmpdir(), 'sa-key-'));
+  const port = await free();
+  const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
+  let engineProc = null;
+  try {
+    const store = new Store(client, () => {});
+    await store.init();
+    const app = await store.createApp({ name: 'Retro' });
+    // cards each person sees their own of: the example rows belong to nobody yet
+    const spec = { name: 'cards', columns: [{ name: 'text', type: 'text' }, { name: 'owner_id', type: 'keyword' }], access: ['ALLOW READ, ADD, CHANGE ON cards TO members WHERE owner_id = :user_id'] };
+    await store.ensureTable(app, spec, new Set(await store.tableNames()));
+    const caps = [await store.putCapability({ app, slug: 'cards', kind: 'table', title: 'cards', spec, code: '' }),
+      await store.putCapability({ app, slug: 'board', kind: 'view', title: 'Board', spec: { order: 1 }, code: '{"body": []}' })];
+    await store.writeComposition(app, caps, 'first', 'cards');
+    await client.write([{ op: 'insert', table: `app_${app}_cards`, doc: { id: 'ex1', text: 'Shipped on time' } }]);
+    await store.putSetting(app, 'publish', JSON.stringify({ on: true, name: 'retro', access: 'add' }));
+    const TOKEN = 'key-test-token';
+    const ePort = await free();
+    engineProc = spawn(process.execPath, [join(import.meta.dirname, '..', 'engine', 'server.mjs'), '--port', String(ePort), '--strata', `http://127.0.0.1:${port}`, '--data', join(dir, 'engine')],
+      { env: { ...process.env, STRATA_APP_TOKEN: TOKEN, STRATA_APPS_SCHEDULES: 'off', STRATA_APPS_AUTOREPAIR: '0', STRATA_APPS_TILES: 'off', STRATA_APPS_GEOCODER: 'off', STRATA_APPS_CLAUDE: '/bin/false' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    engineProc.stdout.on('data', (d) => { out += d; });
+    engineProc.stderr.on('data', (d) => { out += d; });
+    const base = `http://127.0.0.1:${ePort}`;
+    for (let i = 0; ; i++) {
+      try { if ((await fetch(`${base}/healthz`)).ok) break; } catch { /* starting */ }
+      if (i > 600 || engineProc.exitCode !== null) throw new Error(`the engine did not start:\n${out.slice(-2000)}`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const call = async (path, body, headers = {}) => {
+      const res = await fetch(`${base}/api/apps/${app}${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json', ...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
+      return { status: res.status, body: await res.json().catch(() => ({})) };
+    };
+    // What chloedb-server sends with each request it forwards (apps.rs, caller_headers).
+    const key = (name, scope, tables) => ({ authorization: `Bearer ${TOKEN}`, 'x-chloedb-principal': name, 'x-chloedb-scope': scope, ...(tables ? { 'x-chloedb-tables': tables } : {}) });
+    const admin = key('roberto', 'admin');
+    const me = (await call('/me', undefined, admin)).body.user;
+    assert.equal(me?.name, 'roberto', JSON.stringify(me));
+    assert.equal(me.role, 'owner', 'the first to use the app is its owner');
+    assert.ok(!me.email, 'a key\'s person has no email: nobody signs in as them');
+    assert.equal((await call('/me', undefined, admin)).body.user.id, me.id, 'one key, one person');
+    // The example rows became the owner's, so the owner's screens show them.
+    const rows = await client.query(`SELECT id, owner_id FROM app_${app}_cards`);
+    assert.deepEqual(rows.map((r) => r.owner_id), [me.id], JSON.stringify(rows));
+    // What the key adds is said to be theirs.
+    const added = (await call('/insert', { table: 'cards', row: { text: 'Fewer meetings' } }, admin));
+    assert.equal(added.status, 200, JSON.stringify(added.body));
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(await store.maker(app, 'cards', added.body.row?.id), me.id, JSON.stringify(added.body));
+    // Another key that may use the app joins it; one that only reads does not.
+    assert.equal((await call('/me', undefined, key('ops', 'write', `app_${app}_*=write`))).body.user?.role, 'member');
+    assert.equal((await call('/me', undefined, key('viewer', 'read'))).body.user, null, 'a reader sees it as a visitor');
+    const people = (await call('/people', undefined, admin)).body.people.map((p) => `${p.name}:${p.role}`).sort();
+    assert.deepEqual(people, ['ops:member', 'roberto:owner']);
+    assert.equal((await call('/me', undefined, key('token', 'admin'))).body.user?.name, 'Admin', 'the server\'s own --token has no key\'s name');
+    // Nobody else is a key's person: a visitor of the published app, and the
+    // studio's "See it as a stranger".
+    assert.equal((await call('/me')).body.user ?? null, null, 'a visitor of the published app');
+    assert.equal((await call('/me', undefined, { ...admin, 'x-sa-as': 'visitor', 'x-sa-access': 'add' })).body.user ?? null, null, 'a stranger');
+  } finally {
+    engineProc?.kill();
+    child.kill();
+  }
+});
