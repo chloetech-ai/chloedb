@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Login } from './login.mjs';
-import { callerOf, refusal, sees } from './callers.mjs';
+import { callerOf, refusal, sees, onPrefix } from './callers.mjs';
 import { useSelfCookie } from './checks.mjs';
 import { Engine } from './engine.mjs';
 import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions, useCluster } from './forge.mjs';
@@ -231,6 +231,16 @@ function visitorOf(req) {
 async function userOf(req, appId, { join = true } = {}) {
   const person = await services.personOf(tokenOf(req)).catch(() => null);
   return person ? services.user(appId, person, { join }) : null;
+}
+// The person of a request that came through chloedb-server (the command
+// center), which forwards no session of the engine's: the caller's key, as
+// one of the app's people (services.keyUser), when it may use the app (write
+// on its tables). Without it the command center met every screen kept to
+// signed-in people with a sign-in it cannot pass. A key that only reads sees
+// the app as a visitor does.
+async function keyUserOf(caller, appId) {
+  if (!caller || onPrefix(caller, `app_${appId}_`) < 2 /* write */) return null;
+  return services.keyUser(appId, caller.name).catch(() => null);
 }
 
 // ---- map tiles, fetched once and kept on disk (OpenStreetMap's policy:
@@ -1277,7 +1287,7 @@ const server = http.createServer(async (req, res) => {
     // An upload is the file's bytes as the body; its name and type in the query.
     if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/apps\/([a-z0-9]+)\/files$/))) {
       const bytes = await rawBody(req, MAX_FILE);
-      const user = cx0.stranger ? null : await userOf(req, m[1], { join: !cx0.public });
+      const user = cx0.stranger ? null : (await userOf(req, m[1], { join: !cx0.public })) || (cx0.public ? null : await keyUserOf(cx0.caller, m[1]));
       const file = await services.saveFile(m[1], bytes, { name: url.searchParams.get('name'), type: url.searchParams.get('type') || req.headers['content-type'] }, user?.id);
       noteActivity(m[1]);
       return send(res, 200, { file: { ...file, url: `/api/apps/${m[1]}/files/${file.id}` } });
@@ -1294,7 +1304,7 @@ const server = http.createServer(async (req, res) => {
     const people = new Map(); // app -> the person, once per request
     const personOf = (appId) => {
       if (cx0.stranger) return Promise.resolve(null);
-      if (!people.has(appId)) people.set(appId, userOf(req, appId, { join }));
+      if (!people.has(appId)) people.set(appId, userOf(req, appId, { join }).then((u) => u || (cx0.public ? null : keyUserOf(cx0.caller, appId))));
       return people.get(appId);
     };
     // The company the person works in now (services.companyOf).
