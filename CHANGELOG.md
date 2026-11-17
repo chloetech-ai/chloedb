@@ -11,6 +11,32 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **SQL answers as Postgres does where it answered differently without an
+  error** (the persona study's analytics engineer, SAM-2 to SAM-6):
+  - `UPDATE` and `DELETE` take any `WHERE` a `SELECT` of the table takes:
+    a `TEXT` column compared with `=`, `LIKE` on `TEXT`, `lower(...)`,
+    `IN (SELECT ...)` and `[NOT] EXISTS` failed with "unsupported
+    predicate" after the write check had counted the rows. Such a write
+    now picks its rows' keys with that `SELECT` under the writer lock and
+    writes those rows; through a coordinator, one with a subquery picks
+    the keys over every shard first (at most 10,000 without a `LIMIT`).
+  - `GROUP BY` and `SELECT DISTINCT` of a stored `TEXT` column (what
+    imports make of prose, and follow-postgres of every `text`) group its
+    values, rather than failing with "group by KEYWORD, INT or FLOAT
+    fields".
+  - `'a' || NULL` is `NULL` (it was `'a'`), and a `FLOAT`'s `ROUND(x)` and
+    `CAST(x AS INT)` round half to even, as Postgres rounds a `double
+    precision` (2.5 is 2; it was 3); a number written in the statement
+    still rounds half away from zero, as Postgres's `numeric` does.
+  - `n != 1.5`, `n <> 1.5` and `NOT (n = 1.5)` of an `INT` (a value no
+    integer holds) left in the rows whose `n` is `NULL`; they leave them
+    out.
+  - follow-postgres gives the rows from before a column Postgres added the
+    column's default (it gave `NULL`, so `WHERE NOT vip` counted none), and
+    refuses (409) other writes to a table it follows, which the mirror
+    would have answered until Postgres changed the row; `--drop-slot`
+    releases the tables.
+
 - **A command center on Kubernetes forgot the clusters it reaches at every
   restart.** A coordinator kept its hub's book (the **Connections** view,
   the clusters the brand's menu at the top left switches to, and their

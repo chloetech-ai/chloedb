@@ -142,7 +142,7 @@ pub(crate) fn needs(q: &sql::Query, schema: &Schema) -> bool {
         TableFactor::Table { name, .. } if is_table(name, schema) => {}
         _ => return true,
     }
-    if orders_by_text(q, s, schema) || orders_by_row_values(q, s) || filters_rows(s, schema) || orders_by_several(q, s, schema) || aggregates_rows(q, s, schema) {
+    if orders_by_text(q, s, schema) || orders_by_row_values(q, s) || filters_rows(s, schema) || orders_by_several(q, s, schema) || aggregates_rows(q, s, schema) || groups_rows(s, schema) {
         return true;
     }
     let mut found = false;
@@ -655,6 +655,44 @@ fn aggregates_rows(q: &sql::Query, s: &sql::Select, schema: &Schema) -> bool {
         es.iter().for_each(|o| check(&o.expr));
     }
     found
+}
+
+/// Whether a SELECT over one table groups by a stored column the
+/// executor's groups do not read, which take indexed KEYWORD, INT and
+/// FLOAT columns: a TEXT column (`GROUP BY country`, as an import or
+/// follow-postgres makes a name), or one kept without an index, named in
+/// GROUP BY, by its position or by an alias, or as a column of `SELECT
+/// DISTINCT`. The row evaluator groups the scan's rows, as it groups
+/// derived rows (persona study SAM-3).
+fn groups_rows(s: &sql::Select, schema: &Schema) -> bool {
+    let groups_rows = |f: &crate::schema::Field| f.stored && !f.multi && (matches!(f.ty, FieldType::Text { .. }) || (!f.indexed && matches!(f.ty, FieldType::Keyword | FieldType::Int | FieldType::Float)));
+    let items: Vec<&Expr> = s
+        .projection
+        .iter()
+        .filter_map(|i| match i {
+            SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => Some(e),
+            _ => None,
+        })
+        .collect();
+    // A group item's column: itself, the selected column at its position,
+    // or the column an alias names.
+    let column = |e: &Expr| -> Option<&crate::schema::Field> {
+        if let Some(n) = super::sql::literal_usize(e) {
+            return items.get(n.wrapping_sub(1)).and_then(|e| column_field(e, schema));
+        }
+        column_field(e, schema).or_else(|| match e {
+            Expr::Identifier(id) => s.projection.iter().find_map(|i| match i {
+                SelectItem::ExprWithAlias { expr, alias } if alias.value.eq_ignore_ascii_case(&id.value) => column_field(expr, schema),
+                _ => None,
+            }),
+            _ => None,
+        })
+    };
+    match (&s.group_by, &s.distinct) {
+        (sql::GroupByExpr::Expressions(es, _), _) if !es.is_empty() => es.iter().any(|e| column(e).is_some_and(groups_rows)),
+        (_, Some(sql::Distinct::Distinct)) => items.iter().any(|e| column_field(e, schema).is_some_and(groups_rows)),
+        _ => false,
+    }
 }
 
 fn filters_rows(s: &sql::Select, schema: &Schema) -> bool {
@@ -1935,7 +1973,8 @@ impl<'a> Planner<'a> {
                 || windowed(&q, &s)
                 || filters_rows(&s, schema)
                 || orders_by_several(&q, &s, schema)
-                || aggregates_rows(&q, &s, schema) =>
+                || aggregates_rows(&q, &s, schema)
+                || groups_rows(&s, schema) =>
             {
                 return self.join(&q, &s)
             }
@@ -3401,7 +3440,12 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
         Expr::UnaryOp { op: UnaryOperator::Not, expr } => ir::Expr::Not(bx(expr)?),
         Expr::UnaryOp { op: UnaryOperator::Minus, expr } => match super::sql::negative_integer(expr) {
             Some(n) => ir::Expr::Lit(Value::Int(n)),
-            None => ir::Expr::Neg(bx(expr)?),
+            // A number written out, `-2.5`, is one value (CAST(-2.5 AS INT)
+            // rounds it as written).
+            None => match go(expr)? {
+                ir::Expr::Lit(Value::Float(x)) => ir::Expr::Lit(Value::Float(-x)),
+                x => ir::Expr::Neg(Box::new(x)),
+            },
         },
         Expr::IsNull(x) => ir::Expr::IsNull(bx(x)?),
         Expr::IsNotNull(x) => ir::Expr::Not(Box::new(ir::Expr::IsNull(bx(x)?))),
@@ -3625,6 +3669,12 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 });
             }
             func.arity(args.len()).map_err(|a| err(format!("{}() takes {a}", func.name())))?;
+            // round() of numbers written out rounds as PostgreSQL rounds
+            // its numeric literals, half away from zero; of a FLOAT
+            // column's values, as its float8, half to even (SAM-5).
+            if let (Func::Round, Some(values)) = (func, args.iter().map(|a| match a { ir::Expr::Lit(v) => Some(v.clone()), _ => None }).collect::<Option<Vec<Value>>>()) {
+                return Ok(ir::Expr::Lit(ir::eval::round_written(&values)?));
+            }
             ir::Expr::Call { func, args }
         }
         // CAST(x AS type) and x::type: a value cast now; a column of the
