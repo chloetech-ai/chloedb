@@ -166,36 +166,32 @@ kbd, .kc {
 .brand { display: flex; align-items: center; gap: var(--s-2); font-weight: var(--w-title); font-size: var(--fs-body); letter-spacing: var(--track-md); color: var(--text); text-decoration: none; flex: none; }
 .brand .mk { width: 16px; height: 16px; border-radius: var(--r-xs); border: 1.5px solid var(--text); position: relative; flex: none; }
 .brand .mk::after { content: ""; position: absolute; inset: 2px 7px 2px 2px; background: var(--text); border-radius: 1px; }
-/* Converge's parts on a desktop (the phone has them in its tab bar) */
-.tb-nav { display: flex; align-items: center; gap: 2px; flex: none; }
-.tb-nav a { color: var(--text-2); }
-.tb-nav a[aria-current="page"] { color: var(--text); background: var(--line); }
+/* The project in focus: a link to the project picker. */
+.tb-proj { color: var(--text); background: var(--surface-2); border: var(--hair) solid var(--line); max-width: 260px; min-width: 0; flex: 0 1 auto; }
+.tb-proj[hidden] { display: none; }
+.tb-proj span { overflow: hidden; text-overflow: ellipsis; }
+.tb-proj svg.i { width: 15px; height: 15px; color: var(--text-2); flex: none; }
+/* Converge's own pages carry their navigation; the crumbs are for Workbench's. */
+body[data-sect="converge"] .crumbs { display: none; }
 .crumbs { display: flex; align-items: center; gap: 2px; min-width: 0; font: var(--w-text) var(--fs-sm) var(--mono); color: var(--text-2); overflow: hidden; }
 .crumbs a, .crumbs b { padding: var(--s-1) 6px; border-radius: var(--r-xs); color: var(--text-2); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
 .crumbs a:hover { background: var(--line); color: var(--text); }
 .crumbs b { color: var(--text); font-weight: var(--w-mid); background: var(--line); }
 .crumbs .sl { color: var(--text-3); }
 .top .sp { flex: 1; }
-.search {
-  display: flex; align-items: center; gap: var(--s-2); width: 280px; height: 28px; padding: 0 var(--s-2); border-radius: var(--r-sm); border: 0;
-  background: var(--line); color: var(--text-2); font-size: var(--fs-body); cursor: pointer; text-align: left;
-}
-.search svg.i { width: 14px; height: 14px; }
-.search .kc { margin-left: auto; }
 .tb {
-  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: var(--r-sm); border: 0; background: transparent;
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: var(--r-sm); border: 0; background: transparent;
   font: var(--w-mid) var(--fs-sm)/1 var(--sans); color: var(--text); cursor: pointer; white-space: nowrap; text-decoration: none;
 }
 .tb:hover { background: var(--line); }
 .tb[aria-expanded="true"] { background: var(--line); }
 .tb.need.on { color: var(--accent-text); background: var(--accent-soft); }
-.tb .n { font-family: var(--mono); font-weight: var(--w-title); font-variant-numeric: tabular-nums; }
-.tb .avs { display: inline-flex; }
-.tb .avs .lv-av { width: 16px; height: 16px; border-radius: 50%; font-size: 9px; box-shadow: 0 0 0 1.5px var(--surface); }
-.tb .avs .lv-av + .lv-av { margin-left: -5px; }
-.tb.icon { width: 30px; padding: 0; justify-content: center; }
-.tb.nt-top.quiet { width: auto; padding: 0 var(--s-2); }
-.tb-back, .tb-title, .tb-search { display: none; }
+.tb .n { font-family: var(--mono); font-weight: var(--w-title); font-variant-numeric: tabular-nums; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-pill); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); line-height: 18px; text-align: center; }
+.tb .n[hidden] { display: none; }
+.tb.icon { width: 32px; padding: 0; justify-content: center; }
+/* The bell is under More now (Notifications). */
+.tb.nt-top { display: none !important; }
+.tb-back, .tb-title { display: none; }
 .conn { display: inline-flex; align-items: center; width: 14px; height: 14px; justify-content: center; flex: none; }
 .conn::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); }
 .conn[data-state="live"]::before { background: var(--good); }
@@ -226,12 +222,12 @@ main { position: absolute; inset: 0; min-width: 0; overflow: hidden; }
   background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); border-top: var(--hair) solid var(--line);
   grid-template-columns: repeat(4, 1fr);
 }
-.tabbar a {
+.tabbar a, .tabbar button {
   position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: var(--touch);
-  font: var(--w-mid) var(--fs-xs)/1 var(--sans); color: var(--text-2); text-decoration: none;
+  font: var(--w-mid) var(--fs-xs)/1 var(--sans); color: var(--text-2); text-decoration: none; border: 0; background: none; cursor: pointer; padding: 0;
 }
-.tabbar a svg.i { width: 20px; height: 20px; }
-.tabbar a[aria-current="page"] { color: var(--accent-text); }
+.tabbar a svg.i, .tabbar button svg.i { width: 20px; height: 20px; }
+.tabbar a[aria-current="page"], .tabbar button[aria-current="page"], .tabbar button[aria-expanded="true"] { color: var(--accent-text); }
 .tabbar .badge {
   position: absolute; top: 6px; left: calc(50% + 6px); min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-pill);
   background: var(--accent); color: var(--accent-ink); font: var(--w-title) var(--fs-xs)/18px var(--mono); text-align: center;
@@ -281,7 +277,11 @@ main { position: absolute; inset: 0; min-width: 0; overflow: hidden; }
 .pop .foot { display: flex; gap: var(--s-3); flex-wrap: wrap; padding: var(--s-2) var(--s-4) var(--s-1); border-top: var(--hair) solid var(--line); margin-top: var(--s-2); font-size: var(--fs-sm); }
 .pop .foot a { color: var(--accent-text); text-decoration: none; }
 .pop .none { padding: var(--s-1) var(--s-4) var(--s-2); color: var(--text-2); font-size: var(--fs-sm); }
-.more-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: var(--s-2) var(--s-4); color: var(--text); text-decoration: none; min-height: 40px; }
+.more-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: var(--s-2) var(--s-4); color: var(--text); text-decoration: none; min-height: var(--touch); }
+button.more-row { width: 100%; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
+.more-row[aria-current="page"] { background: var(--accent-soft); }
+.pop .more-sec { padding: var(--s-3) var(--s-4) var(--s-1); font: var(--w-mid) var(--fs-xs)/var(--lh-xs) var(--mono); letter-spacing: var(--track-label); text-transform: uppercase; color: var(--text-3); }
+.pop .more-sep { height: 0; border-top: var(--hair) solid var(--line); margin: var(--s-2) 0; }
 .more-row:hover { background: var(--surface-2); }
 .more-row span small { display: block; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .more-row svg.i { color: var(--text-2); }
@@ -867,10 +867,9 @@ button.flag.warn:hover { border-color: var(--warn-line); }
 
 /* -------------------------------------------------------- narrow screens
    (JOURNEYS.md, "Phone"): 1024px folds the side panels under the page; at
-   640px the top bar keeps the page's name, Back and Needs you, and the tab
-   bar takes Board, Needs you, Projects and Workbench. */
+   640px the top bar keeps the page's name and Back, and the tab bar takes
+   Home, Needs you, Personas and More (Workbench is under More). */
 @media (max-width: 1024px) {
-  .search { width: 180px; }
   .crumbs a, .crumbs b { max-width: 140px; }
   .zbody { grid-template-columns: minmax(0, 1fr) 280px; }
   #grid-view { padding: var(--s-5); }
@@ -879,14 +878,16 @@ button.flag.warn:hover { border-color: var(--warn-line); }
   :root { --top: 52px; }
   body { font-size: var(--fs-body); line-height: var(--lh-body); }
   .top { gap: var(--s-1); padding-left: max(8px, env(safe-area-inset-left)); padding-right: max(8px, env(safe-area-inset-right)); }
-  .brand .bn, .tb-nav, .crumbs, .search, #agents-btn, #more-btn, .nt-top, .top .conn, .wide-only, .ag-tabs .hint { display: none !important; }
+  /* The phone's top bar: Back and the page's name; Home, Needs you,
+     Personas and More are in the tab bar. */
+  .brand .bn, .tb-proj, .crumbs, #needs-btn, #more-btn, .nt-top, .top .conn, .wide-only, .ag-tabs .hint { display: none !important; }
   .tb-back { display: inline-flex; }
   .tb-back[hidden] { display: none; }
   .tb-title { display: block; flex: 1; min-width: 0; font: var(--w-title) var(--fs-md)/var(--lh-md) var(--sans); letter-spacing: var(--track-md); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 var(--s-1); }
   .top .sp { display: none; }
-  .tb-search { display: inline-flex; }
   .tb, .tb.icon { height: var(--touch); min-width: var(--touch); justify-content: center; font-size: var(--fs-body); }
-  .tb.need .tlb { display: none; }
+  .brand { min-height: var(--touch); min-width: var(--touch); justify-content: center; padding: 0 var(--s-2); }
+  .btn.sm { height: var(--touch); padding: 0 var(--s-3); }
   .tabbar { display: grid; }
   .shell { bottom: calc(var(--tabh) + env(safe-area-inset-bottom)); }
   body.stepping .tabbar { display: none; }
@@ -902,6 +903,7 @@ button.flag.warn:hover { border-color: var(--warn-line); }
   .dr-body { padding: 0 var(--s-4) var(--s-6); }
   .pop { left: 8px; right: 8px; width: auto; top: auto; bottom: calc(var(--tabh) + env(safe-area-inset-bottom) + 8px); max-height: 70vh; }
   .sw-row, .more-row { min-height: var(--touch); }
+  .more-row .kc { display: none; }
   .gsheet { top: auto; bottom: 0; left: 0; right: 0; transform: none; width: 100vw; max-height: 88vh; border-radius: var(--r) var(--r) 0 0; padding-bottom: env(safe-area-inset-bottom); }
   .gsheet .gs-ft { flex-direction: column-reverse; }
   .gsheet .gs-ft .btn { width: 100%; height: var(--touch); }
