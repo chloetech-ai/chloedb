@@ -28,8 +28,8 @@ CHLOEDB_APP_TOKEN="$APP_TOKEN" chloedb-server --shards ... --app chloectx=http:/
 |---|---|---|
 | `--server` (`CHLOEDB_URL`) | `http://127.0.0.1:7700` | the chloedb-server (a coordinator, or a server on its own) the spaces live in |
 | `--key` (`CHLOEDB_KEY`) | none | its key for the app's reads and writes: an admin key, since a new space is a new table and the on-call agent takes admin calls |
-| `--token` (`CHLOECTX_APP_TOKEN`) | none | the token every caller must send (`Authorization: Bearer`); chloedb-server sends its `CHLOEDB_APP_TOKEN` |
-| `--insecure` | off | serve any caller with no token on an address other than loopback; without it, `chloectx app` refuses to start with `--host 0.0.0.0` (or any non-loopback address) and no token, since whoever reached the port could read and write every space and start model calls billed to its key |
+| `--token` (`CHLOECTX_APP_TOKEN`) | none | the token every caller must send (`Authorization: Bearer`); chloedb-server sends its `CHLOEDB_APP_TOKEN`. Without one, `chloectx app` refuses to start unless `--insecure` |
+| `--insecure` | off | serve any caller with no token; without it, `chloectx app` refuses to start with no token, on loopback too, since whoever reached the port (on loopback, any program of the machine) could read and write every space and start model calls billed to its key. On loopback it then answers only requests whose `Host` is this machine (`127.0.0.1`, `localhost`, `[::1]`), so that a page reaching it through DNS rebinding is refused |
 | `--host`, `--port` | `127.0.0.1`, `7760` | where it listens |
 | `--embedder` (`CHLOECTX_EMBEDDER`) | `static` | `hash:<dim>` for tests without the model |
 

@@ -323,6 +323,55 @@ async fn agents_never_act_alone_at_tier_3() {
     assert_ne!(j["error_code"].as_str(), Some("change_request_required"), "{s} {j}");
 }
 
+/// LENA-2 (CLU-4): an agent's admin key makes agents' keys alone, no wider
+/// than its own: it does not make a plain admin key that escapes the fence
+/// (a minted key that drops a table alone), nor rotate a person's key into
+/// a new secret; a person's key still makes and rotates any.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_key_makes_no_key_outside_the_fence() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = start(dir.path()).await;
+    let agent_admin = key(&base, json!({"name": "admin-bot", "scope": "admin", "agent": true, "on_behalf_of": "lena@example.com", "expires_days": 1, "budget": {"rows_read": 5000}})).await;
+    let why = ("x-chloedb-reason", "nightly job");
+    // Asking for a plain key, by name or by saying agent: false.
+    let (s, j) = call(&base, "POST", "/v1/admin/keys", &agent_admin, &[why], Some(json!({"name": "minted-plain", "scope": "admin", "agent": false}))).await;
+    assert_eq!((s, j["error_code"].as_str()), (403, Some("change_request_required")), "{j}");
+    let (s, j) = call(&base, "POST", "/v1/admin/keys", &agent_admin, &[why], Some(json!({"name": "minted-other", "scope": "admin", "on_behalf_of": "someone@example.com"}))).await;
+    assert_eq!((s, j["error_code"].as_str()), (403, Some("change_request_required")), "{j}");
+    // What it asked for without saying: an agent's key, for the same
+    // person, expiring with it, within its budget.
+    let (s, j) = call(&base, "POST", "/v1/admin/keys", &agent_admin, &[why], Some(json!({"name": "minted", "scope": "admin", "expires_days": 30, "budget": {"rows_read": 9000, "nodes": 50}}))).await;
+    assert_eq!(s, 200, "{j}");
+    let k = &j["key"];
+    assert_eq!((k["agent"].as_bool(), k["on_behalf_of"].as_str()), (Some(true), Some("lena@example.com")), "{j}");
+    let day = chloedb_server::telemetry::now_ms() + 86_400_000;
+    assert!(k["expires_ms"].as_u64().is_some_and(|e| e <= day), "{j}");
+    assert_eq!((k["budget"]["rows_read"].as_u64(), k["budget"]["nodes"].as_u64()), (Some(5000), Some(50)), "{j}");
+    let minted = j["secret"].as_str().unwrap().to_string();
+    // The minted key is fenced as its maker is: a tier 3 statement is
+    // a change request (it dropped the table on 0.3.7).
+    let (s, _) = call(&base, "POST", "/v1/sql", ROOT, &[], Some(json!({"sql": "CREATE TABLE drop_me1 (id KEYWORD PRIMARY KEY)"}))).await;
+    assert_eq!(s, 200);
+    let (s, j) = call(&base, "POST", "/v1/sql", &minted, &[why], Some(json!({"sql": "DROP TABLE drop_me1"}))).await;
+    assert_eq!((s, j["error_code"].as_str()), (403, Some("change_request_required")), "{j}");
+    // A person's key is not rotated by the agent into a new secret.
+    let (_, made) = call(&base, "POST", "/v1/admin/keys", ROOT, &[], Some(json!({"name": "person", "scope": "admin"}))).await;
+    let person = made["key"]["id"].as_str().unwrap().to_string();
+    let (s, j) = call(&base, "POST", &format!("/v1/admin/keys/{person}/rotate"), &agent_admin, &[why], Some(json!({}))).await;
+    assert_eq!((s, j["error_code"].as_str(), j["secret"].as_str()), (403, Some("change_request_required"), None), "{j}");
+    // Its own kind it rotates; a person makes and rotates any key.
+    let mine = k["id"].as_str().unwrap().to_string();
+    let (s, j) = call(&base, "POST", &format!("/v1/admin/keys/{mine}/rotate"), &agent_admin, &[why], Some(json!({}))).await;
+    assert_eq!((s, j["key"]["agent"].as_bool()), (200, Some(true)), "{j}");
+    let (s, j) = call(&base, "POST", &format!("/v1/admin/keys/{person}/rotate"), ROOT, &[], Some(json!({}))).await;
+    assert_eq!(s, 200, "{j}");
+    let (s, j) = call(&base, "POST", "/v1/admin/keys", ROOT, &[], Some(json!({"name": "plain", "scope": "admin"}))).await;
+    assert_eq!((s, j["key"]["agent"].as_bool()), (200, None), "{j}");
+    // A person's key through an agent's headers is an agent's request.
+    let (s, j) = call(&base, "POST", "/v1/admin/keys", ROOT, &[why, ("x-chloedb-agent-session", "s1")], Some(json!({"name": "via-agent", "scope": "admin"}))).await;
+    assert_eq!((s, j["key"]["agent"].as_bool()), (200, Some(true)), "{j}");
+}
+
 /// Audit X-D1: a change request carries no credential and makes none: the
 /// routes that make or show a key's secret, or take another cluster's or
 /// a cloud's, are refused as targets, and so is a body holding one; what

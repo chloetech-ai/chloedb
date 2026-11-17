@@ -382,11 +382,13 @@ enum Cmd {
         #[arg(long, default_value_t = 7760)]
         port: u16,
         /// The token callers must send as `Authorization: Bearer` (chloedb-server
-        /// sends its CHLOEDB_APP_TOKEN); none: any caller ($CHLOECTX_APP_TOKEN).
+        /// sends its CHLOEDB_APP_TOKEN); without one the app refuses to start,
+        /// unless --insecure ($CHLOECTX_APP_TOKEN).
         #[arg(long, env = "CHLOECTX_APP_TOKEN", hide_env_values = true)]
         token: Option<String>,
-        /// Serve any caller with no token on an address other than loopback
-        /// (without it, the app refuses to start that way).
+        /// Serve any caller with no token (on loopback, only requests whose
+        /// Host is this machine's); without it, the app refuses to start with
+        /// no token.
         #[arg(long)]
         insecure: bool,
         /// The embedder (static, or hash:<dim> for tests; $CHLOECTX_EMBEDDER).
