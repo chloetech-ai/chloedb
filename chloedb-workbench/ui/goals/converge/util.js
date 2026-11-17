@@ -108,7 +108,8 @@ export function doingWords(ev) {
     else if (/^(grep|rg|find|ls|tree)\b/.test(cmd)) what = "looking around the code";
     else if (/^(mkdir|cp|mv|rm|chmod|touch)\b/.test(cmd)) what = "arranging files";
     else what = `running ${w.slice(0, 2).join(" ")}`.slice(0, 48);
-    return `${what}${fail}`;
+    // A search that found nothing exits 1: not a failure.
+    return `${what}${what === "looking around the code" ? "" : fail}`;
   }
   // The tools that manage its own background tasks and sessions: not news.
   if (INTERNAL.test(tool)) return `managing its work${fail}`;
@@ -119,7 +120,7 @@ export function doingWords(ev) {
   const words = { Read: "reading", Edit: "editing", MultiEdit: "editing", Write: "writing", NotebookEdit: "editing", Grep: "searching for", Glob: "looking for", WebFetch: "opening", WebSearch: "searching the web for", TodoWrite: "planning", Task: "delegating", Agent: "delegating" };
   const v = words[tool] || (/^[A-Z]/.test(tool) ? "working" : tool);
   const d = /^(Read|Edit|MultiEdit|Write|NotebookEdit)$/.test(tool) ? base(detail) : words[tool] && !/^(TodoWrite|Task|Agent)$/.test(tool) ? cmdWords(detail).slice(0, 50) : "";
-  return `${v}${d ? " " + d : ""}${fail}`;
+  return `${v}${d ? " " + d : ""}${/^(Grep|Glob)$/.test(tool) ? "" : fail}`;
 }
 
 /** Is an agent at work on it now? */
@@ -142,10 +143,10 @@ export function happening(f, settings = {}) {
     case "found": return f.occurrences > 1 ? `seen ${f.occurrences}×` : "waits for your pick";
     case "reproduce": return f.needs_you ? "needs a hint or a repro" : f.repro_hash ? "repro locked" : f.repro ? "running the repro" : "waits for a repro agent";
     case "scope": return "being planned";
-    case "prioritize": return f.door ? `one-way door: ${f.door}` : "planned, waits for your pick";
+    case "prioritize": return f.door ? `one-way door: ${f.door}` : f.queued ? "waits for a free agent slot" : settings.develop_auto ? "planned, starts when a slot is free" : "planned, waits for your pick";
     case "develop": return f.rounds ? `round ${Math.min(f.rounds + 1, rounds)} of ${rounds}` : "checks run next";
-    case "verify": return "the persona replays it";
-    case "review": return f.conflict ? "conflicts with the base" : f.ci === "pass" ? "CI passed" : f.ci === "fail" ? "CI failed" : f.pr_url ? "CI running" : "opening the pull request";
+    case "verify": return !f.persona ? "verified by its repro next" : f.busy ? "the persona replays it" : "waits for the replay (budget or a run slot)";
+    case "review": return f.conflict ? "conflicts with the base" : f.ci === "pass" ? "CI passed" : f.ci === "fail" ? "CI failed" : f.pr_url ? "CI running" : f.needs_you ? "waits for you: merge it or record a pull request" : "opening the pull request";
     case "merged": return f.guard_ok === false ? "regressed" : "merged";
     default: return "";
   }

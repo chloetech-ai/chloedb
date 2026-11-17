@@ -92,10 +92,12 @@ export async function openSheet(C, id) {
     const parts = [
       ui.dismiss ? dismissBox(f) : null,
       ui.back ? backBox(f) : null,
+      ui.pr ? prBox(f) : null,
       ui.edit ? editBox(f) : null,
       blockedBox(f),
       scopeAskBox(f),
       queuedOf(f) ? h("p", { class: "cv-note" }, `Queued: ${queuedOf(f)}. It starts by itself when a slot frees.`) : null,
+      f.sent_back && f.sent_back.reason && ["develop", "verify"].includes(f.stage) ? h("p", { class: "cv-note", style: { overflowWrap: "anywhere" } }, h("b", {}, "Sent back: "), f.sent_back.reason, " — the next check needs a new commit for it.") : null,
       ...stageParts(f, x),
       ui.events ? eventsBox(x) : null,
       tk.section,
@@ -106,6 +108,7 @@ export async function openSheet(C, id) {
   }
 
   // ------------------------------------------------------------ moves
+  const busyNow = (f) => !!f.busy;
   function actions(f) {
     const b = blockedOf(f);
     const out = [];
@@ -127,6 +130,7 @@ export async function openSheet(C, id) {
       case "reproduce":
         if (f.needs_you || (f.repro_attempts || 0) >= 2) {
           out.push(btn("Dismiss", "", () => { ui.dismiss = true; paint(d); sh.body.scrollTop = 0; }));
+          if (/wrote no repro|without writing/.test(f.needs_you || "")) out.push(btn("Can't reproduce", "", () => post("cant-reproduce", {}, "Marked can't reproduce")));
           out.push(btn("Give a hint", "pri", () => tk.focus()));
         }
         break;
@@ -147,6 +151,12 @@ export async function openSheet(C, id) {
       }
       case "review":
         out.push(btn("Send back", "", () => { ui.back = true; paint(d); sh.body.scrollTop = 0; }));
+        // No pull request (no GitHub origin, or opening one failed): merge
+        // it here, or record the one you opened.
+        if (!f.pr_url && f.branch && !busyNow(f)) {
+          out.push(btn("Record a pull request", "", () => { ui.pr = true; paint(d); sh.body.scrollTop = 0; }));
+          out.push(btn("Merge locally", "good", () => { if (confirm(`Merge ${f.branch} into the base branch in the main checkout?`)) post("merge-local", {}, "Merged into the base branch"); }));
+        }
         // A pull request that conflicts with the base is never offered for the merge.
         if (f.ci === "pass" && !f.conflict) out.push(btn("Approve and merge", "good", () => { if (confirm(`Merge the pull request of “${f.title}”?`)) post("approve", {}, "Approved: merging"); }));
         break;
@@ -171,6 +181,8 @@ export async function openSheet(C, id) {
 
   function dismissBox(f) {
     const why = h("input", { class: "cv-in", type: "text", placeholder: "Why is it not a problem?", "aria-label": "Why is it not a problem?" });
+    why.value = ui.dismissDraft || "";
+    why.addEventListener("input", () => { ui.dismissDraft = why.value; });
     setTimeout(() => why.focus(), 0);
     return h("section", { class: "cv-note", style: { display: "flex", flexDirection: "column", gap: "8px" } },
       h("span", { class: "cv-label" }, "Dismiss"), why,
@@ -179,15 +191,29 @@ export async function openSheet(C, id) {
         h("button", { class: "cv-btn crit", type: "button", onclick: async () => { if (!why.value.trim()) { why.focus(); toast("Say why first: it teaches the personas"); return; } await post("dismiss", { reason: why.value.trim() }, "Dismissed"); sh.close(); } }, "Dismiss it")));
   }
 
+  /** The address of a pull request you opened yourself: the `pr` verb. */
+  function prBox(f) {
+    const inp = h("input", { class: "cv-in", type: "url", placeholder: "https://github.com/owner/repo/pull/12", "aria-label": "The pull request's address" });
+    setTimeout(() => inp.focus(), 0);
+    return h("section", { class: "cv-note", style: { display: "flex", flexDirection: "column", gap: "8px" } },
+      h("span", { class: "cv-label" }, "Record a pull request"), inp,
+      h("div", { style: { display: "flex", gap: "8px" } },
+        h("button", { class: "cv-btn", type: "button", onclick: () => { ui.pr = false; paint(d); } }, "Cancel"),
+        h("button", { class: "cv-btn pri", type: "button", onclick: async () => { if (!/^https?:\/\//.test(inp.value.trim())) { inp.focus(); toast("The pull request's address, starting with https://"); return; } ui.pr = false; await post("pr", { url: inp.value.trim() }, "Recorded: CI is read from it"); } }, "Record it")));
+  }
+
   /** "Send back with a note": the `back` verb with {text}; talking alone does not move a card back. */
   function backBox(f) {
     const ta = h("textarea", { class: "cv-ta", rows: "3", placeholder: "What should the fix agent change?", "aria-label": "What should the fix agent change?", style: { fontFamily: "var(--sans)", fontSize: "16px", minHeight: "88px" } });
+    // What you typed survives a repaint (another tap on Send back, a refresh).
+    ta.value = ui.backDraft || "";
+    ta.addEventListener("input", () => { ui.backDraft = ta.value; });
     setTimeout(() => ta.focus(), 0);
     return h("section", { class: "cv-note", style: { display: "flex", flexDirection: "column", gap: "8px" } },
       h("span", { class: "cv-label" }, "Send back to Building"), ta,
       h("div", { style: { display: "flex", gap: "8px" } },
         h("button", { class: "cv-btn", type: "button", onclick: () => { ui.back = false; paint(d); } }, "Cancel"),
-        h("button", { class: "cv-btn pri", type: "button", onclick: async () => { if (!ta.value.trim()) { ta.focus(); toast("Say what to change first: the fix agent gets only your note"); return; } ui.back = false; await post("back", { text: ta.value.trim() }, "Sent back: the fix agent has your note"); } }, "Send back")));
+        h("button", { class: "cv-btn pri", type: "button", onclick: async () => { if (!ta.value.trim()) { ta.focus(); toast("Say what to change first: the fix agent gets only your note"); return; } ui.back = false; const text = ta.value.trim(); ui.backDraft = ""; await post("back", { text }, "Sent back: the fix agent has your note"); } }, "Send back")));
   }
 
   function editBox(f) {
@@ -451,9 +477,10 @@ export async function openSheet(C, id) {
     if (f.stage === "merged") return h("div", { class: `cv-verdict${f.guard_ok === false ? " bad" : ""}` }, f.guard_ok === false ? "Merged, but the nightly guard says the problem is back." : "Merged. The nightly guard keeps running its repro.");
     const ver = [...evs].reverse().find((e) => e.gate === "verify");
     const dev = [...evs].reverse().find((e) => e.gate === "develop" && e.passed);
-    const bits = [f.ci === "pass" ? "CI green" : f.ci === "fail" ? "CI failed" : "CI running", dev ? "checks passed, in scope" : null, ver && ver.passed ? "the persona succeeded" : null].filter(Boolean);
+    const bits = [!f.pr_url ? (f.needs_you ? "no pull request yet" : "opening the pull request") : f.ci === "pass" ? "CI green" : f.ci === "fail" ? "CI failed" : "CI running", dev ? "checks passed, in scope" : null, ver && ver.passed ? "the persona succeeded" : null].filter(Boolean);
     return [
       f.conflict ? h("div", { class: "cv-verdict bad" }, `${f.conflict}. Not ready to merge.`)
+        : !f.pr_url && f.needs_you ? h("div", { class: "cv-verdict wait" }, f.needs_you)
         : h("div", { class: `cv-verdict${f.ci === "pass" ? "" : f.ci === "fail" ? " bad" : " wait"}` }, f.ci === "pass" ? `Ready: ${bits.join(" · ")}` : bits.join(" · ")),
       f.pr_url ? h("section", {}, h("span", { class: "cv-label" }, "Pull request"), h("a", { href: f.pr_url, target: "_blank", rel: "noopener", style: { overflowWrap: "anywhere" } }, f.pr_url), f.branch ? h("p", { class: "cv-meta" }, `Branch ${f.branch}`) : null) : null,
     ];

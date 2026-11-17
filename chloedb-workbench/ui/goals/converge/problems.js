@@ -119,7 +119,7 @@ export function newProblem(C) {
   sh.setHead(h("span", { class: "cv-label" }, "Problems"), h("h2", {}, "New problem"));
   const ta = h("textarea", { class: "cv-ta", rows: "4", placeholder: "What goes wrong, and where? E.g. “Search misses accented words in the Python client”", "aria-label": "Describe the problem", style: { fontFamily: "var(--sans)", fontSize: "16px", minHeight: "120px" } });
   const out = h("div", { "aria-live": "polite" });
-  const title = h("input", { type: "text", id: "cv-ah-t", maxlength: "200" });
+  const title = h("input", { type: "text", id: "cv-ah-t" }); // No maxlength: pasted text is not cut silently; the server says when it is too long.
   const detail = h("textarea", { class: "cv-ta", id: "cv-ah-d", style: { minHeight: "80px" } });
   const kind = h("select", { id: "cv-ah-k" }, KINDS.map((k) => h("option", { value: k }, k)));
   const sev = h("select", { id: "cv-ah-s" }, ["blocker", "major", "minor", "papercut"].map((k) => h("option", { value: k, selected: k === "major" ? true : null }, k)));
@@ -147,7 +147,8 @@ export function newProblem(C) {
         r = await C.api("/api/converge/ask", { method: "POST", body: { repo: C.repo(), text } });
       }
       const f = (r && r.finding) || {};
-      toast(`${f.title || "The card"}: on to Reproducing`);
+      const like = r && r.similar && r.similar.id ? r.similar : null;
+      toast(like ? `${f.title || "The card"}: on to Reproducing. It looks like “${like.title}” (${like.stage}): dismiss one if they are the same` : `${f.title || "The card"}: on to Reproducing`);
       sh.close();
       C.S.sig = ""; await C.load();
       if (f.id) C.open(f.id);
