@@ -156,7 +156,8 @@ pub fn conform_as(schema: &Schema, doc: &mut Document, pooling: Pooling) -> Resu
 /// stored form ([`conform`]).
 pub fn validate(schema: &Schema, doc: &Document) -> Result<()> {
     if doc.len() != schema.fields.len() {
-        return Err(Error::Schema(format!("document has {} values, table has {} fields", doc.len(), schema.fields.len())));
+        let names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+        return Err(Error::Schema(format!("document has {} values, table {} has {} fields ({})", doc.len(), schema.table, schema.fields.len(), names.join(", "))));
     }
     for (f, v) in schema.fields.iter().zip(doc) {
         if f.not_null && matches!(v, Value::Null) {
