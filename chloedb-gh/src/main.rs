@@ -90,6 +90,39 @@ enum Command {
         #[arg(long, default_value_t = 4)]
         shards: usize,
     },
+    /// One shard's events into each person's row of `gh_people` (what
+    /// their page shows): OUT/people/sSHARD/pPASS.parquet.
+    People {
+        /// The folders with the shard's `events` (one a machine).
+        #[arg(long = "input", required = true)]
+        inputs: Vec<PathBuf>,
+        #[arg(long)]
+        shard: usize,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 4)]
+        shards: usize,
+        /// Read the events this many times, a share of the people each
+        /// time, so that a pass's sums fit in memory.
+        #[arg(long, default_value_t = 16)]
+        passes: usize,
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+        /// The shard's kept repos (`reduce`'s OUT/repos/sSHARD.parquet):
+        /// who worked on each goes to OUT/people_repos/sSHARD too.
+        #[arg(long)]
+        kept: Option<PathBuf>,
+    },
+    /// `people`'s pairs of a shard into the people who worked most on each
+    /// kept repo (`gh_repo_people`): OUT/repo_people/sSHARD/pPASS.parquet.
+    RepoPeople {
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        shard: usize,
+        #[arg(long, default_value_t = 4)]
+        passes: usize,
+    },
     /// What GitHub's search API says of each repo with --min-stars or more
     /// today (stars, description, language, topics, license, name), as
     /// `meta` and `names` rows under --out that `reduce` reads after the
@@ -207,6 +240,10 @@ fn main() -> Result<()> {
             vec_min_stars,
             shards,
         }),
+        Command::People { inputs, shard, out, shards, passes, threads, kept } => {
+            chloedb_gh::people::run(chloedb_gh::people::Opts { inputs, shard, out, shards, passes, threads, kept })
+        }
+        Command::RepoPeople { out, shard, passes } => chloedb_gh::people::repo_people(&out, shard, passes),
         Command::ApiMeta {
             out,
             part,
@@ -300,6 +337,7 @@ fn serve(
             started: std::time::Instant::now(),
             latest: std::sync::Mutex::new(None),
             topics: tokio::sync::Mutex::new(None),
+            pages: std::sync::Mutex::new(std::collections::HashMap::new()),
         });
         // Rising's topic list takes seconds to sum: made once at the start.
         {

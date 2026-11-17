@@ -140,6 +140,53 @@ pub struct Service {
     /// The topics with the most stars in the last 12 months, for Rising's
     /// picker, kept 12 hours.
     pub topics: tokio::sync::Mutex<Option<(Instant, Vec<Value>)>>,
+    /// Repos' and people's pages as answered, kept [`PAGE_TTL`]: they read
+    /// rows of the disk's (a busy repo's thousands of stargazers), and the
+    /// archive moves a day at a time.
+    pub pages: Mutex<HashMap<String, (Instant, Value)>>,
+}
+
+/// How long a page is kept.
+pub const PAGE_TTL: Duration = Duration::from_secs(6 * 3600);
+/// How many pages are kept (then they all go).
+pub const PAGES_KEPT: usize = 5_000;
+
+impl Service {
+    /// A page answered less than [`PAGE_TTL`] ago.
+    fn kept_page(&self, key: &str) -> Option<Value> {
+        let pages = self.pages.lock().unwrap_or_else(|e| e.into_inner());
+        pages.get(key).filter(|(t, _)| t.elapsed() < PAGE_TTL).map(|(_, v)| v.clone())
+    }
+
+    /// Keeps a page, unless a statement of it ran out of time (its trace
+    /// says so): that one may answer in full next time.
+    fn keep_page(&self, key: String, v: &Value) {
+        let late = |n: &str| ["deadline", "in time", "timed out", "timeout", "busy", "try again", "connect"].iter().any(|w| n.contains(w));
+        let failed = v["queries"].as_array().is_some_and(|q| q.iter().any(|q| q.get("note").and_then(Value::as_str).is_some_and(late)));
+        if failed {
+            return;
+        }
+        let mut pages = self.pages.lock().unwrap_or_else(|e| e.into_inner());
+        if pages.len() >= PAGES_KEPT {
+            pages.clear();
+        }
+        pages.insert(key, (Instant::now(), v.clone()));
+    }
+}
+
+/// The page kept under `key`, as answered then, or `make`'s, which is kept.
+async fn page_kept<F>(svc: &Service, key: String, t0: Instant, make: F) -> Answer
+where
+    F: std::future::Future<Output = Answer>,
+{
+    if let Some(mut v) = svc.kept_page(&key) {
+        v["kept"] = json!(true);
+        v["took_ms"] = json!((t0.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0);
+        return Ok(Json(v));
+    }
+    let v = make.await?;
+    svc.keep_page(key, &v.0);
+    Ok(v)
 }
 
 pub type Shared = Arc<Service>;
@@ -501,8 +548,13 @@ async fn search(State(svc): State<Shared>, Query(a): Query<SearchParams>) -> Ans
 
 async fn repo(State(svc): State<Shared>, Path(name): Path<String>) -> Answer {
     let t0 = Instant::now();
-    ctx!(svc, trace, c);
     let (latest, _) = svc.latest().await;
+    let key = format!("repo/{latest}/{}", name.to_lowercase());
+    page_kept(&svc, key, t0, repo_page(&svc, name, latest, t0)).await
+}
+
+async fn repo_page(svc: &Shared, name: String, latest: i64, t0: Instant) -> Answer {
+    ctx!(svc, trace, c);
     let Some(id) = pages::find_repo(&c, &name).await else {
         return done(&trace, json!({"found": false, "name": name}), t0);
     };
@@ -518,9 +570,13 @@ async fn repo(State(svc): State<Shared>, Path(name): Path<String>) -> Answer {
 
 async fn person(State(svc): State<Shared>, Path(login): Path<String>) -> Answer {
     let t0 = Instant::now();
-    ctx!(svc, trace, c);
-    let v = pages::person(&c, &login).await?;
-    done(&trace, v, t0)
+    let key = format!("person/{}", login.to_lowercase());
+    page_kept(&svc, key, t0, async {
+        ctx!(svc, trace, c);
+        let v = pages::person(&c, &login).await?;
+        done(&trace, v, t0)
+    })
+    .await
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -661,6 +717,7 @@ mod public_tests {
             started: Instant::now(),
             latest: Mutex::new(None),
             topics: tokio::sync::Mutex::new(None),
+            pages: Mutex::new(HashMap::new()),
         }
     }
 

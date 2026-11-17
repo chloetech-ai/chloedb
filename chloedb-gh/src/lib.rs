@@ -6,6 +6,7 @@ pub mod apimeta;
 pub mod archive;
 pub mod ask;
 pub mod pages;
+pub mod people;
 pub mod prepare;
 pub mod reduce;
 pub mod slots;
