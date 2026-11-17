@@ -1,0 +1,7 @@
+# The large dataset-derived artifacts stay out of the repository: `node apps/atlas/prep.mjs`
+# rebuilds them, and load.mjs loads them into a database from a machine that has them. The
+# small ones (atlas-creds.json, atlas-stats.json) are kept so the shape is visible.
+data/atlas-servers.jsonl
+data/atlas-bindings.jsonl
+# The model's labels, recorded by measure.mjs and read back by load.mjs.
+data/atlas-capability.jsonl

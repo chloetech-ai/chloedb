@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: site-placeholder, namespace: prototypes}
+data:
+  index.html: |
+    <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Prototypes</title>
+    <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1020;color:#e8ecff;font:500 18px/1.5 system-ui,sans-serif}p{opacity:.7}</style>
+    <main><h1>ChloeDB × Nodwyn prototypes</h1><p>Being built tonight. Check back in a few hours.</p></main>
+  Caddyfile: |
+    :8080 {
+      root * /srv
+      file_server
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: site, namespace: prototypes}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: site}}
+  template:
+    metadata: {labels: {app: site}}
+    spec:
+      nodeSelector: {pool: protos}
+      tolerations: [{key: pool, operator: Equal, value: protos, effect: NoSchedule}]
+      containers:
+      - name: site
+        image: caddy:2.8.4
+        command: ["caddy", "run", "--config", "/etc/site/Caddyfile", "--adapter", "caddyfile"]
+        ports: [{containerPort: 8080}]
+        resources: {requests: {cpu: 20m, memory: 32Mi}}
+        volumeMounts:
+        - {name: page, mountPath: /srv/index.html, subPath: index.html}
+        - {name: page, mountPath: /etc/site/Caddyfile, subPath: Caddyfile}
+      volumes: [{name: page, configMap: {name: site-placeholder}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: site, namespace: prototypes}
+spec:
+  selector: {app: site}
+  ports: [{port: 8080, targetPort: 8080}]

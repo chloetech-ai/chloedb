@@ -1,0 +1,66 @@
+[
+  {
+    "id": "pkg",
+    "name": "Package installs ask",
+    "action": "ask",
+    "predicate": "is_pkg_install = 1",
+    "frontier": 1,
+    "descr": "Any pip/npm/apt/conda install prompts before it runs."
+  },
+  {
+    "id": "del",
+    "name": "File deletes ask",
+    "action": "ask",
+    "predicate": "is_delete = 1",
+    "frontier": 1,
+    "descr": "rm / unlink / rmtree prompts before deleting."
+  },
+  {
+    "id": "test",
+    "name": "Edits to tests ask",
+    "action": "ask",
+    "predicate": "is_test_edit = 1",
+    "frontier": 1,
+    "descr": "Writing to a test file prompts (guarding against an agent weakening its own tests)."
+  },
+  {
+    "id": "egress",
+    "name": "Network egress denies",
+    "action": "deny",
+    "predicate": "is_egress = 1",
+    "frontier": 1,
+    "descr": "Any outbound network action (curl, wget, send, upload, push) is blocked."
+  },
+  {
+    "id": "outside",
+    "name": "Writes outside the repo deny",
+    "action": "deny",
+    "predicate": "is_outside_repo = 1",
+    "frontier": 1,
+    "descr": "A file write outside the working tree is blocked."
+  },
+  {
+    "id": "taint_any",
+    "name": "Taint: command built from any tool output asks",
+    "action": "ask",
+    "predicate": "kind = 'command' AND tainted = 1",
+    "frontier": 1,
+    "descr": "Nodwyn's provenance rule, as written: a command whose arguments reuse earlier tool output must ask."
+  },
+  {
+    "id": "taint_untrusted",
+    "name": "Taint from untrusted sources only asks",
+    "action": "ask",
+    "predicate": "kind = 'command' AND (tainted_from LIKE '%web%' OR tainted_from LIKE '%mcp%')",
+    "frontier": 1,
+    "descr": "The same rule, limited to output that came from the web or an MCP tool."
+  },
+  {
+    "id": "combo",
+    "name": "Egress OR untrusted-taint denies",
+    "action": "deny",
+    "predicate": "is_egress = 1 OR tainted_from LIKE '%web%' OR tainted_from LIKE '%mcp%'",
+    "frontier": 1,
+    "descr": "A combined policy: block egress and anything built from untrusted output."
+  }
+]

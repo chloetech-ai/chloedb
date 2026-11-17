@@ -1,0 +1,669 @@
+[
+ {
+  "class": "api-key",
+  "label": "Generic API key",
+  "bucket": "api-key",
+  "kind": "key",
+  "dest_host": "",
+  "servers": 9213,
+  "example_names": [
+   "AI_2KW_API_KEY",
+   "ACHROMAT_AGENT_KEY_FILE",
+   "ADTEST_API_KEY",
+   "AETHERYA_API_KEY",
+   "AGENTTRUST_API_KEY",
+   "AMT_API_KEY",
+   "X-API-Key",
+   "ARMOR_API_KEY"
+  ]
+ },
+ {
+  "class": "bearer",
+  "label": "Generic API key",
+  "bucket": "api-key",
+  "kind": "header",
+  "dest_host": "apexai.academy",
+  "servers": 7617,
+  "example_names": [
+   "Authorization",
+   "x-api-key",
+   "X-API-Key",
+   "X-Api-Key",
+   "X-API-Token",
+   "X-API-KEY",
+   "X-IDP-API-Key",
+   "X-IDP-API-Secret"
+  ]
+ },
+ {
+  "class": "private-key",
+  "label": "Private key / wallet",
+  "bucket": "private-key",
+  "kind": "private-key",
+  "dest_host": "",
+  "servers": 563,
+  "example_names": [
+   "CLAWFETCH_PRIVATE_KEY",
+   "ESCRO_WALLET_SECRET",
+   "MAXWELL_WALLET_KEY_FILE",
+   "APP_PRIVATE_KEY",
+   "WALLET_MASTER_KEY",
+   "TRADEROUTER_PRIVATE_KEY",
+   "BUYER_PRIVATE_KEY",
+   "POLYMARKET_PRIVATE_KEY"
+  ]
+ },
+ {
+  "class": "password",
+  "label": "Password",
+  "bucket": "password",
+  "kind": "password",
+  "dest_host": "",
+  "servers": 560,
+  "example_names": [
+   "PHOENIXD_PASSWORD",
+   "EKWO_PASSWORD",
+   "NEO4J_PASSWORD",
+   "MIRASTACK_REDFISH_PASSWORD",
+   "MIRASTACK_REDFISH_PASSWORD_FILE",
+   "ZEFIX_PASSWORD",
+   "BAM_PASSWORD",
+   "BAM_SSO_PASSWORD"
+  ]
+ },
+ {
+  "class": "anthropic",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "key",
+  "dest_host": "api.anthropic.com",
+  "servers": 162,
+  "example_names": [
+   "ANTHROPIC_API_KEY",
+   "GEOSEO_ANTHROPIC_API_KEY",
+   "MCP_REVIT_ANTHROPIC_API_KEY",
+   "IRIS_ANTHROPIC_API_KEY",
+   "KAGAN_ANTHROPIC_API_KEY"
+  ]
+ },
+ {
+  "class": "openai",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "key",
+  "dest_host": "api.openai.com",
+  "servers": 153,
+  "example_names": [
+   "OPENAI_API_KEY",
+   "AZURE_OPENAI_API_KEY",
+   "GEOSEO_OPENAI_API_KEY",
+   "MAGNET_OPENAI_KEY",
+   "IRIS_OPENAI_API_KEY",
+   "KAGAN_OPENAI_API_KEY",
+   "IMAGE_GENERATION_MCP_OPENAI_API_KEY",
+   "MARKDOWN_VAULT_MCP_SUMMARIZE_OPENAI_API_KEY"
+  ]
+ },
+ {
+  "class": "database",
+  "label": "Database / store",
+  "bucket": "database",
+  "kind": "url",
+  "dest_host": "database",
+  "servers": 153,
+  "example_names": [
+   "EKWO_DB_URL",
+   "BANDITDB_URL",
+   "DATABASE_URL",
+   "ECHO_MEMORY_DATABASE_URL",
+   "WEAVORI_DATABASE_URL",
+   "KANTA_DB_URL",
+   "LEX_DATABASE_URL",
+   "ATLAS_DATASOURCE_URL"
+  ]
+ },
+ {
+  "class": "github",
+  "label": "Source host (GitHub/GitLab)",
+  "bucket": "vcs",
+  "kind": "token",
+  "dest_host": "api.github.com",
+  "servers": 99,
+  "example_names": [
+   "GITHUB_TOKEN",
+   "GH_TOKEN",
+   "GITHUB_PAT",
+   "GITHUB_PERSONAL_ACCESS_TOKEN"
+  ]
+ },
+ {
+  "class": "google-gemini",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "key",
+  "dest_host": "generativelanguage.googleapis.com",
+  "servers": 92,
+  "example_names": [
+   "ENGRAMO_TTS_GEMINI_API_KEYS",
+   "GEMINI_API_KEY",
+   "GEOSEO_GEMINI_API_KEY"
+  ]
+ },
+ {
+  "class": "gcp",
+  "label": "Cloud provider",
+  "bucket": "cloud",
+  "kind": "key",
+  "dest_host": "googleapis.com",
+  "servers": 54,
+  "example_names": [
+   "GOOGLE_APPLICATION_CREDENTIALS",
+   "GCP_BILLING_TABLE",
+   "GCP_PROJECT_ID",
+   "GCP_BILLING_ACCOUNT_ID",
+   "TGCLOUD_CLI",
+   "TGCLOUD_CLI_ARGS",
+   "TGCLOUD_TIMEOUT_MS",
+   "TGCLOUD_TOKEN"
+  ]
+ },
+ {
+  "class": "supabase",
+  "label": "Database / store",
+  "bucket": "database",
+  "kind": "key",
+  "dest_host": "supabase.co",
+  "servers": 48,
+  "example_names": [
+   "SUPABASE_URL",
+   "SUPABASE_ANON_KEY",
+   "Authorization",
+   "X-API-Key",
+   "x-mcp-api-key",
+   "APAC_SUPABASE_URL",
+   "APAC_SUPABASE_KEY",
+   "US_SUPABASE_URL"
+  ]
+ },
+ {
+  "class": "openrouter",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "key",
+  "dest_host": "openrouter.ai",
+  "servers": 38,
+  "example_names": [
+   "OPENROUTER_API_KEY"
+  ]
+ },
+ {
+  "class": "xai",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "header",
+  "dest_host": "api.admux.ai",
+  "servers": 35,
+  "example_names": [
+   "Authorization",
+   "x-arvx-key",
+   "X-MCP-Key",
+   "x-api-key",
+   "XAI_API_KEY",
+   "GEOSEO_XAI_API_KEY",
+   "GROK_API_KEY"
+  ]
+ },
+ {
+  "class": "tavily",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "key",
+  "dest_host": "api.tavily.com",
+  "servers": 23,
+  "example_names": [
+   "TAVILY_API_KEY",
+   "ARGUS_TAVILY_API_KEY",
+   "FUND_TAVILY_API_KEY",
+   "INFOBROKER_TAVILY_API_KEY"
+  ]
+ },
+ {
+  "class": "atlassian",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "token",
+  "dest_host": "api.atlassian.com",
+  "servers": 23,
+  "example_names": [
+   "CONFLUENCE_API_TOKEN",
+   "JIRA_API_TOKEN",
+   "ATLASSIAN_API_TOKEN",
+   "TICKET_AI_JIRA_TOKEN"
+  ]
+ },
+ {
+  "class": "brave",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "key",
+  "dest_host": "api.search.brave.com",
+  "servers": 22,
+  "example_names": [
+   "BRAVE_SEARCH_API_KEY",
+   "ARGUS_BRAVE_API_KEY",
+   "BRAVE_API_KEY",
+   "GEOSEO_BRAVE_API_KEY",
+   "SOTA_ANCHOR_BRAVE_API_KEY"
+  ]
+ },
+ {
+  "class": "cloudflare",
+  "label": "Cloud provider",
+  "bucket": "cloud",
+  "kind": "header",
+  "dest_host": "keeps-pty-ultimately-payroll.trycloudflare.com",
+  "servers": 18,
+  "example_names": [
+   "Authorization",
+   "Authentication",
+   "DOMAINSCOUT_CLOUDFLARE_API_TOKEN",
+   "CLOUDFLARE_API_TOKEN",
+   "CF_API_TOKEN"
+  ]
+ },
+ {
+  "class": "aws",
+  "label": "Cloud provider",
+  "bucket": "cloud",
+  "kind": "key",
+  "dest_host": "amazonaws.com",
+  "servers": 18,
+  "example_names": [
+   "AWS_SECRET_ACCESS_KEY",
+   "AWS_ACCESS_KEY_ID",
+   "AWS_SESSION_TOKEN",
+   "Authorization",
+   "CB_MCP_EMBEDDING_MODEL_AWS_ACCESS_KEY_ID",
+   "CB_MCP_EMBEDDING_MODEL_AWS_SECRET_ACCESS_KEY",
+   "AWS_REPLICATOR_SOURCE_AWS_ACCESS_KEY_ID",
+   "AWS_REPLICATOR_SOURCE_AWS_SECRET_ACCESS_KEY"
+  ]
+ },
+ {
+  "class": "groq",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "key",
+  "dest_host": "api.groq.com",
+  "servers": 18,
+  "example_names": [
+   "GROQ_API_KEY",
+   "GROQ_API_KEYS"
+  ]
+ },
+ {
+  "class": "figma",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "token",
+  "dest_host": "api.figma.com",
+  "servers": 17,
+  "example_names": [
+   "FIGMA_API_KEY",
+   "FIGMA_TOKEN",
+   "OPEN_DESIGN_FIGMA_TOKEN",
+   "FIGMA_API_TOKEN"
+  ]
+ },
+ {
+  "class": "redis",
+  "label": "Database / store",
+  "bucket": "database",
+  "kind": "url",
+  "dest_host": "redis",
+  "servers": 17,
+  "example_names": [
+   "SOURCEWEAVE_SEARCH_CACHE_REDIS_URL",
+   "REDIS_URL",
+   "REDIS_URLS",
+   "MAGNET_REDIS_URL"
+  ]
+ },
+ {
+  "class": "exa",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "header",
+  "dest_host": "api.cloud.vexa.ai",
+  "servers": 14,
+  "example_names": [
+   "Authorization",
+   "EXA_API_KEY",
+   "ARGUS_EXA_API_KEY",
+   "INFOBROKER_EXA_API_KEY"
+  ]
+ },
+ {
+  "class": "discord",
+  "label": "Messaging / email",
+  "bucket": "send",
+  "kind": "token",
+  "dest_host": "discord.com",
+  "servers": 14,
+  "example_names": [
+   "DISCORD_BOT_TOKEN",
+   "DISCORD_TOKEN"
+  ]
+ },
+ {
+  "class": "deepseek",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "key",
+  "dest_host": "api.deepseek.com",
+  "servers": 14,
+  "example_names": [
+   "DEEPSEEK_API_KEY"
+  ]
+ },
+ {
+  "class": "perplexity",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "key",
+  "dest_host": "api.perplexity.ai",
+  "servers": 13,
+  "example_names": [
+   "PERPLEXITY_API_KEY",
+   "GEOSEO_PERPLEXITY_API_KEY"
+  ]
+ },
+ {
+  "class": "telegram",
+  "label": "Messaging / email",
+  "bucket": "send",
+  "kind": "token",
+  "dest_host": "api.telegram.org",
+  "servers": 13,
+  "example_names": [
+   "TELEGRAM_BOT_TOKEN",
+   "HANDOFF_TELEGRAM_BOT_TOKEN"
+  ]
+ },
+ {
+  "class": "gitlab",
+  "label": "Source host (GitHub/GitLab)",
+  "bucket": "vcs",
+  "kind": "token",
+  "dest_host": "gitlab.com",
+  "servers": 13,
+  "example_names": [
+   "GITLAB_TOKEN",
+   "GITLAB_PERSONAL_ACCESS_TOKEN",
+   "TICKET_AI_GITLAB_TOKEN",
+   "GITLAB_PERSONAL_ACCESS_TOKEN_FILE"
+  ]
+ },
+ {
+  "class": "stripe",
+  "label": "Payments",
+  "bucket": "pay",
+  "kind": "key",
+  "dest_host": "api.stripe.com",
+  "servers": 12,
+  "example_names": [
+   "STRIPE_SECRET_KEY",
+   "STRIPE_API_KEY"
+  ]
+ },
+ {
+  "class": "notion",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "token",
+  "dest_host": "api.notion.com",
+  "servers": 12,
+  "example_names": [
+   "NOTION_TOKENS_DIR",
+   "NOTION_TOKEN",
+   "NOTION_API_KEY",
+   "NOTION_API_TOKEN",
+   "NOTION_KEY"
+  ]
+ },
+ {
+  "class": "slack",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "token",
+  "dest_host": "slack.com",
+  "servers": 12,
+  "example_names": [
+   "SLACK_BOT_TOKEN",
+   "SLACK_TOKEN"
+  ]
+ },
+ {
+  "class": "huggingface",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "header",
+  "dest_host": "huggingface.co",
+  "servers": 9,
+  "example_names": [
+   "Authorization",
+   "HF_TOKEN",
+   "HUGGINGFACEHUB_API_TOKEN",
+   "ASM_HF_TOKEN"
+  ]
+ },
+ {
+  "class": "twilio",
+  "label": "Messaging / email",
+  "bucket": "send",
+  "kind": "token",
+  "dest_host": "api.twilio.com",
+  "servers": 7,
+  "example_names": [
+   "TWILIO_AUTH_TOKEN"
+  ]
+ },
+ {
+  "class": "firecrawl",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "key",
+  "dest_host": "api.firecrawl.dev",
+  "servers": 7,
+  "example_names": [
+   "FIRECRAWL_API_KEY",
+   "Authorization"
+  ]
+ },
+ {
+  "class": "azure",
+  "label": "Cloud provider",
+  "bucket": "cloud",
+  "kind": "key",
+  "dest_host": "azure.com",
+  "servers": 6,
+  "example_names": [
+   "AZURE_CLIENT_SECRET",
+   "Authorization"
+  ]
+ },
+ {
+  "class": "serpapi",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "key",
+  "dest_host": "serpapi.com",
+  "servers": 6,
+  "example_names": [
+   "SERPAPI_KEY",
+   "SERP_API_KEY",
+   "Authorization",
+   "OPENSERP_API_KEY"
+  ]
+ },
+ {
+  "class": "linear",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "key",
+  "dest_host": "api.linear.app",
+  "servers": 5,
+  "example_names": [
+   "LINEAR_API_KEY"
+  ]
+ },
+ {
+  "class": "mistral",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "key",
+  "dest_host": "api.mistral.ai",
+  "servers": 4,
+  "example_names": [
+   "MISTRAL_API_KEY"
+  ]
+ },
+ {
+  "class": "paypal",
+  "label": "Payments",
+  "bucket": "pay",
+  "kind": "header",
+  "dest_host": "mcp.paypal.com",
+  "servers": 4,
+  "example_names": [
+   "Authorization",
+   "PAYPAL_CLIENT_SECRET"
+  ]
+ },
+ {
+  "class": "sendgrid",
+  "label": "Messaging / email",
+  "bucket": "send",
+  "kind": "key",
+  "dest_host": "api.sendgrid.com",
+  "servers": 4,
+  "example_names": [
+   "SENDGRID_API_KEY"
+  ]
+ },
+ {
+  "class": "mongodb",
+  "label": "Database / store",
+  "bucket": "database",
+  "kind": "url",
+  "dest_host": "mongodb",
+  "servers": 4,
+  "example_names": [
+   "MONGODB_URL",
+   "MONGODB_URI"
+  ]
+ },
+ {
+  "class": "cohere",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "key",
+  "dest_host": "api.cohere.ai",
+  "servers": 3,
+  "example_names": [
+   "AZURE_COHERE_API_KEY",
+   "COHERE_API_KEY"
+  ]
+ },
+ {
+  "class": "together",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "key",
+  "dest_host": "api.together.xyz",
+  "servers": 3,
+  "example_names": [
+   "TOGETHER_API_KEY"
+  ]
+ },
+ {
+  "class": "resend",
+  "label": "Messaging / email",
+  "bucket": "send",
+  "kind": "key",
+  "dest_host": "api.resend.com",
+  "servers": 3,
+  "example_names": [
+   "RESEND_API_KEY",
+   "GAUGE_RESEND_API_KEY"
+  ]
+ },
+ {
+  "class": "bitbucket",
+  "label": "Source host (GitHub/GitLab)",
+  "bucket": "vcs",
+  "kind": "token",
+  "dest_host": "api.bitbucket.org",
+  "servers": 2,
+  "example_names": [
+   "BITBUCKET_TOKEN"
+  ]
+ },
+ {
+  "class": "hubspot",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "token",
+  "dest_host": "api.hubapi.com",
+  "servers": 2,
+  "example_names": [
+   "HUBSPOT_API_KEY",
+   "HUBSPOT_TOKEN"
+  ]
+ },
+ {
+  "class": "digitalocean",
+  "label": "Cloud provider",
+  "bucket": "cloud",
+  "kind": "token",
+  "dest_host": "api.digitalocean.com",
+  "servers": 2,
+  "example_names": [
+   "ONFIDO_API_TOKEN",
+   "DIGITALOCEAN_TOKEN"
+  ]
+ },
+ {
+  "class": "replicate",
+  "label": "LLM provider key",
+  "bucket": "llm",
+  "kind": "token",
+  "dest_host": "api.replicate.com",
+  "servers": 2,
+  "example_names": [
+   "REPLICATE_API_TOKEN"
+  ]
+ },
+ {
+  "class": "airtable",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "key",
+  "dest_host": "api.airtable.com",
+  "servers": 1,
+  "example_names": [
+   "AIRTABLE_API_KEY"
+  ]
+ },
+ {
+  "class": "asana",
+  "label": "SaaS / productivity",
+  "bucket": "saas",
+  "kind": "token",
+  "dest_host": "app.asana.com",
+  "servers": 1,
+  "example_names": [
+   "ASANA_ACCESS_TOKEN"
+  ]
+ }
+]

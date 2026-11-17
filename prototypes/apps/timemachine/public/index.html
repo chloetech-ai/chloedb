@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Policy Time Machine</title>
+<meta name="description" content="Replay an agent-governance policy over recorded history and read its two honest numbers: attacks it would have stopped, and how often it would have interrupted honest work.">
+<link rel="stylesheet" href="/shared/ds.css">
+<style>
+  .hero { padding: 28px 0 8px; }
+  .hero h1 { font-family: var(--f-display); font-size: clamp(28px, 4vw, 44px); line-height: 1.02; letter-spacing: -0.02em; margin: 0 0 10px; }
+  .hero h1 .accent { color: var(--indigo); }
+  .hero .lede { max-width: 70ch; }
+  .layout { display: grid; grid-template-columns: 1fr; gap: 18px; }
+
+  /* dials */
+  .dials { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .dial { position: relative; overflow: hidden; }
+  .dial .v { font-family: var(--f-display); font-size: clamp(30px, 5vw, 52px); line-height: 1; letter-spacing: -0.02em; }
+  .dial .v small { font-size: 0.42em; color: var(--muted); letter-spacing: 0; }
+  .dial .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
+  .dial .sub { margin-top: 8px; font-size: 13px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; }
+  .dial .sub b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .dial.ask .v { color: var(--amber); }
+  .dial.deny .v { color: var(--red); }
+  .dial.recall .v { color: var(--green); }
+  .replaytag { position: absolute; top: 12px; right: 14px; font-size: 11px; color: var(--muted); font-family: var(--f-mono); }
+  .replaytag b { color: var(--cyan); }
+
+  /* the wall */
+  .wallwrap { position: relative; }
+  .wallhead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .wallhead .leg { display: flex; gap: 14px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+  .wallhead .leg i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .wallscroll { overflow-x: auto; overflow-y: hidden; border-radius: var(--radius-sm); }
+  canvas#wall { display: block; image-rendering: pixelated; cursor: crosshair; }
+  .wallnote { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+  /* editor */
+  .editgrid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  textarea#pred { width: 100%; box-sizing: border-box; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-sm); font-family: var(--f-mono); font-size: 14px; padding: 12px 14px; min-height: 64px; resize: vertical; line-height: 1.5; }
+  textarea#pred:focus { outline: none; border-color: var(--indigo); }
+  .presets { display: flex; gap: 8px; flex-wrap: wrap; }
+  .presets .chip { cursor: pointer; }
+  .presets .chip.on { background: var(--indigo); color: #fff; border-color: var(--indigo); }
+  .actionrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .seg button { background: transparent; color: var(--muted); border: none; padding: 7px 16px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .seg button.on.ask { background: var(--amber); color: #1a1205; }
+  .seg button.on.deny { background: var(--red); color: #fff; }
+  .diff { font-size: 13px; color: var(--muted); min-height: 20px; }
+  .diff b.add { color: var(--amber); } .diff b.stop { color: var(--green); } .diff b.less { color: var(--cyan); }
+  .err { color: var(--red); font-size: 13px; font-family: var(--f-mono); min-height: 18px; }
+  .nlrow { display: flex; gap: 8px; flex-wrap: wrap; }
+  .nlrow input { flex: 1; min-width: 200px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); padding: 9px 12px; font-size: 14px; }
+  .nlrow input:focus { outline: none; border-color: var(--violet); }
+
+  /* frontier */
+  .frontier svg { width: 100%; height: auto; display: block; }
+  .fpt { cursor: pointer; }
+  .flabel { font-size: 10.5px; fill: var(--muted); font-family: var(--f-ui); }
+  .faxis { stroke: var(--line); stroke-width: 1; }
+  .faxtext { font-size: 11px; fill: var(--faint); font-family: var(--f-ui); }
+  .ftip { font-size: 12px; color: var(--muted); }
+
+  /* drill-down */
+  .drill { display: none; }
+  .drill.on { display: block; }
+  .steprow { font-family: var(--f-mono); font-size: 12.5px; }
+  .pathline { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; padding: 7px 0; border-top: 1px solid var(--line); }
+  .pathline .tag { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .code-inline { background: var(--panel-2); border-radius: 4px; padding: 1px 6px; font-family: var(--f-mono); font-size: 12.5px; word-break: break-all; }
+  .classchip { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .classchip.web, .classchip.mcp { color: var(--red); border-color: color-mix(in oklab, var(--red) 40%, var(--line)); }
+
+  .meta-dl { columns: 2; column-gap: 28px; font-size: 13.5px; }
+  @media (max-width: 720px) { .dials { grid-template-columns: 1fr; } .meta-dl { columns: 1; } }
+  .notclaim li { margin: 4px 0; color: var(--muted); font-size: 13.5px; }
+  .src-pill { font-size: 11px; color: var(--muted); }
+  .loading { color: var(--muted); font-size: 13px; }
+  main section { scroll-margin-top: 72px; }
+</style>
+</head>
+<body class="glow">
+<script type="module">
+import { topbar, api, countUp, fmt, highlightSQL, esc, toast } from '/shared/ds.js';
+topbar({ app: 'Policy Time Machine' });
+
+const $ = s => document.querySelector(s);
+const packed = (idx, seq) => idx * 128 + seq;
+
+const state = {
+  wall: null, rules: null, frontier: null, numbers: null, meta: null,
+  current: null,        // last replay result
+  baseline: null,       // pinned baseline {predicate, action, result}
+  action: 'ask',
+};
+
+// ---------- page skeleton ----------
+document.body.insertAdjacentHTML('beforeend', `
+<main class="wrap wide">
+  <section class="hero">
+    <h1>Replay a policy over <span class="accent">recorded history</span> before you ship it.</h1>
+    <p class="lede">An agent-governance rule is a condition on what the agent did. Type one and it runs as a single ChloeDB
+      statement over <b id="h-sessions">…</b> real benign sessions and <b id="h-labelled">…</b> labelled attack traces, and
+      returns its two honest numbers: <span style="color:var(--green)">attacks it would have stopped</span> and
+      <span style="color:var(--amber)">how often it would have interrupted honest work</span>.</p>
+  </section>
+
+  <section class="dials">
+    <div class="card dial recall" id="dial-recall">
+      <div class="replaytag">replay <b id="replay-ms">—</b></div>
+      <div class="k">Attacks stopped</div>
+      <div class="v"><span id="rv-k">0</span><small> / <span id="rv-n">55</span> labelled</small></div>
+      <div class="sub" id="rv-sub"></div>
+    </div>
+    <div class="card dial ask" id="dial-burden">
+      <div class="k" id="bv-k">Interruptions on honest work</div>
+      <div class="v"><span id="bv-v">0</span><small> per session</small></div>
+      <div class="sub" id="bv-sub"></div>
+    </div>
+  </section>
+
+  <section class="card wallwrap">
+    <div class="wallhead">
+      <div>
+        <h3 style="margin:0">The wall — one lane per session, one cell per step</h3>
+        <div class="src-pill" id="wall-src">…</div>
+      </div>
+      <div class="leg">
+        <span><i style="background:#2a3344"></i>command</span>
+        <span><i style="background:#26303a"></i>edit</span>
+        <span><i style="background:#222a33"></i>read</span>
+        <span><i style="background:var(--amber)"></i>ask</span>
+        <span><i style="background:var(--red)"></i>deny</span>
+      </div>
+    </div>
+    <div class="wallscroll"><canvas id="wall"></canvas></div>
+    <div class="wallnote" id="wall-note">Type or pick a policy below; cells where it fires flash. Click a flashed cell to open the step and its taint path.</div>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0">The policy</h3>
+    <div class="editgrid">
+      <div class="presets" id="presets"></div>
+      <textarea id="pred" spellcheck="false" aria-label="policy predicate (SQL)"></textarea>
+      <div class="actionrow">
+        <span class="seg" id="seg">
+          <button data-a="ask" class="on ask">ask</button>
+          <button data-a="deny" class="deny">deny</button>
+        </span>
+        <button class="btn small" id="pin">Pin as baseline</button>
+        <span class="diff" id="diff"></span>
+      </div>
+      <div class="err" id="err"></div>
+      <div class="nlrow">
+        <input id="nl" placeholder="…or describe the rule in English (e.g. &quot;block anything built from the web&quot;)" aria-label="describe rule in English">
+        <button class="btn small ghost" id="nlgo">English → SQL</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card frontier">
+    <h3 style="margin-top:0">The frontier — eight preset policies: burden against recall</h3>
+    <p class="muted" style="margin-top:4px;font-size:13.5px">Every point is a measured replay. The good region is the top-left:
+      stops attacks, interrupts little. A pure sink rule (egress) misses attacks that exfiltrate to a local file; a provenance
+      rule (taint by source) catches them at a fraction of the burden.</p>
+    <div id="frontier-chart"></div>
+    <div class="ftip" id="frontier-tip"></div>
+  </section>
+
+  <section class="card drill" id="drill">
+    <div class="spread"><h3 style="margin:0">Step <span id="d-id" class="mono"></span></h3><button class="btn small ghost" id="d-close">close</button></div>
+    <div id="d-body"></div>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0">Method — what this is, and what it is not</h3>
+    <div id="method"></div>
+  </section>
+</main>
+`);
+
+// ---------- wall rendering (canvas) ----------
+const cv = $('#wall'), ctx = cv.getContext('2d');
+let geom = null;
+const COL = { 0: '#222a33', 1: '#2a3344', 2: '#26303a', 3: '#222a33' };  // other/command/edit/read (base, dim)
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+
+function layoutWall() {
+  const lanes = state.wall.lanes.length;
+  const maxSteps = Math.max(...state.wall.lanes.map(l => l.n));
+  const cell = 4, gap = 1;
+  const laneW = cell;
+  const width = lanes * (laneW + gap);
+  const height = maxSteps * (cell + gap);
+  cv.style.width = width + 'px'; cv.style.height = height + 'px';
+  cv.width = Math.round(width * DPR); cv.height = Math.round(height * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  geom = { cell, gap, laneW, width, height, lanes, maxSteps };
+}
+function drawBase() {
+  ctx.clearRect(0, 0, geom.width, geom.height);
+  const { cell, gap, laneW } = geom;
+  for (const lane of state.wall.lanes) {
+    const g = state.wall.grid[lane.idx] || [];
+    const x = lane.idx * (laneW + gap);
+    for (let s = 0; s < g.length; s++) {
+      ctx.fillStyle = COL[g[s]] || COL[0];
+      ctx.fillRect(x, s * (cell + gap), cell, cell);
+    }
+  }
+}
+function paintFired(fired, action) {
+  const { cell, gap, laneW } = geom;
+  const color = action === 'deny' ? getCss('--red') : getCss('--amber');
+  ctx.fillStyle = color;
+  for (const p of fired) {
+    const idx = Math.floor(p / 128), seq = p % 128;
+    const x = idx * (laneW + gap), y = seq * (cell + gap);
+    ctx.fillRect(x, y, cell, cell);
+  }
+}
+function getCss(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim() || '#999'; }
+
+cv.addEventListener('click', ev => {
+  if (!geom) return;
+  const r = cv.getBoundingClientRect();
+  const px = (ev.clientX - r.left), py = (ev.clientY - r.top);
+  const idx = Math.floor(px / (geom.laneW + geom.gap));
+  const seq = Math.floor(py / (geom.cell + geom.gap));
+  const lane = state.wall.lanes.find(l => l.idx === idx);
+  if (!lane || seq < 0 || seq >= lane.n) return;
+  const id = `${lane.session}:${String(seq).padStart(3, '0')}`;
+  openStep(id, false);
+});
+
+// ---------- replay ----------
+let replayTimer = null;
+function scheduleReplay() { clearTimeout(replayTimer); replayTimer = setTimeout(runReplay, 220); }
+
+async function runReplay() {
+  const predicate = $('#pred').value.trim();
+  if (!predicate) return;
+  $('#err').textContent = '';
+  try {
+    const r = await api('/timemachine/api/replay', { method: 'POST', body: { predicate, action: state.action }, label: 'replay' });
+    state.current = { predicate, action: state.action, result: r };
+    renderDials(r);
+    drawBase(); paintFired(r.fired, r.action);
+    $('#replay-ms').textContent = fmt.ms(r.took_ms);
+    $('#wall-note').textContent = r.fired_truncated
+      ? `Showing the first ${fmt.n(r.fired.length)} of ${fmt.n(r.burden.fires)} firing cells. Click a flashed cell for the step and its taint path.`
+      : `${fmt.n(r.burden.fires)} firing cells across ${fmt.n(r.burden.hit_sessions)} sessions. Click a flashed cell for the step and its taint path.`;
+    renderDiff();
+    drawFrontier();
+    highlightPreset(predicate);
+  } catch (e) {
+    $('#err').textContent = e.data?.error || e.message;
+  }
+}
+
+function renderDials(r) {
+  const dR = $('#dial-recall'), dB = $('#dial-burden');
+  countUp($('#rv-k'), r.recall_total.k, { duration: 500 });
+  $('#rv-n').textContent = r.recall_total.n;
+  $('#rv-sub').innerHTML = r.recall.map(x =>
+    `<span>${esc(x.label === 'agentdojo' ? 'AgentDojo' : 'MCPHunt')} <b>${x.k}/${x.n}</b></span>`).join('');
+  // burden dial reflects the action
+  dB.classList.toggle('ask', r.action === 'ask');
+  dB.classList.toggle('deny', r.action === 'deny');
+  $('#bv-k').textContent = r.action === 'deny' ? 'Denials on honest work' : 'Asks on honest work';
+  countUp($('#bv-v'), r.burden.per_session, { duration: 500, format: v => v.toFixed(2) });
+  $('#bv-sub').innerHTML =
+    `<span><b>${fmt.n(r.burden.fires)}</b> fires in ${fmt.n(r.burden.sessions)} sessions</span>` +
+    `<span><b>${r.burden.per_100.toFixed(2)}</b> per 100 steps</span>` +
+    `<span><b>${fmt.n(r.burden.hit_sessions)}</b> sessions touched</span>`;
+}
+
+function renderDiff() {
+  const el = $('#diff');
+  if (!state.baseline || !state.current) { el.innerHTML = ''; return; }
+  const a = state.baseline.result, b = state.current.result;
+  if (state.baseline.predicate === state.current.predicate && state.baseline.action === state.current.action) {
+    el.innerHTML = `<span class="muted">this is the pinned baseline</span>`; return;
+  }
+  const dFires = b.burden.fires - a.burden.fires;
+  const dRec = b.recall_total.k - a.recall_total.k;
+  const word = state.current.action === 'deny' ? 'denies' : 'asks';
+  const parts = [];
+  parts.push(dFires >= 0 ? `<b class="add">+${fmt.n(dFires)}</b> ${word}` : `<b class="less">${fmt.n(dFires)}</b> ${word}`);
+  parts.push(dRec > 0 ? `stops <b class="stop">${dRec} more</b> attack${dRec === 1 ? '' : 's'}`
+    : dRec < 0 ? `stops <b class="less">${Math.abs(dRec)} fewer</b>` : `same attacks`);
+  el.innerHTML = `vs baseline: ` + parts.join(' · ');
+}
+
+// ---------- presets ----------
+function renderPresets() {
+  $('#presets').innerHTML = state.frontier.points.map(p =>
+    `<span class="chip" data-id="${p.id}" data-pred="${esc(p.predicate)}" data-action="${p.action}" title="${esc(p.descr)}">${esc(p.name)}</span>`).join('');
+  $('#presets').querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => {
+    $('#pred').value = c.dataset.pred;
+    setAction(c.dataset.action);
+    runReplay();
+  }));
+}
+function highlightPreset(pred) {
+  $('#presets').querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c.dataset.pred === pred));
+}
+function setAction(a) {
+  state.action = a;
+  $('#seg').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.a === a));
+}
+$('#seg').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { setAction(b.dataset.a); runReplay(); }));
+$('#pred').addEventListener('input', scheduleReplay);
+$('#pin').addEventListener('click', () => {
+  if (!state.current) return;
+  state.baseline = { ...state.current };
+  toast('Baseline pinned');
+  renderDiff();
+});
+
+// English -> SQL
+$('#nlgo').addEventListener('click', translate);
+$('#nl').addEventListener('keydown', e => { if (e.key === 'Enter') translate(); });
+async function translate() {
+  const text = $('#nl').value.trim();
+  if (!text) return;
+  $('#nlgo').disabled = true; $('#nlgo').textContent = 'translating…';
+  try {
+    const r = await api('/timemachine/api/translate', { method: 'POST', body: { text }, label: 'translate' });
+    if (r.predicate) {
+      $('#pred').value = r.predicate;
+      if (!r.valid) { $('#err').textContent = 'Sonnet wrote: ' + (r.error || 'an unsupported predicate'); }
+      else { $('#err').textContent = ''; runReplay(); }
+      toast(`Sonnet wrote the SQL (${fmt.usd(r.cost_usd)})`);
+    }
+  } catch (e) {
+    $('#err').textContent = (e.data?.code === 'no_key' || e.data?.code === 'budget')
+      ? 'live model off — type the SQL directly (the rule is just a predicate)'
+      : (e.data?.error || e.message);
+  } finally { $('#nlgo').disabled = false; $('#nlgo').textContent = 'English → SQL'; }
+}
+
+// ---------- frontier chart ----------
+function drawFrontier() {
+  const pts = state.frontier.points;
+  const W = 900, H = 380, padL = 56, padR = 150, padT = 18, padB = 46;
+  const maxB = Math.max(...pts.map(p => p.per_session), state.current?.result.burden.per_session || 0, 1);
+  // sqrt x-scale so the low-burden cluster is readable next to taint_any (~23)
+  const sx = v => padL + (Math.sqrt(v) / Math.sqrt(maxB)) * (W - padL - padR);
+  const sy = v => padT + (1 - v) * (H - padT - padB);
+  const n = 55;
+  const gx = [0, 0.25, 1, 4, maxB].filter((v, i, a) => a.indexOf(v) === i);
+  const axX = gx.map(v => `<line class="faxis" x1="${sx(v).toFixed(1)}" y1="${padT}" x2="${sx(v).toFixed(1)}" y2="${H - padB}" opacity=".35"/><text class="faxtext" x="${sx(v).toFixed(1)}" y="${H - padB + 16}" text-anchor="middle">${v}</text>`).join('');
+  const axY = [0, 0.25, 0.5, 0.75, 1].map(v => `<line class="faxis" x1="${padL}" y1="${sy(v).toFixed(1)}" x2="${W - padR}" y2="${sy(v).toFixed(1)}" opacity=".35"/><text class="faxtext" x="${padL - 8}" y="${sy(v) + 4}" text-anchor="end">${Math.round(v * n)}</text>`).join('');
+  const short = s => s.replace(/ (asks|denies|ask|deny)$/i, '');
+  const dots = pts.map(p => {
+    const x = sx(p.per_session), y = sy(p.recall_k / n);
+    const col = p.action === 'deny' ? 'var(--red)' : 'var(--amber)';
+    // only label the informative points inline; zero-recall hygiene rules go in the caption
+    const labelled = p.recall_k > 0 || p.per_session > 6;
+    const rightSide = x > W - padR - 130;
+    const lab = labelled
+      ? `<text class="flabel" x="${(x + (rightSide ? -10 : 10)).toFixed(1)}" y="${(y + 4).toFixed(1)}" text-anchor="${rightSide ? 'end' : 'start'}">${esc(short(p.name))}</text>`
+      : '';
+    return `<g class="fpt" data-id="${p.id}"><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="6" fill="${col}" stroke="var(--bg)" stroke-width="1.5"/>${lab}</g>`;
+  }).join('');
+  const zero = pts.filter(p => p.recall_k === 0 && p.per_session <= 6);
+  let cur = '';
+  if (state.current) {
+    const cx = sx(state.current.result.burden.per_session), cy = sy(state.current.result.recall_total.k / n);
+    cur = `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="9" fill="none" stroke="var(--indigo)" stroke-width="2.5"><animate attributeName="r" values="9;13;9" dur="1.6s" repeatCount="indefinite"/></circle>`;
+  }
+  $('#frontier-chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="burden vs recall frontier">
+    <text class="faxtext" x="${padL}" y="12" >recall: attacks stopped (of ${n})</text>
+    <text class="faxtext" x="${(W - padR)}" y="${H - 6}" text-anchor="end">burden: asks/denies per session →</text>
+    ${axX}${axY}${dots}${cur}</svg>
+    ${zero.length ? `<div class="muted" style="font-size:12.5px;margin-top:4px">At recall 0 (catch no attacks in the labelled set): ${zero.map(p => `<b style="color:var(--text)">${esc(short(p.name))}</b> <span class="mono">${p.per_session.toFixed(2)}/session</span>`).join(' · ')}</div>` : ''}`;
+  $('#frontier-chart').querySelectorAll('.fpt').forEach(g => g.addEventListener('click', () => {
+    const p = pts.find(x => x.id === g.dataset.id);
+    $('#pred').value = p.predicate; setAction(p.action); runReplay();
+    $('#frontier-tip').innerHTML = `<b>${esc(p.name)}</b> — ${esc(p.descr)} &nbsp; <span class="mono">${p.per_session.toFixed(2)}/session · ${p.recall_k}/${p.recall_n} stopped</span>`;
+  }));
+}
+
+// ---------- drill-down ----------
+async function openStep(id, attack) {
+  try {
+    const r = await api(`/timemachine/api/step?id=${encodeURIComponent(id)}${attack ? '&attack=1' : ''}`, { label: 'step' });
+    const s = r.step;
+    $('#d-id').textContent = id;
+    const fires = [];
+    for (const [k, label] of [['is_pkg_install', 'package install'], ['is_delete', 'delete'], ['is_egress', 'egress'], ['is_test_edit', 'test edit'], ['is_write_src', 'write'], ['is_outside_repo', 'outside repo'], ['tainted', 'built from tool output']])
+      if (s[k]) fires.push(label);
+    const classes = (s.tainted_from || '').split(' ').filter(Boolean);
+    $('#d-body').innerHTML = `
+      <div class="steprow" style="margin:10px 0"><span class="muted">${esc(s.kind)} · ${esc(s.tool || '')}${s.label ? ` · <span style="color:var(--red)">attack: ${esc(s.label)}</span>` : ''}</span><br>
+        <span class="code-inline">${esc(s.cmd || '')}</span></div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:8px">features that fire: ${fires.length ? fires.map(f => `<span class="chip warn" style="font-size:11px">${esc(f)}</span>`).join(' ') : '<span class="muted">none</span>'}
+        ${classes.length ? ` &nbsp; taint from: ${classes.map(c => `<span class="classchip ${esc(c)}">${esc(c)}</span>`).join(' ')}` : ''}</div>
+      ${s.harm_step >= 0 ? `<div style="font-size:13px;margin-bottom:8px">harmful step of this trace: <b>seq ${s.harm_step}</b>${s.is_harm ? ' — <b style="color:var(--red)">this is it</b>' : ''}</div>` : ''}
+      <h4 style="margin:14px 0 2px">Taint path — earlier output this step was built from</h4>
+      <div class="muted" style="font-size:12.5px;margin-bottom:4px">approximated from the record: a shared verbatim run of ≥20 characters (${s.taint_snip ? `<span class="code-inline">…${esc(s.taint_snip)}…</span>` : 'none'})</div>
+      ${r.parents.length ? r.parents.map(p => `<div class="pathline"><span class="tag">seq ${p.seq} · ${esc(p.kind)}<br>${esc((p.tainted_from || '').split(' ')[0] || '')}</span><span class="code-inline">${esc(p.cmd || '')}</span></div>`).join('')
+        : '<div class="muted" style="font-size:13px">no earlier output shares a ≥20-char run with this step — it is not built from prior output.</div>'}`;
+    $('#drill').classList.add('on');
+    $('#drill').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (e) { toast('could not open step'); }
+}
+$('#d-close').addEventListener('click', () => $('#drill').classList.remove('on'));
+
+// ---------- method ----------
+function renderMethod() {
+  const m = state.meta;
+  const ds = m.datasets.map(d => `<li><b>${esc(d.name)}</b> — ${fmt.n(d.sessions)} sessions, ${fmt.n(d.steps)} steps. <span class="muted">licence: ${esc(d.licence)}</span>${d.flag_meaning ? `<br><span class="muted" style="font-size:12.5px">${esc(d.flag_meaning)}</span>` : ''}</li>`).join('');
+  $('#method').innerHTML = `
+    <dl class="meta-dl">
+      <dt style="font-weight:600">Data</dt>
+      <ul style="margin:6px 0 14px;padding-left:18px">${ds}</ul>
+    </dl>
+    <p style="font-size:13.5px"><b>Taint is approximated from the record by shared substrings.</b> ${esc(m.taint.note)}
+      It is <b>not</b> Nodwyn's value-level taint, and there is no "blast radius" number here.</p>
+    <p style="font-size:13.5px"><b>Burden</b> is counted over ${fmt.n(m.totals.benign_sessions)} benign sessions (${fmt.n(m.totals.benign_steps)} tool-call steps);
+      <b>recall</b> is over the labelled set of ${m.totals.labelled_n} attack traces (AgentDojo ${m.totals.agentdojo_n} where the attacker's goal was reached, MCPHunt ${m.totals.mcphunt_n} unsafe_success). n is small; it is stated on every recall number.</p>
+    <h4 style="margin:14px 0 4px">What this does not claim</h4>
+    <ul class="notclaim" style="padding-left:18px;margin:0">
+      <li>This is not "a month of activity" — it is ${fmt.n(m.totals.benign_sessions)} benchmark SWE sessions plus ${m.totals.labelled_n} recorded attack traces.</li>
+      <li>Recall on ${m.totals.labelled_n} traces is an indication, not a guarantee; the labelled set is small and from three benchmarks.</li>
+      <li>The taint edges are shared-substring overlap, which over-fires on reused file paths and under-fires on paraphrased data. A real deployment would use value-level provenance.</li>
+      <li>The benign sessions barely touch the network, so network-only rules light few cells here.</li>
+    </ul>`;
+}
+
+// ---------- boot ----------
+(async function boot() {
+  cv.getContext('2d'); // ensure
+  const [wall, frontier, meta] = await Promise.all([
+    api('/timemachine/api/wall', { label: 'wall' }),
+    api('/timemachine/api/frontier', { label: 'frontier' }),
+    api('/timemachine/api/meta'),
+  ]);
+  state.wall = wall; state.frontier = frontier; state.meta = meta;
+  $('#h-sessions').textContent = fmt.n(wall.totals.sessions);
+  $('#h-labelled').textContent = frontier.attack_n.total;
+  $('#wall-src').textContent = `${fmt.n(wall.totals.sessions)} OpenHands SWE-rebench sessions · ${fmt.n(wall.totals.steps)} tool-call steps`;
+  layoutWall(); drawBase();
+  renderPresets();
+  renderMethod();
+  // open on the combo policy — the pitch: provenance + egress
+  const combo = frontier.points.find(p => p.id === 'combo') || frontier.points[0];
+  $('#pred').value = combo.predicate; setAction(combo.action);
+  await runReplay();
+  state.baseline = { ...state.current };  // pin the opening policy as baseline
+  renderDiff();
+  // numbers table (measured): show replay p50 if present
+  try {
+    const nums = await api('/timemachine/api/numbers');
+    const p50 = nums.numbers?.replay_p50_ms;
+    if (p50) document.querySelector('.replaytag').insertAdjacentHTML('beforeend', ` <span class="muted">· p50 ${fmt.ms(p50.value)}</span>`);
+  } catch {}
+})();
+</script>
+</body>
+</html>

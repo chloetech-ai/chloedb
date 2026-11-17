@@ -1,0 +1,36 @@
+{
+ "servers": 65878,
+ "publishers": 40642,
+ "secret_servers": 17009,
+ "secret_env": 13847,
+ "unmarked": 1029,
+ "private_key": 563,
+ "password": 562,
+ "db_url": 156,
+ "llm_key": 357,
+ "since_oct": 37341,
+ "secret_header_servers": 7667,
+ "graded_servers": 845,
+ "graded_slugs": 629,
+ "grade_dist": {
+  "A": 0,
+  "B": 0,
+  "C": 0,
+  "F": 0,
+  "D": 0
+ },
+ "remote_secret_header": 7902,
+ "bindings": 22036,
+ "distinct_grade": {
+  "A": 278,
+  "B": 105,
+  "C": 60,
+  "F": 136,
+  "D": 50
+ },
+ "basis": {
+  "exact": 7751,
+  "unknown": 13079,
+  "inferred": 1206
+ }
+}

@@ -1,0 +1,116 @@
+{
+  "about": "The hub's self-run evidence row. Each value is parsed from a results file in this repository by tools/load-evidence.mjs (the first line that contains `find` and matches `re`), never typed here. Titles, labels and caveats may name parsed values as {name}.",
+  "items": [
+    {
+      "id": "memory_ab",
+      "title": "Memory inside Claude Code",
+      "label": "follow-up tasks solved with ChloeCtx's shipped default",
+      "unit": "pct",
+      "source": "docs/chloectx/results.md",
+      "value": {
+        "find": "| ChloeCtx new (default) |",
+        "re": "(\\d+)/(\\d+) \\((\\d+)%\\)",
+        "k": 1,
+        "n": 2
+      },
+      "compare": [
+        {
+          "label": "whole history in context",
+          "find": "| whole history in context |",
+          "re": "(\\d+)/(\\d+) \\((\\d+)%\\)",
+          "k": 1,
+          "n": 2
+        },
+        {
+          "label": "Claude Code's own memory",
+          "find": "| Claude Code auto memory |",
+          "re": "(\\d+)/(\\d+) \\((\\d+)%\\)",
+          "k": 1,
+          "n": 2
+        },
+        {
+          "label": "no memory",
+          "find": "| no memory |",
+          "re": "(\\d+)/(\\d+) \\((\\d+)%\\)",
+          "k": 1,
+          "n": 2
+        }
+      ],
+      "caveat": "Self-run: one small model as agent and grader, four projects. The whole history in context ties it, at about four times the cost per run. Letta and Zep were not tested."
+    },
+    {
+      "id": "engines_1m",
+      "title": "Search engine, ranked among {engines}",
+      "label": "summed rank over {tests} tests at a million documents (lower is better)",
+      "unit": "points",
+      "source": "chloedb-server/results/compare-msmarco-0.3.5-do/README.md",
+      "value": {
+        "find": "| ChloeDB |",
+        "re": "^\\| ChloeDB \\| (\\d+) \\|",
+        "v": 1
+      },
+      "compare": [
+        {
+          "label": "Elasticsearch, next best",
+          "find": "| Elasticsearch |",
+          "re": "^\\| Elasticsearch \\| (\\d+) \\|",
+          "v": 1
+        },
+        {
+          "label": "Qdrant",
+          "find": "| Qdrant |",
+          "re": "^\\| Qdrant \\| (\\d+) \\|",
+          "v": 1
+        }
+      ],
+      "vars": {
+        "tests": {
+          "find": "summed over",
+          "re": "summed over (\\d+) tests",
+          "v": 1
+        },
+        "engines": {
+          "find": "1M, all",
+          "re": "1M, all (\\d+) engines",
+          "v": 1
+        },
+        "recall": {
+          "find": "at 1M ChloeDB",
+          "re": "at 1M ChloeDB (0\\.\\d+) \\(vector\\)",
+          "v": 1
+        },
+        "qdrant": {
+          "find": "Qdrant 0.",
+          "re": "Qdrant (0\\.\\d+)",
+          "v": 1
+        }
+      },
+      "caveat": "Self-run, with a harness the ChloeDB team wrote. At default settings its vector recall@10 is {recall}, against Qdrant's {qdrant}."
+    },
+    {
+      "id": "memory_scale",
+      "title": "Memory at a million records",
+      "label": "median recall query over a million stored records",
+      "unit": "ms",
+      "source": "docs/chloectx/results.md",
+      "value": {
+        "find": "| 1,000,000 |",
+        "re": "^\\| 1,000,000 \\| ([\\d.]+) / ([\\d.]+) ms",
+        "v": 1
+      },
+      "vars": {
+        "r10k": {
+          "find": "| 10,000 |",
+          "re": "\\| ([\\d.]+) \\|\\s*$",
+          "v": 1
+        },
+        "r1m": {
+          "find": "| 1,000,000 |",
+          "re": "\\| ([\\d.]+) \\|\\s*$",
+          "v": 1
+        }
+      },
+      "caveat": "Fast, but recall@10 falls from {r10k} at 10,000 records to {r1m} at a million."
+    }
+  ]
+}

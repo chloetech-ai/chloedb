@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Black Box: the flight recorder for coding agents</title>
+<link rel="stylesheet" href="/shared/ds.css">
+<style>
+  :root { --k-thought: var(--violet); --k-command: var(--cyan); --k-edit: var(--green); --k-view: var(--indigo); --k-output: #56628c; --k-err: var(--red); --k-message: var(--amber); --k-finish: var(--pink); --k-system: #3b4568; }
+  .hero { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 28px; align-items: center; padding: 16px 0 8px; }
+  .hero h1 { font-size: clamp(22px, 1.95vw, 28px); margin: 8px 0 6px; max-width: 34ch; }
+  .hero .lede { font-size: 13.5px; line-height: 1.45; margin: 0; max-width: 84ch; }
+  .hero .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .hero .kpis .stat { padding: 10px 12px; gap: 3px; }
+  .hero .stat .v { font-size: 24px; }
+  .hero .stat .k { font-size: 11.5px; line-height: 1.3; }
+  .hero .stat .d { font: 500 11px/1.3 var(--f-mono); color: var(--faint); }
+  .tabs { margin: 2px 0 14px; }
+  .tabs button small { font-weight: 500; color: var(--faint); margin-left: 6px; }
+  .view { display: none; } .view.on { display: block; }
+  .kn { font: 500 11.5px/1.3 var(--f-mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+  .sub { font-size: 12.5px; color: var(--muted); }
+  .mini { font-size: 12px; color: var(--faint); }
+  h3 .mini { font-weight: 500; margin-left: 8px; }
+  pre.code.small { font-size: 11.5px; padding: 10px 12px; max-height: 190px; }
+  .kind { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 1px; background: var(--k-output); }
+  .kind.thought { background: var(--k-thought); } .kind.command { background: var(--k-command); } .kind.edit { background: var(--k-edit); } .kind.view { background: var(--k-view); }
+  .kind.output { background: var(--k-output); } .kind.err { background: var(--k-err); } .kind.message { background: var(--k-message); } .kind.finish { background: var(--k-finish); } .kind.system { background: var(--k-system); }
+
+  /* Ask */
+  .askbar { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+  .askbar input { font-size: 15.5px; padding: 13px 16px; border-radius: 12px; }
+  .canned { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 16px; }
+  .canned button { font: 500 13px/1 var(--f-ui); color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 9px 13px; cursor: pointer; }
+  .canned button:hover { color: var(--text); border-color: var(--line-2); }
+  .canned button[aria-pressed=true] { color: var(--text); border-color: var(--indigo); background: var(--indigo-soft); }
+  .canned button b { font: 500 11px/1 var(--f-mono); color: var(--faint); margin-left: 7px; }
+  .askgrid { display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 16px; align-items: start; }
+  .reshead { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 4px; }
+  .reshead .big { font: 700 21px/1.1 var(--f-display); letter-spacing: -.02em; }
+  .lane { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 14px; padding: 9px 10px; border-top: 1px solid var(--line); cursor: pointer; border-radius: 8px; }
+  .lane:hover { background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
+  .lane .who { min-width: 0; }
+  .lane .ttl { font: 550 13px/1.3 var(--f-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lane .meta { font: 500 11.5px/1.5 var(--f-mono); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .track { position: relative; height: 16px; margin-top: 3px; border-radius: 4px; background: linear-gradient(var(--panel-3), var(--panel-3)) center / 100% 2px no-repeat; }
+  .track i { position: absolute; top: 1px; width: 4px; height: 14px; margin-left: -2px; border-radius: 2px; background: var(--k-command); box-shadow: 0 0 8px color-mix(in srgb, currentColor 40%, transparent); }
+  .track i.edit { background: var(--k-edit); } .track i.thought { background: var(--k-thought); } .track i.output { background: var(--amber); } .track i.view { background: var(--k-view); } .track i.message { background: var(--k-message); }
+  .track i:hover { transform: scaleY(1.35); background: #fff; }
+  .lane .snip { font: 400 11.5px/1.45 var(--f-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
+  .lane .snip b { color: var(--faint); font-weight: 500; }
+  .bars2 { display: grid; grid-template-columns: 96px 1fr; gap: 6px 10px; align-items: center; font-size: 12.5px; }
+  .bar { position: relative; height: 18px; border-radius: 5px; background: var(--panel-3); overflow: hidden; }
+  .bar > i { position: absolute; inset: 0 auto 0 0; border-radius: 5px; background: var(--indigo); transition: width .8s cubic-bezier(.2,.7,.2,1); }
+  .bar > span { position: absolute; right: 6px; top: 2px; font: 500 11px/14px var(--f-mono); color: var(--text); }
+  .bar.red > i { background: var(--red); } .bar.green > i { background: var(--green); } .bar.amber > i { background: var(--amber); } .bar.grey > i { background: var(--k-output); }
+  table.rows { width: 100%; border-collapse: collapse; font: 400 11.5px/1.4 var(--f-mono); }
+  table.rows th { text-align: left; color: var(--faint); font-weight: 500; padding: 5px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+  table.rows td { padding: 5px 8px; border-bottom: 1px solid var(--line); max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* the session picker */
+  .picker { position: relative; min-width: 320px; flex: 1; max-width: 560px; }
+  .picker .list { display: none; position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); max-height: 340px; overflow: auto; background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow); }
+  .picker.open .list { display: block; }
+  .picker .list div { padding: 8px 12px; font-size: 13px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .picker .list div:hover { background: var(--panel-2); }
+  .picker .list div b { font: 500 11.5px/1 var(--f-mono); color: var(--faint); margin-right: 8px; }
+
+  /* Blame */
+  .blamehead { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .blamehead .stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px 14px; }
+  .blamehead .stat .v { font-size: 26px; }
+  .blamegrid { position: relative; display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr); gap: 46px; align-items: start; }
+  #threadline { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; overflow: visible; }
+  #threadline path { fill: none; stroke: var(--cyan); stroke-width: 1.8; filter: drop-shadow(0 0 6px rgba(34,211,238,.6)); }
+  .diff { font: 400 12px/1.6 var(--f-mono); max-height: max(380px, calc(100vh - 400px)); overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); }
+  .diff .f { padding: 7px 12px; color: var(--text); font-weight: 600; background: var(--panel-2); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .diff .h { padding: 2px 12px; color: var(--faint); background: color-mix(in srgb, var(--indigo-soft) 50%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .diff .l { display: grid; grid-template-columns: 58px 40px minmax(0, 1fr); white-space: pre; }
+  .diff .l > span { overflow: hidden; text-overflow: ellipsis; }
+  .diff .l .g { text-align: center; color: var(--faint); font-size: 10.5px; user-select: none; }
+  .diff .l .no { text-align: right; padding-right: 10px; color: var(--faint); user-select: none; }
+  .diff .l.del { background: var(--red-soft); color: color-mix(in srgb, var(--red) 70%, var(--text)); }
+  .diff .l.add { background: color-mix(in srgb, var(--green-soft) 70%, transparent); cursor: pointer; }
+  .diff .l.add:hover { background: color-mix(in srgb, var(--green) 22%, transparent); }
+  .diff .l.add.sel { background: color-mix(in srgb, var(--cyan) 26%, transparent); box-shadow: inset 3px 0 0 var(--cyan); }
+  .diff .l.add.same .g b { outline: 1px solid color-mix(in srgb, var(--cyan) 60%, transparent); }
+  .diff .l.add.dim { opacity: .28; }
+  .diff .l .g b { display: inline-block; min-width: 40px; padding: 0 5px; border-radius: 4px; font-weight: 600; color: #06101f; background: var(--c, var(--green)); }
+  .diff .l .g b.sh { background: var(--amber); } .diff .l .g b.none { background: transparent; color: var(--faint); border: 1px dashed var(--line-2); }
+  .thread { position: relative; padding-left: 26px; min-height: 420px; }
+  .thread::before { content: ''; position: absolute; left: 8px; top: 16px; width: 2px; height: var(--rail, 0px); background: linear-gradient(var(--cyan), var(--violet) 60%, var(--red)); border-radius: 2px; transition: height .5s ease; box-shadow: 0 0 10px rgba(34,211,238,.35); }
+  .tcard { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 9px 12px; margin-bottom: 14px; opacity: 0; transform: translateX(14px); transition: opacity .45s ease, transform .45s ease; }
+  .tcard.on { opacity: 1; transform: none; }
+  .tcard::before { content: ''; position: absolute; left: -23px; top: 12px; width: 10px; height: 10px; border-radius: 50%; background: var(--c, var(--cyan)); box-shadow: 0 0 0 3px var(--bg), 0 0 12px var(--c, var(--cyan)); }
+  .tcard .lab { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font: 600 12.5px/1.3 var(--f-ui); margin-bottom: 6px; }
+  .tcard .lab em { font-style: normal; color: var(--c, var(--cyan)); letter-spacing: .04em; text-transform: uppercase; font-size: 11px; }
+  .tcard .lab span { font: 500 11.5px/1.3 var(--f-mono); color: var(--faint); }
+  .tcard pre { margin: 0; font: 400 11.5px/1.5 var(--f-mono); color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 88px; overflow: hidden; -webkit-mask-image: linear-gradient(#000 78%, transparent); mask-image: linear-gradient(#000 78%, transparent); }
+  .tcard pre mark { background: color-mix(in srgb, var(--cyan) 30%, transparent); color: var(--text); border-radius: 2px; }
+  .tcard .gap { position: absolute; left: 12px; bottom: -19px; font: 500 10.5px/1 var(--f-mono); color: var(--faint); }
+  .hops { display: flex; gap: 3px; flex-wrap: wrap; align-items: center; }
+  .hops i { width: 9px; height: 9px; border-radius: 2px; background: var(--k-output); }
+
+  /* Session */
+  .strip { display: flex; height: 38px; gap: 1px; border-radius: 6px; overflow: hidden; background: var(--bg-2); border: 1px solid var(--line); cursor: pointer; position: relative; }
+  .strip i { flex: 1 1 0; min-width: 0; background: var(--k-output); opacity: .78; }
+  .strip i.thought { background: var(--k-thought); } .strip i.command { background: var(--k-command); } .strip i.edit { background: var(--k-edit); opacity: 1; } .strip i.view { background: var(--k-view); }
+  .strip i.err { background: var(--k-err); opacity: 1; } .strip i.message { background: var(--k-message); } .strip i.finish { background: var(--k-finish); } .strip i.system { background: var(--k-system); }
+  .strip i.future { opacity: .28; } .strip i.cur { opacity: 1; outline: 2px solid #fff; outline-offset: -1px; z-index: 1; }
+  .scrub { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; margin: 10px 0 14px; }
+  .scrub input[type=range] { width: 100%; accent-color: var(--indigo); }
+  .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.05fr); gap: 12px; }
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; min-height: 300px; display: flex; flex-direction: column; }
+  .col h4 { font: 600 11.5px/1 var(--f-ui); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); margin: 0 0 8px; display: flex; justify-content: space-between; gap: 8px; }
+  .col h4 span { font: 500 11px/1 var(--f-mono); letter-spacing: 0; text-transform: none; }
+  .col pre { margin: 0; flex: 1; font: 400 11.8px/1.55 var(--f-mono); white-space: pre-wrap; word-break: break-word; max-height: 330px; overflow: auto; color: var(--text); }
+  .col pre.wait { color: var(--faint); font-style: italic; }
+  .col .diff { max-height: 330px; border: 0; background: none; font-size: 11.5px; }
+  .col .diff .l { grid-template-columns: 34px minmax(0, 1fr); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .answer { font-size: 14.5px; line-height: 1.65; white-space: pre-wrap; }
+  .answer a { font: 500 .85em/1 var(--f-mono); white-space: nowrap; }
+  .receipt { max-height: 330px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+  .dec { display: inline-block; font: 600 10.5px/1 var(--f-ui); padding: 3px 6px; border-radius: 4px; background: var(--panel-3); color: var(--muted); }
+  .dec.take { background: var(--green-soft); color: var(--green); } .dec.excerpt { background: var(--cyan-soft, rgba(34,211,238,.13)); color: var(--cyan); } .dec.linked { background: var(--indigo-soft); color: var(--indigo); } .dec.skip { background: var(--amber-soft); color: var(--amber); }
+
+  /* Ingest report */
+  table.mx { width: 100%; border-collapse: separate; border-spacing: 0 6px; font-size: 13px; }
+  table.mx th { text-align: left; font: 600 11px/1.2 var(--f-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--faint); padding: 0 8px 4px; }
+  table.mx td { padding: 0 4px; vertical-align: middle; }
+  table.mx td.name { padding: 6px 8px 6px 0; min-width: 190px; }
+  table.mx td.name b { display: block; font-weight: 600; } table.mx td.name span { font-size: 11.5px; color: var(--faint); }
+  .cell { position: relative; height: 40px; border-radius: 7px; background: var(--panel-3); overflow: hidden; min-width: 96px; }
+  .cell i { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--green) calc(var(--p) * 60%), color-mix(in srgb, var(--red) 55%, var(--panel-3))); opacity: .9; transition: width .9s cubic-bezier(.2,.7,.2,1); }
+  .cell b { position: absolute; left: 9px; top: 5px; font: 700 15px/1 var(--f-display); }
+  .cell span { position: absolute; left: 9px; bottom: 5px; font: 500 10.5px/1 var(--f-mono); color: color-mix(in srgb, var(--text) 75%, transparent); }
+  .fam { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 5px 12px; align-items: center; font-size: 12.5px; }
+  .fam .cells { display: flex; gap: 2px; flex-wrap: wrap; }
+  .fam .cells i { width: 11px; height: 16px; border-radius: 2px; background: color-mix(in srgb, var(--green) calc(var(--p) * 100%), var(--red)); opacity: .9; }
+  .planted { font: 400 11.5px/1.55 var(--f-mono); white-space: pre-wrap; word-break: break-all; color: var(--muted); background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; max-height: 118px; overflow: hidden; }
+  .planted mark { background: color-mix(in srgb, var(--amber) 35%, transparent); color: var(--text); border-radius: 3px; padding: 0 2px; }
+
+  /* Chain */
+  .hash { font: 500 12px/1.5 var(--f-mono); word-break: break-all; color: var(--muted); }
+  .prog { height: 10px; border-radius: 6px; background: var(--panel-3); overflow: hidden; }
+  .prog i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--indigo), var(--green)); transition: width .25s linear; }
+  .links { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 10px; }
+  .links i { width: 7px; height: 14px; border-radius: 2px; background: var(--panel-3); transition: background .2s ease; }
+  .links i.ok { background: var(--green); } .links i.bad { background: var(--red); box-shadow: 0 0 10px var(--red); transform: scaleY(1.5); }
+  .flip { font: 400 12.5px/1.6 var(--f-mono); background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; }
+  .flip del { color: var(--red); text-decoration: none; background: var(--red-soft); padding: 0 3px; border-radius: 3px; } .flip ins { color: var(--green); text-decoration: none; background: var(--green-soft); padding: 0 3px; border-radius: 3px; }
+  .not li { margin-bottom: 8px; color: var(--muted); } .not li b { color: var(--text); font-weight: 600; }
+  @media (max-width: 1100px) { .hero, .askgrid, .blamegrid, .cols { grid-template-columns: 1fr; } .hero .kpis, .blamehead { grid-template-columns: repeat(2, 1fr); } .lane { grid-template-columns: 1fr; } #threadline { display: none; } }
+</style>
+</head>
+<body class="glow">
+<main class="wrap wide">
+  <section class="hero">
+    <div>
+      <div class="eyebrow">Black Box · the flight recorder for coding agents</div>
+      <h1>Ask what your agents did. Follow any patch line back to the step that wrote it.</h1>
+      <p class="lede" id="lede">Recorded agent sessions from several harnesses, normalised into one table of steps in ChloeDB. Every step is hashed with its predecessor at ingest.</p>
+    </div>
+    <div class="kpis" id="kpis"></div>
+  </section>
+
+  <div class="tabs" role="tablist" id="tabs">
+    <button data-tab="ask" aria-selected="true">Ask <small>across everything</small></button>
+    <button data-tab="blame">Blame <small>line → step → reasoning</small></button>
+    <button data-tab="session">Session <small>scrub and ask</small></button>
+    <button data-tab="ingest">Ingest report <small>canary sweep</small></button>
+    <button data-tab="chain">Chain <small>tamper evidence</small></button>
+    <button data-tab="method">Method</button>
+  </div>
+
+  <!-- 1. Ask across everything -->
+  <section class="view on" id="v-ask">
+    <form class="askbar" id="askform">
+      <input type="search" id="askq" autocomplete="off" placeholder='Ask in words, put an exact substring in quotes ("git push"), or write SELECT … FROM blackbox_steps'>
+      <button class="btn primary" type="submit">Ask the record</button>
+    </form>
+    <div class="canned" id="canned"></div>
+    <div class="askgrid">
+      <div class="card" id="results"><div class="skeleton" style="height:320px"></div></div>
+      <div class="stack">
+        <div class="card tight" id="stmt"><h3>The statement</h3><div class="skeleton" style="height:120px"></div></div>
+        <div class="card tight" id="finding"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Blame -->
+  <section class="view" id="v-blame">
+    <div class="row" style="margin-bottom:12px;flex-wrap:nowrap">
+      <div class="picker" id="pick-blame" style="max-width:400px;min-width:300px"><input type="search" placeholder="Another session with a patch: id, repository or words of its title" autocomplete="off"><div class="list"></div></div>
+      <div class="sub" id="blamemeta" style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+    </div>
+    <div class="blamegrid" id="blamegrid">
+      <svg id="threadline" aria-hidden="true"><path d=""/></svg>
+      <div class="card tight">
+        <div class="row spread" style="margin-bottom:8px"><h3 style="margin:0">The final patch <span class="mini" id="patchfrom"></span></h3><span class="sub" id="patchcov"></span></div>
+        <div class="diff" id="blamediff"></div>
+        <div class="legend"><span><b style="background:var(--green);color:#06101f;border-radius:4px;padding:0 5px;font:600 10.5px/1.6 var(--f-mono)">#103</b> written by that step's edit call</span><span><b style="background:var(--amber);color:#06101f;border-radius:4px;padding:0 5px;font:600 10.5px/1.6 var(--f-mono)">sh</b> found only in a shell command</span><span><b style="border:1px dashed var(--line-2);border-radius:4px;padding:0 5px;font:600 10.5px/1.6 var(--f-mono);color:var(--faint)">·</b> no recorded call accounts for it</span></div>
+      </div>
+      <div>
+        <div class="row spread" style="margin-bottom:10px"><h3 style="margin:0" id="threadtitle">The thread</h3><button class="btn small ghost" id="replay">Replay</button></div>
+        <div class="thread" id="thread"></div>
+        <div class="card tight flat" id="reach" style="margin-top:-6px"></div>
+      </div>
+    </div>
+    <div class="blamehead" id="blamehead" style="margin-top:18px"></div>
+    <div class="grid g2">
+      <div class="card tight" id="blamebars"></div>
+      <div class="card tight"><h3>How a line is traced</h3>
+        <p class="sub" style="margin:0">Deterministic, no model. An added, non-blank line of the final patch is traced when an edit call on that file holds the line exactly in the content it wrote. Ties go to the call that also wrote the neighbouring lines, then to the latest. The thread behind an edit is one graph statement over the steps' <code>links</code>: the edit's own output, the thought before it, the agent's latest views of that file and the latest failing output. Lines that only a shell command or a program the agent ran can account for are counted apart, not as traced.</p>
+        <pre class="code small" id="threadsql" style="margin-top:10px"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 and 4. Session scrubber, Ask this session -->
+  <section class="view" id="v-session">
+    <div class="row" style="margin-bottom:10px">
+      <div class="picker" id="pick-session"><input type="search" placeholder="Session: id, harness, repository or words of its title" autocomplete="off"><div class="list"></div></div>
+      <div class="sub" id="sessmeta"></div>
+    </div>
+    <div class="strip" id="strip"></div>
+    <div class="scrub"><button class="btn small" id="play">Play</button><input type="range" id="seek" min="0" max="0" value="0"><span class="kn" id="pos"></span></div>
+    <div class="cols">
+      <div class="col"><h4><span><i class="kind thought"></i>Thought</span><span id="c-thought-n"></span></h4><pre id="c-thought"></pre></div>
+      <div class="col"><h4><span><i class="kind command"></i>Call</span><span id="c-call-n"></span></h4><pre id="c-call"></pre></div>
+      <div class="col"><h4><span><i class="kind output"></i>Output</span><span id="c-out-n"></span></h4><pre id="c-out"></pre></div>
+      <div class="col"><h4><span><i class="kind edit"></i>The patch so far</span><span id="c-patch-n"></span></h4><div class="diff" id="c-patch"></div></div>
+    </div>
+    <div class="legend" id="kindlegend"></div>
+    <div class="grid g2" style="margin-top:18px">
+      <div class="card">
+        <h3>Ask this session</h3>
+        <p class="sub">The answer is written over a context ChloeDB packs from this session's steps: ranked by words and meaning, near-duplicates dropped, linked steps pulled in, cut to a token budget. The receipt on the right is the database's own account of what went in and why.</p>
+        <form class="askbar" id="sform"><input type="search" id="sq" maxlength="300" autocomplete="off" placeholder="Ask about this session"><button class="btn primary" type="submit">Ask</button></form>
+        <div class="canned" id="squestions" style="margin-bottom:10px"></div>
+        <div id="sanswer" class="sub">Pick a question or type one.</div>
+      </div>
+      <div class="card">
+        <div class="row spread"><h3 style="margin:0">The receipt</h3><span class="kn" id="rtally"></span></div>
+        <p class="sub" id="rsub" style="margin:6px 0 10px">Every step the pack considered, in rank order, with what was done with it.</p>
+        <div class="receipt" id="receipt"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. Ingest report -->
+  <section class="view" id="v-ingest">
+    <div class="grid g2" style="align-items:start">
+      <div>
+        <h2 style="margin-bottom:6px">What would a redactor have caught at ingest?</h2>
+        <p class="sub" style="max-width:74ch">The sessions on this record were published as benchmark runs and donated traces. They hold no real credentials, so a count of "secrets caught" here would be a zero that says nothing. Instead, secrets are planted: example secrets from two public rule sets' own test data, and generated ones in no provider's shape, each placed into copies of four real tool outputs from this record. Four redactors run over the copies, and over every untouched step. A secret counts as caught only when every byte of it is removed.</p>
+      </div>
+      <div class="kpis" id="sweepkpis" style="grid-template-columns:repeat(2,minmax(0,1fr))"></div>
+    </div>
+    <div class="card" id="mx-mean" style="margin-top:14px;border-color:color-mix(in srgb,var(--accent) 45%,transparent)" hidden></div>
+    <div class="card" style="margin-top:14px"><h3>Secrets in a known provider format <span class="mini" id="mxa-n"></span></h3><div id="mxa"></div></div>
+    <div class="card" style="margin-top:14px"><h3>Secrets with no provider shape <span class="mini" id="mxb-n"></span></h3><div id="mxb"></div><p class="sub" id="mxb-find" style="margin:10px 0 0"></p></div>
+    <div class="grid g2" style="margin-top:14px;align-items:start">
+      <div class="card"><h3>Each rule set on the other's examples</h3><p class="sub">Only the secret is planted, without the line its example came in, so a rule that leans on its surrounding text misses even its own examples in the bare carriers.</p><div id="cross"></div></div>
+      <div class="card"><h3>What was planted <span class="mini">one generated secret, four carriers</span></h3><div id="samples" class="stack"></div></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>Recall by format family <span class="mini">one cell per family; hover for its count</span></h3><div class="fam" id="fams"></div></div>
+    <div class="card" style="margin-top:14px"><h3>What the redactors flag in the real steps <span class="mini">nothing was planted there</span></h3>
+      <p class="sub">These would be changed at ingest. The sources were published scrubbed, so they are counted as false positives; they were not read one by one, and the samples are shown masked. The stored text is as published: the redactors are measured here, not applied.</p>
+      <div id="flagkpis" class="kpis" style="margin-bottom:12px"></div><div id="flags" style="max-height:300px;overflow:auto"></div></div>
+  </section>
+
+  <!-- 6. Chain -->
+  <section class="view" id="v-chain">
+    <div class="grid g2" style="align-items:start">
+      <div class="card">
+        <h3>The record is unchanged since our ingest</h3>
+        <p class="sub">At ingest every step is hashed together with the hash of the step before it, each session ends in a head hash, and one root is taken over all the heads. The root is kept in a file outside the database it vouches for. Verifying means reading the rows back from ChloeDB and recomputing every hash.</p>
+        <div class="panel" style="margin-bottom:12px"><div class="mini">root recorded at ingest, <span id="rootat"></span></div><div class="hash" id="roothash"></div></div>
+        <div class="row"><button class="btn primary" id="verifyall">Verify every session</button><button class="btn" id="verifyone">Verify one session</button><span class="sub" id="verifywho"></span></div>
+        <div style="margin-top:14px"><div class="prog"><i id="vprog"></i></div><div class="sub" id="vstatus" style="margin-top:8px"></div></div>
+        <div class="links" id="vlinks"></div>
+        <p class="sub" style="margin:14px 0 0"><b style="color:var(--text)">What this proves, exactly:</b> that the steps in the database are the steps that were ingested. It does not prove what happened before ingest. An imported trajectory carries no replay digest, and none is shown here.</p>
+      </div>
+      <div class="card">
+        <h3>Change one character and watch it fail</h3>
+        <p class="sub">A session is copied to a scratch table, one character of one step is changed with an <code>UPDATE</code>, and the copy is verified. The record itself is not touched; the copy is deleted afterwards.</p>
+        <div class="row"><button class="btn" id="tamper">Run the tamper test</button><span class="sub" id="tamperwho"></span></div>
+        <div id="tamperout" style="margin-top:14px"></div>
+      </div>
+    </div>
+    <div class="kpis" id="chainkpis" style="margin-top:14px"></div>
+  </section>
+
+  <!-- Method -->
+  <section class="view" id="v-method">
+    <div class="grid g2" style="align-items:start">
+      <div class="card"><h3>The data, and its licences</h3><div id="sources"></div>
+        <p class="sub" style="margin:12px 0 0">The four benchmark sets are samples of public datasets, shown under the terms on each dataset's card; the donated sessions are CC BY 4.0 and the Swival traces MIT. Dataset files are read as data: ChloeDB imports each Parquet file itself, and nothing from a dataset is executed.</p></div>
+      <div class="card"><h3>What this does not show</h3><ul class="not" id="notlist" style="padding-left:18px;margin:0"></ul></div>
+    </div>
+    <div class="grid g2" style="margin-top:14px;align-items:start">
+      <div class="card"><h3>Models and cost</h3><div id="models"></div></div>
+      <div class="card"><h3>The statements behind Ask and Blame</h3><div id="stmts" class="stack"></div></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>Every number on this page, and how it was measured <span class="mini" id="numn"></span></h3><div id="numtable" style="max-height:520px;overflow:auto"></div></div>
+  </section>
+
+  <div class="provenance" id="prov"></div>
+</main>
+
+<script type="module">
+import { topbar, api, countUp, fmt, esc, highlightSQL, stream, toast } from '/shared/ds.js';
+topbar({ app: 'Black Box' });
+
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const A = '/blackbox/api';
+const S = { n: {}, ov: null, sessions: [], tab: 'ask', sid: null, sess: null, cur: 0, steps: new Map(), blameK: null, threads: new Map(), playing: null, asked: null };
+const N = id => S.n[id] || null;
+const val = id => N(id)?.value;
+const kn = id => { const x = N(id); return x && x.n != null && x.k != null ? `${fmt.n(x.k)} / ${fmt.n(x.n)}` : ''; };
+const pct1 = v => (v == null ? '–' : (v * 100).toFixed(1) + '%');
+const short = p => { const s = String(p || '').replace(/^\/workspace\/[^/]+\//, '').replace(/^\/testbed\//, ''); const parts = s.split('/'); return parts.length > 4 ? '…/' + parts.slice(-3).join('/') : s; };
+const verdict = s => (s.resolved === 1 ? '<span class="chip ok">resolved</span>' : s.resolved === 0 ? '<span class="chip bad">unresolved</span>' : s.feedback ? `<span class="chip">${esc(s.feedback)}</span>` : '<span class="chip">no verdict</span>');
+const kindOf = s => (s.kind === 'output' && s.err ? 'err' : s.role === 'system' ? 'system' : s.kind);
+const PALETTE = ['var(--green)', 'var(--cyan)', 'var(--violet)', 'var(--amber)', 'var(--pink)', '#7dd3fc', '#bef264', '#fca5a5'];
+
+// ---- tabs and the address ------------------------------------------------------------------------
+function show(tab, push = true) {
+  S.tab = tab;
+  for (const b of $$('#tabs button')) b.setAttribute('aria-selected', b.dataset.tab === tab);
+  for (const v of $$('.view')) v.classList.toggle('on', v.id === `v-${tab}`);
+  if (push) history.replaceState(null, '', `#${tab}${(tab === 'session' || tab === 'blame') && S.sid ? `/${S.sid}${tab === 'session' ? `/${S.cur}` : ''}` : ''}`);
+  if (tab === 'blame') enterBlame();
+  if (tab === 'session') enterSession();
+  if (tab === 'ingest') enterIngest();
+  if (tab === 'chain') enterChain();
+  if (tab === 'method') enterMethod();
+  if (tab !== 'session') stopPlay();
+}
+$('#tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) show(b.dataset.tab); });
+
+// ---- the header ----------------------------------------------------------------------------------
+function header() {
+  const k = $('#kpis');
+  const cells = [
+    ['sessions', 'sessions on the record', () => `${fmt.n(val('harnesses'))} harnesses, ${fmt.n(val('formats'))} formats`, v => fmt.n(v)],
+    ['steps', 'steps, each hashed with its predecessor', () => `${(val('bytes') / 1e6).toFixed(0)} MB of step text`, v => fmt.n(v)],
+    ['blame_coverage', 'patch lines traced to the call that wrote them', () => kn('blame_coverage'), v => pct1(v)],
+    ['query_p50', 'query p50 over six questions', () => `p95 ${fmt.ms(val('query_p95'))} · ${fmt.n(N('query_p50')?.n)} runs`, v => fmt.ms(v)],
+  ];
+  k.innerHTML = cells.map(([id, label]) => `<div class="stat" title="${esc(N(id)?.method || 'not measured yet: run measure.mjs')}"><span class="v num" data-id="${id}">–</span><span class="k">${label}</span><span class="d" data-d="${id}"></span></div>`).join('');
+  for (const [id, , d, f] of cells) if (N(id)) { countUp($(`[data-id="${id}"]`, k), val(id), { format: f, duration: 900 }); $(`[data-d="${id}"]`, k).textContent = d(); }
+  if (N('sessions')) $('#lede').textContent = `${fmt.n(val('sessions'))} recorded sessions from ${fmt.n(val('harnesses'))} agent harnesses in ${fmt.n(val('formats'))} on-disk formats, normalised into one table of ${fmt.n(val('steps'))} steps in ChloeDB. Every step is hashed with its predecessor at ingest.`;
+  $('#prov').innerHTML = `Every number on this page is a row of <code>blackbox_numbers</code> or a query against the <code>blackbox_*</code> tables, run when you look; the statements are in the drawer at the bottom right. ${N('sessions') ? `Measured ${esc((N('sessions').measured_at || '').slice(0, 10))} on a ${esc(N('query_p50')?.source || 'development machine')}.` : ''} The sessions are public datasets and donated traces under their own licences (Method). No real credentials are on this record.`;
+}
+
+// ---- 1. Ask across everything ----------------------------------------------------------------------
+function cannedChips() {
+  $('#canned').innerHTML = S.ov.canned.map(c => `<button data-id="${c.id}" aria-pressed="false" title="${esc(c.note)}">${esc(c.label)}${N(`query_${c.id}_p50`) ? `<b>${fmt.ms(val(`query_${c.id}_p50`))}</b>` : ''}</button>`).join('');
+}
+$('#canned').addEventListener('click', e => { const b = e.target.closest('button'); if (b) runCanned(b.dataset.id); });
+$('#askform').addEventListener('submit', e => { e.preventDefault(); const t = $('#askq').value.trim(); if (t) ask(t); });
+
+async function runCanned(id) {
+  for (const b of $$('#canned button')) b.setAttribute('aria-pressed', b.dataset.id === id);
+  const c = S.ov.canned.find(x => x.id === id);
+  $('#askq').value = '';
+  $('#askq').placeholder = c.label;
+  history.replaceState(null, '', `#ask=${id}`);
+  $('#results').style.opacity = .5;
+  try { renderResults(await api(`${A}/canned/${id}`, { label: c.label }), c); } catch (e) { $('#results').innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
+  $('#results').style.opacity = 1;
+}
+async function ask(text) {
+  for (const b of $$('#canned button')) b.setAttribute('aria-pressed', 'false');
+  $('#results').style.opacity = .5;
+  try { renderResults(await api(`${A}/ask`, { body: { q: text }, label: 'ask' }), null, text); } catch (e) { $('#results').innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
+  $('#results').style.opacity = 1;
+}
+const MODE = { substring: ['substring index', 'info'], meaning: ['words + meaning', 'indigo'], aggregate: ['aggregate', 'warn'], sql: ['your SQL', ''] };
+function renderResults(r, canned, text) {
+  const main = r.queries[0];
+  const [mlabel, mcls] = MODE[r.mode] || [r.mode, ''];
+  const measured = canned && N(`query_${canned.id}_p50`) ? `measured p50 ${fmt.ms(val(`query_${canned.id}_p50`))}, p95 ${fmt.ms(val(`query_${canned.id}_p95`))} over ${N(`query_${canned.id}_p50`).n} runs; first run ${fmt.ms(val(`query_${canned.id}_first`))}` : '';
+  let html = `<div class="reshead"><span class="big">${r.error ? 'Not run' : r.mode === 'sql' && !r.lanes.length ? `${fmt.n(r.rows?.length ?? 0)} ${r.rows?.length === 1 ? 'row' : 'rows'}` : `${fmt.n(r.hits ?? 0)} ${r.hits === 1 ? 'hit' : 'hits'} in ${fmt.n(r.lanes.length)} ${r.lanes.length === 1 ? 'session' : 'sessions'}`}</span><span class="chip ${mcls}">${mlabel}</span>${main ? `<span class="kn">${fmt.ms(main.took_ms)} this run</span>` : ''}${measured ? `<span class="kn">${measured}</span>` : ''}</div>`;
+  html += `<p class="sub" style="margin:2px 0 10px">${r.error ? `<span class="bad">${esc(r.error)}</span>` : esc(canned?.note || r.note || (r.mode === 'meaning' ? 'Words and meaning fused over every step that is not a system prompt; each hit is cut to the stretch that matches.' : r.mode === 'substring' ? 'An exact substring of any step\'s text, answered from the substring index.' : 'Rows with a session and a seq are marked on the lanes.'))}</p>`;
+  if (r.mode === 'sql' && r.rows?.length) {
+    html += `<div style="max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-bottom:10px"><table class="rows"><tr>${r.columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr>${r.rows.slice(0, 60).map(row => `<tr>${r.columns.map(c => `<td title="${esc(row[c])}">${esc(row[c])}</td>`).join('')}</tr>`).join('')}</table></div>`;
+  }
+  const shown = r.lanes.slice(0, 40);
+  html += shown.map(l => {
+    const max = Math.max(1, (l.steps || 1) - 1);
+    const first = l.hits[0];
+    return `<div class="lane" data-s="${esc(l.id)}" data-seq="${first.seq}">
+      <div class="who"><div class="ttl" title="${esc(l.title || '')}">${esc(l.title || l.id)}</div><div class="meta">${esc(l.id)} · ${esc(l.harness || '')} · ${fmt.n(l.steps)} steps · ${l.resolved === 1 ? '<span class="ok">resolved</span>' : l.resolved === 0 ? '<span class="bad">unresolved</span>' : 'no verdict'}</div></div>
+      <div><div class="track">${l.hits.slice(0, 80).map(h => `<i class="${esc(h.kind)}" style="left:${(h.seq / max * 100).toFixed(2)}%" data-seq="${h.seq}" title="step ${h.seq}: ${esc(h.text.slice(0, 200))}"></i>`).join('')}</div>
+      <div class="snip"><b>${l.hits.length} ${l.hits.length === 1 ? 'hit' : 'hits'} · step ${first.seq}</b>  ${esc(first.text.replace(/\s+/g, ' ').slice(0, 220))}</div></div></div>`;
+  }).join('');
+  if (r.lanes.length > shown.length) html += `<p class="mini" style="margin:10px 0 0">${r.lanes.length - shown.length} more sessions not drawn.</p>`;
+  if (!r.lanes.length && !r.error && !(r.mode === 'sql' && r.rows?.length)) html += '<p class="sub">Nothing on the record matches.</p>';
+  $('#results').innerHTML = html;
+  $('#stmt').innerHTML = `<h3>The statement <span class="mini">${main ? `${fmt.ms(main.took_ms)}, ${fmt.n(main.rows)} rows` : ''}</span></h3>${main ? `<pre class="code small">${highlightSQL(main.sql)}</pre>${main.params && Object.keys(main.params).length ? `<div class="mini" style="margin-top:6px">${esc(JSON.stringify(main.params)).slice(0, 200)}</div>` : ''}` : `<p class="sub">${esc(text || '')}</p>`}<p class="mini" style="margin:8px 0 0">One statement over all ${fmt.n(val('steps'))} steps. Click a lane to open the session at the hit.</p>`;
+}
+$('#results').addEventListener('click', e => {
+  const lane = e.target.closest('.lane'); if (!lane) return;
+  const tick = e.target.closest('.track i');
+  openSession(lane.dataset.s, Number(tick ? tick.dataset.seq : lane.dataset.seq));
+});
+function finding() {
+  const rows = [['openhands', 'OpenHands'], ['swesmith', 'SWE-smith'], ['sweagent_text', 'SWE-agent']].filter(([k]) => N(`repeat_${k}_unresolved`));
+  if (!rows.length) { $('#finding').innerHTML = '<h3>One finding, computed in SQL</h3><p class="sub">Not measured yet.</p>'; return; }
+  const bar = (id, cls) => { const x = N(id); return `<div class="bar ${cls}"><i style="width:${(x.value * 100).toFixed(1)}%"></i><span>${pct1(x.value)} · ${fmt.n(x.k)} / ${fmt.n(x.n)}</span></div>`; };
+  $('#finding').innerHTML = `<h3>One finding, computed in SQL</h3><p class="sub" style="margin-bottom:10px">Sessions that ran the same command five times or more, by the benchmark's verdict on them.</p>
+    <div class="bars2">${rows.map(([k, label]) => `<span class="muted">${label}<br><span class="mini">unresolved</span></span>${bar(`repeat_${k}_unresolved`, 'red')}<span class="mini" style="text-align:right">resolved</span>${bar(`repeat_${k}_resolved`, 'green')}`).join('')}</div>
+    <p class="mini" style="margin:10px 0 0">A correlation in ${fmt.n(rows.reduce((a, [k]) => a + N(`repeat_${k}_unresolved`).n + N(`repeat_${k}_resolved`).n, 0))} benchmark sessions, not a cause. Each source ran a different model on different tasks, so read each pair on its own.</p>
+    <pre class="code small" style="margin-top:8px;max-height:120px">${highlightSQL(N(`repeat_${rows[0][0]}_unresolved`).sql_text || '')}</pre>`;
+}
+
+// ---- the session picker --------------------------------------------------------------------------
+function picker(el, filter, onPick) {
+  const input = $('input', el), list = $('.list', el);
+  const draw = () => {
+    const t = input.value.trim().toLowerCase();
+    const words = t.split(/\s+/).filter(Boolean);
+    const rows = S.sessions.filter(filter).filter(s => { const hay = `${s.id} ${s.harness} ${s.repo || ''} ${s.title || ''}`.toLowerCase(); return words.every(w => hay.includes(w)); }).slice(0, 60);
+    list.innerHTML = rows.map(s => `<div data-s="${esc(s.id)}"><b>${esc(s.id)}</b>${esc(s.title || s.repo || s.harness)} <span class="mini">· ${fmt.n(s.steps)} steps${s.patch_lines ? ` · ${s.traced}/${s.patch_lines} lines traced` : ''}</span></div>`).join('') || '<div class="mini">no session matches</div>';
+  };
+  input.addEventListener('focus', () => { draw(); el.classList.add('open'); });
+  input.addEventListener('input', draw);
+  input.addEventListener('blur', () => setTimeout(() => el.classList.remove('open'), 180));
+  list.addEventListener('mousedown', e => { const d = e.target.closest('[data-s]'); if (d) { input.value = ''; input.blur(); onPick(d.dataset.s); } });
+}
+picker($('#pick-blame'), s => s.patch_lines > 0, id => { S.blameK = null; loadSession(id).then(() => { history.replaceState(null, '', `#blame/${id}`); renderBlame(true); }); });
+picker($('#pick-session'), () => true, id => openSession(id, 0));
+
+async function loadSession(id) {
+  if (S.sess && S.sid === id) return S.sess;
+  stopPlay();
+  const r = await api(`${A}/session/${id}`, { label: `session ${id}` });
+  S.sid = id; S.sess = r; S.steps = new Map(); S.cur = 0; S.asked = null;
+  return r;
+}
+const metaLine = s => `<b style="color:var(--text)">${esc(s.id)}</b> · ${esc(s.title || '')} ${verdict(s)} <span class="chip">${esc(s.harness)}</span>${s.repo ? ` <span class="chip">${esc(s.repo)}</span>` : ''} <span class="mini">${esc(s.source)} · ${esc(s.licence || '')}</span>`;
+
+// ---- 3. Blame ------------------------------------------------------------------------------------
+async function enterBlame() {
+  blameHead();
+  if (!S.sess || !S.sess.patch.some(r => r.t === 'add')) {
+    if (!S.ov.featured.session) { $('#blamediff').innerHTML = '<p class="sub" style="padding:12px">No session with a traced patch is loaded.</p>'; return; }
+    await loadSession(S.ov.featured.session);
+    S.blameK = S.sess.patch.find(r => r.t === 'add' && r.step === S.ov.featured.step)?.k ?? null;
+  }
+  renderBlame(true);
+}
+function blameHead() {
+  const cov = N('blame_coverage');
+  const cells = [
+    [cov ? pct1(cov.value) : '–', 'of added patch lines traced to the exact call that wrote them', cov ? `${kn('blame_coverage')} lines · ${fmt.n(val('blame_sessions'))} sessions` : ''],
+    [N('blame_steps_back') ? fmt.n(val('blame_steps_back')) : '–', 'median steps back from the edit to the agent\'s latest read of that file', N('blame_steps_back') ? `over ${fmt.n(N('blame_steps_back').n)} traced lines` : ''],
+    [N('thread_p50') ? fmt.ms(val('thread_p50')) : '–', 'to walk the thread behind an edit, p50', N('thread_p50') ? `p95 ${fmt.ms(val('thread_p95'))} · ${N('thread_p50').n} different edits` : ''],
+    [N('blame_untraced') ? pct1(val('blame_untraced')) : '–', 'of lines no recorded call accounts for', N('blame_untraced') ? `${kn('blame_untraced')} · plus ${kn('blame_shell').split(' / ')[0]} found only in shell commands` : ''],
+  ];
+  $('#blamehead').innerHTML = cells.map(([v, k, d]) => `<div class="stat"><span class="v num">${v}</span><span class="k">${k}</span><span class="kn">${d}</span></div>`).join('');
+  const rows = [['blame_coverage_swesmith', 'SWE-smith', 'green'], ['blame_coverage_openhands', 'OpenHands', 'green'], ['blame_coverage_sweagent_text', 'SWE-agent, text format', 'grey']].filter(([id]) => N(id));
+  $('#blamebars').innerHTML = `<h3>Coverage by source</h3><div class="bars2" style="grid-template-columns:170px 1fr">${rows.map(([id, label, cls]) => `<span class="muted">${label}</span><div class="bar ${cls}"><i style="width:${(val(id) * 100).toFixed(1)}%"></i><span>${pct1(val(id))} · ${kn(id)}</span></div>`).join('')}</div>
+    <p class="mini" style="margin:10px 0 0">The headline counts the two sources with structured edit calls. The SWE-agent text format writes edits as fenced commands by line range; it is measured and shown, and left out of the headline. ${N('blame_blank') ? `${fmt.n(val('blame_blank'))} blank added lines are not counted anywhere.` : ''} SWE-smith's patches are the diffs each session printed at submit: the sample's own patch column does not belong to its trajectories.</p>`;
+  $('#threadsql').innerHTML = highlightSQL(N('thread_p50')?.sql_text || '');
+}
+function renderBlame(animate) {
+  const s = S.sess.session, rows = S.sess.patch;
+  const adds = rows.filter(r => r.t === 'add' && r.via !== 'blank');
+  $('#blamemeta').innerHTML = metaLine(s);
+  $('#patchfrom').textContent = s.patch_from ? `from the ${s.patch_from}` : '';
+  $('#patchcov').innerHTML = `<b style="color:var(--text)">${fmt.n(s.traced)} of ${fmt.n(s.patch_lines)}</b> added lines traced`;
+  const stepsIn = [...new Set(adds.filter(r => r.via === 'edit').map(r => r.step))];
+  const colour = st => PALETTE[stepsIn.indexOf(st) % PALETTE.length];
+  if (S.blameK == null) S.blameK = adds.find(r => r.via === 'edit')?.k ?? null;
+  const sel = rows.find(r => r.t === 'add' && r.k === S.blameK);
+  $('#blamediff').innerHTML = rows.map(r => {
+    if (r.t === 'file') return `<div class="f">${esc(r.text)}</div>`;
+    if (r.t === 'hunk') return `<div class="h">${esc(r.text)}</div>`;
+    if (r.t === 'more') return '<div class="h">the rest of the patch is not drawn</div>';
+    if (r.t === 'add') {
+      const g = r.via === 'edit' ? `<b style="--c:${colour(r.step)}">#${r.step.split(':')[1]}</b>` : r.via === 'shell' ? `<b class="sh">sh #${r.step.split(':')[1]}</b>` : r.via === 'none' ? '<b class="none">·</b>' : '';
+      return `<div class="l add${r.k === S.blameK ? ' sel' : ''}${sel && r.step && r.step === sel.step ? ' same' : ''}" data-k="${r.k}"><span class="g">${g}</span><span class="no">${r.n}</span><span>+${esc(r.text)}</span></div>`;
+    }
+    return `<div class="l ${r.t}"><span class="g"></span><span class="no">${r.n}</span><span>${r.t === 'del' ? '-' : ' '}${esc(r.text)}</span></div>`;
+  }).join('') || '<p class="sub" style="padding:12px">This session ended without a patch.</p>';
+  const el = $('#blamediff .sel');
+  if (el && animate) { const box = $('#blamediff'); box.scrollTop = Math.max(0, el.offsetTop - box.clientHeight / 2); }
+  if (sel) playThread(sel, animate); else { $('#thread').innerHTML = '<p class="sub">Pick an added line.</p>'; $('#reach').innerHTML = ''; drawLine(false); }
+}
+$('#blamediff').addEventListener('click', e => { const l = e.target.closest('.l.add'); if (!l) return; S.blameK = Number(l.dataset.k); renderBlame(false); const sel = S.sess.patch.find(r => r.t === 'add' && r.k === S.blameK); if (sel) playThread(sel, true); });
+$('#blamediff').addEventListener('scroll', () => drawLine(false));
+addEventListener('resize', () => drawLine(false));
+$('#replay').addEventListener('click', () => { const sel = S.sess?.patch.find(r => r.t === 'add' && r.k === S.blameK); if (sel) playThread(sel, true); });
+
+let threadRun = 0;
+async function playThread(row, animate) {
+  const run = ++threadRun;
+  const box = $('#thread');
+  $('#threadtitle').innerHTML = `The thread <span class="mini">behind line ${row.n} of ${esc(short(row.file || '').split('/').pop())}</span>`;
+  if (row.via !== 'edit') {
+    box.style.setProperty('--rail', '0px');
+    box.innerHTML = `<div class="tcard on" style="--c:var(--amber)"><div class="lab"><em>${row.via === 'shell' ? 'found in a shell command' : 'not traced'}</em>${row.step ? `<span>step ${row.step.split(':')[1]}</span>` : ''}</div><pre>${row.via === 'shell' ? 'No edit call wrote this line. Its text appears in the shell command at this step (a heredoc, sed or echo), which is weaker evidence than an edit call\'s own content, so it is not counted as traced.' : row.via === 'blank' ? 'A blank line. Blank lines are not traced and not counted.' : 'No recorded call holds this line. It was written by a program the agent ran (a formatter, a generator, git) or by a shell command in another form.'}</pre></div>`;
+    $('#reach').innerHTML = ''; drawLine(false); return;
+  }
+  let t = S.threads.get(row.step);
+  if (!t) { try { t = await api(`${A}/thread?step=${encodeURIComponent(row.step)}`, { label: 'blame thread' }); S.threads.set(row.step, t); } catch (e) { box.innerHTML = `<p class="bad">${esc(e.message)}</p>`; return; } }
+  if (run !== threadRun) return;
+  const C = { 'wrote it': 'var(--cyan)', 'read before it': 'var(--indigo)', 'thought before it': 'var(--violet)', 'failing output before it': 'var(--red)', 'output it reacted to': 'var(--amber)' };
+  const body = (n, i) => {
+    const st = n.step;
+    if (i === 0) {
+      const lines = String(st.text || '').split('\n'); const at = lines.findIndex(l => l.replace(/\r$/, '') === row.text);
+      const from = Math.max(0, at - 2);
+      return lines.slice(from, from + 6).map((l, j) => (from + j === at ? `<mark>${esc(l)}</mark>` : esc(l))).join('\n');
+    }
+    if (n.label === 'read before it') return esc(`${st.cmd}\n${n.output ? String(n.output.text).split('\n').slice(0, 5).join('\n') : ''}`);
+    return esc(String(st.text || '').trim().slice(0, 520));
+  };
+  box.style.setProperty('--rail', '0px');
+  box.innerHTML = t.chain.map((n, i) => {
+    const gap = t.edit.seq - n.step.seq;
+    return `<div class="tcard${animate ? '' : ' on'}" style="--c:${C[n.label] || 'var(--cyan)'}" data-seq="${n.step.seq}"><div class="lab"><em>${esc(n.label)}</em><span title="${esc(n.step.path || '')}">step ${n.step.seq}${gap > 0 ? ` · <b style="color:var(--muted);font-weight:500">${gap} ${gap === 1 ? 'step' : 'steps'} before the edit</b>` : ` · ${esc(n.step.tool || n.step.kind)}`}${n.step.path ? ' · ' + esc(String(n.step.path).split('/').pop()) : ''}</span><a href="#" data-open="${n.step.seq}" style="margin-left:auto;font-size:11.5px">open</a></div><pre>${body(n, i)}</pre></div>`;
+  }).join('');
+  const byHop = {}; for (const n of t.nodes) (byHop[n.hops] = byHop[n.hops] || []).push(n);
+  $('#reach').innerHTML = `<div class="row spread"><span class="sub"><code>REACHABLE(links, '${esc(row.step)}', hops => 4)</code> found <b style="color:var(--text)">${t.nodes.length} steps</b> in <b style="color:var(--green)">${fmt.ms(t.took_ms)}</b></span><span class="hops">${Object.keys(byHop).sort().map(h => `<span class="mini">${h} hop${h === '1' ? '' : 's'}</span>${byHop[h].map(n => `<i class="kind ${esc(n.kind)}" style="margin:0" title="step ${n.seq}, ${esc(n.kind)}"></i>`).join('')}`).join(' ')}</span></div>`;
+  const cards = $$('.tcard', box);
+  const rail = () => { const last = cards.filter(c => c.classList.contains('on')).at(-1); box.style.setProperty('--rail', last ? `${last.offsetTop}px` : '0px'); };
+  if (!animate) { rail(); drawLine(false); return; }
+  drawLine(true);
+  for (let i = 0; i < cards.length; i++) { await new Promise(r => setTimeout(r, i ? 520 : 380)); if (run !== threadRun) return; cards[i].classList.add('on'); rail(); }
+}
+$('#thread').addEventListener('click', e => { const a = e.target.closest('[data-open]'); if (a) { e.preventDefault(); openSession(S.sid, Number(a.dataset.open)); } });
+// The line from the selected patch line to the first card of the thread.
+function drawLine(animate) {
+  const svg = $('#threadline'), path = $('path', svg), grid = $('#blamegrid');
+  const sel = $('#blamediff .sel'), card = $('#thread .tcard'), diff = $('#blamediff');
+  if (!sel || !card || S.tab !== 'blame') { path.setAttribute('d', ''); return; }
+  const g = grid.getBoundingClientRect(), a = sel.getBoundingClientRect(), d = diff.getBoundingClientRect(), b = card.getBoundingClientRect();
+  const y1 = Math.min(Math.max(a.top + a.height / 2, d.top + 4), d.bottom - 4) - g.top, x1 = d.right - g.left;
+  const x2 = b.left - g.left - 18, y2 = b.top - g.top + 17;
+  const mid = (x1 + x2) / 2;
+  path.setAttribute('d', `M${x1} ${y1} C${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`);
+  path.style.transition = 'none';
+  const len = path.getTotalLength();
+  path.style.strokeDasharray = len;
+  if (animate) { path.style.strokeDashoffset = len; path.getBoundingClientRect(); path.style.transition = 'stroke-dashoffset .5s ease'; path.style.strokeDashoffset = 0; } else path.style.strokeDashoffset = 0;
+}
+
+// ---- 2. the session scrubber -----------------------------------------------------------------------
+async function openSession(id, seq) {
+  await loadSession(id);
+  S.cur = Math.min(Math.max(0, seq || 0), S.sess.strip.length - 1);
+  show('session');
+}
+async function enterSession() {
+  if (!S.sess) await loadSession(S.ov.featured.session || S.sessions[0]?.id);
+  const s = S.sess.session, strip = S.sess.strip;
+  $('#sessmeta').innerHTML = metaLine(s);
+  $('#strip').innerHTML = strip.map(x => `<i class="${kindOf(x)}" data-seq="${x.seq}" title="step ${x.seq}: ${esc(x.kind)}${x.tool ? ' · ' + esc(x.tool) : ''}${x.path ? ' · ' + esc(short(x.path)) : ''}"></i>`).join('');
+  $('#seek').max = strip.length - 1;
+  const counts = {}; for (const x of strip) counts[kindOf(x)] = (counts[kindOf(x)] || 0) + 1;
+  $('#kindlegend').innerHTML = ['thought', 'command', 'edit', 'view', 'output', 'err', 'message', 'finish', 'system'].filter(k => counts[k]).map(k => `<span><i class="kind ${k}"></i>${k === 'err' ? 'failing output' : k} ${fmt.n(counts[k])}</span>`).join('') + `<span class="mini">head ${esc((s.head_hash || '').slice(0, 16))}…</span>`;
+  $('#squestions').innerHTML = S.ov.questions.map(x => `<button type="button">${esc(x)}</button>`).join('');
+  if (S.asked !== S.sid) { $('#sanswer').innerHTML = `Pick a question or type one. ${S.ov.ask?.live ? `Answers are written live by ${esc(S.ov.ask.model)} (about 2 cents each), up to $${S.ov.ask.cap_usd} a day; past that, recorded answers are shown.` : 'The live model is off or over its budget: recorded answers are shown where one exists.'}`; $('#receipt').innerHTML = ''; $('#rtally').textContent = ''; }
+  seek(S.cur);
+}
+$('#strip').addEventListener('click', e => { const i = e.target.closest('i'); if (i) { stopPlay(); seek(Number(i.dataset.seq)); } });
+$('#seek').addEventListener('input', e => { stopPlay(); seek(Number(e.target.value)); });
+$('#play').addEventListener('click', () => { if (S.playing) return stopPlay(); if (S.cur >= S.sess.strip.length - 1) S.cur = 0; $('#play').textContent = 'Pause'; S.playing = setInterval(() => { if (S.cur >= S.sess.strip.length - 1) return stopPlay(); seek(S.cur + 1); }, 650); });
+function stopPlay() { if (S.playing) clearInterval(S.playing); S.playing = null; const b = $('#play'); if (b) b.textContent = 'Play'; }
+
+async function need(from, to) {
+  const BLOCK = 40, jobs = [];
+  for (let b = Math.floor(Math.max(0, from) / BLOCK); b <= Math.floor(to / BLOCK); b++) {
+    const key = `b${b}`;
+    if (!S.steps.has(key)) { const sid = S.sid; S.steps.set(key, api(`${A}/session/${sid}/steps?from=${b * BLOCK}&to=${b * BLOCK + BLOCK - 1}`, { label: `steps of ${sid}` }).then(r => { if (S.sid === sid) for (const st of r.steps) S.steps.set(st.seq, st); })); }
+    jobs.push(S.steps.get(key));
+  }
+  await Promise.all(jobs);
+}
+let seekRun = 0;
+async function seek(c) {
+  const run = ++seekRun, strip = S.sess.strip;
+  S.cur = c;
+  $('#seek').value = c;
+  $('#pos').textContent = `step ${c} of ${strip.length - 1} · ${strip[c]?.kind || ''}`;
+  $$('#strip i').forEach((el, i) => { el.classList.toggle('future', i > c); el.classList.toggle('cur', i === c); });
+  if (S.tab === 'session') history.replaceState(null, '', `#session/${S.sid}/${c}`);
+  await need(c - 10, c);
+  if (run !== seekRun) return;
+  const back = (pred, floor = 0) => { for (let i = c; i >= Math.max(floor, c - 10); i--) { const st = S.steps.get(i); if (st && pred(st)) return st; } return null; };
+  const isCall = st => ['command', 'edit', 'view'].includes(st.kind);
+  const thought = back(st => st.kind === 'thought' || st.kind === 'message' || st.kind === 'finish' || st.role === 'system');
+  const call = back(isCall, thought ? thought.seq : 0);
+  const out = call ? back(st => st.kind === 'output', call.seq) : null;
+  const put = (id, st, wait) => { const el = $(`#c-${id}`); el.classList.toggle('wait', !st); el.textContent = st ? st.text : wait; $(`#c-${id}-n`).textContent = st ? `step ${st.seq}${st.kind !== id && id === 'thought' ? ' · ' + (st.role === 'system' ? 'system prompt' : st.kind) : ''}${st.tool ? ' · ' + st.tool : ''}${st.raw_sha ? ' · clipped at ingest' : ''}` : ''; };
+  put('thought', thought, 'No thought, message or prompt in the ten steps before this one.');
+  put('call', call, thought ? 'The agent has not called a tool yet in this turn.' : '');
+  put('out', out, call ? 'No output yet.' : '');
+  if (out?.err) $('#c-out-n').innerHTML += ' · <span class="bad">failed</span>';
+  // The patch as far as the cursor: lines whose edit call has happened are lit.
+  const rows = S.sess.patch, adds = rows.filter(r => r.t === 'add' && r.via === 'edit');
+  const done = adds.filter(r => Number(r.step.split(':')[1]) <= c).length;
+  $('#c-patch-n').textContent = adds.length ? `${done} of ${adds.length} traced lines written` : '';
+  $('#c-patch').innerHTML = rows.length ? rows.filter(r => r.t === 'file' || r.t === 'add').map(r => (r.t === 'file' ? `<div class="f">${esc(short(r.text))}</div>` : `<div class="l add${r.via === 'edit' && Number(r.step.split(':')[1]) <= c ? '' : ' dim'}" data-k="${r.k}" title="${r.via === 'edit' ? 'written at step ' + r.step.split(':')[1] : r.via === 'shell' ? 'found only in a shell command' : 'no recorded call accounts for this line'}"><span class="no">${r.n}</span><span>+${esc(r.text)}</span></div>`)).join('') : '<p class="sub">This session ended without a patch, or its source publishes none.</p>';
+}
+$('#c-patch').addEventListener('click', e => { const l = e.target.closest('.l.add'); if (!l) return; const r = S.sess.patch.find(x => x.t === 'add' && x.k === Number(l.dataset.k)); if (r?.via === 'edit') { stopPlay(); seek(Number(r.step.split(':')[1])); } });
+
+// ---- 4. Ask this session ----------------------------------------------------------------------------
+$('#squestions').addEventListener('click', e => { const b = e.target.closest('button'); if (b) { $('#sq').value = b.textContent; askSession(b.textContent); } });
+$('#sform').addEventListener('submit', e => { e.preventDefault(); const t = $('#sq').value.trim(); if (t) askSession(t); });
+async function askSession(question) {
+  const sid = S.sid;
+  $('#sanswer').innerHTML = '<div class="skeleton" style="height:90px"></div>';
+  let r;
+  try { r = await api(`${A}/ask/session`, { body: { session: sid, question }, label: 'pack with receipt' }); } catch (e) { $('#sanswer').innerHTML = `<span class="bad">${esc(e.message)}</span>`; return; }
+  if (S.sid !== sid) return;
+  S.asked = sid;
+  const cite = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\[([a-z]+-\d+):(\d+)\]/g, (m, s, n) => (s === sid ? `<a href="#" data-seq="${n}">[${n}]</a>` : m));
+  $('#sanswer').innerHTML = `${r.answer ? `<div class="answer">${cite(r.answer)}</div>` : ''}<p class="mini" style="margin:10px 0 0">${r.recorded ? `<span class="chip warn">recorded</span> ${esc(r.why || '')}${r.recorded_question && r.recorded_question !== question ? `. It answers: "${esc(r.recorded_question)}"` : ''}` : '<span class="chip ok">live</span>'}${r.answer ? ` · ${esc(r.model || '')} · ${fmt.usd(r.cost_usd)} · over ${fmt.n(r.tokens)} packed tokens` : ''} · numbers in brackets are steps of this session</p>`;
+  $('#rtally').textContent = `${fmt.n(r.tokens)} tokens · packed in ${fmt.ms(r.pack_ms)}`;
+  $('#rsub').innerHTML = `<b style="color:var(--text)">${r.tally.take}</b> taken whole · <b style="color:var(--text)">${r.tally.excerpt}</b> excerpted · <b style="color:var(--text)">${r.tally.linked}</b> pulled in along a link · <b style="color:var(--text)">${r.tally.skipped}</b> skipped, of ${r.receipt.length} considered.`;
+  const cls = d => (d === 'take' ? 'take' : d === 'excerpt' ? 'excerpt' : d?.startsWith('linked') ? 'linked' : 'skip');
+  $('#receipt').innerHTML = `<table class="rows"><tr><th>step</th><th>kind</th><th>decision</th><th style="text-align:right">tokens</th><th style="text-align:right">running</th></tr>${r.receipt.slice(0, 80).map(x => `<tr data-seq="${x.seq}" style="cursor:pointer"><td>${x.seq}</td><td><i class="kind ${esc(x.kind)}"></i>${esc(x.kind)}</td><td title="${esc(x.decision)}"><span class="dec ${cls(x.decision)}">${esc(String(x.decision || '').split(':')[0].replace(/ from .*/, ''))}</span> <span class="faint">${esc((String(x.decision || '').match(/(?:from|of) (\S+)$/) || [])[1]?.split(':')[1] ? '← ' + String(x.decision).match(/(?:from|of) (\S+)$/)[1].split(':')[1] : '')}</span></td><td style="text-align:right">${fmt.n(x.tokens)}</td><td style="text-align:right">${fmt.n(x.used)}</td></tr>`).join('')}</table>`;
+}
+$('#sanswer').addEventListener('click', e => { const a = e.target.closest('[data-seq]'); if (a) { e.preventDefault(); stopPlay(); seek(Number(a.dataset.seq)); $('#strip').scrollIntoView({ behavior: 'smooth', block: 'center' }); } });
+$('#receipt').addEventListener('click', e => { const a = e.target.closest('[data-seq]'); if (a) { stopPlay(); seek(Number(a.dataset.seq)); $('#strip').scrollIntoView({ behavior: 'smooth', block: 'center' }); } });
+
+// ---- 5. the ingest report -----------------------------------------------------------------------------
+const RED = [['chloectx', 'ChloeCtx redact.rs', 'key names and token shapes; compiled unmodified'], ['nodwyn', 'Nodwyn L1', 'provider prefixes and key blocks, its first layer; compiled unmodified'], ['gitleaks', 'gitleaks rules', 'regex rules with keywords and entropy floors, no allowlists'], ['noseyparker', 'Nosey Parker rules', 'regex rules, run on the Rust regex crate']];
+const CAR = [['env', 'env dump', 'SERVICE_API_KEY=…'], ['curl', 'curl header', 'Authorization: Bearer …'], ['config', 'config file', 'build_ref = "…"'], ['traceback', 'traceback', 'rejected credential …']];
+let sweep = null;
+async function enterIngest() {
+  if (!sweep) { try { sweep = await api(`${A}/sweep`, { label: 'canary sweep' }); } catch (e) { $('#mxa').innerHTML = `<p class="bad">${esc(e.message)}</p>`; return; } }
+  if (!sweep.cells.length) { $('#mxa').innerHTML = '<p class="sub">The sweep has not been run on this database (measure.mjs --only sweep).</p>'; return; }
+  const sum = (red, origins, carrier) => sweep.cells.filter(c => c.redactor === red && origins.includes(c.origin) && (!carrier || c.carrier === carrier)).reduce((a, c) => ({ k: a.k + c.caught, n: a.n + c.planted, f: a.f + c.flagged, p: a.p + c.partial }), { k: 0, n: 0, f: 0, p: 0 });
+  const cell = x => `<div class="cell" style="--p:${x.n ? x.k / x.n : 0}" title="${x.p ? x.p + ' more were removed in part, which counts as missed. ' : ''}${x.f ? x.f + ' more were named as high-entropy and left in the text.' : ''}"><i style="width:${x.n ? (x.k / x.n * 100).toFixed(1) : 0}%"></i><b>${x.n ? pct1(x.k / x.n) : '–'}</b><span>${fmt.n(x.k)} / ${fmt.n(x.n)}</span></div>`;
+  const matrix = origins => `<table class="mx"><tr><th>redactor</th><th>all carriers</th>${CAR.map(c => `<th title="${esc(c[2])}">${c[1]}<br><span style="text-transform:none;letter-spacing:0;font:400 10.5px/1.4 var(--f-mono)">${esc(c[2])}</span></th>`).join('')}</tr>${RED.map(([id, name, how]) => `<tr><td class="name"><b>${name}</b><span>${how}</span></td><td>${cell(sum(id, origins))}</td>${CAR.map(c => `<td>${cell(sum(id, origins, c[0]))}</td>`).join('')}</tr>`).join('')}</table>`;
+  const SH = ['noseyparker', 'gitleaks'], UN = ['unshaped'];
+  $('#mxa').innerHTML = matrix(SH); $('#mxb').innerHTML = matrix(UN);
+  const nSh = sum('chloectx', SH).n / 4, nUn = sum('chloectx', UN).n / 4;
+  $('#mxa-n').textContent = `${fmt.n(nSh)} example secrets × 4 carriers`;
+  $('#mxb-n').textContent = `${fmt.n(nUn)} generated secrets × 4 carriers: hex, base62, base64, a passphrase`;
+  const best = c => RED.map(([id, name]) => ({ name, ...sum(id, UN, c) })).sort((a, b) => b.k - a.k)[0];
+  // What it means, from the same cells: the best of the four on the carriers that do not name the secret.
+  const bestOf = (origins, c) => RED.map(([id]) => sum(id, origins, c)).sort((a, b) => b.k / (b.n || 1) - a.k / (a.n || 1))[0];
+  const kq = ['config', 'traceback'].map(c => bestOf(SH, c)), uq = ['config', 'traceback'].map(c => bestOf(UN, c));
+  const kMax = Math.max(...kq.map(x => x.k / (x.n || 1))), uK = uq.reduce((a, x) => a + x.k, 0), uN = uq.reduce((a, x) => a + x.n, 0);
+  const named = ['env', 'curl'].map(c => bestOf(SH, c));
+  $('#mx-mean').hidden = false;
+  $('#mx-mean').innerHTML = `<h3 style="margin:0 0 6px">What it means</h3><p class="sub" style="margin:0;max-width:110ch">Where the text names the secret (an env dump, a bearer header), the best of the four removes ${pct1(named[0].k / named[0].n)} and ${pct1(named[1].k / named[1].n)} of known-format secrets. Where it does not (a config value, a traceback), the best removes at most ${pct1(kMax)} of them, and ${uK ? `${fmt.n(uK)} of ${fmt.n(uN)}` : `none of the ${fmt.n(uN)}`} shapeless ones. So redaction is a backstop for the record, not the defence. The defence is that the credential never enters the agent's text, which is what <a href="/leaklab/">Leak Lab</a> measures: Nodwyn's handles keep it out, and the redactors catch what slips in.</p>`;
+  $('#mxb-find').innerHTML = `Best redactor per carrier on these: ${CAR.map(c => { const b = best(c[0]); return `${c[1]} <b style="color:var(--text)">${fmt.n(b.k)} / ${fmt.n(b.n)}</b>`; }).join(' · ')}. ${sum('nodwyn', UN).f ? `Nodwyn's first layer named ${fmt.n(sum('nodwyn', UN).f)} of ${fmt.n(sum('nodwyn', UN).n)} as high-entropy and, as its redactor does, left them in the text.` : ''}`;
+  $('#sweepkpis').innerHTML = [[fmt.n(sum('chloectx', [...SH, ...UN]).n), 'planted documents, each run through four redactors', ''], [fmt.n(val('sweep_examples_planted')), 'example secrets planted', `of ${fmt.n(val('sweep_examples_total'))} example strings in the rule sets; the rest are fragments of test code, or identifiers`], [fmt.n(val('sweep_unshaped_planted')), 'generated secrets with no provider shape', 'seeded, the same on every run'], [N('sweep_chloectx_flags_real') ? fmt.n(N('sweep_chloectx_flags_real').n) : '–', 'untouched real steps also swept', 'for flags where nothing was planted']].map(([v, k, d]) => `<div class="stat" style="padding:12px 14px"><span class="v num" style="font-size:25px">${v}</span><span class="k">${k}</span><span class="kn">${esc(d)}</span></div>`).join('');
+  $('#cross').innerHTML = `<table class="mx"><tr><th>rules</th><th>on Nosey Parker's examples</th><th>on gitleaks' examples</th></tr>${RED.map(([id, name]) => `<tr><td class="name"><b>${name}</b></td><td>${cell(sum(id, ['noseyparker']))}</td><td>${cell(sum(id, ['gitleaks']))}</td></tr>`).join('')}</table>`;
+  const chip = v => `<span class="chip ${v === 'caught' ? 'ok' : v === 'flagged' ? 'warn' : 'bad'}">${esc(v)}</span>`;
+  $('#samples').innerHTML = sweep.samples.map(s => { const [a, rest] = s.doc.split('⟦'); const [sec, b] = (rest || '').split('⟧'); return `<div><div class="planted">${esc(a.slice(-110))}<mark>${esc(sec)}</mark>${esc((b || '').slice(0, 60))}</div><div class="row" style="gap:8px;margin-top:6px;font-size:12px"><span class="mini">${esc(s.carrier)}, into a copy of step ${esc(s.host_step)}</span>${RED.map(([id, name]) => `<span class="mini">${name.split(' ')[0]}</span>${chip(s[id])}`).join('')}</div></div>`; }).join('');
+  $('#fams').innerHTML = RED.map(([id, name]) => { const f = sweep.families.filter(x => x.redactor === id && x.origin !== 'unshaped'); return `<span class="muted">${name}</span><div class="cells">${f.map(x => `<i style="--p:${x.planted ? x.caught / x.planted : 0}" title="${esc(x.family)} (${esc(x.origin)}): ${x.caught} / ${x.planted}"></i>`).join('')}</div>`; }).join('');
+  const FL = [...RED.map(r => [r[0], r[1]]), ['nodwyn-entropy', 'Nodwyn L1, high-entropy residual (named, not removed)']];
+  $('#flagkpis').innerHTML = FL.filter(([id]) => N(`sweep_${id}_flags_real`)).map(([id, name]) => { const x = N(`sweep_${id}_flags_real`); return `<div class="stat" style="padding:12px 14px"><span class="v num" style="font-size:22px">${(x.value * 100).toFixed(2)}%</span><span class="k">${name}</span><span class="kn">${fmt.n(x.k)} / ${fmt.n(x.n)} steps</span></div>`; }).join('');
+  $('#flags').innerHTML = `<table class="rows"><tr><th>redactor</th><th>rule</th><th style="text-align:right">steps</th><th style="text-align:right">spans</th><th>a sample, masked</th><th>in step</th></tr>${sweep.flags.map(f => `<tr><td>${esc(f.redactor)}</td><td>${esc(f.rule)}</td><td style="text-align:right">${fmt.n(f.steps)}</td><td style="text-align:right">${fmt.n(f.flags)}</td><td>${esc(f.sample_masked)}</td><td><a href="#" data-step="${esc(f.sample_step)}">${esc(f.sample_step)}</a></td></tr>`).join('')}</table>`;
+}
+$('#flags').addEventListener('click', e => { const a = e.target.closest('[data-step]'); if (a) { e.preventDefault(); const [s, n] = a.dataset.step.split(':'); openSession(s, Number(n)); } });
+
+// ---- 6. the chain -------------------------------------------------------------------------------------
+function enterChain() {
+  const root = S.ov.root;
+  $('#roothash').textContent = root?.root || 'no root is recorded beside this build';
+  $('#rootat').textContent = root ? `${root.ingested_at.replace('T', ' ').slice(0, 19)} UTC, over ${fmt.n(root.sessions)} sessions and ${fmt.n(root.steps)} steps` : '';
+  const sid = S.sid || S.ov.featured.session;
+  $('#verifywho').textContent = `one session: ${sid}`; $('#tamperwho').textContent = `on a scratch copy of ${sid}`;
+  const cells = [['chain_ok', x => `${fmt.n(x.k)} / ${fmt.n(x.n)}`, 'sessions whose chain verified when measured'], ['chain_verify_ms', x => (x.value / 1000).toFixed(2) + ' s', 'to read every step back and recompute every hash'], ['chain_verify_one_ms', x => fmt.ms(x.value), 'to verify one session of median length']];
+  $('#chainkpis').innerHTML = cells.filter(([id]) => N(id)).map(([id, f, k]) => `<div class="stat" title="${esc(N(id).method)}"><span class="v num">${f(N(id))}</span><span class="k">${k}</span><span class="kn">${id === 'chain_verify_one_ms' ? fmt.n(N(id).n) + ' steps' : id === 'chain_verify_ms' ? fmt.n(val('steps')) + ' steps, one run' : ''}</span></div>`).join('');
+}
+$('#verifyone').addEventListener('click', async () => {
+  const sid = S.sid || S.ov.featured.session;
+  $('#vstatus').textContent = `reading ${sid} back…`; $('#vprog').style.width = '0%';
+  try {
+    const v = await api(`${A}/chain/verify?session=${sid}`, { label: 'verify one session' });
+    $('#vlinks').innerHTML = Array.from({ length: v.steps }, () => '<i></i>').join('');
+    const cells = $$('#vlinks i'); const badAt = v.bad ? v.bad.seq : -1;
+    for (let i = 0; i < cells.length; i++) { cells[i].className = i === badAt ? 'bad' : 'ok'; if (i % 6 === 0) await new Promise(r => setTimeout(r, 12)); $('#vprog').style.width = `${(i + 1) / cells.length * 100}%`; }
+    $('#vstatus').innerHTML = v.ok ? `<span class="ok">${esc(sid)} verifies.</span> ${fmt.n(v.steps)} steps, each hashed with its predecessor, end in the recorded head <code>${esc(v.head.slice(0, 16))}…</code>. Read in ${fmt.ms(v.read_ms)}, hashed in ${fmt.ms(v.hash_ms)}.` : `<span class="bad">${esc(sid)} does not verify</span> at step ${v.bad.seq}: ${esc(v.bad.why)}.`;
+  } catch (e) { $('#vstatus').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+});
+$('#verifyall').addEventListener('click', () => {
+  const btn = $('#verifyall'); btn.disabled = true; $('#vlinks').innerHTML = ''; $('#vprog').style.width = '0%'; $('#vstatus').textContent = 'reading every step back from ChloeDB…';
+  const end = () => { btn.disabled = false; };
+  stream(`${A}/chain/verify-all`, {
+    progress: p => { $('#vprog').style.width = `${p.done / p.total * 100}%`; $('#vstatus').textContent = `${fmt.n(p.done)} of ${fmt.n(p.total)} sessions, ${fmt.n(p.steps)} steps hashed…`; },
+    done: r => { $('#vprog').style.width = '100%'; const match = r.recorded_root && r.root === r.recorded_root;
+      $('#vstatus').innerHTML = r.ok ? `<span class="ok">All ${fmt.n(r.sessions)} sessions verify</span>: ${fmt.n(r.steps)} steps recomputed in ${(r.ms / 1000).toFixed(2)} s${r.cached_s != null ? ` (a run from ${r.cached_s} s ago; it is repeated at most once a minute)` : ''}. The root over their heads ${match ? 'equals the one recorded at ingest' : 'has no recorded root to compare with'}: <code>${esc(r.root.slice(0, 24))}…</code>` : `<span class="bad">${fmt.n(r.failures.length)} of ${fmt.n(r.sessions)} sessions do not verify</span>${r.failures[0] ? `; first: ${esc(r.failures[0].session)} at step ${r.failures[0].seq}` : ''}${r.recorded_root && r.root !== r.recorded_root ? '; the root differs from the one recorded at ingest' : ''}.`; end(); },
+    failed: r => { $('#vstatus').innerHTML = `<span class="bad">${esc(r.error)}</span>`; end(); },
+    error: () => end(),
+  });
+});
+$('#tamper').addEventListener('click', async () => {
+  const sid = S.sid || S.ov.featured.session, btn = $('#tamper');
+  btn.disabled = true; $('#tamperout').innerHTML = '<div class="skeleton" style="height:120px"></div>';
+  try {
+    const r = await api(`${A}/chain/tamper`, { body: { session: sid }, label: 'tamper test' });
+    const c = r.changed;
+    $('#tamperout').innerHTML = `<p class="sub" style="margin-bottom:8px">1. The scratch copy of ${esc(sid)} (${fmt.n(r.steps)} steps) ${r.before.ok ? '<span class="ok">verifies</span>' : '<span class="bad">does not verify</span>'} as copied.</p>
+      <p class="sub" style="margin-bottom:6px">2. One character of step ${c.seq} (a ${esc(c.kind)}) is changed, at character ${fmt.n(c.at)}:</p>
+      <div class="flip">…${esc(c.around[0])}<del>${esc(c.from)}</del><ins>${esc(c.to)}</ins>${esc(c.around[1])}…</div>
+      <p class="sub" style="margin:10px 0 6px">3. The copy is verified again, in ${fmt.ms(r.after.ms)}:</p>
+      ${r.after.ok ? '<p class="bad">It still verifies. That should not happen.</p>' : `<div class="panel"><b class="bad">Fails at step ${r.after.bad.seq}</b>: ${esc(r.after.bad.why)}.<div class="hash" style="margin-top:6px">recorded ${esc(r.after.bad.expected)}<br>computed ${esc(r.after.bad.computed)}</div></div>`}
+      <div class="links">${Array.from({ length: r.steps }, (_, i) => `<i class="${!r.after.ok && i === r.after.bad.seq ? 'bad' : 'ok'}"></i>`).join('')}</div>
+      <p class="mini" style="margin:10px 0 0">The scratch copy has been deleted. The record was not touched: verify it on the left.</p>`;
+  } catch (e) { $('#tamperout').innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
+  btn.disabled = false;
+});
+
+// ---- Method ---------------------------------------------------------------------------------------------
+function enterMethod() {
+  $('#sources').innerHTML = `<table class="t"><tr><th>source</th><th>harness, format</th><th>licence</th><th class="n">sessions</th><th class="n">steps</th></tr>${S.ov.sources.map(s => `<tr><td><b>${esc(s.source)}</b><div class="mini">${esc(s.what)}</div></td><td>${esc(s.harness)}<div class="mini">${esc(s.format)}</div></td><td>${esc(s.licence)}</td><td class="n">${fmt.n(s.sessions)}</td><td class="n">${fmt.n(s.steps)}</td></tr>`).join('')}</table>`;
+  $('#notlist').innerHTML = [
+    ['No replay digest.', 'These are imported trajectories. The hash chain proves the record is unchanged since our ingest; it says nothing about whether the published trajectory is what the agent really did.'],
+    ['No real secrets were caught.', 'The public sessions hold none. Redaction is measured with planted canaries, and the redactors are measured, not applied: the stored text is as published.'],
+    ['Not every patch line is traced.', `${N('blame_coverage') ? `${kn('blame_coverage')} lines are, in the two sources with structured edit calls.` : ''} A line written by a program the agent ran has no call to point at, and is counted as untraced.`],
+    ['SWE-smith\'s patches are the diffs the sessions printed at submit.', 'The patch column of the sample used does not belong to its trajectories, so it is not used.'],
+    ['"Made it pass" is not decided by the page.', 'The test-edit question lists edits to test files; whether an edit weakened a test is for the reader, with the thought before it one click away.'],
+    ['Query times are from one machine and one node.', `${N('query_p50') ? `${N('query_p50').n} runs on a ${esc(N('query_p50').source)}; repeated runs are answered partly from the server's filter cache, and each question's first run is listed below.` : ''}`],
+    ['The verdicts are the benchmarks\' own.', `resolved and unresolved come from each dataset; the donated and feedback sessions have none. The record holds ${fmt.n(val('sessions'))} sessions, a sample, not a census of agent behaviour.`],
+    [`${fmt.n(val('events_dropped'))} native events and ${fmt.n(val('steps_clipped'))} long texts were cut at ingest.`, 'Status lines, snapshots and titles of the native logs are left out and counted; a text over 24,000 characters keeps its head and tail, with the SHA-256 of the whole in the chain.'],
+  ].map(([b, t]) => `<li><b>${b}</b> ${t}</li>`).join('');
+  const t = N('titles'), a = N('answers_recorded');
+  $('#models').innerHTML = `<table class="t"><tr><th>use</th><th>model</th><th class="n">calls</th><th class="n">cost</th></tr>
+    <tr><td>One-line title per session<div class="mini">${esc(t?.method || '')}</div></td><td>${esc(t?.model || '–')}</td><td class="n">${t ? fmt.n(t.value) + ' / ' + fmt.n(t.n) : '–'}</td><td class="n">${t ? fmt.usd(t.cost_usd) : '–'}</td></tr>
+    <tr><td>Recorded answers of Ask this session<div class="mini">${esc(a?.method || '')}</div></td><td>${esc(a?.model || '–')}</td><td class="n">${a ? fmt.n(a.value) : '–'}</td><td class="n">${a ? fmt.usd(a.cost_usd) : '–'}</td></tr>
+    <tr><td>Live answers on this page<div class="mini">over a PACK of at most 6,000 tokens; capped at $${S.ov.ask?.cap_usd ?? 4} a day, then recorded answers</div></td><td>${esc(S.ov.ask?.model || '')}</td><td class="n"></td><td class="n">${S.ov.ask?.today_usd != null ? fmt.usd(S.ov.ask.today_usd) + ' today' : '–'}</td></tr></table>
+    <p class="sub" style="margin:12px 0 0">Everything else is computed without a model: the normaliser, blame, the chain, the canary sweep and every search. Titles are a convenience for lists; no number depends on them.</p>`;
+  $('#stmts').innerHTML = [...S.ov.canned.map(c => [c.label, c.sql]), ['The thread behind an edit', N('thread_p50')?.sql_text || '']].map(([l, s]) => `<div><div class="mini" style="margin-bottom:4px">${esc(l)}</div><pre class="code small">${highlightSQL(s)}</pre></div>`).join('');
+  const rows = Object.values(S.n).sort((x, y) => (x.id < y.id ? -1 : 1));
+  $('#numn').textContent = `${rows.length} rows of blackbox_numbers`;
+  const show = x => (x.unit === 'fraction' ? pct1(x.value) : x.unit === 'ms' ? fmt.ms(x.value) : x.unit === 'usd' ? fmt.usd(x.value) : fmt.n(x.value, Number.isInteger(x.value) ? 0 : 2));
+  $('#numtable').innerHTML = `<table class="t"><tr><th>number</th><th class="n">value</th><th class="n">k / n</th><th>how it was measured</th></tr>${rows.map(x => `<tr><td><b>${esc(x.label || x.id)}</b><div class="mini mono">${esc(x.id)}</div></td><td class="n">${show(x)}</td><td class="n">${x.k != null && x.n != null ? fmt.n(x.k) + ' / ' + fmt.n(x.n) : x.n != null ? 'n = ' + fmt.n(x.n) : ''}</td><td class="sub">${esc(x.method || '')}${x.model ? ` <span class="chip">${esc(x.model)}</span>` : ''}</td></tr>`).join('')}</table>`;
+}
+
+// ---- start ------------------------------------------------------------------------------------------------
+(async () => {
+  try {
+    const [n, ov, ss] = await Promise.all([api(`${A}/numbers`), api(`${A}/overview`), api(`${A}/sessions`)]);
+    S.n = n.numbers; S.ov = ov; S.sessions = ss.sessions;
+  } catch (e) { $('#results').innerHTML = `<p class="bad">The record could not be read: ${esc(e.message)}</p>`; return; }
+  header(); cannedChips(); finding();
+  const h = location.hash.slice(1);
+  const m = h.match(/^(session|blame)\/([a-z]+-\d+)(?:\/(\d+))?$/);
+  if (m) { try { await loadSession(m[2]); S.cur = Number(m[3] || 0); } catch { toast('no such session'); } show(m[1], false); }
+  else if (['blame', 'session', 'ingest', 'chain', 'method'].includes(h)) show(h, false);
+  const c = (h.match(/^ask=([a-z-]+)$/) || [])[1];
+  runCanned(S.ov.canned.find(x => x.id === c) ? c : 'test-edit').then(() => { if (m || (h && !h.startsWith('ask'))) history.replaceState(null, '', `#${h}`); });
+})();
+</script>
+</body>
+</html>

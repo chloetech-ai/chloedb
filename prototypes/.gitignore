@@ -1,0 +1,16 @@
+node_modules/
+*.chloedb
+*.chloedb.*
+.dev/
+apps/*/data/raw/
+# Text taken from third-party datasets stays out of this public repository: each app's
+# load.mjs loads it into ChloeDB from a machine that has the datasets (sources and
+# licences are in the app's README and on its page).
+apps/leaklab/data/attacks.jsonl.gz
+apps/timemachine/data/benign.jsonl
+apps/timemachine/data/attacks.jsonl
+apps/hello/
+apps/memfw/data/memfw.json
+apps/memfw/data/recorded/
+# Screenshots taken while building go to the project's files, not the repository.
+apps/*/shots/

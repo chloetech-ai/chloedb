@@ -1,0 +1,8 @@
+{
+  "version": "blackbox/v1",
+  "ingested_at": "2026-11-17T09:20:37.626Z",
+  "sessions": 951,
+  "steps": 105351,
+  "root": "a5ae82a38aaf53d4468f0baebeb1f47f6bb87ea57250ca6a5a851a924b2b23c5",
+  "what": "SHA-256 over every session id and head hash, sorted; each head is the last link of a chain in which every step is hashed with its predecessor"
+}
