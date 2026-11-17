@@ -1,0 +1,10 @@
+binding.go is an unmodified copy of internal/binding/binding.go from Nodwyn
+(https://github.com/fclaude/nodwyn, at commit cdc30069), which says:
+
+  nodwyn
+  Copyright 2026 Francisco Claude-Faust
+
+It is licensed under the Apache License, Version 2.0: the LICENSE file at the root of
+this repository, or https://www.apache.org/licenses/LICENSE-2.0.
+
+It imports github.com/BurntSushi/toml v1.6.0 (MIT), the version Nodwyn's go.mod pins.

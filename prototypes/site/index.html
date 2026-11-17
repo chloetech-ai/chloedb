@@ -223,9 +223,9 @@
       <h3>What we do not claim</h3>
       <ul>
         <li><b>Not a sandbox.</b> The gate decides what a credential may be used for; it does not contain the process.</li>
-        <li><b>Redaction is best effort</b> for anything not registered as a credential. Black Box's canary sweep shows by how much.</li>
+        <li><b>Redaction is best effort</b> for anything not registered as a credential. <a href="/blackbox/#ingest">Black Box's canary sweep</a> shows by how much.</li>
         <li><b>Public sessions, not enterprise traffic.</b> The trajectories are open benchmark runs.</li>
-        <li><b>Not a model-safety measurement.</b> Current models mostly refuse injected orders, so Leak Lab assumes the attacker already won the prompt and counts what the credential handling still lets out. It does not measure how often models obey.</li>
+        <li><b>Not a model-safety measurement.</b> Current models mostly refuse injected orders (in <a href="/memfw/">Memory Firewall</a>, end to end, no new session obeyed a planted rule), so Leak Lab assumes the attacker already won the prompt and counts what the credential handling still lets out. Neither measures how often models obey in general.</li>
       </ul>
     </div>
   </section>
@@ -265,7 +265,7 @@ function shown(entry, row) {
   switch (entry.format) {
     case 'kn': return { big: `${fmt.n(row.k ?? v)}<small>/ ${fmt.n(n)}</small>`, sub: '' };
     case 'pct': return { big: fmt.pct(v, v > 0 && v < 0.1 ? 1 : 0), sub: n ? `${fmt.n(Math.round(v * n))} of ${fmt.n(n)}` : '' };
-    case 'ms': return { big: fmt.ms(v), sub: n ? `over ${fmt.n(n)} runs` : '' };
+    case 'ms': return { big: v >= 1000 ? `${(v / 1000).toFixed(1)} s` : fmt.ms(v), sub: n ? `over ${fmt.n(n)} runs` : '' };
     default: return { big: fmt.n(v, Number.isInteger(v) ? 0 : 2), sub: n ? `of ${fmt.n(n)}` : '' };
   }
 }
