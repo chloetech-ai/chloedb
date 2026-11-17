@@ -107,7 +107,8 @@ def build_db(binary: str, coll: Path, work: Path) -> Path:
     schema = work / "schema.json"
     schema.write_text(json.dumps(SCHEMA))
     db = work / "docs.chloedb"
-    subprocess.run([binary, "import", "--db", str(db), "--schema", str(schema), str(rows)], check=True, stdout=subprocess.DEVNULL)
+    with open(work / "import.log", "w") as log:
+        subprocess.run([binary, "import", "--db", str(db), "--schema", str(schema), str(rows)], check=True, stdout=log, stderr=log)
     return db
 
 
