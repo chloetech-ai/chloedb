@@ -17,8 +17,10 @@ changes collect under "Unreleased".
   sign-in, since the engine's session cookie does not pass through
   chloedb-server. The app engine now takes the key you signed in to the
   command center with as one of the app's people (named after the key,
-  "Admin" for the server's own token, with no email or password; the
-  app's owner when nobody joined before, with its example rows), so
+  "Admin" for the server's own token, the address before its @ for a
+  session of the sign-in with Google, one person over all their sessions;
+  with no email or password; the app's owner when nobody joined before,
+  with its example rows), so
   `app.me()` there is you and those screens open as they do for the owner.
   A key that only reads still sees the app as a visitor does.
 - **The command center's Log explorer showed lines with no text** on

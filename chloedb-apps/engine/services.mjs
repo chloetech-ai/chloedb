@@ -180,13 +180,20 @@ export class Services {
   // anywhere. One key is one person, who joins each app on first use (its
   // owner when nobody has yet, and then the example rows are theirs).
   async keyUser(appId, keyName) {
-    const key = String(keyName || '').trim().slice(0, 80) || 'token';
+    let key = String(keyName || '').trim().slice(0, 120) || 'token';
+    // A person's session (chloedb-server's sign-in with Google) is a key
+    // named "<address> (<id>)", a new one each time they sign in: the person
+    // is the address, shown by its name before the @ (an app's visitors
+    // never see its people's addresses).
+    const session = key.match(/^([^\s@()]+)@[^\s()]+(?= \([A-Za-z0-9_-]{4,16}\)$)/);
+    if (session) key = session[0].toLowerCase();
     const id = `k${createHash('sha256').update(`cluster key\n${key}`).digest('hex').slice(0, 15)}`;
     if (!this.keyPeople.has(id)) {
       const [had] = await this.db.get('sa_people', [id]);
       // (upsert: two first requests at once write the same row; "token" is
       // the server's own --token, an admin with no key's name)
-      if (!had) await this.db.write([{ op: 'upsert', table: 'sa_people', doc: { id, name: key === 'token' ? 'Admin' : key } }]);
+      const name = session ? session[1] : key === 'token' ? 'Admin' : key.slice(0, 80);
+      if (!had) await this.db.write([{ op: 'upsert', table: 'sa_people', doc: { id, name } }]);
       this.keyPeople.add(id);
     }
     return this.user(appId, id);

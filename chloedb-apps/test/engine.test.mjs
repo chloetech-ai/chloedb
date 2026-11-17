@@ -3895,6 +3895,12 @@ test('the command center uses an app as the key it signed in with, one of its pe
     const people = (await call('/people', undefined, admin)).body.people.map((p) => `${p.name}:${p.role}`).sort();
     assert.deepEqual(people, ['ops:member', 'roberto:owner']);
     assert.equal((await call('/me', undefined, key('token', 'admin'))).body.user?.name, 'Admin', 'the server\'s own --token has no key\'s name');
+    // A person signed in with Google has a new session key each time
+    // ("<address> (<id>)"): they are one person, named before the @.
+    const first = (await call('/me', undefined, key('Ro@Example.com (a1b2c3)', 'admin'))).body.user;
+    const again = (await call('/me', undefined, key('ro@example.com (d4e5f6)', 'admin'))).body.user;
+    assert.equal(first?.name, 'Ro');
+    assert.equal(again?.id, first.id, 'one person over their sessions');
     // Nobody else is a key's person: a visitor of the published app, and the
     // studio's "See it as a stranger".
     assert.equal((await call('/me')).body.user ?? null, null, 'a visitor of the published app');
