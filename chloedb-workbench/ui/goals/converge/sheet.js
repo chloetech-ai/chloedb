@@ -6,7 +6,7 @@
 //   Ready to build the plan in plain words, the score and why; Build
 //   Building       the checks as a checklist with the real reason, the change, the replay
 //   Ready to merge a one-line verdict, the pull request, CI; Approve and merge
-import { h, put, toast, enc, SEV, THEME_WORDS, STAGE_NAME, stepOf, blockedOf, blockStep, BLOCK_KIND, looksLikeCmd, cmdOfStep, queuedOf, agentOn, doingWords, ago, toMs, statusLine, thinBar, firstName, fmtScore, firstSentences } from "/goals/converge/util.js";
+import { h, put, toast, enc, seenOf, similarOf, evidenceOf, SEV, THEME_WORDS, STAGE_NAME, stepOf, blockedOf, blockStep, BLOCK_KIND, looksLikeCmd, cmdOfStep, queuedOf, agentOn, doingWords, ago, toMs, statusLine, thinBar, firstName, fmtScore, firstSentences } from "/goals/converge/util.js";
 import { sheetShell, popMenu } from "/goals/converge/kit.js";
 import { talk } from "/goals/converge/talk.js";
 
@@ -27,7 +27,8 @@ const INTRO = {
 
 export async function openSheet(C, id) {
   const S = C.S;
-  let d = null, sig = "", timer = null, ui = { edit: false, events: false, dismiss: false, back: false, open: new Set(), dot: null };
+  let d = null, sig = "", timer = null, ui = { edit: false, events: false, dismiss: false, back: !!C.S.sendBack, open: new Set(), dot: null };
+  C.S.sendBack = false;
   const f0 = C.findings().find((x) => x.id === id);
   const sh = sheetShell({
     label: f0 ? f0.title : "A card", data: { id },
@@ -77,9 +78,13 @@ export async function openSheet(C, id) {
     const step = stepOf(f.stage);
     const sk = step ? step.step : f.stage === "merged" ? "merge" : "problems";
     sh.sheet.setAttribute("aria-label", f.title || "A card");
+    // The merge pack: wider on a desktop; on a phone the foot holds only
+    // its two moves (at the thumb), and the talk box moves into the body.
+    const pack = f.stage === "review" || f.stage === "merged";
+    sh.sheet.classList.toggle("cv-pack", pack);
     if (!tk) {
       tk = talk({ api: C.api, base: `/api/converge/findings/${enc(id)}`, placeholder: PLACEHOLDER[sk], intro: INTRO[sk], onSent: () => setTimeout(reload, 800) });
-      put(sh.foot, acts, tk.box);
+      if (pack) { put(sh.foot, acts); tk.section.append(tk.box); } else put(sh.foot, acts, tk.box);
     }
     const more = h("button", { class: "cv-btn icon quiet", type: "button", "aria-label": "More", "aria-haspopup": "menu", onclick: () => menu(f, more) }, "⋯");
     sh.setTools([more]);
@@ -153,7 +158,7 @@ export async function openSheet(C, id) {
         out.push(btn("Send back", "", () => { ui.back = true; paint(d); sh.body.scrollTop = 0; }));
         // No pull request (no GitHub origin, or opening one failed): merge
         // it here, or record the one you opened.
-        if (!f.pr_url && f.branch && !busyNow(f)) {
+        if (!f.pr_url && f.branch && !busyNow(f) && !f.conflict) {
           out.push(btn("Record a pull request", "", () => { ui.pr = true; paint(d); sh.body.scrollTop = 0; }));
           out.push(btn("Merge locally", "good", () => { if (confirm(`Merge ${f.branch} into the base branch in the main checkout?`)) post("merge-local", {}, "Merged into the base branch"); }));
         }
@@ -344,15 +349,16 @@ export async function openSheet(C, id) {
     const who = () => {
       const hits = f.personas_hit || [];
       const pn = x.persona ? firstName(x.persona.name) : f.persona ? firstName(((C.S.d.personas || []).find((p) => p.id === f.persona) || {}).name || f.persona) : null;
-      return [pn ? `Found by ${pn}${f.step ? ` at “${f.step}”` : ""}` : `Reported by ${f.by || "someone"}`, hits.length > 1 ? `${hits.length} personas` : null, f.occurrences > 1 ? `seen ${f.occurrences}×` : null, f.component || null].filter(Boolean).join(" · ");
+      return [pn ? `Found by ${pn}${f.step ? ` at “${f.step}”` : ""}` : `Reported by ${f.by || "someone"}`, hits.length > 1 ? `${hits.length} personas` : null, seenOf(f) > 1 ? `seen ${seenOf(f)}×` : null, f.component || null].filter(Boolean).join(" · ");
     };
-    const what = h("section", {}, h("span", { class: "cv-label" }, "What happened"), h("p", {}, f.detail || "No detail was written."), h("p", { class: "cv-meta", style: { marginTop: "6px" } }, who()));
+    const what = h("section", {}, h("span", { class: "cv-label" }, "What happened"), h("p", {}, f.detail || "No detail was written."), h("p", { class: "cv-meta", style: { marginTop: "6px" } }, who()), likeBox(f));
     switch (f.stage) {
       case "found": return [what, f.repro ? fold("Their repro script", null, h("pre", { class: "cv-pre" }, f.repro)) : null];
       case "reproduce": return [reproProgress(f, lastEv("repro_fails", "repro_broken")), what];
       case "scope": case "prioritize": return [plan(f), what];
       case "develop": case "verify": return [checks(f, evs), change(f), verify(f, lastEv("verify")), what];
-      case "review": case "merged": return [verdict(f, evs), change(f), verify(f, lastEv("verify")), what];
+      case "review": return [verdict(f, evs), conflictBox(f), h("div", { class: "cv-evgrid" }, evidencePack(f, evs)), diffBox(f, evidenceOf(f).diff && typeof evidenceOf(f).diff === "object" ? evidenceOf(f).diff : null), what];
+      case "merged": return [verdict(f, evs), h("div", { class: "cv-evgrid" }, evidencePack(f, evs)), diffBox(f, evidenceOf(f).diff && typeof evidenceOf(f).diff === "object" ? evidenceOf(f).diff : null), what];
       default: return [what];
     }
   }
@@ -477,13 +483,164 @@ export async function openSheet(C, id) {
     if (f.stage === "merged") return h("div", { class: `cv-verdict${f.guard_ok === false ? " bad" : ""}` }, f.guard_ok === false ? "Merged, but the nightly guard says the problem is back." : "Merged. The nightly guard keeps running its repro.");
     const ver = [...evs].reverse().find((e) => e.gate === "verify");
     const dev = [...evs].reverse().find((e) => e.gate === "develop" && e.passed);
-    const bits = [!f.pr_url ? (f.needs_you ? "no pull request yet" : "opening the pull request") : f.ci === "pass" ? "CI green" : f.ci === "fail" ? "CI failed" : "CI running", dev ? "checks passed, in scope" : null, ver && ver.passed ? "the persona succeeded" : null].filter(Boolean);
+    const e = evidenceOf(f);
+    const after = Array.isArray(e.repro_after) ? e.repro_after.map(Number) : [];
+    const rp = e.replay && typeof e.replay === "object" ? e.replay : null;
+    const bits = [!f.pr_url ? (f.needs_you ? "no pull request yet" : "opening the pull request") : f.ci === "pass" ? "CI green" : f.ci === "fail" ? "CI failed" : "CI running",
+      after.length && after.every((x) => x === 0) ? "repro fixed" : null,
+      e.tests && e.tests.pass === true ? "tests pass" : dev ? "checks passed" : null,
+      (ver && ver.passed) || (rp && rp.ease_after != null && rp.ease_before != null && Number(rp.ease_after) >= Number(rp.ease_before)) ? "persona succeeded" : null].filter(Boolean);
     return [
-      f.conflict ? h("div", { class: "cv-verdict bad" }, `${f.conflict}. Not ready to merge.`)
+      f.conflict ? null
         : !f.pr_url && f.needs_you ? h("div", { class: "cv-verdict wait" }, f.needs_you)
-        : h("div", { class: `cv-verdict${f.ci === "pass" ? "" : f.ci === "fail" ? " bad" : " wait"}` }, f.ci === "pass" ? `Ready: ${bits.join(" · ")}` : bits.join(" · ")),
-      f.pr_url ? h("section", {}, h("span", { class: "cv-label" }, "Pull request"), h("a", { href: f.pr_url, target: "_blank", rel: "noopener", style: { overflowWrap: "anywhere" } }, f.pr_url), f.branch ? h("p", { class: "cv-meta" }, `Branch ${f.branch}`) : null) : null,
+        : h("div", { class: `cv-verdict${f.ci === "pass" ? "" : f.ci === "fail" ? " bad" : " wait"}` }, f.ci === "pass" ? `Ready to merge: ${bits.join(" · ")}` : bits.join(" · ")),
+      f.pr_url || f.branch ? h("p", { class: "cv-meta cv-prl" }, f.pr_url ? h("a", { href: f.pr_url, target: "_blank", rel: "noopener" }, (f.pr_url.match(/\/pull\/(\d+)/) || [])[1] ? `Pull request #${f.pr_url.match(/\/pull\/(\d+)/)[1]} ↗` : "The pull request ↗") : null, f.branch ? h("span", {}, `branch ${f.branch}`) : null) : null,
     ];
+  }
+
+
+  /** "Looks like: <title>" for each similar card, with "Same problem — fold". */
+  function likeBox(f) {
+    const all = C.S.d.findings || [];
+    const items = similarOf(f).filter((x) => x !== f.id).map((x) => all.find((o) => o.id === x)).filter(Boolean);
+    if (!items.length) return null;
+    return h("ul", { class: "cv-likes" }, items.slice(0, 5).map((o) => h("li", {},
+      h("span", { class: "w" }, "Looks like: "), h("a", { href: C.here({ f: o.id }) }, o.title), h("span", { class: "cv-meta" }, STAGE_NAME[o.stage] || o.stage),
+      f.state === "active" && o.state === "active" && !C.S.noFold ? h("button", { class: "cv-btn quiet", type: "button", onclick: async () => {
+        if (!confirm(`Fold this card into “${o.title}”? This one becomes a duplicate of it.`)) return;
+        try { await C.post(id, "fold", { into: o.id }); toast(`Folded into “${o.title}”`); sh.close(); C.S.sig = ""; await C.load(); C.open(o.id); }
+        catch (err) { if (err.status === 404 || err.status === 405) { C.S.noFold = true; toast("This server cannot fold cards"); paint(d); } else toast(err.message || String(err)); }
+      } }, "Same problem — fold") : null)));
+  }
+
+  /** A pull request that conflicts with the base: what the fix agent is doing about it. */
+  function conflictBox(f) {
+    if (!f.conflict) return null;
+    const base = C.settings().base || "main";
+    const doing = agentOn(f) ? `Fix agent: ${f.agent_state === "starting" ? "starting" : doingWords(f.agent_doing) || "resolving the conflict"}` : f.busy ? String(f.busy) : "The fix agent takes it on next";
+    return h("section", { class: "cv-bsec cv-conf" },
+      h("span", { class: "hd" }, `Conflicts with ${base}`),
+      h("p", {}, f.conflict),
+      h("div", { class: "cv-agent on" }, agentOn(f) || f.busy ? h("span", { class: "cv-live" }) : null, h("span", { class: "s" }, doing)),
+      thinBar(f, C.settings()),
+      h("span", { class: "by" }, "It comes back here for your approval once it merges cleanly."));
+  }
+
+  /** The merge pack's evidence: the repro before and after, the tests, what
+   *  the persona said, and the diff (inline on "View diff"). */
+  function evidencePack(f, evs) {
+    const e = evidenceOf(f);
+    const nums = (a) => (Array.isArray(a) ? a.map((x) => (x && typeof x === "object" ? Number(x.exit) : Number(x))).filter((x) => Number.isFinite(x)) : []);
+    // Fallbacks from the events, for an older server.
+    const dev = [...evs].reverse().find((x) => x.gate === "develop" && x.evidence);
+    const rep = [...evs].reverse().find((x) => (x.gate === "repro_fails" || x.gate === "reproduce") && x.evidence && Array.isArray(x.evidence.runs));
+    const ver = [...evs].reverse().find((x) => x.gate === "verify");
+    let before = nums(e.repro_before), after = nums(e.repro_after);
+    if (!before.length && rep) before = nums(rep.evidence.runs);
+    if (!after.length && dev && Array.isArray(dev.evidence.repro)) after = nums(dev.evidence.repro);
+    const base = C.settings().base || "main";
+    const dots = (list, want) => h("span", { class: "cv-edots" }, list.map((x, i) => h("i", { class: x === 0 ? "p" : "f", title: `Run ${i + 1}: exit ${x}`, "aria-hidden": "true" })));
+    const out = [];
+    if (before.length || after.length) {
+      const fb = before.filter((x) => x !== 0).length, pa = after.filter((x) => x === 0).length;
+      out.push(h("section", { class: "cv-ev" }, h("span", { class: "cv-label" }, "The repro"),
+        h("div", { class: "cv-evr" }, h("span", { class: "k" }, `Before (${base})`), dots(before), h("span", { class: "v bad" }, before.length ? `failing ${fb} of ${before.length}` : "–")),
+        h("div", { class: "cv-evr" }, h("span", { class: "k" }, "After (branch)"), dots(after), h("span", { class: `v${after.length && pa === after.length ? " good" : " bad"}` }, after.length ? `passing ${pa} of ${after.length}` : "–"))));
+    }
+    const t = e.tests && typeof e.tests === "object" ? e.tests : dev && dev.evidence.tests ? { cmd: dev.evidence.tests.cmd, pass: dev.evidence.tests.exit === 0 ? true : dev.evidence.tests.exit != null ? false : null } : null;
+    if (t && (t.cmd || t.pass != null)) {
+      const already = Array.isArray(t.failing_on_base) ? t.failing_on_base.filter(Boolean) : [];
+      out.push(h("section", { class: "cv-ev" }, h("span", { class: "cv-label" }, "Tests"),
+        h("div", { class: "cv-evt" }, h("span", { class: `mk ${t.pass ? "done" : t.pass === false ? "fail" : "todo"}` }, t.pass ? "✓" : t.pass === false ? "✕" : ""), h("span", { class: "tt" }, t.pass ? "Tests pass" : t.pass === false ? "Tests fail" : "Tests")),
+        t.cmd ? h("code", { class: "cv-cmd" }, t.cmd) : null,
+        already.length ? h("p", { class: "cv-meta" }, `Already failing on ${base}: ${already.slice(0, 6).join(", ")}${already.length > 6 ? ` +${already.length - 6}` : ""}`) : null));
+    }
+    const rp = e.replay && typeof e.replay === "object" ? e.replay : null;
+    const ve = ver && ver.evidence ? ver.evidence : null;
+    const said = rp?.said || ve?.answer || null;
+    const eb = rp?.ease_before ?? ve?.ease_before ?? f.ease_before, ea = rp?.ease_after ?? ve?.ease_after ?? f.ease_after;
+    if (said || (eb != null && ea != null)) {
+      const pid = rp?.persona || ver?.by || f.persona;
+      const pn = firstName(((C.S.d.personas || []).find((p) => p.id === pid || p.name === pid) || {}).name || pid || "The persona");
+      out.push(h("section", { class: "cv-ev" }, h("span", { class: "cv-label" }, `${pn} replayed it`),
+        eb != null && ea != null ? h("div", { class: "cv-ease2" }, h("span", { class: "b" }, String(eb)), h("span", { "aria-hidden": "true" }, "→"), h("span", { class: `a${Number(ea) > Number(eb) ? " up" : Number(ea) < Number(eb) ? " down" : ""}` }, String(ea)), h("span", { class: "cv-meta" }, "ease, 1 hard to 5 easy")) : null,
+        said ? h("blockquote", { class: "cv-said" }, firstSentences(said, 3)) : null));
+    }
+    return out;
+  }
+
+  /** The change: one fold a file (+/−), read from the card's diff as the
+   *  pack opens; a file over 40 lines shows its first 40 and "Show all". */
+  function diffBox(f, sum) {
+    const S2 = (S.cdiff = S.cdiff || new Map());
+    let c = S2.get(id);
+    if (!c && (f.branch || f.worktree)) {
+      c = { busy: true }; S2.set(id, c);
+      C.api(`/api/converge/findings/${enc(id)}/diff`).then((x) => { S2.set(id, { x }); }, (err) => { S2.set(id, { err: err.status === 404 ? "gone" : err.message || String(err) }); })
+        .then(() => { if (sh.sheet.isConnected && d) paint(d); });
+    }
+    const x = c && c.x;
+    const parsed = x ? splitDiff(String(x.diff || ""), Array.isArray(x.files) ? x.files : []) : [];
+    const nf = parsed.length || (sum && sum.files != null ? (Array.isArray(sum.files) ? sum.files.length : sum.files) : null);
+    const add = x ? x.add : sum?.add, del = x ? x.del : sum?.del;
+    if (nf == null && !f.branch && !f.agent) return null;
+    const allOpen = !!ui.diff;
+    const toggleAll = () => { ui.diff = !allOpen; ui.dfo = new Set(ui.diff ? parsed.map((p) => p.path) : []); paint(d); };
+    ui.dfo = ui.dfo || new Set();
+    // A small change shows whole; a large one opens its first file.
+    if (!ui.dfoInit && parsed.length) {
+      ui.dfoInit = true;
+      const total = parsed.reduce((a, p) => a + p.lines.length, 0);
+      (total <= 60 ? parsed : parsed.slice(0, 1)).forEach((p) => ui.dfo.add(p.path));
+    }
+    const files = parsed.map((p) => {
+      const open = ui.dfo.has(p.path);
+      const det = h("details", { class: "cv-dfile", open: open ? true : null },
+        h("summary", {}, h("span", { class: "p" }, p.path), h("span", { class: "du" }, p.binary ? "binary" : [h("b", { class: "a" }, `+${p.add}`), " ", h("b", { class: "d" }, `−${p.del}`)])),
+        open ? fileBody(p) : null);
+      det.addEventListener("toggle", () => { if (det.open) ui.dfo.add(p.path); else ui.dfo.delete(p.path); if (det.open && !det.querySelector(".cv-diff")) det.append(fileBody(p)); });
+      return det;
+    });
+    const status = !c ? null : c.busy ? h("p", { class: "cv-meta" }, h("span", { class: "cv-live" }, "Reading the diff")) : c.err ? h("p", { class: "cv-meta" }, c.err === "gone" ? "The branch is gone, so there is no diff to show. " : `The diff did not load: ${c.err}. `, f.agent ? h("a", { href: `#/a/${enc(f.agent)}/changes` }, "See the agent's changes") : null) : !parsed.length ? h("p", { class: "cv-meta" }, "No change against the base.") : null;
+    return h("section", { class: "cv-ev cv-evdiff" },
+      h("div", { class: "cv-evh" }, h("span", { class: "cv-label" }, "The change"), nf != null ? h("span", { class: "cv-mono" }, `${nf} file${nf === 1 ? "" : "s"} · `, h("b", { class: "a" }, `+${add ?? 0}`), " ", h("b", { class: "d" }, `−${del ?? 0}`)) : null, h("span", { class: "cv-sp" }),
+        parsed.length ? h("button", { class: "cv-btn quiet sm", type: "button", "aria-expanded": String(allOpen), onclick: toggleAll }, allOpen ? "Fold all" : "View diff") : null),
+      status, files.length ? h("div", { class: "cv-dfiles" }, files) : null,
+      x && x.truncated ? h("p", { class: "cv-meta" }, "The diff is long and was cut: see the branch for the rest.") : null);
+  }
+
+  /** A unified diff, a part a file. */
+  function splitDiff(text, stats) {
+    const out = [];
+    let cur = null;
+    for (const l of text.split("\n")) {
+      if (l.startsWith("diff --git ")) {
+        const m = / b\/(.*)$/.exec(l);
+        cur = { path: m ? m[1] : l.slice(11), lines: [], add: 0, del: 0, binary: false };
+        out.push(cur);
+        continue;
+      }
+      if (!cur) continue;
+      if (/^(index |new file mode|deleted file mode|similarity index|rename (from|to) |old mode|new mode|--- |\+\+\+ )/.test(l)) continue;
+      if (l.startsWith("Binary files")) { cur.binary = true; continue; }
+      if (l === "" ) { cur.lines.push(" "); continue; }
+      cur.lines.push(l);
+      if (l.startsWith("+")) cur.add++; else if (l.startsWith("-")) cur.del++;
+    }
+    for (const p of out) { while (p.lines.length && p.lines.at(-1) === " ") p.lines.pop(); const st = stats.find((s) => s.path === p.path); if (st && st.binary) p.binary = true; }
+    return out;
+  }
+
+  function fileBody(p) {
+    const MAX = 40;
+    const all = ui.dfull && ui.dfull.has(p.path);
+    const lines = all ? p.lines : p.lines.slice(0, MAX);
+    const pre = h("pre", { class: "cv-diff", tabindex: "0", "aria-label": `The diff of ${p.path}` }, lines.map((l) => {
+      const k = l.startsWith("@@") ? "hk" : l.startsWith("+") ? "ad" : l.startsWith("-") ? "dl" : "";
+      return h("span", { class: k || null }, l.startsWith("@@") ? l.replace(/^(@@[^@]*@@).*/, "$1") + (l.replace(/^@@[^@]*@@/, "") ? ` ${l.replace(/^@@[^@]*@@\s*/, "")}` : "") : l);
+    }));
+    const more = p.lines.length > MAX && !all ? h("button", { class: "cv-btn quiet sm cv-dmore", type: "button", onclick: (e) => { e.preventDefault(); (ui.dfull = ui.dfull || new Set()).add(p.path); paint(d); } }, `Show ${p.lines.length - MAX} more lines`) : null;
+    return h("div", { class: "cv-dbody" }, p.binary && !p.lines.length ? h("p", { class: "cv-meta" }, "A binary file.") : pre, more);
   }
 
   function eventsBox(x) {

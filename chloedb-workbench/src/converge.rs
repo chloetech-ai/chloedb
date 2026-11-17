@@ -6191,6 +6191,63 @@ async fn run_get(State(app): State<App>, AxPath(id): AxPath<String>) -> ApiResul
     Ok(AxJson(v).into_response())
 }
 
+// ---------------------------------------------------------------- the diff
+// `GET /api/converge/findings/:id/diff`: the card's change as a unified
+// diff (read-only): its branch against the base, from the merge base, read
+// with git in the main checkout (its worktree when the branch is gone).
+// `{base, branch, files: [{path, add, del}], add, del, diff, truncated}`.
+
+/// The read-only diff route, merged beside [`routes`].
+pub fn diff_routes() -> Router<App> {
+    Router::new().route("/api/converge/findings/:id/diff", get(finding_diff))
+}
+
+/// The most of a diff sent in one answer.
+const DIFF_MAX: usize = 400_000;
+
+async fn finding_diff(State(app): State<App>, AxPath(id): AxPath<String>) -> ApiResult {
+    let sup = app.sup.clone();
+    let v = blocking(move || {
+        let f = get_finding(&sup, &id)?;
+        let repo = PathBuf::from(&f.repo);
+        let branch = f.branch.clone().filter(|b| !b.is_empty()).ok_or_else(|| ApiError::not_found("this card has no branch yet"))?;
+        let base = base_of(&repo, &settings(&sup, &f.repo));
+        // The branch in the main checkout, else the card's worktree (its HEAD).
+        let wt = f.worktree.as_deref().map(PathBuf::from).filter(|p| p.is_dir());
+        let (dir, head) = if git(&repo, &["rev-parse", "--verify", "--quiet", &format!("{branch}^{{commit}}")]).is_ok() {
+            (repo.clone(), branch.clone())
+        } else if let Some(w) = wt {
+            (w, "HEAD".to_string())
+        } else {
+            return Err(ApiError::not_found(format!("the branch {branch} is gone")));
+        };
+        let range = format!("{base}...{head}");
+        let stat = git(&dir, &["diff", "--numstat", "--no-color", &range]).map_err(ApiError::internal)?;
+        let mut files = Vec::new();
+        let (mut add, mut del) = (0i64, 0i64);
+        for l in stat.lines() {
+            let mut it = l.splitn(3, '\t');
+            let (a, d, path) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
+            let (a, d) = (a.parse::<i64>().ok(), d.parse::<i64>().ok());
+            add += a.unwrap_or(0);
+            del += d.unwrap_or(0);
+            files.push(json!({ "path": path, "add": a, "del": d, "binary": a.is_none() }));
+        }
+        let mut diff = git(&dir, &["diff", "--no-color", "--no-ext-diff", &range]).map_err(ApiError::internal)?;
+        let truncated = diff.len() > DIFF_MAX;
+        if truncated {
+            let mut i = DIFF_MAX;
+            while !diff.is_char_boundary(i) {
+                i -= 1;
+            }
+            diff.truncate(i);
+        }
+        Ok(json!({ "base": base, "branch": branch, "files": files, "add": add, "del": del, "diff": diff, "truncated": truncated }))
+    })
+    .await?;
+    Ok(AxJson(v).into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

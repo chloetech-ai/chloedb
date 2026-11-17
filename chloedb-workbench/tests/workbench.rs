@@ -7526,6 +7526,7 @@ fn converge_your_card_is_verified_by_its_repro_and_merges_locally_without_github
     };
     let f = step("prioritize");
     assert_eq!(f["finding"]["stage"], "prioritize", "{f}");
+    assert_eq!(s.get(&format!("/api/converge/findings/{fid}/diff")).0, 404, "no branch, no diff");
     let (st, v) = s.post(&format!("/api/converge/findings/{fid}/start"), json!({}));
     assert_eq!(st, 200, "{v}");
     let aid = v["finding"]["agent"].as_str().unwrap().to_string();
@@ -7549,6 +7550,13 @@ fn converge_your_card_is_verified_by_its_repro_and_merges_locally_without_github
         std::thread::sleep(Duration::from_millis(200));
     };
     assert!(f["finding"]["needs_you"].as_str().unwrap().contains("merge it locally"), "{f}");
+    // The merge pack's diff: the branch against the base, read-only.
+    let (st, dv) = s.get(&format!("/api/converge/findings/{fid}/diff"));
+    assert_eq!(st, 200, "{dv}");
+    let paths: Vec<&str> = dv["files"].as_array().unwrap().iter().filter_map(|x| x["path"].as_str()).collect();
+    assert!(paths.contains(&"src/FIXED") && paths.contains(&"tests/footer_test.sh"), "{dv}");
+    assert_eq!(dv["add"], 2, "{dv}");
+    assert!(dv["diff"].as_str().unwrap().contains("+yes"), "{dv}");
     // Merged locally, into main in the main checkout; its agent is stopped.
     let (st, v) = s.post(&format!("/api/converge/findings/{fid}/merge-local"), json!({}));
     assert_eq!(st, 200, "{v}");

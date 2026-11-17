@@ -184,6 +184,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::harness::routes())
         // Converge (src/converge.rs): personas, findings and their gated loop.
         .merge(crate::converge::routes())
+        .merge(crate::converge::diff_routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
