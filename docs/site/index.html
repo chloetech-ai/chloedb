@@ -291,7 +291,7 @@ GROUP BY p.brand ORDER BY reviews DESC LIMIT 10;</pre></div>
     <div class="tiles">
       <a href="bench-10m.html" data-overall="cloud-10m" data-mode="tile"></a>
       <a href="bench-1m.html" data-overall="cloud-1m" data-mode="tile"></a>
-      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">1.9× to 17×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB with every system on one thread (an older ChloeDB build, four BEIR collections); 4.8× to 33× with ChloeDB on up to eight threads, on all five.</p></a>
+      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">4.1× to 18×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB on five BEIR collections, every system on one node with ChloeDB 0.3.5, and as fast with ChloeDB held to one thread.</p></a>
       <a href="bench-graph.html"><span class="eyebrow">Graph · arXiv citations</span><span class="v">1st of 5</span><p>Against Neo4j, Memgraph, FalkorDB and ArangoDB on places summed over 16 tests, on one laptop: 31 points, Memgraph 60, and 21 against 24 without PageRank, which only ChloeDB and Neo4j run. Memgraph and FalkorDB answer one to three hops in about half ChloeDB's time.</p></a>
     </div>
     <p class="honest" style="justify-self:center;text-align:center">Specialists still win some kinds, such as typo search and key lookups. Each report shows where.</p>
@@ -336,7 +336,7 @@ EOF</pre>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js?v=9baf0c46d1"></script>
+<script src="assets/bench-data.js?v=37458d7418"></script>
 <script src="assets/site.js?v=699f360f4f"></script>
 <script src="assets/bench.js?v=cc795d625d"></script>
 <script src="assets/sims.js?v=8a3133bd4a"></script>
