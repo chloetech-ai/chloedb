@@ -1,0 +1,23 @@
+{
+ "table": "gh_repo_names",
+ "shard_by": "repo",
+ "fields": [
+  {
+   "name": "repo",
+   "type": "int",
+   "not_null": true
+  },
+  {
+   "name": "name",
+   "type": "keyword"
+  },
+  {
+   "name": "first_seen",
+   "type": "int"
+  },
+  {
+   "name": "lname",
+   "type": "keyword"
+  }
+ ]
+}

@@ -1,0 +1,63 @@
+{
+ "table": "gh_topic_months",
+ "shard_by": "part",
+ "fields": [
+  {
+   "name": "part",
+   "type": "int",
+   "not_null": true
+  },
+  {
+   "name": "month",
+   "type": "int"
+  },
+  {
+   "name": "topic",
+   "type": "keyword"
+  },
+  {
+   "name": "stars",
+   "type": "int"
+  },
+  {
+   "name": "forks",
+   "type": "int"
+  },
+  {
+   "name": "pushes",
+   "type": "int"
+  },
+  {
+   "name": "commits",
+   "type": "int"
+  },
+  {
+   "name": "prs",
+   "type": "int"
+  },
+  {
+   "name": "merged",
+   "type": "int"
+  },
+  {
+   "name": "issues",
+   "type": "int"
+  },
+  {
+   "name": "comments",
+   "type": "int"
+  },
+  {
+   "name": "releases",
+   "type": "int"
+  },
+  {
+   "name": "people",
+   "type": "int"
+  },
+  {
+   "name": "repos",
+   "type": "int"
+  }
+ ]
+}

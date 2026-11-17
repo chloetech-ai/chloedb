@@ -15,6 +15,13 @@ Pick one. Each gives you a `chloedb-server` program, prebuilt (a download of abo
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh
 ```
 
+**pipx or uv** <!-- since 0.3.7 -->: the same server, from [PyPI](https://pypi.org/project/chloedb-server/), on the same Macs and on Linux with glibc 2.34 or later. `pipx install` and `uv tool install` put `chloedb-server` on your `PATH`; `uvx chloedb-server` runs it without installing it.
+
+```sh
+# install
+pipx install chloedb-server      # or: uv tool install chloedb-server
+```
+
 **Homebrew** is not available yet: there is no tap to install from. Use the install script above, which works on the same Macs and Linux machines.
 
 **Docker**: skip to [ChloeDB in Docker](#chloedb-in-docker) below, which runs the same steps against the image.
@@ -23,7 +30,7 @@ curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh
 
 ```sh
 # install
-v=0.3.6 p=macos-arm64
+v=0.3.7 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz && mkdir -p ~/.local/bin && mv chloedb-server-$p/chloedb-server ~/.local/bin/
 ```
@@ -176,7 +183,7 @@ The image `ghcr.io/chloetech-ai/chloedb-server` (Linux, x86-64 and arm64) keeps 
 ```sh
 # install
 docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
-  ghcr.io/chloetech-ai/chloedb-server:0.3.6
+  ghcr.io/chloetech-ai/chloedb-server:0.3.7
 ```
 
 Then every request sends the token, and the console asks for it once:

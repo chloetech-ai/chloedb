@@ -88,7 +88,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <div><b>Equal budgets, enforced</b><p>Kubernetes limits: 6.8 CPUs per engine in the cloud, 3 CPUs and 6 GiB on the laptop. Each engine is told its budget.</p></div>
       <div><b>The same text analysis</b><p>Folding, English stopwords, Snowball stemming, BM25 k1 1.2 and b 0.75 everywhere. The Lucene engines' top 10s share 93 to 96% of ChloeDB's.</p></div>
       <div><b>The same vector settings</b><p>HNSW m 16, ef_construction 200, 64 candidates, 8-bit codes re-scored where supported.</p></div>
-      <div><b>No result caches</b><p>Result caches off for every engine, its SQL endpoint included, since 5 November (<a href="#audit">our audit</a>); filter and page caches stay on, and each run records its cache hits. ChloeDB has kept an answer cache since 13 November (0.3.1): the harness starts it with <code>--answer-cache-mb 0</code> and fails a run in which any answer came from it. Every ChloeDB run on these pages was measured on a build from before that cache. Every answer is recorded and checked.</p></div>
+      <div><b>No result caches</b><p>Result caches off for every engine, its SQL endpoint included, since 5 November (<a href="#audit">our audit</a>); filter and page caches stay on, and each run records its cache hits. ChloeDB has kept an answer cache since 13 November (0.3.1): the harness starts it with <code>--answer-cache-mb 0</code> and fails a run in which any answer came from it. The 0.3.5 runs of 16 November ran with it off, and the cloud runs before them on builds from before it. Every answer is recorded and checked.</p></div>
       <div><b>Pinned versions</b><p>Images pinned by tag, ChloeDB by commit, data by SHA-256.</p></div>
       <div><b>Defaults plus documented tuning</b><p>What each engine's own docs recommend, committed beside the results.</p></div>
     </div>
@@ -140,14 +140,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         <tr><th scope="row">ChloeDB's load was an offline build, the others' HTTP ingestion</th><td>Load shown, never ranked</td></tr>
         <tr><th scope="row">"First overall" depends on counting a missing kind as last</th><td>The ranking under five rules on every cluster report</td></tr>
         <tr><th scope="row">Throughput at 4 clients is short of saturation; at 16 ChloeDB out-serves the three Lucene engines on fewer kinds</th><td>16-client throughput on every table; the ranking with it</td></tr>
-        <tr><th scope="row">Vector speed is compared at a fixed search list, not at matched recall; Elasticsearch's and OpenSearch's recall at 1M (0.72, 0.59) is far below theirs on NQ</th><td>Recall beside every vector speed, and since 7 November a sweep of 64, 128 and 256 candidates for ChloeDB and Qdrant (<a href="bench-1m.html#recall">1M</a>). The outliers are not explained yet</td></tr>
+        <tr><th scope="row">Vector speed is compared at a fixed search list, not at matched recall; Elasticsearch's and OpenSearch's recall at 1M (0.72, 0.59) is far below theirs on NQ</th><td>Recall beside every vector speed, and since 16 November a sweep of 64 to 512 candidates at 1M for ChloeDB, Elasticsearch, OpenSearch, Solr, Vespa, Qdrant and Postgres (<a href="bench-1m.html#recall">1M</a>), and of 64 to 256 at 10M for ChloeDB, Elasticsearch and OpenSearch. At 64 Elasticsearch and OpenSearch are at 0.74 and 0.65 on 0.3.5's run; the gap to NQ is not explained yet</td></tr>
         <tr><th scope="row">Without a server, ChloeDB searched a query's segments on up to 8 threads, the others on one</th><td>A one-thread ChloeDB column on every search chart</td></tr>
         <tr><th scope="row">Key lookups took different paths at 1M: ChloeDB's SQL, the others a search on id</th><td>At 10M and in the 1M rerun every engine used its own read by id</td></tr>
         <tr><th scope="row">ChloeDB's updates set one column; the Lucene engines re-index the document</th><td>Said beside the results</td></tr>
         <tr><th scope="row">PageRank compares a local push with power iteration over the whole graph</th><td>Recall beside every PageRank time</td></tr>
         <tr><th scope="row">Thread pools larger than the CPU limit throttled Vespa (408 s), Postgres (136 s) and Typesense (52 s), against ChloeDB's 18 s</th><td>Open: it hurts their tails</td></tr>
         <tr><th scope="row">ChloeDB's coordinator shares the client's node, so its first hop does not cross the network</th><td>Since 6 November each shard pod also runs a coordinator, as Elasticsearch's nodes do, and the client calls them across the network (<a href="https://github.com/chloetech-ai/chloedb/pull/287">#287</a>); at 1M that costs ChloeDB 4 to 29% at the median on one client. Since 7 November the coordinator runs in the shard's process and answers its own shard without the network (<a href="https://github.com/chloetech-ai/chloedb/pull/299">#299</a>)</td></tr>
-        <tr><th scope="row">DigitalOcean handed out four Xeon models; the same engine on other nodes moved 12% at the median, and ChloeDB's same image up to 39% on BM25 at 16 clients</th><td>Since 4 November each lane's engines take turns on the same nodes, with ChloeDB first and again last: 1.4% apart at the median at 1M, 3.4% at 10M</td></tr>
+        <tr><th scope="row">DigitalOcean handed out four Xeon models; the same engine on other nodes moved 12% at the median, and ChloeDB's same image up to 39% on BM25 at 16 clients</th><td>Since 4 November each lane's engines take turns on the same nodes, with ChloeDB first and again last: 1.4% apart at the median at 1M and 3.4% at 10M on 4 November, 2.3% and 1.0% on 16 November</td></tr>
           <tr><th scope="row">Last in its lane, Milvus was still compacting during its first two passes, 2 to 3 times slower than alone</th><td>Its 1M numbers come from a run alone on a fresh node</td></tr>
         <tr><th scope="row">A slow kind is timed on fewer queries in its 6 seconds (ChloeDB's typo kind on its first 48)</th><td>Open</td></tr>
         <tr><th scope="row">The graph run is on a fanless laptop, in a fixed order</th><td>Said on the graph page</td></tr>
@@ -166,7 +166,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <div><dt>Cloud, 1M</dt><dd>DigitalOcean Kubernetes. The rerun: two 4-vCPU nodes (Xeon Platinum 8280, 8168) for the engines that shard, one 8-vCPU node (8280) for the rest, Milvus alone on another (8358). The first run: 4- and 8-vCPU nodes; Xeon Platinum 8168, 8280, 8358 and Gold 6248</dd></div>
       <div><dt>Cloud, 10M</dt><dd>The same layout on m3 nodes; Xeon Platinum 8168, 8280, Gold 6248, 5318Y. Milvus and Redis on 128 GB. The head-to-head on latest main: two m3 nodes (8168, 8280)</dd></div>
       <div><dt>Laptop cluster</dt><dd>MacBook Air M2, 24 GB; kind in Docker Desktop, 4 CPUs</dd></div>
-      <div><dt>No server</dt><dd>DigitalOcean 8 vCPU: Xeon Platinum 8358; Xeon Gold 6548N for Tantivy</dd></div>
+      <div><dt>No server</dt><dd>DigitalOcean 8 vCPU: Xeon Platinum 8168 on 16 November (8358 before); Xeon Gold 6548N for Tantivy as the app's store</dd></div>
       <div><dt>Graph</dt><dd>MacBook Air M2; 3 CPUs and 6 GB per engine</dd></div>
       <div><dt>BM25 under load</dt><dd>A 4-vCPU cloud container, Xeon at 2.10 GHz</dd></div>
     </dl>
@@ -208,8 +208,8 @@ deploy/compare/fanout.sh down</code></pre></div>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js?v=376b5cfc2f"></script>
+<script src="assets/bench-data.js?v=37458d7418"></script>
 <script src="assets/site.js?v=699f360f4f"></script>
-<script src="assets/bench.js?v=c61344792b"></script>
+<script src="assets/bench.js?v=cc795d625d"></script>
 </body>
 </html>

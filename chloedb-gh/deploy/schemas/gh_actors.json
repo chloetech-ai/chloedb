@@ -1,0 +1,27 @@
+{
+ "table": "gh_actors",
+ "key": "actor",
+ "fields": [
+  {
+   "name": "actor",
+   "type": "int",
+   "not_null": true
+  },
+  {
+   "name": "login",
+   "type": "keyword"
+  },
+  {
+   "name": "first_seen",
+   "type": "int"
+  },
+  {
+   "name": "last_seen",
+   "type": "int"
+  },
+  {
+   "name": "llogin",
+   "type": "keyword"
+  }
+ ]
+}

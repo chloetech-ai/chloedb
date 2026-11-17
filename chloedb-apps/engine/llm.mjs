@@ -203,9 +203,14 @@ export function ask(opts) {
   return askClaude(opts);
 }
 
-// The arguments of `claude -p` for one answer.
-export function claudeArgs({ system, model = MODEL, effort, tools = [], maxBudgetUsd, images = [] }) {
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--system-prompt', system,
+// The arguments of `claude -p` for one answer. The system prompt is read
+// from a file (systemFile), not passed as an argument: Linux refuses any one
+// argument over 128 KiB (MAX_ARG_STRLEN) with E2BIG, and the forge's system
+// prompt passed that in #574 (152 KB), so on the operator's pods every build
+// failed at once with "spawn E2BIG" while it still ran on a Mac, which has no
+// such limit.
+export function claudeArgs({ systemFile, model = MODEL, effort, tools = [], maxBudgetUsd, images = [] }) {
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--system-prompt-file', systemFile,
     '--tools', tools.join(','), '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence'];
   if (tools.length) args.push('--allowedTools', tools.join(','));
   if (maxBudgetUsd) args.push('--max-budget-usd', String(maxBudgetUsd));
@@ -214,13 +219,29 @@ export function claudeArgs({ system, model = MODEL, effort, tools = [], maxBudge
   return args;
 }
 
-function askClaude({ system, prompt, images = [], model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE, tools = [], maxBudgetUsd, bucket = 'build' }) {
-  const over = overCap(bucket);
+function askClaude(opts) {
+  const over = overCap(opts.bucket || 'build');
   if (over) return Promise.reject(over);
   const signal = buildScope.getStore()?.signal;
   if (signal?.aborted) return Promise.reject(stoppedError());
+  // The system prompt goes in a file of its own, readable by this user only,
+  // removed when the answer is in (claudeArgs says why).
+  return (async () => {
+    const dir = await mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), 'sa-claude-'));
+    try {
+      const systemFile = path.join(dir, 'system.txt');
+      await writeFile(systemFile, String(opts.system ?? ''), { mode: 0o600 });
+      return await runClaude({ ...opts, systemFile, signal });
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  })();
+}
+
+function runClaude({ systemFile, signal, prompt, images = [], model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE, tools = [], maxBudgetUsd, bucket = 'build' }) {
+  if (signal?.aborted) return Promise.reject(stoppedError());
   return new Promise((resolve, reject) => {
-    const args = claudeArgs({ system, model, effort, tools, maxBudgetUsd, images });
+    const args = claudeArgs({ systemFile, model, effort, tools, maxBudgetUsd, images });
     const env = childEnv('claude');
     const child = spawn(bin, args, { env, stdio: ['pipe', 'pipe', 'pipe'], cwd: process.env.TMPDIR || '/tmp' });
     let buf = '';
@@ -294,7 +315,8 @@ const CODEX_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
 // browser, computer use, image generation or web search), a read-only
 // sandbox in an empty folder, nothing of the user's config.toml (its MCP
 // servers, profiles), no rules files and no session kept. The system prompt
-// goes in as developer instructions; the prompt is read from stdin ('-');
+// goes in as developer instructions when it fits in one argument (codexInput
+// moves a longer one to stdin); the prompt is read from stdin ('-');
 // events come as JSONL (--json) and the final answer also lands in outFile.
 // images: paths of files.
 export function codexArgs({ system, model = null, effort, images = [], outFile, cwd }) {
@@ -309,6 +331,18 @@ export function codexArgs({ system, model = null, effort, images = [], outFile, 
   for (const f of images) args.push('--image', f);
   args.push('-');
   return args;
+}
+
+// Linux's limit on one argument (MAX_ARG_STRLEN, 128 KiB), less room to spare.
+export const ARG_BYTES = 120 * 1024;
+// What codex is given: {system} for its developer instructions and {prompt}
+// for stdin. A system prompt too long for one argument goes at the top of
+// stdin instead, marked as the instructions, rather than failing with E2BIG.
+export function codexInput(system, prompt, max = ARG_BYTES) {
+  const s = String(system || '');
+  const p = String(prompt ?? '');
+  if (Buffer.byteLength(`developer_instructions=${JSON.stringify(s)}`) <= max) return { system: s, prompt: p };
+  return { system: '', prompt: `<instructions>\n${s}\n</instructions>\n\nFollow the instructions above. The request:\n\n${p}` };
 }
 
 // What one line of `codex exec --json` says: {text} for an answer, {thinking}
@@ -348,11 +382,12 @@ function askCodex({ system, prompt, images = [], model, effort = process.env.STR
       const outFile = path.join(dir, 'answer.txt');
       const work = path.join(dir, 'work');
       await mkdir(work);
-      const args = codexArgs({ system, model: use, effort, images: files, outFile, cwd: work });
+      const input = codexInput(system, prompt);
+      const args = codexArgs({ system: input.system, model: use, effort, images: files, outFile, cwd: work });
       const t0 = Date.now();
       let out;
       try {
-        out = await runCodex(bin, args, prompt, { idleMs, timeoutMs, onWrite, cwd: work, signal });
+        out = await runCodex(bin, args, input.prompt, { idleMs, timeoutMs, onWrite, cwd: work, signal });
       } catch (e) {
         // A failed or stopped turn still cost what it used.
         if (e.usage && Object.keys(e.usage).length) counted(codexCost(e.usage), bucket);

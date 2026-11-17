@@ -3,7 +3,7 @@
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.3.6). The
+(November 2026, every crate and package at version 0.3.7). The
 [changelog](../CHANGELOG.md) says what changed.
 
 ChloeDB is pre-1.0: the statements below are the current behaviour, which
@@ -105,7 +105,7 @@ server of their own commit.
 **Not promised.** A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.6), and keeps it between releases: name a
+version of the last release (0.3.7), and keeps it between releases: name a
 build from a commit after a release by its commit.
 
 ## A cluster of mixed versions
@@ -162,6 +162,8 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   writes none, so a 0.3.6 replica under one refuses that flip and the maps
   after it, until a later flip from the shard is marked or the replica is
   replaced. Finish the upgrade before moving slots.
+  0.3.7 keeps the shard protocol at 21 and adds no plan feature and no
+  field, so 0.3.6 and 0.3.7 mix in either order.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
@@ -250,6 +252,8 @@ their promises:
 
 - `chloedb-netops`, network operations on a simulated carrier network;
 - `chloedb-hn`, Hacker News searched, asked in sentences and completed as typed;
+- `chloedb-arxiv`, every arXiv paper with search, the recommender and feeds;
+- `chloedb-gh`, GitHub's public history since 2011: repos by what they do, why they trend, what people use instead;
 - `chloedb-swarm`, simulated users, an internal test instrument;
 - `examples/feature-store`, a shop ranked on features ChloeDB keeps;
 - `examples/parley`, a social network of LLM agents.

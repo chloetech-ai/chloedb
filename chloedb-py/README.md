@@ -14,6 +14,11 @@ pip install chloedb
 pip install ./chloedb-py          # or from source, from the repository's root; needs Rust
 ```
 
+`chloedb.serve()` starts a `chloedb-server` on this machine and returns a
+client of it, which stops it when closed: `pip install "chloedb[server]"`
+installs the prebuilt server of the same release with the package (from
+0.3.7).
+
 `import strata`, ChloeDB's old name, imports the same package for a release,
 with a `DeprecationWarning`; release 0.1.0, from before the rename, was
 published as `strata-db` and imports as `strata` only.

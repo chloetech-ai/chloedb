@@ -483,8 +483,10 @@ public final class Database implements AutoCloseable {
 
     /**
      * Imports the tables of the SQLite file {@code path}. {@code options}:
-     * {@code tables}, {@code schemas}, {@code blobsBase64}. Returns what it
-     * did.
+     * {@code tables}, {@code schemas}, {@code blobsBase64}, {@code append}
+     * (rows into a table without a key that has rows, which is refused
+     * otherwise, as importing the file again would repeat them). Returns
+     * what it did.
      */
     @SuppressWarnings("unchecked")
     public Map<String, Object> importSqlite(String path, Map<String, ?> options) {

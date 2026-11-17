@@ -188,7 +188,7 @@ fn takes(method: &str) -> Option<&'static [&'static str]> {
         "delete" | "getMany" => &["keys", "table"],
         "write" => &["ops"],
         "importFile" => &["path", "format", "table"],
-        "importSqlite" => &["path", "tables", "schemas", "blobsBase64"],
+        "importSqlite" => &["path", "tables", "schemas", "blobsBase64", "append"],
         "exportSqlite" => &["path", "tables", "fts", "indexes", "schemas"],
         "importParquet" => &["path", "table", "schema", "key", "blobsBase64"],
         "exportParquet" => &["path", "tables", "schemas"],
@@ -569,7 +569,9 @@ fn sqlite_options(a: &mut Args) -> R<sqlite::ImportOptions> {
     let tables = a.names("tables")?.unwrap_or_default();
     let schemas = a.json_text("schemas")?.map(|s| sqlite::schemas_from_json(&s)).transpose()?.unwrap_or_default();
     let blobs_base64 = a.bool("blobsBase64", false)?;
-    Ok(sqlite::ImportOptions { tables, schemas, blobs_base64 })
+    // An import's alone: a new database has no rows to add to.
+    let append = if a.takes.contains(&"append") { a.bool("append", false)? } else { false };
+    Ok(sqlite::ImportOptions { tables, schemas, blobs_base64, append })
 }
 
 #[cfg(feature = "parquet")]

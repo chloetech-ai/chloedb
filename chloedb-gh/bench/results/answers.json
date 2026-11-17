@@ -1,0 +1,1072 @@
+{
+ "AUTOMATIC1111/stable-diffusion-webui": {
+  "id": 527591471,
+  "full_name": "AUTOMATIC1111/stable-diffusion-webui",
+  "stars": 165325
+ },
+ "AdguardTeam/AdGuardHome": {
+  "id": 62712899,
+  "full_name": "AdguardTeam/AdGuardHome",
+  "stars": 38500
+ },
+ "AppFlowy-IO/AppFlowy": {
+  "id": 377496562,
+  "full_name": "AppFlowy-IO/AppFlowy",
+  "stars": 79007
+ },
+ "AstroNvim/AstroNvim": {
+  "id": 454957552,
+  "full_name": "AstroNvim/AstroNvim",
+  "stars": 14485
+ },
+ "BurntSushi/ripgrep": {
+  "id": 53631945,
+  "full_name": "BurntSushi/ripgrep",
+  "stars": 69978
+ },
+ "Byron/dua-cli": {
+  "id": 189215168,
+  "full_name": "Byron/dua-cli",
+  "stars": 6445
+ },
+ "ClementTsang/bottom": {
+  "id": 205042455,
+  "full_name": "ClementTsang/bottom",
+  "stars": 14195
+ },
+ "FreshRSS/FreshRSS": {
+  "id": 6322699,
+  "full_name": "FreshRSS/FreshRSS",
+  "stars": 16598
+ },
+ "Kong/insomnia": {
+  "id": 56899284,
+  "full_name": "Kong/insomnia",
+  "stars": 40161
+ },
+ "LazyVim/LazyVim": {
+  "id": 583706111,
+  "full_name": "LazyVim/LazyVim",
+  "stars": 27872
+ },
+ "NvChad/NvChad": {
+  "id": 345368765,
+  "full_name": "NvChad/NvChad",
+  "stars": 28548
+ },
+ "PostHog/posthog": {
+  "id": 235901813,
+  "full_name": "PostHog/posthog",
+  "stars": 40821
+ },
+ "PrefectHQ/prefect": {
+  "id": 139199684,
+  "full_name": "PrefectHQ/prefect",
+  "stars": 24163
+ },
+ "PyCQA/flake8": {
+  "id": 24000265,
+  "full_name": "PyCQA/flake8",
+  "stars": 3837
+ },
+ "RocketChat/Rocket.Chat": {
+  "id": 35866694,
+  "full_name": "RocketChat/Rocket.Chat",
+  "stars": 46512
+ },
+ "VictoriaMetrics/VictoriaMetrics": {
+  "id": 150954997,
+  "full_name": "VictoriaMetrics/VictoriaMetrics",
+  "stars": 18113
+ },
+ "activepieces/activepieces": {
+  "id": 573661753,
+  "full_name": "activepieces/activepieces",
+  "stars": 25557
+ },
+ "actix/actix-web": {
+  "id": 105379569,
+  "full_name": "actix/actix-web",
+  "stars": 24960
+ },
+ "ajeetdsouza/zoxide": {
+  "id": 245166720,
+  "full_name": "ajeetdsouza/zoxide",
+  "stars": 40604
+ },
+ "alacritty/alacritty": {
+  "id": 51980455,
+  "full_name": "alacritty/alacritty",
+  "stars": 66196
+ },
+ "anchore/grype": {
+  "id": 267054247,
+  "full_name": "anchore/grype",
+  "stars": 13269
+ },
+ "apache/airflow": {
+  "id": 33884891,
+  "full_name": "apache/airflow",
+  "stars": 47493
+ },
+ "apache/echarts": {
+  "id": 9185792,
+  "full_name": "apache/echarts",
+  "stars": 67733
+ },
+ "apache/flink": {
+  "id": 20587599,
+  "full_name": "apache/flink",
+  "stars": 26472
+ },
+ "apache/kafka": {
+  "id": 2211243,
+  "full_name": "apache/kafka",
+  "stars": 34222
+ },
+ "apache/spark": {
+  "id": 17165658,
+  "full_name": "apache/spark",
+  "stars": 44538
+ },
+ "apache/superset": {
+  "id": 39464018,
+  "full_name": "apache/superset",
+  "stars": 75529
+ },
+ "appwrite/appwrite": {
+  "id": 180190854,
+  "full_name": "appwrite/appwrite",
+  "stars": 58104
+ },
+ "aquasecurity/trivy": {
+  "id": 180687624,
+  "full_name": "aquasecurity/trivy",
+  "stars": 39398
+ },
+ "aristocratos/btop": {
+  "id": 365005377,
+  "full_name": "aristocratos/btop",
+  "stars": 35428
+ },
+ "astral-sh/ruff": {
+  "id": 523043277,
+  "full_name": "astral-sh/ruff",
+  "stars": 51270
+ },
+ "astral-sh/uv": {
+  "id": 699532645,
+  "full_name": "astral-sh/uv",
+  "stars": 92055
+ },
+ "atuinsh/atuin": {
+  "id": 301244405,
+  "full_name": "atuinsh/atuin",
+  "stars": 32468
+ },
+ "bevyengine/bevy": {
+  "id": 234798675,
+  "full_name": "bevyengine/bevy",
+  "stars": 49782
+ },
+ "bootandy/dust": {
+  "id": 125563061,
+  "full_name": "bootandy/dust",
+  "stars": 12641
+ },
+ "caddyserver/caddy": {
+  "id": 29207621,
+  "full_name": "caddyserver/caddy",
+  "stars": 79090
+ },
+ "catboost/catboost": {
+  "id": 97556265,
+  "full_name": "catboost/catboost",
+  "stars": 9205
+ },
+ "chartjs/Chart.js": {
+  "id": 8843683,
+  "full_name": "chartjs/Chart.js",
+  "stars": 67796
+ },
+ "chroma-core/chroma": {
+  "id": 546206616,
+  "full_name": "chroma-core/chroma",
+  "stars": 29695
+ },
+ "cockroachdb/cockroach": {
+  "id": 16563587,
+  "full_name": "cockroachdb/cockroach",
+  "stars": 32619
+ },
+ "curl/curl": {
+  "id": 569041,
+  "full_name": "curl/curl",
+  "stars": 43527
+ },
+ "cypress-io/cypress": {
+  "id": 31629751,
+  "full_name": "cypress-io/cypress",
+  "stars": 51028
+ },
+ "d3/d3": {
+  "id": 943149,
+  "full_name": "d3/d3",
+  "stars": 113939
+ },
+ "dagster-io/dagster": {
+  "id": 131619646,
+  "full_name": "dagster-io/dagster",
+  "stars": 16427
+ },
+ "dani-garcia/vaultwarden": {
+  "id": 121898717,
+  "full_name": "dani-garcia/vaultwarden",
+  "stars": 70818
+ },
+ "denoland/deno": {
+  "id": 133442384,
+  "full_name": "denoland/deno",
+  "stars": 108932
+ },
+ "derailed/k9s": {
+  "id": 167596393,
+  "full_name": "derailed/k9s",
+  "stars": 34981
+ },
+ "directus/directus": {
+  "id": 7122594,
+  "full_name": "directus/directus",
+  "stars": 38728
+ },
+ "dmlc/xgboost": {
+  "id": 16587283,
+  "full_name": "dmlc/xgboost",
+  "stars": 28978
+ },
+ "dragonflydb/dragonfly": {
+  "id": 437245741,
+  "full_name": "dragonflydb/dragonfly",
+  "stars": 31877
+ },
+ "drizzle-team/drizzle-orm": {
+  "id": 379865325,
+  "full_name": "drizzle-team/drizzle-orm",
+  "stars": 36282
+ },
+ "duckdb/duckdb": {
+  "id": 138754790,
+  "full_name": "duckdb/duckdb",
+  "stars": 43101
+ },
+ "dundee/gdu": {
+  "id": 122750502,
+  "full_name": "dundee/gdu",
+  "stars": 6203
+ },
+ "elastic/elasticsearch": {
+  "id": 507775,
+  "full_name": "elastic/elasticsearch",
+  "stars": 78689
+ },
+ "electron/electron": {
+  "id": 9384267,
+  "full_name": "electron/electron",
+  "stars": 123919
+ },
+ "encode/httpx": {
+  "id": 179492861,
+  "full_name": "encode/httpx",
+  "stars": 15797
+ },
+ "evanw/esbuild": {
+  "id": 61137153,
+  "full_name": "evanw/esbuild",
+  "stars": 40135
+ },
+ "excalidraw/excalidraw": {
+  "id": 231283452,
+  "full_name": "excalidraw/excalidraw",
+  "stars": 135774
+ },
+ "eza-community/eza": {
+  "id": 671832156,
+  "full_name": "eza-community/eza",
+  "stars": 23925
+ },
+ "fastapi/fastapi": {
+  "id": 160919119,
+  "full_name": "fastapi/fastapi",
+  "stars": 104784
+ },
+ "flutter/flutter": {
+  "id": 31792824,
+  "full_name": "flutter/flutter",
+  "stars": 181282
+ },
+ "getsentry/sentry": {
+  "id": 873328,
+  "full_name": "getsentry/sentry",
+  "stars": 45786
+ },
+ "ggml-org/llama.cpp": {
+  "id": 612354784,
+  "full_name": "ggml-org/llama.cpp",
+  "stars": 135297
+ },
+ "ggml-org/whisper.cpp": {
+  "id": 541269386,
+  "full_name": "ggml-org/whisper.cpp",
+  "stars": 55238
+ },
+ "ggreer/the_silver_searcher": {
+  "id": 2810455,
+  "full_name": "ggreer/the_silver_searcher",
+  "stars": 27123
+ },
+ "gin-gonic/gin": {
+  "id": 20904437,
+  "full_name": "gin-gonic/gin",
+  "stars": 89525
+ },
+ "gitleaks/gitleaks": {
+  "id": 119190187,
+  "full_name": "gitleaks/gitleaks",
+  "stars": 31081
+ },
+ "go-gitea/gitea": {
+  "id": 72495579,
+  "full_name": "go-gitea/gitea",
+  "stars": 59109
+ },
+ "godotengine/godot": {
+  "id": 15634981,
+  "full_name": "godotengine/godot",
+  "stars": 120261
+ },
+ "gofiber/fiber": {
+  "id": 234231371,
+  "full_name": "gofiber/fiber",
+  "stars": 40282
+ },
+ "gogs/gogs": {
+  "id": 16752620,
+  "full_name": "gogs/gogs",
+  "stars": 47939
+ },
+ "gohugoio/hugo": {
+  "id": 11180687,
+  "full_name": "gohugoio/hugo",
+  "stars": 90480
+ },
+ "gokcehan/lf": {
+  "id": 65616765,
+  "full_name": "gokcehan/lf",
+  "stars": 9599
+ },
+ "grafana/grafana": {
+  "id": 15111821,
+  "full_name": "grafana/grafana",
+  "stars": 77939
+ },
+ "grafana/k6": {
+  "id": 54400687,
+  "full_name": "grafana/k6",
+  "stars": 32315
+ },
+ "hashicorp/nomad": {
+  "id": 36653430,
+  "full_name": "hashicorp/nomad",
+  "stars": 17100
+ },
+ "hashicorp/terraform": {
+  "id": 17728164,
+  "full_name": "hashicorp/terraform",
+  "stars": 50252
+ },
+ "helix-editor/helix": {
+  "id": 268424739,
+  "full_name": "helix-editor/helix",
+  "stars": 46906
+ },
+ "home-assistant/core": {
+  "id": 12888993,
+  "full_name": "home-assistant/core",
+  "stars": 92322
+ },
+ "hoppscotch/hoppscotch": {
+  "id": 203587744,
+  "full_name": "hoppscotch/hoppscotch",
+  "stars": 80828
+ },
+ "htop-dev/htop": {
+  "id": 288082909,
+  "full_name": "htop-dev/htop",
+  "stars": 8459
+ },
+ "httpie/cli": {
+  "id": 3544424,
+  "full_name": "httpie/cli",
+  "stars": 38719
+ },
+ "huginn/huginn": {
+  "id": 8681349,
+  "full_name": "huginn/huginn",
+  "stars": 50553
+ },
+ "ianyh/Amethyst": {
+  "id": 10115880,
+  "full_name": "ianyh/Amethyst",
+  "stars": 16332
+ },
+ "immich-app/immich": {
+  "id": 455229168,
+  "full_name": "immich-app/immich",
+  "stars": 119344
+ },
+ "influxdata/influxdb": {
+  "id": 13124802,
+  "full_name": "influxdata/influxdb",
+  "stars": 31814
+ },
+ "jarun/nnn": {
+  "id": 66150122,
+  "full_name": "jarun/nnn",
+  "stars": 22121
+ },
+ "jax-ml/jax": {
+  "id": 154739597,
+  "full_name": "jax-ml/jax",
+  "stars": 36634
+ },
+ "jekyll/jekyll": {
+  "id": 65252,
+  "full_name": "jekyll/jekyll",
+  "stars": 51783
+ },
+ "jellyfin/jellyfin": {
+  "id": 161012019,
+  "full_name": "jellyfin/jellyfin",
+  "stars": 59418
+ },
+ "jesseduffield/lazydocker": {
+  "id": 187335810,
+  "full_name": "jesseduffield/lazydocker",
+  "stars": 53349
+ },
+ "jesseduffield/lazygit": {
+  "id": 134017286,
+  "full_name": "jesseduffield/lazygit",
+  "stars": 83921
+ },
+ "jestjs/jest": {
+  "id": 15062869,
+  "full_name": "jestjs/jest",
+  "stars": 45473
+ },
+ "jonas/tig": {
+  "id": 140656,
+  "full_name": "jonas/tig",
+  "stars": 13381
+ },
+ "juanfont/headscale": {
+  "id": 273871859,
+  "full_name": "juanfont/headscale",
+  "stars": 45761
+ },
+ "junegunn/fzf": {
+  "id": 13807606,
+  "full_name": "junegunn/fzf",
+  "stars": 84216
+ },
+ "kovidgoyal/calibre": {
+  "id": 10332822,
+  "full_name": "kovidgoyal/calibre",
+  "stars": 26451
+ },
+ "kovidgoyal/kitty": {
+  "id": 71056775,
+  "full_name": "kovidgoyal/kitty",
+  "stars": 35694
+ },
+ "kubernetes/kubernetes": {
+  "id": 20580498,
+  "full_name": "kubernetes/kubernetes",
+  "stars": 129126
+ },
+ "labstack/echo": {
+  "id": 31504491,
+  "full_name": "labstack/echo",
+  "stars": 32805
+ },
+ "langchain-ai/langchain": {
+  "id": 552661142,
+  "full_name": "langchain-ai/langchain",
+  "stars": 149628
+ },
+ "lapce/lapce": {
+  "id": 120425779,
+  "full_name": "lapce/lapce",
+  "stars": 39062
+ },
+ "laurent22/joplin": {
+  "id": 79162682,
+  "full_name": "laurent22/joplin",
+  "stars": 57201
+ },
+ "lllyasviel/Fooocus": {
+  "id": 676676006,
+  "full_name": "lllyasviel/Fooocus",
+  "stars": 53935
+ },
+ "locustio/locust": {
+  "id": 1377867,
+  "full_name": "locustio/locust",
+  "stars": 28289
+ },
+ "logseq/logseq": {
+  "id": 266231149,
+  "full_name": "logseq/logseq",
+  "stars": 45612
+ },
+ "louislam/uptime-kuma": {
+  "id": 382496361,
+  "full_name": "louislam/uptime-kuma",
+  "stars": 94469
+ },
+ "lsd-rs/lsd": {
+  "id": 158927812,
+  "full_name": "lsd-rs/lsd",
+  "stars": 16291
+ },
+ "matomo-org/matomo": {
+  "id": 1548202,
+  "full_name": "matomo-org/matomo",
+  "stars": 22030
+ },
+ "mattermost/mattermost": {
+  "id": 37448451,
+  "full_name": "mattermost/mattermost",
+  "stars": 39625
+ },
+ "meilisearch/meilisearch": {
+  "id": 130688011,
+  "full_name": "meilisearch/meilisearch",
+  "stars": 59870
+ },
+ "mermaid-js/mermaid": {
+  "id": 26066727,
+  "full_name": "mermaid-js/mermaid",
+  "stars": 91116
+ },
+ "metabase/metabase": {
+  "id": 30203935,
+  "full_name": "metabase/metabase",
+  "stars": 50358
+ },
+ "microsoft/playwright": {
+  "id": 221981891,
+  "full_name": "microsoft/playwright",
+  "stars": 100306
+ },
+ "milvus-io/milvus": {
+  "id": 208728772,
+  "full_name": "milvus-io/milvus",
+  "stars": 46674
+ },
+ "miniflux/v2": {
+  "id": 111364256,
+  "full_name": "miniflux/v2",
+  "stars": 9942
+ },
+ "mochajs/mocha": {
+  "id": 1451352,
+  "full_name": "mochajs/mocha",
+  "stars": 22912
+ },
+ "mpv-player/mpv": {
+  "id": 6201092,
+  "full_name": "mpv-player/mpv",
+  "stars": 38147
+ },
+ "mui/material-ui": {
+  "id": 23083156,
+  "full_name": "mui/material-ui",
+  "stars": 99345
+ },
+ "n8n-io/n8n": {
+  "id": 193215554,
+  "full_name": "n8n-io/n8n",
+  "stars": 210633
+ },
+ "nats-io/nats-server": {
+  "id": 6443435,
+  "full_name": "nats-io/nats-server",
+  "stars": 21047
+ },
+ "neovim/neovim": {
+  "id": 16408992,
+  "full_name": "neovim/neovim",
+  "stars": 103689
+ },
+ "netbirdio/netbird": {
+  "id": 357897199,
+  "full_name": "netbirdio/netbird",
+  "stars": 31036
+ },
+ "nextcloud/server": {
+  "id": 60243197,
+  "full_name": "nextcloud/server",
+  "stars": 37532
+ },
+ "nikitabobko/AeroSpace": {
+  "id": 643647588,
+  "full_name": "nikitabobko/AeroSpace",
+  "stars": 23857
+ },
+ "nodejs/node": {
+  "id": 27193779,
+  "full_name": "nodejs/node",
+  "stars": 123752
+ },
+ "nvim-lua/kickstart.nvim": {
+  "id": 506861932,
+  "full_name": "nvim-lua/kickstart.nvim",
+  "stars": 31690
+ },
+ "obsproject/obs-studio": {
+  "id": 13233158,
+  "full_name": "obsproject/obs-studio",
+  "stars": 79615
+ },
+ "ogham/exa": {
+  "id": 20060596,
+  "full_name": "ogham/exa",
+  "stars": 24453
+ },
+ "ollama/ollama": {
+  "id": 658928958,
+  "full_name": "ollama/ollama",
+  "stars": 187188
+ },
+ "openai/whisper": {
+  "id": 537603333,
+  "full_name": "openai/whisper",
+  "stars": 112827
+ },
+ "opentofu/opentofu": {
+  "id": 679421146,
+  "full_name": "opentofu/opentofu",
+  "stars": 30881
+ },
+ "oven-sh/bun": {
+  "id": 357728969,
+  "full_name": "oven-sh/bun",
+  "stars": 96712
+ },
+ "owncloud/core": {
+  "id": 5550552,
+  "full_name": "owncloud/core",
+  "stars": 8851
+ },
+ "p0deje/Maccy": {
+  "id": 119637215,
+  "full_name": "p0deje/Maccy",
+  "stars": 22346
+ },
+ "pallets/flask": {
+  "id": 596892,
+  "full_name": "pallets/flask",
+  "stars": 75165
+ },
+ "pandas-dev/pandas": {
+  "id": 858127,
+  "full_name": "pandas-dev/pandas",
+  "stars": 50536
+ },
+ "parcel-bundler/parcel": {
+  "id": 99598595,
+  "full_name": "parcel-bundler/parcel",
+  "stars": 44024
+ },
+ "payloadcms/payload": {
+  "id": 327089870,
+  "full_name": "payloadcms/payload",
+  "stars": 45841
+ },
+ "penpot/penpot": {
+  "id": 48769241,
+  "full_name": "penpot/penpot",
+  "stars": 62415
+ },
+ "photoprism/photoprism": {
+  "id": 119160553,
+  "full_name": "photoprism/photoprism",
+  "stars": 40454
+ },
+ "pi-hole/pi-hole": {
+  "id": 20619036,
+  "full_name": "pi-hole/pi-hole",
+  "stars": 62054
+ },
+ "pingcap/tidb": {
+  "id": 41986369,
+  "full_name": "pingcap/tidb",
+  "stars": 40738
+ },
+ "pjreddie/darknet": {
+  "id": 18666758,
+  "full_name": "pjreddie/darknet",
+  "stars": 26512
+ },
+ "plantuml/plantuml": {
+  "id": 1051476,
+  "full_name": "plantuml/plantuml",
+  "stars": 13423
+ },
+ "plausible/analytics": {
+  "id": 160427405,
+  "full_name": "plausible/analytics",
+  "stars": 29865
+ },
+ "pmndrs/zustand": {
+  "id": 180328715,
+  "full_name": "pmndrs/zustand",
+  "stars": 58928
+ },
+ "pocketbase/pocketbase": {
+  "id": 510607652,
+  "full_name": "pocketbase/pocketbase",
+  "stars": 61584
+ },
+ "pola-rs/polars": {
+  "id": 263727855,
+  "full_name": "pola-rs/polars",
+  "stars": 40349
+ },
+ "pqrs-org/Karabiner-Elements": {
+  "id": 63037806,
+  "full_name": "pqrs-org/Karabiner-Elements",
+  "stars": 23109
+ },
+ "prometheus/prometheus": {
+  "id": 6838921,
+  "full_name": "prometheus/prometheus",
+  "stars": 67646
+ },
+ "psf/black": {
+  "id": 125266328,
+  "full_name": "psf/black",
+  "stars": 42186
+ },
+ "psf/requests": {
+  "id": 1362490,
+  "full_name": "psf/requests",
+  "stars": 54715
+ },
+ "pulumi/pulumi": {
+  "id": 72477752,
+  "full_name": "pulumi/pulumi",
+  "stars": 25906
+ },
+ "puppeteer/puppeteer": {
+  "id": 90796663,
+  "full_name": "puppeteer/puppeteer",
+  "stars": 95845
+ },
+ "pylint-dev/pylint": {
+  "id": 47671127,
+  "full_name": "pylint-dev/pylint",
+  "stars": 5750
+ },
+ "pypa/pipenv": {
+  "id": 79510167,
+  "full_name": "pypa/pipenv",
+  "stars": 25025
+ },
+ "python-poetry/poetry": {
+  "id": 123303402,
+  "full_name": "python-poetry/poetry",
+  "stars": 34323
+ },
+ "pytorch/pytorch": {
+  "id": 65600975,
+  "full_name": "pytorch/pytorch",
+  "stars": 105566
+ },
+ "qdrant/qdrant": {
+  "id": 268163609,
+  "full_name": "qdrant/qdrant",
+  "stars": 35588
+ },
+ "questdb/questdb": {
+  "id": 19257422,
+  "full_name": "questdb/questdb",
+  "stars": 17535
+ },
+ "quickwit-oss/tantivy": {
+  "id": 49412556,
+  "full_name": "quickwit-oss/tantivy",
+  "stars": 16445
+ },
+ "radix-ui/primitives": {
+  "id": 273499522,
+  "full_name": "radix-ui/primitives",
+  "stars": 19505
+ },
+ "ranger/ranger": {
+  "id": 218157,
+  "full_name": "ranger/ranger",
+  "stars": 17464
+ },
+ "redis/redis": {
+  "id": 156018,
+  "full_name": "redis/redis",
+  "stars": 77520
+ },
+ "redpanda-data/redpanda": {
+  "id": 309512982,
+  "full_name": "redpanda-data/redpanda",
+  "stars": 12676
+ },
+ "reduxjs/redux": {
+  "id": 36535156,
+  "full_name": "reduxjs/redux",
+  "stars": 61435
+ },
+ "remix-run/remix": {
+  "id": 307489284,
+  "full_name": "remix-run/remix",
+  "stars": 33456
+ },
+ "run-llama/llama_index": {
+  "id": 560704231,
+  "full_name": "run-llama/llama_index",
+  "stars": 52921
+ },
+ "rupa/z": {
+  "id": 236571,
+  "full_name": "rupa/z",
+  "stars": 17073
+ },
+ "rustdesk/rustdesk": {
+  "id": 299354207,
+  "full_name": "rustdesk/rustdesk",
+  "stars": 129676
+ },
+ "rwf2/Rocket": {
+  "id": 54168759,
+  "full_name": "rwf2/Rocket",
+  "stars": 25800
+ },
+ "shadcn-ui/ui": {
+  "id": 585146387,
+  "full_name": "shadcn-ui/ui",
+  "stars": 128301
+ },
+ "sharkdp/bat": {
+  "id": 130464961,
+  "full_name": "sharkdp/bat",
+  "stars": 61279
+ },
+ "sharkdp/fd": {
+  "id": 90793418,
+  "full_name": "sharkdp/fd",
+  "stars": 45074
+ },
+ "siyuan-note/siyuan": {
+  "id": 291438522,
+  "full_name": "siyuan-note/siyuan",
+  "stars": 47255
+ },
+ "slackhq/nebula": {
+  "id": 222172014,
+  "full_name": "slackhq/nebula",
+  "stars": 18534
+ },
+ "starship/starship": {
+  "id": 178991158,
+  "full_name": "starship/starship",
+  "stars": 60748
+ },
+ "strapi/strapi": {
+  "id": 43441403,
+  "full_name": "strapi/strapi",
+  "stars": 73498
+ },
+ "supabase/supabase": {
+  "id": 214587193,
+  "full_name": "supabase/supabase",
+  "stars": 115080
+ },
+ "sxyazi/yazi": {
+  "id": 663900193,
+  "full_name": "sxyazi/yazi",
+  "stars": 43435
+ },
+ "syncthing/syncthing": {
+  "id": 14712850,
+  "full_name": "syncthing/syncthing",
+  "stars": 90483
+ },
+ "tailscale/tailscale": {
+  "id": 237523442,
+  "full_name": "tailscale/tailscale",
+  "stars": 39183
+ },
+ "tailwindlabs/tailwindcss": {
+  "id": 106017343,
+  "full_name": "tailwindlabs/tailwindcss",
+  "stars": 98660
+ },
+ "tauri-apps/tauri": {
+  "id": 196701619,
+  "full_name": "tauri-apps/tauri",
+  "stars": 112938
+ },
+ "tensorflow/tensorflow": {
+  "id": 45717250,
+  "full_name": "tensorflow/tensorflow",
+  "stars": 201619
+ },
+ "timescale/timescaledb": {
+  "id": 84240850,
+  "full_name": "timescale/timescaledb",
+  "stars": 23862
+ },
+ "tldraw/tldraw": {
+  "id": 365739812,
+  "full_name": "tldraw/tldraw",
+  "stars": 51433
+ },
+ "toeverything/AFFiNE": {
+  "id": 519859998,
+  "full_name": "toeverything/AFFiNE",
+  "stars": 74571
+ },
+ "tokio-rs/axum": {
+  "id": 372172254,
+  "full_name": "tokio-rs/axum",
+  "stars": 27836
+ },
+ "tokio-rs/tokio": {
+  "id": 67836789,
+  "full_name": "tokio-rs/tokio",
+  "stars": 33698
+ },
+ "traefik/traefik": {
+  "id": 42408804,
+  "full_name": "traefik/traefik",
+  "stars": 65564
+ },
+ "trufflesecurity/trufflehog": {
+  "id": 77726177,
+  "full_name": "trufflesecurity/trufflehog",
+  "stars": 29394
+ },
+ "twpayne/chezmoi": {
+  "id": 157245200,
+  "full_name": "twpayne/chezmoi",
+  "stars": 22283
+ },
+ "typeorm/typeorm": {
+  "id": 52773157,
+  "full_name": "typeorm/typeorm",
+  "stars": 36673
+ },
+ "typesense/typesense": {
+  "id": 79317191,
+  "full_name": "typesense/typesense",
+  "stars": 27139
+ },
+ "ultralytics/ultralytics": {
+  "id": 535360445,
+  "full_name": "ultralytics/ultralytics",
+  "stars": 63485
+ },
+ "ultralytics/yolov5": {
+  "id": 264818686,
+  "full_name": "ultralytics/yolov5",
+  "stars": 58277
+ },
+ "umami-software/umami": {
+  "id": 280363952,
+  "full_name": "umami-software/umami",
+  "stars": 40179
+ },
+ "usebruno/bruno": {
+  "id": 542284380,
+  "full_name": "usebruno/bruno",
+  "stars": 48411
+ },
+ "valkey-io/valkey": {
+  "id": 775743011,
+  "full_name": "valkey-io/valkey",
+  "stars": 27725
+ },
+ "vercel/next.js": {
+  "id": 70107786,
+  "full_name": "vercel/next.js",
+  "stars": 143586
+ },
+ "videolan/vlc": {
+  "id": 3299208,
+  "full_name": "videolan/vlc",
+  "stars": 20470
+ },
+ "vitejs/vite": {
+  "id": 257485422,
+  "full_name": "vitejs/vite",
+  "stars": 83926
+ },
+ "vitest-dev/vitest": {
+  "id": 434708679,
+  "full_name": "vitest-dev/vitest",
+  "stars": 17381
+ },
+ "weaviate/weaviate": {
+  "id": 55072677,
+  "full_name": "weaviate/weaviate",
+  "stars": 16952
+ },
+ "webpack/webpack": {
+  "id": 3678731,
+  "full_name": "webpack/webpack",
+  "stars": 66009
+ },
+ "withastro/astro": {
+  "id": 348060227,
+  "full_name": "withastro/astro",
+  "stars": 63988
+ },
+ "wting/autojump": {
+  "id": 107258,
+  "full_name": "wting/autojump",
+  "stars": 16960
+ },
+ "yt-dlp/yt-dlp": {
+  "id": 307260205,
+  "full_name": "yt-dlp/yt-dlp",
+  "stars": 208251
+ },
+ "ytdl-org/youtube-dl": {
+  "id": 1039520,
+  "full_name": "ytdl-org/youtube-dl",
+  "stars": 141572
+ },
+ "yugabyte/yugabyte-db": {
+  "id": 105944401,
+  "full_name": "yugabyte/yugabyte-db",
+  "stars": 10664
+ },
+ "zed-industries/zed": {
+  "id": 340547520,
+  "full_name": "zed-industries/zed",
+  "stars": 95136
+ },
+ "zulip/zulip": {
+  "id": 43160685,
+  "full_name": "zulip/zulip",
+  "stars": 26238
+ }
+}

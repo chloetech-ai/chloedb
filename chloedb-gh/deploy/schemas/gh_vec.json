@@ -1,0 +1,12 @@
+{
+ "table": "gh_vec",
+ "key": "repo",
+ "compression": "zstd",
+ "fields": [
+  {"name": "repo", "type": "int", "not_null": true},
+  {"name": "stars", "type": "int"},
+  {"name": "language", "type": "keyword"},
+  {"name": "etext", "type": "keyword", "indexed": false},
+  {"name": "emb", "type": "vector", "embed": {"from": ["etext"], "model": "potion-retrieval-32M"}}
+ ]
+}

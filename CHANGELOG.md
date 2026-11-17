@@ -11,6 +11,106 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **The app engine's builds failed at once on Linux with `spawn E2BIG`**
+  (0 model calls), on the operator's pods too: the forge's system prompt
+  grew to 152 KB in 0.3.6, past Linux's limit of 128 KiB on one argument,
+  and it was passed to `claude -p` as one. Claude Code now reads it from a
+  file (`--system-prompt-file`, removed after the answer), and Codex gets a
+  system prompt too long for an argument on stdin.
+- **A coordinator's query grouped by the column that places the table's
+  rows** (its `shard_by`, else its primary key) has every group whole on
+  one shard, so each shard now sends only the groups that can be in the
+  answer: those `HAVING` keeps, in the query's order, up to its `OFFSET`
+  and `LIMIT`. `SELECT repo, COUNT(*) ... GROUP BY repo ORDER BY 2 DESC
+  LIMIT 20` over a month of GitHub's events (7.2 million repos) took the
+  coordinator past its memory, gathering every group of every shard, and
+  now sends 20 a shard. Grouped by another column, or without a `LIMIT`,
+  a shard still sends every group. No protocol change: servers of 0.3.7
+  mix with it in either order.
+- A demo app, `chloedb-gh` ([docs](docs/chloedb/github.md)): every public
+  GitHub event since 2011, 11.2 billion of them, on four 8 GB machines,
+  at https://gh.chloetech.ai. It is on the `Demos` train.
+
+### Substring index
+
+`LIKE` and `ILIKE` on a field with `OPTIONS(substring = true)`, for short
+and common strings. The file format does not change. On 4.8 million Hacker
+News titles in four shards on one machine, the 40 queries of `chloedb-hn`'s
+evaluation went from 108 to 31 ms at the 99th percentile for their first 20
+rows and from 222 to 73 ms for their count, and from 500 to 46 ms and 719
+to 71 ms after the page cache was dropped, with the same answers
+(`chloedb/results/substring/costs.md`).
+
+- **`ILIKE` of one string is answered from the index alone**, as `LIKE` of
+  one is (`'%rust%'`, `'error%'`, `'%ssh2'`): the spellings it searches are
+  the matches, so no stored value is read for them. A pattern with `_` or
+  several strings still tests its candidates' values.
+- **The values a pattern tests are read in the table's order**, each block
+  of the doc store once, where each was read as the index found it, a
+  block a candidate.
+- **A `LIMIT` without an `ORDER BY`, on a condition that is one `LIKE` or
+  `ILIKE`, stops at its first rows**, the same rows as before: a segment's
+  values are scanned from its start where a few of its rows walked say the
+  first are near it, and its rows listed where they are not, as for a word
+  that came into use late in a table loaded in time order (`'%covid%'
+  LIMIT 20` took 64 ms a shard and takes 9).
+- **Whether a pattern's rows are listed or its values scanned is decided
+  in bytes of whole stored rows**, which a scan reads, measured anew on
+  Loghub's SSH log and on Hacker News titles: a field that is a small part
+  of its row (a title beside its link and counts) is listed from the index
+  for more rows than before, and one that is most of its row for fewer.
+
+## 0.3.7
+
+The server on PyPI (`pip install chloedb-server`, `uvx chloedb-server`) and
+`chloedb.serve()` from Python, SQLite files of many tables imported in
+seconds rather than minutes, Google Cloud (GKE) in the command center's
+Cloud view with no key, and `POST /v1/highlight`, which marks results the
+way a search reads its words: `chloedb-server-v0.3.7`, `chloedb-py-v0.3.7`
+and `chloedb-js-v0.3.7`, which is on npm too (the Java package is built from
+source; `chloedb-crawl`, `chloedb-sheets`, `chloectx` and `chloedb-netops`
+are attached prebuilt to the server's release, whose wheels are on PyPI as
+`chloedb-server`). The file format stays 3 and the shard protocol stays 21,
+with no new field or plan feature, so servers of 0.3.6 and 0.3.7 mix in a
+cluster in either order. **A SQLite import into a table without a key that
+already has rows is refused unless it appends.**
+
+### What changes by default
+
+- **A SQLite import into a table without a key that has rows is refused**
+  (409 `conflict` over HTTP), before anything is written: nothing tells
+  its rows from the file's, so they went in beside them, and importing the
+  same file again repeated every row. Over HTTP, an import into such a
+  table while another import writes it is refused too, so that the same
+  file uploaded twice at once is written once. `--append`, `?append=true`,
+  `append=True` in Python and `append: true` in JavaScript add them as
+  before; a keyed table takes the file's rows in place of its own, as it
+  did. A copy between servers into such a table is refused too.
+- On Kubernetes, a cluster in the namespace `strata` (where the Cloud view
+  makes its clusters) is named without it: the operator gives its servers
+  `NAME`, not `strata/NAME`, which the command center's header shows. A
+  cluster in any other namespace keeps `namespace/name`. Servers take the
+  name at their next restart, and an alert's dedup key holds it, so an
+  alert firing across the upgrade may page once more under the new key.
+
+### SQLite imports (what the stress test of 15 November left)
+
+- **A file of many tables imports in time that grows with their number**,
+  not its square: a 4,000-table file took 227 s from the command line, as
+  each table made two commits and each commit writes every table's schema.
+  An import now makes the tables it creates in one commit and bulk-loads
+  the empty ones in one more (`Db::create_tables`, `Db::try_load_tables`),
+  a merge looks at the table it merges rather than at every table, and an
+  HTTP import makes its tables in one commit and sends the rows of small
+  tables in shared requests.
+- A date column written in seconds and later in milliseconds reads each
+  integer in the unit of its size (the seconds were read as milliseconds,
+  in January 1970); names lose their accents (`Größe` is `Grosse`, it was
+  `Gr__e`) and a name of no Latin letter (`名前`) is named by its place
+  (`column_2`, it was `__`); a file with no table, and an upload with no
+  body, are refused (they imported nothing and answered 200); the command
+  line names the file once and without `schema error:`.
+
 ### Google Cloud in the Cloud view (experimental)
 
 - The command center's **Cloud setup** plans, makes, resizes and deletes a
@@ -43,34 +143,55 @@ changes collect under "Unreleased".
   ChloeDB never runs. Files that run a program for their token, take AWS's
   own credentials, or send tokens anywhere but Google's APIs are refused.
 
-### Substring index
+### The server on PyPI
 
-`LIKE` and `ILIKE` on a field with `OPTIONS(substring = true)`, for short
-and common strings. The file format does not change. On 4.8 million Hacker
-News titles in four shards on one machine, the 40 queries of `chloedb-hn`'s
-evaluation went from 108 to 31 ms at the 99th percentile for their first 20
-rows and from 222 to 73 ms for their count, and from 500 to 46 ms and 719
-to 71 ms after the page cache was dropped, with the same answers
-(`chloedb/results/substring/costs.md`).
+- **`pip install chloedb-server` installs the prebuilt server, and `uvx
+  chloedb-server` runs it.** Each server release also publishes a wheel per
+  platform to PyPI as `chloedb-server`, holding the same binary as the
+  release's archive (Linux x86_64 and aarch64 with glibc 2.34 or later,
+  macOS 11 or later; no Windows, Alpine or source distribution), so pip,
+  pipx and uv install it without Rust or an archive to unpack; `python -m
+  chloedb_server` runs it where the environment's programs are not on the
+  `PATH`. server-release.yml makes the wheels from the archives
+  (`packaging/server-wheels/make_wheels.py`), installs and runs each one on
+  its platform with pip, pipx and uvx, and uploads them from the tag by
+  PyPI's trusted publishing, when `CHLOEDB_PUBLISH_PYPI` is `true`. Each
+  wheel is about 60 MB.
+- **`chloedb.serve()` starts a server from Python.** It runs the installed
+  `chloedb-server` (the package's, `$CHLOEDB_SERVER_BIN` or the `PATH`'s) on
+  a database, or a temporary one, at a free port on loopback, and returns a
+  `Client` of it, which stops it when closed or at the end of its `with`
+  block; `chloedb.find_server()` says which program it runs. `pip install
+  "chloedb[server]"` installs the server of the same release with the
+  package. `Client.close()` stops the server `serve` started and does
+  nothing for any other.
+- The Docs URLs check (`scripts/check-doc-urls.py`) checks `pip install
+  chloedb-server`, `uvx`, `uv tool` and `pipx` lines against PyPI from
+  0.3.7, the first release there, so 0.3.7's drafts are published only once
+  PyPI has its wheels.
 
-- **`ILIKE` of one string is answered from the index alone**, as `LIKE` of
-  one is (`'%rust%'`, `'error%'`, `'%ssh2'`): the spellings it searches are
-  the matches, so no stored value is read for them. A pattern with `_` or
-  several strings still tests its candidates' values.
-- **The values a pattern tests are read in the table's order**, each block
-  of the doc store once, where each was read as the index found it, a
-  block a candidate.
-- **A `LIMIT` without an `ORDER BY`, on a condition that is one `LIKE` or
-  `ILIKE`, stops at its first rows**, the same rows as before: a segment's
-  values are scanned from its start where a few of its rows walked say the
-  first are near it, and its rows listed where they are not, as for a word
-  that came into use late in a table loaded in time order (`'%covid%'
-  LIMIT 20` took 64 ms a shard and takes 9).
-- **Whether a pattern's rows are listed or its values scanned is decided
-  in bytes of whole stored rows**, which a scan reads, measured anew on
-  Loghub's SSH log and on Hacker News titles: a field that is a small part
-  of its row (a title beside its link and counts) is listed from the index
-  for more rows than before, and one that is most of its row for fewer.
+
+### Highlighting
+
+- **`POST /v1/highlight` marks texts the way a search of a TEXT field reads
+  its query** (`{table, field, query, texts, size?, pre?, post?}`): stems,
+  synonyms, typos, prefixes, phrases, and code such as `C++` where its
+  characters are, each text cut to the stretch of about `size` characters
+  with the most matches and HTML-escaped between `<mark>` tags (or `pre`
+  and `post`). It is a read route; a coordinator answers it from the
+  table's analyzer without asking its shards.
+
+### Demos, benchmarks and the website
+
+- Two demo apps, not part of the release: `chloedb-hn`, Hacker News
+  searched, asked in sentences and completed as typed
+  ([docs](docs/chloedb/hn.md)), and `chloedb-arxiv`, every arXiv paper with
+  search, the recommender, feeds explained from the full text, people,
+  labs, code, likely classics and weekly RSS and team feeds
+  ([docs](docs/chloedb/arxiv.md)). Both are on the `Demos` train.
+- The website's benchmark pages are measured again on 0.3.5, with every
+  engine's result cache off: 1M documents on every engine, and 10M head to
+  head. The harness retries a Vespa put that its HTTP client dropped.
 
 ## 0.3.6
 
