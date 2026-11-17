@@ -194,8 +194,24 @@ pub fn prompt_drafts_by(prompt: &str, by: &Source) -> Vec<Draft> {
 fn standing_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(always|never|from now on|from here on|going forward|in (?:the )?future|for future|by default|every time|each time|whenever|any ?time|as a (?:general )?rule|in general|(?:our|the team'?s|the project'?s|house) (?:convention|rule|policy|standard)s?|convention|policy|standing rule|for (?:all|every) (?:future )?(?:tasks?|work|changes|sessions|agents|prs?))\b").unwrap()
+        Regex::new(r"(?i)\b(always|never|from now on|from here on|going forward|in (?:the )?future|for future|by default|every time|each time|whenever|any ?time|everywhere|throughout|as a (?:general )?rule|in general|(?:our|the team'?s|the project'?s|house) (?:convention|rule|policy|standard)s?|convention|policy|standing rule|for (?:all|every) (?:future )?(?:tasks?|work|changes|sessions|agents|prs?)|(?:in|for|across) (?:this|the|our) (?:whole )?(?:project|repo|repository|code ?base))\b").unwrap()
     })
+}
+
+/// Words that announce a list of rules: "ground rules", "a few rules",
+/// "house rules", "rules:", "conventions:", "the following guidelines".
+fn rules_lead_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:(?:ground|house|team|project|coding|style) rules|(?:a few|some|these|my|our|the following|a couple of) (?:ground )?(?:rules|conventions|guidelines|standards)|(?:rules|conventions|guidelines|standards)\s*:)").unwrap()
+    })
+}
+
+/// Words that keep a list of rules to the task: "rules for this task",
+/// "for now", "just this once".
+fn task_scope_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)\b(?:for|in|on) (?:this|the current) (?:task|pr|pull request|change|fix|bug|session|ticket|branch|step)\b|\bfor now\b|\bjust this once\b|\bthis time\b").unwrap())
 }
 
 /// Whether a rule the distiller found in an exchange is a standing one:
@@ -209,8 +225,14 @@ pub fn standing_rule(request: &str, prev_answer: &str, rule: &str) -> bool {
     let re = standing_re();
     let terms = |t: &str| -> BTreeSet<String> { chloedb::text::analyze(t).into_iter().collect() };
     let rule_terms = terms(rule);
+    // Rules announced as such ("A few ground rules before we start: ...",
+    // "Conventions:"): every sentence from there on is one (JONAH-4:
+    // "Commit messages in the imperative mood", the last of a list of ground
+    // rules, was kept for that task only and never reached a session).
+    let mut listed = false;
     for s in sentences(request) {
-        if !re.is_match(s) {
+        listed = listed || (rules_lead_re().is_match(s) && !task_scope_re().is_match(s));
+        if !listed && !re.is_match(s) {
             continue;
         }
         let st = terms(s);
@@ -784,5 +806,14 @@ mod tests {
         // The answer to a question that asked for a rule.
         assert!(standing_rule("Yes, do that.", "I rounded half up. Should I always round half up from now on?", "Amounts are always rounded half up."));
         assert!(!standing_rule("Yes, do that.", "Shall I commit it?", "Commits go on the agent's branch."));
+        // JONAH-4: the rules of a list the user announced as rules.
+        let req = "I'm building tdo, a tiny command-line todo app in Python. A few ground rules before we start: SQLite, not JSON; pytest, never unittest. Type hints are required. Commit messages in the imperative mood.";
+        assert!(standing_rule(req, "", "Write commit messages in the imperative mood."));
+        assert!(standing_rule(req, "", "Type hints are required in all of tdo's code."));
+        assert!(standing_rule("Use type hints everywhere.", "", "Type hints are used everywhere in the code."));
+        // Rules given for the task are the task's.
+        assert!(!standing_rule("Some rules for this task: don't touch cart.py, keep the diff small.", "", "cart.py must not be touched."));
+        // Words before the list are not part of it.
+        assert!(!standing_rule("Rename the cart module to basket. Rules: no emojis in output.", "", "The cart module is renamed to basket."));
     }
 }

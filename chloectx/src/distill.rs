@@ -84,7 +84,7 @@ const PROMPT: &str = r#"Here is one exchange from a software project.{when}{who}
 
 Write down what someone working on this project in a later session would need to know and could not easily see in the code:
 - decisions, with the reason given;
-- rules, constraints and conventions the user, the team or a client set (never the assistant: only they can make a project rule): what must or must not be done, formats, naming, processes. Keep every rule stated, with its reason, even if the current code already follows it: the code shows what was done, not that it must stay that way. A rule is standing only when the user says so ("always", "never", "from now on", "by default", a team convention) or answers a question that asked for a rule; an instruction for the task at hand ("don't touch cart.py", "only change the tests") is not a rule of the project: write it with "scope": "task";
+- rules, constraints and conventions the user, the team or a client set (never the assistant: only they can make a project rule): what must or must not be done, formats, naming, processes. Keep every rule stated, with its reason, even if the current code already follows it: the code shows what was done, not that it must stay that way. A rule is standing only when the user says so ("always", "never", "from now on", "by default", a team convention, a list of ground rules or conventions for the project) or answers a question that asked for a rule; an instruction for the task at hand ("don't touch cart.py", "only change the tests") is not a rule of the project: write it with "scope": "task" (only a rule has a scope: a decision, requirement or fact is the project's);
 - requirements for work the user announced or planned but that is not done yet, with every detail given (formats, names, numbers);
 - facts about the project or its environment that were stated or discovered (how to run or test it, quirks, people, external systems), and approaches that were tried and failed, with why.
 
@@ -233,7 +233,10 @@ pub fn parse(text: &str) -> Distilled {
         // Who stated it and the scope a rule was given: read by [`attribute`].
         let said = v.get("said_by").and_then(|x| x.as_str()).unwrap_or("");
         d.by = Some(if said == "assistant" { "assistant".into() } else { "requester".into() });
-        if v.get("scope").and_then(|x| x.as_str()) == Some("task") {
+        // A scope is a rule's: a decision, a requirement or a fact the
+        // model calls "task" is still one (ANA-6: "Another decision with
+        // the client: invoice numbers ..." was kept for that task only).
+        if k == Kind::Preference && v.get("scope").and_then(|x| x.as_str()) == Some("task") {
             d.tag = TASK_TAG.into();
         }
         out.replaced.extend(replaces);
@@ -348,6 +351,11 @@ mod tests {
         // The user's decision stays the user's.
         assert_eq!(d[2].kind, Kind::Decision);
         assert!(d[2].text.starts_with("Customers win"), "{}", d[2].text);
+        // ANA-6: a decision the model scoped to the task is still a decision.
+        let client = "{\"kind\": \"decision\", \"text\": \"Invoice numbers are INV-YYYY-NNNNN, as agreed with the client.\", \"said_by\": \"requester\", \"scope\": \"task\"}";
+        let d = attribute(parse(client).drafts, "Another decision with the client: invoice numbers are INV-YYYY-NNNNN.", &ex);
+        assert_eq!((d[0].kind, d[0].tag.as_str()), (Kind::Decision, "distilled"), "{d:?}");
+        assert!(d[0].text.starts_with("Invoice numbers"), "{}", d[0].text);
         // A standing rule stays one.
         let rule = "{\"kind\": \"rule\", \"text\": \"Money is always kept as integer cents.\", \"said_by\": \"requester\"}";
         let d = attribute(parse(rule).drafts, "From now on, always keep money as integer cents.", &ex);

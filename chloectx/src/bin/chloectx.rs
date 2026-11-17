@@ -271,10 +271,18 @@ enum Cmd {
     /// Print the session-start briefing.
     #[command(hide = true)]
     Briefing,
-    /// Write down the decisions, rules, requirements and facts of every
-    /// stored turn (for a store recorded before distillation existed).
+    /// Write down the decisions, rules, requirements and facts of the
+    /// stored turns not distilled yet (a store recorded before distillation
+    /// existed, a turn whose distillation failed or was cut short).
     #[command(hide = true)]
-    Distill,
+    Distill {
+        /// Distill every stored turn again, those distilled already too.
+        #[arg(long)]
+        again: bool,
+        /// Only say how many turns it would distill.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Merge related notes now (it also runs on its own every few turns).
     #[command(hide = true)]
     Consolidate,
@@ -513,7 +521,12 @@ enum SyncCmd {
     /// What was sent and received, and what the server holds for this project.
     Status,
     /// Send what the store recorded since the last push.
-    Push,
+    Push {
+        /// Send every record again (the server's table lost them, or they
+        /// went to another table).
+        #[arg(long)]
+        again: bool,
+    },
     /// Push, then store the project's records the server holds and the store lacks.
     Pull,
     /// The records pulled from other machines whose rules and decisions are
@@ -723,7 +736,23 @@ fn main() {
             println!("{}: {} records, {} bytes, in {:.1} s", dest.display(), r["records"], r["bytes"], r["seconds"].as_f64().unwrap_or(0.0));
         }
         Cmd::Briefing => text(&send(&project, json!({"op": "briefing", "session": ""}), 30)),
-        Cmd::Distill => println!("{}", send(&project, json!({"op": "distill_backfill"}), 6 * 3600)),
+        Cmd::Distill { again, dry_run } => {
+            // What it is about to do, then what it did: each turn is a model
+            // call or two, and a run can take minutes (ANA-1).
+            let plan = send(&project, json!({"op": "distill_backfill", "again": again, "dry_run": true}), 120);
+            let n = |k: &str| plan[k].as_u64().unwrap_or(0);
+            let turns = |k: u64| format!("{k} turn{}", if k == 1 { "" } else { "s" });
+            let already = if again || n("already") == 0 { String::new() } else { format!("; {} distilled already, left as they are (--again distills them again)", turns(n("already"))) };
+            let failed = if n("failed_before") > 0 { format!(", {} whose distillation failed before", n("failed_before")) } else { String::new() };
+            println!("{} stored: {} to distill{failed}{already}.", turns(n("turns")), turns(n("to_distill")));
+            if plan["active"] == json!(false) {
+                println!("Distillation is off (CHLOECTX_DISTILL=0, or distill.enabled false in config.json): nothing distilled.");
+            } else if !dry_run && n("to_distill") > 0 {
+                println!("Distilling: about {} model calls.", n("to_distill") * 2);
+                let r = send(&project, json!({"op": "distill_backfill", "again": again}), 6 * 3600);
+                println!("Distilled {} in {} s: {} new records.", turns(r["to_distill"].as_u64().unwrap_or(0)), r["seconds"].as_u64().unwrap_or(0), r["items"].as_u64().unwrap_or(0));
+            }
+        }
         Cmd::Consolidate => println!("{}", send(&project, json!({"op": "consolidate"}), 3600)["report"]),
         Cmd::Rpc { request, timeout } => {
             let req: Json = serde_json::from_str(&request).unwrap_or_else(|e| {
@@ -752,6 +781,10 @@ fn main() {
             });
             let key = chloectx::sync::project_key(&home, &project.to_string_lossy());
             let remote = chloectx::sync::remote_for(&home, &key).expect("just set up");
+            let was = chloectx::sync::saved_state(&paths::store_dir(&project));
+            if was.url == remote.url && !was.key.is_empty() && was.key != key {
+                println!("this project synced as {} before and syncs as {key} now: the next push sends every record to {}", was.key, chloectx::sync::table_for(&key));
+            }
             if !kept.is_empty() {
                 println!("the key is kept in {}", kept.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" and "));
             }
@@ -784,13 +817,17 @@ fn main() {
             println!("{}", r["text"].as_str().unwrap_or(""));
         }
         Cmd::Sync { what } => {
-            let w = match what {
-                SyncCmd::Status => "status",
-                SyncCmd::Push => "push",
-                SyncCmd::Pull => "pull",
+            let (w, again) = match what {
+                SyncCmd::Status => ("status", false),
+                SyncCmd::Push { again } => ("push", again),
+                SyncCmd::Pull => ("pull", false),
                 SyncCmd::Setup { .. } | SyncCmd::Accept { .. } => unreachable!(),
             };
-            println!("{}", serde_json::to_string_pretty(&send(&project, json!({"op": "sync", "what": w}), 600)).unwrap());
+            let r = send(&project, json!({"op": "sync", "what": w, "again": again}), 600);
+            println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            if let Some(w) = r["warning"].as_str() {
+                eprintln!("chloectx sync: {w}");
+            }
         }
         Cmd::Doctor => std::process::exit(doctor::run(&project)),
         Cmd::Upgrade { check, no_pull, force } => std::process::exit(chloectx::version::upgrade(&project, &chloectx::version::UpgradeOptions { check, no_pull, force })),

@@ -991,7 +991,7 @@ pub fn fmt_knowledge_checked(items: &[(Record, f64, f64)], now: i64, mut check: 
 }
 
 /// The briefing given at the start of a session: the knowledge written
-/// down earlier (planned work, rules, decisions, facts), where the last
+/// down earlier (rules, decisions, planned work, facts), where the last
 /// session left off, and how to search the rest. Returns the text and the
 /// ids it shows, so that per-prompt recall does not repeat them.
 pub fn briefing(store: &Store, current_session: &str, max_chars: usize, now: i64) -> Result<(String, Vec<String>)> {
@@ -999,32 +999,74 @@ pub fn briefing(store: &Store, current_session: &str, max_chars: usize, now: i64
 }
 
 /// The briefing, with notes whose code changed since moved to a section of
-/// their own and labelled, and an index of what else the notes are about.
-pub fn briefing_checked(store: &Store, current_session: &str, max_chars: usize, now: i64, mut check: Option<&mut Checker>) -> Result<(String, Vec<String>)> {
+/// their own and labelled, and an index of what else the notes are about:
+/// [`Briefing::text`] and its [`Briefing::tail`], as one text.
+pub fn briefing_checked(store: &Store, current_session: &str, max_chars: usize, now: i64, check: Option<&mut Checker>) -> Result<(String, Vec<String>)> {
+    let b = briefing_parts(store, current_session, max_chars, now, check)?;
+    let text = match (b.text.is_empty(), b.tail.is_empty()) {
+        (_, true) => b.text,
+        (true, false) => b.tail,
+        (false, false) => format!("{}\n{}", b.text, b.tail),
+    };
+    Ok((text, b.ids.into_iter().chain(b.tail_ids).collect()))
+}
+
+/// A briefing in two parts.
+#[derive(Debug, Default, Clone)]
+pub struct Briefing {
+    /// What the notes hold: the same text in every session until a note
+    /// changes (no counts, no "4 min ago"), so that the prompt cache of
+    /// the session's first request is read, not written again (JONAH-7:
+    /// 16,000 to 18,000 cache-writing tokens a session). Rules first.
+    pub text: String,
+    /// The ids `text` shows in full.
+    pub ids: Vec<String>,
+    /// What changes with every session: how much memory there is, the
+    /// last activity, the open tasks of the last checkpoint and where the
+    /// last session left off. Given with the session's first prompt.
+    pub tail: String,
+    pub tail_ids: Vec<String>,
+}
+
+/// At most this many characters of a note in the briefing: the distiller
+/// keeps notes to 600, so a note is cut only when it was written longer.
+const BRIEF_NOTE: usize = 600;
+/// The budget of [`Briefing::tail`].
+const BRIEF_TAIL: usize = 1500;
+
+/// `t` on one line, cut at a word to at most `n` characters; whether cut.
+fn clip_words(t: &str, n: usize) -> (String, bool) {
+    let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.chars().count() <= n {
+        return (t, false);
+    }
+    let head: String = t.chars().take(n).collect();
+    let cut = head.rfind(' ').filter(|&i| i > n / 2).unwrap_or(head.len());
+    (format!("{}…", head[..cut].trim_end_matches(|c: char| c == ',' || c == ';' || c.is_whitespace())), true)
+}
+
+/// The date of `ts`, `2026-11-15` (UTC).
+fn day_of(ts: i64) -> String {
+    fmt_time(ts).chars().take(10).collect()
+}
+
+/// The briefing's two parts ([`Briefing`]). A note it cuts is not counted
+/// shown, so a prompt it bears on gets it whole (JONAH-3: a decision cut at
+/// "Rules: no emojis anyw…" counted as shown, and the rule after the cut
+/// never reached a session).
+pub fn briefing_parts(store: &Store, current_session: &str, max_chars: usize, now: i64, mut check: Option<&mut Checker>) -> Result<Briefing> {
     let store = &store.pinned();
     let total = store.len();
     if total == 0 {
-        return Ok((String::new(), Vec::new()));
+        return Ok(Briefing::default());
     }
     let none = Filter::default();
-    let sessions = store.query("SELECT session, COUNT(*) FROM memory GROUP BY session ORDER BY 2 DESC LIMIT 1000")?.rows.len();
     let prev = Filter { exclude_window: Some((current_session.to_string(), 0)), ..Default::default() };
-    let last = store.latest(&[], 1, &prev)?;
-    let mut s = format!("ChloeCtx memory for this project: {total} records from {sessions} session{}", if sessions == 1 { "" } else { "s" });
-    if let Some(r) = last.first() {
-        s += &format!(", last activity {}", fmt_ago(r.ts, now));
-    }
-    s += ". Requirements, decisions and conventions agreed in earlier conversations are often not in the code: \
+    let mut s = String::from(
+        "ChloeCtx memory for this project. Requirements, decisions and conventions agreed in earlier conversations are often not in the code: \
           before a design decision, and whenever a task refers to earlier work, search memory (memory_ask answers a question about earlier work from notes, replies and messages at once; \
-          memory_search is one quick search; memory_timeline shows a record's surroundings; memory_sql runs structured queries). memory_remember stores a new decision or fact: keep decisions there, not in memory files of your own, where the user and later sessions do not look.\n";
-    let clip = |t: &str, n: usize| -> String {
-        let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
-        if t.chars().count() > n {
-            format!("{}…", t.chars().take(n).collect::<String>())
-        } else {
-            t
-        }
-    };
+          memory_search is one quick search; memory_timeline shows a record's surroundings; memory_sql runs structured queries). memory_remember stores a new decision or fact: keep decisions there, not in memory files of your own, where the user and later sessions do not look.\n",
+    );
     let norm = |t: &str| t.split_whitespace().map(|w| w.to_lowercase()).collect::<Vec<_>>().join(" ");
     // Once knowledge is distilled, the cue-word preferences (sentences
     // picked from prompts by their wording) only repeat it in fragments.
@@ -1033,9 +1075,12 @@ pub fn briefing_checked(store: &Store, current_session: &str, max_chars: usize, 
     let mut ids = Vec::new();
     let mut stale: Vec<(Record, String)> = Vec::new();
     let mut unshown: Vec<Record> = Vec::new();
-    // Most recent first, oldest shown first; one line per record, while the budget lasts.
-    let mut section = |title: &str, recs: Vec<Record>, n: usize, keep: usize, s: &mut String, stale: &mut Vec<(Record, String)>, unshown: &mut Vec<Record>| {
-        let mut lines = Vec::new();
+    // Newest first while the count and the budget last, shown oldest first;
+    // one line per record, whole unless longer than `n`.
+    let mut section = |title: &str, recs: Vec<Record>, n: usize, keep: usize, budget: usize, s: &mut String, ids: &mut Vec<String>, stale: &mut Vec<(Record, String)>, unshown: &mut Vec<Record>| {
+        let mut lines: Vec<(Option<String>, String)> = Vec::new();
+        let head = format!("\n{title}\n");
+        let mut len = s.len() + head.len();
         for r in recs {
             if r.tag == "superseded" || r.tag == "done" || (distilled && r.tag == "cue") || crate::envelope::is_envelope_record(&r) || crate::sync::held_back(&r) || !seen.insert(norm(&r.text)) {
                 continue;
@@ -1050,38 +1095,38 @@ pub fn briefing_checked(store: &Store, current_session: &str, max_chars: usize, 
                 stale.push((r, label));
                 continue;
             }
-            if lines.len() == keep {
+            let (text, cut) = clip_words(&r.text, n);
+            let more = if cut { format!("; memory_timeline {} shows the rest", r.id) } else { String::new() };
+            let line = format!("- {} ({}, {}{more}){}\n", crate::envelope::defuse(&text), r.id, day_of(r.ts), label);
+            if lines.len() == keep || len + line.len() > budget {
                 unshown.push(r);
                 continue;
             }
-            lines.push((r.id.clone(), format!("- {} ({}, {}){}\n", crate::envelope::defuse(&clip(&r.text, n)), r.id, fmt_ago(r.ts, now), label)));
+            len += line.len();
+            lines.push(((!cut).then(|| r.id.clone()), line));
+        }
+        if lines.is_empty() {
+            return;
         }
         lines.reverse();
-        let head = format!("\n{title}\n");
-        let mut added = false;
+        *s += &head;
         for (id, line) in lines {
-            if s.len() + line.len() + if added { 0 } else { head.len() } > max_chars {
-                continue;
-            }
-            if !added {
-                *s += &head;
-                added = true;
-            }
             *s += &line;
-            ids.push(id);
+            ids.extend(id);
         }
     };
+    // The user's rules first: what a session must not do or forget.
+    section("Rules and conventions:", store.latest(&[Kind::Preference], 80, &none)?, BRIEF_NOTE, 40, max_chars, &mut s, &mut ids, &mut stale, &mut unshown);
+    section("Decisions:", store.latest(&[Kind::Decision], 80, &none)?, BRIEF_NOTE, 12, max_chars, &mut s, &mut ids, &mut stale, &mut unshown);
     let planned: Vec<Record> = store.latest(&[Kind::Todo], 60, &none)?.into_iter().filter(|r| r.tag == "planned").collect();
-    section("Planned work, with the requirements agreed for it:", planned, 400, 10, &mut s, &mut stale, &mut unshown);
-    section("Rules and conventions:", store.latest(&[Kind::Preference], 80, &none)?, 260, 14, &mut s, &mut stale, &mut unshown);
-    section("Decisions:", store.latest(&[Kind::Decision], 80, &none)?, 260, 10, &mut s, &mut stale, &mut unshown);
-    section("Facts about the project:", store.latest(&[Kind::Fact, Kind::Note], 80, &none)?, 260, 10, &mut s, &mut stale, &mut unshown);
-    let mut stale_ids: Vec<String> = Vec::new();
+    section("Planned work, with the requirements agreed for it:", planned, BRIEF_NOTE, 10, max_chars, &mut s, &mut ids, &mut stale, &mut unshown);
+    section("Facts about the project:", store.latest(&[Kind::Fact, Kind::Note], 80, &none)?, 300, 10, max_chars, &mut s, &mut ids, &mut stale, &mut unshown);
     if !stale.is_empty() {
         let head = "\nNotes that may be out of date or from another branch (the code they describe has changed since, or is not merged into this worktree; check it before relying on them):\n";
         let mut added = false;
         for (r, label) in stale.iter().take(6) {
-            let line = format!("- {} ({}, {}){label}\n", crate::envelope::defuse(&clip(&r.text, 220)), r.id, fmt_ago(r.ts, now));
+            let (text, cut) = clip_words(&r.text, 220);
+            let line = format!("- {} ({}, {}){label}\n", crate::envelope::defuse(&text), r.id, day_of(r.ts));
             if s.len() + line.len() + if added { 0 } else { head.len() } > max_chars {
                 continue;
             }
@@ -1090,18 +1135,16 @@ pub fn briefing_checked(store: &Store, current_session: &str, max_chars: usize, 
                 added = true;
             }
             s += &line;
-            stale_ids.push(r.id.clone());
+            if !cut {
+                ids.push(r.id.clone());
+            }
         }
     }
-    let checkpoint: Vec<Record> = store.latest(&[Kind::Todo], 10, &none)?.into_iter().filter(|r| r.tag != "planned" && r.tag != "done").take(1).collect();
-    section("Open tasks at the last checkpoint:", checkpoint, 500, 1, &mut s, &mut stale, &mut unshown);
-    section("Where the most recent earlier session left off:", store.latest(&[Kind::Episode], 3, &prev)?, 300, 3, &mut s, &mut stale, &mut unshown);
-    ids.extend(stale_ids);
     // What the notes left out are about, so the model knows what to ask for.
-    let unshown: Vec<Record> = unshown.into_iter().filter(|r| r.kind.is_knowledge()).collect();
-    if !unshown.is_empty() {
+    let left: Vec<&Record> = unshown.iter().filter(|r| r.kind.is_knowledge()).collect();
+    if !left.is_empty() {
         let mut count: HashMap<String, usize> = HashMap::new();
-        for r in &unshown {
+        for r in &left {
             for e in r.linked("about") {
                 if let Some(name) = e.strip_prefix("e:") {
                     *count.entry(name.to_string()).or_default() += 1;
@@ -1111,7 +1154,7 @@ pub fn briefing_checked(store: &Store, current_session: &str, max_chars: usize, 
         let mut top: Vec<(String, usize)> = count.into_iter().collect();
         top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let names: Vec<String> = top.iter().take(20).map(|(n, c)| if *c > 1 { format!("{n} ({c})") } else { n.clone() }).collect();
-        let mut line = format!("\n{} older note{} not shown here", unshown.len(), if unshown.len() == 1 { " is" } else { "s are" });
+        let mut line = format!("\n{} older note{} not shown here", left.len(), if left.len() == 1 { " is" } else { "s are" });
         if !names.is_empty() {
             line += &format!(", about: {}", names.join(", "));
         }
@@ -1120,7 +1163,24 @@ pub fn briefing_checked(store: &Store, current_session: &str, max_chars: usize, 
             s += &line;
         }
     }
-    Ok((s, ids))
+
+    // What changes with every session.
+    let sessions = store.query("SELECT session, COUNT(*) FROM memory GROUP BY session ORDER BY 2 DESC LIMIT 1000")?.rows.len();
+    let last = store.latest(&[], 1, &prev)?;
+    let mut tail = format!("ChloeCtx memory holds {total} records from {sessions} session{}", if sessions == 1 { "" } else { "s" });
+    if let Some(r) = last.first() {
+        tail += &format!(", last activity {}", fmt_ago(r.ts, now));
+    }
+    tail += ".\n";
+    let mut tail_ids = Vec::new();
+    let mut no_stale = Vec::new();
+    let mut no_unshown = Vec::new();
+    let budget = tail.len() + BRIEF_TAIL;
+    let checkpoint: Vec<Record> = store.latest(&[Kind::Todo], 10, &none)?.into_iter().filter(|r| r.tag != "planned" && r.tag != "done").take(1).collect();
+    section("Open tasks at the last checkpoint:", checkpoint, 500, 1, budget, &mut tail, &mut tail_ids, &mut no_stale, &mut no_unshown);
+    section("Where the most recent earlier session left off:", store.latest(&[Kind::Episode], 3, &prev)?, 300, 3, budget, &mut tail, &mut tail_ids, &mut no_stale, &mut no_unshown);
+    let tail = tail.trim_start_matches('\n').to_string();
+    Ok(Briefing { text: s, ids, tail, tail_ids })
 }
 
 #[cfg(test)]
@@ -1141,6 +1201,52 @@ mod tests {
         assert_eq!(SHARE.get(), 0);
         assert!(std::panic::catch_unwind(|| both(|| panic!("a search failed"), || 1)).is_err());
         assert_eq!(SHARE.get(), 0);
+    }
+
+    /// JONAH-3 and JONAH-7: the rules come first and every note whole (a
+    /// decision was cut at "Rules: no emojis anyw…" and the rule after the
+    /// cut never reached a session); the text is the same from one session
+    /// to the next while the notes are, and what changes (counts, ages,
+    /// where the last session left off) is the tail.
+    #[test]
+    fn the_briefing_is_whole_rules_first_and_the_same_each_session() {
+        use crate::embed::HashEmbedder;
+        use crate::record::Draft;
+        use crate::store::StoreOptions;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("m.strata"), std::sync::Arc::new(HashEmbedder { dim: 64 }), StoreOptions { sync: false, ..Default::default() }).unwrap();
+        let decision = "Decision: tdo v1 is a single-user CLI with exactly three priority levels (low, normal, high), stored in SQLite at ~/.tdo/todos.db, \
+            with argparse subcommands add, list, done and rm, and output that fits an 80-column terminal. \
+            Rules: no emojis anywhere in the output or the docs, no colours unless stdout is a terminal, \
+            and no recurring todos in v1, so do not suggest them.";
+        assert!(decision.len() > 300 && decision.len() < BRIEF_NOTE);
+        let long = format!("{} The end of a note written by hand.", "A very long note about the export format. ".repeat(20));
+        let recs = store
+            .append("s1", 1, 1_000, vec![
+                Draft::new(Kind::Decision, decision).tag("distilled"),
+                Draft::new(Kind::Fact, long.clone()).tag("remembered"),
+                Draft::new(Kind::Preference, "Write all tests with pytest, never unittest.").tag("distilled"),
+                Draft::new(Kind::Episode, "Turn 1. User asked: set up tdo. Ran: pytest -q"),
+            ])
+            .unwrap();
+        let b = briefing_parts(&store, "s2", 6000, 2_000, None).unwrap();
+        assert!(b.text.contains("no recurring todos in v1, so do not suggest them."), "{}", b.text);
+        assert!(b.text.find("Rules and conventions:").unwrap() < b.text.find("Decisions:").unwrap(), "{}", b.text);
+        // A note longer than the briefing's cut ends at a word, says where
+        // the rest is, and is not counted shown: a prompt gets it whole.
+        assert!(b.text.contains(&format!("; memory_timeline {} shows the rest", recs[1].id)), "{}", b.text);
+        assert!(!b.ids.contains(&recs[1].id) && b.ids.contains(&recs[0].id));
+        assert!(!b.text.contains(" ago") && !b.text.contains("records") && !b.text.contains("left off"), "{}", b.text);
+        assert!(b.tail.contains("4 records from 1 session") && b.tail.contains("Where the most recent earlier session left off") && b.tail.contains("Turn 1. User asked"), "{}", b.tail);
+        // Later, after another session's work that wrote no note: the same text.
+        store.append("s2", 1, 5_000, vec![Draft::new(Kind::Prompt, "list the todos"), Draft::new(Kind::Answer, "Here they are.")]).unwrap();
+        let later = briefing_parts(&store, "s3", 6000, 90_000, None).unwrap();
+        assert_eq!(later.text, b.text);
+        assert_ne!(later.tail, b.tail);
+        // A rule that does not fit the budget is listed as not shown, not
+        // dropped without a word.
+        let tight = briefing_parts(&store, "s3", b.text.find("Decisions:").unwrap() + 10, 90_000, None).unwrap();
+        assert!(tight.text.contains("pytest") && !tight.text.contains("three priority levels") && tight.text.contains("not shown here"), "{}", tight.text);
     }
 
     /// The session's last records bring back what the prompt does not
