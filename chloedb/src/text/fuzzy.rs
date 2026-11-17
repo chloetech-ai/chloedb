@@ -191,6 +191,40 @@ pub fn walk<S: Sorted>(q: &[char], k: u8, m: Match, terms: &mut S, hit: impl FnM
     }
 }
 
+/// [`walk`] with [`Match::Whole`] for the terms within `k` edits of `a`
+/// or of `b`, each once, with the fewer edits of the two: one walk of the
+/// dictionary for both, so the trie's nodes the two reach (most of them
+/// when one starts the other, as a word does its stem) are read once.
+pub fn walk_either<S: Sorted>(a: &[char], b: &[char], k: u8, terms: &mut S, hit: impl FnMut(&S, std::ops::Range<usize>, u8)) {
+    let m = Match::Whole;
+    match (a.len() < 64, b.len() < 64) {
+        (true, true) => walk_rows(Either(BitRows::new(a, k), BitRows::new(b, k)), a, k, m, terms, hit),
+        (true, false) => walk_rows(Either(BitRows::new(a, k), CellRows::new(b, k)), a, k, m, terms, hit),
+        (false, true) => walk_rows(Either(CellRows::new(a, k), BitRows::new(b, k)), a, k, m, terms, hit),
+        (false, false) => walk_rows(Either(CellRows::new(a, k), CellRows::new(b, k)), a, k, m, terms, hit),
+    }
+}
+
+/// The rows of two queries along one path ([`walk_either`]): a branch is
+/// dead once it is for both, and a term's edits are the fewer of its two.
+struct Either<A, B>(A, B);
+
+impl<A: Rows, B: Rows> Rows for Either<A, B> {
+    fn truncate(&mut self, depth: usize) {
+        self.0.truncate(depth);
+        self.1.truncate(depth);
+    }
+
+    fn push(&mut self, c: char, last: Option<char>) -> (u8, u8) {
+        let (a, b) = (self.0.push(c, last), self.1.push(c, last));
+        (a.0.min(b.0), a.1.min(b.1))
+    }
+
+    fn whole(&self, depth: usize) -> u8 {
+        self.0.whole(depth).min(self.1.whole(depth))
+    }
+}
+
 /// The rows of the edit-distance table along a walk's path: per depth
 /// `j`, the edits from the path's first `j` letters to each prefix of the
 /// query, capped at `k + 1` (all that matters past `k`).
@@ -593,5 +627,67 @@ mod tests {
         assert_eq!(past_prefix(b"ab"), Some(b"ac".to_vec()));
         assert_eq!(past_prefix(&[0x61, 0xff]), Some(b"b".to_vec()));
         assert_eq!(past_prefix(&[0xff]), None);
+    }
+
+    /// One walk for two words finds each term within k of either, once,
+    /// at the fewer edits: what a full scan for each finds, merged; with
+    /// rows of bits and of cells, and with one word starting the other (a
+    /// stem and the word it was cut from).
+    #[test]
+    fn a_walk_for_two_words_finds_the_terms_near_either() {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let letters: Vec<char> = "abcdeé日".chars().collect();
+        let word = |next: &mut dyn FnMut() -> u64, max: u64| -> String { (0..next() % max).map(|_| letters[(next() % letters.len() as u64) as usize]).collect() };
+        let scan = |terms: &[String], a: &[char], b: &[char], k: u8| -> Vec<(usize, u8)> {
+            terms
+                .iter()
+                .enumerate()
+                .filter_map(|(i, t)| match (within(a, t, k), within(b, t, k)) {
+                    (None, None) => None,
+                    (da, db) => Some((i, da.unwrap_or(u8::MAX).min(db.unwrap_or(u8::MAX)))),
+                })
+                .collect()
+        };
+        for round in 0..40 {
+            let mut terms: Vec<String> = (0..300).map(|_| word(&mut next, 8)).collect();
+            if round % 5 == 0 {
+                terms.push(String::from_utf8_lossy(&[0xffu8, 0x61]).into_owned());
+            }
+            terms.sort();
+            terms.dedup();
+            for i in 0..20 {
+                let a: Vec<char> = word(&mut next, 7).chars().collect();
+                // Half the time, `b` is `a` cut short (as a stem is).
+                let b: Vec<char> = if i % 2 == 0 { a[..a.len() - a.len().min((next() % 3) as usize)].to_vec() } else { word(&mut next, 7).chars().collect() };
+                for k in 0..=2u8 {
+                    let want = scan(&terms, &a, &b, k);
+                    let mut got = Vec::new();
+                    walk_either(&a, &b, k, &mut SliceTerms::new(&terms), |_, r, d| got.push((r.start, d)));
+                    assert_eq!(got, want, "{a:?} or {b:?} within {k}");
+                    let mut cells = Vec::new();
+                    let rows = Either(CellRows::new(&a, k), BitRows::new(&b, k));
+                    walk_rows(rows, &a, k, Match::Whole, &mut SliceTerms::new(&terms), |_, r, d| cells.push((r.start, d)));
+                    assert_eq!(cells, want, "{a:?} or {b:?} within {k}, by cells and bits");
+                }
+            }
+        }
+        // A word of 64 letters or more (rows of cells) with its stem.
+        let a: Vec<char> = (0..66).map(|i| letters[i % 5]).collect();
+        let b = a[..62].to_vec();
+        let base: String = a.iter().collect();
+        let mut terms: Vec<String> = vec![base.clone(), base[..61].to_string(), base[..63].to_string(), format!("{base}x"), base[..64].to_string()];
+        terms.sort();
+        terms.dedup();
+        for k in 0..=2u8 {
+            let mut got = Vec::new();
+            walk_either(&a, &b, k, &mut SliceTerms::new(&terms), |_, r, d| got.push((r.start, d)));
+            assert_eq!(got, scan(&terms, &a, &b, k), "66 letters or 62 within {k}");
+        }
     }
 }

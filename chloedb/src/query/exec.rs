@@ -3273,11 +3273,22 @@ impl<'a> Executor<'a> {
     /// The indexed terms of `field` within `edits` edits of `term` in any
     /// segment, with their document counts and distances.
     fn near_terms(&self, field: usize, term: &str, edits: u8) -> Result<Arc<Vec<(String, u64, u8)>>> {
-        let key = (field, term.to_string(), edits);
+        self.near_either(field, term, None, edits)
+    }
+
+    /// [`Self::near_terms`] of `term`, or of `term` and `other` in one walk
+    /// of each segment's terms, each term at the fewer edits of the two.
+    fn near_either(&self, field: usize, term: &str, other: Option<&str>, edits: u8) -> Result<Arc<Vec<(String, u64, u8)>>> {
+        // The two forms, as one key: no word holds a NUL.
+        let word = match other {
+            Some(o) => format!("{term}\0{o}"),
+            None => term.to_string(),
+        };
+        let key = (field, word, edits);
         if let Some(v) = self.expanded.lock().unwrap_or_else(|e| e.into_inner()).near.get(&key) {
             return Ok(v.clone());
         }
-        let shared = self.opts.expansions.as_ref().map(|x| (x, (self.schema.table.clone(), field, term.to_string(), edits)));
+        let shared = self.opts.expansions.as_ref().map(|x| (x, (self.schema.table.clone(), field, key.1.clone(), edits)));
         if let Some((x, k)) = &shared {
             if let Some(v) = x.near.lock().unwrap_or_else(|e| e.into_inner()).get(k).cloned() {
                 self.expanded.lock().unwrap_or_else(|e| e.into_inner()).near.insert(key, v.clone());
@@ -3285,7 +3296,7 @@ impl<'a> Executor<'a> {
             }
         }
         let fields = self.stat_segs().iter().map(|s| self.text(s, field)).collect::<Result<Vec<_>>>()?;
-        let mut v = TextFieldReader::fuzzy_across(&fields, term, edits);
+        let mut v = TextFieldReader::fuzzy_across_of(&fields, term, other, edits);
         v.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
         let v = Arc::new(v);
         if let Some((x, k)) = shared {
@@ -3299,26 +3310,18 @@ impl<'a> Executor<'a> {
     /// all (a misspelling) and the word was written otherwise before it
     /// was stemmed (`raw`), the terms near that form too: `wireles` stems
     /// to `wirel`, three edits from `wireless`, but is one edit from it as
-    /// written. Each term once, at its nearest.
+    /// written. Each term once, at its nearest. The two forms share one
+    /// walk of the terms: they share most of their letters, so the walk
+    /// reads most of the terms near one for the other too.
     fn near_terms_of(&self, field: usize, term: &str, raw: Option<&str>, edits: u8) -> Result<Arc<Vec<(String, u64, u8)>>> {
-        let near = self.near_terms(field, term, edits)?;
-        let Some(raw) = raw.filter(|r| *r != term) else { return Ok(near) };
-        if near.iter().any(|x| x.2 == 0) {
-            return Ok(near);
+        let Some(raw) = raw.filter(|r| *r != term) else { return self.near_terms(field, term, edits) };
+        // A word the index has is no misspelling: a lookup in each
+        // segment's dictionary, not a walk, says so.
+        let fields = self.stat_segs().iter().map(|s| self.text(s, field)).collect::<Result<Vec<_>>>()?;
+        if fields.iter().any(|f| f.dict.get(term).is_some()) {
+            return self.near_terms(field, term, edits);
         }
-        let more = self.near_terms(field, raw, edits)?;
-        if more.is_empty() {
-            return Ok(near);
-        }
-        let mut all: Vec<(String, u64, u8)> = near.iter().cloned().collect();
-        for m in more.iter() {
-            match all.iter_mut().find(|x| x.0 == m.0) {
-                Some(x) => x.2 = x.2.min(m.2),
-                None => all.push(m.clone()),
-            }
-        }
-        all.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
-        Ok(Arc::new(all))
+        self.near_either(field, term, Some(raw), edits)
     }
 
     /// A `MATCH` query with its synonyms and typos expanded to the indexed
