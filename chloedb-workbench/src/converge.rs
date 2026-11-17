@@ -108,6 +108,17 @@ pub fn components_of(repo: &Path) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default();
+    // A workspace's packages, one level down in the usual containers
+    // (packages/cart, apps/web, crates/core): each is a component.
+    for c in WORKSPACE_DIRS {
+        let Ok(d) = std::fs::read_dir(repo.join(c)) else { continue };
+        for e in d.filter_map(|e| e.ok()) {
+            let n = e.file_name().to_string_lossy().to_string();
+            if !n.starts_with('.') && n != "node_modules" && e.path().is_dir() && BUILD_FILES.iter().any(|b| e.path().join(b).is_file()) {
+                dirs.push(format!("{c}/{n}"));
+            }
+        }
+    }
     dirs.sort();
     let mut out: Vec<String> = dirs.iter().filter(|d| sdk_dir(d).is_none()).cloned().collect();
     if dirs.iter().any(|d| sdk_dir(d).is_some()) {
@@ -122,6 +133,8 @@ pub fn components_of(repo: &Path) -> Vec<String> {
     out.push("other".into());
     out
 }
+
+const WORKSPACE_DIRS: [&str; 6] = ["packages", "apps", "crates", "services", "libs", "modules"];
 
 const BUILD_FILES: [&str; 5] = ["Cargo.toml", "package.json", "pyproject.toml", "pom.xml", "go.mod"];
 
@@ -172,6 +185,10 @@ fn named_in(comps: &[String], text: &str) -> Option<String> {
     by_len.sort_by_key(|c| std::cmp::Reverse(c.len()));
     let exact = |w: &str| whole(text, w);
     if let Some(c) = by_len.iter().find(|c| exact(c)) {
+        return Some(c.to_string());
+    }
+    // A workspace package: its path, or its own name (cart for packages/cart).
+    if let Some(c) = by_len.iter().filter(|c| c.contains('/')).find(|c| text.contains(&format!("{c}/")) || c.rsplit('/').next().is_some_and(|leaf| leaf.len() > 2 && exact(leaf))) {
         return Some(c.to_string());
     }
     if comps.iter().any(|c| c == "sdks") {
@@ -1934,6 +1951,10 @@ fn take_repro(sup: &Arc<Supervisor>, f: &mut Finding, by: &str) -> Result<(), Ap
 /// Reproduce: the repro must fail every run at the base branch.
 fn gate_reproduce(sup: &Arc<Supervisor>, id: &str) -> Result<(), ApiError> {
     let mut f = get_finding(sup, id)?;
+    // Parked (or dismissed) since this was started: leave it as it is.
+    if f.state != "active" {
+        return Ok(());
+    }
     let repo = PathBuf::from(&f.repo);
     let st = settings(sup, &f.repo);
     let Some(text) = f.repro.clone().filter(|r| !r.trim().is_empty()) else {
@@ -2205,6 +2226,8 @@ fn steer_back(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, text: &s
 fn send_back(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, reason: &str, text: &str, restart: bool) {
     let head = f.worktree.as_deref().and_then(|w| git(Path::new(w), &["rev-parse", "HEAD"]).ok());
     f.sent_back = Some(json!({ "head": head, "reason": reason, "at": now_ms() }));
+    // An older round's failure is not this one's.
+    f.last_check = None;
     f.ci = None;
     f.needs_you = None;
     let running = f.agent.as_deref().is_some_and(|a| sup.is_running(a));
@@ -2238,6 +2261,10 @@ fn is_doc(path: &str) -> bool {
 /// Develop's gate: committed, repro green N of N, tests, a test changed, in scope.
 fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(), ApiError> {
     let mut f = get_finding(sup, id)?;
+    // Parked (or dismissed) since this was started: leave it as it is.
+    if f.state != "active" {
+        return Ok(());
+    }
     let st = settings(sup, &f.repo);
     let repo = PathBuf::from(&f.repo);
     let Some(wt) = f.worktree.clone().map(PathBuf::from).filter(|p| p.is_dir()) else {
@@ -2315,6 +2342,7 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
     if problems.is_empty() {
         f.needs_you = None;
         f.sent_back = None;
+        f.last_check = None;
         return advance_to(sup, &mut f, "verify", "develop", true, "autopilot", &format!("Repro green {green} of {green}; tests pass; {} files changed", changed.len()), evidence);
     }
     let text = format!("Workbench's check of your branch did not pass (round {}):\n- {}\nFix these, commit, and stop. {BLOCKED_HELP}", f.rounds + 1, problems.join("\n- "));
@@ -2529,7 +2557,8 @@ fn found_with_memory(sup: &Supervisor, f: &Finding) -> bool {
 /// Verify's gate, on the persona's replay.
 fn finish_verify(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, run: &Run) -> Result<(), ApiError> {
     *f = get_finding(sup, &f.id)?;
-    if f.stage != "verify" {
+    // Parked or dismissed while it replayed: the replay changes nothing.
+    if f.stage != "verify" || f.state != "active" {
         return Ok(());
     }
     let mut problems = Vec::new();
@@ -2549,19 +2578,61 @@ fn finish_verify(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, run: 
             problems.push(format!("its ease dropped from {b} to {a}"));
         }
     }
-    let serious: Vec<String> = run.findings.iter().filter(|x| sev_of(&x["severity"]) >= 3).filter_map(|x| x["title"].as_str().map(str::to_string)).collect();
+    // Only a new regression fails the replay: a serious problem that is
+    // already a card (the duplicate check's similarity), or whose repro fails
+    // on the base branch too, was there before this fix and is not its doing.
+    let (serious, known) = new_regressions(sup, f, run);
     if !serious.is_empty() {
         problems.push(format!("new problems of severity major or worse: {}", serious.join("; ")));
     }
     f.ease_after = run.ease;
-    let evidence = json!({ "run": run.id, "outcome": run.outcome, "fixed": run.fixed, "ease_before": f.ease_before, "ease_after": run.ease, "use_memory": run.use_memory, "ease_compared": same_mode, "answer": run.answer, "new_findings": run.findings });
+    let evidence = json!({ "run": run.id, "outcome": run.outcome, "fixed": run.fixed, "ease_before": f.ease_before, "ease_after": run.ease, "use_memory": run.use_memory, "ease_compared": same_mode, "answer": run.answer, "new_findings": run.findings, "known_before": known });
     if problems.is_empty() {
         f.needs_you = None;
+        f.last_check = None;
         return advance_to(sup, f, "review", "verify", true, run.persona.as_deref().unwrap_or("persona"), &format!("The persona succeeded on the branch; ease {} → {}", f.ease_before.map(|e| e.to_string()).unwrap_or("?".into()), run.ease.map(|e| e.to_string()).unwrap_or("?".into())), evidence);
     }
-    let text = format!("The persona who found this replayed it on your branch and it did not pass:\n- {}\nTheir words: {}\nFix it, commit, and stop.", problems.join("\n- "), run.answer.clone().unwrap_or_default());
+    let text = format!("The persona who found this replayed it on your branch and it did not pass:\n- {}\nTheir words: {}\nFix it inside the plan's files, commit, and stop. {SCOPE_HELP}", problems.join("\n- "), run.answer.clone().unwrap_or_default());
+    // What "N rounds without passing" names: this replay's failure, not an older check's.
+    f.last_check = Some(json!({ "problems": problems, "agent_said": run.answer.as_deref().map(|a| crate::narrate::sentences(a, 2, 400)), "at": now_ms(), "round": f.rounds + 1, "by": "verify" }));
     steer_back(sup, lv, f, &text);
     advance_to(sup, f, "develop", "verify", false, run.persona.as_deref().unwrap_or("persona"), &problems.join("; "), evidence)
+}
+
+/// The replay's serious findings that are new: not like an open card of
+/// the repository (other than this one), and, when it gives a repro, one
+/// that passes on the base branch. Answers them and the ones left out.
+fn new_regressions(sup: &Supervisor, f: &Finding, run: &Run) -> (Vec<String>, Vec<Json>) {
+    let open: Vec<Finding> = findings_of(sup, &f.repo).into_iter().filter(|g| g.id != f.id && matches!(g.state.as_str(), "active" | "parked")).collect();
+    let st = settings(sup, &f.repo);
+    let repo = PathBuf::from(&f.repo);
+    let mut base_scratch: Option<Option<Scratch>> = None;
+    let (mut fresh, mut known) = (Vec::new(), Vec::new());
+    for x in run.findings.iter().filter(|x| sev_of(&x["severity"]) >= 3) {
+        let Some(title) = x["title"].as_str() else { continue };
+        let probe = Finding { title: title.to_string(), detail: x["detail"].as_str().unwrap_or("").to_string(), ..Default::default() };
+        if let Some(g) = open.iter().find(|g| similarity(&probe, g) >= DUP) {
+            known.push(json!({ "title": title, "card": g.id }));
+            continue;
+        }
+        if let Some(r) = x["repro"].as_str().filter(|r| !r.trim().is_empty()) {
+            let sc = base_scratch.get_or_insert_with(|| {
+                let base = base_of(&repo, &st);
+                let rev = crate::git::rev_parse(&repo, &base).unwrap_or(base);
+                Scratch::new(sup, &repo, &rev, &format!("verify-base-{}", run.id)).ok()
+            });
+            if let Some(sc) = sc.as_ref() {
+                // Its own file (not this card's repro), in the run's name.
+                let probe = Finding { id: format!("{}-base", run.id), repo: f.repo.clone(), repro: Some(r.to_string()), ..Default::default() };
+                if run_repro(sup, &probe, &sc.path, 1, st.repro_timeout_s).iter().any(|(c, _)| *c == 1) {
+                    known.push(json!({ "title": title, "on_base": true }));
+                    continue;
+                }
+            }
+        }
+        fresh.push(title.to_string());
+    }
+    (fresh, known)
 }
 
 fn gh() -> String {
@@ -2673,6 +2744,10 @@ fn merge_conflict(sup: &Supervisor, f: &mut Finding, answer: &str) -> ApiError {
 /// Review: CI's state and whether it merged.
 fn check_pr(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(), ApiError> {
     let mut f = get_finding(sup, id)?;
+    // Parked (or dismissed) since this was started: leave it as it is.
+    if f.state != "active" {
+        return Ok(());
+    }
     let Some(url) = f.pr_url.clone() else { return Ok(()) };
     let wt = f.worktree.clone().map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(|| PathBuf::from(&f.repo));
     let Some((slug, n)) = pr_of(&url) else { return Ok(()) };
@@ -2699,6 +2774,16 @@ fn check_pr(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(), Api
                         failed(sup, &mut f, "pr", "autopilot", &format!("push failed: {e}"), json!({ "error": e }))
                     }
                 };
+            }
+            // Pushed, but GitHub does not show this head yet: CI of an older
+            // head says nothing about this one, so it is pending until it does.
+            if !local.is_empty() && !sha.is_empty() && local != sha {
+                if f.ci.as_deref() != Some("pending") {
+                    f.ci = Some("pending".into());
+                    f.updated = now_ms();
+                    put_finding(sup, &f)?;
+                }
+                return Ok(());
             }
         }
         // GitHub works out whether it merges in the background (null until
@@ -3056,7 +3141,9 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
         }
     }
     // Prioritize → develop, under the WIP limit; doors wait for you.
-    let mut in_dev = fs.iter().filter(|f| f.state == "active" && f.stage == "develop").count();
+    // A card holds its slot from develop to the merge: one sent back from
+    // verify, CI or review is still in it, so WIP is never passed that way.
+    let mut in_dev = fs.iter().filter(|f| f.state == "active" && matches!(f.stage.as_str(), "develop" | "verify" | "review")).count();
     // What you started that waits for an agent slot goes too (a door you started is yours).
     let mut queue: Vec<Finding> = fs.iter().filter(|f| f.state == "active" && f.stage == "prioritize" && ((st.develop_auto && f.door.is_none()) || f.queued.is_some())).cloned().collect();
     queue.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)));
@@ -3115,6 +3202,18 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
     // Personas due to replay (not in a tick that only follows your picks).
     let budget_left = if personas { budget_left } else { 0.0 };
     let due_ms = (st.replay_every_h * 3_600_000.0) as i64;
+    // Probation is decided on what was tried, whenever that changes (a
+    // reproduce, a dismissal), not only after its next explore run.
+    for mut p in personas_of(sup, repo).into_iter().filter(|p| p.state == "probation" && p.runs >= 2) {
+        if busy_what(&format!("persona:{}", p.id)).is_some() {
+            continue;
+        }
+        let was = (p.state.clone(), p.why.clone());
+        review_persona(sup, &st, &mut p);
+        if (p.state.clone(), p.why.clone()) != was {
+            let _ = put_persona(sup, &p);
+        }
+    }
     let mut playing = busy_count("playing");
     let mut next_due: Option<(i64, String, String)> = None;
     for p in personas_of(sup, repo).into_iter().filter(|p| p.state != "retired") {
@@ -4155,19 +4254,34 @@ async fn settings_put(State(app): State<App>, headers: HeaderMap, body: Bytes) -
         if let (Some(c), Some(n)) = (cur.as_object_mut(), v.get("settings").or(Some(&v)).and_then(Json::as_object)) {
             for (k, x) in n {
                 if k != "repo" && c.contains_key(k) {
+                    // A number stays a number: empty, null (JSON's Infinity) or
+                    // text is refused, never saved as 0.
+                    if c[k].is_number() {
+                        let whole = c[k].is_u64() || c[k].is_i64();
+                        let ok = match x.as_f64() {
+                            Some(f) if f.is_finite() && f >= 0.0 => !whole || f.fract() == 0.0,
+                            _ => false,
+                        };
+                        if !ok {
+                            return Err(ApiError::bad(format!("{} must be {}, not {}", k.replace('_', " "), if whole { "a whole number, 0 or more" } else { "a number, 0 or more" }, if x.is_null() { "empty".to_string() } else { one_line(&x.to_string(), 40) })));
+                        }
+                    }
                     c.insert(k.clone(), x.clone());
                 }
             }
         }
-        let st: Settings = serde_json::from_value(cur).map_err(|e| ApiError::bad(format!("settings: {e}")))?;
+        let st: Settings = serde_json::from_value(cur).map_err(|e| ApiError::bad(format!("settings: a value is not of its kind ({})", one_line(&e.to_string(), 120))))?;
         if let Some(m) = st.dev_permission_mode.as_deref().filter(|m| !m.is_empty()) {
             if !crate::ownperms::MODES.contains(&m) {
                 return Err(ApiError::bad(format!("dev_permission_mode is one of {}, not {m:?}", crate::ownperms::MODES.join(", "))));
             }
         }
         crate::supervisor::PermissionProfile { allow: st.dev_allow.clone(), ask: Vec::new(), deny: st.dev_deny.clone() }.check().map_err(ApiError::bad)?;
+        if !st.budget_usd_day.is_finite() || st.budget_usd_day > 100_000.0 {
+            return Err(ApiError::bad("budget usd day must be a number from 0 to 100000"));
+        }
         if st.budget_usd_day < 0.0 || st.wip > 20 || st.runs_at_once > 20 || st.repro_runs > 20 {
-            return Err(ApiError::bad("settings out of range: budget ≥ 0, wip and runs_at_once ≤ 20, repro_runs ≤ 20"));
+            return Err(ApiError::bad("out of range: the budget is 0 or more, findings in development and persona runs at once at most 20, repro runs at most 20"));
         }
         let before = serde_json::to_value(settings(&sup, &repo)).unwrap();
         put_settings(&sup, &repo, &st)?;
@@ -4723,6 +4837,8 @@ fn do_verb(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, verb: &str,
                 }
                 f.rounds = 0;
                 send_back(sup, lv, f, &text, &format!("Sent back by your reviewer: {text}\n\nMake the change on this branch, commit it, and stop."), true);
+                // Your note is not a failed round: the rounds start over from it.
+                f.rounds = 0;
                 advance_to(sup, f, "develop", "review", false, "you", &text, Json::Null)?;
             }
             "pr" => {

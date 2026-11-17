@@ -7062,13 +7062,16 @@ esac
 const CONVERGE_GH: &str = r#"#!/bin/sh
 D="__DIR__"
 printf '%s\n' "$*" >> "$D/gh.log"
+# The pull request's head: what was pushed to "GitHub" (the bare origin).
+HEAD_SHA=$(git --git-dir="$D/acme/proj.git" for-each-ref --format='%(objectname)' 'refs/heads/wb/' 2>/dev/null | head -1)
+[ -n "$HEAD_SHA" ] || HEAD_SHA=abc123
 case "$*" in
   "api -X POST repos/acme/proj/pulls "*) echo '{"html_url":"https://github.com/acme/proj/pull/7","number":7}';;
   "api repos/acme/proj/pulls/7")
-    if [ -f "$D/merged" ]; then echo '{"merged":true,"state":"closed","merged_by":{"login":"roberto"},"head":{"sha":"abc123"}}'
-    elif [ -f "$D/conflict" ]; then echo '{"merged":false,"state":"open","mergeable":false,"mergeable_state":"dirty","base":{"ref":"main"},"head":{"sha":"abc123"}}'
-    else echo '{"merged":false,"state":"open","mergeable":true,"mergeable_state":"clean","head":{"sha":"abc123"}}'; fi;;
-  "api repos/acme/proj/commits/abc123/check-runs"*) echo '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"CI result","status":"completed","conclusion":"success"}]}';;
+    if [ -f "$D/merged" ]; then echo '{"merged":true,"state":"closed","merged_by":{"login":"roberto"},"head":{"sha":"'"$HEAD_SHA"'"}}'
+    elif [ -f "$D/conflict" ]; then echo '{"merged":false,"state":"open","mergeable":false,"mergeable_state":"dirty","base":{"ref":"main"},"head":{"sha":"'"$HEAD_SHA"'"}}'
+    else echo '{"merged":false,"state":"open","mergeable":true,"mergeable_state":"clean","head":{"sha":"'"$HEAD_SHA"'"}}'; fi;;
+  "api repos/acme/proj/commits/"*"/check-runs"*) echo '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"CI result","status":"completed","conclusion":"success"}]}';;
   "api -X PUT repos/acme/proj/pulls/7/merge "*)
     if [ -f "$D/conflict405" ]; then echo '{"message":"Pull Request has merge conflicts","status":"405"}'; echo 'gh: Pull Request has merge conflicts (HTTP 405)' >&2; exit 1; fi
     touch "$D/merged"; echo '{"merged":true,"sha":"def456"}';;
