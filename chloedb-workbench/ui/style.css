@@ -227,6 +227,7 @@ main { position: absolute; inset: 0; min-width: 0; overflow: hidden; }
   font: var(--w-mid) var(--fs-xs)/1 var(--sans); color: var(--text-2); text-decoration: none; border: 0; background: none; cursor: pointer; padding: 0;
 }
 .tabbar a svg.i, .tabbar button svg.i { width: 20px; height: 20px; }
+.tabbar [hidden] { display: none; }
 .tabbar a[aria-current="page"], .tabbar button[aria-current="page"], .tabbar button[aria-expanded="true"] { color: var(--accent-text); }
 .tabbar .badge {
   position: absolute; top: 6px; left: calc(50% + 6px); min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-pill);

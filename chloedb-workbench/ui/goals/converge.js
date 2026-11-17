@@ -1,7 +1,9 @@
 // Converge (src/converge.rs, SPEC.md "Seventh build: Converge"): personas
 // play the product, what they hit becomes problems, and each problem walks
 // the flow to a pull request you approve. One screen a step:
-//   #/converge                 Home: the inbox (Merge this? Build these? Worth fixing?)
+//   #/converge                 Home: the project overview (KPIs, the flow, the board, live now, what happened)
+//   #/converge/board           The board alone, with its filters (a phone's Board tab)
+//   #/converge/inbox           Needs you: Merge this? Build these? Worth fixing?
 //   #/converge/progress        In progress: everything moving without you
 //   #/converge/personas        Run a persona: the ranked list, Play, live run
 //   #/converge/problems        Problems: triage, filter, Reproduce or Dismiss
@@ -18,6 +20,7 @@ import { h, put, toast, enc, STEPS, blockedOf, queuedOf, agentOn, local } from "
 import { styles } from "/goals/converge/style.js";
 import { closeSheets } from "/goals/converge/kit.js";
 import { homeScreen, topBar, progressScreen, inboxKey } from "/goals/converge/home.js";
+import { overviewScreen, boardScreen, boardKey, overviewTick } from "/goals/converge/overview.js";
 import { problemsScreen } from "/goals/converge/problems.js";
 import { stepScreen } from "/goals/converge/steps.js";
 import { openSheet } from "/goals/converge/sheet.js";
@@ -32,9 +35,9 @@ export { THEME_WORDS, doingWords } from "/goals/converge/util.js";
 /** The label of the sheet's kind select (a test reads it here). */
 export const KIND_LABEL = "Kind of problem";
 
-const VIEWS = new Set(["home", "progress", "problems", "reproducing", "ready", "building", "merge", "personas", "metrics", "settings", "activity"]);
-/** Old addresses: the board and the Agents tab are Home now. */
-const OLD = { board: "home", work: "home" };
+const VIEWS = new Set(["home", "board", "inbox", "progress", "problems", "reproducing", "ready", "building", "merge", "personas", "metrics", "settings", "activity"]);
+/** Old addresses: the Agents tab is Home now. */
+const OLD = { work: "home" };
 
 /** The last data and view settings of each repository, kept across visits:
  *  coming back draws at once, then refreshes in place. */
@@ -279,10 +282,12 @@ export function mount(root, ctx) {
     // Home's crumbs are the project alone, so a phone gets no Back arrow to the picker.
     const crumbs = [{ label: projName(), href: href("home") }];
     const step = STEPS.find((s) => s.step === v);
-    const extra = { progress: "In progress", personas: "Personas", metrics: "Metrics", settings: "Autopilot", activity: "Activity log" };
+    const extra = { board: "Board", inbox: "Needs you", progress: "In progress", personas: "Personas", metrics: "Metrics", settings: "Autopilot", activity: "Activity log" };
     if (step || extra[v]) crumbs.push({ label: step ? step.name : extra[v], href: href(v) });
     if (ctx.crumbs) ctx.crumbs(crumbs);
-    const body = v === "home" ? homeScreen(C)
+    const body = v === "home" ? overviewScreen(C)
+      : v === "board" ? boardScreen(C)
+      : v === "inbox" ? homeScreen(C)
       : v === "progress" ? progressScreen(C)
       : v === "problems" ? problemsScreen(C)
         : v === "personas" ? personasScreen(C)
@@ -291,7 +296,8 @@ export function mount(root, ctx) {
               : v === "activity" ? activityScreen(C)
                 : stepScreen(C, v);
     const restore = scrollState();
-    put(host, v === "home" ? topBar(C) : null, body);
+    host.classList.toggle("cv-wide", v === "home" || v === "board");
+    put(host, v === "inbox" ? topBar(C) : null, body);
     restore();
     syncSheet();
   }
@@ -337,6 +343,10 @@ export function mount(root, ctx) {
   };
   window.addEventListener("hashchange", onHash);
   document.addEventListener("keydown", onKey);
+  // The overview has a phone layout of its own: crossing 640 px redraws it.
+  const mq = window.matchMedia("(max-width: 640px)");
+  const onMq = () => { if (S.d && S.alive && (view() === "home" || view() === "board")) draw(); };
+  mq.addEventListener("change", onMq);
   if (S.d && repo()) draw();
   load();
   S.timer = setInterval(() => {
@@ -346,17 +356,19 @@ export function mount(root, ctx) {
     // Settings being edited are not redrawn under you; Save reloads them.
     if (view() === "settings") return;
     load({ quiet: true });
+    if (S.d && (view() === "home" || view() === "board")) overviewTick(C);
   }, 8000);
   return {
     update() {},
     /** The app's key handler asks the page first (outside text boxes). */
-    onKey(e) { return !!(S.d && (view() === "home" || view() === "progress") && inboxKey(C, e, host)); },
+    onKey(e) { return !!(S.d && ((view() === "home" || view() === "board") ? boardKey(C, e, host) : (view() === "inbox" || view() === "progress") && inboxKey(C, e, host))); },
     unmount() {
       S.alive = false;
       if (view() === "problems") C.markSeen();
       clearInterval(S.timer);
       (S.stops || []).forEach((f) => { try { f(); } catch { /* gone */ } });
       window.removeEventListener("hashchange", onHash);
+      mq.removeEventListener("change", onMq);
       document.removeEventListener("keydown", onKey);
       for (const ev of ["wheel", "touchmove", "keydown"]) window.removeEventListener(ev, moved);
       closeSheets();

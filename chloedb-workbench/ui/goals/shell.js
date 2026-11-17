@@ -152,8 +152,8 @@ export function update() {
   const hb = document.getElementById("tab-badge-home");
   if (hb) hb.textContent = n && cp ? String(n) : "";
   const hl = document.getElementById("tab-home-l"), nl = document.getElementById("tab-needs-l");
-  if (hl) hl.textContent = cp ? "Inbox" : "Home";
-  if (nl) nl.textContent = cp ? "In progress" : "Needs you";
+  if (hl) hl.textContent = cp ? "Overview" : "Home";
+  if (nl) nl.textContent = cp ? "Board" : "Needs you";
   setCrumbs(O.crumbs);
   if (GRANTS.size) closeStaleGrants();
   // An open drawer or switcher is drawn again only when what it lists
@@ -174,7 +174,9 @@ export function update() {
   for (const a of document.querySelectorAll("#tabbar [data-tab]")) {
     if (a.dataset.tab === "home") a.href = homeHref();
     if (a.dataset.tab === "personas") a.href = p ? `#/converge/personas?project=${enc(p.project)}` : "#/converge";
-    if (a.dataset.tab === "needs") a.href = cp ? `#/converge/progress?project=${enc(cp.project)}` : "#/needs";
+    if (a.dataset.tab === "needs") a.href = cp ? `#/converge/board?project=${enc(cp.project)}` : "#/needs";
+    if (a.dataset.tab === "activity") { a.href = cp ? `#/converge/activity?project=${enc(cp.project)}` : "#/converge"; a.hidden = !cp; }
+    if (a.dataset.tab === "more") a.hidden = !!cp;
     if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   }
   // Converge's own pages name their project (with its switcher) in the
@@ -191,7 +193,8 @@ export function update() {
 export function tabOf(hsh) {
   if (/^#\/needs\b/.test(hsh)) return "needs";
   if (/^#\/converge\/personas\b/.test(hsh)) return "personas";
-  if (/^#\/converge\/progress\b/.test(hsh)) return "needs";
+  if (/^#\/converge\/(progress|board|inbox)\b/.test(hsh)) return "needs";
+  if (/^#\/converge\/activity\b/.test(hsh)) return "activity";
   if (/^#\/converge\b/.test(hsh)) return "home";
   if (hsh === "#/" || hsh === "#" || hsh === "") return "home";
   return "more";

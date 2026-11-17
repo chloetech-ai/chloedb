@@ -1,4 +1,4 @@
-// Home: the inbox. The project and its status line on top (sticky on a
+// The inbox (#/converge/inbox; the overview is home now). The project and its status line on top (sticky on a
 // phone), the five steps' counts as one compact strip, then the three
 // decisions that are yours, in this order: "Merge this?" (green and
 // mergeable), "Build these?" (planned), "Worth fixing?" (new problems).
@@ -21,11 +21,11 @@ function projectTitle(C) {
 
 /** One tap: Stop everything (the autopilot and your picks pause, every
  * agent and run stops), and Resume while stopped. */
-function stopButton(C) {
+export function stopButton(C, always) {
   const st = C.settings();
   const stopped = !!st.stopped;
   const busy = (C.S.d.findings || []).some((f) => agentOn(f) || f.busy) || (C.S.d.runs || []).some((r) => r.state === "running");
-  if (!stopped && !busy && !st.enabled && !st.follow_picks) return null;
+  if (!always && !stopped && !busy && !st.enabled && !st.follow_picks) return null;
   const b = h("button", { class: `cv-btn ${stopped ? "pri" : "crit"}`, type: "button", onclick: async () => {
     b.disabled = true;
     try {
@@ -135,9 +135,9 @@ export async function build(C, list) {
   const r = await C.act(() => C.bulk(list.map((f) => f.id), "start"), null);
   if (r) toast(r.failed && r.failed.length ? `${r.done.length} started; ${r.failed.length} did not: ${r.failed[0].error}` : `${r.done.length > 1 ? `${r.done.length} fix agents` : "A fix agent"} on it`);
 }
-function askDismiss(C, f) { C.S.dismissRow = f.id; C.S.cur = f.id; C.draw(); }
+export function askDismiss(C, f) { C.S.dismissRow = f.id; C.S.cur = f.id; C.draw(); }
 
-function dismissBox(C, f) {
+export function dismissBox(C, f) {
   const why = h("input", { class: "cv-in", type: "text", placeholder: "Why is it not worth fixing?", "aria-label": `Why dismiss “${f.title}”?`, enterkeyhint: "done" });
   const cancel = () => { C.S.dismissRow = null; C.draw(); };
   const go = () => { const r = why.value.trim(); if (!r) { why.focus(); toast("A reason, first: it teaches the personas"); return; } C.S.dismissRow = null; dismiss(C, [f.id], r); };
@@ -202,7 +202,7 @@ function progressStrip(C, moving) {
 export function progressScreen(C) {
   const { moving } = inboxOf(C.findings());
   return h("div", {},
-    h("header", { class: "cv-sh" }, h("a", { class: "cv-back", href: C.href("home") }, "‹ Inbox"),
+    h("header", { class: "cv-sh" }, h("a", { class: "cv-back", href: C.href("home") }, "‹ Overview"),
       h("div", { class: "row" }, h("h1", {}, "In progress", h("span", { class: "c" }, String(moving.length)))),
       h("p", { class: "hint" }, "Reproducing, planning, building and verifying: agents move these without you. Blocked ones wait for a step only you can take.")),
     moving.length ? h("ul", { class: "cv-iplist full" }, moving.map((f) => progressRow(C, f))) : h("div", { class: "cv-none" }, h("p", {}, "Nothing is moving. Pick something in the inbox."), h("a", { class: "cv-btn pri", href: C.href("home") }, "Back to the inbox")));
@@ -255,7 +255,7 @@ export function homeScreen(C) {
 }
 
 // ------------------------------------------------------------ keys
-const KEYS = [["j / k", "Next / previous card"], ["Enter", "Open the card"], ["r", "Reproduce (Worth fixing?)"], ["b", "Build (Build these?)"], ["d", "Dismiss, with a reason"], ["m", "Open the merge pack (Merge this?)"], ["x", "Select (Worth fixing?)"], ["?", "This help"], ["Esc", "Close"]];
+const KEYS = [["j / k", "Next / previous card"], ["Enter", "Open the card"], ["r", "Reproduce (a card in Found)"], ["b", "Build (a card ready to build)"], ["d", "Dismiss, with a reason"], ["m", "Open the merge pack"], ["x", "Select (Needs you: Worth fixing?)"], ["?", "This help"], ["Esc", "Close"]];
 
 export function keyHelp() {
   document.querySelectorAll(".cv-help, .cv-helpscrim").forEach((e) => e.remove());
