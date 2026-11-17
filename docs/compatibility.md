@@ -254,6 +254,7 @@ their promises:
 - `chloedb-hn`, Hacker News searched, asked in sentences and completed as typed;
 - `chloedb-arxiv`, every arXiv paper with search, the recommender and feeds;
 - `chloedb-gh`, GitHub's public history since 2011: repos by what they do, why they trend, what people use instead;
+- `chloedb-backbone`, the internet's routing from public data: what is wrong now, where, and how it connects;
 - `chloedb-swarm`, simulated users, an internal test instrument;
 - `examples/feature-store`, a shop ranked on features ChloeDB keeps;
 - `examples/parley`, a social network of LLM agents.
