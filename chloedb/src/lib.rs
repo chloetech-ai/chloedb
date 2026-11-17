@@ -1,9 +1,14 @@
-//! Strata: an embedded, single-file search database.
+//! ChloeDB (called Strata until November 2026): an embedded, single-file
+//! search database.
 //!
-//! One file holds a table whose documents are indexed three ways: posting
-//! lists (full text and keyword filters), a columnar forward index (structured
+//! One file holds tables whose rows are indexed three ways: posting lists
+//! (full text and keyword filters), a columnar forward index (structured
 //! fields, doc store) and vector ANN indexes. Queries are SQL with search
 //! functions, planned by a cost-based optimizer. See `DESIGN.md`.
+//!
+//! [`db::Db`] is the place to start: `Db::create_empty`, `Db::open`,
+//! `Db::sql` and `Db::write_ops`. `docs/chloedb/rust.md` in the repository
+//! shows them in use, with the dependency line for `Cargo.toml`.
 //!
 //! * [`schema`], [`value`]: tables, field types, documents; [`ingest`]:
 //!   rows from JSON, CSV and files; [`timestamp`]: TIMESTAMP values as

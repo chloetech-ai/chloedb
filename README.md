@@ -9,7 +9,9 @@
 
 ChloeDB keeps full text, structured columns, vectors and graph edges over the same rows, in one file, and answers all of them in one SQL query. Use it inside your app like SQLite, serve it over HTTP, or grow it to a sharded cluster without changing a query.
 
-[Website](https://chloetech-ai.github.io/chloedb/) · [Documentation](https://chloetech-ai.github.io/chloedb/site/docs/) · [Query language](docs/chloedb/query-language.md) · [Benchmarks](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) · [Changelog](CHANGELOG.md)
+[ChloeCtx](#chloectx-long-term-memory-for-claude-code), built on ChloeDB, is long-term memory for Claude Code: it records each session of a project and brings back what earlier sessions decided ([install it](docs/chloectx/setup.md)).
+
+[Website](https://chloetech-ai.github.io/chloedb/) · [Documentation](https://chloetech-ai.github.io/chloedb/site/docs/) · [Query language](docs/chloedb/query-language.md) · [ChloeCtx](docs/chloectx/setup.md) · [Benchmarks](https://chloetech-ai.github.io/chloedb/site/benchmarks.html) · [Changelog](CHANGELOG.md)
 
 ```sql
 SELECT id, title, price, score() FROM products
@@ -83,7 +85,7 @@ More in [the server guide](docs/chloedb/server.md).
 | Python | `pip install chloedb` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md), [LangChain, LangGraph and LlamaIndex](docs/guide/frameworks.md) |
 | JavaScript (Node, Bun, Deno) | `npm install chloedb` | [JavaScript](docs/chloedb/javascript.md) |
 | Java and JDBC | `cd chloedb-java && mvn install` (builds from source) | [Java](docs/chloedb/java.md) |
-| Rust | the `chloedb` crate in [`chloedb/`](chloedb/), by path | [Design](docs/chloedb/index.md) |
+| Rust | `chloedb = { git = "https://github.com/chloetech-ai/chloedb", tag = "chloedb-server-v0.3.7" }` in `Cargo.toml` (not on crates.io yet) | [Rust](docs/chloedb/rust.md), [Design](docs/chloedb/index.md) |
 
 ```python
 import chloedb
@@ -149,7 +151,7 @@ The quickest way is the Claude Code plugin, which downloads a prebuilt `chloectx
 /plugin install chloectx@chloedb
 ```
 
-Or install it from a checkout on macOS or Linux (WSL 2 on Windows). You need Rust (stable), a C compiler and the [Claude Code](https://claude.com/claude-code) CLI, signed in:
+Or install it from a checkout on macOS or Linux (WSL 2 on Windows). You need the [Claude Code](https://claude.com/claude-code) CLI, signed in, and Rust (stable) and a C compiler to build `chloectx` from a checkout of main:
 
 ```sh
 git clone https://github.com/chloetech-ai/chloedb && cd chloedb
@@ -157,7 +159,7 @@ git clone https://github.com/chloetech-ai/chloedb && cd chloedb
 ./install.sh --project ~/code/app     # or just one project
 ```
 
-The installer builds `chloectx` into `~/.local/bin`, downloads its embedding model (129 MB), connects it to Claude Code and runs `chloectx doctor` to check the result. It takes effect in new Claude Code sessions. To have a coding agent install it for you, ask it to *"clone https://github.com/chloetech-ai/chloedb and set ChloeCtx up for my Claude Code by following its AGENTS.md"*.
+The installer puts `chloectx` into `~/.local/bin` (the release's prebuilt binary in a checkout of a release tag, or where there is no Rust; otherwise it builds it), downloads its embedding model (129 MB), connects it to Claude Code and runs `chloectx doctor` to check the result. It takes effect in new Claude Code sessions. To have a coding agent install it for you, ask it to *"clone https://github.com/chloetech-ai/chloedb and set ChloeCtx up for my Claude Code by following its AGENTS.md"*.
 
 Then look at what it stored:
 
@@ -198,7 +200,7 @@ Read more: [install guide](docs/chloectx/setup.md) · [how it works](docs/chloec
 
 ## Status
 
-ChloeDB is young, at version 0.2, and much of it was measured on one machine (an Apple M2 MacBook Air; the comparisons with other engines ran on DigitalOcean). The file format and the shard protocol have [compatibility rules](docs/compatibility.md), but APIs can still change between releases. One process writes a database at a time, while other processes can read it. Each results page lists its own limitations.
+ChloeDB is young, at version 0.3.7, and much of it was measured on one machine (an Apple M2 MacBook Air; the comparisons with other engines ran on DigitalOcean). The file format and the shard protocol have [compatibility rules](docs/compatibility.md), but APIs can still change between releases. One process writes a database at a time, while other processes can read it. Each results page lists its own limitations.
 
 ChloeDB was called Strata, and ChloeCtx was called Engram, until November 2026. The old names (`strata-server`, `STRATA_*` settings, `import strata`, `engram`) still work for a release; [old names](docs/compatibility.md#old-names) lists them.
 

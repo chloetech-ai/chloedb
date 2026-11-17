@@ -13,7 +13,7 @@ tar xzf chloedb-server-$p.tar.gz && cp chloedb-server-$p/chloedb-server ./chloed
 ./chloedb-server --db shop.chloedb --seq-no
 ```
 
-The server listens on `http://127.0.0.1:7700` (HTTP JSON, and the command center in a browser) and on 7701 (gRPC). A new `--db` starts with no tables. `--seq-no` numbers every write, which the stock below needs. [Run it](server.md#run-it) has the options, the source build (`cd chloedb-server && cargo build --release`) and the image.
+The server listens on `http://127.0.0.1:7700` (HTTP JSON, and the command center in a browser) and on 7701 (gRPC). A second server on the same machine, for your tests say, needs both ports of its own: `--listen` moves only the HTTP one, and a second server left on 7701 stops with "the address is in use", so give it `--grpc` another port too, or `--grpc off`. A new `--db` starts with no tables. `--seq-no` numbers every write, which the stock below needs. [Run it](server.md#run-it) has the options, the source build (`cd chloedb-server && cargo build --release`) and the image.
 
 ## Make the tables
 
@@ -69,9 +69,18 @@ q '{"sql": "SELECT id, title FROM listings ORDER BY rrf(bm25(body, :t), similari
 
 # facets: how many listings per category
 q '{"sql": "SELECT category, COUNT(*) FROM listings GROUP BY category", "objects": true}'
+
+# as you type: "camping te" filters by its last word as a prefix and ranks by the words typed whole
+q '{"sql": "SELECT id, title FROM listings WHERE MATCH(title, :typed) AND stock > 0 ORDER BY bm25(title, :whole) DESC, price LIMIT 10",
+    "params": {"typed": "camping te*", "whole": "camping"}, "objects": true}'
+
+# the words a search matched, marked in each text
+curl -s localhost:7700/v1/highlight -H 'content-type: application/json' \
+  -d '{"table": "listings", "field": "title", "query": "camping te*", "texts": ["Red camping tent"]}'
+# {"texts":["Red <mark>camping</mark> <mark>tent</mark>"],...}
 ```
 
-Rows come as lists in the order of `columns`, or as objects with `"objects": true`. Typo tolerance, synonyms, phrase and prefix search, geographic and time decay, and reranking by a model are in the [query language](query-language.md).
+Rows come as lists in the order of `columns`, or as objects with `"objects": true`. A prefix filters but scores nothing in `bm25`, so a query ranked by `bm25(title, 'te*')` alone returns no rows: rank by the words typed whole, or by a column while the first word is being typed ([full text](query-language.md#full-text-match)). `POST /v1/correct` gives a "did you mean" ([did you mean](query-language.md#did-you-mean-correcting-a-querys-words)). A page in a browser cannot send these requests itself from another origin: chloedb-server refuses every `POST` from a page of another site, a query too, and sends no CORS headers, so your app's server code queries it and answers the page ([a search box in a web app](javascript.md#a-search-box-in-a-web-app)). Typo tolerance, synonyms, phrase and prefix search, geographic and time decay, and reranking by a model are in the [query language](query-language.md).
 
 ## Read one row by its key
 

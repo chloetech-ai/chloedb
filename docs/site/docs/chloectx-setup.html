@@ -19,7 +19,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
 </head>
 <body class="docs">
 <!-- Google Tag Manager (noscript) -->
@@ -40,6 +40,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js?v=c2829d2b7b">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
@@ -48,8 +54,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
       <a href="next-items.html">Next items</a>
@@ -64,18 +72,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
       <a href="java.html">Java and JDBC</a>
       <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
       <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html" aria-current="page">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -86,18 +105,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
-      <a href="chloectx.html">ChloeCtx</a>
-      <a href="chloectx-setup.html" aria-current="page">Install ChloeCtx</a>
-      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
-      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
-      <a href="chloectx-capsules.html">Context capsules</a>
-      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
-      <span class="eyebrow">Apps</span>
+      <span class="eyebrow">ChloeCtx</span>
       <h1>Install ChloeCtx on your machine</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/setup.md">docs/chloectx/setup.md</a>.</p>
       <p class="doc-version">These docs describe release 0.3.7.</p>
@@ -145,7 +159,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </table></div>
 <p>Python 3 is only needed for the scripted demo and the evaluation harnesses, not for ChloeCtx itself.</p>
 <p>The CLI login matters more than it looks. The distiller runs <code>claude -p</code> in the background, so an expired CLI login breaks it even while interactive sessions (or the desktop app) keep working. Recording and recall still work in that state, but nothing new is written down. <code>chloectx doctor</code> checks for it.</p>
-<p>ChloeCtx makes model calls of its own, through <code>claude -p</code> with a small model (<code>haiku</code> by default), billed to the CLI's login: one after each turn to write down decisions and rules (about $0.001); after each of your own turns that is like something you said before, one more to see whether you had to say it again, which makes it a rule (about $0.0005); and, once a project's store holds 20 records, two more after each prompt of four words or more, in the background, to search memory for it (<a href="chloectx.html#query-understanding">query understanding</a>, about $0.001 a prompt). None of them holds up a turn: what the search finds comes with the turn's next tool result, or at the next prompt. <code>CHLOECTX_DISTILL=0</code> turns the first two off, <code>CHLOECTX_DEEP=off</code> (or <code>tool</code>, only when the model asks) the last.</p>
+<p>ChloeCtx makes model calls of its own, through <code>claude -p</code> with a small model (<code>haiku</code> by default), billed to the CLI's login: one after each turn to write down decisions and rules (about $0.001 to $0.002); after each of your own turns that is like something you said before, one more to see whether you had to say it again, which makes it a rule (about $0.0005); and, once a project's store holds 20 records, two more after each prompt of four words or more, in the background, to search memory for it (<a href="chloectx.html#query-understanding">query understanding</a>, about $0.001 to $0.002 a prompt). <code>chloectx doctor</code> shows what these calls cost in your own store over the last 30 days. None of them holds up a turn: what the search finds comes with the turn's next tool result, or at the next prompt, so a quick question that Claude answers without a tool call is answered before the search is done. <code>CHLOECTX_DISTILL=0</code> turns the first two off, <code>CHLOECTX_DEEP=off</code> (or <code>tool</code>, only when the model asks) the last.</p>
+<p>The session's own model reads ChloeCtx's context too: the briefing, up to 6,000 characters (about 1,500 tokens), at the start of each session and again on each <code>claude --continue</code> or <code>--resume</code>, and the notes that come with a prompt.</p>
 <p>The daemon that makes these calls finds the <code>claude</code> CLI where Claude Code's hooks found it, on its own <code>PATH</code>, or in the usual install places (<code>~/.local/bin</code>, <code>~/.claude/local</code>, <code>/opt/homebrew/bin</code>, <code>/usr/local/bin</code>); <code>CHLOECTX_CLAUDE</code> names it outright. <code>chloectx doctor</code> shows which one the running daemon uses.</p>
 <h2 id="as-a-claude-code-plugin">As a Claude Code plugin<a class="anchor" href="#as-a-claude-code-plugin" aria-label="Link to this section">#</a></h2>
 <p>The repository is a Claude Code plugin marketplace, named <code>chloedb</code>, with ChloeCtx as its plugin <code>chloectx</code>. In Claude Code:</p>
@@ -159,7 +174,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <li>it fetches the embedding model (<code>chloectx fetch-model</code>, 129 MB, SHA-256 checked).</li>
 </ol>
 <p>Until that is done, which is usually well under a minute, the hooks record nothing, and the first session's start says so; the memory tools come with the next session if they were not ready within 25 seconds. The launcher writes what it did to <code>~/.claude/plugins/data/chloectx-chloedb/setup.log</code>, and when it cannot set up, the next session's start says why. To watch it, or to try again by hand: <code>~/.claude/plugins/cache/chloedb/chloectx/&lt;version&gt;/scripts/chloectx-launch setup</code>. When the plugin is updated (<code>/plugin update</code>, or Claude Code's auto-update) to a new version, the launcher replaces a <code>chloectx</code> it downloaded with the new version's; one you installed yourself is yours to upgrade.</p>
-<p>Claude Code clones the whole repository for the marketplace (about 230 MB). <code>claude plugin marketplace add chloetech-ai/chloedb --sparse .claude-plugin chloectx/plugin</code> checks out only the plugin, which leaves no checkout to build from on a machine without a prebuilt <code>chloectx</code>.</p>
+<p>Claude Code clones the whole repository for the marketplace, into <code>~/.claude/plugins/marketplaces/chloedb</code>: 665 MB on 17 November 2026 (Claude Code 2.1.326), of which 213 MB is <code>.git</code> and most of the rest benchmark results the plugin does not use. <code>claude plugin marketplace add chloetech-ai/chloedb --sparse .claude-plugin chloectx/plugin</code> checks out only the plugin, about 2 MB, which leaves no checkout to build from on a machine without a prebuilt <code>chloectx</code>. Either way, the prebuilt <code>chloectx</code> takes another 137 MB in <code>~/.local/bin</code> and the embedding model 129 MB.</p>
 <p>How it differs from <code>chloectx install --user</code>:</p>
 <div class="doc-table"><table>
 <thead>
@@ -203,7 +218,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </tbody>
 </table></div>
 <p>Both use the same stores, one per project. A project with its own <code>chloectx install</code> keeps using that one, and the plugin's hooks step aside there, as the user-level ones do. With both the plugin and <code>chloectx install --user</code>, the hooks of the user settings record and the plugin's step aside, but a session has the memory tools twice; <code>chloectx doctor</code> warns, and <code>chloectx uninstall --user</code> leaves only the plugin. Doctor shows the plugin:</p>
-<pre data-lang="sh">  ok    plugin: chloectx@chloedb 0.3.2, enabled in /home/you/.claude/settings.json (9 hook events, through /home/you/.claude/plugins/cache/chloedb/chloectx/0.3.2/scripts/chloectx-launch)
+<pre data-lang="sh">  ok    plugin: chloectx@chloedb 0.3.7, enabled in /home/you/.claude/settings.json (11 hook events, through /home/you/.claude/plugins/cache/chloedb/chloectx/0.3.7/scripts/chloectx-launch)
   ok    MCP server: the plugin&#x27;s, plugin:chloectx:chloectx (its tools are mcp__plugin_chloectx_chloectx__*)</pre>
 <div class="doc-table"><table>
 <thead>
@@ -247,9 +262,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p><span class="since">since 0.3.2</span> From release 0.3.2, the ChloeDB installer fetches <code>chloectx</code> prebuilt (macOS 11 or later, Linux with glibc 2.35 or later), with no Rust and no clone; then fetch the model, wire it into Claude Code and check:</p>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with ctx    # ~/.local/bin/chloectx
 ~/.local/bin/chloectx fetch-model                    # potion-retrieval-32M, 129 MB, SHA-256 checked
-~/.local/bin/chloectx install --project /absolute/path/to/project    # or: install --user, every session
+~/.local/bin/chloectx install --project /absolute/path/to/project --distill-model haiku    # or: install --user --distill-model haiku, every session
 ~/.local/bin/chloectx doctor</pre>
-<p>Release 0.3.1 and earlier have no prebuilt <code>chloectx</code>: build it from source, below. This installer (the website's <code>install.sh</code>) is not the repository's <code>./install.sh</code>, which installs ChloeCtx from a checkout and wires it in one step (next section), and takes the same prebuilt binary when it can.</p>
+<p>Without <code>--distill-model</code>, the distiller runs the Claude Code CLI's default model, and <code>chloectx doctor</code> warns that a small one is enough; <code>install</code> again with <code>--distill-model haiku</code> to change it. Release 0.3.1 and earlier have no prebuilt <code>chloectx</code>: build it from source, below. This installer (the website's <code>install.sh</code>) is not the repository's <code>./install.sh</code>, which installs ChloeCtx from a checkout and wires it in one step (next section), and takes the same prebuilt binary when it can.</p>
 <h2 id="install-in-one-command-from-source">Install in one command, from source<a class="anchor" href="#install-in-one-command-from-source" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">git clone https://github.com/chloetech-ai/chloedb &amp;&amp; cd chloedb &amp;&amp; ./install.sh</pre>
 <p><code>install.sh</code> does five things and can be run again at any time:</p>
@@ -299,7 +314,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </tbody>
 </table></div>
 <p>From the release after 0.3.2, <code>install.sh</code> can take the binary that release carries instead of building it. Without <code>--prebuilt</code> or <code>--source</code>, it takes the prebuilt binary of release <code>chloedb-server-v&lt;version&gt;</code> (the version in <code>chloectx/Cargo.toml</code>), checked against the release's SHA-256, in two cases: when the checkout is that release's (the tag, with <code>chloectx/</code> and <code>chloedb/</code> unchanged since), and when there is no Rust on the machine (then it says the checkout may be newer than the release). Otherwise it builds, so a checkout of main, or one you changed, runs what is in it. To install such a release with nothing to compile, clone its tag: <code>git clone --branch chloedb-server-v&lt;version&gt; https://github.com/chloetech-ai/chloedb</code>, then <code>./install.sh</code> in it. (A checkout of 0.3.2 or earlier has the <code>install.sh</code> that always builds.)</p>
-<p>A prebuilt binary does not know the checkout it came with, so <code>chloectx upgrade</code> asks for it: <code>CHLOECTX_SOURCE=/path/to/chloedb chloectx upgrade</code>, or <code>git pull &amp;&amp; ./install.sh</code> there.</p>
+<p>A prebuilt binary does not know the checkout it came with, so <code>chloectx upgrade</code> and <code>chloectx doctor</code> cannot compare it with one or rebuild it, even when <code>./install.sh</code> took it in a checkout of yours. To upgrade a checkout of a release tag, move it to the new release's tag and run the installer again, which takes that release's prebuilt binary: <code>git fetch --tags &amp;&amp; git checkout chloedb-server-v&lt;version&gt; &amp;&amp; ./install.sh</code>. <code>CHLOECTX_SOURCE=/path/to/chloedb chloectx upgrade</code> is for a checkout on a branch, such as main, which it pulls and builds; on a tag (a detached HEAD) it stops and says so.</p>
 <p>Sessions that were already open pick ChloeCtx up when they restart.</p>
 <h2 id="or-let-your-agent-do-it">Or let your agent do it<a class="anchor" href="#or-let-your-agent-do-it" aria-label="Link to this section">#</a></h2>
 <p>Tell Claude Code (or another coding agent) in any session:</p>
@@ -312,15 +327,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 cargo build --release --bin chloectx
 cargo install --path . --bin chloectx --root ~/.local       # a stable path for the hooks: ~/.local/bin/chloectx
 chloectx fetch-model                                        # potion-retrieval-32M, 129 MB, at a pinned revision, SHA-256 checked
-chloectx install --user --distill-model haiku               # or: chloectx install --project /path/to/project
+chloectx install --user --distill-model haiku               # or: chloectx install --project /path/to/project --distill-model haiku
 chloectx doctor</pre>
-<p><code>chloectx install --user</code> merges eleven hooks and a permission for the memory tools into <code>~/.claude/settings.json</code> (saving the previous file next to it as <code>settings.json.chloectx-&lt;time&gt;.bak</code>) and registers the MCP server at user scope with <code>claude mcp add-json</code>. A project install backs up the project's <code>.claude/settings.local.json</code> and <code>.mcp.json</code> the same way before it changes them (delete the <code>.bak</code> files once you are happy, and do not commit them). Every settings file is written to a file beside it and renamed into place, so an interrupted install leaves the old file whole, and its keys stay in the order they were. A project with its own <code>chloectx install</code> keeps using that one; the user-level hooks step aside there, so nothing is recorded twice.</p>
+<p><code>chloectx install --user</code> merges eleven hooks and a permission for the memory tools into <code>~/.claude/settings.json</code> and registers the MCP server at user scope with <code>claude mcp add-json</code>. Each run saves the previous <code>settings.json</code> next to it as <code>settings.json.chloectx-&lt;time&gt;.bak</code>, and so does <code>chloectx uninstall --user</code>; nothing deletes these backups, so remove the old ones once you are happy. A project install backs up the project's <code>.claude/settings.local.json</code> and <code>.mcp.json</code> the same way, when it changes them. It adds those two files to the repository's <code>.git/info/exclude</code>, since they hold this machine's paths, but not the <code>.bak</code> files next to them: <code>git status</code> shows them (as <code>?? .claude/</code>). Delete them, and do not commit them. Every settings file is written to a file beside it and renamed into place, so an interrupted install leaves the old file whole, and its keys stay in the order they were. A project with its own <code>chloectx install</code> keeps using that one; the user-level hooks step aside there, so nothing is recorded twice.</p>
 <h2 id="check-it">Check it<a class="anchor" href="#check-it" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">$ chloectx doctor
 ChloeCtx 0.3.7 for /home/you/code/app
   ok    binary: /home/you/.local/bin/chloectx
-  ok    Claude Code CLI: 2.1.299 (Claude Code)
-  ok    user hooks: /home/you/.claude/settings.json (9 events, /home/you/.local/bin/chloectx)
+  ok    version: built from 1847ac7072, up to date with origin/main
+  ok    Claude Code CLI: 2.1.326 (Claude Code) (/home/you/.local/bin/claude)
+  ok    user hooks: /home/you/.claude/settings.json (11 events, /home/you/.local/bin/chloectx)
   ok    MCP server: user scope in /home/you/.claude.json (/home/you/.local/bin/chloectx mcp)
   ok    embedding model: /home/you/.local/share/chloectx/models/potion-retrieval-32M
   ok    distillation: model haiku (from the user settings), after each turn
@@ -328,9 +344,9 @@ ChloeCtx 0.3.7 for /home/you/code/app
   ok    query understanding: after the prompt, in the background (the default): after each prompt of 4 words or more, once the store holds 20 records, 2 model calls (haiku: one plans the searches, one picks the records); nothing waits for it: what it finds comes with the turn&#x27;s next tool result or the next prompt, and the end of a turn does not wait (stop_recheck off)
   ok    query understanding cost: nothing measured in this store&#x27;s last 30 days yet (about $0.001 a search with haiku)
   ok    distillation cost: nothing measured in this store&#x27;s last 30 days yet (about $0.001 a turn with haiku)
-  ok    daemon: a scratch store opened and answered in 368 ms; this project&#x27;s store will be /home/you/.local/share/chloectx/projects/app-251a5186 once a session runs here
+  ok    daemon: a scratch store opened and answered in 1016 ms; this project&#x27;s store will be /home/you/.local/share/chloectx/projects/app-e10db370 once a session runs here
 ChloeCtx is ready. Start `claude` in a project; `chloectx ui` shows what it stores.</pre>
-<p><code>doctor</code> checks the current directory's project. Once a session has run there, the last line becomes the store itself (records, sessions, daemon round trip), and a <code>last distillation</code> line reports whether the most recent distillation worked. Every failed line says how to fix it, and the command exits non-zero when anything failed.</p>
+<p><code>doctor</code> checks the current directory's project. The <code>version</code> line compares the binary with the checkout it was built from; a prebuilt binary has none, and the line says how to upgrade it instead (<a href="#upgrade-and-remove">below</a>). Once a session has run there, the last line becomes the store itself (records, sessions, daemon round trip), lines for the store's size on disk and the daemon's own <code>claude</code> CLI follow, and a <code>last distillation</code> line reports whether the most recent distillation worked. Every failed line says how to fix it, and the command exits non-zero when anything failed.</p>
 <p>It also says what ChloeCtx's own model calls do and cost, with the settings the hooks see (the environment, then the <code>env</code> of the project's local settings, the project's settings and the user settings, then the store's <code>config.json</code>):</p>
 <ul>
 <li><code>query understanding</code> says when it runs: after the prompt, in the background (<code>async</code>, the default), at prompt time with the prompt waiting for it (<code>sync</code>, a warning), only when the model asks (<code>tool</code>), or never (<code>off</code>). It names the setting it came from, the model calls each prompt makes, and whether the end of a turn waits for it, which it does only with <code>stop_recheck</code> on (a warning: Claude may then run again).</li>
@@ -486,8 +502,10 @@ chloectx ui --no-open        # on the devbox; open the printed URL in your lapto
 <p><code>chloectx sync</code> copies each project's memory to a table of its own, <code>chloectx_mem_&lt;project&gt;</code>, on a ChloeDB server or a cluster's coordinator, and back. The store stays a local file, so hooks and recall never wait on the network:</p>
 <ul>
 <li>the daemon pushes what it recorded every 30 seconds and as it exits, and when it starts it pulls the project's records the store lacks (written on another machine, or by a container that is gone) and embeds them here;</li>
-<li>a project is its git repository (<code>owner/name</code> of <code>origin</code>), so checkouts in different folders share one memory, and <code>--rename owner/old=owner/new</code> lets a checkout of a renamed repository join the new name's; <code>chloectx sync status</code> says what the project syncs as (<code>synced_as</code>), and <code>chloectx doctor</code> names its table (<code>chloectx_mem_</code>, the name in lowercase letters, digits and <code>_</code>, then 8 hex digits of its hash: <code>chloectx_mem_acme_web_1a2b3c4d</code>), which the server can search too (<code>SELECT content FROM chloectx_mem_acme_web_1a2b3c4d ORDER BY bm25(content, '...') DESC LIMIT 10</code>).</li>
+<li>a project is its git repository (<code>owner/name</code> of <code>origin</code>), so checkouts in different folders share one memory, and <code>--rename owner/old=owner/new</code> lets a checkout of a renamed repository join the new name's; <code>chloectx sync status</code> says what the project syncs as (<code>synced_as</code>), and <code>chloectx doctor</code> names its table (<code>chloectx_mem_</code>, the name in lowercase letters, digits and <code>_</code>, then 8 hex digits of its hash: <code>chloectx_mem_acme_web_1a2b3c4d</code>), which the server can search too (<code>SELECT content FROM chloectx_mem_acme_web_1a2b3c4d ORDER BY bm25(content, '...') DESC LIMIT 10</code>);</li>
+<li>a folder with no <code>origin</code> syncs as its absolute path, and its table is named after that (<code>/home/you/code/app</code> syncs into <code>chloectx_mem_home_you_code_app_</code> and its hash), so another machine shares it only from the same path.</li>
 </ul>
+<p><strong>When what the project syncs as changes</strong>, because you added an <code>origin</code> to a folder that synced by its path or gave a <code>--rename</code>, the project gets another table, which <code>sync setup</code> run again creates. On 0.3.7 the store keeps the mark of what it sent before, so <code>sync push</code> sends only the records written after it, and the new table starts without the older ones: <code>chloectx sync status</code> then shows fewer <code>server_records</code> than the store holds. To send them all, run <code>chloectx stop</code> in the project's folder, delete the store's <code>sync-state.json</code>, and run <code>chloectx sync push</code>.</p>
 <pre data-lang="sh"># in the project&#x27;s folder: the key from stdin, kept owner-only in ChloeCtx&#x27;s home as this project&#x27;s
 printf %s &quot;$KEY&quot; | chloectx sync setup --url https://chloedb.example.com --token-stdin
 # or: read it, whenever the daemon syncs, from a variable (a cloud environment&#x27;s, say)
@@ -506,9 +524,9 @@ chloectx sync accept --origin m-1a2b3c4d5e6f    # or --all</pre>
 chloectx upgrade             # git pull --ff-only in the checkout it was built from, rebuild, reinstall, doctor
 chloectx stop --all          # restart daemons by hand (they start again on demand)
 chloectx uninstall --user    # or `chloectx uninstall` in a project; stores are kept</pre>
-<p>The binary knows the commit and the checkout it was built from (<code>chloectx --version</code> names the commit). <code>chloectx doctor</code> fetches that checkout's upstream branch (waiting at most 3 s; <code>upgrade --check</code> waits 20 s) and says how many commits on it change ChloeCtx or ChloeDB since the build, or, when the fetch failed, that it could not check and what the last fetch said (<code>upgrade --check</code> then exits 1), and a session that starts while the binary is behind says so once a day, from what the checkout last fetched. <code>chloectx upgrade</code> pulls the checkout (fast forward only: it stops when local commits or changes are in the way, and <code>--no-pull</code> builds the checkout as it is), stops the daemons of the old build, runs <code>install.sh --no-wire</code> into the binary's own prefix, writes the user-level install again (a version may add hook events; the distillation model you chose is kept), and ends with <code>doctor</code>. A prebuilt binary, or one built outside a checkout (no <code>.git</code>), cannot upgrade itself: <code>chloectx upgrade</code> and <code>doctor</code> say to run the installer again (<code>curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with ctx</code>, which replaces the binary and keeps the stores), or run <code>git pull &amp;&amp; ./install.sh</code> in a checkout, or point <code>CHLOECTX_SOURCE</code> at one.</p>
+<p>The binary knows the commit and the checkout it was built from (<code>chloectx --version</code> names the commit). <code>chloectx doctor</code> fetches that checkout's upstream branch (waiting at most 3 s; <code>upgrade --check</code> waits 20 s) and says how many commits on it change ChloeCtx or ChloeDB since the build, or, when the fetch failed, that it could not check and what the last fetch said (<code>upgrade --check</code> then exits 1), and a session that starts while the binary is behind says so once a day, from what the checkout last fetched. <code>chloectx upgrade</code> pulls the checkout (fast forward only: it stops when local commits or changes are in the way, and <code>--no-pull</code> builds the checkout as it is), stops the daemons of the old build, runs <code>install.sh --no-wire</code> into the binary's own prefix, writes the user-level install again (a version may add hook events; the distillation model you chose is kept), and ends with <code>doctor</code>. A prebuilt binary, or one built outside a checkout (no <code>.git</code>), cannot upgrade itself: <code>chloectx upgrade</code> and <code>doctor</code> say to run the installer again (<code>curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with ctx</code>, which replaces the binary, keeps the stores and installs <code>chloedb-server</code> too), or point <code>CHLOECTX_SOURCE</code> at a checkout on a branch. A checkout of a release tag upgrades by moving to the new tag (<a href="#install-in-one-command-from-source">above</a>), and one on main with <code>git pull &amp;&amp; ./install.sh</code>.</p>
 <h2 id="keep-the-stores-tidy-chloectx-stores-and-chloectx-prune">Keep the stores tidy: <code>chloectx stores</code> and <code>chloectx prune</code><a class="anchor" href="#keep-the-stores-tidy-chloectx-stores-and-chloectx-prune" aria-label="Link to this section">#</a></h2>
-<p>Every directory a session runs in gets its own store, including the throwaway folders tools make under the system's temporary directory, so stores pile up over months. <code>chloectx stores</code> lists them all, most recently used first, with the project each records, its size on disk and when it was last used, and marks the ones <code>prune</code> would remove:</p>
+<p>Every directory a session runs in gets its own store, including the throwaway folders tools make under the system's temporary directory, so stores pile up over months. A health check of the MCP server makes one too: <code>claude mcp get chloectx</code> starts the server, and with it a daemon and a store, for the folder it runs in, even one where no session ever ran. <code>chloectx stores</code> lists them all, most recently used first, with the project each records, its size on disk and when it was last used, and marks the ones <code>prune</code> would remove:</p>
 <ul>
 <li>the project folder no longer exists, and the store was not used for a week (a folder missing for less, or on a drive that is not mounted, such as <code>/Volumes/…</code> or <code>/media/…</code>, may have moved and is only marked; <code>chloectx move OLD NEW</code> attaches the store to the folder's new place);</li>
 <li>the project is in a temporary folder (<code>/tmp</code>, <code>/var/folders</code> on macOS) and the store was not used for a day;</li>
@@ -560,7 +578,11 @@ chloectx uninstall --user    # or `chloectx uninstall` in a project; stores are 
 </tr>
 <tr>
 <td>distillation costs</td>
-<td>about $0.001 and 8 s per turn with a small model; <code>CHLOECTX_DISTILL=0</code> turns it off</td>
+<td>about $0.001 to $0.002 a turn with a small model, after the turn has ended; <code>chloectx doctor</code> shows the cost and the median time your store measured over the last 30 days, and <code>CHLOECTX_DISTILL=0</code> turns it off</td>
+</tr>
+<tr>
+<td><code>doctor</code>: <strong>distillation</strong> warns that it <em>uses the Claude Code CLI's default model</em></td>
+<td>the install was made without <code>--distill-model</code>. Install again with it: <code>chloectx install --project /path/to/project --distill-model haiku</code> for a project install (the warning names <code>--user</code>, which is for every session)</td>
 </tr>
 <tr>
 <td><code>doctor</code>: <strong>last distillation</strong> failed with something other than the login</td>
@@ -572,11 +594,19 @@ chloectx uninstall --user    # or `chloectx uninstall` in a project; stores are 
 </tr>
 <tr>
 <td>a project folder was moved or renamed, and its sessions start with an empty memory</td>
-<td>stores are kept by the folder's path: <code>chloectx move OLD NEW</code> attaches the old store to the new folder. <code>stores</code> marks a store whose folder went missing in the last week, or is on a drive that is not mounted, and <code>prune</code> leaves it alone. A <code>git worktree</code> is a folder of its own, with a store of its own</td>
+<td>stores are kept by the folder's path: <code>chloectx move OLD NEW</code> attaches the old store to the new folder. <code>stores</code> marks a store whose folder went missing in the last week, or is on a drive that is not mounted, and <code>prune</code> leaves it alone. A linked <code>git worktree</code> uses its main checkout's store, whatever folder it is in</td>
+</tr>
+<tr>
+<td><code>doctor</code> in a git worktree: <strong>hooks</strong> fails with <em>none in ~/.claude/settings.json or …/.claude, and the chloectx plugin is not enabled</em></td>
+<td>a project install writes its hooks into that folder's <code>.claude/settings.local.json</code>, which git does not carry into other worktrees. Run <code>chloectx install --project</code> in the worktree too (it then shares the main checkout's store), or install for every session</td>
 </tr>
 <tr>
 <td>a project should not be recorded</td>
 <td>add <code>"env": {"CHLOECTX_DISABLE": "1"}</code> to that project's <code>.claude/settings.local.json</code>, or set <code>CHLOECTX_DISABLE=1</code> in the shell you start <code>claude</code> from</td>
+</tr>
+<tr>
+<td>the memory tools are still there with <code>CHLOECTX_DISABLE=1</code></td>
+<td>it turns the hooks off, not the MCP server: start Claude Code with <code>claude --disallowedTools mcp__chloectx</code> to leave the tools out of a session too</td>
 </tr>
 </tbody>
 </table></div>
@@ -595,6 +625,7 @@ chloectx uninstall --user    # or `chloectx uninstall` in a project; stores are 
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

@@ -10,8 +10,9 @@ type Tables = string | Iterable<string>;
 type Bytes = Uint8Array | ArrayBuffer | ArrayBufferView;
 
 export interface OpenOptions {
-  /** Where embedded fields' models are ($CHLOEDB_MODELS or
-   * ~/.local/share/strata/models by default). */
+  /** Where embedded fields' models are: $CHLOEDB_MODELS, else
+   * ~/.local/share/chloedb/models (~/.local/share/strata/models on a machine
+   * that has that folder from before the rename and no ~/.local/share/chloedb). */
   models?: Path;
   /** Cores vector indexes build on and each query searches segments on
    * (default: every core). */

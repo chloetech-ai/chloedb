@@ -10,16 +10,16 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 })(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
 <!-- End Google Tag Manager -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>ChloeCtx: how it works · ChloeDB docs</title>
+<title>ChloeCtx: long-term memory for Claude Code · ChloeDB docs</title>
 <link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
 <link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
-<meta name="description" content="ChloeCtx, an application built on ChloeDB, gives a coding agent (Claude Code first) a memory that outlives its context window. It records every prompt, answer, tool call and compaction summary of a project into one…">
+<meta name="description" content="ChloeCtx gives Claude Code a memory that outlives its sessions. It records every prompt, answer, tool call and compaction summary of a project into a ChloeDB file on your machine, has a small model write down the…">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
 </head>
 <body class="docs">
 <!-- Google Tag Manager (noscript) -->
@@ -40,6 +40,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js?v=c2829d2b7b">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
@@ -48,8 +54,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
       <a href="next-items.html">Next items</a>
@@ -64,18 +72,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
       <a href="java.html">Java and JDBC</a>
       <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
       <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html" aria-current="page">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -86,27 +105,170 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
-      <a href="chloectx.html" aria-current="page">ChloeCtx</a>
-      <a href="chloectx-setup.html">Install ChloeCtx</a>
-      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
-      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
-      <a href="chloectx-capsules.html">Context capsules</a>
-      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
-      <span class="eyebrow">Apps</span>
-      <h1>ChloeCtx: how it works</h1>
+      <span class="eyebrow">ChloeCtx</span>
+      <h1>ChloeCtx: long-term memory for Claude Code</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/index.md">docs/chloectx/index.md</a>.</p>
       <p class="doc-version">These docs describe release 0.3.7.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-problem">The problem</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#the-data-model">The data model</a></li><li><a href="#when-to-store-always">When to store: always</a></li><li><a href="#when-to-load">When to load</a></li><li><a href="#answering-a-question">Answering a question</a></li><li><a href="#query-understanding">Query understanding</a></li><li><a href="#cost-and-latency-targets">Cost and latency targets</a></li><li><a href="#install-and-use">Install and use</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#install-it">Install it</a></li><li><a href="#what-happens-on-its-own">What happens on its own</a></li><li><a href="#use-it-from-a-shell">Use it from a shell</a></li><li><a href="#where-it-keeps-what-it-stores">Where it keeps what it stores</a></li><li><a href="#forget-something">Forget something</a></li><li><a href="#settings">Settings</a></li><li><a href="#how-it-works-the-problem">How it works: the problem</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#the-data-model">The data model</a></li><li><a href="#when-to-store-always">When to store: always</a></li><li><a href="#when-to-load">When to load</a></li><li><a href="#answering-a-question">Answering a question</a></li><li><a href="#query-understanding">Query understanding</a></li><li><a href="#cost-and-latency-targets">Cost and latency targets</a></li></ol></details>
     <div class="doc-body">
 
-<p>ChloeCtx, an application built on <a href="design.html">ChloeDB</a>, gives a coding agent (Claude Code first) a memory that outlives its context window. It records every prompt, answer, tool call and compaction summary of a project into one ChloeDB file, brings the relevant pieces back at the moments they matter without the model having to ask, and gives the model tools to search its own history when it decides to.</p>
-<h2 id="the-problem">The problem<a class="anchor" href="#the-problem" aria-label="Link to this section">#</a></h2>
+<p>ChloeCtx gives Claude Code a memory that outlives its sessions. It records every prompt, answer, tool call and compaction summary of a project into a ChloeDB file on your machine, has a small model write down the decisions and rules each turn agreed, and brings the relevant ones back when a session starts and with each prompt, without the model having to ask. The model also gets tools to search that history itself.</p>
+<p>This page starts with what you install and use day to day. <a href="#how-it-works-the-problem">How it works</a> follows, for those who want the design: what it stores, when it brings history back, and how it ranks.</p>
+<h2 id="install-it">Install it<a class="anchor" href="#install-it" aria-label="Link to this section">#</a></h2>
+<p>ChloeCtx runs on macOS and Linux (on Windows, inside WSL 2), and needs the <a href="https://claude.com/claude-code">Claude Code</a> CLI, logged in (<code>claude auth status</code> shows <code>"loggedIn": true</code>). The quickest way is the Claude Code plugin, which downloads a prebuilt <code>chloectx</code> on its first session; in Claude Code:</p>
+<pre data-lang="text" data-title="Output">/plugin marketplace add chloetech-ai/chloedb
+/plugin install chloectx@chloedb</pre>
+<p>Or install it from a checkout, for every session or for one project:</p>
+<pre data-lang="sh">git clone https://github.com/chloetech-ai/chloedb &amp;&amp; cd chloedb
+./install.sh                                    # every Claude Code session on this machine
+./install.sh --project /path/to/your/project    # or one project</pre>
+<p>Then start a <strong>new</strong> Claude Code session: a session that was already open has neither the hooks nor the memory tools. <code>chloectx doctor</code>, run in a project's folder, checks the setup and says how to fix each line that failed. A project install covers that one folder: a git worktree of the same repository is a folder of its own and needs its own <code>chloectx install</code> (they then share one store), or install for every session instead. <a href="chloectx-setup.html">Install ChloeCtx</a> has every route (the plugin's details, a prebuilt binary, remote machines and dev containers), what each one changes in Claude Code's settings, upgrades and removal.</p>
+<h2 id="what-happens-on-its-own">What happens on its own<a class="anchor" href="#what-happens-on-its-own" aria-label="Link to this section">#</a></h2>
+<p>Once it is installed there is nothing to run. In each session:</p>
+<ul>
+<li><strong>At the start</strong>, Claude gets a briefing of at most 6,000 characters: planned work with its requirements, rules, decisions, facts and where the last session stopped. It comes again when a session is resumed (<code>claude --continue</code>, <code>--resume</code>).</li>
+<li><strong>With each prompt</strong>, up to four notes that match the prompt come with it, and earlier records about it when the evidence is strong enough. Once the store holds 20 records, a small model also searches memory for the prompt in the background; what it finds comes with the turn's next tool result or with the next prompt, so a quick question answered without a tool call is answered before it arrives.</li>
+<li><strong>After each turn</strong>, a small model (<code>haiku</code> by default) writes down the decisions, rules, facts and planned work the turn agreed.</li>
+<li><strong>When Claude decides to</strong>, it calls the memory tools: <code>memory_ask</code>, <code>memory_search</code>, <code>memory_timeline</code>, <code>memory_sql</code>, <code>memory_remember</code> and <code>memory_forget</code>.</li>
+</ul>
+<p>ChloeCtx's own model calls run through <code>claude -p</code> and are billed to the CLI's login: about $0.003 a turn in all with Haiku once the store holds 20 records, none of it holding up a turn (<a href="chloectx-setup.html#what-you-need">what each call costs</a>). <code>chloectx doctor</code> shows what your own store measured over the last 30 days.</p>
+<p>A rule is only as good as the note it became. The briefing cuts each rule, decision and fact at 260 characters and shows at most 14 rules, 10 decisions and 10 facts, so a rule stated at the end of a long message can be cut off. A rule that must never be missed is safest as its own short note (<code>chloectx remember preference "Never suggest recurring todos in v1"</code>), or in <code>CLAUDE.md</code>, which Claude Code always loads.</p>
+<h2 id="use-it-from-a-shell">Use it from a shell<a class="anchor" href="#use-it-from-a-shell" aria-label="Link to this section">#</a></h2>
+<p>Run these in a project's folder: except <code>ui</code> and <code>stores</code>, which cover every store, each one works on that project's store.</p>
+<pre data-lang="sh">chloectx doctor                                     # is it set up and working here?
+chloectx ui                                         # the inspector: what it stored, per project and per session
+chloectx briefing                                   # the briefing a new session would get now
+chloectx ask &quot;how do invoice totals get rounded?&quot;   # what memory holds on it: rules, notes and excerpts, by search alone
+chloectx ask --deep &quot;...&quot;                           # the same through the query engine (two model calls; --model sonnet for a stronger one)
+chloectx search &quot;why did the planner pick post-filtering&quot;
+chloectx sql &quot;SELECT ts, text FROM memory WHERE kind = &#x27;error&#x27; AND MATCH(files, &#x27;exec&#x27;) ORDER BY ts DESC LIMIT 5&quot;
+chloectx remember decision &quot;Prices are integer cents&quot;   # or preference, fact, todo, note
+chloectx forget a1b2c3d4:42                         # delete a record for good (read &quot;Forget something&quot; below first)
+chloectx report [--days 7] [--session ID] [--json]  # where the project&#x27;s time went
+chloectx repeats [--days 30] [--json]               # instructions you had to give again, and the rules kept for it
+chloectx blame src/pay.rs:42                        # which session wrote a line, and what memory had shown it
+chloectx backup ~/backups/chloectx-2026-10-28       # a consistent copy of this project&#x27;s store
+chloectx redact [--all] [--dry-run]                 # redact secrets a store recorded before redaction caught them
+chloectx stores                                     # every store on this machine; `chloectx prune` removes the unused ones
+chloectx stats | stop
+chloectx pack ./work.capsule                        # a capsule another agent mounts
+chloectx mount ./work.capsule                       # serve it as MCP tools (stdio)</pre>
+<p><code>chloectx ask</code> prints the context a model would be given, not a written answer. Three commands are for maintenance and cost model calls: <code>chloectx ingest-transcript ~/.claude/projects/&lt;project&gt;/&lt;session&gt;.jsonl</code> back-fills a session ChloeCtx did not record (one it recorded live is stored a second time); <code>chloectx distill</code> writes down the notes of every turn the store holds, one model call per turn, including turns distilled before; <code>chloectx consolidate</code> merges overlapping notes now. <code>distill</code> and <code>consolidate</code> print one line of JSON when they are done (<code>{"items":0,"turns":1}</code>).</p>
+<p>A capsule hands a slice of this memory to another agent as one read-only file it queries: <a href="chloectx-capsules.html">capsules</a>. <a href="chloectx-receipts.html">Blame and receipts</a> explain <code>chloectx blame</code>.</p>
+<h3 id="where-the-time-went">Where the time went<a class="anchor" href="#where-the-time-went" aria-label="Link to this section">#</a></h3>
+<p><code>chloectx report</code> reads the store and writes nothing. For each session of the last <code>--days</code> days (7 by default; <code>--session</code> picks one by its id or the start of it) and in all, it splits the time between the records into:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>share</th>
+<th>from</th>
+<th>to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>model</td>
+<td>a prompt, or a tool's result</td>
+<td>the next tool call, or the answer</td>
+</tr>
+<tr>
+<td>tools</td>
+<td>a tool call</td>
+<td>its result (while any call runs)</td>
+</tr>
+<tr>
+<td>waiting</td>
+<td>an answer, or a notification (a permission prompt, an idle notice)</td>
+<td>the next prompt; one wait counts up to 30 minutes, the rest is <em>away</em>, counted apart</td>
+</tr>
+<tr>
+<td>compaction</td>
+<td>a compaction's start</td>
+<td>its summary</td>
+</tr>
+</tbody>
+</table></div>
+<p>Anything that ends in a prompt is waiting (a turn the user interrupted, which has no answer). A permission wait lasts until the tool's result, so it includes the tool's own run after the user answered. Records keep Unix seconds, so every span is whole seconds, and a tool call has a length only when its record says how long it took: calls under a second, and calls recorded before ChloeCtx timed them, count as instants.</p>
+<p>Then: the commands that took most time, normalised as <a href="#when-to-load">error to fix</a> matches them (<code>cd x &amp;&amp; cargo test 2&gt;&amp;1 | tail</code> is <code>cargo test</code>), with their runs, time per run and failures; time by tool; errors seen three or more times, by signature, with the session they came back most often in; files read four or more times in one session; compactions per hour of use. Last, up to five suggestions, each with the numbers behind it: a slow command run often, a loop on one error, a file reread often, permissions waited on often, frequent compactions. <code>--json</code> prints the same as JSON.</p>
+<h2 id="where-it-keeps-what-it-stores">Where it keeps what it stores<a class="anchor" href="#where-it-keeps-what-it-stores" aria-label="Link to this section">#</a></h2>
+<p>Each project's store is a folder outside the repository, because transcripts can contain secrets: <code>~/.local/share/chloectx/projects/&lt;folder&gt;-&lt;hash&gt;/</code> (under <code>$CHLOECTX_HOME/projects/</code> when that is set, and in <code>~/.local/share/engram/projects/</code> on a machine that has that folder from before the rename). It holds the ChloeDB file <code>memory.strata</code> and its write-ahead log, <code>state.json</code> (each session's live window and last prompts), <code>events.log</code> (the recall, search and distillation decisions), <code>receipts.strata</code> (<a href="chloectx-receipts.html">receipts</a>) and <code>snapshots/</code>. <code>chloectx doctor</code> names the store of the folder it runs in.</p>
+<p>A repository has one store, whichever of its git worktrees a session runs in: the store of a linked worktree (a folder whose <code>.git</code> file points at <code>&lt;repo&gt;/.git/worktrees/&lt;name&gt;</code>) is that of the same folder in the main checkout, so agents in different worktrees read and add to one memory, through one daemon. A main checkout and a folder outside git keep the store they always had. Each session remembers the folder it runs in (in the store's session state, and in <code>events.log</code> with its branch): its paths are stored relative to it, and notes tied to the code are checked against its files, not the main checkout's. <code>CHLOECTX_PER_WORKTREE=1</code> gives each worktree its own store again.</p>
+<p>A redaction pass replaces keys, tokens, private keys, passwords in URLs and headers, and values assigned to names such as <code>DB_PASSWORD</code> with markers before anything is stored or synced; a password written in prose is not caught. <code>chloectx redact</code> applies it to a store written before (<a href="chloectx-setup.html#secrets-and-chloectx-redact">what is redacted</a>). Treat a store like your shell history.</p>
+<h2 id="forget-something">Forget something<a class="anchor" href="#forget-something" aria-label="Link to this section">#</a></h2>
+<p><code>chloectx forget</code> (and the model's <code>memory_forget</code>) deletes what ChloeCtx stored, for good: read <a href="chloectx-setup.html#forget-something-chloectx-forget">Forget something</a> in the install guide for what it matches and what it leaves before you use it.</p>
+<h2 id="settings">Settings<a class="anchor" href="#settings" aria-label="Link to this section">#</a></h2>
+<p>Set these in the environment Claude Code starts in, or in the <code>env</code> of its settings.</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>variable</th>
+<th>effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CHLOECTX_DISABLE=1</code></td>
+<td>turns the hooks off: nothing is recorded or recalled. The memory tools stay; start Claude with <code>--disallowedTools mcp__chloectx</code> to leave them out of a session too</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_PER_WORKTREE=1</code></td>
+<td>a store for each git worktree, instead of one for the repository</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_HOME</code>, <code>CHLOECTX_MODELS</code></td>
+<td>relocate the store and the models</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_DISTILL=0</code></td>
+<td>turns distillation off (or <code>"distill": {"enabled": false}</code> in the store's <code>config.json</code>)</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_DISTILL_MODEL</code></td>
+<td>the model the distiller and consolidation use (<code>install --distill-model</code> writes it into the settings)</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_DEEP</code></td>
+<td>query engine mode: <code>off</code>, <code>tool</code>, <code>async</code> (default), <code>sync</code></td>
+</tr>
+<tr>
+<td><code>CHLOECTX_DEEP_MODEL</code>, <code>CHLOECTX_DEEP_PLANNER_MODEL</code>, <code>CHLOECTX_DEEP_RANKER_MODEL</code>, <code>CHLOECTX_DEEP_HARD_MODEL</code></td>
+<td>the query engine's models (default <code>haiku</code>; the hard model is unset)</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_DEEP_PLAN</code>, <code>CHLOECTX_DEEP_RANK</code></td>
+<td><code>none</code> skips the planner; <code>local</code> ranks without a model call (defaults: <code>model</code>, <code>model</code>)</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_CONSOLIDATE=0</code></td>
+<td>turns consolidation off</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_SESSION_CONTEXT=1</code></td>
+<td>recall also searches with the session's last records (<a href="#ranking">session context</a>; or <code>"rank": {"tail": {"enabled": true}}</code> in the store's <code>config.json</code>)</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_NEXT_FILES=1</code></td>
+<td>before an edit, also the files usually edited next, with a note on each (<a href="#when-to-load">when to load</a>; or <code>"next_files": true</code> in the store's <code>config.json</code>)</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_ERROR_FIXES=0</code></td>
+<td>turns error to fix off (<a href="#when-to-load">when to load</a>; or <code>"error_fixes": false</code> in the store's <code>config.json</code>)</td>
+</tr>
+<tr>
+<td><code>CHLOECTX_EMBEDDER</code></td>
+<td><code>static</code> (default), <code>bert</code>, or <code>hash:&lt;dim&gt;</code> for a model-free hash embedder</td>
+</tr>
+</tbody>
+</table></div>
+<p>Each is still read under its name from before the rename, <code>ENGRAM_*</code>, when the new one is not set.</p>
+<h2 id="how-it-works-the-problem">How it works: the problem<a class="anchor" href="#how-it-works-the-problem" aria-label="Link to this section">#</a></h2>
 <p>A long session on a complex project outgrows any context window. Claude Code then compacts it into a summary of about 15,000 characters. Summaries keep the plan and lose the particulars:</p>
 <ul>
 <li>exact numbers, error messages and file paths;</li>
@@ -129,7 +291,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <li><strong>Reads in parallel, one writer.</strong> Reads run on each client's own thread against a snapshot, any number at once, and the searches behind one prompt share that snapshot and run side by side while cores are free. Every write goes to one writer thread, which commits whatever is queued in one transaction and builds the new version before the write returns, so a reader never waits for a write or for the index build after it. In-memory chunks hold 256 records and scan their vectors instead of building an HNSW graph, so that build stays cheap. A full memtable becomes a segment, and segments merge, on ChloeDB's background threads, not on the writer's: with 150,000 appends back to back in the cloud container (4-core Xeon), the longest took 0.2–0.4 s, against 12–15 s when the writer flushed and merged itself (<a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/results/writes">results</a>).</li>
 <li><strong>Never in the way.</strong> A client that cannot reach the daemon within its deadline prints nothing and exits 0. A memory failure never blocks a prompt or a tool call.</li>
 </ul>
-<p>The store lives outside the repository, in <code>${CHLOECTX_HOME:-~/.local/share/chloectx}/&lt;project-slug&gt;/</code> (in <code>~/.local/share/engram</code> on a machine that has it from before the rename), because transcripts can contain secrets. A repository has one store, whichever of its git worktrees a session runs in: the slug of a linked worktree (a folder whose <code>.git</code> file points at <code>&lt;repo&gt;/.git/worktrees/&lt;name&gt;</code>) is that of the same folder in the main checkout, so agents in different worktrees read and add to one memory, through one daemon. A main checkout and a folder outside git keep the slug they always had. Each session remembers the folder it runs in (in the store's session state, and in <code>events.log</code> with its branch): its paths are stored relative to it, and notes tied to the code are checked against its files, not the main checkout's. <code>CHLOECTX_PER_WORKTREE=1</code> gives each worktree its own store again. A redaction pass replaces keys, tokens, private keys, passwords in URLs and headers, and values assigned to names such as <code>DB_PASSWORD</code> with markers before anything is stored or synced; <code>chloectx redact</code> applies it to a store written before (<a href="chloectx-setup.html#secrets-and-chloectx-redact">what is redacted</a>).</p>
+<p>The store lives outside the repository, one folder per project, and a repository's worktrees share one (<a href="#where-it-keeps-what-it-stores">where</a>). A redaction pass replaces secrets with markers before anything is stored or synced (<a href="chloectx-setup.html#secrets-and-chloectx-redact">what is redacted</a>).</p>
 <h2 id="the-data-model">The data model<a class="anchor" href="#the-data-model" aria-label="Link to this section">#</a></h2>
 <p>One ChloeDB table, <code>memory</code>. Each record is one key–value pair with attributes.</p>
 <div class="doc-table"><table>
@@ -346,7 +508,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </tbody>
 </table></div>
 <p>A rule does not go stale because the code moved away from it: a teammate who switched invoices to banker's rounding did not cancel the client's requirement, so the rule stays where the model will see it, with a warning that the code may now break it.</p>
-<p><strong>Branches.</strong> Worktrees of one repository share one store, but not their code. Each session's worktree, branch and commit are kept as an event when its hooks first name them and whenever the branch changes, so every record has a branch: its anchor's, else its session's at the time. A file an agent read or changed is anchored too (commit, branch, content hash). When a record is shown in another worktree, ChloeCtx asks git for the merge base of the record's branch with this HEAD: a record written after that commit came from work this worktree does not have, and is labelled "from branch wb/paybutton, not merged here: not a description of this worktree's code", unless its anchored files are the same here. The briefing moves such notes to the section of notes that may be out of date, and the query engine's ranker is told never to present them as the current code.</p>
+<p><strong>Branches.</strong> Worktrees of one repository share one store, but not their code. Each session's worktree, branch and commit are kept as an event when its hooks first name them and whenever the branch changes, so every record has a branch: its anchor's, else its session's at the time. A file an agent read or changed is anchored too (commit, branch, content hash). When a record is shown in another worktree, ChloeCtx asks git for the merge base of the record's branch with this HEAD: a record written after that commit came from work this worktree does not have, and is labelled "from branch wb/paybutton, not merged here: not a description of this worktree's code", unless its anchored files are the same here. The briefing moves such notes to the section of notes that may be out of date, and the query engine's ranker is told never to present them as the current code. On 0.3.7 that includes notes that name no file, rules among them: a rule you state in a session on one branch is labelled "not merged here" in a worktree on another branch, and moved out of that briefing's rules, once it was written after the two branches' last shared commit, even when neither branch has a commit of its own since. The rule is still shown and still searched; the label tells the model to check it applies.</p>
 <h2 id="when-to-load">When to load<a class="anchor" href="#when-to-load" aria-label="Link to this section">#</a></h2>
 <p>Records still inside the model's context are never injected. For each session <em>s</em> the daemon keeps the window start w<sub>s</sub>, the sequence number at session start or at the last compaction, and every query excludes</p>
 <p>$$
@@ -383,7 +545,7 @@ $$</p>
     E-&gt;&gt;E: distill the turn, check notes against code, consolidate every 8 turns (background)
 </pre>
 <ol>
-<li><strong><code>SessionStart</code>: a briefing</strong>, always, at most 6,000 characters: planned work with its requirements, rules, decisions, facts, open tasks, and where the previous session stopped, each note checked against the current code. It opens with an instruction to search memory before a design decision. After a compaction it also recalls the records most relevant to the last two prompts.</li>
+<li><strong><code>SessionStart</code>: a briefing</strong>, always, at most 6,000 characters: planned work with its requirements, rules, decisions, facts, open tasks, and where the previous session stopped, each note checked against the current code. It shows the newest 14 rules, 10 decisions, 10 facts and 10 items of planned work, each cut at 260 characters (planned work at 400). It opens with an instruction to search memory before a design decision, and each note says how long ago it was written ("3 days ago"), so the briefing differs from one session to the next. A resumed session (<code>claude --continue</code> or <code>--resume</code>) gets it again, with its live window kept. After a compaction it also recalls the records most relevant to the last two prompts.</li>
 <li><strong><code>UserPromptSubmit</code>: knowledge, then gated recall.</strong> Up to four knowledge records not yet shown that match the prompt on their own text, bypassing the gate:</li>
 </ol>
 <p>$$
@@ -583,130 +745,11 @@ $$</p>
 </tbody>
 </table></div>
 <p>The default embedder is static (Model2Vec potion-retrieval-32M: token lookup and mean, 512 dimensions, microseconds per record). BGE-small (384 dimensions) is optional (<code>--features bert</code>) and costs about 50 ms per record on a CPU.</p>
-<h2 id="install-and-use">Install and use<a class="anchor" href="#install-and-use" aria-label="Link to this section">#</a></h2>
-<p><a href="chloectx-setup.html">Install on your machine</a> has the whole procedure, remote machines and dev containers included. In short:</p>
-<pre data-lang="sh">git clone https://github.com/chloetech-ai/chloedb &amp;&amp; cd chloedb &amp;&amp; ./install.sh   # every Claude Code session
-./install.sh --project /path/to/your/project                              # or one project
-chloectx doctor                                                             # check the setup
-chloectx ui                                                                 # browse what it stored</pre>
-<pre data-lang="sh">chloectx ask &quot;where do invoice totals get rounded, and why that rounding mode?&quot;   # the query engine
-chloectx ask --model sonnet &quot;...&quot;                                                  # with a stronger model
-chloectx search &quot;why did the planner pick post-filtering&quot;
-chloectx sql &quot;SELECT ts, text FROM memory WHERE kind = &#x27;error&#x27; AND MATCH(files, &#x27;exec&#x27;) ORDER BY ts DESC LIMIT 5&quot;
-chloectx remember decision &quot;Prices are integer cents&quot;
-chloectx ingest-transcript ~/.claude/projects/&lt;project&gt;/&lt;session&gt;.jsonl   # back-fill old sessions
-chloectx distill                                                          # distill turns stored before distillation existed
-chloectx consolidate                                                      # merge overlapping notes now
-chloectx backup ~/backups/chloectx-2026-10-28                             # a consistent copy of this project&#x27;s store
-chloectx redact [--all] [--dry-run]                                       # redact secrets a store recorded before redaction caught them
-chloectx report [--days 7] [--session ID] [--json]                         # where the project&#x27;s time went
-chloectx repeats [--days 30] [--json]                                     # instructions you had to give again, and the rules kept for it
-chloectx stats | briefing | stop
-chloectx pack ./work.capsule                                              # a capsule another agent mounts
-chloectx mount ./work.capsule                                             # serve it as MCP tools (stdio)</pre>
-<p>A capsule hands a slice of this memory to another agent as one read-only file it queries: <a href="chloectx-capsules.html">capsules</a>.</p>
-<h3 id="where-the-time-went">Where the time went<a class="anchor" href="#where-the-time-went" aria-label="Link to this section">#</a></h3>
-<p><code>chloectx report</code> reads the store and writes nothing. For each session of the last <code>--days</code> days (7 by default; <code>--session</code> picks one by its id or the start of it) and in all, it splits the time between the records into:</p>
-<div class="doc-table"><table>
-<thead>
-<tr>
-<th>share</th>
-<th>from</th>
-<th>to</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>model</td>
-<td>a prompt, or a tool's result</td>
-<td>the next tool call, or the answer</td>
-</tr>
-<tr>
-<td>tools</td>
-<td>a tool call</td>
-<td>its result (while any call runs)</td>
-</tr>
-<tr>
-<td>waiting</td>
-<td>an answer, or a notification (a permission prompt, an idle notice)</td>
-<td>the next prompt; one wait counts up to 30 minutes, the rest is <em>away</em>, counted apart</td>
-</tr>
-<tr>
-<td>compaction</td>
-<td>a compaction's start</td>
-<td>its summary</td>
-</tr>
-</tbody>
-</table></div>
-<p>Anything that ends in a prompt is waiting (a turn the user interrupted, which has no answer). A permission wait lasts until the tool's result, so it includes the tool's own run after the user answered. Records keep Unix seconds, so every span is whole seconds, and a tool call has a length only when its record says how long it took: calls under a second, and calls recorded before ChloeCtx timed them, count as instants.</p>
-<p>Then: the commands that took most time, normalised as <a href="#when-to-load">error to fix</a> matches them (<code>cd x &amp;&amp; cargo test 2&gt;&amp;1 | tail</code> is <code>cargo test</code>), with their runs, time per run and failures; time by tool; errors seen three or more times, by signature, with the session they came back most often in; files read four or more times in one session; compactions per hour of use. Last, up to five suggestions, each with the numbers behind it: a slow command run often, a loop on one error, a file reread often, permissions waited on often, frequent compactions. <code>--json</code> prints the same as JSON.</p>
-<div class="doc-table"><table>
-<thead>
-<tr>
-<th>variable</th>
-<th>effect</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>CHLOECTX_DISABLE=1</code></td>
-<td>turns the hooks off</td>
-</tr>
-<tr>
-<td><code>CHLOECTX_PER_WORKTREE=1</code></td>
-<td>a store for each git worktree, instead of one for the repository</td>
-</tr>
-<tr>
-<td><code>CHLOECTX_HOME</code>, <code>CHLOECTX_MODELS</code></td>
-<td>relocate the store and the models</td>
-</tr>
-<tr>
-<td><code>CHLOECTX_DISTILL=0</code></td>
-<td>turns distillation off (or <code>"distill": {"enabled": false}</code> in the store's <code>config.json</code>)</td>
-</tr>
-<tr>
-<td><code>CHLOECTX_DISTILL_MODEL</code></td>
-<td>the model the distiller and consolidation use</td>
-</tr>
-<tr>
-<td><code>CHLOECTX_DEEP</code></td>
-<td>query engine mode: <code>off</code>, <code>tool</code>, <code>async</code> (default), <code>sync</code></td>
-</tr>
-<tr>
-<td><code>CHLOECTX_DEEP_MODEL</code>, <code>CHLOECTX_DEEP_PLANNER_MODEL</code>, <code>CHLOECTX_DEEP_RANKER_MODEL</code>, <code>CHLOECTX_DEEP_HARD_MODEL</code></td>
-<td>the query engine's models (default <code>haiku</code>; the hard model is unset)</td>
-</tr>
-<tr>
-<td><code>CHLOECTX_DEEP_PLAN</code>, <code>CHLOECTX_DEEP_RANK</code></td>
-<td><code>none</code> skips the planner; <code>local</code> ranks without a model call (defaults: <code>model</code>, <code>model</code>)</td>
-</tr>
-<tr>
-<td><code>CHLOECTX_CONSOLIDATE=0</code></td>
-<td>turns consolidation off</td>
-</tr>
-<tr>
-<td><code>CHLOECTX_SESSION_CONTEXT=1</code></td>
-<td>recall also searches with the session's last records (<a href="#ranking">session context</a>; or <code>"rank": {"tail": {"enabled": true}}</code> in the store's <code>config.json</code>)</td>
-</tr>
-<tr>
-<td><code>CHLOECTX_NEXT_FILES=1</code></td>
-<td>before an edit, also the files usually edited next, with a note on each (<a href="#when-to-load">when to load</a>; or <code>"next_files": true</code> in the store's <code>config.json</code>)</td>
-</tr>
-<tr>
-<td><code>CHLOECTX_ERROR_FIXES=0</code></td>
-<td>turns error to fix off (<a href="#when-to-load">when to load</a>; or <code>"error_fixes": false</code> in the store's <code>config.json</code>)</td>
-</tr>
-<tr>
-<td><code>CHLOECTX_EMBEDDER</code></td>
-<td><code>static</code> (default), <code>bert</code>, or <code>hash:&lt;dim&gt;</code> for a model-free hash embedder</td>
-</tr>
-</tbody>
-</table></div>
 <p>The full design, including the evaluation plan, is in <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloectx/DESIGN.md"><code>chloectx/DESIGN.md</code></a>.</p>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloectx/index.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="backbone.html">← Backbone explorer</a><a href="chloectx-setup.html">Install ChloeCtx →</a></span>
+      <span class="pager"><a href="compatibility.html">← Versions and compatibility</a><a href="chloectx-setup.html">Install ChloeCtx →</a></span>
     </footer>
   </article>
 </div></main>
@@ -718,6 +761,7 @@ chloectx mount ./work.capsule                                             # serv
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

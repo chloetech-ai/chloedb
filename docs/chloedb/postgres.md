@@ -2,6 +2,8 @@
 
 `chloedb-server follow-postgres` keeps ChloeDB in step with a Postgres database by logical replication: it copies the tables of a publication, then applies every insert, update, delete, `TRUNCATE` and new column a moment after Postgres commits it, so ChloeDB serves search over the rows Postgres holds without a nightly job or a Debezium and Kafka pipeline in between. It speaks Postgres's own protocol (`pgoutput`, the plugin Postgres ships, from version 10), and keeps what it applied in ChloeDB's `_sources`, in the same transactions as the rows, so a follower stopped and started again goes on from there and applies each change once.
 
+This is ChloeDB reading from Postgres, not ChloeDB speaking to Postgres clients: ChloeDB serves no Postgres protocol of its own, so `psql`, DBeaver, Metabase and dbt's Postgres adapter cannot connect to it. [Running SQL](query-language.md#running-sql) lists the ways in.
+
 ## Set up Postgres
 
 Postgres writes what logical replication needs once `wal_level` is `logical` (a restart takes it):
@@ -45,11 +47,24 @@ Stop it whenever: started again it resumes from what ChloeDB applied. While it i
 
 - **Inserts and updates** are upserts of the whole row by key; an update that changes the key deletes the old row. A large value an update leaves unchanged, which Postgres does not send (TOAST), is kept: taken from the old row with `REPLICA IDENTITY FULL`, or else read from ChloeDB's row.
 - **Deletes** are by key. **`TRUNCATE`** deletes every row of the table.
-- **Columns added** in Postgres are added to the ChloeDB table (`ALTER TABLE ... ADD COLUMN`), and a column renamed while the follower runs is renamed. A column dropped in Postgres stays in ChloeDB, `NULL` in rows written since. A changed type keeps the ChloeDB column's, and the values are read as it reads them.
+- **Columns added** in Postgres are added to the ChloeDB table (`ALTER TABLE ... ADD COLUMN`), and a column renamed while the follower runs is renamed. A column dropped in Postgres stays in ChloeDB, `NULL` in rows written since. A changed type keeps the ChloeDB column's, and the values are read as it reads them. See [a column added with a default](#a-column-added-with-a-default) below: the default does not come across.
 - **Tables joining the publication** (`ALTER PUBLICATION ... ADD TABLE`, or a table created under `FOR ALL TABLES`) are copied when the follower sees them, within 30 seconds, then followed. A table leaving it is no longer followed; its ChloeDB rows stay. A table renamed in Postgres goes on into the ChloeDB table of its old name.
-- ChloeDB's tables the follower writes take no other writes: a transaction applied again after a restart writes what it wrote before.
+- **After a restart**, a transaction applied again writes what it wrote before.
 
 Transactions are applied whole, each in one write (several at once while Postgres sends faster than they are written), but one of more than 1,000 changes, more than 16 MB of values, or with a `TRUNCATE`, is written in steps: a reader can see part of it, as it can see part of any write across a cluster's shards.
+
+### A column added with a default
+
+The follower adds a new column with its type only, not its `DEFAULT`, and logical replication sends no change for the rows a table already holds when a column is added to it. In ChloeDB those rows read `NULL` in the new column until Postgres next changes each of them. After `ALTER TABLE customers ADD COLUMN vip boolean DEFAULT false` and an `UPDATE` that sets `vip = true` on four customers, Postgres holds `false` for every other customer and ChloeDB `NULL`, so `WHERE NOT vip` counts none of them in ChloeDB. Rows inserted or updated in Postgres after the `ALTER` carry their value, the default included.
+
+To keep the mirror right:
+
+- **Add the column in ChloeDB first**, with the same default, then in Postgres: `ALTER TABLE customers ADD COLUMN vip BOOL DEFAULT false` on ChloeDB (`POST /v1/sql`). The follower finds the column there and leaves it as it is, and the rows written before read it as its default.
+- **Or copy again** once the column is added: `--copy` drops ChloeDB's rows of the followed tables and copies them from Postgres with a new slot.
+
+### Writes to the followed tables
+
+ChloeDB does not refuse other writes to the tables the follower writes. An `UPDATE` or a `/v1/write` to one is taken, and the row then differs from Postgres's, with no warning, until Postgres changes that row again (an insert or update there writes the whole row) or the tables are copied again (`--copy`). A row written only in ChloeDB stays until Postgres writes or deletes a row of its key, or a copy removes it. Write such rows in Postgres, and give the apps that write to ChloeDB a [key limited to the other tables](server.md#security).
 
 ### How Postgres columns become fields
 
@@ -70,13 +85,14 @@ Transactions are applied whole, each in one write (several at once while Postgre
 
 ### Choosing ChloeDB types
 
-To choose the types, analyzers, an embedded vector or fields of ChloeDB's own, make the table in ChloeDB before the first run, with the Postgres key as its key and the columns of the names Postgres has:
+A `text` or `varchar` column becomes `TEXT`, which is searched by its words: a query cannot `GROUP BY` it, or `SELECT DISTINCT` it, on its own table (`GROUP BY country` is refused with "group by KEYWORD, INT or FLOAT fields"), and an `UPDATE` or `DELETE` cannot compare it with `=` ([differences from PostgreSQL](query-language.md#differences-from-postgresql)). A column of names, codes or statuses that you group and filter by its whole value (`brand` below) belongs in a `KEYWORD`. To choose the types, analyzers, an embedded vector or fields of ChloeDB's own, make the table in ChloeDB before the first run, with the Postgres key as its key and the columns of the names Postgres has:
 
 ```sql
 CREATE TABLE products (
   id INT PRIMARY KEY,
   title TEXT,
   sku KEYWORD,
+  brand KEYWORD,
   description TEXT OPTIONS(analyzer = 'english'),
   price FLOAT,
   emb VECTOR OPTIONS(embed = 'title, description', model = 'potion-retrieval-32M')

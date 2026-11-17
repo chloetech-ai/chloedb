@@ -138,9 +138,11 @@ NAV = [
         ("quickstart", "Quickstart", "docs/quickstart.md", "guide"),
         ("concepts", "Concepts", "docs/guide/concepts.md", "guide"),
         ("build-an-app", "Build an app on the HTTP API", "docs/chloedb/build-an-app.md", "reference"),
+        ("troubleshooting", "Troubleshooting", "docs/chloedb/troubleshooting.md", "reference"),
     ]),
     ("Search and SQL", [
         ("search", "Search guide", "docs/guide/search.md", "guide"),
+        ("search-page", "Build a search page", "docs/guide/search-page.md", "guide"),
         ("sql", "SQL reference", "docs/chloedb/query-language.md", "reference"),
         ("graphs", "Graphs", "docs/chloedb/graphs.md", "reference"),
         ("next-items", "Next items", "docs/chloedb/next-items.md", "reference"),
@@ -157,19 +159,31 @@ NAV = [
         ("python", "Python", "docs/chloedb/python.md", "reference"),
         ("frames", "DataFrames", "docs/chloedb/frames.md", "reference"),
         ("javascript", "JavaScript", "docs/chloedb/javascript.md", "reference"),
+        ("rust", "Rust", "docs/chloedb/rust.md", "reference"),
         ("java", "Java and JDBC", "docs/chloedb/java.md", "reference"),
         ("frameworks", "LangChain, LangGraph, LlamaIndex", "docs/guide/frameworks.md", "guide"),
         ("frameworks-reference", "Framework adapters reference", "docs/chloedb/frameworks.md", "reference"),
     ]),
     ("Server and cluster", [
         ("server", "chloedb-server", "docs/chloedb/server.md", "reference"),
+        ("operate-cluster", "Operate a cluster", "docs/guide/operate-cluster.md", "guide"),
+        ("cluster-limits", "Cluster limits", "docs/chloedb/cluster-limits.md", "reference"),
         ("runbooks", "Runbooks", "docs/chloedb/runbooks.md", "reference"),
+        ("security", "Security model", "docs/chloedb/security.md", "reference"),
         ("sqlite", "SQLite in and out", "docs/chloedb/sqlite.md", "reference"),
         ("parquet", "Parquet and S3", "docs/chloedb/parquet.md", "reference"),
         ("postgres", "Following Postgres", "docs/chloedb/postgres.md", "reference"),
         ("connectors", "Connectors", "docs/chloedb/connectors.md", "reference"),
         ("opensearch", "OpenSearch API", "docs/chloedb/opensearch.md", "reference"),
         ("compatibility", "Versions and compatibility", "docs/compatibility.md", "reference"),
+    ]),
+    ("ChloeCtx", [
+        ("chloectx", "ChloeCtx", "docs/chloectx/index.md", "reference"),
+        ("chloectx-setup", "Install ChloeCtx", "docs/chloectx/setup.md", "reference"),
+        ("chloectx-inspector", "ChloeCtx inspector", "docs/chloectx/inspector.md", "reference"),
+        ("chloectx-capsules", "Context capsules", "docs/chloectx/capsules.md", "reference"),
+        ("chloectx-receipts", "Blame and receipts", "docs/chloectx/receipts.md", "reference"),
+        ("chloectx-app", "ChloeCtx on a cluster", "docs/chloectx/app.md", "reference"),
     ]),
     ("Apps", [
         ("apps", "Apps on a cluster", "docs/guide/apps.md", "guide"),
@@ -181,12 +195,6 @@ NAV = [
         ("github", "GitHub explorer", "docs/chloedb/github.md", "reference"),
         ("sound", "Sound Explorer", "docs/chloedb/sound.md", "reference"),
         ("backbone", "Backbone explorer", "docs/chloedb/backbone.md", "reference"),
-        ("chloectx", "ChloeCtx", "docs/chloectx/index.md", "reference"),
-        ("chloectx-setup", "Install ChloeCtx", "docs/chloectx/setup.md", "reference"),
-        ("chloectx-inspector", "ChloeCtx inspector", "docs/chloectx/inspector.md", "reference"),
-        ("chloectx-app", "ChloeCtx on a cluster", "docs/chloectx/app.md", "reference"),
-        ("chloectx-capsules", "Context capsules", "docs/chloectx/capsules.md", "reference"),
-        ("chloectx-receipts", "Blame and receipts", "docs/chloectx/receipts.md", "reference"),
         ("app-engine", "App engine (prototype)", "docs/chloedb/apps.md", "reference"),
     ]),
 ]
@@ -340,7 +348,44 @@ def convert(page, by_source):
     body = rewrite_links(body, page, by_source)
     toc = [(t["level"], t["id"], t["name"]) for t in flat_toc(md.toc_tokens) if t["level"] == 2]
     desc = description(page.source.read_text())
+    page.sections = index_sections(page, title, body)
     return title, desc, body, toc, any("mermaid" in b for b in blocks if b.startswith('<pre class="mermaid"'))
+
+
+def plain(fragment):
+    """A piece of a page's HTML as one line of text: code blocks left out
+    (inline code stays), tags gone, entities read."""
+    fragment = re.sub(r"<pre\b.*?</pre>", " ", fragment, flags=re.S)
+    fragment = re.sub(r'<a class="anchor"[^>]*>#</a>', "", fragment)
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", fragment)).split())
+
+
+def index_sections(page, title, body):
+    """The page cut at its h2 and h3 headings, for the docs' search box:
+    [url, page title, heading, text] per piece (the piece before the first
+    heading has no heading)."""
+    title = plain(title)
+    cuts = list(re.finditer(r'<(h[23]) id="([^"]+)">(.*?)</\1>', body, flags=re.S))
+    out = []
+    intro = plain(body[:cuts[0].start()] if cuts else body)
+    if intro or not cuts:
+        out.append([f"{page.page}.html", title, "", intro])
+    for i, m in enumerate(cuts):
+        end = cuts[i + 1].start() if i + 1 < len(cuts) else len(body)
+        out.append([f"{page.page}.html#{m.group(2)}", title, plain(m.group(3)), plain(body[m.end():end])])
+    return out
+
+
+SEARCH_INDEX = "search-index.js"
+
+
+def search_index(all_pages):
+    """docs/site/docs/search-index.js: every page's sections, which the
+    search box (assets/docs-search.js) loads the first time it is used."""
+    rows = [s for p in all_pages for s in getattr(p, "sections", [])]
+    data = json.dumps({"v": 1, "sections": rows}, ensure_ascii=False, separators=(",", ":"))
+    return ("// Written by docs/site/scripts/build_docs.py: the docs' search index, read by assets/docs-search.js.\n"
+            f"window.CHLOEDB_DOCS_INDEX={data};\n")
 
 
 def flat_toc(tokens):
@@ -413,12 +458,19 @@ TEMPLATE = """<!doctype html>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="{search_index}">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
       {sidebar}
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
       <span class="eyebrow">{section}</span>
@@ -444,6 +496,7 @@ TEMPLATE = """<!doctype html>
   <div><h4>Source</h4><ul><li><a href="{github}">GitHub</a></li><li><a href="{github}/blob/{branch}/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="{up}assets/site.js?v={h_site_js}"></script>
+<script src="{up}assets/docs-search.js?v={h_docs_search_js}" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
@@ -486,6 +539,7 @@ def render_page(p, all_pages, by_source, hashes):
     return TEMPLATE.format(
         title=html.escape(re.sub(r"<[^>]+>", "", html.unescape(title))), desc=html.escape(desc, quote=True),
         h_site_css=hashes.get("site.css", ""), h_docs_css=hashes.get("docs.css", ""), h_site_js=hashes.get("site.js", ""),
+        h_docs_search_js=hashes.get("docs-search.js", ""), search_index=f"{SEARCH_INDEX}?v=CHLOEDBSEARCHINDEXHASH",
         source=p.rel, github=GITHUB, branch=BRANCH, sidebar=sidebar(p, all_pages), section=html.escape(p.section),
         h1=title, badge=badge, toc=toc_html, body=body, edit=f"{GITHUB}/edit/{BRANCH}/{p.rel}", pager=pager,
         mermaid=MERMAID if has_mermaid else "", up=UP, version=version_line(),
@@ -519,9 +573,12 @@ def build(out):
     hashes = asset_hashes()
     out.mkdir(parents=True, exist_ok=True)
     written = set()
-    for p in all_pages:
-        (out / f"{p.page}.html").write_text(render_page(p, all_pages, by_source, hashes))
-        written.add(f"{p.page}.html")
+    rendered = {f"{p.page}.html": render_page(p, all_pages, by_source, hashes) for p in all_pages}
+    index = search_index(all_pages)
+    index_hash = hashlib.sha256(index.encode()).hexdigest()[:10]
+    for name, text in rendered.items():
+        (out / name).write_text(text.replace("CHLOEDBSEARCHINDEXHASH", index_hash))
+        written.add(name)
     if EDITION == "snapshot":
         # A page the release did not have yet (the template's footer names
         # some): the one of main.
@@ -530,6 +587,8 @@ def build(out):
             f.write_text(re.sub(r'href="([a-z0-9-]+\.html)(#[^"]*)?"', lambda m: m.group(0) if m.group(1) in written else f'href="../{m.group(1)}{m.group(2) or ""}"', f.read_text()))
     for line in check_links(out, written):
         print(f"broken link: {line}", file=sys.stderr)
+    (out / SEARCH_INDEX).write_text(index)
+    written.add(SEARCH_INDEX)
     return written
 
 
@@ -581,7 +640,7 @@ def main():
     for f in OUT.glob("*.html"):
         if f.name not in written:
             f.unlink()
-    print(f"wrote {len(written)} pages to docs/site/docs/")
+    print(f"wrote {len(written) - 1} pages and the search index to docs/site/docs/")
 
 
 if __name__ == "__main__":

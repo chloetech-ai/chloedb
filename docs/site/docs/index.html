@@ -19,7 +19,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
 </head>
 <body class="docs">
 <!-- Google Tag Manager (noscript) -->
@@ -40,6 +40,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js?v=c2829d2b7b">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
@@ -48,8 +54,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
       <a href="next-items.html">Next items</a>
@@ -64,18 +72,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
       <a href="java.html">Java and JDBC</a>
       <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
       <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -86,15 +105,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
-      <a href="chloectx.html">ChloeCtx</a>
-      <a href="chloectx-setup.html">Install ChloeCtx</a>
-      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
-      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
-      <a href="chloectx-capsules.html">Context capsules</a>
-      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
       <span class="eyebrow">Start</span>
@@ -102,7 +116,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
       <p class="doc-version">These docs describe release 0.3.7.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#cookbook">Cookbook</a></li><li><a href="#use-it-from">Use it from</a></li><li><a href="#apps">Apps</a></li><li><a href="#how-these-pages-are-tested">How these pages are tested</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#where-to-start">Where to start</a></li><li><a href="#cookbook">Cookbook</a></li><li><a href="#use-it-from">Use it from</a></li><li><a href="#apps">Apps</a></li><li><a href="#how-these-pages-are-tested">How these pages are tested</a></li></ol></details>
     <div class="doc-body">
 
 <p>ChloeDB is an embedded search database with SQL: full text, structured columns, vectors and graph edges over the same rows, in one file, combined in one query by one planner. It runs inside your program like SQLite, or as a server and a cluster with the same SQL.</p>
@@ -112,10 +126,54 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <a href="search.html"><b>Search guide</b><span>Words, typos, filters, facets, vectors and hybrid ranking, on one small catalogue.</span></a>
 <a href="sql.html"><b>SQL reference</b><span>Every statement, function and option.</span></a></p>
 </div>
+<h2 id="where-to-start">Where to start<a class="anchor" href="#where-to-start" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>you are making</th>
+<th>start with</th>
+<th>then</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a Python app, script or notebook, with the database in your process</td>
+<td><a href="quickstart.html#chloedb-from-python-with-no-server">the quickstart's Python section</a> (<code>pip install chloedb</code>, no server)</td>
+<td><a href="python.html">Python</a>, the <a href="search.html">search guide</a>, and <a href="search-page.html">Build a search page</a> for a web app</td>
+</tr>
+<tr>
+<td>a JavaScript or TypeScript app (Node, Bun, Deno, a framework's server code)</td>
+<td><a href="javascript.html">JavaScript</a>: <code>npm install chloedb</code> and a database in your process</td>
+<td>the <a href="search.html">search guide</a>, whose queries run as <code>await db.query(sql, params)</code></td>
+</tr>
+<tr>
+<td>a server that several programs, languages or machines use</td>
+<td><a href="quickstart.html">the quickstart</a>: install <code>chloedb-server</code>, a table, a search, the command center</td>
+<td><a href="server.html">chloedb-server</a>, and <a href="build-an-app.html">Build an app on chloedb-server</a> for an app over its HTTP API</td>
+</tr>
+<tr>
+<td>a cluster: shards, replicas, failover</td>
+<td><a href="operate-cluster.html">Operate a cluster</a>, on one machine first</td>
+<td><a href="runbooks.html">Runbooks</a> and <a href="cluster-limits.html">cluster limits</a></td>
+</tr>
+<tr>
+<td>retrieval for a language model</td>
+<td><a href="rag.html">Retrieval for RAG</a></td>
+<td><a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a></td>
+</tr>
+<tr>
+<td>long-term memory for Claude Code</td>
+<td><a href="chloectx-setup.html">Install ChloeCtx</a>: it plugs into Claude Code, and needs neither chloedb-server nor Python</td>
+<td><a href="chloectx.html">ChloeCtx</a></td>
+</tr>
+</tbody>
+</table></div>
+<p>Something failed? <a href="troubleshooting.html">Troubleshooting</a> has the usual messages, each with what to do, and <code>chloedb-server doctor</code> checks this machine for their causes.</p>
 <h2 id="cookbook">Cookbook<a class="anchor" href="#cookbook" aria-label="Link to this section">#</a></h2>
 <p>Complete programs for common jobs. Each one runs, as written, every time the code changes.</p>
 <div class="doc-cards">
-<p><a href="rag.html"><b>Retrieval for RAG</b><span>Chunk documents, search them by words and meaning, and hand a model the passages with their sources.</span></a>
+<p><a href="search-page.html"><b>Build a search page</b><span>A search box for a small web app: typos, highlights, did you mean, more like this and a filter.</span></a>
+<a href="rag.html"><b>Retrieval for RAG</b><span>Chunk documents, search them by words and meaning, and hand a model the passages with their sources.</span></a>
 <a href="agent-memory.html"><b>Memory for an agent</b><span>Remember turns and facts, recall what matters to a new message, and keep facts current.</span></a>
 <a href="crawl-to-search.html"><b>Crawl a site into search</b><span>Point the crawler at a site, get a table with its fields, and search it.</span></a>
 <a href="logs.html"><b>Search your logs</b><span>Send syslog and OpenTelemetry logs to a table, and find the last 15 minutes' errors, a flapping interface, an IP.</span></a></p>
@@ -166,6 +224,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

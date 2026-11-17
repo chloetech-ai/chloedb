@@ -19,7 +19,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
 </head>
 <body class="docs">
 <!-- Google Tag Manager (noscript) -->
@@ -40,6 +40,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js?v=c2829d2b7b">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
@@ -48,8 +54,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html" aria-current="page">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
       <a href="next-items.html">Next items</a>
@@ -64,18 +72,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
       <a href="java.html">Java and JDBC</a>
       <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
       <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -86,15 +105,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
-      <a href="chloectx.html">ChloeCtx</a>
-      <a href="chloectx-setup.html">Install ChloeCtx</a>
-      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
-      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
-      <a href="chloectx-capsules.html">Context capsules</a>
-      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
       <span class="eyebrow">Start</span>
@@ -112,7 +126,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz &amp;&amp; cp chloedb-server-$p/chloedb-server ./chloedb-server
 ./chloedb-server --db shop.chloedb --seq-no</pre>
-<p>The server listens on <code>http://127.0.0.1:7700</code> (HTTP JSON, and the command center in a browser) and on 7701 (gRPC). A new <code>--db</code> starts with no tables. <code>--seq-no</code> numbers every write, which the stock below needs. <a href="server.html#run-it">Run it</a> has the options, the source build (<code>cd chloedb-server &amp;&amp; cargo build --release</code>) and the image.</p>
+<p>The server listens on <code>http://127.0.0.1:7700</code> (HTTP JSON, and the command center in a browser) and on 7701 (gRPC). A second server on the same machine, for your tests say, needs both ports of its own: <code>--listen</code> moves only the HTTP one, and a second server left on 7701 stops with "the address is in use", so give it <code>--grpc</code> another port too, or <code>--grpc off</code>. A new <code>--db</code> starts with no tables. <code>--seq-no</code> numbers every write, which the stock below needs. <a href="server.html#run-it">Run it</a> has the options, the source build (<code>cd chloedb-server &amp;&amp; cargo build --release</code>) and the image.</p>
 <h2 id="make-the-tables">Make the tables<a class="anchor" href="#make-the-tables" aria-label="Link to this section">#</a></h2>
 <p><code>POST /v1/sql</code> takes one statement:</p>
 <pre data-lang="sh">sql() { curl -s localhost:7700/v1/sql -H &#x27;content-type: application/json&#x27; -d &quot;$(jq -n --arg s &quot;$1&quot; &#x27;{sql: $s}&#x27;)&quot;; echo; }
@@ -153,8 +167,17 @@ q &#x27;{&quot;sql&quot;: &quot;SELECT id, title FROM listings ORDER BY rrf(bm25
     &quot;params&quot;: {&quot;t&quot;: &quot;shelter for two&quot;, &quot;v&quot;: {&quot;embed&quot;: &quot;shelter for two&quot;}}, &quot;objects&quot;: true}&#x27;
 
 # facets: how many listings per category
-q &#x27;{&quot;sql&quot;: &quot;SELECT category, COUNT(*) FROM listings GROUP BY category&quot;, &quot;objects&quot;: true}&#x27;</pre>
-<p>Rows come as lists in the order of <code>columns</code>, or as objects with <code>"objects": true</code>. Typo tolerance, synonyms, phrase and prefix search, geographic and time decay, and reranking by a model are in the <a href="sql.html">query language</a>.</p>
+q &#x27;{&quot;sql&quot;: &quot;SELECT category, COUNT(*) FROM listings GROUP BY category&quot;, &quot;objects&quot;: true}&#x27;
+
+# as you type: &quot;camping te&quot; filters by its last word as a prefix and ranks by the words typed whole
+q &#x27;{&quot;sql&quot;: &quot;SELECT id, title FROM listings WHERE MATCH(title, :typed) AND stock &gt; 0 ORDER BY bm25(title, :whole) DESC, price LIMIT 10&quot;,
+    &quot;params&quot;: {&quot;typed&quot;: &quot;camping te*&quot;, &quot;whole&quot;: &quot;camping&quot;}, &quot;objects&quot;: true}&#x27;
+
+# the words a search matched, marked in each text
+curl -s localhost:7700/v1/highlight -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;table&quot;: &quot;listings&quot;, &quot;field&quot;: &quot;title&quot;, &quot;query&quot;: &quot;camping te*&quot;, &quot;texts&quot;: [&quot;Red camping tent&quot;]}&#x27;
+# {&quot;texts&quot;:[&quot;Red &lt;mark&gt;camping&lt;/mark&gt; &lt;mark&gt;tent&lt;/mark&gt;&quot;],...}</pre>
+<p>Rows come as lists in the order of <code>columns</code>, or as objects with <code>"objects": true</code>. A prefix filters but scores nothing in <code>bm25</code>, so a query ranked by <code>bm25(title, 'te*')</code> alone returns no rows: rank by the words typed whole, or by a column while the first word is being typed (<a href="sql.html#full-text-match">full text</a>). <code>POST /v1/correct</code> gives a "did you mean" (<a href="sql.html#did-you-mean-correcting-a-querys-words">did you mean</a>). A page in a browser cannot send these requests itself from another origin: chloedb-server refuses every <code>POST</code> from a page of another site, a query too, and sends no CORS headers, so your app's server code queries it and answers the page (<a href="javascript.html#a-search-box-in-a-web-app">a search box in a web app</a>). Typo tolerance, synonyms, phrase and prefix search, geographic and time decay, and reranking by a model are in the <a href="sql.html">query language</a>.</p>
 <h2 id="read-one-row-by-its-key">Read one row by its key<a class="anchor" href="#read-one-row-by-its-key" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">curl -s localhost:7700/v1/kv/listings/l1
 # {&quot;found&quot;:true,&quot;key&quot;:&quot;l1&quot;,&quot;row&quot;:{&quot;id&quot;:&quot;l1&quot;,...,&quot;stock&quot;:3},&quot;seq_no&quot;:5,&quot;table&quot;:&quot;listings&quot;,...}</pre>
@@ -231,7 +254,7 @@ curl -s localhost:7700/v1/admin/rebalance -X POST</pre>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/build-an-app.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="concepts.html">← Concepts</a><a href="search.html">Search guide →</a></span>
+      <span class="pager"><a href="concepts.html">← Concepts</a><a href="troubleshooting.html">Troubleshooting →</a></span>
     </footer>
   </article>
 </div></main>
@@ -243,6 +266,7 @@ curl -s localhost:7700/v1/admin/rebalance -X POST</pre>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

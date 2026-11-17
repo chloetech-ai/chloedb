@@ -19,7 +19,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
 </head>
 <body class="docs">
 <!-- Google Tag Manager (noscript) -->
@@ -40,6 +40,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js?v=c2829d2b7b">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
@@ -48,8 +54,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
       <a href="next-items.html">Next items</a>
@@ -64,18 +72,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
       <a href="java.html">Java and JDBC</a>
       <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
       <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html" aria-current="page">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -86,15 +105,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
-      <a href="chloectx.html">ChloeCtx</a>
-      <a href="chloectx-setup.html">Install ChloeCtx</a>
-      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
-      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
-      <a href="chloectx-capsules.html">Context capsules</a>
-      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
       <span class="eyebrow">Server and cluster</span>
@@ -181,6 +195,16 @@ chloedb-server import --db lake.chloedb --schema plan.json events.parquet  # wit
 </tbody>
 </table></div>
 <p>Text reads as labels when no value is over 256 bytes and the values have 2.5 words or fewer on average, or each value repeats ten times on average (as the <a href="sqlite.html#how-sqlite-columns-become-fields">SQLite import</a> judges). Column names that are not ChloeDB identifiers are respelled (<code>City Name</code> becomes <code>City_Name</code>; the plan lists each). A column named <code>id</code> (in any case) of integers or text without NULLs in the sample is the key; <code>--key</code> names another, and <code>--key ""</code> makes a table without one. A NaN or infinite float is read as NULL, and the import says how many were.</p>
+<p>A column fills only the field of its own name, and nothing renames one on the way in. A key column named otherwise, such as <code>_id</code> in BEIR's corpora and in MongoDB's documents, therefore does not fill a table keyed <code>id</code>: an import into one fails with <code>bad value for field id: NULL does not fit a KEYWORD field</code>, and a table made from the file has no key unless <code>--key</code> names one, since only a column named <code>id</code> becomes the key by itself. The plan's <code>columns</code> says which field each column fills, but it is read, not followed: a plan given back as <code>--schema</code> (or <code>schema=</code>) gives the table's schema, and a <code>columns</code> edited to <code>{"_id": "id"}</code> fails the same way. Two ways through:</p>
+<ul>
+<li><strong>Keep the column's name as the key.</strong> <code>--key _id</code> (<code>key="_id"</code> in Python, <code>?key=_id</code> over HTTP) makes <code>_id</code> the key of the table the import creates, and SQL reads it as any column (<code>WHERE _id = 'd1'</code>). To choose the fields' types, analyzers or an embedded vector field, create the table first with a key named <code>_id</code> and import into it with <code>--table</code>.</li>
+<li><strong>Rename the column before the import</strong>, in Arrow from Python, and write the rows with <a href="#arrow-from-python"><code>import_arrow</code></a> into the table you made:</li>
+</ul>
+<pre data-lang="python">import pyarrow.parquet as pq
+t = pq.read_table(&quot;corpus.parquet&quot;)
+t = t.rename_columns([&quot;id&quot; if c == &quot;_id&quot; else c for c in t.column_names])
+db.import_arrow(t, table=&quot;docs&quot;)</pre>
+<p>A table made from a file without <code>--table</code> is named for the file, so Hugging Face's <code>corpus-00000-of-00001.parquet</code> makes <code>corpus_00000_of_00001</code>: give <code>--table corpus</code> (<code>table="corpus"</code>).</p>
 <p>Into a table that exists, a column fills its field when its values do: any integer, float or decimal for a number, dates, timestamps and ISO 8601 text for a <code>TIMESTAMP</code>, a list of <code>n</code> numbers (or <code>4n</code> little-endian float32 bytes) for a <code>VECTOR(n)</code>, a list for a multi-valued field, structs, maps and lists for a <code>JSON</code> field. Integers that are Unix times (seconds, milliseconds or microseconds, by their size) fill a <code>TIMESTAMP</code> too.</p>
 <h3 id="directories-and-hive-partitions">Directories and Hive partitions<a class="anchor" href="#directories-and-hive-partitions" aria-label="Link to this section">#</a></h3>
 <p>A directory Spark writes with <code>partitionBy</code> holds its files under <code>key=value</code> directories (<code>year=2026/month=11/part-00000-….snappy.parquet</code>). Each key becomes a field, <code>INT</code> when every value is an integer and <code>KEYWORD</code> otherwise, and each row takes its file's values; <code>__HIVE_DEFAULT_PARTITION__</code> is NULL. Into a table that exists, a key fills the field of its name. A directory whose files keep different ChloeDB tables (an export of several, below) is refused: import its files one at a time.</p>
@@ -300,6 +324,7 @@ chloedb-server export --db lake.chloedb --no-schemas events.parquet      # witho
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
