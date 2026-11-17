@@ -52,6 +52,9 @@ pub struct Service {
     pub seen: Mutex<HashMap<String, (u64, usize, usize)>>,
     /// The preview file of each sound, once looked up.
     pub files: Mutex<HashMap<String, String>>,
+    /// The map's answer, read again ten minutes after it was made: it is
+    /// every sound, and changes only when sounds are loaded.
+    pub map: Mutex<Option<(Instant, Value)>>,
     pub started: Instant,
 }
 
@@ -369,11 +372,18 @@ async fn drift_route(State(svc): State<Shared>, Query(a): Query<DriftParams>) ->
 }
 
 async fn map_route(State(svc): State<Shared>) -> Answer {
+    if let Some((at, v)) = svc.map.lock().unwrap().as_ref() {
+        if at.elapsed().as_secs() < 600 {
+            return Ok(Json(v.clone()));
+        }
+    }
     let t0 = Instant::now();
     let c = ctx(&svc);
-    let r = sound::map(&c, 20_000).await?;
+    let r = sound::map(&c, 200_000).await?;
     let trace = c.trace.clone();
-    done(&trace, r, t0)
+    let v = done(&trace, r, t0)?.0;
+    *svc.map.lock().unwrap() = Some((Instant::now(), v.clone()));
+    Ok(Json(v))
 }
 
 async fn labels_route(State(svc): State<Shared>) -> Answer {

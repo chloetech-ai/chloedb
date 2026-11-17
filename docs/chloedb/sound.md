@@ -31,14 +31,14 @@ python3 -I tools/prepare.py --fsd50k ~/sounds/fsd50k --fma ~/sounds/fma --common
 target/release/chloedb-sound load --rows ./sound-rows
 ```
 
-`serve --local DIR` starts a chloedb-server with its database in `DIR`, makes the tables and the labels (the server fetches CLAP, 600 MB, the first time a field names it), and lists the app as `sound`; open `http://127.0.0.1:7700` and go to **Apps → Sound Explorer**. `tools/prepare.py` decodes each sound with ffmpeg, writes its preview and waveform, sends each ten-second window to the server's CLAP (`POST /v1/embed` through `au_labels`' model, about two and a half windows a second on four cores), and writes the rows; it needs ffmpeg and numpy, and a run that stops goes on where it was. Give `serve` the rows with `--rows` and it loads them when the tables are empty, and plays the previews from their `audio/` folder (`--audio` for another).
+`serve --local DIR` starts a chloedb-server with its database in `DIR`, makes the tables and the labels (the server fetches CLAP, 600 MB, the first time a field names it), and lists the app as `sound`; open `http://127.0.0.1:7700` and go to **Apps → Sound Explorer**. `tools/prepare.py` decodes each sound with ffmpeg, writes its preview and waveform, sends each ten-second window to the server's CLAP (`POST /v1/embed` through `au_labels`' model, about three windows a second on four cores with AVX-512), and writes the rows; it needs ffmpeg and numpy, and a run that stops goes on where it was. `--concurrency` sounds are made at once, and `--embed URL,URL,...` shares the windows among several servers with CLAP (each window to the one with the fewest at work). Of more than 4,000 sounds the map is a t-SNE of 4,000 of them, and each other sound is placed among the ten it sounds most like. Give `serve` the rows with `--rows` and it loads them when the tables are empty, and plays the previews from their `audio/` folder (`--audio` for another).
 
 The three sources, and what is kept of each:
 
 | source | what | licences kept |
 |---|---|---|
-| [FSD50K](https://zenodo.org/records/4060432) | Freesound clips labelled by hand with 200 classes of the AudioSet ontology; the evaluation set's, the same number of each class | CC0, CC BY |
-| [Free Music Archive](https://github.com/mdeff/fma) | 30-second clips of `fma_small`, with their genres | CC BY, CC BY-SA, CC0, Free Art License (about 15% of its tracks) |
+| [FSD50K](https://zenodo.org/records/4060432) | Freesound clips labelled by hand with 200 classes of the AudioSet ontology; the evaluation set's, the same number of each class, or with `--split both --clips 0` every clip of both sets (43,379 of 51,197 qualify) | CC0, CC BY |
+| [Free Music Archive](https://github.com/mdeff/fma) | 30-second clips of `fma_small`, or with `--set large --shards 0` of all of `fma_large` (9,918 of its 105,024 tracks qualify), with their genres | CC BY, CC BY-SA, CC0, Free Art License (about one track in ten) |
 | [Wikimedia Commons](https://commons.wikimedia.org/wiki/Category:Sounds_by_type) | sounds under its sound categories, with descriptions and, for some, a place | CC0, public domain, CC BY, CC BY-SA, GFDL |
 
 Freesound's own archive is not used: its terms do not allow a copy of it on another site.
@@ -53,7 +53,7 @@ chloedb-sound serve --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --toke
 chloedb-server ... --app sound=http://sound-host:7870     # with CHLOEDB_APP_TOKEN=$SOUND_TOKEN
 ```
 
-On Kubernetes, [`deploy/k8s.yaml`](../../chloedb-sound/deploy/k8s.yaml) runs it on one small node of its own (2 vCPUs, 4 GB): the server with CLAP, the app and a pod to work in, with the binaries, the model, the rows, the previews and the database on the node's own disk.
+On Kubernetes, [`deploy/k8s.yaml`](../../chloedb-sound/deploy/k8s.yaml) runs it on one small node of its own (2 vCPUs, 4 GB): the server with CLAP, the app and a pod to work in, with the binaries, the model, the rows, the previews and the database on the node's own disk. A bigger set is made on machines of their own and copied in: [`deploy/batch.yaml`](../../chloedb-sound/deploy/batch.yaml) runs a server with CLAP on each node of a temporary pool, and the first downloads the sounds, makes the rows with `--embed` over all of them and builds the database. The whole of FSD50K and `fma_large`'s clips that qualify come to about 53,000 sounds.
 
 `--public` serves the page at `/` and its reads to anyone, without the token, within `--per-minute` requests a minute from one address (120 by default; the previews are not counted) and `--listens-per-minute` clips heard (6), and refuses calls from another site's pages. It serves no SQL: the page's *SQL* drawer shows the statements each answer ran.
 

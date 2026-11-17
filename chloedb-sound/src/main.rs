@@ -250,6 +250,7 @@ async fn serve(a: ServeArgs) {
         listens_per_minute: a.listens_per_minute.max(1),
         seen: Mutex::new(Default::default()),
         files: Mutex::new(Default::default()),
+        map: Mutex::new(None),
         started: Instant::now(),
     });
     eprintln!("chloedb-sound: the API answers at {me}{}{}", if token.is_some() && a.token.is_none() { " (token made for the server)" } else { "" }, if a.public { ", and the page at / to anyone" } else { "" });

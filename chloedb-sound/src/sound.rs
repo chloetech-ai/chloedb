@@ -475,7 +475,8 @@ pub async fn map(c: &Ctx<'_>, limit: usize) -> Result<Value> {
     c.db.scroll(sql, Value::Null, 10_000, |rows| {
         for r in rows {
             if pts.len() < limit {
-                pts.push(json!([r.s("id"), r.s("title"), r.s("kind"), r.s("source"), r.f("x"), r.f("y"), r.get("lat").cloned().unwrap_or(Value::Null), r.get("lon").cloned().unwrap_or(Value::Null), r.f("seconds")]));
+                let title: String = r.s("title").chars().take(80).collect();
+                pts.push(json!([r.s("id"), title, r.s("kind"), r.s("source"), r.f("x"), r.f("y"), r.get("lat").cloned().unwrap_or(Value::Null), r.get("lon").cloned().unwrap_or(Value::Null), r.f("seconds")]));
             }
         }
     })

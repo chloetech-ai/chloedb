@@ -3,7 +3,7 @@
 
 Reads the three free sources as their downloaders left them:
 
-  --fsd50k DIR    FSD50K's eval_clips_info_FSD50K.json, eval.csv and clips/<id>.wav
+  --fsd50k DIR    FSD50K's {eval,dev}_clips_info_FSD50K.json, {eval,dev}.csv and clips/<id>.wav
   --fma DIR       fma.jsonl (a row a track, with its licence) and tracks/<id>.mp3
   --commons DIR   commons.jsonl (a row a file, read from its page) and the files it names
 
@@ -36,6 +36,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -107,8 +108,11 @@ def human(label):
 
 
 def fsd50k(d):
-    info = json.load(open(os.path.join(d, "eval_clips_info_FSD50K.json")))
-    labels = {r["fname"]: r["labels"].split(",") for r in csv.DictReader(open(os.path.join(d, "eval.csv")))}
+    info, labels = {}, {}
+    for sp in ("eval", "dev"):
+        if os.path.exists(os.path.join(d, f"{sp}.csv")):
+            info.update(json.load(open(os.path.join(d, f"{sp}_clips_info_FSD50K.json"))))
+            labels.update({r["fname"]: r["labels"].split(",") for r in csv.DictReader(open(os.path.join(d, f"{sp}.csv")))})
     for f in sorted(os.listdir(os.path.join(d, "clips"))):
         if not f.endswith(".wav"):
             continue
@@ -234,8 +238,14 @@ def wav_b64(x):
 
 
 class Server:
-    def __init__(self, url, key):
+    def __init__(self, url, key, embed=None):
         self.url, self.key = url.rstrip("/"), key
+        # Windows are embedded by these servers (each with CLAP and the
+        # app's tables), each window by the one with the fewest at work, so
+        # a slower one gets fewer; the rest goes to the first.
+        self.embedders = [Server(u, key) for u in embed] if embed else [self]
+        self.busy = [0] * len(self.embedders)
+        self.lock = threading.Lock()
 
     def post(self, path, body, timeout=300):
         req = urllib.request.Request(self.url + path, data=json.dumps(body).encode(), headers={"content-type": "application/json", "x-chloedb-client": "chloedb-sound-prepare"})
@@ -257,7 +267,14 @@ class Server:
                 raise RuntimeError(f"{path}: {e}")
 
     def embed(self, b64):
-        v = self.post("/v1/embed", {"audio": b64, "table": "au_labels", "field": "emb"})["vector"]
+        with self.lock:
+            i = min(range(len(self.busy)), key=self.busy.__getitem__)
+            self.busy[i] += 1
+        try:
+            v = self.embedders[i].post("/v1/embed", {"audio": b64, "table": "au_labels", "field": "emb"})["vector"]
+        finally:
+            with self.lock:
+                self.busy[i] -= 1
         return np.array(v, dtype=np.float32)
 
     def labels(self):
@@ -318,7 +335,59 @@ def tsne(X, perplexity=30.0, iters=700, seed=7):
     return Y
 
 
+LANDMARKS = 4000
+
+
+def layout(E):
+    """Every sound's place on the map: a t-SNE of the vectors, or, of more
+    than LANDMARKS sounds, a t-SNE of that many of them and each other
+    sound put among the ten it sounds most like (a mean weighted by how
+    alike), so a map of a hundred thousand takes minutes, not a day."""
+    n = len(E)
+    if n <= 50:
+        return np.random.default_rng(1).random((n, 2))
+    if n <= LANDMARKS:
+        return tsne(E.astype(np.float64))
+    rng = np.random.default_rng(7)
+    idx = rng.choice(n, LANDMARKS, replace=False)
+    Yl = tsne(E[idx].astype(np.float64))
+    L = E[idx]
+    Y = np.empty((n, 2))
+    for a in range(0, n, 4096):
+        S = E[a:a + 4096] @ L.T
+        k = np.argpartition(-S, 10, axis=1)[:, :10]
+        sk = np.take_along_axis(S, k, 1)
+        w = np.exp((sk - sk.max(1, keepdims=True)) * 30)
+        w /= w.sum(1, keepdims=True)
+        Y[a:a + 4096] = (w[..., None] * Yl[k]).sum(1)
+    Y += rng.normal(0, 0.004, Y.shape)
+    Y[idx] = Yl
+    return Y.clip(0, 1)
+
+
 # --- the run ----------------------------------------------------------------
+
+def one(srv, rec, out):
+    """A sound's preview, waveform and windows' vectors; or why not."""
+    try:
+        x = decode(rec["path"])
+    except Exception as e:
+        return rec, None, f"cannot read {rec['path']}: {e}"
+    seconds = len(x) / RATE
+    if seconds < 0.3:
+        return rec, None, f"too short: {rec['path']}"
+    fname = re.sub(r"[^A-Za-z0-9_-]", "_", rec["id"].replace(":", "_")) + ".mp3"
+    try:
+        preview(rec["path"], os.path.join(out, "audio", fname), rec.get("stereo", False), seconds)
+    except Exception as e:
+        return rec, None, f"cannot make a preview of {rec['path']}: {e}"
+    ws = windows(x)
+    try:
+        vecs = [srv.embed(wav_b64(w)) for _, w in ws]
+    except Exception as e:
+        return rec, None, f"cannot embed {rec['id']}: {e}"
+    return rec, (seconds, fname, peaks(x), [t for t, _ in ws], vecs), None
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -329,11 +398,12 @@ def main():
     ap.add_argument("--strata", default=os.environ.get("CHLOEDB_URL", "http://127.0.0.1:7700"))
     ap.add_argument("--key", default=os.environ.get("CHLOEDB_KEY"))
     ap.add_argument("--limit", type=int, default=0, help="at most this many sounds of each source")
-    ap.add_argument("--concurrency", type=int, default=3, help="windows embedded at once")
+    ap.add_argument("--concurrency", type=int, default=3, help="sounds made at once (each embeds its windows one after another)")
+    ap.add_argument("--embed", help="servers to embed the windows with, in turn (comma-separated URLs; default --strata)")
     a = ap.parse_args()
     out = a.out
     os.makedirs(os.path.join(out, "audio"), exist_ok=True)
-    srv = Server(a.strata, a.key)
+    srv = Server(a.strata, a.key, a.embed.split(",") if a.embed else None)
     sources = []
     for name, fn, d in (("fsd50k", fsd50k, a.fsd50k), ("commons", commons, a.commons), ("fma", fma, a.fma)):
         if d:
@@ -347,52 +417,45 @@ def main():
     if os.path.exists(partial):
         for l in open(partial):
             done.add(json.loads(l)["id"])
-    log(f"{len(done)} sounds done before, {len(sources) - len(done)} to go")
     t0 = time.time()
     n_done = 0
     n_windows = 0
-    pool = cf.ThreadPoolExecutor(a.concurrency)
-    with open(partial, "a") as sp, open(os.path.join(out, "au_moments.jsonl"), "a") as mp:
-        for rec in sources:
-            if rec["id"] in done:
-                continue
-            try:
-                x = decode(rec["path"])
-            except Exception as e:
-                log("cannot read", rec["path"], e)
-                continue
-            seconds = len(x) / RATE
-            if seconds < 0.3:
-                log("too short", rec["path"])
-                continue
-            fname = re.sub(r"[^A-Za-z0-9_-]", "_", rec["id"].replace(":", "_")) + ".mp3"
-            try:
-                preview(rec["path"], os.path.join(out, "audio", fname), rec.get("stereo", False), seconds)
-            except Exception as e:
-                log("cannot make a preview of", rec["path"], e)
-                continue
-            ws = windows(x)
-            try:
-                vecs = list(pool.map(lambda w: srv.embed(wav_b64(w[1])), ws))
-            except Exception as e:
-                log("cannot embed", rec["id"], e)
-                continue
-            base = [v for (t, _), v in zip(ws, vecs) if t % 10 == 0]
-            emb = np.mean(base, axis=0)
-            emb = emb / max(np.linalg.norm(emb), 1e-9)
-            for (t, _), v in zip(ws, vecs):
-                mp.write(json.dumps({"id": f"{rec['id']}@{t}", "sound": rec["id"], "t": float(t), "seconds": round(seconds, 2), "emb": [round(float(f), 6) for f in v]}) + "\n")
-            mp.flush()
-            row = dict(rec)
-            row.pop("path", None)
-            row.update(seconds=round(seconds, 2), audio=fname, peaks=",".join(map(str, peaks(x))), moments=len(ws), emb=[round(float(f), 6) for f in emb])
-            sp.write(json.dumps(row) + "\n")
-            sp.flush()
-            n_done += 1
-            n_windows += len(ws)
-            if n_done % 25 == 0:
-                s = time.time() - t0
-                log(f"{n_done} sounds, {n_windows} moments in {s:.0f} s ({n_windows / s:.2f} moments a second)")
+    todo = [rec for rec in sources if rec["id"] not in done]
+    log(f"{len(sources) - len(todo)} sounds done before, {len(todo)} to go")
+    with open(partial, "a") as sp, open(os.path.join(out, "au_moments.jsonl"), "a") as mp, cf.ThreadPoolExecutor(a.concurrency) as pool:
+        # A few sounds ahead of the workers, not all of them at once.
+        running = set()
+        it = iter(todo)
+        while True:
+            for rec in it:
+                running.add(pool.submit(one, srv, rec, out))
+                if len(running) >= a.concurrency * 4:
+                    break
+            if not running:
+                break
+            finished, running = cf.wait(running, return_when=cf.FIRST_COMPLETED)
+            for f in finished:
+                rec, got, err = f.result()
+                if err:
+                    log(err)
+                    continue
+                seconds, fname, pk, ts, vecs = got
+                base = [v for t, v in zip(ts, vecs) if t % 10 == 0]
+                emb = np.mean(base, axis=0)
+                emb = emb / max(np.linalg.norm(emb), 1e-9)
+                for t, v in zip(ts, vecs):
+                    mp.write(json.dumps({"id": f"{rec['id']}@{t}", "sound": rec["id"], "t": float(t), "seconds": round(seconds, 2), "emb": [round(float(f), 6) for f in v]}) + "\n")
+                mp.flush()
+                row = dict(rec)
+                row.pop("path", None)
+                row.update(seconds=round(seconds, 2), audio=fname, peaks=",".join(map(str, pk)), moments=len(ts), emb=[round(float(f), 6) for f in emb])
+                sp.write(json.dumps(row) + "\n")
+                sp.flush()
+                n_done += 1
+                n_windows += len(ts)
+                if n_done % 100 == 0:
+                    el = time.time() - t0
+                    log(f"{n_done} of {len(todo)} sounds, {n_windows} moments in {el:.0f} s ({n_windows / el:.2f} moments a second)")
     log(f"embedded {n_done} sounds ({n_windows} moments) in {time.time() - t0:.0f} s")
     # A run stopped between a sound's moments and its row wrote its moments
     # twice: keep each moment once, and only those of sounds with a row.
@@ -427,7 +490,7 @@ def main():
     ids = [i for i, _ in labels]
     S = E @ L.T
     log(f"laying out {len(rows)} sounds on the map")
-    Y = tsne(E.astype(np.float64)) if len(rows) > 50 else np.random.default_rng(1).random((len(rows), 2))
+    Y = layout(E)
     with open(os.path.join(out, "au_sounds.jsonl"), "w") as f:
         for k, r in enumerate(rows):
             heard = [ids[j] for j in np.argsort(-S[k])[:3]]

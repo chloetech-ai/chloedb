@@ -130,7 +130,7 @@ python3 -I tools/fetch.py commons ~/sounds/commons --files 300 --min-seconds 20
 target/release/chloedb-sound serve --local ./sound-data --server-bin ../chloedb-server/target/release/chloedb-server &amp;
 python3 -I tools/prepare.py --fsd50k ~/sounds/fsd50k --fma ~/sounds/fma --commons ~/sounds/commons --out ./sound-rows
 target/release/chloedb-sound load --rows ./sound-rows</pre>
-<p><code>serve --local DIR</code> starts a chloedb-server with its database in <code>DIR</code>, makes the tables and the labels (the server fetches CLAP, 600 MB, the first time a field names it), and lists the app as <code>sound</code>; open <code>http://127.0.0.1:7700</code> and go to <strong>Apps → Sound Explorer</strong>. <code>tools/prepare.py</code> decodes each sound with ffmpeg, writes its preview and waveform, sends each ten-second window to the server's CLAP (<code>POST /v1/embed</code> through <code>au_labels</code>' model, about two and a half windows a second on four cores), and writes the rows; it needs ffmpeg and numpy, and a run that stops goes on where it was. Give <code>serve</code> the rows with <code>--rows</code> and it loads them when the tables are empty, and plays the previews from their <code>audio/</code> folder (<code>--audio</code> for another).</p>
+<p><code>serve --local DIR</code> starts a chloedb-server with its database in <code>DIR</code>, makes the tables and the labels (the server fetches CLAP, 600 MB, the first time a field names it), and lists the app as <code>sound</code>; open <code>http://127.0.0.1:7700</code> and go to <strong>Apps → Sound Explorer</strong>. <code>tools/prepare.py</code> decodes each sound with ffmpeg, writes its preview and waveform, sends each ten-second window to the server's CLAP (<code>POST /v1/embed</code> through <code>au_labels</code>' model, about three windows a second on four cores with AVX-512), and writes the rows; it needs ffmpeg and numpy, and a run that stops goes on where it was. <code>--concurrency</code> sounds are made at once, and <code>--embed URL,URL,...</code> shares the windows among several servers with CLAP (each window to the one with the fewest at work). Of more than 4,000 sounds the map is a t-SNE of 4,000 of them, and each other sound is placed among the ten it sounds most like. Give <code>serve</code> the rows with <code>--rows</code> and it loads them when the tables are empty, and plays the previews from their <code>audio/</code> folder (<code>--audio</code> for another).</p>
 <p>The three sources, and what is kept of each:</p>
 <div class="doc-table"><table>
 <thead>
@@ -143,13 +143,13 @@ target/release/chloedb-sound load --rows ./sound-rows</pre>
 <tbody>
 <tr>
 <td><a href="https://zenodo.org/records/4060432">FSD50K</a></td>
-<td>Freesound clips labelled by hand with 200 classes of the AudioSet ontology; the evaluation set's, the same number of each class</td>
+<td>Freesound clips labelled by hand with 200 classes of the AudioSet ontology; the evaluation set's, the same number of each class, or with <code>--split both --clips 0</code> every clip of both sets (43,379 of 51,197 qualify)</td>
 <td>CC0, CC BY</td>
 </tr>
 <tr>
 <td><a href="https://github.com/mdeff/fma">Free Music Archive</a></td>
-<td>30-second clips of <code>fma_small</code>, with their genres</td>
-<td>CC BY, CC BY-SA, CC0, Free Art License (about 15% of its tracks)</td>
+<td>30-second clips of <code>fma_small</code>, or with <code>--set large --shards 0</code> of all of <code>fma_large</code> (9,918 of its 105,024 tracks qualify), with their genres</td>
+<td>CC BY, CC BY-SA, CC0, Free Art License (about one track in ten)</td>
 </tr>
 <tr>
 <td><a href="https://commons.wikimedia.org/wiki/Category:Sounds_by_type">Wikimedia Commons</a></td>
@@ -165,7 +165,7 @@ python3 -I tools/prepare.py ... --out ./sound-rows --strata http://coordinator:7
 chloedb-sound load --rows ./sound-rows --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot;
 chloedb-sound serve --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --token &quot;$SOUND_TOKEN&quot; --audio ./sound-rows/audio --listen 0.0.0.0:7870
 chloedb-server ... --app sound=http://sound-host:7870     # with CHLOEDB_APP_TOKEN=$SOUND_TOKEN</pre>
-<p>On Kubernetes, <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-sound/deploy/k8s.yaml"><code>deploy/k8s.yaml</code></a> runs it on one small node of its own (2 vCPUs, 4 GB): the server with CLAP, the app and a pod to work in, with the binaries, the model, the rows, the previews and the database on the node's own disk.</p>
+<p>On Kubernetes, <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-sound/deploy/k8s.yaml"><code>deploy/k8s.yaml</code></a> runs it on one small node of its own (2 vCPUs, 4 GB): the server with CLAP, the app and a pod to work in, with the binaries, the model, the rows, the previews and the database on the node's own disk. A bigger set is made on machines of their own and copied in: <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-sound/deploy/batch.yaml"><code>deploy/batch.yaml</code></a> runs a server with CLAP on each node of a temporary pool, and the first downloads the sounds, makes the rows with <code>--embed</code> over all of them and builds the database. The whole of FSD50K and <code>fma_large</code>'s clips that qualify come to about 53,000 sounds.</p>
 <p><code>--public</code> serves the page at <code>/</code> and its reads to anyone, without the token, within <code>--per-minute</code> requests a minute from one address (120 by default; the previews are not counted) and <code>--listens-per-minute</code> clips heard (6), and refuses calls from another site's pages. It serves no SQL: the page's <em>SQL</em> drawer shows the statements each answer ran.</p>
 <p>A server without CLAP (built without the <code>audio</code> feature, or without the model) still serves the app: searches by words are ranked by BM25 alone and say so, and the pages that hear words or clips answer with an error.</p>
 <h2 id="tables">Tables<a class="anchor" href="#tables" aria-label="Link to this section">#</a></h2>

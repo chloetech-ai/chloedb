@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Download the free sounds Sound Explorer is built from, licences checked.
 
-    python3 -I tools/fetch.py fsd50k DIR [--clips 2500]
-    python3 -I tools/fetch.py fma DIR [--shards 9]
+    python3 -I tools/fetch.py fsd50k DIR [--clips 2500] [--split eval|dev|both]
+    python3 -I tools/fetch.py fma DIR [--shards 9] [--set small|large]
     python3 -I tools/fetch.py commons DIR [--files 300] [--per-category 25] [--min-seconds 20]
 
 Each keeps only what may be shown on a public site and played as an
@@ -11,14 +11,18 @@ License (and the GFDL on Commons). Non-commercial (NC), no-derivatives
 (ND) and Sampling+ sounds are left out, so most of FMA is (about 85% of
 its tracks).
 
-  fsd50k   FSD50K's evaluation clips (Freesound, labelled by hand with 200
-           classes of the AudioSet ontology), CC0 and CC BY only, the same
-           number of each class as far as it goes, from the dataset's mirror
-           on Hugging Face (Fhrozen/FSD50k), with its metadata.
-  fma      The Free Music Archive's 30-second clips (fma_small, from
-           benjamin-paine/free-music-archive-small on Hugging Face), read
-           shard by shard (each about 500 MB, deleted once read), and the
-           genres' names from FMA's fma_metadata.zip (342 MB, deleted too).
+  fsd50k   FSD50K's clips (Freesound, labelled by hand with 200 classes of
+           the AudioSet ontology), CC0 and CC BY only, from the dataset's
+           mirror on Hugging Face (Fhrozen/FSD50k), with its metadata: the
+           evaluation set's by default (--split dev or both for the
+           development set's 40,966 too), the same number of each class as
+           far as --clips goes (0: every one).
+  fma      The Free Music Archive's 30-second clips (fma_small, or with
+           --set large all 105,024 of fma_large, from
+           benjamin-paine/free-music-archive-<set> on Hugging Face), read
+           shard by shard (each about 500 MB, deleted once read; --shards 0
+           for all), and the genres' names from FMA's fma_metadata.zip
+           (342 MB, deleted too).
   commons  Sounds of Wikimedia Commons under its sound categories, each
            file's page read for its licence, author, description, date and
            place, then the original downloaded. One request a second to the
@@ -40,6 +44,7 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -55,21 +60,60 @@ def log(*a):
     print("fetch:", *a, file=sys.stderr, flush=True)
 
 
+# Hugging Face allows an address so many file requests a window (3,000 in
+# five minutes) and says in each answer how many are left (`RateLimit:
+# "resolvers";r=2875;t=77`): every download waits for the next window when
+# few are left, or when it was answered 429.
+_gate = threading.Lock()
+_resume = [0.0]
+
+
+def _pause_for(headers, default):
+    m = re.search(r";r=(\d+);t=(\d+)", headers.get("ratelimit") or "")
+    if m and (int(m.group(1)) < 30 or default):
+        return int(m.group(2)) + 1
+    retry = headers.get("retry-after")
+    if default and retry and retry.isdigit():
+        return int(retry)
+    return default
+
+
+def _wait_gate():
+    while (left := _resume[0] - time.time()) > 0:
+        time.sleep(min(left, 5))
+
+
 def download(url, path, timeout=120, tries=4):
     """`url` into `path`, through a .part file; True when it is there."""
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return True
     err = None
-    for _ in range(tries):
+    n = 0
+    limited = 0
+    while n < tries:
+        _wait_gate()
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
             with urllib.request.urlopen(req, timeout=timeout) as r, open(path + ".part", "wb") as o:
+                if wait := _pause_for(r.headers, 0):
+                    with _gate:
+                        _resume[0] = max(_resume[0], time.time() + wait)
                 while chunk := r.read(1 << 20):
                     o.write(chunk)
             os.rename(path + ".part", path)
             return True
+        except urllib.error.HTTPError as e:
+            err = e
+            if e.code == 429 and limited < 30:
+                limited += 1
+                with _gate:
+                    _resume[0] = max(_resume[0], time.time() + _pause_for(e.headers, 60))
+                continue
+            n += 1
+            time.sleep(2)
         except Exception as e:  # noqa: BLE001 - a file that fails is skipped
             err = e
+            n += 1
             time.sleep(2)
     log("failed", url, err)
     return False
@@ -81,29 +125,35 @@ def fsd50k(a):
     d = a.dir
     os.makedirs(f"{d}/clips", exist_ok=True)
     base = f"{HF}/Fhrozen/FSD50k/resolve/main"
-    for f in ["metadata/eval_clips_info_FSD50K.json", "labels/eval.csv", "labels/vocabulary.csv", "metadata/class_info_FSD50K.json", "LICENSE-DATASET.md"]:
+    splits = ["eval", "dev"] if a.split == "both" else [a.split]
+    files = ["labels/vocabulary.csv", "metadata/class_info_FSD50K.json", "LICENSE-DATASET.md"]
+    for sp in splits:
+        files += [f"metadata/{sp}_clips_info_FSD50K.json", f"labels/{sp}.csv"]
+    for f in files:
         download(f"{base}/{f}", f"{d}/{os.path.basename(f)}")
-    info = json.load(open(f"{d}/eval_clips_info_FSD50K.json"))
     ok = ("publicdomain/zero", "licenses/by/")
     rows = []
-    for r in csv.DictReader(open(f"{d}/eval.csv")):
-        i = info.get(r["fname"])
-        if i and any(k in i["license"] for k in ok):
-            rows.append((r["fname"], r["labels"].split(",")))
+    for sp in splits:
+        info = json.load(open(f"{d}/{sp}_clips_info_FSD50K.json"))
+        for r in csv.DictReader(open(f"{d}/{sp}.csv")):
+            i = info.get(r["fname"])
+            if i and any(k in i["license"] for k in ok):
+                rows.append((sp, r["fname"], r["labels"].split(",")))
     random.seed(7)
     random.shuffle(rows)
     by = {}
-    for f, labels in rows:
-        by.setdefault(labels[0], []).append(f)
+    for sp, f, labels in rows:
+        by.setdefault(labels[0], []).append((sp, f))
+    want = a.clips or len(rows)
     pick = []
-    while len(pick) < a.clips and any(by.values()):
+    while len(pick) < want and any(by.values()):
         for leaf in sorted(by):
-            if by[leaf] and len(pick) < a.clips:
+            if by[leaf] and len(pick) < want:
                 pick.append(by[leaf].pop())
-    with cf.ThreadPoolExecutor(8) as ex:
-        got = sum(ex.map(lambda f: download(f"{base}/clips/eval/{f}.wav", f"{d}/clips/{f}.wav"), pick))
-    json.dump(pick, open(f"{d}/picked.json", "w"))
-    log(f"fsd50k: {got} clips of {len(pick)} picked, {len(by)} classes")
+    with cf.ThreadPoolExecutor(a.threads) as ex:
+        got = sum(ex.map(lambda p: download(f"{base}/clips/{p[0]}/{p[1]}.wav", f"{d}/clips/{p[1]}.wav"), pick))
+    json.dump([f for _, f in pick], open(f"{d}/picked.json", "w"))
+    log(f"fsd50k: {got} clips of {len(pick)} picked ({len(rows)} usable), {len(by)} classes")
 
 
 # --- FMA --------------------------------------------------------------------
@@ -131,24 +181,30 @@ def fma(a):
         z = f"{d}/fma_metadata.zip"
         if download("https://os.unil.cloud.switch.ch/fma/fma_metadata.zip", z, timeout=600):
             with zipfile.ZipFile(z) as zf:
-                name = next(n for n in zf.namelist() if n.endswith("genres.csv"))
+                name = next(n for n in zf.namelist() if os.path.basename(n) == "genres.csv")
                 g = {r["genre_id"]: r["title"] for r in csv.DictReader(io.TextIOWrapper(zf.open(name), "utf-8"))}
             json.dump(g, open(f"{d}/genres.json", "w"))
             os.remove(z)
     genres = json.load(open(f"{d}/genres.json")) if os.path.exists(f"{d}/genres.json") else {}
-    repo = "benjamin-paine/free-music-archive-small"
+    repo = f"benjamin-paine/free-music-archive-{a.set}"
     tree = json.load(urllib.request.urlopen(urllib.request.Request(f"https://huggingface.co/api/datasets/{repo}/tree/main/data", headers={"User-Agent": UA}), timeout=60))
-    shards = sorted(t["path"] for t in tree if t["path"].endswith(".parquet"))[: a.shards]
+    shards = sorted(t["path"] for t in tree if t["path"].endswith(".parquet"))
+    shards = shards[: a.shards] if a.shards else shards
     done = set()
     if os.path.exists(f"{d}/shards.done"):
         done = set(open(f"{d}/shards.done").read().split())
     kept = 0
-    with open(f"{d}/fma.jsonl", "a") as meta:
-        for s in shards:
-            if s in done:
-                continue
+    if os.path.exists(f"{d}/fma.jsonl"):
+        seen = {json.loads(l)["id"] for l in open(f"{d}/fma.jsonl")}
+    else:
+        seen = set()
+    todo = [s for s in shards if s not in done]
+    # The next shards download while one is read.
+    get = lambda s: (s, download(f"{HF}/{repo}/resolve/main/{s}", f"{d}/{os.path.basename(s)}", timeout=1800))
+    with cf.ThreadPoolExecutor(3) as ex, open(f"{d}/fma.jsonl", "a") as meta:
+        for s, ok in ex.map(get, todo):
             p = f"{d}/{os.path.basename(s)}"
-            if not download(f"{HF}/{repo}/resolve/main/{s}", p, timeout=1800):
+            if not ok:
                 continue
             pf = pq.ParquetFile(p)
             for g in range(pf.num_row_groups):
@@ -156,6 +212,9 @@ def fma(a):
                     if r.get("license") not in FMA_LIC:
                         continue
                     tid = os.path.splitext(os.path.basename(r["audio"]["path"]))[0]
+                    if tid in seen:
+                        continue
+                    seen.add(tid)
                     path = f"{d}/tracks/{tid}.mp3"
                     with open(path, "wb") as o:
                         o.write(r["audio"]["bytes"])
@@ -165,6 +224,7 @@ def fma(a):
                     r.update(id=tid, path=path, licence=lic, licence_url=url, released=str(r.get("released") or "")[:10])
                     meta.write(json.dumps(r, default=str) + "\n")
                     kept += 1
+            meta.flush()
             os.remove(p)
             with open(f"{d}/shards.done", "a") as o:
                 o.write(s + "\n")
@@ -344,10 +404,13 @@ def main():
     sub = ap.add_subparsers(dest="source", required=True)
     p = sub.add_parser("fsd50k")
     p.add_argument("dir")
-    p.add_argument("--clips", type=int, default=2500)
+    p.add_argument("--clips", type=int, default=2500, help="0 for every usable one")
+    p.add_argument("--split", choices=["eval", "dev", "both"], default="eval")
+    p.add_argument("--threads", type=int, default=8, help="clips downloaded at once")
     p = sub.add_parser("fma")
     p.add_argument("dir")
-    p.add_argument("--shards", type=int, default=9, help="of fma_small's 15 (each about 80 usable tracks)")
+    p.add_argument("--shards", type=int, default=9, help="of the set's (fma_small has 15, each about 80 usable tracks; fma_large 171); 0 for all")
+    p.add_argument("--set", choices=["small", "large"], default="small")
     p = sub.add_parser("commons")
     p.add_argument("dir")
     p.add_argument("--files", type=int, default=300)

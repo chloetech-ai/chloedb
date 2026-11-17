@@ -986,10 +986,12 @@ async function map(main, app, rest, alive) {
       for (let lon = -180; lon <= 180; lon += 30) { const [a, b] = pos({ x: (lon + 180) / 360, y: 0 }); const [, d] = pos({ x: (lon + 180) / 360, y: 1 }); ctx2.beginPath(); ctx2.moveTo(a, b); ctx2.lineTo(a, d); ctx2.stroke(); }
       for (let lat = -90; lat <= 90; lat += 30) { const [a, b] = pos({ x: 0, y: (90 - lat) / 180 }); const [c] = pos({ x: 1, y: (90 - lat) / 180 }); ctx2.beginPath(); ctx2.moveTo(a, b); ctx2.lineTo(c, b); ctx2.stroke(); }
     }
-    const r = (by === "place" ? 4 : 3) * devicePixelRatio * Math.min(2.2, Math.sqrt(scale));
+    // Smaller dots when there are many, so tens of thousands still show their shape.
+    const dense = Math.max(0.4, Math.min(1, Math.sqrt(8000 / Math.max(pts.length, 1))));
+    const r = (by === "place" ? 4 : 3) * devicePixelRatio * dense * Math.min(2.2, Math.sqrt(scale));
     const cols = {};
     for (const k of Object.keys(KIND)) cols[k] = cssVar(KCOLOR[k], canvas);
-    ctx2.globalAlpha = 0.8;
+    ctx2.globalAlpha = pts.length > 20000 ? 0.6 : 0.8;
     for (const p of pts) { const [x, y] = pos(p); if (x < -10 || y < -10 || x > W + 10 || y > H + 10) continue; ctx2.fillStyle = cols[p.kind] || "#888"; ctx2.beginPath(); ctx2.arc(x, y, r, 0, 7); ctx2.fill(); }
     ctx2.globalAlpha = 1;
     for (const p of [hover, picked].filter(Boolean)) { const [x, y] = pos(p); ctx2.strokeStyle = cssVar("--text", canvas); ctx2.lineWidth = 2 * devicePixelRatio; ctx2.beginPath(); ctx2.arc(x, y, r * 2, 0, 7); ctx2.stroke(); }
