@@ -280,9 +280,10 @@ a query touches table audit, which the key "netops" may not: it is limited to lo
 
 ## The Log explorer
 
-The command center (the server's address in a browser, here http://127.0.0.1:7700/#/explorer) has a **Log explorer** under Operate. Sign in with the on-call key and it lists the tables the key reads that hold log lines (a `TIMESTAMP` and a text column), and shows one of them:
+The command center (the server's address in a browser, here http://127.0.0.1:7700/#/explorer) has a **Log explorer** under Operate. Sign in with the on-call key and it lists the tables the key reads that hold log lines (any table with a `TIMESTAMP`), and shows one of them:
 
 - **a search box**: words and `"a phrase"` find the line's text (`ILIKE '%...%'` on a column with a substring index, `MATCH` on one without, or pick Substring or Words), `host:core-rtr-02` a column's value (`*` for any text), `attributes.iface:Gi0/1` a JSON path, `code>=4` a comparison, `level>=warn` the levels at or above warn as the table spells them, `-debug` leaves lines out, and `WHERE ...` takes a SQL condition as written;
+- **what a line is**, under the search box: its text (a log's message or body; in another table, its title), its time, and the row's other fields, each changeable. The other fields show beside the text when the table is not a log (it has no level or host column), on a line whose text is empty, or when **other fields** is on; when most of the newest lines leave the text empty and another column is full, the lines show that one and say so. A table with no text column (BGP updates, events) shows each row's fields, and a word in the search box finds a field's exact value;
 - **the time range**: the last 15 minutes, hour, day or week (`ts > now() - INTERVAL '15 minutes'`), or a window from and to;
 - **lines over time**: a count per minute (per 5 or 15 minutes, or 2 hours, over longer ranges) with errors and warnings apart, `time_bucket` grouped by the server; a click on a bar zooms into it;
 - **the lines**, newest first, followed live every 3 seconds (Pause stops it), and for a line clicked, the lines before and after it on the same host;
