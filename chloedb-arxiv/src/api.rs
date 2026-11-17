@@ -1182,15 +1182,35 @@ async fn make_issue(State(svc): State<Shared>, Path(id): Path<String>, body: Opt
     }
     svc.spend(cfg.papers.clamp(1, 30))?;
     let job = format!("j{}", crate::live::now() * 1000 + (t0.elapsed().as_nanos() % 1000) as i64);
-    svc.jobs.lock().unwrap_or_else(|e| e.into_inner()).insert(job.clone(), json!({"state": "running", "step": "starting", "feed": id}));
+    // The job's state: the writer's last step merged in (its phase, the
+    // paper it is on, the chosen papers once), and every step with its
+    // second, so a page that opens later shows the whole story.
+    let started = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    svc.jobs.lock().unwrap_or_else(|e| e.into_inner()).insert(job.clone(), json!({"state": "running", "phase": "start", "step": "starting", "feed": id, "name": cfg.name, "style": cfg.style, "started": started, "log": []}));
     let svc2 = svc.clone();
     let job2 = job.clone();
     tokio::spawn(async move {
         let trace = Trace::new();
         let c = Ctx { db: &svc2.db, g: &svc2.graph, trace: &trace };
-        let progress = |s: String| {
+        let progress = |ev: Value| {
             if let Some(j) = svc2.jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&job2) {
-                j["step"] = json!(s);
+                for k in ["i", "id", "title", "figure"] {
+                    if let Some(o) = j.as_object_mut() {
+                        o.remove(k);
+                    }
+                }
+                if let (Some(o), Some(e)) = (j.as_object_mut(), ev.as_object()) {
+                    for (k, v) in e {
+                        o.insert(k.clone(), v.clone());
+                    }
+                }
+                let line = json!({"t": t0.elapsed().as_secs_f64().round(), "phase": ev["phase"], "step": ev["step"], "i": ev["i"]});
+                if let Some(log) = j["log"].as_array_mut() {
+                    log.push(line);
+                    if log.len() > 120 {
+                        log.remove(0);
+                    }
+                }
             }
         };
         let until = if b.until.is_empty() { None } else { Some(b.until.as_str()) };
@@ -1199,10 +1219,21 @@ async fn make_issue(State(svc): State<Shared>, Path(id): Path<String>, body: Opt
         if jobs.len() > 200 {
             jobs.retain(|_, v| v["state"] == "running");
         }
-        let v = match got {
-            Ok(issue) => json!({"state": "done", "issue": issue["id"], "queries": trace.take()}),
-            Err(e) => json!({"state": "failed", "error": e, "queries": trace.take()}),
-        };
+        let mut v = jobs.remove(&job2).unwrap_or_else(|| json!({}));
+        v["took_s"] = json!(t0.elapsed().as_secs_f64().round());
+        v["queries"] = json!(trace.take());
+        match got {
+            Ok(issue) => {
+                v["state"] = json!("done");
+                v["phase"] = json!("done");
+                v["issue"] = issue["id"].clone();
+                v["vol"] = issue["vol"].clone();
+            }
+            Err(e) => {
+                v["state"] = json!("failed");
+                v["error"] = json!(e);
+            }
+        }
         jobs.insert(job2, v);
     });
     done(&trace, json!({"job": job}), t0)

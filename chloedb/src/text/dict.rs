@@ -386,6 +386,19 @@ impl Dict {
         out
     }
 
+    /// The terms within `edits` edits of `a` or of `b`, each once, with the
+    /// fewer edits of the two, in order: [`Self::fuzzy`] of both in one
+    /// walk ([`super::fuzzy::walk_either`]).
+    pub fn fuzzy_either(&self, a: &str, b: &str, edits: u8) -> Vec<(String, TermInfo, u8)> {
+        use super::fuzzy::Sorted;
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        let mut out = Vec::new();
+        super::fuzzy::walk_either(&a, &b, edits, &mut self.cursor(), |c, _, d| {
+            out.push((String::from_utf8_lossy(c.term().unwrap_or_default()).into_owned(), c.info(), d));
+        });
+        out
+    }
+
     /// [`Self::fuzzy`] by a test of every term, as Strata found them before
     /// the walk; for comparisons.
     pub fn fuzzy_scan(&self, term: &str, edits: u8) -> Vec<(String, TermInfo, u8)> {

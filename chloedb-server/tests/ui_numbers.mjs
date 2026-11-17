@@ -343,5 +343,67 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.match(operatorBehind(undefined, [v("0.3.6")], "Ready"), /older than 0\.3\.6/);
 }
 
+// The Log explorer: which column a line's text is, its fields beside it, and the search on a table with no text column.
+{
+  const lx = await import(new URL("views/explorer.js", app));
+  // HN's users: one text column, mostly empty. The table is not a log, so its lines show their fields.
+  const users = [{ name: "id", type: "keyword" }, { name: "stories", type: "int" }, { name: "first", type: "timestamp" }, { name: "last", type: "timestamp" }, { name: "about", type: "text" }, { name: "karma", type: "int" }, { name: "emb", type: "vector", dim: 8 }];
+  const u = lx.logColumns(users, { table: "hn_users", key: "id" });
+  assert.deepEqual([u.ts, u.msg, u.log, u.key, u.times, u.texts], ["first", "about", false, "id", ["first", "last"], ["about"]]);
+  const rows = Array.from({ length: 10 }, (_, i) => ({ id: "u" + i, stories: i, first: "2026-11-16T20:15:22.000Z", last: null, about: i < 2 ? "I build things" : "", karma: 5 }));
+  assert.deepEqual(lx.pickText(rows, u), { msg: "about", n: 10, empty: 8 }, "no fuller text column: the lines show their fields");
+  assert.deepEqual(lx.rowFields({ ...rows[3], emb: [0.1, 0.2] }, u), [["stories", "3"], ["karma", "5"]], "not the time, the text, the key, empty values or a vector");
+  assert.equal(lx.lineText(rows[3], u), "stories=3 karma=5");
+  assert.equal(lx.lineText(rows[0], u), "I build things");
+  // HN's stories: not a log, so a title says more in a line than a body (which most stories lack); a text made from another column (urlwords) comes last.
+  const stories = [{ name: "id", type: "int" }, { name: "title", type: "text", substring: true }, { name: "body", type: "text" }, { name: "url", type: "keyword", substring: true }, { name: "urlwords", type: "text", from: "url" }, { name: "author", type: "keyword" }, { name: "created", type: "timestamp" }];
+  const st = lx.logColumns(stories, { table: "hn_stories", key: "id" });
+  assert.deepEqual([st.ts, st.msg, st.texts], ["created", "title", ["title", "body", "url", "urlwords"]]);
+  assert.deepEqual(lx.searchSql("rust", st).conds, ["title ILIKE '%rust%'"]);
+  // The newest lines move it to a fuller column when it is empty in most of them.
+  const srows = Array.from({ length: 10 }, (_, i) => ({ id: i, title: i === 0 ? "Ask HN" : "", body: "words " + i, url: "https://x/" + i, created: "2026-11-16T20:00:00Z" }));
+  const d = lx.pickText(srows, st);
+  assert.deepEqual(d, { msg: "body", from: "title", n: 10, empty: 9 });
+  const st2 = lx.withText(st, d.msg);
+  assert.deepEqual([st2.msg, st2.substring, st2.indexed], ["body", false, true]);
+  assert.deepEqual(lx.searchSql("rust", st2).conds, ["MATCH(body, 'rust')"]);
+  assert.deepEqual(lx.pickText(srows.slice(0, 4).map((r) => ({ ...r, body: r.id === 1 ? r.body : "", url: null })), st), { msg: "title", n: 4, empty: 3 }, "none full in half the lines: it stays");
+  // A log: its level and host make it one, and its text is the body.
+  const syslog = [{ name: "ts", type: "timestamp" }, { name: "severity", type: "keyword" }, { name: "host", type: "keyword", substring: true }, { name: "service", type: "keyword" }, { name: "body", type: "text", substring: true }, { name: "attributes", type: "json" }];
+  const sy = lx.logColumns(syslog, { table: "logs_syslog" });
+  assert.deepEqual([sy.ts, sy.msg, sy.host, sy.sev, sy.log, sy.substring, sy.texts], ["ts", "body", "host", "severity", true, true, ["body"]], "the host is not a text to move to");
+  assert.deepEqual(lx.searchSql("Gi0/1 -debug", sy).conds, ["body ILIKE '%Gi0/1%'", "NOT (body ILIKE '%debug%')"]);
+  // BGP updates: a TIMESTAMP and no text column. Each line is its fields, and a word is a field's exact value.
+  const updates = [{ name: "id", type: "int" }, { name: "ts", type: "timestamp" }, { name: "collector", type: "keyword" }, { name: "peer_as", type: "int" }, { name: "prefix", type: "keyword" }, { name: "route", type: "keyword", indexed: false }, { name: "comms", type: "keyword", multi: true }];
+  const bu = lx.logColumns(updates, { table: "bb_updates", key: "id" });
+  assert.deepEqual([bu.ts, bu.msg, bu.log, bu.texts], ["ts", null, false, []]);
+  assert.deepEqual(lx.searchSql("rrc00", bu).conds, ["(collector = 'rrc00' OR prefix = 'rrc00')"]);
+  assert.deepEqual(lx.searchSql("13335", bu).conds, ["(id = 13335 OR collector = '13335' OR peer_as = 13335 OR prefix = '13335')"]);
+  assert.deepEqual(lx.searchSql("collector:rrc0*", bu).conds, ["collector LIKE 'rrc0%'"]);
+  assert.equal(lx.lineText({ id: 7, ts: "x", collector: "rrc00", peer_as: 3333, comms: ["3333:100"], route: "" }, bu), "collector=rrc00 peer_as=3333 comms=3333:100");
+  assert.equal(lx.pickText([{ id: 1 }], bu).msg, null);
+  // Backbone's alerts: an unindexed KEYWORD title is the text, searched by ILIKE (MATCH needs a text index), not the indexed subject.
+  const alerts = [{ name: "id", type: "keyword" }, { name: "severity", type: "keyword" }, { name: "subject", type: "keyword" }, { name: "title", type: "keyword", indexed: false }, { name: "detail", type: "keyword", indexed: false }, { name: "first_seen", type: "timestamp" }, { name: "last_seen", type: "timestamp" }];
+  const al = lx.logColumns(alerts, { table: "bb_alerts", key: "id" });
+  assert.deepEqual([al.msg, al.texts, al.sev, al.log], ["title", ["title", "subject", "detail"], "severity", true]);
+  assert.deepEqual(lx.searchSql("RPKI", al, "words").conds, ["title ILIKE '%RPKI%'"]);
+  // arXiv's issues: an unindexed TEXT is ranked after an indexed one, and a search of it reads it with ILIKE.
+  const issues = [{ name: "id", type: "keyword" }, { name: "since", type: "timestamp" }, { name: "made", type: "timestamp" }, { name: "title", type: "text" }, { name: "body", type: "text", indexed: false }];
+  const is = lx.logColumns(issues, { table: "ax_issues", key: "id" });
+  assert.deepEqual([is.msg, is.texts], ["title", ["title", "body"]]);
+  assert.deepEqual(lx.searchSql("graph body:graph", is).conds, ["MATCH(title, 'graph')", "body ILIKE '%graph%'"]);
+  assert.equal(lx.logColumns([{ name: "id", type: "keyword" }, { name: "about", type: "text" }]), null, "no TIMESTAMP: not in the explorer");
+  // Values on one line: whitespace folded, cut, arrays joined, times to the second.
+  assert.equal(lx.shortValue("a\n  b", "text"), "a b");
+  assert.equal(lx.shortValue("x".repeat(100), "keyword").length, 80);
+  assert.equal(lx.shortValue([1, 2, 3], "int"), "1,2,3");
+  assert.equal(lx.shortValue({ a: 1 }, "json"), '{"a":1}');
+  assert.equal(lx.shortValue("2026-11-16T20:15:22.123456Z", "timestamp"), "2026-11-16T20:15:22Z");
+  assert.deepEqual(lx.rowFields({ a: 1, b: 2, c: 3 }, { fields: [{ name: "a", type: "int" }, { name: "b", type: "int" }, { name: "c", type: "int" }] }, 2), [["a", "1"], ["b", "2"], ["…", "+1 more"]]);
+  // Patterns of field lines group by the fields' shape.
+  const g = lx.groupPatterns([{ ts: "2026-11-16T20:00:00Z", collector: "rrc00", peer_as: 3333 }, { ts: "2026-11-16T20:01:00Z", collector: "rrc01", peer_as: 174 }], (r) => lx.lineText(r, bu), "ts", null);
+  assert.deepEqual(g.map((x) => [x.pattern, x.n]), [["collector=rrc<n> peer_as=<n>", 2]]);
+}
+
 console.log("ok");
 process.exit(0);

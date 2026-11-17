@@ -159,11 +159,23 @@ impl TextFieldReader {
     /// the field's [`TermTable`] (built at the first), else of the
     /// dictionary ([`Dict::fuzzy`]).
     pub fn fuzzy_terms(&self, term: &str, edits: u8) -> Vec<(String, TermInfo, u8)> {
+        self.fuzzy_terms_of(term, None, edits)
+    }
+
+    /// [`Self::fuzzy_terms`] of `term` or of `other` too, each term once
+    /// with the fewer edits of the two, in one walk.
+    pub fn fuzzy_terms_of(&self, term: &str, other: Option<&str>, edits: u8) -> Vec<(String, TermInfo, u8)> {
         let Some(table) = self.term_table() else {
-            return self.dict.fuzzy(term, edits);
+            return match other {
+                Some(o) => self.dict.fuzzy_either(term, o, edits),
+                None => self.dict.fuzzy(term, edits),
+            };
         };
-        table
-            .fuzzy(term, edits)
+        let found = match other {
+            Some(o) => table.fuzzy_either(term, o, edits),
+            None => table.fuzzy(term, edits),
+        };
+        found
             .into_iter()
             .filter_map(|(ord, d)| {
                 let info = self.dict.info_at(ord as usize)?;
@@ -183,9 +195,15 @@ impl TextFieldReader {
     /// the segments and its distance, in order: a walk of each segment's
     /// [`TermTable`] ([`Self::fuzzy_terms`]).
     pub fn fuzzy_across(fields: &[&TextFieldReader], term: &str, edits: u8) -> Vec<(String, u64, u8)> {
+        Self::fuzzy_across_of(fields, term, None, edits)
+    }
+
+    /// [`Self::fuzzy_across`] of `term` or of `other` too, each term at the
+    /// fewer edits of the two ([`Self::fuzzy_terms_of`]).
+    pub fn fuzzy_across_of(fields: &[&TextFieldReader], term: &str, other: Option<&str>, edits: u8) -> Vec<(String, u64, u8)> {
         let mut found: std::collections::BTreeMap<String, (u64, u8)> = Default::default();
         for f in fields {
-            for (t, info, d) in f.fuzzy_terms(term, edits) {
+            for (t, info, d) in f.fuzzy_terms_of(term, other, edits) {
                 found.entry(t).or_insert((0, d)).0 += info.df as u64;
             }
         }

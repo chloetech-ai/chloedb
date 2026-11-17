@@ -94,6 +94,16 @@ impl TermTable {
         out
     }
 
+    /// The ranks of the terms within `edits` edits of `a` or of `b`, each
+    /// once, with the fewer edits of the two, in order: [`Self::fuzzy`] of
+    /// both in one walk ([`super::fuzzy::walk_either`]).
+    pub fn fuzzy_either(&self, a: &str, b: &str, edits: u8) -> Vec<(u32, u8)> {
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        let mut out = Vec::new();
+        super::fuzzy::walk_either(&a, &b, edits, &mut self.cursor(), |c, _, d| out.push((c.pos() as u32, d)));
+        out
+    }
+
     /// A cursor on the first term.
     pub fn cursor(&self) -> TableCursor<'_> {
         TableCursor { table: self, pos: 0 }

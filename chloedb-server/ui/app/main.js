@@ -4,7 +4,7 @@
 // palette (Ctrl+K), which finds views, actions and the fleet's shards,
 // copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
-import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, signInNeeded, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink, keyLabel, isIdle, IDLE_SLOW } from "./core.js";
+import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, signInNeeded, signedIn, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink, keyLabel, isIdle, IDLE_SLOW } from "./core.js";
 import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, pendingProposals, homeProblems, homeStatus, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight, isSandbox } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 import { loadApps, listApps, appIcon } from "./views/apps.js";
@@ -264,7 +264,9 @@ setWhereOf(() => ({ title: currentEntry?.title || null, table: current?.id === "
 const whoBtn = h("button", { class: "btn ghost sm who", title: "Who you are signed in as" }, icon("user"), h("span", {}, "…"));
 whoBtn.onclick = () => menu(whoBtn, [
   { label: "Use another key or token", icon: "access", onclick: askToken },
-  { label: "Sign out of this tab", icon: "unlock", onclick: () => { setToken(null); toast("Signed out: the key is forgotten for this tab"); } },
+  state.whoami?.signed_in
+    ? { label: `Sign out (${state.whoami.signed_in.email})`, icon: "unlock", onclick: () => signOut() }
+    : { label: "Sign out of this tab", icon: "unlock", onclick: () => { setToken(null); toast("Signed out: the key is forgotten for this tab"); } },
   "-",
   { label: "Manage API keys", icon: "lock", onclick: () => (location.hash = "#/access?tab=keys") },
   { label: "Keyboard shortcuts", icon: "keyboard", onclick: () => shortcuts() },
@@ -374,9 +376,10 @@ setInterval(() => { drawLive(); drawDown(); }, 1000);
 
 function drawWho() {
   const w = state.whoami;
-  whoBtn.querySelector("span").textContent = w ? `${w.name} · ${w.tables ? (w.preset || "tables") : w.scope}` : hasToken() ? "key refused" : "signed out";
+  const who = w?.signed_in?.email || w?.name;
+  whoBtn.querySelector("span").textContent = w ? `${who} · ${w.tables ? (w.preset || "tables") : w.scope}` : hasToken() ? "key refused" : "signed out";
   // A key limited to tables: its grants, which its widest scope alone would misstate.
-  whoBtn.title = w?.tables ? `${w.name}: limited to ${keyLabel(w)}` : w ? `${w.name}: ${w.scope} key` : "";
+  whoBtn.title = w?.tables ? `${w.name}: limited to ${keyLabel(w)}` : w?.signed_in ? `${who}, signed in with Google: ${w.scope}` : w ? `${w.name}: ${w.scope} key` : "";
 }
 /**
  * The crumb: the view's title (a view without a heading of its own), and
@@ -545,7 +548,48 @@ async function route() {
 addEventListener("hashchange", route);
 
 // ---------------------------------------------------------------- the key
+// Google sign-in, where this server (the hub, on a connection's page) lets
+// people in with it: Google's own button; the server checks Google's
+// token and keeps the session in a cookie this page cannot read, so no
+// key is pasted or held by the tab. The routes are the server's own, not
+// a connection's: signing in to the hub signs in to its connections.
+const signinPath = (p) => location.pathname.replace(/\/c\/[^/]+\/?.*$/, "").replace(/\/$/, "") + p;
+let gsiLoaded = null;
+const loadGsi = (src) => (gsiLoaded ||= new Promise((ok, no) => { const s = document.createElement("script"); s.src = src; s.async = true; s.onload = ok; s.onerror = () => { gsiLoaded = null; no(new Error("Google's sign-in script did not load")); }; document.head.append(s); }));
+async function googleButton(slot, m, said) {
+  let s = null;
+  try { const r = await fetch(signinPath("/v1/auth/google"), { headers: { "x-strata-client": "command-center" }, credentials: "same-origin" }); s = r.ok ? await r.json() : null; } catch { /* not answering: the key field is still there */ }
+  if (!s?.enabled) return;
+  const btn = h("div", { class: "gsi" });
+  clear(slot, h("p", { class: "dim", style: { margin: 0 } }, "Sign in with your Google account, if this server lets it in. Your session is kept in a cookie for this server, for 12 hours unused and a week at most."), btn, h("div", { class: "small muted", style: { margin: "4px 0 2px" } }, "or"));
+  try { await loadGsi(s.script); } catch (e) { clear(slot, h("p", { class: "small bad", style: { margin: 0 } }, e.message + ": use a key below.")); return; }
+  const g = window.google?.accounts?.id;
+  if (!g) return;
+  g.initialize({
+    client_id: s.client_id, nonce: s.nonce, ux_mode: "popup", auto_select: false, itp_support: true, use_fedcm_for_prompt: true,
+    callback: async (resp) => {
+      said.className = "small muted"; said.textContent = "Checking with this server…";
+      let r, j = null;
+      try {
+        r = await fetch(signinPath("/v1/auth/google"), { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-strata-client": "command-center" }, body: JSON.stringify({ credential: resp.credential }) });
+        j = await r.json().catch(() => null);
+      } catch { said.className = "small bad"; said.textContent = "The server did not answer: try again."; return; }
+      if (!r.ok) { said.className = "small bad"; said.textContent = j?.error || `The server refused this sign-in (HTTP ${r.status}).`; return; }
+      signedIn(); m.close(); refreshWho();
+      toast(`Signed in as ${j.signed_in?.email} (${j.scope})`, "ok");
+    },
+  });
+  const dark = document.documentElement.dataset.theme === "dark" || (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  g.renderButton(btn, { type: "standard", theme: dark ? "filled_black" : "outline", size: "large", text: "signin_with", shape: "pill", logo_alignment: "left", width: Math.min(320, slot.clientWidth || 320) });
+}
+async function signOut() {
+  try { await fetch(signinPath("/v1/auth/signout"), { method: "POST", credentials: "same-origin", headers: { "x-strata-client": "command-center" } }); } catch { /* the cookie goes with the page anyway */ }
+  try { window.google?.accounts?.id?.disableAutoSelect(); } catch { /* no script */ }
+  setToken(null); state.whoami = null; refreshWho();
+  toast("Signed out: your session is ended on this server", "ok");
+}
 function askToken() {
+  const google = h("div", { class: "gsi-slot" });
   const inp = h("input", { class: "input", type: "password", placeholder: "sk_… or the server's --token", autocomplete: "off", style: { width: "100%" } });
   const save = h("button", { class: "btn primary" }, "Use it");
   const r = parse();
@@ -555,10 +599,12 @@ function askToken() {
     title: shared ? "Sign in to see what was shared" : "Sign in to this server",
     body: [
       shared ? h("p", { style: { margin: 0 } }, "This link opens ", h("b", {}, what), ` on ${clusterName() || location.host}. A link never holds a key: use your own.`) : null,
+      google,
       h("p", { class: "dim", style: { margin: 0 } }, "Paste an API key (feed, read, write or admin) or the server's token. It is kept for this tab only, and sent as a bearer token."), inp],
     foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), save],
   });
   const said = h("div", { class: "small", role: "status", "aria-live": "polite" });
+  googleButton(google, m, said);
   // The key is asked about before it is kept: a key the server refuses is
   // said so here, and the dialog stays open.
   const ok = async () => {

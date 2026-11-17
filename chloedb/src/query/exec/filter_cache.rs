@@ -122,6 +122,18 @@ impl FilterCache {
         i.bytes = 0;
     }
 
+    /// Whether the cache keeps filter `filter` of the segment `readers`
+    /// read, without counting a time it was seen: a query that needs only
+    /// some of its documents, and finds them without making the whole set,
+    /// asks this first ([`super::Executor::first_like`]).
+    pub(super) fn holds(&self, readers: &Arc<SegmentReaders>, filter: &str) -> bool {
+        if self.limit == 0 {
+            return false;
+        }
+        let key = (Arc::as_ptr(readers) as usize, filter.to_string());
+        self.lock().kept.get(&key).is_some_and(|k| k.readers.upgrade().is_some_and(|r| Arc::ptr_eq(&r, readers)))
+    }
+
     /// The filter `filter` of the segment `readers` read, as kept; else
     /// whether to keep it now, counting this time it was seen unless query
     /// `query` saw it already.

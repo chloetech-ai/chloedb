@@ -46,24 +46,32 @@
 
 <header class="top">
   <a class="tb icon tb-back" id="tb-back" href="#/" hidden aria-label="Back"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></a>
-  <a class="brand" href="#/" title="Converge (g s)"><span class="mk" aria-hidden="true"></span><span class="bn">Converge</span></a>
-  <nav class="tb-nav" id="tb-nav" aria-label="Converge">
-    <a class="tb" href="#/converge" data-tab="board" title="The board of the project in focus (g s)">Board</a>
-    <a class="tb" href="#/converge" data-tab="projects" title="Pick a project">Projects</a>
-    <a class="tb" href="#/workbench" data-tab="workbench" title="Agents, terminals, review, debug, rules (g w)">Workbench</a>
-  </nav>
+  <a class="brand" href="#/" title="Converge: the pipeline of the project in focus (g s)"><span class="mk" aria-hidden="true"></span><span class="bn">Converge</span></a>
+  <a class="tb tb-proj" id="tb-proj" href="#/converge" hidden title="Switch project"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span id="tb-proj-n"></span><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5"/></svg></a>
   <span class="tb-title" id="tb-title">Converge</span>
   <nav class="crumbs" id="crumbs" aria-label="Where you are"></nav>
   <span class="sp"></span>
-  <nav class="vw-sw" id="vw-sw" aria-label="View"><a href="#/s" data-view-switch="simple" title="The board of requests: where each agent is, and what to do there">Simple</a><a href="#/workbench" data-view-switch="advanced" title="Today's Workbench: projects, Review, Debug, every agent's page">Advanced</a></nav>
-  <button class="search" id="search-btn" type="button" title="Search code, docs and decisions (/)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4"/></svg><span>Search code, docs, decisions</span><kbd class="kc">/</kbd></button>
-  <button class="tb icon tb-search" id="tb-search" type="button" aria-label="Search"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4"/></svg></button>
   <span class="prefix-ind" id="prefix-ind" hidden title="Prefix armed: press a key, ? for the list">C-b</span>
-  <button class="tb need" id="needs-btn" type="button" aria-expanded="false" aria-haspopup="dialog"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h5l1.5 2.5h5L16 13h5M5.5 5h13L21 13v6H3v-6z"/></svg><span class="n" id="needs-n" hidden>0</span><span class="tlb" id="needs-lb">Nothing needs you</span></button>
-  <button class="tb" id="agents-btn" type="button" aria-expanded="false" aria-haspopup="dialog" title="Agents (a)"><span class="avs" id="agents-avs"></span><span class="tlb" id="agents-lb">0 agents</span></button>
-  <button class="tb icon" id="more-btn" type="button" aria-expanded="false" aria-haspopup="menu" aria-label="More"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></button>
+  <button class="tb need" id="needs-btn" type="button" aria-expanded="false" aria-haspopup="dialog"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h5l1.5 2.5h5L16 13h5M5.5 5h13L21 13v6H3v-6z"/></svg><span class="tlb" id="needs-lb">Needs you</span><span class="n" id="needs-n" hidden>0</span></button>
+  <button class="tb icon" id="more-btn" type="button" aria-expanded="false" aria-haspopup="menu" aria-label="More: Metrics, Personas, Autopilot, Activity log, Workbench" title="More (Metrics, Personas, Autopilot, Activity log, Workbench)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></button>
   <span class="conn" id="conn" data-state="connecting" title="The live stream of changes"><span id="conn-text">connecting</span></span>
 </header>
+
+<!-- ⋯ › Workbench: Workbench's pages, out of Converge's navigation. The
+     shell's More menu draws these rows (goals/shell.js, drawMore); the
+     Simple view's rows keep its switch (goals/simple/switch.js). -->
+<template id="wb-links">
+  <a class="more-row" href="#/workbench" data-wb="home" data-view-switch="advanced"><svg class="i"><use href="#i-grid"/></svg><span>Workbench home<small>Projects, agents and the tools</small></span><kbd class="kc">g w</kbd></a>
+  <button class="more-row" type="button" data-wb="agents"><svg class="i"><use href="#i-user"/></svg><span>Agents<small>Every agent, by what it is doing</small></span><kbd class="kc">a</kbd></button>
+  <a class="more-row" href="#/more/terminals" data-wb="terminals"><svg class="i"><use href="#i-grid"/></svg><span>All terminals<small>Every running session side by side</small></span><kbd class="kc">g t</kbd></a>
+  <a class="more-row" href="#/p" data-wb="review"><svg class="i"><use href="#i-check"/></svg><span>Review and ship<small>A branch's change, its checks, the merge</small></span><kbd class="kc">g r</kbd></a>
+  <a class="more-row" href="#/debug" data-wb="debug"><svg class="i"><use href="#i-warn"/></svg><span>Debug<small>An agent's turn, a line of code, a failing test</small></span><kbd class="kc">g d</kbd></a>
+  <a class="more-row" href="#/harness" data-wb="harness"><svg class="i"><use href="#i-act"/></svg><span>Optimize the harness<small>Permissions, memory and versions</small></span><span></span></a>
+  <a class="more-row" href="#/more/rules" data-wb="rules"><svg class="i"><use href="#i-check"/></svg><span>Rules and grants<small>What agents are told and may do</small></span><span></span></a>
+  <a class="more-row" href="#/s" data-wb="simple" data-view-switch="simple"><svg class="i"><use href="#i-map"/></svg><span>Simple view<small>The board of requests</small></span><span></span></a>
+  <a class="more-row" href="#/s/new" data-wb="simple-new" data-view-switch="simple"><svg class="i"><use href="#i-plus"/></svg><span>New request<small>In the Simple view</small></span><span></span></a>
+  <a class="more-row" href="#/more" data-wb="more"><svg class="i"><use href="#i-book"/></svg><span>Everything else<small>Time, decisions, library, tests, keys, setup</small></span><span></span></a>
+</template>
 
 <div class="shell">
   <main>
@@ -140,12 +148,10 @@
 </div>
 
 <nav class="tabbar" id="tabbar" aria-label="Converge">
-  <a href="#/s" data-tab="simple" class="vw-s"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="5" height="16" rx="1.5"/><rect x="10" y="4" width="5" height="11" rx="1.5"/><rect x="17" y="4" width="4" height="7" rx="1.5"/></svg><span>Requests</span></a>
-  <a href="#/s/new" data-tab="new" class="vw-s"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New</span></a>
-  <a href="#/converge" data-tab="board" class="vw-a"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="4.5" height="15" rx="1"/><rect x="9.75" y="4.5" width="4.5" height="10" rx="1"/><rect x="16" y="4.5" width="4.5" height="6.5" rx="1"/></svg><span>Board</span></a>
+  <a href="#/converge" data-tab="home"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="4.5" height="15" rx="1"/><rect x="9.75" y="4.5" width="4.5" height="10" rx="1"/><rect x="16" y="4.5" width="4.5" height="6.5" rx="1"/></svg><span>Home</span></a>
   <a href="#/needs" data-tab="needs"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h5l1.5 2.5h5L16 13h5M5.5 5h13L21 13v6H3v-6z"/></svg><span>Needs you</span><b class="badge" id="tab-badge"></b></a>
-  <a href="#/converge" data-tab="projects" class="vw-a"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Projects</span></a>
-  <a href="#/workbench" data-tab="workbench"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 9.5l3 2.5-3 2.5M12.5 15H17"/></svg><span>Workbench</span></a>
+  <a href="#/converge" data-tab="personas"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="3.6"/><path d="M5 20c.8-3.6 3.6-5.6 7-5.6s6.2 2 7 5.6"/></svg><span>Personas</span></a>
+  <button type="button" data-tab="more" id="tab-more" aria-haspopup="menu" aria-expanded="false"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg><span>More</span></button>
 </nav>
 
 <div class="ov" id="ov" hidden></div>

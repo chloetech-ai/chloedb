@@ -11,6 +11,19 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **The command center's Log explorer showed lines with no text** on
+  tables that are not logs: it took a table's first text column as each
+  line's words, and on HN's `hn_users` that is `about`, empty for most
+  people, so the lines were only times. A line is now its text column (a
+  log's message; another table's title before its body), moved to a fuller
+  one when most of the newest lines leave it empty, with the row's other
+  fields beside it when the table is not a log (no level or host column)
+  or the text is empty. The text, the time column and the fields can be
+  changed under the search box, and stay per table. Tables with a
+  `TIMESTAMP` and no text column (BGP updates, events, metrics) are listed
+  too, their lines their fields, and a word searched in them is a field's
+  exact value; a text column with no index of its words (a title kept
+  unindexed) is searched with `ILIKE` rather than `MATCH`.
 - **The app engine's builds failed at once on Linux with `spawn E2BIG`**
   (0 model calls), on the operator's pods too: the forge's system prompt
   grew to 152 KB in 0.3.6, past Linux's limit of 128 KiB on one argument,
@@ -30,6 +43,52 @@ changes collect under "Unreleased".
 - A demo app, `chloedb-gh` ([docs](docs/chloedb/github.md)): every public
   GitHub event since 2011, 11.2 billion of them, on four 8 GB machines,
   at https://gh.chloetech.ai. It is on the `Demos` train.
+
+### Sign in with Google
+
+- **The command center takes a Google sign-in, from any browser, a
+  phone's too.** `--google-client-id ID --google-allow you@example.com=admin`
+  (an address, or `@domain` for a Google Workspace domain, each `read`,
+  `write` or `admin`) puts Google's button in the sign-in dialog. The server
+  checks Google's ID token itself (Google's published keys, the client,
+  the issuer, its time, the verified address, a nonce of the page's) and
+  makes the person a session: a key owned by their address, listed in
+  Access, set in a `__Host-` cookie the page's scripts cannot read, 12 hours
+  unused and 7 days at most, checked against the allow list on each request,
+  and refused by servers from before sessions. A change made with it needs
+  the page's own origin. No client secret is involved. On the hub, one
+  sign-in reaches every connection, and each cluster's audit log names the
+  person beside the hub's key (`person`). This touches the authentication
+  door.
+
+### Substring index
+
+`LIKE` and `ILIKE` on a field with `OPTIONS(substring = true)`, for short
+and common strings. The file format does not change. On 4.8 million Hacker
+News titles in four shards on one machine, the 40 queries of `chloedb-hn`'s
+evaluation went from 108 to 31 ms at the 99th percentile for their first 20
+rows and from 222 to 73 ms for their count, and from 500 to 46 ms and 719
+to 71 ms after the page cache was dropped, with the same answers
+(`chloedb/results/substring/costs.md`).
+
+- **`ILIKE` of one string is answered from the index alone**, as `LIKE` of
+  one is (`'%rust%'`, `'error%'`, `'%ssh2'`): the spellings it searches are
+  the matches, so no stored value is read for them. A pattern with `_` or
+  several strings still tests its candidates' values.
+- **The values a pattern tests are read in the table's order**, each block
+  of the doc store once, where each was read as the index found it, a
+  block a candidate.
+- **A `LIMIT` without an `ORDER BY`, on a condition that is one `LIKE` or
+  `ILIKE`, stops at its first rows**, the same rows as before: a segment's
+  values are scanned from its start where a few of its rows walked say the
+  first are near it, and its rows listed where they are not, as for a word
+  that came into use late in a table loaded in time order (`'%covid%'
+  LIMIT 20` took 64 ms a shard and takes 9).
+- **Whether a pattern's rows are listed or its values scanned is decided
+  in bytes of whole stored rows**, which a scan reads, measured anew on
+  Loghub's SSH log and on Hacker News titles: a field that is a small part
+  of its row (a title beside its link and counts) is listed from the index
+  for more rows than before, and one that is most of its row for fewer.
 
 ## 0.3.7
 
