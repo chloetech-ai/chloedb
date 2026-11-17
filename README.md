@@ -20,6 +20,14 @@ ORDER BY rrf(bm25(title, 'wireless controller'),        -- words
   DESC MAX 2 PER brand LIMIT 10;                        -- at most two per brand
 ```
 
+From Python, pass the query as text and let the table's embedded field turn it into the vector (`:query_vector` can also be any list of numbers or numpy array):
+
+```python
+db.query(sql, query_vector={"embed": "wireless controller"})
+```
+
+`{"embed": text}` is explained, with `{"vector_of": key}`, in the [Python guide](docs/chloedb/python.md).
+
 A cost-based planner decides, per segment and from exact statistics, how to run each part of that statement.
 
 ## Why ChloeDB
