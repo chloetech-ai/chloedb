@@ -3422,13 +3422,118 @@ actor, summary, finding?, persona?, run?, agent?, detail}`; `kind` is
 `GET /api/converge?repo=` adds `last_tick: {ts, summary, started,
 decisions}` (the last logged tick), `components` and `chloectx`.
 
+### Blocked on you, queued, and the real reason a check failed
+
+Some work only a person can do: publishing a package or a release,
+credentials or tokens, account or repository settings, an outside
+service, the owner's decision. Every repro and fix agent is told
+(`BLOCKED_HELP`) to write `.converge/blocked.json` in its worktree, one
+object `{kind: credentials|publish|account|external|decision, what,
+you_do}`, and stop; a plain line counts as the step. The scope call may
+add `blocked: {kind, what, you_do}` to its answer. Either way the finding
+gets `blocked: {kind, what, you_do, by, at}` (an unknown kind is
+`other`), `needs_you: "Blocked: <you_do>"`, an event `blocked` and a
+`decide` item; it keeps its stage, and the autopilot leaves it alone
+(no gate, no agent, no round) until `POST
+/api/converge/findings/:id/unblock {note?}` (your token only; 409 when it
+is not blocked): the file is removed, a running agent is steered with
+"The person did it: <you_do> (<note>). Carry on from where you stopped."
+(a finished repro agent is dropped, and the next tick starts another),
+an event `unblocked` by `you`, and the loop is kicked. `/api/needs` lists
+the "Blocked on you (<kind>): <you_do>" groups first, one group per kind
+and step (`blocked {kind, what, you_do}` on the item and on each of its
+`findings`); the metrics have
+`blocked: {total, by_kind, queued}`.
+
+A spawn refused for want of an agent slot (429) is not a need of yours:
+the finding gets `queued: "waiting for a free agent slot (...)"` and a
+`decide` item (`agent_slots`), and `needs_you` stays as it was; `queued`
+is cleared when its agent starts. When the develop check fails, the
+finding keeps `last_check: {problems[], agent_said, at, round}` (the fix
+agent's last message, two sentences), and the "N rounds without passing"
+that asks you names the first problem.
+
+### Talk to the card's agent
+
+`POST /api/converge/findings/:id/talk {text}` (your token only; 1 to
+8000 bytes) → `{message, agent, started}`. Who answers depends on the
+card (`talk_kind`):
+
+| card | running agent | none running |
+|---|---|---|
+| reproduce (also `cant_reproduce`) | its repro agent is steered | a repro agent starts, its task ending with your words; its old script is dropped, and a card that could not be reproduced is active again |
+| develop, verify, review | its fix agent is steered | the fix agent is started again (`restart_request`: the same name, worktree and branch, its session continued, the settings' allow and deny lists) with your words; else a new one on the finding's branch |
+| scope, prioritize | the scope agent is steered | a scope agent starts |
+| found, merged, parked, dismissed | the card agent is steered | a card agent starts |
+
+A repro or fix agent gets "The person who owns this project says, about
+this card: <text>"; a card or scope agent gets your words as they are.
+The card agent (`cvt-<id>`) and the scope agent (`cvs-<id>`) are
+read-only Workbench agents in the main checkout, without a worktree, in
+permission mode `default`, with the profile allow Read, Glob, Grep and
+deny Edit, Write, MultiEdit, NotebookEdit, Bash (read-only keeps its allow
+list as it is, so only the denies are written; Read, Glob and Grep need no
+rule in the working directory), on `settings.model`; their
+task is the finding (title, detail, stage, component, severity, kind,
+step, repro) and your words; the scope agent is also told the current
+plan and asked to end its answer with the whole revised plan as one JSON
+object (`{area, files, root_cause, acceptance, size}`) when your words
+change it. A chat agent of the other kind (the card moved from found to
+scope) is stopped when the new one starts. While a repro is being run
+(the gate is busy), talk on it answers 409.
+
+The finding keeps `talk_count`, `chat_agent` and `chat_kind` (and
+`chat_taken`, the time of the scope agent's last answer that was read).
+Each of your messages is a row of `cv_talk (id, finding, repo, ts, who:
+"you", text, agent, doc)`, its text your words exactly, and an activity
+item of kind `you` (`detail {text, stage, to, started}`). Talking to the
+fix agent in develop clears `needs_you` (so its next turn is checked
+again).
+
+`GET /api/converge/findings/:id/talk` → `{messages: [{id, ts, who, text,
+agent}], agent: {id, name, state, doing, kind} | null}`: your messages,
+and the replies (each `Stop` event's `last_assistant_message`) since
+your first message of every agent your messages went to, the card's chat
+agent and its repro or fix agent, by time; `who` of a reply is the
+agent's name. `agent` is the one your next words go to. Reading it (and
+each tick) reads the scope agent's latest answer: a complete plan in it
+(the last JSON object, its size S, M or L, its acceptance the old one
+when it gives none) becomes the finding's scope, its door is checked and
+it is scored again (event `scope_talk`).
+
+### Bulk, steps and run summaries
+
+`POST /api/converge/findings/bulk {repo, ids: [1..500], verb, reason?}`
+(your token only) → `{done: [ids], failed: [{id, error}]}` for
+`reproduce`, `dismiss` (`reason` required: 400 before anything is done),
+`park`, `start` and `pin`, each as its own verb does it; an id of
+another repository fails; the loop is kicked once after `reproduce` or
+`start`.
+
+`GET /api/converge?repo=` adds `steps: [{step, stages[], count, moving,
+blocked, queued}]` for the five steps of the pipeline (`problems`: found;
+`reproducing`: reproduce; `ready`: scope, prioritize; `building`:
+develop, verify; `merge`: review), counting active findings: `moving`
+those with a gate running or an agent in its turn (not blocked), and
+`merged_week` (findings that reached merged in the last seven days).
+
+`GET /api/converge/runs/:id` adds, once an explore run ended, `summary:
+{found, new, known, findings: [{id, title, new, dup_of}]}`: the findings
+the run made; a finding is known when it was merged into an open one, or
+(not checked yet) an older open finding of another run says the same.
+
 ### Tests
 
 `converge_an_ask_becomes_a_card_in_reproduce_and_a_card_by_hand_can_be_picked`,
 `converge_generates_personas_from_the_codebase_and_logs_the_autopilots_decisions`,
-`converge_a_persona_plays_with_its_own_memory_only_when_asked`, and the
-timeline's checks in `converge_takes_a_finding_from_a_persona_to_a_merged_fix`;
+`converge_a_persona_plays_with_its_own_memory_only_when_asked`,
+`converge_talk_reaches_the_cards_agent_at_every_step` (and bulk verbs),
+`converge_blocked_on_you_stops_the_autopilot_and_a_full_slot_queues`, and the
+timeline's, the run summary's, the steps' and `merged_week`'s checks in
+`converge_takes_a_finding_from_a_persona_to_a_merged_fix`;
 the fake runner has `card` and `personas` cases and notes each call's
-ChloeCtx environment. Unit tests in converge: components, log kinds, when
-a tick is logged, asks, generated personas, the runner's arguments with
-and without memory, and the version check.
+ChloeCtx environment, and its `scope` answers `blocked` for a title with
+PUBLISH. Unit tests in converge: components, log kinds, when a tick is
+logged, asks, generated personas, the runner's arguments with and without
+memory, the version check, blocked files, who answers talk, a scope
+agent's plan, the steps and a run's summary.

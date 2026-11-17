@@ -68,7 +68,7 @@ pub async fn call(svc: &Arc<Service>, name: &str, method: reqwest::Method, path:
     let mut h = axum::http::HeaderMap::new();
     h.insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static("application/json"));
     let b = body.map(|b| reqwest::Body::from(b.to_string())).unwrap_or_else(|| reqwest::Body::from(""));
-    let r = svc.hub.forward(name, method, path, &h, b, k.as_ref()).await?;
+    let r = svc.hub.forward(name, method, path, &h, b, k.as_ref(), None).await?;
     let status = r.status().as_u16();
     let raw = axum::body::to_bytes(r.into_body(), 16 << 20).await.map_err(|e| ApiError { code: None, status: 502, message: format!("{name}'s answer: {e}") })?;
     let j: Json = serde_json::from_slice(&raw).unwrap_or_else(|_| json!({"error": String::from_utf8_lossy(&raw).chars().take(300).collect::<String>()}));

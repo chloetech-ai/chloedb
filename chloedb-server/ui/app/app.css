@@ -3720,6 +3720,12 @@ pre.code.diff > .del { background: color-mix(in srgb, var(--crit) 14%, transpare
 .lx-host { flex: none; width: 14ch; overflow: hidden; text-overflow: ellipsis; color: var(--s7); }
 .lx-msg { white-space: pre-wrap; word-break: break-word; min-width: 0; }
 .lx-msg mark { background: var(--warn-soft); color: inherit; border-radius: 2px; box-shadow: 0 0 0 1px var(--s4); }
+.lx-key { color: var(--s7); }
+.lx-kvs { color: var(--text-2); }
+.lx-kv { display: inline-block; max-width: 100%; vertical-align: top; }
+.lx-k { color: var(--muted); }
+.lx-pick { gap: 6px 14px; flex-wrap: wrap; align-items: center; margin-bottom: 4px; color: var(--text-2); }
+.lx-pick .row { gap: 6px; }
 .lx-foot { padding: 8px 12px; border-top: 1px solid var(--line); }
 .lx-chipbar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .lx-pats td { vertical-align: top; }

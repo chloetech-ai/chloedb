@@ -1,0 +1,121 @@
+# The Backbone explorer on ChloeDB in a Kubernetes cluster, on one node of
+# its own (16 GB; labelled and tainted chloedb/pool=backbone):
+#   backbone-db    one chloedb-server; its database on the node's own SSD
+#                  (hostPath), checkpoints in /data/backup on the same disk
+#                  (deploy/backup.yaml copies the newest off the node)
+#   backbone-feed  fetches the public sources, loads them, then reads RIPE
+#                  RIS's updates (the archive after the newest row kept, then
+#                  RIS Live) and polls RIPE Atlas and IODA; it stops after a
+#                  day and starts again with the day's RPKI, origins and names
+#   backbone-app   the app: the page, its API and the alert rules, public
+#                  (https://backbone.chloetech.ai through the web proxy)
+# Secrets: backbone-admin (token: the server's token), e2e-admin (token:
+# what the command center's app proxy sends). The binary is put in
+# /mnt/backbone/work/bin on the node through the pod backbone-work
+# (kubectl cp, then rollout restart).
+apiVersion: v1
+kind: Service
+metadata: {name: backbone-db, namespace: strata}
+spec:
+  selector: {app: backbone-db}
+  ports: [{name: http, port: 7700, targetPort: 7700}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: backbone-app, namespace: strata}
+spec:
+  selector: {app: backbone-app}
+  ports: [{name: http, port: 7890, targetPort: 7890}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: backbone-db, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: backbone-db}}
+  template:
+    metadata: {labels: {app: backbone-db}}
+    spec:
+      nodeSelector: {chloedb/pool: backbone}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: backbone, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:baab31323377bade0d2fe8963ed4d1d999c737430281de860e8147e16a8081b7
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/backbone.chloedb --listen 0.0.0.0:7700 --grpc off --backup-dir /data/backup"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: backbone-admin, key: token}}}
+        ports: [{containerPort: 7700}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # A limit, so the server sizes its memory budgets from it and leaves
+        # the feed (about 4 GB: RPKI and yesterday's origins as prefix maps)
+        # room beside it.
+        resources: {requests: {cpu: "1500m", memory: 4Gi}, limits: {memory: 9Gi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/backbone/db, type: DirectoryOrCreate}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: backbone-feed, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: backbone-feed}}
+  template:
+    metadata: {labels: {app: backbone-feed}}
+    spec:
+      nodeSelector: {chloedb/pool: backbone}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: backbone, effect: NoSchedule}]
+      containers:
+      - name: feed
+        image: ubuntu:24.04
+        command: ["sh", "-c", "set -e; B=/work/bin/chloedb-backbone; D=/work/data; $B fetch --dir $D; $B load --dir $D; exec $B feed --dir $D --collectors rrc00 --resume --from 6h --live --hours 24"]
+        env:
+        - {name: CHLOEDB_URL, value: "http://backbone-db.strata.svc:7700"}
+        - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: backbone-admin, key: token}}}
+        - {name: RUST_LOG, value: chloedb_backbone=info}
+        resources: {requests: {cpu: "1", memory: 3Gi}, limits: {memory: 6Gi}}
+        volumeMounts: [{name: work, mountPath: /work}]
+      volumes: [{name: work, hostPath: {path: /mnt/backbone/work, type: Directory}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: backbone-app, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: backbone-app}}
+  template:
+    metadata: {labels: {app: backbone-app}}
+    spec:
+      nodeSelector: {chloedb/pool: backbone}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: backbone, effect: NoSchedule}]
+      containers:
+      - name: app
+        image: ubuntu:24.04
+        command: ["/work/bin/chloedb-backbone", "serve", "--strata", "http://backbone-db.strata.svc:7700", "--listen", "0.0.0.0:7890", "--public", "--per-minute", "600"]
+        env:
+        - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: backbone-admin, key: token}}}
+        - {name: CHLOEDB_BACKBONE_TOKEN, valueFrom: {secretKeyRef: {name: e2e-admin, key: token}}}
+        - {name: RUST_LOG, value: chloedb_backbone=info}
+        ports: [{containerPort: 7890}]
+        readinessProbe: {httpGet: {path: /healthz, port: 7890}, periodSeconds: 5}
+        resources: {requests: {cpu: 500m, memory: 512Mi}, limits: {memory: 1Gi}}
+        volumeMounts: [{name: work, mountPath: /work}]
+      volumes: [{name: work, hostPath: {path: /mnt/backbone/work, type: Directory}}]
+---
+# A shell on the node for putting the binary in place (kubectl cp, exec).
+apiVersion: v1
+kind: Pod
+metadata: {name: backbone-work, namespace: strata, labels: {app: backbone-work}}
+spec:
+  nodeSelector: {chloedb/pool: backbone}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: backbone, effect: NoSchedule}]
+  containers:
+  - name: work
+    image: ubuntu:24.04
+    command: ["sleep", "infinity"]
+    resources: {requests: {cpu: 100m, memory: 128Mi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/backbone/work, type: DirectoryOrCreate}}]

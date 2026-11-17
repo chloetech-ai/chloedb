@@ -201,6 +201,10 @@ pub struct Options {
     pub connectors: bool,
     /// Who this hub's calls to other clusters say they come from.
     pub hub_device: Option<String>,
+    /// The OAuth client of Google sign-in for the command center, and who
+    /// may sign in ([`crate::signin`]).
+    pub google_client_id: Option<String>,
+    pub google_allow: Vec<String>,
     /// The alert rules' file (default rules, in memory, without it).
     pub alerts: Option<PathBuf>,
     /// A coordinator's Contain rules' file (in memory without it): fleet.
@@ -613,6 +617,11 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             }
             Err(e) => tracing::warn!(secret = %format!("{}/{secret}", l.namespace), error = %e, "the hub's book is kept in memory only: a restart forgets the connections"),
         }
+    }
+    match (&o.google_client_id, o.google_allow.is_empty()) {
+        (Some(id), _) => svc.signin = Some(Arc::new(crate::signin::Google::new(id, &o.google_allow)?)),
+        (None, false) => return Err("--google-allow needs --google-client-id, the OAuth client people sign in with".into()),
+        (None, true) => {}
     }
     let connector_secrets = o.connector_secrets.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::connectors::Connectors::file_of));
     if let Some(file) = connector_secrets {

@@ -96,6 +96,11 @@ fn fold(s: &str) -> String {
         .collect()
 }
 
+/// The ids `sql` answers, in its order.
+fn listed(db: &Db, sql: &str) -> Vec<String> {
+    db.query(sql, &Params::new()).unwrap_or_else(|e| panic!("{sql}: {e}")).rows.iter().map(|r| r[0].as_str().unwrap().to_string()).collect()
+}
+
 fn ids(db: &Db, sql: &str) -> Vec<String> {
     let mut out: Vec<String> = db.query(sql, &Params::new()).unwrap_or_else(|e| panic!("{sql}: {e}")).rows.iter().map(|r| r[0].as_str().unwrap().to_string()).collect();
     out.sort();
@@ -137,6 +142,16 @@ fn check(db: &Db, docs: &[Document], at: &str) {
                 // rows, and the rows in an order.
                 let sql = format!("SELECT id FROM logs WHERE n >= 40 AND n < 48 AND {field} {op} '{quoted}' ORDER BY n DESC LIMIT 100000");
                 assert_eq!(ids(db, &sql), want(&|d| holds(&d[col], pattern, ci, negated) && (40..=47).contains(&d[3].as_i64().unwrap())), "{at}: {sql}");
+            }
+            // A LIMIT without an ORDER BY stops at the first rows the
+            // whole answer lists, which a condition beside the pattern
+            // makes in full.
+            for (op, _, _) in [("LIKE", false, false), ("ILIKE", true, false)] {
+                let all = listed(db, &format!("SELECT id FROM logs WHERE {field} {op} '{quoted}' AND n >= 0 LIMIT 100000"));
+                for (limit, offset) in [(1, 0), (3, 0), (2, 3), (40, 0)] {
+                    let sql = format!("SELECT id FROM logs WHERE {field} {op} '{quoted}' LIMIT {limit} OFFSET {offset}");
+                    assert_eq!(listed(db, &sql), all.iter().skip(offset).take(limit).cloned().collect::<Vec<_>>(), "{at}: {sql}");
+                }
             }
             let sql = format!("SELECT count(*) FROM logs WHERE {field} LIKE '{quoted}'");
             let n = db.query(&sql, &Params::new()).unwrap().rows[0][0].as_i64().unwrap();
