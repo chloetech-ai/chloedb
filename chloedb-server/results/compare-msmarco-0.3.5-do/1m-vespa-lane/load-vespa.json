@@ -1,0 +1,14 @@
+{
+  "batch": 500,
+  "clients": 8,
+  "collection": "msmarco-1000k",
+  "docs": 1000000,
+  "engine": "vespa",
+  "ingest_s": 1394.890441501,
+  "json_bytes": 11808590408,
+  "merge_s": 2e-7,
+  "refresh_s": 5.88e-7,
+  "searchable_docs": 1000000,
+  "setup_s": 1.020887422,
+  "total_s": 1394.890464777
+}

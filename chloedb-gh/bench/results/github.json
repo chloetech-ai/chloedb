@@ -1,0 +1,5142 @@
+{
+ "self-hosted photo and video backup like google photos": {
+  "total": 0,
+  "ms": 615,
+  "top": []
+ },
+ "terminal file manager": {
+  "total": 1659,
+  "ms": 2731,
+  "top": [
+   {
+    "id": 65616765,
+    "name": "gokcehan/lf",
+    "stars": 9599
+   },
+   {
+    "id": 66150122,
+    "name": "jarun/nnn",
+    "stars": 22121
+   },
+   {
+    "id": 774468912,
+    "name": "yorukot/superfile",
+    "stars": 24093
+   },
+   {
+    "id": 436414970,
+    "name": "antonmedv/walk",
+    "stars": 3651
+   },
+   {
+    "id": 663900193,
+    "name": "sxyazi/yazi",
+    "stars": 43435
+   },
+   {
+    "id": 140782188,
+    "name": "kamiyaa/joshuto",
+    "stars": 3745
+   },
+   {
+    "id": 153698336,
+    "name": "dylanaraps/fff",
+    "stars": 4184
+   },
+   {
+    "id": 356883757,
+    "name": "mistakenelf/fm",
+    "stars": 636
+   },
+   {
+    "id": 763068884,
+    "name": "mikavilpas/yazi.nvim",
+    "stars": 1895
+   },
+   {
+    "id": 1177113373,
+    "name": "elio-fm/elio",
+    "stars": 915
+   }
+  ]
+ },
+ "fast grep alternative that respects gitignore": {
+  "total": 0,
+  "ms": 2184,
+  "top": []
+ },
+ "cat clone with syntax highlighting": {
+  "total": 8,
+  "ms": 2976,
+  "top": [
+   {
+    "id": 453458903,
+    "name": "sunilhari/gat",
+    "stars": 1
+   },
+   {
+    "id": 374025522,
+    "name": "pscedu/singularity-bat",
+    "stars": 1
+   },
+   {
+    "id": 316245789,
+    "name": "purveshpatel511/batwing",
+    "stars": 1
+   },
+   {
+    "id": 1228896716,
+    "name": "codedeviate/batty",
+    "stars": 2
+   },
+   {
+    "id": 767149697,
+    "name": "pscedu/apptainer-bat",
+    "stars": 0
+   },
+   {
+    "id": 759869380,
+    "name": "unix-terminal-setup/bat-setup",
+    "stars": 0
+   },
+   {
+    "id": 1300892707,
+    "name": "MohammedSaudAlsahli/mark",
+    "stars": 0
+   },
+   {
+    "id": 969763684,
+    "name": "typovrak/nixos-bat",
+    "stars": 1
+   }
+  ]
+ },
+ "find files faster than find": {
+  "total": 57,
+  "ms": 2748,
+  "top": [
+   {
+    "id": 734122009,
+    "name": "sweetbbak/find-suid",
+    "stars": 6
+   },
+   {
+    "id": 1188440680,
+    "name": "momokun7/xgrep",
+    "stars": 22
+   },
+   {
+    "id": 134974113,
+    "name": "IdeaLaboratory/FileFinder",
+    "stars": 2
+   },
+   {
+    "id": 276634344,
+    "name": "breakthatbass/lookfor",
+    "stars": 2
+   },
+   {
+    "id": 683850727,
+    "name": "ItsNotMatt/File-Finder",
+    "stars": 0
+   },
+   {
+    "id": 1289908225,
+    "name": "ElementalistConquer/Everything-Search-Pro-Desktop-Edition-Setup-Guide",
+    "stars": 5
+   },
+   {
+    "id": 202659478,
+    "name": "selfup/filesizefinder",
+    "stars": 0
+   },
+   {
+    "id": 1352753867,
+    "name": "telebroad/fastfind",
+    "stars": 0
+   },
+   {
+    "id": 1162101314,
+    "name": "ripkitten-co/filehound",
+    "stars": 0
+   },
+   {
+    "id": 1309285095,
+    "name": "Marvel112233/ProFind-for-Mac",
+    "stars": 0
+   }
+  ]
+ },
+ "fuzzy finder for the command line": {
+  "total": 10,
+  "ms": 2327,
+  "top": [
+   {
+    "id": 37134132,
+    "name": "hugows/hf",
+    "stars": 335
+   },
+   {
+    "id": 201649159,
+    "name": "ianchesal/nord-fzf",
+    "stars": 35
+   },
+   {
+    "id": 449087646,
+    "name": "terror/fzf.py",
+    "stars": 1
+   },
+   {
+    "id": 1322310015,
+    "name": "ocx-contrib/mirror-fzf",
+    "stars": 0
+   },
+   {
+    "id": 150983637,
+    "name": "carroarmato0/fzf-carroarmato0",
+    "stars": 0
+   },
+   {
+    "id": 40330771,
+    "name": "BlakeWilliams/sultan",
+    "stars": 0
+   },
+   {
+    "id": 1242038563,
+    "name": "TopherBot/fuzzy-finder",
+    "stars": 0
+   },
+   {
+    "id": 1164245687,
+    "name": "AMassil/twi-cli",
+    "stars": 1
+   },
+   {
+    "id": 191672548,
+    "name": "klonnet23/helloy-word",
+    "stars": 92
+   },
+   {
+    "id": 1040715007,
+    "name": "Banh-Canh/okada",
+    "stars": 1
+   }
+  ]
+ },
+ "smarter cd command that learns your habits": {
+  "total": 0,
+  "ms": 2099,
+  "top": []
+ },
+ "terminal ui for git": {
+  "total": 266,
+  "ms": 2745,
+  "top": [
+   {
+    "id": 134017286,
+    "name": "jesseduffield/lazygit",
+    "stars": 83921
+   },
+   {
+    "id": 247725846,
+    "name": "gitui-org/gitui",
+    "stars": 22664
+   },
+   {
+    "id": 1113326957,
+    "name": "hosenur/portal",
+    "stars": 817
+   },
+   {
+    "id": 1020225167,
+    "name": "cruzyjapan/Gemini-CLI-UI",
+    "stars": 687
+   },
+   {
+    "id": 1260810887,
+    "name": "simoarpe/ziggity",
+    "stars": 386
+   },
+   {
+    "id": 198479074,
+    "name": "hugit-project/hugit",
+    "stars": 72
+   },
+   {
+    "id": 1236472889,
+    "name": "Ataraxy-Labs/lazydiff",
+    "stars": 164
+   },
+   {
+    "id": 1227505419,
+    "name": "NayJi7/gitoui",
+    "stars": 144
+   },
+   {
+    "id": 1180183116,
+    "name": "hjr265/gittop",
+    "stars": 161
+   },
+   {
+    "id": 1073690115,
+    "name": "gohyuhan/gitti",
+    "stars": 51
+   }
+  ]
+ },
+ "terminal ui for docker": {
+  "total": 156,
+  "ms": 2497,
+  "top": [
+   {
+    "id": 124775772,
+    "name": "qfdk/EasyDockerWeb",
+    "stars": 421
+   },
+   {
+    "id": 1005531634,
+    "name": "andreybleme/lazycontainer",
+    "stars": 371
+   },
+   {
+    "id": 1167301128,
+    "name": "pivovarit/tdocker",
+    "stars": 91
+   },
+   {
+    "id": 973129894,
+    "name": "log-forge/logforge",
+    "stars": 301
+   },
+   {
+    "id": 713243825,
+    "name": "NatLee/django-docker-gui",
+    "stars": 11
+   },
+   {
+    "id": 976664437,
+    "name": "Eldara-Tech/swarmcli",
+    "stars": 24
+   },
+   {
+    "id": 334514629,
+    "name": "MahmoudAlyy/docker-django-ui",
+    "stars": 5
+   },
+   {
+    "id": 1437374299,
+    "name": "protonspy/harness-for-rea",
+    "stars": 28
+   },
+   {
+    "id": 785731200,
+    "name": "phoenixthrush/AniWorld-Downloader",
+    "stars": 370
+   },
+   {
+    "id": 1357496181,
+    "name": "leodeim/colimui",
+    "stars": 4
+   }
+  ]
+ },
+ "kubernetes terminal ui": {
+  "total": 101,
+  "ms": 2586,
+  "top": [
+   {
+    "id": 1359950131,
+    "name": "vvrnv/argo9s",
+    "stars": 146
+   },
+   {
+    "id": 645923439,
+    "name": "galasa-dev/webui",
+    "stars": 3
+   },
+   {
+    "id": 1069229633,
+    "name": "berge472/lazyk8s",
+    "stars": 43
+   },
+   {
+    "id": 1207133834,
+    "name": "huseyinbabal/portkube",
+    "stars": 31
+   },
+   {
+    "id": 1429705387,
+    "name": "dynatrace-oss/dtui",
+    "stars": 5
+   },
+   {
+    "id": 600782894,
+    "name": "night-crawler/kgv",
+    "stars": 11
+   },
+   {
+    "id": 996906116,
+    "name": "nlamirault/g1c",
+    "stars": 41
+   },
+   {
+    "id": 1016601872,
+    "name": "codechamp1/certlens",
+    "stars": 7
+   },
+   {
+    "id": 254921259,
+    "name": "vs4vijay/lazykubectl",
+    "stars": 5
+   },
+   {
+    "id": 210119239,
+    "name": "panos--/kwatch",
+    "stars": 3
+   }
+  ]
+ },
+ "cross-shell customizable prompt": {
+  "total": 5,
+  "ms": 2435,
+  "top": [
+   {
+    "id": 140200404,
+    "name": "reujab/silver",
+    "stars": 511
+   },
+   {
+    "id": 96597771,
+    "name": "reujab/bronze",
+    "stars": 51
+   },
+   {
+    "id": 276099087,
+    "name": "lucat1/prompt",
+    "stars": 1
+   },
+   {
+    "id": 1226465031,
+    "name": "pld-linux/starship",
+    "stars": 0
+   },
+   {
+    "id": 1065839559,
+    "name": "ZulfiFazhar/starship",
+    "stars": 0
+   }
+  ]
+ },
+ "gpu accelerated terminal emulator": {
+  "total": 134,
+  "ms": 2550,
+  "top": [
+   {
+    "id": 120568143,
+    "name": "wezterm/wezterm",
+    "stars": 29569
+   },
+   {
+    "id": 546129875,
+    "name": "raphamorim/rio",
+    "stars": 7747
+   },
+   {
+    "id": 1289958986,
+    "name": "Kuddev/pebrel",
+    "stars": 3827
+   },
+   {
+    "id": 273645824,
+    "name": "rajasegar/alacritty-themes",
+    "stars": 732
+   },
+   {
+    "id": 908811926,
+    "name": "fearlessgeekmedia/Awesome-Ghostty",
+    "stars": 277
+   },
+   {
+    "id": 1154445441,
+    "name": "sanohiro/bcon",
+    "stars": 62
+   },
+   {
+    "id": 1209462278,
+    "name": "jephersonRD/foxix-terminal",
+    "stars": 17
+   },
+   {
+    "id": 293706784,
+    "name": "solidiquis/alacpretty",
+    "stars": 149
+   },
+   {
+    "id": 1192126948,
+    "name": "eranif/wxTerminalEmulator",
+    "stars": 9
+   },
+   {
+    "id": 1143525144,
+    "name": "benyblack/ntilde",
+    "stars": 21
+   }
+  ]
+ },
+ "self-hosted password manager server compatible with bitwarden": {
+  "total": 3,
+  "ms": 2229,
+  "top": [
+   {
+    "id": 1373887816,
+    "name": "TonyA2024/Self-Hosted-Password-Manager",
+    "stars": 0
+   },
+   {
+    "id": 1349860204,
+    "name": "vikraml9972/vaultwarden",
+    "stars": 0
+   },
+   {
+    "id": 1439564925,
+    "name": "emreakca/firnkey",
+    "stars": 0
+   }
+  ]
+ },
+ "network-wide ad blocking dns": {
+  "total": 135,
+  "ms": 2647,
+  "top": [
+   {
+    "id": 62712899,
+    "name": "AdguardTeam/AdGuardHome",
+    "stars": 38500
+   },
+   {
+    "id": 858992835,
+    "name": "Corvus-Malus/AdGuardHome-Keenetic",
+    "stars": 133
+   },
+   {
+    "id": 193560922,
+    "name": "klutchell/balena-adguard",
+    "stars": 62
+   },
+   {
+    "id": 164821119,
+    "name": "YunoHost-Apps/adguardhome_ynh",
+    "stars": 20
+   },
+   {
+    "id": 82992461,
+    "name": "seedifferently/nogo",
+    "stars": 142
+   },
+   {
+    "id": 199068577,
+    "name": "adelolmo/adguardhome-debian",
+    "stars": 7
+   },
+   {
+    "id": 384804644,
+    "name": "iobroker-community-adapters/ioBroker.adguard",
+    "stars": 9
+   },
+   {
+    "id": 1285108461,
+    "name": "devwez/DeepDNS",
+    "stars": 45
+   },
+   {
+    "id": 96779803,
+    "name": "raghavdua1995/DNSlock",
+    "stars": 5
+   },
+   {
+    "id": 941341664,
+    "name": "cjscrofani/cloudflare-zero-trust-adblock",
+    "stars": 10
+   }
+  ]
+ },
+ "home automation platform": {
+  "total": 737,
+  "ms": 2623,
+  "top": [
+   {
+    "id": 76734068,
+    "name": "renovatebot/renovate",
+    "stars": 23138
+   },
+   {
+    "id": 5258723,
+    "name": "sergejey/majordomo",
+    "stars": 408
+   },
+   {
+    "id": 138183822,
+    "name": "thecowan/wallpanel-android",
+    "stars": 767
+   },
+   {
+    "id": 461625401,
+    "name": "TheTimeWalker/wallpanel-android",
+    "stars": 613
+   },
+   {
+    "id": 120186948,
+    "name": "SANdood/Ecobee-Suite",
+    "stars": 117
+   },
+   {
+    "id": 267182382,
+    "name": "gbaranski/houseflow",
+    "stars": 190
+   },
+   {
+    "id": 102506190,
+    "name": "thanksmister/android-mqtt-alarm-panel",
+    "stars": 190
+   },
+   {
+    "id": 56004926,
+    "name": "nutechsoftware/alarmdecoder-smartthings",
+    "stars": 24
+   },
+   {
+    "id": 78155025,
+    "name": "meta-homeassistant/meta-homeassistant",
+    "stars": 49
+   },
+   {
+    "id": 150300448,
+    "name": "YunoHost-Apps/homeassistant_ynh",
+    "stars": 25
+   }
+  ]
+ },
+ "self-hosted media server": {
+  "total": 935,
+  "ms": 2482,
+  "top": [
+   {
+    "id": 403368935,
+    "name": "tubearchivist/tubearchivist",
+    "stars": 8599
+   },
+   {
+    "id": 39890823,
+    "name": "streamaserver/streama",
+    "stars": 9824
+   },
+   {
+    "id": 43047092,
+    "name": "andreimarcu/linx-server",
+    "stars": 1584
+   },
+   {
+    "id": 1168508817,
+    "name": "lostb1t/remux",
+    "stars": 678
+   },
+   {
+    "id": 346110279,
+    "name": "wppconnect-team/wppconnect-server",
+    "stars": 1066
+   },
+   {
+    "id": 1247142351,
+    "name": "Silo-Server/silo-server",
+    "stars": 1018
+   },
+   {
+    "id": 779963425,
+    "name": "Morzomb/All-jellyfin-media-server",
+    "stars": 586
+   },
+   {
+    "id": 67291182,
+    "name": "DocMarty84/koozic",
+    "stars": 91
+   },
+   {
+    "id": 1290003578,
+    "name": "kaybi-gh/K7",
+    "stars": 348
+   },
+   {
+    "id": 573785987,
+    "name": "Atsumeru-xyz/Atsumeru",
+    "stars": 197
+   }
+  ]
+ },
+ "local-first markdown note taking app": {
+  "total": 95,
+  "ms": 2389,
+  "top": [
+   {
+    "id": 1263494700,
+    "name": "team-reflect/reflect-open",
+    "stars": 1621
+   },
+   {
+    "id": 48593559,
+    "name": "nuttyartist/notes",
+    "stars": 4266
+   },
+   {
+    "id": 1105973710,
+    "name": "blueberrycongee/Lumina-Note",
+    "stars": 913
+   },
+   {
+    "id": 323793116,
+    "name": "bangle-io/bangle-io",
+    "stars": 1237
+   },
+   {
+    "id": 517126881,
+    "name": "lumen-notes/lumen",
+    "stars": 723
+   },
+   {
+    "id": 900247680,
+    "name": "sspaeti/obsidian-note-taking-assistant",
+    "stars": 68
+   },
+   {
+    "id": 848296980,
+    "name": "nuttyartist/daino-notes-public",
+    "stars": 123
+   },
+   {
+    "id": 941642929,
+    "name": "besoeasy/ZeroNote",
+    "stars": 53
+   },
+   {
+    "id": 1156040065,
+    "name": "AlbertArakelyan/Lumark",
+    "stars": 22
+   },
+   {
+    "id": 1351796614,
+    "name": "yetemgetaB/Kenote",
+    "stars": 24
+   }
+  ]
+ },
+ "open source alternative to notion": {
+  "total": 57,
+  "ms": 2463,
+  "top": [
+   {
+    "id": 716944423,
+    "name": "Anil-matcha/awesome-open-source-saas-alternatives",
+    "stars": 3479
+   },
+   {
+    "id": 301793434,
+    "name": "mattermost-community/focalboard",
+    "stars": 26558
+   },
+   {
+    "id": 674295265,
+    "name": "docmost/docmost",
+    "stars": 22345
+   },
+   {
+    "id": 1401511276,
+    "name": "yannicschuller/flowplan",
+    "stars": 137
+   },
+   {
+    "id": 1417151253,
+    "name": "Aarav2709/Morrow",
+    "stars": 296
+   },
+   {
+    "id": 677923556,
+    "name": "AppFlowy-IO/AppFlowy-Website",
+    "stars": 61
+   },
+   {
+    "id": 712889642,
+    "name": "Nick-h4ck3r/quickflow",
+    "stars": 46
+   },
+   {
+    "id": 1078524315,
+    "name": "LeadcodeDev/remindr",
+    "stars": 27
+   },
+   {
+    "id": 1430142712,
+    "name": "ariedotme/vasta",
+    "stars": 57
+   },
+   {
+    "id": 1396397208,
+    "name": "evergreen-it-dev/folio",
+    "stars": 89
+   }
+  ]
+ },
+ "open source firebase alternative": {
+  "total": 107,
+  "ms": 2744,
+  "top": [
+   {
+    "id": 337414495,
+    "name": "nhost/nhost",
+    "stars": 9390
+   },
+   {
+    "id": 231921809,
+    "name": "supertokens/supertokens-core",
+    "stars": 15345
+   },
+   {
+    "id": 432722380,
+    "name": "faisalsayed10/firefiles",
+    "stars": 372
+   },
+   {
+    "id": 975460498,
+    "name": "Selfdb-io/SelfDB",
+    "stars": 165
+   },
+   {
+    "id": 676897841,
+    "name": "measure-sh/measure",
+    "stars": 1445
+   },
+   {
+    "id": 901915024,
+    "name": "nuvix-dev/nuvix",
+    "stars": 145
+   },
+   {
+    "id": 1308739986,
+    "name": "vanshyadav1408/Omentir",
+    "stars": 54
+   },
+   {
+    "id": 457082458,
+    "name": "nathgoutam93/linkpile-react",
+    "stars": 22
+   },
+   {
+    "id": 1111817811,
+    "name": "Ryware/nona-config",
+    "stars": 51
+   },
+   {
+    "id": 1106278185,
+    "name": "LinkForty/core",
+    "stars": 49
+   }
+  ]
+ },
+ "headless cms": {
+  "total": 8571,
+  "ms": 2463,
+  "top": [
+   {
+    "id": 66815348,
+    "name": "Squidex/squidex",
+    "stars": 2517
+   },
+   {
+    "id": 43441403,
+    "name": "strapi/strapi",
+    "stars": 73498
+   },
+   {
+    "id": 128193054,
+    "name": "keystonejs/keystone",
+    "stars": 9993
+   },
+   {
+    "id": 111562942,
+    "name": "statamic/cms",
+    "stars": 4918
+   },
+   {
+    "id": 143404631,
+    "name": "gentics/headless-cms-comparison",
+    "stars": 308
+   },
+   {
+    "id": 13601190,
+    "name": "agentejo/cockpit",
+    "stars": 5395
+   },
+   {
+    "id": 54377519,
+    "name": "PiranhaCMS/piranha.core",
+    "stars": 2199
+   },
+   {
+    "id": 889274685,
+    "name": "usemarble/marble",
+    "stars": 386
+   },
+   {
+    "id": 258616786,
+    "name": "imranhsayed/headless-cms",
+    "stars": 209
+   },
+   {
+    "id": 82357190,
+    "name": "n370/awesome-headless-cms",
+    "stars": 238
+   }
+  ]
+ },
+ "workflow automation tool like zapier": {
+  "total": 22,
+  "ms": 2567,
+  "top": [
+   {
+    "id": 861824821,
+    "name": "RohinJoshi1/WorkflowAutomation",
+    "stars": 0
+   },
+   {
+    "id": 1288148853,
+    "name": "amarnath-arch/AutoFlow",
+    "stars": 0
+   },
+   {
+    "id": 1045854269,
+    "name": "Garvit-Rajpal/zapier-automation",
+    "stars": 0
+   },
+   {
+    "id": 1271184198,
+    "name": "JordanRegal/Zapier-Workflows-Automation",
+    "stars": 1
+   },
+   {
+    "id": 1220922196,
+    "name": "SnehMalhotra/ai-automation-workflows",
+    "stars": 0
+   },
+   {
+    "id": 1150451486,
+    "name": "googleknight/mini-workflow-engine",
+    "stars": 1
+   },
+   {
+    "id": 1177947973,
+    "name": "kharief/ai-automation-workflows",
+    "stars": 0
+   },
+   {
+    "id": 1217318941,
+    "name": "gabrielpeixoto-git/workflow-automation",
+    "stars": 0
+   },
+   {
+    "id": 952554373,
+    "name": "Jayrajrodage/TriggerX",
+    "stars": 0
+   },
+   {
+    "id": 1083832012,
+    "name": "Devwithumar/Ai-workflow-builder",
+    "stars": 1
+   }
+  ]
+ },
+ "run large language models locally": {
+  "total": 131,
+  "ms": 2322,
+  "top": [
+   {
+    "id": 643316621,
+    "name": "juliooa/secondbrain",
+    "stars": 294
+   },
+   {
+    "id": 1269099967,
+    "name": "engeldlgado/toshllm",
+    "stars": 260
+   },
+   {
+    "id": 942846228,
+    "name": "di37/running-llms-locally",
+    "stars": 101
+   },
+   {
+    "id": 919602542,
+    "name": "Run-Tu/MindFlow",
+    "stars": 207
+   },
+   {
+    "id": 739889368,
+    "name": "gbaptista/ollama-ai",
+    "stars": 260
+   },
+   {
+    "id": 788096530,
+    "name": "WilliamKarolDiCioccio/open_local_ui",
+    "stars": 73
+   },
+   {
+    "id": 1116347994,
+    "name": "Gygeek/Framework-strix-halo-llm-setup",
+    "stars": 122
+   },
+   {
+    "id": 945682151,
+    "name": "saadnaseem/grammarAI",
+    "stars": 5
+   },
+   {
+    "id": 1027587525,
+    "name": "kmlbdh/ComfyUI_LocalLLMNodes",
+    "stars": 13
+   },
+   {
+    "id": 973888140,
+    "name": "sethshoultes/LLM",
+    "stars": 38
+   }
+  ]
+ },
+ "web ui for stable diffusion": {
+  "total": 244,
+  "ms": 2627,
+  "top": [
+   {
+    "id": 529560594,
+    "name": "AbdBarho/stable-diffusion-webui-docker",
+    "stars": 7299
+   },
+   {
+    "id": 702791636,
+    "name": "NVIDIA/Stable-Diffusion-WebUI-TensorRT",
+    "stars": 1979
+   },
+   {
+    "id": 551576759,
+    "name": "EmpireMediaScience/A1111-Web-UI-Installer",
+    "stars": 1797
+   },
+   {
+    "id": 549758909,
+    "name": "DominikDoom/a1111-sd-webui-tagcomplete",
+    "stars": 2809
+   },
+   {
+    "id": 590459097,
+    "name": "hako-mikan/sd-webui-supermerger",
+    "stars": 836
+   },
+   {
+    "id": 555766133,
+    "name": "AUTOMATIC1111/stable-diffusion-webui-aesthetic-gradients",
+    "stars": 460
+   },
+   {
+    "id": 568527720,
+    "name": "tsukimiya/stable-diffusion-webui-wd14-tagger",
+    "stars": 30
+   },
+   {
+    "id": 557804090,
+    "name": "toshiaki1729/stable-diffusion-webui-dataset-tag-editor",
+    "stars": 736
+   },
+   {
+    "id": 684005338,
+    "name": "ai-dock/stable-diffusion-webui",
+    "stars": 164
+   },
+   {
+    "id": 660861499,
+    "name": "TonyLianLong/stable-diffusion-xl-demo",
+    "stars": 278
+   }
+  ]
+ },
+ "framework for building applications with llms": {
+  "total": 82,
+  "ms": 2457,
+  "top": [
+   {
+    "id": 221654678,
+    "name": "deepset-ai/haystack",
+    "stars": 27015
+   },
+   {
+    "id": 656264456,
+    "name": "langchain4j/langchain4j",
+    "stars": 13410
+   },
+   {
+    "id": 1050157453,
+    "name": "dx-corp/dspy-0to1-guide",
+    "stars": 225
+   },
+   {
+    "id": 907305950,
+    "name": "Rovanta/rmodel",
+    "stars": 64
+   },
+   {
+    "id": 771511100,
+    "name": "zenmodel/zenmodel",
+    "stars": 73
+   },
+   {
+    "id": 790545867,
+    "name": "kabir12345/Agent-Experiments",
+    "stars": 17
+   },
+   {
+    "id": 1022994412,
+    "name": "JoakimCarlsson/ai",
+    "stars": 50
+   },
+   {
+    "id": 818273557,
+    "name": "zhiguoxu/flowx",
+    "stars": 7
+   },
+   {
+    "id": 847870727,
+    "name": "xlang-foundation/xMind",
+    "stars": 7
+   },
+   {
+    "id": 966299078,
+    "name": "Tania526-sudo/AI-Automation-Build-LLM-Apps-AI-Agents-with-n8n-APIs",
+    "stars": 2
+   }
+  ]
+ },
+ "vector database": {
+  "total": 15063,
+  "ms": 2422,
+  "top": [
+   {
+    "id": 638739649,
+    "name": "zilliztech/VectorDBBench",
+    "stars": 1202
+   },
+   {
+    "id": 208728772,
+    "name": "milvus-io/milvus",
+    "stars": 46674
+   },
+   {
+    "id": 1110443421,
+    "name": "alibaba/zvec",
+    "stars": 16249
+   },
+   {
+    "id": 670778224,
+    "name": "Mintplex-Labs/vector-admin",
+    "stars": 2242
+   },
+   {
+    "id": 191751505,
+    "name": "milvus-io/pymilvus",
+    "stars": 1424
+   },
+   {
+    "id": 55072677,
+    "name": "weaviate/weaviate",
+    "stars": 16952
+   },
+   {
+    "id": 64289545,
+    "name": "alibaba/AliSQL",
+    "stars": 5994
+   },
+   {
+    "id": 268163609,
+    "name": "qdrant/qdrant",
+    "stars": 35588
+   },
+   {
+    "id": 79901405,
+    "name": "objectbox/objectbox-java",
+    "stars": 4630
+   },
+   {
+    "id": 80674179,
+    "name": "dblalock/bolt",
+    "stars": 2521
+   }
+  ]
+ },
+ "speech recognition model": {
+  "total": 4555,
+  "ms": 2421,
+  "top": [
+   {
+    "id": 200722670,
+    "name": "NVIDIA-NeMo/Speech",
+    "stars": 18759
+   },
+   {
+    "id": 89726872,
+    "name": "zzw922cn/awesome-speech-recognition-speech-synthesis-papers",
+    "stars": 3133
+   },
+   {
+    "id": 586310592,
+    "name": "Const-me/Whisper",
+    "stars": 10716
+   },
+   {
+    "id": 150800705,
+    "name": "douglas125/SpeechCmdRecognition",
+    "stars": 187
+   },
+   {
+    "id": 780573982,
+    "name": "salute-developers/GigaAM",
+    "stars": 939
+   },
+   {
+    "id": 174432286,
+    "name": "Demfier/multimodal-speech-emotion-recognition",
+    "stars": 450
+   },
+   {
+    "id": 810195157,
+    "name": "ictnlp/StreamSpeech",
+    "stars": 1292
+   },
+   {
+    "id": 493046993,
+    "name": "hu1won/SpeechRecognition",
+    "stars": 44
+   },
+   {
+    "id": 159827756,
+    "name": "richmondu/libfaceid",
+    "stars": 496
+   },
+   {
+    "id": 629730614,
+    "name": "savbell/whisper-writer",
+    "stars": 1106
+   }
+  ]
+ },
+ "gradient boosting library": {
+  "total": 165,
+  "ms": 2584,
+  "top": [
+   {
+    "id": 16587283,
+    "name": "dmlc/xgboost",
+    "stars": 28978
+   },
+   {
+    "id": 97556265,
+    "name": "catboost/catboost",
+    "stars": 9205
+   },
+   {
+    "id": 360444739,
+    "name": "google/yggdrasil-decision-forests",
+    "stars": 680
+   },
+   {
+    "id": 381305871,
+    "name": "Swiggy/Moo-GBT",
+    "stars": 78
+   },
+   {
+    "id": 91575491,
+    "name": "kanyun-inc/ytk-learn",
+    "stars": 349
+   },
+   {
+    "id": 99384068,
+    "name": "srlearn/srlearn",
+    "stars": 32
+   },
+   {
+    "id": 859750492,
+    "name": "transferwise/shap-select",
+    "stars": 43
+   },
+   {
+    "id": 105145272,
+    "name": "polinaeterna/testing-catboost",
+    "stars": 5
+   },
+   {
+    "id": 263218213,
+    "name": "a-wozniakowski/scikit-physlearn",
+    "stars": 10
+   },
+   {
+    "id": 180965520,
+    "name": "jiewwantan/XGBoost_stock_prediction",
+    "stars": 53
+   }
+  ]
+ },
+ "deep learning framework": {
+  "total": 13360,
+  "ms": 2461,
+  "top": [
+   {
+    "id": 12791642,
+    "name": "BVLC/caffe",
+    "stars": 34556
+   },
+   {
+    "id": 101887545,
+    "name": "ilkarman/DeepLearningFrameworks",
+    "stars": 1653
+   },
+   {
+    "id": 192155460,
+    "name": "dragen1860/Deep-Learning-with-TensorFlow-book",
+    "stars": 13201
+   },
+   {
+    "id": 271823369,
+    "name": "Esri/deep-learning-frameworks",
+    "stars": 674
+   },
+   {
+    "id": 161455005,
+    "name": "alibaba/x-deeplearning",
+    "stars": 4301
+   },
+   {
+    "id": 46017258,
+    "name": "zer0n/deepframeworks",
+    "stars": 2041
+   },
+   {
+    "id": 182210458,
+    "name": "aidlearning/AidLearning-FrameWork",
+    "stars": 5820
+   },
+   {
+    "id": 88418646,
+    "name": "ysh329/deep-learning-model-convertor",
+    "stars": 3236
+   },
+   {
+    "id": 165004157,
+    "name": "alibaba/euler",
+    "stars": 2903
+   },
+   {
+    "id": 38066334,
+    "name": "facebookarchive/caffe2",
+    "stars": 8368
+   }
+  ]
+ },
+ "real-time object detection": {
+  "total": 16949,
+  "ms": 2472,
+  "top": [
+   {
+    "id": 308869901,
+    "name": "nicknochnack/RealTimeObjectDetection",
+    "stars": 430
+   },
+   {
+    "id": 217475193,
+    "name": "PaddlePaddle/PaddleDetection",
+    "stars": 14473
+   },
+   {
+    "id": 86843940,
+    "name": "leggedrobotics/darknet_ros",
+    "stars": 2442
+   },
+   {
+    "id": 749596944,
+    "name": "AILab-CVC/YOLO-World",
+    "stars": 6612
+   },
+   {
+    "id": 804788522,
+    "name": "THU-MIG/yolov10",
+    "stars": 11345
+   },
+   {
+    "id": 51731516,
+    "name": "gliese581gg/YOLO_tensorflow",
+    "stars": 1707
+   },
+   {
+    "id": 1059829262,
+    "name": "Intellindust-AI-Lab/DEIMv2",
+    "stars": 2105
+   },
+   {
+    "id": 128363878,
+    "name": "lbeaucourt/Object-detection",
+    "stars": 518
+   },
+   {
+    "id": 5562456,
+    "name": "mtschirs/js-objectdetect",
+    "stars": 1214
+   },
+   {
+    "id": 59329529,
+    "name": "xingwangsfu/caffe-yolo",
+    "stars": 513
+   }
+  ]
+ },
+ "fast dataframe library": {
+  "total": 51,
+  "ms": 2639,
+  "top": [
+   {
+    "id": 762867802,
+    "name": "DataHaskell/dataframe",
+    "stars": 272
+   },
+   {
+    "id": 245409771,
+    "name": "kaelzhang/stock-pandas",
+    "stars": 149
+   },
+   {
+    "id": 485817069,
+    "name": "nshiab/simple-data-analysis",
+    "stars": 360
+   },
+   {
+    "id": 885881467,
+    "name": "Edwardvaneechoud/Flowfile",
+    "stars": 413
+   },
+   {
+    "id": 543084704,
+    "name": "andrusha/pandas-maxminddb",
+    "stars": 11
+   },
+   {
+    "id": 959743699,
+    "name": "cool-japan/pandrs",
+    "stars": 21
+   },
+   {
+    "id": 471599886,
+    "name": "Rust-Data-Science/mycat",
+    "stars": 2
+   },
+   {
+    "id": 589513435,
+    "name": "iAmKankan/Polars",
+    "stars": 5
+   },
+   {
+    "id": 1071943239,
+    "name": "MPhuongLe/Polars-A-lightning-fast-dataframe-library",
+    "stars": 0
+   },
+   {
+    "id": 143886705,
+    "name": "EmptySamurai/bintable",
+    "stars": 1
+   }
+  ]
+ },
+ "in-process analytical sql database": {
+  "total": 13,
+  "ms": 2549,
+  "top": [
+   {
+    "id": 1068324702,
+    "name": "SusieGlitter/duckdb",
+    "stars": 1
+   },
+   {
+    "id": 1106322390,
+    "name": "shararai/DuckDBPFB",
+    "stars": 0
+   },
+   {
+    "id": 1104452805,
+    "name": "loong64/duckdb",
+    "stars": 0
+   },
+   {
+    "id": 1322421963,
+    "name": "ocx-contrib/mirror-duckdb",
+    "stars": 0
+   },
+   {
+    "id": 1454586703,
+    "name": "myhao690/Demand-Aware-Grouped-Top-K-Execution-in-DuckDB",
+    "stars": 1
+   },
+   {
+    "id": 1122134959,
+    "name": "ChampionNan/DuckOuterYan",
+    "stars": 0
+   },
+   {
+    "id": 1162054850,
+    "name": "xlhuang37/duckdb",
+    "stars": 0
+   },
+   {
+    "id": 1299900494,
+    "name": "chdb-io/llama-index-tools-chdb",
+    "stars": 0
+   },
+   {
+    "id": 1249939197,
+    "name": "analitiq-dip-registry/duckdb",
+    "stars": 0
+   },
+   {
+    "id": 884728924,
+    "name": "Theofilusarifin/duck-db",
+    "stars": 0
+   }
+  ]
+ },
+ "distributed sql database": {
+  "total": 601,
+  "ms": 2400,
+  "top": [
+   {
+    "id": 49876476,
+    "name": "apache/shardingsphere",
+    "stars": 20831
+   },
+   {
+    "id": 105944401,
+    "name": "yugabyte/yugabyte-db",
+    "stars": 10664
+   },
+   {
+    "id": 16563587,
+    "name": "cockroachdb/cockroach",
+    "stars": 32619
+   },
+   {
+    "id": 183929744,
+    "name": "erikgrinaker/toydb",
+    "stars": 7310
+   },
+   {
+    "id": 16109206,
+    "name": "biokoda/actordb",
+    "stars": 1890
+   },
+   {
+    "id": 40075190,
+    "name": "ngaut/builddatabase",
+    "stars": 2145
+   },
+   {
+    "id": 231384404,
+    "name": "talent-plan/tinysql",
+    "stars": 2054
+   },
+   {
+    "id": 436658287,
+    "name": "surrealdb/surrealdb",
+    "stars": 33312
+   },
+   {
+    "id": 143436277,
+    "name": "baidu/BaikalDB",
+    "stars": 1240
+   },
+   {
+    "id": 370529505,
+    "name": "polardb/PolarDB-for-PostgreSQL",
+    "stars": 3209
+   }
+  ]
+ },
+ "time series database": {
+  "total": 1619,
+  "ms": 2374,
+  "top": [
+   {
+    "id": 6838921,
+    "name": "prometheus/prometheus",
+    "stars": 67646
+   },
+   {
+    "id": 865412,
+    "name": "OpenTSDB/opentsdb",
+    "stars": 5067
+   },
+   {
+    "id": 84240850,
+    "name": "timescale/timescaledb",
+    "stars": 23862
+   },
+   {
+    "id": 196353673,
+    "name": "taosdata/TDengine",
+    "stars": 25194
+   },
+   {
+    "id": 150954997,
+    "name": "VictoriaMetrics/VictoriaMetrics",
+    "stars": 18113
+   },
+   {
+    "id": 19257422,
+    "name": "questdb/questdb",
+    "stars": 17535
+   },
+   {
+    "id": 8039659,
+    "name": "kairosdb/kairosdb",
+    "stars": 1759
+   },
+   {
+    "id": 22631422,
+    "name": "Netflix/atlas",
+    "stars": 3589
+   },
+   {
+    "id": 71190322,
+    "name": "xephonhq/awesome-time-series-database",
+    "stars": 889
+   },
+   {
+    "id": 29259281,
+    "name": "filodb/FiloDB",
+    "stars": 1469
+   }
+  ]
+ },
+ "full-text search engine": {
+  "total": 1065,
+  "ms": 2627,
+  "top": [
+   {
+    "id": 139021428,
+    "name": "toshi-search/Toshi",
+    "stars": 4259
+   },
+   {
+    "id": 58132544,
+    "name": "RediSearch/RediSearch",
+    "stars": 6245
+   },
+   {
+    "id": 52596904,
+    "name": "teamtnt/tntsearch",
+    "stars": 3200
+   },
+   {
+    "id": 49412556,
+    "name": "quickwit-oss/tantivy",
+    "stars": 16445
+   },
+   {
+    "id": 149144662,
+    "name": "lucaong/minisearch",
+    "stars": 6203
+   },
+   {
+    "id": 282226154,
+    "name": "akrylysov/simplefts",
+    "stars": 402
+   },
+   {
+    "id": 20427027,
+    "name": "pouchdb-community/pouchdb-quick-search",
+    "stars": 376
+   },
+   {
+    "id": 979133,
+    "name": "basho/riak_search",
+    "stars": 139
+   },
+   {
+    "id": 119272629,
+    "name": "tinysearch/tinysearch",
+    "stars": 2980
+   },
+   {
+    "id": 11187800,
+    "name": "Blue-Rocket/BRFullTextSearch",
+    "stars": 153
+   }
+  ]
+ },
+ "in-memory key value store": {
+  "total": 1741,
+  "ms": 2380,
+  "top": [
+   {
+    "id": 3087541,
+    "name": "patrickmn/go-cache",
+    "stars": 8840
+   },
+   {
+    "id": 60480511,
+    "name": "lmdbjava/lmdbjava",
+    "stars": 876
+   },
+   {
+    "id": 128195485,
+    "name": "olric-data/olric",
+    "stars": 3503
+   },
+   {
+    "id": 93692655,
+    "name": "efficient/mica2",
+    "stars": 52
+   },
+   {
+    "id": 17355445,
+    "name": "efficient/mica",
+    "stars": 215
+   },
+   {
+    "id": 122701001,
+    "name": "carl-mastrangelo/kvstore",
+    "stars": 71
+   },
+   {
+    "id": 21511525,
+    "name": "kelseyhightower/memkv",
+    "stars": 58
+   },
+   {
+    "id": 2662146,
+    "name": "patx/pickledb",
+    "stars": 1072
+   },
+   {
+    "id": 44455032,
+    "name": "asim/kv",
+    "stars": 144
+   },
+   {
+    "id": 265390281,
+    "name": "jakekgrog/GhostDB",
+    "stars": 754
+   }
+  ]
+ },
+ "distributed event streaming platform": {
+  "total": 277,
+  "ms": 2789,
+  "top": [
+   {
+    "id": 2211243,
+    "name": "apache/kafka",
+    "stars": 34222
+   },
+   {
+    "id": 318937268,
+    "name": "hadron-project/hadron",
+    "stars": 37
+   },
+   {
+    "id": 448046539,
+    "name": "uber/uForwarder",
+    "stars": 225
+   },
+   {
+    "id": 899774672,
+    "name": "tferdous17/flux",
+    "stars": 11
+   },
+   {
+    "id": 1192387468,
+    "name": "yashdotdev13/Distributed-streaming-platform",
+    "stars": 1
+   },
+   {
+    "id": 1138514753,
+    "name": "hupe1980/rivven",
+    "stars": 9
+   },
+   {
+    "id": 1249200935,
+    "name": "MasirJafri1/distributed-video-processing-platform",
+    "stars": 2
+   },
+   {
+    "id": 1237072983,
+    "name": "X-Tube/upload-service",
+    "stars": 3
+   },
+   {
+    "id": 809444459,
+    "name": "prabhat3697/EventPulse",
+    "stars": 0
+   },
+   {
+    "id": 1252222967,
+    "name": "vaishali515/Switchboard",
+    "stars": 2
+   }
+  ]
+ },
+ "container orchestration": {
+  "total": 4472,
+  "ms": 2260,
+  "top": [
+   {
+    "id": 15045751,
+    "name": "docker/compose",
+    "stars": 38892
+   },
+   {
+    "id": 26337322,
+    "name": "rancher/rancher",
+    "stars": 26058
+   },
+   {
+    "id": 20171642,
+    "name": "spotify/helios",
+    "stars": 2133
+   },
+   {
+    "id": 71197715,
+    "name": "Huawei/containerops",
+    "stars": 339
+   },
+   {
+    "id": 584826422,
+    "name": "AdminTurnedDevOps/100DaysOfContainersAndOrchestration",
+    "stars": 626
+   },
+   {
+    "id": 77179634,
+    "name": "NetApp/trident",
+    "stars": 884
+   },
+   {
+    "id": 223211268,
+    "name": "democratic-csi/democratic-csi",
+    "stars": 1347
+   },
+   {
+    "id": 58152695,
+    "name": "ansible/ansible-container",
+    "stars": 2157
+   },
+   {
+    "id": 341374526,
+    "name": "direktiv/direktiv",
+    "stars": 492
+   },
+   {
+    "id": 114128199,
+    "name": "canonical/multipass",
+    "stars": 9396
+   }
+  ]
+ },
+ "infrastructure as code": {
+  "total": 18035,
+  "ms": 2494,
+  "top": [
+   {
+    "id": 118977874,
+    "name": "Artemmkin/infrastructure-as-code-tutorial",
+    "stars": 2304
+   },
+   {
+    "id": 66963716,
+    "name": "DNSControl/dnscontrol",
+    "stars": 4009
+   },
+   {
+    "id": 55511241,
+    "name": "gruntwork-io/infrastructure-as-code-training",
+    "stars": 356
+   },
+   {
+    "id": 72477752,
+    "name": "pulumi/pulumi",
+    "stars": 25906
+   },
+   {
+    "id": 54501548,
+    "name": "brikis98/infrastructure-as-code-talk",
+    "stars": 570
+   },
+   {
+    "id": 575295397,
+    "name": "gofireflyio/aiac",
+    "stars": 3784
+   },
+   {
+    "id": 242286989,
+    "name": "udacity/nd9991-c2-Infrastructure-as-Code-v1",
+    "stars": 188
+   },
+   {
+    "id": 234919119,
+    "name": "snyk-labs/infrastructure-as-code-goof",
+    "stars": 17
+   },
+   {
+    "id": 218836177,
+    "name": "gruntwork-io/infrastructure-as-code-testing-talk",
+    "stars": 187
+   },
+   {
+    "id": 103084166,
+    "name": "tenable/terrascan",
+    "stars": 5213
+   }
+  ]
+ },
+ "reverse proxy with automatic https": {
+  "total": 101,
+  "ms": 2704,
+  "top": [
+   {
+    "id": 56686580,
+    "name": "artyom/leproxy",
+    "stars": 101
+   },
+   {
+    "id": 112824884,
+    "name": "wqihai/ssldocker",
+    "stars": 77
+   },
+   {
+    "id": 1060235184,
+    "name": "ingres-si/ingressi",
+    "stars": 249
+   },
+   {
+    "id": 1045134115,
+    "name": "tommyvange/RustDeskPro-WSS",
+    "stars": 36
+   },
+   {
+    "id": 704948270,
+    "name": "iamtrazy/xray-docker-tls",
+    "stars": 6
+   },
+   {
+    "id": 1150781295,
+    "name": "execution-co/Caddy-Proxy",
+    "stars": 0
+   },
+   {
+    "id": 498545681,
+    "name": "berrybyte-net/strawberry",
+    "stars": 4
+   },
+   {
+    "id": 1233713230,
+    "name": "dortanes/prox",
+    "stars": 12
+   },
+   {
+    "id": 945647245,
+    "name": "zkt2202/CloudflareNginx",
+    "stars": 0
+   },
+   {
+    "id": 1196167103,
+    "name": "Zevoxsh/NebulaProxy",
+    "stars": 5
+   }
+  ]
+ },
+ "monitoring dashboards and visualization": {
+  "total": 6807,
+  "ms": 2405,
+  "top": [
+   {
+    "id": 518323105,
+    "name": "SigNoz/dashboards",
+    "stars": 147
+   },
+   {
+    "id": 1105915656,
+    "name": "crossplane-contrib/crossview",
+    "stars": 289
+   },
+   {
+    "id": 779874236,
+    "name": "LondheShubham153/PromGraf",
+    "stars": 10
+   },
+   {
+    "id": 1270509327,
+    "name": "The-ProfessorGG/global-situation-dashboard",
+    "stars": 24
+   },
+   {
+    "id": 348777695,
+    "name": "aws-solutions/aws-devops-monitoring-dashboard",
+    "stars": 75
+   },
+   {
+    "id": 129462207,
+    "name": "aws-solutions/real-time-iot-device-monitoring-with-kinesis",
+    "stars": 66
+   },
+   {
+    "id": 1011956365,
+    "name": "vietanhlee/Smart-Traffic-Monitoring-System",
+    "stars": 39
+   },
+   {
+    "id": 1143019584,
+    "name": "jmuncor/tokentap",
+    "stars": 812
+   },
+   {
+    "id": 1448825551,
+    "name": "alexandephilia/sitrep-osint",
+    "stars": 46
+   },
+   {
+    "id": 970198485,
+    "name": "rasjonell/dashbrew",
+    "stars": 279
+   }
+  ]
+ },
+ "self-hosted uptime monitoring": {
+  "total": 864,
+  "ms": 2291,
+  "top": [
+   {
+    "id": 382496361,
+    "name": "louislam/uptime-kuma",
+    "stars": 94470
+   },
+   {
+    "id": 731676136,
+    "name": "nafiesl/uptime-monitor",
+    "stars": 166
+   },
+   {
+    "id": 535309783,
+    "name": "alexjustesen/speedtest-tracker",
+    "stars": 6089
+   },
+   {
+    "id": 980675910,
+    "name": "operacle/checkcle",
+    "stars": 3329
+   },
+   {
+    "id": 793866369,
+    "name": "bluewave-labs/Checkmate",
+    "stars": 11060
+   },
+   {
+    "id": 994983023,
+    "name": "0xfurai/peekaping",
+    "stars": 1224
+   },
+   {
+    "id": 1169465369,
+    "name": "kOlapsis/maintenant",
+    "stars": 549
+   },
+   {
+    "id": 1251221821,
+    "name": "mosamlife/wpmgr",
+    "stars": 167
+   },
+   {
+    "id": 1006098437,
+    "name": "OpsiMate/OpsiMate",
+    "stars": 294
+   },
+   {
+    "id": 1075312540,
+    "name": "easymonitordev/easymonitor",
+    "stars": 88
+   }
+  ]
+ },
+ "self-hosted git service": {
+  "total": 242,
+  "ms": 2605,
+  "top": [
+   {
+    "id": 72495579,
+    "name": "go-gitea/gitea",
+    "stars": 59109
+   },
+   {
+    "id": 16752620,
+    "name": "gogs/gogs",
+    "stars": 47939
+   },
+   {
+    "id": 449622001,
+    "name": "PGYER/codefever",
+    "stars": 2746
+   },
+   {
+    "id": 349850211,
+    "name": "roles-ansible/ansible_role_gitea",
+    "stars": 83
+   },
+   {
+    "id": 218551086,
+    "name": "dblueai/giteapy",
+    "stars": 41
+   },
+   {
+    "id": 255919505,
+    "name": "swarmlet/swarmlet",
+    "stars": 816
+   },
+   {
+    "id": 51591149,
+    "name": "danielflower/app-runner",
+    "stars": 74
+   },
+   {
+    "id": 401089157,
+    "name": "ArkToria/ACross",
+    "stars": 60
+   },
+   {
+    "id": 30944351,
+    "name": "cloudfoundry-community/gogs-boshrelease",
+    "stars": 5
+   },
+   {
+    "id": 96895234,
+    "name": "G-Node/gogs",
+    "stars": 16
+   }
+  ]
+ },
+ "react framework with server side rendering": {
+  "total": 117,
+  "ms": 2806,
+  "top": [
+   {
+    "id": 159688756,
+    "name": "adnanrahic/serverless-side-rendering-react-next",
+    "stars": 122
+   },
+   {
+    "id": 291631560,
+    "name": "ragu-framework/ragu",
+    "stars": 90
+   },
+   {
+    "id": 117801651,
+    "name": "artoliukkonen/serverless-isomorphic-react-boilerplate",
+    "stars": 31
+   },
+   {
+    "id": 88263460,
+    "name": "wildlyinaccurate/second",
+    "stars": 41
+   },
+   {
+    "id": 1367553095,
+    "name": "Proa-Labs/framework-benchmarks",
+    "stars": 7
+   },
+   {
+    "id": 1102441996,
+    "name": "Makhloufhleli/harpy.js",
+    "stars": 23
+   },
+   {
+    "id": 73382345,
+    "name": "reworkjs/reworkjs",
+    "stars": 12
+   },
+   {
+    "id": 315707971,
+    "name": "vasurajan/Blogzo",
+    "stars": 9
+   },
+   {
+    "id": 48660690,
+    "name": "xiaoyunyang/play-react-d3",
+    "stars": 4
+   },
+   {
+    "id": 474783889,
+    "name": "tzachbon/ssr-react-monorepo-example",
+    "stars": 10
+   }
+  ]
+ },
+ "javascript runtime": {
+  "total": 4153,
+  "ms": 2255,
+  "top": [
+   {
+    "id": 27193779,
+    "name": "nodejs/node",
+    "stars": 123752
+   },
+   {
+    "id": 133442384,
+    "name": "denoland/deno",
+    "stars": 108932
+   },
+   {
+    "id": 20153919,
+    "name": "runtimejs/runtime",
+    "stars": 1913
+   },
+   {
+    "id": 18500066,
+    "name": "latentflip/loupe",
+    "stars": 3259
+   },
+   {
+    "id": 357728969,
+    "name": "oven-sh/bun",
+    "stars": 96712
+   },
+   {
+    "id": 198097850,
+    "name": "saghul/txiki.js",
+    "stars": 3325
+   },
+   {
+    "id": 537085161,
+    "name": "cloudflare/workerd",
+    "stars": 9199
+   },
+   {
+    "id": 11918233,
+    "name": "DragonBones/DragonBonesJS",
+    "stars": 863
+   },
+   {
+    "id": 22938893,
+    "name": "nodesource/distributions",
+    "stars": 13857
+   },
+   {
+    "id": 97646385,
+    "name": "microsoft/napajs",
+    "stars": 9166
+   }
+  ]
+ },
+ "frontend build tool with a fast dev server": {
+  "total": 0,
+  "ms": 1967,
+  "top": []
+ },
+ "utility-first css framework": {
+  "total": 510,
+  "ms": 3034,
+  "top": [
+   {
+    "id": 106017343,
+    "name": "tailwindlabs/tailwindcss",
+    "stars": 98661
+   },
+   {
+    "id": 325215114,
+    "name": "windicss/windicss",
+    "stars": 6494
+   },
+   {
+    "id": 492526669,
+    "name": "htmlstreamofficial/preline",
+    "stars": 6528
+   },
+   {
+    "id": 188427649,
+    "name": "styled-components/xstyled",
+    "stars": 2303
+   },
+   {
+    "id": 753554509,
+    "name": "mojocss/mojocss",
+    "stars": 427
+   },
+   {
+    "id": 213591248,
+    "name": "axentix/axentix",
+    "stars": 191
+   },
+   {
+    "id": 253396236,
+    "name": "ThinkUniform/uniformcss",
+    "stars": 160
+   },
+   {
+    "id": 1196245933,
+    "name": "yasmramos/tailwindfx",
+    "stars": 13
+   },
+   {
+    "id": 191071449,
+    "name": "frankpagan/CoCreateCSS",
+    "stars": 15
+   },
+   {
+    "id": 179895792,
+    "name": "tjhillard/steller-css",
+    "stars": 22
+   }
+  ]
+ },
+ "javascript test framework": {
+  "total": 3607,
+  "ms": 2393,
+  "top": [
+   {
+    "id": 84009,
+    "name": "jasmine/jasmine",
+    "stars": 15809
+   },
+   {
+    "id": 7639232,
+    "name": "angular/protractor",
+    "stars": 8654
+   },
+   {
+    "id": 259691,
+    "name": "qunitjs/qunit",
+    "stars": 4031
+   },
+   {
+    "id": 221981891,
+    "name": "microsoft/playwright",
+    "stars": 100306
+   },
+   {
+    "id": 1451352,
+    "name": "mochajs/mocha",
+    "stars": 22912
+   },
+   {
+    "id": 7298651,
+    "name": "defunctzombie/zuul",
+    "stars": 952
+   },
+   {
+    "id": 155722492,
+    "name": "allure-framework/allure-js",
+    "stars": 283
+   },
+   {
+    "id": 2931111,
+    "name": "chaijs/chai",
+    "stars": 8268
+   },
+   {
+    "id": 2296970,
+    "name": "webdriverio/webdriverio",
+    "stars": 9884
+   },
+   {
+    "id": 108920680,
+    "name": "dubzzz/fast-check",
+    "stars": 5261
+   }
+  ]
+ },
+ "end to end browser testing": {
+  "total": 963,
+  "ms": 2585,
+  "top": [
+   {
+    "id": 75691991,
+    "name": "laravel/dusk",
+    "stars": 1947
+   },
+   {
+    "id": 34262857,
+    "name": "DevExpress/testcafe",
+    "stars": 9892
+   },
+   {
+    "id": 284747964,
+    "name": "microsoft/playwright-pytest",
+    "stars": 578
+   },
+   {
+    "id": 252586220,
+    "name": "microsoft/playwright-test",
+    "stars": 789
+   },
+   {
+    "id": 345403438,
+    "name": "grafana-cold-storage/xk6-browser",
+    "stars": 357
+   },
+   {
+    "id": 136581530,
+    "name": "nateshmbhat/webbot",
+    "stars": 251
+   },
+   {
+    "id": 130316243,
+    "name": "ejoubaud/cypress-browser-extension-plugin",
+    "stars": 57
+   },
+   {
+    "id": 992195621,
+    "name": "debugg-ai/debugg-ai-mcp",
+    "stars": 69
+   },
+   {
+    "id": 14787222,
+    "name": "exratione/protractor-selenium-server-vagrant",
+    "stars": 63
+   },
+   {
+    "id": 428379263,
+    "name": "nicholasvuono/xk6-playwright",
+    "stars": 54
+   }
+  ]
+ },
+ "python web framework for building apis": {
+  "total": 247,
+  "ms": 2520,
+  "top": [
+   {
+    "id": 136796266,
+    "name": "Bogdanp/molten",
+    "stars": 974
+   },
+   {
+    "id": 462778762,
+    "name": "AliRn76/panther",
+    "stars": 355
+   },
+   {
+    "id": 625300271,
+    "name": "BaseMax/SimpleFastPyAPI",
+    "stars": 40
+   },
+   {
+    "id": 385495819,
+    "name": "ShangSky/flask-sugar",
+    "stars": 161
+   },
+   {
+    "id": 766408297,
+    "name": "Gurupatil0003/RestFull_API",
+    "stars": 36
+   },
+   {
+    "id": 1158928235,
+    "name": "tubox-labs/Aquilia",
+    "stars": 17
+   },
+   {
+    "id": 719804477,
+    "name": "Yudhyy/AgoraAI_ChatBotApp",
+    "stars": 6
+   },
+   {
+    "id": 340568872,
+    "name": "Arvintian/madara",
+    "stars": 9
+   },
+   {
+    "id": 777802129,
+    "name": "Chiragj2003/Rest-apis-using-Fast-api-Python",
+    "stars": 11
+   },
+   {
+    "id": 81298142,
+    "name": "python-odin/odinweb",
+    "stars": 3
+   }
+  ]
+ },
+ "fast python package manager": {
+  "total": 89,
+  "ms": 2495,
+  "top": [
+   {
+    "id": 699532645,
+    "name": "astral-sh/uv",
+    "stars": 92055
+   },
+   {
+    "id": 173947939,
+    "name": "mamba-org/mamba",
+    "stars": 8118
+   },
+   {
+    "id": 299957530,
+    "name": "suptejas/electric",
+    "stars": 244
+   },
+   {
+    "id": 1183749490,
+    "name": "nbafrank/uvr",
+    "stars": 372
+   },
+   {
+    "id": 992455855,
+    "name": "wahyudesu/Fastapi-AI-Production-Template",
+    "stars": 115
+   },
+   {
+    "id": 999639161,
+    "name": "nzlz/colcon-uv",
+    "stars": 35
+   },
+   {
+    "id": 407734014,
+    "name": "Calbabreaker/yacpm",
+    "stars": 36
+   },
+   {
+    "id": 1209518845,
+    "name": "Pro-GenAI/pepip",
+    "stars": 8
+   },
+   {
+    "id": 500594039,
+    "name": "DEgITx/cpk",
+    "stars": 23
+   },
+   {
+    "id": 1196713463,
+    "name": "canonical/uv-sdk",
+    "stars": 2
+   }
+  ]
+ },
+ "python linter": {
+  "total": 3377,
+  "ms": 2446,
+  "top": [
+   {
+    "id": 523043277,
+    "name": "astral-sh/ruff",
+    "stars": 51270
+   },
+   {
+    "id": 124593057,
+    "name": "wemake-services/wemake-python-styleguide",
+    "stars": 2948
+   },
+   {
+    "id": 7053637,
+    "name": "python/mypy",
+    "stars": 20724
+   },
+   {
+    "id": 13782029,
+    "name": "SublimeLinter/SublimeLinter",
+    "stars": 2040
+   },
+   {
+    "id": 167795381,
+    "name": "import-linter/import-linter",
+    "stars": 1263
+   },
+   {
+    "id": 83462592,
+    "name": "asottile/pyupgrade",
+    "stars": 4124
+   },
+   {
+    "id": 615062592,
+    "name": "microsoft/vscode-mypy",
+    "stars": 152
+   },
+   {
+    "id": 18508013,
+    "name": "PyCQA/pyflakes",
+    "stars": 1466
+   },
+   {
+    "id": 17689377,
+    "name": "pre-commit/pre-commit",
+    "stars": 15696
+   },
+   {
+    "id": 639678591,
+    "name": "jsh9/pydoclint",
+    "stars": 234
+   }
+  ]
+ },
+ "python code formatter": {
+  "total": 3038,
+  "ms": 2487,
+  "top": [
+   {
+    "id": 125266328,
+    "name": "psf/black",
+    "stars": 42186
+   },
+   {
+    "id": 523043277,
+    "name": "astral-sh/ruff",
+    "stars": 51270
+   },
+   {
+    "id": 144499900,
+    "name": "jupyterlab-contrib/jupyterlab_code_formatter",
+    "stars": 908
+   },
+   {
+    "id": 1206729,
+    "name": "hhatto/autopep8",
+    "stars": 4654
+   },
+   {
+    "id": 202137421,
+    "name": "life4/awesome-python-code-formatters",
+    "stars": 388
+   },
+   {
+    "id": 1001931311,
+    "name": "daaain/claude-code-log",
+    "stars": 1263
+   },
+   {
+    "id": 292369405,
+    "name": "grantjenks/blue",
+    "stars": 408
+   },
+   {
+    "id": 243785305,
+    "name": "snakemake/snakefmt",
+    "stars": 197
+   },
+   {
+    "id": 170367633,
+    "name": "lgeiger/black-action",
+    "stars": 190
+   },
+   {
+    "id": 31251295,
+    "name": "lincanbin/Pythonic-PHP-Code-Formatter",
+    "stars": 69
+   }
+  ]
+ },
+ "static site generator": {
+  "total": 17072,
+  "ms": 2513,
+  "top": [
+   {
+    "id": 128237146,
+    "name": "vuejs/vuepress",
+    "stars": 22715
+   },
+   {
+    "id": 260338399,
+    "name": "vuejs/vitepress",
+    "stars": 18491
+   },
+   {
+    "id": 29514104,
+    "name": "decaporg/decap-cms",
+    "stars": 19483
+   },
+   {
+    "id": 102987907,
+    "name": "react-static/react-static",
+    "stars": 10338
+   },
+   {
+    "id": 261759626,
+    "name": "vuepress/core",
+    "stars": 2833
+   },
+   {
+    "id": 65252,
+    "name": "jekyll/jekyll",
+    "stars": 51783
+   },
+   {
+    "id": 24027784,
+    "name": "myles/awesome-static-generators",
+    "stars": 3772
+   },
+   {
+    "id": 38007053,
+    "name": "dotnet/docfx",
+    "stars": 4452
+   },
+   {
+    "id": 3337657,
+    "name": "jnordberg/wintersmith",
+    "stars": 3474
+   },
+   {
+    "id": 19157620,
+    "name": "netlify/staticgen",
+    "stars": 2429
+   }
+  ]
+ },
+ "cross platform desktop apps with web technologies": {
+  "total": 19,
+  "ms": 2587,
+  "top": [
+   {
+    "id": 1024268658,
+    "name": "ysdragon/webview",
+    "stars": 7
+   },
+   {
+    "id": 657909563,
+    "name": "rajr5/electron",
+    "stars": 0
+   },
+   {
+    "id": 282344602,
+    "name": "Satireven/milkui",
+    "stars": 0
+   },
+   {
+    "id": 407775325,
+    "name": "atomlong/electron-bin",
+    "stars": 0
+   },
+   {
+    "id": 517321080,
+    "name": "atomlong/electron16-bin",
+    "stars": 0
+   },
+   {
+    "id": 788461191,
+    "name": "noahvogt/electron30-xdg",
+    "stars": 0
+   },
+   {
+    "id": 772642315,
+    "name": "noahvogt/electron29-xdg",
+    "stars": 0
+   },
+   {
+    "id": 1063876841,
+    "name": "Alternat1v3/Portfolio-Desktop-App-Electron",
+    "stars": 0
+   },
+   {
+    "id": 793410168,
+    "name": "chapysgc2/App-Desktop",
+    "stars": 0
+   },
+   {
+    "id": 864940084,
+    "name": "Acro88/electron-typescript-tailwind-webpack-template",
+    "stars": 0
+   }
+  ]
+ },
+ "cross platform mobile ui toolkit": {
+  "total": 25,
+  "ms": 2569,
+  "top": [
+   {
+    "id": 12256376,
+    "name": "ionic-team/ionic-framework",
+    "stars": 52753
+   },
+   {
+    "id": 834710,
+    "name": "dennisjzh/GwtMobile",
+    "stars": 163
+   },
+   {
+    "id": 1312626011,
+    "name": "belluikit/bellui",
+    "stars": 30
+   },
+   {
+    "id": 387882327,
+    "name": "hassanannajjar/common_ui_toolkit",
+    "stars": 7
+   },
+   {
+    "id": 5872795,
+    "name": "uijs/uijs",
+    "stars": 5
+   },
+   {
+    "id": 258524543,
+    "name": "deliciafernandes/Flutter-Apps-AtoZ",
+    "stars": 6
+   },
+   {
+    "id": 332681615,
+    "name": "diina-gh/shop-ionic",
+    "stars": 3
+   },
+   {
+    "id": 13329715,
+    "name": "AppSauceLabs/ROUX",
+    "stars": 0
+   },
+   {
+    "id": 331640177,
+    "name": "diina-gh/melody-ionic-cordova",
+    "stars": 3
+   },
+   {
+    "id": 590043832,
+    "name": "cyberprophet/maui-seven-stocks-mini",
+    "stars": 0
+   }
+  ]
+ },
+ "open source game engine": {
+  "total": 2029,
+  "ms": 2456,
+  "top": [
+   {
+    "id": 2567475,
+    "name": "gameplay3d/gameplay",
+    "stars": 4963
+   },
+   {
+    "id": 14590125,
+    "name": "nem0/LumixEngine",
+    "stars": 3907
+   },
+   {
+    "id": 158645957,
+    "name": "OpenDiablo2/OpenDiablo2",
+    "stars": 11110
+   },
+   {
+    "id": 18179848,
+    "name": "ezEngine/ezEngine",
+    "stars": 2041
+   },
+   {
+    "id": 141283339,
+    "name": "BlindMindStudios/StarRuler2-Source",
+    "stars": 1535
+   },
+   {
+    "id": 959908,
+    "name": "OpenRA/OpenRA",
+    "stars": 17793
+   },
+   {
+    "id": 21331090,
+    "name": "4ian/GDevelop",
+    "stars": 28935
+   },
+   {
+    "id": 47440536,
+    "name": "cocos/cocos-engine",
+    "stars": 9933
+   },
+   {
+    "id": 13189252,
+    "name": "increpare/PuzzleScript",
+    "stars": 1115
+   },
+   {
+    "id": 136570231,
+    "name": "stride3d/stride",
+    "stars": 7949
+   }
+  ]
+ },
+ "http client library for python": {
+  "total": 211,
+  "ms": 2379,
+  "top": [
+   {
+    "id": 2410676,
+    "name": "urllib3/urllib3",
+    "stars": 4083
+   },
+   {
+    "id": 41890299,
+    "name": "ipfs-shipyard/py-ipfs-http-client",
+    "stars": 687
+   },
+   {
+    "id": 53002916,
+    "name": "httplib2/httplib2",
+    "stars": 514
+   },
+   {
+    "id": 440757282,
+    "name": "databento/databento-python",
+    "stars": 314
+   },
+   {
+    "id": 128578499,
+    "name": "tomplus/kubernetes_asyncio",
+    "stars": 440
+   },
+   {
+    "id": 3003791,
+    "name": "geventhttpclient/geventhttpclient",
+    "stars": 564
+   },
+   {
+    "id": 454560833,
+    "name": "grafana-toolbox/grafana-client",
+    "stars": 142
+   },
+   {
+    "id": 12426527,
+    "name": "crate/crate-python",
+    "stars": 85
+   },
+   {
+    "id": 243736354,
+    "name": "glassnode/glassnode-api-python-client",
+    "stars": 59
+   },
+   {
+    "id": 2936314,
+    "name": "datafolklabs/drest",
+    "stars": 73
+   }
+  ]
+ },
+ "command line http client": {
+  "total": 1272,
+  "ms": 2436,
+  "top": [
+   {
+    "id": 55584626,
+    "name": "httpie/http-prompt",
+    "stars": 9109
+   },
+   {
+    "id": 3544424,
+    "name": "httpie/cli",
+    "stars": 38719
+   },
+   {
+    "id": 19330736,
+    "name": "NuGet/NuGet.Client",
+    "stars": 825
+   },
+   {
+    "id": 569041,
+    "name": "curl/curl",
+    "stars": 43527
+   },
+   {
+    "id": 33047868,
+    "name": "ikreymer/cdx-index-client",
+    "stars": 202
+   },
+   {
+    "id": 179772617,
+    "name": "WindSoilder/hors",
+    "stars": 248
+   },
+   {
+    "id": 56897766,
+    "name": "donnemartin/gitsome",
+    "stars": 7695
+   },
+   {
+    "id": 31923927,
+    "name": "porras/crul",
+    "stars": 113
+   },
+   {
+    "id": 107006485,
+    "name": "mstruebing/tldr",
+    "stars": 267
+   },
+   {
+    "id": 480161075,
+    "name": "api1st/httprun",
+    "stars": 48
+   }
+  ]
+ },
+ "open source api client like postman": {
+  "total": 2,
+  "ms": 2230,
+  "top": [
+   {
+    "id": 1416706252,
+    "name": "jithin245/requestbench",
+    "stars": 0
+   },
+   {
+    "id": 110963819,
+    "name": "smmcgrath/MyFirstApp",
+    "stars": 1
+   }
+  ]
+ },
+ "screen recording and live streaming": {
+  "total": 254,
+  "ms": 2774,
+  "top": [
+   {
+    "id": 13233158,
+    "name": "obsproject/obs-studio",
+    "stars": 79615
+   },
+   {
+    "id": 825005239,
+    "name": "anonfaded/FadCam",
+    "stars": 2902
+   },
+   {
+    "id": 161028383,
+    "name": "vuquangtrong/androidmirrroing",
+    "stars": 60
+   },
+   {
+    "id": 584687202,
+    "name": "OpenBSDGuy/ffmpeg_openbsd",
+    "stars": 13
+   },
+   {
+    "id": 874164841,
+    "name": "LucienHH/obs-doom-transition",
+    "stars": 29
+   },
+   {
+    "id": 1282566356,
+    "name": "CalvinSturm/FastCast-releases",
+    "stars": 26
+   },
+   {
+    "id": 1218731415,
+    "name": "ardhrubo/email-blurrer",
+    "stars": 4
+   },
+   {
+    "id": 1242711067,
+    "name": "MalloyTheDev/MalloyStudio",
+    "stars": 2
+   },
+   {
+    "id": 1412550239,
+    "name": "Bykemi/dedcut-source",
+    "stars": 6
+   },
+   {
+    "id": 889982935,
+    "name": "PaimountLtd/open-source-software-for-live-streaming-and-screen-recording",
+    "stars": 0
+   }
+  ]
+ },
+ "media player": {
+  "total": 25562,
+  "ms": 2531,
+  "top": [
+   {
+    "id": 1444372497,
+    "name": "Minireel/HGhub",
+    "stars": 9345
+   },
+   {
+    "id": 6201092,
+    "name": "mpv-player/mpv",
+    "stars": 38147
+   },
+   {
+    "id": 27166370,
+    "name": "piemonte/Player",
+    "stars": 2199
+   },
+   {
+    "id": 402527443,
+    "name": "androidx/media",
+    "stars": 3079
+   },
+   {
+    "id": 862398823,
+    "name": "alexfreud/winamp",
+    "stars": 725
+   },
+   {
+    "id": 20818126,
+    "name": "google/ExoPlayer",
+    "stars": 21933
+   },
+   {
+    "id": 311451920,
+    "name": "moneytoo/Player",
+    "stars": 2813
+   },
+   {
+    "id": 462770331,
+    "name": "media-kit/media-kit",
+    "stars": 1854
+   },
+   {
+    "id": 667006,
+    "name": "videojs/video.js",
+    "stars": 40196
+   },
+   {
+    "id": 139664351,
+    "name": "alandtse/alexa_media_player",
+    "stars": 2006
+   }
+  ]
+ },
+ "download videos from youtube": {
+  "total": 5849,
+  "ms": 2427,
+  "top": [
+   {
+    "id": 157858597,
+    "name": "Tyrrrz/YoutubeDownloader",
+    "stars": 16733
+   },
+   {
+    "id": 1039520,
+    "name": "ytdl-org/youtube-dl",
+    "stars": 141572
+   },
+   {
+    "id": 138611811,
+    "name": "shaked6540/YoutubePlaylistDownloader",
+    "stars": 3185
+   },
+   {
+    "id": 1086398,
+    "name": "Jamie-Landeg-Jones/youtube-dl",
+    "stars": 42
+   },
+   {
+    "id": 7380528,
+    "name": "jeckman/YouTube-Downloader",
+    "stars": 897
+   },
+   {
+    "id": 877830661,
+    "name": "pH-7/Download-Simply-Videos-From-YouTube",
+    "stars": 406
+   },
+   {
+    "id": 3650224,
+    "name": "flagbug/YoutubeExtractor",
+    "stars": 833
+   },
+   {
+    "id": 37553826,
+    "name": "ytb2mp3/youtube-mp3-downloader",
+    "stars": 413
+   },
+   {
+    "id": 517736014,
+    "name": "aandrew-me/ytDownloader",
+    "stars": 10688
+   },
+   {
+    "id": 4095390,
+    "name": "eyecatchup/php-yt_downloader",
+    "stars": 297
+   }
+  ]
+ },
+ "neovim configuration distribution": {
+  "total": 24,
+  "ms": 3080,
+  "top": [
+   {
+    "id": 178259731,
+    "name": "tsakirist/dotfiles",
+    "stars": 26
+   },
+   {
+    "id": 180671847,
+    "name": "oniani/dot",
+    "stars": 10
+   },
+   {
+    "id": 762051877,
+    "name": "44mira/tyraelvim",
+    "stars": 4
+   },
+   {
+    "id": 742904890,
+    "name": "JustBarnt/NvaderVIM",
+    "stars": 5
+   },
+   {
+    "id": 1150770425,
+    "name": "joaostack/stacknvim",
+    "stars": 2
+   },
+   {
+    "id": 593366196,
+    "name": "HustavoJhon/dotfiles",
+    "stars": 11
+   },
+   {
+    "id": 600844256,
+    "name": "kradalby/neovim",
+    "stars": 0
+   },
+   {
+    "id": 999065693,
+    "name": "komar-23/nide",
+    "stars": 0
+   },
+   {
+    "id": 1061066548,
+    "name": "Alex1478/neovim-old",
+    "stars": 0
+   },
+   {
+    "id": 714377329,
+    "name": "Dev-Chase/lvim_config",
+    "stars": 0
+   }
+  ]
+ },
+ "vim fork focused on extensibility": {
+  "total": 7,
+  "ms": 1943,
+  "top": [
+   {
+    "id": 16408992,
+    "name": "neovim/neovim",
+    "stars": 103689
+   },
+   {
+    "id": 952690188,
+    "name": "ekjotsinghmakhija/neovim",
+    "stars": 0
+   },
+   {
+    "id": 1179269587,
+    "name": "lukedev45/neovim",
+    "stars": 0
+   },
+   {
+    "id": 1013601022,
+    "name": "DJjhaii/DarkSpawner",
+    "stars": 0
+   },
+   {
+    "id": 271240495,
+    "name": "KaOS-Community-Packages/neovim",
+    "stars": 0
+   },
+   {
+    "id": 68144957,
+    "name": "pld-linux/neovim",
+    "stars": 0
+   },
+   {
+    "id": 1349973319,
+    "name": "nachovim/nachovim",
+    "stars": 0
+   }
+  ]
+ },
+ "code editor written in rust": {
+  "total": 82,
+  "ms": 2709,
+  "top": [
+   {
+    "id": 120425779,
+    "name": "lapce/lapce",
+    "stars": 39062
+   },
+   {
+    "id": 239454891,
+    "name": "ilai-deutel/kibi",
+    "stars": 1959
+   },
+   {
+    "id": 1448990972,
+    "name": "MuaraAI/FluxCode",
+    "stars": 88
+   },
+   {
+    "id": 1236640467,
+    "name": "AabhaJahagirdar/VelociRust",
+    "stars": 16
+   },
+   {
+    "id": 1123987764,
+    "name": "kashsuks/Pinel",
+    "stars": 10
+   },
+   {
+    "id": 862889998,
+    "name": "0xGingi/phantom",
+    "stars": 9
+   },
+   {
+    "id": 427803301,
+    "name": "Wardenfar/Rust-Text-Editor-Gui",
+    "stars": 3
+   },
+   {
+    "id": 1084237287,
+    "name": "celymyst/Oxidy",
+    "stars": 4
+   },
+   {
+    "id": 196292576,
+    "name": "AndrewBregger/rem",
+    "stars": 2
+   },
+   {
+    "id": 1414927472,
+    "name": "boleklolek/rustext",
+    "stars": 8
+   }
+  ]
+ },
+ "tiling window manager for macos": {
+  "total": 210,
+  "ms": 2151,
+  "top": [
+   {
+    "id": 643647588,
+    "name": "nikitabobko/AeroSpace",
+    "stars": 23857
+   },
+   {
+    "id": 10115880,
+    "name": "ianyh/Amethyst",
+    "stars": 16332
+   },
+   {
+    "id": 184909163,
+    "name": "asmvik/yabai",
+    "stars": 29842
+   },
+   {
+    "id": 275561012,
+    "name": "glzr-io/glazewm",
+    "stars": 13004
+   },
+   {
+    "id": 1025929171,
+    "name": "acsandmann/rift",
+    "stars": 2741
+   },
+   {
+    "id": 949144653,
+    "name": "karinushka/paneru",
+    "stars": 2496
+   },
+   {
+    "id": 440351007,
+    "name": "mogenson/PaperWM.spoon",
+    "stars": 1811
+   },
+   {
+    "id": 85761596,
+    "name": "saforem2/chunkwm",
+    "stars": 51
+   },
+   {
+    "id": 796118172,
+    "name": "tmandry/glide",
+    "stars": 707
+   },
+   {
+    "id": 1453694054,
+    "name": "gakonst/tatami",
+    "stars": 91
+   }
+  ]
+ },
+ "keyboard remapping for macos": {
+  "total": 51,
+  "ms": 2772,
+  "top": [
+   {
+    "id": 437925159,
+    "name": "petrstepanov/gnome-macos-remap-wayland",
+    "stars": 233
+   },
+   {
+    "id": 1258050999,
+    "name": "hoyaaaa/trackpoint-daemon-macos",
+    "stars": 4
+   },
+   {
+    "id": 414578431,
+    "name": "adamkdean/remap-k120",
+    "stars": 4
+   },
+   {
+    "id": 1378060692,
+    "name": "A7ALABS/redragon-k673-macos",
+    "stars": 6
+   },
+   {
+    "id": 1448977773,
+    "name": "AmoabaKelvin/keylight",
+    "stars": 6
+   },
+   {
+    "id": 292130291,
+    "name": "rukbotto/macos-keyboard-remap",
+    "stars": 0
+   },
+   {
+    "id": 586222085,
+    "name": "marcuscarlssoon/macOS_keyboard_remapping",
+    "stars": 0
+   },
+   {
+    "id": 1430122110,
+    "name": "Paari/keyboard-mapping",
+    "stars": 0
+   },
+   {
+    "id": 1203898791,
+    "name": "gazjones00/MacRemap",
+    "stars": 2
+   },
+   {
+    "id": 261464358,
+    "name": "matthewadams/macos-keyboard-remap",
+    "stars": 0
+   }
+  ]
+ },
+ "clipboard manager for mac": {
+  "total": 164,
+  "ms": 2274,
+  "top": [
+   {
+    "id": 119637215,
+    "name": "p0deje/Maccy",
+    "stars": 22346
+   },
+   {
+    "id": 18004805,
+    "name": "naotaka/ClipMenu",
+    "stars": 937
+   },
+   {
+    "id": 784742855,
+    "name": "PasteBar/PasteBarApp",
+    "stars": 2200
+   },
+   {
+    "id": 1111053300,
+    "name": "yuzeguitarist/Deck",
+    "stars": 1492
+   },
+   {
+    "id": 1152447423,
+    "name": "nickustinov/itsypad-macos",
+    "stars": 448
+   },
+   {
+    "id": 746019409,
+    "name": "saumsy/Macboard",
+    "stars": 220
+   },
+   {
+    "id": 824354877,
+    "name": "0PandaDEV/Qopy",
+    "stars": 408
+   },
+   {
+    "id": 95215585,
+    "name": "aaabhilash97/cliptext-clipboard-manager",
+    "stars": 41
+   },
+   {
+    "id": 542986492,
+    "name": "IndieGoodies/PastePal",
+    "stars": 248
+   },
+   {
+    "id": 254133658,
+    "name": "Swift-open-source/UltraTabSaver",
+    "stars": 293
+   }
+  ]
+ },
+ "self-hosted rss reader": {
+  "total": 322,
+  "ms": 2592,
+  "top": [
+   {
+    "id": 8912617,
+    "name": "Athou/commafeed",
+    "stars": 3651
+   },
+   {
+    "id": 9255495,
+    "name": "stringer-rss/stringer",
+    "stars": 4126
+   },
+   {
+    "id": 767976247,
+    "name": "0x2E/fusion",
+    "stars": 2407
+   },
+   {
+    "id": 1107212497,
+    "name": "LeslieLeung/glean",
+    "stars": 874
+   },
+   {
+    "id": 239322686,
+    "name": "angristan/feedbin-docker",
+    "stars": 277
+   },
+   {
+    "id": 32134524,
+    "name": "nilsbraden/ttrss-reader-fork",
+    "stars": 182
+   },
+   {
+    "id": 9058487,
+    "name": "pietheinstrengholt/rssmonster",
+    "stars": 579
+   },
+   {
+    "id": 2500559,
+    "name": "fossar/selfoss",
+    "stars": 2477
+   },
+   {
+    "id": 906603078,
+    "name": "fiatjaf/narr",
+    "stars": 67
+   },
+   {
+    "id": 531848052,
+    "name": "rumca-js/Django-link-archive",
+    "stars": 150
+   }
+  ]
+ },
+ "e-book manager": {
+  "total": 210,
+  "ms": 2739,
+  "top": [
+   {
+    "id": 52642045,
+    "name": "devimust/easy-bookmark-manager",
+    "stars": 66
+   },
+   {
+    "id": 362256142,
+    "name": "UrosVuj/Explorer-Bookmark",
+    "stars": 24
+   },
+   {
+    "id": 42731273,
+    "name": "KDE/bookmanager",
+    "stars": 5
+   },
+   {
+    "id": 711207731,
+    "name": "umerghafoor/E-Book_manager",
+    "stars": 15
+   },
+   {
+    "id": 137625328,
+    "name": "ereid7/electron-bookmark-manager",
+    "stars": 2
+   },
+   {
+    "id": 330942703,
+    "name": "DamienSALEM/Easy-Book-Manager",
+    "stars": 0
+   },
+   {
+    "id": 196885147,
+    "name": "sudheer-ranga/easy-bookmark-manager",
+    "stars": 2
+   },
+   {
+    "id": 270216647,
+    "name": "sujoys10/expense-book",
+    "stars": 4
+   },
+   {
+    "id": 121733250,
+    "name": "rounakpolley/e-book-Manager",
+    "stars": 3
+   },
+   {
+    "id": 406228825,
+    "name": "Yash54/ExpenseBook",
+    "stars": 2
+   }
+  ]
+ },
+ "find secrets in git repositories": {
+  "total": 29,
+  "ms": 2352,
+  "top": [
+   {
+    "id": 647761894,
+    "name": "padok-team/git-secret-scanner",
+    "stars": 71
+   },
+   {
+    "id": 146666834,
+    "name": "mapbox/secret-shield",
+    "stars": 33
+   },
+   {
+    "id": 227420834,
+    "name": "intuit/gitdetect",
+    "stars": 18
+   },
+   {
+    "id": 764171751,
+    "name": "abdullahkhawer/find-and-report-secrets-in-code",
+    "stars": 5
+   },
+   {
+    "id": 518908087,
+    "name": "bassammaged/lazyGitleaks",
+    "stars": 3
+   },
+   {
+    "id": 1068391709,
+    "name": "cristibtz/SecretFinder",
+    "stars": 0
+   },
+   {
+    "id": 1348556721,
+    "name": "langacorp/leakform",
+    "stars": 3
+   },
+   {
+    "id": 1044279896,
+    "name": "Azeem-dash/github-secrets-scanner",
+    "stars": 0
+   },
+   {
+    "id": 269195543,
+    "name": "customcommander/git-secrets-examples",
+    "stars": 1
+   },
+   {
+    "id": 1452674982,
+    "name": "Mohamed01032/secrets-scanner",
+    "stars": 0
+   }
+  ]
+ },
+ "vulnerability scanner for container images": {
+  "total": 56,
+  "ms": 2365,
+  "top": [
+   {
+    "id": 267054247,
+    "name": "anchore/grype",
+    "stars": 13269
+   },
+   {
+    "id": 268833180,
+    "name": "aquasecurity/trivy-action",
+    "stars": 1470
+   },
+   {
+    "id": 36458130,
+    "name": "baude/image-scanner",
+    "stars": 13
+   },
+   {
+    "id": 840731904,
+    "name": "openclarity/kubeclarity",
+    "stars": 46
+   },
+   {
+    "id": 236433581,
+    "name": "abhisek/container-image-scanner-api",
+    "stars": 5
+   },
+   {
+    "id": 283696162,
+    "name": "appsecco/container-image-scanner-api",
+    "stars": 2
+   },
+   {
+    "id": 832711142,
+    "name": "popey/grype-snap",
+    "stars": 3
+   },
+   {
+    "id": 974715250,
+    "name": "pavanrh1432/Vulnerability-Scanner-for-Container-Images",
+    "stars": 0
+   },
+   {
+    "id": 1120007760,
+    "name": "ahmed230104036/Container-Vulnerability-Scanner",
+    "stars": 0
+   },
+   {
+    "id": 1023663634,
+    "name": "sayeeswari-git/container-vulnerability-dashboard",
+    "stars": 0
+   }
+  ]
+ },
+ "mesh vpn built on wireguard": {
+  "total": 7,
+  "ms": 2531,
+  "top": [
+   {
+    "id": 1177812449,
+    "name": "herenickname/meshezia",
+    "stars": 2
+   },
+   {
+    "id": 1122500554,
+    "name": "daemonless/tailscale",
+    "stars": 1
+   },
+   {
+    "id": 1316734112,
+    "name": "wilsonstone/wiremesh",
+    "stars": 0
+   },
+   {
+    "id": 1166447375,
+    "name": "AlecInfo/umbra",
+    "stars": 1
+   },
+   {
+    "id": 1264343897,
+    "name": "Albro3459/CloudGateway",
+    "stars": 1
+   },
+   {
+    "id": 1235940193,
+    "name": "api-evangelist/tailscale",
+    "stars": 0
+   },
+   {
+    "id": 1437454314,
+    "name": "headmesh-dev/headmesh",
+    "stars": 1
+   }
+  ]
+ },
+ "open source remote desktop": {
+  "total": 421,
+  "ms": 3076,
+  "top": [
+   {
+    "id": 299354207,
+    "name": "rustdesk/rustdesk",
+    "stars": 129679
+   },
+   {
+    "id": 426167234,
+    "name": "nubosoftware/linux-remote-desktop",
+    "stars": 310
+   },
+   {
+    "id": 678144466,
+    "name": "Ruddle/RemoteCam",
+    "stars": 777
+   },
+   {
+    "id": 294573749,
+    "name": "KangLin/RabbitRemoteControl",
+    "stars": 338
+   },
+   {
+    "id": 97478419,
+    "name": "mockoon/mockoon",
+    "stars": 8487
+   },
+   {
+    "id": 46535947,
+    "name": "YiannisBourkelis/Andama-Remote-Desktop",
+    "stars": 59
+   },
+   {
+    "id": 433149194,
+    "name": "OpenSourceCommunityBrasil/Aegys-Acesso-Remoto",
+    "stars": 130
+   },
+   {
+    "id": 927634907,
+    "name": "Techlm77/LinuxPlay",
+    "stars": 635
+   },
+   {
+    "id": 1333486649,
+    "name": "ningbainb/deepseek-harness-desktop",
+    "stars": 935
+   },
+   {
+    "id": 312996963,
+    "name": "selkies-project/docker-selkies-glx-desktop",
+    "stars": 459
+   }
+  ]
+ },
+ "continuous file synchronization between devices": {
+  "total": 3,
+  "ms": 1652,
+  "top": [
+   {
+    "id": 1350839392,
+    "name": "hassio-addons/app-syncthing",
+    "stars": 1
+   },
+   {
+    "id": 1389168737,
+    "name": "Syncthing-2026/.github",
+    "stars": 0
+   },
+   {
+    "id": 218151890,
+    "name": "jettbrains/-L-",
+    "stars": 171
+   }
+  ]
+ },
+ "self-hosted cloud storage": {
+  "total": 730,
+  "ms": 2890,
+  "top": [
+   {
+    "id": 120156076,
+    "name": "cloudreve/cloudreve",
+    "stars": 28974
+   },
+   {
+    "id": 766341786,
+    "name": "HeyPuter/puter",
+    "stars": 44183
+   },
+   {
+    "id": 586207268,
+    "name": "hudikhq/hoodik",
+    "stars": 1556
+   },
+   {
+    "id": 939308212,
+    "name": "AtalayaLabs/OxiCloud",
+    "stars": 3709
+   },
+   {
+    "id": 1099490130,
+    "name": "plutonhq/pluton",
+    "stars": 887
+   },
+   {
+    "id": 60499652,
+    "name": "cubiclesoft/cloud-storage-server",
+    "stars": 101
+   },
+   {
+    "id": 1130509468,
+    "name": "kuchingneko28/neko-drive",
+    "stars": 30
+   },
+   {
+    "id": 180190854,
+    "name": "appwrite/appwrite",
+    "stars": 58104
+   },
+   {
+    "id": 354207203,
+    "name": "VueFileManager/vuefilemanager",
+    "stars": 62
+   },
+   {
+    "id": 1334475917,
+    "name": "elevityadmin/trilli",
+    "stars": 64
+   }
+  ]
+ },
+ "self-hosted team chat": {
+  "total": 311,
+  "ms": 2338,
+  "top": [
+   {
+    "id": 3673976,
+    "name": "sdelements/lets-chat",
+    "stars": 9786
+   },
+   {
+    "id": 632902959,
+    "name": "AprilNEA/AChat",
+    "stars": 3257
+   },
+   {
+    "id": 1450794567,
+    "name": "agentes-chat/agentes-chat",
+    "stars": 1590
+   },
+   {
+    "id": 1201847370,
+    "name": "aozorae/Edgechat",
+    "stars": 1453
+   },
+   {
+    "id": 1160171263,
+    "name": "zooid-ai/zooid",
+    "stars": 66
+   },
+   {
+    "id": 591565521,
+    "name": "shamspias/customizable-gpt-chatbot",
+    "stars": 411
+   },
+   {
+    "id": 1192216774,
+    "name": "dandacompany/deskrpg",
+    "stars": 221
+   },
+   {
+    "id": 1102387633,
+    "name": "ZenYukti-Labs/OpenMindWell",
+    "stars": 50
+   },
+   {
+    "id": 1158233394,
+    "name": "buildsense-ai/cats-company",
+    "stars": 4
+   },
+   {
+    "id": 1217222433,
+    "name": "tashfeenahmed/circlechat",
+    "stars": 97
+   }
+  ]
+ },
+ "javascript data visualization library": {
+  "total": 658,
+  "ms": 2485,
+  "top": [
+   {
+    "id": 12152307,
+    "name": "openglobus/openglobus",
+    "stars": 956
+   },
+   {
+    "id": 116067411,
+    "name": "syt123450/giojs",
+    "stars": 1742
+   },
+   {
+    "id": 243440049,
+    "name": "themustafaomar/jsvectormap",
+    "stars": 543
+   },
+   {
+    "id": 374784415,
+    "name": "vizzuhq/vizzu-lib",
+    "stars": 2050
+   },
+   {
+    "id": 4528770,
+    "name": "jsxgraph/jsxgraph",
+    "stars": 1497
+   },
+   {
+    "id": 3510746,
+    "name": "anomal/RainbowVis-JS",
+    "stars": 356
+   },
+   {
+    "id": 5235639,
+    "name": "hgraph-os/hGraph",
+    "stars": 294
+   },
+   {
+    "id": 34920966,
+    "name": "ebemunk/chess-dataviz",
+    "stars": 84
+   },
+   {
+    "id": 200947732,
+    "name": "visgl/hubble.gl",
+    "stars": 185
+   },
+   {
+    "id": 163701535,
+    "name": "BasicPrimitives/javascript",
+    "stars": 65
+   }
+  ]
+ },
+ "open source business intelligence dashboards": {
+  "total": 31,
+  "ms": 2809,
+  "top": [
+   {
+    "id": 126015775,
+    "name": "biblibre/urungi",
+    "stars": 120
+   },
+   {
+    "id": 231346548,
+    "name": "jortilles/EDA",
+    "stars": 215
+   },
+   {
+    "id": 53849880,
+    "name": "widestage/widestage",
+    "stars": 277
+   },
+   {
+    "id": 81016816,
+    "name": "yogeshsd/query2report",
+    "stars": 53
+   },
+   {
+    "id": 1346307946,
+    "name": "dashloom-dev/dashloom",
+    "stars": 48
+   },
+   {
+    "id": 529204494,
+    "name": "DashboardBuilder/open-source-dashboard",
+    "stars": 4
+   },
+   {
+    "id": 1337825693,
+    "name": "nardony-lang/biforglpi",
+    "stars": 2
+   },
+   {
+    "id": 1182767289,
+    "name": "DavnsTech/datapulse-dashboard",
+    "stars": 0
+   },
+   {
+    "id": 1282069620,
+    "name": "bahira/business-intelligence-dashboard",
+    "stars": 0
+   },
+   {
+    "id": 1338063789,
+    "name": "avihelical-hub/awesome-business-intelligence-tools",
+    "stars": 1
+   }
+  ]
+ },
+ "workflow orchestration for data pipelines": {
+  "total": 507,
+  "ms": 2288,
+  "top": [
+   {
+    "id": 139199684,
+    "name": "PrefectHQ/prefect",
+    "stars": 24163
+   },
+   {
+    "id": 463354076,
+    "name": "durable-workflow/workflow",
+    "stars": 1282
+   },
+   {
+    "id": 350431276,
+    "name": "raystack/optimus",
+    "stars": 770
+   },
+   {
+    "id": 1011785222,
+    "name": "kafein-technology/KAI-Flow",
+    "stars": 58
+   },
+   {
+    "id": 1178385789,
+    "name": "NVIDIA/nvflow",
+    "stars": 29
+   },
+   {
+    "id": 1123956852,
+    "name": "lzjever/routilux",
+    "stars": 69
+   },
+   {
+    "id": 969365841,
+    "name": "pipelinetoinsights/dagster-dbt-orchestration-example",
+    "stars": 9
+   },
+   {
+    "id": 842487010,
+    "name": "jonathanbhaskar/dagster-odp",
+    "stars": 38
+   },
+   {
+    "id": 748491106,
+    "name": "broomva/vortex",
+    "stars": 5
+   },
+   {
+    "id": 634677908,
+    "name": "gersonrs/data-engineering-for-machine-learning",
+    "stars": 7
+   }
+  ]
+ },
+ "stream processing framework": {
+  "total": 556,
+  "ms": 2432,
+  "top": [
+   {
+    "id": 571186647,
+    "name": "pathwaycom/pathway",
+    "stars": 61992
+   },
+   {
+    "id": 48806149,
+    "name": "WallarooLabs/wally",
+    "stars": 1485
+   },
+   {
+    "id": 730714815,
+    "name": "aceld/kis-flow",
+    "stars": 409
+   },
+   {
+    "id": 163260126,
+    "name": "gojek/ziggurat",
+    "stars": 408
+   },
+   {
+    "id": 22634457,
+    "name": "cdapio/tigon",
+    "stars": 284
+   },
+   {
+    "id": 324505913,
+    "name": "rlink-rs/rlink-rs",
+    "stars": 485
+   },
+   {
+    "id": 30008530,
+    "name": "pulsarIO/jetstream",
+    "stars": 115
+   },
+   {
+    "id": 1058247783,
+    "name": "wingfoil-io/wingfoil",
+    "stars": 232
+   },
+   {
+    "id": 218868348,
+    "name": "digitalocean/firebolt",
+    "stars": 720
+   },
+   {
+    "id": 354974364,
+    "name": "scramdblabs/callysto",
+    "stars": 170
+   }
+  ]
+ },
+ "rust web framework": {
+  "total": 1666,
+  "ms": 2645,
+  "top": [
+   {
+    "id": 54168759,
+    "name": "rwf2/Rocket",
+    "stars": 25800
+   },
+   {
+    "id": 40813887,
+    "name": "flosse/rust-web-framework-comparison",
+    "stars": 5769
+   },
+   {
+    "id": 105379569,
+    "name": "actix/actix-web",
+    "stars": 24960
+   },
+   {
+    "id": 114466145,
+    "name": "yewstack/yew",
+    "stars": 32858
+   },
+   {
+    "id": 140609832,
+    "name": "seanmonstar/warp",
+    "stars": 10387
+   },
+   {
+    "id": 20702627,
+    "name": "iron/iron",
+    "stars": 6105
+   },
+   {
+    "id": 39148240,
+    "name": "tomaka/rouille",
+    "stars": 1242
+   },
+   {
+    "id": 159957569,
+    "name": "seed-rs/seed",
+    "stars": 3830
+   },
+   {
+    "id": 20462243,
+    "name": "nickel-org/nickel.rs",
+    "stars": 3044
+   },
+   {
+    "id": 505394765,
+    "name": "LukeMathWalker/pavex",
+    "stars": 2074
+   }
+  ]
+ },
+ "go web framework": {
+  "total": 4040,
+  "ms": 2367,
+  "top": [
+   {
+    "id": 31504491,
+    "name": "labstack/echo",
+    "stars": 32805
+   },
+   {
+    "id": 13975314,
+    "name": "go-martini/martini",
+    "stars": 11594
+   },
+   {
+    "id": 234231371,
+    "name": "gofiber/fiber",
+    "stars": 40282
+   },
+   {
+    "id": 3577919,
+    "name": "beego/beego",
+    "stars": 32437
+   },
+   {
+    "id": 55581236,
+    "name": "smallnest/go-web-framework-benchmark",
+    "stars": 2132
+   },
+   {
+    "id": 102413181,
+    "name": "mingrammer/go-web-framework-stars",
+    "stars": 3848
+   },
+   {
+    "id": 25594973,
+    "name": "gobuffalo/buffalo",
+    "stars": 8423
+   },
+   {
+    "id": 20904437,
+    "name": "gin-gonic/gin",
+    "stars": 89525
+   },
+   {
+    "id": 430266498,
+    "name": "goravel/framework",
+    "stars": 531
+   },
+   {
+    "id": 5783199,
+    "name": "golangers/framework",
+    "stars": 292
+   }
+  ]
+ },
+ "asynchronous runtime for rust": {
+  "total": 61,
+  "ms": 2476,
+  "top": [
+   {
+    "id": 67836789,
+    "name": "tokio-rs/tokio",
+    "stars": 33698
+   },
+   {
+    "id": 316471362,
+    "name": "AMythicDev/minus",
+    "stars": 378
+   },
+   {
+    "id": 225160577,
+    "name": "LeonHartley/Coerce-rs",
+    "stars": 759
+   },
+   {
+    "id": 240338845,
+    "name": "pnnl/lamellar-runtime",
+    "stars": 67
+   },
+   {
+    "id": 702642946,
+    "name": "mjovanc/awesome-tokio",
+    "stars": 141
+   },
+   {
+    "id": 540023062,
+    "name": "photondb/photonio",
+    "stars": 43
+   },
+   {
+    "id": 771598765,
+    "name": "mintlu8/bevy_defer",
+    "stars": 97
+   },
+   {
+    "id": 312126524,
+    "name": "pnnl/lamellar",
+    "stars": 33
+   },
+   {
+    "id": 912672011,
+    "name": "surrealdb/affinitypool",
+    "stars": 22
+   },
+   {
+    "id": 1180560659,
+    "name": "ferronweb/zincio",
+    "stars": 18
+   }
+  ]
+ },
+ "typescript orm": {
+  "total": 6402,
+  "ms": 2420,
+  "top": [
+   {
+    "id": 192925833,
+    "name": "prisma/orm",
+    "stars": 47672
+   },
+   {
+    "id": 379865325,
+    "name": "drizzle-team/drizzle-orm",
+    "stars": 36282
+   },
+   {
+    "id": 125342064,
+    "name": "mikro-orm/mikro-orm",
+    "stars": 9273
+   },
+   {
+    "id": 52773157,
+    "name": "typeorm/typeorm",
+    "stars": 36673
+   },
+   {
+    "id": 50502690,
+    "name": "sequelize/sequelize-typescript",
+    "stars": 2835
+   },
+   {
+    "id": 10321083,
+    "name": "alfateam/orange-orm",
+    "stars": 1014
+   },
+   {
+    "id": 73426253,
+    "name": "tomjschuster/sequelize-ui",
+    "stars": 299
+   },
+   {
+    "id": 237852090,
+    "name": "joist-orm/joist-orm",
+    "stars": 387
+   },
+   {
+    "id": 185978179,
+    "name": "prisma/prisma-client-js",
+    "stars": 1462
+   },
+   {
+    "id": 247559216,
+    "name": "jawj/zapatos",
+    "stars": 1403
+   }
+  ]
+ },
+ "react state management": {
+  "total": 28955,
+  "ms": 2710,
+  "top": [
+   {
+    "id": 119693982,
+    "name": "jamiebuilds/unstated",
+    "stars": 7709
+   },
+   {
+    "id": 286867459,
+    "name": "pmndrs/jotai",
+    "stars": 21318
+   },
+   {
+    "id": 32215970,
+    "name": "mobxjs/mobx",
+    "stars": 28210
+   },
+   {
+    "id": 180328715,
+    "name": "pmndrs/zustand",
+    "stars": 58928
+   },
+   {
+    "id": 174038031,
+    "name": "react-hook-form/react-hook-form",
+    "stars": 44919
+   },
+   {
+    "id": 111738332,
+    "name": "final-form/react-final-form",
+    "stars": 7435
+   },
+   {
+    "id": 92187939,
+    "name": "RisingStack/react-easy-state",
+    "stars": 2538
+   },
+   {
+    "id": 207645083,
+    "name": "TanStack/query",
+    "stars": 50568
+   },
+   {
+    "id": 130597640,
+    "name": "GantMan/ReactStateMuseum",
+    "stars": 1536
+   },
+   {
+    "id": 111614342,
+    "name": "boardgameio/boardgame.io",
+    "stars": 12492
+   }
+  ]
+ },
+ "accessible react component library": {
+  "total": 688,
+  "ms": 2346,
+  "top": [
+   {
+    "id": 585146387,
+    "name": "shadcn-ui/ui",
+    "stars": 128301
+   },
+   {
+    "id": 46743486,
+    "name": "mlaursen/react-md",
+    "stars": 2327
+   },
+   {
+    "id": 274544109,
+    "name": "estevanmaito/windmill-react-ui",
+    "stars": 749
+   },
+   {
+    "id": 273499522,
+    "name": "radix-ui/primitives",
+    "stars": 19505
+   },
+   {
+    "id": 419046329,
+    "name": "saas-js/saas-ui",
+    "stars": 1655
+   },
+   {
+    "id": 665114665,
+    "name": "codewithMUHILAN/Lightswind-UI-Library",
+    "stars": 1283
+   },
+   {
+    "id": 76937669,
+    "name": "akveo/react-native-ui-kitten",
+    "stars": 10665
+   },
+   {
+    "id": 654115547,
+    "name": "radix-ui/themes",
+    "stars": 8851
+   },
+   {
+    "id": 177590445,
+    "name": "t0gre/react-datepicker",
+    "stars": 329
+   },
+   {
+    "id": 442484173,
+    "name": "TailGrids/tailgrids",
+    "stars": 1660
+   }
+  ]
+ },
+ "diagrams from text": {
+  "total": 377,
+  "ms": 2425,
+  "top": [
+   {
+    "id": 26066727,
+    "name": "mermaid-js/mermaid",
+    "stars": 91117
+   },
+   {
+    "id": 343261217,
+    "name": "tone-row/flowchart-fun",
+    "stars": 3410
+   },
+   {
+    "id": 109050203,
+    "name": "ggambetta/computer-graphics-from-scratch",
+    "stars": 1319
+   },
+   {
+    "id": 165063056,
+    "name": "yuzutech/kroki",
+    "stars": 4407
+   },
+   {
+    "id": 1131797886,
+    "name": "axtonliu/axton-obsidian-visual-skills",
+    "stars": 3681
+   },
+   {
+    "id": 185189932,
+    "name": "harehare/textusm",
+    "stars": 190
+   },
+   {
+    "id": 102391722,
+    "name": "AleksandarDev/vscode-sequence-diagrams",
+    "stars": 49
+   },
+   {
+    "id": 1131055889,
+    "name": "swiftlysingh/excalidraw-cli",
+    "stars": 323
+   },
+   {
+    "id": 68706944,
+    "name": "cidrblock/drawthe.net",
+    "stars": 1183
+   },
+   {
+    "id": 412812752,
+    "name": "Adrninistrator/uml-sequence-diagram-drawio",
+    "stars": 37
+   }
+  ]
+ },
+ "hand-drawn style whiteboard": {
+  "total": 63,
+  "ms": 2594,
+  "top": [
+   {
+    "id": 1360767622,
+    "name": "masihsultani/whiteboard-animator",
+    "stars": 270
+   },
+   {
+    "id": 612513553,
+    "name": "JhinBoard/jhindraw",
+    "stars": 12
+   },
+   {
+    "id": 1426657588,
+    "name": "reedodev/explainer-studio",
+    "stars": 23
+   },
+   {
+    "id": 716813893,
+    "name": "MolinDeng/roughly",
+    "stars": 3
+   },
+   {
+    "id": 1057673394,
+    "name": "ghostland-dev/hand-drawn-canvas-collab",
+    "stars": 0
+   },
+   {
+    "id": 1357820857,
+    "name": "marcelerz/draft-pad",
+    "stars": 0
+   },
+   {
+    "id": 765777187,
+    "name": "parthpatel021/CanvasCraft",
+    "stars": 0
+   },
+   {
+    "id": 1211694671,
+    "name": "slamsmart/portfolio",
+    "stars": 0
+   },
+   {
+    "id": 1159080611,
+    "name": "sadiksaifi/zentis",
+    "stars": 0
+   },
+   {
+    "id": 1021560833,
+    "name": "Dedipya07/ExcaliDraw",
+    "stars": 0
+   }
+  ]
+ },
+ "open source figma alternative": {
+  "total": 28,
+  "ms": 2340,
+  "top": [
+   {
+    "id": 1168481509,
+    "name": "open-pencil/open-pencil",
+    "stars": 9874
+   },
+   {
+    "id": 1318681359,
+    "name": "revyme-web/builder",
+    "stars": 175
+   },
+   {
+    "id": 1294968581,
+    "name": "heyimjames/tela",
+    "stars": 30
+   },
+   {
+    "id": 1245751030,
+    "name": "virtualstarsmith/awesome-oss-ai-alternatives",
+    "stars": 4
+   },
+   {
+    "id": 1196784223,
+    "name": "yoohoo360/open-pencil-cloud",
+    "stars": 9
+   },
+   {
+    "id": 1204301360,
+    "name": "ilya-makarov-dev/Reframe",
+    "stars": 22
+   },
+   {
+    "id": 1379606720,
+    "name": "andreabuttarelli/feega",
+    "stars": 11
+   },
+   {
+    "id": 1441137696,
+    "name": "Vertex-Systems-Network/open-designer",
+    "stars": 0
+   },
+   {
+    "id": 1237863067,
+    "name": "leifiyoo/bran-studio",
+    "stars": 0
+   },
+   {
+    "id": 1411278890,
+    "name": "FranckALPHA/Swiftma",
+    "stars": 0
+   }
+  ]
+ },
+ "privacy friendly web analytics": {
+  "total": 67,
+  "ms": 2603,
+  "top": [
+   {
+    "id": 254441446,
+    "name": "milesmcc/shynet",
+    "stars": 3157
+   },
+   {
+    "id": 1169432997,
+    "name": "RavelloH/InsightFlare",
+    "stars": 715
+   },
+   {
+    "id": 1160995909,
+    "name": "shivamanupadi/traks",
+    "stars": 349
+   },
+   {
+    "id": 1314756781,
+    "name": "hayaran/Edgemetry",
+    "stars": 71
+   },
+   {
+    "id": 553044211,
+    "name": "nuxt-modules/plausible",
+    "stars": 121
+   },
+   {
+    "id": 291694655,
+    "name": "spekulatius/awesome-privacy-friendly-web-analytics",
+    "stars": 19
+   },
+   {
+    "id": 1292101848,
+    "name": "qiayue/pvuv.ai",
+    "stars": 90
+   },
+   {
+    "id": 279816228,
+    "name": "kiranandcode/simple-pleroma-comments",
+    "stars": 16
+   },
+   {
+    "id": 1413752155,
+    "name": "velixio/supermetry",
+    "stars": 12
+   },
+   {
+    "id": 1162379513,
+    "name": "callmefredcom/NanoAnalytics",
+    "stars": 9
+   }
+  ]
+ },
+ "open source product analytics": {
+  "total": 131,
+  "ms": 2687,
+  "top": [
+   {
+    "id": 365373172,
+    "name": "growthbook/growthbook",
+    "stars": 8597
+   },
+   {
+    "id": 765049188,
+    "name": "Openpanel-dev/openpanel",
+    "stars": 7303
+   },
+   {
+    "id": 75924381,
+    "name": "wso2/product-sp",
+    "stars": 125
+   },
+   {
+    "id": 1259390066,
+    "name": "pug-sh/pug",
+    "stars": 111
+   },
+   {
+    "id": 139156354,
+    "name": "cvat-ai/cvat",
+    "stars": 17144
+   },
+   {
+    "id": 865585945,
+    "name": "FrigadeHQ/trench",
+    "stars": 1672
+   },
+   {
+    "id": 346664434,
+    "name": "anonrig/socketkit",
+    "stars": 253
+   },
+   {
+    "id": 377990650,
+    "name": "shafy/fugu",
+    "stars": 214
+   },
+   {
+    "id": 483176950,
+    "name": "suyambutriveni/objectiv-analytics",
+    "stars": 0
+   },
+   {
+    "id": 61065377,
+    "name": "Aleyasen/awesome-oss-data-analytics",
+    "stars": 71
+   }
+  ]
+ },
+ "error tracking and performance monitoring": {
+  "total": 191,
+  "ms": 2333,
+  "top": [
+   {
+    "id": 873328,
+    "name": "getsentry/sentry",
+    "stars": 45786
+   },
+   {
+    "id": 1042306852,
+    "name": "activerabbit-ai/activerabbit",
+    "stars": 133
+   },
+   {
+    "id": 479791682,
+    "name": "traceo-dev/traceo",
+    "stars": 481
+   },
+   {
+    "id": 349227174,
+    "name": "Swetrix/swetrix",
+    "stars": 1223
+   },
+   {
+    "id": 1139727427,
+    "name": "rustrak/rustrak",
+    "stars": 893
+   },
+   {
+    "id": 1072887495,
+    "name": "dingcodingco/sentry-nextjs-test",
+    "stars": 0
+   },
+   {
+    "id": 1307645419,
+    "name": "OtezVikentiy/gotcha",
+    "stars": 44
+   },
+   {
+    "id": 1046695732,
+    "name": "activerabbit-ai/activerabbit-ai",
+    "stars": 9
+   },
+   {
+    "id": 1127571458,
+    "name": "ITSSOUMIT/findbug",
+    "stars": 34
+   },
+   {
+    "id": 1048270466,
+    "name": "zjsix/vue-monitor",
+    "stars": 13
+   }
+  ]
+ },
+ "load testing tool": {
+  "total": 2102,
+  "ms": 2334,
+  "top": [
+   {
+    "id": 54400687,
+    "name": "grafana/k6",
+    "stars": 32315
+   },
+   {
+    "id": 12080551,
+    "name": "tsenart/vegeta",
+    "stars": 25247
+   },
+   {
+    "id": 125127188,
+    "name": "bojand/ghz",
+    "stars": 3361
+   },
+   {
+    "id": 68935891,
+    "name": "rabbitmq/rabbitmq-perf-test",
+    "stars": 419
+   },
+   {
+    "id": 440436833,
+    "name": "baidu/dperf",
+    "stars": 5661
+   },
+   {
+    "id": 688352,
+    "name": "apache/jmeter",
+    "stars": 9604
+   },
+   {
+    "id": 2574980,
+    "name": "session-replay-tools/tcpcopy",
+    "stars": 4689
+   },
+   {
+    "id": 246082993,
+    "name": "aliesbelik/load-testing-toolkit",
+    "stars": 252
+   },
+   {
+    "id": 35025578,
+    "name": "tarekziade/molotov",
+    "stars": 483
+   },
+   {
+    "id": 81925124,
+    "name": "mgasiorowski/performance_testing",
+    "stars": 424
+   }
+  ]
+ },
+ "dotfiles manager": {
+  "total": 2538,
+  "ms": 2583,
+  "top": [
+   {
+    "id": 39074570,
+    "name": "yadm-dev/yadm",
+    "stars": 6480
+   },
+   {
+    "id": 78938149,
+    "name": "nix-community/home-manager",
+    "stars": 10524
+   },
+   {
+    "id": 830895910,
+    "name": "mylinuxforwork/dotfiles",
+    "stars": 5120
+   },
+   {
+    "id": 84231584,
+    "name": "deadc0de6/dotdrop",
+    "stars": 1957
+   },
+   {
+    "id": 323142553,
+    "name": "fufexan/dotfiles",
+    "stars": 1157
+   },
+   {
+    "id": 5741489,
+    "name": "justone/dfm",
+    "stars": 126
+   },
+   {
+    "id": 2449588,
+    "name": "ellipsis/ellipsis",
+    "stars": 367
+   },
+   {
+    "id": 90471343,
+    "name": "SuperCuber/dotter",
+    "stars": 2032
+   },
+   {
+    "id": 254877600,
+    "name": "antoniosarosi/dotfiles",
+    "stars": 927
+   },
+   {
+    "id": 282640628,
+    "name": "oknozor/toml-bombadil",
+    "stars": 340
+   }
+  ]
+ },
+ "shell history sync and search": {
+  "total": 7,
+  "ms": 2733,
+  "top": [
+   {
+    "id": 1335512025,
+    "name": "dont-be-evil-company/remnix",
+    "stars": 23
+   },
+   {
+    "id": 1309036369,
+    "name": "Dannyblazer/recall",
+    "stars": 3
+   },
+   {
+    "id": 1363198247,
+    "name": "alderon07/al",
+    "stars": 2
+   },
+   {
+    "id": 1193240819,
+    "name": "Aisha-Aliyu/drift-browser-shell",
+    "stars": 0
+   },
+   {
+    "id": 1437015267,
+    "name": "paulsullivan33-dev/atuin-for-mere-mortals",
+    "stars": 0
+   },
+   {
+    "id": 191672548,
+    "name": "klonnet23/helloy-word",
+    "stars": 92
+   },
+   {
+    "id": 274472671,
+    "name": "zszszszsz/.config",
+    "stars": 372
+   }
+  ]
+ },
+ "disk usage analyzer for the terminal": {
+  "total": 8,
+  "ms": 2291,
+  "top": [
+   {
+    "id": 1194040156,
+    "name": "lostf1sh/dusk",
+    "stars": 43
+   },
+   {
+    "id": 1253689705,
+    "name": "foweh/dirsize",
+    "stars": 0
+   },
+   {
+    "id": 1221580080,
+    "name": "activatethefud/storage_analyzer",
+    "stars": 4
+   },
+   {
+    "id": 1409333468,
+    "name": "OriginalMHV/minimenta",
+    "stars": 1
+   },
+   {
+    "id": 1316497363,
+    "name": "derKosi/UnixDirStat",
+    "stars": 0
+   },
+   {
+    "id": 1206610335,
+    "name": "bradhawkins85/wincdu",
+    "stars": 2
+   },
+   {
+    "id": 1441751943,
+    "name": "omniex/cmdcleaner",
+    "stars": 1
+   },
+   {
+    "id": 1415662912,
+    "name": "jagjordi/windu",
+    "stars": 0
+   }
+  ]
+ },
+ "system monitor for the terminal": {
+  "total": 170,
+  "ms": 2463,
+  "top": [
+   {
+    "id": 201211939,
+    "name": "jchomarat/wttop",
+    "stars": 93
+   },
+   {
+    "id": 1252036272,
+    "name": "cuihp/code-light-ai",
+    "stars": 22
+   },
+   {
+    "id": 107833247,
+    "name": "bunbunjp/gotop",
+    "stars": 22
+   },
+   {
+    "id": 1112200006,
+    "name": "krishnapschauhan/terminal-system-monitor",
+    "stars": 4
+   },
+   {
+    "id": 888108803,
+    "name": "moh-a-abde/THE-Process-Manager",
+    "stars": 12
+   },
+   {
+    "id": 996739194,
+    "name": "ur-grue/toptop",
+    "stars": 21
+   },
+   {
+    "id": 1429335487,
+    "name": "fan-ziqi/rstop",
+    "stars": 41
+   },
+   {
+    "id": 1106998590,
+    "name": "bitr8/bitpunk-theme",
+    "stars": 16
+   },
+   {
+    "id": 1210336243,
+    "name": "lucasschimmel/muxtop",
+    "stars": 3
+   },
+   {
+    "id": 1330482446,
+    "name": "v4rgas/sttop",
+    "stars": 3
+   }
+  ]
+ },
+ "modern ls replacement": {
+  "total": 19,
+  "ms": 2676,
+  "top": [
+   {
+    "id": 20060596,
+    "name": "ogham/exa",
+    "stars": 24453
+   },
+   {
+    "id": 1026267657,
+    "name": "Mr-Fox-h/ds",
+    "stars": 3
+   },
+   {
+    "id": 1361280565,
+    "name": "THEChrismoth/lst",
+    "stars": 0
+   },
+   {
+    "id": 794952888,
+    "name": "KaOS-Community-Packages/eza",
+    "stars": 0
+   },
+   {
+    "id": 1117283707,
+    "name": "jofftiquez/lsnote",
+    "stars": 2
+   },
+   {
+    "id": 1307180875,
+    "name": "repolish/lish",
+    "stars": 0
+   },
+   {
+    "id": 1323634626,
+    "name": "jc21/lsgo",
+    "stars": 0
+   },
+   {
+    "id": 713677437,
+    "name": "adam-du-nz/asdf-eza",
+    "stars": 0
+   },
+   {
+    "id": 1169594814,
+    "name": "alexlm78/eka",
+    "stars": 1
+   },
+   {
+    "id": 483764129,
+    "name": "cerebral-archive/exa.plugin.zsh",
+    "stars": 1
+   }
+  ]
+ }
+}

@@ -1,0 +1,1183 @@
+{
+ "at": "2026-11-16T09:18:00Z",
+ "app": "https://hn.chloetech.ai",
+ "keystrokes": 68,
+ "ours_server": {
+  "p50": 9.95,
+  "p90": 22.4,
+  "max": 45.1
+ },
+ "ours_rt": {
+  "p50": 47.6,
+  "p90": 58.4,
+  "max": 84.1
+ },
+ "algolia_server": {
+  "p50": 13.5,
+  "p90": 34,
+  "max": 108
+ },
+ "algolia_rt": {
+  "p50": 199.2,
+  "p90": 234.2,
+  "max": 277.7
+ },
+ "rows": [
+  {
+   "q": "p",
+   "ours_server": 16.5,
+   "ours_rt": 53.7,
+   "ours_top": [
+    "P \u2260 NP",
+    "Android P",
+    "P vs. NP"
+   ],
+   "algolia_server": 30,
+   "algolia_rt": 224.8,
+   "algolia_top": [
+    "Steve Jobs has passed away.",
+    "Don't post generated/AI-edited comments. HN is for conversation between humans",
+    "Google\u2019s copying of the Java SE API was fair use [pdf]"
+   ]
+  },
+  {
+   "q": "po",
+   "ours_server": 19.1,
+   "ours_rt": 55.5,
+   "ours_top": [
+    "Twitter to ban political advertising",
+    "Poll: What's Your Favorite Programming Language?",
+    "Ask HN: What tech job would let me get away with the least real work possible?"
+   ],
+   "algolia_server": 4,
+   "algolia_rt": 230.0,
+   "algolia_top": [
+    "Don't post generated/AI-edited comments. HN is for conversation between humans",
+    "Twitter to ban political advertising",
+    "IDF killed Gaza aid workers at point blank range in 2025 massacre: Report"
+   ]
+  },
+  {
+   "q": "pos",
+   "ours_server": 9.8,
+   "ours_rt": 46.0,
+   "ours_top": [
+    "Ask HN: What tech job would let me get away with the least real work possible?",
+    "Accepted and ghosted: interviewing for a leadership position at Stripe",
+    "Ethereum will use around 99.95% less energy post merge"
+   ],
+   "algolia_server": 9,
+   "algolia_rt": 259.4,
+   "algolia_top": [
+    "Don't post generated/AI-edited comments. HN is for conversation between humans",
+    "Ask HN: What tech job would let me get away with the least real work possible?",
+    "AI-generated posters don\u2019t have to be horrible"
+   ]
+  },
+  {
+   "q": "post",
+   "ours_server": 10.5,
+   "ours_rt": 57.2,
+   "ours_top": [
+    "Ethereum will use around 99.95% less energy post merge",
+    "Bye Bye Mongo, Hello Postgres",
+    "Bruno: Fast and Git-friendly open-source API client (Postman alternative)"
+   ],
+   "algolia_server": 11,
+   "algolia_rt": 189.9,
+   "algolia_top": [
+    "Don't post generated/AI-edited comments. HN is for conversation between humans",
+    "AI-generated posters don\u2019t have to be horrible",
+    "Ethereum will use around 99.95% less energy post merge"
+   ]
+  },
+  {
+   "q": "postg",
+   "ours_server": 9.2,
+   "ours_rt": 47.2,
+   "ours_top": [
+    "Bye Bye Mongo, Hello Postgres",
+    "Common mistakes in PostgreSQL",
+    "Postgres IDE in VS Code"
+   ],
+   "algolia_server": 108,
+   "algolia_rt": 191.9,
+   "algolia_top": [
+    "Bye Bye Mongo, Hello Postgres",
+    "Common mistakes in PostgreSQL",
+    "Postgres IDE in VS Code"
+   ]
+  },
+  {
+   "q": "postgr",
+   "ours_server": 8.3,
+   "ours_rt": 44.6,
+   "ours_top": [
+    "Bye Bye Mongo, Hello Postgres",
+    "Common mistakes in PostgreSQL",
+    "Postgres IDE in VS Code"
+   ],
+   "algolia_server": 37,
+   "algolia_rt": 194.6,
+   "algolia_top": [
+    "Bye Bye Mongo, Hello Postgres",
+    "Common mistakes in PostgreSQL",
+    "Postgres IDE in VS Code"
+   ]
+  },
+  {
+   "q": "postgre",
+   "ours_server": 8.8,
+   "ours_rt": 46.6,
+   "ours_top": [
+    "Bye Bye Mongo, Hello Postgres",
+    "Common mistakes in PostgreSQL",
+    "Postgres IDE in VS Code"
+   ],
+   "algolia_server": 28,
+   "algolia_rt": 277.7,
+   "algolia_top": [
+    "Bye Bye Mongo, Hello Postgres",
+    "Common mistakes in PostgreSQL",
+    "Postgres IDE in VS Code"
+   ]
+  },
+  {
+   "q": "postgres",
+   "ours_server": 8.2,
+   "ours_rt": 47.4,
+   "ours_top": [
+    "Bye Bye Mongo, Hello Postgres",
+    "Common mistakes in PostgreSQL",
+    "Postgres IDE in VS Code"
+   ],
+   "algolia_server": 12,
+   "algolia_rt": 194.3,
+   "algolia_top": [
+    "Bye Bye Mongo, Hello Postgres",
+    "Common mistakes in PostgreSQL",
+    "Postgres IDE in VS Code"
+   ]
+  },
+  {
+   "q": "postgres ",
+   "ours_server": 13.6,
+   "ours_rt": 50.0,
+   "ours_top": [
+    "Better JSON in Postgres with PostgreSQL 14",
+    "How I work with Postgres \u2013 psql, My PostgreSQL Admin",
+    "Postgres-XL: Scalable Open Source PostgreSQL-based Database Cluster"
+   ],
+   "algolia_server": 8,
+   "algolia_rt": 212.0,
+   "algolia_top": [
+    "Bye Bye Mongo, Hello Postgres",
+    "Postgres IDE in VS Code",
+    "Postgres gets support for upsert"
+   ]
+  },
+  {
+   "q": "postgres v",
+   "ours_server": 14.8,
+   "ours_rt": 52.3,
+   "ours_top": [
+    "Postgres IDE in VS Code",
+    "RethinkDB versus PostgreSQL: my personal experience",
+    "Pev: Postgres \u2018Explain\u2019 Visualizer (2016)"
+   ],
+   "algolia_server": 15,
+   "algolia_rt": 187.5,
+   "algolia_top": [
+    "Pev: Postgres \u2018Explain\u2019 Visualizer (2016)",
+    "Launch HN: Hydra (YC W22) \u2013 Query any database via Postgres",
+    "Full text search over Postgres: Elasticsearch vs. alternatives"
+   ]
+  },
+  {
+   "q": "postgres vs",
+   "ours_server": 7.9,
+   "ours_rt": 46.1,
+   "ours_top": [
+    "Postgres IDE in VS Code",
+    "Postgres Full Text Search vs. the Rest",
+    "Full text search over Postgres: Elasticsearch vs. alternatives"
+   ],
+   "algolia_server": 11,
+   "algolia_rt": 190.3,
+   "algolia_top": [
+    "Full text search over Postgres: Elasticsearch vs. alternatives",
+    "Benchmarking Postgres 17 vs. 18",
+    "Unstructured Datatypes in Postgres \u2013 Hstore vs. JSON vs. JSONB"
+   ]
+  },
+  {
+   "q": "postgres vs ",
+   "ours_server": 13.3,
+   "ours_rt": 49.4,
+   "ours_top": [
+    "Postgres IDE in VS Code",
+    "Oracle vs. PostgreSQL \u2013 A Comment",
+    "MySQL vs PostgreSQL"
+   ],
+   "algolia_server": 9,
+   "algolia_rt": 181.6,
+   "algolia_top": [
+    "Full text search over Postgres: Elasticsearch vs. alternatives",
+    "Benchmarking Postgres 17 vs. 18",
+    "Unstructured Datatypes in Postgres \u2013 Hstore vs. JSON vs. JSONB"
+   ]
+  },
+  {
+   "q": "postgres vs m",
+   "ours_server": 34.4,
+   "ours_rt": 71.1,
+   "ours_top": [
+    "MySQL vs PostgreSQL",
+    " PostgreSQL vs MySQL: an apples to oranges comparison",
+    "PostgreSQL vs. MS SQL Server"
+   ],
+   "algolia_server": 29,
+   "algolia_rt": 202.6,
+   "algolia_top": [
+    "The ultimate postgres vs. mysql blog post",
+    "Postgres vs. MySQL: A Complete Comparison in 2023",
+    "Ask HN: Postgres vs. MySQL in 2023?"
+   ]
+  },
+  {
+   "q": "postgres vs my",
+   "ours_server": 8.5,
+   "ours_rt": 45.2,
+   "ours_top": [
+    "MySQL vs PostgreSQL",
+    " PostgreSQL vs MySQL: an apples to oranges comparison",
+    "Showdown: MySQL 8 vs. PostgreSQL 10"
+   ],
+   "algolia_server": 15,
+   "algolia_rt": 176.7,
+   "algolia_top": [
+    "The ultimate postgres vs. mysql blog post",
+    "Postgres vs. MySQL: A Complete Comparison in 2023",
+    "Ask HN: Postgres vs. MySQL in 2023?"
+   ]
+  },
+  {
+   "q": "r",
+   "ours_server": 14.6,
+   "ours_rt": 49.9,
+   "ours_top": [
+    "Reddit shuts down subreddits including r/The_Donald and r/ChapoTrapHouse",
+    "Swirl: Learn R, in R",
+    "Rarely Seen Paintings by J.R.R. Tolkien"
+   ],
+   "algolia_server": 3,
+   "algolia_rt": 245.9,
+   "algolia_top": [
+    "YouTube-dl has received a DMCA takedown from RIAA",
+    "Reflecting on one very, very strange year at Uber",
+    "Jensen Huang resigns"
+   ]
+  },
+  {
+   "q": "ru",
+   "ours_server": 14.5,
+   "ours_rt": 51.8,
+   "ours_top": [
+    "F.C.C. Repeals Net Neutrality Rules",
+    "My Business Card Runs Linux",
+    "Russian forces invade Ukraine after Putin orders attack"
+   ],
+   "algolia_server": 4,
+   "algolia_rt": 201.7,
+   "algolia_top": [
+    "F.C.C. Repeals Net Neutrality Rules",
+    "My Business Card Runs Linux",
+    "Git commands I run before reading any code"
+   ]
+  },
+  {
+   "q": "rus",
+   "ours_server": 12.7,
+   "ours_rt": 49.8,
+   "ours_top": [
+    "Russian forces invade Ukraine after Putin orders attack",
+    "Namecheap: Russia Service Termination",
+    "Why Discord is switching from Go to Rust"
+   ],
+   "algolia_server": 6,
+   "algolia_rt": 188.8,
+   "algolia_top": [
+    "Russian forces invade Ukraine after Putin orders attack",
+    "Namecheap: Russia Service Termination",
+    "Why Discord is switching from Go to Rust"
+   ]
+  },
+  {
+   "q": "rust",
+   "ours_server": 9.3,
+   "ours_rt": 46.0,
+   "ours_top": [
+    "Why Discord is switching from Go to Rust",
+    "Leaving Rust gamedev after 3 years",
+    "A half-hour to learn Rust"
+   ],
+   "algolia_server": 13,
+   "algolia_rt": 196.1,
+   "algolia_top": [
+    "Why Discord is switching from Go to Rust",
+    "Leaving Rust gamedev after 3 years",
+    "A half-hour to learn Rust"
+   ]
+  },
+  {
+   "q": "rust ",
+   "ours_server": 16.0,
+   "ours_rt": 52.8,
+   "ours_top": [
+    "Rust-analyzer \u2013 an IDE backend for Rust",
+    "Rust for Windows",
+    "A Sad Day for Rust"
+   ],
+   "algolia_server": 15,
+   "algolia_rt": 193.2,
+   "algolia_top": [
+    "Why Discord is switching from Go to Rust",
+    "Leaving Rust gamedev after 3 years",
+    "A half-hour to learn Rust"
+   ]
+  },
+  {
+   "q": "rust a",
+   "ours_server": 38.7,
+   "ours_rt": 75.9,
+   "ours_top": [
+    "Leaving Rust gamedev after 3 years",
+    "Announcing Rust 1.0",
+    "I refuse to let Amazon define Rust"
+   ],
+   "algolia_server": 34,
+   "algolia_rt": 199.9,
+   "algolia_top": [
+    "Leaving Rust gamedev after 3 years",
+    "Announcing Rust 1.0",
+    "Sandspiel \u2013 A falling sand game built in Rust and WebGL"
+   ]
+  },
+  {
+   "q": "rust as",
+   "ours_server": 13.4,
+   "ours_rt": 50.8,
+   "ours_top": [
+    "Async-await on stable Rust",
+    "Tokio 1.0 \u2013 async runtime for Rust",
+    "Why asynchronous Rust doesn't work"
+   ],
+   "algolia_server": 17,
+   "algolia_rt": 192.5,
+   "algolia_top": [
+    "Why asynchronous Rust doesn't work",
+    "Futurelock: A subtle risk in async Rust",
+    "Async Rust never left the MVP state"
+   ]
+  },
+  {
+   "q": "rust asy",
+   "ours_server": 9.8,
+   "ours_rt": 46.8,
+   "ours_top": [
+    "Async-await on stable Rust",
+    "Tokio 1.0 \u2013 async runtime for Rust",
+    "Why asynchronous Rust doesn't work"
+   ],
+   "algolia_server": 33,
+   "algolia_rt": 234.2,
+   "algolia_top": [
+    "Why asynchronous Rust doesn't work",
+    "Futurelock: A subtle risk in async Rust",
+    "Async Rust never left the MVP state"
+   ]
+  },
+  {
+   "q": "rust asyn",
+   "ours_server": 9.2,
+   "ours_rt": 45.5,
+   "ours_top": [
+    "Async-await on stable Rust",
+    "Tokio 1.0 \u2013 async runtime for Rust",
+    "Why asynchronous Rust doesn't work"
+   ],
+   "algolia_server": 19,
+   "algolia_rt": 193.2,
+   "algolia_top": [
+    "Why asynchronous Rust doesn't work",
+    "Futurelock: A subtle risk in async Rust",
+    "Async Rust never left the MVP state"
+   ]
+  },
+  {
+   "q": "rust async",
+   "ours_server": 7.6,
+   "ours_rt": 46.1,
+   "ours_top": [
+    "Async-await on stable Rust",
+    "Tokio 1.0 \u2013 async runtime for Rust",
+    "Why asynchronous Rust doesn't work"
+   ],
+   "algolia_server": 21,
+   "algolia_rt": 196.5,
+   "algolia_top": [
+    "Why asynchronous Rust doesn't work",
+    "Futurelock: A subtle risk in async Rust",
+    "Async Rust never left the MVP state"
+   ]
+  },
+  {
+   "q": "k",
+   "ours_server": 16.0,
+   "ours_rt": 53.0,
+   "ours_top": [
+    "iMac G4(K)",
+    "ngn/k, an AGPL K interpreter",
+    "The K Language"
+   ],
+   "algolia_server": 5,
+   "algolia_rt": 199.7,
+   "algolia_top": [
+    "Replit used legal threats to kill my open-source project",
+    "Kevin Mitnick has died",
+    "\u201cThey introduce kernel bugs on purpose\u201d"
+   ]
+  },
+  {
+   "q": "ku",
+   "ours_server": 9.2,
+   "ours_rt": 47.5,
+   "ours_top": [
+    "Kuo: Apple to include new scissor switch keyboard in MacBook",
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack"
+   ],
+   "algolia_server": 5,
+   "algolia_rt": 179.4,
+   "algolia_top": [
+    "Kuo: Apple to include new scissor switch keyboard in MacBook",
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack"
+   ]
+  },
+  {
+   "q": "kub",
+   "ours_server": 8.3,
+   "ours_rt": 45.8,
+   "ours_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ],
+   "algolia_server": 10,
+   "algolia_rt": 179.7,
+   "algolia_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ]
+  },
+  {
+   "q": "kube",
+   "ours_server": 9.9,
+   "ours_rt": 52.1,
+   "ours_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ],
+   "algolia_server": 11,
+   "algolia_rt": 202.7,
+   "algolia_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ]
+  },
+  {
+   "q": "kuber",
+   "ours_server": 9.2,
+   "ours_rt": 46.8,
+   "ours_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ],
+   "algolia_server": 16,
+   "algolia_rt": 193.9,
+   "algolia_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ]
+  },
+  {
+   "q": "kubern",
+   "ours_server": 8.1,
+   "ours_rt": 44.2,
+   "ours_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ],
+   "algolia_server": 5,
+   "algolia_rt": 203.8,
+   "algolia_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ]
+  },
+  {
+   "q": "kuberne",
+   "ours_server": 7.5,
+   "ours_rt": 43.7,
+   "ours_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ],
+   "algolia_server": 15,
+   "algolia_rt": 209.5,
+   "algolia_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ]
+  },
+  {
+   "q": "kubernet",
+   "ours_server": 9.7,
+   "ours_rt": 45.6,
+   "ours_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ],
+   "algolia_server": 21,
+   "algolia_rt": 204.1,
+   "algolia_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ]
+  },
+  {
+   "q": "kubernete",
+   "ours_server": 8.4,
+   "ours_rt": 45.1,
+   "ours_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ],
+   "algolia_server": 11,
+   "algolia_rt": 186.9,
+   "algolia_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ]
+  },
+  {
+   "q": "kubernetes",
+   "ours_server": 8.5,
+   "ours_rt": 47.2,
+   "ours_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ],
+   "algolia_server": 10,
+   "algolia_rt": 202.3,
+   "algolia_top": [
+    "Google Kubernetes Engine's third consecutive day of service disruption",
+    "Container technologies at Coinbase: Why Kubernetes is not part of our stack",
+    "Why is Kubernetes getting so popular?"
+   ]
+  },
+  {
+   "q": "s",
+   "ours_server": 28.7,
+   "ours_rt": 68.9,
+   "ours_top": [
+    "\u201cIt's The Future\u201d",
+    "That's not an abstraction, that's a layer of indirection",
+    "It\u2019s Time to Build"
+   ],
+   "algolia_server": 3,
+   "algolia_rt": 220.4,
+   "algolia_top": [
+    "Stephen Hawking has died",
+    "OpenAI's board has fired Sam Altman",
+    "Backdoor in upstream xz/liblzma leading to SSH server compromise"
+   ]
+  },
+  {
+   "q": "sq",
+   "ours_server": 8.6,
+   "ours_rt": 45.2,
+   "ours_top": [
+    "Bypassing airport security via SQL injection",
+    "In loving memory of square checkbox",
+    "Hosting SQLite databases on GitHub Pages or any static file hoster"
+   ],
+   "algolia_server": 5,
+   "algolia_rt": 199.3,
+   "algolia_top": [
+    "Bypassing airport security via SQL injection",
+    "In loving memory of square checkbox",
+    "Hosting SQLite databases on GitHub Pages or any static file hoster"
+   ]
+  },
+  {
+   "q": "sql",
+   "ours_server": 7.8,
+   "ours_rt": 46.4,
+   "ours_top": [
+    "Bypassing airport security via SQL injection",
+    "Hosting SQLite databases on GitHub Pages or any static file hoster",
+    "I'm all-in on server-side SQLite"
+   ],
+   "algolia_server": 34,
+   "algolia_rt": 189.9,
+   "algolia_top": [
+    "Bypassing airport security via SQL injection",
+    "Hosting SQLite databases on GitHub Pages or any static file hoster",
+    "I'm all-in on server-side SQLite"
+   ]
+  },
+  {
+   "q": "sqli",
+   "ours_server": 7.7,
+   "ours_rt": 44.3,
+   "ours_top": [
+    "Hosting SQLite databases on GitHub Pages or any static file hoster",
+    "I'm all-in on server-side SQLite",
+    "SQLite is not a toy database"
+   ],
+   "algolia_server": 22,
+   "algolia_rt": 199.1,
+   "algolia_top": [
+    "Hosting SQLite databases on GitHub Pages or any static file hoster",
+    "I'm all-in on server-side SQLite",
+    "Tracking down the 16-year-old WAL-reset SQLite bug"
+   ]
+  },
+  {
+   "q": "sqlit",
+   "ours_server": 9.1,
+   "ours_rt": 46.1,
+   "ours_top": [
+    "Hosting SQLite databases on GitHub Pages or any static file hoster",
+    "I'm all-in on server-side SQLite",
+    "SQLite is not a toy database"
+   ],
+   "algolia_server": 19,
+   "algolia_rt": 207.2,
+   "algolia_top": [
+    "Hosting SQLite databases on GitHub Pages or any static file hoster",
+    "I'm all-in on server-side SQLite",
+    "Tracking down the 16-year-old WAL-reset SQLite bug"
+   ]
+  },
+  {
+   "q": "sqlite",
+   "ours_server": 9.2,
+   "ours_rt": 46.6,
+   "ours_top": [
+    "Hosting SQLite databases on GitHub Pages or any static file hoster",
+    "I'm all-in on server-side SQLite",
+    "SQLite is not a toy database"
+   ],
+   "algolia_server": 4,
+   "algolia_rt": 190.1,
+   "algolia_top": [
+    "Hosting SQLite databases on GitHub Pages or any static file hoster",
+    "I'm all-in on server-side SQLite",
+    "Tracking down the 16-year-old WAL-reset SQLite bug"
+   ]
+  },
+  {
+   "q": "sqlite ",
+   "ours_server": 12.9,
+   "ours_rt": 49.2,
+   "ours_top": [
+    "SQLite Is Serverless",
+    "JSON with Sqlite",
+    "SQLite is not a toy database"
+   ],
+   "algolia_server": 3,
+   "algolia_rt": 185.6,
+   "algolia_top": [
+    "Hosting SQLite databases on GitHub Pages or any static file hoster",
+    "I'm all-in on server-side SQLite",
+    "Tracking down the 16-year-old WAL-reset SQLite bug"
+   ]
+  },
+  {
+   "q": "sqlite i",
+   "ours_server": 22.4,
+   "ours_rt": 59.4,
+   "ours_top": [
+    "I'm all-in on server-side SQLite",
+    "SQLite Internals: Pages and B-trees",
+    "Inserting a billion rows in SQLite under a minute"
+   ],
+   "algolia_server": 21,
+   "algolia_rt": 200.1,
+   "algolia_top": [
+    "SQLite is not a toy database",
+    "Show HN: 22 GB of Hacker News in SQLite",
+    "SQLite is all you need for durable workflows"
+   ]
+  },
+  {
+   "q": "sqlite in",
+   "ours_server": 14.2,
+   "ours_rt": 50.8,
+   "ours_top": [
+    "SQLite Internals: Pages and B-trees",
+    "Inserting a billion rows in SQLite under a minute",
+    "We\u2019re pretty happy with SQLite and not urgently interested in a fancier DBMS"
+   ],
+   "algolia_server": 20,
+   "algolia_rt": 198.6,
+   "algolia_top": [
+    "Show HN: 22 GB of Hacker News in SQLite",
+    "SQLite Internals: Pages and B-trees",
+    "I found a bug in SQLite"
+   ]
+  },
+  {
+   "q": "sqlite in ",
+   "ours_server": 11.8,
+   "ours_rt": 48.7,
+   "ours_top": [
+    "SQLite Is Serverless",
+    "JSON with Sqlite",
+    "SQLite is not a toy database"
+   ],
+   "algolia_server": 11,
+   "algolia_rt": 188.2,
+   "algolia_top": [
+    "Show HN: 22 GB of Hacker News in SQLite",
+    "I found a bug in SQLite",
+    "Inserting a billion rows in SQLite under a minute"
+   ]
+  },
+  {
+   "q": "sqlite in p",
+   "ours_server": 38.1,
+   "ours_rt": 75.8,
+   "ours_top": [
+    "Hosting SQLite databases on GitHub Pages or any static file hoster",
+    "DuckDB \u2013 An embeddable SQL database like SQLite, but supports Postgres features",
+    "SQLite developer must have received a lot of phone calls"
+   ],
+   "algolia_server": 70,
+   "algolia_rt": 189.3,
+   "algolia_top": [
+    "SQLite in Production: Optimizing WAL Mode, Concurrency, and VFS Layers",
+    "Things that surprised me while running SQLite in production",
+    "Build your own SQLite in Rust, Part 5: Evaluating queries"
+   ]
+  },
+  {
+   "q": "sqlite in pr",
+   "ours_server": 14.4,
+   "ours_rt": 52.3,
+   "ours_top": [
+    "Ask HN: Have you used SQLite as a primary database?",
+    "We\u2019re pretty happy with SQLite and not urgently interested in a fancier DBMS",
+    "Sqlite-vec: Work-in-progress vector search SQLite extension that runs anywhere"
+   ],
+   "algolia_server": 56,
+   "algolia_rt": 216.2,
+   "algolia_top": [
+    "SQLite in Production: Optimizing WAL Mode, Concurrency, and VFS Layers",
+    "Things that surprised me while running SQLite in production",
+    "SQLite in Production: Lessons from Running a Store on a Single File"
+   ]
+  },
+  {
+   "q": "sqlite in pro",
+   "ours_server": 11.1,
+   "ours_rt": 47.7,
+   "ours_top": [
+    "Sqlite-vec: Work-in-progress vector search SQLite extension that runs anywhere",
+    "Postgres wire compatible SQLite proxy",
+    "Rqlite: Replicated SQLite using the Raft consensus protocol"
+   ],
+   "algolia_server": 18,
+   "algolia_rt": 178.6,
+   "algolia_top": [
+    "SQLite in Production: Optimizing WAL Mode, Concurrency, and VFS Layers",
+    "Things that surprised me while running SQLite in production",
+    "SQLite in Production: Lessons from Running a Store on a Single File"
+   ]
+  },
+  {
+   "q": "sqlite in prod",
+   "ours_server": 10.0,
+   "ours_rt": 46.0,
+   "ours_top": [
+    "How (and why) to run SQLite in production",
+    "Ask HN: SQLite in Production?",
+    "Django SQLite Production Config"
+   ],
+   "algolia_server": 37,
+   "algolia_rt": 185.5,
+   "algolia_top": [
+    "SQLite in Production: Optimizing WAL Mode, Concurrency, and VFS Layers",
+    "Things that surprised me while running SQLite in production",
+    "SQLite in Production: Lessons from Running a Store on a Single File"
+   ]
+  },
+  {
+   "q": "s",
+   "ours_server": 23.3,
+   "ours_rt": 58.3,
+   "ours_top": [
+    "\u201cIt's The Future\u201d",
+    "That's not an abstraction, that's a layer of indirection",
+    "It\u2019s Time to Build"
+   ],
+   "algolia_server": 3,
+   "algolia_rt": 221.8,
+   "algolia_top": [
+    "Stephen Hawking has died",
+    "OpenAI's board has fired Sam Altman",
+    "Backdoor in upstream xz/liblzma leading to SSH server compromise"
+   ]
+  },
+  {
+   "q": "sh",
+   "ours_server": 12.8,
+   "ours_rt": 49.8,
+   "ours_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Ask HN: I'm a software engineer going blind, how should I prepare?"
+   ],
+   "algolia_server": 5,
+   "algolia_rt": 229.5,
+   "algolia_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Ask HN: I'm a software engineer going blind, how should I prepare?"
+   ]
+  },
+  {
+   "q": "sho",
+   "ours_server": 10.5,
+   "ours_rt": 46.7,
+   "ours_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Ask HN: I'm a software engineer going blind, how should I prepare?"
+   ],
+   "algolia_server": 20,
+   "algolia_rt": 250.0,
+   "algolia_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Ask HN: I'm a software engineer going blind, how should I prepare?"
+   ]
+  },
+  {
+   "q": "show",
+   "ours_server": 9.1,
+   "ours_rt": 46.5,
+   "ours_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Show HN: I made an open-source laptop from scratch"
+   ],
+   "algolia_server": 19,
+   "algolia_rt": 230.5,
+   "algolia_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Show HN: I made an open-source laptop from scratch"
+   ]
+  },
+  {
+   "q": "show ",
+   "ours_server": 21.3,
+   "ours_rt": 58.4,
+   "ours_top": [
+    "Show HN: Show HN",
+    "Show HN: Bel",
+    "Show HN: Best of Show HN"
+   ],
+   "algolia_server": 8,
+   "algolia_rt": 218.1,
+   "algolia_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Show HN: I made an open-source laptop from scratch"
+   ]
+  },
+  {
+   "q": "show h",
+   "ours_server": 29.8,
+   "ours_rt": 66.1,
+   "ours_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Show HN: I made an open-source laptop from scratch"
+   ],
+   "algolia_server": 18,
+   "algolia_rt": 269.5,
+   "algolia_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Show HN: I made an open-source laptop from scratch"
+   ]
+  },
+  {
+   "q": "show hn",
+   "ours_server": 19.1,
+   "ours_rt": 57.9,
+   "ours_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Show HN: I made an open-source laptop from scratch"
+   ],
+   "algolia_server": 11,
+   "algolia_rt": 237.2,
+   "algolia_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Show HN: I made an open-source laptop from scratch"
+   ]
+  },
+  {
+   "q": "show hn ",
+   "ours_server": 5.3,
+   "ours_rt": 41.6,
+   "ours_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Show HN: I made an open-source laptop from scratch"
+   ],
+   "algolia_server": 12,
+   "algolia_rt": 258.6,
+   "algolia_top": [
+    "Show HN: This up votes itself",
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Show HN: I made an open-source laptop from scratch"
+   ]
+  },
+  {
+   "q": "show hn g",
+   "ours_server": 17.3,
+   "ours_rt": 53.6,
+   "ours_top": [
+    "Show HN: G-Fu \u2013 a pragmatic Lisp embedded in Go",
+    "Show HN: Vdm, a sane alternative to e.g. Git submodules",
+    "Show HN: Use React to build G Suite dialogs and add-ons"
+   ],
+   "algolia_server": 34,
+   "algolia_rt": 229.6,
+   "algolia_top": [
+    "Show HN: Gemini Pro 3 imagines the HN front page 10 years from now",
+    "Show HN: I got laid off from Meta and created a minor hit on Steam",
+    "Show HN: Jmail \u2013 Google Suite for Epstein files"
+   ]
+  },
+  {
+   "q": "show hn ga",
+   "ours_server": 18.5,
+   "ours_rt": 54.7,
+   "ours_top": [
+    "Show HN: A retro video game console I've been working on in my free time",
+    "Show HN: Airmash \u2013 Multiplayer Missile Warfare HTML5 Game",
+    "Show HN: Looptap \u2013 A minimal game to waste your time"
+   ],
+   "algolia_server": 67,
+   "algolia_rt": 188.5,
+   "algolia_top": [
+    "Show HN: A game where you build a GPU",
+    "Show HN: Immersive Gaussian Splat experience of Sutro Tower, San Francisco",
+    "Show HN: A game that tests how well you know your local area"
+   ]
+  },
+  {
+   "q": "show hn gam",
+   "ours_server": 9.4,
+   "ours_rt": 46.0,
+   "ours_top": [
+    "Show HN: A retro video game console I've been working on in my free time",
+    "Show HN: Airmash \u2013 Multiplayer Missile Warfare HTML5 Game",
+    "Show HN: Looptap \u2013 A minimal game to waste your time"
+   ],
+   "algolia_server": 50,
+   "algolia_rt": 187.1,
+   "algolia_top": [
+    "Show HN: A game where you build a GPU",
+    "Show HN: A game that tests how well you know your local area",
+    "Show HN: Video Game in a Font"
+   ]
+  },
+  {
+   "q": "l",
+   "ours_server": 14.8,
+   "ours_rt": 51.1,
+   "ours_top": [
+    "L-systems",
+    "Walking in L.A.",
+    "L-System"
+   ],
+   "algolia_server": 14,
+   "algolia_rt": 210.1,
+   "algolia_top": [
+    "Backdoor in upstream xz/liblzma leading to SSH server compromise",
+    "CrowdStrike Update: Windows Bluescreen and Boot Loops",
+    "Replit used legal threats to kill my open-source project"
+   ]
+  },
+  {
+   "q": "ll",
+   "ours_server": 9.7,
+   "ours_rt": 45.6,
+   "ours_top": [
+    "Meta Llama 3",
+    "Before buying a NYT subscription, here's what it'll take to cancel it",
+    "LLM Inevitabilism"
+   ],
+   "algolia_server": 6,
+   "algolia_rt": 192.8,
+   "algolia_top": [
+    "Llama 2",
+    "Meta Llama 3",
+    "LLM Inevitabilism"
+   ]
+  },
+  {
+   "q": "lla",
+   "ours_server": 7.0,
+   "ours_rt": 43.2,
+   "ours_top": [
+    "Meta Llama 3",
+    "LLaMA now goes faster on CPUs",
+    "The Llama 4 herd"
+   ],
+   "algolia_server": 33,
+   "algolia_rt": 190.3,
+   "algolia_top": [
+    "Llama 2",
+    "Meta Llama 3",
+    "LLaMA now goes faster on CPUs"
+   ]
+  },
+  {
+   "q": "llam",
+   "ours_server": 7.3,
+   "ours_rt": 43.2,
+   "ours_top": [
+    "Meta Llama 3",
+    "LLaMA now goes faster on CPUs",
+    "The Llama 4 herd"
+   ],
+   "algolia_server": 17,
+   "algolia_rt": 204.7,
+   "algolia_top": [
+    "Llama 2",
+    "Meta Llama 3",
+    "LLaMA now goes faster on CPUs"
+   ]
+  },
+  {
+   "q": "llama",
+   "ours_server": 7.2,
+   "ours_rt": 43.1,
+   "ours_top": [
+    "Meta Llama 3",
+    "LLaMA now goes faster on CPUs",
+    "The Llama 4 herd"
+   ],
+   "algolia_server": 7,
+   "algolia_rt": 195.6,
+   "algolia_top": [
+    "Llama 2",
+    "Meta Llama 3",
+    "LLaMA now goes faster on CPUs"
+   ]
+  },
+  {
+   "q": "llama ",
+   "ours_server": 22.3,
+   "ours_rt": 57.6,
+   "ours_top": [
+    "Meta Llama 3",
+    "The Llama 4 herd",
+    "Llama 3.1"
+   ],
+   "algolia_server": 4,
+   "algolia_rt": 184.5,
+   "algolia_top": [
+    "Llama 2",
+    "Meta Llama 3",
+    "LLaMA now goes faster on CPUs"
+   ]
+  },
+  {
+   "q": "llama c",
+   "ours_server": 45.1,
+   "ours_rt": 84.1,
+   "ours_top": [
+    "LLaMA now goes faster on CPUs",
+    "Llama 3.2: Revolutionizing edge AI and vision with open, customizable models",
+    "Meta AI releases Code Llama 70B"
+   ],
+   "algolia_server": 12,
+   "algolia_rt": 203.9,
+   "algolia_top": [
+    "Llama.cpp 30B runs with only 6GB of RAM now",
+    "Llama.cpp: Port of Facebook's LLaMA model in C/C++, with Apple Silicon support",
+    "Code Llama, a state-of-the-art large language model for coding"
+   ]
+  },
+  {
+   "q": "llama cp",
+   "ours_server": 8.4,
+   "ours_rt": 54.3,
+   "ours_top": [
+    "LLaMA now goes faster on CPUs",
+    "Vision Now Available in Llama.cpp",
+    "Llama.cpp guide \u2013 Running LLMs locally on any hardware, from scratch"
+   ],
+   "algolia_server": 5,
+   "algolia_rt": 181.9,
+   "algolia_top": [
+    "Llama.cpp 30B runs with only 6GB of RAM now",
+    "Llama.cpp: Port of Facebook's LLaMA model in C/C++, with Apple Silicon support",
+    "Llama.cpp: Full CUDA GPU Acceleration"
+   ]
+  },
+  {
+   "q": "llama cpp",
+   "ours_server": 8.4,
+   "ours_rt": 47.1,
+   "ours_top": [
+    "Vision Now Available in Llama.cpp",
+    "Llama.cpp guide \u2013 Running LLMs locally on any hardware, from scratch",
+    "Heap-overflowing Llama.cpp to RCE"
+   ],
+   "algolia_server": 9,
+   "algolia_rt": 229.6,
+   "algolia_top": [
+    "Llama.cpp 30B runs with only 6GB of RAM now",
+    "Llama.cpp: Port of Facebook's LLaMA model in C/C++, with Apple Silicon support",
+    "Llama.cpp: Full CUDA GPU Acceleration"
+   ]
+  }
+ ]
+}

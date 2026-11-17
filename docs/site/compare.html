@@ -67,10 +67,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p>Look at these before choosing ChloeDB.</p>
     </div>
     <div class="behind">
-      <div class="card"><h4>Elasticsearch and OpenSearch</h4><p>Years at very large scale, a large ecosystem and analyzers for dozens of languages. Faster on typo search (Elasticsearch 34.6 ms against ChloeDB's 45.8 at 10M) and on BM25 under load (OpenSearch 720 queries a second at 16 clients against 625).</p></div>
+      <div class="card"><h4>Elasticsearch and OpenSearch</h4><p>Years at very large scale, a large ecosystem and analyzers for dozens of languages. Faster on typo search (Elasticsearch 32.4 ms against ChloeDB's 55.1 at 10M), on BM25 under load (OpenSearch 820 queries a second at 16 clients against 650) and on key lookups (OpenSearch 0.82 ms against 0.99).</p></div>
       <div class="card"><h4>Vespa</h4><p>Proven at very large scale, multi-phase tensor ranking and a managed cloud. Fastest on BM25 × recency at 10M.</p></div>
-      <div class="card"><h4>Milvus, Qdrant and Weaviate</h4><p>Indexes for billions of vectors, on disk or GPUs, and managed clouds. Qdrant's recall@10 at 10M is 0.941, ChloeDB's 0.791 at the shared settings.</p></div>
-      <div class="card"><h4>SQLite and PostgreSQL</h4><p>Decades of hardening. SQLite reads a row by id in 8 µs against ChloeDB's 21; Postgres looks up keys in about a third of ChloeDB's time at 10M (0.37 against 0.99 ms).</p></div>
+      <div class="card"><h4>Milvus, Qdrant and Weaviate</h4><p>Indexes for billions of vectors, on disk or GPUs, and managed clouds. Qdrant's recall@10 at 10M is 0.941, ChloeDB's 0.798 at the shared settings.</p></div>
+      <div class="card"><h4>SQLite and PostgreSQL</h4><p>Decades of hardening. SQLite reads a row by id in 11 µs against ChloeDB's 30 by key; Postgres looks up keys in about a third of ChloeDB's time at 10M (0.37 against 0.99 ms).</p></div>
       <div class="card"><h4>Tantivy</h4><p>Faster facet counts on small collections, and faster cold range filters.</p></div>
       <div class="card"><h4>ChloeDB itself</h4><p>A young project: analyzers for 22 languages, new and less tried than Lucene's, no managed service, no point-in-time recovery yet, and one writer per file. A cluster refuses graph queries and recommenders, the local BERT, image and sound models need a build of your own, and the cloud, autoscaling and on-call features are experimental.</p></div>
     </div>
@@ -86,8 +86,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/compare-data.js?v=cec1237791"></script>
-<script src="assets/bench-data.js?v=376b5cfc2f"></script>
+<script src="assets/bench-data.js?v=37458d7418"></script>
 <script src="assets/site.js?v=699f360f4f"></script>
-<script src="assets/bench.js?v=c61344792b"></script>
+<script src="assets/bench.js?v=cc795d625d"></script>
 </body>
 </html>

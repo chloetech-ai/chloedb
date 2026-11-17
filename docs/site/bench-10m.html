@@ -15,7 +15,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="icon" href="../assets/brand/chloedb-icon.svg" type="image/svg+xml">
 <link rel="icon" href="../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../assets/brand/apple-touch-icon.png">
-<meta name="description" content="ChloeDB and thirteen other engines on DigitalOcean at 10M MS MARCO passages with the 1M run's budget: fourteen kinds of query at 1, 4 and 16 clients, recall beside speed, writes, freshness and streams, the engines that did not finish at equal resources, and a head-to-head with Elasticsearch and OpenSearch; ChloeDB on 7 November with five fixes now merged, each engine from its newest run.">
+<meta name="description" content="ChloeDB and thirteen other engines on DigitalOcean at 10M MS MARCO passages with the 1M run's budget: fourteen kinds of query at 1, 4 and 16 clients, recall beside speed, writes, freshness and streams, the engines that did not finish at equal resources, and ChloeDB 0.3.5 head to head with Elasticsearch and OpenSearch on 16 November, every result cache off.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
@@ -41,43 +41,43 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <main>
 <div class="gutter head-band"><div class="wrap page-head">
     <nav class="subnav" aria-label="Benchmark pages"><a href="benchmarks.html">Overview</a><a href="bench-10m.html" aria-current="page">10M, cloud</a><a href="bench-1m.html">1M, cloud</a><a href="bench-laptop.html">1M, laptop cluster</a><a href="bench-embedded.html">No server</a><a href="bench-graph.html">Graph</a><a href="bench-method.html">How we test</a></nav>
-    <span class="eyebrow">Cluster · 10M passages · DigitalOcean · 3 to 7 November 2026</span>
+    <span class="eyebrow">Cluster · 10M passages · DigitalOcean · 3 to 16 November 2026</span>
     <h1>Ten times the data, the same budget</h1>
-    <p class="lede">The 1M run with ten times the data. Every engine had its own DigitalOcean machines with 6.8 CPUs and 52 GiB, and nine of the fourteen finished. ChloeDB ran again on 7 November with five fixes that are now merged, Elasticsearch and OpenSearch on 5 November with their result caches off; the others' numbers are from 3 November.</p>
+    <p class="lede">The 1M run with ten times the data. Every engine had its own DigitalOcean machines with 6.8 CPUs and 52 GiB, and nine of the fourteen finished. ChloeDB 0.3.5, Elasticsearch and OpenSearch ran again on 16 November, taking turns on the same machines with every result cache off; the others' numbers are from 3 November.</p>
     <p class="verdict" data-overall="cloud-10m"></p>
-    <p>ChloeDB is fastest on 25 of the 45 tests and in the top half on 41. Its lowest places are key lookups (6th of 9) and recall under a filter. The SQL aggregate that was its worst result on 3 November (4.3 s) now takes 36.8 ms, the fastest of the run, and typo search 45.8 ms instead of 824. Head to head with Elasticsearch and OpenSearch it is fastest on 38 of the 45 tests (<a href="#latest">below</a>).</p>
+    <p>ChloeDB is fastest on 26 of the 45 tests and in the top half on 41. Its lowest places are key lookups (6th of 9) and recall under a filter (5th). The SQL aggregate that was its worst result on 3 November (4.3 s) now takes 35.6 ms, the fastest of the run, and typo search 55.1 ms instead of 824. Head to head with Elasticsearch and OpenSearch it is fastest on 37 of the 45 tests (<a href="#latest">below</a>).</p>
     <dl class="atglance">
       <div><dt>Data</dt><dd>The first 10M MS MARCO v2.1 passages, with their Arctic Embed M v1.5 vectors (768 dimensions)</dd></div>
-      <div><dt>Machines</dt><dd>DigitalOcean sfo2, Xeon Platinum and Gold; 6.8 CPUs and 52 GiB per engine</dd></div>
-      <div><dt>ChloeDB</dt><dd>2 pods of 3.4 CPUs and 26 GiB, each a shard and a coordinator in one process; image <code>861ab1d</code>, main at <code>8e66622</code> with five pull requests (#293, #294, #295, #296 and #299), all now merged</dd></div>
+      <div><dt>Machines</dt><dd>DigitalOcean sfo2, Xeon Platinum and Gold; 6.8 CPUs and 52 GiB per engine. ChloeDB, Elasticsearch and OpenSearch on two m3-4vcpu-32gb machines (Platinum 8280) on 16 November, the others on machines of their own on 3 November</dd></div>
+      <div><dt>ChloeDB</dt><dd>0.3.5 (the tag's commit <code>1445c10</code>, with the harness of #575): 2 pods of 3.4 CPUs and 26 GiB, each a shard and a coordinator in one process</dd></div>
       <div><dt>Queries</dt><dd>300 dev queries per kind at 1, 4 and 16 clients, after warm-up; medians of three passes for ChloeDB, Elasticsearch and OpenSearch, one pass for the rest</dd></div>
-      <div><dt>Noise</dt><dd>6 November's main ran again on 7 November's nodes first, within 7% of its own numbers; 5 November's image on 6 November's nodes served 0.75 to 1.10 of its queries a second at 16 clients. Read gaps under 10% as ties</dd></div>
-      <div><dt>Cost</dt><dd>$83.07 at list price, failed attempts included</dd></div>
+      <div><dt>Noise</dt><dd>ChloeDB ran first and again last on 16 November's machines, ten hours apart: the second round was 1.0% slower (the median over 42 timings, up to 4.9%). Between the two days the machines differ, so read gaps under 10% there as ties</dd></div>
+      <div><dt>Cost</dt><dd>$83.07 at list price on 3 November, failed attempts included; 16 November's head to head is in the 1M run's $28.67</dd></div>
     </dl>
-    <nav class="toc" aria-label="Sections"><a href="#latest">Head to head</a><a href="#fixes">Five fixes</a><a href="#rank">Overall</a><a href="#places">Every kind</a><a href="#explore">One kind at a time</a><a href="#versus">Engine by engine</a><a href="#big">128 GB machine</a><a href="#writes">Writes</a><a href="#load">Load</a><a href="#behind">Behind</a><a href="#failed">Did not finish</a><a href="#files">Raw data</a></nav>
+    <nav class="toc" aria-label="Sections"><a href="#latest">Head to head</a><a href="#since">Since 7 November</a><a href="#rank">Overall</a><a href="#places">Every kind</a><a href="#explore">One kind at a time</a><a href="#versus">Engine by engine</a><a href="#big">128 GB machine</a><a href="#writes">Writes</a><a href="#load">Load</a><a href="#behind">Behind</a><a href="#failed">Did not finish</a><a href="#files">Raw data</a></nav>
   </div></div>
 
   <section class="gutter" id="latest"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Head to head · 5 and 7 November 2026</span>
+      <span class="eyebrow">Head to head · 16 November 2026</span>
       <h2>Head to head with Elasticsearch and OpenSearch</h2>
-      <p>ChloeDB's 7 November image (<code>861ab1d</code>, with the five fixes), and Elasticsearch and OpenSearch of 5 November with their result caches off, each on two m3-4vcpu-32gb machines, three passes each. Of the three, ChloeDB is fastest on 38 of the 45 tests. Elasticsearch is fastest on typos, and OpenSearch on BM25 under load (720 queries a second at 16 clients, ChloeDB 625), key lookups at four clients and recall under a filter. The days had different machines: on 6 November's, ChloeDB's 5 November image served 0.75 to 1.10 of its 5 November queries a second at 16 clients, so where the others lead under load, part of it may be the machines.</p>
+      <p>ChloeDB 0.3.5, Elasticsearch 9.5.5 and OpenSearch 3.9.0 taking turns on the same two m3-4vcpu-32gb machines, every result cache off, three passes each. Of the three, ChloeDB is fastest on 37 of the 45 tests and has the best recall on all three vector kinds. Elasticsearch is fastest on typos, and OpenSearch on BM25 under load (820 queries a second at 16 clients, ChloeDB 650) and on key lookups (0.82 ms at one client, ChloeDB 0.99).</p>
     </div>
     <p class="verdict" data-overall="cloud-10m-h2h"></p>
     <div data-rank="cloud-10m-h2h"></div>
     <div data-pick="cloud-10m-h2h" data-metric="p50" data-title="Median latency at 1 client, ms, lower is better" data-engines="strata,os,es" data-kinds="bm25|phrase|vector|similar items|hybrid (RRF)|typo|sql aggregate"></div>
     <div data-pick="cloud-10m-h2h" data-metric="qps16" data-title="Queries a second at 16 clients, higher is better" data-engines="strata,os,es" data-kinds="bm25|bm25 + filter|phrase|vector|key lookup"></div>
     <div data-writes="cloud-10m-h2h"></div>
-    <p class="small muted">Raw data: <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/rerun-1107-do/README.md">ChloeDB's rerun</a> and <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/bigger-items-do/README.md">5 November's run</a>. The rest of this page ranks every engine from its newest run.</p>
+    <p class="small muted">Raw data: <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-0.3.5-do/README.md">the 0.3.5 run</a> and its <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-0.3.5-do/10m/passes.md">passes.md</a>. The rest of this page ranks these three from this run with the other engines of 3 November.</p>
   </div></section>
 
-  <section class="gutter" id="fixes"><div class="wrap block">
+  <section class="gutter" id="since"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Five fixes, now merged · 7 November 2026</span>
-      <h2>Key lookups 34% faster under load</h2>
-      <p>6 November's main and the 7 November image on the same two m3-4vcpu-32gb machines, serving shards built from the same data, three passes each. <a href="https://github.com/chloetech-ai/chloedb/pull/299">#299</a> answers a pod's own shard inside its coordinator, so half the keys skip the network: 8,967 to 11,993 lookups a second at 16 clients. Other kinds gain up to 9% (typos lose 3%), less than at 1M, since the shards' own work is a larger part of each query. With <a href="https://github.com/chloetech-ai/chloedb/pull/293">#293</a> the shards' merges take 40 and 58 minutes instead of 54 and 77.</p>
+      <span class="eyebrow">Since 7 November · machines of the same size</span>
+      <h2>0.3.5 against the image this page showed before</h2>
+      <p>Until 16 November this page showed ChloeDB's 7 November image (<code>861ab1d</code>). 0.3.5 ran on two m3-4vcpu-32gb machines as it did, on another day. Its median at one client is 1 to 16% lower on 13 of the 14 kinds, and at 16 clients it serves between 7% fewer and 12% more queries a second. Typo search is the exception: 45.8 to 55.1 ms at one client and 26% fewer queries a second at 16 clients, while Elasticsearch's and OpenSearch's typo queries got no slower. Something between <code>861ab1d</code> and 0.3.5 slowed it; it is not bisected yet.</p>
     </div>
-    <div data-ab="fix-1107-10m" data-merge data-labels="6 Nov main,7 Nov image"></div>
+    <div data-ab="since-1107-10m" data-merge data-labels="7 Nov image,0.3.5"></div>
   </div></section>
   <section class="gutter" id="rank"><div class="wrap block">
     <div class="block-head">
@@ -87,7 +87,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <div data-rank="cloud-10m"></div>
     <div class="sub">
       <h3>Under other rules</h3>
-      <p>ChloeDB stays first at 16 clients, with gaps under 15% as ties, and on average place. Postgres is first on the four kinds every engine answered (33 points against ChloeDB's 42): its text kinds hit a 20 s limit, which left it vectors, key lookups and aggregates.</p>
+      <p>ChloeDB stays first at 16 clients, with gaps under 15% as ties, and on average place. Postgres is first on the four kinds every engine answered (33 points against ChloeDB's 43): its text kinds hit a 20 s limit, which left it vectors, key lookups and aggregates.</p>
       <div data-variants="cloud-10m"></div>
     </div>
   </div></section>
@@ -123,7 +123,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <div class="block-head">
       <span class="eyebrow">The 128 GB machine</span>
       <h2>Milvus and Redis, with more memory</h2>
-      <p>Both needed more than 52 GiB, so they ran with the same CPUs on 128 GB and are not ranked. Redis is fastest on vectors (at recall 0.684) and key lookups, and takes 0.8 to 1.5 s on text. Milvus has the best filtered recall, at about a seventh of ChloeDB's vector throughput. While searching on 3 November, Redis held 72 GiB, Milvus 64 and ChloeDB 2.2.</p>
+      <p>Both needed more than 52 GiB, so they ran with the same CPUs on 128 GB and are not ranked. Redis is fastest on vectors (at recall 0.684) and key lookups, and takes 0.8 to 1.5 s on text. Milvus has the best filtered recall, at about an eighth of ChloeDB's vector throughput. While searching on 3 November, Redis held 72 GiB, Milvus 64 and ChloeDB 2.2.</p>
     </div>
     <div data-pick="cloud-10m" data-metric="p50" data-title="Median latency at 1 client, ms, lower is better" data-engines="strata,milvus,redis" data-kinds="bm25|vector|vector + filter|key lookup|hybrid (RRF)"></div>
     <div data-pick="cloud-10m" data-metric="qps4" data-title="Queries a second at 4 clients, higher is better" data-engines="strata,milvus,redis" data-kinds="bm25|vector|vector + filter|key lookup|hybrid (RRF)"></div>
@@ -133,7 +133,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <div class="block-head">
       <span class="eyebrow">Writes and streams</span>
       <h2>Searchable in 7 ms</h2>
-      <p>ChloeDB and Vespa make a write searchable when it returns (7.6 and 10.0 ms); Elasticsearch and OpenSearch refresh every second (820 and 674 ms at the median). At 16 clients ChloeDB's updates are more than three times as fast as theirs (5,001 a second against 1,516 and 1,567), because it sets one column in place. From one client its writes are slower than on 4 November (289 inserts a second against 405), on other machines and with the coordinator across the network. A crashed stream consumer resumes exactly, since offsets commit with the rows. Solr has no write numbers.</p>
+      <p>ChloeDB and Vespa make a write searchable when it returns (6.7 and 10.0 ms); Elasticsearch and OpenSearch refresh every second (731 and 867 ms at the median). At 16 clients ChloeDB's updates are more than three times as fast as theirs (6,730 a second against 1,858 and 1,964), because it sets one column in place. A crashed stream consumer resumes exactly, since offsets commit with the rows. Solr has no write numbers.</p>
     </div>
     <div data-writes="cloud-10m"></div>
   </div></section>
@@ -155,11 +155,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <div data-pick="cloud-10m" data-metric="p50" data-title="Median latency at 1 client, ms, lower is better" data-engines="strata,os,es,solr,paradedb,postgres,qdrant,weaviate" data-kinds="typo|key lookup|boosted (bm25 × decay)"></div>
     <div data-pick="cloud-10m" data-metric="recall" data-title="Recall@10 at the shared settings, higher is better" data-engines="strata,os,es,solr,paradedb,postgres,qdrant,weaviate" data-kinds="vector|vector + filter|similar items"></div>
     <ul class="gaps">
-      <li><b>Typo search.</b> 45.8 ms, against Elasticsearch's 34.6 (OpenSearch 46.6). It took 824 ms on 3 November's build, before #242 and #266.</li>
-      <li><b>Key lookups.</b> 0.99 ms, against 0.37 to 0.47 for Postgres, Weaviate, ParadeDB and Qdrant: most of it is the hop from a coordinator to the shard. #299, already in these numbers, skips it for the coordinator's own shard, which helps under load more than at one client.</li>
-      <li><b>Vector recall.</b> 0.791 at the shared settings, against Qdrant's 0.941 and Postgres's 0.826; 0.821 under a filter, against Solr's 0.917. With 256 candidates ChloeDB reaches 0.903 and 0.916, at 630 and 555 queries a second at 16 clients (<a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/rerun-1107-do/10m/ef.md">ef.md</a>).</li>
-      <li><b>BM25 × recency.</b> 8.89 ms, against Vespa's 5.42 and Qdrant's 5.86.</li>
-      <li><b>BM25 at 16 clients.</b> 625 queries a second, against OpenSearch's 720 and Elasticsearch's 683. A coordinator in each shard pod (#287) added 3% on the same machines, where 5 November's image served as many BM25 queries as on 5 November's: the shards' own scoring is what waits.</li>
+      <li><b>Typo search.</b> 55.1 ms, against Elasticsearch's 32.4 (OpenSearch 44.4). It took 824 ms on 3 November's build, before #242 and #266, and 45.8 on 7 November's image: something since has slowed it (<a href="#since">above</a>).</li>
+      <li><b>Key lookups.</b> 0.99 ms, against 0.37 to 0.47 for Postgres, Weaviate, ParadeDB and Qdrant and OpenSearch's 0.82: most of it is the hop from a coordinator to the shard. #299 skips it for the coordinator's own shard, which helps under load more than at one client.</li>
+      <li><b>Vector recall.</b> 0.798 at the shared settings, against Qdrant's 0.941 and Postgres's 0.826; 0.816 under a filter, against Solr's 0.917. With 256 candidates ChloeDB reaches 0.914 and 0.918, at 680 and 582 queries a second at 16 clients; Elasticsearch and OpenSearch reach 0.767 and 0.757 without a filter (<a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-0.3.5-do/10m/ef.md">ef.md</a>).</li>
+      <li><b>BM25 × recency.</b> 8.02 ms, against Vespa's 5.42 and Qdrant's 5.86.</li>
+      <li><b>BM25 at 16 clients.</b> 650 queries a second, against OpenSearch's 820 and Elasticsearch's 662 on the same machines, though ChloeDB answers a single BM25 query the soonest (3.28 ms, against 3.71 and 4.44). Under load the shards' own scoring is what waits.</li>
     </ul>
   </div></section>
 
@@ -185,13 +185,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <h2>Every number comes from these files</h2>
     </div>
     <ul class="files">
-      <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/rerun-1107-do/README.md">ChloeDB's rerun of 7 November</a>: the image with the five fixes against 6 November's main on the same machines, and recall at 64, 128 and 256 candidates</li>
-      <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/rerun-1106-do/README.md">ChloeDB's rerun of 6 November</a>: main against 5 November's image on the same machines, and BM25 under load with coordinators in the shard pods</li>
-      <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/bigger-items-do/README.md">5 November's run</a>: Elasticsearch and OpenSearch with their result caches off, and ChloeDB before and after the fixes of that day</li>
+      <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-0.3.5-do/README.md">The 0.3.5 run's README</a> of 16 November: setup, machines, the drift check, and how its numbers compare with 7 November's</li>
+      <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-0.3.5-do/10m/passes.md">passes.md</a>, <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-0.3.5-do/10m/rank-no-load.md">rank-no-load.md</a> and <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-0.3.5-do/10m/ef.md">ef.md</a> of its head to head: the medians of three passes, the ranking and the candidates sweep</li>
+      <li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-server/results/compare-msmarco-0.3.5-do/10m">Its directory</a>: raw results, loads, writes, streams and ChloeDB's second round</li>
+      <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/rerun-1107-do/README.md">ChloeDB's rerun of 7 November</a>: the image this page showed until 16 November</li>
       <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-10m-do/README.md">README.md</a> of 3 November: setup, machines, the noise check and what went wrong</li>
-      <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-10m-do/tables.md">tables.md</a>: every table</li>
-      <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-10m-do/rank.md">rank.md</a>: the ranking as <code>rank.py</code> computes it</li>
-      <li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-server/results/compare-msmarco-10m-do">The directory</a>: raw results per engine, loads, writes and logs</li>
+      <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-10m-do/tables.md">tables.md</a>: every table of 3 November</li>
+      <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/results/compare-msmarco-10m-do/rank.md">rank.md</a>: 3 November's ranking as <code>rank.py</code> computes it</li>
+      <li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-server/results/compare-msmarco-10m-do">The directory</a> of 3 November: raw results per engine, loads, writes and logs</li>
       <li><a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-server/deploy/compare/README.md">The method</a>: budgets, settings and every engine's request for each kind</li>
     </ul>
   </div></section>
@@ -204,8 +205,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js?v=376b5cfc2f"></script>
+<script src="assets/bench-data.js?v=37458d7418"></script>
 <script src="assets/site.js?v=699f360f4f"></script>
-<script src="assets/bench.js?v=c61344792b"></script>
+<script src="assets/bench.js?v=cc795d625d"></script>
 </body>
 </html>

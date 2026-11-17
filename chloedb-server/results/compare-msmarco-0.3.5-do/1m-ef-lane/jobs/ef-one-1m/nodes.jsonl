@@ -1,0 +1,2 @@
+{"node": "ef-one-1m-d-a1-3a2suk", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.789, "sha256_1g_x_vcpus_s": 11.659, "disk_write_2g_s": 2.206, "copy_ms": 0, "time": 1794790847, "size": "m-8vcpu-64gb"}
+{"node": "ef-one-1m-c-a1-3a2suh", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382184, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 23.009, "sha256_1g_x_vcpus_s": 11.674, "disk_write_2g_s": 3.741, "copy_ms": 43478, "time": 1794790895, "size": "c-8"}

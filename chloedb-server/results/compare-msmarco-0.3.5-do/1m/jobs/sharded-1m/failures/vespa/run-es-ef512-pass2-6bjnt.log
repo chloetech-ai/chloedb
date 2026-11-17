@@ -1,0 +1,19 @@
+es-ef512-pass2 vector                   warm-up: p50 7.635, 7.445 ms
+es-ef512-pass2 vector                   c=1        182 q/s  p50   5.433 ms  p90   6.386 ms  p99   7.881 ms  errors 0
+es-ef512-pass2 vector                   c=4        517 q/s  p50   7.457 ms  p90   9.729 ms  p99  12.156 ms  errors 0
+es-ef512-pass2 vector                   c=16       808 q/s  p50  18.804 ms  p90  28.180 ms  p99  38.345 ms  errors 0
+es-ef512-pass2 vector + filter          warm-up: p50 10.628, 10.659 ms
+es-ef512-pass2 vector + filter          c=1        131 q/s  p50   7.486 ms  p90   9.006 ms  p99  11.287 ms  errors 0
+es-ef512-pass2 vector + filter          c=4        359 q/s  p50  10.733 ms  p90  14.449 ms  p99  18.504 ms  errors 0
+es-ef512-pass2 vector + filter          c=16       515 q/s  p50  30.290 ms  p90  42.287 ms  p99  55.205 ms  errors 0
+es-ef512-pass2 hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es-ef512-pass2 hybrid (weighted)        warm-up: p50 9.106, 9.067 ms
+es-ef512-pass2 hybrid (weighted)        c=1        143 q/s  p50   6.005 ms  p90  10.560 ms  p99  19.321 ms  errors 0
+es-ef512-pass2 hybrid (weighted)        c=4        388 q/s  p50   9.014 ms  p90  15.732 ms  p99  30.326 ms  errors 0
+es-ef512-pass2 hybrid (weighted)        c=16       535 q/s  p50  26.781 ms  p90  46.725 ms  p99  82.031 ms  errors 0
+es-ef512-pass2 similar items            warm-up: p50 12.839, 13.033 ms
+es-ef512-pass2 similar items            c=1        109 q/s  p50   8.919 ms  p90  10.715 ms  p99  13.827 ms  errors 0
+es-ef512-pass2 similar items            c=4        296 q/s  p50  13.114 ms  p90  17.361 ms  p99  22.401 ms  errors 0
+es-ef512-pass2 similar items            c=16       391 q/s  p50  39.866 ms  p90  55.593 ms  p99  74.901 ms  errors 0
+es-ef512-pass2 result cache: {"after":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2},"before":{"evictions":0,"hit_count":0,"memory_size_in_bytes":1328,"miss_count":2}}
+wrote /data/compare/run-es-ef512-pass2.json

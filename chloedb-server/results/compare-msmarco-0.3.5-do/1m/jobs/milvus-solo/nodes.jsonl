@@ -1,0 +1,2 @@
+{"node": "milvus-solo-d-a1-3a2sus", "cpu": "Intel(R) Xeon(R) Gold 5318Y CPU @ 2.10GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 26.964, "sha256_1g_x_vcpus_s": 13.838, "disk_write_2g_s": 3.555, "copy_ms": 0, "time": 1794790855, "size": "m-8vcpu-64gb"}
+{"node": "milvus-solo-c-a1-3a2su5", "cpu": "Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz", "vcpus": 8, "mem_kb": 16382184, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 20.226, "sha256_1g_x_vcpus_s": 10.475, "disk_write_2g_s": 0.993, "copy_ms": 92927, "time": 1794790933, "size": "c-8"}

@@ -108,7 +108,7 @@ export declare class Database extends Searchable {
   write(ops: Iterable<Record<string, Input>>): Promise<number>;
 
   importFile(path: Path, options?: { format?: "jsonl" | "json" | "csv" | "tsv"; table?: string }): Promise<{ rows: number; bulk: boolean; skippedFields: string[] }>;
-  importSqlite(path: Path, options?: { tables?: Tables; schemas?: unknown; blobsBase64?: boolean }): Promise<Record<string, unknown>>;
+  importSqlite(path: Path, options?: { tables?: Tables; schemas?: unknown; blobsBase64?: boolean; append?: boolean }): Promise<Record<string, unknown>>;
   exportSqlite(path: Path, options?: { tables?: Tables; fts?: boolean; indexes?: boolean; schemas?: boolean }): Promise<Record<string, unknown>>;
   importParquet(path: Path, options?: { table?: string; schema?: SchemaInput; key?: string; blobsBase64?: boolean }): Promise<Record<string, unknown>>;
   planParquet(path: Path, options?: { table?: string; schema?: SchemaInput; key?: string; blobsBase64?: boolean }): Promise<Record<string, unknown>>;

@@ -1,0 +1,24 @@
+{
+  "batch": 500,
+  "clients": 8,
+  "collection": "msmarco-1000k",
+  "docs": 1000000,
+  "engine": "postgres",
+  "index_bytes": 10249388032,
+  "indexes_bytes": 4435132416,
+  "ingest_s": 143.456741511,
+  "merge_s": 1249.757010154,
+  "prepare_s": 0.0,
+  "refresh_s": 0.0,
+  "request_bytes": 10687148657,
+  "searchable_docs": 1000000,
+  "setup_s": 0.023016574,
+  "steps": {
+    "analyze_s": 1.116494995,
+    "gin_index_s": 73.93561287,
+    "hnsw_index_s": 1170.630289695,
+    "primary_key_s": 4.074485705
+  },
+  "table_bytes": 1496342528,
+  "total_s": 1393.213779606
+}

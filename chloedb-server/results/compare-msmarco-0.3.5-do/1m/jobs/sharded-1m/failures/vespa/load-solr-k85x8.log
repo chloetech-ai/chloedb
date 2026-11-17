@@ -1,0 +1,44 @@
+solr: index created in 4.9 s
+solr: 25000 documents sent, 12 s
+solr: 50000 documents sent, 24 s
+solr: 75000 documents sent, 33 s
+solr: 100000 documents sent, 42 s
+solr: 125000 documents sent, 53 s
+solr: 150000 documents sent, 63 s
+solr: 175000 documents sent, 75 s
+solr: 200000 documents sent, 86 s
+solr: 225000 documents sent, 96 s
+solr: 250000 documents sent, 108 s
+solr: 275000 documents sent, 120 s
+solr: 300000 documents sent, 130 s
+solr: 325000 documents sent, 141 s
+solr: 350000 documents sent, 152 s
+solr: 375000 documents sent, 163 s
+solr: 400000 documents sent, 173 s
+solr: 425000 documents sent, 182 s
+solr: 450000 documents sent, 195 s
+solr: 475000 documents sent, 206 s
+solr: 500000 documents sent, 219 s
+solr: 525000 documents sent, 231 s
+solr: 550000 documents sent, 243 s
+solr: 575000 documents sent, 257 s
+solr: 600000 documents sent, 268 s
+solr: 625000 documents sent, 278 s
+solr: 650000 documents sent, 290 s
+solr: 675000 documents sent, 306 s
+solr: 700000 documents sent, 317 s
+solr: 725000 documents sent, 329 s
+solr: 750000 documents sent, 341 s
+solr: 775000 documents sent, 354 s
+solr: 800000 documents sent, 368 s
+solr: 825000 documents sent, 384 s
+solr: 850000 documents sent, 400 s
+solr: 875000 documents sent, 415 s
+solr: 900000 documents sent, 425 s
+solr: 925000 documents sent, 443 s
+solr: 950000 documents sent, 460 s
+solr: 975000 documents sent, 474 s
+solr: 1000000 documents sent, 498 s
+solr: 1000000 documents (11.8 GB of JSON) sent in 503.1 s
+solr: searchable after 3.9 s more, merged in 763.9 s; 1270.9 s in all
+wrote /data/compare/load-solr.json

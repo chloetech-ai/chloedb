@@ -1,0 +1,2779 @@
+{
+ "machine": "4 x DigitalOcean s-4vcpu-8gb-amd (4 vCPU, 8 GB, local SSD), ChloeDB 0.3.5, answer cache off",
+ "started": "2026-11-16 21:10:28Z",
+ "runs": 5,
+ "ids": {
+  "repos": {
+   "torvalds/linux": 2325298,
+   "kubernetes/kubernetes": 20580498,
+   "facebook/react": 10270250,
+   "microsoft/vscode": 41881900
+  },
+  "people": {
+   "torvalds": 1024025,
+   "sindresorhus": 170270,
+   "dependabot[bot]": 49699333
+  }
+ },
+ "events": 11227448089,
+ "statements": [
+  {
+   "group": "every event",
+   "name": "count every event",
+   "sql": "SELECT COUNT(*) AS n FROM gh_events",
+   "params": {},
+   "runs": [
+    {
+     "ms": 15.354719,
+     "wall_ms": 56.22138499893481,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 12.627846,
+     "wall_ms": 43.15449599380372,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 17.266503,
+     "wall_ms": 45.51344000356039,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 14.663549,
+     "wall_ms": 41.72488500626059,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 12.809006,
+     "wall_ms": 52.32663600327214,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 11.033154,
+     "wall_ms": 42.712376001873054,
+     "rows": 1,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "n": 11227448089
+    }
+   ],
+   "first_ms": 15.354719,
+   "median_ms": 12.809006,
+   "max_ms": 17.266503,
+   "cached": 0
+  },
+  {
+   "group": "every event",
+   "name": "first and last event",
+   "sql": "SELECT MIN(t) AS first, MAX(t) AS last FROM gh_events",
+   "params": {},
+   "runs": [
+    {
+     "ms": 54492.855790999994,
+     "wall_ms": 54559.24639500154,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 57905.759941,
+     "wall_ms": 57998.75200400129,
+     "rows": 1,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "first": 1297468800,
+     "last": 1794787198
+    }
+   ],
+   "first_ms": 54492.855790999994,
+   "median_ms": 57905.759941,
+   "max_ms": 57905.759941,
+   "cached": 0
+  },
+  {
+   "group": "every event",
+   "name": "events by kind",
+   "sql": "SELECT kind, COUNT(*) AS n FROM gh_events GROUP BY kind ORDER BY n DESC",
+   "params": {},
+   "runs": [
+    {
+     "ms": 12220.361776000002,
+     "wall_ms": 12313.563691001036,
+     "rows": 39,
+     "cached": false
+    },
+    {
+     "ms": 6184.384907,
+     "wall_ms": 6273.342708998825,
+     "rows": 39,
+     "cached": false
+    },
+    {
+     "ms": 6154.938062,
+     "wall_ms": 6204.308143998787,
+     "rows": 39,
+     "cached": false
+    },
+    {
+     "ms": 5516.327306,
+     "wall_ms": 5580.440629004443,
+     "rows": 39,
+     "cached": false
+    },
+    {
+     "ms": 6290.0513089999995,
+     "wall_ms": 6334.200083998439,
+     "rows": 39,
+     "cached": false
+    },
+    {
+     "ms": 5637.779131,
+     "wall_ms": 5678.346250999311,
+     "rows": 39,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "kind": "push",
+     "n": 6505106732
+    },
+    {
+     "kind": "create_branch",
+     "n": 958872165
+    },
+    {
+     "kind": "comment",
+     "n": 559884318
+    }
+   ],
+   "first_ms": 12220.361776000002,
+   "median_ms": 6154.938062,
+   "max_ms": 6290.0513089999995,
+   "cached": 0
+  },
+  {
+   "group": "every event",
+   "name": "stars ever",
+   "sql": "SELECT COUNT(*) AS n FROM gh_events WHERE kind = 'star'",
+   "params": {},
+   "runs": [
+    {
+     "ms": 378.870948,
+     "wall_ms": 421.7579399992246,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 371.896309,
+     "wall_ms": 426.6152089985553,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 280.845805,
+     "wall_ms": 315.6804079990252,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 346.10348,
+     "wall_ms": 385.4044470062945,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 304.71115599999996,
+     "wall_ms": 349.7799210017547,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 401.851446,
+     "wall_ms": 438.43769000523025,
+     "rows": 1,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "n": 556629221
+    }
+   ],
+   "first_ms": 378.870948,
+   "median_ms": 346.10348,
+   "max_ms": 401.851446,
+   "cached": 0
+  },
+  {
+   "group": "every event",
+   "name": "commits pushed ever",
+   "sql": "SELECT SUM(n) AS commits, COUNT(*) AS pushes FROM gh_events WHERE kind = 'push'",
+   "params": {},
+   "runs": [
+    {
+     "ms": 35815.794568,
+     "wall_ms": 35884.517067999695,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 23049.04235,
+     "wall_ms": 23139.244778998545,
+     "rows": 1,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "commits": 27170338076,
+     "pushes": 6505106732
+    }
+   ],
+   "first_ms": 35815.794568,
+   "median_ms": 23049.04235,
+   "max_ms": 23049.04235,
+   "cached": 0
+  },
+  {
+   "group": "every event",
+   "name": "events by year (a year computed from each row's INT time)",
+   "sql": "SELECT t - t % 31556952 AS y, COUNT(*) AS n FROM gh_events GROUP BY y ORDER BY y",
+   "params": {},
+   "runs": [
+    {
+     "ms": NaN,
+     "error": "SELECT t - t % 31556952 AS y, COUNT(*) AS n FROM gh_events GROUP BY y ORDER BY y: 400: {\"docs\":\"https://chloetech-ai.github.io/chloedb/site/docs/server.html#reading-past-the-window-scrolls\",\"error\":\"query error: gh-s0 (shard 0): query error: the query matches more than 1000001 rows, the most a query"
+    }
+   ],
+   "answer": null
+  },
+  {
+   "group": "every event",
+   "name": "events by year (one range count a year, 16 statements)",
+   "sql": [
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1293840000 AND t < 1325376000",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1325376000 AND t < 1356998400",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1356998400 AND t < 1388534400",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1388534400 AND t < 1420070400",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1420070400 AND t < 1451606400",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1451606400 AND t < 1483228800",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1483228800 AND t < 1514764800",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1514764800 AND t < 1546300800",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1546300800 AND t < 1577836800",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1577836800 AND t < 1609459200",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1609459200 AND t < 1640995200",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1640995200 AND t < 1672531200",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1672531200 AND t < 1704067200",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1704067200 AND t < 1735689600",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1735689600 AND t < 1767225600",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1767225600 AND t < 1798761600"
+   ],
+   "params": {},
+   "runs": [
+    {
+     "ms": 3703.378232,
+     "wall_ms": 4403.237969010661,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 1422.751862,
+     "wall_ms": 1961.0705169834546,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 1459.8455040000001,
+     "wall_ms": 2033.4086350048892,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 1534.106106,
+     "wall_ms": 2063.587505996111,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 1516.144768,
+     "wall_ms": 2261.576127006265,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 1472.646268,
+     "wall_ms": 2006.9796159878024,
+     "rows": 16,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "n": 17866770
+    },
+    {
+     "n": 33809933
+    },
+    {
+     "n": 79597257
+    }
+   ],
+   "first_ms": 3703.378232,
+   "median_ms": 1472.646268,
+   "max_ms": 1534.106106,
+   "cached": 0
+  },
+  {
+   "group": "every event",
+   "name": "kinds of events in 2024 (a range of times)",
+   "sql": "SELECT kind, COUNT(*) AS n FROM gh_events WHERE t >= :a AND t < :b GROUP BY kind ORDER BY n DESC",
+   "params": {
+    "a": 1704067200,
+    "b": 1735689600
+   },
+   "runs": [
+    {
+     "ms": 1542.5663240000001,
+     "wall_ms": 1587.386769002478,
+     "rows": 23,
+     "cached": false
+    },
+    {
+     "ms": 935.250469,
+     "wall_ms": 975.5591339999228,
+     "rows": 23,
+     "cached": false
+    },
+    {
+     "ms": 950.3139819999999,
+     "wall_ms": 996.8110940026236,
+     "rows": 23,
+     "cached": false
+    },
+    {
+     "ms": 872.137973,
+     "wall_ms": 927.1760249976069,
+     "rows": 23,
+     "cached": false
+    },
+    {
+     "ms": 966.412503,
+     "wall_ms": 1007.8575730003649,
+     "rows": 23,
+     "cached": false
+    },
+    {
+     "ms": 814.556965,
+     "wall_ms": 864.2636439981288,
+     "rows": 23,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "kind": "push",
+     "n": 1127652510
+    },
+    {
+     "kind": "create_branch",
+     "n": 141173145
+    },
+    {
+     "kind": "star",
+     "n": 74752590
+    }
+   ],
+   "first_ms": 1542.5663240000001,
+   "median_ms": 935.250469,
+   "max_ms": 966.412503,
+   "cached": 0
+  },
+  {
+   "group": "monthly sums",
+   "name": "pushes, commits and stars of every month (gh_repo_months)",
+   "sql": "SELECT month, SUM(pushes) AS pushes, SUM(commits) AS commits, SUM(stars) AS stars, COUNT(*) AS repos FROM gh_repo_months GROUP BY month ORDER BY month",
+   "params": {},
+   "runs": [
+    {
+     "ms": 1141.7185009999998,
+     "wall_ms": 1155.8621779986424,
+     "rows": 189,
+     "cached": false
+    },
+    {
+     "ms": 954.3097029999999,
+     "wall_ms": 969.3371780012967,
+     "rows": 189,
+     "cached": false
+    },
+    {
+     "ms": 915.938616,
+     "wall_ms": 929.9072390058427,
+     "rows": 189,
+     "cached": false
+    },
+    {
+     "ms": 866.588396,
+     "wall_ms": 879.7540470040985,
+     "rows": 189,
+     "cached": false
+    },
+    {
+     "ms": 964.004671,
+     "wall_ms": 978.8503970048623,
+     "rows": 189,
+     "cached": false
+    },
+    {
+     "ms": 928.7889849999999,
+     "wall_ms": 941.8673360050889,
+     "rows": 189,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "commits": 446391,
+     "month": 1296518400,
+     "pushes": 162268,
+     "repos": 37681,
+     "stars": 66742
+    },
+    {
+     "commits": 961574,
+     "month": 1298937600,
+     "pushes": 329015,
+     "repos": 55779,
+     "stars": 137790
+    },
+    {
+     "commits": 985904,
+     "month": 1301616000,
+     "pushes": 329585,
+     "repos": 59314,
+     "stars": 144919
+    }
+   ],
+   "first_ms": 1141.7185009999998,
+   "median_ms": 928.7889849999999,
+   "max_ms": 964.004671,
+   "cached": 0
+  },
+  {
+   "group": "a window",
+   "name": "busiest repos of March 2020",
+   "sql": "SELECT repo, COUNT(*) AS n FROM gh_events WHERE t >= :a AND t < :b GROUP BY repo ORDER BY n DESC LIMIT 20",
+   "params": {
+    "a": 1583020800,
+    "b": 1585699200
+   },
+   "runs": [
+    {
+     "ms": NaN,
+     "error": "the coordinator ran out of memory (1.5 GB): 7.2 million repos had events that month, and it gathers every group from every shard though rows are split by repo; one shard answers its own top 20 in 9.5 s"
+    }
+   ]
+  },
+  {
+   "group": "a window",
+   "name": "events of each hour of 18 June 2024",
+   "sql": "SELECT t - t % 3600 AS h, COUNT(*) AS n FROM gh_events WHERE t >= :a AND t < :b GROUP BY h ORDER BY h",
+   "params": {
+    "a": 1718668800,
+    "b": 1718755200
+   },
+   "runs": [
+    {
+     "ms": NaN,
+     "error": "SELECT t - t % 3600 AS h, COUNT(*) AS n FROM gh_events WHERE t >= :a AND t < :b : 400: {\"docs\":\"https://chloetech-ai.github.io/chloedb/site/docs/server.html#reading-past-the-window-scrolls\",\"error\":\"query error: gh-s0 (shard 0): query error: the query matches more than 1000001 rows, the most a query"
+    }
+   ],
+   "answer": null
+  },
+  {
+   "group": "a window",
+   "name": "events of each hour of 18 June 2024 (24 range counts)",
+   "sql": [
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718668800 AND t < 1718672400",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718672400 AND t < 1718676000",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718676000 AND t < 1718679600",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718679600 AND t < 1718683200",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718683200 AND t < 1718686800",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718686800 AND t < 1718690400",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718690400 AND t < 1718694000",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718694000 AND t < 1718697600",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718697600 AND t < 1718701200",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718701200 AND t < 1718704800",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718704800 AND t < 1718708400",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718708400 AND t < 1718712000",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718712000 AND t < 1718715600",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718715600 AND t < 1718719200",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718719200 AND t < 1718722800",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718722800 AND t < 1718726400",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718726400 AND t < 1718730000",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718730000 AND t < 1718733600",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718733600 AND t < 1718737200",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718737200 AND t < 1718740800",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718740800 AND t < 1718744400",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718744400 AND t < 1718748000",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718748000 AND t < 1718751600",
+    "SELECT COUNT(*) AS n FROM gh_events WHERE t >= 1718751600 AND t < 1718755200"
+   ],
+   "params": {},
+   "runs": [
+    {
+     "ms": 3637.6198879999997,
+     "wall_ms": 4530.913803006115,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 1182.267304,
+     "wall_ms": 1986.3081259754836,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 1181.8777559999999,
+     "wall_ms": 1965.0659160106443,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 1156.206263,
+     "wall_ms": 1924.550448980881,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 1227.492772,
+     "wall_ms": 1981.2340989810764,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 1314.204884,
+     "wall_ms": 2086.0052200150676,
+     "rows": 24,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "n": 195188
+    },
+    {
+     "n": 208535
+    },
+    {
+     "n": 172170
+    }
+   ],
+   "first_ms": 3637.6198879999997,
+   "median_ms": 1182.267304,
+   "max_ms": 1314.204884,
+   "cached": 0
+  },
+  {
+   "group": "a window",
+   "name": "most starred repos of 18 June 2024",
+   "sql": "SELECT repo, COUNT(*) AS n FROM gh_events WHERE kind = 'star' AND t >= :a AND t < :b GROUP BY repo ORDER BY n DESC LIMIT 20",
+   "params": {
+    "a": 1718668800,
+    "b": 1718755200
+   },
+   "runs": [
+    {
+     "ms": 917.0400020000001,
+     "wall_ms": 956.0420930065447,
+     "rows": 20,
+     "cached": false
+    },
+    {
+     "ms": 305.44455,
+     "wall_ms": 346.38693899614736,
+     "rows": 20,
+     "cached": false
+    },
+    {
+     "ms": 251.232507,
+     "wall_ms": 295.543556996563,
+     "rows": 20,
+     "cached": false
+    },
+    {
+     "ms": 260.898809,
+     "wall_ms": 303.5283260032884,
+     "rows": 20,
+     "cached": false
+    },
+    {
+     "ms": 260.173279,
+     "wall_ms": 305.32683699857444,
+     "rows": 20,
+     "cached": false
+    },
+    {
+     "ms": 254.014786,
+     "wall_ms": 288.0253480034298,
+     "rows": 20,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "n": 845,
+     "repo": 813932983
+    },
+    {
+     "n": 751,
+     "repo": 681502705
+    },
+    {
+     "n": 746,
+     "repo": 630724545
+    }
+   ],
+   "first_ms": 917.0400020000001,
+   "median_ms": 260.173279,
+   "max_ms": 305.44455,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "torvalds/linux: work ever (count, first, last)",
+   "sql": "SELECT MAX(t) AS last, MIN(t) AS first, COUNT(*) AS n FROM gh_events WHERE repo = :id AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag')",
+   "params": {
+    "id": 2325298
+   },
+   "runs": [
+    {
+     "ms": 330.116409,
+     "wall_ms": 358.5799069987843,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 56.983786,
+     "wall_ms": 85.90579299925594,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 27.369846,
+     "wall_ms": 58.38920999667607,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 27.69996,
+     "wall_ms": 54.341057999408804,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 22.989591,
+     "wall_ms": 49.480945999675896,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 18.972062,
+     "wall_ms": 48.732076000305824,
+     "rows": 1,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "first": 1315178623,
+     "last": 1792987016,
+     "n": 24774
+    }
+   ],
+   "first_ms": 330.116409,
+   "median_ms": 27.369846,
+   "max_ms": 56.983786,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "torvalds/linux: who did the work ever",
+   "sql": "SELECT actor, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE repo = :id AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag') GROUP BY actor ORDER BY n DESC LIMIT 30",
+   "params": {
+    "id": 2325298
+   },
+   "runs": [
+    {
+     "ms": 166.46263199999999,
+     "wall_ms": 194.97139300074195,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 45.355287000000004,
+     "wall_ms": 73.30461800302146,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 45.723903,
+     "wall_ms": 73.89436700032093,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 46.026804,
+     "wall_ms": 70.36619500286179,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 42.149584,
+     "wall_ms": 70.61659499595407,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 46.594091,
+     "wall_ms": 71.78771500184666,
+     "rows": 30,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "actor": 1024025,
+     "first": 1315178623,
+     "last": 1792987016,
+     "n": 12591
+    },
+    {
+     "actor": 19486479,
+     "first": 1485835213,
+     "last": 1758529817,
+     "n": 684
+    },
+    {
+     "actor": 30789544,
+     "first": 1730449534,
+     "last": 1742991901,
+     "n": 224
+    }
+   ],
+   "first_ms": 166.46263199999999,
+   "median_ms": 45.723903,
+   "max_ms": 46.594091,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "torvalds/linux: stars month by month",
+   "sql": "SELECT t - t % 2629746 AS m, COUNT(*) AS n FROM gh_events WHERE repo = :id AND kind = 'star' GROUP BY m ORDER BY m",
+   "params": {
+    "id": 2325298
+   },
+   "runs": [
+    {
+     "ms": 304.732546,
+     "wall_ms": 325.3581489989301,
+     "rows": 181,
+     "cached": false
+    },
+    {
+     "ms": 189.899006,
+     "wall_ms": 210.17979200405534,
+     "rows": 181,
+     "cached": false
+    },
+    {
+     "ms": 189.207361,
+     "wall_ms": 210.38140100426972,
+     "rows": 181,
+     "cached": false
+    },
+    {
+     "ms": 151.26063200000002,
+     "wall_ms": 171.09214800439076,
+     "rows": 181,
+     "cached": false
+    },
+    {
+     "ms": 119.221547,
+     "wall_ms": 140.29846499761334,
+     "rows": 181,
+     "cached": false
+    },
+    {
+     "ms": 145.38500200000001,
+     "wall_ms": 163.78386699943803,
+     "rows": 181,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "m": 1314873000,
+     "n": 2777
+    },
+    {
+     "m": 1317502746,
+     "n": 277
+    },
+    {
+     "m": 1320132492,
+     "n": 269
+    }
+   ],
+   "first_ms": 304.732546,
+   "median_ms": 151.26063200000002,
+   "max_ms": 189.899006,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "kubernetes/kubernetes: work ever (count, first, last)",
+   "sql": "SELECT MAX(t) AS last, MIN(t) AS first, COUNT(*) AS n FROM gh_events WHERE repo = :id AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag')",
+   "params": {
+    "id": 20580498
+   },
+   "runs": [
+    {
+     "ms": 1188.7728,
+     "wall_ms": 1215.2455350005766,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 185.819763,
+     "wall_ms": 210.48775300005218,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 201.35726100000002,
+     "wall_ms": 232.71027599548688,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 104.725843,
+     "wall_ms": 130.60694400337525,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 112.440939,
+     "wall_ms": 140.283027998521,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 90.286678,
+     "wall_ms": 115.48625800060108,
+     "rows": 1,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "first": 1402424101,
+     "last": 1794775087,
+     "n": 3043958
+    }
+   ],
+   "first_ms": 1188.7728,
+   "median_ms": 112.440939,
+   "max_ms": 201.35726100000002,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "kubernetes/kubernetes: who did the work ever",
+   "sql": "SELECT actor, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE repo = :id AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag') GROUP BY actor ORDER BY n DESC LIMIT 30",
+   "params": {
+    "id": 20580498
+   },
+   "runs": [
+    {
+     "ms": 1154.774531,
+     "wall_ms": 1182.0720359974075,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 578.894318,
+     "wall_ms": 606.4744130053441,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 424.045023,
+     "wall_ms": 472.15625099488534,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 423.425701,
+     "wall_ms": 448.3431609987747,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 450.833028,
+     "wall_ms": 474.9185469991062,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 413.980585,
+     "wall_ms": 445.95970999944257,
+     "rows": 30,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "actor": 20407524,
+     "first": 1472757364,
+     "last": 1781945380,
+     "n": 908562
+    },
+    {
+     "actor": 13653959,
+     "first": 1440131201,
+     "last": 1536772131,
+     "n": 267877
+    },
+    {
+     "actor": 980082,
+     "first": 1411417317,
+     "last": 1794502037,
+     "n": 70274
+    }
+   ],
+   "first_ms": 1154.774531,
+   "median_ms": 424.045023,
+   "max_ms": 578.894318,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "kubernetes/kubernetes: stars month by month",
+   "sql": "SELECT t - t % 2629746 AS m, COUNT(*) AS n FROM gh_events WHERE repo = :id AND kind = 'star' GROUP BY m ORDER BY m",
+   "params": {
+    "id": 20580498
+   },
+   "runs": [
+    {
+     "ms": 566.714229,
+     "wall_ms": 590.6104220048292,
+     "rows": 150,
+     "cached": false
+    },
+    {
+     "ms": 183.344348,
+     "wall_ms": 203.66937899962068,
+     "rows": 150,
+     "cached": false
+    },
+    {
+     "ms": 104.21631000000001,
+     "wall_ms": 122.67329399765003,
+     "rows": 150,
+     "cached": false
+    },
+    {
+     "ms": 97.77313099999999,
+     "wall_ms": 116.7746220016852,
+     "rows": 150,
+     "cached": false
+    },
+    {
+     "ms": 91.707416,
+     "wall_ms": 120.67178299912484,
+     "rows": 150,
+     "cached": false
+    },
+    {
+     "ms": 96.765411,
+     "wall_ms": 117.37039299623575,
+     "rows": 150,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "m": 1401654618,
+     "n": 1689
+    },
+    {
+     "m": 1404284364,
+     "n": 1185
+    },
+    {
+     "m": 1406914110,
+     "n": 489
+    }
+   ],
+   "first_ms": 566.714229,
+   "median_ms": 97.77313099999999,
+   "max_ms": 183.344348,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "facebook/react: work ever (count, first, last)",
+   "sql": "SELECT MAX(t) AS last, MIN(t) AS first, COUNT(*) AS n FROM gh_events WHERE repo = :id AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag')",
+   "params": {
+    "id": 10270250
+   },
+   "runs": [
+    {
+     "ms": 321.90699099999995,
+     "wall_ms": 353.4910679954919,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 32.536364999999996,
+     "wall_ms": 63.25990700133843,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 25.338831,
+     "wall_ms": 62.33556700317422,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 23.234157,
+     "wall_ms": 74.29717000195524,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 28.961354,
+     "wall_ms": 54.50881399883656,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 23.452206,
+     "wall_ms": 49.713311993400566,
+     "rows": 1,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "first": 1369861286,
+     "last": 1794485560,
+     "n": 273676
+    }
+   ],
+   "first_ms": 321.90699099999995,
+   "median_ms": 25.338831,
+   "max_ms": 32.536364999999996,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "facebook/react: who did the work ever",
+   "sql": "SELECT actor, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE repo = :id AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag') GROUP BY actor ORDER BY n DESC LIMIT 30",
+   "params": {
+    "id": 10270250
+   },
+   "runs": [
+    {
+     "ms": 364.63812099999996,
+     "wall_ms": 392.0091890031472,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 209.77649300000002,
+     "wall_ms": 239.24387200531783,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 180.01519499999998,
+     "wall_ms": 205.19592700293288,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 168.33435699999998,
+     "wall_ms": 198.9448049935163,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 149.162143,
+     "wall_ms": 174.50121100409888,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 161.614528,
+     "wall_ms": 194.24548400274944,
+     "rows": 30,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "actor": 810438,
+     "first": 1398285202,
+     "last": 1792667026,
+     "n": 29928
+    },
+    {
+     "actor": 29597,
+     "first": 1450582425,
+     "last": 1718359338,
+     "n": 14621
+    },
+    {
+     "actor": 63648,
+     "first": 1373404588,
+     "last": 1769110493,
+     "n": 13167
+    }
+   ],
+   "first_ms": 364.63812099999996,
+   "median_ms": 168.33435699999998,
+   "max_ms": 209.77649300000002,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "facebook/react: stars month by month",
+   "sql": "SELECT t - t % 2629746 AS m, COUNT(*) AS n FROM gh_events WHERE repo = :id AND kind = 'star' GROUP BY m ORDER BY m",
+   "params": {
+    "id": 10270250
+   },
+   "runs": [
+    {
+     "ms": 2718.9238060000002,
+     "wall_ms": 2737.084397995204,
+     "rows": 163,
+     "cached": false
+    },
+    {
+     "ms": 185.90288999999999,
+     "wall_ms": 206.71257100184448,
+     "rows": 163,
+     "cached": false
+    },
+    {
+     "ms": 156.611075,
+     "wall_ms": 181.60611699568108,
+     "rows": 163,
+     "cached": false
+    },
+    {
+     "ms": 148.24669400000002,
+     "wall_ms": 174.5869039950776,
+     "rows": 163,
+     "cached": false
+    },
+    {
+     "ms": 138.016438,
+     "wall_ms": 174.9852020002436,
+     "rows": 163,
+     "cached": false
+    },
+    {
+     "ms": 144.917493,
+     "wall_ms": 168.7240409955848,
+     "rows": 163,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "m": 1367467920,
+     "n": 1024
+    },
+    {
+     "m": 1370097666,
+     "n": 498
+    },
+    {
+     "m": 1372727412,
+     "n": 163
+    }
+   ],
+   "first_ms": 2718.9238060000002,
+   "median_ms": 148.24669400000002,
+   "max_ms": 185.90288999999999,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "microsoft/vscode: work ever (count, first, last)",
+   "sql": "SELECT MAX(t) AS last, MIN(t) AS first, COUNT(*) AS n FROM gh_events WHERE repo = :id AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag')",
+   "params": {
+    "id": 41881900
+   },
+   "runs": [
+    {
+     "ms": 700.3869940000001,
+     "wall_ms": 737.5092470028903,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 148.002163,
+     "wall_ms": 185.80224700417602,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 65.89951099999999,
+     "wall_ms": 101.36313999828417,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 64.508544,
+     "wall_ms": 108.40951999853132,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 82.268261,
+     "wall_ms": 121.01305199757917,
+     "rows": 1,
+     "cached": false
+    },
+    {
+     "ms": 69.753255,
+     "wall_ms": 131.1252930026967,
+     "rows": 1,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "first": 1447862090,
+     "last": 1794786383,
+     "n": 1606810
+    }
+   ],
+   "first_ms": 700.3869940000001,
+   "median_ms": 69.753255,
+   "max_ms": 148.002163,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "microsoft/vscode: who did the work ever",
+   "sql": "SELECT actor, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE repo = :id AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag') GROUP BY actor ORDER BY n DESC LIMIT 30",
+   "params": {
+    "id": 41881900
+   },
+   "runs": [
+    {
+     "ms": 2172.549128,
+     "wall_ms": 2230.2365439973073,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 1283.146797,
+     "wall_ms": 1322.2215559944743,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 1796.037757,
+     "wall_ms": 1830.2165810018778,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 1629.481473,
+     "wall_ms": 1657.5192240052274,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 1191.2685490000001,
+     "wall_ms": 1217.8643849983928,
+     "rows": 30,
+     "cached": false
+    },
+    {
+     "ms": 1070.305663,
+     "wall_ms": 1106.6345859944704,
+     "rows": 30,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "actor": 900690,
+     "first": 1447867234,
+     "last": 1778170435,
+     "n": 95366
+    },
+    {
+     "actor": 2193314,
+     "first": 1447863036,
+     "last": 1775326367,
+     "n": 65953
+    },
+    {
+     "actor": 1794099,
+     "first": 1447862582,
+     "last": 1778059254,
+     "n": 52051
+    }
+   ],
+   "first_ms": 2172.549128,
+   "median_ms": 1283.146797,
+   "max_ms": 1796.037757,
+   "cached": 0
+  },
+  {
+   "group": "one repo",
+   "name": "microsoft/vscode: stars month by month",
+   "sql": "SELECT t - t % 2629746 AS m, COUNT(*) AS n FROM gh_events WHERE repo = :id AND kind = 'star' GROUP BY m ORDER BY m",
+   "params": {
+    "id": 41881900
+   },
+   "runs": [
+    {
+     "ms": 310.182992,
+     "wall_ms": 336.9053279966465,
+     "rows": 133,
+     "cached": false
+    },
+    {
+     "ms": 187.265969,
+     "wall_ms": 206.3568080047844,
+     "rows": 133,
+     "cached": false
+    },
+    {
+     "ms": 116.653092,
+     "wall_ms": 137.17923700460233,
+     "rows": 133,
+     "cached": false
+    },
+    {
+     "ms": 120.380133,
+     "wall_ms": 150.07092100131558,
+     "rows": 133,
+     "cached": false
+    },
+    {
+     "ms": 112.017587,
+     "wall_ms": 130.3621370025212,
+     "rows": 133,
+     "cached": false
+    },
+    {
+     "ms": 120.118953,
+     "wall_ms": 138.05591499840375,
+     "rows": 133,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "m": 1446360300,
+     "n": 8265
+    },
+    {
+     "m": 1448990046,
+     "n": 1226
+    },
+    {
+     "m": 1451619792,
+     "n": 1039
+    }
+   ],
+   "first_ms": 310.182992,
+   "median_ms": 120.118953,
+   "max_ms": 187.265969,
+   "cached": 0
+  },
+  {
+   "group": "one person",
+   "name": "torvalds: what they did",
+   "sql": "SELECT kind, COUNT(*) AS n FROM gh_events WHERE actor = :a GROUP BY kind ORDER BY n DESC LIMIT 30",
+   "params": {
+    "a": 1024025
+   },
+   "runs": [
+    {
+     "ms": 458.75912400000004,
+     "wall_ms": 502.41142899903934,
+     "rows": 22,
+     "cached": false
+    },
+    {
+     "ms": 38.668108,
+     "wall_ms": 79.43845300178509,
+     "rows": 22,
+     "cached": false
+    },
+    {
+     "ms": 34.305518,
+     "wall_ms": 70.09152600221569,
+     "rows": 22,
+     "cached": false
+    },
+    {
+     "ms": 32.202048,
+     "wall_ms": 69.33167700481135,
+     "rows": 22,
+     "cached": false
+    },
+    {
+     "ms": 35.3864,
+     "wall_ms": 76.85905600374099,
+     "rows": 22,
+     "cached": false
+    },
+    {
+     "ms": 35.27681,
+     "wall_ms": 78.2680039992556,
+     "rows": 22,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "kind": "push",
+     "n": 12572
+    },
+    {
+     "kind": "create_tag",
+     "n": 625
+    },
+    {
+     "kind": "comment",
+     "n": 325
+    }
+   ],
+   "first_ms": 458.75912400000004,
+   "median_ms": 35.27681,
+   "max_ms": 38.668108,
+   "cached": 0
+  },
+  {
+   "group": "one person",
+   "name": "torvalds: year by year",
+   "sql": "SELECT t - t % 31556952 AS y, COUNT(*) AS n FROM gh_events WHERE actor = :a AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag') GROUP BY y ORDER BY y LIMIT 40",
+   "params": {
+    "a": 1024025
+   },
+   "runs": [
+    {
+     "ms": 622.520631,
+     "wall_ms": 665.8920289992238,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 57.357652,
+     "wall_ms": 99.10246700019343,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 41.507599,
+     "wall_ms": 74.57309299934423,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 48.503215000000004,
+     "wall_ms": 120.60546199791133,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 42.54101,
+     "wall_ms": 78.81723199534463,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 54.875395,
+     "wall_ms": 85.02164999663364,
+     "rows": 16,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "n": 561,
+     "y": 1293835032
+    },
+    {
+     "n": 652,
+     "y": 1325391984
+    },
+    {
+     "n": 784,
+     "y": 1356948936
+    }
+   ],
+   "first_ms": 622.520631,
+   "median_ms": 48.503215000000004,
+   "max_ms": 57.357652,
+   "cached": 0
+  },
+  {
+   "group": "one person",
+   "name": "torvalds: where they work",
+   "sql": "SELECT repo, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE actor = :a AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag') GROUP BY repo ORDER BY n DESC LIMIT 24",
+   "params": {
+    "a": 1024025
+   },
+   "runs": [
+    {
+     "ms": 267.875932,
+     "wall_ms": 309.1531180034508,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 43.336594,
+     "wall_ms": 86.64307899744017,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 38.648611,
+     "wall_ms": 80.20007999584777,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 44.945698,
+     "wall_ms": 85.34571799827972,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 41.546103,
+     "wall_ms": 81.53644900448853,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 46.330551,
+     "wall_ms": 83.78771800198592,
+     "rows": 24,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "first": 1315178623,
+     "last": 1792987016,
+     "n": 12591,
+     "repo": 2325298
+    },
+    {
+     "first": 1315063882,
+     "last": 1724832345,
+     "n": 749,
+     "repo": 2319498
+    },
+    {
+     "first": 1484613037,
+     "last": 1766800662,
+     "n": 247,
+     "repo": 78377724
+    }
+   ],
+   "first_ms": 267.875932,
+   "median_ms": 43.336594,
+   "max_ms": 46.330551,
+   "cached": 0
+  },
+  {
+   "group": "one person",
+   "name": "sindresorhus: what they did",
+   "sql": "SELECT kind, COUNT(*) AS n FROM gh_events WHERE actor = :a GROUP BY kind ORDER BY n DESC LIMIT 30",
+   "params": {
+    "a": 170270
+   },
+   "runs": [
+    {
+     "ms": 20239.166425,
+     "wall_ms": 20291.72056200332,
+     "rows": 28,
+     "cached": false
+    },
+    {
+     "ms": 14896.712794000001,
+     "wall_ms": 14982.702702000097,
+     "rows": 28,
+     "cached": false
+    },
+    {
+     "ms": 1164.052054,
+     "wall_ms": 1236.9293550000293,
+     "rows": 28,
+     "cached": false
+    },
+    {
+     "ms": 69.842739,
+     "wall_ms": 117.20558600063669,
+     "rows": 28,
+     "cached": false
+    },
+    {
+     "ms": 46.194913,
+     "wall_ms": 85.67791000677971,
+     "rows": 28,
+     "cached": false
+    },
+    {
+     "ms": 42.293026999999995,
+     "wall_ms": 77.03160100209061,
+     "rows": 28,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "kind": "comment",
+     "n": 66916
+    },
+    {
+     "kind": "push",
+     "n": 58722
+    },
+    {
+     "kind": "review_comment",
+     "n": 22613
+    }
+   ],
+   "first_ms": 20239.166425,
+   "median_ms": 69.842739,
+   "max_ms": 14896.712794000001,
+   "cached": 0
+  },
+  {
+   "group": "one person",
+   "name": "sindresorhus: year by year",
+   "sql": "SELECT t - t % 31556952 AS y, COUNT(*) AS n FROM gh_events WHERE actor = :a AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag') GROUP BY y ORDER BY y LIMIT 40",
+   "params": {
+    "a": 170270
+   },
+   "runs": [
+    {
+     "ms": 11937.451359,
+     "wall_ms": 11996.677703995374,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 10774.956765,
+     "wall_ms": 10907.349316999898,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 1142.561038,
+     "wall_ms": 1225.4311880024034,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 177.84336000000002,
+     "wall_ms": 228.15476099640364,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 115.15928100000001,
+     "wall_ms": 164.47155900095822,
+     "rows": 16,
+     "cached": false
+    },
+    {
+     "ms": 115.874512,
+     "wall_ms": 164.73029799817596,
+     "rows": 16,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "n": 245,
+     "y": 1293835032
+    },
+    {
+     "n": 3959,
+     "y": 1325391984
+    },
+    {
+     "n": 11492,
+     "y": 1356948936
+    }
+   ],
+   "first_ms": 11937.451359,
+   "median_ms": 177.84336000000002,
+   "max_ms": 10774.956765,
+   "cached": 0
+  },
+  {
+   "group": "one person",
+   "name": "sindresorhus: where they work",
+   "sql": "SELECT repo, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE actor = :a AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag') GROUP BY repo ORDER BY n DESC LIMIT 24",
+   "params": {
+    "a": 170270
+   },
+   "runs": [
+    {
+     "ms": 1545.2324640000002,
+     "wall_ms": 1590.782996994676,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 117.536523,
+     "wall_ms": 156.66409699770156,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 69.85577599999999,
+     "wall_ms": 115.44423700252082,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 69.403018,
+     "wall_ms": 113.97859799762955,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 72.75848599999999,
+     "wall_ms": 118.96708000131184,
+     "rows": 24,
+     "cached": false
+    },
+    {
+     "ms": 74.982456,
+     "wall_ms": 115.86253499990562,
+     "rows": 24,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "first": 1405086163,
+     "last": 1782843677,
+     "n": 8195,
+     "repo": 21737465
+    },
+    {
+     "first": 1460188141,
+     "last": 1794772839,
+     "n": 7506,
+     "repo": 55832243
+    },
+    {
+     "first": 1440753438,
+     "last": 1778527974,
+     "n": 4949,
+     "repo": 26820798
+    }
+   ],
+   "first_ms": 1545.2324640000002,
+   "median_ms": 72.75848599999999,
+   "max_ms": 117.536523,
+   "cached": 0
+  },
+  {
+   "group": "one person",
+   "name": "dependabot[bot]: what they did",
+   "sql": "SELECT kind, COUNT(*) AS n FROM gh_events WHERE actor = :a GROUP BY kind ORDER BY n DESC LIMIT 30",
+   "params": {
+    "a": 49699333
+   },
+   "runs": [
+    {
+     "ms": 20465.915739,
+     "wall_ms": 20526.786868998897,
+     "rows": 17,
+     "cached": false
+    },
+    {
+     "ms": 20080.780788999997,
+     "wall_ms": 20174.369310007023,
+     "rows": 17,
+     "cached": false
+    },
+    {
+     "ms": 15045.322202,
+     "wall_ms": 15145.034235996718,
+     "rows": 17,
+     "cached": false
+    },
+    {
+     "ms": 18549.002865,
+     "wall_ms": 18656.567320998874,
+     "rows": 17,
+     "cached": false
+    },
+    {
+     "ms": 14661.485663000001,
+     "wall_ms": 14744.701301999157,
+     "rows": 17,
+     "cached": false
+    },
+    {
+     "ms": 19680.860094,
+     "wall_ms": 19768.134992998966,
+     "rows": 17,
+     "cached": false
+    }
+   ],
+   "answer": [
+    {
+     "kind": "create_branch",
+     "n": 130300648
+    },
+    {
+     "kind": "pr_opened",
+     "n": 126337669
+    },
+    {
+     "kind": "delete_branch",
+     "n": 56379907
+    }
+   ],
+   "first_ms": 20465.915739,
+   "median_ms": 18549.002865,
+   "max_ms": 20080.780788999997,
+   "cached": 0
+  },
+  {
+   "group": "one person",
+   "name": "dependabot[bot]: year by year",
+   "sql": "SELECT t - t % 31556952 AS y, COUNT(*) AS n FROM gh_events WHERE actor = :a AND kind IN ('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag') GROUP BY y ORDER BY y LIMIT 40",
+   "params": {
+    "a": 49699333
+   },
+   "runs": [
+    {
+     "ms": NaN,
+     "error": "SELECT t - t % 31556952 AS y, COUNT(*) AS n FROM gh_events WHERE actor = :a AND : 400: {\"docs\":\"https://chloetech-ai.github.io/chloedb/site/docs/server.html#reading-past-the-window-scrolls\",\"error\":\"query error: gh-s0 (shard 0): query error: the query matches more than 1000001 rows, the most a query"
+    }
+   ],
+   "answer": null
+  }
+ ],
+ "pages": [
+  {
+   "name": "a repo: torvalds/linux",
+   "path": "/v1/repo/torvalds/linux",
+   "runs": [
+    {
+     "ms": 6258.3,
+     "wall_ms": 6282.715382003516,
+     "statements": 12,
+     "refused": 1
+    },
+    {
+     "ms": 5134.3,
+     "wall_ms": 5156.837407994317,
+     "statements": 12,
+     "refused": 1
+    },
+    {
+     "ms": 5118.6,
+     "wall_ms": 5127.590951997263,
+     "statements": 12,
+     "refused": 1
+    },
+    {
+     "ms": 5117.4,
+     "wall_ms": 5129.852457997913,
+     "statements": 12,
+     "refused": 1
+    },
+    {
+     "ms": 5141.5,
+     "wall_ms": 5150.836441003776,
+     "statements": 12,
+     "refused": 1
+    },
+    {
+     "ms": 5161.2,
+     "wall_ms": 5170.8218319981825,
+     "statements": 12,
+     "refused": 1
+    }
+   ],
+   "queries": [
+    {
+     "name": "what the same people starred",
+     "ms": 5008.3,
+     "note": "refused: shard 2 (http://gh-s2.strata.svc:7701): no answer in time"
+    },
+    {
+     "name": "repos that do the same job (by meaning)",
+     "ms": 1322.5,
+     "note": null
+    },
+    {
+     "name": "who did the work ever",
+     "ms": 87.11,
+     "note": null
+    },
+    {
+     "name": "its last event",
+     "ms": 57.42,
+     "note": null
+    },
+    {
+     "name": "who did the work this last year",
+     "ms": 39.01,
+     "note": null
+    },
+    {
+     "name": "its latest stargazers",
+     "ms": 31.32,
+     "note": null
+    },
+    {
+     "name": "their logins",
+     "ms": 18.9,
+     "note": null
+    },
+    {
+     "name": "the names it had",
+     "ms": 9.32,
+     "note": null
+    },
+    {
+     "name": "the repo",
+     "ms": 8.62,
+     "note": null
+    },
+    {
+     "name": "its months",
+     "ms": 8.25,
+     "note": null
+    },
+    {
+     "name": "its last 120 days",
+     "ms": 6.45,
+     "note": null
+    },
+    {
+     "name": "the repo by its name",
+     "ms": 5.32,
+     "note": null
+    }
+   ],
+   "first_ms": 6258.3,
+   "median_ms": 5134.3,
+   "max_ms": 5161.2,
+   "cached": 0
+  },
+  {
+   "name": "a repo: facebook/react",
+   "path": "/v1/repo/facebook/react",
+   "runs": [
+    {
+     "ms": 6229.0,
+     "wall_ms": 6245.745504005754,
+     "statements": 13,
+     "refused": 1
+    },
+    {
+     "ms": 5377.5,
+     "wall_ms": 5387.982801999897,
+     "statements": 13,
+     "refused": 1
+    },
+    {
+     "ms": 5422.3,
+     "wall_ms": 5439.175171995885,
+     "statements": 13,
+     "refused": 1
+    },
+    {
+     "ms": 5432.8,
+     "wall_ms": 5444.244496000465,
+     "statements": 13,
+     "refused": 1
+    },
+    {
+     "ms": 5376.0,
+     "wall_ms": 5385.0318170007085,
+     "statements": 13,
+     "refused": 1
+    },
+    {
+     "ms": 5446.6,
+     "wall_ms": 5474.709433001408,
+     "statements": 13,
+     "refused": 1
+    }
+   ],
+   "queries": [
+    {
+     "name": "what the same people starred",
+     "ms": 5010.33,
+     "note": "refused: shard 0 (http://gh-s0.strata.svc:7701): no answer in time"
+    },
+    {
+     "name": "repos that do the same job (by meaning)",
+     "ms": 1842.17,
+     "note": null
+    },
+    {
+     "name": "who did the work ever",
+     "ms": 315.5,
+     "note": null
+    },
+    {
+     "name": "its last event",
+     "ms": 72.38,
+     "note": null
+    },
+    {
+     "name": "who did the work this last year",
+     "ms": 42.27,
+     "note": null
+    },
+    {
+     "name": "a repo that had that name",
+     "ms": 39.57,
+     "note": null
+    },
+    {
+     "name": "its latest stargazers",
+     "ms": 29.41,
+     "note": null
+    },
+    {
+     "name": "their logins",
+     "ms": 24.06,
+     "note": null
+    },
+    {
+     "name": "the repo",
+     "ms": 9.95,
+     "note": null
+    },
+    {
+     "name": "its months",
+     "ms": 9.77,
+     "note": null
+    },
+    {
+     "name": "its last 120 days",
+     "ms": 7.15,
+     "note": null
+    },
+    {
+     "name": "the names it had",
+     "ms": 6.11,
+     "note": null
+    },
+    {
+     "name": "the repo by its name",
+     "ms": 4.73,
+     "note": null
+    }
+   ],
+   "first_ms": 6229.0,
+   "median_ms": 5422.3,
+   "max_ms": 5446.6,
+   "cached": 0
+  },
+  {
+   "name": "a person: torvalds",
+   "path": "/v1/person/torvalds",
+   "runs": [
+    {
+     "ms": 645.5,
+     "wall_ms": 664.1791430010926,
+     "statements": 7,
+     "refused": 0
+    },
+    {
+     "ms": 118.6,
+     "wall_ms": 127.01370799914002,
+     "statements": 7,
+     "refused": 0
+    },
+    {
+     "ms": 75.2,
+     "wall_ms": 83.68706100009149,
+     "statements": 7,
+     "refused": 0
+    },
+    {
+     "ms": 77.9,
+     "wall_ms": 86.47330600069836,
+     "statements": 7,
+     "refused": 0
+    },
+    {
+     "ms": 78.1,
+     "wall_ms": 85.52236499963328,
+     "statements": 7,
+     "refused": 0
+    },
+    {
+     "ms": 88.6,
+     "wall_ms": 96.48780999850715,
+     "statements": 7,
+     "refused": 0
+    }
+   ],
+   "queries": [
+    {
+     "name": "year by year",
+     "ms": 73.07,
+     "note": null
+    },
+    {
+     "name": "where they work",
+     "ms": 65.45,
+     "note": null
+    },
+    {
+     "name": "what they did",
+     "ms": 48.06,
+     "note": null
+    },
+    {
+     "name": "what they starred lately",
+     "ms": 10.77,
+     "note": null
+    },
+    {
+     "name": "those repos",
+     "ms": 9.31,
+     "note": null
+    },
+    {
+     "name": "the repos they own",
+     "ms": 5.38,
+     "note": null
+    },
+    {
+     "name": "the login",
+     "ms": 4.65,
+     "note": null
+    }
+   ],
+   "first_ms": 645.5,
+   "median_ms": 78.1,
+   "max_ms": 118.6,
+   "cached": 0
+  },
+  {
+   "name": "search: terminal file manager",
+   "path": "/v1/search?q=terminal+file+manager",
+   "runs": [
+    {
+     "ms": 4433.2,
+     "wall_ms": 4445.021854000515,
+     "statements": 6,
+     "refused": 0
+    },
+    {
+     "ms": 772.2,
+     "wall_ms": 782.4482269934379,
+     "statements": 6,
+     "refused": 0
+    },
+    {
+     "ms": 731.3,
+     "wall_ms": 750.1014209992718,
+     "statements": 6,
+     "refused": 0
+    },
+    {
+     "ms": 780.1,
+     "wall_ms": 787.2998750026454,
+     "statements": 6,
+     "refused": 0
+    },
+    {
+     "ms": 870.3,
+     "wall_ms": 877.8515650046756,
+     "statements": 6,
+     "refused": 0
+    },
+    {
+     "ms": 586.9,
+     "wall_ms": 602.9192319983849,
+     "statements": 6,
+     "refused": 0
+    }
+   ],
+   "queries": [
+    {
+     "name": "repos by meaning",
+     "ms": 520.28,
+     "note": null
+    },
+    {
+     "name": "the repos, ranked",
+     "ms": 58.23,
+     "note": null
+    },
+    {
+     "name": "repos with the words",
+     "ms": 23.02,
+     "note": null
+    },
+    {
+     "name": "the languages of the matches",
+     "ms": 11.7,
+     "note": null
+    },
+    {
+     "name": "how many repos have the words",
+     "ms": 8.82,
+     "note": null
+    },
+    {
+     "name": "their stars a month",
+     "ms": 7.34,
+     "note": null
+    }
+   ],
+   "first_ms": 4433.2,
+   "median_ms": 772.2,
+   "max_ms": 870.3,
+   "cached": 0
+  },
+  {
+   "name": "search: self-hosted photo backup",
+   "path": "/v1/search?q=self-hosted+photo+backup",
+   "runs": [
+    {
+     "ms": 4101.7,
+     "wall_ms": 4109.773782998673,
+     "statements": 6,
+     "refused": 0
+    },
+    {
+     "ms": 737.2,
+     "wall_ms": 762.8469740011496,
+     "statements": 6,
+     "refused": 0
+    },
+    {
+     "ms": 693.9,
+     "wall_ms": 701.2090149946744,
+     "statements": 6,
+     "refused": 0
+    },
+    {
+     "ms": 1022.9,
+     "wall_ms": 1029.6112860014546,
+     "statements": 6,
+     "refused": 0
+    },
+    {
+     "ms": 927.4,
+     "wall_ms": 933.8005140016321,
+     "statements": 6,
+     "refused": 0
+    },
+    {
+     "ms": 697.9,
+     "wall_ms": 706.6992629988817,
+     "statements": 6,
+     "refused": 0
+    }
+   ],
+   "queries": [
+    {
+     "name": "repos by meaning",
+     "ms": 611.77,
+     "note": null
+    },
+    {
+     "name": "the repos, ranked",
+     "ms": 76.92,
+     "note": null
+    },
+    {
+     "name": "repos with the words",
+     "ms": 22.75,
+     "note": null
+    },
+    {
+     "name": "the languages of the matches",
+     "ms": 8.96,
+     "note": null
+    },
+    {
+     "name": "their stars a month",
+     "ms": 8.22,
+     "note": null
+    },
+    {
+     "name": "how many repos have the words",
+     "ms": 7.81,
+     "note": null
+    }
+   ],
+   "first_ms": 4101.7,
+   "median_ms": 737.2,
+   "max_ms": 1022.9,
+   "cached": 0
+  },
+  {
+   "name": "rising",
+   "path": "/v1/rising",
+   "runs": [
+    {
+     "ms": 559.8,
+     "wall_ms": 567.8964020044077,
+     "statements": 5,
+     "refused": 0
+    },
+    {
+     "ms": 372.8,
+     "wall_ms": 386.29483000113396,
+     "statements": 5,
+     "refused": 0
+    },
+    {
+     "ms": 304.7,
+     "wall_ms": 313.633434001531,
+     "statements": 5,
+     "refused": 0
+    },
+    {
+     "ms": 344.0,
+     "wall_ms": 352.5933630007785,
+     "statements": 5,
+     "refused": 0
+    },
+    {
+     "ms": 410.0,
+     "wall_ms": 419.03071900014766,
+     "statements": 5,
+     "refused": 0
+    },
+    {
+     "ms": 262.0,
+     "wall_ms": 270.89254499878734,
+     "statements": 5,
+     "refused": 0
+    }
+   ],
+   "queries": [
+    {
+     "name": "their releases in the window",
+     "ms": 163.96,
+     "note": null
+    },
+    {
+     "name": "stars in the window, by repo",
+     "ms": 88.92,
+     "note": null
+    },
+    {
+     "name": "their stars in the four weeks before",
+     "ms": 71.26,
+     "note": null
+    },
+    {
+     "name": "their stars day by day",
+     "ms": 70.61,
+     "note": null
+    },
+    {
+     "name": "the repos",
+     "ms": 30.37,
+     "note": null
+    }
+   ],
+   "first_ms": 559.8,
+   "median_ms": 344.0,
+   "max_ms": 410.0,
+   "cached": 0
+  },
+  {
+   "name": "trends",
+   "path": "/v1/trends",
+   "runs": [
+    {
+     "ms": 52.5,
+     "wall_ms": 60.82305600284599,
+     "statements": 4,
+     "refused": 0
+    },
+    {
+     "ms": 50.1,
+     "wall_ms": 57.632325995655265,
+     "statements": 4,
+     "refused": 0
+    },
+    {
+     "ms": 47.3,
+     "wall_ms": 55.2138879938866,
+     "statements": 4,
+     "refused": 0
+    },
+    {
+     "ms": 48.5,
+     "wall_ms": 55.936518001544755,
+     "statements": 4,
+     "refused": 0
+    },
+    {
+     "ms": 54.3,
+     "wall_ms": 62.56029100040905,
+     "statements": 4,
+     "refused": 0
+    },
+    {
+     "ms": 42.7,
+     "wall_ms": 50.659756001550704,
+     "statements": 4,
+     "refused": 0
+    }
+   ],
+   "queries": [
+    {
+     "name": "the picked ones month by month",
+     "ms": 28.92,
+     "note": null
+    },
+    {
+     "name": "every month's total",
+     "ms": 11.68,
+     "note": null
+    },
+    {
+     "name": "the year before",
+     "ms": 10.84,
+     "note": null
+    },
+    {
+     "name": "this last year",
+     "ms": 10.54,
+     "note": null
+    }
+   ],
+   "first_ms": 52.5,
+   "median_ms": 48.5,
+   "max_ms": 54.3,
+   "cached": 0
+  },
+  {
+   "name": "weekly",
+   "path": "/v1/weekly",
+   "runs": [
+    {
+     "ms": 359.8,
+     "wall_ms": 368.01741299859714,
+     "statements": 8,
+     "refused": 0
+    },
+    {
+     "ms": 313.5,
+     "wall_ms": 322.0367139947484,
+     "statements": 8,
+     "refused": 0
+    },
+    {
+     "ms": 378.4,
+     "wall_ms": 385.86047499848064,
+     "statements": 8,
+     "refused": 0
+    },
+    {
+     "ms": 365.8,
+     "wall_ms": 378.48585699975956,
+     "statements": 8,
+     "refused": 0
+    },
+    {
+     "ms": 403.6,
+     "wall_ms": 424.27511399728246,
+     "statements": 8,
+     "refused": 0
+    },
+    {
+     "ms": 356.4,
+     "wall_ms": 367.54676300188294,
+     "statements": 8,
+     "refused": 0
+    }
+   ],
+   "queries": [
+    {
+     "name": "their releases in the window",
+     "ms": 248.43,
+     "note": null
+    },
+    {
+     "name": "releases of the most starred repos",
+     "ms": 189.05,
+     "note": null
+    },
+    {
+     "name": "stars in the window, by repo",
+     "ms": 95.23,
+     "note": null
+    },
+    {
+     "name": "their stars day by day",
+     "ms": 82.6,
+     "note": null
+    },
+    {
+     "name": "their stars in the four weeks before",
+     "ms": 54.18,
+     "note": null
+    },
+    {
+     "name": "the repos",
+     "ms": 38.76,
+     "note": null
+    },
+    {
+     "name": "new repos with the most stars",
+     "ms": 7.41,
+     "note": null
+    },
+    {
+     "name": "those repos",
+     "ms": 5.38,
+     "note": null
+    }
+   ],
+   "first_ms": 359.8,
+   "median_ms": 365.8,
+   "max_ms": 403.6,
+   "cached": 0
+  },
+  {
+   "name": "ask: who works on rust-lang/rust",
+   "path": "/v1/ask?q=who%20works%20on%20rust-lang/rust",
+   "runs": [
+    {
+     "ms": 505.3,
+     "wall_ms": 514.6371269947849,
+     "statements": 3,
+     "refused": 0
+    },
+    {
+     "ms": 287.1,
+     "wall_ms": 295.82705900247674,
+     "statements": 3,
+     "refused": 0
+    },
+    {
+     "ms": 255.8,
+     "wall_ms": 263.54370299668517,
+     "statements": 3,
+     "refused": 0
+    },
+    {
+     "ms": 318.6,
+     "wall_ms": 327.07866199780256,
+     "statements": 3,
+     "refused": 0
+    },
+    {
+     "ms": 303.6,
+     "wall_ms": 311.1881130025722,
+     "statements": 3,
+     "refused": 0
+    },
+    {
+     "ms": 278.8,
+     "wall_ms": 286.3814900047146,
+     "statements": 3,
+     "refused": 0
+    }
+   ],
+   "queries": [
+    {
+     "name": "the work, by person",
+     "ms": 270.65,
+     "note": null
+    },
+    {
+     "name": "their logins",
+     "ms": 4.1,
+     "note": null
+    },
+    {
+     "name": "the repo by its name",
+     "ms": 3.81,
+     "note": null
+    }
+   ],
+   "first_ms": 505.3,
+   "median_ms": 287.1,
+   "max_ms": 318.6,
+   "cached": 0
+  },
+  {
+   "name": "ask: languages by stars in 2015",
+   "path": "/v1/ask?q=languages%20by%20stars%20in%202015",
+   "runs": [
+    {
+     "ms": 8.2,
+     "wall_ms": 17.171899002278224,
+     "statements": 1,
+     "refused": 0
+    },
+    {
+     "ms": 7.0,
+     "wall_ms": 15.394773996376898,
+     "statements": 1,
+     "refused": 0
+    },
+    {
+     "ms": 7.2,
+     "wall_ms": 14.99363799666753,
+     "statements": 1,
+     "refused": 0
+    },
+    {
+     "ms": 7.4,
+     "wall_ms": 14.824039004452061,
+     "statements": 1,
+     "refused": 0
+    },
+    {
+     "ms": 7.1,
+     "wall_ms": 13.205503004428465,
+     "statements": 1,
+     "refused": 0
+    },
+    {
+     "ms": 7.7,
+     "wall_ms": 14.693329998408444,
+     "statements": 1,
+     "refused": 0
+    }
+   ],
+   "queries": [
+    {
+     "name": "languages by stars",
+     "ms": 7.57,
+     "note": null
+    }
+   ],
+   "first_ms": 8.2,
+   "median_ms": 7.2,
+   "max_ms": 7.7,
+   "cached": 0
+  },
+  {
+   "name": "for you: sindresorhus",
+   "path": "/v1/foryou?login=sindresorhus",
+   "runs": [
+    {
+     "ms": 10327.7,
+     "wall_ms": 10351.965472000302,
+     "statements": 6,
+     "refused": 2
+    },
+    {
+     "ms": 10300.6,
+     "wall_ms": 10345.583741996961,
+     "statements": 6,
+     "refused": 2
+    },
+    {
+     "ms": 10341.6,
+     "wall_ms": 10370.227977000468,
+     "statements": 6,
+     "refused": 2
+    },
+    {
+     "ms": 10144.2,
+     "wall_ms": 10179.646233998938,
+     "statements": 6,
+     "refused": 2
+    },
+    {
+     "ms": 10278.9,
+     "wall_ms": 10313.57290899905,
+     "statements": 6,
+     "refused": 2
+    },
+    {
+     "ms": 11022.6,
+     "wall_ms": 11052.954280996346,
+     "statements": 6,
+     "refused": 1
+    }
+   ],
+   "queries": [
+    {
+     "name": "what those people starred",
+     "ms": 5008.12,
+     "note": "refused: shard 0 (http://gh-s0.strata.svc:7701): no answer in time"
+    },
+    {
+     "name": "where they work",
+     "ms": 3333.88,
+     "note": null
+    },
+    {
+     "name": "people who starred the same repos",
+     "ms": 2614.73,
+     "note": null
+    },
+    {
+     "name": "what they starred",
+     "ms": 399.55,
+     "note": null
+    },
+    {
+     "name": "the repos",
+     "ms": 57.75,
+     "note": null
+    },
+    {
+     "name": "the login",
+     "ms": 5.88,
+     "note": null
+    }
+   ],
+   "first_ms": 10327.7,
+   "median_ms": 10300.6,
+   "max_ms": 11022.6,
+   "cached": 0
+  }
+ ],
+ "finished": "2026-11-16 21:29:35Z"
+}

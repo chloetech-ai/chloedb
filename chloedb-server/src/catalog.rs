@@ -151,7 +151,7 @@ pub const PLANS: &[(&str, &str, &str)] = &[
     ("POST", "/v1/admin/kube/upgrade", "the same route with {\"plan\": true}"),
     ("POST", "/v1/import", "the same route with ?plan=true (SQLite and Parquet)"),
     ("POST", "/v1/sql", "POST /v1/admin/changes/preview (rows a DELETE or UPDATE changes, a table's rows a DROP loses)"),
-    ("POST", "/v1/admin/cloud/clusters", "POST /v1/admin/aws/plan or /v1/admin/digitalocean/plan"),
+    ("POST", "/v1/admin/cloud/clusters", "POST /v1/admin/aws/plan, /v1/admin/digitalocean/plan or /v1/admin/gcp/plan"),
 ];
 
 /// The experimental features: routes by the start of their path, the
@@ -162,9 +162,10 @@ pub const PLANS: &[(&str, &str, &str)] = &[
 /// marks the route. A prefix ends where a path segment does (`/v1/admin/hub`
 /// is `/v1/admin/hub` and `/v1/admin/hub/...`, not `/v1/admin/hubs`).
 pub const EXPERIMENTAL: &[(&str, &str, &str)] = &[
-    ("/v1/admin/cloud", "cloud", "clusters made on AWS or DigitalOcean from the command center"),
-    ("/v1/admin/aws", "cloud", "clusters made on AWS or DigitalOcean from the command center"),
-    ("/v1/admin/digitalocean", "cloud", "clusters made on AWS or DigitalOcean from the command center"),
+    ("/v1/admin/cloud", "cloud", "clusters made on AWS, DigitalOcean or Google Cloud from the command center"),
+    ("/v1/admin/aws", "cloud", "clusters made on AWS, DigitalOcean or Google Cloud from the command center"),
+    ("/v1/admin/digitalocean", "cloud", "clusters made on AWS, DigitalOcean or Google Cloud from the command center"),
+    ("/v1/admin/gcp", "cloud", "clusters made on AWS, DigitalOcean or Google Cloud from the command center"),
     ("/v1/admin/hub", "hub", "the hub: a book of other clusters, and calls forwarded to them"),
     ("/c", "hub", "the hub: a book of other clusters, and calls forwarded to them"),
     ("/v1/admin/kube/autoscale", "autoscale", "the operator's autoscaler and its rules"),

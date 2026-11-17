@@ -1,0 +1,147 @@
++ cd /work/wtest
++ command -v strace
++ apt-get update -qq
++ apt-get install -y -qq strace
+debconf: delaying package configuration, since apt-utils is not installed
++ S353='env LD_LIBRARY_PATH=/work/sqlite-3.53.1/lib'
++ echo '## fsync micro on /work'
+## fsync micro on /work
++ python3 fsync_micro.py /work/wtest 400
+append     p50 1.201 p90 1.452 p99 2.763 mean 1.271 ms
+prealloc   p50 0.544 p90 0.620 p99 0.977 mean 0.563 ms
+overwrite  p50 0.537 p90 0.593 p99 1.089 mean 0.571 ms
+append     p50 1.178 p90 1.549 p99 6.411 mean 1.373 ms
+prealloc   p50 0.546 p90 0.578 p99 2.272 mean 0.590 ms
+overwrite  p50 0.548 p90 0.589 p99 1.033 mean 0.567 ms
++ echo '## 0.3.5 writes'
+## 0.3.5 writes
++ /work/venv/bin/python3 writes.py /work/wtest/db-035 1000
+insert one         p50 1.212 p90 1.407 p99 3.700 max 26.7 ms  728/s  slow(>20ms) 4
+update price       p50 1.479 p90 1.773 p99 6.481 max 21.4 ms  594/s  slow(>20ms) 1
+delete by id       p50 1.173 p90 1.249 p99 2.287 max 3.6 ms  823/s  slow(>20ms) 0
+version 0.3.5
++ echo '## 6 Nov build writes'
+## 6 Nov build writes
++ /work/wtest/b022/bin/python3 writes.py /work/wtest/db-b022 1000
+insert one         p50 1.207 p90 1.357 p99 1.896 max 3.3 ms  800/s  slow(>20ms) 0
+update price       p50 1.365 p90 1.468 p99 2.332 max 15.9 ms  705/s  slow(>20ms) 0
+delete by id       p50 1.191 p90 1.301 p99 2.870 max 8.0 ms  791/s  slow(>20ms) 0
+version ?
++ echo '## 0.3.5 writes again'
+## 0.3.5 writes again
++ /work/venv/bin/python3 writes.py /work/wtest/db-035 1000
+insert one         p50 1.217 p90 1.312 p99 1.980 max 3.8 ms  794/s  slow(>20ms) 0
+update price       p50 1.477 p90 1.598 p99 3.559 max 6.7 ms  647/s  slow(>20ms) 0
+delete by id       p50 1.143 p90 1.240 p99 2.039 max 6.8 ms  838/s  slow(>20ms) 0
+version 0.3.5
++ echo '## 6 Nov build writes again'
+## 6 Nov build writes again
++ /work/wtest/b022/bin/python3 writes.py /work/wtest/db-b022 1000
+insert one         p50 1.228 p90 1.342 p99 2.244 max 6.7 ms  782/s  slow(>20ms) 0
+update price       p50 1.398 p90 1.532 p99 12.135 max 130.5 ms  547/s  slow(>20ms) 7
+delete by id       p50 1.179 p90 1.277 p99 1.977 max 6.4 ms  818/s  slow(>20ms) 0
+version ?
++ echo '## sqlite FULL'
+## sqlite FULL
++ env LD_LIBRARY_PATH=/work/sqlite-3.53.1/lib /work/venv/bin/python3 sqlite_writes.py /work/wtest/db-sq 1000 FULL
+insert one         p50 0.587 p90 1.247 p99 1.580 max 12.2 ms  1,340/s  slow(>20ms) 0
+update price       p50 0.568 p90 1.210 p99 1.673 max 6.5 ms  1,409/s  slow(>20ms) 0
+delete by id       p50 0.589 p90 1.244 p99 1.737 max 2.6 ms  1,386/s  slow(>20ms) 0
+sqlite 3.53.1 FULL
++ echo '## sqlite NORMAL'
+## sqlite NORMAL
++ env LD_LIBRARY_PATH=/work/sqlite-3.53.1/lib /work/venv/bin/python3 sqlite_writes.py /work/wtest/db-sq 1000 NORMAL
+insert one         p50 0.026 p90 0.039 p99 0.071 max 17.9 ms  15,330/s  slow(>20ms) 0
+update price       p50 0.020 p90 0.021 p99 0.032 max 7.8 ms  36,691/s  slow(>20ms) 0
+delete by id       p50 0.024 p90 0.025 p99 0.058 max 8.4 ms  23,727/s  slow(>20ms) 0
+sqlite 3.53.1 NORMAL
++ TR=trace=fsync,fdatasync,rename,renameat,renameat2,unlink,unlinkat,openat,write,pwrite64,ftruncate,fallocate
++ echo '## 0.3.5 under strace -T'
+## 0.3.5 under strace -T
++ rm -f mark
++ MARK=/work/wtest/mark
++ strace -f -T -o /work/wtest/trace-035.txt -e trace=fsync,fdatasync,rename,renameat,renameat2,unlink,unlinkat,openat,write,pwrite64,ftruncate,fallocate /work/venv/bin/python3 writes.py /work/wtest/db-035s 2000
+insert one         p50 1.293 p90 1.480 p99 3.435 max 9.0 ms  723/s  slow(>20ms) 0
+update price       p50 1.493 p90 1.667 p99 3.958 max 10.3 ms  631/s  slow(>20ms) 0
+delete by id       p50 1.276 p90 1.408 p99 4.600 max 20.2 ms  710/s  slow(>20ms) 1
+version 0.3.5
++ python3 count.py /work/wtest/trace-035.txt 2000
+insert one     per op: fdatasync 1.00, fsync 0.00   files: app.strata-wal 1.00, WRITER 0.00, app.strata-readers 0.00, db-035s 0.00
+update price   per op: fdatasync 1.00   files: app.strata-wal 1.00
+delete by id   per op: fdatasync 1.00   files: app.strata-wal 1.00
++ python3 slow.py /work/wtest/trace-035.txt
+insert one fdatasync: 2001 calls, 2521 ms total, 1.260 ms each; pwrite64: 2001 calls, 42 ms total, 0.021 ms each; openat: 3 calls, 0 ms total, 0.030 ms each; fsync: 2 calls, 0 ms total, 0.015 ms each
+update price fdatasync: 2000 calls, 2517 ms total, 1.258 ms each; pwrite64: 2000 calls, 64 ms total, 0.032 ms each; openat: 2 calls, 0 ms total, 0.053 ms each
+delete by id fdatasync: 2000 calls, 2602 ms total, 1.301 ms each; pwrite64: 2000 calls, 42 ms total, 0.021 ms each; openat: 1 calls, 0 ms total, 0.044 ms each
+   20.08 ms  delete by id  138550 fdatasync(5)                     = 0 <0.020079>
+   19.44 ms  delete by id  138550 fdatasync(5)                     = 0 <0.019441>
+   18.19 ms  delete by id  138550 fdatasync(5)                     = 0 <0.018191>
+   15.32 ms  delete by id  138550 fdatasync(5)                     = 0 <0.015317>
+   12.51 ms  delete by id  138550 fdatasync(5)                     = 0 <0.012514>
+   11.75 ms  delete by id  138550 fdatasync(5)                     = 0 <0.011747>
+   11.33 ms  delete by id  138550 fdatasync(5)                     = 0 <0.011330>
+   10.89 ms  delete by id  138550 fdatasync(5)                     = 0 <0.010891>
+   10.54 ms  delete by id  138550 fdatasync(5)                     = 0 <0.010536>
+   10.04 ms  delete by id  138550 fdatasync(5)                     = 0 <0.010042>
+    9.95 ms  delete by id  138550 fdatasync(5)                     = 0 <0.009952>
+    9.82 ms  update price  138550 fdatasync(5)                     = 0 <0.009821>
++ echo '## 6 Nov build under strace -T'
+## 6 Nov build under strace -T
++ rm -f mark
++ MARK=/work/wtest/mark
++ strace -f -T -o /work/wtest/trace-b022.txt -e trace=fsync,fdatasync,rename,renameat,renameat2,unlink,unlinkat,openat,write,pwrite64,ftruncate,fallocate /work/wtest/b022/bin/python3 writes.py /work/wtest/db-b022s 2000
+insert one         p50 1.331 p90 1.580 p99 24.622 max 435.2 ms  328/s  slow(>20ms) 22
+update price       p50 1.554 p90 2.434 p99 9.305 max 31.0 ms  513/s  slow(>20ms) 4
+delete by id       p50 1.322 p90 1.439 p99 2.049 max 11.2 ms  729/s  slow(>20ms) 0
+version ?
++ python3 count.py /work/wtest/trace-b022.txt 2000
+insert one     per op: fdatasync 1.00   files: app.strata-wal 1.00
+update price   per op: fdatasync 1.00   files: app.strata-wal 1.00
+delete by id   per op: fdatasync 1.00   files: app.strata-wal 1.00
++ python3 slow.py /work/wtest/trace-b022.txt
+insert one fdatasync: 2000 calls, 5827 ms total, 2.914 ms each; pwrite64: 2000 calls, 58 ms total, 0.029 ms each; openat: 1 calls, 0 ms total, 0.049 ms each
+update price fdatasync: 2000 calls, 3241 ms total, 1.621 ms each; pwrite64: 2000 calls, 79 ms total, 0.039 ms each; openat: 2 calls, 0 ms total, 0.053 ms each
+delete by id fdatasync: 2000 calls, 2511 ms total, 1.255 ms each; pwrite64: 2000 calls, 50 ms total, 0.025 ms each; openat: 1 calls, 0 ms total, 0.048 ms each
+  434.96 ms  insert one    138579 fdatasync(4)                     = 0 <0.434962>
+  348.25 ms  insert one    138579 fdatasync(4)                     = 0 <0.348247>
+  339.11 ms  insert one    138579 fdatasync(4)                     = 0 <0.339106>
+  272.35 ms  insert one    138579 fdatasync(4)                     = 0 <0.272353>
+  249.64 ms  insert one    138579 fdatasync(4)                     = 0 <0.249641>
+  237.79 ms  insert one    138579 fdatasync(4)                     = 0 <0.237788>
+  203.49 ms  insert one    138579 fdatasync(4)                     = 0 <0.203494>
+  176.99 ms  insert one    138579 fdatasync(4)                     = 0 <0.176987>
+  138.36 ms  insert one    138579 fdatasync(4)                     = 0 <0.138360>
+   99.33 ms  insert one    138579 fdatasync(4)                     = 0 <0.099329>
+   98.78 ms  insert one    138579 fdatasync(4)                     = 0 <0.098775>
+   90.46 ms  insert one    138579 fdatasync(4)                     = 0 <0.090462>
++ echo '## sqlite FULL under strace -T'
+## sqlite FULL under strace -T
++ rm -f mark
++ MARK=/work/wtest/mark
++ env LD_LIBRARY_PATH=/work/sqlite-3.53.1/lib strace -f -T -o /work/wtest/trace-sq.txt -e trace=fsync,fdatasync,rename,renameat,renameat2,unlink,unlinkat,openat,write,pwrite64,ftruncate,fallocate /work/venv/bin/python3 sqlite_writes.py /work/wtest/db-sqs 2000 FULL
+insert one         p50 1.023 p90 1.748 p99 2.536 max 83.7 ms  758/s  slow(>20ms) 1
+update price       p50 0.886 p90 1.558 p99 2.060 max 7.9 ms  928/s  slow(>20ms) 0
+delete by id       p50 1.080 p90 1.786 p99 2.829 max 6.6 ms  762/s  slow(>20ms) 0
+sqlite 3.53.1 FULL
++ python3 count.py /work/wtest/trace-sq.txt 2000
+insert one     per op: fsync 1.01   files: app.db-wal 1.00, app.db 0.00
+update price   per op: fsync 1.00   files: app.db-wal 1.00, app.db 0.00
+delete by id   per op: fsync 1.01   files: app.db-wal 1.00, app.db 0.00
++ python3 slow.py /work/wtest/trace-sq.txt
+insert one fsync: 2015 calls, 1690 ms total, 0.839 ms each; pwrite64: 10288 calls, 161 ms total, 0.016 ms each; ftruncate: 10 calls, 0 ms total, 0.029 ms each; openat: 1 calls, 0 ms total, 0.045 ms each
+update price fsync: 2005 calls, 1536 ms total, 0.766 ms each; pwrite64: 4034 calls, 64 ms total, 0.016 ms each; ftruncate: 3 calls, 0 ms total, 0.033 ms each; openat: 1 calls, 0 ms total, 0.052 ms each
+delete by id fsync: 2012 calls, 1711 ms total, 0.850 ms each; pwrite64: 8451 calls, 149 ms total, 0.018 ms each; ftruncate: 4 calls, 0 ms total, 0.032 ms each; openat: 1 calls, 0 ms total, 0.047 ms each
+    9.46 ms  insert one    138608 fsync(4)                         = 0 <0.009461>
+    7.55 ms  update price  138608 fsync(4)                         = 0 <0.007549>
+    7.40 ms  insert one    138608 fsync(4)                         = 0 <0.007403>
+    6.28 ms  insert one    138608 fsync(3)                         = 0 <0.006280>
+    6.14 ms  delete by id  138608 fsync(4)                         = 0 <0.006140>
+    5.81 ms  update price  138608 fsync(4)                         = 0 <0.005807>
+    5.74 ms  delete by id  138608 fsync(4)                         = 0 <0.005739>
+    4.89 ms  delete by id  138608 fsync(4)                         = 0 <0.004888>
+    4.87 ms  update price  138608 fsync(4)                         = 0 <0.004870>
+    4.37 ms  update price  138608 fsync(4)                         = 0 <0.004372>
+    4.28 ms  insert one    138608 fsync(4)                         = 0 <0.004276>
+    4.24 ms  delete by id  138608 fsync(4)                         = 0 <0.004242>
++ echo '## done'
+## done

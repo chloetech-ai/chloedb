@@ -17,7 +17,7 @@ import os
 from typing import Any
 
 A1_ORDER = ["strata", "sqlite-full", "sqlite-normal", "duckdb", "tantivy"]
-A2_ORDER = ["strata", "sqlite", "tantivy", "duckdb", "lancedb"]
+A2_ORDER = ["strata", "strata-1t", "sqlite", "tantivy", "duckdb", "lancedb"]
 A2_COLLECTIONS = ["scifact", "nfcorpus", "fiqa", "trec-covid", "quora"]
 W_ORDER = ["strata", "sqlite-full", "sqlite-normal", "duckdb", "lancedb", "tantivy"]
 A3_ORDER = ["strata", "lancedb", "sqlite-vec", "faiss-sqlite"]

@@ -1,0 +1,60 @@
+{
+ "table": "gh_repo_months",
+ "shard_by": "repo",
+ "cluster_by": "repo",
+ "fields": [
+  {
+   "name": "repo",
+   "type": "int",
+   "not_null": true
+  },
+  {
+   "name": "month",
+   "type": "int"
+  },
+  {
+   "name": "stars",
+   "type": "int"
+  },
+  {
+   "name": "forks",
+   "type": "int"
+  },
+  {
+   "name": "pushes",
+   "type": "int"
+  },
+  {
+   "name": "commits",
+   "type": "int"
+  },
+  {
+   "name": "prs",
+   "type": "int"
+  },
+  {
+   "name": "merged",
+   "type": "int"
+  },
+  {
+   "name": "issues",
+   "type": "int"
+  },
+  {
+   "name": "comments",
+   "type": "int"
+  },
+  {
+   "name": "releases",
+   "type": "int"
+  },
+  {
+   "name": "people",
+   "type": "int"
+  },
+  {
+   "name": "repos",
+   "type": "int"
+  }
+ ]
+}

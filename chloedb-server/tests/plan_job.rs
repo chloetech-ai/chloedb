@@ -201,8 +201,18 @@ async fn a_plan_runs_on_the_coordinator_is_kept_and_resumed_after_a_restart() {
         assert_eq!((e["reason"].as_str(), e["after"]["plan"].as_str(), e["status"].as_u64()), (Some("plan test"), Some(id.as_str()), Some(200)), "{e}");
     }
     assert!(entries.iter().any(|e| e["route"] == "/v1/admin/plan/apply" && e["detail"].as_str().is_some_and(|d| d.starts_with("applied a plan of 3 steps"))), "{log}");
-    let ev = get(format!("{base}/v1/events?kind=change")).await;
-    assert!(ev["events"].as_array().unwrap().iter().any(|e| e["title"].as_str().unwrap().starts_with("Plan applied: 3 steps") && e["detail"]["plan"] == json!(id)), "{ev}");
+    // The plan's end is said after its file is kept, a moment after the
+    // run reads done (on macOS's runners, after the views above): so its
+    // event is waited for, and the file below is the one kept at the end.
+    let t0 = Instant::now();
+    loop {
+        let ev = get(format!("{base}/v1/events?kind=change")).await;
+        if ev["events"].as_array().unwrap().iter().any(|e| e["title"].as_str().unwrap().starts_with("Plan applied: 3 steps") && e["detail"]["plan"] == json!(id)) {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(30), "{ev}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     // The coordinator stopped during step 2: as the file it keeps says.
     let file = dir.path().join("audit.plan.json");

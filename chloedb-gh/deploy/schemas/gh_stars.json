@@ -1,0 +1,31 @@
+{
+ "table": "gh_stars",
+ "shard_by": "repo",
+ "cluster_by": "repo",
+ "compression": "zstd",
+ "fields": [
+  {
+   "name": "repo",
+   "type": "int",
+   "not_null": true
+  },
+  {
+   "name": "actor",
+   "type": "int",
+   "stored": false,
+   "not_null": true
+  },
+  {
+   "name": "actor_k",
+   "type": "keyword",
+   "stored": false,
+   "not_null": true
+  },
+  {
+   "name": "t",
+   "type": "int",
+   "stored": false,
+   "not_null": true
+  }
+ ]
+}

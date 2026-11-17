@@ -110,6 +110,22 @@ pub struct Spec {
     /// copies one at a time, as other settings do.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub secret_env: Vec<SecretEnv>,
+    /// Annotations of the coordinators' Kubernetes account: on GKE,
+    /// `iam.gke.io/gcp-service-account` makes it act as a Google service
+    /// account through Workload Identity, so that the command center calls
+    /// Google Cloud with no key (`eks.amazonaws.com/role-arn` does the
+    /// same on EKS). No copy restarts when it changes.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub coordinator_account_annotations: std::collections::BTreeMap<String, String>,
+    /// Workload identity federation for the coordinators, on a cluster
+    /// outside Google Cloud: a token Kubernetes gives their account, for
+    /// the pool's provider, and the federation's file from a ConfigMap,
+    /// mounted in [`GCP_FEDERATION_DIR`], so that the command center calls
+    /// Google Cloud as a service account with no key
+    /// ([`crate::gcp::federation_commands`]). Changing it restarts the
+    /// coordinators.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gcp_federation: Option<GcpFederation>,
     /// Resources of each server's and each coordinator's container.
     pub resources: Option<Json>,
     pub coordinator_resources: Option<Json>,
@@ -389,6 +405,32 @@ impl Default for CoordinatorStorage {
 /// that says so: given unless `coordinatorArgs` gives the flag itself.
 pub const COORDINATOR_FILES: [(&str, &str); 3] = [("--log-store", "/data/logs"), ("--audit-log", "/data/audit.jsonl"), ("--alerts", "/data/alerts.json")];
 
+/// Where the coordinators find the federation's file
+/// (`credentials.json`) and the token it reads (`token`).
+pub const GCP_FEDERATION_DIR: &str = "/var/run/secrets/gcp";
+
+/// Workload identity federation for the coordinators (`spec.gcpFederation`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GcpFederation {
+    /// The ConfigMap, in the cluster's namespace, with the file
+    /// `gcloud iam workload-identity-pools create-cred-config` wrote for
+    /// the token file `/var/run/secrets/gcp/token`.
+    pub config_map: String,
+    /// Its key that holds the file.
+    #[serde(default = "GcpFederation::default_key")]
+    pub key: String,
+    /// The token's audience: one the pool's provider allows
+    /// (`https://iam.googleapis.com/projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER`).
+    pub audience: String,
+}
+
+impl GcpFederation {
+    fn default_key() -> String {
+        "credentials.json".into()
+    }
+}
+
 /// An environment variable taken from a Secret (`spec.secretEnv`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -425,6 +467,8 @@ impl Default for Spec {
             token_secret: None,
             cluster_token_secret: None,
             secret_env: Vec::new(),
+            coordinator_account_annotations: Default::default(),
+            gcp_federation: None,
             resources: None,
             coordinator_resources: None,
             args: Vec::new(),
@@ -472,6 +516,9 @@ impl Spec {
         // hash (and its coordinators) across the operator's upgrade.
         if let Some(st) = &self.coordinator_storage {
             j["storage"] = json!(st);
+        }
+        if let Some(f) = &self.gcp_federation {
+            j["gcpFederation"] = json!(f);
         }
         let apps = self.apps();
         if !apps.is_empty() {
@@ -597,6 +644,31 @@ impl Spec {
             }
             if e.secret.is_empty() || e.key.is_empty() {
                 return Err(format!("secretEnv: {} needs a secret, and a key in it", e.name));
+            }
+        }
+        for (k, v) in &self.coordinator_account_annotations {
+            let (prefix, name) = k.rsplit_once('/').unwrap_or(("", k));
+            let ok = |x: &str, most: usize, extra: &str| !x.is_empty() && x.len() <= most && x.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c));
+            if !ok(name, 63, "-_.") || (!prefix.is_empty() && !ok(prefix, 253, "-.")) || k.starts_with('/') {
+                return Err(format!("coordinatorAccountAnnotations: {k:?} is not an annotation's name (an optional DNS prefix and /, then at most 63 letters, digits, -, _ and .)"));
+            }
+            if v.len() > 4096 {
+                return Err(format!("coordinatorAccountAnnotations: {k}'s value is longer than 4,096 bytes"));
+            }
+        }
+        if let Some(f) = &self.gcp_federation {
+            let dns = |x: &str| !x.is_empty() && x.len() <= 253 && x.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.') && x.starts_with(|c: char| c.is_ascii_alphanumeric()) && x.ends_with(|c: char| c.is_ascii_alphanumeric());
+            if !dns(&f.config_map) {
+                return Err(format!("gcpFederation.configMap: {:?} is not a ConfigMap's name", f.config_map));
+            }
+            if f.key.is_empty() || f.key.len() > 253 || !f.key.chars().all(|c| c.is_ascii_alphanumeric() || "-._".contains(c)) {
+                return Err(format!("gcpFederation.key: {:?} is not a ConfigMap's key", f.key));
+            }
+            if f.audience.is_empty() || f.audience.len() > 1024 || f.audience.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                return Err("gcpFederation.audience: the audience the pool's provider allows (https://iam.googleapis.com/projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER)".into());
+            }
+            if self.secret_env.iter().any(|e| e.name == "GOOGLE_APPLICATION_CREDENTIALS") {
+                return Err("secretEnv sets GOOGLE_APPLICATION_CREDENTIALS, which gcpFederation sets: give one".into());
             }
         }
         if !matches!(self.write_acks.as_str(), "all" | "majority" | "primary") {
@@ -2238,6 +2310,12 @@ pub fn crd() -> Json {
             "writeAcks": {"type": "string", "enum": ["all", "majority", "primary"], "description": "--write-acks of every primary (default all)."},
             "tokenSecret": {"type": "string", "description": "A Secret whose key token every server and coordinator requires; with clusterTokenSecret, the coordinators only (the admin token)."},
             "clusterTokenSecret": {"type": "string", "description": "A Secret whose key token is the cluster's token (--cluster-token), which the servers and coordinators send each other and clients never hold. Needs tokenSecret."},
+            "coordinatorAccountAnnotations": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Annotations of the coordinators' ServiceAccount, such as iam.gke.io/gcp-service-account (GKE's Workload Identity) or eks.amazonaws.com/role-arn: the command center then calls the cloud as that account, with no key. No copy restarts when it changes."},
+            "gcpFederation": {"type": "object", "required": ["configMap", "audience"], "description": "Workload identity federation for the coordinators on a cluster outside Google Cloud: a token Kubernetes gives their account for audience, and the federation's file from configMap, both mounted in /var/run/secrets/gcp, so that the command center calls Google Cloud as a service account with no key. Changing it restarts the coordinators.", "properties": {
+                "configMap": {"type": "string", "description": "The ConfigMap with the file gcloud iam workload-identity-pools create-cred-config wrote for the token file /var/run/secrets/gcp/token."},
+                "key": {"type": "string", "description": "Its key that holds the file (default credentials.json)."},
+                "audience": {"type": "string", "description": "The token's audience, one the pool's provider allows: https://iam.googleapis.com/projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER."},
+            }},
             "secretEnv": {"type": "array", "description": "Environment variables of every server and coordinator taken from Secrets: the keys of models behind an API (ANTHROPIC_API_KEY for the agents, LLM fields and reranking; OPENAI_API_KEY, COHERE_API_KEY, ... for hosted embeddings). Changing it restarts the copies one at a time.", "items": {
                 "type": "object", "required": ["name", "secret"], "properties": {
                     "name": {"type": "string", "description": "The variable, such as ANTHROPIC_API_KEY."},

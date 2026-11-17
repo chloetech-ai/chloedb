@@ -92,6 +92,7 @@ from ._native import (
     error_code,
 )
 from .client import Client, Session, Written
+from ._serve import Server, find_server, serve
 from .aio import AsyncClient, AsyncSession
 from .frame import Frame, FrameStore, GroupBy, concat, len_, _arrow_table
 from .nearby import Nearby, NearbyResult, nearby
@@ -99,7 +100,7 @@ from .ngrams import next_items
 from .result import ArrowResult, Result
 
 # The package's version: pyproject.toml's (a test checks they agree).
-__version__ = "0.3.6"
+__version__ = "0.3.7"
 
 __all__ = [
     "__version__",
@@ -129,6 +130,9 @@ __all__ = [
     "error_code",
     "open",
     "connect",
+    "serve",
+    "find_server",
+    "Server",
     "from_sqlite",
     "plan_sqlite",
     "from_parquet",
@@ -268,8 +272,8 @@ class _Pending:
     """A database `connect` was given the path of, not made yet: its
     first `create_table` makes it."""
 
-    def __init__(self, path: str, directory: bool, models: Any, threads: int | None):
-        self.path, self.directory, self.models, self.threads = path, directory, models, threads
+    def __init__(self, path: str, directory: bool, models: Any, threads: int | None, sync: bool = True):
+        self.path, self.directory, self.models, self.threads, self.sync = path, directory, models, threads, sync
 
     def __getattr__(self, name: str) -> Any:
         raise ChloeDBError(f"{self.path} has no tables yet: make one with create_table(name, data)")
@@ -311,7 +315,7 @@ class Database(Search, FrameStore):
             self.set_limits(timeout_ms=timeout_ms, memory=memory)
 
     @classmethod
-    def create(cls, path: str | os.PathLike, schema: Any, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, timeout_ms: int | None = None, memory: int | None = None) -> "Database":
+    def create(cls, path: str | os.PathLike, schema: Any, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, timeout_ms: int | None = None, memory: int | None = None, sync: bool = True) -> "Database":
         """Creates a database at `path` with `schema` (a dict, JSON text, or
         the path of a JSON file; the short form or the long one).
         `directory` keeps it as a directory of segment files instead of one
@@ -319,13 +323,23 @@ class Database(Search, FrameStore):
         $CHLOEDB_MODELS or ~/.local/share/chloedb/models; see `chloedb-server
         fetch-model`). `threads` is how many cores vector indexes build on
         and each query searches segments on (default: every core).
-        `timeout_ms` and `memory` limit its queries (see `set_limits`)."""
-        return cls(_strata.Database.create(os.fspath(path), _schema_json(schema), directory, None if models is None else os.fspath(models), threads), timeout_ms=timeout_ms, memory=memory)
+        `timeout_ms` and `memory` limit its queries (see `set_limits`).
+
+        `sync=False` commits without waiting for the disk. A commit still
+        reaches the operating system before it returns, so a crash of the
+        program loses nothing, but a power failure or a crash of the machine
+        may lose the transactions committed since the last flush, newest
+        first; the database stays consistent. It is SQLite's
+        `synchronous=NORMAL` in WAL mode, for many small commits on a disk
+        that is slow to sync. Bulk loads, `flush()` and merges sync either
+        way."""
+        return cls(_strata.Database.create(os.fspath(path), _schema_json(schema), directory, None if models is None else os.fspath(models), threads, sync), timeout_ms=timeout_ms, memory=memory)
 
     @classmethod
-    def open(cls, path: str | os.PathLike, *, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False, recover: bool = False, timeout_ms: int | None = None, memory: int | None = None) -> "Database":
-        """Opens the database at `path`; `threads`, `timeout_ms` and
-        `memory` as `create` takes them.
+    def open(cls, path: str | os.PathLike, *, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False, recover: bool = False, timeout_ms: int | None = None, memory: int | None = None, sync: bool = True) -> "Database":
+        """Opens the database at `path`; `threads`, `timeout_ms`, `memory`
+        and `sync` as `create` takes them (`sync` is not kept in the file:
+        each open chooses).
         `read_only` opens it to read while another process writes it (a
         web server's other workers, a script): it sees each commit of the
         writer, and every write fails. Without it only one process may have
@@ -338,7 +352,7 @@ class Database(Search, FrameStore):
         the damaged files are kept first (`<path>.damaged-<time>`,
         `<path>-wal.damaged`), `damaged` says what was lost, and a
         `RuntimeWarning` is issued."""
-        db = cls(_strata.Database.open(os.fspath(path), None if models is None else os.fspath(models), threads, read_only, recover), timeout_ms=timeout_ms, memory=memory)
+        db = cls(_strata.Database.open(os.fspath(path), None if models is None else os.fspath(models), threads, read_only, recover, sync), timeout_ms=timeout_ms, memory=memory)
         if db.damaged is not None:
             import warnings
 
@@ -581,17 +595,19 @@ class Database(Search, FrameStore):
         rows, bulk, skipped = self._db.import_file(os.fspath(path), format, table)
         return {"rows": rows, "bulk": bulk, "skipped_fields": skipped}
 
-    def import_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, schemas: Any = None, blobs_base64: bool = False) -> dict:
+    def import_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, schemas: Any = None, blobs_base64: bool = False, append: bool = False) -> dict:
         """Imports the tables of a SQLite database file (all, or `tables`).
         Each goes into the table of its name: an existing table takes the
         columns whose names match its fields (rows upserted by key, or
         bulk-loaded when it is empty); a missing one is created from the
         SQLite table's declarations and values, or from the schema
         `schemas` gives for it (see `plan_sqlite`). BLOB columns are left
-        out unless `blobs_base64`. Returns {tables: [{source, table, rows,
-        created, bulk, notes}], skipped: {name: why}}; the notes say what
-        did not carry over."""
-        self.last_import = json.loads(self._db.import_sqlite(os.fspath(path), _names(tables), _schemas_json(schemas), blobs_base64))
+        out unless `blobs_base64`. A table without a key that has rows is
+        refused, since importing the file again would repeat its rows,
+        unless `append` (drop the table to replace them). Returns
+        {tables: [{source, table, rows, created, bulk, notes}],
+        skipped: {name: why}}; the notes say what did not carry over."""
+        self.last_import = json.loads(self._db.import_sqlite(os.fspath(path), _names(tables), _schemas_json(schemas), blobs_base64, append))
         return self.last_import
 
     def export_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, fts: bool = True, indexes: bool = True, schemas: bool = True) -> dict:
@@ -744,7 +760,7 @@ class Database(Search, FrameStore):
     def _create(self, schema: Mapping[str, Any]) -> None:
         if isinstance(self._db, _Pending):
             p = self._db
-            self._db = _strata.Database.create(p.path, json.dumps(schema), p.directory, None if p.models is None else os.fspath(p.models), p.threads)
+            self._db = _strata.Database.create(p.path, json.dumps(schema), p.directory, None if p.models is None else os.fspath(p.models), p.threads, p.sync)
             self._db.set_limits(*self._limits)
         else:
             self._db.sql(_strata.create_sql(json.dumps(schema)), None)
@@ -755,19 +771,21 @@ class Database(Search, FrameStore):
         return self.import_arrow(data, table=table)
 
 
-def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False, recover: bool = False, timeout_ms: int | None = None, memory: int | None = None) -> Database:
+def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False, recover: bool = False, timeout_ms: int | None = None, memory: int | None = None, sync: bool = True) -> Database:
     """Opens the database at `path`, creating it with `schema` if it does
     not exist. `threads`: how many cores vector indexes build on and each
     query searches segments on (default: every core). `read_only`: opens
     it to read while another process writes it; `recover`: opens a
     damaged database accepting the loss of acknowledged writes (see
     `Database.open`). `timeout_ms` and `memory` limit its queries (see
-    `Database.set_limits`)."""
+    `Database.set_limits`). `sync=False` commits without waiting for the
+    disk: a crash of the program loses nothing, a power failure may lose
+    the last commits (see `Database.create`)."""
     if os.path.exists(path) or read_only:
-        return Database.open(path, models=models, threads=threads, read_only=read_only, recover=recover, timeout_ms=timeout_ms, memory=memory)
+        return Database.open(path, models=models, threads=threads, read_only=read_only, recover=recover, timeout_ms=timeout_ms, memory=memory, sync=sync)
     if schema is None:
         raise ChloeDBError(f"{os.fspath(path)} does not exist: pass a schema to create it")
-    return Database.create(path, schema, directory=directory, models=models, threads=threads, timeout_ms=timeout_ms, memory=memory)
+    return Database.create(path, schema, directory=directory, models=models, threads=threads, timeout_ms=timeout_ms, memory=memory, sync=sync)
 
 
 def from_sqlite(sqlite_path: str | os.PathLike, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, schemas: Any = None, blobs_base64: bool = False, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None) -> Database:
@@ -810,12 +828,14 @@ def plan_parquet(parquet_path: str | os.PathLike, *, table: str | None = None, s
     return json.loads(_strata.Database.plan_parquet(os.fspath(parquet_path), table, None if schema is None else _schema_json(schema), key, blobs_base64, None if db is None else db._db))
 
 
-def connect(url: str | os.PathLike = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0, retry_for: float = 10.0, models: str | os.PathLike | None = None, threads: int | None = None, directory: bool = False) -> Client | Database:
+def connect(url: str | os.PathLike = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0, retry_for: float = 10.0, models: str | os.PathLike | None = None, threads: int | None = None, directory: bool = False, sync: bool = True) -> Client | Database:
     """A store, for frames and queries alike: a `Client` of the
     chloedb-server (or coordinator) at an `http://` or `https://` URL, or
     the `Database` at a path, in this process. A path that does not exist
     yet makes a database at its first `create_table`. The code after it is
-    the same either way: `connect(...)["orders"]` is a frame of a table."""
+    the same either way: `connect(...)["orders"]` is a frame of a table.
+    `sync=False` commits to a path without waiting for the disk (see
+    `Database.create`)."""
     target = os.fspath(url)
     if target.startswith(("http://", "https://")):
         return Client(target, token=token, timeout=timeout, retry_for=retry_for)
@@ -824,6 +844,6 @@ def connect(url: str | os.PathLike = "http://127.0.0.1:7700", *, token: str | No
     if target.startswith("file:"):
         target = target[len("file:"):]
     if os.path.exists(target):
-        return Database.open(target, models=models, threads=threads)
-    return Database(_Pending(target, directory, models, threads))
+        return Database.open(target, models=models, threads=threads, sync=sync)
+    return Database(_Pending(target, directory, models, threads, sync))
 

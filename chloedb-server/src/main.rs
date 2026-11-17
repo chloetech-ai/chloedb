@@ -490,6 +490,14 @@ struct Args {
     /// one, the view uses DIGITALOCEAN_TOKEN or DIGITALOCEAN_ACCESS_TOKEN.
     #[arg(long)]
     digitalocean_file: Option<PathBuf>,
+    /// The Google Cloud project and region the command center's cloud view
+    /// saves (default: DB.gcp.json beside --db; a coordinator keeps them in
+    /// memory without it). It holds no credentials: the view calls Google
+    /// as Application Default Credentials (`gcloud auth
+    /// application-default login`, with --impersonate-service-account) or,
+    /// on GKE and Compute Engine, as the metadata server's account.
+    #[arg(long)]
+    gcp_file: Option<PathBuf>,
     /// The clusters the cloud view made, and where each one is (default:
     /// DB.cloud.json beside --db; a coordinator keeps them in memory
     /// without it). No secrets: the clouds' keys stay in their own files.
@@ -599,7 +607,8 @@ struct Args {
     #[arg(long)]
     no_read_stats: bool,
     /// The cluster's name, as the command center shows it (default: the
-    /// StrataCluster, namespace/name, that runs a coordinator).
+    /// StrataCluster that runs a coordinator, namespace/name, or its name
+    /// alone in the cloud view's namespace).
     #[arg(long, env = "CHLOEDB_CLUSTER_NAME")]
     cluster_name: Option<String>,
     /// The cluster's environment ("production", "staging"...): the
@@ -1117,6 +1126,12 @@ enum Command {
         /// than leave them out.
         #[arg(long)]
         blobs_base64: bool,
+        /// SQLite: add the rows to tables without a primary key that have
+        /// rows already, which an import refuses otherwise (nothing tells
+        /// their rows from the file's, so importing a file again would
+        /// repeat them).
+        #[arg(long)]
+        append: bool,
         /// SQLite and Parquet: print what the import would do as JSON (each
         /// table's schema, its columns and what is left out), and write
         /// nothing. Edit it and give it back with --schema.
@@ -1232,7 +1247,7 @@ const HELP_TOPICS: &[(&str, &[&str])] = &[
     ("Apps, connectors, tenants and clouds", &[
         "apps", "app_token", "app_token_dir", "connectors", "connector_secrets", "connector_env_prefix", "tenants",
         "tenant_cache", "tenant_idle_s", "tenant_open_max", "opensearch_listen",
-        "opensearch_version", "aws_file", "digitalocean_file", "cloud_file", "hub_file",
+        "opensearch_version", "aws_file", "digitalocean_file", "gcp_file", "cloud_file", "hub_file",
         "hub_device"
     ]),
 ];
@@ -1496,9 +1511,9 @@ async fn run() {
             }
             return;
         }
-        Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, plan }) => {
+        Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, append, plan }) => {
             let named = |n: &str| format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(n));
-            let files_of = server::FileImport { sqlite: named("sqlite"), parquet: named("parquet"), tables: tables.clone(), key: key.clone(), blobs_base64: *blobs_base64, plan: *plan };
+            let files_of = server::FileImport { sqlite: named("sqlite"), parquet: named("parquet"), tables: tables.clone(), key: key.clone(), blobs_base64: *blobs_base64, append: *append, plan: *plan };
             let format = format
                 .as_deref()
                 .filter(|_| !files_of.sqlite && !files_of.parquet)
@@ -1654,6 +1669,7 @@ async fn run() {
         audit_log: a.audit_log,
         aws_file: a.aws_file,
         digitalocean_file: a.digitalocean_file,
+        gcp_file: a.gcp_file,
         cloud_file: a.cloud_file,
         hub_file: a.hub_file,
         connector_secrets: a.connector_secrets.clone(),
@@ -1716,6 +1732,7 @@ async fn run() {
             audit_log: None,
             aws_file: None,
             digitalocean_file: None,
+            gcp_file: None,
             cloud_file: None,
             hub_file: None,
             connector_secrets: o.connector_secrets.clone().or_else(|| o.db.as_deref().map(chloedb_server::connectors::Connectors::file_of)),

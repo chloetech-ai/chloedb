@@ -1,0 +1,11 @@
+# Vespa's 1M round of the 0.3.5 rerun (16 November 2026) again: in
+# fanout-jobs-0.3.5.tsv's sharded lane its load ended at the last batch on a
+# put whose connection the container closed, which engine-compare did not
+# retry (it does now). A lane of its own, on new nodes, with ChloeDB first and
+# last on the same nodes, so that Vespa is still compared with ChloeDB on
+# one set of machines; the candidates swept as on the other sharded lane.
+#   PASSES=3 COPY_JOBS=0 BUDGET=45 MAX_NODES=20 \
+#   IMAGE=ghcr.io/chloetech-ai/chloedb-server:<full sha>-bench \
+#   fanout.sh run fanout-jobs-0.3.5-vespa.tsv
+# name       engines                         shape    hours  env
+vespa-1m     strata-first+vespa+strata-last  sharded  5      EFS=128/256/512

@@ -1,0 +1,4805 @@
+Name:             load-es-8lgd7
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 01:50:24 +0000
+Labels:           batch.kubernetes.io/controller-uid=02c38fb7-22d9-4a4e-ad85-e72830876e19
+                  batch.kubernetes.io/job-name=load-es
+                  controller-uid=02c38fb7-22d9-4a4e-ad85-e72830876e19
+                  job-name=load-es
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.79
+IPs:
+  IP:           10.121.4.79
+Controlled By:  Job/load-es
+Containers:
+  compare:
+    Container ID:  containerd://d555abd28fded28b5e399a1a08847db53199b0b97cbe308a2932ed3089465c2e
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      load
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --clients
+      8
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 01:50:25 +0000
+      Finished:     Mon, 16 Nov 2026 02:00:13 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-5t4bb (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-5t4bb:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             load-os-gprmw
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:44:06 +0000
+Labels:           batch.kubernetes.io/controller-uid=ef236774-8d75-43a2-a2cb-3c4b00fed4bf
+                  batch.kubernetes.io/job-name=load-os
+                  controller-uid=ef236774-8d75-43a2-a2cb-3c4b00fed4bf
+                  job-name=load-os
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.52
+IPs:
+  IP:           10.121.4.52
+Controlled By:  Job/load-os
+Containers:
+  compare:
+    Container ID:  containerd://2b5942db438c7551b3939d27c9692ea0cf9afdf9cfde005750bc61ebeb307b9a
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      load
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --clients
+      8
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:44:07 +0000
+      Finished:     Mon, 16 Nov 2026 02:58:18 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-2vs72 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-2vs72:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             load-solr-k85x8
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:46:52 +0000
+Labels:           batch.kubernetes.io/controller-uid=9d6a0c18-ec2d-487d-9d4a-d082ed7e9c0c
+                  batch.kubernetes.io/job-name=load-solr
+                  controller-uid=9d6a0c18-ec2d-487d-9d4a-d082ed7e9c0c
+                  job-name=load-solr
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.85
+IPs:
+  IP:           10.121.4.85
+Controlled By:  Job/load-solr
+Containers:
+  compare:
+    Container ID:  containerd://d95e712e6510c9617f48b3becaef9e351de9074898858337a29ba529025d1f3e
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      load
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --clients
+      8
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:46:53 +0000
+      Finished:     Mon, 16 Nov 2026 04:08:08 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-pv4wc (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-pv4wc:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             load-vespa-bs49n
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:59:49 +0000
+Labels:           batch.kubernetes.io/controller-uid=5dd9f556-5d2f-4324-8ca3-5a396343f243
+                  batch.kubernetes.io/job-name=load-vespa
+                  controller-uid=5dd9f556-5d2f-4324-8ca3-5a396343f243
+                  job-name=load-vespa
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Failed
+IP:               10.121.4.64
+IPs:
+  IP:           10.121.4.64
+Controlled By:  Job/load-vespa
+Containers:
+  compare:
+    Container ID:  containerd://4f1c81b4fcc16a40a9a655be77ac6766201bafdba04841f77c14d543c967a13e
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      load
+      --engine
+      vespa
+      --url
+      http://vespa-0.vespa:8080
+      --clients
+      8
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Mon, 16 Nov 2026 04:59:50 +0000
+      Finished:     Mon, 16 Nov 2026 05:22:57 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-szvsm (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-szvsm:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             redpanda
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:40:05 +0000
+Labels:           app=redpanda
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.121.4.4
+IPs:
+  IP:  10.121.4.4
+Containers:
+  redpanda:
+    Container ID:  containerd://f6d28e1f9532c2a99402a0197f981b41239876715f57d956a66f5e9988ac5ee1
+    Image:         redpandadata/redpanda:v25.2.9
+    Image ID:      docker.io/redpandadata/redpanda@sha256:bd6c35647153a4dbc19507c8037dcca0802484c23e6e5fbb97591a62539e313a
+    Port:          9092/TCP (kafka)
+    Host Port:     0/TCP (kafka)
+    Args:
+      redpanda
+      start
+      --mode
+      dev-container
+      --smp
+      1
+      --memory
+      768M
+      --overprovisioned
+      --kafka-addr
+      0.0.0.0:9092
+      --advertise-kafka-addr
+      redpanda.redpanda.sharded-1m.svc.cluster.local:9092
+    State:          Running
+      Started:      Mon, 16 Nov 2026 02:40:13 +0000
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     1
+      memory:  1Gi
+    Requests:
+      cpu:        1
+      memory:     1Gi
+    Readiness:    exec [rpk cluster health --exit-when-healthy] delay=0s timeout=10s period=2s successThreshold=1 failureThreshold=3
+    Environment:  <none>
+    Mounts:
+      /var/lib/redpanda/data from data (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-lpjlb (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-lpjlb:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+
+
+Name:             run-es-ef128-fdvc7
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:19:09 +0000
+Labels:           batch.kubernetes.io/controller-uid=b1d2b7d2-43b3-4154-89b0-740084e2680b
+                  batch.kubernetes.io/job-name=run-es-ef128
+                  controller-uid=b1d2b7d2-43b3-4154-89b0-740084e2680b
+                  job-name=run-es-ef128
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.91
+IPs:
+  IP:           10.121.4.91
+Controlled By:  Job/run-es-ef128
+Containers:
+  compare:
+    Container ID:  containerd://b6aaa7be42c4037b2852119b063590a16f26a2091c51446d708e33edbc98c2e7
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --candidates
+      128
+      --label
+      es-ef128
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:19:10 +0000
+      Finished:     Mon, 16 Nov 2026 02:20:54 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-hvfmz (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-hvfmz:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-ef128-pass2-jx84p
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:21:09 +0000
+Labels:           batch.kubernetes.io/controller-uid=233ff3ec-c287-43dd-a4ba-a09ea532ddb2
+                  batch.kubernetes.io/job-name=run-es-ef128-pass2
+                  controller-uid=233ff3ec-c287-43dd-a4ba-a09ea532ddb2
+                  job-name=run-es-ef128-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.58
+IPs:
+  IP:           10.121.4.58
+Controlled By:  Job/run-es-ef128-pass2
+Containers:
+  compare:
+    Container ID:  containerd://f1370108489d2bd9437d106c344d1da6e84d04ae7b7ca1fb986dd2bce4501a97
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --candidates
+      128
+      --label
+      es-ef128-pass2
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:21:10 +0000
+      Finished:     Mon, 16 Nov 2026 02:22:53 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-wn5n9 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-wn5n9:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-ef128-pass3-sv62q
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:23:08 +0000
+Labels:           batch.kubernetes.io/controller-uid=95f74417-22d6-4334-b7b1-6bc9b5442e34
+                  batch.kubernetes.io/job-name=run-es-ef128-pass3
+                  controller-uid=95f74417-22d6-4334-b7b1-6bc9b5442e34
+                  job-name=run-es-ef128-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.122
+IPs:
+  IP:           10.121.4.122
+Controlled By:  Job/run-es-ef128-pass3
+Containers:
+  compare:
+    Container ID:  containerd://6ad811bdc45a84c48b4f51d729b2df7ef65edf4dbcd12883226fe83574ab17f6
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --candidates
+      128
+      --label
+      es-ef128-pass3
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:23:09 +0000
+      Finished:     Mon, 16 Nov 2026 02:24:53 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-w85mt (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-w85mt:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-ef256-pass2-wgskm
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:27:07 +0000
+Labels:           batch.kubernetes.io/controller-uid=8a2a5866-9f4b-4bc0-93eb-5cf9fbd10fca
+                  batch.kubernetes.io/job-name=run-es-ef256-pass2
+                  controller-uid=8a2a5866-9f4b-4bc0-93eb-5cf9fbd10fca
+                  job-name=run-es-ef256-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.24
+IPs:
+  IP:           10.121.4.24
+Controlled By:  Job/run-es-ef256-pass2
+Containers:
+  compare:
+    Container ID:  containerd://a4d404733c1ba11ce547ee1497aaa7eb69a46022252796a3b87e3883831a24d4
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --candidates
+      256
+      --label
+      es-ef256-pass2
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:27:08 +0000
+      Finished:     Mon, 16 Nov 2026 02:28:52 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-x8w5s (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-x8w5s:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-ef256-pass3-9llzj
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:29:07 +0000
+Labels:           batch.kubernetes.io/controller-uid=a641362c-1537-416f-a8bc-4ab923b182b9
+                  batch.kubernetes.io/job-name=run-es-ef256-pass3
+                  controller-uid=a641362c-1537-416f-a8bc-4ab923b182b9
+                  job-name=run-es-ef256-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.5
+IPs:
+  IP:           10.121.4.5
+Controlled By:  Job/run-es-ef256-pass3
+Containers:
+  compare:
+    Container ID:  containerd://7ed55f195d1363ad4845637f813062e9c7e77f177e24da338c80573d76ad861b
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --candidates
+      256
+      --label
+      es-ef256-pass3
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:29:08 +0000
+      Finished:     Mon, 16 Nov 2026 02:30:53 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-2hd6m (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-2hd6m:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-ef256-t9wbp
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:25:07 +0000
+Labels:           batch.kubernetes.io/controller-uid=2f98c1ff-6e5d-4af5-becb-9e292de317e2
+                  batch.kubernetes.io/job-name=run-es-ef256
+                  controller-uid=2f98c1ff-6e5d-4af5-becb-9e292de317e2
+                  job-name=run-es-ef256
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.111
+IPs:
+  IP:           10.121.4.111
+Controlled By:  Job/run-es-ef256
+Containers:
+  compare:
+    Container ID:  containerd://fcd4deee8262b8a2d350d32fbc16360d8c5f2e1534f494249a29d59fc8bf5164
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --candidates
+      256
+      --label
+      es-ef256
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:25:08 +0000
+      Finished:     Mon, 16 Nov 2026 02:26:52 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-w7ww5 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-w7ww5:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-ef512-bss5k
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:31:08 +0000
+Labels:           batch.kubernetes.io/controller-uid=0a7ba2e8-1ca5-42d0-8070-008579e13441
+                  batch.kubernetes.io/job-name=run-es-ef512
+                  controller-uid=0a7ba2e8-1ca5-42d0-8070-008579e13441
+                  job-name=run-es-ef512
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.81
+IPs:
+  IP:           10.121.4.81
+Controlled By:  Job/run-es-ef512
+Containers:
+  compare:
+    Container ID:  containerd://b090c787150b03161611572388261f30c329d43f680c7318f9fb120d7656e3fa
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      es-ef512
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:31:09 +0000
+      Finished:     Mon, 16 Nov 2026 02:32:54 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-4q8w6 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-4q8w6:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-ef512-pass2-6bjnt
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:33:09 +0000
+Labels:           batch.kubernetes.io/controller-uid=c8cf96ea-a786-4e0c-b400-b0f22cf5243b
+                  batch.kubernetes.io/job-name=run-es-ef512-pass2
+                  controller-uid=c8cf96ea-a786-4e0c-b400-b0f22cf5243b
+                  job-name=run-es-ef512-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.54
+IPs:
+  IP:           10.121.4.54
+Controlled By:  Job/run-es-ef512-pass2
+Containers:
+  compare:
+    Container ID:  containerd://2a1a650de0e57377eacbf6a2fc711be20654910baae1f7b279e9e61c5db6a651
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      es-ef512-pass2
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:33:10 +0000
+      Finished:     Mon, 16 Nov 2026 02:34:55 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-5bt7w (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-5bt7w:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-ef512-pass3-6mc62
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:35:10 +0000
+Labels:           batch.kubernetes.io/controller-uid=90c7e1d3-04be-43ac-96d0-104b02249118
+                  batch.kubernetes.io/job-name=run-es-ef512-pass3
+                  controller-uid=90c7e1d3-04be-43ac-96d0-104b02249118
+                  job-name=run-es-ef512-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.32
+IPs:
+  IP:           10.121.4.32
+Controlled By:  Job/run-es-ef512-pass3
+Containers:
+  compare:
+    Container ID:  containerd://485bcf8cfb93b8052e8817ae4bf87dc030bdea03b0451c8834690fcc35492e78
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      es-ef512-pass3
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:35:11 +0000
+      Finished:     Mon, 16 Nov 2026 02:36:56 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-2r9gc (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-2r9gc:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-pass2-84vsz
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:07:04 +0000
+Labels:           batch.kubernetes.io/controller-uid=50752982-47b2-4629-9565-85e5b10db5aa
+                  batch.kubernetes.io/job-name=run-es-pass2
+                  controller-uid=50752982-47b2-4629-9565-85e5b10db5aa
+                  job-name=run-es-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.69
+IPs:
+  IP:           10.121.4.69
+Controlled By:  Job/run-es-pass2
+Containers:
+  compare:
+    Container ID:  containerd://afb576bc1a3bb96f686819e521ed1f91bcd7c8982423bdf869eabd71348d899b
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --label
+      es-pass2
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:07:05 +0000
+      Finished:     Mon, 16 Nov 2026 02:12:53 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-2p2vr (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-2p2vr:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-pass3-sbfnc
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:13:07 +0000
+Labels:           batch.kubernetes.io/controller-uid=52cf199c-c07c-49c7-8e00-10f55ae397f4
+                  batch.kubernetes.io/job-name=run-es-pass3
+                  controller-uid=52cf199c-c07c-49c7-8e00-10f55ae397f4
+                  job-name=run-es-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.123
+IPs:
+  IP:           10.121.4.123
+Controlled By:  Job/run-es-pass3
+Containers:
+  compare:
+    Container ID:  containerd://248e73ceb00787ad5fdfb1a05983bbaa043754a8382cb421d7440d0375e2ac4e
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --label
+      es-pass3
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:13:08 +0000
+      Finished:     Mon, 16 Nov 2026 02:18:55 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-86lcf (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-86lcf:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-trial-ng2q6
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:37:12 +0000
+Labels:           batch.kubernetes.io/controller-uid=925bd59f-46bc-4d1d-9bb9-3d48973db97e
+                  batch.kubernetes.io/job-name=run-es-trial
+                  controller-uid=925bd59f-46bc-4d1d-9bb9-3d48973db97e
+                  job-name=run-es-trial
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.116
+IPs:
+  IP:           10.121.4.116
+Controlled By:  Job/run-es-trial
+Containers:
+  compare:
+    Container ID:  containerd://c3bccab343d3440ccce2fae5f00c4fbff80e25c2535241411ee3282a697e1385
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --kinds
+      hybrid (RRF),hybrid (weighted)
+      --paid
+      --label
+      es-trial
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:37:13 +0000
+      Finished:     Mon, 16 Nov 2026 02:38:10 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-lrd2t (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-lrd2t:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-es-z5g4d
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:00:30 +0000
+Labels:           batch.kubernetes.io/controller-uid=29e9846a-f6f5-4d0e-b6d7-930b9c730be3
+                  batch.kubernetes.io/job-name=run-es
+                  controller-uid=29e9846a-f6f5-4d0e-b6d7-930b9c730be3
+                  job-name=run-es
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.47
+IPs:
+  IP:           10.121.4.47
+Controlled By:  Job/run-es
+Containers:
+  compare:
+    Container ID:  containerd://1d860dad7002e84f2578a7399de4438f4127463a8d80b4a8e582fdbb7274d2f1
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:00:31 +0000
+      Finished:     Mon, 16 Nov 2026 02:06:49 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-fmbbs (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-fmbbs:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-ef128-pass2-mkqdv
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:21:25 +0000
+Labels:           batch.kubernetes.io/controller-uid=26959004-7585-48f0-b749-369330f678cf
+                  batch.kubernetes.io/job-name=run-os-ef128-pass2
+                  controller-uid=26959004-7585-48f0-b749-369330f678cf
+                  job-name=run-os-ef128-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.93
+IPs:
+  IP:           10.121.4.93
+Controlled By:  Job/run-os-ef128-pass2
+Containers:
+  compare:
+    Container ID:  containerd://4e92486b6c6528b4c16bacdc657881c8aad2f272cbe112adc6466c91686e9a00
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --candidates
+      128
+      --label
+      os-ef128-pass2
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:21:26 +0000
+      Finished:     Mon, 16 Nov 2026 03:23:39 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-ztf4n (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-ztf4n:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-ef128-pass3-59ltp
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:23:54 +0000
+Labels:           batch.kubernetes.io/controller-uid=38565113-42d7-4b51-b37b-98893cb7065b
+                  batch.kubernetes.io/job-name=run-os-ef128-pass3
+                  controller-uid=38565113-42d7-4b51-b37b-98893cb7065b
+                  job-name=run-os-ef128-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.100
+IPs:
+  IP:           10.121.4.100
+Controlled By:  Job/run-os-ef128-pass3
+Containers:
+  compare:
+    Container ID:  containerd://c1643591db09a0a93e8cd8cb07ac677b6a5973d8557e191668f70c33c16d27f0
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --candidates
+      128
+      --label
+      os-ef128-pass3
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:23:54 +0000
+      Finished:     Mon, 16 Nov 2026 03:26:08 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-sqcdc (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-sqcdc:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-ef128-r5qmk
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:18:55 +0000
+Labels:           batch.kubernetes.io/controller-uid=f6049c81-f319-4ac1-b9a9-1492220b1b62
+                  batch.kubernetes.io/job-name=run-os-ef128
+                  controller-uid=f6049c81-f319-4ac1-b9a9-1492220b1b62
+                  job-name=run-os-ef128
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.93
+IPs:
+  IP:           10.121.4.93
+Controlled By:  Job/run-os-ef128
+Containers:
+  compare:
+    Container ID:  containerd://f7339b035f2a24749b068466dd6f24947454bb96436d1181b2acdb72390020c8
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --candidates
+      128
+      --label
+      os-ef128
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:18:55 +0000
+      Finished:     Mon, 16 Nov 2026 03:21:09 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-9hhmm (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-9hhmm:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-ef256-hv8cg
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:26:23 +0000
+Labels:           batch.kubernetes.io/controller-uid=775fe140-8723-4e41-ba53-c5a0070430e0
+                  batch.kubernetes.io/job-name=run-os-ef256
+                  controller-uid=775fe140-8723-4e41-ba53-c5a0070430e0
+                  job-name=run-os-ef256
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.32
+IPs:
+  IP:           10.121.4.32
+Controlled By:  Job/run-os-ef256
+Containers:
+  compare:
+    Container ID:  containerd://35e2e1655b70d06e5482eec552f136d1ef4b7570e9d762953f33791628142d4d
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --candidates
+      256
+      --label
+      os-ef256
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:26:24 +0000
+      Finished:     Mon, 16 Nov 2026 03:28:40 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-ql7vw (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-ql7vw:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-ef256-pass2-jkm2k
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:28:49 +0000
+Labels:           batch.kubernetes.io/controller-uid=23e46f85-eeb5-47ae-abe3-f8a2688f086b
+                  batch.kubernetes.io/job-name=run-os-ef256-pass2
+                  controller-uid=23e46f85-eeb5-47ae-abe3-f8a2688f086b
+                  job-name=run-os-ef256-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.69
+IPs:
+  IP:           10.121.4.69
+Controlled By:  Job/run-os-ef256-pass2
+Containers:
+  compare:
+    Container ID:  containerd://a268753a488103a1a023dada640a9e958e2047c6612fb52b6e65f9f0729cf435
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --candidates
+      256
+      --label
+      os-ef256-pass2
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:28:50 +0000
+      Finished:     Mon, 16 Nov 2026 03:31:06 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-bgzs9 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-bgzs9:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-ef256-pass3-svm4x
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:31:21 +0000
+Labels:           batch.kubernetes.io/controller-uid=24c00932-c195-4caa-96a6-431a3f4885be
+                  batch.kubernetes.io/job-name=run-os-ef256-pass3
+                  controller-uid=24c00932-c195-4caa-96a6-431a3f4885be
+                  job-name=run-os-ef256-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.117
+IPs:
+  IP:           10.121.4.117
+Controlled By:  Job/run-os-ef256-pass3
+Containers:
+  compare:
+    Container ID:  containerd://fa2f499d85fa064e000933a1b6ea28df1783adbff6b364b2e8eb0b332e2eff6c
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --candidates
+      256
+      --label
+      os-ef256-pass3
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:31:21 +0000
+      Finished:     Mon, 16 Nov 2026 03:33:38 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-76s4d (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-76s4d:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-ef512-ktcgc
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:33:53 +0000
+Labels:           batch.kubernetes.io/controller-uid=65776bb9-b8fb-4f5d-bbaa-18f4ee5fc7a7
+                  batch.kubernetes.io/job-name=run-os-ef512
+                  controller-uid=65776bb9-b8fb-4f5d-bbaa-18f4ee5fc7a7
+                  job-name=run-os-ef512
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.120
+IPs:
+  IP:           10.121.4.120
+Controlled By:  Job/run-os-ef512
+Containers:
+  compare:
+    Container ID:  containerd://3b50c936afa4951cefcefe8ce2b21565fb3c51538c706eee046c3936ef5affdb
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      os-ef512
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:33:54 +0000
+      Finished:     Mon, 16 Nov 2026 03:36:15 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-dlnzb (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-dlnzb:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-ef512-pass2-fjbc9
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:36:30 +0000
+Labels:           batch.kubernetes.io/controller-uid=df8241b4-72d1-497d-bb8e-a5863d76aacc
+                  batch.kubernetes.io/job-name=run-os-ef512-pass2
+                  controller-uid=df8241b4-72d1-497d-bb8e-a5863d76aacc
+                  job-name=run-os-ef512-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.8
+IPs:
+  IP:           10.121.4.8
+Controlled By:  Job/run-os-ef512-pass2
+Containers:
+  compare:
+    Container ID:  containerd://a408c00020907c8aeef13aa74d6fbae710923e129fa3066a4d9ccb7154cf555c
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      os-ef512-pass2
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:36:31 +0000
+      Finished:     Mon, 16 Nov 2026 03:38:52 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-2xctl (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-2xctl:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-ef512-pass3-gz92h
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:39:06 +0000
+Labels:           batch.kubernetes.io/controller-uid=06fb9f99-1f5d-4262-b2e2-167078f79fc6
+                  batch.kubernetes.io/job-name=run-os-ef512-pass3
+                  controller-uid=06fb9f99-1f5d-4262-b2e2-167078f79fc6
+                  job-name=run-os-ef512-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.82
+IPs:
+  IP:           10.121.4.82
+Controlled By:  Job/run-os-ef512-pass3
+Containers:
+  compare:
+    Container ID:  containerd://ec65bb17e3503b8fc87d7d8ec13a0304d7062adb36bcf4a2cd34a9b8af104c92
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      os-ef512-pass3
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:39:07 +0000
+      Finished:     Mon, 16 Nov 2026 03:41:28 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-6sfzp (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-6sfzp:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-pass2-dfnpp
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:05:45 +0000
+Labels:           batch.kubernetes.io/controller-uid=372cce7c-0c08-4568-baa4-70f4dc9cf9aa
+                  batch.kubernetes.io/job-name=run-os-pass2
+                  controller-uid=372cce7c-0c08-4568-baa4-70f4dc9cf9aa
+                  job-name=run-os-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.54
+IPs:
+  IP:           10.121.4.54
+Controlled By:  Job/run-os-pass2
+Containers:
+  compare:
+    Container ID:  containerd://8f20facd37aa82c13fa951637534dbd160b06987f7b02fc5031657735d762d99
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --label
+      os-pass2
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:05:46 +0000
+      Finished:     Mon, 16 Nov 2026 03:12:05 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-4j6zp (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-4j6zp:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-pass3-dmxjk
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:12:20 +0000
+Labels:           batch.kubernetes.io/controller-uid=6626ef5e-1a93-4f51-a1ac-14fe4f733fec
+                  batch.kubernetes.io/job-name=run-os-pass3
+                  controller-uid=6626ef5e-1a93-4f51-a1ac-14fe4f733fec
+                  job-name=run-os-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.44
+IPs:
+  IP:           10.121.4.44
+Controlled By:  Job/run-os-pass3
+Containers:
+  compare:
+    Container ID:  containerd://0caa76ee9c95f27efb6bddde04222c2eb6fc8f2c87ecd44fbae5682b911fd207
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --label
+      os-pass3
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:12:20 +0000
+      Finished:     Mon, 16 Nov 2026 03:18:39 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-jjnnw (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-jjnnw:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-os-ppwgv
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:58:33 +0000
+Labels:           batch.kubernetes.io/controller-uid=ddd3c134-f272-42e0-a3de-8c4e3e8513ab
+                  batch.kubernetes.io/job-name=run-os
+                  controller-uid=ddd3c134-f272-42e0-a3de-8c4e3e8513ab
+                  job-name=run-os
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.60
+IPs:
+  IP:           10.121.4.60
+Controlled By:  Job/run-os
+Containers:
+  compare:
+    Container ID:  containerd://dc22041dad63c0860f13e9272b69880ad99c111fcfc00d9b9e84c2469443d62b
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:58:34 +0000
+      Finished:     Mon, 16 Nov 2026 03:05:30 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-tvw9l (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-tvw9l:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-24s8f
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:08:24 +0000
+Labels:           batch.kubernetes.io/controller-uid=2e2e47f8-c448-4be4-a233-d1a83c5a4d98
+                  batch.kubernetes.io/job-name=run-solr
+                  controller-uid=2e2e47f8-c448-4be4-a233-d1a83c5a4d98
+                  job-name=run-solr
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.26
+IPs:
+  IP:           10.121.4.26
+Controlled By:  Job/run-solr
+Containers:
+  compare:
+    Container ID:  containerd://52a5e853cd6467931155b1a237ce176e14a23c1e95fa627d6c076e9752d17b44
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:08:25 +0000
+      Finished:     Mon, 16 Nov 2026 04:15:21 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-c684m (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-c684m:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-ef128-hbwgv
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:28:58 +0000
+Labels:           batch.kubernetes.io/controller-uid=84fcafd0-3798-4568-8378-cb70d4cf7f48
+                  batch.kubernetes.io/job-name=run-solr-ef128
+                  controller-uid=84fcafd0-3798-4568-8378-cb70d4cf7f48
+                  job-name=run-solr-ef128
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.49
+IPs:
+  IP:           10.121.4.49
+Controlled By:  Job/run-solr-ef128
+Containers:
+  compare:
+    Container ID:  containerd://528377e4d30a7da7db7ca5fee2abbfaae6d7360cc8d319acd2f3275affb1238c
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --candidates
+      128
+      --label
+      solr-ef128
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:28:59 +0000
+      Finished:     Mon, 16 Nov 2026 04:31:13 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-88v49 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-88v49:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-ef128-pass2-w9kj5
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:31:27 +0000
+Labels:           batch.kubernetes.io/controller-uid=9fb2ce9a-d660-4ae3-b18a-7910de868682
+                  batch.kubernetes.io/job-name=run-solr-ef128-pass2
+                  controller-uid=9fb2ce9a-d660-4ae3-b18a-7910de868682
+                  job-name=run-solr-ef128-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.32
+IPs:
+  IP:           10.121.4.32
+Controlled By:  Job/run-solr-ef128-pass2
+Containers:
+  compare:
+    Container ID:  containerd://0373124942d92cc6f7af322b395e4ddd8275de640ebdf3e40846a4a59e56f9b6
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --candidates
+      128
+      --label
+      solr-ef128-pass2
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:31:28 +0000
+      Finished:     Mon, 16 Nov 2026 04:33:54 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-pwltx (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-pwltx:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-ef128-pass3-hhg4x
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:34:08 +0000
+Labels:           batch.kubernetes.io/controller-uid=03eada79-4c1a-418f-9ed2-b58e3e7046b9
+                  batch.kubernetes.io/job-name=run-solr-ef128-pass3
+                  controller-uid=03eada79-4c1a-418f-9ed2-b58e3e7046b9
+                  job-name=run-solr-ef128-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.35
+IPs:
+  IP:           10.121.4.35
+Controlled By:  Job/run-solr-ef128-pass3
+Containers:
+  compare:
+    Container ID:  containerd://8701bc92d79942555f2ccbec4249696053e609aab77d1965a5adb71797f335a6
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --candidates
+      128
+      --label
+      solr-ef128-pass3
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:34:08 +0000
+      Finished:     Mon, 16 Nov 2026 04:36:22 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-8m7pr (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-8m7pr:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-ef256-7666l
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:36:37 +0000
+Labels:           batch.kubernetes.io/controller-uid=7dd6870d-4ff8-4431-a02b-102e3b44f76c
+                  batch.kubernetes.io/job-name=run-solr-ef256
+                  controller-uid=7dd6870d-4ff8-4431-a02b-102e3b44f76c
+                  job-name=run-solr-ef256
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.22
+IPs:
+  IP:           10.121.4.22
+Controlled By:  Job/run-solr-ef256
+Containers:
+  compare:
+    Container ID:  containerd://f5dc74dd64eabe4b0d0be511a5d406bb95235e6d6df6d49cc35f1324e605129a
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --candidates
+      256
+      --label
+      solr-ef256
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:36:37 +0000
+      Finished:     Mon, 16 Nov 2026 04:38:53 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-8ff57 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-8ff57:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-ef256-pass2-qjvml
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:39:07 +0000
+Labels:           batch.kubernetes.io/controller-uid=39c9dcba-f970-427c-ac21-0b2280929068
+                  batch.kubernetes.io/job-name=run-solr-ef256-pass2
+                  controller-uid=39c9dcba-f970-427c-ac21-0b2280929068
+                  job-name=run-solr-ef256-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.67
+IPs:
+  IP:           10.121.4.67
+Controlled By:  Job/run-solr-ef256-pass2
+Containers:
+  compare:
+    Container ID:  containerd://92380c8b83bbefd992b5a690094a8800b7f9969268772333c868ff8054b2b374
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --candidates
+      256
+      --label
+      solr-ef256-pass2
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:39:08 +0000
+      Finished:     Mon, 16 Nov 2026 04:41:27 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-pmngk (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-pmngk:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-ef256-pass3-hdjqf
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:41:41 +0000
+Labels:           batch.kubernetes.io/controller-uid=ff3f6397-047d-42ba-983c-2ac829326a24
+                  batch.kubernetes.io/job-name=run-solr-ef256-pass3
+                  controller-uid=ff3f6397-047d-42ba-983c-2ac829326a24
+                  job-name=run-solr-ef256-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.93
+IPs:
+  IP:           10.121.4.93
+Controlled By:  Job/run-solr-ef256-pass3
+Containers:
+  compare:
+    Container ID:  containerd://ec7a3f70d7550828c11c3e6757f1962039607a5a8819454885e6b57edaa3c559
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --candidates
+      256
+      --label
+      solr-ef256-pass3
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:41:42 +0000
+      Finished:     Mon, 16 Nov 2026 04:44:07 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-jpz2x (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-jpz2x:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-ef512-4kjgd
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:44:21 +0000
+Labels:           batch.kubernetes.io/controller-uid=f7d5f633-a820-43f8-a509-b02c65cb4b0f
+                  batch.kubernetes.io/job-name=run-solr-ef512
+                  controller-uid=f7d5f633-a820-43f8-a509-b02c65cb4b0f
+                  job-name=run-solr-ef512
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.93
+IPs:
+  IP:           10.121.4.93
+Controlled By:  Job/run-solr-ef512
+Containers:
+  compare:
+    Container ID:  containerd://d79216539703db40f292f0f5b3f4e60dae1e7f27f41a55d54eba9242ba98b4b4
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      solr-ef512
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:44:22 +0000
+      Finished:     Mon, 16 Nov 2026 04:46:44 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-rgpfb (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-rgpfb:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-ef512-pass2-wvs4q
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:46:59 +0000
+Labels:           batch.kubernetes.io/controller-uid=b6c921f5-9bdb-4540-b24b-438bc67de80a
+                  batch.kubernetes.io/job-name=run-solr-ef512-pass2
+                  controller-uid=b6c921f5-9bdb-4540-b24b-438bc67de80a
+                  job-name=run-solr-ef512-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.62
+IPs:
+  IP:           10.121.4.62
+Controlled By:  Job/run-solr-ef512-pass2
+Containers:
+  compare:
+    Container ID:  containerd://7013a148db55eb842f3ee80ab2d029d9b0591f53631474743dce813ff439f7d3
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      solr-ef512-pass2
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:46:59 +0000
+      Finished:     Mon, 16 Nov 2026 04:49:19 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-95tjm (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-95tjm:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-ef512-pass3-rffm9
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:49:33 +0000
+Labels:           batch.kubernetes.io/controller-uid=9034c026-2958-4a84-b06f-a4b597c50ebb
+                  batch.kubernetes.io/job-name=run-solr-ef512-pass3
+                  controller-uid=9034c026-2958-4a84-b06f-a4b597c50ebb
+                  job-name=run-solr-ef512-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.18
+IPs:
+  IP:           10.121.4.18
+Controlled By:  Job/run-solr-ef512-pass3
+Containers:
+  compare:
+    Container ID:  containerd://1ce13ad5f981b5874d4622ccce7931762ad07db0e70eff5d7374c48b154b2c70
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      solr-ef512-pass3
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:49:34 +0000
+      Finished:     Mon, 16 Nov 2026 04:51:54 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-zhvkz (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-zhvkz:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-pass2-gfbb5
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:15:35 +0000
+Labels:           batch.kubernetes.io/controller-uid=8f7f683d-c4e7-4602-afbc-d175e613eda8
+                  batch.kubernetes.io/job-name=run-solr-pass2
+                  controller-uid=8f7f683d-c4e7-4602-afbc-d175e613eda8
+                  job-name=run-solr-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.55
+IPs:
+  IP:           10.121.4.55
+Controlled By:  Job/run-solr-pass2
+Containers:
+  compare:
+    Container ID:  containerd://c9d032ec43401dd461a0d8fd34210af3c8daf27d0ad9f183589935243fcf6406
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --label
+      solr-pass2
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:15:36 +0000
+      Finished:     Mon, 16 Nov 2026 04:22:05 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-rdx9x (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-rdx9x:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-solr-pass3-qhpsl
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:22:19 +0000
+Labels:           batch.kubernetes.io/controller-uid=39710995-c4ec-4a9b-bcb2-6fbde0d1d900
+                  batch.kubernetes.io/job-name=run-solr-pass3
+                  controller-uid=39710995-c4ec-4a9b-bcb2-6fbde0d1d900
+                  job-name=run-solr-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.106
+IPs:
+  IP:           10.121.4.106
+Controlled By:  Job/run-solr-pass3
+Containers:
+  compare:
+    Container ID:  containerd://83e3d301d0a96c5cde938879eb42d32977d9a2c1f40e5ee87f8ccd724fba52f0
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --label
+      solr-pass3
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:22:20 +0000
+      Finished:     Mon, 16 Nov 2026 04:28:44 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-zl6b9 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-zl6b9:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-strata-ef256-pass2-742fd
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 01:37:19 +0000
+Labels:           batch.kubernetes.io/controller-uid=bd88c074-36d0-41c8-ae61-652adb021baa
+                  batch.kubernetes.io/job-name=run-strata-ef256-pass2
+                  controller-uid=bd88c074-36d0-41c8-ae61-652adb021baa
+                  job-name=run-strata-ef256-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.23
+IPs:
+  IP:           10.121.4.23
+Controlled By:  Job/run-strata-ef256-pass2
+Containers:
+  compare:
+    Container ID:  containerd://c8d64f99d40210f95d6b5676cfa64883a7ae5f12c36ccafc0fbb12f0ec2ff1f0
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      strata
+      --url
+      http://strata-0.strata:7710,http://strata-1.strata:7710
+      --out
+      /data/compare
+      --candidates
+      256
+      --label
+      strata-ef256-pass2
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 01:37:19 +0000
+      Finished:     Mon, 16 Nov 2026 01:39:26 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-klpkt (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-klpkt:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-strata-ef256-pass3-2k45j
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 01:39:40 +0000
+Labels:           batch.kubernetes.io/controller-uid=df7b64c2-0c16-424e-a724-80a2cf9318e3
+                  batch.kubernetes.io/job-name=run-strata-ef256-pass3
+                  controller-uid=df7b64c2-0c16-424e-a724-80a2cf9318e3
+                  job-name=run-strata-ef256-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.40
+IPs:
+  IP:           10.121.4.40
+Controlled By:  Job/run-strata-ef256-pass3
+Containers:
+  compare:
+    Container ID:  containerd://69c531d708f40bf0524f5fc9ed0af4f6529d25bcdf445f98f5d2e675193e5748
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      strata
+      --url
+      http://strata-0.strata:7710,http://strata-1.strata:7710
+      --out
+      /data/compare
+      --candidates
+      256
+      --label
+      strata-ef256-pass3
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 01:39:41 +0000
+      Finished:     Mon, 16 Nov 2026 01:41:48 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-7r7kg (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-7r7kg:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-strata-ef512-h89mz
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 01:42:02 +0000
+Labels:           batch.kubernetes.io/controller-uid=70f4e9f5-d785-446a-83ce-19f60b191eff
+                  batch.kubernetes.io/job-name=run-strata-ef512
+                  controller-uid=70f4e9f5-d785-446a-83ce-19f60b191eff
+                  job-name=run-strata-ef512
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.50
+IPs:
+  IP:           10.121.4.50
+Controlled By:  Job/run-strata-ef512
+Containers:
+  compare:
+    Container ID:  containerd://161ab2d4c2a93b4ec7ac5b362bf5056d4fff7122573540eaa791fcde9a92549b
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      strata
+      --url
+      http://strata-0.strata:7710,http://strata-1.strata:7710
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      strata-ef512
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 01:42:03 +0000
+      Finished:     Mon, 16 Nov 2026 01:44:11 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-6d2l6 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-6d2l6:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-strata-ef512-pass2-vgsms
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 01:44:26 +0000
+Labels:           batch.kubernetes.io/controller-uid=019d385b-702b-43e3-8505-80a46d4eaafd
+                  batch.kubernetes.io/job-name=run-strata-ef512-pass2
+                  controller-uid=019d385b-702b-43e3-8505-80a46d4eaafd
+                  job-name=run-strata-ef512-pass2
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.8
+IPs:
+  IP:           10.121.4.8
+Controlled By:  Job/run-strata-ef512-pass2
+Containers:
+  compare:
+    Container ID:  containerd://132c2a05f8ad07afa42f0ddbbe1c8d038bfa08e3884b3589534628cdad0fc574
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      strata
+      --url
+      http://strata-0.strata:7710,http://strata-1.strata:7710
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      strata-ef512-pass2
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 01:44:27 +0000
+      Finished:     Mon, 16 Nov 2026 01:46:34 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-ccxw2 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-ccxw2:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             run-strata-ef512-pass3-zpphh
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 01:46:49 +0000
+Labels:           batch.kubernetes.io/controller-uid=fb9a5fe2-6db5-4ed4-b5d4-7659c63ae594
+                  batch.kubernetes.io/job-name=run-strata-ef512-pass3
+                  controller-uid=fb9a5fe2-6db5-4ed4-b5d4-7659c63ae594
+                  job-name=run-strata-ef512-pass3
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.120
+IPs:
+  IP:           10.121.4.120
+Controlled By:  Job/run-strata-ef512-pass3
+Containers:
+  compare:
+    Container ID:  containerd://3bedefaa640e8ef7cb96baf1f4216b19d9e95936ae03343a8a1720bcb92e4b1b
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      strata
+      --url
+      http://strata-0.strata:7710,http://strata-1.strata:7710
+      --out
+      /data/compare
+      --candidates
+      512
+      --label
+      strata-ef512-pass3
+      --kinds
+      vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 01:46:50 +0000
+      Finished:     Mon, 16 Nov 2026 01:48:58 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-xplck (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-xplck:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             stream-es-r2bh7
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:40:19 +0000
+Labels:           batch.kubernetes.io/controller-uid=18eb1248-4125-4593-bd08-407bce2504a9
+                  batch.kubernetes.io/job-name=stream-es
+                  controller-uid=18eb1248-4125-4593-bd08-407bce2504a9
+                  job-name=stream-es
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.55
+IPs:
+  IP:           10.121.4.55
+Controlled By:  Job/stream-es
+Containers:
+  compare:
+    Container ID:  containerd://9ca7aacf589fa3e051771cff0be3cb8bc39cad38fb65b29e1fb29934c92e3c45
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      stream
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --brokers
+      redpanda.redpanda:9092
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:40:20 +0000
+      Finished:     Mon, 16 Nov 2026 02:42:36 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-6z9r9 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-6z9r9:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             stream-os-tc2rh
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:43:31 +0000
+Labels:           batch.kubernetes.io/controller-uid=7cfdb41a-b3f8-493c-bc0f-84cdc4a1c595
+                  batch.kubernetes.io/job-name=stream-os
+                  controller-uid=7cfdb41a-b3f8-493c-bc0f-84cdc4a1c595
+                  job-name=stream-os
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.83
+IPs:
+  IP:           10.121.4.83
+Controlled By:  Job/stream-os
+Containers:
+  compare:
+    Container ID:  containerd://38886b0ed216693ff6735ed5a624bb4b2a95770cd1554f4eaecc0b761ce5f11a
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      stream
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --brokers
+      redpanda.redpanda:9092
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:43:32 +0000
+      Finished:     Mon, 16 Nov 2026 03:45:51 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-4627q (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-4627q:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             stream-solr-bzkx5
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:54:06 +0000
+Labels:           batch.kubernetes.io/controller-uid=a67c154f-72c1-4d09-bee4-1a24463cf5c1
+                  batch.kubernetes.io/job-name=stream-solr
+                  controller-uid=a67c154f-72c1-4d09-bee4-1a24463cf5c1
+                  job-name=stream-solr
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.41
+IPs:
+  IP:           10.121.4.41
+Controlled By:  Job/stream-solr
+Containers:
+  compare:
+    Container ID:  containerd://7feb6d7aaf167fef7dc538b0f16da1caf09f4e5efad01987672a8c4e9ecfdcf9
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      stream
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --brokers
+      redpanda.redpanda:9092
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:54:07 +0000
+      Finished:     Mon, 16 Nov 2026 04:56:26 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-6tg48 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-6tg48:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             vespa-0
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:57:10 +0000
+Labels:           app=vespa
+                  engine=vespa
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.121.4.63
+IPs:
+  IP:  10.121.4.63
+Containers:
+  vespa:
+    Container ID:  containerd://825645f0f5b231b13cfbe04a72c56375c0c836c7ab6a4b315fa0af7e43b35115
+    Image:         vespaengine/vespa:8.778.45
+    Image ID:      docker.io/vespaengine/vespa@sha256:ed696aa1c9fc24fa50aa8252c55a8cbc162e4c066bc0ff2acba0f1b98b89c57b
+    Ports:         8080/TCP (http), 19071/TCP (config)
+    Host Ports:    0/TCP (http), 0/TCP (config)
+    Args:
+      configserver,services
+    State:          Running
+      Started:      Mon, 16 Nov 2026 04:57:41 +0000
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     1
+      memory:  6Gi
+    Requests:
+      cpu:     1
+      memory:  6Gi
+    Environment:
+      VESPA_CONFIGSERVERS:             vespa-0.vespa.sharded-1m.svc.cluster.local
+      VESPA_IGNORE_NOT_ENOUGH_MEMORY:  true
+      VESPA_CONFIGSERVER_JVMARGS:      -Xms128m -Xmx384m
+      VESPA_CONFIGPROXY_JVMARGS:       -Xms32m -Xmx64m
+    Mounts:
+      /opt/vespa/var from var (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-hgtzx (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  var:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-hgtzx:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+
+
+Name:             vespa-1
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-d-a1-3a2sub/10.120.0.8
+Start Time:       Mon, 16 Nov 2026 04:57:11 +0000
+Labels:           app=vespa
+                  engine=vespa
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.121.3.152
+IPs:
+  IP:  10.121.3.152
+Containers:
+  vespa:
+    Container ID:  containerd://4a67e0f213463c6582416febff74e5e75436707e4800faabdf674f2b3d4e7282
+    Image:         vespaengine/vespa:8.778.45
+    Image ID:      docker.io/vespaengine/vespa@sha256:ed696aa1c9fc24fa50aa8252c55a8cbc162e4c066bc0ff2acba0f1b98b89c57b
+    Ports:         8080/TCP (http), 19071/TCP (config)
+    Host Ports:    0/TCP (http), 0/TCP (config)
+    Args:
+      services
+    State:          Running
+      Started:      Mon, 16 Nov 2026 04:57:41 +0000
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     2900m
+      memory:  23Gi
+    Requests:
+      cpu:     2900m
+      memory:  23Gi
+    Environment:
+      VESPA_CONFIGSERVERS:             vespa-0.vespa.sharded-1m.svc.cluster.local
+      VESPA_IGNORE_NOT_ENOUGH_MEMORY:  true
+      VESPA_CONFIGSERVER_JVMARGS:      -Xms128m -Xmx384m
+      VESPA_CONFIGPROXY_JVMARGS:       -Xms32m -Xmx64m
+    Mounts:
+      /opt/vespa/var from var (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-7f9dc (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  var:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-7f9dc:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+
+
+Name:             vespa-2
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-d-a1-3a2sur/10.120.0.14
+Start Time:       Mon, 16 Nov 2026 04:57:12 +0000
+Labels:           app=vespa
+                  engine=vespa
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.121.1.149
+IPs:
+  IP:  10.121.1.149
+Containers:
+  vespa:
+    Container ID:  containerd://4180bbdb8f092b3fdc27293ff0b2577f43cfafa912c0b34b929e243893c89e06
+    Image:         vespaengine/vespa:8.778.45
+    Image ID:      docker.io/vespaengine/vespa@sha256:ed696aa1c9fc24fa50aa8252c55a8cbc162e4c066bc0ff2acba0f1b98b89c57b
+    Ports:         8080/TCP (http), 19071/TCP (config)
+    Host Ports:    0/TCP (http), 0/TCP (config)
+    Args:
+      services
+    State:          Running
+      Started:      Mon, 16 Nov 2026 04:57:34 +0000
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     2900m
+      memory:  23Gi
+    Requests:
+      cpu:     2900m
+      memory:  23Gi
+    Environment:
+      VESPA_CONFIGSERVERS:             vespa-0.vespa.sharded-1m.svc.cluster.local
+      VESPA_IGNORE_NOT_ENOUGH_MEMORY:  true
+      VESPA_CONFIGSERVER_JVMARGS:      -Xms128m -Xmx384m
+      VESPA_CONFIGPROXY_JVMARGS:       -Xms32m -Xmx64m
+    Mounts:
+      /opt/vespa/var from var (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-47phr (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  var:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-47phr:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+
+
+Name:             writes-es-lzcfp
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 02:38:24 +0000
+Labels:           batch.kubernetes.io/controller-uid=02848665-3ee3-4ee7-a611-2d76887387e2
+                  batch.kubernetes.io/job-name=writes-es
+                  controller-uid=02848665-3ee3-4ee7-a611-2d76887387e2
+                  job-name=writes-es
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.78
+IPs:
+  IP:           10.121.4.78
+Controlled By:  Job/writes-es
+Containers:
+  compare:
+    Container ID:  containerd://52d0c5ec15f8f4cadb40f05210506c7a0cbf1a0fdb6a89d20e991f1f00006301
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      writes
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 02:38:25 +0000
+      Finished:     Mon, 16 Nov 2026 02:39:53 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-m9txg (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-m9txg:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             writes-os-bz4hk
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 03:41:43 +0000
+Labels:           batch.kubernetes.io/controller-uid=c39075fc-4cbc-46a7-b093-a22be0ef4e3e
+                  batch.kubernetes.io/job-name=writes-os
+                  controller-uid=c39075fc-4cbc-46a7-b093-a22be0ef4e3e
+                  job-name=writes-os
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.23
+IPs:
+  IP:           10.121.4.23
+Controlled By:  Job/writes-os
+Containers:
+  compare:
+    Container ID:  containerd://458a4d52124f6a0fcf4ab412a8793a8ea5767cf391d0c66e4b3a2153eae3b899
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      writes
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 03:41:44 +0000
+      Finished:     Mon, 16 Nov 2026 03:43:16 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-fmg4d (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-fmg4d:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             writes-solr-bj5sg
+Namespace:        sharded-1m
+Priority:         0
+Service Account:  default
+Node:             sharded-1m-c-a1-3a2sua/10.120.0.13
+Start Time:       Mon, 16 Nov 2026 04:52:09 +0000
+Labels:           batch.kubernetes.io/controller-uid=707fa419-7303-4d7d-b0b6-5eff4078c64d
+                  batch.kubernetes.io/job-name=writes-solr
+                  controller-uid=707fa419-7303-4d7d-b0b6-5eff4078c64d
+                  job-name=writes-solr
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.121.4.56
+IPs:
+  IP:           10.121.4.56
+Controlled By:  Job/writes-solr
+Containers:
+  compare:
+    Container ID:  containerd://07f78bb790de251a81a55aa5627542c05bfa4d90492bad4bc9e27016802277b3
+    Image:         ghcr.io/chloetech-ai/chloedb-server:324199900231276e6e34e3600710784e61361d1b-bench
+    Image ID:      ghcr.io/chloetech-ai/chloedb-server@sha256:eda664ba236646255972fcfab00315fae317f74a80a380408a33e0f3e2d9f015
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      writes
+      --engine
+      solr
+      --url
+      http://solr-0.solr:8983,http://solr-1.solr:8983
+      --out
+      /data/compare
+      --collection
+      msmarco-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 16 Nov 2026 04:52:10 +0000
+      Finished:     Mon, 16 Nov 2026 04:53:51 +0000
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:                   /beir
+      STRATA_TOKEN:                  <set to the key 'token' in secret 'strata-token'>  Optional: true
+      CHLOEDB_COMPARE_METRICS_URLS:  http://strata-0.strata:7700,http://strata-1.strata:7700
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-gnkcd (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-gnkcd:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
