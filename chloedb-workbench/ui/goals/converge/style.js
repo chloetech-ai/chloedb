@@ -39,6 +39,9 @@ const CSS = `
 .cv-ptitle .car { font-size: var(--fs-sm); color: var(--muted); }
 .cv-psel { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 44px; opacity: 0; cursor: pointer; font-size: 16px; }
 .cv-ptitle:focus-within .cv-pname { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+/* A phone: the title takes its own line, so the name is not cut and the buttons do not overlap it. */
+@media (max-width: 480px) { .cv-top { flex-wrap: wrap; } .cv-ptitle { flex: 1 1 100%; } .cv-ptitle .cv-pname { white-space: normal; overflow-wrap: anywhere; } }
+.cv-ptitle:has(.cv-psel:focus-visible) .cv-pname { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .cv-auto { display: flex; align-items: center; gap: 8px; min-height: 32px; margin: -8px 0 var(--s-4); font-size: var(--fs-sm); color: var(--text-2); text-decoration: none; }
 .cv-auto .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .cv-auto .dot.on { background: var(--good); }

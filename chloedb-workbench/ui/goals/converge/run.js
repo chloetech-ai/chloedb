@@ -21,7 +21,13 @@ export function openRun(C, id) {
 
   const paint = async () => {
     let d;
-    try { d = await C.api(`/api/converge/runs/${enc(id)}`); } catch (err) { put(sh.body, h("p", { class: "cv-empty" }, err.message || String(err))); clearInterval(timer); return; }
+    try { d = await C.api(`/api/converge/runs/${enc(id)}`); } catch (err) {
+      clearInterval(timer);
+      if (tl) return; // A run already shown keeps what it showed.
+      sh.setHead(h("h2", {}, err.status === 404 ? "No such run" : "The run did not open"));
+      put(sh.body, h("p", { class: "cv-empty" }, err.status === 404 ? "This run does not exist (it may be from another project). Close this and pick one from Personas." : `It did not load: ${err.message || err}`));
+      return;
+    }
     if (!sh.sheet.isConnected) { clearInterval(timer); return; }
     const r = d.run || {}, pe = d.persona || {};
     const gen = r.purpose === "generate" || (!d.persona && !r.persona);

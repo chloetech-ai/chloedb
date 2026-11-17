@@ -427,7 +427,9 @@ export async function openSheet(C, id) {
     }
     const files = c && c.x && Array.isArray(c.x.files) ? c.x.files : null;
     if (!files) return null;
-    const num = (o, ...ks) => { for (const q of ks) if (Number.isFinite(Number(o[q]))) return Number(o[q]); return 0; };
+    // Workbench's diff gives each file's hunks: its lines are counted (+ added, - removed).
+    const lines = (o, k) => (Array.isArray(o.hunks) ? o.hunks : []).reduce((a, hk) => a + (Array.isArray(hk.lines) ? hk.lines.filter((l) => l && l.kind === k).length : 0), 0);
+    const num = (o, ...ks) => { for (const q of ks) if (o[q] != null && Number.isFinite(Number(o[q]))) return Number(o[q]); return lines(o, ks[0] === "added" ? "+" : "-"); };
     const add = files.reduce((a, o) => a + num(o, "added", "adds", "insertions", "plus"), 0);
     const del = files.reduce((a, o) => a + num(o, "removed", "deleted", "dels", "deletions", "minus"), 0);
     return fold("The change", `${files.length} file${files.length === 1 ? "" : "s"} · +${add} −${del}`,

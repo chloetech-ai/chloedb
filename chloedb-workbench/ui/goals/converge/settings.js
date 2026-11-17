@@ -1,15 +1,25 @@
 // Autopilot settings (under "⋯"): its limits, cadence and checks, what fix
 // agents may do and what runs on its own. Save sits in a sticky bar.
-import { h } from "/goals/converge/util.js";
+import { h, toast } from "/goals/converge/util.js";
 import { stepHead } from "/goals/converge/rows.js";
 
 export function settingsScreen(C) {
   const d = C.S.d;
-    const st = { ...d.settings };
+    // Your unsaved edits outlive a redraw and a failed Save.
+    const st = C.S.settingsDraft && C.S.settingsDraft.repo === d.repo ? C.S.settingsDraft.st : { ...d.settings };
+    C.S.settingsDraft = { repo: d.repo, st };
+    const bad = C.S.settingsBad = C.S.settingsBad || new Map();
     const field = (k, l, hint, type = "number") => {
-      const inp = h("input", { type, id: `cv-s-${k}`, value: st[k] == null ? "" : String(st[k]), step: type === "number" ? "any" : null });
-      inp.addEventListener("change", () => { st[k] = type === "number" ? Number(inp.value) : (inp.value || null); });
-      return h("div", { class: "cv-f" }, h("label", { for: `cv-s-${k}` }, l), inp, h("span", { class: "hint" }, hint));
+      const inp = h("input", { type, id: `cv-s-${k}`, value: bad.has(k) ? bad.get(k) : st[k] == null ? "" : String(st[k]), step: type === "number" ? "any" : null, inputmode: type === "number" ? "decimal" : null });
+      const err = h("span", { class: "hint", style: { color: "var(--crit-ink)" }, hidden: !bad.has(k) }, "A number, 0 or more");
+      inp.addEventListener("change", () => {
+        if (type !== "number") { st[k] = inp.value || null; return; }
+        const raw = inp.value.trim(), n = Number(raw);
+        // Empty, Infinity or text is never sent (it would save as 0).
+        if (!raw || !Number.isFinite(n) || n < 0) { bad.set(k, inp.value); err.hidden = false; inp.setAttribute("aria-invalid", "true"); return; }
+        bad.delete(k); err.hidden = true; inp.removeAttribute("aria-invalid"); st[k] = n;
+      });
+      return h("div", { class: "cv-f" }, h("label", { for: `cv-s-${k}` }, l), inp, err, h("span", { class: "hint" }, hint));
     };
     const list = (k, l, hint) => {
       const ta = h("textarea", { class: "cv-ta", id: `cv-s-${k}`, spellcheck: "false", style: { minHeight: "140px" } });
@@ -52,9 +62,17 @@ export function settingsScreen(C) {
   return h("div", {},
     stepHead(C, "Autopilot", null, "What moves by itself, and the limits it keeps. Merges and one-way doors always wait for you."),
     h("div", { class: "cv-bar", style: { marginBottom: "16px" } },
-      h("button", { class: "cv-btn", type: "button", onclick: () => C.act(() => C.api("/api/converge/settings", { method: "PUT", body: { repo: d.repo, enabled: !on } }), on ? "Autopilot paused: running steps finish" : "Autopilot on") }, on ? "Pause the autopilot" : "Turn the autopilot on"),
+      h("button", { class: "cv-btn", type: "button", onclick: () => C.act(() => { if (C.S.settingsDraft) C.S.settingsDraft.st.enabled = !on; return C.api("/api/converge/settings", { method: "PUT", body: { repo: d.repo, enabled: !on } }); }, on ? "Autopilot paused: running steps finish" : "Autopilot on") }, on ? "Pause the autopilot" : "Turn the autopilot on"),
       h("button", { class: "cv-btn", type: "button", onclick: () => C.act(() => C.api("/api/converge/tick", { method: "POST", body: { repo: d.repo } }), "Tick started: what can move now, moves") }, "Run a tick now")),
     panels,
     h("div", { class: "cv-bulk" }, h("span", { class: "n" }, "Changes apply from the next tick."),
-      h("button", { class: "cv-btn pri", type: "button", onclick: () => C.act(() => C.api("/api/converge/settings", { method: "PUT", body: { repo: d.repo, settings: st } }), "Settings saved") }, "Save")));
+      h("button", { class: "cv-btn pri", type: "button", onclick: async () => {
+        if (bad.size) { toast(`Fix ${[...bad.keys()].map((k) => k.replace(/_/g, " ")).join(", ")} first: a number, 0 or more`); return; }
+        try {
+          await C.api("/api/converge/settings", { method: "PUT", body: { repo: d.repo, settings: st } });
+          C.S.settingsDraft = null;
+          toast("Settings saved");
+        } catch (err) { toast(`Not saved: ${err.message || err}. Your edits are kept.`); return; }
+        C.S.sig = ""; await C.load();
+      } }, "Save")));
 }

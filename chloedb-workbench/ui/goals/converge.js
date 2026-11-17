@@ -208,7 +208,18 @@ export function mount(root, ctx) {
         return h("a", { class: "cv-pj", href: `#/converge?project=${enc(p.project)}` }, h("span", { class: "n" }, p.project), h("span", { class: "p" }, p.path),
           m ? h("span", { class: "cv-meta" }, `${m.open || 0} open`) : null);
       }), h("a", { class: "cv-pj add", href: "#/p" }, h("span", { class: "n" }, "+ Open a project"), h("span", { class: "p" }, "A git checkout on this machine"))));
-    if (!ps.length && ctx.refreshProjects) ctx.refreshProjects().then(() => { if (S.alive && projects().length) load(); });
+    if (!ps.length && ctx.refreshProjects) ctx.refreshProjects().then(() => { if (S.alive && projects().length) load(); }, () => {});
+    // No project may only mean the server refused this page's token: say that, not "no project".
+    if (!ps.length || unknown) {
+      api("/api/needs").then(() => {}, (err) => {
+        if (!S.alive || !(err && (err.status === 401 || err.status === 403)) || repo()) return;
+        if (ctx.crumbs) ctx.crumbs([{ label: "Converge", href: "#/converge" }]);
+        put(host, h("div", { class: "cv-none" },
+          h("h1", {}, "Not signed in"),
+          h("p", {}, `Workbench refused this page's access token (${err.status}), so it cannot list your projects${proj() ? ` or open “${proj()}”` : ""}. Open Workbench again from the address \`chloedb-workbench serve\` printed (it carries the token), then come back.`),
+          h("button", { class: "cv-btn", type: "button", onclick: () => location.reload() }, "Try again")));
+      });
+    }
   }
 
   function draw() {
