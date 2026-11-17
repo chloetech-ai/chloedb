@@ -7066,9 +7066,12 @@ case "$*" in
   "api -X POST repos/acme/proj/pulls "*) echo '{"html_url":"https://github.com/acme/proj/pull/7","number":7}';;
   "api repos/acme/proj/pulls/7")
     if [ -f "$D/merged" ]; then echo '{"merged":true,"state":"closed","merged_by":{"login":"roberto"},"head":{"sha":"abc123"}}'
-    else echo '{"merged":false,"state":"open","head":{"sha":"abc123"}}'; fi;;
+    elif [ -f "$D/conflict" ]; then echo '{"merged":false,"state":"open","mergeable":false,"mergeable_state":"dirty","base":{"ref":"main"},"head":{"sha":"abc123"}}'
+    else echo '{"merged":false,"state":"open","mergeable":true,"mergeable_state":"clean","head":{"sha":"abc123"}}'; fi;;
   "api repos/acme/proj/commits/abc123/check-runs"*) echo '{"check_runs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"CI result","status":"completed","conclusion":"success"}]}';;
-  "api -X PUT repos/acme/proj/pulls/7/merge "*) touch "$D/merged"; echo '{"merged":true,"sha":"def456"}';;
+  "api -X PUT repos/acme/proj/pulls/7/merge "*)
+    if [ -f "$D/conflict405" ]; then echo '{"message":"Pull Request has merge conflicts","status":"405"}'; echo 'gh: Pull Request has merge conflicts (HTTP 405)' >&2; exit 1; fi
+    touch "$D/merged"; echo '{"merged":true,"sha":"def456"}';;
   *) echo "unexpected gh $*" >&2; exit 1;;
 esac
 "#;
@@ -7290,11 +7293,78 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     // The branch was pushed to origin.
     assert!(git(&origin, &["branch", "--list", "wb/cv-*"]).contains("wb/cv-"), "the branch was not pushed");
 
+    // Sending it back needs a reason: it is all the fix agent gets.
+    let (st, e) = s.post(&format!("/api/converge/findings/{fid}/back"), json!({ "text": "  " }));
+    assert_eq!(st, 400, "{e}");
+    assert_eq!(s.post(&format!("/api/converge/findings/{fid}/back"), json!({})).0, 400);
+
+    // GitHub refuses the merge for a conflict: the card says so and waits for you.
+    std::fs::write(fd.join("conflict405"), "").unwrap();
+    let (st, e) = s.post(&format!("/api/converge/findings/{fid}/approve"), json!({}));
+    assert_eq!(st, 409, "{e}");
+    assert!(e["error"].as_str().unwrap().starts_with("Conflicts with main"), "{e}");
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["stage"], "review", "{f}");
+    assert!(f["finding"]["needs_you"].as_str().unwrap().starts_with("Conflicts with main"), "{f}");
+    assert!(f["finding"]["conflict"].is_string(), "{f}");
+    assert!(f["finding"]["needs_now"].as_str().unwrap().starts_with("Conflicts with main"), "{f}");
+    std::fs::remove_file(fd.join("conflict405")).unwrap();
+    // While it conflicts it is not approved, even with CI green.
+    let (st, e) = s.post(&format!("/api/converge/findings/{fid}/approve"), json!({}));
+    assert_eq!(st, 409, "{e}");
+
+    // GitHub says the pull request conflicts: back to its running fix agent, to merge main in.
+    std::fs::write(fd.join("conflict"), "").unwrap();
+    cv_tick(&s, &r);
+    let f = cv_finding(&s, &fid);
+    assert_eq!(f["finding"]["stage"], "develop", "{f}");
+    assert!(f["finding"]["needs_you"].is_null(), "{f}");
+    let last = f["events"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["gate"], "conflict", "{last}");
+    let steered = Instant::now() + Duration::from_secs(20);
+    while !s.events(&aid).iter().any(|e| e["summary"].as_str().unwrap_or("").contains("conflicts with main")) && Instant::now() < steered {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(s.events(&aid).iter().any(|e| e["summary"].as_str().unwrap_or("").contains("conflicts with main")), "the fix agent was not told about the conflict");
+    // Its turn ends without a new commit: that is not a fix, and it stays in develop.
+    let end = Instant::now() + Duration::from_secs(30);
+    let f = loop {
+        cv_tick(&s, &r);
+        let f = cv_finding(&s, &fid);
+        let said = f["events"].as_array().unwrap().iter().any(|e| e["gate"] == "develop" && e["summary"].as_str().unwrap_or("").contains("no new commit since it was sent back"));
+        if said || Instant::now() > end {
+            break f;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(f["finding"]["stage"], "develop", "{f}");
+    assert!(f["events"].as_array().unwrap().iter().any(|e| e["gate"] == "develop" && e["summary"].as_str().unwrap_or("").contains("no new commit")), "{f}");
+    // It merges main in (a new commit); the check passes, the persona replays it, and the new head is pushed.
+    std::fs::remove_file(fd.join("conflict")).unwrap();
+    std::fs::write(wt.join("tests/merge_note.sh"), "test -f src/FIXED\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "-q", "-m", "merge main"]);
+    let head = git(&wt, &["rev-parse", "HEAD"]).trim().to_string();
+    let end = Instant::now() + Duration::from_secs(40);
+    let f = loop {
+        cv_tick(&s, &r);
+        let f = cv_finding(&s, &fid);
+        if (f["finding"]["stage"] == "review" && f["finding"]["ci"] == "pass") || Instant::now() > end {
+            break f;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!((f["finding"]["stage"].as_str(), f["finding"]["ci"].as_str()), (Some("review"), Some("pass")), "{f}");
+    assert!(f["finding"]["conflict"].is_null() && f["finding"]["sent_back"].is_null(), "{f}");
+    assert!(git(&origin, &["rev-parse", &f["finding"]["branch"].as_str().unwrap().to_string()]).trim() == head, "the new commit was not pushed");
+
     // You approve: merged with gh.
     let (st, v) = s.post(&format!("/api/converge/findings/{fid}/approve"), json!({}));
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["finding"]["stage"], "merged", "{v}");
     assert!(std::fs::read_to_string(fd.join("gh.log")).unwrap().contains("-X PUT repos/acme/proj/pulls/7/merge -f merge_method=merge"));
+    // Merged: its fix agent is stopped, not left idle holding a slot.
+    s.wait(&aid, "exited");
 
     // The guard: the repro passes on main once the branch is in it.
     let branch = f["finding"]["branch"].as_str().unwrap().to_string();
@@ -7329,6 +7399,68 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     let mut res = http().get(format!("{}/goals/converge.js", s.url)).header("authorization", format!("Bearer {TOKEN}")).call().unwrap();
     assert_eq!(res.status().as_u16(), 200);
     assert!(res.body_mut().read_to_string().unwrap().contains("Kind of problem"));
+}
+
+/// A persona on probation is judged on what was tried: its finding waiting
+/// in Found keeps it on probation. A dismissed card stops its agent, and
+/// what the card's agents spent counts in the day's spend.
+#[test]
+fn converge_probation_waits_for_untried_findings_and_a_dismissed_card_stops_its_agent() {
+    let fakes = tempfile::tempdir().unwrap();
+    let fd = fakes.path().canonicalize().unwrap();
+    let (runner, gh) = converge_fakes(&fd);
+    let s = start_lab(&[("CHLOEDB_WORKBENCH_CONVERGE_CMD", &runner), ("CHLOEDB_WORKBENCH_CONVERGE_GH", &gh)]);
+    let (_d, r) = repo();
+    let (st, v) = s.post("/api/converge/personas/generate", json!({ "repo": r }));
+    assert_eq!(st, 201, "{v}");
+    let pid = v["persona"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["persona"]["state"], "probation", "{v}");
+    let play = |body: Value| {
+        let (st, v) = s.post(&format!("/api/converge/personas/{pid}/play"), body);
+        assert_eq!(st, 200, "{v}");
+        v
+    };
+    // Two runs: the first reports a problem, which waits in Found for you.
+    let v = play(json!({ "wait": true }));
+    assert!(v["run"]["id"].is_string(), "this run, once it started: {v}");
+    play(json!({ "wait": true }));
+    let (_, o) = s.get(&format!("/api/converge?repo={}", r.display()));
+    let p = o["personas"].as_array().unwrap().iter().find(|p| p["id"] == json!(pid)).unwrap().clone();
+    assert_eq!(p["runs"], 2, "{p}");
+    assert_eq!(p["state"], "probation", "not retired for a finding nobody tried: {p}");
+    assert!(p["why"].as_str().unwrap_or("").contains("wait to be reproduced"), "{p}");
+    assert!(p["repro_rate"].is_null(), "nothing attempted yet: {p}");
+    let fid = o["findings"][0]["id"].as_str().unwrap().to_string();
+    // The metrics: found counts it, nothing attempted, so no repro rate; and too few persona-hours for a rate.
+    let m = &o["metrics"];
+    assert_eq!((m["funnel"]["found"].as_u64(), m["funnel"]["attempted"].as_u64()), (Some(1), Some(0)), "{m}");
+    assert!(m["repro_rate"].is_null() && m["serious_per_persona_hour"].is_null(), "{m}");
+
+    // Talking to the card starts its card agent; its spend is the day's too.
+    let before = m["spent_today"].as_f64().unwrap();
+    let v = cv_talk(&s, &fid, "Why does the button do nothing?");
+    let card = v["agent"]["id"].as_str().unwrap().to_string();
+    s.wait(&card, "idle");
+    let end = Instant::now() + Duration::from_secs(20);
+    let m = loop {
+        let (_, m) = s.get(&format!("/api/converge/metrics?repo={}", r.display()));
+        if m["cost_7d_by"]["agents"].as_f64().unwrap_or(0.0) > 0.0 || Instant::now() > end {
+            break m;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    };
+    assert!(m["cost_7d_by"]["agents"].as_f64().unwrap() > 0.0, "{m}");
+    assert!(m["spent_today"].as_f64().unwrap() > before, "{m}");
+    let total = m["cost_7d_by"]["agents"].as_f64().unwrap() + m["cost_7d_by"]["runs"].as_f64().unwrap();
+    assert!((m["cost_7d"].as_f64().unwrap() - total).abs() < 1e-9, "counted once: {m}");
+
+    // Dismissed: its agent is stopped, and a dismissed card is no longer "found".
+    let (st, v) = s.post(&format!("/api/converge/findings/{fid}/dismiss"), json!({ "reason": "Works as designed" }));
+    assert_eq!(st, 200, "{v}");
+    s.wait(&card, "exited");
+    let (_, m) = s.get(&format!("/api/converge/metrics?repo={}", r.display()));
+    assert_eq!(m["funnel"]["found"], 0, "{m}");
+    assert_eq!(m["funnel"]["dismissed"], 1, "{m}");
 }
 
 #[test]
