@@ -11,6 +11,22 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A coordinator says which key slots are hot.** It counts each read and
+  write it routes by key in its slot, over 1, 5 and 15 minutes, and each
+  request it sends to every shard once (fan-out). `GET /v1/cluster/slots`
+  answers per shard its keyed reads and writes a second, its share and its
+  busiest slot, the 20 slots most counted, the skew (the busiest shard's
+  load against the mean) and a verdict: `even`, `quiet`, `hot range` (move
+  some of the shard's slots) or `hot slot` (one key or `shard_by` value,
+  which moving slots does not split); `?all=1` adds every slot counted
+  since the coordinator started. `/v1/cluster` carries the 5 minutes'
+  figures on each shard (`heat`) and the verdict (`slot_heat`), and
+  `/metrics` the gauges `chloedb_shard_keyed_ops_per_second{shard,kind,window}`
+  and `chloedb_slot_heat_skew` and the counter `chloedb_slot_ops_total{kind}`,
+  with no series per slot. `--slot-heat-keys` also samples the 64 keys
+  counted most, with their table, which only an admin reads, at
+  `GET /v1/admin/slots/keys`; it is off by default, since it holds key
+  values.
 - **A command center on Kubernetes forgot the clusters it reaches at every
   restart.** A coordinator kept its hub's book (the **Connections** view,
   the clusters the brand's menu at the top left switches to, and their
