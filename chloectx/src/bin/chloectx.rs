@@ -127,34 +127,37 @@ enum Cmd {
     /// Store a decision, preference, fact, todo or note.
     #[command(display_order = 8)]
     Remember { kind: String, text: String },
-    /// Delete records from memory for good: this project's by id, or with
-    /// --everywhere what every store holds of a fact
+    /// Delete records from memory for good: this project's by id or by
+    /// their text, or with --everywhere what every store holds of a fact
     ///
     /// The ids are the ones `chloectx search` and the inspector show
     /// (`session:seq`). Each record is deleted, scrubbed from the receipts
     /// that showed it, and the automatic snapshots that hold it are dropped;
     /// the other records of its turn stay. It cannot be undone.
     ///
-    /// With --everywhere, every store `chloectx stores` lists is searched
-    /// for records whose text or context holds the words given (whatever
-    /// their case; 3 characters or more), or, when each word is a record id,
-    /// for those records. The matches are listed by store, and forgotten
-    /// once you say yes (or with --yes; --dry-run only lists them). A store
-    /// synced to a server gets them back at its next pull while the server
-    /// holds them: delete them there too.
+    /// Given words that are not record ids, it forgets that text (whatever
+    /// its case; 3 characters or more): the records whose own text holds it
+    /// are deleted; those that hold it only in their context (the request of
+    /// the turn they came from, such as a rule given in the same prompt) are
+    /// kept, with it cut from that context; and the session state, the logs
+    /// and every receipt lose it. What goes and what stays is listed first,
+    /// each record with its kind and first line, and it asks (or --yes;
+    /// --dry-run only lists). With --everywhere, every store `chloectx
+    /// stores` lists, by text or by id. With a sync set up, the server's
+    /// copies go too.
     #[command(hide = true)]
     Forget {
-        /// Record ids, such as a1b2c3d4:42; with --everywhere, the text to look for, or ids.
+        /// Record ids, such as a1b2c3d4:42, or the text to forget.
         #[arg(required = true)]
         ids: Vec<String>,
         /// In every store on this machine, not only this project's.
         #[arg(long)]
         everywhere: bool,
-        /// With --everywhere: forget the matches without asking.
-        #[arg(long, short, requires = "everywhere")]
+        /// Forget what was listed without asking.
+        #[arg(long, short)]
         yes: bool,
-        /// With --everywhere: only list the matches.
-        #[arg(long, requires = "everywhere")]
+        /// Only list what would be forgotten.
+        #[arg(long)]
         dry_run: bool,
     },
     /// The edit behind a line of code (`path:line`) or a file: its session,
@@ -801,12 +804,16 @@ fn main() {
             }
         },
         Cmd::Forget { ids, everywhere: true, yes, dry_run } => std::process::exit(chloectx::stores::forget_everywhere(&paths::home(), &ids, &chloectx::stores::ForgetOptions { yes, dry_run })),
-        Cmd::Forget { ids, .. } => {
+        Cmd::Forget { ids, yes, dry_run, .. } => {
             // Only a store that exists: forgetting never creates one.
             let dir = paths::store_dir(&project);
             if !dir.join("memory.strata").exists() {
                 eprintln!("chloectx forget: {} has no store ({}); run it in the project's folder, or pass --project", project.display(), dir.display());
                 std::process::exit(1);
+            }
+            // A text, or a list first: listed, and asked.
+            if dry_run || !ids.iter().all(|i| chloectx::stores::is_record_id(i.trim())) {
+                std::process::exit(chloectx::stores::forget_in(&paths::home(), Some(&dir), &ids, &chloectx::stores::ForgetOptions { yes, dry_run }));
             }
             let mut missing = 0;
             for id in &ids {
