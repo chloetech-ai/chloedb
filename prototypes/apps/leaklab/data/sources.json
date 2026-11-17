@@ -1,0 +1,93 @@
+{
+ "made_at": "2026-11-17T09:33:32.787Z",
+ "sources": [
+  {
+   "key": "tensor-trust",
+   "name": "Tensor Trust",
+   "kind": "prompt extraction and hijacking attacks from the game",
+   "file": "tensor-trust/{extraction,hijacking}_robustness_dataset.jsonl",
+   "licence": "not stated in the files on disk",
+   "licence_from": "tensor-trust/README.md names no licence; see github.com/HumanCompatibleAI/tensor-trust-data",
+   "url": "https://github.com/HumanCompatibleAI/tensor-trust-data",
+   "rows": 927,
+   "rows_on_disk": 1346
+  },
+  {
+   "key": "mosscap",
+   "name": "Lakera Mosscap",
+   "kind": "password-extraction prompts from the game (test split)",
+   "file": "lakera-mosscap/test.parquet",
+   "licence": "MIT",
+   "licence_from": "lakera-mosscap/README.md (\"license: mit\")",
+   "url": "https://huggingface.co/datasets/Lakera/mosscap_prompt_injection",
+   "rows": 21762,
+   "rows_on_disk": 27381
+  },
+  {
+   "key": "gandalf",
+   "name": "Lakera Gandalf (ignore instructions)",
+   "kind": "instruction-override prompts from the game",
+   "file": "lakera-gandalf-ignore-instructions/train.parquet",
+   "licence": "MIT (dataset card)",
+   "licence_from": "the dataset card on Hugging Face; no licence file on disk",
+   "url": "https://huggingface.co/datasets/Lakera/gandalf_ignore_instructions",
+   "rows": 777,
+   "rows_on_disk": 777
+  },
+  {
+   "key": "deepset",
+   "name": "deepset prompt-injections",
+   "kind": "texts labelled as injections (label 1)",
+   "file": "deepset-prompt-injections/{train,test}-*.parquet",
+   "licence": "Apache-2.0 (dataset card)",
+   "licence_from": "the dataset card on Hugging Face; no licence file on disk",
+   "url": "https://huggingface.co/datasets/deepset/prompt-injections",
+   "rows": 263,
+   "rows_on_disk": 263
+  },
+  {
+   "key": "bipia",
+   "name": "BIPIA",
+   "kind": "indirect-injection attack strings (distinct attack_str)",
+   "file": "bipia/train.parquet",
+   "licence": "CC BY-SA 4.0 (this redistribution); BIPIA code MIT",
+   "licence_from": "bipia/README.md (\"license: cc-by-sa-4.0\", \"BIPIA code is MIT\")",
+   "url": "https://github.com/microsoft/BIPIA",
+   "rows": 125,
+   "rows_on_disk": 41250
+  },
+  {
+   "key": "llmail",
+   "name": "LLMail-Inject",
+   "kind": "attack emails submitted to the challenge (phase 2, first 2,501)",
+   "file": "llmail-inject-challenge/raw_submissions_phase2.head.jsonl",
+   "licence": "MIT",
+   "licence_from": "llmail-inject-challenge/README.md (\"license: mit\")",
+   "url": "https://huggingface.co/datasets/microsoft/llmail-inject-challenge",
+   "rows": 367,
+   "rows_on_disk": 2501
+  },
+  {
+   "key": "injecagent",
+   "name": "InjecAgent",
+   "kind": "attacker instructions planted in tool results",
+   "file": "InjecAgent/repo/data/test_cases_{ds,dh}_base.json",
+   "licence": "MIT",
+   "licence_from": "InjecAgent/repo/LICENCE",
+   "url": "https://github.com/uiuc-kang-lab/InjecAgent",
+   "rows": 62,
+   "rows_on_disk": 1054
+  },
+  {
+   "key": "nemotron",
+   "name": "Nemotron indirect prompt injection",
+   "kind": "injections planted in an agent's tool data",
+   "file": "nemotron-indirect-prompt-injection/train.jsonl",
+   "licence": "CC BY 4.0",
+   "licence_from": "nemotron-indirect-prompt-injection/README.md (\"license: cc-by-4.0\")",
+   "url": "https://huggingface.co/datasets/nvidia/Nemotron-RL-Agentic-Indirect-Prompt-Injection-v1",
+   "rows": 686,
+   "rows_on_disk": 1272
+  }
+ ]
+}

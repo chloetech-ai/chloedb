@@ -51,8 +51,8 @@ spec:
         - {name: PROTOS_LLM_TOTAL_USD, value: "150"}
         - {name: PROTOS_LLM_PER_IP_HOUR, value: "40"}
         ports: [{containerPort: 8080}]
-        readinessProbe: {httpGet: {path: /api/hub, port: 8080}, periodSeconds: 10, timeoutSeconds: 5}
-        livenessProbe: {httpGet: {path: /api/hub, port: 8080}, periodSeconds: 30, timeoutSeconds: 10, failureThreshold: 5}
+        readinessProbe: {httpGet: {path: /healthz, port: 8080}, periodSeconds: 10, timeoutSeconds: 5}
+        livenessProbe: {httpGet: {path: /healthz, port: 8080}, periodSeconds: 30, timeoutSeconds: 10, failureThreshold: 5}
         resources: {requests: {cpu: 250m, memory: 256Mi}, limits: {memory: 2Gi}}
         volumeMounts: [{name: work, mountPath: /work}]
       volumes: [{name: work, emptyDir: {}}]

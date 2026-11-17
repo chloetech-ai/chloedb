@@ -1,0 +1,47 @@
+{
+  "built_at": "2026-11-17T09:18:19.738Z",
+  "datasets": [
+    {
+      "name": "OpenHands SWE-rebench trajectories (benign history)",
+      "file": "nebius-SWE-rebench-openhands-trajectories/sample-300.parquet",
+      "sessions": 300,
+      "steps": 18160,
+      "licence": "see dataset card (nebius / SWE-rebench, OpenHands)"
+    },
+    {
+      "name": "AgentDojo recorded runs (labelled attacks: attacker goal reached)",
+      "file": "agentdojo/repo/runs",
+      "sessions": 25,
+      "steps": 206,
+      "licence": "MIT (ethz-spylab/agentdojo)",
+      "flag_meaning": "security=true means the injected task goal was achieved (verified by reading tool calls); those runs are the labelled set."
+    },
+    {
+      "name": "MCPHunt agent traces (labelled attacks: unsafe_success)",
+      "file": "mcphunt-agent-traces/deepseek_v4_flash_baseline.json",
+      "sessions": 30,
+      "steps": 570,
+      "licence": "CC-BY-4.0"
+    }
+  ],
+  "totals": {
+    "benign_sessions": 300,
+    "benign_steps": 18160,
+    "benign_commands": 9836,
+    "attack_sessions": 55,
+    "attack_steps": 776,
+    "labelled_n": 55,
+    "agentdojo_n": 25,
+    "mcphunt_n": 30
+  },
+  "taint": {
+    "method": "approximated from the record by shared substrings",
+    "minlen": 20,
+    "benign_commands_tainted": 7002,
+    "note": "tainted_by edges link a step to earlier outputs in the same session sharing a verbatim run of >= 20 characters with its arguments; source class is of the earlier output (web, mcp, file, test output, user). This is NOT Nodwyn value-level taint."
+  },
+  "wall": {
+    "lanes": 300,
+    "cells": 18160
+  }
+}

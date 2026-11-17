@@ -62,6 +62,16 @@ async function route(req, res) {
     try { dbHealth = await db.health(); } catch (e) { dbHealth = { error: e.message }; }
     return json(res, 200, { apps: appList(), spend: await llm.spendStatus(), db: dbHealth });
   }
+  if (p === '/api/evidence') {
+    // The hub's self-run evidence row, loaded by tools/load-evidence.mjs from the repository's results files.
+    try {
+      const r = await db.query('SELECT id, ord, title, label, unit, value, k, n, compare, caveat, source, line, url, as_of FROM protos_evidence ORDER BY ord');
+      const rows = r.rows.map(x => ({ ...x, compare: JSON.parse(x.compare || '[]') }));
+      return json(res, 200, { rows, queries: [{ sql: r.sql, took_ms: r.took_ms, rows: r.rows.length, plan: r.plan }] });
+    } catch (e) {
+      return json(res, 200, { rows: [], error: e.message, queries: [] });
+    }
+  }
   const m = p.match(/^\/([a-z0-9][a-z0-9-]*)(\/.*)?$/);
   const app = m && apps.get(m[1]);
   if (app) {
