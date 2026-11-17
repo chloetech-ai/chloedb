@@ -4983,6 +4983,7 @@ impl Service {
                 idem::Begin::Mismatch => return Err(ApiError { code: None, status: 422, message: "this idempotency key was used for a different statement".into() }),
             }
         }
+        let _claim = key.as_ref().map(|(k, _)| Claim { keys: self.idempotency.clone(), key: k.clone() });
         let r = async {
             let core = match self.embeds() {
                 true => Some(self.embedding.clone().acquire_owned().await.map_err(ApiError::internal)?),
@@ -5073,6 +5074,7 @@ impl Service {
                         idem::Begin::Mismatch => return Err(ApiError { code: None, status: 422, message: "this idempotency key was used for different operations".into() }),
                     }
                 }
+                let _claim = key.as_ref().map(|(k, _)| Claim { keys: self.idempotency.clone(), key: k.clone() });
                 // A hold of the shard's writes: from here on it takes no
                 // other, and it commits once those under way did.
                 let _holding = feed::carried_hold(&ops).filter(|h| h % 2 == 1).map(|_| self.hold_pending());
@@ -6739,6 +6741,26 @@ impl Queued {
     }
 }
 
+/// An idempotency key a request claimed ([`idem::Keys::begin`]), let go
+/// when the request ends however it ends: a request dropped while it
+/// waited (its client gone, or a coordinator that gave up on it and sent
+/// it to another copy) before the writer took it kept its key claimed,
+/// and every retry with the key was refused as still running for the
+/// key's lifetime (an hour). Letting it go once the writer took the
+/// write is safe too: the writer applies a key once, by its row
+/// ([`once_per_key`]), and records the outcome whatever became of the
+/// request ([`Queued::answer`]); after that, it lets go of nothing.
+struct Claim {
+    keys: Arc<idem::Keys>,
+    key: String,
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        self.keys.finish(&self.key, None);
+    }
+}
+
 impl Drop for Queued {
     /// A request dropped unanswered: the writer panicked applying it.
     fn drop(&mut self) {
@@ -7833,6 +7855,43 @@ mod tests {
         // It did not commit, so a retry with its key applies it.
         assert_eq!(keys.begin("k", 1), idem::Begin::New);
         assert_eq!(state.queued.load(Ordering::Relaxed), 0);
+    }
+
+    // A write dropped after it claimed its idempotency key and before the
+    // writer took it (here, waiting for a core to embed on; in the persona
+    // study's case, a frozen server that woke to a request its coordinator
+    // had given up on) kept the key claimed: every retry with the key was
+    // refused as still running (409) for the key's lifetime, an hour.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_dropped_before_the_writer_took_it_lets_its_key_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create(&dir.path().join("t.strata"), crate::demo::schema(10), chloedb::storage::DbOptions::default()).unwrap());
+        db.set_embedder("emb", Arc::new(chloedb::embed::HashEmbedder { dim: crate::demo::DIM })).unwrap();
+        db.load((0..10).map(|i| crate::demo::product(i, 7))).unwrap();
+        let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+        let mut svc = Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent, 16, Duration::from_secs(10));
+        svc.open_models(&dir.path().join("models"));
+        let svc = Arc::new(svc);
+        assert!(svc.embeds(), "the products embed their title");
+        let sold = || {
+            let svc = svc.clone();
+            async move { svc.query(QueryReq { sql: "SELECT sold FROM products WHERE id = 'p0000003'".into(), ..Default::default() }).await.unwrap().rs.rows[0][0].as_i64().unwrap() }
+        };
+        let before = sold().await;
+        let add = || vec![json!({"op": "add", "key": "p0000003", "field": "sold", "value": 1})];
+
+        // Every core taken: the write waits to embed, and is dropped there.
+        let cores = svc.embedding.clone().acquire_many_owned(svc.cores as u32).await.unwrap();
+        let w = tokio::time::timeout(Duration::from_millis(300), svc.write_ops(add(), Some("k-1".into()))).await;
+        assert!(w.is_err(), "the write waits for a core");
+        drop(cores);
+
+        // Sent again with its key: applied, once.
+        svc.write_ops(add(), Some("k-1".into())).await.unwrap_or_else(|e| panic!("sent again: {}", e.message));
+        assert_eq!(sold().await, before + 1);
+        let again = svc.write_ops(add(), Some("k-1".into())).await.unwrap();
+        assert_eq!(again.rows, 1, "answered as the first was");
+        assert_eq!(sold().await, before + 1, "not applied twice");
     }
 }
 
