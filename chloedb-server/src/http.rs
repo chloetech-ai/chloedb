@@ -2423,10 +2423,28 @@ async fn run_plan(State(app): State<App>, w: Option<axum::Extension<Principal>>,
 /// The body's `ops`, applied once per idempotency key (the body's
 /// `idempotency_key` or an `Idempotency-Key` header).
 async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(mut b): AxJson<Json>) -> Result<Response, ApiError> {
+    // A field the body does not take is refused by name: read as nothing,
+    // a guess at the body's shape (`"table"` before it was taken) wrote
+    // somewhere else than was meant.
+    if let Some(k) = b.as_object().and_then(|o| o.keys().find(|k| !WRITE_FIELDS.contains(&k.as_str()))) {
+        return Err(ApiError::bad(format!("/v1/write takes no field {k:?}{}: its body is {{\"ops\": [...]}}, with \"table\" (the table of the operations that name none), \"strict\" and \"idempotency_key\"", hint_of(k, &WRITE_FIELDS))));
+    }
     let mut ops = match b.get_mut("ops").map(Json::take) {
         Some(Json::Array(ops)) => ops,
         _ => return Err(ApiError::bad("the body needs an array \"ops\"")),
     };
+    // The table of the operations that name none: the body's, else the
+    // server's default table.
+    match b.get("table") {
+        None | Some(Json::Null) => {}
+        Some(Json::String(t)) => {
+            let table = app.svc.table(t).await?.table.clone();
+            for op in ops.iter_mut().filter(|op| op.is_object() && op.get("table").is_none_or(Json::is_null) && !crate::service::is_mark(op)) {
+                op["table"] = json!(table);
+            }
+        }
+        Some(_) => return Err(ApiError::bad("the body's table is a table's name")),
+    }
     match b.get("strict") {
         None | Some(Json::Null) | Some(Json::Bool(false)) => {}
         Some(Json::Bool(true)) => strict_ops(&mut ops),
@@ -2468,17 +2486,77 @@ async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, he
         }
     };
     note(None, None);
+    let left_out = left_out_by_upserts(&app, &ops);
     let (r, partial) = crate::coord::with_partial(app.svc.write_request(ops, key)).await;
     match r {
         Ok(w) => {
             note(Some(w.rows as u64), None);
-            Ok(AxJson(written(app.svc.termed(w), t0.elapsed().as_secs_f64() * 1e3)).into_response())
+            let replaced = w.receipt.map_or(0, |r| r.replaced + r.collapsed);
+            let mut j = written(app.svc.termed(w), t0.elapsed().as_secs_f64() * 1e3);
+            if replaced > 0 && !left_out.is_empty() {
+                j["warnings"] = json!([upsert_warning(replaced, &left_out)]);
+            }
+            Ok(AxJson(j).into_response())
         }
         Err(e) => {
             note(None, partial.as_ref().map(|p| &p["shards"]));
             Ok(write_failed(e, partial))
         }
     }
+}
+
+/// The fields that upserts among `ops` leave out, by table, in the order
+/// the tables come: a row an upsert replaces takes NULL (or the field's
+/// default) in each, which a caller who read "upsert" as "update or
+/// insert" does not expect. Fields the server fills (embedded vectors,
+/// generated, derived and semantic-ID fields) and the key do not count.
+fn left_out_by_upserts(app: &App, ops: &[Json]) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    let catalog = app.svc.catalog();
+    for op in ops.iter().filter(|op| matches!(op["op"].as_str(), Some("upsert" | "upsert_if_newer"))) {
+        let Some(doc) = op["doc"].as_object() else { continue };
+        let schema = match op["table"].as_str() {
+            Some(t) => catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).cloned(),
+            None => app.svc.default_table().ok(),
+        };
+        let Some(schema) = schema else { continue };
+        let filled = |f: &chloedb::schema::Field| f.embed.is_some() || !f.generated_from.is_empty() || f.derive.is_some() || f.semantic_id.is_some();
+        let missing = schema.fields.iter().enumerate().filter(|(i, f)| Some(*i) != schema.primary_key && !filled(f) && !doc.contains_key(&f.name)).map(|(_, f)| f.name.clone());
+        let at = match out.iter().position(|(t, _)| *t == schema.table) {
+            Some(i) => i,
+            None => {
+                out.push((schema.table.clone(), Vec::new()));
+                out.len() - 1
+            }
+        };
+        for m in missing {
+            if !out[at].1.contains(&m) {
+                out[at].1.push(m);
+            }
+        }
+    }
+    out.retain(|(_, fields)| !fields.is_empty());
+    out
+}
+
+/// What a write's answer says when it replaced rows by upserts that left
+/// fields out ([`left_out_by_upserts`]).
+fn upsert_warning(replaced: u64, left_out: &[(String, Vec<String>)]) -> String {
+    let fields: Vec<String> = left_out.iter().map(|(t, fs)| format!("{} of {t}", fs.join(", "))).collect();
+    let (t, f) = left_out.first().map(|(t, fs)| (t.as_str(), fs[0].as_str())).unwrap_or(("t", "f"));
+    format!(
+        "an upsert writes the whole row: {replaced} row{} replaced, and each takes NULL (or the field's default) in the fields its upsert left out ({}). To change some fields of a row and keep the others, write {{\"op\": \"set\", \"key\": .., \"field\": \"{f}\", \"value\": ..}}, or UPDATE {t} SET {f} = .. WHERE ..",
+        if replaced == 1 { " was" } else { "s were" },
+        fields.join("; ")
+    )
+}
+
+/// The fields of `/v1/write`'s body.
+const WRITE_FIELDS: [&str; 4] = ["ops", "table", "strict", "idempotency_key"];
+
+/// ` (did you mean x?)` for a field `k` near one of `known`.
+fn hint_of(k: &str, known: &[&str]) -> String {
+    chloedb::query::hint::did_you_mean(k, known.iter().copied())
 }
 
 /// The writes a read by key must see, from its query string
