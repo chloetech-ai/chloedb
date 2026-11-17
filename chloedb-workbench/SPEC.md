@@ -3571,6 +3571,70 @@ the run made; a finding is known when it was merged into an open one, or
   packages (`packages/x`, `apps/x`, `crates/x`, `services/x`, `libs/x`,
   `modules/x`).
 
+### One card per problem, branches that do not collide, and the evidence
+
+- **Duplicates fold.** A report's words are normalised (lower case,
+  quotes, punctuation and numbers dropped, stop words out, each word
+  stemmed) and compared with the open cards made before it (not merged):
+  the best of its title's and its title-and-detail's likeness (shared words,
+  and how much of the shorter the longer holds), plus 0.1 for the same
+  component and times 0.7 for another (`other` counts as neither). Each
+  tick checks the new reports in Found and the cards you picked that
+  `dedup_pending`: one of 0.8 or more folds by its words; those from 0.25
+  go to the model in one batched call (runner role `dedup`, setting
+  `dedup_model`, default haiku, empty for words only; a run `purpose:
+  "dedup"` counts in the spend), which answers `{same: [{report, card}]}`
+  among each report's candidates; without the model (no answer, budget
+  spent), 0.6 or more folds. Folding adds the report to the card's `seen`
+  (and `occurrences`), its persona to `personas_hit`, keeps the worse
+  severity and the report itself in the card's `dedup` event (`evidence
+  {merged, similarity, by: words|model|you, seen, report}`); the report
+  becomes `duplicate` with `dup_of`. What is not folded stays a card with
+  `similar` (up to three ids). A card you add and pick (`pick`, an ask)
+  folds at once at 0.8 (the answer has `folded_into`, and a card still in
+  Found goes on to Reproduce as your pick), else at 0.25 it is
+  `dedup_pending` for the next tick. `POST /api/converge/findings/:id/fold
+  {into}` (your token) folds it yourself.
+- **Overlapping branches queue.** A card's plan paths are its scope's
+  parts and files (test paths left out unless it has only those); two
+  plans overlap when a path of one is, or is under, a path of the other.
+  Start (yours or the autopilot's) on a card whose plan overlaps a card in
+  develop, verify or review queues it: `queued: "Queued: waits for <title>
+  which touches the same files"`, `waits_for: <id>`, an event `queued`;
+  each tick tries it again, so it starts when the other merges or leaves
+  the flow (approving and merging kick a tick).
+- **Branches stay current.** The develop check merges the base in first.
+  A card in verify or review whose branch is behind the base (fetched at
+  most once a minute) has it merged in (`gate_current`, busy "bringing the
+  base in"): the repro and the tests run again; passing, it stays (event
+  `base_moved`, review pushes the new head and CI is pending); a conflict
+  or a failing check sends it back to develop with the reason.
+- **Verify judges three things**: the locked repro passes N of N on the
+  replayed head (the develop check's result when the head is the one it
+  checked), the tests pass but for what fails on the base too, and the
+  replay reports no new problem of major or worse (not an open card, not
+  reproducing on the base). The persona's `fixed`, outcome and ease are
+  `notes` in the evidence. A replay that fails to run plays again; after
+  two, it asks you.
+- **Tests failing on the base.** Failed test names are read from the
+  output (cargo's `... FAILED`, pytest's `FAILED`, go's `--- FAIL:`, TAP's
+  `not ok`, jest's `✕`). When the base fails too, the branch passes when
+  every test it fails also fails on the base (or, without names, as
+  before); the names are `failing_on_base`.
+- **Evidence pack.** Each card has `evidence {repro_before, repro_after,
+  tests {cmd, pass, failing_on_base}, replay {persona, said, ease_before,
+  ease_after}, diff {files, add, del}, base_sha, head_sha}`, null where
+  unknown: `repro_before` and the base commit at reproduce; the rest at
+  each develop check, base merge and verify (`base_sha` the merge-base,
+  the diff `git diff --numstat` from it). The pull request's body starts
+  with it, compact (`### Evidence`).
+- **Outcomes.** `GET /api/converge/metrics` has `outcomes {merged_7d,
+  median_found_to_merged_ms, cost_per_merged_fix_usd, ease_before,
+  ease_after, open_by_kind}`: the fixes merged in the last seven days
+  (found = created, merged = the stage's start), the week's spend over
+  them, the mean eases of those a persona found and replayed, and open
+  cards by kind.
+
 ### Tests
 
 `converge_an_ask_becomes_a_card_in_reproduce_and_a_card_by_hand_can_be_picked`,
@@ -3579,7 +3643,9 @@ the run made; a finding is known when it was merged into an open one, or
 `converge_talk_reaches_the_cards_agent_at_every_step` (and bulk verbs),
 `converge_blocked_on_you_stops_the_autopilot_and_a_full_slot_queues`,
 `converge_probation_waits_for_untried_findings_and_a_dismissed_card_stops_its_agent`,
-`converge_your_card_is_verified_by_its_repro_and_merges_locally_without_github`
+`converge_your_card_is_verified_by_its_repro_and_merges_locally_without_github`,
+`converge_overlapping_cards_queue_and_the_evidence_is_kept`,
+`converge_duplicate_reports_fold_into_one_card`
 (and the conflict, send-back and push checks in the merged-fix test), and the
 timeline's, the run summary's, the steps' and `merged_week`'s checks in
 `converge_takes_a_finding_from_a_persona_to_a_merged_fix`;
