@@ -2,7 +2,7 @@
 // chips, rows you can select, "Reproduce" and "Dismiss" in a sticky bar;
 // on a phone a swipe right reproduces and a swipe left dismisses (with an
 // undo). "+ New problem" writes a card from a sentence, or by hand.
-import { h, put, toast, SEV, THEME_WORDS, KINDS, toMs, ago, firstName, flagLine, blockedOf } from "/goals/converge/util.js";
+import { h, put, toast, seenOf, SEV, THEME_WORDS, KINDS, toMs, ago, firstName, flagLine, blockedOf } from "/goals/converge/util.js";
 import { chipFilter, sheetShell } from "/goals/converge/kit.js";
 import { listRow, stepHead, none, bulkBar } from "/goals/converge/rows.js";
 
@@ -23,7 +23,7 @@ export function problemsScreen(C) {
     && (skip === "comp" || !F.comp.size || F.comp.has(f.component || ""))
     && (skip === "persona" || !F.persona.size || (f.personas_hit || [f.persona]).some((p) => F.persona.has(p)))
     && (skip === "fresh" || !F.fresh || isNew(f));
-  const shown = all.filter((f) => match(f)).sort((a, b) => (blockedOf(b) ? 1 : 0) - (blockedOf(a) ? 1 : 0) || (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.severity - a.severity || (b.occurrences || 1) - (a.occurrences || 1) || (toMs(b.created) || 0) - (toMs(a.created) || 0));
+  const shown = all.filter((f) => match(f)).sort((a, b) => (blockedOf(b) ? 1 : 0) - (blockedOf(a) ? 1 : 0) || (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.severity - a.severity || seenOf(b) - seenOf(a) || (toMs(b.created) || 0) - (toMs(a.created) || 0));
   const count = (skip, pred) => all.filter((f) => match(f, skip) && pred(f)).length;
   const redraw = () => { C.keep(); C.draw(); };
   // The selection keeps only what is still on screen.
@@ -69,7 +69,7 @@ export function problemsScreen(C) {
           isNew(f) ? h("span", { class: "r-new" }, "new") : null,
           f.component ? h("span", {}, f.component) : null,
           hits.length ? h("span", {}, hits.slice(0, 2).map(personaName).join(", ") + (hits.length > 2 ? ` +${hits.length - 2}` : "")) : f.by ? h("span", {}, f.by === "you" ? "you" : f.by) : null,
-          f.occurrences > 1 ? h("span", {}, `seen ${f.occurrences}×`) : null),
+          seenOf(f) > 1 ? h("span", { class: "cv-tag seen" }, `seen ${seenOf(f)}×`) : null),
         flagLine(f)],
       side: h("span", {}, ago(f.created || f.stage_since)),
       swipe: { right: ["Reproduce", () => reproduce([f.id])], left: ["Dismiss", () => dismiss([f.id], "Dismissed from the list")] },

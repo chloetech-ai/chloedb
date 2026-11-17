@@ -59,7 +59,7 @@ function swipeable(li, inner, sw, S, mark) {
 /** A step screen's head: back to the pipeline, the name and count, a hint, an action. */
 export function stepHead(C, name, count, hint, action) {
   return h("header", { class: "cv-sh" },
-    h("a", { class: "cv-back", href: C.href("home") }, "‹ Pipeline"),
+    h("a", { class: "cv-back", href: C.href("home") }, "‹ Inbox"),
     h("div", { class: "row" }, h("h1", {}, name, count != null ? h("span", { class: "c" }, String(count)) : null), action || null),
     hint ? h("p", { class: "hint" }, hint) : null);
 }
