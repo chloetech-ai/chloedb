@@ -2,7 +2,7 @@
 // tasks that you can unfold"): a `step` starts a task; what comes before
 // the first is "Getting started". Each task is one line, folded; the
 // running one is open. Painted in place, so a refresh keeps what is open.
-import { h, put, toMs, secsWords, firstSentences } from "/goals/converge/util.js";
+import { h, put, toMs, secsWords, firstSentences, doingWords } from "/goals/converge/util.js";
 import { useStyle } from "/levels/common.js";
 
 const CSS = `
@@ -68,8 +68,12 @@ export function taskStyles() { useStyle("converge-tasks", CSS); }
 
 export function groupTasks(steps) {
   const tasks = [{ key: "start", title: "Getting started", ts: toMs(steps[0]?.ts), items: [] }];
+  let last = 0;
   steps.forEach((x, i) => {
-    if (x.kind === "step") tasks.push({ key: `s${i}`, title: x.text || `Step ${tasks.length}`, ts: toMs(x.ts), items: [] });
+    // A step at or before the one it is on (a recap at the end) is not a new task.
+    const n = x.kind === "step" ? Number((/^Step (\d+) of/i.exec(x.text || "") || [])[1]) || 0 : 0;
+    if (x.kind === "step" && n && n <= last) return;
+    if (x.kind === "step") { if (n) last = n; tasks.push({ key: `s${i}`, title: x.text || `Step ${tasks.length}`, ts: toMs(x.ts), items: [] }); }
     else tasks.at(-1).items.push(x);
   });
   if (tasks.length > 1 && !tasks[0].items.length) tasks.shift();
@@ -85,7 +89,7 @@ export function taskStates(tasks, o) {
     const tools = t.items.filter((x) => x.kind === "tool");
     const lastTool = tools.at(-1);
     const sum = said.length ? firstSentences(said.at(-1).text, 1)
-      : state === "run" ? (lastTool ? `${TOOL_WORDS[lastTool.tool] || lastTool.tool} ${lastTool.text || ""}` : "working…")
+      : state === "run" ? (lastTool ? doingWords(`${lastTool.tool}: ${lastTool.text || ""}`) || "working…" : "working…")
         : "";
     return { ...t, state, dur: t.ts && end ? end - t.ts : null, sum, tools: tools.length, said: said.length };
   });
