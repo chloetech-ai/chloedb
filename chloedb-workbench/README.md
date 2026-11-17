@@ -1,11 +1,19 @@
 # ChloeDB Workbench: Converge
 
-The app opens on **Converge** (`#/`): per project, personas play the
-product, and what they hit is reproduced, fixed, verified and sent to you as
-a pull request, on a board you steer from a phone ([SPEC.md](SPEC.md),
-"Seventh build"). **Workbench** is its section (`#/workbench`, the
-Workbench tab): the agents, terminals, projects, review, debug, harness and
-rules described below. The crate, the binary (`chloedb-workbench`) and its
+The app is **Converge** (`#/`): per project, personas play the product,
+and what they hit goes through one flow, a screen per step: run a persona,
+Problems (filter, pick what to reproduce), Reproducing, Ready to build
+(scope and priority), Building (develop and verify), Ready to merge. Each
+step can be talked to directly, and only three picks are yours: Reproduce,
+Build and the merge ([SPEC.md](SPEC.md), "Seventh build"). It is made to be
+steered from a phone. The top bar holds the project, **Needs you** (what is
+blocked on you first, with "Done, carry on") and **⋯**; the phone's tab
+bar is Home, Needs you, Personas and More.
+
+**Workbench**, the rest of this README, is under **⋯ › Workbench**: the
+agents, terminals, projects, review, debug, the harness, rules and the
+Simple view, each at its own route (`#/workbench` is its home) but out of
+Converge's navigation. The crate, the binary (`chloedb-workbench`) and its
 output keep their names.
 
 Workbench is a local app that runs many Claude Code sessions side by side.
@@ -17,7 +25,7 @@ this build follows.
 
 **Using it rather than building on it? Read [GUIDE.md](GUIDE.md)**: what
 each screen is for and when to open it, a first ten minutes, and the
-keyboard. In the app, **Guide** (the **?** at the bottom of the left rail)
+keyboard. In the app, **Guide** (⋯ › Workbench › Everything else › Guide)
 opens it. This README is the reference: installing, settings and the API.
 
 ## Install and run it

@@ -49,7 +49,7 @@ use crate::supervisor::{one_line, ApiError, SpawnRequest, Supervisor};
 
 /// The tables (created with the others in `db.rs`). A row's columns are
 /// what the board filters and sorts on; the whole record is `doc` (JSON).
-pub const TABLES: [&str; 8] = [
+pub const TABLES: [&str; 9] = [
     "CREATE TABLE IF NOT EXISTS cv_personas (id KEYWORD PRIMARY KEY, repo KEYWORD, name TEXT, state KEYWORD, origin KEYWORD, created TIMESTAMP, doc TEXT OPTIONS(indexed = false))",
     "CREATE TABLE IF NOT EXISTS cv_runs (id KEYWORD PRIMARY KEY, repo KEYWORD, persona KEYWORD, purpose KEYWORD, finding KEYWORD, state KEYWORD, outcome KEYWORD, ease FLOAT, cost_usd FLOAT, created TIMESTAMP, ended TIMESTAMP, doc TEXT OPTIONS(indexed = false))",
     "CREATE TABLE IF NOT EXISTS cv_findings (id KEYWORD PRIMARY KEY, repo KEYWORD, title TEXT, stage KEYWORD, state KEYWORD, severity INT, score FLOAT, persona KEYWORD, created TIMESTAMP, updated TIMESTAMP, doc TEXT OPTIONS(indexed = false))",
@@ -60,6 +60,8 @@ pub const TABLES: [&str; 8] = [
     "CREATE TABLE IF NOT EXISTS cv_log (id KEYWORD PRIMARY KEY, repo KEYWORD, ts TIMESTAMP, kind KEYWORD, doc TEXT OPTIONS(indexed = false))",
     // The part of the project a finding is about (`component_of`).
     "ALTER TABLE cv_findings ADD COLUMN IF NOT EXISTS component KEYWORD",
+    // What you said on a card (`talk`): your words as you wrote them.
+    "CREATE TABLE IF NOT EXISTS cv_talk (id KEYWORD PRIMARY KEY, finding KEYWORD, repo KEYWORD, ts TIMESTAMP, who KEYWORD, text TEXT, agent KEYWORD, doc TEXT OPTIONS(indexed = false))",
 ];
 
 /// The kinds of problem the board groups by.
@@ -316,6 +318,9 @@ pub struct Settings {
     /// Scoping asks the project's ChloeCtx memory (read only) for earlier
     /// decisions and rules (off: scoping runs with ChloeCtx off).
     pub scope_memory: bool,
+    /// Set by Stop everything: when, and the autopilot and picks as they
+    /// were, for Resume.
+    pub stopped: Option<Json>,
 }
 
 /// A fix agent's default allow-list: reading, editing, building and testing
@@ -362,19 +367,225 @@ impl Default for Settings {
             develop_auto: false,
             follow_picks: true,
             scope_memory: true,
+            stopped: None,
         }
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Scope {
     pub area: String,
+    /// The parts of the code the fix touches, by name, each with the files
+    /// and symbols it stands for (from the code index).
+    pub parts: Vec<Part>,
+    /// Exact paths (the advanced way); a part's paths count too.
     pub files: Vec<String>,
     pub root_cause: String,
     pub acceptance: String,
     /// S, M or L.
     pub size: String,
+}
+
+/// A part of the code, named the way a person says it ("the crawler's
+/// template learning"), and what it stands for in the repository.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Part {
+    pub name: String,
+    pub paths: Vec<String>,
+    pub symbols: Vec<String>,
+}
+
+/// Whether text is a path rather than words ("src/a.rs", "docs/").
+fn looks_like_path(t: &str) -> bool {
+    let t = scope_path(t);
+    !t.is_empty() && !t.contains(' ') && (t.contains('/') || t.contains('.'))
+}
+
+/// The parts of the code that words name, best first: the code index's hits
+/// grouped by file, a group's symbols kept. Empty without an index.
+pub fn find_parts(sup: &Supervisor, repo: &str, text: &str, limit: usize) -> Vec<Part> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    if looks_like_path(text) {
+        let p = scope_path(text).to_string();
+        return vec![Part { name: part_label(&p, &[]), paths: vec![p], symbols: Vec::new() }];
+    }
+    let ask = crate::search::Ask { repo, q: text, agent: None, lang: None, limit: 40, tokens: None };
+    let Ok((hits, _)) = crate::search::search(sup, &ask) else { return Vec::new() };
+    let mut order: Vec<String> = Vec::new();
+    let mut by: HashMap<String, (f64, Vec<String>)> = HashMap::new();
+    for hit in &hits {
+        let Some(path) = hit["path"].as_str().filter(|p| !p.is_empty()) else { continue };
+        if crate::search::is_test_path(path) {
+            continue;
+        }
+        let e = by.entry(path.to_string()).or_insert_with(|| {
+            order.push(path.to_string());
+            (0.0, Vec::new())
+        });
+        e.0 += hit["score"].as_f64().unwrap_or(1.0).max(0.1);
+        if let Some(sym) = hit["symbol"].as_str().filter(|x| !x.is_empty()) {
+            if !e.1.iter().any(|x| x == sym) && e.1.len() < 4 {
+                e.1.push(sym.to_string());
+            }
+        }
+    }
+    order.sort_by(|a, b| by[b].0.partial_cmp(&by[a].0).unwrap_or(std::cmp::Ordering::Equal));
+    order.into_iter().take(limit.max(1)).map(|path| {
+        let syms = by[&path].1.clone();
+        Part { name: part_label(&path, &syms), paths: vec![path], symbols: syms }
+    }).collect()
+}
+
+/// "chloedb-crawl › extract › learn_template" for a file and its symbols.
+fn part_label(path: &str, syms: &[String]) -> String {
+    let segs: Vec<&str> = path.split('/').filter(|x| !x.is_empty() && *x != "src" && *x != "lib").collect();
+    let stem = |x: &str| x.rsplit_once('.').map(|(a, _)| a).unwrap_or(x).to_string();
+    let mut out: Vec<String> = Vec::new();
+    if segs.len() > 1 {
+        out.push(segs[0].to_string());
+    }
+    if let Some(last) = segs.last() {
+        let st = stem(last);
+        if st != "mod" && st != "index" && st != "lib" && st != "main" {
+            out.push(st);
+        } else if segs.len() > 2 {
+            out.push(segs[segs.len() - 2].to_string());
+        }
+    }
+    if let Some(sym) = syms.first() {
+        out.push(sym.clone());
+    }
+    out.join(" › ")
+}
+
+/// A part named in words, resolved (the best match), or kept as a name only.
+fn resolve_part(sup: &Supervisor, repo: &str, name: &str) -> Part {
+    match find_parts(sup, repo, name, 1).into_iter().next() {
+        Some(mut p) => {
+            if !looks_like_path(name) {
+                p.name = format!("{} ({})", one_line(name, 80), p.name);
+            }
+            p
+        }
+        None => Part { name: one_line(name, 120), paths: Vec::new(), symbols: Vec::new() },
+    }
+}
+
+/// Fills in the paths of parts given by name only.
+fn resolve_parts(sup: &Supervisor, repo: &str, sc: &mut Scope) {
+    for part in sc.parts.iter_mut() {
+        if part.paths.is_empty() && !part.name.trim().is_empty() {
+            let r = resolve_part(sup, repo, &part.name);
+            part.paths = r.paths;
+            if part.symbols.is_empty() {
+                part.symbols = r.symbols;
+            }
+        }
+    }
+}
+
+/// Every path a plan allows: its parts' and its exact files.
+fn scope_paths(sc: &Scope) -> Vec<String> {
+    let mut v: Vec<String> = sc.parts.iter().flat_map(|p| p.paths.iter().cloned()).collect();
+    v.extend(sc.files.iter().cloned());
+    v
+}
+
+/// An agent's (or scope's) report that the work needs a person.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Blocked {
+    /// credentials, publish, account, external, decision, other
+    pub kind: String,
+    /// Why the agent cannot do it, one sentence.
+    pub what: String,
+    /// The exact step for the person.
+    pub you_do: String,
+    pub by: String,
+    pub at: i64,
+}
+
+pub const BLOCKED_KINDS: [&str; 6] = ["credentials", "publish", "account", "external", "decision", "other"];
+
+/// What every agent is told about steps it cannot take.
+const SCOPE_HELP: &str = "If the fix truly needs a part of the code the plan does not list, do not work around the plan: write .converge/scope_change.json, one JSON object {\"add\": [\"the part, by name or path, e.g. the crawler's template learning\"], \"remove\": [], \"why\": \"one sentence\"}, do not commit it, and stop. The person approves it with one tap.";
+
+/// A plan's file entry as a path: what comes before a note ("src/a.rs (fn x)" is src/a.rs).
+fn scope_path(entry: &str) -> &str {
+    let e = entry.trim().trim_matches('`');
+    let end = e.find(|c: char| c.is_whitespace() || c == '(' || c == ',' || c == ';').unwrap_or(e.len());
+    e[..end].trim_end_matches(':').trim_matches('`')
+}
+
+/// Whether a changed path is inside one of the plan's entries: the file
+/// itself, or under a directory entry ("src/" or "src"), or a glob's prefix.
+fn in_scope(changed: &str, files: &[String]) -> bool {
+    files.iter().map(|f| scope_path(f)).filter(|p| !p.is_empty()).any(|p| {
+        if let Some(prefix) = p.strip_suffix('*') {
+            return changed.starts_with(prefix);
+        }
+        let dir = p.trim_end_matches('/');
+        changed == p || changed.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// Reads (and removes) `.converge/scope_change.json`: the fix agent asks for files.
+fn read_scope_ask(wt: &Path, by: &str) -> Option<Json> {
+    let path = wt.join(".converge/scope_change.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    let v: Json = serde_json::from_str(text.trim()).ok().or_else(|| extract_json(&text))?;
+    let list = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).map(|x| if looks_like_path(x) { scope_path(x).to_string() } else { one_line(x, 120) }).filter(|x| !x.is_empty()).collect::<Vec<_>>()).unwrap_or_default();
+    let (add, remove) = (list("add"), list("remove"));
+    if add.is_empty() && remove.is_empty() {
+        return None;
+    }
+    Some(json!({ "add": add, "remove": remove, "why": one_line(v["why"].as_str().unwrap_or(""), 400), "by": by, "at": now_ms() }))
+}
+
+const BLOCKED_HELP: &str = "If the work needs something only a person can do or reach from outside this checkout (publishing a package or a release, credentials or tokens, account or repository settings, an outside service, or a decision that is the owner's), do not work around it: write .converge/blocked.json, one JSON object {\"kind\": \"credentials\" or \"publish\" or \"account\" or \"external\" or \"decision\", \"what\": \"one sentence: why you cannot do it\", \"you_do\": \"the exact step for the person, with the command if there is one\"}, do not commit it, and stop.";
+
+/// Reads `.converge/blocked.json` from an agent's worktree (a plain line
+/// counts too: it is the step).
+fn read_blocked(wt: &Path, by: &str) -> Option<Blocked> {
+    let text = std::fs::read_to_string(wt.join(".converge/blocked.json")).ok()?;
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let v: Json = serde_json::from_str(text).or_else(|_| extract_json(text).ok_or(())).unwrap_or(Json::Null);
+    let mut b = if v.is_object() { blocked_of(&v, by)? } else { Blocked { kind: "other".into(), what: String::new(), you_do: one_line(text, 400), by: by.into(), at: now_ms() } };
+    if b.you_do.trim().is_empty() {
+        b.you_do = one_line(text, 400);
+    }
+    Some(b)
+}
+
+/// A `{kind, what, you_do}` object as a Blocked, if it names a step.
+fn blocked_of(v: &Json, by: &str) -> Option<Blocked> {
+    let you_do = v["you_do"].as_str().map(str::trim).filter(|t| !t.is_empty())?;
+    let kind = v["kind"].as_str().map(|k| k.trim().to_lowercase()).filter(|k| BLOCKED_KINDS.contains(&k.as_str())).unwrap_or_else(|| "other".into());
+    Some(Blocked { kind, what: one_line(v["what"].as_str().unwrap_or(""), 400), you_do: one_line(you_do, 600), by: by.into(), at: now_ms() })
+}
+
+/// The finding waits for a person: the autopilot stops on it.
+fn set_blocked(sup: &Supervisor, f: &mut Finding, b: Blocked) -> Result<(), ApiError> {
+    f.needs_you = Some(format!("Blocked: {}", b.you_do));
+    f.queued = None;
+    let st = f.stage.clone();
+    let (repo, title, by) = (f.repo.clone(), f.title.clone(), b.by.clone());
+    let detail = json!({ "kind": b.kind, "what": b.what, "you_do": b.you_do });
+    f.blocked = Some(b.clone());
+    f.updated = now_ms();
+    put_finding(sup, f)?;
+    event(sup, f, &st, &st, "blocked", false, &by, &format!("Blocked on you ({}): {}", b.kind, b.you_do), detail.clone());
+    log(sup, &repo, "decide", "autopilot", &format!("{}: blocked on you ({}): {}", short(&title, 60), b.kind, short(&b.you_do, 120)), json!({ "finding": f.id, "agent": f.agent }), detail);
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -421,6 +632,25 @@ pub struct Finding {
     pub guard_last: Option<i64>,
     /// Why a person is needed now (shown as "Needs you").
     pub needs_you: Option<String>,
+    /// What only a person can do (publish, credentials, an outside
+    /// service, a decision): the autopilot leaves it alone until you
+    /// say it is done (`unblock`).
+    pub blocked: Option<Blocked>,
+    /// Waits for capacity (an agent slot, WIP, budget): not a need of yours.
+    pub queued: Option<String>,
+    /// Why the last develop check failed, and what the agent said.
+    pub last_check: Option<Json>,
+    /// A plan change the fix agent asks for: `{add, remove, why, by, at}`,
+    /// waiting for your yes (`scope-ok`) or no (`scope-no`).
+    pub scope_ask: Option<Json>,
+    /// How many times you talked to this card's agent (`talk`).
+    pub talk_count: i64,
+    /// The read-only agent started to answer you on this card, and its
+    /// kind: `card` (questions) or `scope` (the plan).
+    pub chat_agent: Option<String>,
+    pub chat_kind: Option<String>,
+    /// The time of the scope agent's last answer whose plan was read.
+    pub chat_taken: Option<i64>,
     pub dup_of: Option<String>,
     pub note: Option<String>,
     pub by: String,
@@ -1225,6 +1455,19 @@ pub struct Memory {
     pub prompt_log: PathBuf,
     /// `CHLOECTX_AGENT_NAME`, `CHLOECTX_PROMPT_SOURCE`, `CHLOECTX_PROMPT_LOG`.
     pub who: Json,
+    /// Wired into the run (hooks, server, tools); false: only a store of its
+    /// own for whatever ChloeCtx the persona runs itself (a sandbox).
+    pub wired: bool,
+}
+
+/// A persona that plays without memory still gets a ChloeCtx home of its
+/// own, empty and thrown away with the run: what it installs, records or
+/// asks lands there, never in your stores or another project's.
+fn sandbox_memory(run_dir: &Path) -> Memory {
+    let home = run_dir.join("chloectx");
+    let _ = std::fs::create_dir_all(&home);
+    let models = models_dir(std::env::var("CHLOECTX_MODELS").ok(), std::env::var("XDG_DATA_HOME").ok(), std::env::var("HOME").ok(), |p| p.is_dir());
+    Memory { home: Some(home), models: Some(models), settings: PathBuf::new(), mcp: PathBuf::new(), prompt_log: PathBuf::new(), who: Json::Null, wired: false }
 }
 
 /// ChloeCtx's models folder: `$CHLOECTX_MODELS`, else `chloectx/models`
@@ -1253,13 +1496,21 @@ pub const MEMORY_READ_TOOLS: [&str; 3] = ["mcp__chloectx__memory_search", "mcp__
 /// and only its read tools; every other call runs with ChloeCtx off. Both
 /// tell ChloeCtx the prompt is Workbench's, not the user's.
 pub fn claude_call(role: &str, model: &str, stream: bool, mem: Option<&Memory>) -> (Vec<String>, Vec<(String, String)>) {
-    let mem = mem.filter(|_| matches!(role, "play" | "scope"));
+    let mem = mem.filter(|m| matches!(role, "play" | "scope") && (m.wired || role == "play"));
     let mut args: Vec<String> = vec!["-p".into(), "--output-format".into(), if stream { "stream-json" } else { "json" }.into(), "--model".into(), model.to_string()];
     if stream {
         args.push("--verbose".into());
     }
     let mut envs: Vec<(String, String)> = Vec::new();
     match mem {
+        Some(m) if !m.wired => {
+            if let Some(h) = &m.home {
+                envs.push(("CHLOECTX_HOME".into(), h.to_string_lossy().to_string()));
+            }
+            if let Some(x) = &m.models {
+                envs.push(("CHLOECTX_MODELS".into(), x.to_string_lossy().to_string()));
+            }
+        }
         Some(m) => {
             args.extend(["--settings".into(), m.settings.to_string_lossy().to_string(), "--mcp-config".into(), m.mcp.to_string_lossy().to_string()]);
             if let Some(h) = &m.home {
@@ -1275,7 +1526,7 @@ pub fn claude_call(role: &str, model: &str, stream: bool, mem: Option<&Memory>) 
         None => envs.push(("CHLOECTX_DISABLE".into(), "1".into())),
     }
     // Last: --allowedTools takes every word after it (the prompt is on stdin).
-    let tools = match (role, mem) {
+    let tools = match (role, mem.filter(|m| m.wired)) {
         ("play", Some(_)) => "Bash Read Write Edit Glob Grep WebFetch mcp__chloectx__*".to_string(),
         ("play", None) => "Bash Read Write Edit Glob Grep WebFetch".to_string(),
         ("scope", Some(_)) => format!("Read Glob Grep {}", MEMORY_READ_TOOLS.join(" ")),
@@ -1307,7 +1558,7 @@ fn wire_memory(sup: &Supervisor, name: &str, dir: &Path, cwd: &Path, home: Optio
     let (sf, mf) = (dir.join("settings.json"), dir.join("mcp.json"));
     std::fs::write(&sf, serde_json::to_string_pretty(&settings).unwrap()).map_err(|e| e.to_string())?;
     std::fs::write(&mf, serde_json::to_string_pretty(&mcp).unwrap()).map_err(|e| e.to_string())?;
-    Ok(Memory { home, models, settings: sf, mcp: mf, prompt_log: who.log.clone(), who: who.env() })
+    Ok(Memory { home, models, settings: sf, mcp: mf, prompt_log: who.log.clone(), who: who.env(), wired: true })
 }
 
 /// The version a `--version` line names (`chloectx 0.3.4` → `0.3.4`).
@@ -1468,7 +1719,7 @@ fn prompt_for(role: &str, job: &Json) -> String {
             ) + if job["memory"] == true { "\n\nYou have memory of your earlier visits (memory_* tools); use it like a returning user would." } else { "" }
         }
         "scope" => format!(
-            "A user of the software in the current directory hit this problem:\n\nTitle: {}\nDetail: {}\nRepro script (fails while the problem is there):\n{}\n\nRead the code (do not change anything) and scope the fix. End your answer with one JSON object and nothing after it:\n{{\"area\": \"the component or folder\", \"files\": [\"paths a fix likely changes, including where its test goes\"], \"root_cause\": \"one or two sentences\", \"acceptance\": \"what must be true when it is fixed (the repro exits 0, plus ...)\", \"size\": \"S\" or \"M\" or \"L\"}}",
+            "A user of the software in the current directory hit this problem:\n\nTitle: {}\nDetail: {}\nRepro script (fails while the problem is there):\n{}\n\nRead the code (do not change anything) and scope the fix. End your answer with one JSON object and nothing after it:\n{{\"area\": \"the component or folder\", \"parts\": [{{\"name\": \"a part of the code the fix changes, named as a person would say it (e.g. the crawler's template learning)\", \"paths\": [\"the repository paths it lives in, paths only\"]}}], \"files\": [], \"root_cause\": \"one or two sentences\", \"acceptance\": \"what must be true when it is fixed (the repro exits 0, plus ...)\", \"size\": \"S\" or \"M\" or \"L\"}}\n\nIf the fix needs a step only a person can take (publishing a package or a release, credentials, account or repository settings, an outside service, the owner's decision), add to that object \"blocked\": {{\"kind\": \"credentials\" or \"publish\" or \"account\" or \"external\" or \"decision\", \"what\": \"why an agent cannot do it\", \"you_do\": \"the exact step for the person\"}}.",
             job["finding"]["title"].as_str().unwrap_or(""),
             job["finding"]["detail"].as_str().unwrap_or(""),
             job["finding"]["repro"].as_str().unwrap_or("(none)")
@@ -1553,18 +1804,30 @@ fn shared_env(sup: &Supervisor, repo: &str) -> std::collections::BTreeMap<String
     let key = repo.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
     let dir = sup.cfg.data_dir.join("cargo-target").join(format!("{key:016x}"));
     let _ = std::fs::create_dir_all(&dir);
-    [("CARGO_TARGET_DIR".to_string(), dir.to_string_lossy().to_string())].into_iter().collect()
+    // Converge's agents keep their memory in a space of their own (one per
+    // repository): their sessions stay out of your stores and briefings, and
+    // yours out of theirs.
+    let ctx = sup.cfg.data_dir.join("converge").join("agents-memory").join(format!("{key:016x}"));
+    let _ = std::fs::create_dir_all(&ctx);
+    let mut env: std::collections::BTreeMap<String, String> = [("CARGO_TARGET_DIR".to_string(), dir.to_string_lossy().to_string()), ("CHLOECTX_HOME".to_string(), ctx.to_string_lossy().to_string())].into_iter().collect();
+    let models = models_dir(std::env::var("CHLOECTX_MODELS").ok(), std::env::var("XDG_DATA_HOME").ok(), std::env::var("HOME").ok(), |p| p.is_dir());
+    env.insert("CHLOECTX_MODELS".into(), models.to_string_lossy().to_string());
+    env
 }
 
 /// An agent in its own worktree writes `.converge/repro.sh`, with the fix
 /// agents' allow-list so it does not stop at every command.
-fn start_repro_agent(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &str) -> Result<(), ApiError> {
+/// `note`: what you said on the card (`talk`), told to the agent.
+fn start_repro_agent(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &str, note: Option<&str>) -> Result<(), ApiError> {
     let st = settings(sup, &f.repo);
     let short = f.id.trim_start_matches("cv").chars().take(8).collect::<String>();
-    let task = format!(
-        "Write a reproduction script for this problem a user hit, without fixing it.\n\nProblem: {}\n{}\n\nWrite .converge/repro.sh at the repository root: a POSIX sh script, run from the root, that exits 1 while the problem is there and 0 once it is fixed (any other exit, or running past a few minutes, counts as a broken repro, so do not build more than it needs). Run it to check that it exits 1 now, then stop. If the problem cannot be checked by a script, write none and say why.",
-        f.title, f.detail
+    let mut task = format!(
+        "Write a reproduction script for this problem a user hit, without fixing it.\n\nProblem: {}\n{}\n\nWrite .converge/repro.sh at the repository root: a POSIX sh script, run from the root, that exits 1 while the problem is there and 0 once it is fixed (any other exit, or running past a few minutes, counts as a broken repro, so do not build more than it needs). Run it to check that it exits 1 now, then stop. If the problem cannot be checked by a script, write none and say why.\n\n{}",
+        f.title, f.detail, BLOCKED_HELP
     );
+    if let Some(n) = note {
+        task.push_str(&format!("\n\nThe person who owns this project says about it: {n}"));
+    }
     let req = SpawnRequest {
         repo: f.repo.clone(),
         task: Some(task),
@@ -1580,8 +1843,16 @@ fn start_repro_agent(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, b
     let aid = a["id"].as_str().unwrap_or("").to_string();
     f.agent = Some(aid.clone());
     f.worktree = sup.agent_row(&aid).map(|r| r.cwd);
+    // A worktree an earlier repro agent of this name left is reused: what
+    // that one wrote is not this one's.
+    if let Some(wt) = f.worktree.as_deref() {
+        for x in [".converge/repro.sh", ".converge/blocked.json"] {
+            let _ = std::fs::remove_file(Path::new(wt).join(x));
+        }
+    }
+    f.queued = None;
     f.needs_you = None;
-    failed(sup, f, "repro_agent", by, &format!("Agent {aid} is writing the repro"), json!({ "agent": aid }))
+    failed(sup, f, "repro_agent", by, &format!("Agent {aid} is writing the repro"), json!({ "agent": aid, "note": note }))
 }
 
 /// The repro agent's `.converge/repro.sh` becomes the finding's repro.
@@ -1721,12 +1992,20 @@ fn gate_scope(sup: &Arc<Supervisor>, id: &str) -> Result<(), ApiError> {
                 run.cost_usd = v["cost_usd"].as_f64().unwrap_or(0.0);
                 run.state = "done".into();
                 let mut sc: Scope = serde_json::from_value(v.clone()).unwrap_or_default();
+                if let Some(b) = blocked_of(&v["blocked"], "scope") {
+                    sc.size = sc.size.trim().to_uppercase();
+                    f.scope = Some(sc);
+                    run.ended = Some(now_ms());
+                    put_run(sup, &run)?;
+                    return set_blocked(sup, &mut f, b);
+                }
                 sc.size = sc.size.trim().to_uppercase();
                 // What you asked for keeps the acceptance you were given.
                 let before = f.scope.as_ref().map(|s| s.acceptance.clone()).filter(|a| !a.trim().is_empty());
                 if sc.acceptance.trim().is_empty() {
                     sc.acceptance = before.unwrap_or_else(|| "The locked repro exits 0".into());
                 }
+                resolve_parts(sup, &f.repo, &mut sc);
                 f.scope = Some(sc);
             }
             Err(e) => {
@@ -1782,7 +2061,7 @@ pub fn score(f: &Finding) -> f64 {
 fn dev_task(f: &Finding) -> String {
     let sc = f.scope.clone().unwrap_or_default();
     format!(
-        "Fix this problem a user hit (Workbench Converge, finding {id}, severity {sev}).\n\nProblem: {title}\n{detail}\n\nScope: {area}. Likely files: {files}. Root cause: {cause}\nAcceptance: {acc}\n\nThis script fails now and must exit 0 when you are done (run it from the repository root with sh; do not change it, Workbench keeps its own copy):\n{repro}\n\nAdd a regression test, keep the change to the scope, run the tests, and commit your work on this branch. Then stop: Workbench checks the repro, the tests and the diff, and the persona who found it replays the journey.",
+        "Fix this problem a user hit (Workbench Converge, finding {id}, severity {sev}).\n\nProblem: {title}\n{detail}\n\nScope: {area}. Likely files: {files}. Root cause: {cause}\nAcceptance: {acc}\n\nThis script fails now and must exit 0 when you are done (run it from the repository root with sh; do not change it, Workbench keeps its own copy):\n{repro}\n\nAdd a regression test, keep the change to the scope, run the tests, and commit your work on this branch. Then stop: Workbench checks the repro, the tests and the diff, and the persona who found it replays the journey.\n\n{help}",
         id = f.id,
         sev = sev_name(f.severity),
         title = f.title,
@@ -1791,7 +2070,8 @@ fn dev_task(f: &Finding) -> String {
         files = if sc.files.is_empty() { "(not named)".into() } else { sc.files.join(", ") },
         cause = sc.root_cause,
         acc = sc.acceptance,
-        repro = f.repro.clone().unwrap_or_default()
+        repro = f.repro.clone().unwrap_or_default(),
+        help = format!("{BLOCKED_HELP} {SCOPE_HELP}")
     )
 }
 
@@ -1821,6 +2101,7 @@ fn start_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &
     f.branch = Some(branch.clone());
     f.worktree = sup.agent_row(&aid).map(|r| r.cwd);
     f.rounds = 0;
+    f.queued = None;
     f.needs_you = None;
     advance_to(sup, f, "develop", "slot", true, by, &format!("Agent {aid} started on {branch}"), json!({ "agent": aid, "branch": branch }))
 }
@@ -1841,7 +2122,11 @@ fn steer_back(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, text: &s
     }
     let st = settings(sup, &f.repo);
     if f.rounds >= st.max_rounds {
-        f.needs_you = Some(format!("{} rounds without passing: look at the branch, steer the agent, or park it.", f.rounds));
+        let first = f.last_check.as_ref().and_then(|c| c["problems"][0].as_str().map(|p| one_line(p, 200)));
+        f.needs_you = Some(match first {
+            Some(p) => format!("{} rounds without passing: {p}. Look at the branch, steer the agent, or park it.", f.rounds),
+            None => format!("{} rounds without passing: look at the branch, steer the agent, or park it.", f.rounds),
+        });
     }
 }
 
@@ -1861,6 +2146,19 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
         return put_finding(sup, &f);
     };
     let base = base_of(&repo, &st);
+    let agent_name = f.agent.as_deref().map(|a| who(sup, a)).unwrap_or_else(|| "The fix agent".into());
+    if let Some(b) = read_blocked(&wt, &agent_name) {
+        return set_blocked(sup, &mut f, b);
+    }
+    if let Some(ask) = read_scope_ask(&wt, &agent_name) {
+        let add: Vec<&str> = ask["add"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+        f.needs_you = Some(format!("{agent_name} asks to change the plan{}: approve or keep the plan", if add.is_empty() { String::new() } else { format!(" (add {})", add.join(", ")) }));
+        let st2 = f.stage.clone();
+        event(sup, &f, &st2, &st2, "scope_ask", false, &agent_name, f.needs_you.as_deref().unwrap_or(""), ask.clone());
+        f.scope_ask = Some(ask);
+        f.updated = now_ms();
+        return put_finding(sup, &f);
+    }
     let mut problems: Vec<String> = Vec::new();
     let dirty = git(&wt, &["status", "--porcelain"]).unwrap_or_default();
     if !dirty.trim().is_empty() {
@@ -1898,10 +2196,10 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
     if !changed.is_empty() && !docs_only && !changed.iter().any(|p| p.to_lowercase().contains("test")) {
         problems.push("no test file changed: add a regression test".into());
     }
-    let files = f.scope.as_ref().map(|s| s.files.clone()).unwrap_or_default();
-    let outside: Vec<&String> = if files.is_empty() { Vec::new() } else { changed.iter().filter(|c| !files.iter().any(|p| c.starts_with(p.trim_end_matches('*')) || c.to_lowercase().contains("test"))).collect() };
+    let files = f.scope.as_ref().map(scope_paths).unwrap_or_default();
+    let outside: Vec<&String> = if files.is_empty() { Vec::new() } else { changed.iter().filter(|c| !in_scope(c, &files) && !c.to_lowercase().contains("test")).collect() };
     if !outside.is_empty() {
-        problems.push(format!("changed outside the scope: {}", outside.iter().map(|x| x.as_str()).collect::<Vec<_>>().join(", ")));
+        problems.push(format!("changed outside the plan's files: {} (if the fix needs them, ask with .converge/scope_change.json)", outside.iter().map(|x| x.as_str()).collect::<Vec<_>>().join(", ")));
     }
     let evidence = json!({ "base": base, "changed": changed, "docs_only": docs_only, "repro": runs.iter().map(|(c, o)| json!({ "exit": c, "output": o })).collect::<Vec<_>>(), "tests": tests, "round": f.rounds + 1 });
     if f.repro_hash.as_deref() != f.repro.as_deref().map(repro_hash).as_deref() {
@@ -1913,7 +2211,9 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
         f.needs_you = None;
         return advance_to(sup, &mut f, "verify", "develop", true, "autopilot", &format!("Repro green {green} of {green}; tests pass; {} files changed", changed.len()), evidence);
     }
-    let text = format!("Workbench's check of your branch did not pass (round {}):\n- {}\nFix these, commit, and stop.", f.rounds + 1, problems.join("\n- "));
+    let text = format!("Workbench's check of your branch did not pass (round {}):\n- {}\nFix these, commit, and stop. {BLOCKED_HELP}", f.rounds + 1, problems.join("\n- "));
+    let said = f.agent.as_deref().and_then(|a| crate::capsule::last_summary(sup, a)).map(|t| crate::narrate::sentences(&t, 2, 400));
+    f.last_check = Some(json!({ "problems": problems, "agent_said": said, "at": now_ms(), "round": f.rounds + 1 }));
     steer_back(sup, lv, &mut f, &text);
     failed(sup, &mut f, "develop", "autopilot", &problems.join("; "), evidence)
 }
@@ -1970,6 +2270,7 @@ fn play(sup: &Arc<Supervisor>, lv: &Arc<Levels>, persona_id: &str, finding: Opti
         },
     };
     run.use_memory = mem.is_some();
+    let mem = mem.or_else(|| Some(sandbox_memory(&run_dir)));
     if run.use_memory {
         put_run(sup, &run)?;
         log(sup, &pe.repo, "persona", &pe.name, &format!("{} remembers its earlier visits (its own memory)", pe.name), refs.clone(), json!({ "use_memory": true, "store": mem.as_ref().and_then(|m| m.home.as_ref()).map(|h| h.to_string_lossy().to_string()) }));
@@ -2374,12 +2675,22 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
             did.push(format!("the duplicate check of {}", short(&f.title, 50)));
         }
     }
+    // What you agreed with a scope agent becomes the plan.
+    for f in fs.iter_mut().filter(|f| f.state == "active" && f.chat_kind.as_deref() == Some("scope")) {
+        if busy_what(&f.id).is_none() {
+            take_chat_scope(sup, f)?;
+        }
+    }
     let fs = findings_of(sup, repo);
     let active: Vec<&Finding> = fs.iter().filter(|f| f.state == "active").collect();
     let mut repro_agents = active.iter().filter(|f| f.stage == "reproduce" && f.repro.is_none() && f.agent.is_some()).count();
     for f in &active {
         let id = f.id.clone();
         let (s2, l2) = (sup.clone(), lv.clone());
+        // Blocked on you: nothing to do until you say it is done.
+        if f.blocked.is_some() {
+            continue;
+        }
         let h = match f.stage.as_str() {
             "reproduce" if f.repro.is_some() => in_background(&id, "reproducing", {
                 let id = id.clone();
@@ -2390,7 +2701,10 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
             // A repro agent finished: take its script, or say it wrote none.
             "reproduce" if f.agent.as_deref().is_some_and(|a| agent_done(sup, a)) => {
                 if let Ok(mut g) = get_finding(sup, &id) {
-                    if take_repro(sup, &mut g, "autopilot").is_err() {
+                    let name = g.agent.as_deref().map(|a| who(sup, a)).unwrap_or_else(|| "The repro agent".into());
+                    if let Some(b) = g.worktree.as_deref().and_then(|w| read_blocked(Path::new(w), &name)) {
+                        let _ = set_blocked(sup, &mut g, b);
+                    } else if take_repro(sup, &mut g, "autopilot").is_err() {
                         let aid = g.agent.take();
                         g.needs_you = Some("The repro agent finished without writing .converge/repro.sh: paste a repro, ask again, or park it.".into());
                         g.repro_attempts += 1;
@@ -2413,11 +2727,19 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
                         let _ = gate_reproduce(sup, &id);
                     }
                 } else if let Ok(mut g) = get_finding(sup, &id) {
-                    match start_repro_agent(sup, lv, &mut g, "autopilot") {
+                    match start_repro_agent(sup, lv, &mut g, "autopilot", None) {
                         Ok(()) => {
                             repro_agents += 1;
                             started.push(format!("{id} repro agent"));
                             did.push(format!("a repro agent for {}", short(&f.title, 50)));
+                        }
+                        Err(e) if e.status == 429 => {
+                            let q = format!("waiting for a free agent slot ({})", one_line(&e.message, 120));
+                            if g.queued.as_deref() != Some(q.as_str()) {
+                                g.queued = Some(q);
+                                let _ = put_finding(sup, &g);
+                            }
+                            decide(&mut dec, "agent_slots".to_string(), format!("Agent slots full: {}", one_line(&e.message, 120)));
                         }
                         Err(e) => {
                             g.needs_you = Some(format!("Could not start a repro agent: {}", e.message));
@@ -2520,6 +2842,15 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
                 in_dev += 1;
                 started.push(format!("{} develop", f.id));
                 did.push(format!("development of {}", short(&f.title, 50)));
+            }
+            Err(e) if e.status == 429 => {
+                let q = format!("waiting for a free agent slot ({})", one_line(&e.message, 120));
+                if f.queued.as_deref() != Some(q.as_str()) {
+                    f.queued = Some(q);
+                    put_finding(sup, &f)?;
+                }
+                decide(&mut dec, "agent_slots".to_string(), format!("Agent slots full: {}", one_line(&e.message, 120)));
+                break;
             }
             Err(e) => {
                 f.needs_you = Some(format!("Could not start an agent: {}", e.message));
@@ -2914,6 +3245,11 @@ pub fn metrics_of(sup: &Supervisor, repo: &str, component: Option<&str>) -> Json
     json!({
         "ease": ease,
         "open": active.len(),
+        "blocked": {
+            "total": active.iter().filter(|f| f.blocked.is_some()).count(),
+            "by_kind": BLOCKED_KINDS.iter().map(|k| (k.to_string(), json!(active.iter().filter(|f| f.blocked.as_ref().is_some_and(|b| b.kind == *k)).count()))).filter(|(_, n)| n != &json!(0)).collect::<serde_json::Map<_, _>>(),
+            "queued": active.iter().filter(|f| f.queued.is_some()).count(),
+        },
         "open_by_severity": { "blocker": active.iter().filter(|f| f.severity >= 4).count(), "major": active.iter().filter(|f| f.severity == 3).count(), "minor": active.iter().filter(|f| f.severity == 2).count(), "papercut": active.iter().filter(|f| f.severity <= 1).count() },
         "by_stage": by_stage,
         "by_theme": by_theme,
@@ -3029,8 +3365,12 @@ pub fn routes() -> Router<App> {
         .route("/api/converge/timeline", get(timeline_route))
         .route("/api/converge/activity", get(activity_route))
         .route("/api/converge/ask", post(ask_route))
+        .route("/api/converge/stop", post(stop_route))
+        .route("/api/converge/parts", get(parts_route))
         .route("/api/converge/findings", post(finding_new))
+        .route("/api/converge/findings/bulk", post(bulk_route))
         .route("/api/converge/findings/:id", get(finding_get).put(finding_put).patch(finding_put))
+        .route("/api/converge/findings/:id/talk", get(talk_get).post(talk_post))
         .route("/api/converge/findings/:id/:verb", post(finding_verb))
         .route("/api/converge/personas", get(personas_get).post(persona_new))
         .route("/api/converge/personas/generate", post(generate_route))
@@ -3072,7 +3412,9 @@ async fn overview_route(State(app): State<App>, Query(q): Query<RepoQ>) -> ApiRe
         let ps: Vec<Json> = personas_of(&sup, &repo).iter().map(|p| persona_json(&sup, p)).collect();
         let runs: Vec<Json> = runs_of(&sup, &repo, 30).iter().map(|r| serde_json::to_value(r).unwrap()).collect();
         let all = findings_of(&sup, &repo);
-        Ok(json!({ "repo": repo, "settings": settings(&sup, &repo), "stages": gates(), "themes": THEMES, "components": components_open(&repo, &all), "findings": fs, "personas": ps, "runs": runs, "metrics": metrics(&sup, &repo), "busy": BUSY.lock().unwrap().clone().unwrap_or_default(), "last_tick": last_tick(&sup, &repo), "chloectx": chloectx_check(&sup, &repo) }))
+        let moving = |f: &Finding| busy_what(&f.id).is_some() || f.agent.as_deref().and_then(|a| sup.agent_row(a)).is_some_and(|a| matches!(a.state.as_str(), "starting" | "working"));
+        let steps = steps_of(&all, &moving);
+        Ok(json!({ "repo": repo, "settings": settings(&sup, &repo), "stages": gates(), "themes": THEMES, "components": components_open(&repo, &all), "findings": fs, "personas": ps, "runs": runs, "metrics": metrics(&sup, &repo), "busy": BUSY.lock().unwrap().clone().unwrap_or_default(), "last_tick": last_tick(&sup, &repo), "chloectx": chloectx_check(&sup, &repo), "steps": steps, "merged_week": merged_week(&all, now_ms()) }))
     })
     .await?;
     Ok(AxJson(v).into_response())
@@ -3084,7 +3426,9 @@ pub fn needs_items(sup: &Supervisor, keep: &dyn Fn(&str) -> bool) -> Vec<(i64, J
     let all: Vec<Finding> = docs(sup, "SELECT doc FROM cv_findings WHERE state = 'active' LIMIT 5000", &Params::new());
     let mut groups: Vec<(String, String, Vec<&Finding>)> = Vec::new();
     for f in all.iter().filter(|f| keep(&f.repo)) {
-        let why = if let Some(n) = &f.needs_you {
+        let why = if let Some(b) = &f.blocked {
+            format!("Blocked on you ({}): {}", b.kind, b.you_do)
+        } else if let Some(n) = &f.needs_you {
             n.clone()
         } else if f.stage == "review" && f.ci.as_deref() == Some("pass") {
             "CI passed: approve the merge.".into()
@@ -3093,23 +3437,417 @@ pub fn needs_items(sup: &Supervisor, keep: &dyn Fn(&str) -> bool) -> Vec<(i64, J
         } else {
             continue;
         };
-        // Reasons that differ only in their details group together.
-        let key = format!("{}\u{0}{}", f.repo, why.split([':', '(']).next().unwrap_or(&why).trim());
+        // Reasons that differ only in their details group together; what
+        // only you can do groups only with the same step.
+        let key = match &f.blocked {
+            Some(b) => format!("{}\u{0}blocked\u{0}{}\u{0}{}", f.repo, b.kind, b.you_do.trim()),
+            None => format!("{}\u{0}{}", f.repo, why.split([':', '(']).next().unwrap_or(&why).trim()),
+        };
         match groups.iter_mut().find(|g| g.0 == key) {
             Some(g) => g.2.push(f),
             None => groups.push((key, why, vec![f])),
         }
     }
+    // What only you can do comes first.
+    groups.sort_by_key(|g| !g.1.starts_with("Blocked on you"));
     groups
         .into_iter()
         .map(|(key, why, fs)| {
             let since = fs.iter().map(|f| f.updated).min().unwrap_or(0);
-            let list: Vec<Json> = fs.iter().take(50).map(|f| json!({ "id": f.id, "title": f.title, "stage": f.stage, "severity": f.severity, "severity_name": sev_name(f.severity), "why": f.needs_you })).collect();
+            let list: Vec<Json> = fs.iter().take(50).map(|f| json!({ "id": f.id, "title": f.title, "stage": f.stage, "severity": f.severity, "severity_name": sev_name(f.severity), "why": f.needs_you, "blocked": f.blocked.as_ref().map(|b| json!({ "kind": b.kind, "what": b.what, "you_do": b.you_do })) })).collect();
             let repo = fs[0].repo.clone();
             let hash = format!("cv-{:x}", key.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)));
-            (since, json!({ "kind": "converge", "id": hash, "repo": repo, "since_ms": since, "text": why, "count": fs.len(), "findings": list, "stage": fs[0].stage }))
+            (since, json!({ "kind": "converge", "id": hash, "repo": repo, "since_ms": since, "text": why, "count": fs.len(), "findings": list, "stage": fs[0].stage, "blocked": fs[0].blocked.as_ref().map(|b| json!({ "kind": b.kind, "what": b.what, "you_do": b.you_do })) }))
         })
         .collect()
+}
+
+// ------------------------------------------------------------------- talk
+
+/// The longest thing you can say on a card at once.
+const TALK_MAX: usize = 8000;
+
+/// A chat agent's permissions: it reads the code and changes nothing.
+fn chat_profile() -> crate::supervisor::PermissionProfile {
+    crate::supervisor::PermissionProfile {
+        allow: ["Read", "Glob", "Grep"].iter().map(|x| x.to_string()).collect(),
+        ask: Vec::new(),
+        deny: ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"].iter().map(|x| x.to_string()).collect(),
+    }
+}
+
+/// Who answers you on a card, by its stage: the repro agent, the fix
+/// agent, a scope agent (the plan) or a card agent (questions).
+pub fn talk_kind(state: &str, stage: &str) -> &'static str {
+    match (state, stage) {
+        ("active" | "cant_reproduce", "reproduce") => "repro",
+        ("active", "develop" | "verify" | "review") => "fix",
+        ("active", "scope" | "prioritize") => "scope",
+        _ => "card",
+    }
+}
+
+/// Your words, framed for an agent that works on the card.
+fn told(text: &str) -> String {
+    format!("The person who owns this project says, about this card: {text}")
+}
+
+fn talk_rows(sup: &Supervisor, finding: &str) -> Vec<Json> {
+    docs(sup, "SELECT doc FROM cv_talk WHERE finding = :f ORDER BY id ASC LIMIT 2000", &Params::new().set("f", s(finding)))
+}
+
+fn put_talk(sup: &Supervisor, f: &Finding, who: &str, text: &str, agent: Option<&str>) -> Result<Json, ApiError> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 1_000_000;
+    let ts = now_ms();
+    let id = format!("tk{ts:013}{n:06}");
+    let doc = json!({ "id": id, "ts": ts, "who": who, "text": text, "agent": agent });
+    let p = Params::new()
+        .set("id", s(&id))
+        .set("finding", s(&f.id))
+        .set("repo", s(&f.repo))
+        .set("ts", t(ts))
+        .set("who", s(who))
+        .set("text", s(text))
+        .set("agent", agent.map_or(Value::Null, s))
+        .set("doc", s(&doc.to_string()));
+    sup.db().query("INSERT INTO cv_talk (id, finding, repo, ts, who, text, agent, doc) VALUES (:id, :finding, :repo, :ts, :who, :text, :agent, :doc)", &p).map_err(ApiError::internal)?;
+    Ok(doc)
+}
+
+/// The finding, the way a chat agent is told it.
+fn card_context(f: &Finding) -> String {
+    let mut c = format!("Problem: {}\n{}\n\nStage: {}. Component: {}. Severity: {}. Kind: {}.", f.title, f.detail, f.stage, if f.component.is_empty() { "unset" } else { &f.component }, sev_name(f.severity), f.kind);
+    if let Some(st) = f.step.as_deref() {
+        c.push_str(&format!(" The user was trying to: {st}."));
+    }
+    if let Some(r) = f.repro.as_deref().filter(|r| !r.trim().is_empty()) {
+        c.push_str(&format!("\n\nIts repro script (exits 1 while the problem is there):\n{r}"));
+    }
+    c
+}
+
+/// A read-only agent in the main checkout that answers you: `card`
+/// (questions) or `scope` (the plan; its answer may end with a new one).
+fn start_chat(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &Finding, kind: &str, text: &str) -> Result<String, ApiError> {
+    let st = settings(sup, &f.repo);
+    let short = f.id.trim_start_matches("cv").chars().take(8).collect::<String>();
+    let head = format!("Workbench Converge, finding {}. You may read the code (Read, Glob, Grep); you cannot change anything or run commands.", f.id);
+    let task = if kind == "scope" {
+        let plan = f.scope.as_ref().map(|s| serde_json::to_string(s).unwrap()).unwrap_or_else(|| "(none yet)".into());
+        format!(
+            "You talk with the person who owns this project about the plan to fix a problem a user hit ({head})\n\n{}\n\nThe plan now: {plan}\n\nThe person says: {text}\n\nAnswer them in a few sentences. If what they say changes the plan, end your answer with the whole revised plan as one JSON object and nothing after it: {{\"area\": \"the component or folder\", \"parts\": [{{\"name\": \"a part of the code, as a person would say it\", \"paths\": [\"its repository paths\"]}}], \"files\": [], \"root_cause\": \"one or two sentences\", \"acceptance\": \"what must be true when it is fixed\", \"size\": \"S\" or \"M\" or \"L\"}}. Workbench takes it as the new plan. If the plan stays, end without JSON. Their next messages come as your next prompts.",
+            card_context(f)
+        )
+    } else {
+        format!("You answer the person who owns this project about a problem a user hit ({head})\n\n{}\n\nThe person says: {text}\n\nAnswer in a few sentences, then stop. Their next messages come as your next prompts.", card_context(f))
+    };
+    let req = SpawnRequest {
+        repo: f.repo.clone(),
+        task: Some(task),
+        name: Some(format!("{}-{short}", if kind == "scope" { "cvs" } else { "cvt" })),
+        worktree: Some(false),
+        model: Some(st.model.clone()).filter(|m| !m.trim().is_empty()),
+        read_only: Some(true),
+        permissions: Some(chat_profile()),
+        permission_mode: Some("default".into()),
+        ..Default::default()
+    };
+    let a = crate::goals::spawn(sup, lv, req)?;
+    Ok(a["id"].as_str().unwrap_or("").to_string())
+}
+
+/// The fix agent again, on the finding's worktree and branch, told what
+/// you said: its session continues when it has one.
+fn restart_fix(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, text: &str) -> Result<String, ApiError> {
+    let st = settings(sup, &f.repo);
+    let words = format!("{}\n\nAnswer them. If it asks for a change, make it on this branch, commit it, and stop. {BLOCKED_HELP}", told(text));
+    let profile = crate::supervisor::PermissionProfile { allow: st.dev_allow.clone(), ask: Vec::new(), deny: st.dev_deny.clone() };
+    let req = match f.agent.as_deref().filter(|a| sup.agent_row(a).is_some()) {
+        Some(old) => {
+            let mut req = sup.restart_request(old, Some(words.clone()))?;
+            // Nothing to continue: it starts over on its task, with your words.
+            if let Some(r) = req.restart.as_mut().filter(|r| r.resume.is_none()) {
+                r.prompt = Some(format!("{}\n\n{words}", dev_task(f)));
+            }
+            req.permissions = Some(profile);
+            req.env = Some(shared_env(sup, &f.repo));
+            if req.permission_mode.is_none() {
+                req.permission_mode = st.dev_permission_mode.clone().filter(|m| !m.is_empty());
+            }
+            req
+        }
+        None => {
+            let repo = PathBuf::from(&f.repo);
+            let short = f.id.trim_start_matches("cv").chars().take(8).collect::<String>();
+            SpawnRequest {
+                repo: f.repo.clone(),
+                task: Some(format!("{}\n\n{words}", dev_task(f))),
+                name: Some(format!("cv-{short}")),
+                branch: Some(f.branch.clone().unwrap_or_else(|| format!("wb/cv-{short}"))),
+                base: Some(base_of(&repo, &st)),
+                worktree: Some(true),
+                model: st.dev_model.clone(),
+                permissions: Some(profile),
+                permission_mode: st.dev_permission_mode.clone().filter(|m| !m.is_empty()),
+                env: Some(shared_env(sup, &f.repo)),
+                ..Default::default()
+            }
+        }
+    };
+    let a = crate::goals::spawn(sup, lv, req)?;
+    let aid = a["id"].as_str().unwrap_or("").to_string();
+    f.agent = Some(aid.clone());
+    if let Some(cwd) = sup.agent_row(&aid).map(|r| r.cwd) {
+        f.branch = f.branch.clone().or_else(|| git(Path::new(&cwd), &["rev-parse", "--abbrev-ref", "HEAD"]).ok());
+        f.worktree = Some(cwd);
+    }
+    Ok(aid)
+}
+
+/// `POST /api/converge/findings/:id/talk {text}`: your words go to the
+/// card's agent, started for them when none runs.
+pub fn talk(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str, text: &str) -> Result<Json, ApiError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(ApiError::bad("text is empty"));
+    }
+    if text.len() > TALK_MAX {
+        return Err(ApiError::bad(format!("text is longer than {TALK_MAX} bytes")));
+    }
+    let mut f = get_finding(sup, id)?;
+    let kind = talk_kind(&f.state, &f.stage);
+    let running = |a: &Option<String>| a.clone().filter(|a| sup.is_running(a));
+    let (aid, started) = match kind {
+        "repro" | "fix" => match running(&f.agent) {
+            Some(a) => {
+                crate::levels::steer(sup, lv, &a, &told(text))?;
+                (a, false)
+            }
+            None if kind == "repro" => {
+                if busy_what(&f.id).is_some() {
+                    return Err(ApiError::conflict("its repro is running now: say it again when it is done"));
+                }
+                // A hint for a card that could not be reproduced brings it back.
+                if f.state == "cant_reproduce" {
+                    f.state = "active".into();
+                    f.repro_attempts = 0;
+                }
+                f.repro = None;
+                f.repro_hash = None;
+                start_repro_agent(sup, lv, &mut f, "you", Some(text))?;
+                (f.agent.clone().unwrap_or_default(), true)
+            }
+            None => (restart_fix(sup, lv, &mut f, text)?, true),
+        },
+        _ => match running(&f.chat_agent).filter(|_| f.chat_kind.as_deref() == Some(kind)) {
+            Some(a) => {
+                crate::levels::steer(sup, lv, &a, text)?;
+                (a, false)
+            }
+            None => {
+                // The other kind's agent (the card moved on) is not the one to ask.
+                if let Some(old) = running(&f.chat_agent) {
+                    let _ = sup.stop_with(&old, Some(true));
+                }
+                let a = start_chat(sup, lv, &f, kind, text)?;
+                f.chat_agent = Some(a.clone());
+                f.chat_kind = Some(kind.to_string());
+                f.chat_taken = None;
+                (a, true)
+            }
+        },
+    };
+    // Talking to the fix agent is how you take over a stuck round.
+    if kind == "fix" && f.stage == "develop" {
+        f.needs_you = None;
+    }
+    f.queued = None;
+    let message = put_talk(sup, &f, "you", text, Some(&aid))?;
+    f.talk_count += 1;
+    f.updated = now_ms();
+    put_finding(sup, &f)?;
+    let name = who(sup, &aid);
+    log(sup, &f.repo, "you", "you", &format!("{}: you said to {name}: “{}”", short(&f.title, 60), one_line(text, 160)), json!({ "finding": f.id, "agent": aid }), json!({ "text": text, "stage": f.stage, "to": kind, "started": started }));
+    Ok(json!({ "message": message, "agent": talk_agent(sup, &f), "started": started }))
+}
+
+/// The agent your next words go to, if there is one.
+fn talk_agent(sup: &Supervisor, f: &Finding) -> Json {
+    let kind = talk_kind(&f.state, &f.stage);
+    let a = match kind {
+        "repro" | "fix" => f.agent.clone(),
+        _ => f.chat_agent.clone().filter(|_| f.chat_kind.as_deref() == Some(kind)),
+    };
+    let Some(a) = a else { return Json::Null };
+    match sup.agent_row(&a) {
+        Some(r) => json!({ "id": a, "name": r.name, "state": r.state, "doing": sup.agent_json_of(&a).map(|j| j["last_event"].clone()).unwrap_or(Json::Null), "kind": kind }),
+        None => Json::Null,
+    }
+}
+
+/// What an agent said at the end of each of its turns since `since`:
+/// `(event id, ts, text)`.
+fn replies_of(sup: &Supervisor, agent: &str, since: i64) -> Vec<(String, i64, String)> {
+    sup.all_events(agent)
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| e.kind == "Stop" && e.ts >= since)
+        .filter_map(|e| {
+            let d = crate::trail::data_of(e)?;
+            let t = d["last_assistant_message"].as_str().map(str::trim).filter(|t| !t.is_empty())?;
+            Some((e.id.clone(), e.ts, t.to_string()))
+        })
+        .collect()
+}
+
+/// `GET /api/converge/findings/:id/talk`: your words and the replies of
+/// the agents they went to (and the card's own), by time.
+pub fn talk_of(sup: &Supervisor, f: &Finding) -> Json {
+    let mine = talk_rows(sup, &f.id);
+    let mut msgs = mine.clone();
+    if let Some(first) = mine.first().and_then(|r| r["ts"].as_i64()) {
+        let mut agents: Vec<String> = Vec::new();
+        for a in mine.iter().filter_map(|r| r["agent"].as_str().map(str::to_string)).chain(f.chat_agent.clone()).chain(f.agent.clone()) {
+            if !agents.contains(&a) {
+                agents.push(a);
+            }
+        }
+        for a in agents {
+            let name = who(sup, &a);
+            for (id, ts, text) in replies_of(sup, &a, first) {
+                msgs.push(json!({ "id": id, "ts": ts, "who": name, "text": text, "agent": a }));
+            }
+        }
+    }
+    msgs.sort_by_key(|m| m["ts"].as_i64().unwrap_or(0));
+    json!({ "messages": msgs, "agent": talk_agent(sup, f) })
+}
+
+/// A plan in a chat answer: its last JSON object, if it is a complete scope.
+pub fn scope_of_reply(text: &str, acceptance: Option<&str>) -> Option<Scope> {
+    let v = extract_json(text)?;
+    v.get("area")?;
+    let mut sc: Scope = serde_json::from_value(v).ok()?;
+    sc.size = sc.size.trim().to_uppercase();
+    if sc.acceptance.trim().is_empty() {
+        sc.acceptance = acceptance.unwrap_or("").to_string();
+    }
+    scope_ok(&sc).ok()?;
+    Some(sc)
+}
+
+/// The scope agent's latest answer: a new plan in it becomes the
+/// finding's scope (scored again). Whether the finding changed.
+fn take_chat_scope(sup: &Supervisor, f: &mut Finding) -> Result<bool, ApiError> {
+    if f.state != "active" || f.chat_kind.as_deref() != Some("scope") || !matches!(f.stage.as_str(), "scope" | "prioritize") {
+        return Ok(false);
+    }
+    let Some(a) = f.chat_agent.clone() else { return Ok(false) };
+    let since = f.chat_taken.map(|t| t + 1).unwrap_or(0);
+    let Some((_, ts, text)) = replies_of(sup, &a, since).pop() else { return Ok(false) };
+    f.chat_taken = Some(ts);
+    let before = f.scope.as_ref().map(|s| s.acceptance.clone());
+    match scope_of_reply(&text, before.as_deref()) {
+        Some(mut sc) => {
+            resolve_parts(sup, &f.repo, &mut sc);
+            let repo = PathBuf::from(&f.repo);
+            f.door = door_of(&repo, &sc);
+            f.scope = Some(sc.clone());
+            f.score = score(f);
+            f.updated = now_ms();
+            put_finding(sup, f)?;
+            let st = f.stage.clone();
+            event(sup, f, &st, &st, "scope_talk", true, &a, &format!("The plan changed after you talked: {} (size {}), score {}", sc.area, sc.size, f.score), json!({ "scope": sc, "agent": a, "door": f.door }));
+        }
+        None => put_finding(sup, f)?,
+    }
+    Ok(true)
+}
+
+// ------------------------------------------------------------------- bulk
+
+/// The verbs `POST /api/converge/findings/bulk` takes.
+pub const BULK_VERBS: [&str; 5] = ["reproduce", "dismiss", "park", "start", "pin"];
+
+/// `POST /api/converge/findings/bulk {repo, ids, verb, reason?}`: the verb on
+/// each, `{done: [ids], failed: [{id, error}]}`.
+fn bulk(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, ids: &[String], verb: &str, v: &Json) -> Result<Json, ApiError> {
+    if !BULK_VERBS.contains(&verb) {
+        return Err(ApiError::bad(format!("verb is one of {}", BULK_VERBS.join(", "))));
+    }
+    if ids.is_empty() || ids.len() > 500 {
+        return Err(ApiError::bad("ids: 1 to 500 finding ids"));
+    }
+    if verb == "dismiss" && v["reason"].as_str().is_none_or(|r| r.trim().is_empty()) {
+        return Err(ApiError::bad("reason is required: why they are not problems (it teaches the personas)"));
+    }
+    let (mut done, mut bad) = (Vec::new(), Vec::new());
+    for id in ids {
+        let r = get_finding(sup, id).and_then(|mut f| {
+            if f.repo != repo {
+                return Err(ApiError::bad(format!("{id} is not a finding of {repo}")));
+            }
+            do_verb(sup, lv, &mut f, verb, v)
+        });
+        match r {
+            Ok(()) => done.push(id.clone()),
+            Err(e) => bad.push(json!({ "id": id, "error": e.message })),
+        }
+    }
+    if !done.is_empty() && matches!(verb, "reproduce" | "start") {
+        kick(sup, lv, repo);
+    }
+    Ok(json!({ "done": done, "failed": bad }))
+}
+
+// ---------------------------------------------------- steps and run summary
+
+/// The five steps of the pipeline you see, by the stages each holds.
+pub const STEPS: [(&str, &[&str]); 5] = [("problems", &["found"]), ("reproducing", &["reproduce"]), ("ready", &["scope", "prioritize"]), ("building", &["develop", "verify"]), ("merge", &["review"])];
+
+/// The overview's `steps`: each step's active findings, how many have work
+/// in flight (a gate, or an agent in its turn), are blocked on you, or queued.
+pub fn steps_of(fs: &[Finding], moving: &dyn Fn(&Finding) -> bool) -> Json {
+    let list: Vec<Json> = STEPS
+        .iter()
+        .map(|(step, stages)| {
+            let mine: Vec<&Finding> = fs.iter().filter(|f| f.state == "active" && stages.contains(&f.stage.as_str())).collect();
+            json!({
+                "step": step, "stages": stages, "count": mine.len(),
+                "moving": mine.iter().filter(|f| f.blocked.is_none() && moving(f)).count(),
+                "blocked": mine.iter().filter(|f| f.blocked.is_some()).count(),
+                "queued": mine.iter().filter(|f| f.queued.is_some()).count(),
+            })
+        })
+        .collect();
+    Json::Array(list)
+}
+
+/// Findings merged in the last seven days.
+pub fn merged_week(fs: &[Finding], now: i64) -> usize {
+    fs.iter().filter(|f| f.stage == "merged" && !matches!(f.state.as_str(), "duplicate" | "dismissed") && f.stage_since >= now - 7 * 86_400_000).count()
+}
+
+/// What a persona's run found, once it ended: `{found, new, known,
+/// findings: [{id, title, new, dup_of}]}`. A finding is known when it was
+/// merged into an open one, or (not checked yet) one says the same.
+pub fn run_summary(run: &Run, fs: &[Finding]) -> Json {
+    let mine: Vec<&Finding> = fs.iter().filter(|f| f.run.as_deref() == Some(run.id.as_str())).collect();
+    let list: Vec<Json> = mine
+        .iter()
+        .map(|f| {
+            let like = || fs.iter().find(|o| o.id != f.id && o.state == "active" && o.created <= f.created && o.run.as_deref() != Some(run.id.as_str()) && similarity(f, o) >= DUP).map(|o| o.id.clone());
+            let dup = match f.state.as_str() {
+                "duplicate" => f.dup_of.clone().or_else(|| Some(String::new())),
+                _ if f.stage == "found" && f.needs_you.is_none() => like(),
+                _ => None,
+            };
+            json!({ "id": f.id, "title": f.title, "new": dup.is_none(), "dup_of": dup.filter(|d| !d.is_empty()) })
+        })
+        .collect();
+    let new = list.iter().filter(|x| x["new"] == true).count();
+    json!({ "found": list.len(), "new": new, "known": list.len() - new, "findings": list })
 }
 
 fn persona_json(sup: &Supervisor, p: &Persona) -> Json {
@@ -3120,8 +3858,38 @@ fn persona_json(sup: &Supervisor, p: &Persona) -> Json {
     v["live_at"] = json!(live.as_deref().and_then(live_of).and_then(|(_, at)| at));
     v["live_run"] = json!(live);
     v["repro_rate"] = json!(if p.reported == 0 { None } else { Some(p.reproduced as f64 / p.reported as f64) });
-    v["open"] = json!(findings_of(sup, &p.repo).iter().filter(|f| f.state == "active" && f.stage != "merged" && f.personas_hit.contains(&p.id)).count());
+    let fs = findings_of(sup, &p.repo);
+    let mine: Vec<&Finding> = fs.iter().filter(|f| f.personas_hit.contains(&p.id)).collect();
+    v["open"] = json!(mine.iter().filter(|f| f.state == "active" && f.stage != "merged").count());
+    // Its scores, for the ranking on the Personas tab.
+    // Found and reproduced count its runs' reports, and at least the
+    // findings it hit (a seeded or merged duplicate counts too).
+    let past_repro = mine.iter().filter(|f| STAGES.iter().position(|x| *x == f.stage).unwrap_or(0) >= 2).count() as i64;
+    v["found"] = json!(p.reported.max(mine.len() as i64));
+    v["reproduced"] = json!(p.reproduced.max(past_repro));
+    v["fixed"] = json!(mine.iter().filter(|f| f.stage == "merged").count());
+    v["blockers"] = json!(mine.iter().filter(|f| f.state == "active" && f.stage != "merged" && f.severity >= 4).count());
+    v["ease_avg"] = json!(mean(&p.ease_hist));
+    v["ease_trend"] = json!(ease_trend(&p.ease_hist));
+    v["cost_usd"] = json!(persona_cost(sup, &p.id));
     v
+}
+
+fn mean(xs: &[f64]) -> Option<f64> {
+    if xs.is_empty() { None } else { Some((xs.iter().sum::<f64>() / xs.len() as f64 * 100.0).round() / 100.0) }
+}
+
+/// The last run's ease against the one before it (None with fewer than two).
+fn ease_trend(xs: &[f64]) -> Option<f64> {
+    match xs {
+        [.., a, b] => Some(((b - a) * 100.0).round() / 100.0),
+        _ => None,
+    }
+}
+
+fn persona_cost(sup: &Supervisor, id: &str) -> f64 {
+    let rows = sup.db().query("SELECT SUM(cost_usd) AS c FROM cv_runs WHERE persona = :p", &Params::new().set("persona", s(id)).set("p", s(id))).unwrap_or_default();
+    rows.first().and_then(|r| r.first()).and_then(|x| match x { Value::Float(f) => Some(*f), Value::Int(i) => Some(*i as f64), _ => None }).map(|c| (c * 10000.0).round() / 10000.0).unwrap_or(0.0)
 }
 
 async fn settings_get(State(app): State<App>, Query(q): Query<RepoQ>) -> ApiResult {
@@ -3457,6 +4225,7 @@ async fn finding_put(State(app): State<App>, headers: HeaderMap, AxPath(id): AxP
     let app_lv = app.lv.clone();
     let out = blocking(move || {
         let mut f = get_finding(&sup, &id)?;
+        let before = f.clone();
         if let Some(x) = v["title"].as_str().map(str::trim).filter(|x| !x.is_empty()) {
             f.title = one_line(x, 200);
         }
@@ -3483,6 +4252,7 @@ async fn finding_put(State(app): State<App>, headers: HeaderMap, AxPath(id): AxP
         if let Some(sc) = v.get("scope").filter(|x| x.is_object()) {
             let mut sc: Scope = serde_json::from_value(sc.clone()).map_err(|e| ApiError::bad(format!("scope: {e}")))?;
             sc.size = sc.size.trim().to_uppercase();
+            resolve_parts(&sup, &f.repo, &mut sc);
             f.scope = Some(sc);
         }
         if let Some(r) = v["repro"].as_str() {
@@ -3503,72 +4273,199 @@ async fn finding_put(State(app): State<App>, headers: HeaderMap, AxPath(id): AxP
         }
         f.score = score(&f);
         f.updated = now_ms();
+        let edited = context_edited(&before, &f);
+        let recheck = !edited.is_empty() && after_edit(&sup, &app_lv, &mut f, &before, &edited, &by);
         put_finding(&sup, &f)?;
-        if v["repro"].is_string() {
+        if v["repro"].is_string() || recheck {
             kick(&sup, &app_lv, &f.repo);
         }
-        Ok(json!({ "finding": f.to_json(&sup) }))
+        Ok(json!({ "finding": f.to_json(&sup), "edited": edited, "recheck": recheck }))
     })
     .await?;
     Ok(AxJson(out).into_response())
 }
 
+/// What of a card's context an edit changed, in words ("the plan's files").
+fn context_edited(a: &Finding, b: &Finding) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if a.title != b.title {
+        out.push("the title");
+    }
+    if a.detail != b.detail {
+        out.push("what happened");
+    }
+    let (sa, sb) = (a.scope.clone().unwrap_or_default(), b.scope.clone().unwrap_or_default());
+    if sa.files != sb.files || sa.parts != sb.parts {
+        out.push("the parts of the code");
+    }
+    if sa.area != sb.area || sa.root_cause != sb.root_cause || sa.size != sb.size {
+        out.push("the plan");
+    }
+    if sa.acceptance != sb.acceptance {
+        out.push("how we know it is fixed");
+    }
+    out
+}
+
+/// After you edit a card's context: recorded on the card, told to the agent
+/// working on it, and a plan change in develop re-runs the branch's check
+/// (the rounds start over). Returns whether a check should run now.
+fn after_edit(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, before: &Finding, edited: &[&str], by: &str) -> bool {
+    let what = edited.join(", ");
+    let st = f.stage.clone();
+    let mut ev = json!({ "fields": edited });
+    if before.scope != f.scope {
+        ev["scope_before"] = serde_json::to_value(&before.scope).unwrap_or(Json::Null);
+        ev["scope_after"] = serde_json::to_value(&f.scope).unwrap_or(Json::Null);
+    }
+    event(sup, f, &st, &st, "edited", true, by, &format!("You edited {what}"), ev);
+    log(sup, &f.repo, "you", by, &format!("{}: you edited {what}", short(&f.title, 70)), json!({ "finding": f.id }), Json::Null);
+    let mut told = format!("The person who owns this project edited this card ({what}). Work from this version:\nTitle: {}\nWhat happened: {}", f.title, one_line(&f.detail, 1500));
+    if let Some(sc) = f.scope.as_ref() {
+        told.push_str(&format!("\nPlan: area {}; parts of the code {}; root cause: {}; fixed when: {}; size {}", sc.area, if scope_paths(sc).is_empty() { "(any)".into() } else { sc.parts.iter().map(|p| format!("{} [{}]", p.name, p.paths.join(", "))).chain(sc.files.iter().cloned()).collect::<Vec<_>>().join("; ") }, one_line(&sc.root_cause, 400), one_line(&sc.acceptance, 400), sc.size));
+    }
+    let plan_changed = edited.iter().any(|e| e.starts_with("the plan") || e.starts_with("how we know"));
+    let recheck = plan_changed && f.stage == "develop" && f.agent.as_deref().is_some_and(|a| agent_done(sup, a));
+    if recheck {
+        told.push_str("\nWorkbench checks your branch again against this plan now.");
+        f.rounds = 0;
+        f.needs_you = None;
+    }
+    for a in [f.agent.clone(), f.chat_agent.clone()].into_iter().flatten() {
+        if sup.is_running(&a) && !agent_done(sup, &a) {
+            let _ = crate::levels::steer(sup, lv, &a, &told);
+        }
+    }
+    recheck
+}
+
 async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, verb)): AxPath<(String, String)>, body: Bytes) -> ApiResult {
     let v: Json = if body.is_empty() { json!({}) } else { parse_body(&body)? };
-    if matches!(verb.as_str(), "approve" | "start" | "reproduce" | "dismiss" | "back" | "park" | "unpark" | "pin" | "unpin" | "pr") {
+    if matches!(verb.as_str(), "approve" | "start" | "reproduce" | "dismiss" | "back" | "park" | "unpark" | "pin" | "unpin" | "pr" | "unblock" | "scope-ok" | "scope-no") {
         user_only(&app, &headers)?;
     }
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
     let out = blocking(move || {
         let mut f = get_finding(&sup, &id)?;
-        match verb.as_str() {
+        do_verb(&sup, &lv, &mut f, &verb, &v)?;
+        if matches!(verb.as_str(), "reproduce" | "start" | "take-repro" | "repro-agent" | "unpark") {
+            kick(&sup, &lv, &f.repo);
+        }
+        Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup) }))
+    })
+    .await?;
+    Ok(AxJson(out).into_response())
+}
+
+/// One of a finding's verbs (`POST /api/converge/findings/:id/<verb>`),
+/// without the kick that follows a pick.
+fn do_verb(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, verb: &str, v: &Json) -> Result<(), ApiError> {
+    {
+        match verb {
             "pin" | "unpin" => {
                 f.pinned = verb == "pin";
                 f.updated = now_ms();
-                put_finding(&sup, &f)?;
+                put_finding(sup, f)?;
             }
             "park" => {
                 f.state = "parked".into();
-                failed(&sup, &mut f, "parked", "you", v["reason"].as_str().unwrap_or("Parked"), Json::Null)?;
+                failed(sup, f, "parked", "you", v["reason"].as_str().unwrap_or("Parked"), Json::Null)?;
+            }
+            "unblock" => {
+                let Some(b) = f.blocked.take() else { return Err(ApiError::conflict("this finding is not blocked")) };
+                let note = v["note"].as_str().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+                f.needs_you = None;
+                if let Some(wt) = f.worktree.as_deref() {
+                    let _ = std::fs::remove_file(Path::new(wt).join(".converge/blocked.json"));
+                }
+                let said = format!("The person did it: {}{}. Carry on from where you stopped.", b.you_do, note.as_deref().map(|n| format!(" ({n})")).unwrap_or_default());
+                match f.stage.as_str() {
+                    // A finished repro agent: a new one starts on the next tick.
+                    "reproduce" if f.agent.as_deref().is_some_and(|a| !sup.is_running(a)) || f.agent.is_none() => {
+                        f.agent = None;
+                    }
+                    _ => {
+                        if let Some(a) = f.agent.clone().filter(|a| sup.is_running(a)) {
+                            let _ = crate::levels::steer(sup, lv, &a, &said);
+                        }
+                    }
+                }
+                let st = f.stage.clone();
+                f.updated = now_ms();
+                put_finding(sup, f)?;
+                event(sup, f, &st, &st, "unblocked", true, "you", &format!("You did it: {}{}", b.you_do, note.as_deref().map(|n| format!(" ({n})")).unwrap_or_default()), json!({ "blocked": b, "note": note }));
+                kick(sup, lv, &f.repo);
+            }
+            "scope-ok" | "scope-no" => {
+                let Some(ask) = f.scope_ask.take() else { return Err(ApiError::conflict("the agent has not asked to change the plan")) };
+                let list = |k: &str| ask[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>()).unwrap_or_default();
+                let note = v["note"].as_str().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+                let st = f.stage.clone();
+                let said = if verb == "scope-ok" {
+                    let mut sc = f.scope.clone().unwrap_or_default();
+                    let remove = list("remove");
+                    sc.files.retain(|x| !remove.iter().any(|r| scope_path(x) == r.as_str()));
+                    sc.parts.retain(|p| !remove.iter().any(|r| p.name == *r || p.paths.iter().any(|x| x == r)));
+                    for a in list("add") {
+                        let part = resolve_part(sup, &f.repo, &a);
+                        if !sc.parts.iter().any(|p| p.paths == part.paths && !p.paths.is_empty()) {
+                            sc.parts.push(part);
+                        }
+                    }
+                    f.scope = Some(sc);
+                    f.rounds = 0;
+                    event(sup, f, &st, &st, "scope_ok", true, "you", &format!("You approved the plan change: {}", f.scope.as_ref().map(|s| s.parts.iter().map(|p| p.name.clone()).collect::<Vec<_>>().join(", ")).unwrap_or_default()), ask.clone());
+                    format!("The person approved your plan change: the plan now covers {}. Carry on and stop when done; Workbench checks the branch again.", f.scope.as_ref().map(|s| scope_paths(s).join(", ")).unwrap_or_default())
+                } else {
+                    event(sup, f, &st, &st, "scope_no", false, "you", "You kept the plan", json!({ "ask": ask, "note": note }));
+                    format!("The person kept the plan as it is{}. Keep the change inside the plan's files.", note.as_deref().map(|n| format!(": {n}")).unwrap_or_default())
+                };
+                f.needs_you = None;
+                if let Some(a) = f.agent.clone().filter(|a| sup.is_running(a)) {
+                    let _ = crate::levels::steer(sup, lv, &a, &said);
+                }
+                f.updated = now_ms();
+                put_finding(sup, f)?;
+                kick(sup, lv, &f.repo);
             }
             "unpark" => {
                 f.state = "active".into();
-                failed(&sup, &mut f, "unparked", "you", "Back in the loop", Json::Null)?;
+                failed(sup, f, "unparked", "you", "Back in the loop", Json::Null)?;
             }
             "dismiss" => {
                 let reason = v["reason"].as_str().map(str::trim).filter(|r| !r.is_empty()).ok_or_else(|| ApiError::bad("reason is required: why it is not a problem (it teaches the persona)"))?;
                 f.state = "dismissed".into();
                 f.note = Some(reason.to_string());
-                failed(&sup, &mut f, "dismissed", "you", reason, Json::Null)?;
+                failed(sup, f, "dismissed", "you", reason, Json::Null)?;
             }
             "reproduce" => {
                 if f.stage != "found" {
                     return Err(ApiError::conflict(format!("{} is in {}, not found", f.id, f.stage)));
                 }
                 f.needs_you = None;
-                advance_to(&sup, &mut f, "reproduce", "triage", true, "you", "You chose to reproduce it", Json::Null)?;
+                advance_to(sup, f, "reproduce", "triage", true, "you", "You chose to reproduce it", Json::Null)?;
             }
             "start" => {
                 if f.stage != "prioritize" {
                     return Err(ApiError::conflict(format!("{} is in {}, not prioritize", f.id, f.stage)));
                 }
-                start_develop(&sup, &lv, &mut f, "you")?;
+                start_develop(sup, lv, f, "you")?;
             }
             "back" => {
                 if !matches!(f.stage.as_str(), "verify" | "review") {
                     return Err(ApiError::conflict(format!("{} is in {}: only verify and review go back to develop", f.id, f.stage)));
                 }
                 let text = v["text"].as_str().unwrap_or("Your reviewer sent this back.").to_string();
-                steer_back(&sup, &lv, &mut f, &format!("Sent back by your reviewer: {text}"));
+                steer_back(sup, lv, f, &format!("Sent back by your reviewer: {text}"));
                 f.ci = None;
-                advance_to(&sup, &mut f, "develop", "review", false, "you", &text, Json::Null)?;
+                advance_to(sup, f, "develop", "review", false, "you", &text, Json::Null)?;
             }
             "pr" => {
                 let url = v["url"].as_str().map(str::trim).filter(|u| u.starts_with("http")).ok_or_else(|| ApiError::bad("url is required: the pull request's address"))?;
                 f.pr_url = Some(url.to_string());
                 f.ci = Some("pending".into());
                 f.needs_you = None;
-                failed(&sup, &mut f, "pr", "you", &format!("Pull request {url} recorded"), json!({ "url": url }))?;
+                failed(sup, f, "pr", "you", &format!("Pull request {url} recorded"), json!({ "url": url }))?;
             }
             "approve" => {
                 if f.stage != "review" {
@@ -3584,7 +4481,7 @@ async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
                 match gh_api(&wt, &args) {
                     Ok(v) if v["merged"] == true => {
                         f.approved_by = Some("you".into());
-                        advance_to(&sup, &mut f, "merged", "approved", true, "you", &format!("Approved and merged {url}"), json!({ "url": url, "sha": v["sha"] }))?;
+                        advance_to(sup, f, "merged", "approved", true, "you", &format!("Approved and merged {url}"), json!({ "url": url, "sha": v["sha"] }))?;
                     }
                     Ok(v) => return Err(ApiError::new(502, "merge_failed", format!("GitHub did not merge it: {}", one_line(&v.to_string(), 300)))),
                     Err(e) => return Err(ApiError::new(502, "merge_failed", e)),
@@ -3594,15 +4491,56 @@ async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
                 if f.stage != "reproduce" {
                     return Err(ApiError::conflict(format!("{} is in {}, not reproduce", f.id, f.stage)));
                 }
-                start_repro_agent(&sup, &lv, &mut f, "you")?;
+                start_repro_agent(sup, lv, f, "you", None)?;
             }
-            "take-repro" => take_repro(&sup, &mut f, "you")?,
+            "take-repro" => take_repro(sup, f, "you")?,
             _ => return Err(ApiError::not_found(format!("no action {verb}"))),
         }
-        if matches!(verb.as_str(), "reproduce" | "start" | "take-repro" | "repro-agent" | "unpark") {
-            kick(&sup, &lv, &f.repo);
-        }
-        Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup) }))
+    }
+    Ok(())
+}
+
+#[derive(Deserialize, Default)]
+struct TalkB {
+    text: Option<String>,
+}
+
+async fn talk_post(State(app): State<App>, headers: HeaderMap, AxPath(id): AxPath<String>, body: Bytes) -> ApiResult {
+    // Only you talk to a card: an agent's key reports, it does not steer.
+    user_only(&app, &headers)?;
+    let b: TalkB = if body.is_empty() { TalkB::default() } else { parse_body(&body)? };
+    let (sup, lv) = (app.sup.clone(), app.lv.clone());
+    let v = blocking(move || talk(&sup, &lv, &id, b.text.as_deref().unwrap_or(""))).await?;
+    Ok(AxJson(v).into_response())
+}
+
+async fn talk_get(State(app): State<App>, AxPath(id): AxPath<String>) -> ApiResult {
+    let sup = app.sup.clone();
+    let v = blocking(move || {
+        let mut f = get_finding(&sup, &id)?;
+        take_chat_scope(&sup, &mut f)?;
+        Ok(talk_of(&sup, &f))
+    })
+    .await?;
+    Ok(AxJson(v).into_response())
+}
+
+#[derive(Deserialize, Default)]
+struct BulkB {
+    repo: Option<String>,
+    #[serde(default)]
+    ids: Vec<String>,
+    verb: Option<String>,
+}
+
+async fn bulk_route(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
+    user_only(&app, &headers)?;
+    let v: Json = parse_body(&body)?;
+    let b: BulkB = serde_json::from_value(v.clone()).map_err(|e| ApiError::bad(e.to_string()))?;
+    let (sup, lv) = (app.sup.clone(), app.lv.clone());
+    let out = blocking(move || {
+        let repo = repo_of(b.repo)?;
+        bulk(&sup, &lv, &repo, &b.ids, b.verb.as_deref().unwrap_or(""), &v)
     })
     .await?;
     Ok(AxJson(out).into_response())
@@ -3797,6 +4735,100 @@ struct ActivityQ {
     limit: Option<usize>,
 }
 
+#[derive(Deserialize)]
+struct PartsQ {
+    repo: Option<String>,
+    q: Option<String>,
+}
+
+/// `GET /api/converge/parts?repo=&q=`: parts of the code that words name.
+async fn parts_route(State(app): State<App>, Query(q): Query<PartsQ>) -> ApiResult {
+    let sup = app.sup.clone();
+    let v = blocking(move || {
+        let repo = repo_of(q.repo)?;
+        let parts = find_parts(&sup, &repo, q.q.as_deref().unwrap_or(""), 8);
+        Ok(json!({ "parts": parts }))
+    })
+    .await?;
+    Ok(AxJson(v).into_response())
+}
+
+/// `POST /api/converge/stop {repo, resume?}`: Stop everything (the autopilot
+/// and your picks pause, every Converge agent and run of the repository
+/// stops) or Resume (they come back as they were).
+async fn stop_route(State(app): State<App>, headers: HeaderMap, body: Bytes) -> ApiResult {
+    user_only(&app, &headers)?;
+    let v: Json = parse_body(&body)?;
+    let (sup, lv) = (app.sup.clone(), app.lv.clone());
+    let out = blocking(move || {
+        let repo = repo_of(v["repo"].as_str().map(str::to_string))?;
+        let resume = v["resume"].as_bool().unwrap_or(false);
+        Ok(if resume { resume_all(&sup, &lv, &repo)? } else { stop_all(&sup, &repo)? })
+    })
+    .await?;
+    Ok(AxJson(out).into_response())
+}
+
+const STOPPED: &str = "stopped by you: Resume carries on";
+
+fn stop_all(sup: &Arc<Supervisor>, repo: &str) -> Result<Json, ApiError> {
+    let mut st = settings(sup, repo);
+    if st.stopped.is_none() {
+        st.stopped = Some(json!({ "at": now_ms(), "enabled": st.enabled, "follow_picks": st.follow_picks }));
+    }
+    st.enabled = false;
+    st.follow_picks = false;
+    put_settings(sup, repo, &st)?;
+    // The agents of its cards, and any other Converge agent of the repository.
+    let mut ids: HashSet<String> = HashSet::new();
+    let mut cards = 0;
+    for mut f in findings_of(sup, repo) {
+        let mine: Vec<String> = [f.agent.clone(), f.chat_agent.clone()].into_iter().flatten().filter(|a| sup.is_running(a)).collect();
+        if !mine.is_empty() && f.state == "active" {
+            f.queued = Some(STOPPED.into());
+            f.updated = now_ms();
+            let _ = put_finding(sup, &f);
+            cards += 1;
+        }
+        ids.extend(mine);
+    }
+    let main = PathBuf::from(repo);
+    for a in sup.agent_rows() {
+        let ours = a.name.starts_with("cv") && (Path::new(&a.repo) == main || a.repo == repo);
+        if ours && sup.is_running(&a.id) {
+            ids.insert(a.id.clone());
+        }
+    }
+    for id in &ids {
+        let _ = sup.stop_with(id, Some(true));
+    }
+    // Persona runs and scoping: their process groups, builds included.
+    stop_runs();
+    let n_runs = runs_of(sup, repo, 50).iter().filter(|r| r.state == "running").count();
+    log(sup, repo, "you", "you", &format!("You stopped everything: {} agents, {n_runs} runs; the autopilot and your picks are paused", ids.len()), Json::Null, json!({ "agents": ids }));
+    Ok(json!({ "stopped": true, "agents": ids.len(), "runs": n_runs, "cards": cards }))
+}
+
+fn resume_all(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str) -> Result<Json, ApiError> {
+    let mut st = settings(sup, repo);
+    let was = st.stopped.take().unwrap_or_else(|| json!({ "enabled": st.enabled, "follow_picks": true }));
+    st.enabled = was["enabled"].as_bool().unwrap_or(st.enabled);
+    st.follow_picks = was["follow_picks"].as_bool().unwrap_or(true);
+    put_settings(sup, repo, &st)?;
+    let mut cards = 0;
+    for mut f in findings_of(sup, repo) {
+        if f.queued.as_deref() == Some(STOPPED) {
+            f.queued = None;
+            f.updated = now_ms();
+            let _ = put_finding(sup, &f);
+            cards += 1;
+        }
+    }
+    log(sup, repo, "you", "you", &format!("You resumed: the autopilot is {}, your picks {}", if st.enabled { "on" } else { "off" }, if st.follow_picks { "move by themselves" } else { "wait" }), Json::Null, Json::Null);
+    kick(sup, lv, repo);
+    Ok(json!({ "stopped": false, "enabled": st.enabled, "follow_picks": st.follow_picks, "cards": cards }))
+}
+
 async fn activity_route(State(app): State<App>, Query(q): Query<ActivityQ>) -> ApiResult {
     let sup = app.sup.clone();
     let v = blocking(move || {
@@ -3906,7 +4938,8 @@ async fn run_get(State(app): State<App>, AxPath(id): AxPath<String>) -> ApiResul
             r.at = at;
         }
         let persona = r.persona.as_deref().and_then(|p| get_persona(&sup, p).ok()).map(|p| json!({ "id": p.id, "name": p.name, "journey": p.journey }));
-        Ok(json!({ "run": r, "live": r.state == "running", "persona": persona, "now": now_ms() }))
+        let summary = (r.state != "running" && r.purpose == "explore").then(|| run_summary(&r, &findings_of(&sup, &r.repo)));
+        Ok(json!({ "run": r, "live": r.state == "running", "persona": persona, "now": now_ms(), "summary": summary }))
     })
     .await?;
     Ok(AxJson(v).into_response())
@@ -3915,6 +4948,85 @@ async fn run_get(State(app): State<App>, AxPath(id): AxPath<String>) -> ApiResul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agents_blocked_file_names_the_step_for_you() {
+        let d = tempfile::tempdir().unwrap();
+        let wt = d.path();
+        assert!(read_blocked(wt, "cv-1").is_none(), "no file");
+        std::fs::create_dir_all(wt.join(".converge")).unwrap();
+        std::fs::write(wt.join(".converge/blocked.json"), "  \n").unwrap();
+        assert!(read_blocked(wt, "cv-1").is_none(), "an empty file");
+        std::fs::write(wt.join(".converge/blocked.json"), r#"Here it is: {"kind": "Publish", "what": "No PyPI token here.", "you_do": "Run twine upload dist/*"}"#).unwrap();
+        let b = read_blocked(wt, "cv-1").unwrap();
+        assert_eq!((b.kind.as_str(), b.what.as_str(), b.you_do.as_str(), b.by.as_str()), ("publish", "No PyPI token here.", "Run twine upload dist/*", "cv-1"));
+        std::fs::write(wt.join(".converge/blocked.json"), r#"{"kind": "magic", "you_do": "Ask the owner"}"#).unwrap();
+        assert_eq!(read_blocked(wt, "x").unwrap().kind, "other");
+        std::fs::write(wt.join(".converge/blocked.json"), "Set the DEPLOY_KEY secret in the repository settings").unwrap();
+        let b = read_blocked(wt, "x").unwrap();
+        assert_eq!((b.kind.as_str(), b.you_do.as_str()), ("other", "Set the DEPLOY_KEY secret in the repository settings"));
+        // A scope's answer names it in its object, or not at all.
+        assert!(blocked_of(&json!({ "kind": "credentials" }), "scope").is_none());
+        assert_eq!(blocked_of(&json!({ "kind": "credentials", "you_do": "Add the token" }), "scope").unwrap().kind, "credentials");
+    }
+
+    #[test]
+    fn talk_goes_to_the_agent_of_the_cards_step() {
+        assert_eq!(talk_kind("active", "found"), "card");
+        assert_eq!(talk_kind("active", "reproduce"), "repro");
+        assert_eq!(talk_kind("cant_reproduce", "reproduce"), "repro");
+        assert_eq!(talk_kind("active", "scope"), "scope");
+        assert_eq!(talk_kind("active", "prioritize"), "scope");
+        for st in ["develop", "verify", "review"] {
+            assert_eq!(talk_kind("active", st), "fix", "{st}");
+        }
+        assert_eq!(talk_kind("active", "merged"), "card");
+        assert_eq!(talk_kind("parked", "develop"), "card");
+    }
+
+    #[test]
+    fn a_scope_agents_answer_can_carry_a_new_plan() {
+        let text = "Yes, the exporter is in it too.\n\n{\"area\": \"src\", \"files\": [\"src/\", \"exporter/\"], \"root_cause\": \"Not wired.\", \"acceptance\": \"\", \"size\": \"l\"}";
+        let sc = scope_of_reply(text, Some("The repro exits 0")).unwrap();
+        assert_eq!((sc.size.as_str(), sc.acceptance.as_str(), sc.files.len()), ("L", "The repro exits 0", 2));
+        assert!(scope_of_reply(text, None).is_none(), "no acceptance at all");
+        assert!(scope_of_reply("The plan stays as it is.", Some("x")).is_none());
+        assert!(scope_of_reply("{\"answer\": 1}", Some("x")).is_none(), "not a plan");
+        assert!(scope_of_reply("{\"area\": \"src\", \"acceptance\": \"a\", \"size\": \"XL\"}", None).is_none(), "a size that is not S, M or L");
+    }
+
+    #[test]
+    fn the_steps_count_their_cards_and_the_merges_of_the_week() {
+        let now = 10 * 86_400_000;
+        let f = |id: &str, stage: &str, state: &str| Finding { id: id.into(), stage: stage.into(), state: state.into(), stage_since: now - 1000, ..Default::default() };
+        let mut fs = vec![f("a", "found", "active"), f("b", "found", "parked"), f("c", "scope", "active"), f("d", "prioritize", "active"), f("e", "develop", "active"), f("g", "verify", "active"), f("h", "review", "active"), f("m", "merged", "active"), f("o", "merged", "active")];
+        fs[4].blocked = Some(Blocked { kind: "publish".into(), you_do: "x".into(), ..Default::default() });
+        fs[5].queued = Some("waiting for a free agent slot".into());
+        fs[8].stage_since = now - 8 * 86_400_000;
+        let st = steps_of(&fs, &|f: &Finding| f.id == "e" || f.id == "g");
+        let by: Vec<(String, u64, u64, u64, u64)> = st.as_array().unwrap().iter().map(|x| (x["step"].as_str().unwrap().to_string(), x["count"].as_u64().unwrap(), x["moving"].as_u64().unwrap(), x["blocked"].as_u64().unwrap(), x["queued"].as_u64().unwrap())).collect();
+        assert_eq!(by, vec![("problems".into(), 1, 0, 0, 0), ("reproducing".into(), 0, 0, 0, 0), ("ready".into(), 2, 0, 0, 0), ("building".into(), 2, 1, 1, 1), ("merge".into(), 1, 0, 0, 0)]);
+        assert_eq!(st[2]["stages"], json!(["scope", "prioritize"]));
+        assert_eq!(merged_week(&fs, now), 1);
+    }
+
+    #[test]
+    fn a_runs_summary_says_what_was_new() {
+        let run = Run { id: "cr1".into(), state: "done".into(), purpose: "explore".into(), ..Default::default() };
+        let mk = |id: &str, title: &str, run: &str, created: i64| Finding { id: id.into(), title: title.into(), run: Some(run.into()), state: "active".into(), stage: "found".into(), created, ..Default::default() };
+        let old = mk("old", "The export button does nothing on the orders page", "cr0", 1);
+        let mut checked = mk("n1", "Totals in the footer are rounded oddly", "cr1", 5);
+        checked.needs_you = Some(TRIAGE.into());
+        let mut merged = mk("d1", "Export button does nothing on orders page", "cr1", 6);
+        merged.state = "duplicate".into();
+        merged.dup_of = Some("old".into());
+        let unchecked = mk("d2", "The export button does nothing on the orders page today", "cr1", 7);
+        let v = run_summary(&run, &[old, checked, merged, unchecked]);
+        assert_eq!((v["found"].as_u64(), v["new"].as_u64(), v["known"].as_u64()), (Some(3), Some(1), Some(2)), "{v}");
+        assert_eq!(v["findings"][0], json!({ "id": "n1", "title": "Totals in the footer are rounded oddly", "new": true, "dup_of": null }));
+        assert_eq!(v["findings"][1]["dup_of"], "old");
+        assert_eq!(v["findings"][2]["dup_of"], "old");
+    }
 
     #[test]
     fn pull_request_addresses_are_read() {
@@ -4123,7 +5235,7 @@ mod tests {
 
     #[test]
     fn a_persona_with_memory_gets_chloectx_and_others_do_not() {
-        let m = Memory { home: Some("/d/converge/memory/cp1".into()), models: Some("/h/.local/share/chloectx/models".into()), settings: "/d/run/settings.json".into(), mcp: "/d/run/mcp.json".into(), prompt_log: "/d/run/p.jsonl".into(), who: json!({ "CHLOECTX_AGENT_NAME": "Maya", "CHLOECTX_PROMPT_SOURCE": "workbench" }) };
+        let m = Memory { home: Some("/d/converge/memory/cp1".into()), models: Some("/h/.local/share/chloectx/models".into()), settings: "/d/run/settings.json".into(), mcp: "/d/run/mcp.json".into(), prompt_log: "/d/run/p.jsonl".into(), who: json!({ "CHLOECTX_AGENT_NAME": "Maya", "CHLOECTX_PROMPT_SOURCE": "workbench" }), wired: true };
         let env = |e: &[(String, String)], k: &str| e.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone());
         // Off (the default), and every role but play: ChloeCtx is off.
         for (role, mem) in [("play", None), ("scope", None), ("card", Some(&m)), ("personas", Some(&m))] {
@@ -4131,6 +5243,16 @@ mod tests {
             assert_eq!(env(&e, "CHLOECTX_DISABLE").as_deref(), Some("1"), "{role}");
             assert!(env(&e, "CHLOECTX_HOME").is_none() && !args.contains(&"--settings".to_string()) && !args.join(" ").contains("mcp__chloectx"), "{role} {args:?}");
         }
+        // Without memory a persona still gets a ChloeCtx home of its own (a
+        // sandbox): never yours, never another project's; not wired in.
+        let sb = sandbox_memory(Path::new("/tmp/cv-sandbox-test"));
+        let (args, e) = claude_call("play", "haiku", true, Some(&sb));
+        assert!(env(&e, "CHLOECTX_DISABLE").is_none(), "{e:?}");
+        assert_eq!(env(&e, "CHLOECTX_HOME").as_deref(), Some("/tmp/cv-sandbox-test/chloectx"));
+        assert!(!args.contains(&"--settings".to_string()) && !args.join(" ").contains("mcp__chloectx"), "{args:?}");
+        let (_, e) = claude_call("scope", "haiku", false, Some(&sb));
+        assert_eq!(env(&e, "CHLOECTX_DISABLE").as_deref(), Some("1"));
+        let _ = std::fs::remove_dir_all("/tmp/cv-sandbox-test");
         let (args, e) = claude_call("play", "haiku", true, Some(&m));
         assert!(env(&e, "CHLOECTX_DISABLE").is_none(), "{e:?}");
         assert_eq!(env(&e, "CHLOECTX_HOME").as_deref(), Some("/d/converge/memory/cp1"));
@@ -4169,6 +5291,52 @@ mod tests {
         assert_eq!(chloectx_stale(Some("0.3.3"), Some("0.3.5")).unwrap(), "ChloeCtx 0.3.3 is older than this checkout's 0.3.5: scope runs with it anyway; run `chloectx upgrade`");
         assert!(chloectx_stale(Some("0.10.0"), Some("0.9.1")).unwrap().contains("is newer than"));
         assert!(chloectx_stale(None, Some("0.3.5")).unwrap().starts_with("ChloeCtx is not installed"));
+    }
+
+    #[test]
+    fn a_plans_file_with_a_note_still_counts_as_in_scope() {
+        let files = vec!["chloedb-crawl/src/extract.rs (learn_template, line ~762; test learns_template_fields, line ~853)".to_string(), "`docs/`".to_string(), "src/cc/*".to_string(), "chloedb".to_string()];
+        assert_eq!(scope_path(&files[0]), "chloedb-crawl/src/extract.rs");
+        assert!(in_scope("chloedb-crawl/src/extract.rs", &files));
+        assert!(in_scope("docs/guide/index.md", &files));
+        assert!(in_scope("src/cc/view.rs", &files));
+        assert!(in_scope("chloedb/src/lib.rs", &files));
+        assert!(!in_scope("chloedb-crawl/src/extract.rs.bak", &files));
+        assert!(!in_scope("chloedb-server/src/main.rs", &files));
+        assert!(!in_scope("chloedb-crawl/src/fetch.rs", &files));
+    }
+
+    #[test]
+    fn a_part_of_the_code_is_named_by_its_crate_module_and_symbol() {
+        assert_eq!(part_label("chloedb-crawl/src/extract.rs", &["learn_template".into()]), "chloedb-crawl › extract › learn_template");
+        assert_eq!(part_label("chloedb-server/src/cc/mod.rs", &[]), "chloedb-server › cc");
+        assert_eq!(part_label("README.md", &[]), "README");
+        assert!(looks_like_path("chloedb-crawl/src/extract.rs (learn_template)"));
+        assert!(!looks_like_path("the crawler's template learning"));
+        let sc = Scope { parts: vec![Part { name: "x".into(), paths: vec!["chloedb-crawl/src/extract.rs".into()], symbols: vec![] }], files: vec!["docs/".into()], ..Default::default() };
+        let all = scope_paths(&sc);
+        assert!(in_scope("chloedb-crawl/src/extract.rs", &all) && in_scope("docs/a.md", &all) && !in_scope("chloedb-crawl/src/fetch.rs", &all));
+    }
+
+    #[test]
+    fn an_agent_asks_to_change_the_plan_with_a_file() {
+        let dir = std::env::temp_dir().join(format!("cv-ask-{}", now_ms()));
+        std::fs::create_dir_all(dir.join(".converge")).unwrap();
+        std::fs::write(dir.join(".converge/scope_change.json"), r#"{"add": ["chloedb-crawl/src/extract.rs (the template)"], "why": "the bug is there"}"#).unwrap();
+        let ask = read_scope_ask(&dir, "Ada").unwrap();
+        assert_eq!(ask["add"], json!(["chloedb-crawl/src/extract.rs"]));
+        assert_eq!(ask["by"], "Ada");
+        assert!(!dir.join(".converge/scope_change.json").exists(), "read once");
+        assert!(read_scope_ask(&dir, "Ada").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_personas_ease_has_a_mean_and_a_trend() {
+        assert_eq!(mean(&[]), None);
+        assert_eq!(mean(&[2.0, 3.0, 4.0]), Some(3.0));
+        assert_eq!(ease_trend(&[3.0]), None);
+        assert_eq!(ease_trend(&[2.0, 4.0, 3.0]), Some(-1.0));
     }
 
     #[test]

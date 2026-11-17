@@ -4,11 +4,14 @@
 // short name of the project in focus (the last one opened, or the most
 // active), for the old routes that had none.
 //
-// The app is Converge: `#/` opens its board (`#/converge?project=<the
-// project in focus>`, or its project picker with none). Workbench is its
-// section: Workbench's home, the old Start page, is `#/workbench`, and
-// Workbench's pages (`#/p/…`, `#/a/…`, `#/needs`, `#/more/…`, `#/debug/…`)
-// stay where they were.
+// The app is Converge: `#/` opens its pipeline (`#/converge?project=<the
+// project in focus>`, or its project picker with none), and its steps are
+// `#/converge/<step>?project=` (problems, reproducing, ready, building,
+// merge, personas), drawn by the Converge page. Needs you is `#/needs`.
+// Workbench is reached from ⋯ › Workbench only: its home, the old Start
+// page, is `#/workbench`, and its pages (`#/p/…`, `#/a/…`, `#/more/…`,
+// `#/debug/…`, `#/harness/…`, the Simple view `#/s/…`) stay where they were,
+// out of Converge's navigation but every route still served.
 
 function split(hash) {
   const h = (hash || "").replace(/^#/, "");

@@ -671,28 +671,40 @@ fn first_sentence(a: &str) -> String {
 }
 
 /// Writes an issue: chooses the papers, reads who each is from, writes
-/// each paragraph, and keeps the issue. `progress` hears each step.
-pub async fn write_issue(c: &Ctx<'_>, pages: &Pages, feed_id: &str, cfg: &Config, model: &str, until: Option<&str>, progress: &(dyn Fn(String) + Sync)) -> Result<Value, String> {
+/// each paragraph, and keeps the issue. `progress` hears each step as an
+/// object: `phase` (choose, chosen, read, explain, figure, write, opening,
+/// save), `step` (the step in words), and where it applies `i` and `n`
+/// (the paper, from 0, of how many), `id`, `title`, `left_s` (seconds
+/// left at most, when no page was read before) and, once, `papers` (the
+/// chosen papers' ids and titles) and `candidates`.
+pub async fn write_issue(c: &Ctx<'_>, pages: &Pages, feed_id: &str, cfg: &Config, model: &str, until: Option<&str>, progress: &(dyn Fn(Value) + Sync)) -> Result<Value, String> {
     let t0 = Instant::now();
     let (since, until) = span(c, cfg.days, until).await;
-    progress(format!("choosing papers from {}", span_text(&since, &until)));
+    progress(json!({"phase": "choose", "step": format!("choosing papers from {}", span_text(&since, &until))}));
     let ranked = choose(c, cfg, &since, &until).await;
     let (main, tools, benches, surveys) = pick(cfg, &ranked);
     if main.is_empty() {
         return Err("no papers in that span match the feed".into());
     }
     let full_style = cfg.style == "full";
+    let n = main.len();
+    // A guess at each paper's seconds, before any is done: its page and
+    // figure images read 15 s apart (when not read before), and the model.
+    let per_paper = if full_style { (1 + cfg.figures.min(3) * 2) * 15 + 30 } else { 8 + if cfg.affiliations { 15 } else { 0 } };
+    progress(json!({"phase": "chosen", "step": format!("chose {n} papers from {} candidates", ranked.len()), "n": n, "candidates": ranked.len(), "left_s": n * per_paper,
+        "papers": main.iter().map(|r| json!({"id": r.s("id"), "title": r.s("title")})).collect::<Vec<_>>()}));
     let mut papers = Vec::new();
     for (i, r) in main.iter().enumerate() {
         let id = r.s("id");
-        let left = main.len() - i;
+        let left = n - i;
+        let at = |phase: &str, step: String| json!({"phase": phase, "step": step, "i": i, "n": n, "id": r.s("id"), "title": r.s("title"), "left_s": left * per_paper});
         if full_style {
-            progress(format!("reading {} of {}: {} (its page on arxiv.org; pages and figures are read 15 s apart, as arXiv asks: about {} min left)", i + 1, main.len(), r.s("title"), (left * (1 + cfg.figures.min(3) * 2) * 15).div_ceil(60)));
+            progress(at("read", format!("reading {} of {n}: {} (its page on arxiv.org, where pages and figures are read 15 s apart, as arXiv asks)", i + 1, r.s("title"))));
         }
         let read = if cfg.affiliations || full_style { pages.paper(c, &id).await } else { Read::default() };
         let mut p = json!({"id": id, "title": r.s("title"), "authors": r.s("authors"), "orgs": read.orgs, "code": r.s("code"), "hf": r.s("hf"), "created": r.s("created"), "cats": r.get("cats"), "techniques": r.get("techniques"), "topic": r.get("topic"), "score": r.get("feed_score"), "found_by": r.get("found_by")});
         if full_style {
-            progress(format!("explaining {} of {} from its {}: {}", i + 1, main.len(), if read.full.is_some() { "full text" } else { "abstract (arXiv has no HTML of it)" }, r.s("title")));
+            progress(at("explain", format!("explaining {} of {n} from its {}: {}", i + 1, if read.full.is_some() { "full text" } else { "abstract (arXiv has no HTML of it)" }, r.s("title"))));
             let ex = explain(c, cfg, model, r, &read.orgs, read.full.as_ref()).await;
             if ex.is_null() {
                 // The model did not answer as asked: the paragraph instead.
@@ -714,7 +726,9 @@ pub async fn write_issue(c: &Ctx<'_>, pages: &Pages, feed_id: &str, cfg: &Config
                 let mut figs = Vec::new();
                 for (n, why) in picks.into_iter().take(cfg.figures.min(3)) {
                     let fig = &f.figures[n];
-                    progress(format!("copying {} of paper {} of {} from arxiv.org: {}", fig.label, i + 1, main.len(), r.s("title")));
+                    let mut ev = at("figure", format!("copying {} of paper {} of {} from arxiv.org: {}", fig.label, i + 1, main.len(), r.s("title")));
+                    ev["figure"] = json!(fig.label);
+                    progress(ev);
                     let mut imgs = Vec::new();
                     for (k, img) in fig.images.iter().take(3).enumerate() {
                         if let Some(x) = pages.image(c, &id, &fig.id, k, img).await {
@@ -733,13 +747,13 @@ pub async fn write_issue(c: &Ctx<'_>, pages: &Pages, feed_id: &str, cfg: &Config
                 }
             }
         } else {
-            progress(format!("writing {} of {}: {}", i + 1, main.len(), r.s("title")));
+            progress(at("write", format!("writing {} of {n}: {}", i + 1, r.s("title"))));
             p["blurb"] = json!(blurb(c, cfg, model, r, &read.orgs, &read.intro).await);
         }
         papers.push(p);
     }
     let intro = if full_style && papers.len() > 1 {
-        progress("writing the issue's opening".into());
+        progress(json!({"phase": "opening", "step": "writing the issue's opening", "i": n, "n": n, "left_s": 0}));
         opening(c, cfg, model, &papers).await
     } else {
         String::new()
@@ -753,6 +767,7 @@ pub async fn write_issue(c: &Ctx<'_>, pages: &Pages, feed_id: &str, cfg: &Config
         "papers": papers, "tools": line(&tools), "benchmarks": line(&benches), "surveys": line(&surveys),
         "candidates": ranked.len(), "model": model,
     });
+    progress(json!({"phase": "save", "step": format!("keeping Vol. {vol}"), "i": n, "n": n, "left_s": 0}));
     let md = markdown(cfg, &issue);
     issue["markdown"] = json!(md);
     let ms = t0.elapsed().as_secs_f64() * 1000.0;

@@ -11,6 +11,12 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **The app engine's builds failed at once on Linux with `spawn E2BIG`**
+  (0 model calls), on the operator's pods too: the forge's system prompt
+  grew to 152 KB in 0.3.6, past Linux's limit of 128 KiB on one argument,
+  and it was passed to `claude -p` as one. Claude Code now reads it from a
+  file (`--system-prompt-file`, removed after the answer), and Codex gets a
+  system prompt too long for an argument on stdin.
 - **A coordinator's query grouped by the column that places the table's
   rows** (its `shard_by`, else its primary key) has every group whole on
   one shard, so each shard now sends only the groups that can be in the
