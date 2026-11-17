@@ -75,7 +75,8 @@ that touches one and every night, and a failure there does not hold a
 ChloeDB release (docs/compatibility.md, "Demos").
 
 The TLA+ specifications (spec/) run nothing here either: the workflow
-Specs (specs.yml) runs TLC on their models.
+Specs (specs.yml) runs TLC on their models. Nor do the prototypes
+(prototypes/), a Node site that no job builds.
 
 `python3 .github/scripts/ci_changes.py --self-test` checks the rules, that
 every job of ci.yml has its entry in CI_JOBS, and that every file a crate
@@ -192,6 +193,9 @@ NOTHING = re.compile(
     r"|research/|chloedb/(notes|report|scripts)/"
     # The TLA+ specifications: specs.yml runs TLC on them.
     r"|spec/"
+    # The prototypes of the ChloeDB and Nodwyn study (prototypes/README.md),
+    # a Node site deployed by hand, which no job builds or runs.
+    r"|prototypes/"
     r")"
 )
 
@@ -376,6 +380,7 @@ def self_test():
     assert on(["docs/guide/search.md"]) == {"any", "docs", "server"}
     assert on(["chloedb/results/sequence/gate.py"]) == every
     assert on(["chloedb/notes/text.md", "chloedb/report/graph.html", "chloedb/scripts/prepare_beir.py", "research/cpu-encoders/sparse.py"]) == set()
+    assert on(["prototypes/server.mjs", "prototypes/apps/leaklab/app.mjs", "prototypes/deploy/site.yaml"]) == set()
     # The rest of .github and the scripts.
     assert on([".github/workflows/release-gate.yml", ".github/workflows/demos.yml", ".github/workflows/server-release.yml"]) == set()
     assert on([".github/scripts/door_check.py", ".github/CODEOWNERS", ".github/pull_request_template.md"]) == set()
