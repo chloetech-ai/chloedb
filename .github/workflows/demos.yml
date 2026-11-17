@@ -7,6 +7,7 @@ name: Demos
 #   chloedb-arxiv            every arXiv paper: search, the recommender, feeds
 #   chloedb-hn               Hacker News searched, asked and completed
 #   chloedb-gh               GitHub's public history since 2011
+#   chloedb-sound            free sounds searched by how they sound
 #   chloedb-backbone         the internet's routing from public data
 #   chloedb-swarm            simulated users, an internal test instrument
 #   examples/feature-store   a shop ranked on features ChloeDB keeps
@@ -27,6 +28,7 @@ on:
       - "chloedb-hn/**"
       - "chloedb-arxiv/**"
       - "chloedb-gh/**"
+      - "chloedb-sound/**"
       - "chloedb-backbone/**"
       - "chloedb-swarm/**"
       - "examples/feature-store/**"
@@ -182,6 +184,45 @@ jobs:
         working-directory: chloedb-gh
         run: cargo clippy --locked --profile ci --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
+  # Sounds: its tests and clippy, and nine made-up sounds with their
+  # moments loaded into a server of this commit, searched by sound and by
+  # words, credited, drifted between, mapped and served as previews
+  # (tests/cluster.rs). The server here is built without the `audio`
+  # feature, so this checks that the app still searches by words without
+  # CLAP; the pages that need CLAP are tested against `--features audio`
+  # with CHLOEDB_SOUND_CLAP=1 (docs/chloedb/sound.md).
+  sound:
+    name: chloedb-sound
+    needs: server
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: chloedb-sound
+          shared-key: chloedb-sound-demos
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: chloedb-server-demos
+          path: .server-bin
+      - name: Tests
+        working-directory: chloedb-sound
+        env:
+          CHLOEDB_SERVER_BIN: ${{ github.workspace }}/.server-bin/chloedb-server
+          CHLOEDB_SOUND_NEED_SERVER: "1"
+        run: |
+          chmod +x "$CHLOEDB_SERVER_BIN"
+          cargo test --locked --profile ci --no-fail-fast
+      - name: Clippy
+        working-directory: chloedb-sound
+        run: cargo clippy --locked --profile ci --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+
   # Backbone: its tests and clippy (MRT and RIS Live's messages, RPKI and
   # origin checks, IODA's events); it has no cluster test yet, so it needs
   # no server.
@@ -310,7 +351,7 @@ jobs:
   demo-result:
     name: Demo result
     if: always()
-    needs: [server, netops, hn, arxiv, gh, backbone, swarm, python]
+    needs: [server, netops, hn, sound, arxiv, gh, backbone, swarm, python]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
