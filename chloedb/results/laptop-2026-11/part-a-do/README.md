@@ -892,8 +892,8 @@ name it 0.3.7, main's version then. The scripts are this directory's
 - **A stream at 50,000 rows a second** reached 19,662 (14,916 on
   16 November), with reads at 4,971 a second alongside.
 - **DuckDB's stream stopped at its first rate.** At 1,000 rows a second its
-  commits fell 1.7 s behind in 15 (a median commit of 7.3 ms, a mean of
-  15.0, so a pause or two of about a second), and it wrote 873 a second;
+  commits fell 1.7 s behind in 15 (a median commit of 7.3 ms but a mean of
+  15.0: about 2 s of slow commits in all), and it wrote 873 a second;
   `a_writes.py` stops a stream at the first rate a system misses by more
   than 10%. On 16 November it reached all three rates.
 - **A3:** similar items 704 µs at the median (916 on 16 November) and the
