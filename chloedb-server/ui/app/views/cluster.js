@@ -160,7 +160,9 @@ function forceTarget(sh) {
  * make the primary, as the others vote only for a copy holding all they do.
  */
 function bestLive(sh, skip = []) {
-  return sh.copies.filter((c) => !c.down && !skip.includes(c.url)).sort((a, b) => (b.term || 0) - (a.term || 0) || (b.txn || 0) - (a.txn || 0))[0] || null;
+  // By replication's numbers when both have them: `txn` counts a process's own commits, which a copy rebuilt on an empty disk numbers anew (OLU-8).
+  const later = (a, b) => (a.seq != null && b.seq != null ? b.seq - a.seq : (b.txn || 0) - (a.txn || 0));
+  return sh.copies.filter((c) => !c.down && !skip.includes(c.url)).sort((a, b) => (b.term || 0) - (a.term || 0) || later(a, b))[0] || null;
 }
 /**
  * The copy to make a shard's primary by a vote: one that answers, when no
@@ -285,7 +287,7 @@ function model(c) {
         role: down ? "down" : primary ? "primary" : "replica",
         wasPrimary: down && (r.last_role === "primary" || !!r.takes_writes),
         downSince: r.down_since_ms || null, lastSeen: r.last_seen_ms || null, error: r.error || null,
-        term: r.term ?? d.health?.replication?.term ?? null, txn: r.txn ?? null,
+        term: r.term ?? d.health?.replication?.term ?? null, txn: r.txn ?? null, seq: r.seq_no ?? d.health?.replication?.seq_no ?? null,
         // Rows of every table (NEW-cluster-admin-1); docs counts the first only.
         docs: d.health?.rows ?? r.docs ?? null, rtt: r.rtt_ms ?? null,
         avoided: !!r.avoided, avoidedWhy: r.avoided_why || null,
@@ -1466,12 +1468,15 @@ function render(page, r) {
     }
   }
   async function checkpointCopy(sh, c) {
-    const name = `${cname(c)}-` + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    // A copy's short name may be its address (127.0.0.1:17744), whose ":" a checkpoint's name may not hold (OLU-10).
+    const name = core.checkpointName(cname(c));
     const inp = h("input", { class: "input", value: name });
     const layout = h("select", { class: "select" }, h("option", { value: "file" }, "one file"), h("option", { value: "dir" }, "a directory"));
     const go = h("button", { class: "btn primary" }, "Write it");
     const m = modal({ title: `Write a checkpoint of ${cname(c)}`, body: [h("p", { class: "dim", style: { margin: 0 } }, "A consistent copy of its database, into its server's --backup-dir. Queries and writes go on."), h("label", { class: "f" }, "Name", inp), h("label", { class: "f" }, "Layout", layout)], foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), go] });
     go.onclick = async () => {
+      const bad = core.checkpointNameProblem(inp.value.trim());
+      if (bad) { toast(`Not a checkpoint's name: ${bad}`, "bad", 6000); inp.focus(); return; }
       m.close();
       try {
         const j = await api("/v1/admin/copies/checkpoint", { body: { url: c.url, name: inp.value.trim(), layout: layout.value } });

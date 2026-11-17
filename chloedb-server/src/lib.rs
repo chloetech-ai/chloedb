@@ -91,6 +91,8 @@ pub mod profiling;
 pub mod reads;
 pub mod runbooks;
 pub mod replication;
+// `chloedb-server restore`: a checkpoint in place of a database, with its map and keys.
+pub mod restore;
 pub mod scoped;
 pub mod server;
 pub mod service;

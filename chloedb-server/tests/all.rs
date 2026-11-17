@@ -77,6 +77,7 @@ mod rank_models;
 mod rank_profiles;
 mod recommender;
 mod replication;
+mod restore;
 mod safety;
 mod schema_race;
 mod scoped_keys;

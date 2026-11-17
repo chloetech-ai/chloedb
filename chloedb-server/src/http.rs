@@ -3759,15 +3759,79 @@ async fn snapshot(State(app): State<App>) -> Res {
 }
 
 /// `{"name": ..., "layout": "file" | "dir", "link_from": ...}`: writes a
-/// checkpoint into the server's `--backup-dir`.
-async fn admin_checkpoint(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+/// checkpoint into the server's `--backup-dir`, with the cluster map and
+/// keys beside it ([`Service::checkpoint`]); on a coordinator, one of
+/// every shard ([`cluster_checkpoint`]).
+async fn admin_checkpoint(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let layout = match b.get("layout").and_then(|v| v.as_str()).unwrap_or("file") {
         "file" => Layout::SingleFile,
         "dir" | "directory" => Layout::Directory,
         other => return Err(ApiError::bad(format!("layout is \"file\" or \"dir\", not {other:?}"))),
     };
+    if let Ok(c) = app.svc.coordinator() {
+        return cluster_checkpoint(c, w, &b).await;
+    }
     let stats = app.svc.checkpoint(body_str(&b, "name")?, layout, b.get("link_from").and_then(|v| v.as_str())).await?;
-    Ok(AxJson(json!({"checkpoint": stats})))
+    Ok(AxJson(json!({"checkpoint": stats})).into_response())
+}
+
+/// `POST /v1/admin/checkpoint {"name", "layout"?, "link_from"?}` on a
+/// coordinator: the copy taking each shard's writes (its primary, or its
+/// one copy) writes checkpoint `name` into its own `--backup-dir`, every
+/// shard at once, as `POST /v1/admin/copies/checkpoint` has one copy do.
+/// Answers `{name, slot_epoch, shards: [{shard, url, short, backup_dir,
+/// checkpoint}]}` when every shard wrote it under the same cluster map;
+/// otherwise an error naming each shard that did not, and those that did
+/// (their checkpoints stay: write the next under another name).
+async fn cluster_checkpoint(c: &crate::coord::Coordinator, w: Option<axum::Extension<Principal>>, b: &Json) -> Result<Response, ApiError> {
+    let name = crate::service::checkpoint_name(body_str(b, "name")?)?.to_string();
+    let snap = c.snapshot_within(Duration::ZERO).await;
+    let mut asks = Vec::new();
+    let mut failed: Vec<(u64, ApiError)> = Vec::new();
+    for s in snap["shards"].as_array().into_iter().flatten() {
+        let i = s["shard"].as_u64().unwrap_or(0);
+        let up: Vec<&Json> = s["replicas"].as_array().into_iter().flatten().filter(|r| r["status"] != "down").collect();
+        // A shard of copies without roles (one copy, most often) is
+        // checkpointed on its first copy that answers.
+        let url = s["primary"].as_str().map(String::from).or_else(|| up.iter().all(|r| r["role"] == "standalone").then(|| up.first().and_then(|r| r["url"].as_str()).map(String::from)).flatten());
+        match url {
+            Some(u) => {
+                let short = up.iter().find(|r| r["url"] == u.as_str()).map_or(Json::Null, |r| r["short"].clone());
+                let dir = up.iter().find(|r| r["url"] == u.as_str()).map_or(Json::Null, |r| r["backup_dir"].clone());
+                asks.push((i, u, short, dir));
+            }
+            None => failed.push((i, ApiError { code: None, status: 503, message: format!("shard {i} has no primary up: {}", s["why"].as_str().unwrap_or("its copies do not answer")) })),
+        }
+    }
+    let by = keys::audit_name(&who(w));
+    keys::note_change(keys::Change { object: Some("every shard".into()), after: Some(json!({"checkpoint": name, "layout": b["layout"]})), ..Default::default() });
+    let body = json!({"name": name, "layout": b["layout"].as_str().unwrap_or("file"), "link_from": b["link_from"], "by": by});
+    let answers = futures::future::join_all(asks.into_iter().map(|(i, url, short, dir)| {
+        let body = body.clone();
+        async move { (i, url.clone(), short, dir, ask_copy(c, &url, crate::profiling::Kind::Checkpoint, body).await) }
+    }))
+    .await;
+    let mut shards = Vec::new();
+    for (i, url, short, dir, a) in answers {
+        match a {
+            Ok(j) => shards.push(json!({"shard": i, "url": url, "short": short, "backup_dir": dir, "checkpoint": j["checkpoint"]})),
+            Err(e) => failed.push((i, e)),
+        }
+    }
+    shards.sort_by_key(|s| s["shard"].as_u64());
+    failed.sort_by_key(|(i, _)| *i);
+    let written = |shards: &[Json]| shards.iter().map(|s| format!("shard {} ({})", s["shard"], s["short"].as_str().unwrap_or("?"))).collect::<Vec<_>>().join(", ");
+    if let Some((_, first)) = failed.first() {
+        let why: Vec<String> = failed.iter().map(|(i, e)| format!("shard {i}: {}", e.message)).collect();
+        let kept = if shards.is_empty() { String::new() } else { format!("; written on {}, which keep it", written(&shards)) };
+        return Err(ApiError { code: None, status: first.status, message: format!("checkpoint {name} was not written on every shard ({}){kept}", why.join("; ")) });
+    }
+    let epochs: std::collections::BTreeSet<u64> = shards.iter().map(|s| s["checkpoint"]["slots"]["epoch"].as_u64().unwrap_or(0)).collect();
+    if epochs.len() > 1 {
+        return Err(ApiError { code: None, status: 409, message: format!("checkpoint {name} was written on every shard, but under cluster maps of epochs {epochs:?} (slots moved meanwhile): a restore needs one map, so write them again under another name") });
+    }
+    let j = json!({"name": name, "slot_epoch": epochs.first(), "shards": shards});
+    Ok(audited(j, format!("checkpoint {name} of every shard: {}", written(&shards))))
 }
 
 /// `{"rate_mib_s"?}`: reads every segment against its checksum now

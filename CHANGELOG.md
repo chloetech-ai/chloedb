@@ -11,6 +11,33 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A sharded cluster could not be restored from its checkpoints.** A
+  checkpoint held only the database: not the shard's part of the cluster
+  map nor the API keys, so a copy served from one came up without its
+  slots or keys, and there was no procedure. A checkpoint now writes the
+  map (`NAME.slots`) and the keys (`NAME.keys.json`) beside it, under the
+  names a server serving it reads; `POST /v1/admin/checkpoint` on a
+  coordinator has every shard's primary write one of the same cluster map
+  (and the command center's **Settings > Upkeep** has **Write a checkpoint
+  of every shard**); and `chloedb-server restore --from CHECKPOINT --db
+  PATH` puts one in place of a stopped server's database, checked before
+  anything changes, the old files moved aside, the keys merged (a key
+  revoked since stays revoked). The runbook [Restore from
+  checkpoints](docs/chloedb/runbooks.md#restore-from-checkpoints) restores
+  a cluster of two shards of three copies, and a test follows it.
+- **A replica rebuilt on an empty disk never got the cluster map back**,
+  and said it was fine: the coordinator re-sends the map only when a
+  copy's hello is due, every minute, and its watcher kept the hello fresh
+  every two seconds. The coordinator now gives the map to any copy that
+  says an older one, or none, and `GET /v1/cluster` says each copy's map
+  epoch (`slot_epoch`) and position (`seq_no`); the command center
+  compares copies by position.
+- **The command center proposed checkpoint names its server refused**:
+  **Write a checkpoint** on a copy offered the copy's address
+  (`127.0.0.1:17744-...`), whose `:` a name cannot have. It now offers
+  `127.0.0.1-17744-<time>`, and says what a name may hold before sending
+  one.
+
 - **A command center on Kubernetes forgot the clusters it reaches at every
   restart.** A coordinator kept its hub's book (the **Connections** view,
   the clusters the brand's menu at the top left switches to, and their

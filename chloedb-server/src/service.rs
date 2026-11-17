@@ -2134,14 +2134,63 @@ impl Service {
 
     /// Writes a checkpoint of the database ([`chloedb::storage::Database::checkpoint`])
     /// named `name` in the backup directory, hard-linking the segments an
-    /// earlier checkpoint there (`link_from`) already holds.
-    pub async fn checkpoint(&self, name: &str, layout: Layout, link_from: Option<&str>) -> Result<CheckpointStats, ApiError> {
+    /// earlier checkpoint there (`link_from`) already holds, and beside it
+    /// what a server restored from it needs besides its rows, under the
+    /// names a server serving it with `--db` reads: the cluster map it
+    /// holds (`<name>.slots`) and its API keys (`<name>.keys.json`, readable
+    /// by its owner only), so that `chloedb-server restore` puts the three
+    /// in place of a copy's ([`crate::restore`]). The answer is the
+    /// checkpoint's [`CheckpointStats`], its `name`, the `files` it wrote,
+    /// and `slots` (its shard, the map's epoch and shards) and `keys` (how
+    /// many) when it has them. A checkpoint written while the map changed
+    /// (a move's flip) is not kept: its rows and map could disagree.
+    pub async fn checkpoint(&self, name: &str, layout: Layout, link_from: Option<&str>) -> Result<Json, ApiError> {
         let dir = self.backup_dir.as_ref().ok_or_else(|| ApiError::bad("checkpoints need the server started with --backup-dir"))?;
         let db = self.admin_db()?;
-        let dest = dir.join(checkpoint_name(name)?);
+        let name = checkpoint_name(name)?;
+        let dest = dir.join(name);
         let link_from = link_from.map(|n| checkpoint_name(n).map(|n| dir.join(n))).transpose()?;
         let opts = CheckpointOptions { layout, link_from };
-        tokio::task::spawn_blocking(move || db.storage().checkpoint(&dest, &opts)).await.map_err(ApiError::internal)?.map_err(Into::into)
+        let map = self.slots();
+        let since = self.slots_since.load(Ordering::Relaxed);
+        let to = dest.clone();
+        let stats: CheckpointStats = tokio::task::spawn_blocking(move || db.storage().checkpoint(&to, &opts)).await.map_err(ApiError::internal)??;
+        let held = |m: &Option<(SlotMap, usize)>| m.as_ref().map(|(m, s)| (m.epoch, *s));
+        let now = self.slots();
+        if held(&map) != held(&now) {
+            remove_checkpoint(&dest);
+            return Err(conflict(format!(
+                "the cluster map changed from epoch {} to {} while checkpoint {name} was written (slots moved), so it was not kept: write it again",
+                map.as_ref().map_or(0, |(m, _)| m.epoch),
+                now.as_ref().map_or(0, |(m, _)| m.epoch)
+            )));
+        }
+        let mut j = serde_json::to_value(&stats).map_err(ApiError::internal)?;
+        let mut files = vec![name.to_string()];
+        let kept = (|| -> Result<(), ApiError> {
+            if let Some((m, shard)) = &map {
+                let path = slots::file_of(&dest);
+                save_slots(&path, m, *shard, since).map_err(|e| ApiError::internal(format!("keep the slot map beside the checkpoint, in {}: {e}", path.display())))?;
+                files.push(format!("{name}.slots"));
+                j["slots"] = json!({"shard": shard, "epoch": m.epoch, "shards": m.shards()});
+            }
+            let keys = self.keys.set();
+            if !keys.keys.is_empty() || !keys.revoked.is_empty() {
+                let path = Keys::file_of(&dest);
+                let _ = std::fs::remove_file(&path);
+                Keys::open(path.clone()).map_err(ApiError::internal)?.merge(&keys)?;
+                files.push(format!("{name}.keys.json"));
+                j["keys"] = json!(keys.keys.len());
+            }
+            Ok(())
+        })();
+        if let Err(e) = kept {
+            remove_checkpoint(&dest);
+            return Err(e);
+        }
+        j["name"] = json!(name);
+        j["files"] = json!(files);
+        Ok(j)
     }
 
     /// Checks every byte of the database against its checksums
@@ -7059,9 +7108,20 @@ impl Queued {
     }
 }
 
+/// Removes the checkpoint at `dest` and what [`Service::checkpoint`] wrote
+/// beside it, which a server must not take for a whole checkpoint.
+fn remove_checkpoint(dest: &Path) {
+    let _ = match dest.is_dir() {
+        true => std::fs::remove_dir_all(dest),
+        false => std::fs::remove_file(dest),
+    };
+    let _ = std::fs::remove_file(slots::file_of(dest));
+    let _ = std::fs::remove_file(Keys::file_of(dest));
+}
+
 /// A checkpoint's name in the backup directory: letters, digits, '.', '_'
 /// and '-', not starting with '.', so that it stays in the directory.
-fn checkpoint_name(name: &str) -> Result<&str, ApiError> {
+pub(crate) fn checkpoint_name(name: &str) -> Result<&str, ApiError> {
     let ok = !name.is_empty() && name.len() <= 200 && !name.starts_with('.') && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
     ok.then_some(name).ok_or_else(|| ApiError::bad(format!("bad checkpoint name {name:?}: use letters, digits, '.', '_' and '-', not starting with '.'")))
 }

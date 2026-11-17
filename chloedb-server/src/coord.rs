@@ -390,6 +390,11 @@ struct Replica {
     /// when it said so (ms after [`Coordinator::epoch`]).
     protocol: AtomicU32,
     hello_at: AtomicU64,
+    /// Not given the cluster map again before this time (ms after
+    /// [`Coordinator::epoch`]), after it refused it ([`Coordinator::give_older`]).
+    give_after: AtomicU64,
+    /// The epoch of the cluster map it last said it holds (0: none).
+    epoch: AtomicU64,
     /// Its part in replication ([`pb::Role`]), its term, and whether a
     /// primary of a newer term replaced it, as it last said.
     role: AtomicI32,
@@ -421,6 +426,8 @@ impl Replica {
             avoid_until: AtomicU64::new(0),
             protocol: AtomicU32::new(0),
             hello_at: AtomicU64::new(0),
+            give_after: AtomicU64::new(0),
+            epoch: AtomicU64::new(0),
             role: AtomicI32::new(0),
             term: AtomicU64::new(0),
             replaced: AtomicBool::new(false),
@@ -440,6 +447,7 @@ impl Replica {
     /// Keeps what it said to `Hello`.
     fn heard(&self, said: &Said) {
         self.protocol.store(said.protocol, Ordering::Relaxed);
+        self.epoch.store(said.epoch, Ordering::Relaxed);
         self.role.store(said.role as i32, Ordering::Relaxed);
         self.term.store(said.term, Ordering::Relaxed);
         self.replaced.store(said.replaced, Ordering::Relaxed);
@@ -4144,6 +4152,15 @@ impl Coordinator {
                     }
                     j["term"] = json!(r.term.load(Ordering::Relaxed));
                     j["protocol"] = json!(r.protocol.load(Ordering::Relaxed));
+                    if up {
+                        // The cluster map it holds, and its last transaction
+                        // as replication numbers it: `txn` counts this
+                        // process's commits, which a copy started again on
+                        // an empty disk numbers anew (OLU-8), so copies
+                        // compare by `seq_no`.
+                        j["slot_epoch"] = json!(r.epoch.load(Ordering::Relaxed));
+                        j["seq_no"] = j["detail"]["health"]["replication"]["seq_no"].clone();
+                    }
                     // What this coordinator observed of its calls to it.
                     j["observed"] = r.stats.json();
                     if r.failed_until.load(Ordering::Relaxed) > now {
@@ -4354,12 +4371,22 @@ impl Coordinator {
     /// [`Self::sync`], and the newest map epoch a server said it holds.
     async fn sync_heard(&self) -> (bool, u64) {
         let t = self.topo();
-        let asks = t.replicas.iter().flatten().map(|r| {
+        let routed = t.slots.as_ref();
+        let asks = t.replicas.iter().enumerate().flat_map(|(i, rs)| rs.iter().map(move |r| (i, r))).map(|(i, r)| {
             let mut c = r.client.clone();
             async move {
                 let said = tokio::time::timeout(Duration::from_secs(2), hello(&mut c)).await.ok()?.ok()?;
                 r.heard(&said);
                 r.hello_at.store(self.now_ms(), Ordering::Relaxed);
+                // It holds an older map than the one routed by, or none: a
+                // copy started again on an empty disk, whose primary sent
+                // it a copy of the rows but not the map (finding OLU-8), or
+                // one that missed a change. Given it here, since this round
+                // keeps its answer to Hello fresh and so [`Self::speak`]
+                // never asks it again.
+                if let Some(m) = routed.filter(|m| said.protocol >= 4 && said.epoch < m.epoch) {
+                    self.give_older(r, &mut c, m, i, said.epoch).await;
+                }
                 Some((said.epoch, said.protocol, c))
             }
         });
@@ -4378,6 +4405,28 @@ impl Coordinator {
             _ => false,
         };
         (took, heard)
+    }
+
+    /// Gives `map`, the one routed by, to replica `r` of shard `i`, which
+    /// said it holds epoch `held` (0: none). A server that refuses it (it
+    /// holds rows of other shards' slots, say) is not given it again for
+    /// [`HELLO_EVERY_MS`], since it checks every row before it takes a map.
+    async fn give_older(&self, r: &Replica, c: &mut Client, map: &SlotMap, i: usize, held: u64) {
+        let now = self.now_ms();
+        if now < r.give_after.load(Ordering::Relaxed) {
+            return;
+        }
+        match tokio::time::timeout(Duration::from_secs(30), give_slots(c, map, i)).await {
+            Ok(Ok(epoch)) => tracing::info!(replica = %r.url, shard = i, held, epoch, "gave the cluster map to a copy that held an older one, or none"),
+            Ok(Err(e)) => {
+                r.give_after.store(now + HELLO_EVERY_MS, Ordering::Relaxed);
+                tracing::warn!(replica = %r.url, shard = i, held, epoch = map.epoch, error = %e.message(), "a copy refused the cluster map routed by; it is given it again in a minute");
+            }
+            Err(_) => {
+                r.give_after.store(now + HELLO_EVERY_MS, Ordering::Relaxed);
+                tracing::warn!(replica = %r.url, shard = i, held, epoch = map.epoch, "a copy took no cluster map within 30 s; it is given it again in a minute");
+            }
+        }
     }
 
     /// Follows the cluster map the servers hold, every [`WATCH_EVERY`] and
