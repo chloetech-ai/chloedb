@@ -1,0 +1,34 @@
+[package]
+name = "chloedb-sound"
+version = "0.3.7"
+edition = "2021"
+license = "Apache-2.0"
+description = "Sound Explorer on ChloeDB: free sounds and music searched by words and by how they sound, inside long recordings too, with the clip you hum, scenes, a map and drifts, each credited and linked to its source"
+
+# A client of chloedb-server over HTTP, as chloedb-hn is: no ChloeDB crate
+# in its build. ChloeDB's server listens to the sounds (CLAP, built with
+# --features audio); tools/prepare.py cuts them into moments and writes the
+# rows this loads.
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "fs", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+axum = "0.7"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+clap = { version = "4", features = ["derive", "env"] }
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "ansi"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+# CI's tests (cargo test --profile ci), as in the other crates.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16

@@ -179,6 +179,7 @@ NAV = [
         ("hn", "Hacker News", "docs/chloedb/hn.md", "reference"),
         ("arxiv", "arXiv explorer", "docs/chloedb/arxiv.md", "reference"),
         ("github", "GitHub explorer", "docs/chloedb/github.md", "reference"),
+        ("sound", "Sound Explorer", "docs/chloedb/sound.md", "reference"),
         ("chloectx", "ChloeCtx", "docs/chloectx/index.md", "reference"),
         ("chloectx-setup", "Install ChloeCtx", "docs/chloectx/setup.md", "reference"),
         ("chloectx-inspector", "ChloeCtx inspector", "docs/chloectx/inspector.md", "reference"),

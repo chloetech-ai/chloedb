@@ -67,7 +67,7 @@ check-documented-python.py, runs on every change anyway). The
 documentation site, Markdown files and benchmark results run nothing, as
 before (see the top of ci.yml).
 
-The demos (chloedb-netops, chloedb-hn, chloedb-arxiv, chloedb-gh, chloedb-swarm,
+The demos (chloedb-netops, chloedb-hn, chloedb-sound, chloedb-arxiv, chloedb-gh, chloedb-swarm,
 examples/feature-store, examples/parley) are on a release train of their own: CI and its required
 check `CI result` do not test them, and a change only under them runs
 nothing here. The workflow Demos (demos.yml) tests them, on a pull request
@@ -172,7 +172,7 @@ CI_JOBS = {
 NOTHING = re.compile(
     r"^("
     # The demo train (demos.yml).
-    r"chloedb-netops/|chloedb-hn/|chloedb-arxiv/|chloedb-gh/|chloedb-swarm/|examples/feature-store/|examples/parley/"
+    r"chloedb-netops/|chloedb-hn/|chloedb-sound/|chloedb-arxiv/|chloedb-gh/|chloedb-swarm/|examples/feature-store/|examples/parley/"
     # The other workflows; CI calls none of them.
     r"|\.github/workflows/(?!ci\.yml$)[^/]+\.ya?ml$"
     # Their scripts: door_check.py (doors.yml), nightly_report.py
@@ -389,6 +389,7 @@ def self_test():
     assert on(["chloedb-hn/src/nl.rs", "chloedb-hn/ui/view.js"]) == set()
     assert on(["chloedb-arxiv/src/main.rs", "chloedb-arxiv/ui/view.js"]) == set()
     assert on(["chloedb-gh/src/pages.rs", "chloedb-gh/ui/view.js", "chloedb-gh/deploy/vec.yaml"]) == set()
+    assert on(["chloedb-sound/src/sound.rs", "chloedb-sound/ui/view.js", "chloedb-sound/tools/prepare.py"]) == set()
     assert on(["examples/parley/parley/app.py", "examples/feature-store/featurestore.py"]) == set()
     assert on(["chloedb-netops/src/lib.rs", "chloedb-sheets/src/lib.rs"]) == {"any", "test:chloedb-sheets", "smoke", "smoke_sheets", "docs", "server"}
     assert on(["chloedb-crawl/src/lib.rs"]) == {"any", "test:chloedb-crawl", "smoke", "smoke_crawl", "docs", "server"}
