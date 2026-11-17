@@ -365,8 +365,11 @@ pub async fn listen(c: &Ctx<'_>, b64: &str) -> Result<Value> {
     let like = c.q("sounds like the clip", &format!("SELECT {CARD}, score() AS score FROM au_sounds ORDER BY similarity(emb, :v) DESC LIMIT 24"), json!({"v": vecs::param(&v)})).await?;
     let from = moments_like(c, &v, 0.0, 6, true).await?;
     // A clip cut from a recording here matches one of its moments far
-    // better than anything else does.
-    let original = from.first().filter(|m| m["score"].as_f64().unwrap_or(0.0) >= 0.9).cloned();
+    // better than anything else does: very closely, or closely and well
+    // ahead of the next recording (among a hundred thousand moments, songs
+    // of one kind come within a few hundredths of each other).
+    let score = |i: usize| from.get(i).and_then(|m| m["score"].as_f64()).unwrap_or(0.0);
+    let original = from.first().filter(|_| score(0) >= 0.95 || (score(0) >= 0.9 && score(0) - score(1) >= 0.03)).cloned();
     Ok(json!({"like": like.iter().map(card).collect::<Vec<_>>(), "moments": from, "original": original}))
 }
 
