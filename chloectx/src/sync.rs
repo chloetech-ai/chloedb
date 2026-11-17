@@ -403,6 +403,13 @@ impl Remote {
 pub struct SyncState {
     /// The server these marks are for: another URL starts again.
     pub url: String,
+    /// The name the project synced as ([`project_key`]), whose table the
+    /// marks are for: another name (an origin added, a rename) is another
+    /// table, which starts again from the first record (ANA-3: 318 records
+    /// were "pushed" and none reached the new table). Empty in a state
+    /// written before it was kept: taken for the current one.
+    #[serde(default)]
+    pub key: String,
     /// Every record up to this sequence number was sent.
     pub pushed_seq: i64,
     pub last_push: i64,
@@ -416,13 +423,28 @@ fn state_path(store_dir: &Path) -> PathBuf {
     store_dir.join("sync-state.json")
 }
 
-pub fn load_state(store_dir: &Path, url: &str) -> SyncState {
-    let s: SyncState = std::fs::read_to_string(state_path(store_dir)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    if s.url == url {
-        s
+pub fn load_state(store_dir: &Path, url: &str, key: &str) -> SyncState {
+    let s = saved_state(store_dir);
+    if s.url == url && (s.key.is_empty() || s.key == key) {
+        SyncState { key: key.to_string(), ..s }
     } else {
-        SyncState { url: url.to_string(), ..SyncState::default() }
+        SyncState { url: url.to_string(), key: key.to_string(), ..SyncState::default() }
     }
+}
+
+/// The state as saved, for whichever server and name.
+pub fn saved_state(store_dir: &Path) -> SyncState {
+    std::fs::read_to_string(state_path(store_dir)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+/// What `chloectx sync status` says is wrong when the server holds fewer of
+/// the project's records than this store has sent or taken from it (the
+/// records up to `pushed_seq`, `upto`): a table that lost them, or marks
+/// for another table.
+pub fn short_on_server(upto: u64, on_server: i64) -> Option<String> {
+    (on_server >= 0 && upto > on_server as u64).then(|| {
+        format!("the server holds {on_server} of this project's records, fewer than the {upto} this store sent or took from it: `chloectx sync push --again` sends them all again")
+    })
 }
 
 pub fn save_state(store_dir: &Path, s: &SyncState) {
@@ -777,13 +799,33 @@ fn is_anthropic_key(t: &str) -> bool {
     t.trim_start().starts_with("sk-ant-")
 }
 
-fn fnv(s: &str) -> u64 {
+pub(crate) fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ANA-3: an origin added changes the name a project syncs as, and so
+    /// its table; the marks of the old table sent nothing to the new one.
+    #[test]
+    fn another_name_starts_its_table_from_the_first_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = SyncState { url: "http://s".into(), key: "home_ana_code_ledger_a521b67e".into(), pushed_seq: 320, pushed: 318, ..Default::default() };
+        save_state(dir.path(), &st);
+        assert_eq!(load_state(dir.path(), "http://s", "home_ana_code_ledger_a521b67e").pushed_seq, 320);
+        let new = load_state(dir.path(), "http://s", "acme/ledger");
+        assert_eq!((new.pushed_seq, new.pushed, new.key.as_str()), (0, 0, "acme/ledger"));
+        assert_eq!(load_state(dir.path(), "http://other", "home_ana_code_ledger_a521b67e").pushed_seq, 0, "another server too");
+        // A state from before the name was kept: taken for the current one.
+        std::fs::write(dir.path().join("sync-state.json"), r#"{"url":"http://s","pushed_seq":12,"last_push":0,"last_pull":0,"pushed":12,"pulled":0,"last_error":""}"#).unwrap();
+        assert_eq!(load_state(dir.path(), "http://s", "acme/ledger").pushed_seq, 12);
+        // Status says when the table holds fewer than were sent.
+        assert!(short_on_server(318, 0).unwrap().contains("chloectx sync push --again"));
+        assert_eq!(short_on_server(318, 318), None);
+        assert_eq!(short_on_server(0, 0), None);
+    }
 
     #[test]
     fn each_project_syncs_with_its_own_key_and_the_first_is_the_machines() {

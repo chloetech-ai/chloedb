@@ -101,7 +101,13 @@ fn sessions_tools_compaction_and_memory_tools() {
     // Session two starts with a briefing that carries the preference and the episode.
     let brief = hook(&d, "SessionStart", json!({"session_id": "s2", "source": "startup"}));
     assert!(brief.contains("checked arithmetic"), "{brief}");
-    assert!(brief.contains("Turn 1. User asked"), "{brief}");
+    // JONAH-7: what changes every session comes with its first prompt, so
+    // the briefing is the same text while the notes are.
+    assert!(!brief.contains("Turn 1. User asked") && !brief.contains("records from") && !brief.contains(" ago"), "{brief}");
+    assert_eq!(hook(&d, "SessionStart", json!({"session_id": "s3", "source": "startup"})), brief);
+    let first = hook(&d, "UserPromptSubmit", json!({"session_id": "s2", "prompt": "What did we do last time?"}));
+    assert!(first.contains("Turn 1. User asked") && first.contains("records from") && first.contains("last activity"), "{first}");
+    assert!(!hook(&d, "UserPromptSubmit", json!({"session_id": "s2", "prompt": "And what is next?"})).contains("records from"), "once");
     // Now session one's records are searchable.
     let s = call(&d, json!({"op": "search", "query": "ledger mismatched types", "limit": 5}));
     assert!(s["text"].as_str().unwrap().contains("E0308"), "{s}");
@@ -306,6 +312,93 @@ esac
     assert_eq!(r["kept"], 1, "{r}");
     assert_eq!((r["rules"][0]["sessions"].as_u64(), r["rules"][0]["said_again_after_shown"].as_u64()), (Some(3), Some(1)), "{r}");
     assert_eq!(sql(&d, "SELECT COUNT(*) FROM memory LIMIT 1"), before);
+}
+
+/// ANA-1 and ANA-5: a rule said once is counted once, `chloectx distill`
+/// leaves a distilled turn as it is (it distilled every turn again and
+/// counted its rules again), and the turn a stopped daemon did not distill
+/// is distilled when the next daemon serves its first hook.
+#[test]
+fn a_turn_is_distilled_once_and_a_missed_one_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let calls = dir.path().join("calls");
+    let script = dir.path().join("fake-model.sh");
+    // Each call is counted; asked what the request says again, the fake
+    // model says it says again everything it was shown, quoting it.
+    let fake = r#"#!/bin/sh
+p=$(cat)
+echo x >> 'CALLS'
+case "$p" in
+*'<said_before>'*)
+  ids=$(printf '%s\n' "$p" | sed -n '/<said_before>/,/<\/said_before>/p' | sed -n 's/^\[\([^]]*\)\].*/\1/p' | sed 's/.*/\\"&\\"/' | paste -s -d, -)
+  printf '{"is_error":false,"total_cost_usd":0.001,"result":"{\\"said_again\\":[{\\"ids\\":[%s],\\"quote\\":\\"always run ruff check\\",\\"rule\\":\\"Run ruff check before saying you are done.\\"}]}"}' "$ids";;
+*) printf '%s' '{"is_error":false,"total_cost_usd":0.001,"result":"{\"kind\": \"rule\", \"text\": \"Run ruff check before saying the work is done.\", \"said_by\": \"requester\"}"}';;
+esac
+"#;
+    std::fs::write(&script, fake.replace("CALLS", &calls.to_string_lossy())).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let cfg = json!({"embedder": "hash:64", "sync": false, "briefing_chars": 4000, "distill": {"command": script, "model": "m"}});
+    std::fs::write(dir.path().join("config.json"), cfg.to_string()).unwrap();
+    let n_calls = || std::fs::read_to_string(&calls).map_or(0, |t| t.lines().count());
+    let d = Arc::new(Daemon::open(dir.path(), "/proj").unwrap());
+    hook(&d, "SessionStart", json!({"session_id": "s1", "source": "startup"}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s1", "prompt": "From now on always run ruff check before you tell me you are done."}));
+    hook(&d, "Stop", json!({"session_id": "s1", "last_assistant_message": "Understood, ruff check first from now on."}));
+    let rules = || sql(&d, "SELECT text FROM memory WHERE kind = 'preference' AND tag != 'cue' AND tag != 'superseded' LIMIT 10");
+    assert_eq!(rules(), [json!(["Run ruff check before saying the work is done."])], "said once, counted once: the cue picked from the turn's own words is not an earlier saying");
+    assert_eq!(n_calls(), 1, "no earlier saying, so no check call");
+
+    // `chloectx distill`: nothing to do, and it says so.
+    let plan = call(&d, json!({"op": "distill_backfill", "dry_run": true}));
+    assert_eq!((plan["turns"].as_u64(), plan["to_distill"].as_u64(), plan["already"].as_u64()), (Some(1), Some(0), Some(1)), "{plan}");
+    call(&d, json!({"op": "distill_backfill"}));
+    assert_eq!(n_calls(), 1);
+    assert_eq!(rules().len(), 1);
+
+    // A daemon killed after the turn ended, before it distilled it: the
+    // turn's prompt and answer are stored, with no mark.
+    d.store.append("s1", 2, chloectx::now(), vec![
+        chloectx::record::Draft::new(chloectx::record::Kind::Prompt, "Decision: invoices are rendered to PDF with WeasyPrint."),
+        chloectx::record::Draft::new(chloectx::record::Kind::Answer, "WeasyPrint it is."),
+    ]).unwrap();
+    assert_eq!(call(&d, json!({"op": "stats"}))["undistilled"], 1);
+    drop(d);
+    let d = Arc::new(Daemon::open(dir.path(), "/proj").unwrap());
+    hook(&d, "SessionStart", json!({"session_id": "s2", "source": "startup"}));
+    assert!(n_calls() >= 2, "the missed turn is distilled");
+    assert_eq!(call(&d, json!({"op": "stats"}))["undistilled"], 0);
+    let marks = sql(&d, "SELECT session, turn FROM memory WHERE kind = 'event' AND tag = 'distilled_turn' LIMIT 10");
+    assert_eq!(marks, [json!(["s1", 1]), json!(["s1", 2])]);
+    // Once only: another hook does not distill it again.
+    let after = n_calls();
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s2", "prompt": "hello there"}));
+    assert_eq!(n_calls(), after);
+    // --again distills every turn again (s2's too, which has a prompt).
+    assert_eq!(call(&d, json!({"op": "distill_backfill", "again": true, "dry_run": true}))["to_distill"], 3);
+}
+
+/// ANA-4: a turn's final answer that reached the transcript after its Stop
+/// is read with the next turn's narration: it is not stored again.
+#[test]
+fn an_answer_is_not_stored_again_as_the_next_turns_narration() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path());
+    let t = dir.path().join("transcript.jsonl");
+    let line = |text: &str| json!({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}).to_string() + "\n";
+    let a1 = "Acknowledged. I'll follow both rules: UTC timestamps with a trailing Z, and ruff check before I say I'm done.";
+    let n2 = "Reading src/billing.py first to see how the invoice lines are rounded today.";
+    let a2 = "VAT is now rounded per invoice line, half up, in src/billing.py, and ruff check passes.";
+    std::fs::write(&t, "").unwrap();
+    hook(&d, "SessionStart", json!({"session_id": "s1", "source": "startup"}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s1", "prompt": "Two rules for this project: timestamps in UTC with a Z, and ruff check before done."}));
+    hook(&d, "Stop", json!({"session_id": "s1", "last_assistant_message": a1, "transcript_path": t}));
+    // The transcript gets the first answer only now, then the next turn.
+    std::fs::write(&t, format!("{}{}{}", line(a1), line(n2), line(a2))).unwrap();
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s1", "prompt": "Round VAT per invoice line."}));
+    hook(&d, "Stop", json!({"session_id": "s1", "last_assistant_message": a2, "transcript_path": t}));
+    let answers = sql(&d, "SELECT turn, tag, text FROM memory WHERE kind = 'answer' ORDER BY seq ASC LIMIT 10");
+    let got: Vec<(i64, String, String)> = answers.iter().map(|r| (r[0].as_i64().unwrap(), r[1].as_str().unwrap().to_string(), r[2].as_str().unwrap().chars().take(20).collect())).collect();
+    assert_eq!(got, [(1, "-".into(), a1.chars().take(20).collect()), (2, "narration".into(), n2.chars().take(20).collect()), (2, "-".into(), a2.chars().take(20).collect())], "{answers:?}");
 }
 
 /// `chloectx backup`: a copy of the store taken while the daemon serves,

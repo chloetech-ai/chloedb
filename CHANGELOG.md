@@ -11,6 +11,37 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **ChloeCtx's rules and counts say what happened.** A rule said once read
+  "(the user has said this 2 times)": the preference picked from the
+  prompt's own words, and the notes an earlier distillation of the turn
+  wrote, counted as an earlier saying; now nothing of the turn itself, or
+  stored after it, does, nor the same request sent again word for word, nor
+  a format pasted onto each task. `chloectx distill` distilled every turn
+  again, silently, adding to the counts: each distilled turn is now marked
+  (an event record, `distilled_turn`, written with its notes), and the
+  command distills only the turns not distilled yet, says how many before
+  it starts and what it wrote after (`--again` redoes them all, `--dry-run`
+  only counts). A daemon stopped while it distilled lost that turn's notes:
+  the next daemon distills the newest five such turns of the last week after
+  its first hook, and doctor counts them. A turn's final answer the
+  transcript held only after its Stop was stored again as the next turn's
+  narration. The briefing gives the rules first and every note whole (a
+  decision cut mid-word hid the rule at its end, and counted as shown), and
+  is the same text from one session to the next while the notes are, so
+  Claude Code's prompt cache holds it: the counts, the last activity, the
+  checkpoint's open tasks and where the last session left off come with the
+  first prompt. A search finished by the end of a turn that found a rule or
+  decision of the user's the session was not shown is given then. Rules said
+  in a worktree, with nothing committed, are no longer labelled "from
+  branch X, not merged here" elsewhere: the user's rules hold on every
+  branch, and a note that names no file is another branch's only when that
+  branch has commits. Rules listed after "ground rules" or "conventions:"
+  are standing rules, and a decision is never kept for one task only. A
+  sync whose project was renamed (an `origin` added) pushed nothing to the
+  new table and said it had: the new table now starts from the first
+  record, `sync status` warns when the server holds fewer records than
+  were sent, and `sync push --again` sends them all.
+
 - **A command center on Kubernetes forgot the clusters it reaches at every
   restart.** A coordinator kept its hub's book (the **Connections** view,
   the clusters the brand's menu at the top left switches to, and their
