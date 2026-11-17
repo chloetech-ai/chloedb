@@ -207,7 +207,7 @@ export function mount(root, ctx) {
         const m = KEEP.get(p.path)?.d?.metrics;
         return h("a", { class: "cv-pj", href: `#/converge?project=${enc(p.project)}` }, h("span", { class: "n" }, p.project), h("span", { class: "p" }, p.path),
           m ? h("span", { class: "cv-meta" }, `${m.open || 0} open`) : null);
-      }), h("a", { class: "cv-pj add", href: "#/p" }, h("span", { class: "n" }, "+ Open a project"), h("span", { class: "p" }, "A git checkout on this machine"))));
+      }), h("a", { class: "cv-pj add", href: "#/p" }, h("span", { class: "n" }, "+ Open a project"), h("span", { class: "p" }, "A git checkout on this machine, or from GitHub"))));
     if (!ps.length && ctx.refreshProjects) ctx.refreshProjects().then(() => { if (S.alive && projects().length) load(); }, () => {});
     // No project may only mean the server refused this page's token: say that, not "no project".
     if (!ps.length || unknown) {

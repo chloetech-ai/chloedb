@@ -3571,6 +3571,56 @@ the run made; a finding is known when it was merged into an open one, or
   packages (`packages/x`, `apps/x`, `crates/x`, `services/x`, `libs/x`,
   `modules/x`).
 
+### Open a project from GitHub
+
+`POST /api/repos/import {source, async?, fork?}` (your token only; src/import.rs)
+takes `owner/repo`, `https://github.com/owner/repo(.git)` (a page under it
+too), `git@github.com:owner/repo.git` or another host's
+`https://host/owner/repo(.git)`; a local path, `file://`, `ssh://`,
+`ext::`, a leading `-`, a user or a port in the address, or any character
+outside a GitHub owner's (`[A-Za-z0-9-]`, at most 39) and a repository's
+(`[A-Za-z0-9._-]`) is refused (400) before git or gh runs. It clones with
+`gh repo clone owner/repo DIR -- --filter=blob:none` (blobless: the whole
+history for merges; `git clone` of the https address when gh fails) into
+the data dir's `repos/<owner>/<name>` (another host's under
+`repos/<host>/<owner>/<name>`), or, already cloned, fetches and
+fast-forwards. `gh api repos/owner/repo` says whether you can push and the
+default branch; when you cannot, `gh repo fork --remote --remote-name origin`
+makes origin your fork and upstream the original (not with `fork: false`), and Converge's settings
+get `upstream: owner/repo`, so a pull request opens on upstream with head
+`you:branch`. It detects the language, the test command (Cargo.toml: `cargo
+test`; a real `scripts.test`: `npm test`; a Python project with pytest
+signs: `uv run --with pytest python -m pytest -q`, or `python -m pytest -q`
+without uv; go.mod: `go test ./...`; a Makefile `test:`: `make test`), a run
+command when one is plain (`npm start`/`npm run dev`, the first
+`[project.scripts]`, `cargo run`, `go run .`, a README code line) and CI
+(`.github/workflows/*.yml`); opens it as Open a folder does (trusting it
+only when you can push), and writes the test command (when none is set) and
+the base (the default branch) into its Converge settings. It answers
+`{path, project, source, forked, fork, upstream, untrusted, can_push,
+default_branch, reused, detected: {language, test_cmd, run_cmd, ci},
+settings, warning, notes, repo}`; with `async: true`, `202 {id}` and `GET
+/api/repos/import/:id` is `{state: running|done|failed, step, steps,
+result, error}` (steps: cloning or fetching, checking, forking, detecting).
+One import of a repository at a time (409). `gh` is
+`CHLOEDB_WORKBENCH_CONVERGE_GH` when set.
+
+- `untrusted` (a setting; true for an import you cannot push to, or another
+  host's): fix agents run in Claude Code's `default` mode when the setting
+  says `auto` or `bypassPermissions` (they ask before what their list does
+  not allow), the deny-list stays (no push, gh, curl, wget, ssh, docker),
+  and Open a project warns before Converge runs anything. Personas and
+  agents still run the code on this machine: isolating them in a container
+  is the next step.
+- The page: Open a project (`#/p`) has From GitHub under Open a folder: the
+  steps as they happen, then what was detected, the test command editable,
+  and Write personas from the code (`#/converge/personas?project=`). The
+  Converge project picker's "+ Open a project" leads there.
+- Test: `a_github_repository_is_cloned_forked_detected_and_opened` (a fake
+  gh over bare repositories: refused sources, a fork, the settings, a
+  second import that fetches, one you can push to); unit tests of the
+  sources, the detection, `pr_target` and the untrusted mode.
+
 ### Tests
 
 `converge_an_ask_becomes_a_card_in_reproduce_and_a_card_by_hand_can_be_picked`,
