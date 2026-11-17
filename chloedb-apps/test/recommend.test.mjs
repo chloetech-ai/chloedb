@@ -13,7 +13,11 @@ import { signals } from '../engine/evolve.mjs';
 import { usePatterns, useUnopened, usePhone, useErrors, startAsks, startLibrary, asksOf, wordsOf, builtWords, SOURCES } from '../engine/recsources.mjs';
 import { Recommender, rank, learnWeights, withHint } from '../engine/recommend.mjs';
 
-const T0 = Date.parse('2026-11-01T09:00:00Z');
+// The use below starts a day before the tests run. The recommender reads the
+// clock (a pattern's confidence falls with its age, recsources.mjs), so use
+// on a fixed date fell behind the other sources as the days went by: from
+// 2026-11-17 the path from Orders to Stock no longer came first.
+const T0 = Date.now() - 86400000;
 const at = (s) => new Date(T0 + s * 1000).toISOString();
 // Events as the store gives them: newest first.
 const newestFirst = (evs) => evs.slice().sort((a, b) => b.ts.localeCompare(a.ts));
