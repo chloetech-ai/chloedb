@@ -166,7 +166,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <div><dt>Cloud, 1M</dt><dd>DigitalOcean Kubernetes. The rerun: two 4-vCPU nodes (Xeon Platinum 8280, 8168) for the engines that shard, one 8-vCPU node (8280) for the rest, Milvus alone on another (8358). The first run: 4- and 8-vCPU nodes; Xeon Platinum 8168, 8280, 8358 and Gold 6248</dd></div>
       <div><dt>Cloud, 10M</dt><dd>The same layout on m3 nodes; Xeon Platinum 8168, 8280, Gold 6248, 5318Y. Milvus and Redis on 128 GB. The head-to-head on latest main: two m3 nodes (8168, 8280)</dd></div>
       <div><dt>Laptop cluster</dt><dd>MacBook Air M2, 24 GB; kind in Docker Desktop, 4 CPUs</dd></div>
-      <div><dt>No server</dt><dd>DigitalOcean 8 vCPU: Xeon Platinum 8358; Xeon Gold 6548N for Tantivy</dd></div>
+      <div><dt>No server</dt><dd>DigitalOcean 8 vCPU: Xeon Platinum 8168 on 16 November (8358 before); Xeon Gold 6548N for Tantivy as the app's store</dd></div>
       <div><dt>Graph</dt><dd>MacBook Air M2; 3 CPUs and 6 GB per engine</dd></div>
       <div><dt>BM25 under load</dt><dd>A 4-vCPU cloud container, Xeon at 2.10 GHz</dd></div>
     </dl>
@@ -208,7 +208,7 @@ deploy/compare/fanout.sh down</code></pre></div>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js?v=9baf0c46d1"></script>
+<script src="assets/bench-data.js?v=37458d7418"></script>
 <script src="assets/site.js?v=699f360f4f"></script>
 <script src="assets/bench.js?v=cc795d625d"></script>
 </body>
