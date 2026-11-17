@@ -4,21 +4,73 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, chmodSync, mkdtempSync, readFileSync } from 'node:fs';
+import { writeFileSync, chmodSync, mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ask, claudeArgs, codexArgs, codexEvent, checkProvider, withProvider, currentProvider, modelFor, PROVIDER, AGY_UNSUPPORTED, CODEX_OFF, childEnv, codexCost, buildScope, spend } from '../engine/llm.mjs';
+import { ask, claudeArgs, codexArgs, codexInput, ARG_BYTES, codexEvent, checkProvider, withProvider, currentProvider, modelFor, PROVIDER, AGY_UNSUPPORTED, CODEX_OFF, childEnv, codexCost, buildScope, spend } from '../engine/llm.mjs';
 
 // Codex is off unless the engine's runner turns it on (audit 4, X-G6); the
 // tests below that use it turn it on, each for itself.
 const codexOn = (t) => { const was = process.env.STRATA_APPS_CODEX_ON; process.env.STRATA_APPS_CODEX_ON = '1'; t.after(() => { if (was === undefined) delete process.env.STRATA_APPS_CODEX_ON; else process.env.STRATA_APPS_CODEX_ON = was; }); };
 
-test('claude: the same arguments as before', () => {
-  assert.deepEqual(claudeArgs({ system: 'S', model: 'claude-x' }), ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', 'claude-x', '--system-prompt', 'S',
+test('claude: the same arguments as before, the system prompt read from a file', () => {
+  assert.deepEqual(claudeArgs({ systemFile: '/t/system.txt', model: 'claude-x' }), ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', 'claude-x', '--system-prompt-file', '/t/system.txt',
     '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence']);
-  const web = claudeArgs({ system: 'S', model: 'm', tools: ['WebSearch', 'WebFetch'], maxBudgetUsd: 0.5, effort: 'low', images: [{}] });
+  const web = claudeArgs({ systemFile: '/t/s', model: 'm', tools: ['WebSearch', 'WebFetch'], maxBudgetUsd: 0.5, effort: 'low', images: [{}] });
   assert.deepEqual(web.slice(-8), ['--allowedTools', 'WebSearch,WebFetch', '--max-budget-usd', '0.5', '--effort', 'low', '--input-format', 'stream-json']);
   assert.equal(web[web.indexOf('--tools') + 1], 'WebSearch,WebFetch');
+});
+
+// A system prompt over Linux's 128 KiB limit on one argument (the forge's
+// passed it in #574): as an argument, spawn fails at once with E2BIG.
+const BIG = `# Rules\n${'Every app has one to five views. '.repeat(6000)}\nThe end.`;
+
+// A fake claude that keeps what it was given (its arguments, the system
+// prompt file's text, stdin) and answers.
+function fakeClaude() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'sa-fake-claude-'));
+  const bin = path.join(dir, 'claude');
+  writeFileSync(bin, `#!${process.execPath}
+const fs = require('fs');
+const args = process.argv.slice(2);
+const file = args[args.indexOf('--system-prompt-file') + 1];
+let input = '';
+process.stdin.on('data', (d) => { input += d; });
+process.stdin.on('end', () => {
+  fs.writeFileSync(${JSON.stringify(path.join(dir, 'seen.json'))}, JSON.stringify({ args, file, system: fs.readFileSync(file, 'utf8'), mode: fs.statSync(file).mode & 0o777, input }));
+  const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+  out({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '<plan>{}</plan>' } } });
+  out({ type: 'result', subtype: 'success', is_error: false, result: '<plan>{}</plan>', total_cost_usd: 0.01, duration_ms: 5, usage: { output_tokens: 3 } });
+});
+`);
+  chmodSync(bin, 0o755);
+  return { bin, seen: () => JSON.parse(readFileSync(path.join(dir, 'seen.json'), 'utf8')) };
+}
+
+test('claude: a system prompt over 128 KiB reaches the model whole, from a file it removes after', async () => {
+  assert.ok(Buffer.byteLength(BIG) > 128 * 1024);
+  const fake = fakeClaude();
+  const out = await ask({ bin: fake.bin, system: BIG, prompt: 'A retro board for my team' });
+  assert.equal(out.text, '<plan>{}</plan>');
+  const seen = fake.seen();
+  assert.equal(seen.system, BIG, 'the whole system prompt, from the file');
+  assert.equal(seen.input, 'A retro board for my team', 'the prompt on stdin');
+  assert.equal(seen.mode, 0o600, 'readable by this user only');
+  assert.ok(!seen.args.includes('--system-prompt'), 'never as an argument');
+  assert.ok(seen.args.every((a) => Buffer.byteLength(a) < 4096), 'no long argument');
+  assert.ok(!existsSync(seen.file), 'the file is removed when the answer is in');
+  // A stop before the call starts runs nothing.
+  await assert.rejects(buildScope.run({ signal: AbortSignal.abort() }, () => ask({ bin: fake.bin, system: BIG, prompt: 'p' })), (e) => e.stopped === true);
+});
+
+test('codex: a system prompt too long for one argument goes on stdin instead', () => {
+  assert.deepEqual(codexInput('Be brief', 'p'), { system: 'Be brief', prompt: 'p' }, 'a short one stays developer instructions');
+  const big = codexInput(BIG, 'build a counter');
+  assert.equal(big.system, '');
+  assert.ok(big.prompt.startsWith(`<instructions>\n${BIG}\n</instructions>`));
+  assert.ok(big.prompt.endsWith('build a counter'));
+  assert.ok(codexArgs({ system: big.system }).every((a) => Buffer.byteLength(a) < ARG_BYTES));
+  assert.ok(ARG_BYTES < 128 * 1024);
 });
 
 test('codex: exec, read only, no tools, no user config, answer only', () => {
@@ -130,6 +182,15 @@ test('codex: an answer through a fake codex, its cost worked out from its tokens
   assert.equal(again.provider, 'codex');
   // Tools (an app's web ask) need claude.
   await assert.rejects(ask({ provider: 'codex', bin: fake.bin, system: 's', prompt: 'p', tools: ['WebSearch'] }), /needs the claude provider/);
+});
+
+test('codex: a long system prompt through a fake codex arrives on stdin', async (t) => {
+  codexOn(t);
+  const fake = fakeCodex();
+  await ask({ provider: 'codex', bin: fake.bin, system: BIG, prompt: 'build a counter' });
+  const seen = fake.seen();
+  assert.ok(!seen.args.some((a) => a.startsWith('developer_instructions=')));
+  assert.ok(seen.input.includes(BIG) && seen.input.endsWith('build a counter'));
 });
 
 test('codex: a failed turn is the error', async (t) => {

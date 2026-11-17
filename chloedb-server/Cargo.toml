@@ -58,6 +58,9 @@ sha2 = "0.10"
 # and the public CAs a TLS certificate of verify-full is checked against.
 hmac = "0.12"
 md-5 = "0.10"
+# Google's ID tokens, checked for the command center's Google sign-in
+# (`signin`): RS256 with Google's published keys. rustls has it already.
+ring = "0.17"
 webpki-roots = "1"
 # AWS answers in XML (EC2: instance types, regions, spot prices; `aws`).
 roxmltree = "0.20"

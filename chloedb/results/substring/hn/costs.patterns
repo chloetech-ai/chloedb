@@ -1,0 +1,176 @@
+ILIKE	%rust%
+LIKE	%rust%
+ILIKE	%r_st%
+LIKE	%r_st%
+ILIKE	%postgres vs mysql%
+LIKE	%postgres vs mysql%
+ILIKE	%p_stgres vs mysql%
+LIKE	%p_stgres vs mysql%
+ILIKE	%kubernetes%
+LIKE	%kubernetes%
+ILIKE	%k_bernetes%
+LIKE	%k_bernetes%
+ILIKE	%sqlite in production%
+LIKE	%sqlite in production%
+ILIKE	%s_lite in production%
+LIKE	%s_lite in production%
+ILIKE	%why is my startup failing%
+LIKE	%why is my startup failing%
+ILIKE	%w_y is my startup failing%
+LIKE	%w_y is my startup failing%
+ILIKE	%llm agents%
+LIKE	%llm agents%
+ILIKE	%l_m agents%
+LIKE	%l_m agents%
+ILIKE	%remote work%
+LIKE	%remote work%
+ILIKE	%r_mote work%
+LIKE	%r_mote work%
+ILIKE	%vim vs emacs%
+LIKE	%vim vs emacs%
+ILIKE	%v_m vs emacs%
+LIKE	%v_m vs emacs%
+ILIKE	%apple vision pro%
+LIKE	%apple vision pro%
+ILIKE	%a_ple vision pro%
+LIKE	%a_ple vision pro%
+ILIKE	%self hosting email%
+LIKE	%self hosting email%
+ILIKE	%s_lf hosting email%
+LIKE	%s_lf hosting email%
+ILIKE	%show hn database%
+LIKE	%show hn database%
+ILIKE	%s_ow hn database%
+LIKE	%s_ow hn database%
+ILIKE	%rewrite in rust%
+LIKE	%rewrite in rust%
+ILIKE	%r_write in rust%
+LIKE	%r_write in rust%
+ILIKE	%how to learn compilers%
+LIKE	%how to learn compilers%
+ILIKE	%h_w to learn compilers%
+LIKE	%h_w to learn compilers%
+ILIKE	%tesla autopilot%
+LIKE	%tesla autopilot%
+ILIKE	%t_sla autopilot%
+LIKE	%t_sla autopilot%
+ILIKE	%best laptop for programming%
+LIKE	%best laptop for programming%
+ILIKE	%b_st laptop for programming%
+LIKE	%b_st laptop for programming%
+ILIKE	%crypto scam%
+LIKE	%crypto scam%
+ILIKE	%c_ypto scam%
+LIKE	%c_ypto scam%
+ILIKE	%open source funding%
+LIKE	%open source funding%
+ILIKE	%o_en source funding%
+LIKE	%o_en source funding%
+ILIKE	%static site generator%
+LIKE	%static site generator%
+ILIKE	%s_atic site generator%
+LIKE	%s_atic site generator%
+ILIKE	%burnout%
+LIKE	%burnout%
+ILIKE	%b_rnout%
+LIKE	%b_rnout%
+ILIKE	%zig language%
+LIKE	%zig language%
+ILIKE	%z_g language%
+LIKE	%z_g language%
+ILIKE	%gpt-4%
+LIKE	%gpt-4%
+ILIKE	%g_t-4%
+LIKE	%g_t-4%
+ILIKE	%privacy google%
+LIKE	%privacy google%
+ILIKE	%p_ivacy google%
+LIKE	%p_ivacy google%
+ILIKE	%leaving big tech%
+LIKE	%leaving big tech%
+ILIKE	%l_aving big tech%
+LIKE	%l_aving big tech%
+ILIKE	%htmx%
+LIKE	%htmx%
+ILIKE	%h_mx%
+LIKE	%h_mx%
+ILIKE	%web assembly%
+LIKE	%web assembly%
+ILIKE	%w_b assembly%
+LIKE	%w_b assembly%
+ILIKE	%side project revenue%
+LIKE	%side project revenue%
+ILIKE	%s_de project revenue%
+LIKE	%s_de project revenue%
+ILIKE	%microservices vs monolith%
+LIKE	%microservices vs monolith%
+ILIKE	%m_croservices vs monolith%
+LIKE	%m_croservices vs monolith%
+ILIKE	%technical interviews%
+LIKE	%technical interviews%
+ILIKE	%t_chnical interviews%
+LIKE	%t_chnical interviews%
+ILIKE	%golang generics%
+LIKE	%golang generics%
+ILIKE	%g_lang generics%
+LIKE	%g_lang generics%
+ILIKE	%deno vs node%
+LIKE	%deno vs node%
+ILIKE	%d_no vs node%
+LIKE	%d_no vs node%
+ILIKE	%nuclear power%
+LIKE	%nuclear power%
+ILIKE	%n_clear power%
+LIKE	%n_clear power%
+ILIKE	%four day work week%
+LIKE	%four day work week%
+ILIKE	%f_ur day work week%
+LIKE	%f_ur day work week%
+ILIKE	%python packaging%
+LIKE	%python packaging%
+ILIKE	%p_thon packaging%
+LIKE	%p_thon packaging%
+ILIKE	%duckdb%
+LIKE	%duckdb%
+ILIKE	%d_ckdb%
+LIKE	%d_ckdb%
+ILIKE	%paul graham essays%
+LIKE	%paul graham essays%
+ILIKE	%p_ul graham essays%
+LIKE	%p_ul graham essays%
+ILIKE	%bitcoin%
+LIKE	%bitcoin%
+ILIKE	%b_tcoin%
+LIKE	%b_tcoin%
+ILIKE	%docker alternatives%
+LIKE	%docker alternatives%
+ILIKE	%d_cker alternatives%
+LIKE	%d_cker alternatives%
+ILIKE	%ycombinator%
+LIKE	%ycombinator%
+ILIKE	%y_ombinator%
+LIKE	%y_ombinator%
+ILIKE	%openai board%
+LIKE	%openai board%
+ILIKE	%o_enai board%
+LIKE	%o_enai board%
+ILIKE	%type systems%
+LIKE	%type systems%
+ILIKE	%t_pe systems%
+LIKE	%t_pe systems%
+ILIKE	%the%
+LIKE	%the%
+ILIKE	%a%
+LIKE	%a%
+ILIKE	%e%
+LIKE	%e%
+ILIKE	%to%
+LIKE	%to%
+ILIKE	%of%
+LIKE	%of%
+ILIKE	%ing%
+LIKE	%ing%
+ILIKE	%show hn%
+LIKE	%show hn%
+ILIKE	%ask hn%
+LIKE	%ask hn%

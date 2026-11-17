@@ -258,6 +258,18 @@ struct Args {
     /// Serve HTTP and gRPC over TLS with this certificate chain (PEM).
     #[arg(long, requires = "tls_key")]
     tls_cert: Option<PathBuf>,
+    /// Let people sign in to the command center with Google: the client id
+    /// of an OAuth client of type Web application
+    /// (NUMBER-....apps.googleusercontent.com), whose Authorized JavaScript
+    /// origins name this server's address. No client secret is needed.
+    #[arg(long, env = "CHLOEDB_GOOGLE_CLIENT_ID")]
+    google_client_id: Option<String>,
+    /// Who may sign in with Google, and at what scope (repeatable, or
+    /// comma-separated): name@example.com=admin, or @example.com=read for
+    /// every account of a Google Workspace domain (scope read when none is
+    /// given).
+    #[arg(long, env = "CHLOEDB_GOOGLE_ALLOW", value_delimiter = ',')]
+    google_allow: Vec<String>,
     /// The private key of --tls-cert (PEM).
     #[arg(long, requires = "tls_cert")]
     tls_key: Option<PathBuf>,
@@ -1227,7 +1239,8 @@ const HELP_TOPICS: &[(&str, &[&str])] = &[
         "node_name", "environment", "public_url", "image_repository"
     ]),
     ("Security", &[
-        "allow_host", "tls_cert", "tls_key", "keys", "audit_log", "trust_proxy", "redact_params"
+        "allow_host", "tls_cert", "tls_key", "keys", "audit_log", "trust_proxy", "redact_params",
+        "google_client_id", "google_allow"
     ]),
     ("Limits and timeouts", &[
         "timeout_ms", "max_timeout_ms", "max_concurrent", "admission_wait_ms", "max_result_window",
@@ -1676,6 +1689,8 @@ async fn run() {
         connector_env_prefix: a.connector_env_prefix.clone(),
         connectors: run_connectors,
         hub_device: a.hub_device,
+        google_client_id: a.google_client_id.clone().filter(|c| !c.trim().is_empty()),
+        google_allow: a.google_allow.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
         contain: a.contain.clone().or_else(|| a.alerts.as_ref().map(|p| p.with_file_name("contain.json"))),
         alerts: a.alerts,
         alert_webhook: a.alert_webhook.filter(|u| !u.is_empty()),

@@ -1,9 +1,14 @@
 # The vector table gh_vec in a cluster of its own, beside the main one
 # (k8s.yaml): the 3.3 million repos with a vector (ten stars or more), each
-# with its stars and language, for the app's searches by meaning (--vec).
+# with its stars and language, for the app's searches by meaning (--vec),
+# and the summaries the person and repo pages read, gh_people and
+# gh_repo_people (people-build.yaml makes each part, gh-side.chloedb, from
+# a copy of gh-vec.chloedb, which vec-build.yaml builds).
 #   gh-v0..gh-v3   a chloedb-server each, on the node of gh-s0..gh-s3, its
-#                  database at hostPath /mnt/chloedb/gh/vec, built there by
-#                  vec-build.yaml from the reduce step's repos
+#                  database gh-side.chloedb on the node's volume gh-side-N
+#                  (/side; people-build.yaml makes the volumes: the SSDs
+#                  have no room above the kubelet's eviction line), the
+#                  pin and its log at hostPath /mnt/chloedb/gh/vec (/data)
 #   gh-vec         its coordinator, which embeds the query and asks the four
 # Why apart: next to the 60 GB of events a shard reads, the vectors' pages
 # (half a gigabyte a node, quantized, and the graph) were pushed out of the
@@ -40,7 +45,7 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /data/gh-vec.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
+        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /side/gh-side.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /side/gh-side.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
@@ -52,8 +57,10 @@ spec:
         # the cache out (and the part is rebuilt from the reduce output in
         # minutes).
         resources: {requests: {cpu: 100m, memory: 768Mi}, limits: {memory: 1280Mi}}
-        volumeMounts: [{name: data, mountPath: /data}]
-      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
+        volumeMounts: [{name: data, mountPath: /data}, {name: side, mountPath: /side}]
+      volumes:
+      - {name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}
+      - {name: side, persistentVolumeClaim: {claimName: gh-side-0}}
 ---
 apiVersion: v1
 kind: Service
@@ -78,7 +85,7 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /data/gh-vec.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
+        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /side/gh-side.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /side/gh-side.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
@@ -90,8 +97,10 @@ spec:
         # the cache out (and the part is rebuilt from the reduce output in
         # minutes).
         resources: {requests: {cpu: 100m, memory: 768Mi}, limits: {memory: 1280Mi}}
-        volumeMounts: [{name: data, mountPath: /data}]
-      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
+        volumeMounts: [{name: data, mountPath: /data}, {name: side, mountPath: /side}]
+      volumes:
+      - {name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}
+      - {name: side, persistentVolumeClaim: {claimName: gh-side-1}}
 ---
 apiVersion: v1
 kind: Service
@@ -116,7 +125,7 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /data/gh-vec.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
+        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /side/gh-side.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /side/gh-side.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
@@ -128,8 +137,10 @@ spec:
         # the cache out (and the part is rebuilt from the reduce output in
         # minutes).
         resources: {requests: {cpu: 100m, memory: 768Mi}, limits: {memory: 1280Mi}}
-        volumeMounts: [{name: data, mountPath: /data}]
-      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
+        volumeMounts: [{name: data, mountPath: /data}, {name: side, mountPath: /side}]
+      volumes:
+      - {name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}
+      - {name: side, persistentVolumeClaim: {claimName: gh-side-2}}
 ---
 apiVersion: v1
 kind: Service
@@ -154,7 +165,7 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /data/gh-vec.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
+        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /side/gh-side.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /side/gh-side.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
@@ -166,8 +177,10 @@ spec:
         # the cache out (and the part is rebuilt from the reduce output in
         # minutes).
         resources: {requests: {cpu: 100m, memory: 768Mi}, limits: {memory: 1280Mi}}
-        volumeMounts: [{name: data, mountPath: /data}]
-      volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
+        volumeMounts: [{name: data, mountPath: /data}, {name: side, mountPath: /side}]
+      volumes:
+      - {name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}
+      - {name: side, persistentVolumeClaim: {claimName: gh-side-3}}
 ---
 apiVersion: v1
 kind: Service

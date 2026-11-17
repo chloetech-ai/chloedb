@@ -400,6 +400,34 @@ async fn two_servers_every_page() {
     post(&http, &app, &format!("/v1/feeds/{fid}/team"), json!({"user": "reader-owner", "off": true})).await;
     assert_eq!(save(&key).await.unwrap().status().as_u16(), 403);
 
+    // Writing an issue tells its progress: the papers it chose, each step
+    // with its phase and the paper it is on, and the issue it kept (no
+    // model in these tests, so its paragraphs are empty).
+    let f = post(&http, &app, "/v1/feeds", json!({"user": "reader-progress", "config": {"name": "progress", "interests": ["sequential recommendation"], "days": 400, "papers": 3, "style": "bullets", "extras": []}})).await;
+    let fid = f["id"].as_str().unwrap().to_string();
+    let job = post(&http, &app, &format!("/v1/feeds/{fid}/issue"), json!({"user": "reader-progress"})).await["job"].as_str().unwrap().to_string();
+    let mut j = Value::Null;
+    for _ in 0..240 {
+        j = get(&http, &app, &format!("/v1/jobs/{job}")).await;
+        if j["state"] != "running" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    let chose = ids(&j["papers"]);
+    assert!((1..=3).contains(&chose.len()), "{j}");
+    assert_eq!((j["state"].clone(), j["phase"].clone(), j["name"].clone(), j["n"].clone()), (json!("done"), json!("done"), json!("progress"), json!(chose.len())), "{j}");
+    assert!(chose.iter().all(|id| rec.contains(id)), "{chose:?}");
+    assert!(j["papers"].as_array().unwrap().iter().all(|p| !p["title"].as_str().unwrap_or("").is_empty()), "{j}");
+    let phases: Vec<&str> = j["log"].as_array().unwrap().iter().filter_map(|l| l["phase"].as_str()).collect();
+    let mut want = vec!["choose", "chosen"];
+    want.extend(std::iter::repeat("write").take(chose.len()));
+    want.push("save");
+    assert_eq!(phases, want, "{j}");
+    let on: Vec<Value> = j["log"].as_array().unwrap().iter().filter(|l| l["phase"] == "write").map(|l| l["i"].clone()).collect();
+    assert_eq!(on, (0..chose.len()).map(|i| json!(i)).collect::<Vec<_>>(), "{j}");
+    assert_eq!(get(&http, &app, &format!("/v1/issue/{}", j["issue"].as_str().unwrap())).await["issue"]["vol"], 1);
+
     // Likely classics: a judged paper is listed with its judgement and the
     // paper's row, under the models' card.
     let row = json!({"id": rec_id(4), "p": 0.2, "lift": 18.5, "win": 182, "early": 7, "record_cites": 900, "area": "cs", "pcat": "cs.IR", "created": chrono::Utc::now().to_rfc3339(), "why": ["cited in its first 182 days", "code"]});

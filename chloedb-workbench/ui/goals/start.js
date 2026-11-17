@@ -1,12 +1,13 @@
 // Workbench's home, `#/workbench` (JOURNEYS.md, "Workbench (Home)" and
-// "First run"; it was Start, the app's home, before Converge was): what do
+// "First run"; it was Start, the app's home, before Converge was; it is
+// reached from ⋯ › Workbench, not from Converge's navigation): what do
 // you want to do? Four goals, the one that fits now filled; your projects,
 // most active first; the agents; Workbench's tools (what More lists); what
 // needs you now, answered in place. With no project known: the folder box
 // and Start a new project, the tools and the setup line.
 import { h, useStyle, page, btn, label, kc, pane, bank, stateDot, since, ago, fmtClock, icon, avatar, GROUP_WORDS, toMs } from "/levels/common.js";
 import { repoPicker } from "/levels/repos.js";
-import { MORE, ORDER, WB, fleetWords } from "/goals/shell.js";
+import { MORE, ORDER, WB, fleetWords, ordered } from "/goals/shell.js";
 
 export function mount(root, ctx) {
   useStyle("g-start", CSS);
@@ -95,9 +96,8 @@ export function mount(root, ctx) {
       tile("Review", "g r", "Review and ship", "The change, its checks, and the merge.", readyN ? `${readyN} ready: ${readyNames.join(", ")}` : "Nothing is ready yet", btn("Review", { href: cont ? `#/p/${(projects.find((p) => p.counts && p.counts.ready) || cont).project}/ship` : "#/p", primary: goal === "review" }), goal === "review"),
       tile("Debug", "g d", "Find out why something went wrong", "An agent's turn, a line of code, or a failing test.", N.items.some((i) => i.kind === "alert") ? `${N.items.filter((i) => i.kind === "alert").length} alert asks you` : "Pick a turn, a line or a test", btn("Debug", { href: "#/debug" }), false));
     goals.classList.add("g-goals");
-    // Optimize the harness (HARNESS.md, "Where it plugs in"): the goal
-    // after the four, as a line.
-    const hx = h("a", { class: "g-hx", href: "#/harness" }, icon("spark"), h("span", {}, h("b", {}, "Optimize the harness"), " What cost your agents time this week, and a change to keep."), icon("chev", "i sm"));
+    // Optimize the harness is one of the tools below (and ⋯ › Workbench),
+    // not a line of its own.
     const dense = ctx.prefs.get("compact");
     const rows = projects.map((p) => {
       const c = p.counts || {};
@@ -109,7 +109,7 @@ export function mount(root, ctx) {
         h("td", { class: "r num g-dim g-hide" }, p.last_activity_ms ? ago(p.last_activity_ms) : "—"),
         h("td", { class: "r" }, h("span", { class: "g-acts" }, btn("Continue", { sm: true, href: `#/p/${p.project}` }), c.ready ? btn(`Review ${c.ready}`, { sm: true, href: `#/p/${p.project}/ship` }) : null)));
     });
-    const needs = N.items.slice(0, 4);
+    const needs = ordered(N.items).slice(0, 4); // Blocked on you first
     const insp = [
       h("div", { class: "g-ih" }, label(`Needs you now`, h("span", { class: "num" }, String(N.count)))),
       needs.length ? needs.map((it) => ctx.needCard(it)) : h("p", { class: "g-dim" }, "Nothing needs you."),
@@ -117,7 +117,7 @@ export function mount(root, ctx) {
       ctx.slot("rules-suggest"),
     ];
     return page({ kicker: "Converge › Workbench", title: "What do you want to do?", sub, wide: true, inspector: insp },
-      goals, hx,
+      goals,
       h("div", { class: "gp-sec" }, pane("Your projects", h("a", { href: "#/p" }, "Open another"),
         h("table", { class: "tbl" }, h("thead", {}, h("tr", {}, h("th", {}, "Project"), h("th", {}, "State"), h("th", { class: "g-hide" }, "Agents"), h("th", { class: "r g-hide" }, "Active"), h("th", { class: "r" }, ""))), h("tbody", {}, rows)))),
       agents(),

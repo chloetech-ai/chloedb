@@ -42,7 +42,7 @@ pub struct Opts {
 }
 
 /// A shard's files of `table` in every input, oldest day first.
-fn files(inputs: &[PathBuf], table: &str, shard: usize) -> Result<Vec<PathBuf>> {
+pub(crate) fn files(inputs: &[PathBuf], table: &str, shard: usize) -> Result<Vec<PathBuf>> {
     let mut v = Vec::new();
     for i in inputs {
         let d = i.join(table).join(format!("s{shard}"));
@@ -60,7 +60,7 @@ fn files(inputs: &[PathBuf], table: &str, shard: usize) -> Result<Vec<PathBuf>> 
     Ok(v)
 }
 
-fn each_batch(files: &[PathBuf], mut f: impl FnMut(&Batch)) -> Result<()> {
+pub(crate) fn each_batch(files: &[PathBuf], mut f: impl FnMut(&Batch)) -> Result<()> {
     for p in files {
         let r = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(p)?)?
             .with_batch_size(65536)
@@ -73,7 +73,7 @@ fn each_batch(files: &[PathBuf], mut f: impl FnMut(&Batch)) -> Result<()> {
 }
 
 /// A batch's columns by name, read once a batch.
-struct Batch(RecordBatch);
+pub(crate) struct Batch(RecordBatch);
 
 impl Batch {
     fn col(&self, name: &str) -> Option<&ArrayRef> {
@@ -83,16 +83,16 @@ impl Batch {
             .ok()
             .map(|i| self.0.column(i))
     }
-    fn ints(&self, name: &str) -> Option<&arrow_array::Int64Array> {
+    pub(crate) fn ints(&self, name: &str) -> Option<&arrow_array::Int64Array> {
         self.col(name).map(|c| c.as_primitive::<Int64Type>())
     }
-    fn strs(&self, name: &str) -> Option<&StringArray> {
+    pub(crate) fn strs(&self, name: &str) -> Option<&StringArray> {
         self.col(name).map(|c| c.as_string::<i32>())
     }
     fn bools(&self, name: &str) -> Option<&BooleanArray> {
         self.col(name).map(|c| c.as_boolean())
     }
-    fn rows(&self) -> usize {
+    pub(crate) fn rows(&self) -> usize {
         self.0.num_rows()
     }
 }

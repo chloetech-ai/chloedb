@@ -1,0 +1,16 @@
+{
+ "table": "gh_people",
+ "shard_by": "part",
+ "cluster_by": "actor",
+ "compression": "zstd",
+ "fields": [
+  {"name": "part", "type": "int", "not_null": true},
+  {"name": "actor", "type": "int", "not_null": true},
+  {"name": "events", "type": "int"},
+  {"name": "stars", "type": "int"},
+  {"name": "work", "type": "int"},
+  {"name": "kinds", "type": "keyword", "indexed": false},
+  {"name": "years", "type": "keyword", "indexed": false},
+  {"name": "repos", "type": "keyword", "indexed": false}
+ ]
+}

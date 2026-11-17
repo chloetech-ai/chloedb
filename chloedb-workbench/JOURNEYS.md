@@ -1,10 +1,16 @@
 # Workbench, rebuilt around what you came to do
 
-> **Since 2026-11-15 the app is Converge, and Workbench is its section.**
-> `#/` opens Converge's board of the project in focus; the page this file
-> calls Start (Home) is Workbench's home at `#/workbench`, and the phone's
-> tabs are Board, Needs you, Projects and Workbench. See "URL routes". The
-> rest of this file describes Workbench's pages, which keep their routes.
+> **Since 2026-11-16 Converge is the whole app's navigation.** `#/` opens
+> Converge's pipeline of the project in focus (Run a persona, Problems,
+> Reproducing, Ready to build, Building, Ready to merge; [SPEC.md](SPEC.md),
+> "Seventh build"). The top bar holds the brand, the project, **Needs you**
+> and **⋯**; the phone's tab bar is Home, Needs you, Personas and More.
+> Workbench and its pages (agents, terminals, review, debug, the harness,
+> rules, the Simple view) left the main navigation: they are reached only
+> through **⋯ › Workbench**, and every one keeps its route. See "Global
+> elements" and "URL routes". The page this file calls Start (Home) is
+> Workbench's home at `#/workbench`; the rest of this file describes
+> Workbench's pages.
 
 This is the information architecture for the next Workbench UI: the pages,
 the steps on each page, the one thing to press on each step, and where
@@ -139,52 +145,41 @@ Why this shape:
 
 ## Global elements
 
-On a desktop, the top bar of every page holds the breadcrumb and four
-controls:
+On a desktop, the top bar of every page holds four things:
 
 ```
-◼ Workbench   Home › shop › Review and ship › cents     [⌕ Search shop /]  [● 2 need you]  [◉◉◉◉ 4 agents ▾]  [⋯]
+◼ Converge   [▭ shop ▾]   Workbench / More / Rules                [▤ Needs you 3]  [⋯]
 ```
 
-- **Breadcrumb** (left): Home › project › step › agent. It says where you
-  are, and each part is a link. It replaces the left rail and the level
-  pills.
-- **Search** (`/`): today's quick search (`quicksearch.js`) over code,
-  docs and decisions, scoped to the project in the breadcrumb.
-  - `⇧ Enter` on a line asks "why is this line like this" (Debug).
-  - With no project yet, the first line of the results is the folder box,
-    never "repo is required".
-- **Needs you** (`.`): the one count. It is a button that opens a drawer
-  of cards, oldest first.
-  - Each card shows the agent, how long it has waited, and what it asks
-    in full: the whole command, the edit as a diff, or the trust prompt.
-  - Under that are Claude Code's own options, with Claude Code's numbers,
-    and "Open agent".
-  - Answering never types into a prompt that is already gone.
-  - Alerts that ask you come after the agents' questions.
-  - Zero shows as a quiet "Nothing needs you", not as a hidden pill.
-- **Agents** (`a`): the agent switcher. It shows the running agents'
-  avatars and a count.
-  - It opens a list grouped as Needs you, Working, Ready to review and
-    Finished.
-  - Each row has the agent's name, project and model, its state in words,
-    and its one live sentence.
-  - The row opens the agent's page, and the terminal icon opens its
-    Terminal tab. `1`…`9` pick a row.
-  - Finished agents have **Resume**.
-- **More** (`⋯`): what is useful but is nobody's first step:
-  - All terminals (today's grid)
-  - Where the time went (Flow)
-  - Decisions timeline
-  - Library docs
-  - Rules
-  - Guide
-  - Keys
-  - Setup check
+- **Brand** (`g s`): Converge's pipeline of the project in focus (`#/`).
+- **Project**: the project in focus, a link to the project picker
+  (`#/converge`). Converge's own pages name the project in the page, with
+  its switcher, so the top bar leaves it out there.
+- **Crumbs**: on Workbench's pages only (Workbench / project / step /
+  agent), each part a link. Converge's pages draw their own steps.
+- **Needs you** (`.`): the one count. It opens a drawer of cards:
+  - Converge's **Blocked on you** groups first: each finding with its step
+    (Problems, Reproducing, Ready to build, Building, Ready to merge), what
+    you do, **Done, carry on** (`POST /api/converge/findings/:id/unblock`,
+    which hands it back to its agent) and Open it.
+  - Then the agents' questions, in the one question card (the agent, how
+    long it has waited, the whole command or diff, Claude Code's own
+    options with its numbers; answering never types into a prompt that is
+    already gone), Converge's other picks, and the alerts.
+  - **Open the list** goes to `#/needs`, the same order with filters.
+- **⋯** (More): Converge's views of the project in focus (Personas,
+  Metrics, Autopilot settings, Activity log, Switch project), Search (`/`)
+  and Notifications, then **Workbench ›**, a second level with every
+  Workbench page: its home, Agents (`a`), All terminals, Review and ship,
+  Debug, Optimize the harness, Rules and grants, the Simple view and New
+  request, and Everything else (`#/more`). Its rows are in `index.html`'s
+  `<template id="wb-links">`.
 
-There is no left rail, no level switch, no global time bar and no
-permanent right rail. On a phone, the same controls move to a bottom tab
-bar (see "Phone").
+There is no Board/Projects/Workbench row of links, no Simple/Advanced
+switch, no search box and no agents button in the top bar: the keys still
+work (`/` searches, `a` opens the agent switcher, `g w` goes to Workbench).
+On a phone the top bar keeps Back and the page's name, and Home, Needs you,
+Personas and More move to the bottom tab bar (see "Phone").
 
 ## Start (Home)
 
@@ -802,13 +797,15 @@ The phone rules:
    agents" on step 4). The inline primary buttons are hidden, so each
    step still has one primary. Review and Debug use the same compact
    indicator.
-3. **Top navigation becomes a bottom tab bar**: **Board** (Converge),
-   **Needs you** (with the count as a badge), **Projects** and
-   **Workbench** (its home lists what Start, More and Agents had).
+3. **Top navigation becomes a bottom tab bar**: **Home** (Converge's
+   pipeline of the project in focus), **Needs you** (with the count as a
+   badge), **Personas** and **More** (the ⋯ menu; Workbench is its second
+   level).
    - The top bar keeps a back link to the parent crumb and the page's
-     name, plus Agents (a count) and a Search icon.
+     name, nothing else.
    - Needs you opens full screen between the two bars.
-   - More, Agents and Search open as bottom sheets.
+   - More and the agent switcher open as bottom sheets; Search is under
+     More.
 4. **Needs-you cards get full-width Allow and Deny buttons** (48px tall).
    - The command is shown in full, in a wrapping monospace block, **never
      truncated** (no max height, no ellipsis).
@@ -920,9 +917,9 @@ In short:
 |---|---|
 | `#/` | Converge: redirects to `#/converge?project=<the project in focus>`, or `#/converge` with none |
 | `#/converge` | Converge's project picker (a card per project, and Open a project, `#/p`) |
-| `#/converge[/<view>]?project=<project>` | that project's Converge (its board, activity, agents, personas…); `?f=<finding>` opens one finding |
-| `#/workbench` | Workbench's home, the old Start: its four goals, your projects, agents, tools (More's list), what needs you; the first run when no project is known |
-| `#/needs` | Needs you, every project's |
+| `#/converge[/<step>]?project=<project>` | that project's Converge: its pipeline, or one step (`problems`, `reproducing`, `ready`, `building`, `merge`, `personas`) or view under ⋯ (`metrics`, `settings`, `activity`); `?f=<finding>` opens one finding |
+| `#/needs` | Needs you, every project's: Blocked on you first, with Done, carry on |
+| `#/workbench` | Workbench's home (⋯ › Workbench), the old Start: its four goals, your projects, agents, tools (More's list), what needs you; the first run when no project is known |
 | `#/` | Start (the first run when no project is known) |
 | `#/s`, `#/s/r/<agent>[?tell=1]`, `#/s/new` | the Simple view: the board of requests, one request beside it (its own page on a phone), the box on a phone; `#/` redirects to `#/s` while Simple is your view |
 | `#/new`, `#/new/what`, `#/new/plan` | A. Start a new project |
@@ -948,9 +945,12 @@ later (a slow `/api/repos` on a fresh load said "No project named …").
 
 Crumbs start at Converge: Converge's pages at its board, Needs you under
 Converge, every Workbench page under Converge › Workbench (`shell.js`
-rewrites an old first crumb "Start" this way). The top bar on a desktop has
-Board, Projects and Workbench after the brand; the phone's tab bar has
-Board, Needs you, Projects (`#/converge`, the picker) and Workbench.
+rewrites an old first crumb "Start" this way). The top bar shows them on
+Workbench's pages only, after the brand (which stands for Converge). The
+phone's tab bar has Home (the pipeline of the project in focus), Needs you,
+Personas (`#/converge/personas?project=`) and More (the ⋯ menu). Every
+Workbench route above, the harness's and the Simple view's included, is
+still served; none is in Converge's navigation, only under ⋯ › Workbench.
 
 Today's routes redirect for a release:
 
@@ -1184,8 +1184,9 @@ On a phone, Back and Next sit in a bar at the bottom.
   Workbench. A sheet of P's or R2's has every key while it is open.
 
 **Phone.** Breakpoints are at 640 and 1024 px.
-- The tab bar has Board, Needs you (with the count), Projects and
-  Workbench, above the safe-area inset.
+- The tab bar has Home, Needs you (with the count), Personas and More,
+  above the safe-area inset (since 2026-11-16; it had Board, Needs you,
+  Projects and Workbench).
 - With a coarse pointer, targets are at least 44 px and inputs 16 px.
 - Nothing is hover-only.
 - No page scrolls sideways at 390 px (the screenshot run checks this).
@@ -1221,8 +1222,12 @@ Roberto, 14 Nov: a view between Claude Code desktop and the goal pages,
 for many requests in flight, each one agent in its own worktree, with
 where each is in the process on a board, and the buttons following the
 stage. The goal pages stay as they are and are called **Advanced**; a
-switch in the top bar (on a phone, the other view's name) picks one, kept
-in this browser as the pref `simple`, which only says what `#/` opens.
+switch in the top bar (on a phone, the other view's name) picked one, kept
+in this browser as the pref `simple`, which only says what `#/workbench`
+opens. Since 2026-11-16 the switch is not in the top bar: the Simple view
+is ⋯ › Workbench › Simple view (which sets the pref), its board's
+"Advanced view" and ⋯ › Workbench › Workbench home clear it, and its
+routes are unchanged.
 
 - **Stages** (`ui/goals/simple/stage.js`, pure): Planning (running with
   nothing changed in its worktree, or in Plan mode; a turn that ended with

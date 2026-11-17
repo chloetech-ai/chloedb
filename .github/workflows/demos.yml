@@ -8,6 +8,7 @@ name: Demos
 #   chloedb-hn               Hacker News searched, asked and completed
 #   chloedb-gh               GitHub's public history since 2011
 #   chloedb-sound            free sounds searched by how they sound
+#   chloedb-backbone         the internet's routing from public data
 #   chloedb-swarm            simulated users, an internal test instrument
 #   examples/feature-store   a shop ranked on features ChloeDB keeps
 #   examples/parley          a social network of LLM agents
@@ -28,6 +29,7 @@ on:
       - "chloedb-arxiv/**"
       - "chloedb-gh/**"
       - "chloedb-sound/**"
+      - "chloedb-backbone/**"
       - "chloedb-swarm/**"
       - "examples/feature-store/**"
       - "examples/parley/**"
@@ -221,6 +223,31 @@ jobs:
         working-directory: chloedb-sound
         run: cargo clippy --locked --profile ci --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
+  # Backbone: its tests and clippy (MRT and RIS Live's messages, RPKI and
+  # origin checks, IODA's events); it has no cluster test yet, so it needs
+  # no server.
+  backbone:
+    name: chloedb-backbone
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: chloedb-backbone
+          shared-key: chloedb-backbone-demos
+      - name: Tests
+        working-directory: chloedb-backbone
+        run: cargo test --locked --profile ci --no-fail-fast
+      - name: Clippy
+        working-directory: chloedb-backbone
+        run: cargo clippy --locked --profile ci --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+
   # arXiv: its tests and clippy, and every page on two servers of this
   # commit (the search server and the graph server, as in production) over
   # a small made-up arXiv embedded by hash:512 (tests/cluster.rs).
@@ -324,7 +351,7 @@ jobs:
   demo-result:
     name: Demo result
     if: always()
-    needs: [server, netops, hn, sound, arxiv, gh, swarm, python]
+    needs: [server, netops, hn, sound, arxiv, gh, backbone, swarm, python]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -3,7 +3,7 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use super::like::{self, Like, Plan, Stats};
+use super::like::{self, First, Like, Plan, Stats};
 use super::*;
 use crate::segment::{DocId, FieldIndexBuilder, SegmentFile, SegmentWriter};
 use crate::value::Value;
@@ -240,6 +240,109 @@ fn ilike_folds_each_character_alone() {
         assert_eq!(got.to_sorted(), want, "{value:?} ILIKE {pattern:?} from the index");
     }
     assert!(!Like::new("ΟΔΟΣ%", false).matches("ΟΔΟσΑ"), "LIKE keeps case");
+}
+
+/// An ILIKE of one literal folds each of the value's characters alone, so
+/// the spellings the index follows are every value that matches: none is
+/// read, whether a capital İ, a Kelvin sign or a final sigma spells it.
+#[test]
+fn ilike_of_one_literal_reads_no_value() {
+    let vals: Vec<Option<String>> = ["Rust", "rust", "RUST", "trust", "TRUST me", "rüst", "İstanbul", "istanbul", "ISTANBUL", "\u{212A}elvin", "kelvin", "ΟΔΟΣ", "οδος", "οδόσ", "ﬁle", "x"]
+        .iter()
+        .map(|s| Some(s.to_string()))
+        .chain([None])
+        .collect();
+    for (sample, part_bytes) in [(1, 16), (4, MAX_PART_BYTES)] {
+        let ix = index(&vals, sample, part_bytes);
+        for p in ["%rust%", "rust", "%rust", "rust%", "%RuSt%", "%istanbul%", "%İSTANBUL%", "İstanbul", "%stan%", "%k%", "k%", "%οδοσ%", "%ΟΔΟΣ", "%ος", "%ﬁ%", "%nothing%", "%ü%"] {
+            let like = Like::new(p, true);
+            assert!(matches!(like.plan(), Plan::Spelled(_)), "{p}: {:?}", like.plan());
+            let want: Vec<DocId> = vals.iter().enumerate().filter(|(_, v)| v.as_ref().is_some_and(|v| reference(p, true, v))).map(|(d, _)| d as DocId).collect();
+            for locate in [0, like::LOCATE_BYTES] {
+                let mut stats = Stats::default();
+                let got = like::eval(&ix, &like, vals.len() as u32, &mut |d| match locate {
+                    0 => panic!("{p}: the value of {d} read"),
+                    _ => Ok(vals[d as usize].clone()),
+                }, locate, &mut stats)
+                .unwrap();
+                assert_eq!(got.to_sorted(), want, "{p}, sample {sample}, parts of {part_bytes}");
+                if locate == 0 {
+                    assert_eq!((stats.read, stats.tested, stats.scanned), (0, 0, 0), "{p}");
+                }
+            }
+        }
+    }
+    // A wildcard between, `_`, or a literal cut where a dot above stands
+    // alone: the candidates' values are tested.
+    for p in ["%r_st%", "%ru%st%", "%i\u{307}s%", "_rust"] {
+        assert!(matches!(Like::new(p, true).plan(), Plan::Pieces(_)), "{p}");
+    }
+}
+
+/// [`like::eval_first`]: the first matches by docID that a live set keeps,
+/// as [`like::eval`]'s whole answer lists them; and both read values in
+/// docID order, the doc store's.
+#[test]
+fn the_first_matches_are_the_first_of_the_answer() {
+    let mut how = Stats::default();
+    for seed in 0..300 {
+        let mut rng = StdRng::seed_from_u64(7000 + seed);
+        let vals = values(&mut rng);
+        let ix = index(&vals, [1, 3, 32][rng.gen_range(0..3)], [8, 64, MAX_PART_BYTES][rng.gen_range(0..3)]);
+        let dead: Vec<bool> = vals.iter().map(|_| rng.gen_bool(0.25)).collect();
+        let live = |d: DocId| !dead[d as usize];
+        for _ in 0..20 {
+            let (p, ci) = (pattern(&mut rng, &vals), rng.gen_bool(0.5));
+            let like = Like::new(&p, ci);
+            let locate = [0, 16, like::LOCATE_BYTES][rng.gen_range(0..3)];
+            let mut last: Option<DocId> = None;
+            let mut value = |d: DocId| {
+                assert!(last.is_none_or(|l| l < d), "{p:?}: {d} read after {last:?}");
+                last = Some(d);
+                Ok(vals[d as usize].clone())
+            };
+            let all: Vec<DocId> = like::eval(&ix, &like, vals.len() as u32, &mut value, locate, &mut how).unwrap().to_sorted().into_iter().filter(|&d| live(d)).collect();
+            let need = rng.gen_range(1..8);
+            let mut last: Option<DocId> = None;
+            let mut value = |d: DocId| {
+                assert!(last.is_none_or(|l| l < d), "{p:?}: {d} read after {last:?}");
+                last = Some(d);
+                Ok(vals[d as usize].clone())
+            };
+            let first = First { need, live: &live };
+            let got: Vec<DocId> = like::eval_first(&ix, &like, vals.len() as u32, &mut value, locate, &mut how, &mut || Ok(()), first).unwrap().to_sorted().into_iter().filter(|&d| live(d)).collect();
+            assert_eq!(got, all[..need.min(all.len())], "seed {seed}: {p:?} ci {ci}, the first {need}");
+        }
+    }
+    assert!(how.exact > 0 && how.tested > 0 && how.scanned > 0, "{how:?}");
+}
+
+#[test]
+fn the_first_matches_are_scanned_for_where_they_are_near() {
+    let at = |late: &dyn Fn(usize) -> bool| -> Vec<Option<String>> { (0..2100).map(|i| Some(if late(i) { format!("yyab{i}") } else { format!("xxxxxxx{i}") })).collect() };
+    // Matches spread evenly: the first three are near the start, and the
+    // scan finds them.
+    let even = at(&|i| i % 21 == 0);
+    // Bunched at the end of the part, as a word that came into use late is
+    // in a table loaded in time order: the index's counts say the first
+    // are near the start, the rows walked say they are not, and the part
+    // is listed.
+    let late = at(&|i| i >= 2000);
+    // One near the start, which the rows walked see (`ab0` is the first
+    // of the suffixes), and the rest at the end: the scan finds that one,
+    // gives up once it has read what listing the candidates costs (100
+    // rows of 32 bytes a walk, some 3,200 bytes), and the rest of the
+    // part is listed.
+    let one = at(&|i| i == 0 || i >= 2001);
+    for (vals, first, read, located, listed) in [(&even, [0, 21, 42], 43, 16, false), (&late, [2000, 2001, 2002], 0, 116, true), (&one, [0, 2001, 2002], 400, 116, true)] {
+        let ix = index(vals, 32, MAX_PART_BYTES);
+        let live = |_: DocId| true;
+        let mut stats = Stats::default();
+        let got = like::eval_first(&ix, &Like::new("%ab%", false), vals.len() as u32, &mut |d| Ok(vals[d as usize].clone()), 64, &mut stats, &mut || Ok(()), First { need: 3, live: &live }).unwrap().to_sorted();
+        assert_eq!(got, first, "{stats:?}");
+        assert!(stats.read <= read, "{stats:?}");
+        assert_eq!((stats.located, stats.exact == 1), (located, listed), "{stats:?}");
+    }
 }
 
 #[test]

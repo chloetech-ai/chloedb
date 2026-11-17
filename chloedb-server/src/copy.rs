@@ -80,7 +80,7 @@ pub async fn copy(svc: &Arc<Service>, who: &Principal, from: &End, to: &End, tab
         }
         End::Connection(n) => {
             let k = kube_for(svc, n).await?;
-            let r = svc.hub.forward(n, reqwest::Method::GET, &format!("/v1/export?tables={list}&fts=false&indexes=false"), &axum::http::HeaderMap::new(), reqwest::Body::from(""), k.as_ref()).await?;
+            let r = svc.hub.forward(n, reqwest::Method::GET, &format!("/v1/export?tables={list}&fts=false&indexes=false"), &axum::http::HeaderMap::new(), reqwest::Body::from(""), k.as_ref(), None).await?;
             if !r.status().is_success() {
                 let why = error_of(r).await;
                 let hint = if why.contains("coordinator holds no rows") { ": it is a cluster, whose coordinators hold no rows; copy from one server" } else { "" };
@@ -104,7 +104,7 @@ pub async fn copy(svc: &Arc<Service>, who: &Principal, from: &End, to: &End, tab
             let mut h = axum::http::HeaderMap::new();
             h.insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static("application/vnd.sqlite3"));
             let body = reqwest::Body::wrap_stream(file.into_data_stream());
-            let r = svc.hub.forward(n, reqwest::Method::POST, &format!("/v1/import?tables={list}"), &h, body, k.as_ref()).await?;
+            let r = svc.hub.forward(n, reqwest::Method::POST, &format!("/v1/import?tables={list}"), &h, body, k.as_ref(), None).await?;
             if !r.status().is_success() {
                 let status = r.status().as_u16();
                 let why = error_of(r).await;

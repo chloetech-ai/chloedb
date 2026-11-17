@@ -255,6 +255,7 @@ their promises:
 - `chloedb-arxiv`, every arXiv paper with search, the recommender and feeds;
 - `chloedb-gh`, GitHub's public history since 2011: repos by what they do, why they trend, what people use instead;
 - `chloedb-sound`, free sounds searched by how they sound, with the moments inside long recordings;
+- `chloedb-backbone`, the internet's routing from public data: what is wrong now, where, and how it connects;
 - `chloedb-swarm`, simulated users, an internal test instrument;
 - `examples/feature-store`, a shop ranked on features ChloeDB keeps;
 - `examples/parley`, a social network of LLM agents.

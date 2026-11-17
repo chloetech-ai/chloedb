@@ -14,6 +14,10 @@
 //!   its own when the app is given one (`--vec`): there the vectors stay
 //!   in memory, where next to the events they are read from the disk.
 //! - `gh_repo_names`, `gh_actors`: old names, and people's public logins.
+//! - `gh_people`, `gh_repo_people` (beside `gh_vec`, [`Ctx::side`]): each
+//!   person's summary and each repo's people, summed from the events by
+//!   `chloedb-gh people` (the events are in repo order: a person's are
+//!   rows all over them).
 //! - `gh_repo_months`, `gh_lang_months`, `gh_topic_months`: what happened
 //!   each month, per repo, language and topic.
 //!
@@ -40,6 +44,45 @@ pub const REPO_COLS: &str = "repo, name, owner, description, language, topics, l
 pub const COSTAR_PEOPLE: usize = 400;
 /// How long those statements may take.
 pub const COSTAR_MS: u64 = 15_000;
+
+/// Of a repo's latest stargazers, those whose stars a page reads: their
+/// stars are rows all over `gh_stars` (one read from the disk each), so
+/// what the same people starred is read from at most this many stars...
+pub const GAZER_STARS: i64 = 40_000;
+/// ...of people with at most this many (who star thousands of repos say
+/// little of any one, and cost the most).
+pub const GAZER_MAX_STARS: i64 = 2_000;
+/// How long that statement may take.
+pub const GAZERS_MS: u64 = 4_000;
+/// How long a repo's page may take for who did its work ever.
+pub const EVER_MS: u64 = 3_000;
+
+/// The stargazers whose stars [`repo`] reads, latest first, within
+/// [`GAZER_STARS`]: by their stars in `gh_people` (all of them when it
+/// cannot say).
+pub async fn sample_gazers(c: &Ctx<'_>, gazers: Vec<i64>) -> Vec<i64> {
+    if gazers.is_empty() {
+        return gazers;
+    }
+    let Ok(rows) = c.side("how many stars each of them has", "SELECT actor, SUM(stars) AS s FROM gh_people WHERE actor IN (:ids) GROUP BY actor", json!({"ids": gazers})).await else {
+        return gazers;
+    };
+    let stars: HashMap<i64, i64> = rows.iter().map(|r| (r.i("actor"), r.i("s"))).collect();
+    let mut left = GAZER_STARS;
+    let mut out = Vec::new();
+    for g in gazers {
+        let s = stars.get(&g).copied().unwrap_or(1);
+        if s > GAZER_MAX_STARS {
+            continue;
+        }
+        if s > left {
+            break;
+        }
+        left -= s;
+        out.push(g);
+    }
+    out
+}
 
 /// What people do in a repo, as opposed to starring or forking it.
 pub const WORK: &str = "('push', 'pr_opened', 'pr_merged', 'pr_closed', 'issue_opened', 'issue_closed', 'comment', 'review', 'review_comment', 'commit_comment', 'release', 'create_branch', 'create_tag')";
@@ -104,6 +147,13 @@ impl Ctx<'_> {
             .filter(|r| r.get("sim").is_some_and(|v| !v.is_null()))
             .map(|r| (r.i("repo"), r.f("sim")))
             .collect()
+    }
+
+    /// The rows of a statement on the small side cluster that holds
+    /// `gh_vec` and `gh_people` (the vector cluster), or on the main one
+    /// when there is none.
+    pub async fn side(&self, what: &str, sql: &str, params: Value) -> Result<Vec<Row>> {
+        self.vec.unwrap_or(self.db).traced(self.trace, what, sql, params).await
     }
 
     pub async fn rows(
@@ -333,11 +383,22 @@ pub async fn find_repo(c: &Ctx<'_>, name: &str) -> Option<i64> {
 pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
     let p = json!({"id": id});
     let year_ago = latest - 365 * DAY;
-    let (info, months, days, last, names) = tokio::join!(
+    let (info, (months, last), days, names) = tokio::join!(
         c.rows("the repo", format!("SELECT {REPO_COLS} FROM gh_repos WHERE repo = :id"), p.clone()),
-        c.soft("its months", "SELECT month, stars, forks, pushes, commits, prs, merged, issues, comments, releases, people FROM gh_repo_months WHERE repo = :id ORDER BY month LIMIT 400", p.clone()),
+        async {
+            let months = c.soft("its months", "SELECT month, stars, forks, pushes, commits, prs, merged, issues, comments, releases, people FROM gh_repo_months WHERE repo = :id ORDER BY month LIMIT 400", p.clone()).await;
+            // Its last work, from the month its months say it was in: a
+            // repo's events are in time order within its run of rows, so
+            // a time from then reads that month's (all of them took 2 to
+            // 4 s for a busy repo, from the disk).
+            let worked = |m: &Row| ["pushes", "prs", "merged", "issues", "comments", "releases"].iter().any(|k| m.i(k) > 0);
+            let last = match months.iter().rev().find(|m| worked(m)) {
+                Some(m) => c.soft("its last work", format!("SELECT MAX(t) AS last FROM gh_events WHERE repo = :id AND t >= :since AND kind IN {WORK}"), json!({"id": id, "since": m.i("month")})).await,
+                None => Vec::new(),
+            };
+            (months, last)
+        },
         c.soft("its last 120 days", "SELECT day, stars, forks FROM gh_stars_daily WHERE repo = :id AND day > :since ORDER BY day LIMIT 200", json!({"id": id, "since": latest - 120 * DAY})),
-        c.soft("its last event", format!("SELECT MAX(t) AS last, MIN(t) AS first, COUNT(*) AS n FROM gh_events WHERE repo = :id AND kind IN {WORK}"), p.clone()),
         c.soft("the names it had", "SELECT name, first_seen FROM gh_repo_names WHERE repo = :id ORDER BY first_seen LIMIT 20", p.clone()),
     );
     let info = info?;
@@ -346,7 +407,14 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
     };
     let (recent, ever, gazers) = tokio::join!(
         c.soft("who did the work this last year", format!("SELECT actor, COUNT(*) AS n FROM gh_events WHERE repo = :id AND t > :since AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 30"), json!({"id": id, "since": year_ago})),
-        c.soft("who did the work ever", format!("SELECT actor, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE repo = :id AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 30"), p.clone()),
+        async {
+            // As `chloedb-gh repo-people` summed them; from the events, every
+            // event of a busy repo is read from the disk (seconds: linux).
+            match c.side("who did the work ever", "SELECT actor, n, first, last FROM gh_repo_people WHERE repo = :id ORDER BY n DESC LIMIT 30", p.clone()).await {
+                Ok(rows) => rows,
+                Err(_) => c.soft_within("who did the work ever", format!("SELECT actor, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE repo = :id AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 30"), p.clone(), EVER_MS).await,
+            }
+        },
         c.soft("its latest stargazers", format!("SELECT actor FROM gh_stars WHERE repo = :id ORDER BY t DESC LIMIT {COSTAR_PEOPLE}"), p.clone()),
     );
     let mut people: Vec<i64> = ids(&recent, "actor");
@@ -357,7 +425,7 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
         r.s("description"),
         r.s("topics").replace(',', " ")
     );
-    let gz = ids(&gazers, "actor");
+    let gz = sample_gazers(c, ids(&gazers, "actor")).await;
     let (who, alike, co) = tokio::join!(
         logins(c, &people),
         async {
@@ -375,7 +443,7 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
             if gz.len() < 20 {
                 return Vec::new();
             }
-            c.soft_within("what the same people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:a) GROUP BY repo ORDER BY n DESC LIMIT 60", json!({"a": keys(&gz)}), COSTAR_MS).await
+            c.soft_within("what the same people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:a) GROUP BY repo ORDER BY n DESC LIMIT 60", json!({"a": keys(&gz)}), GAZERS_MS).await
         },
     );
     let co_ids: Vec<i64> = ids(&co, "repo").into_iter().filter(|x| *x != id).collect();
@@ -609,12 +677,31 @@ pub async fn person(c: &Ctx<'_>, login: &str) -> Result<Value> {
     };
     let a = w.i("actor");
     let p = json!({"a": a});
-    let (kinds, years, repos, stars) = tokio::join!(
-        c.soft("what they did", "SELECT kind, COUNT(*) AS n FROM gh_events WHERE actor = :a GROUP BY kind ORDER BY n DESC LIMIT 30", p.clone()),
-        c.soft("year by year", format!("SELECT t - t % {YEAR} AS y, COUNT(*) AS n FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY y ORDER BY y LIMIT 40"), p.clone()),
-        c.soft_within("where they work", format!("SELECT repo, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY repo ORDER BY n DESC LIMIT 24"), p.clone(), COSTAR_MS),
+    // What they did, year by year and where: their rows of `gh_people`
+    // (one a shard), as `chloedb-gh people` summed them. `gh_events` is in
+    // repo order, so the same from it reads the actor of every event.
+    let (summed, stars) = tokio::join!(
+        c.side("what they did, year by year and where", "SELECT events, stars, work, kinds, years, repos FROM gh_people WHERE actor = :a LIMIT 64", p.clone()),
         c.soft("what they starred lately", "SELECT repo, t FROM gh_stars WHERE actor_k = :k ORDER BY t DESC LIMIT 24", json!({"k": a.to_string()})),
     );
+    let (kinds, years, repos) = match summed {
+        Ok(rows) => {
+            let texts: Vec<(i64, i64, i64, String, String, String)> = rows.iter().map(|r| (r.i("events"), r.i("stars"), r.i("work"), r.s("kinds"), r.s("years"), r.s("repos"))).collect();
+            let s = crate::people::summary(texts.iter().map(|t| (t.0, t.1, t.2, t.3.as_str(), t.4.as_str(), t.5.as_str())));
+            let row = |v: Value| v.as_object().cloned().unwrap_or_default();
+            (
+                s.kinds.iter().map(|(k, n)| row(json!({"kind": k, "n": n}))).collect::<Vec<Row>>(),
+                s.years.iter().map(|(y, n)| row(json!({"y": (y - 1970) * YEAR, "n": n}))).collect::<Vec<Row>>(),
+                s.repos.iter().map(|(r, n, f, l)| row(json!({"repo": r, "n": n, "first": f, "last": l}))).collect::<Vec<Row>>(),
+            )
+        }
+        // No `gh_people` (a cluster loaded before it): from the events.
+        Err(_) => tokio::join!(
+            c.soft("what they did", "SELECT kind, COUNT(*) AS n FROM gh_events WHERE actor = :a GROUP BY kind ORDER BY n DESC LIMIT 30", p.clone()),
+            c.soft("year by year", format!("SELECT t - t % {YEAR} AS y, COUNT(*) AS n FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY y ORDER BY y LIMIT 40"), p.clone()),
+            c.soft_within("where they work", format!("SELECT repo, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY repo ORDER BY n DESC LIMIT 24"), p.clone(), COSTAR_MS),
+        ),
+    };
     let mut rids = ids(&repos, "repo");
     rids.extend(ids(&stars, "repo"));
     let info = repos_of(c, "those repos", &rids).await;
@@ -850,10 +937,18 @@ pub async fn for_you(c: &Ctx<'_>, login: &str) -> Result<Value> {
         return Ok(json!({"found": false, "login": login}));
     };
     let a = w.i("actor");
-    let (starred, worked) = tokio::join!(
+    let (starred, summed) = tokio::join!(
         c.soft("what they starred", "SELECT repo, t FROM gh_stars WHERE actor_k = :k ORDER BY t DESC LIMIT 200", json!({"k": a.to_string()})),
-        c.soft("where they work", format!("SELECT repo, COUNT(*) AS n FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY repo ORDER BY n DESC LIMIT 10"), json!({"a": a})),
+        c.side("where they work", "SELECT events, stars, work, kinds, years, repos FROM gh_people WHERE actor = :a LIMIT 64", json!({"a": a})),
     );
+    let worked: Vec<Row> = match summed {
+        Ok(rows) => {
+            let texts: Vec<(i64, i64, i64, String, String, String)> = rows.iter().map(|r| (r.i("events"), r.i("stars"), r.i("work"), r.s("kinds"), r.s("years"), r.s("repos"))).collect();
+            let s = crate::people::summary(texts.iter().map(|t| (t.0, t.1, t.2, t.3.as_str(), t.4.as_str(), t.5.as_str())));
+            s.repos.iter().take(10).filter_map(|(r, n, _, _)| json!({"repo": r, "n": n}).as_object().cloned()).collect()
+        }
+        Err(_) => c.soft("where they work", format!("SELECT repo, COUNT(*) AS n FROM gh_events WHERE actor = :a AND kind IN {WORK} GROUP BY repo ORDER BY n DESC LIMIT 10"), json!({"a": a})).await,
+    };
     let mut seeds = ids(&starred, "repo");
     seeds.truncate(40);
     seeds.extend(ids(&worked, "repo"));
@@ -871,11 +966,11 @@ pub async fn for_you(c: &Ctx<'_>, login: &str) -> Result<Value> {
             json!({"s": seeds}),
         )
         .await;
-    let nb: Vec<i64> = ids(&nb, "actor").into_iter().filter(|x| *x != a).collect();
+    let nb: Vec<i64> = sample_gazers(c, ids(&nb, "actor").into_iter().filter(|x| *x != a).collect()).await;
     let cand = if nb.is_empty() {
         Vec::new()
     } else {
-        c.soft_within("what those people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:p) GROUP BY repo ORDER BY n DESC LIMIT 400", json!({"p": keys(&nb)}), COSTAR_MS).await
+        c.soft_within("what those people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:p) GROUP BY repo ORDER BY n DESC LIMIT 400", json!({"p": keys(&nb)}), GAZERS_MS).await
     };
     let cids: Vec<i64> = ids(&cand, "repo")
         .into_iter()

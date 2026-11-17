@@ -20,6 +20,14 @@ ORDER BY rrf(bm25(title, 'wireless controller'),        -- words
   DESC MAX 2 PER brand LIMIT 10;                        -- at most two per brand
 ```
 
+From Python, pass the query as text and let the table's embedded field turn it into the vector (`:query_vector` can also be any list of numbers or numpy array):
+
+```python
+db.query(sql, query_vector={"embed": "wireless controller"})
+```
+
+`{"embed": text}` is explained, with `{"vector_of": key}`, in the [Python guide](docs/chloedb/python.md).
+
 A cost-based planner decides, per segment and from exact statistics, how to run each part of that statement.
 
 ## Why ChloeDB
@@ -120,6 +128,7 @@ The same methods work against a server: replace `chloedb.open(...)` with `chloed
 - **[chloedb-hn](docs/chloedb/hn.md)**: every Hacker News story and comment, searched by words and meaning, with questions in a sentence ("which post has received the most comments") answered by SQL without a model, autocomplete of questions and phrases, exact text from the FM-index, threads, people and cited answers.
 - **[chloedb-arxiv](docs/chloedb/arxiv.md)**: every arXiv paper searched by words and meaning, with people, topics, trends, citations, what to read next from ChloeDB's recommender, and a weekly feed each reader shapes.
 - **[chloedb-gh](docs/chloedb/github.md)**: every public GitHub event since 2011 (11.2 billion) on four 8 GB machines: repos found by what they do, why their stars moved, what people use instead, who keeps them going, what is rising, and what to star next.
+- **[chloedb-backbone](docs/chloedb/backbone.md)**: the internet's routing from public data: every BGP update a RIPE RIS collector hears, checked against RPKI as it arrives, alert rules written as SQL, and a map from the world down to one prefix, with RIPE Atlas, PeeringDB, CAIDA and IODA beside it.
 - **[chloedb-apps](docs/chloedb/apps.md)** (a prototype): describe an app in a sentence, and a model writes it, the engine checks it, and you change it by asking.
 - **[chloedb-swarm](chloedb-swarm/README.md)**: simulated users who try ChloeDB through its MCP tools or the command center, and a report of what got in their way.
 

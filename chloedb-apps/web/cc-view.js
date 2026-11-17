@@ -18,8 +18,9 @@
 // which calls the engine's API for that one app (the engine scopes app.sql
 // to the app's tables). The broker below answers only the methods the
 // studio's does. What differs: people's sign-in (a cookie of the engine's)
-// does not pass through chloedb-server, so the creator shows an app as a
-// visitor sees it; its own page (/a/<id>) is where people sign in.
+// does not pass through chloedb-server, so here the app's person is the key
+// you signed in with (one of its people, its owner if you were first: the
+// engine's keyUser); its own page (/a/<id>) is where other people sign in.
 //
 // chloedb-server forwards whole answers, so live updates come by long polls
 // of GET /api/events (the same events the studio's stream carries).
@@ -1198,10 +1199,13 @@ __sa_ready();
             case 'update': value = (await post(`${base}/update${atV()}`, { table: a, id: b, fields: c })).row; break;
             case 'remove': value = await post(`${base}/remove${atV()}`, { table: a, id: b }); break;
             case 'call': value = (await post(`${base}/call${atV()}`, { name: a, input: b })).result; break;
-            case 'me': value = null; break; // people sign in on the app's own page
+            // You, as the app sees you: the key you signed in to the command
+            // center with is one of its people (the engine's keyUser), so a
+            // screen kept to signed-in people opens as it does for its owner.
+            case 'me': value = (await api(`${base}/me`)).user || null; break;
             case 'companies': value = []; break;
             case 'company': value = null; break;
-            case 'signIn': case 'signUp': case 'signOut': case 'createCompany': case 'useCompany': case 'addToCompany': case 'joinCompany': throw new Error('People sign in on the app’s own page; here you see the app as a visitor does');
+            case 'signIn': case 'signUp': case 'signOut': case 'createCompany': case 'useCompany': case 'addToCompany': case 'joinCompany': throw new Error('Here you use the app as your key’s person; other people sign in on the app’s own page');
             case 'people': value = (await api(`${base}/people`)).people; break;
             case 'files': value = (await post(`${base}/files/info`, { ids: a })).files.map((f) => ({ ...f, url: `${kit.base}${f.url}` })); break;
             case 'email': value = (await post(`${base}/email`, a)).email; break;

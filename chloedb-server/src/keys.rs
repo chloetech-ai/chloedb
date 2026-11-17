@@ -575,6 +575,12 @@ const LIMITED: &str = "t:";
 /// its secret either.
 const DELEGATED: &str = "d:";
 
+/// The same for a person's session ([`Key::session`],
+/// [`Keys::create_session`]): a server from before sessions, which would
+/// take one for a plain key (no idle limit, no check of its allow list),
+/// never takes its secret either.
+const SESSION: &str = "s:";
+
 /// The digest of `secret` as a key keeps it ([`LIMITED`], [`DELEGATED`]):
 /// for a key limited to tables (`limited`), made by another key
 /// (`delegated`, which is limited too).
@@ -588,7 +594,7 @@ fn stored_digest(secret: &str, limited: bool, delegated: bool) -> String {
 
 /// A stored digest without its mark.
 fn unmarked(stored: &str) -> &str {
-    stored.strip_prefix(LIMITED).or_else(|| stored.strip_prefix(DELEGATED)).unwrap_or(stored)
+    stored.strip_prefix(LIMITED).or_else(|| stored.strip_prefix(DELEGATED)).or_else(|| stored.strip_prefix(SESSION)).unwrap_or(stored)
 }
 
 /// Whether a stored digest is the digest `digest` ([`stored_digest`]).
@@ -663,7 +669,24 @@ pub struct Key {
     /// maker's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<chloedb::query::budget::Budget>,
+    /// A person's session, by how they signed in (`google`,
+    /// [`crate::signin`]): its owner is their address, it ends when it has
+    /// not been used for [`SESSION_IDLE_MS`], and each request checks
+    /// that the server still lets that address in. Its digest is kept
+    /// after a mark of its own ([`SESSION`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
+
+/// How long a person's session lasts unused ([`Key::session`]).
+pub const SESSION_IDLE_MS: u64 = 12 * 3600 * 1000;
+
+/// How long a person's session lasts at most, used or not.
+pub const SESSION_MAX_MS: u64 = 7 * 24 * 3600 * 1000;
+
+/// The sessions one person keeps at once (a phone, a laptop, ...): a new
+/// one past them ends their oldest.
+pub const SESSIONS_PER_PERSON: usize = 8;
 
 /// What a key made for an agent or for operations has beyond a plain key
 /// ([`Keys::create_full`]).
@@ -715,6 +738,10 @@ impl Key {
         if let Some(b) = self.budget.filter(|b| !b.is_none()) {
             j["budget"] = json!(b);
         }
+        if let Some(p) = &self.session {
+            j["session"] = json!(p);
+            j["idle_ends_ms"] = json!(self.last_used_ms.max(self.created_ms) + SESSION_IDLE_MS);
+        }
         j
     }
 
@@ -727,6 +754,10 @@ impl Key {
     fn principal(&self) -> Option<Principal> {
         let delegated = self.sha256.starts_with(DELEGATED);
         if delegated != self.parent.is_some() {
+            return None;
+        }
+        // A session is a person's, of every table, made by no key.
+        if self.sha256.starts_with(SESSION) != self.session.is_some() || (self.session.is_some() && (self.tables.is_some() || self.parent.is_some() || self.role.is_some())) {
             return None;
         }
         let marked = self.sha256.starts_with(LIMITED) || delegated;
@@ -1047,7 +1078,7 @@ impl Keys {
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
         let scope = widest(&tables);
-        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true, false), last_used_ms: 0, owner: Some(name.to_string()), note: Some(note), last_addr: None, tables: Some(tables), parent: None, role: None, agent: false, on_behalf_of: None, allow: None, budget: None };
+        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms: None, sha256: stored_digest(&secret, true, false), last_used_ms: 0, owner: Some(name.to_string()), note: Some(note), last_addr: None, tables: Some(tables), parent: None, role: None, agent: false, on_behalf_of: None, allow: None, budget: None, session: None };
         let mut e = self.ephemeral();
         e.retain(|k| k.name != name);
         e.push(key);
@@ -1207,6 +1238,7 @@ impl Keys {
             on_behalf_of: more.on_behalf_of.map(|p| p.trim().to_string()),
             allow,
             budget: more.budget.filter(|b| !b.is_none()),
+            session: None,
         };
         let mut next = set.clone();
         next.keys.push(key.clone());
@@ -1220,6 +1252,89 @@ impl Keys {
         drop(set);
         self.changed.notify_one();
         Ok((key, full))
+    }
+
+    /// A session for the person `email`, who signed in by `provider`
+    /// (`google`, [`crate::signin`]), at `scope`: a key of every table,
+    /// owned by their address, that lasts [`SESSION_MAX_MS`] at most and
+    /// [`SESSION_IDLE_MS`] unused, kept and synced as the other keys are,
+    /// so that every coordinator takes it and a revocation ends it
+    /// everywhere. Past [`SESSIONS_PER_PERSON`] of theirs, their oldest is
+    /// revoked. It goes in a cookie, never in a page: its secret, not
+    /// kept, is the answer's. A server with no token and no admin key that
+    /// never expires makes none (a session would close an open server, or
+    /// be its only admin until it ends).
+    pub fn create_session(&self, provider: &str, email: &str, scope: Scope, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
+        let email = email.trim().to_ascii_lowercase();
+        if email.is_empty() || email.len() > 254 || !email.contains('@') || email.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            return Err(ApiError::bad("a session is a person's: their address"));
+        }
+        if !matches!(provider, "google") {
+            return Err(ApiError::bad(format!("no sign-in by {provider:?}")));
+        }
+        let mut set = self.lock();
+        if !token && (in_cluster || !managed(&set.keys)) {
+            return Err(ApiError {
+                code: None, status: 409,
+                message: "this server has no token and no admin key that never expires: a sign-in would close it, or be its only admin until the session ends. Give it a --token (or an admin key) first".into(),
+            });
+        }
+        let now = now_ms();
+        let id = hex(&random(8)?);
+        let secret = hex(&random(24)?);
+        let full = format!("sk_{id}_{secret}");
+        // The name says whose it is, and which of theirs (names are unique).
+        let short: String = email.chars().take(48).collect();
+        let key = Key {
+            id: id.clone(),
+            name: format!("{short} ({})", &id[..6]),
+            scope,
+            created_ms: now,
+            expires_ms: Some(now + SESSION_MAX_MS),
+            sha256: format!("{SESSION}{}", sha256(&secret)),
+            last_used_ms: now,
+            owner: Some(email.clone()),
+            note: Some(format!("signed in with {}", if provider == "google" { "Google" } else { provider })),
+            last_addr: caller().and_then(|c| c.addr),
+            tables: None,
+            parent: None,
+            role: None,
+            agent: false,
+            on_behalf_of: None,
+            allow: None,
+            budget: None,
+            session: Some(provider.to_string()),
+        };
+        let mut next = set.clone();
+        // Their sessions, the oldest first: those past the limit end.
+        let mut theirs: Vec<Key> = next.keys.iter().filter(|k| k.session.is_some() && k.owner.as_deref() == Some(email.as_str())).cloned().collect();
+        theirs.sort_by_key(|k| k.created_ms);
+        let over = (theirs.len() + 1).saturating_sub(SESSIONS_PER_PERSON);
+        for old in theirs.into_iter().take(over) {
+            next.keys.retain(|k| k.id != old.id);
+            let scope = Some(old.scope_name().into());
+            next.revoked.push(Revoked { id: old.id, revoked_ms: now, name: Some(old.name), scope, owner: old.owner, revoked_by: Some(format!("{email}'s newer sign-in")), sha256: Some(old.sha256) });
+        }
+        next.keys.push(key.clone());
+        self.save(&next)?;
+        *set = next;
+        drop(set);
+        self.changed.notify_one();
+        Ok((key, full))
+    }
+
+    /// Whether key `id` is one these keys hold or revoked.
+    pub fn knows(&self, id: &str) -> bool {
+        let set = self.lock();
+        set.keys.iter().any(|k| k.id == id) || set.is_revoked(id)
+    }
+
+    /// The person and the way they signed in of session `id`
+    /// ([`Self::create_session`]); `None` for any other key.
+    pub fn session(&self, id: &str) -> Option<(String, String)> {
+        let set = self.lock();
+        let k = set.keys.iter().find(|k| k.id == id)?;
+        Some((k.owner.clone()?, k.session.clone()?))
     }
 
     /// A key made by key `by` (a request's principal) for something of
@@ -1280,7 +1395,7 @@ impl Keys {
         let full = format!("sk_{id}_{secret}");
         let now = now_ms();
         let scope = widest(&tables);
-        let key = Key { id, name: full_name, scope, created_ms: now, expires_ms: parent.expires_ms, sha256: stored_digest(&secret, true, true), last_used_ms: 0, owner: Some(parent.name.clone()), note, last_addr: None, tables: Some(tables), parent: Some(parent_id), role: None, agent: parent.agent, on_behalf_of: parent.on_behalf_of.clone(), allow: None, budget: parent.budget };
+        let key = Key { id, name: full_name, scope, created_ms: now, expires_ms: parent.expires_ms, sha256: stored_digest(&secret, true, true), last_used_ms: 0, owner: Some(parent.name.clone()), note, last_addr: None, tables: Some(tables), parent: Some(parent_id), role: None, agent: parent.agent, on_behalf_of: parent.on_behalf_of.clone(), allow: None, budget: parent.budget, session: None };
         let mut next = set.clone();
         next.keys.retain(|k| !before.iter().any(|b| b.id == k.id));
         for b in before {
@@ -1367,6 +1482,9 @@ impl Keys {
         if old.expires_ms.is_some_and(|e| now >= e) {
             return Err(ApiError { code: None, status: 409, message: format!("key {} has expired: make a new one instead", old.name) });
         }
+        if old.session.is_some() {
+            return Err(ApiError { code: None, status: 409, message: format!("{} is a person's session: it is not rotated (revoke it, and they sign in again)", old.name) });
+        }
         let new_id = hex(&random(8)?);
         let secret = hex(&random(24)?);
         let full = format!("sk_{new_id}_{secret}");
@@ -1427,6 +1545,10 @@ impl Keys {
         let i = set.keys.iter().position(|k| k.id == id)?;
         let k = &set.keys[i];
         if !digest_is(&k.sha256, &digest) || k.expires_ms.is_some_and(|e| now >= e) {
+            return None;
+        }
+        // A person's session ends unused, as well as at its end.
+        if k.session.is_some() && now.saturating_sub(k.last_used_ms) >= SESSION_IDLE_MS {
             return None;
         }
         // A key another key made opens nothing once that key no longer
@@ -1557,6 +1679,10 @@ pub struct Caller {
     pub app: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The person a hub's call is for, as the hub says
+    /// ([`crate::hub::PERSON`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
 }
 
 impl Caller {
@@ -1653,6 +1779,11 @@ pub struct Entry {
     /// The change request this request applied ([`crate::changes`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_request: Option<String>,
+    /// A call through a hub: the person signed in to it who made the
+    /// call, as the hub says ([`crate::hub::PERSON`]); `who` is the hub's
+    /// key, which is what was checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
 }
 
 impl Entry {
@@ -1741,6 +1872,50 @@ mod tests {
     fn limited_to(name: &str, grants: &[(&str, Scope)]) -> Principal {
         let g: Vec<Grant> = grants.iter().map(|(t, s)| Grant::new(t, *s).unwrap()).collect();
         Principal { name: name.into(), key: Some("k1".into()), scope: widest(&g), root: false, tables: Some(g.into()), role: None, agent: false, on_behalf_of: None, allow: None }
+    }
+
+    /// A person's session: of every table, owned by their address, ended
+    /// unused after [`SESSION_IDLE_MS`] and at [`SESSION_MAX_MS`], eight a
+    /// person at most, never rotated; and a server from before sessions,
+    /// which keeps no `session`, takes no session's secret.
+    #[test]
+    fn a_session_ends_unused_and_an_older_server_takes_none() {
+        let keys = Keys::memory();
+        // An open server makes none: the session would close it.
+        assert_eq!(keys.create_session("google", "ro@example.com", Scope::Admin, false, false).unwrap_err().status, 409);
+        let (k, secret) = keys.create_session("google", "Ro@Example.com", Scope::Admin, true, false).unwrap();
+        assert_eq!((k.owner.as_deref(), k.session.as_deref(), k.scope, k.tables.is_none()), (Some("ro@example.com"), Some("google"), Scope::Admin, true));
+        assert!(k.name.starts_with("ro@example.com (") && k.sha256.starts_with(SESSION), "{k:?}");
+        assert_eq!(k.expires_ms, Some(k.created_ms + SESSION_MAX_MS));
+        let p = keys.find(&secret).expect("taken");
+        assert_eq!((p.scope, p.agent, p.key.as_deref()), (Scope::Admin, false, Some(k.id.as_str())));
+        assert_eq!(keys.session(&k.id), Some(("ro@example.com".into(), "google".into())));
+        assert!(keys.knows(&k.id) && !keys.knows("nope"));
+        assert_eq!(keys.rotate(&k.id, 0, true).unwrap_err().status, 409);
+        // Unused for 12 hours: ended.
+        keys.lock().keys.iter_mut().find(|x| x.id == k.id).unwrap().last_used_ms = now_ms() - SESSION_IDLE_MS - 1;
+        assert!(keys.find(&secret).is_none());
+        // Written back by a server from before sessions (no `session`): its
+        // mark keeps it from being taken as a plain key, here and there.
+        let (k2, s2) = keys.create_session("google", "ro@example.com", Scope::Read, true, false).unwrap();
+        let stripped = Key { session: None, ..k2.clone() };
+        assert!(stripped.principal().is_none());
+        assert!(!digest_is_unmarked_by_old_servers(&k2.sha256, &sha256(s2.rsplit('_').next().unwrap())));
+        // Eight a person: a ninth ends the oldest.
+        for _ in 0..SESSIONS_PER_PERSON {
+            keys.create_session("google", "ro@example.com", Scope::Read, true, false).unwrap();
+        }
+        let theirs = keys.lock().keys.iter().filter(|x| x.owner.as_deref() == Some("ro@example.com")).count();
+        assert_eq!(theirs, SESSIONS_PER_PERSON);
+        assert!(!keys.lock().keys.iter().any(|x| x.id == k.id || x.id == k2.id) && keys.knows(&k2.id), "the oldest revoked");
+        assert!(keys.find(&s2).is_none());
+    }
+
+    /// How a server from before sessions compared a digest: without the
+    /// marks of limited keys and keys other keys made, and no other.
+    fn digest_is_unmarked_by_old_servers(stored: &str, digest: &str) -> bool {
+        let old = stored.strip_prefix(LIMITED).or_else(|| stored.strip_prefix(DELEGATED)).unwrap_or(stored);
+        same_secret(digest.as_bytes(), old.as_bytes())
     }
 
     /// DAT-5: the key a server gives an app it starts is limited to the

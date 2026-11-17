@@ -1,7 +1,9 @@
 // The shell (JOURNEYS.md, "Global elements" and "Phone"): the top bar
-// (brand, Board, Projects, Workbench, breadcrumb, Search, Needs you, Agents,
-// More), the phone's tab bar (Board, Needs you, Projects, Workbench),
-// the Needs-you drawer, the agent switcher, the More menu, and the sheets
+// (brand, the project in focus, the crumbs on Workbench's pages, Needs you,
+// ⋯ More), the phone's tab bar (Home, Needs you, Personas, More), the
+// Needs-you drawer (Converge's "Blocked on you" first), the agent switcher,
+// the More menu (Converge's Metrics, Personas, Autopilot and Activity log,
+// then ⋯ › Workbench: every Workbench page), and the sheets
 // every page shares: the grant sheet (a wide "don't ask again" answer,
 // agent P's), the batch answer, the keys. One count of what needs you, one count of
 // agents and one set of words for their groups, used on every page.
@@ -65,11 +67,9 @@ export function fleetWords(list) {
 export function initShell(app) {
   A = app;
   useStyle("shell", CSS);
-  $("search-btn").addEventListener("click", () => A.openSearch());
-  $("tb-search").addEventListener("click", () => A.openSearch());
   $("needs-btn").addEventListener("click", () => toggle("needs"));
-  $("agents-btn").addEventListener("click", () => toggle("agents"));
   $("more-btn").addEventListener("click", () => toggle("more"));
+  $("tab-more").addEventListener("click", () => toggle("more"));
   $("ov").addEventListener("click", (e) => { if (e.target.classList.contains("ov-scrim")) close(); });
   $("ov").addEventListener("keydown", (e) => {
     if (O.open === "agents" && /^[1-9]$/.test(e.key) && !e.target.closest("input,textarea")) {
@@ -103,9 +103,11 @@ function normal(list) {
 export function setCrumbs(list) {
   O.crumbs = normal(list);
   const nav = $("crumbs");
-  nav.replaceChildren(...O.crumbs.flatMap((c, i) => [
+  // The brand is Converge's link: the crumbs start after it.
+  const shown = O.crumbs.length > 1 && O.crumbs[0].label === "Converge" ? O.crumbs.slice(1) : O.crumbs;
+  nav.replaceChildren(...shown.flatMap((c, i) => [
     i ? h("span", { class: "sl" }, "/") : null,
-    i === O.crumbs.length - 1 ? h("b", { "aria-current": "page" }, c.label) : h("a", { href: c.href }, c.label),
+    i === shown.length - 1 ? h("b", { "aria-current": "page" }, c.label) : h("a", { href: c.href }, c.label),
   ]).filter(Boolean));
   const last = O.crumbs[O.crumbs.length - 1];
   const parent = O.crumbs[O.crumbs.length - 2];
@@ -117,26 +119,18 @@ export function setCrumbs(list) {
 }
 export function crumbs() { return O.crumbs; }
 
-/** The one count, on the button, the tab bar and the title; the agents' avatars. */
+/** The one count, on the button, the tab bar and the title; the project in focus. */
 export function update() {
   if (!A) return;
   const n = A.needs().count;
   const nb = $("needs-btn");
   nb.classList.toggle("on", n > 0);
   $("needs-n").textContent = String(n);
-  $("needs-lb").textContent = n ? "need you" : "Nothing needs you";
   $("needs-n").hidden = !n;
-  nb.title = n ? `${n} need${n === 1 ? "s" : ""} you (.)` : "Nothing needs you (.)";
+  const blk = A.needs().items.filter(isBlocked).length;
+  nb.title = n ? `${n} need${n === 1 ? "s" : ""} you${blk ? `, ${blk} blocked on you` : ""} (.)` : "Nothing needs you (.)";
+  nb.setAttribute("aria-label", n ? `Needs you: ${n}` : "Needs you: nothing");
   $("tab-badge").textContent = n ? String(n) : "";
-  const list = fleet();
-  const running = list.filter((a) => a.running);
-  $("agents-avs").replaceChildren(...running.slice(0, 4).map((a) => avatar(a, 16)));
-  const c = counts(list);
-  // One count of what needs you, on the Needs-you button only (UX critique, issue 4).
-  // At work counts; one merged or finished is said apart, not counted as active.
-  const active = list.length - c.finished;
-  $("agents-lb").textContent = `${active} agent${active === 1 ? "" : "s"}${c.finished ? ` · ${c.finished} done` : ""}`;
-  $("agents-btn").title = `${fleetWords(list)} (a)`;
   setCrumbs(O.crumbs);
   if (GRANTS.size) closeStaleGrants();
   // An open drawer or switcher is drawn again only when what it lists
@@ -147,28 +141,51 @@ export function update() {
     if (O.open === "needs") drawDrawer();
     else if (O.open === "agents") drawSwitcher();
   }
-  // The tab bar and the top bar's links: which part of Converge the page
-  // is under. Board is the project in focus's board; Projects is the
-  // project picker (Converge's, or Workbench's Open a project); Workbench
-  // holds the rest.
+  // The tab bar: which part the page is under. Home is the project in
+  // focus's pipeline; Personas its personas; everything of Workbench is
+  // under More. The top bar names the project in focus (a link to the
+  // picker); the crumbs show on Workbench's pages only.
   const hsh = location.hash || "#/";
   const tab = tabOf(hsh);
-  for (const a of document.querySelectorAll("#tabbar a, #tb-nav a")) {
-    if (a.dataset.tab === "board") a.href = homeHref();
+  const p = A.project();
+  for (const a of document.querySelectorAll("#tabbar [data-tab]")) {
+    if (a.dataset.tab === "home") a.href = homeHref();
+    if (a.dataset.tab === "personas") a.href = p ? `#/converge/personas?project=${enc(p.project)}` : "#/converge";
     if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   }
+  // Converge's own pages name their project (with its switcher) in the
+  // page: the top bar does not say it twice.
+  const own = /^#\/converge\b/.test(hsh);
+  document.body.dataset.page = own ? "converge" : "";
+  const pj = $("tb-proj");
+  pj.hidden = !p || own;
+  if (p) { $("tb-proj-n").textContent = p.project; pj.title = `${p.project}: switch project`; pj.setAttribute("aria-label", `Project ${p.project}: switch project`); }
+  document.body.dataset.sect = tab === "workbench" || tab === "more" ? "workbench" : "converge";
 }
 
-/** Which tab a hash is under: board, needs, projects or workbench. */
+/** Which tab a hash is under: home, personas, needs, or more (Workbench's pages). */
 export function tabOf(hsh) {
-  if (/^#\/s\/new\b/.test(hsh)) return "new";
-  if (/^#\/s(\/|$|\?)/.test(hsh)) return "simple";
   if (/^#\/needs\b/.test(hsh)) return "needs";
-  if (/^#\/converge\b/.test(hsh)) return /[?&]project=/.test(hsh) ? "board" : "projects";
-  if (/^#\/(p|new)\/?(\?|$)/.test(hsh) || /^#\/new\b/.test(hsh)) return "projects";
-  if (hsh === "#/" || hsh === "#" || hsh === "") return "board";
-  return "workbench";
+  if (/^#\/converge\/personas\b/.test(hsh)) return "personas";
+  if (/^#\/converge\b/.test(hsh)) return "home";
+  if (hsh === "#/" || hsh === "#" || hsh === "") return "home";
+  return "more";
 }
+
+/** Converge's stages, in the words of its five steps (SPEC.md, "Seventh build"). */
+export const STEPS = {
+  found: ["problems", "Problems"], reproduce: ["reproducing", "Reproducing"],
+  scope: ["ready", "Ready to build"], prioritize: ["ready", "Ready to build"],
+  develop: ["building", "Building"], verify: ["building", "Building"],
+  review: ["merge", "Ready to merge"], merged: ["merge", "Merged"],
+};
+export const stepWords = (stage) => (STEPS[stage] || [null, stage || ""])[1];
+
+/** A Converge group that only you can unblock. */
+export function isBlocked(it) { return !!it && it.kind === "converge" && /^Blocked on you/.test(it.text || ""); }
+/** The needs in the order the list shows them: Converge's "Blocked on you"
+ *  groups first, then the rest in the server's order. */
+export function ordered(items) { return [...(items || []).filter(isBlocked), ...(items || []).filter((it) => !isBlocked(it))]; }
 
 // ---------------------------------------------------------------- overlays
 
@@ -184,7 +201,7 @@ export function open(which) {
   O.open = which;
   O.drawn = drawnKey(which);
   $("ov").hidden = false;
-  for (const [id, w] of [["needs-btn", "needs"], ["agents-btn", "agents"], ["more-btn", "more"]]) $(id).setAttribute("aria-expanded", String(which === w));
+  for (const [id, w] of [["needs-btn", "needs"], ["more-btn", "more"], ["tab-more", "more"]]) $(id).setAttribute("aria-expanded", String(which === w));
   if (which === "needs") drawDrawer();
   else if (which === "agents") drawSwitcher();
   else if (which === "more") drawMore();
@@ -199,25 +216,23 @@ export function close() {
   O.sel.clear();
   $("ov").hidden = true;
   $("ov").replaceChildren();
-  for (const id of ["needs-btn", "agents-btn", "more-btn"]) $(id).setAttribute("aria-expanded", "false");
+  for (const id of ["needs-btn", "more-btn", "tab-more"]) $(id).setAttribute("aria-expanded", "false");
   return true;
 }
 
 function drawDrawer() {
   const N = A.needs();
-  const items = N.items;
-  const p = A.project();
+  const items = ordered(N.items);
   const body = h("div", { class: "dr-body" },
-    items.length ? items.map((it) => needCard(it, { big: true })) : h("div", { class: "dr-empty" }, h("b", {}, "Nothing needs you"), "No agent is waiting on you, and no alert asks you. Agents still working are under Agents."));
+    items.length ? items.map((it) => needCard(it, { big: true })) : h("div", { class: "dr-empty" }, h("b", {}, "Nothing needs you"), "Nothing is blocked on you, no agent is waiting on you, and no alert asks you. Converge moves the rest by itself."));
   $("ov").replaceChildren(
     h("div", { class: "ov-scrim" }),
     h("aside", { class: "drawer", role: "dialog", "aria-label": "Needs you" },
       h("div", { class: "dr-head" }, h("h2", {}, items.length ? `${items.length} need${items.length === 1 ? "s" : ""} you` : "Needs you"), h("span", { class: "sp" }),
-        btn("Inbox", { href: "#/needs", ghost: true, sm: true }), btn("", { icon: "x", ghost: true, sm: true, title: "Close (Esc)", onclick: close })),
+        btn("Open the list", { href: "#/needs", ghost: true, sm: true, onclick: close }), btn("", { icon: "x", ghost: true, sm: true, title: "Close (Esc)", onclick: close })),
       body,
       h("div", { class: "dr-foot" },
-        h("span", {}, "Oldest first. ", kc("j"), kc("k"), " move, a digit then ", kc("↵"), " answers, ", kc("e"), " shows a long command, ", kc("x"), " selects, ", kc("⇧1"), " answers the selected alike (identical commands only)."),
-        p ? h("a", { class: "lv-link", href: `#/p/${p.project}`, onclick: close }, "Everything since you left →") : null)));
+        h("span", {}, "Blocked on you first, then oldest first. ", kc("j"), kc("k"), " move, a digit then ", kc("↵"), " answers, ", kc("e"), " shows a long command, ", kc("x"), " selects, ", kc("⇧1"), " answers the selected alike (identical commands only)."))));
 }
 
 function drawSwitcher() {
@@ -260,13 +275,51 @@ export const MORE = [
   ["keys", "kbd", "Keys", "The keyboard, all of it"],
   ["setup", "spark", "Setup check", "ChloeCtx, Claude Code, git"],
 ];
-function drawMore() {
+// The ⋯ menu: Converge's own views of the project in focus, Search and
+// Notifications, then ⋯ › Workbench, every Workbench page (index.html's
+// #wb-links), which left the main navigation.
+function drawMore(level = "top") {
+  const p = A.project();
+  const q = p ? `?project=${enc(p.project)}` : "";
+  const cur = location.hash || "#/";
+  const row = (href, ic, t, sub, key) => h("a", { class: "more-row", href, onclick: close, "aria-current": cur === href ? "page" : null }, icon(ic), h("span", {}, t, sub ? h("small", {}, sub) : null), key ? kc(key) : h("span"));
+  const act = (ic, t, sub, key, fn) => h("button", { type: "button", class: "more-row", onclick: fn }, icon(ic), h("span", {}, t, sub ? h("small", {}, sub) : null), key ? kc(key) : h("span"));
+  let rows;
+  if (level === "wb") {
+    const tpl = $("wb-links");
+    const links = tpl ? [...tpl.content.cloneNode(true).children] : [];
+    for (const l of links) {
+      if (l.dataset.wb === "agents") l.addEventListener("click", () => open("agents"));
+      else l.addEventListener("click", close);
+      if (l.dataset.wb === "review" && p) l.setAttribute("href", `#/p/${enc(p.project)}/ship`);
+      if (l.getAttribute("href") === cur) l.setAttribute("aria-current", "page");
+    }
+    rows = [
+      act("back", "Back", null, null, () => drawMore("top")),
+      h("div", { class: "more-sec" }, "Workbench"),
+      links,
+    ];
+  } else {
+    rows = [
+      p ? [
+        h("div", { class: "more-sec" }, `Converge · ${p.project}`),
+        row(`#/converge/personas${q}`, "agents", "Personas", "Play one; their scores and memory"),
+        row(`#/converge/metrics${q}`, "spark", "Metrics", "Found, fixed, merged; time per step"),
+        row(`#/converge/settings${q}`, "gear", "Autopilot settings", "Budget, slots, what moves by itself"),
+        row(`#/converge/activity${q}`, "clock", "Activity log", "Everything Converge and its agents did"),
+        row("#/converge", "folder", "Switch project", null),
+      ] : row("#/converge", "folder", "Pick a project", "Converge works one project at a time"),
+      h("div", { class: "more-sep" }),
+      act("search", "Search", "Code, docs and decisions", "/", () => { close(); A.openSearch(); }),
+      A.notifications ? act("bell", "Notifications", "Notify me, quiet hours", null, () => { close(); A.notifications(); }) : null,
+      h("div", { class: "more-sep" }),
+      act("grid", "Workbench", "Agents, terminals, review, debug, harness, rules, Simple view", null, () => drawMore("wb")),
+    ];
+  }
   $("ov").replaceChildren(
     h("div", { class: "ov-scrim clear" }),
-    h("nav", { class: "pop", "aria-label": "More" },
-      h("a", { class: "more-row", href: "#/workbench", onclick: close }, icon("grid"), h("span", {}, "Workbench", h("small", {}, "Its home: your projects, agents and what needs you")), kc("g w")),
-      MORE.map(([k, ic, t, sub]) =>
-        h("a", { class: "more-row", href: `#/more/${k}`, onclick: close }, icon(ic), h("span", {}, t, h("small", {}, sub)), k === "terminals" ? kc("g t") : k === "keys" ? kc("?") : h("span")))));
+    h("nav", { class: "pop", "aria-label": level === "wb" ? "Workbench" : "More" }, rows));
+  if (level === "wb" || level === "top") requestAnimationFrame(() => { const f = $("ov").querySelector(".more-row"); if (f && O.open === "more") f.focus({ preventScroll: true }); });
 }
 
 // ---------------------------------------------------------------- cards
@@ -302,7 +355,9 @@ export function needCard(it, { big = false } = {}) {
   return card;
 }
 
-/** Converge's findings that wait for you, one card per reason. */
+/** Converge's findings that wait for you, one card per reason. A group
+ *  blocked on you lists each finding with its step, what you do, and
+ *  "Done, carry on" (POST unblock), which hands it back to its agent. */
 function convergeCard(it) {
   const fs = it.findings || [];
   const pn = (A.projectNames() || {})[it.repo] || (A.project() || {}).project || null;
@@ -310,14 +365,56 @@ function convergeCard(it) {
   const one1 = (f) => `${board}${board.includes("?") ? "&" : "?"}f=${enc(f.id)}`;
   const n = it.count || fs.length;
   const one = n === 1 && fs[0];
+  if (isBlocked(it)) return blockedCard(it, fs, n, one1);
   const triage = it.stage === "found" && /^New finding/.test(it.text || "");
-  const title = triage ? `${n} new finding${n === 1 ? "" : "s"} to triage` : one ? one.title : `${n} findings: ${(it.text || "").split(/[:(]/)[0]}`;
-  return h("div", { class: "alert-card", tabindex: "0", "data-need": it.id },
-    h("div", { class: "hd" }, icon("bug", "i sm"), h("b", {}, `Converge · ${fs[0] ? fs[0].stage : ""}`), h("span", { class: "t" }, since(it.since_ms))),
+  const title = triage ? `${n} new problem${n === 1 ? "" : "s"} to triage` : one ? one.title : `${n} findings: ${(it.text || "").split(/[:(]/)[0]}`;
+  return h("div", { class: "alert-card nd-card", tabindex: "0", "data-need": it.id },
+    h("div", { class: "hd" }, icon("bug", "i sm"), h("b", {}, `Converge · ${stepWords(fs[0] ? fs[0].stage : it.stage)}`), h("span", { class: "t" }, since(it.since_ms))),
     h("div", { class: "ti" }, title),
     h("p", { class: "qc-what" }, triage ? "Choose Reproduce to chase one (an agent writes its repro), or Dismiss it." : it.text),
     n > 1 ? h("ul", { class: "qc-what", style: { margin: 0, paddingLeft: "18px" } }, fs.slice(0, 5).map((f) => h("li", {}, h("a", { href: one1(f) }, f.title))), n > 5 ? h("li", {}, `and ${n - 5} more`) : null) : null,
     h("div", { class: "act" }, btn(one ? "Open it" : "Open the board", { sm: true, href: one ? one1(one) : board })));
+}
+
+/** What you do for one blocked finding: its own `blocked.you_do`, else the
+ *  group's reason after "Blocked on you (kind): ". */
+function youDo(it, f) {
+  if (f && f.blocked && f.blocked.you_do) return f.blocked.you_do;
+  const m = /^Blocked on you(?: \(([^)]*)\))?:\s*(.*)$/s.exec(it.text || "");
+  return m ? m[2] : it.text || "";
+}
+
+function blockedCard(it, fs, n, one1) {
+  const many = n > 1;
+  const kind = (/^Blocked on you \(([^)]*)\)/.exec(it.text || "") || [])[1];
+  const done = async (f, b) => {
+    b.disabled = true;
+    try {
+      await A.api(`/api/converge/findings/${enc(f.id)}/unblock`, { method: "POST", body: { note: "" } });
+      A.toast(`Carrying on: ${f.title}`);
+      // The last one of its group: the card goes; else only its row.
+      const left = b.closest(".nd-blks") ? b.closest(".nd-blks").querySelectorAll(".nd-blk").length : 1;
+      if (left <= 1) A.answered(it.id);
+      else { b.closest(".nd-blk").remove(); A.refreshNeeds(); }
+    } catch (e) {
+      b.disabled = false;
+      A.toast(e.status === 409 ? `Not blocked any more: ${f.title}` : `Not sent: ${e.message}`, e.status !== 409);
+      A.refreshNeeds();
+    }
+  };
+  const item = (f) => {
+    const b = btn("Done, carry on", { sm: true, primary: true });
+    b.addEventListener("click", () => done(f, b));
+    return h("li", { class: "nd-blk" },
+      h("div", { class: "nd-blk-t" }, h("span", { class: "nd-step" }, stepWords(f.stage)), many ? h("a", { href: one1(f) }, f.title) : null),
+      h("p", { class: "nd-blk-do" }, h("b", {}, "You do: "), youDo(it, f)),
+      h("div", { class: "act" }, b, btn("Open it", { sm: true, href: one1(f) })));
+  };
+  return h("div", { class: "alert-card nd-card blocked", tabindex: "0", "data-need": it.id },
+    h("div", { class: "hd" }, icon("warn", "i sm"), h("b", {}, `Blocked on you${kind ? ` · ${kind}` : ""}`), h("span", { class: "t" }, since(it.since_ms))),
+    h("div", { class: "ti" }, many ? `${n} findings wait for you to do something` : fs[0] ? fs[0].title : "A finding waits for you"),
+    h("p", { class: "qc-what" }, "Only you can do this. When it is done, its agent carries on from where it stopped."),
+    h("ul", { class: "nd-blks" }, fs.slice(0, 12).map(item), n > 12 ? h("li", { class: "nd-blk-more" }, `and ${n - 12} more on the board`) : null));
 }
 
 function alertCard(it) {
@@ -449,7 +546,7 @@ export function toggleSelect(card) {
 export const KEYS = [
   ["Anywhere outside a text box or a terminal", [
     ["/", "Search (⇧↵ on a line: why is this line like this)"], [".", "Needs you"], ["a", "Agents, then 1…9 to open one"],
-    ["g s", "Converge: the board of the project in focus"], ["g w", "Workbench"], ["g c", "Continue the project"], ["g r", "Review and ship"], ["g d", "Debug"], ["g t", "All terminals"], ["g n", "The inbox"],
+    ["g s", "Converge: the pipeline of the project in focus"], ["g w", "Workbench"], ["g c", "Continue the project"], ["g r", "Review and ship"], ["g d", "Debug"], ["g t", "All terminals"], ["g n", "The inbox"],
     ["n", "In a project: Start a change"], ["z", "Compact rows on or off"], ["?", "This list"], ["Esc", "Close the drawer or a sheet; else up one level"],
   ]],
   ["Cards that need you", [
@@ -474,5 +571,16 @@ const CSS = `
 .keys2 dt{display:flex;gap:4px;align-items:center;text-transform:none;letter-spacing:0}
 .gs-ov{z-index:40}
 .dr-body .qc,.dr-body .alert-card,.dr-body .wait-card{flex:none}
+.alert-card.blocked{box-shadow:inset 3px 0 0 var(--crit),var(--shadow-2)}
+.nd-card .qc-what{padding:0;margin:0}
+.nd-blks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.nd-blk{display:flex;flex-direction:column;gap:var(--s-1);padding:var(--s-3) 0;border-top:var(--hair) solid var(--line)}
+.nd-blk-t{display:flex;gap:var(--s-2);align-items:baseline;flex-wrap:wrap;min-width:0}
+.nd-blk-t a{color:var(--text);font-weight:var(--w-mid);text-decoration:none;overflow-wrap:anywhere;min-width:0}
+.nd-blk-t a:hover{text-decoration:underline}
+.nd-step{flex:none;font:var(--w-mid) var(--fs-xs)/var(--lh-xs) var(--mono);letter-spacing:var(--track-label);text-transform:uppercase;color:var(--text-2);background:var(--surface-2);border:var(--hair) solid var(--line);border-radius:var(--r-xs);padding:1px 6px}
+.nd-blk-do{margin:0;color:var(--crit-ink);font-size:var(--fs-sm);overflow-wrap:anywhere}
+.nd-blk-do b{font-weight:var(--w-mid)}
+.nd-blk-more{padding-top:var(--s-2);color:var(--text-2);font-size:var(--fs-sm)}
 @media (max-width:640px),(pointer:coarse){.dr-foot>span:first-child{display:none}}
 `;

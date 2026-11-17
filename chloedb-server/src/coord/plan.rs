@@ -1327,6 +1327,7 @@ fn audit_step(svc: &Service, c: &Coordinator, k: usize, status: u16, ms: f64, er
             agent: None,
             on_behalf_of: None,
             change_request: None,
+            person: None,
             ts_ms: now_ms(),
             who: run.by.clone(),
             key: run.key.clone(),

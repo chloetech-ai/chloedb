@@ -263,16 +263,23 @@ impl Cluster {
     /// The coordinators' Role: this one StrataCluster, read and scaled
     /// from the command center, and (`lease`) the Lease of the cluster's
     /// map, which one coordinator at a time holds while it changes the map
-    /// (finding E-2, [`super::lease`]). Kubernetes lets the operator make
-    /// a Role only of what its own ClusterRole holds: one from before the
-    /// Lease (operator.yaml as it was, or the cloud view's install) holds
-    /// no Leases, and [`common`] makes the Role without them then.
-    pub fn coordinator_role(&self, lease: bool) -> Json {
+    /// (finding E-2, [`super::lease`]), and (`hub`) the Secret their
+    /// hub's book is kept in ([`super::hub_secret`]), only it. Kubernetes
+    /// lets the operator make a Role only of what it holds itself: one
+    /// whose ClusterRole is from before the Lease (operator.yaml as it
+    /// was, or the cloud view's install) holds no Leases, and one not
+    /// bound to strata-operator-secrets in the namespace no Secrets, and
+    /// [`common`] makes the Role without them then.
+    pub fn coordinator_role(&self, lease: bool, hub: bool) -> Json {
         let mut rules = vec![json!({"apiGroups": [GROUP], "resources": [PLURAL], "resourceNames": [self.name], "verbs": ["get", "patch"]})];
         if lease {
             // A create cannot name the object.
             rules.push(json!({"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "resourceNames": [format!("{}-map", self.name)], "verbs": ["get", "update"]}));
             rules.push(json!({"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "verbs": ["create"]}));
+        }
+        if hub {
+            // The operator makes the Secret: no create.
+            rules.push(json!({"apiGroups": [""], "resources": ["secrets"], "resourceNames": [super::hub_secret(&self.name)], "verbs": ["get", "patch"]}));
         }
         json!({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": self.meta(&self.coordinator_account(), self.labels()), "rules": rules})
     }
@@ -303,7 +310,10 @@ impl Cluster {
             sa_meta["annotations"] = json!(self.spec.coordinator_account_annotations);
         }
         let sa = json!({"apiVersion": "v1", "kind": "ServiceAccount", "metadata": sa_meta});
-        let role = self.coordinator_role(true);
+        let role = self.coordinator_role(true, true);
+        // The Secret of the hub's book, empty until the coordinators write
+        // it. The operator's apply sets no data, so it never takes theirs.
+        let hub = json!({"apiVersion": "v1", "kind": "Secret", "type": "Opaque", "metadata": self.meta(&super::hub_secret(&self.name), self.labels())});
         let binding = json!({
             "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": self.meta(&account, self.labels()),
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": account},
@@ -317,6 +327,7 @@ impl Cluster {
             (format!("{}/{account}", ns_path(ns, "v1", "serviceaccounts")), sa),
             (rbac("roles"), role),
             (rbac("rolebindings"), binding),
+            (format!("{}/{}", ns_path(ns, "v1", "secrets"), super::hub_secret(&self.name)), hub),
         ]
     }
 
@@ -1872,6 +1883,11 @@ impl Link {
         format!("/apis/{GROUP}/{VERSION}/namespaces/{}/{PLURAL}/{}", self.namespace, self.name)
     }
 
+    /// The client of the API server, as the coordinator's account.
+    pub fn kube(&self) -> &Kube {
+        &self.kube
+    }
+
     /// The Lease of the cluster's map, taken as `me` ([`super::lease`]).
     pub fn map_lease(&self, me: &str) -> super::lease::MapLease {
         super::lease::MapLease::new(self.kube.clone(), &self.namespace, &self.name, me)
@@ -2322,13 +2338,34 @@ async fn common(c: &Cluster) -> Result<Admin, String> {
     for (path, obj) in c.common() {
         match c.kube.apply(&path, &obj).await {
             // The coordinators' Role, refused as granting what this
-            // operator's ClusterRole does not hold (one from before the
-            // map's Lease): made without the Lease, so the cluster is still
-            // kept, and its coordinators change the map without one.
-            Err(e) if obj["kind"] == "Role" && e.contains(" 403 ") => {
-                tracing::warn!(cluster = %c.name, error = %e, "the operator's ClusterRole holds no Leases (it is from an older operator.yaml): the coordinators' Role is made without the cluster map's Lease; apply deploy/k8s/operator/operator.yaml again to give it");
-                c.kube.apply(&path, &c.coordinator_role(false)).await?;
+            // operator does not hold: made without the hub's Secret (an
+            // operator that may not write Secrets in this namespace), then
+            // without the map's Lease too (a ClusterRole from before it),
+            // so that the cluster is still kept: its coordinators then keep
+            // their hub's book in memory, and change the map without a
+            // Lease.
+            Err(e) if obj["kind"] == "Role" && forbidden(&e) => {
+                let mut last = e;
+                let mut made = None;
+                for (lease, hub) in [(true, false), (false, true), (false, false)] {
+                    match c.kube.apply(&path, &c.coordinator_role(lease, hub)).await {
+                        Ok(_) => {
+                            made = Some((lease, hub));
+                            break;
+                        }
+                        Err(e) if forbidden(&e) => last = e,
+                        Err(e) => return Err(e),
+                    }
+                }
+                let Some((lease, hub)) = made else { return Err(last) };
+                if !hub {
+                    tracing::warn!(cluster = %c.name, error = %last, "the operator may not grant the coordinators the Secret of their hub's book (bind strata-operator-secrets in this namespace): their hub keeps its book in memory only");
+                }
+                if !lease {
+                    tracing::warn!(cluster = %c.name, error = %last, "the operator's ClusterRole holds no Leases (it is from an older operator.yaml): the coordinators' Role is made without the cluster map's Lease; apply deploy/k8s/operator/operator.yaml again to give it");
+                }
             }
+            Err(e) if obj["kind"] == "Secret" && forbidden(&e) => tracing::warn!(cluster = %c.name, error = %e, "{OLD_ROLE}; the coordinators' hub keeps its book in memory only"),
             r => drop(r?),
         }
     }
@@ -2843,6 +2880,8 @@ mod tests {
                 // The Lease of its map (finding E-2), and only it.
                 {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "resourceNames": ["orders-map"], "verbs": ["get", "update"]},
                 {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"], "verbs": ["create"]},
+                // The Secret of its hub's book, and only it.
+                {"apiGroups": [""], "resources": ["secrets"], "resourceNames": ["orders-hub"], "verbs": ["get", "patch"]},
             ])
         );
         let binding = &objects.iter().find(|(p, _)| p.ends_with("/rolebindings/orders-coordinator")).unwrap().1;
@@ -3048,21 +3087,42 @@ mod tests {
     #[test]
     fn the_operator_holds_what_it_grants_the_coordinators() {
         let c = cluster(json!({"demo": 10}));
-        let operator = crate::cloud::install::operator_objects("chloedb-server:dev").into_iter().find(|o| o["kind"] == "ClusterRole").unwrap();
+        let objects = crate::cloud::install::operator_objects("chloedb-server:dev");
+        // Its own ClusterRole, and the one of Secrets, which the install
+        // binds in the clusters' namespace.
+        let held_by: Vec<&Json> = objects.iter().filter(|o| o["kind"] == "ClusterRole").collect();
+        assert!(objects.iter().any(|o| o["kind"] == "RoleBinding" && o["roleRef"]["name"] == "strata-operator-secrets"), "the Secrets' ClusterRole is bound");
         let strs = |j: &Json| j.as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
-        for lease in [true, false] {
-            for rule in c.coordinator_role(lease)["rules"].as_array().unwrap() {
+        for (lease, hub) in [(true, true), (true, false), (false, true), (false, false)] {
+            for rule in c.coordinator_role(lease, hub)["rules"].as_array().unwrap() {
                 for (g, r, v) in strs(&rule["apiGroups"]).iter().flat_map(|g| strs(&rule["resources"]).into_iter().map(move |r| (g.clone(), r))).flat_map(|(g, r)| strs(&rule["verbs"]).into_iter().map(move |v| (g.clone(), r.clone(), v))) {
-                    let held = operator["rules"].as_array().unwrap().iter().any(|o| {
+                    let held = held_by.iter().flat_map(|o| o["rules"].as_array().unwrap()).any(|o| {
                         let all = |k: &str, x: &str| strs(&o[k]).iter().any(|y| y == x || y == "*");
                         all("apiGroups", &g) && all("resources", &r) && all("verbs", &v) && o["resourceNames"].is_null()
                     });
-                    assert!(held, "the coordinators' Role grants {v} {g}/{r}, which the operator's ClusterRole does not hold");
+                    assert!(held, "the coordinators' Role grants {v} {g}/{r}, which the operator's ClusterRoles do not hold");
                 }
             }
         }
-        let leases = |role: &Json| role["rules"].as_array().unwrap().iter().any(|r| r["resources"] == json!(["leases"]));
-        assert!(leases(&c.coordinator_role(true)) && !leases(&c.coordinator_role(false)));
+        let has = |role: &Json, what: &str| role["rules"].as_array().unwrap().iter().any(|r| r["resources"] == json!([what]));
+        assert!(has(&c.coordinator_role(true, false), "leases") && !has(&c.coordinator_role(false, true), "leases"));
+        assert!(has(&c.coordinator_role(false, true), "secrets") && !has(&c.coordinator_role(true, false), "secrets"));
+    }
+
+    /// The coordinators may read and change the Secret of their hub's
+    /// book and no other, and the operator's Secret holds no data: its
+    /// apply would otherwise take the coordinators' entries.
+    #[test]
+    fn the_coordinators_keep_their_hub_in_one_secret() {
+        let c = cluster(json!({"demo": 10}));
+        let objects = c.common();
+        let secret = &objects.iter().find(|(p, _)| p.ends_with("/secrets/orders-hub")).expect("the hub's Secret").1;
+        assert_eq!((&secret["kind"], &secret["metadata"]["namespace"]), (&json!("Secret"), &json!("db")));
+        assert!(secret.get("data").is_none() && secret.get("stringData").is_none(), "{secret}");
+        assert_eq!(secret["metadata"]["ownerReferences"][0]["name"], "orders", "deleted with the cluster");
+        let role = c.coordinator_role(true, true);
+        let rules: Vec<&Json> = role["rules"].as_array().unwrap().iter().filter(|r| r["resources"] == json!(["secrets"])).collect();
+        assert_eq!(rules, [&json!({"apiGroups": [""], "resources": ["secrets"], "resourceNames": ["orders-hub"], "verbs": ["get", "patch"]})]);
     }
 
     /// An operator whose ClusterRole is from before the map's Lease (the
@@ -3094,9 +3154,42 @@ mod tests {
         common(&c).await.unwrap();
         let seen = seen.lock().unwrap();
         let roles: Vec<&Json> = seen.iter().filter(|(p, _)| p.ends_with("/roles/orders-coordinator")).map(|(_, j)| j).collect();
-        assert_eq!(roles.len(), 2, "{seen:?}");
-        assert_eq!(*roles[1], c.coordinator_role(false));
+        assert_eq!(roles.len(), 3, "{seen:?}");
+        assert_eq!(*roles[2], c.coordinator_role(false, true), "the hub's Secret is kept");
         assert!(seen.iter().any(|(p, _)| p.ends_with("/rolebindings/orders-coordinator")), "the binding after it is made too");
+    }
+
+    /// An operator that may not write Secrets in the cluster's namespace
+    /// (strata-operator-secrets not bound there) is refused the hub's
+    /// Secret and the Role that grants it: it keeps the cluster, with the
+    /// map's Lease, and the coordinators keep their hub in memory.
+    #[tokio::test]
+    async fn an_operator_without_secrets_keeps_the_cluster_without_the_hub() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<(String, Json)>>> = Arc::default();
+        let s = seen.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: axum::body::Bytes| {
+            let s = s.clone();
+            async move {
+                let j: Json = serde_json::from_slice(&body).unwrap_or(Json::Null);
+                s.lock().unwrap().push((uri.path().to_string(), j.clone()));
+                if j["kind"] == "Secret" || (j["kind"] == "Role" && j.to_string().contains("\"secrets\"")) {
+                    let m = json!({"message": "secrets is forbidden: User \"system:serviceaccount:strata-system:strata-operator\" cannot patch resource \"secrets\" in the namespace \"db\""});
+                    return (axum::http::StatusCode::FORBIDDEN, axum::Json(m));
+                }
+                (axum::http::StatusCode::OK, axum::Json(j))
+            }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await });
+        let mut c = cluster(json!({"demo": 10}));
+        c.kube = Kube::new(&Options { api: Some(url), token: Some("t".into()), ..Default::default() }).unwrap();
+        common(&c).await.unwrap();
+        let seen = seen.lock().unwrap();
+        let roles: Vec<&Json> = seen.iter().filter(|(p, _)| p.ends_with("/roles/orders-coordinator")).map(|(_, j)| j).collect();
+        assert_eq!(roles.len(), 2, "{seen:?}");
+        assert_eq!(*roles[1], c.coordinator_role(true, false), "the Lease is kept");
     }
 
     /// An operator whose ClusterRole may not make Secrets (one from before

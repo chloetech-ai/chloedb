@@ -365,6 +365,8 @@ pub struct Database {
     dir: Option<PathBuf>,
     /// The single-writer lock; it owns the WAL.
     writer: Mutex<Wal>,
+    /// The WAL's length ([`Wal::shown_len`]); `None` read-only.
+    wal_len: Option<Arc<std::sync::atomic::AtomicU64>>,
     /// Shared with the reader, read-only.
     state: Arc<Mutex<State>>,
     /// Where the writer's lock and the readers' pins are
@@ -899,6 +901,10 @@ impl Drop for Database {
                 let _ = h.join();
             }
         }
+        // A closed log holds its records and nothing past them, as before
+        // zeros were written ahead of appends; a log left longer reads
+        // the same.
+        let _ = self.writer.get_mut().unwrap_or_else(|e| e.into_inner()).trim();
     }
 }
 
@@ -1123,6 +1129,7 @@ impl Database {
         let db = Database {
             path: path.to_path_buf(),
             writer: Mutex::new(Wal::unwritable(file.try_clone()?, &wal_path, db_id)),
+            wal_len: None,
             wal_path,
             opts,
             file,
@@ -1492,6 +1499,7 @@ impl Database {
             opts,
             file,
             dir,
+            wal_len: Some(wal.shown_len()),
             writer: Mutex::new(wal),
             state: Arc::new(Mutex::new(st)),
             share,
@@ -2837,6 +2845,7 @@ impl Database {
             drop(st);
             // A log with no commits since the last seal stays as it is.
             if !wal.is_empty() {
+                wal.trim()?;
                 wal.sync_appends()?;
                 let to = wal::sealed_path(&self.wal_path, txn);
                 io::rename(&self.wal_path, &to)?;
@@ -4036,10 +4045,13 @@ impl Database {
         Ok(out)
     }
 
-    /// The size of the WAL, sealed files included.
+    /// The size of the WAL, sealed files included: its header and records,
+    /// not the zeros written ahead of them ([`wal::AHEAD`]); read-only, the
+    /// file's size.
     fn wal_bytes(&self) -> u64 {
         let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
-        size(&self.wal_path) + lock(&self.sealed_wals).iter().map(|&t| size(&wal::sealed_path(&self.wal_path, t))).sum::<u64>()
+        let open = self.wal_len.as_ref().map_or_else(|| size(&self.wal_path), |l| l.load(std::sync::atomic::Ordering::Relaxed));
+        open + lock(&self.sealed_wals).iter().map(|&t| size(&wal::sealed_path(&self.wal_path, t))).sum::<u64>()
     }
 
     /// The writes to table `table` since this database was opened

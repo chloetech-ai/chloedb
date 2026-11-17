@@ -43,9 +43,21 @@
 //! The log is only ever appended to. Emptying it (after a flush) writes a
 //! new log with only a header under a temporary name and renames it over
 //! the old one, as creating one does; a background flush renames it away
-//! and starts a new one. A process reading the database without writing
-//! it ([`LogTail`]) reads the log from where it left off, and knows the
-//! log was replaced when its name names another file.
+//! and starts a new one.
+//!
+//! An append writes over zeros the writer wrote past the last record
+//! beforehand, [`AHEAD`] bytes at a time, so that the file's length does
+//! not change with each commit: an `fdatasync` after a write that grew the
+//! file has to make the new length durable too, which on a disk slow to
+//! sync took twice as long as one after a write over blocks already
+//! written. The zeros read as a record of length 0, where replay stops, as
+//! it stops at a torn tail; opening cuts them off with the tail, and a
+//! version of ChloeDB from before them does the same. Closing the
+//! database, and sealing the log, cut them off too.
+//!
+//! A process reading the database without writing it ([`LogTail`]) reads
+//! the log from where it left off, and knows the log was replaced when its
+//! name names another file.
 //!
 //! A transaction is its operation records followed by a commit record,
 //! written with one `write` and made durable with one `fdatasync`. Replay
@@ -78,6 +90,7 @@
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::error::{corrupt, Error, Result};
@@ -85,6 +98,15 @@ use crate::storage::io;
 use crate::schema::Schema;
 use crate::storage::manifest::{RankProfile, SeqNo, RANK_PROFILES};
 use crate::value::{Document, Value};
+
+/// How many bytes of zeros an append that would pass the end of the file
+/// writes ahead of itself (rounded up to a multiple of this): one commit
+/// in about a thousand of a few hundred bytes grows the file.
+pub const AHEAD: u64 = 256 << 10;
+
+/// What a [`LogTail`] reads first past its last read, so that it does not
+/// read all the zeros written ahead each time.
+const READ_STEP: u64 = 16 << 10;
 
 const MAGIC: &[u8; 8] = b"STRWAL01";
 /// A log whose header names its features.
@@ -154,7 +176,13 @@ pub struct Wal {
     profiles: bool,
     /// The header's length.
     header: u64,
+    /// The header's and the records' length: where the next append goes.
     len: u64,
+    /// The file's length: `len` and the zeros written ahead of it.
+    written: u64,
+    /// `len`, for statistics read without the writer's lock; the same
+    /// across [`Wal::restart`].
+    shown: Arc<AtomicU64>,
     /// What opening cut off past damage that committed transactions follow.
     dropped: Option<String>,
     /// Changed since its last sync (appends without `sync`).
@@ -207,13 +235,14 @@ impl Wal {
         let h = header_bytes(db_id, numbered, false);
         let file = fresh(path, &h, sync)?;
         let header = h.len() as u64;
-        Ok(Wal { file, path: path.to_path_buf(), db_id, numbered, profiles: false, header, len: header, dropped: None, unsynced: !sync })
+        let shown = Arc::new(AtomicU64::new(header));
+        Ok(Wal { file, path: path.to_path_buf(), db_id, numbered, profiles: false, header, len: header, written: header, shown, dropped: None, unsynced: !sync })
     }
 
     /// A log a read-only database holds in the writer's place, over a
     /// descriptor opened for reading only: nothing can be written to it.
     pub(crate) fn unwritable(file: File, path: &Path, db_id: u64) -> Wal {
-        Wal { file, path: path.to_path_buf(), db_id, numbered: false, profiles: false, header: 0, len: 0, dropped: None, unsynced: false }
+        Wal { file, path: path.to_path_buf(), db_id, numbered: false, profiles: false, header: 0, len: 0, written: 0, shown: Arc::default(), dropped: None, unsynced: false }
     }
 
     /// Opens the log and returns its committed transactions. A missing log,
@@ -237,7 +266,8 @@ impl Wal {
         let mut buf = vec![0u8; size as usize];
         file.read_exact_at(&mut buf, 0)?;
         // What an earlier process appended may not be durable yet.
-        let mut wal = Wal { file, path: path.to_path_buf(), db_id, numbered, profiles: false, header: 0, len: size, dropped: None, unsynced: true };
+        let shown = Arc::new(AtomicU64::new(size));
+        let mut wal = Wal { file, path: path.to_path_buf(), db_id, numbered, profiles: false, header: 0, len: size, written: size, shown, dropped: None, unsynced: true };
         let Some((logged, profiles, header)) = header(&buf, db_id, path)? else {
             wal.reset(sync)?;
             return Ok((wal, Vec::new()));
@@ -274,11 +304,13 @@ impl Wal {
                 std::fs::write(&saved, &buf)?;
                 wal.dropped = Some(format!("{what}: dropped them, the whole log is copied to {}", saved.display()));
             }
+            // A torn tail, or the zeros written ahead of the last append.
             io::set_len(&wal.file, end)?;
             if sync {
                 io::sync(&wal.file)?;
             }
-            wal.len = end;
+            wal.at(end);
+            wal.written = end;
         }
         Ok((wal, txns))
     }
@@ -306,17 +338,59 @@ impl Wal {
             return Err(Error::Schema("a change of tables is not logged: it is a version of its own".into()));
         }
         let buf = encode_txn(txn, seq, ops);
-        let res = io::write_at(&self.file, &buf, self.len).and_then(|_| if sync { io::sync(&self.file) } else { Ok(()) });
+        let end = self.len + buf.len() as u64;
+        let res = self.ahead(end).and_then(|_| io::write_at(&self.file, &buf, self.len)).and_then(|_| if sync { io::sync(&self.file) } else { Ok(()) });
         if let Err(e) = res {
             // Cut off whatever part landed, so that later commits stay
             // reachable by replay; if even that fails the caller poisons
             // the database.
             io::set_len(&self.file, self.len)?;
+            self.written = self.len;
             return Err(e.into());
         }
-        self.len += buf.len() as u64;
+        self.at(end);
         self.unsynced |= !sync;
         Ok(buf)
+    }
+
+    /// Writes zeros from the end of the file to the next multiple of
+    /// [`AHEAD`] at or past `end`, unless the file reaches `end` already,
+    /// so that an append up to `end` does not change its length.
+    fn ahead(&mut self, end: u64) -> std::io::Result<()> {
+        if end <= self.written {
+            return Ok(());
+        }
+        let to = end.div_ceil(AHEAD) * AHEAD;
+        io::write_at(&self.file, &vec![0u8; (to - self.written) as usize], self.written)?;
+        self.written = to;
+        Ok(())
+    }
+
+    fn at(&mut self, len: u64) {
+        self.len = len;
+        self.shown.store(len, Ordering::Relaxed);
+    }
+
+    /// The log's length (header and records, not the zeros past them),
+    /// kept current as it changes, here and in the logs [`Wal::restart`]
+    /// puts in its place: for statistics, read without the writer's lock.
+    pub fn shown_len(&self) -> Arc<AtomicU64> {
+        self.shown.clone()
+    }
+
+    /// Cuts the zeros written ahead off the file, for a log that takes no
+    /// more appends (sealed, [`sealed_path`], or closed).
+    /// The next [`Wal::sync_appends`] makes that durable: a sealed log is
+    /// read as damaged where anything but records follows its header.
+    pub fn trim(&mut self) -> Result<()> {
+        // The file's size, not `written`: a sync that failed after an
+        // earlier trim may have left the file as it was before it.
+        if self.file.metadata()?.len() > self.len {
+            io::set_len(&self.file, self.len)?;
+            self.unsynced = true;
+        }
+        self.written = self.len;
+        Ok(())
     }
 
     /// Makes appends made without `sync` durable.
@@ -342,7 +416,8 @@ impl Wal {
         self.file = fresh(&self.path, &h, sync)?;
         self.unsynced = !sync;
         self.header = h.len() as u64;
-        self.len = self.header;
+        self.at(self.header);
+        self.written = self.header;
         Ok(())
     }
 
@@ -377,12 +452,16 @@ impl Wal {
     /// numbered as this one, without `rank_profiles`.
     pub fn restart(&mut self, path: &Path, sync: bool) -> Result<()> {
         let dropped = self.dropped.take();
+        let shown = self.shown.clone();
         *self = Wal::create(path, self.db_id, self.numbered, sync)?;
         self.dropped = dropped;
+        self.shown = shown;
+        self.shown.store(self.len, Ordering::Relaxed);
         Ok(())
     }
 
-    /// Size in bytes.
+    /// The header's and the records' length in bytes (the file is longer
+    /// by the zeros written ahead of them).
     pub fn len(&self) -> u64 {
         self.len
     }
@@ -480,9 +559,20 @@ impl LogTail {
         Ok(Some(LogTail { file, path: path.to_path_buf(), id: (m.dev(), m.ino()), offset: 0, numbered: false }))
     }
 
-    /// Whether the file holds bytes past the last read.
+    /// Whether the file holds bytes past the last read other than the
+    /// zeros a writer writes ahead of its appends ([`AHEAD`]): a record's
+    /// length, or part of one, where the next read starts.
     pub fn grew(&self) -> Result<bool> {
-        Ok(self.file.metadata()?.len() > self.offset)
+        if self.file.metadata()?.len() <= self.offset {
+            return Ok(false);
+        }
+        if self.offset == 0 {
+            return Ok(true);
+        }
+        let mut len = [0u8; 4];
+        let n = read_up_to(&self.file, &mut len, self.offset)?;
+        // A record's length is never 0.
+        Ok(len[..n].iter().any(|&b| b != 0))
     }
 
     /// The whole transactions past the last read, and where they end, as
@@ -496,14 +586,31 @@ impl LogTail {
         if size <= self.offset {
             return Ok((Vec::new(), self.offset, self.numbered));
         }
-        let mut buf = vec![0u8; (size - self.offset) as usize];
-        let n = read_up_to(&self.file, &mut buf, self.offset)?;
-        buf.truncate(n);
+        // The file ends in up to AHEAD bytes of zeros: read a step at a
+        // time, up to a record's length of 0.
+        let rest = size - self.offset;
+        let mut want = rest.min(READ_STEP);
+        loop {
+            let mut buf = vec![0u8; want as usize];
+            let n = read_up_to(&self.file, &mut buf, self.offset)?;
+            buf.truncate(n);
+            let got = self.read_from(&buf, db_id, numbered, fits)?;
+            let at = got.1.saturating_sub(self.offset) as usize;
+            let zeros = buf.get(at..at + 4).is_some_and(|l| l == [0; 4]);
+            if zeros || n < want as usize || want == rest {
+                return Ok(got);
+            }
+            want = (want * 4).min(rest);
+        }
+    }
+
+    /// [`LogTail::read`] of `buf`, the file's bytes from the last read on.
+    fn read_from(&self, buf: &[u8], db_id: u64, numbered: bool, fits: &dyn Fn(u32, &Op) -> bool) -> Result<(Vec<WalTxn>, u64, bool)> {
         if self.offset > 0 {
-            let (txns, end) = decode(&buf, self.numbered, false, fits);
+            let (txns, end) = decode(buf, self.numbered, false, fits);
             return Ok((txns, self.offset + end as u64, self.numbered));
         }
-        let Some((logged, _, header)) = header(&buf, db_id, &self.path)? else { return Ok((Vec::new(), 0, false)) };
+        let Some((logged, _, header)) = header(buf, db_id, &self.path)? else { return Ok((Vec::new(), 0, false)) };
         let (txns, end) = decode(&buf[header as usize..], logged, false, fits);
         if logged != numbered {
             if !txns.is_empty() {
@@ -1173,6 +1280,67 @@ mod tests {
             let (wal, got) = Wal::open(&p, 12, numbered, false, false, &any).unwrap();
             assert!(got.is_empty() && wal.is_empty());
         }
+    }
+
+    /// Appends go over zeros written ahead of them, so the file grows
+    /// [`AHEAD`] at a time and not with each commit; replay stops at the
+    /// zeros, opening and [`Wal::trim`] cut them off, and a follower does
+    /// not take them for a record.
+    #[test]
+    fn appends_go_over_zeros_written_ahead() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("db-wal");
+        let size = |p: &Path| std::fs::metadata(p).unwrap().len();
+        let mut wal = Wal::create(&p, 11, false, true).unwrap();
+        assert_eq!(size(&p), 16, "a new log is its header");
+        let shown = wal.shown_len();
+        let mut tail = LogTail::open(&p).unwrap().unwrap();
+        let (got, end, _) = tail.read(11, false, &any).unwrap();
+        assert!(got.is_empty());
+        tail.advance(end, false);
+        assert!(!tail.grew().unwrap());
+        for t in 1..=4u64 {
+            wal.append(t, None, &[(0, Op::Insert(doc(t as i64)))], true).unwrap();
+            assert_eq!(size(&p), AHEAD, "the first append writes the zeros, the next ones go over them");
+            assert_eq!(shown.load(Ordering::Relaxed), wal.len());
+            assert!(tail.grew().unwrap(), "a record past the last read");
+            let (got, end, _) = tail.read(11, false, &any).unwrap();
+            assert_eq!(got.iter().map(|t| t.txn).collect::<Vec<_>>(), [t]);
+            assert_eq!(end, wal.len());
+            tail.advance(end, false);
+            assert!(!tail.grew().unwrap(), "zeros are not a record");
+        }
+        // A transaction longer than the zeros left grows the file past it,
+        // to a multiple of AHEAD.
+        let big = Arc::new(vec![Value::Str("x".repeat(AHEAD as usize)), Value::Int(5), Value::Null, Value::Null, Value::Null]);
+        wal.append(5, None, &[(0, Op::Insert(big))], true).unwrap();
+        assert!(wal.len() > AHEAD);
+        assert_eq!(size(&p), wal.len().div_ceil(AHEAD) * AHEAD);
+        // A follower reads it whole, a step at a time.
+        let (got, end, _) = tail.read(11, false, &any).unwrap();
+        assert_eq!((got.iter().map(|t| t.txn).collect::<Vec<_>>(), end), (vec![5], wal.len()));
+        let len = wal.len();
+        drop(wal);
+        // Opening finds every transaction and cuts the zeros off, quietly.
+        let (mut wal, got) = Wal::open(&p, 11, false, true, false, &any).unwrap();
+        let shown = wal.shown_len();
+        assert_eq!(got.iter().map(|t| t.txn).collect::<Vec<_>>(), [1, 2, 3, 4, 5]);
+        assert!(wal.dropped().is_none());
+        assert_eq!((wal.len(), size(&p)), (len, len));
+        wal.append(6, None, &[(0, Op::Insert(doc(6)))], false).unwrap();
+        assert_eq!(size(&p), wal.len().div_ceil(AHEAD) * AHEAD);
+        // A sealed log holds its records and nothing after them.
+        wal.trim().unwrap();
+        wal.sync_appends().unwrap();
+        assert_eq!(size(&p), wal.len());
+        let (got, damage) = read_sealed(&p, 11, &any).unwrap().unwrap();
+        assert_eq!((got.len(), damage), (6, None));
+        // A log started again is its header, and its length is still shown.
+        wal.reset(true).unwrap();
+        assert_eq!((size(&p), shown.load(Ordering::Relaxed)), (16, 16));
+        wal.restart(&p, true).unwrap();
+        wal.append(7, None, &[(0, Op::Insert(doc(7)))], true).unwrap();
+        assert_eq!(shown.load(Ordering::Relaxed), wal.len());
     }
 
     /// An empty log of the other kind starts again in the database's; a log

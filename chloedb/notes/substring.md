@@ -373,22 +373,38 @@ Not part of the format, and free to change:
   sorted by libsais; a 4-ary Huffman code, its counts halved until no code
   is longer than 16 digits. A memtable's segment has no index.
 - **`LIKE`** (`like.rs`): a pattern with one literal and `%` only at its
-  ends (`lit`, `lit%`, `%lit`, `%lit%`), case-sensitive, is answered from
-  the index alone. Any other pattern, and every `ILIKE`, takes its
-  candidates from the literal piece with the fewest rows (a piece with no
-  row means no match) and tests each candidate's stored value with the
-  row evaluator's rule. `ILIKE` searches the spellings of each character
-  that lowercase to the pattern's, keeping at most 64 ranges; past that
-  the part is scanned.
-- **Listing or scanning**: a part where the pattern has more candidates
-  than one for each 4096 bytes of its text is scanned (one for each 1024
-  bytes when the index answers alone and no value is read, and for an
-  `ILIKE`, whose scan folds every value's case), since listing
-  costs about `sample / 2` steps a row. The numbers are from
-  `results/substring/`.
+  ends (`lit`, `lit%`, `%lit`, `%lit%`) is answered from the index alone,
+  `LIKE` and `ILIKE` both. `ILIKE` searches the spellings of each
+  character that lowercase to the pattern's, keeping the ranges that are
+  not empty; since `ILIKE` folds a value a character at a time to one
+  character each, the values in which one of those spellings occurs are
+  the matches (a capital `İ` is one of an `i`'s spellings anywhere in the
+  literal). Past 64 ranges alive the rest of the literal is left unread
+  and the candidates are tested. Any other pattern takes its candidates
+  from the literal piece with the fewest rows (a piece with no row means
+  no match) and tests each candidate's stored value with the row
+  evaluator's rule. Rows are walked in the order of the suffixes and their
+  documents taken in docID order, which is the doc store's, so that each of
+  its blocks is decompressed once.
+- **Listing or scanning**: a part is scanned where listing its candidates
+  costs more than testing every value: a candidate whose value is tested
+  costs as much as scanning 4096 bytes of the segment's stored rows, one
+  the index answers alone half that, and a byte costs twice as much to
+  scan for a pattern the row evaluator tests as for one literal. The
+  bytes are of whole rows, which a scan decompresses, put in bytes of the
+  field's text by the segment's ratio of the two. The numbers are from
+  `results/substring/costs.md`.
+- **A `LIMIT` without an `ORDER BY`**, on a condition that is one pattern,
+  stops at its first rows by docID: a part's candidates are listed and
+  their documents taken in order until there are enough, or, where they
+  are so many that the first should be near the part's start and 16 of
+  them walked say they are (matches bunch up, as a word that came into use
+  late does in a table loaded in time order), its values are scanned from
+  there, until the scan has cost what listing them would, and the rest of
+  the part is then listed: never more than twice the cheaper of the two.
 - **Not yet**: `ESCAPE`; a function that returns the count or a position
   (`SubstringIndex::count` gives a segment's count from Rust); carrying a
-  part across a merge; listing only as far as a `LIMIT` needs; any of the
+  part across a merge; a `LIMIT` beside other conditions; any of the
   encodings left open above.
 
 ## Decisions
