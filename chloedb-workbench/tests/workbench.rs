@@ -7045,6 +7045,8 @@ case "$role" in
     else
       echo '{"area":"src","files":["src/","tests/"],"root_cause":"The handler is not wired.","acceptance":"The repro exits 0","size":"S","cost_usd":0.01}'
     fi;;
+  dedup)
+    if [ -f "$D/dedup-answer" ]; then cat "$D/dedup-answer"; else echo '{"same":[],"cost_usd":0.001}'; fi;;
   generate) echo '{"name":"Omar, data engineer","role":"Loads data nightly","traits":["impatient"],"journey":"Load a CSV and query it.","surfaces":["load"],"why":"Nobody played loading","cost_usd":0.01}';;
   card)
     if printf '%s' "$job" | grep -q 'BREAK THE RUNNER'; then echo "no card today"; exit 3; fi
@@ -7277,6 +7279,13 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     let f = cv_finding(&s, &fid);
     assert_eq!(f["finding"]["stage"], "review", "{f}");
     assert_eq!(f["finding"]["ease_after"], 4.0, "{f}");
+    // The evidence pack: the repro on main and on the branch, the tests, the replay, the diff.
+    let ev = &f["finding"]["evidence"];
+    assert_eq!((ev["repro_before"].clone(), ev["repro_after"].clone()), (json!([1, 1]), json!([0, 0])), "{ev}");
+    assert_eq!((ev["tests"]["cmd"].as_str(), ev["tests"]["pass"].as_bool()), (Some("test -f src/FIXED"), Some(true)), "{ev}");
+    assert_eq!(ev["replay"], json!({ "persona": "Maya, shop owner", "said": "Export works now.", "ease_before": 2.0, "ease_after": 4.0 }), "{ev}");
+    assert_eq!(ev["diff"]["files"], 2, "{ev}");
+    assert!(ev["base_sha"].is_string() && ev["head_sha"].is_string(), "{ev}");
     let jobs = std::fs::read_to_string(fd.join("jobs-play")).unwrap();
     assert!(jobs.contains("\"purpose\":\"verify\"") && jobs.contains(&pid), "{jobs}");
 
@@ -7293,6 +7302,8 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     assert_eq!(f["finding"]["ci"], "pass", "{f}");
     let ghlog = std::fs::read_to_string(fd.join("gh.log")).unwrap();
     assert!(ghlog.contains("-X POST repos/acme/proj/pulls -f head=wb/cv-") && ghlog.contains("-f base=main"), "{ghlog}");
+    // The pull request's body starts with the evidence.
+    assert!(ghlog.contains("body=### Evidence") && ghlog.contains("**Maya, shop owner said**: \"Export works now.\" (ease 2 → 4)"), "{ghlog}");
     // The branch was pushed to origin.
     assert!(git(&origin, &["branch", "--list", "wb/cv-*"]).contains("wb/cv-"), "the branch was not pushed");
 
@@ -7383,6 +7394,13 @@ fn converge_takes_a_finding_from_a_persona_to_a_merged_fix() {
     let (_, m) = s.get(&format!("/api/converge/metrics?repo={}", r.display()));
     assert_eq!(m["funnel"]["merged"], 1, "{m}");
     assert_eq!(m["by_theme"]["usability"]["merged"], 1, "{m}");
+    // Outcomes: one fix merged this week, its persona's ease before and after, what it cost.
+    let oc = &m["outcomes"];
+    assert_eq!(oc["merged_7d"], 1, "{oc}");
+    assert_eq!((oc["ease_before"].as_f64(), oc["ease_after"].as_f64()), (Some(2.0), Some(4.0)), "{oc}");
+    assert!(oc["median_found_to_merged_ms"].as_i64().unwrap() > 0, "{oc}");
+    assert!(oc["cost_per_merged_fix_usd"].as_f64().unwrap() > 0.0, "{oc}");
+    assert!(oc["open_by_kind"].is_object(), "{oc}");
     assert!(m["spent_today"].as_f64().unwrap() > 0.0, "{m}");
     // The timeline: what was spent and started per bucket, and found → merged times.
     let (_, tl) = s.get(&format!("/api/converge/timeline?repo={}", r.display()));
@@ -7537,6 +7555,173 @@ fn converge_your_card_is_verified_by_its_repro_and_merges_locally_without_github
     assert_eq!(v["finding"]["stage"], "merged", "{v}");
     assert!(r.join("src/FIXED").is_file(), "main has the fix");
     s.wait(&aid, "exited");
+}
+
+/// Two cards whose plans touch the same files are not in development at
+/// once: the second is queued behind the first and starts on its own once
+/// that one merges. A card waiting in review takes what merged since, and
+/// its checks run again. Each card keeps the evidence of its gates: the
+/// repro on the base and on the branch, the tests (what fails on the base
+/// too is not required), the diff and the commits.
+#[test]
+fn converge_overlapping_cards_queue_and_the_evidence_is_kept() {
+    let fakes = tempfile::tempdir().unwrap();
+    let fd = fakes.path().canonicalize().unwrap();
+    let (runner, gh) = converge_fakes(&fd);
+    let s = start_lab(&[("CHLOEDB_WORKBENCH_CONVERGE_CMD", &runner), ("CHLOEDB_WORKBENCH_CONVERGE_GH", &gh)]);
+    let (_d, r) = repo();
+    std::fs::create_dir_all(r.join("src")).unwrap();
+    std::fs::create_dir_all(r.join("tests")).unwrap();
+    std::fs::write(r.join("src/app.sh"), "echo app\n").unwrap();
+    // A test that fails on main already: not a fix's to make green.
+    std::fs::write(r.join("tests/run.sh"), "echo 'test legacy::old_export ... FAILED'\nexit 1\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "app"]);
+    let (st, v) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "repro_runs": 1, "test_cmd": "sh tests/run.sh", "follow_picks": false } }));
+    assert_eq!(st, 200, "{v}");
+    let a = cv_new(&s, json!({ "repo": r, "title": "Totals in the footer are wrong", "repro": "test -f src/FIXED_A", "pick": true }));
+    std::thread::sleep(Duration::from_millis(5));
+    let b = cv_new(&s, json!({ "repo": r, "title": "Login rejects valid email addresses", "repro": "test -f src/FIXED_B", "pick": true }));
+    let until = |id: &str, ok: &dyn Fn(&Value) -> bool| {
+        let end = Instant::now() + Duration::from_secs(40);
+        loop {
+            cv_tick(&s, &r);
+            let f = cv_finding(&s, id);
+            if ok(&f["finding"]) || Instant::now() > end {
+                return f;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    for id in [&a, &b] {
+        let f = until(id, &|f| f["stage"] == "prioritize");
+        assert_eq!(f["finding"]["stage"], "prioritize", "{f}");
+        // The repro failed on main: its exit codes and the commit are kept.
+        assert_eq!(f["finding"]["evidence"]["repro_before"], json!([1]), "{f}");
+        assert!(f["finding"]["evidence"]["base_sha"].is_string(), "{f}");
+        assert_eq!(f["finding"]["seen"], 1, "{f}");
+    }
+    // A starts; B touches the same files (src/), so it waits for A.
+    let (st, v) = s.post(&format!("/api/converge/findings/{a}/start"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["finding"]["stage"], "develop", "{v}");
+    let aid = v["finding"]["agent"].as_str().unwrap().to_string();
+    let wt_a = PathBuf::from(v["finding"]["worktree"].as_str().unwrap());
+    let (st, v) = s.post(&format!("/api/converge/findings/{b}/start"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["finding"]["stage"], "prioritize", "{v}");
+    assert!(v["finding"]["queued"].as_str().unwrap().starts_with("Queued: waits for Totals in the footer are wrong which touches the same files"), "{v}");
+    assert_eq!(v["finding"]["waits_for"], json!(a), "{v}");
+    assert!(v["finding"]["needs_now"].is_null(), "queued is not a need of yours: {v}");
+
+    // A's fix: the develop check passes (the failing legacy test fails on main too), and A goes to review.
+    s.wait(&aid, "idle");
+    std::fs::write(wt_a.join("src/FIXED_A"), "yes\n").unwrap();
+    std::fs::write(wt_a.join("tests/footer_test.sh"), "test -f src/FIXED_A\n").unwrap();
+    git(&wt_a, &["add", "."]);
+    git(&wt_a, &["commit", "-q", "-m", "fix the footer"]);
+    let f = until(&a, &|f| f["stage"] == "review" && f["needs_you"].is_string());
+    assert_eq!(f["finding"]["stage"], "review", "{f}");
+    let ev = &f["finding"]["evidence"];
+    assert_eq!(ev["repro_after"], json!([0]), "{ev}");
+    assert_eq!(ev["tests"]["cmd"], "sh tests/run.sh", "{ev}");
+    assert_eq!(ev["tests"]["pass"], true, "{ev}");
+    assert_eq!(ev["tests"]["failing_on_base"], json!(["legacy::old_export"]), "{ev}");
+    assert_eq!((ev["diff"]["files"].as_u64(), ev["diff"]["add"].as_u64(), ev["diff"]["del"].as_u64()), (Some(2), Some(2), Some(0)), "{ev}");
+    assert_eq!(ev["head_sha"].as_str().unwrap(), git(&wt_a, &["rev-parse", "HEAD"]).trim(), "{ev}");
+    assert_eq!(ev["base_sha"].as_str().unwrap(), git(&r, &["rev-parse", "main"]).trim(), "{ev}");
+    assert!(ev["replay"].is_null(), "no persona replayed it: {ev}");
+    // B is still queued while A is in flight.
+    cv_tick(&s, &r);
+    assert_eq!(cv_finding(&s, &b)["finding"]["stage"], "prioritize");
+
+    // A merges: B starts on its own at the next tick, from main with A's fix in it.
+    let (st, v) = s.post(&format!("/api/converge/findings/{a}/merge-local"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    let f = until(&b, &|f| f["stage"] == "develop");
+    assert_eq!(f["finding"]["stage"], "develop", "{f}");
+    assert!(f["finding"]["queued"].is_null() && f["finding"]["waits_for"].is_null(), "{f}");
+    let bid = f["finding"]["agent"].as_str().unwrap().to_string();
+    let wt_b = PathBuf::from(f["finding"]["worktree"].as_str().unwrap());
+    assert!(wt_b.join("src/FIXED_A").is_file(), "B's branch starts from main with A merged");
+    s.wait(&bid, "idle");
+    std::fs::write(wt_b.join("src/FIXED_B"), "yes\n").unwrap();
+    std::fs::write(wt_b.join("tests/login_test.sh"), "test -f src/FIXED_B\n").unwrap();
+    git(&wt_b, &["add", "."]);
+    git(&wt_b, &["commit", "-q", "-m", "fix login"]);
+    let f = until(&b, &|f| f["stage"] == "review");
+    assert_eq!(f["finding"]["stage"], "review", "{f}");
+
+    // Something else lands on main while B waits in review: it is merged
+    // into B's branch at the next check, the checks run again, and B stays in review.
+    std::fs::write(r.join("NOTES"), "a note\n").unwrap();
+    git(&r, &["add", "NOTES"]);
+    git(&r, &["commit", "-q", "-m", "notes"]);
+    let f = until(&b, &|f| wt_b.join("NOTES").is_file() && f["evidence"]["head_sha"].as_str() == Some(git(&wt_b, &["rev-parse", "HEAD"]).trim()));
+    assert!(wt_b.join("NOTES").is_file(), "main was merged into B's branch: {f}");
+    assert_eq!(f["finding"]["stage"], "review", "{f}");
+    let moved = f["events"].as_array().unwrap().iter().find(|e| e["gate"] == "base_moved").cloned().unwrap_or(Value::Null);
+    assert_eq!(moved["passed"], true, "{f}");
+    assert_eq!(f["finding"]["evidence"]["repro_after"], json!([0]), "{f}");
+}
+
+/// Three reports of one problem make one card: a sure match folds by its
+/// words, a borderline one is asked of the model (one batched call per
+/// tick), and what the model does not confirm stays a card of its own,
+/// marked `similar`. A card you pick that repeats an open one is folded
+/// into it, and you can fold one card into another.
+#[test]
+fn converge_duplicate_reports_fold_into_one_card() {
+    let fakes = tempfile::tempdir().unwrap();
+    let fd = fakes.path().canonicalize().unwrap();
+    let (runner, gh) = converge_fakes(&fd);
+    let s = start_lab(&[("CHLOEDB_WORKBENCH_CONVERGE_CMD", &runner), ("CHLOEDB_WORKBENCH_CONVERGE_GH", &gh)]);
+    let (_d, r) = repo();
+    let (st, v) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "follow_picks": false } }));
+    assert_eq!(st, 200, "{v}");
+    let gap = || std::thread::sleep(Duration::from_millis(5));
+    let a = cv_new(&s, json!({ "repo": r, "title": "Server crashes on startup when the data directory is missing", "detail": "Ran the server with --data ./db and it panicked: No such file or directory (os error 2)." }));
+    gap();
+    let b = cv_new(&s, json!({ "repo": r, "title": "The server panics at startup if the --data directory doesn't exist", "detail": "Started it with a fresh data path; it exits with a panic, os error 2, instead of creating the directory." }));
+    gap();
+    let c = cv_new(&s, json!({ "repo": r, "title": "Server startup is slow with a big data directory", "detail": "Starting the server takes 40 seconds with 2 GB in the data directory." }));
+    // The model says B is A's problem, and nothing of C.
+    std::fs::write(fd.join("dedup-answer"), format!("{{\"same\":[{{\"report\":\"{b}\",\"card\":\"{a}\"}}],\"cost_usd\":0.002}}")).unwrap();
+    cv_tick(&s, &r);
+    let job = std::fs::read_to_string(fd.join("jobs-dedup")).unwrap();
+    assert_eq!(job.lines().count(), 1, "one batched call: {job}");
+    assert!(job.contains(&b) && job.contains(&c), "{job}");
+    let fb = cv_finding(&s, &b);
+    assert_eq!((fb["finding"]["state"].as_str(), fb["finding"]["dup_of"].as_str()), (Some("duplicate"), Some(a.as_str())), "{fb}");
+    let fa = cv_finding(&s, &a);
+    assert_eq!(fa["finding"]["seen"], 2, "{fa}");
+    let folded = fa["events"].as_array().unwrap().iter().find(|e| e["gate"] == "dedup" && e["passed"] == true).cloned().unwrap();
+    assert_eq!(folded["evidence"]["by"], "model", "{folded}");
+    assert_eq!(folded["evidence"]["report"]["title"], fb["finding"]["title"], "its evidence is kept on the card: {folded}");
+    let fc = cv_finding(&s, &c);
+    assert_eq!(fc["finding"]["state"], "active", "{fc}");
+    assert_eq!(fc["finding"]["similar"], json!([a]), "{fc}");
+    // The overview shows two cards, not three.
+    let (_, o) = s.get(&format!("/api/converge?repo={}", r.display()));
+    assert_eq!(o["findings"].as_array().unwrap().len(), 2, "{o}");
+    // The call counts in the spend.
+    let (_, m) = s.get(&format!("/api/converge/metrics?repo={}", r.display()));
+    assert!(m["cost_7d_by"]["runs"].as_f64().unwrap() >= 0.002, "{m}");
+
+    // You add the same problem again and pick it: folded at once, and A goes on to Reproduce.
+    let (st, v) = s.post("/api/converge/findings", json!({ "repo": r, "title": "Server crashes on startup when the data directory is missing", "pick": true }));
+    assert_eq!(st, 201, "{v}");
+    assert_eq!(v["finding"]["state"], "duplicate", "{v}");
+    assert_eq!(v["folded_into"]["id"], json!(a), "{v}");
+    assert_eq!(v["folded_into"]["seen"], 3, "{v}");
+    assert_eq!(v["folded_into"]["stage"], "reproduce", "{v}");
+
+    // You say C is the same problem after all.
+    let (st, v) = s.post(&format!("/api/converge/findings/{c}/fold"), json!({ "into": a }));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["finding"]["state"], "duplicate", "{v}");
+    assert_eq!(v["into"]["seen"], 4, "{v}");
+    assert_eq!(s.post(&format!("/api/converge/findings/{a}/fold"), json!({ "into": a })).0, 409);
 }
 
 #[test]
