@@ -233,6 +233,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/home", get(home))
         .route("/v1/search", get(search))
         .route("/v1/repo/*name", get(repo))
+        .route("/v1/repo-more/:id", get(repo_more))
         .route("/v1/person/:login", get(person))
         .route("/v1/rising", get(rising))
         .route("/v1/trends", get(trends))
@@ -558,14 +559,35 @@ async fn repo_page(svc: &Shared, name: String, latest: i64, t0: Instant) -> Answ
     let Some(id) = pages::find_repo(&c, &name).await else {
         return done(&trace, json!({"found": false, "name": name}), t0);
     };
-    let mut v = pages::repo(&c, id, latest).await?;
-    // The stories on Hacker News over its life, for its spikes.
-    if let (Some(hn), Some(n)) = (&svc.hn, v["repo"]["name"].as_str().map(str::to_string)) {
-        let link = hn.link(&n).await;
+    // The stories on Hacker News over its life, for its spikes: asked for
+    // beside the page, by the name asked for (again by its own name if it
+    // was renamed).
+    let (v, link) = tokio::join!(pages::repo(&c, id, latest), async {
+        match &svc.hn {
+            Some(hn) => Some(hn.link(&name).await),
+            None => None,
+        }
+    });
+    let mut v = v?;
+    if let (Some(hn), Some(n), Some(link)) = (&svc.hn, v["repo"]["name"].as_str().map(str::to_string), link) {
+        let link = if n.eq_ignore_ascii_case(&name) { link } else { hn.link(&n).await };
         let subs: Vec<Value> = link["submissions"].as_array().into_iter().flatten().filter(|s| s["points"].as_i64().unwrap_or(0) >= 5).map(|s| json!({"title": s["title"], "points": s["points"], "comments": s["comments"], "created": s["created"], "url": format!("https://news.ycombinator.com/item?id={}", s["id"])})).collect();
         v["hn"] = json!({"submissions": subs, "totals": link["totals"]});
     }
     done(&trace, v, t0)
+}
+
+/// A repo page's slow parts (alternatives, and what its stargazers starred
+/// too), which the page asks for once the rest is shown.
+async fn repo_more(State(svc): State<Shared>, Path(id): Path<i64>) -> Answer {
+    let t0 = Instant::now();
+    let (latest, _) = svc.latest().await;
+    page_kept(&svc, format!("more/{latest}/{id}"), t0, async {
+        ctx!(svc, trace, c);
+        let v = pages::repo_more(&c, id).await?;
+        done(&trace, v, t0)
+    })
+    .await
 }
 
 async fn person(State(svc): State<Shared>, Path(login): Path<String>) -> Answer {
