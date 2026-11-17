@@ -5,7 +5,7 @@
 import { h, useStyle, btn, label } from "/levels/common.js";
 
 const enc = encodeURIComponent;
-const STEPS = { starting: "Starting", cloning: "Cloning", fetching: "Fetching", checking: "Checking access", forking: "Forking", detecting: "Detecting", done: "Opened" };
+const STEPS = { starting: "Starting", cloning: "Cloning", fetching: "Fetching", checking: "Checking access", forking: "Forking", detecting: "Detecting", done: "Done" };
 
 export function githubImport(ctx) {
   useStyle("g-ghi", CSS);

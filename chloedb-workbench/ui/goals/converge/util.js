@@ -27,7 +27,7 @@ export const blockStep = (f, b) => String((b && (b.you_do || b.what)) || (f.need
 /** Waiting for a free agent slot: the server's `queued`, or an older server's needs-you that says so. */
 export function queuedOf(f) {
   if (!f || f.state !== "active" || blockedOf(f)) return null;
-  if (typeof f.queued === "string" && f.queued) return f.queued;
+  if (typeof f.queued === "string" && f.queued) return f.queued.replace(/^Queued:\s*/i, "");
   const m = /(\d+) agents are running, the most allowed/.exec(f.needs_you || "");
   return m ? `waiting for a free agent slot (${m[1]} of ${m[1]})` : null;
 }
@@ -143,7 +143,7 @@ export function happening(f, settings = {}) {
     case "found": return seenOf(f) > 1 ? `seen ${seenOf(f)}×` : "waits for your pick";
     case "reproduce": return f.needs_you ? "needs a hint or a repro" : f.repro_hash ? "repro locked" : f.repro ? "running the repro" : "waits for a repro agent";
     case "scope": return "being planned";
-    case "prioritize": return f.door ? `one-way door: ${f.door}` : f.queued ? "waits for a free agent slot" : settings.develop_auto ? "planned, starts when a slot is free" : "planned, waits for your pick";
+    case "prioritize": return f.door ? `one-way door: ${f.door}` : f.queued ? queuedOf(f) : settings.develop_auto ? "planned, starts when a slot is free" : "planned, waits for your pick";
     case "develop": return f.rounds ? `round ${Math.min(f.rounds + 1, rounds)} of ${rounds}` : "checks run next";
     case "verify": return !f.persona ? "verified by its repro next" : f.busy ? "the persona replays it" : "waits for the replay (budget or a run slot)";
     case "review": return f.conflict ? "conflicts with the base" : f.ci === "pass" ? "CI passed" : f.ci === "fail" ? "CI failed" : f.pr_url ? "CI running" : f.needs_you ? "waits for you: merge it or record a pull request" : "opening the pull request";

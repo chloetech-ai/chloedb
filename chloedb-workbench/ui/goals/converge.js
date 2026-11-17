@@ -242,7 +242,14 @@ export function mount(root, ctx) {
   function drawPicker() {
     if (ctx.crumbs) ctx.crumbs([{ label: "Converge", href: "#/converge" }]);
     const ps = projects();
-    const unknown = proj() && !projRow();
+    // A project link on a fresh page can arrive before the project list is
+    // current: refresh it once before saying there is no such project.
+    const unsure = proj() && !projRow() && ctx.refreshProjects && !S.refreshedFor;
+    if (unsure) {
+      S.refreshedFor = proj();
+      ctx.refreshProjects().then(() => { if (S.alive) load(); }, () => { if (S.alive) load(); });
+    }
+    const unknown = proj() && !projRow() && !unsure;
     put(host,
       h("div", { class: "cv-sh" }, h("div", { class: "row" }, h("h1", {}, "Converge"))),
       h("p", { class: "cv-intro" }, unknown ? `There is no open project named “${proj()}”. Pick one, or open it first.` : "Pick a project. Personas play it, and what they hit is reproduced, fixed and sent to you as a pull request."),

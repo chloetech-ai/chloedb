@@ -415,6 +415,14 @@ fn import_in(sup: &Arc<Supervisor>, src: &Source, job: &str, dest: &Path, may_fo
     if st.base.as_deref().is_none_or(str::is_empty) {
         st.base = default.clone();
     }
+    // The test command's own runner must be allowed, or the fix agent stops
+    // at its first test run (uv, go, make are not in the defaults).
+    if let Some(tool) = st.test_cmd.as_deref().and_then(|c| c.split_whitespace().next()).map(str::to_string) {
+        let rule = format!("Bash({tool}:*)");
+        if !st.dev_allow.iter().any(|r| r == &rule) && !st.dev_deny.iter().any(|r| r == &rule) {
+            st.dev_allow.push(rule);
+        }
+    }
     st.untrusted = untrusted;
     if untrusted && matches!(st.dev_permission_mode.as_deref(), None | Some("auto") | Some("bypassPermissions")) {
         st.dev_permission_mode = Some("default".into());

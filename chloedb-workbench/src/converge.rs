@@ -2647,6 +2647,18 @@ fn start_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &
         let _ = git(&repo, &["fetch", "-q", "origin", &base]);
     }
     let from = diff_base(&repo, &base);
+    // Its agent is already running (started by a step whose write was lost):
+    // take it on instead of failing on the name.
+    if let Some(live) = sup.agent_rows().into_iter().find(|a| a.name == name && a.repo == f.repo && sup.is_running(&a.id)) {
+        f.agent = Some(live.id.clone());
+        f.branch = Some(branch.clone());
+        f.worktree = Some(live.cwd.clone());
+        f.rounds = 0;
+        f.queued = None;
+        let waited = f.waits_for.take();
+        f.needs_you = None;
+        return advance_to(sup, f, "develop", "slot", true, by, &format!("Agent {} carries on {branch}", live.id), json!({ "agent": live.id, "branch": branch, "waited_for": waited, "adopted": true }));
+    }
     let req = SpawnRequest {
         repo: f.repo.clone(),
         task: Some(dev_task(f)),
@@ -3945,7 +3957,13 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
     // What you started that waits for an agent slot goes too (a door you started is yours).
     let mut queue: Vec<Finding> = fs.iter().filter(|f| f.state == "active" && f.stage == "prioritize" && ((st.develop_auto && f.door.is_none()) || f.queued.is_some())).cloned().collect();
     queue.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)));
-    for (i, mut f) in queue.clone().into_iter().enumerate() {
+    for (i, f) in queue.clone().into_iter().enumerate() {
+        // Read it again: you (Build) or an earlier step may have started it
+        // since the snapshot, and writing the snapshot back would undo that.
+        let Ok(mut f) = get_finding(sup, &f.id) else { continue };
+        if f.state != "active" || f.stage != "prioritize" {
+            continue;
+        }
         if in_dev >= st.wip {
             let more = queue.len() - i - 1;
             decide(&mut dec, format!("wip:{}", f.id), format!("WIP full ({in_dev} of {}): {} waits{}", st.wip, short(&f.title, 50), if more > 0 { format!(", and {more} more") } else { String::new() }));
@@ -3976,8 +3994,12 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
                 break;
             }
             Err(e) => {
-                f.needs_you = Some(format!("Could not start an agent: {}", e.message));
-                put_finding(sup, &f)?;
+                if let Ok(mut now) = get_finding(sup, &f.id) {
+                    if now.stage == "prioritize" && now.agent.is_none() {
+                        now.needs_you = Some(format!("Could not start an agent: {}", e.message));
+                        put_finding(sup, &now)?;
+                    }
+                }
             }
         }
     }
@@ -6315,6 +6337,12 @@ async fn finding_diff(State(app): State<App>, AxPath(id): AxPath<String>) -> Api
         } else {
             return Err(ApiError::not_found(format!("the branch {branch} is gone")));
         };
+        // Against what has merged (origin's base when it is ahead of the
+        // local one), so a fix merged on GitHub is not shown as this card's.
+        if git(&repo, &["remote", "get-url", "origin"]).is_ok() {
+            let _ = git(&repo, &["fetch", "-q", "origin", &base]);
+        }
+        let base = diff_base(&repo, &base);
         let range = format!("{base}...{head}");
         let stat = git(&dir, &["diff", "--numstat", "--no-color", &range]).map_err(ApiError::internal)?;
         let mut files = Vec::new();
