@@ -383,9 +383,12 @@ def search_index(all_pages):
     """docs/site/docs/search-index.js: every page's sections, which the
     search box (assets/docs-search.js) loads the first time it is used."""
     rows = [s for p in all_pages for s in getattr(p, "sections", [])]
-    data = json.dumps({"v": 1, "sections": rows}, ensure_ascii=False, separators=(",", ":"))
+    # One section a line, so that two changes to different pages merge
+    # here as they do in the pages; and the pages name this file without
+    # a hash of it, so that a change to one page does not change them all.
+    lines = ",\n".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")) for r in rows)
     return ("// Written by docs/site/scripts/build_docs.py: the docs' search index, read by assets/docs-search.js.\n"
-            f"window.CHLOEDB_DOCS_INDEX={data};\n")
+            f'window.CHLOEDB_DOCS_INDEX={{"v":1,"sections":[\n{lines}\n]}};\n')
 
 
 def flat_toc(tokens):
@@ -539,7 +542,7 @@ def render_page(p, all_pages, by_source, hashes):
     return TEMPLATE.format(
         title=html.escape(re.sub(r"<[^>]+>", "", html.unescape(title))), desc=html.escape(desc, quote=True),
         h_site_css=hashes.get("site.css", ""), h_docs_css=hashes.get("docs.css", ""), h_site_js=hashes.get("site.js", ""),
-        h_docs_search_js=hashes.get("docs-search.js", ""), search_index=f"{SEARCH_INDEX}?v=CHLOEDBSEARCHINDEXHASH",
+        h_docs_search_js=hashes.get("docs-search.js", ""), search_index=SEARCH_INDEX,
         source=p.rel, github=GITHUB, branch=BRANCH, sidebar=sidebar(p, all_pages), section=html.escape(p.section),
         h1=title, badge=badge, toc=toc_html, body=body, edit=f"{GITHUB}/edit/{BRANCH}/{p.rel}", pager=pager,
         mermaid=MERMAID if has_mermaid else "", up=UP, version=version_line(),
@@ -573,12 +576,10 @@ def build(out):
     hashes = asset_hashes()
     out.mkdir(parents=True, exist_ok=True)
     written = set()
-    rendered = {f"{p.page}.html": render_page(p, all_pages, by_source, hashes) for p in all_pages}
+    for p in all_pages:
+        (out / f"{p.page}.html").write_text(render_page(p, all_pages, by_source, hashes))
+        written.add(f"{p.page}.html")
     index = search_index(all_pages)
-    index_hash = hashlib.sha256(index.encode()).hexdigest()[:10]
-    for name, text in rendered.items():
-        (out / name).write_text(text.replace("CHLOEDBSEARCHINDEXHASH", index_hash))
-        written.add(name)
     if EDITION == "snapshot":
         # A page the release did not have yet (the template's footer names
         # some): the one of main.
