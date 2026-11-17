@@ -81,6 +81,7 @@ mod safety;
 mod schema_race;
 mod scoped_keys;
 mod signin;
+mod silent_answers;
 mod limited_keys;
 mod scroll_pages;
 mod server;

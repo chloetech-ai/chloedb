@@ -11,6 +11,40 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Answers that were wrong without an error, found by the persona study of
+  17 November.** Each is now right, or an error that says why:
+  - **Options a scoring function does not take were ignored.**
+    `bm25(body, :q, fuzy => 1)`, `similarity(emb, :v, ef => 'x')` and
+    `rrf(..., kk => 60)` ranked as if the option had not been written; now
+    an unknown option, or a value out of its range (`b => 2`), is an error
+    that lists the options the function takes.
+  - **`rrf(..., weights => [0.3, 0.7])`** is weighted reciprocal rank
+    fusion: each input's terms times its weight. Before, `weights` given as
+    a parameter was ignored, and as a list refused.
+  - **A prefix or a typo in `bm25`'s text ranked no row.**
+    `ORDER BY bm25(name, 'sof*') DESC` gave nothing while
+    `WHERE MATCH(name, 'sof*')` kept rows; now `word*` ranks by the words
+    that begin so (the 128 in the most rows, which the plan says when more
+    do) and `word~`, `word~N` by the words within that many edits, as
+    `MATCH` reads them. `db.search()` in Python, JavaScript and Java reads
+    them too. `syntax => 'plain'` keeps reading them as words.
+  - **`ORDER BY` a scored alias** (`SELECT bm25(name, :q) AS score ...
+    ORDER BY score DESC`) failed with "no such column: score"; it ranks by
+    the column the alias names, as in PostgreSQL.
+  - **`/v1/write` ignored a top-level `"table"`** and wrote the rows into
+    the first table. It is now the table of the operations that name none,
+    and a field the body does not take is refused (400).
+  - **`/v1/health`'s `docs` counted the placeholder** of a database made
+    with no tables, so 0, and so did `count()` of the clients and of the
+    embedded packages. It counts the default table's rows.
+  - **An `upsert` that leaves fields out** replaces the row, with those
+    fields `NULL`: the answer now says so in `warnings`, naming the fields,
+    and points to `set` and `UPDATE`.
+  - **Rust's `WriteTxn::insert` and the other table-less writes** of a
+    database made with no tables wrote into its placeholder, and a row of
+    the wrong shape said "document has 2 values, table has 1 fields". They
+    write the first table people made, and the error names the table and
+    its fields; a JSON row's unknown field names its table too.
 - **ChloeCtx's rules and counts say what happened.** A rule said once read
   "(the user has said this 2 times)": the preference picked from the
   prompt's own words, and the notes an earlier distillation of the turn

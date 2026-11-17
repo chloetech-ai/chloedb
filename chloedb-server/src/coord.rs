@@ -4212,7 +4212,7 @@ impl Coordinator {
         let mut shards = Vec::new();
         let (mut docs, mut segments, mut all_up, mut every_shard) = (0, 0, true, true);
         // LIV-13: the rows of every table, summed over the shards from the
-        // health each copy sends (`docs` counts the first table only); none
+        // health each copy sends (`docs` counts the default table only); none
         // when a shard does not say (an older server).
         let mut tables: Option<serde_json::Map<String, Json>> = Some(Default::default());
         for (i, answers) in join_all(calls).await.into_iter().enumerate() {
