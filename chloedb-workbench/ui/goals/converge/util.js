@@ -27,7 +27,7 @@ export const blockStep = (f, b) => String((b && (b.you_do || b.what)) || (f.need
 /** Waiting for a free agent slot: the server's `queued`, or an older server's needs-you that says so. */
 export function queuedOf(f) {
   if (!f || f.state !== "active" || blockedOf(f)) return null;
-  if (typeof f.queued === "string" && f.queued) return f.queued;
+  if (typeof f.queued === "string" && f.queued) return f.queued.replace(/^Queued:\s*/i, "");
   const m = /(\d+) agents are running, the most allowed/.exec(f.needs_you || "");
   return m ? `waiting for a free agent slot (${m[1]} of ${m[1]})` : null;
 }
@@ -140,10 +140,10 @@ export function happening(f, settings = {}) {
   }
   const rounds = Math.max(1, settings.max_rounds || 3);
   switch (f.stage) {
-    case "found": return f.occurrences > 1 ? `seen ${f.occurrences}×` : "waits for your pick";
+    case "found": return seenOf(f) > 1 ? `seen ${seenOf(f)}×` : "waits for your pick";
     case "reproduce": return f.needs_you ? "needs a hint or a repro" : f.repro_hash ? "repro locked" : f.repro ? "running the repro" : "waits for a repro agent";
     case "scope": return "being planned";
-    case "prioritize": return f.door ? `one-way door: ${f.door}` : f.queued ? "waits for a free agent slot" : settings.develop_auto ? "planned, starts when a slot is free" : "planned, waits for your pick";
+    case "prioritize": return f.door ? `one-way door: ${f.door}` : f.queued ? queuedOf(f) : settings.develop_auto ? "planned, starts when a slot is free" : "planned, waits for your pick";
     case "develop": return f.rounds ? `round ${Math.min(f.rounds + 1, rounds)} of ${rounds}` : "checks run next";
     case "verify": return !f.persona ? "verified by its repro next" : f.busy ? "the persona replays it" : "waits for the replay (budget or a run slot)";
     case "review": return f.conflict ? "conflicts with the base" : f.ci === "pass" ? "CI passed" : f.ci === "fail" ? "CI failed" : f.pr_url ? "CI running" : f.needs_you ? "waits for you: merge it or record a pull request" : "opening the pull request";
@@ -193,3 +193,44 @@ export const local = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* private window */ } },
 };
+
+/** How many reports were folded into a card: the server's `seen`, else the older `occurrences`. */
+export const seenOf = (f) => { const n = Number(f && (f.seen ?? f.occurrences)); return Number.isFinite(n) && n > 0 ? n : 1; };
+/** The cards that look like the same problem (`similar`, ids; tolerated absent or as objects). */
+export const similarOf = (f) => (Array.isArray(f && f.similar) ? f.similar.map((x) => (typeof x === "string" ? x : x && x.id)).filter(Boolean) : []);
+/** The card's evidence object, or {} (an older server sends none). */
+export const evidenceOf = (f) => (f && f.evidence && typeof f.evidence === "object" ? f.evidence : {});
+
+/** The three decisions that are yours, and what is moving without you. */
+export function inboxOf(findings) {
+  const merge = [], build = [], fix = [], moving = [];
+  for (const f of findings) {
+    if (f.state !== "active" || f.stage === "merged") continue;
+    if (blockedOf(f)) { moving.push(f); continue; }
+    if (f.stage === "review" && !f.conflict && !f.busy && (f.ci === "pass" || (!f.pr_url && f.branch && f.needs_you))) merge.push(f);
+    else if (f.stage === "prioritize" && !queuedOf(f)) build.push(f);
+    else if (f.stage === "found") fix.push(f);
+    else moving.push(f);
+  }
+  const sev = (a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.severity - a.severity || seenOf(b) - seenOf(a) || (toMs(b.created) || 0) - (toMs(a.created) || 0);
+  merge.sort(sev);
+  build.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.score || 0) - (a.score || 0) || b.severity - a.severity);
+  fix.sort(sev);
+  moving.sort((a, b) => (blockedOf(b) ? 1 : 0) - (blockedOf(a) ? 1 : 0) || ((agentOn(b) || b.busy ? 1 : 0) - (agentOn(a) || a.busy ? 1 : 0)) || STAGES.indexOf(b.stage) - STAGES.indexOf(a.stage));
+  return { merge, build, fix, moving, count: merge.length + build.length + fix.length };
+}
+
+/** Hide cards now and send the verb once the undo has passed (5 s). */
+export function deferVerb(C, ids, verb, body, words, ms = 5000) {
+  const S = C.S;
+  ids.forEach((id) => { S.gone.add(id); S.sel.delete(id); });
+  C.keep(); C.draw();
+  let undone = false;
+  const timer = setTimeout(async () => {
+    if (undone) return;
+    try { await C.bulk(ids, verb, body); } catch (err) { toast(err.message || String(err)); }
+    ids.forEach((id) => S.gone.delete(id));
+    S.sig = ""; await C.load();
+  }, ms);
+  toast(words, { undo: () => { undone = true; clearTimeout(timer); ids.forEach((id) => S.gone.delete(id)); C.keep(); C.draw(); }, ms });
+}

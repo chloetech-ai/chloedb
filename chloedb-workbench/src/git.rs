@@ -46,6 +46,11 @@ pub fn checkout(path: &Path) -> Result<Checkout, String> {
     Ok(Checkout { main })
 }
 
+/// The top folder of the checkout `path` is in (a linked worktree's own).
+pub fn toplevel(path: &Path) -> Result<PathBuf, String> {
+    git(path, &["rev-parse", "--show-toplevel"]).map(PathBuf::from)
+}
+
 /// The commit `rev` names in `dir`, in full.
 pub fn rev_parse(dir: &Path, rev: &str) -> Option<String> {
     git(dir, &["rev-parse", "--verify", "--quiet", &format!("{rev}^{{commit}}")]).ok().filter(|s| !s.is_empty())

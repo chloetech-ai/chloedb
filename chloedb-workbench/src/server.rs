@@ -168,6 +168,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::complete::routes())
         // Sixth build: repositories without an agent, and the user guide.
         .merge(crate::repos::routes())
+        .merge(crate::import::routes())
         // The rewrite around goals (JOURNEYS.md): the one Needs-you count,
         // and the permissions a session was granted.
         .merge(crate::needs::routes())
@@ -184,6 +185,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::harness::routes())
         // Converge (src/converge.rs): personas, findings and their gated loop.
         .merge(crate::converge::routes())
+        .merge(crate::converge::diff_routes())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -265,6 +267,7 @@ const GOALS: &[(&str, &str)] = &[
     ("start.js", include_str!("../ui/goals/start.js")),
     ("newproject.js", include_str!("../ui/goals/newproject.js")),
     ("continue.js", include_str!("../ui/goals/continue.js")),
+    ("github-import.js", include_str!("../ui/goals/github-import.js")),
     ("agent.js", include_str!("../ui/goals/agent.js")),
     ("more.js", include_str!("../ui/goals/more.js")),
     ("needs.js", include_str!("../ui/goals/needs.js")),
@@ -289,6 +292,8 @@ const GOALS: &[(&str, &str)] = &[
     ("converge/talk.js", include_str!("../ui/goals/converge/talk.js")),
     ("converge/tasks.js", include_str!("../ui/goals/converge/tasks.js")),
     ("converge/home.js", include_str!("../ui/goals/converge/home.js")),
+    ("converge/overview.js", include_str!("../ui/goals/converge/overview.js")),
+    ("converge/story.js", include_str!("../ui/goals/converge/story.js")),
     ("converge/problems.js", include_str!("../ui/goals/converge/problems.js")),
     ("converge/steps.js", include_str!("../ui/goals/converge/steps.js")),
     ("converge/sheet.js", include_str!("../ui/goals/converge/sheet.js")),

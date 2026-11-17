@@ -115,14 +115,30 @@ export function setCrumbs(list) {
   const back = $("tb-back");
   back.hidden = !parent;
   if (parent) { back.href = parent.href; back.setAttribute("aria-label", `Back to ${parent.label}`); }
-  document.title = `${A && A.needs().count ? `(${A.needs().count}) ` : ""}${last && O.crumbs.length > 1 ? last.label + " · " : ""}Converge`;
+  document.title = `${A && needsCount() ? `(${needsCount()}) ` : ""}${last && O.crumbs.length > 1 ? last.label + " · " : ""}Converge`;
 }
 export function crumbs() { return O.crumbs; }
 
 /** The one count, on the button, the tab bar and the title; the project in focus. */
+/** Inside a project's Converge pages: that project (the badge counts its needs only). */
+function convergeProject() {
+  const hsh = location.hash || "";
+  if (!/^#\/converge\b/.test(hsh)) return null;
+  const name = new URLSearchParams(hsh.split("?")[1] || "").get("project");
+  const p = name && A.project ? A.project() : null;
+  return p && (p.project === name || p.path === name) ? p : null;
+}
+/** What needs you: the project's count when inside one, else every project's. */
+function needsCount() {
+  const N = A.needs();
+  const p = convergeProject();
+  if (p && N.by_repo && typeof N.by_repo === "object") return Number(N.by_repo[p.path]) || 0;
+  return N.count;
+}
+
 export function update() {
   if (!A) return;
-  const n = A.needs().count;
+  const n = needsCount();
   const nb = $("needs-btn");
   nb.classList.toggle("on", n > 0);
   $("needs-n").textContent = String(n);
@@ -130,7 +146,14 @@ export function update() {
   const blk = A.needs().items.filter(isBlocked).length;
   nb.title = n ? `${n} need${n === 1 ? "s" : ""} you${blk ? `, ${blk} blocked on you` : ""} (.)` : "Nothing needs you (.)";
   nb.setAttribute("aria-label", n ? `Needs you: ${n}` : "Needs you: nothing");
-  $("tab-badge").textContent = n ? String(n) : "";
+  // Inside a project the tab bar is Inbox (with the count) · In progress · Personas · More.
+  const cp = convergeProject();
+  $("tab-badge").textContent = n && !cp ? String(n) : "";
+  const hb = document.getElementById("tab-badge-home");
+  if (hb) hb.textContent = n && cp ? String(n) : "";
+  const hl = document.getElementById("tab-home-l"), nl = document.getElementById("tab-needs-l");
+  if (hl) hl.textContent = cp ? "Overview" : "Home";
+  if (nl) nl.textContent = cp ? "Board" : "Needs you";
   setCrumbs(O.crumbs);
   if (GRANTS.size) closeStaleGrants();
   // An open drawer or switcher is drawn again only when what it lists
@@ -151,6 +174,9 @@ export function update() {
   for (const a of document.querySelectorAll("#tabbar [data-tab]")) {
     if (a.dataset.tab === "home") a.href = homeHref();
     if (a.dataset.tab === "personas") a.href = p ? `#/converge/personas?project=${enc(p.project)}` : "#/converge";
+    if (a.dataset.tab === "needs") a.href = cp ? `#/converge/board?project=${enc(cp.project)}` : "#/needs";
+    if (a.dataset.tab === "activity") { a.href = cp ? `#/converge/activity?project=${enc(cp.project)}` : "#/converge"; a.hidden = !cp; }
+    if (a.dataset.tab === "more") a.hidden = !!cp;
     if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   }
   // Converge's own pages name their project (with its switcher) in the
@@ -167,6 +193,8 @@ export function update() {
 export function tabOf(hsh) {
   if (/^#\/needs\b/.test(hsh)) return "needs";
   if (/^#\/converge\/personas\b/.test(hsh)) return "personas";
+  if (/^#\/converge\/(progress|board|inbox)\b/.test(hsh)) return "needs";
+  if (/^#\/converge\/activity\b/.test(hsh)) return "activity";
   if (/^#\/converge\b/.test(hsh)) return "home";
   if (hsh === "#/" || hsh === "#" || hsh === "") return "home";
   return "more";

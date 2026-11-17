@@ -3334,6 +3334,13 @@ scope touches (an event `component`, in the feed); you set it by `PUT` or
 load. The overview gives `components: [{name, open}]`;
 `GET /api/converge/metrics` and `/timeline` take `component=`.
 
+`GET /api/converge/findings/:id/diff` (read-only, for the merge pack):
+the card's branch against the base from their merge base, read with git
+in the main checkout, or in the card's worktree when the branch is not
+there: `{base, branch, files: [{path, add, del, binary}], add, del, diff,
+truncated}` (the diff is cut at 400 KB); 404 while the card has no
+branch.
+
 ### The timeline
 
 Each bucket also has `spend_usd` (the runs started in it) and `agents
@@ -3571,15 +3578,182 @@ the run made; a finding is known when it was merged into an open one, or
   packages (`packages/x`, `apps/x`, `crates/x`, `services/x`, `libs/x`,
   `modules/x`).
 
+### One card per problem, branches that do not collide, and the evidence
+
+- **Duplicates fold.** A report's words are normalised (lower case,
+  quotes, punctuation and numbers dropped, stop words out, each word
+  stemmed) and compared with the open cards made before it (not merged):
+  the best of its title's and its title-and-detail's likeness (shared words,
+  and how much of the shorter the longer holds), plus 0.1 for the same
+  component and times 0.7 for another (`other` counts as neither). Each
+  tick checks the new reports in Found and the cards you picked that
+  `dedup_pending`: one of 0.8 or more folds by its words; those from 0.25
+  go to the model in one batched call (runner role `dedup`, setting
+  `dedup_model`, default haiku, empty for words only; a run `purpose:
+  "dedup"` counts in the spend), which answers `{same: [{report, card}]}`
+  among each report's candidates; without the model (no answer, budget
+  spent), 0.6 or more folds. Folding adds the report to the card's `seen`
+  (and `occurrences`), its persona to `personas_hit`, keeps the worse
+  severity and the report itself in the card's `dedup` event (`evidence
+  {merged, similarity, by: words|model|you, seen, report}`); the report
+  becomes `duplicate` with `dup_of`. What is not folded stays a card with
+  `similar` (up to three ids). A card you add and pick (`pick`, an ask)
+  folds at once at 0.8 (the answer has `folded_into`, and a card still in
+  Found goes on to Reproduce as your pick), else at 0.25 it is
+  `dedup_pending` for the next tick. `POST /api/converge/findings/:id/fold
+  {into}` (your token) folds it yourself.
+- **Overlapping branches queue.** A card's plan paths are its scope's
+  parts and files (test paths left out unless it has only those); two
+  plans overlap when a path of one is, or is under, a path of the other.
+  Start (yours or the autopilot's) on a card whose plan overlaps a card in
+  develop, verify or review queues it: `queued: "Queued: waits for <title>
+  which touches the same files"`, `waits_for: <id>`, an event `queued`;
+  each tick tries it again, so it starts when the other merges or leaves
+  the flow (approving and merging kick a tick).
+- **Branches stay current.** The develop check merges the base in first.
+  A card in verify or review whose branch is behind the base (fetched at
+  most once a minute) has it merged in (`gate_current`, busy "bringing the
+  base in"): the repro and the tests run again; passing, it stays (event
+  `base_moved`, review pushes the new head and CI is pending); a conflict
+  or a failing check sends it back to develop with the reason.
+- **Verify judges three things**: the locked repro passes N of N on the
+  replayed head (the develop check's result when the head is the one it
+  checked), the tests pass but for what fails on the base too, and the
+  replay reports no new problem of major or worse (not an open card, not
+  reproducing on the base). The persona's `fixed`, outcome and ease are
+  `notes` in the evidence. A replay that fails to run plays again; after
+  two, it asks you.
+- **Tests failing on the base.** Failed test names are read from the
+  output (cargo's `... FAILED`, pytest's `FAILED`, go's `--- FAIL:`, TAP's
+  `not ok`, jest's `✕`). When the base fails too, the branch passes when
+  every test it fails also fails on the base (or, without names, as
+  before); the names are `failing_on_base`.
+- **Evidence pack.** Each card has `evidence {repro_before, repro_after,
+  tests {cmd, pass, failing_on_base}, replay {persona, said, ease_before,
+  ease_after}, diff {files, add, del}, base_sha, head_sha}`, null where
+  unknown: `repro_before` and the base commit at reproduce; the rest at
+  each develop check, base merge and verify (`base_sha` the merge-base,
+  the diff `git diff --numstat` from it). The pull request's body starts
+  with it, compact (`### Evidence`).
+- **Outcomes.** `GET /api/converge/metrics` has `outcomes {merged_7d,
+  median_found_to_merged_ms, cost_per_merged_fix_usd, ease_before,
+  ease_after, open_by_kind}`: the fixes merged in the last seven days
+  (found = created, merged = the stage's start), the week's spend over
+  them, the mean eases of those a persona found and replayed, and open
+  cards by kind.
+
+### Open a project from GitHub
+
+`POST /api/repos/import {source, async?, fork?}` (your token only; src/import.rs)
+takes `owner/repo`, `https://github.com/owner/repo(.git)` (a page under it
+too), `git@github.com:owner/repo.git` or another host's
+`https://host/owner/repo(.git)`; a local path, `file://`, `ssh://`,
+`ext::`, a leading `-`, a user or a port in the address, or any character
+outside a GitHub owner's (`[A-Za-z0-9-]`, at most 39) and a repository's
+(`[A-Za-z0-9._-]`) is refused (400) before git or gh runs. It clones with
+`gh repo clone owner/repo DIR -- --filter=blob:none` (blobless: the whole
+history for merges; `git clone` of the https address when gh fails) into
+the data dir's `repos/<owner>/<name>` (another host's under
+`repos/<host>/<owner>/<name>`), or, already cloned, fetches and
+fast-forwards. `gh api repos/owner/repo` says whether you can push and the
+default branch; when you cannot, `gh repo fork --remote --remote-name origin`
+makes origin your fork and upstream the original (not with `fork: false`), and Converge's settings
+get `upstream: owner/repo`, so a pull request opens on upstream with head
+`you:branch`. It detects the language, the test command (Cargo.toml: `cargo
+test`; a real `scripts.test`: `npm test`; a Python project with pytest
+signs: `uv run --with pytest python -m pytest -q`, or `python -m pytest -q`
+without uv; go.mod: `go test ./...`; a Makefile `test:`: `make test`), a run
+command when one is plain (`npm start`/`npm run dev`, the first
+`[project.scripts]`, `cargo run`, `go run .`, a README code line) and CI
+(`.github/workflows/*.yml`); opens it as Open a folder does (trusting it
+only when you can push), and writes the test command (when none is set) and
+the base (the default branch) into its Converge settings. It answers
+`{path, project, source, forked, fork, upstream, untrusted, can_push,
+default_branch, reused, detected: {language, test_cmd, run_cmd, ci},
+settings, warning, notes, repo}`; with `async: true`, `202 {id}` and `GET
+/api/repos/import/:id` is `{state: running|done|failed, step, steps,
+result, error}` (steps: cloning or fetching, checking, forking, detecting).
+One import of a repository at a time (409). `gh` is
+`CHLOEDB_WORKBENCH_CONVERGE_GH` when set.
+
+- `untrusted` (a setting; true for an import you cannot push to, or another
+  host's): fix agents run in Claude Code's `default` mode when the setting
+  says `auto` or `bypassPermissions` (they ask before what their list does
+  not allow), the deny-list stays (no push, gh, curl, wget, ssh, docker),
+  and Open a project warns before Converge runs anything. Personas and
+  agents still run the code on this machine: isolating them in a container
+  is the next step.
+- The page: Open a project (`#/p`) has From GitHub under Open a folder: the
+  steps as they happen, then what was detected, the test command editable,
+  and Write personas from the code (`#/converge/personas?project=`). The
+  Converge project picker's "+ Open a project" leads there.
+- Test: `a_github_repository_is_cloned_forked_detected_and_opened` (a fake
+  gh over bare repositories: refused sources, a fork, the settings, a
+  second import that fetches, one you can push to); unit tests of the
+  sources, the detection, `pr_target` and the untrusted mode.
+
+### The page: the overview, a card's story, personas
+
+`#/converge?project=` is the project overview (`ui/goals/converge/overview.js`):
+a top bar (the project picker, the autopilot, the day's spend of the budget,
+Pause, Stop everything); six numbers from `outcomes` and the timeline (open
+problems with their trend, merged this week, found → merged, cost per fix,
+persona ease before → after, needs you); the eight steps of the flow with
+their counts and a live line each, your three picks (Found, Ready to build,
+Ready to merge) marked ✋ in amber, a step filtering the board (`&step=`);
+chips for component, severity and persona (`&comp=`, `&sev=`, `&who=`); the
+board in four columns (Found · Reproduce/Scope · Build/Verify · Merge), a
+card a problem with its tags, `seen N×`, an eight-part bar (amber where it
+waits for you, red when blocked), its live line, the queue's reason (dashed)
+and its one move (Reproduce or Dismiss, Build, Open merge pack), long columns
+cut to "+ N more"; and a right rail: Live now (each agent at work and each
+persona run, a line with its time, a segmented bar and its step, unfolding
+to its recent steps from `/api/agents/:id/events` or the run, with Terminal
+and Talk to it) and What happened (the activity, newest first, ticks and
+decisions left out, with Full activity). `#/converge/board` is the filters
+and the board; `#/converge/inbox` the earlier inbox (Merge this? Build
+these? Worth fixing?). Keys on the board: j/k, Enter, r, b, d, m, ?.
+
+A card (`?f=<id>`) opens as a page-wide sheet: its story on the left, every
+event in order as one timeline (`story.js`: the persona that hit it, its
+words and ease and its run's steps; the reports folded in; your picks; the
+repro agent with its steps and the runs on the base as dots; the plan; the
+fix agent with its steps, commits and each round's checks; the replay with
+its words and ease; the pull request and CI; the merge and the guard; what
+happens now), then Talk to this card's agent; on the right the merge pack in
+review and after, else what its step needs. A phone shows one half at a time
+(Merge pack or Details | Story) with the moves pinned at the bottom.
+
+Personas (`#/converge/personas`) has three ways to make one (written from
+the code, described by you, copied from another project's
+`GET /api/converge/personas?repo=` into `POST /api/converge/personas`: the
+role and journey, not the history), then a card each ranked by ease (the
+hardest first): its live step and a link to watch, ease, runs, found and
+reproduced, what probation means for it, its journey and past runs folded,
+Play now, Stop, Edit, Retire and its memory switch.
+
+On a phone (640 px and less) the overview is a row of four numbers, the flow
+in seven steps, Needs you (the merge pack first) and Live now, and the tab
+bar is Overview · Board · Personas · Activity while a project is open.
+
+`POST /api/converge/personas/:id/stop` (your token only) ends that
+persona's run in flight: the process group of its `claude -p` (builds
+included), which the runner call records by run id. It answers `{persona,
+run, stopped}`, 409 when it is not playing, and logs "You stopped <name>'s
+run"; the run ends as a failed run would.
+
 ### Tests
 
 `converge_an_ask_becomes_a_card_in_reproduce_and_a_card_by_hand_can_be_picked`,
+`converge_stop_ends_one_personas_run`,
 `converge_generates_personas_from_the_codebase_and_logs_the_autopilots_decisions`,
 `converge_a_persona_plays_with_its_own_memory_only_when_asked`,
 `converge_talk_reaches_the_cards_agent_at_every_step` (and bulk verbs),
 `converge_blocked_on_you_stops_the_autopilot_and_a_full_slot_queues`,
 `converge_probation_waits_for_untried_findings_and_a_dismissed_card_stops_its_agent`,
-`converge_your_card_is_verified_by_its_repro_and_merges_locally_without_github`
+`converge_your_card_is_verified_by_its_repro_and_merges_locally_without_github`,
+`converge_overlapping_cards_queue_and_the_evidence_is_kept`,
+`converge_duplicate_reports_fold_into_one_card`
 (and the conflict, send-back and push checks in the merged-fix test), and the
 timeline's, the run summary's, the steps' and `merged_week`'s checks in
 `converge_takes_a_finding_from_a_persona_to_a_merged_fix`;

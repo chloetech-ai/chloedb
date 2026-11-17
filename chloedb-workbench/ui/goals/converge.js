@@ -1,7 +1,10 @@
 // Converge (src/converge.rs, SPEC.md "Seventh build: Converge"): personas
 // play the product, what they hit becomes problems, and each problem walks
 // the flow to a pull request you approve. One screen a step:
-//   #/converge                 Home: the pipeline, five steps with counts
+//   #/converge                 Home: the project overview (KPIs, the flow, the board, live now, what happened)
+//   #/converge/board           The board alone, with its filters (a phone's Board tab)
+//   #/converge/inbox           Needs you: Merge this? Build these? Worth fixing?
+//   #/converge/progress        In progress: everything moving without you
 //   #/converge/personas        Run a persona: the ranked list, Play, live run
 //   #/converge/problems        Problems: triage, filter, Reproduce or Dismiss
 //   #/converge/reproducing     Reproducing: each repro agent's progress
@@ -16,7 +19,8 @@
 import { h, put, toast, enc, STEPS, blockedOf, queuedOf, agentOn, local } from "/goals/converge/util.js";
 import { styles } from "/goals/converge/style.js";
 import { closeSheets } from "/goals/converge/kit.js";
-import { homeScreen, topBar } from "/goals/converge/home.js";
+import { homeScreen, topBar, progressScreen, inboxKey } from "/goals/converge/home.js";
+import { overviewScreen, boardScreen, boardKey, overviewTick } from "/goals/converge/overview.js";
 import { problemsScreen } from "/goals/converge/problems.js";
 import { stepScreen } from "/goals/converge/steps.js";
 import { openSheet } from "/goals/converge/sheet.js";
@@ -31,13 +35,21 @@ export { THEME_WORDS, doingWords } from "/goals/converge/util.js";
 /** The label of the sheet's kind select (a test reads it here). */
 export const KIND_LABEL = "Kind of problem";
 
-const VIEWS = new Set(["home", "problems", "reproducing", "ready", "building", "merge", "personas", "metrics", "settings", "activity"]);
-/** Old addresses: the board and the Agents tab are Home now. */
-const OLD = { board: "home", work: "home" };
+const VIEWS = new Set(["home", "board", "inbox", "progress", "problems", "reproducing", "ready", "building", "merge", "personas", "metrics", "settings", "activity"]);
+/** Old addresses: the Agents tab is Home now. */
+const OLD = { work: "home" };
 
 /** The last data and view settings of each repository, kept across visits:
  *  coming back draws at once, then refreshes in place. */
 const KEEP = new Map();
+
+/** The thin line at the top while a slow fetch runs. */
+function busyLine(on) {
+  let el = document.querySelector(".cv-prog");
+  if (!on) { if (el) { el.classList.add("done"); setTimeout(() => { if (el.classList.contains("done")) el.remove(); }, 250); } return; }
+  if (!el) { el = document.createElement("div"); el.className = "cv-prog"; el.setAttribute("role", "progressbar"); el.setAttribute("aria-label", "Loading"); document.body.append(el); }
+  el.classList.remove("done");
+}
 
 export function mount(root, ctx) {
   styles();
@@ -57,7 +69,18 @@ export function mount(root, ctx) {
     gone: new Set(), // rows swiped away, waiting for their undo to pass
   };
   const keep = () => { if (repo()) KEEP.set(repo(), { d: S.d, sig: S.sig, pf: S.pf, sel: [...S.sel], range: S.range, hide: [...S.hide], act: S.act, actKinds: [...S.actKinds] }); };
-  const api = (p, o) => ctx.api(p, o);
+  // A fetch that takes longer than 300 ms shows a thin line at the top;
+  // the page keeps its last data meanwhile. Polls pass { quiet: true }.
+  const api = (p, o) => {
+    const quiet = o && o.quiet;
+    const call = ctx.api(p, o && quiet ? { ...o, quiet: undefined } : o);
+    if (quiet) return call;
+    S.inflight = (S.inflight || 0) + 1;
+    const t = setTimeout(() => busyLine(true), 300);
+    const end = () => { clearTimeout(t); S.inflight = Math.max(0, S.inflight - 1); if (!S.inflight) busyLine(false); };
+    call.then(end, end);
+    return call;
+  };
   const query = () => new URLSearchParams(location.hash.split("?")[1] || "");
   const view = () => { const v = location.hash.split("?")[0].split("/")[2] || "home"; const x = OLD[v] || v; return VIEWS.has(x) ? x : "home"; };
   /** A Converge address that keeps the project. */
@@ -75,10 +98,10 @@ export function mount(root, ctx) {
   const seenKey = () => `cv-seen:${repo()}`;
   S.seenAt = Number(local.get(seenKey())) || 0;
 
-  async function load() {
+  async function load(o = {}) {
     if (!repo()) { picker(); return; }
     try {
-      const d = await api(`/api/converge?repo=${enc(repo())}`);
+      const d = await api(`/api/converge?repo=${enc(repo())}`, S.d && o.quiet ? { quiet: true } : undefined);
       // Nothing changed: keep the page as it is (its scroll, a row being swiped).
       const sig = JSON.stringify({ ...d, metrics: { ...d.metrics, history: (d.metrics?.history || []).length } }).replace(/"(stage_since|updated|ts_ms|last_run|now)":\d+/g, "");
       if (S.d && sig === S.sig) return;
@@ -195,11 +218,41 @@ export function mount(root, ctx) {
     if (el && typeof el.focus === "function") el.focus({ preventScroll: true });
   }
 
+  /** A card's link without its project (`#/converge?f=<id>`, opened fresh
+   *  before the project in focus is known): find the card's project and go
+   *  to its board with the card open, in place of this address. */
+  let finding404 = false;
+  async function toCardsProject(fid) {
+    if (finding404) return false;
+    try {
+      const x = await api(`/api/converge/findings/${enc(fid)}`);
+      const path = x && x.finding && x.finding.repo;
+      if (!path) return false;
+      let p = projects().find((y) => y.path === path);
+      if (!p && ctx.refreshProjects) { await ctx.refreshProjects().catch(() => {}); p = projects().find((y) => y.path === path); }
+      if (!p || !S.alive) return false;
+      const q = query(); q.set("project", p.project);
+      location.replace(`${location.pathname}${location.search}#/converge${view() === "home" ? "" : "/" + view()}?${q}`);
+      return true;
+    } catch { finding404 = true; return false; }
+  }
+
   /** No project: each one as a large card. */
   function picker() {
+    if (!proj() && query().get("f")) { toCardsProject(query().get("f")).then((went) => { if (!went && S.alive && !repo()) drawPicker(); }); return; }
+    drawPicker();
+  }
+  function drawPicker() {
     if (ctx.crumbs) ctx.crumbs([{ label: "Converge", href: "#/converge" }]);
     const ps = projects();
-    const unknown = proj() && !projRow();
+    // A project link on a fresh page can arrive before the project list is
+    // current: refresh it once before saying there is no such project.
+    const unsure = proj() && !projRow() && ctx.refreshProjects && !S.refreshedFor;
+    if (unsure) {
+      S.refreshedFor = proj();
+      ctx.refreshProjects().then(() => { if (S.alive) load(); }, () => { if (S.alive) load(); });
+    }
+    const unknown = proj() && !projRow() && !unsure;
     put(host,
       h("div", { class: "cv-sh" }, h("div", { class: "row" }, h("h1", {}, "Converge"))),
       h("p", { class: "cv-intro" }, unknown ? `There is no open project named “${proj()}”. Pick one, or open it first.` : "Pick a project. Personas play it, and what they hit is reproduced, fixed and sent to you as a pull request."),
@@ -207,7 +260,7 @@ export function mount(root, ctx) {
         const m = KEEP.get(p.path)?.d?.metrics;
         return h("a", { class: "cv-pj", href: `#/converge?project=${enc(p.project)}` }, h("span", { class: "n" }, p.project), h("span", { class: "p" }, p.path),
           m ? h("span", { class: "cv-meta" }, `${m.open || 0} open`) : null);
-      }), h("a", { class: "cv-pj add", href: "#/p" }, h("span", { class: "n" }, "+ Open a project"), h("span", { class: "p" }, "A git checkout on this machine"))));
+      }), h("a", { class: "cv-pj add", href: "#/p" }, h("span", { class: "n" }, "+ Open a project"), h("span", { class: "p" }, "A git checkout on this machine, or from GitHub"))));
     if (!ps.length && ctx.refreshProjects) ctx.refreshProjects().then(() => { if (S.alive && projects().length) load(); }, () => {});
     // No project may only mean the server refused this page's token: say that, not "no project".
     if (!ps.length || unknown) {
@@ -229,10 +282,13 @@ export function mount(root, ctx) {
     // Home's crumbs are the project alone, so a phone gets no Back arrow to the picker.
     const crumbs = [{ label: projName(), href: href("home") }];
     const step = STEPS.find((s) => s.step === v);
-    const extra = { personas: "Personas", metrics: "Metrics", settings: "Autopilot", activity: "Activity log" };
+    const extra = { board: "Board", inbox: "Needs you", progress: "In progress", personas: "Personas", metrics: "Metrics", settings: "Autopilot", activity: "Activity log" };
     if (step || extra[v]) crumbs.push({ label: step ? step.name : extra[v], href: href(v) });
     if (ctx.crumbs) ctx.crumbs(crumbs);
-    const body = v === "home" ? homeScreen(C)
+    const body = v === "home" ? overviewScreen(C)
+      : v === "board" ? boardScreen(C)
+      : v === "inbox" ? homeScreen(C)
+      : v === "progress" ? progressScreen(C)
       : v === "problems" ? problemsScreen(C)
         : v === "personas" ? personasScreen(C)
           : v === "metrics" ? metricsScreen(C)
@@ -240,7 +296,8 @@ export function mount(root, ctx) {
               : v === "activity" ? activityScreen(C)
                 : stepScreen(C, v);
     const restore = scrollState();
-    put(host, v === "home" ? topBar(C) : null, body);
+    host.classList.toggle("cv-wide", v === "home" || v === "board");
+    put(host, v === "inbox" ? topBar(C) : null, body);
     restore();
     syncSheet();
   }
@@ -275,7 +332,9 @@ export function mount(root, ctx) {
   const moved = () => { S.userMoved = (S.userMoved || 0) + 1; };
   for (const ev of ["wheel", "touchmove", "keydown"]) window.addEventListener(ev, moved, { passive: true });
   const onKey = (e) => {
-    if (e.key !== "Escape") return;
+    if (e.key !== "Escape") return; // the inbox's keys come through onKey, from the app's key handler
+    const help = document.querySelector(".cv-help"); if (help) { document.querySelectorAll(".cv-help, .cv-helpscrim").forEach((x) => x.remove()); return; }
+    if (S.dismissRow && !document.querySelector(".cv-sheet")) { S.dismissRow = null; draw(); return; }
     // Esc in a box you are typing in leaves the box, not the sheet (the draft stays).
     const t = document.activeElement;
     if (t && t.matches && t.matches("textarea, input[type=text], input:not([type])") && t.value) { t.blur(); e.preventDefault(); return; }
@@ -284,6 +343,10 @@ export function mount(root, ctx) {
   };
   window.addEventListener("hashchange", onHash);
   document.addEventListener("keydown", onKey);
+  // The overview has a phone layout of its own: crossing 640 px redraws it.
+  const mq = window.matchMedia("(max-width: 640px)");
+  const onMq = () => { if (S.d && S.alive && (view() === "home" || view() === "board")) draw(); };
+  mq.addEventListener("change", onMq);
   if (S.d && repo()) draw();
   load();
   S.timer = setInterval(() => {
@@ -292,20 +355,24 @@ export function mount(root, ctx) {
     if (S.swiping || Date.now() - (S.touched || 0) < 4000) return;
     // Settings being edited are not redrawn under you; Save reloads them.
     if (view() === "settings") return;
-    load();
+    load({ quiet: true });
+    if (S.d && (view() === "home" || view() === "board")) overviewTick(C);
   }, 8000);
   return {
     update() {},
+    /** The app's key handler asks the page first (outside text boxes). */
+    onKey(e) { return !!(S.d && ((view() === "home" || view() === "board") ? boardKey(C, e, host) : (view() === "inbox" || view() === "progress") && inboxKey(C, e, host))); },
     unmount() {
       S.alive = false;
       if (view() === "problems") C.markSeen();
       clearInterval(S.timer);
       (S.stops || []).forEach((f) => { try { f(); } catch { /* gone */ } });
       window.removeEventListener("hashchange", onHash);
+      mq.removeEventListener("change", onMq);
       document.removeEventListener("keydown", onKey);
       for (const ev of ["wheel", "touchmove", "keydown"]) window.removeEventListener(ev, moved);
       closeSheets();
-      document.querySelectorAll(".cv-menu, .cv-pop, .cv-popscrim").forEach((e) => e.remove());
+      document.querySelectorAll(".cv-menu, .cv-pop, .cv-popscrim, .cv-prog").forEach((e) => e.remove());
     },
   };
 }

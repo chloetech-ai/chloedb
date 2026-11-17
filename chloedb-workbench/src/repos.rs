@@ -102,6 +102,27 @@ pub fn add_trusting(sup: &std::sync::Arc<Supervisor>, path: &str, trust: Option<
     Ok(json!({ "repo": r, "created": had.is_empty() }))
 }
 
+/// A folder you open that is a linked worktree of another checkout would
+/// open that checkout instead (a project is its repository's main
+/// checkout), so say so rather than open something else. Workbench's own
+/// agent worktrees (under its data folder) are not refused.
+fn refuse_foreign_worktree(sup: &Supervisor, path: &str) -> Result<(), ApiError> {
+    let p = expand_home(path.trim());
+    let Ok(top) = crate::git::toplevel(&p) else { return Ok(()) };
+    let Ok(c) = crate::git::checkout(&p) else { return Ok(()) };
+    let top = top.canonicalize().unwrap_or(top);
+    if top == c.main || top.starts_with(sup.cfg.data_dir.canonicalize().unwrap_or_else(|_| sup.cfg.data_dir.clone())) {
+        return Ok(());
+    }
+    Err(ApiError::bad(format!(
+        "{} is a git worktree of {}: Workbench opens a repository by its main checkout, so it would open {} instead. Open {} itself, a standalone clone, or the repository from GitHub.",
+        top.display(),
+        c.main.display(),
+        c.main.display(),
+        c.main.display()
+    )))
+}
+
 /// Forgets a repository a person opened (its agents' still list it).
 pub fn forget(sup: &Supervisor, path: &str) -> Result<Json, ApiError> {
     let p = expand_home(path.trim());
@@ -410,6 +431,7 @@ async fn add_route(State(app): State<App>, body: Bytes) -> ApiResult {
         } else {
             path
         };
+        refuse_foreign_worktree(&sup, &path)?;
         add_trusting(&sup, &path, b.trust)
     })
     .await?;
