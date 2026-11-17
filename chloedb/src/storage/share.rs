@@ -320,18 +320,18 @@ pub fn busy_message(holder: Option<u32>, me: u32, parent: u32, command: impl Fn(
         Some(c) => format!("process {p} ({c})"),
         None => format!("process {p}"),
     };
-    let apart = "To read it beside that writer, open it read-only; to write to it from several processes, serve it with chloedb-server and connect each of them to the server";
+    let apart = "Open it read-only to read beside that writer, or serve it with chloedb-server to write to it from several processes";
     match holder {
-        Some(p) if p == me => "the database is open elsewhere: this process has it open for writing already, and a second open of the same file is refused in the same process as in another \
-             (a module run again, as a hot reload or a test's setup does, opens it again). Keep the database opened first and use it everywhere, or open this one read-only"
+        Some(p) if p == me => "the database is open elsewhere: this process has it open for writing already (a module run again, as a hot reload or a test's setup does, opens it a second time). \
+             Use the database opened first, or open this one read-only"
             .to_string(),
         Some(p) if p == parent && parent > 1 => format!(
-            "the database is open elsewhere: {}, the parent of this process, has it open for writing. A reloader does this (Flask's debug mode, Django's runserver, uvicorn --reload): \
-             it runs the program again in a child process while the first, which only watches the files, keeps the database it opened as the program started. \
-             Open the database when the program first needs it rather than when its module is imported, run without the reloader, or serve it with chloedb-server and connect to the server",
+            "the database is open elsewhere: {}, the parent of this process, has it open for writing. A reloader (Flask's debug mode, Django's runserver, uvicorn --reload) \
+             runs the program again in a child while its first process keeps what it opened at start: open the database when the program first needs it rather than at import, \
+             run without the reloader, or serve it with chloedb-server",
             named(p)
         ),
-        Some(p) => format!("the database is open elsewhere: {} has it open for writing, and one process writes a database at a time. {apart}, or stop that process", named(p)),
+        Some(p) => format!("the database is open elsewhere: {} has it open for writing, and one process writes a database at a time. {apart}", named(p)),
         None => format!("the database is open elsewhere: another process, or another open in this one, has it open for writing, and one process writes a database at a time. {apart}"),
     }
 }
@@ -633,10 +633,10 @@ mod tests {
         let none = |_| None;
         let same = busy_message(Some(10), 10, 9, none);
         assert!(same.starts_with("the database is open elsewhere: this process has it open"), "{same}");
-        assert!(same.contains("Keep the database opened first") && same.contains("read-only"), "{same}");
+        assert!(same.contains("Use the database opened first") && same.contains("read-only"), "{same}");
         let parent = busy_message(Some(9), 10, 9, |p| Some(format!("python app.py ({p})")));
         assert!(parent.contains("process 9 (python app.py (9)), the parent of this process") && parent.contains("Flask's debug mode"), "{parent}");
-        assert!(parent.contains("when the program first needs it") && parent.contains("chloedb-server"), "{parent}");
+        assert!(parent.contains("when the program first needs it") && parent.contains("without the reloader") && parent.contains("chloedb-server"), "{parent}");
         let other = busy_message(Some(77), 10, 9, none);
         assert!(other.contains("process 77 has it open for writing") && other.contains("read-only") && other.contains("serve it with chloedb-server"), "{other}");
         // A parent that is init (an orphan) is no reloader.

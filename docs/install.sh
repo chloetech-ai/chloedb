@@ -311,5 +311,5 @@ if "$INSTALL_DIR/chloedb-server" doctor --help > /dev/null 2>&1; then
   say "Something in the way? $bin doctor checks the version, the Python package, the models and port 7700."
 fi
 case " $EXTRA " in
-  *" chloectx "*) say "ChloeCtx for Claude Code: $INSTALL_DIR/chloectx fetch-model && $INSTALL_DIR/chloectx install --project /absolute/path/to/a/project (see $SITE/site/docs/chloectx-setup.html)" ;;
+  *" chloectx "*) say "ChloeCtx for Claude Code: $INSTALL_DIR/chloectx fetch-model && $INSTALL_DIR/chloectx install --project /absolute/path/to/a/project --distill-model haiku (see $SITE/site/docs/chloectx-setup.html)" ;;
 esac

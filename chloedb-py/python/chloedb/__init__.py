@@ -785,15 +785,11 @@ def _busy(e: BusyError, path: str | os.PathLike) -> BusyError:
         return e
     p = os.fspath(path)
     if "this process has it open" in message:
-        hint = f"In Python: open it once and share that Database (a module-level name, or functools.cache on a function that opens it), or chloedb.open({p!r}, read_only=True) to read beside it"
+        hint = f"In Python: share one Database (functools.cache on the function that opens it), or chloedb.open({p!r}, read_only=True)"
     elif "the parent of this process" in message:
-        hint = (
-            "In Python: open it in a function your routes call, the first time they need it, not at import "
-            "(the reloader's first process imports the app and never serves it); or app.run(debug=True, use_reloader=False); "
-            f"or serve it, chloedb-server --db {p}, and use chloedb.connect('http://127.0.0.1:7700')"
-        )
+        hint = f"In Python: open it in a function the routes call (functools.cache keeps one), app.run(debug=True, use_reloader=False), or chloedb.connect('http://127.0.0.1:7700') to chloedb-server --db {p}"
     else:
-        hint = f"In Python: chloedb.open({p!r}, read_only=True) reads beside the writer; to write from several processes, serve it (chloedb-server --db {p}) and use chloedb.connect('http://127.0.0.1:7700')"
+        hint = f"In Python: chloedb.open({p!r}, read_only=True), or chloedb.connect('http://127.0.0.1:7700') to chloedb-server --db {p}"
     return _make_error(f"{message}. {hint}", code="busy")
 
 
