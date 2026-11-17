@@ -21,7 +21,8 @@ changes collect under "Unreleased".
   (an event record, `distilled_turn`, written with its notes), and the
   command distills only the turns not distilled yet, says how many before
   it starts and what it wrote after (`--again` redoes them all, `--dry-run`
-  only counts). A daemon stopped while it distilled lost that turn's notes:
+  only counts); a turn that called `memory_forget` is marked never to be
+  distilled, even with `--again`. A daemon stopped while it distilled lost that turn's notes:
   the next daemon distills the newest five such turns of the last week after
   its first hook, and doctor counts them. A turn's final answer the
   transcript held only after its Stop was stored again as the next turn's
@@ -41,6 +42,23 @@ changes collect under "Unreleased".
   new table and said it had: the new table now starts from the first
   record, `sync status` warns when the server holds fewer records than
   were sent, and `sync push --again` sends them all.
+
+- **ChloeCtx's forget deleted rules that never said what was forgotten, and
+  left what was forgotten on disk** (persona study JONAH-1, JONAH-2,
+  LENA-5). `chloectx forget --everywhere "bundle"` matched a record's
+  context too (the turn's request, which every record of a turn carries),
+  so it deleted five standing rules given in the same prompt as a private
+  aside, and its question showed only that context. It now deletes the
+  records whose own text holds the words, keeps those that hold them only in
+  their context with the lines that held them cut, and lists both, each
+  record with its kind and first line, before it asks. It also scrubs the
+  words from `state.json`, `events.log`, `daemon.log` and every receipt, and
+  writes zeros over the free pages of `receipts.strata` as it did for
+  `memory.strata`. `chloectx forget TEXT` does this in the project's own
+  store, and `memory_forget` takes `text` as well as `id`. A turn that calls
+  `memory_forget` stores no reply and is not distilled, so no note says
+  again what was forgotten, and for five minutes after a forget nothing
+  that holds the words is stored.
 
 - **A command center on Kubernetes forgot the clusters it reaches at every
   restart.** A coordinator kept its hub's book (the **Connections** view,

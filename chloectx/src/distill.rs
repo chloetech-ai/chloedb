@@ -95,6 +95,7 @@ Also list, for each item, 2 to 4 situations in which a later session must recall
 The already-noted items above are the notes most related to this exchange (not all notes). When this exchange changes, reverses or extends one of them, write the new version with "replaces": the new sentence must stand on its own (repeat what still holds) and may say what changed (e.g. "30 days, changed from 14").
 
 Leave out:
+- a request to forget something, to delete it from memory or not to keep it (a private plan, a secret), and what it was about: write nothing about it, not even that it is private;
 - anything already noted above, unless this exchange changes it;
 - status that will soon be stale (test counts and results, what was committed or pushed and to which branch);
 - the assistant's own habits and conventions, even when it says it always follows them ("as usual I'll ...": commit message style, formatting, tool usage), and its suggestions the user did not take up;

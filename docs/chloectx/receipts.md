@@ -232,20 +232,23 @@ tool's output; the web for `WebFetch` and `WebSearch`).
 
 A receipt and a snapshot hold copies of what was recalled. So `memory_forget`
 (and the `forget` request) scrubs the text of the receipts that showed the
-forgotten record (their rows keep ids and scores, and lose the record's
-text hash), removes a forgotten prompt from the query of the receipts it
-was asked as, rewrites the store's segments that held the record without
-drops every automatic snapshot, and rewrites the store's segments that
-held the record without it, with no snapshot taken until that is done, so
-no snapshot taken afterwards holds its bytes. Only the segments that held
-it are rewritten (those whose live rows fell with the delete, and those a
-flush or a merge wrote since that still hold it, marked deleted), not every
-segment with an older delete, and then the free pages of the store's file,
-where the old segments were, are written with zeros
-(`Database::zero_free_pages`); pages an open snapshot still reads are left,
-and said. `memory_forget` answers before the rewrite, which runs after the
-answer, and `chloectx forget` waits for it. Named snapshots are kept and
-listed, for you to drop.
+forgotten records (their rows keep ids and scores, and lose the record's
+text hash) and removes a forgotten prompt from the query of the receipts it
+was asked as, in one pass over the receipts however many records went.
+Forgetting by text (`memory_forget` with `text`, `chloectx forget TEXT`)
+also replaces every string of every receipt that holds it (a query, the
+text shown), and then `receipts.strata` is compacted and its free pages
+written with zeros. The forget drops every automatic snapshot, and
+rewrites the store's segments that held the records without them, with no
+snapshot taken until that is done, so no snapshot taken afterwards holds
+their bytes. Only the segments that held them are rewritten (those whose
+live rows fell with the delete, and those a flush or a merge wrote since
+that still hold them, marked deleted), not every segment with an older
+delete, and then the free pages of the store's file, where the old
+segments were, are written with zeros (`Database::zero_free_pages`); pages
+an open snapshot still reads are left, and said. `memory_forget` answers
+before the rewrite, which runs after the answer, and `chloectx forget`
+waits for it. Named snapshots are kept and listed, for you to drop.
 `chloectx redact` redacts the receipts as it does the records, and drops
 the automatic snapshots too. Replays of the receipts before then can no
 longer be exact.

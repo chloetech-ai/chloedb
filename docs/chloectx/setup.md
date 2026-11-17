@@ -229,17 +229,37 @@ The project's daemon rewrites each record whose text redaction changes, redacts 
 
 ### Forget something: `chloectx forget`
 
-`chloectx forget ID...`, in a project's folder, deletes records of its store for good by id (the ids `chloectx search` and the inspector show, `session:seq`). Each record is deleted and scrubbed from the receipts that showed it, the automatic snapshots that hold it are dropped, the segments of the store that held it are rewritten without it, and the free pages of the store's file, where the old copies were, are written with zeros; the other records of its turn stay. Only those segments are rewritten, not every segment with an older delete, so the cost is their size, not the store's. `memory_forget` is the same for the model, except that it answers once the record is deleted and scrubbed and the snapshots dropped, and the segments are rewritten after the answer (no snapshot is taken meanwhile), so a large store does not run past MCP's 20 s deadline; `chloectx forget` waits for all of it and says so. With a [sync](#keep-the-memory-on-a-chloedb-server) set up, the record's row on the server is deleted too, and the store keeps the record's id (in `sync-forgotten.json`) so that no pull stores it again, whichever machine pushes it back; a delete the server did not answer is sent again with each push. A machine that pulled the record before keeps its copy until it forgets it there.
-
-A fact usually lives in more than one record and more than one store: the prompt that said it, the tool output that showed it, the notes written from it, in every project where it came up. `chloectx forget --everywhere` finds it in every store `chloectx stores` lists:
+A fact usually lives in more than one record: the prompt that said it, the tool output that showed it, the answer and the notes written from it. So forget it by its words, in a project's folder:
 
 ```bash
-chloectx forget --everywhere --dry-run "staging codeword"   # list the matches, change nothing
-chloectx forget --everywhere "staging codeword"             # list them, ask, forget
+chloectx forget --dry-run "staging codeword"   # list what goes and what stays, change nothing
+chloectx forget "staging codeword"             # list it, ask, forget
+chloectx forget a1b2c3d4:42                    # one record, by the id chloectx search shows
+```
+
+Given words that are not record ids (3 characters or more, whatever their case), it lists, before it asks:
+
+- the records whose own text holds them, which are deleted, each with its kind and first line;
+- the records that hold them only in their context, which stay. Every record of a turn carries that turn's request as its context, so a rule you gave in the same prompt as a private aside is one of these: the rule is kept, and the lines of its context that held the words are cut;
+- how many session states, log lines and receipts hold them, which are scrubbed.
+
+`--yes` skips the question; without a terminal and without `--yes` it only lists. Then the project's daemon deletes the records, cuts the words from the other records' context, and scrubs them from every file of the store: `state.json` (the session's last prompts), `events.log` and `daemon.log`, and every receipt that holds them (`receipts.strata`). The automatic snapshots are dropped, the segments of `memory.strata` and `receipts.strata` that held the old copies are rewritten, and the free pages of both files, where those copies were, are written with zeros. For five minutes after, nothing that holds the words is stored, so a note being distilled at that moment does not bring them back. Only the segments that held them are rewritten, not every segment with an older delete, so the cost is their size, not the store's.
+
+By id, `chloectx forget ID...` deletes those records only, with the same scrubbing of receipts and snapshots; the other records of their turn stay.
+
+`memory_forget` is the same for the model: asked to forget something, Claude passes its words as `text` (or one record's `id`). The turn that calls it stores no reply, card or narration and is not distilled, so no note says again what was forgotten, and nothing that holds the words is stored until the turn ends. It answers once the records are deleted and the files scrubbed, and the segments are rewritten after the answer (no snapshot is taken meanwhile), so a large store does not run past MCP's 20 s deadline; `chloectx forget` waits for all of it and says so.
+
+With a [sync](#keep-the-memory-on-a-chloedb-server) set up, the deleted records' rows on the server are deleted too, the records whose context was cut are sent again to replace the server's copies, and the store keeps the deleted ids (in `sync-forgotten.json`) so that no pull stores them again, whichever machine pushes them back; a delete the server did not answer is sent again with each push. A machine that pulled a record before keeps its copy until it forgets it there.
+
+To find a fact in every project, `--everywhere` looks in every store `chloectx stores` lists, by text or by id, and lists what it finds by store:
+
+```bash
+chloectx forget --everywhere --dry-run "staging codeword"
+chloectx forget --everywhere "staging codeword"
 chloectx forget --everywhere --yes a1b2c3d4:42              # by id, in whichever store has it
 ```
 
-It matches the records whose text or context holds the words given, whatever their case (3 characters or more), or, when every word is a record id, those records. It lists them by store with a snippet of each and asks before it forgets them (`--yes` skips the question; without a terminal and without `--yes` it only lists). Then each store's own forget runs on its matches. A daemon started to look into a store is stopped afterwards. What it cannot reach: named snapshots (it says which), backups made with `chloectx backup`, the copies other machines pulled from a sync server before the forget, and the server's own backups.
+A daemon started to look into a store is stopped afterwards. What forget cannot reach, and says when it can see it: named snapshots (`chloectx snapshot drop NAME`), a `memory.strata.before-field-ids` copy left by a format upgrade, backups made with `chloectx backup`, packs written with `chloectx pack`, Claude Code's own transcripts of your sessions (under `~/.claude/projects/`), the copies other machines pulled from a sync server before the forget, and the server's own backups.
 
 To back a store up, run `chloectx backup DEST` in the project directory. It copies the store while sessions go on: a consistent checkpoint of `memory.strata` (copying the file itself while the daemon writes can catch it half way through a commit), `state.json`, the config and `events.log`, into a new directory `DEST`. To restore, run `chloectx stop` and copy those files back into the store's directory. A backup is as private as the store.
 
