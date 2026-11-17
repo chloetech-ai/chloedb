@@ -162,6 +162,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </tr>
 </tbody>
 </table></div>
+<p>A repo's page comes in two answers: <code>/v1/repo/&lt;owner&gt;/&lt;name&gt;</code> has everything but the alternatives and what its stargazers also starred, and <code>/v1/repo-more/&lt;id&gt;</code> brings those two once the rest is shown, since its stargazers' stars take seconds for a big repo.</p>
 <p>Each answer carries the statements it ran and their times, which the page shows under SQL.</p>
 <h2 id="the-data">The data<a class="anchor" href="#the-data" aria-label="Link to this section">#</a></h2>
 <p>GH Archive keeps each hour of GitHub's public event stream as a gzipped JSON file. Its formats changed over the years, and the load reads them all:</p>

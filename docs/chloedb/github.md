@@ -16,6 +16,8 @@
 | Weekly | the week's rising repos, new ones and releases of the big ones | `gh_stars_daily`, `gh_events` |
 | How it works | the tables, their rows and each shard's share, and what each page asks | every table |
 
+A repo's page comes in two answers: `/v1/repo/<owner>/<name>` has everything but the alternatives and what its stargazers also starred, and `/v1/repo-more/<id>` brings those two once the rest is shown, since its stargazers' stars take seconds for a big repo.
+
 Each answer carries the statements it ran and their times, which the page shows under SQL.
 
 ## The data
