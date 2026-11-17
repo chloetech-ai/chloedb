@@ -157,7 +157,7 @@ fn fields_of(schema: &Schema, j: &Json, now: i64, unknown: &mut Option<&mut BTre
                 Some(u) => {
                     u.insert(k.clone());
                 }
-                None => return Err(Error::Schema(format!("no field {k}"))),
+                None => return Err(Error::Schema(format!("no field {k} in table {}", schema.table))),
             },
         }
     }
