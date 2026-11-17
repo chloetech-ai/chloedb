@@ -241,7 +241,6 @@ topbar({});
 
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const cols = [...document.querySelectorAll('.col')];
-const LOWER_IS_BETTER = new Set(['leaklab']);
 
 // ---- the system panel ---------------------------------------------------------------------
 const hub = await api('/api/hub').catch(() => ({ apps: [], spend: {}, db: null }));
@@ -264,7 +263,7 @@ const when = v => {
 function shown(entry, row) {
   const v = Number(row.value), n = row.n != null && row.n !== '' ? Number(row.n) : null;
   switch (entry.format) {
-    case 'kn': return { big: `${fmt.n(v)}<small>/ ${fmt.n(n)}</small>`, sub: '' };
+    case 'kn': return { big: `${fmt.n(row.k ?? v)}<small>/ ${fmt.n(n)}</small>`, sub: '' };
     case 'pct': return { big: fmt.pct(v, v > 0 && v < 0.1 ? 1 : 0), sub: n ? `${fmt.n(Math.round(v * n))} of ${fmt.n(n)}` : '' };
     case 'ms': return { big: fmt.ms(v), sub: n ? `over ${fmt.n(n)} runs` : '' };
     default: return { big: fmt.n(v, Number.isInteger(v) ? 0 : 2), sub: n ? `of ${fmt.n(n)}` : '' };
@@ -292,12 +291,19 @@ async function fill(col) {
   const got = want.map(e => ({ e, row: numbers[e.id] })).filter(x => x.row && x.row.value != null && x.row.value !== '');
   if (!got.length) { waiting(el, 'Measuring. A number appears here only once its run has written it.'); return; }
 
-  if (got.length === 3 && got.every(x => x.e.format === 'kn')) {          // three arms side by side (Leak Lab)
-    el.innerHTML = `<div class="arms">${got.map(({ e, row }) => {
-      const v = Number(row.value), n = Number(row.n) || 1, f = v / n;
-      const color = LOWER_IS_BETTER.has(slug) ? (f === 0 ? 'var(--green)' : f < .5 ? 'var(--amber)' : 'var(--red)') : 'var(--indigo)';
-      return `<div class="arm"><div class="v">${fmt.n(v)}<small>/${fmt.n(n)}</small></div><div class="bar"><i style="width:0;background:${color}" data-w="${(100 * f).toFixed(1)}%"></i></div><div class="t">${esc(e.label || e.id)}</div></div>`;
-    }).join('')}</div><div class="lbl">of ${fmt.n(Number(got[0].row.n))} exfiltration channels leak, by how the agent holds the secret</div><div class="meta">${metaLine(got[0].row)}</div>`;
+  // Two or three arms side by side (format 'arm': k of n, with the row's k or its value as k),
+  // captioned by the app's meta.hub_caption; any other entries follow as lines.
+  const arms = got.filter(x => x.e.format === 'arm'), others = got.filter(x => x.e.format !== 'arm');
+  if (arms.length >= 2) {
+    const count = row => Number(row.k ?? row.value), total = row => Number(row.n) || 1;
+    el.innerHTML = `<div class="arms" style="grid-template-columns:repeat(${arms.length},minmax(0,1fr))">${arms.map(({ e, row }) => {
+      const k = count(row), n = total(row), f = k / n;
+      const color = app.hub_lower_is_better ? (f === 0 ? 'var(--green)' : f < .5 ? 'var(--amber)' : 'var(--red)') : 'var(--indigo)';
+      return `<div class="arm"><div class="v">${fmt.n(k)}<small>/${fmt.n(n)}</small></div><div class="bar"><i style="width:0;background:${color}" data-w="${(100 * f).toFixed(1)}%"></i></div><div class="t">${esc(e.label || e.id)}</div></div>`;
+    }).join('')}</div>`
+      + (app.hub_caption ? `<div class="lbl">${esc(app.hub_caption.replace('{n}', fmt.n(total(arms[0].row))))}</div>` : '')
+      + (others.length ? `<div class="more">${others.map(({ e, row }) => { const b = shown(e, row); return `<div><b>${b.big.replace(/<[^>]+>/g, ' ')}</b>${esc(e.label || e.id)}</div>`; }).join('')}</div>` : '')
+      + `<div class="meta">${metaLine(arms[0].row)}</div>`;
     requestAnimationFrame(() => el.querySelectorAll('.bar i').forEach(i => { i.style.width = i.dataset.w; }));
     return;
   }

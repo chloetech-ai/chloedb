@@ -10,10 +10,12 @@ export const meta = {
   // The hub card: leaking channels of 24 per arm (rows of leaklab_numbers; value / n).
   // B is shown by its stronger variant (headers only); the page shows both.
   hub: [
-    { id: 'matrix.A.leak', label: 'secret in the environment', format: 'kn' },
-    { id: 'matrix.B2.leak', label: 'host-bound placeholder', format: 'kn' },
-    { id: 'matrix.C.leak', label: 'handles + binding (Nodwyn)', format: 'kn' },
+    { id: 'matrix.A.leak', label: 'secret in the environment', format: 'arm' },
+    { id: 'matrix.B2.leak', label: 'host-bound placeholder', format: 'arm' },
+    { id: 'matrix.C.leak', label: 'handles + binding (Nodwyn)', format: 'arm' },
   ],
+  hub_caption: 'of {n} exfiltration channels leak, by how the agent holds the secret',
+  hub_lower_is_better: true,
 };
 
 const q = (r, params) => ({ sql: r.sql, params, took_ms: r.took_ms, rows: r.rows.length, plan: r.plan });

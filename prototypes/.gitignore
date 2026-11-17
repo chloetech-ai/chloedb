@@ -10,3 +10,7 @@ apps/leaklab/data/attacks.jsonl.gz
 apps/timemachine/data/benign.jsonl
 apps/timemachine/data/attacks.jsonl
 apps/hello/
+apps/memfw/data/memfw.json
+apps/memfw/data/recorded/
+# Screenshots taken while building go to the project's files, not the repository.
+apps/*/shots/
