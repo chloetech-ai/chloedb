@@ -3692,9 +3692,60 @@ One import of a repository at a time (409). `gh` is
   second import that fetches, one you can push to); unit tests of the
   sources, the detection, `pr_target` and the untrusted mode.
 
+### The page: the overview, a card's story, personas
+
+`#/converge?project=` is the project overview (`ui/goals/converge/overview.js`):
+a top bar (the project picker, the autopilot, the day's spend of the budget,
+Pause, Stop everything); six numbers from `outcomes` and the timeline (open
+problems with their trend, merged this week, found → merged, cost per fix,
+persona ease before → after, needs you); the eight steps of the flow with
+their counts and a live line each, your three picks (Found, Ready to build,
+Ready to merge) marked ✋ in amber, a step filtering the board (`&step=`);
+chips for component, severity and persona (`&comp=`, `&sev=`, `&who=`); the
+board in four columns (Found · Reproduce/Scope · Build/Verify · Merge), a
+card a problem with its tags, `seen N×`, an eight-part bar (amber where it
+waits for you, red when blocked), its live line, the queue's reason (dashed)
+and its one move (Reproduce or Dismiss, Build, Open merge pack), long columns
+cut to "+ N more"; and a right rail: Live now (each agent at work and each
+persona run, a line with its time, a segmented bar and its step, unfolding
+to its recent steps from `/api/agents/:id/events` or the run, with Terminal
+and Talk to it) and What happened (the activity, newest first, ticks and
+decisions left out, with Full activity). `#/converge/board` is the filters
+and the board; `#/converge/inbox` the earlier inbox (Merge this? Build
+these? Worth fixing?). Keys on the board: j/k, Enter, r, b, d, m, ?.
+
+A card (`?f=<id>`) opens as a page-wide sheet: its story on the left, every
+event in order as one timeline (`story.js`: the persona that hit it, its
+words and ease and its run's steps; the reports folded in; your picks; the
+repro agent with its steps and the runs on the base as dots; the plan; the
+fix agent with its steps, commits and each round's checks; the replay with
+its words and ease; the pull request and CI; the merge and the guard; what
+happens now), then Talk to this card's agent; on the right the merge pack in
+review and after, else what its step needs. A phone shows one half at a time
+(Merge pack or Details | Story) with the moves pinned at the bottom.
+
+Personas (`#/converge/personas`) has three ways to make one (written from
+the code, described by you, copied from another project's
+`GET /api/converge/personas?repo=` into `POST /api/converge/personas`: the
+role and journey, not the history), then a card each ranked by ease (the
+hardest first): its live step and a link to watch, ease, runs, found and
+reproduced, what probation means for it, its journey and past runs folded,
+Play now, Stop, Edit, Retire and its memory switch.
+
+On a phone (640 px and less) the overview is a row of four numbers, the flow
+in seven steps, Needs you (the merge pack first) and Live now, and the tab
+bar is Overview · Board · Personas · Activity while a project is open.
+
+`POST /api/converge/personas/:id/stop` (your token only) ends that
+persona's run in flight: the process group of its `claude -p` (builds
+included), which the runner call records by run id. It answers `{persona,
+run, stopped}`, 409 when it is not playing, and logs "You stopped <name>'s
+run"; the run ends as a failed run would.
+
 ### Tests
 
 `converge_an_ask_becomes_a_card_in_reproduce_and_a_card_by_hand_can_be_picked`,
+`converge_stop_ends_one_personas_run`,
 `converge_generates_personas_from_the_codebase_and_logs_the_autopilots_decisions`,
 `converge_a_persona_plays_with_its_own_memory_only_when_asked`,
 `converge_talk_reaches_the_cards_agent_at_every_step` (and bulk verbs),
