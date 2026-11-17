@@ -405,6 +405,36 @@ const CSS = `
   .cv-sheet-b { padding: 14px 16px 18px; }
   .cv-sheet-f { padding: 8px 16px calc(8px + env(safe-area-inset-bottom, 0px)); }
 }
+
+/* A card's page: the story on the left, the merge pack or the step's details on the right */
+.cv-sheet.cv-story-sheet, .cv-sheet.cv-story-sheet.cv-pack { width: min(1360px, calc(100% - 24px)); }
+.cv-story-sheet .cv-sheet-h h2 { font-size: var(--fs-lg); line-height: var(--lh-lg); }
+.cv-shead-st { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.cv-s8 { display: inline-flex; gap: 3px; width: 240px; max-width: 100%; }
+.cv-s8 i { flex: 1; height: 8px; border-radius: 2px; background: var(--surface-3); }
+.cv-s8 i.d { background: var(--accent); } .cv-s8 i.n { background: color-mix(in srgb, var(--accent) 50%, var(--surface)); } .cv-s8 i.w { background: var(--warn); } .cv-s8 i.x { background: var(--crit); }
+.cv-stabs { display: none; }
+.cv-sgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 520px); gap: 24px; align-items: start; }
+.cv-sl, .cv-sr { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.cv-storyc { border: var(--hair) solid var(--line); border-radius: 10px; padding: 16px 16px 4px; background: var(--surface); }
+.cv-storyc > .cv-label { display: block; margin-bottom: 12px; }
+.cv-talkc { border: var(--hair) solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+.cv-talkc .cv-talk { border: 0; padding: 0; margin: 0; }
+.cv-story-sheet .cv-sheet-f .acts { width: min(520px, 100%); margin-left: auto; }
+.cv-story-sheet .cv-sheet-f .acts .cv-btn.good { flex: 2; }
+@media (max-width: 1000px) { .cv-sgrid { grid-template-columns: minmax(0, 1fr); } .cv-sr { order: -1; } .cv-story-sheet .cv-sheet-f .acts { width: 100%; } }
+@media (max-width: 640px) {
+  .cv-sheet.cv-story-sheet, .cv-sheet.cv-story-sheet.cv-pack { width: 100%; }
+  .cv-story-sheet .cv-sheet-h h2 { font-size: var(--fs-md); line-height: var(--lh-md); }
+  .cv-story-sheet .cv-shead-st > .cv-meta { display: none; }
+  .cv-s8 { width: 100%; } .cv-s8 i { height: 5px; }
+  .cv-stabs { display: grid; grid-template-columns: 1fr 1fr; border: var(--hair) solid var(--line); border-radius: 8px; overflow: hidden; margin-top: 4px; }
+  .cv-stabs button { min-height: 44px; border: 0; background: var(--surface); color: var(--text); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
+  .cv-stabs button[aria-selected="true"] { background: var(--text); color: var(--surface); font-weight: var(--w-title); }
+  .cv-sgrid.tab-pack .cv-sl, .cv-sgrid.tab-story .cv-sr { display: none; }
+  .cv-storyc { padding: 12px 12px 2px; } .cv-storyc .cv-more { display: none; }
+  .cv-story-sheet .cv-sheet-f .acts .cv-btn { min-height: 48px; }
+}
 /* A phone: every target at least 44 px (last, so it wins). */
 @media (max-width: 640px) { .cv .cv-btn.sm, .cv-sheet .cv-btn.sm, .cv-ibh .cv-btn.quiet { min-height: 44px; } }
 `;

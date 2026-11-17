@@ -1,5 +1,7 @@
-// A card's sheet: only what its step needs, its moves in a sticky foot, and
-// always "Talk to the agent" at the bottom. It refreshes in place: what you
+// A card's page: its story (every event in order, story.js) and "Talk to
+// this card's agent" on the left; on the right the merge pack in review, else
+// only what its step needs; its moves in a sticky foot. A phone shows the
+// two halves one at a time (Merge pack | Story). It refreshes in place: what you
 // typed, what you unfolded and where you scrolled stay.
 //   Problems       what happened, who hit it; Reproduce or Dismiss
 //   Reproducing    the agent's progress, the script (folded), the runs as dots
@@ -9,6 +11,7 @@
 import { h, put, toast, enc, seenOf, similarOf, evidenceOf, SEV, THEME_WORDS, STAGE_NAME, stepOf, blockedOf, blockStep, BLOCK_KIND, looksLikeCmd, cmdOfStep, queuedOf, agentOn, doingWords, ago, toMs, statusLine, thinBar, firstName, fmtScore, firstSentences } from "/goals/converge/util.js";
 import { sheetShell, popMenu } from "/goals/converge/kit.js";
 import { talk } from "/goals/converge/talk.js";
+import { storyTimeline, stageWords } from "/goals/converge/story.js";
 
 const PLACEHOLDER = {
   problems: "Ask about this problem",
@@ -78,23 +81,45 @@ export async function openSheet(C, id) {
     const step = stepOf(f.stage);
     const sk = step ? step.step : f.stage === "merged" ? "merge" : "problems";
     sh.sheet.setAttribute("aria-label", f.title || "A card");
-    // The merge pack: wider on a desktop; on a phone the foot holds only
-    // its two moves (at the thumb), and the talk box moves into the body.
+    // The card's page: its story on the left, the merge pack (or what its
+    // step needs) on the right; a phone shows one at a time (a toggle).
     const pack = f.stage === "review" || f.stage === "merged";
+    sh.sheet.classList.add("cv-story-sheet");
     sh.sheet.classList.toggle("cv-pack", pack);
     if (!tk) {
       tk = talk({ api: C.api, base: `/api/converge/findings/${enc(id)}`, placeholder: PLACEHOLDER[sk], intro: INTRO[sk], onSent: () => setTimeout(reload, 800) });
-      if (pack) { put(sh.foot, acts); tk.section.append(tk.box); } else put(sh.foot, acts, tk.box);
+      put(sh.foot, acts);
     }
     const more = h("button", { class: "cv-btn icon quiet", type: "button", "aria-label": "More", "aria-haspopup": "menu", onclick: () => menu(f, more) }, "⋯");
     sh.setTools([more]);
+    const story = storyTimeline(C, x, ui, () => { if (d && sh.sheet.isConnected) paint(d); });
+    const sw = stageWords(f);
+    const needsYou = !!(f.state === "active" && (f.needs_now || blockedOf(f)));
+    const si = f.stage === "merged" ? 8 : sw.n - 1;
+    const bar = h("span", { class: "cv-s8", "aria-hidden": "true" }, Array.from({ length: 8 }, (_, i) => h("i", { class: i < si ? "d" : i === si ? (blockedOf(f) ? "x" : needsYou ? "w" : "n") : null })));
+    const hits = (f.personas_hit && f.personas_hit.length ? f.personas_hit : f.persona ? [f.persona] : []).map((p) => firstName(((C.S.d.personas || []).find((y) => y.id === p) || {}).name || "")).filter(Boolean);
+    const cost = f.agent_cost != null ? Number(f.agent_cost) : null;
+    const tabLabel = pack ? "Merge pack" : "Details";
+    ui.tab = ui.tab || "pack";
+    const tabs = h("div", { class: "cv-stabs", role: "tablist", "aria-label": "Show" },
+      h("button", { type: "button", role: "tab", "aria-selected": String(ui.tab === "pack"), onclick: () => { ui.tab = "pack"; paint(d); sh.body.scrollTop = 0; } }, tabLabel),
+      h("button", { type: "button", role: "tab", "aria-selected": String(ui.tab === "story"), onclick: () => { ui.tab = "story"; paint(d); sh.body.scrollTop = 0; } }, `Story · ${story.count} step${story.count === 1 ? "" : "s"}`));
+    const hm = (t) => new Date(toMs(t) || Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
     sh.setHead(
-      h("span", { class: "cv-meta" }, h("span", { class: "cv-sev", "data-sev": String(f.severity) }), h("span", {}, SEV[f.severity] || ""), h("span", {}, step ? step.name : STAGE_NAME[f.stage] || f.stage), f.state && f.state !== "active" ? h("span", { class: "cv-tag bad" }, f.state.replace(/_/g, " ")) : null, f.pinned ? h("span", { class: "cv-tag" }, "pinned") : null),
+      h("span", { class: "cv-meta" },
+        h("span", { class: `cv-tag${f.severity >= 3 ? ` s${f.severity}` : ""}` }, SEV[f.severity] || "–"),
+        f.component ? h("span", { class: "cv-tag" }, f.component) : null,
+        f.theme ? h("span", { class: "cv-tag" }, THEME_WORDS[f.theme] || f.theme) : null,
+        seenOf(f) > 1 ? h("span", { class: "cv-tag seen" }, `seen ${seenOf(f)}×${hits.length ? ` · ${hits.slice(0, 3).join(", ")}` : ""}`) : null,
+        f.state && f.state !== "active" ? h("span", { class: "cv-tag bad" }, f.state.replace(/_/g, " ")) : null, f.pinned ? h("span", { class: "cv-tag" }, "pinned") : null),
       h("h2", {}, f.title || ""),
+      h("div", { class: "cv-shead-st" },
+        h("span", { class: "cv-label" }, `Stage ${Math.min(sw.n, 8)} of 8 · ${sw.name}`), bar,
+        h("span", { class: "cv-meta" }, [`found ${hm(f.created)}`, f.stage === "merged" ? `merged ${hm(f.stage_since)}` : ago(f.created) ? `${ago(f.created)} so far` : null, cost ? `$${cost.toFixed(2)}` : null].filter(Boolean).join(" · "))),
       statusLine(f, C.settings()),
-      thinBar(f, C.settings()));
+      tabs);
     const keepTop = sh.body.scrollTop;
-    const parts = [
+    const right = [
       ui.dismiss ? dismissBox(f) : null,
       ui.back ? backBox(f) : null,
       ui.pr ? prBox(f) : null,
@@ -105,9 +130,12 @@ export async function openSheet(C, id) {
       f.sent_back && f.sent_back.reason && ["develop", "verify"].includes(f.stage) ? h("p", { class: "cv-note", style: { overflowWrap: "anywhere" } }, h("b", {}, "Sent back: "), f.sent_back.reason, " — the next check needs a new commit for it.") : null,
       ...stageParts(f, x),
       ui.events ? eventsBox(x) : null,
-      tk.section,
     ];
-    put(sh.body, parts);
+    const left = [
+      h("section", { class: "cv-storyc", "aria-label": "The story" }, h("span", { class: "cv-label" }, "The story", h("span", { class: "cv-more" }, " · every step, in order · ▸ unfolds the details")), story.el),
+      h("section", { class: "cv-talkc" }, tk.section, tk.box),
+    ];
+    put(sh.body, h("div", { class: `cv-sgrid tab-${ui.tab}` }, h("div", { class: "cv-sl" }, left), h("div", { class: "cv-sr" }, right)));
     sh.body.scrollTop = keepTop;
     put(acts, actions(f));
   }
@@ -582,7 +610,7 @@ export async function openSheet(C, id) {
     const x = c && c.x;
     const parsed = x ? splitDiff(String(x.diff || ""), Array.isArray(x.files) ? x.files : []) : [];
     const nf = parsed.length || (sum && sum.files != null ? (Array.isArray(sum.files) ? sum.files.length : sum.files) : null);
-    const add = x ? x.add : sum?.add, del = x ? x.del : sum?.del;
+    const add = x && parsed.length ? x.add : sum?.add ?? x?.add, del = x && parsed.length ? x.del : sum?.del ?? x?.del;
     if (nf == null && !f.branch && !f.agent) return null;
     const allOpen = !!ui.diff;
     const toggleAll = () => { ui.diff = !allOpen; ui.dfo = new Set(ui.diff ? parsed.map((p) => p.path) : []); paint(d); };
@@ -601,7 +629,7 @@ export async function openSheet(C, id) {
       det.addEventListener("toggle", () => { if (det.open) ui.dfo.add(p.path); else ui.dfo.delete(p.path); if (det.open && !det.querySelector(".cv-diff")) det.append(fileBody(p)); });
       return det;
     });
-    const status = !c ? null : c.busy ? h("p", { class: "cv-meta" }, h("span", { class: "cv-live" }, "Reading the diff")) : c.err ? h("p", { class: "cv-meta" }, c.err === "gone" ? "The branch is gone, so there is no diff to show. " : `The diff did not load: ${c.err}. `, f.agent ? h("a", { href: `#/a/${enc(f.agent)}/changes` }, "See the agent's changes") : null) : !parsed.length ? h("p", { class: "cv-meta" }, "No change against the base.") : null;
+    const status = !c ? null : c.busy ? h("p", { class: "cv-meta" }, h("span", { class: "cv-live" }, "Reading the diff")) : c.err ? h("p", { class: "cv-meta" }, c.err === "gone" ? "The branch is gone, so there is no diff to show. " : `The diff did not load: ${c.err}. `, f.agent ? h("a", { href: `#/a/${enc(f.agent)}/changes` }, "See the agent's changes") : null) : !parsed.length ? h("p", { class: "cv-meta" }, f.stage === "merged" ? "Merged: the change is in the base now (the numbers are from before the merge)." : "No change against the base.") : null;
     return h("section", { class: "cv-ev cv-evdiff" },
       h("div", { class: "cv-evh" }, h("span", { class: "cv-label" }, "The change"), nf != null ? h("span", { class: "cv-mono" }, `${nf} file${nf === 1 ? "" : "s"} · `, h("b", { class: "a" }, `+${add ?? 0}`), " ", h("b", { class: "d" }, `−${del ?? 0}`)) : null, h("span", { class: "cv-sp" }),
         parsed.length ? h("button", { class: "cv-btn quiet sm", type: "button", "aria-expanded": String(allOpen), onclick: toggleAll }, allOpen ? "Fold all" : "View diff") : null),

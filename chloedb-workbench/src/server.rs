@@ -293,6 +293,7 @@ const GOALS: &[(&str, &str)] = &[
     ("converge/tasks.js", include_str!("../ui/goals/converge/tasks.js")),
     ("converge/home.js", include_str!("../ui/goals/converge/home.js")),
     ("converge/overview.js", include_str!("../ui/goals/converge/overview.js")),
+    ("converge/story.js", include_str!("../ui/goals/converge/story.js")),
     ("converge/problems.js", include_str!("../ui/goals/converge/problems.js")),
     ("converge/steps.js", include_str!("../ui/goals/converge/steps.js")),
     ("converge/sheet.js", include_str!("../ui/goals/converge/sheet.js")),
