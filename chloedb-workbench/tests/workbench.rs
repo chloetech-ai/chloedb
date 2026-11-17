@@ -8088,3 +8088,111 @@ fn converge_blocked_on_you_stops_the_autopilot_and_a_full_slot_queues() {
     let q = cv_finding(&s, &qid);
     assert!(q["finding"]["queued"].is_null() && q["finding"]["agent"].is_string(), "{q}");
 }
+
+/// A fake `gh` for imports: "GitHub" is bare repositories under its folder
+/// (`acme/pylib.git`, `acme/mine.git`); you may push to `acme/mine` only,
+/// and a fork is a bare copy under `me/`, added as origin with the old
+/// origin renamed upstream, as `gh repo fork --remote` does.
+const IMPORT_GH: &str = r#"#!/bin/sh
+D="__DIR__"
+printf '%s\n' "$*" >> "$D/gh.log"
+case "$*" in
+  "repo clone "*) git clone -q "$D/$3.git" "$4";;
+  "api repos/acme/pylib") echo '{"default_branch":"main","permissions":{"push":false}}';;
+  "api repos/acme/mine") echo '{"default_branch":"main","permissions":{"push":true}}';;
+  "repo fork --remote --remote-name origin")
+    git clone -q --bare "$D/acme/pylib.git" "$D/me/pylib.git"
+    git remote rename origin upstream && git remote add origin "$D/me/pylib.git"
+    echo "Created fork me/pylib";;
+  *) echo "unexpected gh $*" >&2; exit 1;;
+esac
+"#;
+
+/// A bare "GitHub" repository at `dir/slug.git` holding a small pytest project.
+fn github_bare(dir: &Path, slug: &str) {
+    let src = dir.join("src-".to_string() + &slug.replace('/', "-"));
+    std::fs::create_dir_all(src.join("tests")).unwrap();
+    std::fs::create_dir_all(src.join(".github/workflows")).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    std::fs::write(src.join("pyproject.toml"), "[project]\nname = \"pylib\"\n\n[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n").unwrap();
+    std::fs::write(src.join("tests/test_pylib.py"), "def test_ok():\n    assert True\n").unwrap();
+    std::fs::write(src.join(".github/workflows/ci.yml"), "on: push\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-q", "-m", "first"]);
+    let bare = dir.join(format!("{slug}.git"));
+    std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
+    let out = Command::new("git").args(["clone", "-q", "--bare"]).arg(&src).arg(&bare).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn a_github_repository_is_cloned_forked_detected_and_opened() {
+    use std::os::unix::fs::PermissionsExt;
+    let fakes = tempfile::tempdir().unwrap();
+    let fd = fakes.path().canonicalize().unwrap();
+    let gh = fd.join("fake-gh");
+    std::fs::write(&gh, IMPORT_GH.replace("__DIR__", &fd.display().to_string())).unwrap();
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    github_bare(&fd, "acme/pylib");
+    github_bare(&fd, "acme/mine");
+    let s = start_lab(&[("CHLOEDB_WORKBENCH_CONVERGE_GH", &gh.display().to_string())]);
+
+    // What is not a repository never reaches git or gh.
+    for bad in ["", "/etc", "~/src", "file:///tmp/x", "a/b;touch x", "--upload-pack=x/y", "ext::sh -c x", "a/b/c"] {
+        let (st, v) = s.post("/api/repos/import", json!({ "source": bad }));
+        assert_eq!(st, 400, "{bad:?}: {v}");
+    }
+    assert!(!fd.join("gh.log").exists(), "gh ran for a refused source");
+
+    // A repository you cannot push to: cloned, forked, untrusted.
+    let (st, v) = s.post("/api/repos/import", json!({ "source": "https://github.com/acme/pylib.git" }));
+    assert_eq!(st, 201, "{v}");
+    let path = v["path"].as_str().unwrap().to_string();
+    assert!(path.ends_with("/repos/acme/pylib"), "{v}");
+    assert_eq!(v["project"], "pylib", "{v}");
+    assert_eq!(v["forked"], true, "{v}");
+    assert_eq!(v["fork"], "me/pylib", "{v}");
+    assert_eq!(v["upstream"], "acme/pylib", "{v}");
+    assert_eq!(v["untrusted"], true, "{v}");
+    assert_eq!(v["reused"], false, "{v}");
+    assert_eq!(v["default_branch"], "main", "{v}");
+    assert_eq!(v["detected"]["language"], "Python", "{v}");
+    assert!(v["detected"]["test_cmd"].as_str().unwrap().ends_with("python -m pytest -q"), "{v}");
+    assert_eq!(v["detected"]["ci"], true, "{v}");
+    assert!(v["warning"].as_str().unwrap().contains("do not own"), "{v}");
+    assert!(git(Path::new(&path), &["remote", "get-url", "upstream"]).ends_with("acme/pylib.git"));
+    assert!(git(Path::new(&path), &["remote", "get-url", "origin"]).ends_with("me/pylib.git"));
+    let log = std::fs::read_to_string(fd.join("gh.log")).unwrap();
+    assert!(log.contains("repo clone acme/pylib ") && log.contains("--filter=blob:none"), "{log}");
+
+    // Opened as a folder is, with its Converge settings written.
+    let (_, l) = s.get("/api/repos");
+    assert!(l["repos"].as_array().unwrap().iter().any(|r| r["path"] == path.as_str()), "{l}");
+    let (st, c) = s.get(&format!("/api/converge/settings?repo={}", enc(&path)));
+    assert_eq!(st, 200, "{c}");
+    assert_eq!(c["settings"]["test_cmd"], v["detected"]["test_cmd"], "{c}");
+    assert_eq!(c["settings"]["base"], "main", "{c}");
+    assert_eq!(c["settings"]["untrusted"], true, "{c}");
+    assert_eq!(c["settings"]["upstream"], "acme/pylib", "{c}");
+    assert_eq!(c["settings"]["dev_permission_mode"], "default", "{c}");
+
+    // Again: fetched, not cloned or forked twice; in the background this time.
+    let (st, j) = s.post("/api/repos/import", json!({ "source": "acme/pylib", "async": true }));
+    assert_eq!(st, 202, "{j}");
+    let id = j["id"].as_str().unwrap().to_string();
+    let done = s.get_until(&format!("/api/repos/import/{id}"), "the import to finish", |v| v["state"] != "running");
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["result"]["reused"], true, "{done}");
+    assert_eq!(done["result"]["forked"], true, "{done}");
+    assert!(done["steps"].as_array().unwrap().iter().any(|x| x["step"] == "fetching"), "{done}");
+    let log = std::fs::read_to_string(fd.join("gh.log")).unwrap();
+    assert_eq!(log.matches("repo fork").count(), 1, "{log}");
+    assert_eq!(log.matches("repo clone").count(), 1, "{log}");
+
+    // One you can push to: no fork, trusted, its settings as they were.
+    let (st, m) = s.post("/api/repos/import", json!({ "source": "acme/mine" }));
+    assert_eq!(st, 201, "{m}");
+    assert_eq!(m["forked"], false, "{m}");
+    assert_eq!(m["untrusted"], false, "{m}");
+    assert_eq!(m["settings"]["dev_permission_mode"], "auto", "{m}");
+}
