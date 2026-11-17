@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use chloedb_backbone::{api, feed, fetch, load, refdata::Reference, rules, strata::Strata};
+use chloedb_backbone::{api, feed, fetch, load, refdata::Reference, rules, strata::{RowExt, Strata}};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -60,6 +60,14 @@ enum Command {
         to: Option<String>,
         #[arg(long)]
         live: bool,
+        /// Start the archive after the newest update already kept (its next
+        /// five-minute file), else at --from: a restart fills its gap.
+        #[arg(long)]
+        resume: bool,
+        /// Stop after this many hours, so a supervisor starts it again
+        /// with the day's RPKI, origins and names (fetched before it).
+        #[arg(long)]
+        hours: Option<f64>,
         #[arg(long, value_delimiter = ',', default_value = "1001,5001")]
         atlas: Vec<u64>,
         #[arg(long, env = "CHLOEDB_URL", default_value = "http://127.0.0.1:7700")]
@@ -117,6 +125,10 @@ fn when(s: &str) -> Result<i64> {
     }
 }
 
+fn when_iso(t: i64) -> String {
+    chrono::DateTime::from_timestamp(t, 0).map(|d| d.to_rfc3339()).unwrap_or_default()
+}
+
 fn logs() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
@@ -142,7 +154,7 @@ fn main() -> Result<()> {
                 .await??;
                 load::run(&db, load::Opts { dir: &dir, only }, &r).await
             }
-            Command::Feed { dir, collectors, from, to, live, atlas, strata, key } => {
+            Command::Feed { dir, collectors, from, to, live, resume, hours, atlas, strata, key } => {
                 for c in &collectors {
                     if !feed::COLLECTORS.contains(&c.as_str()) {
                         bail!("{c}: not a RIS collector ({})", feed::COLLECTORS.join(", "));
@@ -156,9 +168,29 @@ fn main() -> Result<()> {
                 })
                 .await??;
                 tracing::info!(roas = r.roas.len(), usual = r.usual.len(), names = r.names.len(), "reference loaded");
-                let from = from.as_deref().map(when).transpose()?;
+                let mut from = from.as_deref().map(when).transpose()?;
+                if resume {
+                    let rows = db.query("SELECT MAX(ts) AS t FROM bb_updates WHERE collector IN (:c)", serde_json::json!({ "c": collectors })).await?;
+                    let newest = rows.first().map(|r| r.s("t")).and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok()).map(|t| t.timestamp());
+                    if let Some(t) = newest {
+                        // The next file: the one holding `t` was read already,
+                        // and RIS Live's rows have keys of their own.
+                        from = Some((t / 300 + 1) * 300);
+                        tracing::info!(from = %when_iso(from.unwrap_or(0)), "resuming after the newest update kept");
+                    }
+                }
                 let to = to.as_deref().map(when).transpose()?;
-                feed::run(db, Arc::new(r), feed::Opts { dir, collectors, from, to, live, atlas }).await
+                let run = feed::run(db, Arc::new(r), feed::Opts { dir, collectors, from, to, live, atlas });
+                match hours {
+                    Some(h) => match tokio::time::timeout(std::time::Duration::from_secs_f64(h * 3600.0), run).await {
+                        Ok(r) => r,
+                        Err(_) => {
+                            tracing::info!(hours = h, "stopping to start again with the day's reference data");
+                            Ok(())
+                        }
+                    },
+                    None => run.await,
+                }
             }
             Command::Rules { strata, key } => {
                 let db = Strata::new(&strata, key);

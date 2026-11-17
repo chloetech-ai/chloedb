@@ -1297,7 +1297,7 @@ async function prefixPage(app, main, p, alive) {
   const status = x.state === "bad" ? "red" : x.state === "warn" ? "watch" : x.state === "ended" ? "ended" : "ok";
   const headline = held.length
     ? `${plural(x.held_now, "peer")} of rrc00's ${x.peers_heard} hold a route to it now, from ${held.map((o) => netName(o.origin.asn ? o.origin : null)).join(" and ")}.`
-    : x.updates ? `No peer holds a route to it now: the last word of each was a withdrawal.` : "rrc00 heard nothing of it in the last 30 days.";
+    : x.updates ? `No peer holds a route to it now: the last word of each was a withdrawal.` : "rrc00 heard nothing of it in the last 3 days.";
   const top = h("section", { class: `bn-hero ${x.state === "bad" ? "" : x.state === "warn" ? "warn" : "calm"}` },
     h("div", {},
       h("div", { class: "bn-hero-top" }, pill(x.state === "ended" ? "info" : x.state, status), h("span", { class: "muted small" }, `as of ${clock(x.as_of)}`)),
@@ -1448,7 +1448,7 @@ async function dataPage(app, main, alive) {
   if (!alive()) return;
   const c = j.counts || {};
   const size = Object.fromEntries((j.sizes || []).map((s) => [s.table, s.bytes]));
-  const TABLES = [["bb_updates", "every BGP update RIPE RIS's rrc00 heard, checked against RPKI and yesterday's origins as it arrived (30 days)"], ["bb_as", "networks: the RIRs' names and countries, PeeringDB's records, CAIDA's counts"], ["bb_p2c", "provider to customer edges (CAIDA), walked by REACHABLE"], ["bb_p2p", "peer edges (CAIDA)"], ["bb_roa", "RPKI's validated ROAs (rpki-client)"], ["bb_ix", "internet exchanges (PeeringDB)"], ["bb_member", "who is on which exchange"], ["bb_probe", "RIPE Atlas probes"], ["bb_ping", "Atlas pings to the K root server, a row per probe and round (30 days)"], ["bb_trace", "Atlas traceroutes to K, with where the time jumps (30 days)"], ["bb_outage", "IODA's outages"], ["bb_alerts", "what the rules found"], ["bb_incidents", "alerts grouped"]];
+  const TABLES = [["bb_updates", "every BGP update RIPE RIS's rrc00 heard, checked against RPKI and yesterday's origins as it arrived (kept 3 days)"], ["bb_as", "networks: the RIRs' names and countries, PeeringDB's records, CAIDA's counts"], ["bb_p2c", "provider to customer edges (CAIDA), walked by REACHABLE"], ["bb_p2p", "peer edges (CAIDA)"], ["bb_roa", "RPKI's validated ROAs (rpki-client)"], ["bb_ix", "internet exchanges (PeeringDB)"], ["bb_member", "who is on which exchange"], ["bb_probe", "RIPE Atlas probes"], ["bb_ping", "Atlas pings to the K root server, a row per probe and round (30 days)"], ["bb_trace", "Atlas traceroutes to K, with where the time jumps (30 days)"], ["bb_outage", "IODA's outages"], ["bb_alerts", "what the rules found"], ["bb_incidents", "alerts grouped"]];
   const tbl = card("The tables", "rows now, and bytes on disk", table(["table", { t: "rows", num: true }, { t: "on disk", num: true }, "what"], TABLES.map(([t, what]) => h("tr", {},
     h("td", { class: "mono" }, t), h("td", { class: "num" }, fmt(c[t])), h("td", { class: "num" }, size[t] ? `${short(size[t])}B` : ""), h("td", { class: "small" }, what)))));
   const pts = (j.minutes || []).map((m) => ({ t: m.t, a: m.n }));

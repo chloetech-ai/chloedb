@@ -156,6 +156,8 @@ pub async fn run(db: Strata, r: Arc<Reference>, o: Opts) -> Result<()> {
                 };
                 let t0 = Instant::now();
                 let n = archive_file(&db, &r, &mut last, c, &path).await?;
+                // Read and kept as rows: the file is not needed again.
+                let _ = std::fs::remove_file(&path);
                 tracing::info!(collector = %c, file = %path.display(), rows = n, secs = t0.elapsed().as_secs_f32(), "archive file");
                 note(&db, &format!("ris:{c}"), "archive", t + 300, n, &path.file_name().unwrap_or_default().to_string_lossy()).await;
             }

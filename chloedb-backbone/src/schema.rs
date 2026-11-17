@@ -66,7 +66,7 @@ pub fn tables() -> Vec<(&'static str, &'static str, &'static str)> {
   id INT PRIMARY KEY, ts TIMESTAMP, collector KEYWORD, peer KEYWORD, peer_as INT, kind KEYWORD,
   prefix KEYWORD, af INT, plen INT, lo INT, hi INT, origin INT, path INT[], route KEYWORD OPTIONS(indexed = false),
   hops INT, rpki KEYWORD, seen KEYWORD, owner INT, country KEYWORD, comms KEYWORD[]
-) OPTIONS(retain = '30 days', retain_by = 'ts', cluster_by = 'prefix', compression = 'zstd')", "Every BGP update a RIS collector heard: a row per prefix announced or withdrawn, checked against RPKI and yesterday's origins as it arrived"),
+) OPTIONS(retain = '3 days', retain_by = 'ts', cluster_by = 'prefix', compression = 'zstd')", "Every BGP update a RIS collector heard: a row per prefix announced or withdrawn, checked against RPKI and yesterday's origins as it arrived"),
         ("bb_rules", "CREATE TABLE IF NOT EXISTS bb_rules (
   id KEYWORD PRIMARY KEY, title KEYWORD, kind KEYWORD, severity KEYWORD, every_s INT, sql KEYWORD OPTIONS(indexed = false),
   about KEYWORD OPTIONS(indexed = false), enabled BOOL, last_run TIMESTAMP, last_ms FLOAT, last_rows INT
