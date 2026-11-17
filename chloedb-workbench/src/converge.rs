@@ -1852,7 +1852,8 @@ fn extract_json(text: &str) -> Option<Json> {
             b'{' => {
                 depth -= 1;
                 if depth == 0 {
-                    return serde_json::from_str(&text[i as usize..=end]).ok();
+                    let raw = &text[i as usize..=end];
+                    return serde_json::from_str(raw).ok().or_else(|| serde_json::from_str(&quote_bare_values(raw)).ok());
                 }
             }
             _ => {}
@@ -1860,6 +1861,70 @@ fn extract_json(text: &str) -> Option<Json> {
         i -= 1;
     }
     None
+}
+
+/// A model sometimes leaves a string value unquoted (`"journey": Priya
+/// installs it, then ...`): quote each value after a key that does not start
+/// like JSON (a quote, a bracket, a number, true, false, null), up to the
+/// next `, "`, closing bracket or line end.
+fn quote_bare_values(raw: &str) -> String {
+    let c: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len() + 16);
+    let (mut i, mut in_str) = (0usize, false);
+    while i < c.len() {
+        let ch = c[i];
+        out.push(ch);
+        if in_str {
+            if ch == '\\' && i + 1 < c.len() {
+                out.push(c[i + 1]);
+                i += 2;
+                continue;
+            }
+            if ch == '"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == '"' {
+            in_str = true;
+            i += 1;
+            continue;
+        }
+        if ch == ':' {
+            let mut j = i + 1;
+            while j < c.len() && (c[j] == ' ' || c[j] == '\t') {
+                j += 1;
+            }
+            let rest: String = c[j..c.len().min(j + 5)].iter().collect();
+            let json_like = j >= c.len() || matches!(c[j], '"' | '{' | '[' | '-' | '0'..='9') || rest.starts_with("true") || rest.starts_with("false") || rest.starts_with("null");
+            if !json_like {
+                let mut k = j;
+                while k < c.len() {
+                    if c[k] == '\n' || c[k] == '}' || c[k] == ']' {
+                        break;
+                    }
+                    if c[k] == ',' {
+                        let mut m = k + 1;
+                        while m < c.len() && c[m].is_whitespace() {
+                            m += 1;
+                        }
+                        if m < c.len() && (c[m] == '"' || c[m] == '{' || c[m] == '}' || c[m] == ']') {
+                            break;
+                        }
+                    }
+                    k += 1;
+                }
+                let val: String = c[j..k].iter().collect::<String>().trim_end().to_string();
+                out.push(' ');
+                out.push_str(&serde_json::to_string(&val).unwrap_or_default());
+                i = k;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 fn prompt_for(role: &str, job: &Json) -> String {
@@ -6279,6 +6344,15 @@ async fn finding_diff(State(app): State<App>, AxPath(id): AxPath<String>) -> Api
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_bare_string_value_is_quoted() {
+        let v = super::extract_json("here: {\"name\": \"Priya\", \"journey\": Priya installs it, then signs, then verifies, \"n\": 2, \"ok\": true}").unwrap();
+        assert_eq!(v["journey"], "Priya installs it, then signs, then verifies");
+        assert_eq!(v["n"], 2);
+        assert_eq!(v["ok"], true);
+        assert_eq!(super::extract_json("{\"a\": [1, 2], \"b\": \"x, y\"}").unwrap()["b"], "x, y");
+    }
+
     use super::*;
 
     #[test]
