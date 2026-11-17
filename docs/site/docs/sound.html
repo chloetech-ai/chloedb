@@ -114,7 +114,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <li><strong>Moments inside long recordings.</strong> Every sound is cut into ten-second windows every five seconds, each with its own vector (<code>au_moments</code>), so a search can land 7:40 into a half-hour dawn chorus. <em>Moments</em> returns the best moment of each sound (<code>DISTINCT ON (sound)</code>) and the other good moments of each.</li>
 <li><strong>What is in it.</strong> A sound's page shows, along its waveform, which of FSD50K's 200 labels each moment sounds like (each moment's vector against the labels', <code>au_labels</code>, embedded by the server from a sentence each).</li>
 <li><strong>Listen.</strong> Record ten seconds with the microphone or drop a file, and find what it sounds like: the clip is embedded by <code>POST /v1/embed</code> and searched like any sound; a match above 0.9 is called the same recording.</li>
-<li><strong>Scenes.</strong> Describe a place ("a rainy café by a harbour") and get its layers, a sound for each label it calls for, played together with a level for each.</li>
+<li><strong>Scenes.</strong> Describe a place ("a rainy café by a harbour") and get its layers: the sounds nearest the words and each part of them, one for each thing they sound like most (their best label by sound), played together with a level for each.</li>
 <li><strong>Drift.</strong> From one sound to another in steps, each step the sound nearest to a point on the way between their vectors (a slerp).</li>
 <li><strong>Map.</strong> Every sound placed by how it sounds (t-SNE of the vectors, made by <code>tools/prepare.py</code>), or by where it was recorded when its source says.</li>
 <li><strong>Credit and licences.</strong> Each sound carries its title, author, source page and licence, shown on the page and copied as one line ("“Title” by author, source (page), licence (link)"). Only CC0, public domain, CC BY, CC BY-SA and the Free Art License (and the GFDL on Commons) are kept: no non-commercial, no-derivatives or Sampling+ sound is loaded.</li>
@@ -214,7 +214,7 @@ chloedb-server ... --app sound=http://sound-host:7870     # with CHLOEDB_APP_TOK
 </tr>
 <tr>
 <td><code>GET /v1/moments?q=&amp;min=</code></td>
-<td>the best moment of each sound, and its other good moments, in sounds at least <code>min</code> seconds long</td>
+<td>the best moment of each recording, and its other good moments, in recordings at least <code>min</code> seconds long (15 by default; songs are left to <em>Music</em>)</td>
 </tr>
 <tr>
 <td><code>POST /v1/listen</code></td>
@@ -222,7 +222,7 @@ chloedb-server ... --app sound=http://sound-host:7870     # with CHLOEDB_APP_TOK
 </tr>
 <tr>
 <td><code>GET /v1/scene?q=</code></td>
-<td>a scene's layers: a sound for each label it calls for, with a level</td>
+<td>a scene's layers: a sound for each thing the place sounds like, with a level</td>
 </tr>
 <tr>
 <td><code>GET /v1/drift?from=&amp;to=&amp;steps=</code></td>

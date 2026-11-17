@@ -730,7 +730,7 @@ async function search(main, app, rest, alive) {
       h("input", { type: "radio", name: "len", checked: (o.min || "") === mn && (o.max || "") === mx, onchange: () => go({ min: mn, max: mx }) }), h("span", { class: "l" }, t))));
   fill(left, facet("Source", "source", SRC), facet("Kind", "kind", KIND), facet("Licence", "lic", LIC), len);
   fill(right,
-    h("div", { class: "sx-card" }, h("h4", {}, "Inside long recordings"), h("p", {}, `The ten seconds where “${q || "it"}” is heard, in recordings of a minute or more.`), q ? h("a", { class: "sx-btn", href: app.href("moments", q) }, icon("clock"), "Find the moments") : null),
+    h("div", { class: "sx-card" }, h("h4", {}, "Inside long recordings"), h("p", {}, `The ten seconds where “${q || "it"}” is heard, in recordings of fifteen seconds or more.`), q ? h("a", { class: "sx-btn", href: app.href("moments", q) }, icon("clock"), "Find the moments") : null),
     h("div", { class: "sx-card" }, h("h4", {}, "As a scene"), h("p", {}, "Describe a place and get layers of sounds to play together, with the credits to paste."), q ? h("a", { class: "sx-btn", href: app.href("scene", q) }, icon("layers"), "Make it a scene") : null),
     h("div", { class: "sx-card" }, h("h4", {}, "How this ranks"), h("p", {}, "CLAP, a model of sound and text that ChloeDB runs, puts your words and every sound in one space; the search mixes that closeness with the words of each sound's title, tags and description. Steering moves the point it looks from.")));
 }
@@ -895,7 +895,7 @@ async function scene(main, app, rest, alive) {
   const body = h("div", {}, q ? skel(4) : null);
   fill(main,
     h("h1", { style: { fontSize: "26px", margin: "12px 0 4px", letterSpacing: "-.02em" } }, "Scenes: describe a place, hear it in layers"),
-    h("p", { style: { color: "var(--text-2)", margin: "0 0 12px", maxWidth: "820px" } }, "The words CLAP hears closest to your place become layers; each layer gets the sound that best fits both. Play them together, set each one's level, and take the credits with you."),
+    h("p", { style: { color: "var(--text-2)", margin: "0 0 12px", maxWidth: "820px" } }, "CLAP finds the sounds closest to your place and to each part of it (a café, a harbour), and each thing they sound like most becomes a layer. Play them together, set each one's level, and take the credits with you."),
     h("div", { class: "sx-pick" }, input, h("button", { type: "button", class: "sx-btn pri", onclick: () => input.value.trim() && app.go("scene", input.value.trim()) }, "Make the scene")),
     h("div", { class: "sx-und", style: { marginTop: "10px" } }, "Try:", ["a harbour at dawn", "a rainy café", "a farm in summer", "a thunderstorm in the city", "a night in the jungle", "a kitchen at dinner time"].map((x) => h("a", { class: "sx-chip", href: app.href("scene", x) }, x))),
     body);

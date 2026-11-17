@@ -90,6 +90,18 @@ FSD_KIND = [
 ]
 
 
+def fsd_kind(labels):
+    """The kind of the label nearest the clip's own: its labels run from the
+    leaves to their ancestors, so thunder and birdsong under it ("thunder",
+    "chirp", "thunderstorm", ..., "bird", "animal") is nature, not animal."""
+    best = (len(labels), "effect")
+    for k, names in FSD_KIND:
+        at = next((i for i, l in enumerate(labels) if l in names), None)
+        if at is not None and at < best[0]:
+            best = (at, k)
+    return best[1]
+
+
 def human(label):
     return ", ".join(p.replace("_", " ") for p in label.split("_and_"))
 
@@ -108,7 +120,7 @@ def fsd50k(d):
         if not licence:
             continue
         ls = labels.get(fid, [])
-        kind = next((k for k, s in FSD_KIND if s & set(ls)), "effect")
+        kind = fsd_kind(ls)
         title = re.sub(r"\.(wav|aiff?|flac|mp3|ogg|m4a)$", "", i["title"], flags=re.I).replace("_", " ").strip() or f"Freesound {fid}"
         yield {
             "id": f"fsd:{fid}", "path": os.path.join(d, "clips", f), "source": "fsd50k",
@@ -399,9 +411,14 @@ def main():
 
     # Every sound once, with its place on the map and, when its source gave
     # none, the labels CLAP hears in it.
+    # A sound's words, credit and kind are read from its source again, so a
+    # fix to them needs no new vectors.
+    fresh = {rec["id"]: rec for rec in sources}
     rows = {}
     for l in open(partial):
         r = json.loads(l)
+        if r["id"] in fresh:
+            r.update({k: v for k, v in fresh[r["id"]].items() if k != "path"})
         rows[r["id"]] = r
     rows = list(rows.values())
     E = np.array([r["emb"] for r in rows], dtype=np.float32)

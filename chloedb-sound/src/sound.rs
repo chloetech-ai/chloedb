@@ -313,9 +313,12 @@ async fn cards(c: &Ctx<'_>, ids: &[String], what: &str) -> Result<Vec<Value>> {
 
 /// The moments inside recordings that sound like `v`: the best recording
 /// by its best moment, each with its other good moments.
-pub async fn moments_like(c: &Ctx<'_>, v: &[f32], min_seconds: f64, n: usize) -> Result<Vec<Value>> {
+pub async fn moments_like(c: &Ctx<'_>, v: &[f32], min_seconds: f64, n: usize, music: bool) -> Result<Vec<Value>> {
     let p = json!({"v": vecs::param(v), "min": min_seconds});
-    let best = c.q("the best moment of each recording", &format!("SELECT DISTINCT ON (sound) sound, t, score() AS score FROM au_moments WHERE seconds >= :min ORDER BY similarity(emb, :v) DESC LIMIT {n}"), p.clone()).await?;
+    // Without music (the Moments page, about recordings), more are read and
+    // the songs dropped once their cards say which they are.
+    let read = if music { n } else { n * 3 };
+    let best = c.q("the best moment of each recording", &format!("SELECT DISTINCT ON (sound) sound, t, score() AS score FROM au_moments WHERE seconds >= :min ORDER BY similarity(emb, :v) DESC LIMIT {read}"), p.clone()).await?;
     let ids: Vec<String> = best.iter().map(|r| r.s("sound")).collect();
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -348,6 +351,8 @@ pub async fn moments_like(c: &Ctx<'_>, v: &[f32], min_seconds: f64, n: usize) ->
             cd["at"] = json!(kept.iter().map(|(t, s)| json!({"t": t, "score": s})).collect::<Vec<_>>());
             cd
         })
+        .filter(|cd| music || cd["kind"] != "music")
+        .take(n)
         .collect())
 }
 
@@ -358,7 +363,7 @@ pub async fn listen(c: &Ctx<'_>, b64: &str) -> Result<Value> {
     let v = c.emb.audio(b64).await?;
     c.trace.push("the clip, heard by CLAP in ChloeDB (POST /v1/embed)", "-- not SQL: the server's model of sound and text embeds the clip", &Value::Null, 1, t0.elapsed().as_secs_f64() * 1000.0, None);
     let like = c.q("sounds like the clip", &format!("SELECT {CARD}, score() AS score FROM au_sounds ORDER BY similarity(emb, :v) DESC LIMIT 24"), json!({"v": vecs::param(&v)})).await?;
-    let from = moments_like(c, &v, 0.0, 6).await?;
+    let from = moments_like(c, &v, 0.0, 6, true).await?;
     // A clip cut from a recording here matches one of its moments far
     // better than anything else does.
     let original = from.first().filter(|m| m["score"].as_f64().unwrap_or(0.0) >= 0.9).cloned();
@@ -366,37 +371,70 @@ pub async fn listen(c: &Ctx<'_>, b64: &str) -> Result<Value> {
 }
 
 /// A place described in words, as layers of sounds to play together: the
-/// labels nearest the words, each one's best sound for that place.
+/// sounds nearest the words and their parts, a layer for each thing they
+/// sound like most (their best label by sound), unlike one another.
 pub async fn scene(c: &Ctx<'_>, text: &str) -> Result<Value> {
-    let tv = c.emb.text(text).await?;
+    // The place as a whole and its parts ("a rainy café" and "a harbour"),
+    // each heard by CLAP; the sounds nearest any of them are the candidates.
+    let mut asks = vec![(text.trim().to_string(), 1.0f32)];
+    for part in scene_parts(text) {
+        asks.push((part, 0.92));
+    }
     let labels = c.emb.labels(Some(&c.trace)).await?;
-    let mut scored: Vec<(f32, &Label)> = labels.iter().filter(|l| l.name != l.grp).map(|l| (vecs::dot(&tv, &l.v), l)).collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    let mut picked: Vec<&Label> = Vec::new();
-    for (_, l) in &scored {
-        if picked.len() >= 4 {
+    let leaves: Vec<&Label> = labels.iter().filter(|l| l.name != l.grp).collect();
+    let mut best: HashMap<String, (f32, Row, Vec<f32>)> = HashMap::new();
+    for (i, (q, w)) in asks.iter().enumerate() {
+        let tv = c.emb.text(q).await?;
+        let rows = c.q(&format!("sounds of \u{201c}{q}\u{201d}"), &format!("SELECT {CARD}, emb, score() AS score FROM au_sounds WHERE seconds >= 4 ORDER BY similarity(emb, :v) DESC LIMIT {}", if i == 0 { 40 } else { 20 }), json!({"v": vecs::param(&tv)})).await?;
+        for r in rows {
+            let v = vecs::floats(r.get("emb").unwrap_or(&Value::Null));
+            let sc = r.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32 * w;
+            let id = r.s("id");
+            if v.len() == crate::schema::DIM && best.get(&id).map_or(true, |b| b.0 < sc) {
+                best.insert(id, (sc, r, v));
+            }
+        }
+    }
+    let mut cands: Vec<(f32, Row, Vec<f32>)> = best.into_values().collect();
+    cands.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // A layer each for what the candidates sound like most (their best label
+    // by sound), the best sound of each, unlike the layers before it.
+    let mut layers = Vec::new();
+    let mut used_labels: Vec<&Label> = Vec::new();
+    let mut picked: Vec<Vec<f32>> = Vec::new();
+    for (_, r, v) in &cands {
+        if layers.len() >= 4 {
             break;
         }
-        if picked.iter().any(|p| vecs::dot(&p.v, &l.v) > 0.8) {
+        let Some(l) = leaves.iter().max_by(|a, b| vecs::dot(v, &a.v).partial_cmp(&vecs::dot(v, &b.v)).unwrap_or(std::cmp::Ordering::Equal)) else { break };
+        // Not rain twice: a label like one already playing (rain, raindrop)
+        // is the same layer.
+        if used_labels.iter().any(|u| u.id == l.id || vecs::dot(&u.v, &l.v) > 0.8) || picked.iter().any(|p| vecs::dot(p, v) > 0.9) {
             continue;
         }
-        picked.push(l);
-    }
-    let mut used: HashSet<String> = HashSet::new();
-    let mut layers = Vec::new();
-    for (i, l) in picked.iter().enumerate() {
-        let mut v: Vec<f32> = tv.to_vec();
-        vecs::add(&mut v, &l.v, 0.8);
-        vecs::norm(&mut v);
-        let rows = c.q(&format!("layer {}: {}", i + 1, l.name), &format!("SELECT {CARD}, score() AS score FROM au_sounds WHERE seconds >= 4 ORDER BY similarity(emb, :v) DESC LIMIT 8"), json!({"v": vecs::param(&v)})).await?;
-        if let Some(r) = rows.iter().find(|r| !used.contains(&r.s("id"))) {
-            used.insert(r.s("id"));
-            let gain = [1.0, 0.7, 0.55, 0.45][i];
-            layers.push(json!({"label": l.name, "group": l.grp, "gain": gain, "sound": card(r)}));
-        }
+        used_labels.push(l);
+        picked.push(v.clone());
+        let gain = [1.0, 0.7, 0.55, 0.45][layers.len()];
+        let mut r = r.clone();
+        r.remove("emb");
+        layers.push(json!({"label": l.name, "group": l.grp, "gain": gain, "sound": card(&r)}));
     }
     let credits: Vec<String> = layers.iter().filter_map(|l| l["sound"]["credit"].as_str().map(str::to_string)).collect();
     Ok(json!({"text": text, "layers": layers, "credits": credits}))
+}
+
+/// The parts of a described place: "a rainy café by a harbour" is "a rainy
+/// café" and "a harbour".
+pub fn scene_parts(text: &str) -> Vec<String> {
+    let mut parts = vec![text.to_lowercase()];
+    for sep in [",", ";", " and ", " with ", " by ", " near ", " beside ", " next to ", " in ", " on ", " at ", " under ", " over "] {
+        parts = parts.iter().flat_map(|p| p.split(sep).map(str::to_string).collect::<Vec<_>>()).collect();
+    }
+    let parts: Vec<String> = parts.into_iter().map(|p| p.trim().to_string()).filter(|p| p.split_whitespace().any(|w| !["a", "an", "the", "of", "some"].contains(&w))).collect();
+    if parts.len() < 2 {
+        return Vec::new();
+    }
+    parts.into_iter().take(4).collect()
 }
 
 /// A path of sounds from one to another: at each step the sound nearest
@@ -491,6 +529,14 @@ pub async fn labels(emb: &Arc<Embedder>) -> Result<Vec<Value>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_place_is_cut_into_its_parts() {
+        assert_eq!(super::scene_parts("a rainy café by a harbour"), vec!["a rainy café", "a harbour"]);
+        assert_eq!(super::scene_parts("Market, with gulls and a bell"), vec!["market", "gulls", "a bell"]);
+        assert!(super::scene_parts("a forest at night").len() == 2);
+        assert!(super::scene_parts("thunderstorm").is_empty());
+    }
+
     use super::*;
 
     fn label(id: &str, v: Vec<f32>) -> Label {

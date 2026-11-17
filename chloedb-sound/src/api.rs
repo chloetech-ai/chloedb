@@ -314,7 +314,7 @@ async fn moments_route(State(svc): State<Shared>, Query(a): Query<TextParams>) -
         return Err(ApiError(StatusCode::BAD_REQUEST, "say what to listen for: ?q=".into()));
     }
     let v = svc.emb.text(&q).await?;
-    let found = sound::moments_like(&c, &v, a.min.unwrap_or(30.0), 20).await?;
+    let found = sound::moments_like(&c, &v, a.min.unwrap_or(15.0), 20, false).await?;
     let trace = c.trace.clone();
     done(&trace, json!({"q": q, "results": found}), t0)
 }

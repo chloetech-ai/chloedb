@@ -9,7 +9,7 @@
 - **Moments inside long recordings.** Every sound is cut into ten-second windows every five seconds, each with its own vector (`au_moments`), so a search can land 7:40 into a half-hour dawn chorus. *Moments* returns the best moment of each sound (`DISTINCT ON (sound)`) and the other good moments of each.
 - **What is in it.** A sound's page shows, along its waveform, which of FSD50K's 200 labels each moment sounds like (each moment's vector against the labels', `au_labels`, embedded by the server from a sentence each).
 - **Listen.** Record ten seconds with the microphone or drop a file, and find what it sounds like: the clip is embedded by `POST /v1/embed` and searched like any sound; a match above 0.9 is called the same recording.
-- **Scenes.** Describe a place ("a rainy café by a harbour") and get its layers, a sound for each label it calls for, played together with a level for each.
+- **Scenes.** Describe a place ("a rainy café by a harbour") and get its layers: the sounds nearest the words and each part of them, one for each thing they sound like most (their best label by sound), played together with a level for each.
 - **Drift.** From one sound to another in steps, each step the sound nearest to a point on the way between their vectors (a slerp).
 - **Map.** Every sound placed by how it sounds (t-SNE of the vectors, made by `tools/prepare.py`), or by where it was recorded when its source says.
 - **Credit and licences.** Each sound carries its title, author, source page and licence, shown on the page and copied as one line ("“Title” by author, source (page), licence (link)"). Only CC0, public domain, CC BY, CC BY-SA and the Free Art License (and the GFDL on Commons) are kept: no non-commercial, no-derivatives or Sampling+ sound is loaded.
@@ -73,9 +73,9 @@ Every answer carries `queries`, the SQL it ran, for the page's *SQL* drawer.
 |---|---|
 | `GET /v1/search?q=&like=&unlike=&not=&steer=&source=&kind=&lic=&min_s=&max_s=&by=&page=` | sounds by words and by sound, steered, filtered and faceted; `by` is `both`, `sound` or `words` |
 | `GET /v1/sound/:id` | a sound with its credit, what is in it moment by moment, sounds like it and more by its author |
-| `GET /v1/moments?q=&min=` | the best moment of each sound, and its other good moments, in sounds at least `min` seconds long |
+| `GET /v1/moments?q=&min=` | the best moment of each recording, and its other good moments, in recordings at least `min` seconds long (15 by default; songs are left to *Music*) |
 | `POST /v1/listen` | `{audio: base64}` (WAV, FLAC, MP3 or Ogg, at most 2 MB): what it sounds like, and whether it is one of the sounds |
-| `GET /v1/scene?q=` | a scene's layers: a sound for each label it calls for, with a level |
+| `GET /v1/scene?q=` | a scene's layers: a sound for each thing the place sounds like, with a level |
 | `GET /v1/drift?from=&to=&steps=` | the sounds on the way from one to the other |
 | `GET /v1/map` | every sound's place on the map and by where it was recorded |
 | `GET /v1/home`, `/v1/labels`, `/v1/status` | the front page, the labels, the counts |
