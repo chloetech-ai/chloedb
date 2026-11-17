@@ -137,7 +137,7 @@ async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response 
     };
     if !authed {
         let listen = req.method() == Method::POST && path == "/v1/listen";
-        if !(svc.public && (req.method() == Method::GET || listen)) {
+        if !(svc.public && (req.method() == Method::GET || req.method() == Method::HEAD || listen)) {
             return ApiError(StatusCode::UNAUTHORIZED, "this app needs its token".into()).into_response();
         }
         // In public, a limit per address (the first forwarded one behind a proxy).

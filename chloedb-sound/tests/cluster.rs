@@ -258,6 +258,9 @@ async fn public_reads_within_a_limit() {
     let r = http.get(&app.url).send().await.unwrap();
     assert!(r.status().is_success());
     assert!(r.text().await.unwrap().contains("Sound Explorer"));
+    // And to a HEAD, as uptime checks and link previews ask.
+    let r = http.head(&app.url).send().await.unwrap();
+    assert_eq!(r.status(), 200);
     // Another site's page may not call it.
     let r = http.get(format!("{}/v1/map", app.url)).header("origin", "https://elsewhere.example").send().await.unwrap();
     assert_eq!(r.status(), 403);
