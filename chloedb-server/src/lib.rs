@@ -94,6 +94,7 @@ pub mod replication;
 pub mod scoped;
 pub mod server;
 pub mod service;
+pub mod signin;
 pub mod sim;
 pub mod slices;
 pub mod sql_check;

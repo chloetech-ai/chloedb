@@ -283,6 +283,11 @@ export function refusedRoute(path) {
 let refusedKey;
 /** Whether the server refused the key in use (or wants one): the views say "Sign in", the polls wait. */
 export const signInNeeded = () => refusedKey !== undefined && refusedKey === token;
+/**
+ * After a sign-in with Google: no key in the tab, and the session in a
+ * cookie this page cannot read, which every request to this server sends.
+ */
+export function signedIn() { if (token) setToken(null); refusedKey = undefined; bus.emit("token"); }
 
 // The server's own views (statements, logs, index sizes, keys) are read by
 // an admin, or an ops or propose key: whoami says so (`may.server_views`).

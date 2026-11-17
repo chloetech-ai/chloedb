@@ -51,11 +51,13 @@
 /chloedb-server/src/cores/slots.rs @rkonow
 
 # door: authentication
-# Authentication and authorization: the server's keys and their sync, and
-# the app engine's keys and the access it grants apps to tables.
+# Authentication and authorization: the server's keys and their sync,
+# people's sign-in with Google, and the app engine's keys and the access it
+# grants apps to tables.
 /chloedb-server/src/auth.rs        @rkonow
 /chloedb-server/src/keys.rs        @rkonow
 /chloedb-server/src/keysync.rs     @rkonow
+/chloedb-server/src/signin.rs      @rkonow
 /chloedb-apps/engine/appkeys.mjs   @rkonow
 /chloedb-apps/engine/access.mjs    @rkonow
 

@@ -80,6 +80,7 @@ mod replication;
 mod safety;
 mod schema_race;
 mod scoped_keys;
+mod signin;
 mod limited_keys;
 mod scroll_pages;
 mod server;

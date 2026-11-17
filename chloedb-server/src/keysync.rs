@@ -113,6 +113,27 @@ pub(crate) async fn round(svc: &Service, peers: Vec<(String, Client)>) -> bool {
     changed
 }
 
+/// One round now, on a coordinator, for a session another coordinator made
+/// a moment ago ([`crate::keys::Keys::create_session`]): a person who signs
+/// in on one coordinator is not asked again by the next one their page
+/// reaches before the round of [`EVERY`] brings it. At most one a second
+/// (a cookie of no one's cannot make every request call every shard), and
+/// a few seconds at most. Whether it brought anything.
+pub async fn catch_up(svc: &Arc<Service>) -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    if !matches!(svc.backend, Backend::Cluster(_)) {
+        return false;
+    }
+    let now = crate::telemetry::now_ms();
+    let last = LAST.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < 1000 || LAST.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+        return false;
+    }
+    let peers = peers(svc, &mut HashMap::new());
+    tokio::time::timeout(TIMEOUT + Duration::from_secs(1), round(svc, peers)).await.unwrap_or(false)
+}
+
 /// Merges keys once before a coordinator serves, so that it admits its
 /// cluster's keys from its first request, then keeps merging ([`spawn`]).
 pub async fn start(svc: &Arc<Service>) {

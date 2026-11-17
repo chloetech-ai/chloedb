@@ -31,6 +31,23 @@ changes collect under "Unreleased".
   GitHub event since 2011, 11.2 billion of them, on four 8 GB machines,
   at https://gh.chloetech.ai. It is on the `Demos` train.
 
+### Sign in with Google
+
+- **The command center takes a Google sign-in, from any browser, a
+  phone's too.** `--google-client-id ID --google-allow you@example.com=admin`
+  (an address, or `@domain` for a Google Workspace domain, each `read`,
+  `write` or `admin`) puts Google's button in the sign-in dialog. The server
+  checks Google's ID token itself (Google's published keys, the client,
+  the issuer, its time, the verified address, a nonce of the page's) and
+  makes the person a session: a key owned by their address, listed in
+  Access, set in a `__Host-` cookie the page's scripts cannot read, 12 hours
+  unused and 7 days at most, checked against the allow list on each request,
+  and refused by servers from before sessions. A change made with it needs
+  the page's own origin. No client secret is involved. On the hub, one
+  sign-in reaches every connection, and each cluster's audit log names the
+  person beside the hub's key (`person`). This touches the authentication
+  door.
+
 ## 0.3.7
 
 The server on PyPI (`pip install chloedb-server`, `uvx chloedb-server`) and
