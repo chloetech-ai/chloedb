@@ -880,6 +880,11 @@ impl pb::strata_server::Strata for Grpc {
                 crate::profiling::Kind::Checkpoint => format!("checkpoint {} from a coordinator, by {}", asked.body["name"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Scrub => format!("scrub from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Alerts => format!("alerts {} from a coordinator, by {}", asked.body["op"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
+                crate::profiling::Kind::DiskClean => format!(
+                    "delete from the database's volume, from a coordinator, by {}: {}",
+                    asked.body["by"].as_str().unwrap_or("?"),
+                    asked.body["paths"].as_array().into_iter().flatten().filter_map(|p| p["path"].as_str()).collect::<Vec<_>>().join(", ")
+                ),
                 crate::profiling::Kind::Settings => match (asked.body.get("slow_ms"), asked.body.get("cpu_all")) {
                     (None, None) => "profiling settings, read by a coordinator".to_string(),
                     (slow, cpu) => format!("profiling settings from a coordinator, by {}: {}", asked.body["by"].as_str().unwrap_or("?"), [slow.map(|v| format!("slow_ms {v}")), cpu.map(|v| format!("cpu_all {v}"))].into_iter().flatten().collect::<Vec<_>>().join(", ")),

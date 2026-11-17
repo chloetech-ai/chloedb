@@ -101,7 +101,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/runbooks.md">docs/chloedb/runbooks.md</a>.</p>
       <p class="doc-version">These docs describe release 0.3.7.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#queries-are-slow">Queries are slow</a></li><li><a href="#searches-fail">Searches fail</a></li><li><a href="#queries-are-refused">Queries are refused</a></li><li><a href="#a-copy-is-down">A copy is down</a></li><li><a href="#a-replica-is-behind">A replica is behind</a></li><li><a href="#the-disk-is-filling">The disk is filling</a></li><li><a href="#writes-fail-or-queue">Writes fail or queue</a></li><li><a href="#data-damaged-on-disk">Data damaged on disk</a></li><li><a href="#a-shards-primary-changed">A shard's primary changed</a></li><li><a href="#a-rollout-is-held">A rollout is held</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#queries-are-slow">Queries are slow</a></li><li><a href="#searches-fail">Searches fail</a></li><li><a href="#queries-are-refused">Queries are refused</a></li><li><a href="#a-copy-is-down">A copy is down</a></li><li><a href="#a-replica-is-behind">A replica is behind</a></li><li><a href="#the-disk-is-filling">The disk is filling</a></li><li><a href="#a-disk-reads-slowly">A disk reads slowly</a></li><li><a href="#a-nodes-disk-nears-kubernetes-eviction-line">A node's disk nears Kubernetes' eviction line</a></li><li><a href="#a-statement-times-out">A statement times out</a></li><li><a href="#writes-fail-or-queue">Writes fail or queue</a></li><li><a href="#data-damaged-on-disk">Data damaged on disk</a></li><li><a href="#a-shards-primary-changed">A shard's primary changed</a></li><li><a href="#a-rollout-is-held">A rollout is held</a></li></ol></details>
     <div class="doc-body">
 
 <p>What to do when an alert fires or the fleet view names a problem, written
@@ -209,6 +209,61 @@ problem's id (<code>runbook {"for": "copy-down"}</code>), and each fleet problem
    as a change request.</li>
 <li>Deleted rows still on disk: <code>POST /v1/admin/vacuum</code> frees them for good
    (tier 3: it loses old versions, and is a person's alone).</li>
+</ol>
+<h2 id="a-disk-reads-slowly">A disk reads slowly<a class="anchor" href="#a-disk-reads-slowly" aria-label="Link to this section">#</a></h2>
+<p>For: <code>disk-slow</code>, <code>disk_speed</code></p>
+<ol>
+<li>Read what each copy's disk probe measured: <code>GET /v1/admin/disk?copy=&lt;url&gt;</code>
+   on a coordinator (<code>probe.kept</code>: the last hour's readings) and the
+   problem's <code>why</code>. A disk far slower than its peers' that is not busy
+   (<code>disk_busy</code> low) is the disk's fault, or the machine's under it (a
+   degraded cloud volume or host), not the load's.</li>
+<li>Measure again (tier 1, an <code>ops</code> key with a reason): <code>POST
+   /v1/admin/disk/probe {"copy": "&lt;url&gt;"}</code>.</li>
+<li>The copy is its shard's primary, and another copy is in sync on a fast
+   disk: hand the primary over (tier 3, a person's), <code>POST
+   /v1/admin/shards/&lt;i&gt;/promote {"url": "&lt;the fast copy&gt;"}</code>, so that writes
+   go to a fast disk.</li>
+<li>Replace the copy (tier 2, and it costs money: a node or a volume): add a
+   copy of the shard on another node or a volume, wait until it is in sync,
+   then remove the slow one; plan it and file it as a change request.</li>
+</ol>
+<h2 id="a-nodes-disk-nears-kubernetes-eviction-line">A node's disk nears Kubernetes' eviction line<a class="anchor" href="#a-nodes-disk-nears-kubernetes-eviction-line" aria-label="Link to this section">#</a></h2>
+<p>For: <code>disk-evict</code>, <code>disk-evict-now</code>, <code>evict</code></p>
+<p>The database is on the node's own disk (a <code>hostPath</code> or an <code>emptyDir</code>),
+which the kubelet shares: once that disk has less than its eviction
+threshold free (15% on DigitalOcean, <code>--evict-free-ratio</code>), Kubernetes
+evicts every pod of the node, the database's among them.</p>
+<ol>
+<li>Read what fills the disk: <code>GET /v1/admin/disk?copy=&lt;url&gt;</code> lists the
+   database's own files and every other entry beside them, the largest
+   first, with when each last changed (a build's output, a copy left
+   behind).</li>
+<li>Delete what is not needed (tier 3, a person's: it loses data): <code>POST
+   /v1/admin/disk/clean {"copy": "&lt;url&gt;", "paths": [{"path", "modified_ms"}]}</code>
+   with entries as the listing gave them. The server refuses its own
+   files, anything changed since it was listed, and anything it did not
+   list. Files outside the database's folder (images, other pods' files)
+   are the node's: clean them on the node.</li>
+<li>Move the database to a volume of its own (tier 2, and it costs money): a
+   copy of each shard on a volume, in sync, then remove the copies on the
+   node's disk.</li>
+</ol>
+<h2 id="a-statement-times-out">A statement times out<a class="anchor" href="#a-statement-times-out" aria-label="Link to this section">#</a></h2>
+<p>For: <code>slow-statement</code>, <code>statements</code></p>
+<ol>
+<li>Read the statement: <code>GET /v1/queries/stats/&lt;id&gt;</code> (its slowest calls,
+   where it waits by shard, who sends it) and the problem's <code>why</code> and
+   <code>reads</code>: a filter on a field the table neither indexes nor is clustered
+   by reads every row of the table (<code>reads.every_row</code>).</li>
+<li>One client sending it (tier 1, an <code>ops</code> key with a reason): limit it
+   with a contain rule, <code>POST /v1/admin/contain {"match": {"fingerprint":
+   "..."}, "action": "limit", "concurrency": 2}</code>, while it is fixed.</li>
+<li>A filter no index serves: the application reads a summary table kept
+   by that field, or the table is made again indexed or clustered by it
+   (tier 2, a change of the schema).</li>
+<li>A shard that holds it up, on a copy whose disk reads slowly: follow "A
+   disk reads slowly".</li>
 </ol>
 <h2 id="writes-fail-or-queue">Writes fail or queue<a class="anchor" href="#writes-fail-or-queue" aria-label="Link to this section">#</a></h2>
 <p>For: <code>failing</code>, <code>flush-failing</code>, <code>merge-failing</code>, <code>write-queue</code>, <code>write-p99</code></p>

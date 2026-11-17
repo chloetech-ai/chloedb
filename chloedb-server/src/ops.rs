@@ -5,9 +5,9 @@
 //! | tier | what | who may |
 //! |---|---|---|
 //! | 0 | reads: views, plans, dry runs | a key of the route's scope; a `propose` or `ops` key the server's views too |
-//! | 1 | bounded and undone by itself: a contain rule (it expires), a query cancelled, an alert acknowledged or silenced (for a while), a note, a log filter (it expires), a profile, a scrub or verify | an `ops` key, with a reason |
+//! | 1 | bounded and undone by itself: a contain rule (it expires), a query cancelled, an alert acknowledged or silenced (for a while), a note, a log filter (it expires), a profile, a scrub or verify, a disk probe | an `ops` key, with a reason |
 //! | 2 | changes the cluster or its data, and can be undone: a plan applied, a spec, an upgrade, rank profiles, synonyms, alert rules, keys made or rotated, rows written | a key of the route's scope; an agent files a change request ([`crate::changes`]) |
-//! | 3 | loses data or costs money: a shard removed, a promotion, a follow stopped, writes held, a key revoked, a tenant deleted, a cloud cluster made or deleted, vacuum | as tier 2, and an agent may not do it alone through MCP or with an agent key |
+//! | 3 | loses data or costs money: a shard removed, a promotion, a follow stopped, writes held, a key revoked, a tenant deleted, a cloud cluster made or deleted, vacuum, files deleted from a volume | as tier 2, and an agent may not do it alone through MCP or with an agent key |
 //!
 //! A role key reads tables as a read key does and writes no row
 //! ([`crate::keys::Role`]); what it may do on the server is decided here,
@@ -85,6 +85,7 @@ pub fn tier(method: &Method, route: &str) -> Tier {
         ("POST", "/v1/events/notes") => 1,
         ("PUT", "/v1/logs/filter") | ("PUT", "/v1/profile/settings") | ("POST", "/v1/profile/cpu") | ("POST", "/v1/profile/heap") => 1,
         ("POST", "/v1/admin/checkpoint") | ("POST", "/v1/admin/scrub") | ("POST", "/v1/admin/verify") | ("POST", "/v1/admin/copies/scrub") | ("POST", "/v1/admin/copies/verify") | ("POST", "/v1/admin/copies/checkpoint") => 1,
+        ("POST", "/v1/admin/disk/probe") => 1,
         ("POST", "/v1/admin/oncall") | ("POST", "/v1/admin/oncall/runs/:id/stop") => 1,
         ("POST", "/v1/admin/simulator/stop") | ("POST", "/v1/admin/plan/run/stop") | ("POST", "/v1/admin/moves/stop") => 1,
         ("POST", "/v1/admin/kube/autoscale/dismiss") | ("POST", "/v1/queries/stats/reset") | ("POST", "/v1/index/reads/reset") => 1,
@@ -93,7 +94,7 @@ pub fn tier(method: &Method, route: &str) -> Tier {
         // 3: loses data, stops writes, or costs money.
         ("DELETE", "/v1/admin/shards/:i") | ("POST", "/v1/admin/promote") | ("POST", "/v1/admin/shards/:i/promote") => 3,
         ("POST", "/v1/admin/follow/stop") | ("POST", "/v1/admin/follow/promote") | ("POST", "/v1/admin/hold-writes") => 3,
-        ("DELETE", "/v1/admin/keys/:id") | ("DELETE", "/v1/admin/tenants/:id") | ("POST", "/v1/admin/vacuum") => 3,
+        ("DELETE", "/v1/admin/keys/:id") | ("DELETE", "/v1/admin/tenants/:id") | ("POST", "/v1/admin/vacuum") | ("POST", "/v1/admin/disk/clean") => 3,
         ("POST", "/v1/admin/cloud/clusters") | ("POST", "/v1/admin/cloud/clusters/:id/delete") | ("POST", "/v1/admin/cloud/found/delete") => 3,
         _ => 2,
     }

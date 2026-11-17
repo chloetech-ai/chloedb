@@ -161,6 +161,20 @@ struct Args {
     /// The MiB a second a scheduled scrub reads at most.
     #[arg(long, default_value_t = 64)]
     scrub_mib_s: u64,
+    /// On a database server: time a few reads of the database's file
+    /// around the page cache every this many seconds (16 KiB at random
+    /// places and 4 MiB in a row, two seconds at most), so that the command
+    /// center tells a copy whose disk reads far slower than its peers' (0:
+    /// never).
+    #[arg(long, default_value_t = chloedb_server::disks::EVERY_S)]
+    disk_probe_s: u64,
+    /// Under Kubernetes, with the database on the node's own disk (a
+    /// hostPath or an emptyDir): the free share of that disk below which
+    /// the kubelet evicts the node's pods (its imagefs.available or
+    /// nodefs.available threshold), which the command center warns of
+    /// before the disk gets there.
+    #[arg(long, default_value_t = chloedb_server::disks::EVICT_FREE)]
+    evict_free_ratio: f64,
     /// Coordinate these shard servers (comma-separated gRPC URLs; replicas
     /// of one shard joined by '|'). Servers of protocol 9 hold the cluster
     /// map, which names every shard's servers: the coordinator then routes
@@ -1221,7 +1235,7 @@ const HELP_TOPICS: &[(&str, &[&str])] = &[
     ("Database", &[
         "demo_shard", "copy_from", "no_backfill", "no_fetch_models", "directory",
         "wal_drop_damaged", "recover", "verify_checksums", "seq_no", "idempotency_ttl_s",
-        "scrub_every_s", "scrub_mib_s", "synonyms", "backup_dir", "slices", "slices_rebuild_s",
+        "scrub_every_s", "scrub_mib_s", "disk_probe_s", "evict_free_ratio", "synonyms", "backup_dir", "slices", "slices_rebuild_s",
         "no_read_stats"
     ]),
     ("Merges and storage tiers", &[
@@ -1619,6 +1633,8 @@ async fn run() {
         failover_after_ms: a.failover_after_ms,
         scrub_every_s: a.scrub_every_s,
         scrub_mib_s: a.scrub_mib_s,
+        disk_probe_s: a.disk_probe_s,
+        evict_free_ratio: Some(a.evict_free_ratio).filter(|r| r.is_finite() && (0.0..1.0).contains(r)).or_else(|| fail(&format!("--evict-free-ratio is a share from 0 to 1, not {}", a.evict_free_ratio))),
         shards: a.shards,
         kube_cluster: a.kube_cluster.filter(|c| !c.is_empty()),
         coord: chloedb_server::coord::CoordOptions {

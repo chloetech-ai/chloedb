@@ -184,6 +184,17 @@ function whyItIs(st, d, c, slowSince) {
     lines.push({ tone: rule ? "muted" : "warn", text: `${fmt.pct(sp.refused / sp.calls, 0)} of its calls were refused (429)`, sub: rule ? `mostly by contain rule ${rule[1]}: its clients are turned away on purpose` : topRef ? `mostly “${topRef.message}”` : "the server had no query slot or memory free" });
   }
   if (sp.client / Math.max(1, sp.calls) > 0.05) lines.push({ tone: "warn", text: `${fmt.pct(sp.client / sp.calls, 0)} of its calls are client errors (400)`, sub: topErr ? `“${topErr.message}”: the client sends SQL the server cannot run; not a server fault` : "the client sends a request the server cannot run; not a server fault" });
+  // Calls that passed the server's deadline: their callers got no rows (gh, 11-16).
+  const timeouts = st.outcomes?.timeout || 0;
+  if (timeouts) lines.push({ tone: "bad", text: `${fmt.plural(timeouts, "call")} of ${fmt.n(sp.calls)} timed out`, sub: `they passed the server's deadline${state.system?.limits?.timeout_ms ? ` (${fmt.ms(state.system.limits.timeout_ms)})` : ""}, and their callers got a 504 with no rows` });
+  // What it reads: a filter no index serves reads every row of the table.
+  const rd = d.reads;
+  if (rd?.every_row) {
+    const rows = rd.rows != null ? ` (${fmt.si(rd.rows)} rows)` : "";
+    if (rd.why === "filter") lines.push({ tone: "bad", text: ["it filters on ", ...(rd.fields || []).flatMap((f, i) => [i ? (i === rd.fields.length - 1 ? " and " : ", ") : "", h("b", { class: "mono" }, f)]), `, which ${rd.table} does not index and is not clustered by${rd.cluster_by ? ` (it is clustered by ${rd.cluster_by})` : ""}`],
+      sub: `so each call reads every row of ${rd.table}${rows}: an index on it, the table clustered by it, or a summary table kept by it reads only the rows it needs` });
+    else lines.push({ tone: "warn", text: `it has no WHERE, and groups or sorts`, sub: `so each call reads every row of ${rd.table}${rows}: a summary table kept as rows are written reads far less` });
+  }
   if (slow) lines.push({ tone: "bad", text: `p99 is ${fmt.ms(st.p99_ms)}${slowSince ? " since " + when(slowSince, { sec: false }) : ""} (${fmt.ms(prev.p99_ms)} before)`, sub: prev.p50_ms != null && st.p50_ms < prev.p50_ms * 1.5 ? "p50 has not moved: a few calls are slow, not all of them" : c.callsX < 1.5 ? "calls are flat: not more of it, each slower" : null });
   else if (prev?.p99_ms) lines.push({ tone: "muted", text: `p99 ${fmt.ms(st.p99_ms)}, ${fmt.ms(prev.p99_ms)} before`, sub: c ? `calls ×${c.callsX.toFixed(1)}` : null });
   if (c?.callsX >= 3) lines.push({ tone: "warn", text: `${c.callsX.toFixed(1)}× the calls of the window before`, sub: "more of it, rather than each slower" });
@@ -196,6 +207,10 @@ function whyItIs(st, d, c, slowSince) {
       if (cp) {
         const ld = cp.detail?.load || {}, med2 = medianOf("segments");
         if (ld.segments != null && med2 && ld.segments > 3 * med2) lines.push({ tone: "warn", text: `${copyName(w.copy)} has ${fmt.n(ld.segments)} segments (the fleet's median is ${fmt.n(med2)})`, sub: "a search reads every segment" });
+        // Its disk against the fleet's: one degraded disk holds up every call that reads its shard (gh, 11-17).
+        const dk = ld.disk_read_ms, dmed = medianOf("disk_read_ms");
+        if (dk != null && dmed != null && dk >= 5 * dmed && dk >= dmed + 2) lines.push({ tone: "bad", text: `${copyName(w.copy)}'s disk reads ${fmt.ms(dk)} a block, the fleet's median ${fmt.ms(dmed)}`,
+          sub: ld.disk_busy != null ? (ld.disk_busy < 0.3 ? `the device was busy ${fmt.pct(ld.disk_busy, 0)} of the time: the disk is slow, not loaded; Home says what to do` : `the device was busy ${fmt.pct(ld.disk_busy, 0)} of the time`) : "Home says what to do" });
         if (ld.merge_failing) lines.push({ tone: "warn", text: `its merges fail`, sub: ld.disk_used_ratio != null ? `disk ${fmt.pct(ld.disk_used_ratio, 0)} used on ${copyName(w.copy)}` : null });
         else if (ld.disk_used_ratio > 0.9) lines.push({ tone: "warn", text: `disk ${fmt.pct(ld.disk_used_ratio, 0)} used on ${copyName(w.copy)}` });
       }

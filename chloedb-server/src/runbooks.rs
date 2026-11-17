@@ -60,10 +60,22 @@ fn json_of(r: &Runbook) -> Json {
 }
 
 /// The runbook for alert rule or fleet problem `id`: exactly by its id
-/// (a fleet problem `shard-2-down` is `shards`).
+/// (a fleet problem `shard-2-down` is `shards`, `disk-slow-<copy>`
+/// `disk-slow`, `evict-<node>` `evict`, `slow-statement-<id>`
+/// `slow-statement`).
 pub fn for_id(id: &str) -> Option<&'static Runbook> {
     let id = id.trim();
-    let id = if id.starts_with("shard-") { "shards" } else { id };
+    let id = if id.starts_with("shard-") {
+        "shards"
+    } else if id.starts_with("disk-slow-") {
+        "disk-slow"
+    } else if id.starts_with("evict-") {
+        "evict"
+    } else if id.starts_with("slow-statement-") {
+        "slow-statement"
+    } else {
+        id
+    };
     all().iter().find(|r| r.ids.contains(&id))
 }
 
@@ -116,7 +128,7 @@ mod tests {
         for rule in crate::alerts::defaults().into_iter().chain(crate::alerts::builtins()) {
             assert!(for_id(&rule.id).is_some(), "no runbook for alert {}", rule.id);
         }
-        for id in ["alerts", "coordinators_gone", "copies", "damaged", "disk", "error_ratio", "error_ratio_recovered", "lag", "p99", "p99_recovered", "shards", "shard-0-down"] {
+        for id in ["alerts", "coordinators_gone", "copies", "damaged", "disk", "error_ratio", "error_ratio_recovered", "lag", "p99", "p99_recovered", "shards", "shard-0-down", "disk-slow-s3-0", "evict-pool-a1", "slow-statement-3f2a", "disk_speed", "evict", "statements"] {
             if id == "alerts" {
                 continue;
             }
