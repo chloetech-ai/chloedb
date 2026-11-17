@@ -1,7 +1,9 @@
 # Part A on DigitalOcean (2026-11-02)
 
-The latest run is 16 November's, every system with ChloeDB 0.3.5 on one
-node: see "16 November" at the end. The website's No server page reads it.
+The latest run is 17 November's, every system on one Platinum 8358 node with
+ChloeDB's write and typo fixes (#608, #612), and chloedb-server 0.3.5 against
+them: see "17 November" at the end. The website's No server page reads 16
+November's, every system with ChloeDB 0.3.5 on a slower node.
 
 The laptop benchmark's data preparation and Part A (A1 replacing SQLite, A2
 search, writes and streams, A3 recommendations), run on one DigitalOcean
@@ -32,6 +34,7 @@ on an otherwise idle node.
 | `build-split/` | `a2_build_split.py`: Strata's A2 build with and without its vector field, beside Tantivy |
 | `part-a-tantivy/`, `part-a-tantivy-2/` | Tantivy as the app's store beside Strata, on two sfo3 nodes (2026-11-03): see "Tantivy as the app's store" below |
 | `part-a-0.3.5/` | 16 November: every system again on one sfo2 node, with ChloeDB 0.3.5 (its `sqlite-3.40.1/` holds SQLite 3.40.1's A1, replaced by 3.53.1's; `write-tests/` the single-row write tests); see "16 November" at the end |
+| `part-a-1117/` | 17 November: every system again on one nyc1 node (Platinum 8358), ChloeDB with #608 and #612, SQLite 3.54.1 in every part, rows for `sync=False` and 64 vector candidates; `server/` holds chloedb-server 0.3.5 against the same build; see "17 November" at the end |
 
 The tables below come from
 
@@ -812,3 +815,254 @@ three rounds:
   `UPDATE` statement, which takes 0.11 ms without the sync.
 - Cost: the node for about 25 minutes at $0.375 an hour, about $0.16; the
   cluster was deleted with its resources at 02:32 UTC.
+
+## 17 November: every system again, with the write and typo fixes (`part-a-1117/`)
+
+Part A again, every system on one node, with ChloeDB built from main at
+3f0948c with #608 (the log written over zeros written ahead, so a commit's
+sync does not grow the file) and #612 (one walk of the terms for a typo)
+merged in; both are on main since (9a3469ee and b8c1f9d5) and go out in
+0.3.8. `chloedb-py` was built on the node from that tree, and the reports
+name it 0.3.7, main's version then. The scripts are this directory's
+`do_part_a.sh` and the Part A scripts of the same commit.
+
+- **Node:** DigitalOcean `g-8vcpu-32gb` in nyc1 (cluster
+  `chloedb-parta-fix-3b`), Intel Xeon Platinum 8358 @ 2.60GHz, as on 2 and
+  6 November, 8 vCPU, 31 GiB, Debian 13, Python 3.12.16. The five nodes
+  before it (sfo2 and nyc1) came up with a Platinum 8168 and were deleted at
+  once. The other systems' reads and searches took 0.96 (Tantivy) to 1.14
+  (SQLite NORMAL's A1) times as long as on 2 November's node, about 1.07 at
+  the median, and ran 1.12 to 1.34 times as fast as on 16 November's (the
+  median of each system's ratios over A1 and A2). Its disk syncs about as
+  fast as 2 November's: SQLite FULL commits a row of A1 in 0.137 ms at the
+  median (0.14 then, 0.71 on 16 November).
+- **SQLite:** 3.54.1, built from the amalgamation on the node and loaded with
+  `LD_LIBRARY_PATH` (`SQLITE_LIB`) in every part, with sqlite-vec 0.1.9: on
+  16 November A2 and A3 ran on Debian's 3.40.1.
+- **The others:** the newest on PyPI when the node was set up
+  (`versions.txt`): DuckDB 2.0.0, Tantivy 0.27.0, LanceDB 0.41.0, faiss-cpu
+  1.16.0, the same as on 16 November.
+- **Two new ChloeDB rows:** `strata-nosync` in the writes test, ChloeDB with
+  `sync=False` (a commit returns without waiting for the disk; SQLite NORMAL
+  is the row to read it beside), and `strata-ef64` in A2, vector search at
+  64 candidates, the default before 10 November (0.3.5 searches 200), with
+  its recall beside it.
+- **Passes:** three timed passes of every kind, as on 16 November.
+- **SQLite on quora was not run,** as on 16 November: three passes of its
+  exact vector scans take about 9 hours. Quora ran as a second run after the
+  rest (`A2_COLLECTIONS=quora`).
+- **Cost:** the node from 05:26 to 16:07 UTC and the five 8168 nodes for
+  about 9 minutes each, about 11.5 node-hours at $0.375, about $4.30. Every
+  cluster was deleted with its resources, and no droplet tagged
+  `strata-bench` is left.
+
+**What changed.**
+
+- **Searches against 16 November's 0.3.5** (another node): 1.33 times as
+  fast at the median of every kind and collection, about what the node gave
+  the other systems, so most of 16 November's slowdown was that node's CPU.
+  Typo queries 1.40 to 1.73 times as fast (the node and #612), vector search
+  1.46 to 1.81 (the node, and AVX-512 VNNI, which the 8168 lacks, for the
+  scalar-quantized dot products).
+- **Searches against the 6 November build** (`part-a-1106/`, 6 November's
+  8358 node in nyc3, which ran the 2 November build 5 to 10% faster than
+  2 November's did): ChloeDB's queries still take 1.32 times as long at the
+  median, BM25 1.17, AND and OR of words 1.32 to 1.35, typos 1.29 and 1.39.
+  The nodes account for about 1.1 to 1.2 of that (this one ran the other
+  systems about 7% slower than 2 November's); the rest, about 1.1 to 1.2,
+  came with the changes since 6 November, a little at a time (the bisect of
+  16 November found no one merge). Vector search takes 1.96 times as long at the default
+  200 candidates (recall@10 0.995 to 0.999, against 0.977 to 0.997), and 1.10
+  to 1.41 times at 64 (`strata-ef64`: recall@10 the same as 6 November's on
+  four collections, 0.970 against 0.984 on trec-covid).
+- **Single-row writes.** In A1, 13,267 inserts a second (0.067 ms at the
+  median) against SQLite FULL's 5,212 (0.137 ms) and NORMAL's 10,409, and
+  deletes 15,936 against 6,473 and 14,278. On 16 November's slow disk 0.3.5
+  did 268 against SQLite FULL's 933; the 6 November build did 6,263 on
+  6 November's fast one. With the text and vector indexes (the writes test),
+  3,737 inserts a second against SQLite FULL's 711 and NORMAL's 884.
+- **Updates are still slower than SQLite's:** in A1, 3,149 price updates a
+  second against SQLite FULL's 7,149 (0.307 ms at the median, against
+  0.108); the time is the `UPDATE` statement's planning and running, not the
+  sync (`strata-nosync` updates 3,540 a second in the writes test, against
+  1,920 synced).
+- **`sync=False`:** 7,397 inserts a second in the writes test (0.067 ms),
+  twice the synced rate, and 211,474 deletes; batches gain little, since a
+  batch's sync is already one of many rows.
+- **A stream at 50,000 rows a second** reached 19,662 (14,916 on
+  16 November), with reads at 4,971 a second alongside.
+- **A3:** similar items 704 µs at the median (916 on 16 November) and the
+  feed 7.81 ms (8.46).
+
+### chloedb-server: 0.3.5 and the fixes on this node
+
+After Part A, `server_check.py` ran chloedb-server 0.3.5 (the release
+commit 1445c103) and the fixes' build (the tree above, which reports 0.3.7)
+in turns, three rounds, both built on the node with the release profile.
+Each round, for each build and each of scifact, nfcorpus and fiqa: the
+collection imported with `chloedb-server import`, the server started with
+`--answer-cache-mb 0`, then A2's typo queries (`typo_of`, the second and
+third letters of the longest word swapped) as `bm25(..., fuzzy => 'auto')`
+over HTTP from one client, a pass to warm up and three timed. On scifact
+also 2,000 one-row `POST /v1/write` inserts at 1 client and at 16 (each
+client its own process), each answered after its commit's sync, then a
+SIGKILL, a restart and a count. `server/server_check.json` holds every
+round, `server/server-check.log` the output. The median of the three rounds:
+
+| build | scifact typo p50 | nfcorpus typo p50 | fiqa typo p50 | writes, 1 client | writes, 16 clients | requests a commit at 16 | after SIGKILL |
+|---|---|---|---|---|---|---|---|
+| 0.3.5 | 1.452 ms | 1.011 ms | 2.528 ms | 1,588/s | 8,454/s | 5.2 | every row |
+| fixes | 1.190 ms | 0.821 ms | 2.090 ms | 2,248/s | 9,529/s | 4.1 | every row |
+
+- **The same answers:** each of the 1,208 typo queries (291, 292 and 625)
+  got the same ten keys from both builds, in the same order.
+- **Nothing lost:** in all three rounds, after the SIGKILL both builds had
+  every row they had answered (5,183 + 4,000), and none of the 24,000
+  writes failed.
+- **Typos:** 1.21 to 1.23 times as fast for the client, 1.24 to 1.31 in the
+  server's own `took_ms`.
+- **Writes:** 1.42 times as many a second from one client (0.405 ms at the
+  median, against 0.577), 1.13 times from 16. The writer commits what has
+  queued together, and with shorter syncs fewer requests wait for each
+  commit (4.1 against 5.2).
+
+The tables come from
+
+```bash
+python3 chloedb-py/bench/laptop/part_a_report.py part-a-1117
+```
+
+### A1: the app (Shop, 137,260 products and 4,624,176 reviews)
+
+Reads (p50 / p99, one thread):
+
+| system | get by id (SQL) | get by key (no SQL) | get, 4 threads | 100 by id (SQL) | 100 by key | a user's reviews | page 1 | page 10,000 |
+|---|---|---|---|---|---|---|---|---|
+| strata | 35 µs / 62 µs | 22 µs / 40 µs | 44,737/s | 1.85 ms / 2.38 ms | 1.92 ms / 2.40 ms | 40 µs / 84 µs | 1.32 ms / 1.78 ms | 3.96 ms / 4.98 ms |
+| sqlite-full, 3.54.1 | 9 µs / 19 µs | - | 13,149/s | 406 µs / 569 µs | - | 13 µs / 41 µs | 11.0 ms / 11.9 ms | 32.2 ms / 34.4 ms |
+| sqlite-normal, 3.54.1 | 9 µs / 19 µs | - | 12,728/s | 400 µs / 568 µs | - | 13 µs / 41 µs | 10.4 ms / 11.6 ms | 31.7 ms / 35.0 ms |
+| duckdb, 2.0.0 | 740 µs / 969 µs | - | 4,356/s | 6.08 ms / 8.32 ms | - | 33.9 ms / 39.5 ms | 10.7 ms / 14.1 ms | 16.6 ms / 19.0 ms |
+
+Loads, aggregates and joins:
+
+| system | load reviews | file | reviews by brand | reviews by month | join: top products | join: a user's |
+|---|---|---|---|---|---|---|
+| strata | 60,886/s | 1,753 MB | 41.0 ms / 45.8 ms | 22.1 ms / 38.9 ms | 702 ms / 716 ms | 551 µs / 1.06 ms |
+| sqlite-full, 3.54.1 | 20,231/s | 2,868 MB | 114 ms / 123 ms | 3,975 ms / 3,996 ms | 2,566 ms / 2,584 ms | 25 µs / 102 µs |
+| sqlite-normal, 3.54.1 | 20,297/s | 2,868 MB | 114 ms / 122 ms | 3,974 ms / 4,107 ms | 2,599 ms / 2,621 ms | 25 µs / 104 µs |
+| duckdb, 2.0.0 | 49,269/s | 3,230 MB | 5.82 ms / 7.27 ms | 10.8 ms / 12.5 ms | 227 ms / 265 ms | 33.3 ms / 39.7 ms |
+
+Writes (one row per transaction unless noted) and a mixed run of 2 readers and 1 writer:
+
+| system | insert | insert, 1,000 per txn | update price | counter + 1 | delete by id | mixed reads | mixed writes | errors |
+|---|---|---|---|---|---|---|---|---|
+| strata | 13,267/s | 88,817/s | 3,149/s | 3,353/s | 15,936/s | 2,781/s, p99 10.0 ms | 2,881/s, p99 543 µs | 0 |
+| sqlite-full, 3.54.1 | 5,212/s | 18,696/s | 7,149/s | 13,134/s | 6,473/s | 473/s, p99 46.9 ms | 1,848/s, p99 5.36 ms | 0 |
+| sqlite-normal, 3.54.1 | 10,409/s | 18,623/s | 17,221/s | 70,472/s | 14,278/s | 482/s, p99 44.9 ms | 18,058/s, p99 217 µs | 0 |
+| duckdb, 2.0.0 | 263/s | 85,857/s | 787/s | 818/s | 905/s | 96/s, p99 167 ms | 239/s, p99 12.1 ms | 0 |
+
+### A2: search (BEIR, Cohere embed-english-v3 1,024-d vectors)
+
+Each cell is p50 / p99 on one thread, then nDCG@10 (vector: and recall@10 against exact search). Hybrid is RRF of BM25 and vectors at depth 100.
+
+#### scifact (5,183 documents)
+
+| system | build | size | BM25 | vector | hybrid | filtered hybrid | hybrid, 4 threads |
+|---|---|---|---|---|---|---|---|
+| strata | 0.6 s | 35 MB | 111 µs / 289 µs · 0.690 | 323 µs / 436 µs · 0.718 · r 0.999 | 605 µs / 833 µs · 0.729 | 359 µs / 825 µs | 5,529/s |
+| strata-1t | 0.6 s | 35 MB | 111 µs / 290 µs · 0.690 | 323 µs / 419 µs · 0.718 · r 1.000 | 619 µs / 834 µs · 0.729 | 381 µs / 837 µs | 5,591/s |
+| strata-ef64 | 0.6 s | 35 MB | 109 µs / 286 µs · 0.690 | 214 µs / 308 µs · 0.718 · r 0.997 | 519 µs / 735 µs · 0.729 | 369 µs / 828 µs | 6,197/s |
+| sqlite | 0.6 s | 39 MB | 2.64 ms / 6.10 ms · 0.682 | 9.96 ms / 10.6 ms · 0.718 · r 1.000 | 14.7 ms / 18.8 ms · 0.736 | 9.55 ms / 73.6 ms | 242/s |
+| tantivy | 0.3 s | 3 MB | 93 µs / 187 µs · 0.686 | - | - | - | - |
+| duckdb | 3.0 s | 50 MB | 23.8 ms / 28.9 ms · 0.685 | 5.01 ms / 6.16 ms · 0.718 · r 0.996 | 28.6 ms / 33.3 ms · 0.737 | 35.0 ms / 50.8 ms | 94/s |
+| lancedb | 1.0 s | 29 MB | 3.26 ms / 4.51 ms · 0.687 | 11.8 ms / 15.7 ms · 0.718 · r 1.000 | 15.6 ms / 20.1 ms · 0.738 | 11.0 ms / 19.2 ms | 86/s |
+
+#### nfcorpus (3,633 documents)
+
+| system | build | size | BM25 | vector | hybrid | filtered hybrid | hybrid, 4 threads |
+|---|---|---|---|---|---|---|---|
+| strata | 0.5 s | 24 MB | 45 µs / 102 µs · 0.329 | 310 µs / 473 µs · 0.387 · r 0.995 | 435 µs / 585 µs · 0.380 | 262 µs / 575 µs | 6,897/s |
+| strata-1t | 0.4 s | 24 MB | 46 µs / 107 µs · 0.329 | 305 µs / 455 µs · 0.386 · r 0.995 | 441 µs / 593 µs · 0.380 | 265 µs / 578 µs | 6,622/s |
+| strata-ef64 | 0.4 s | 24 MB | 44 µs / 99 µs · 0.329 | 212 µs / 279 µs · 0.385 · r 0.977 | 374 µs / 518 µs · 0.377 | 257 µs / 552 µs | 7,249/s |
+| sqlite | 0.4 s | 27 MB | 227 µs / 2.33 ms · 0.327 | 6.92 ms / 7.50 ms · 0.387 · r 1.000 | 8.26 ms / 11.4 ms · 0.377 | 4.94 ms / 45.8 ms | 410/s |
+| tantivy | 0.2 s | 2 MB | 35 µs / 85 µs · 0.326 | - | - | - | - |
+| duckdb | 1.7 s | 35 MB | 21.8 ms / 30.8 ms · 0.323 | 4.42 ms / 5.64 ms · 0.384 · r 0.976 | 26.4 ms / 35.6 ms · 0.379 | 30.9 ms / 45.2 ms | 111/s |
+| lancedb | 0.6 s | 21 MB | 2.95 ms / 3.91 ms · 0.327 | 10.8 ms / 13.9 ms · 0.387 · r 0.999 | 13.7 ms / 16.4 ms · 0.384 | 9.34 ms / 15.2 ms | 99/s |
+
+#### fiqa (57,638 documents)
+
+| system | build | size | BM25 | vector | hybrid | filtered hybrid | hybrid, 4 threads |
+|---|---|---|---|---|---|---|---|
+| strata | 10.8 s | 349 MB | 323 µs / 1.10 ms · 0.253 | 460 µs / 583 µs · 0.419 · r 0.997 | 1.14 ms / 2.01 ms · 0.360 | 569 µs / 4.14 ms | 2,883/s |
+| strata-1t | 10.6 s | 349 MB | 320 µs / 1.08 ms · 0.253 | 480 µs / 638 µs · 0.419 · r 0.997 | 1.14 ms / 2.00 ms · 0.363 | 597 µs / 4.31 ms | 3,226/s |
+| strata-ef64 | 10.7 s | 349 MB | 320 µs / 1.09 ms · 0.253 | 277 µs / 368 µs · 0.412 · r 0.979 | 1.01 ms / 1.90 ms · 0.363 | 570 µs / 4.20 ms | 3,262/s |
+| sqlite | 5.6 s | 320 MB | 17.9 ms / 42.1 ms · 0.256 | 103 ms / 106 ms · 0.421 · r 1.000 | 129 ms / 156 ms · 0.365 | 106 ms / 1,491 ms | 30/s |
+| tantivy | 1.3 s | 19 MB | 241 µs / 557 µs · 0.253 | - | - | - | - |
+| duckdb | 20.2 s | 541 MB | 36.3 ms / 43.7 ms · 0.230 | 5.38 ms / 7.15 ms · 0.413 · r 0.982 | 44.2 ms / 51.9 ms · 0.348 | 99.7 ms / 197 ms | 47/s |
+| lancedb | 12.8 s | 348 MB | 3.64 ms / 5.21 ms · 0.257 | 6.42 ms / 8.53 ms · 0.416 · r 0.977 | 8.70 ms / 11.3 ms · 0.381 | 11.1 ms / 64.1 ms | 121/s |
+
+#### trec-covid (171,332 documents)
+
+| system | build | size | BM25 | vector | hybrid | filtered hybrid | hybrid, 4 threads |
+|---|---|---|---|---|---|---|---|
+| strata | 41.1 s | 1,077 MB | 745 µs / 3.10 ms · 0.664 | 524 µs / 670 µs · 0.817 · r 0.996 | 2.01 ms / 5.46 ms · 0.831 | 1.19 ms / 11.7 ms | 1,707/s |
+| strata-1t | 41.3 s | 1,077 MB | 739 µs / 3.12 ms · 0.664 | 547 µs / 728 µs · 0.819 · r 0.994 | 2.03 ms / 5.49 ms · 0.829 | 1.19 ms / 11.7 ms | 1,653/s |
+| strata-ef64 | 41.4 s | 1,077 MB | 738 µs / 3.10 ms · 0.664 | 322 µs / 438 µs · 0.797 · r 0.970 | 1.85 ms / 5.31 ms · 0.829 | 1.19 ms / 11.5 ms | 1,804/s |
+| sqlite | 39.0 s | 1,044 MB | 93.0 ms / 190 ms · 0.638 | 309 ms / 314 ms · 0.819 · r 0.998 | 427 ms / 527 ms · 0.834 | 343 ms / 4,951 ms | 9/s |
+| tantivy | 5.1 s | 68 MB | 1.15 ms / 2.24 ms · 0.658 | - | - | - | - |
+| duckdb | 58.7 s | 1,751 MB | 94.2 ms / 125 ms · 0.649 | 6.63 ms / 9.71 ms · 0.816 · r 0.986 | 103 ms / 138 ms · 0.838 | 255 ms / 386 ms | 15/s |
+| lancedb | 42.9 s | 1,070 MB | 4.55 ms / 9.42 ms · 0.653 | 6.16 ms / 8.69 ms · 0.819 · r 0.980 | 8.96 ms / 13.3 ms · 0.774 | 16.1 ms / 196 ms | 118/s |
+
+#### quora (522,931 documents)
+
+| system | build | size | BM25 | vector | hybrid | filtered hybrid | hybrid, 4 threads |
+|---|---|---|---|---|---|---|---|
+| strata | 128.4 s | 2,807 MB | 229 µs / 1.22 ms · 0.755 | 647 µs / 846 µs · 0.892 · r 0.997 | 1.15 ms / 2.41 ms · 0.850 | 1.62 ms / 26.4 ms | 3,117/s |
+| strata-1t | 130.6 s | 2,807 MB | 226 µs / 1.22 ms · 0.755 | 667 µs / 871 µs · 0.893 · r 0.997 | 1.17 ms / 2.46 ms · 0.851 | 1.64 ms / 29.4 ms | 2,874/s |
+| strata-ef64 | 130.9 s | 2,807 MB | 226 µs / 1.22 ms · 0.755 | 359 µs / 464 µs · 0.891 · r 0.994 | 956 µs / 2.24 ms · 0.850 | 1.60 ms / 29.8 ms | 3,437/s |
+| tantivy | 8.3 s | 33 MB | 320 µs / 831 µs · 0.756 | - | - | - | - |
+| duckdb | 179.6 s | 4,432 MB | 55.2 ms / 69.4 ms · 0.726 | 5.85 ms / 7.74 ms · 0.892 · r 0.995 | 64.0 ms / 78.4 ms · 0.834 | 293 ms / 638 ms | 29/s |
+| lancedb | 121.7 s | 2,820 MB | 3.76 ms / 5.70 ms · 0.774 | 6.35 ms / 8.23 ms · 0.891 · r 0.989 | 8.47 ms / 11.2 ms · 0.869 | 32.4 ms / 235 ms | 121/s |
+
+### Writes, updates and streams (137,260 products with a text index and a vector index)
+
+Rows per second, one writer:
+
+| system | load | insert 1/txn | 100/txn | 1,000/txn | 10,000/txn | update price | update title | update vector | upsert row | delete |
+|---|---|---|---|---|---|---|---|---|---|---|
+| strata | 12.1 s | 3,737/s | 31,929/s | 10,442/s | 12,772/s | 1,920/s | 1,953/s | 1,273/s | 4,705/s | 17,398/s |
+| strata-nosync | 12.2 s | 7,397/s | 41,741/s | 9,604/s | 10,533/s | 3,540/s | 2,657/s | 1,529/s | 12,565/s | 211,474/s |
+| sqlite-full | 9.7 s | 711/s | 7,010/s | 12,820/s | 12,332/s | 8,763/s | 651/s | 2,498/s | 459/s | 2,416/s |
+| sqlite-normal | 9.8 s | 884/s | 10,071/s | 12,783/s | 12,085/s | 29,623/s | 859/s | 3,870/s | 503/s | 3,390/s |
+| duckdb | 36.8 s | 130/s | 1,277/s | 1,176/s | 1,317/s | 815/s | 565/s | 155/s | 179/s | 833/s |
+| lancedb | 19.3 s | 255/s | 9,576/s | 51,866/s | 101,594/s | 2/s | 2/s | 2/s | 1/s | 5/s |
+
+A stream of new rows at a target rate, with a reader running:
+
+| system | target | reached | commit p50 | lag p99 | reads |
+|---|---|---|---|---|---|
+| strata | 1,000/s | 1,000/s | 1.52 ms | 26.6 ms | 30,940/s, p99 424 µs |
+| strata | 10,000/s | 10,000/s | 12.8 ms | 267 ms | 8,699/s, p99 4.92 ms |
+| strata | 50,000/s | 19,662/s | 112 ms | 9,196 ms | 4,971/s, p99 6.44 ms |
+| strata-nosync | 1,000/s | 1,000/s | 1.15 ms | 29.7 ms | 28,845/s, p99 434 µs |
+| strata-nosync | 10,000/s | 10,000/s | 11.1 ms | 241 ms | 8,523/s, p99 4.93 ms |
+| strata-nosync | 50,000/s | 20,936/s | 101 ms | 8,678 ms | 4,925/s, p99 6.82 ms |
+| sqlite-full | 1,000/s | 1,000/s | 7.67 ms | 32.8 ms | 5,260/s, p99 5.10 ms |
+| sqlite-full | 10,000/s | 8,758/s | 50.9 ms | 1,848 ms | 527/s, p99 83.8 ms |
+| sqlite-normal | 1,000/s | 1,000/s | 6.82 ms | 33.4 ms | 5,193/s, p99 5.44 ms |
+| sqlite-normal | 10,000/s | 9,727/s | 41.4 ms | 421 ms | 528/s, p99 82.2 ms |
+| sqlite-normal | 50,000/s | 12,969/s | 181 ms | 11,257 ms | 143/s, p99 194 ms |
+| duckdb | 1,000/s | 873/s | 7.31 ms | 12.1 ms | 1,538/s, p99 6.44 ms |
+| lancedb | 1,000/s | 1,000/s | 17.2 ms | 70.8 ms | 76/s, p99 217 ms |
+| lancedb | 10,000/s | 10,000/s | 25.5 ms | 64.3 ms | 7/s, p99 2,484 ms |
+| lancedb | 50,000/s | 49,998/s | 32.4 ms | 52.3 ms | 2/s, p99 8,156 ms |
+| lancedb | flat out | 113,078/s | 43.5 ms | 52.0 ms | 1/s, p99 15,406 ms |
+
+### A3: recommendations (similar products under filters; a feed fusing vectors with a walk of the co-purchase graph)
+
+| system | build | size | similar | similar recall@10 | similar, 4 threads | feed |
+|---|---|---|---|---|---|---|
+| strata | 53.4 s | 1,242 MB | 704 µs / 1.41 ms | 0.995 | 5,012/s | 7.81 ms / 10.6 ms |
+| lancedb | 31.5 s | 825 MB | 14.5 ms / 18.5 ms | 0.977 | 131/s | 30.1 ms / 35.5 ms |
+| sqlite-vec | 31.9 s | 949 MB | 389 ms / 488 ms | 0.999 | 11/s | 1,000 ms / 1,203 ms |
+| faiss-sqlite | 49.9 s | 1,683 MB | 593 µs / 8.68 ms | 0.994 | 2,151/s | - |
