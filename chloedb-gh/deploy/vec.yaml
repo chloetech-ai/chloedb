@@ -7,8 +7,13 @@
 #   gh-vec         its coordinator, which embeds the query and asks the four
 # Why apart: next to the 60 GB of events a shard reads, the vectors' pages
 # (half a gigabyte a node, quantized, and the graph) were pushed out of the
-# shard's 6 GiB, so a new search read them from the SSD, 1.5 to 3 s. In a
-# cgroup of its own, with a limit the pages fit in, they stay in memory.
+# shard's 6 GiB, so a new search read them from the SSD, 1.5 to 3 s. A
+# cgroup of their own was not enough: after half an hour without searches
+# the node's own reclaim took them too (0.4 to 1 s). So each server runs
+# beside it chloedb-gh-pin (tools/pin), which locks those sections in
+# memory (mlock) and holds them: build it as its main.rs says and copy it
+# to each node's /mnt/chloedb/gh/vec (kubectl cp into gh-vN:/data); without
+# it the server runs as before. Its log is /data/pin.log.
 # Rows are placed as in gh_repos (by repo, 4096 slots split evenly), so
 # each part's slots file is its gh-sN's with the gh-v addresses.
 ---
@@ -35,17 +40,18 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
+        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /data/gh-vec.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
-        # The quantized vectors and the graph are about 530 MB a part: the
-        # limit leaves them room as page cache. No scheduled scrub: reading
-        # the part's 2.3 GB against its checksums pushes them out of it (and
-        # the part is rebuilt from the reduce output in minutes).
-        resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
+        # The quantized vectors and the graph are about 500 MB a part, which
+        # chloedb-gh-pin locks in memory. No scheduled scrub:
+        # reading the part's 4.5 GB against its checksums pushes the rest of
+        # the cache out (and the part is rebuilt from the reduce output in
+        # minutes).
+        resources: {requests: {cpu: 100m, memory: 768Mi}, limits: {memory: 1280Mi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
 ---
@@ -72,17 +78,18 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
+        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /data/gh-vec.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
-        # The quantized vectors and the graph are about 530 MB a part: the
-        # limit leaves them room as page cache. No scheduled scrub: reading
-        # the part's 2.3 GB against its checksums pushes them out of it (and
-        # the part is rebuilt from the reduce output in minutes).
-        resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
+        # The quantized vectors and the graph are about 500 MB a part, which
+        # chloedb-gh-pin locks in memory. No scheduled scrub:
+        # reading the part's 4.5 GB against its checksums pushes the rest of
+        # the cache out (and the part is rebuilt from the reduce output in
+        # minutes).
+        resources: {requests: {cpu: 100m, memory: 768Mi}, limits: {memory: 1280Mi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
 ---
@@ -109,17 +116,18 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
+        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /data/gh-vec.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
-        # The quantized vectors and the graph are about 530 MB a part: the
-        # limit leaves them room as page cache. No scheduled scrub: reading
-        # the part's 2.3 GB against its checksums pushes them out of it (and
-        # the part is rebuilt from the reduce output in minutes).
-        resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
+        # The quantized vectors and the graph are about 500 MB a part, which
+        # chloedb-gh-pin locks in memory. No scheduled scrub:
+        # reading the part's 4.5 GB against its checksums pushes the rest of
+        # the cache out (and the part is rebuilt from the reduce output in
+        # minutes).
+        resources: {requests: {cpu: 100m, memory: 768Mi}, limits: {memory: 1280Mi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
 ---
@@ -146,17 +154,18 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
+        command: ["sh", "-c", "(sleep 20; exec /data/chloedb-gh-pin /data/gh-vec.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /data/gh-vec.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701 --no-fetch-models --scrub-every-s 0"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: gh-admin, key: token}}}
         - {name: CHLOEDB_MODELS, value: /data/no-models}
         ports: [{containerPort: 7700}, {containerPort: 7701}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
-        # The quantized vectors and the graph are about 530 MB a part: the
-        # limit leaves them room as page cache. No scheduled scrub: reading
-        # the part's 2.3 GB against its checksums pushes them out of it (and
-        # the part is rebuilt from the reduce output in minutes).
-        resources: {requests: {cpu: 100m, memory: 640Mi}, limits: {memory: 1280Mi}}
+        # The quantized vectors and the graph are about 500 MB a part, which
+        # chloedb-gh-pin locks in memory. No scheduled scrub:
+        # reading the part's 4.5 GB against its checksums pushes the rest of
+        # the cache out (and the part is rebuilt from the reduce output in
+        # minutes).
+        resources: {requests: {cpu: 100m, memory: 768Mi}, limits: {memory: 1280Mi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/chloedb/gh/vec, type: Directory}}]
 ---
