@@ -15,6 +15,10 @@ import { Recommender, rank, learnWeights, withHint } from '../engine/recommend.m
 
 const T0 = Date.parse('2026-11-01T09:00:00Z');
 const at = (s) => new Date(T0 + s * 1000).toISOString();
+// A refresh reads the clock (a pattern's confidence fades with its age, by
+// a month), so the events it reads are dated from a day ago, not from T0:
+// from T0 they grew older every day and fell behind the other sources.
+const ago = (s) => new Date(Date.now() - 86400000 + s * 1000).toISOString();
 // Events as the store gives them: newest first.
 const newestFirst = (evs) => evs.slice().sort((a, b) => b.ts.localeCompare(a.ts));
 
@@ -158,7 +162,7 @@ function memoryStore(view, events) {
 
 test('a refresh stores the best few with source, confidence and change; again, it adds nothing twice; a dismissed one stays away', async () => {
   const evs = [];
-  for (let i = 0; i < 6; i++) evs.push({ kind: 'open', detail: 'orders', session: `s${i}`, ts: at(i * 1000) }, { kind: 'open', detail: 'stock', session: `s${i}`, ts: at(i * 1000 + 5) });
+  for (let i = 0; i < 6; i++) evs.push({ kind: 'open', detail: 'orders', session: `s${i}`, ts: ago(i * 1000) }, { kind: 'open', detail: 'stock', session: `s${i}`, ts: ago(i * 1000 + 5) });
   const { store, rows } = memoryStore(VIEW, evs);
   const emitted = [];
   const rec = new Recommender({ engine: { store }, signalsOf: async (a, v, e) => signals(e, { views: v.views }), emit: (k, p) => emitted.push([k, p]) });
@@ -181,7 +185,7 @@ test('a refresh stores the best few with source, confidence and change; again, i
 
 test('the model only rewords and orders, within its budget; when it fails the sources\' words stand', async () => {
   const evs = [];
-  for (let i = 0; i < 6; i++) evs.push({ kind: 'open', detail: 'orders', session: `s${i}`, ts: at(i * 1000) }, { kind: 'open', detail: 'stock', session: `s${i}`, ts: at(i * 1000 + 5) });
+  for (let i = 0; i < 6; i++) evs.push({ kind: 'open', detail: 'orders', session: `s${i}`, ts: ago(i * 1000) }, { kind: 'open', detail: 'stock', session: `s${i}`, ts: ago(i * 1000 + 5) });
   const asked = [];
   const ask = async (o) => { asked.push(o); return { text: '{"items": [{"id": "c0", "text": "Show what is left of each product on Orders"}]}' }; };
   const a = memoryStore(VIEW, evs);
