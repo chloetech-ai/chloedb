@@ -1101,7 +1101,9 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // Coordinators telling each other their alerts: a sync between
     // servers, which the coordinator it came from audited as its change.
     let sync = route == "/v1/alerts/peer";
-    let read = method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan || sync;
+    // A change asked only for its plan (a rebalance's dry run): a read.
+    let dry = res.extensions().get::<DryRun>().is_some();
+    let read = method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan || sync || dry;
     // A request that made its own event of what it did (an alert
     // acknowledged, a log level set, a Contain rule): its audit entry is
     // not a `change` event too, so that the Timeline says it once.
@@ -1196,6 +1198,11 @@ struct ClientError(Arc<str>);
 /// What the audit log says a request did, set on its answer.
 #[derive(Clone)]
 struct Audited(String);
+
+/// A change route asked only for its plan, which changes nothing: not
+/// audited, as a GET is not.
+#[derive(Clone)]
+struct DryRun;
 
 /// The answer `j`, with what the audit log says of it.
 /// The statement budget a request's body asks for (`"budget": {"nodes":
@@ -3913,9 +3920,18 @@ fn chunk(b: &Option<AxJson<Json>>) -> Result<usize, ApiError> {
     }
 }
 
-/// `POST /v1/admin/rebalance {"chunk"?}`: evens out the slots over the
-/// shards, in the background (`GET /v1/admin/moves` follows it).
+/// `POST /v1/admin/rebalance {"chunk"?, "by"?, "window"?, "dry_run"?, "force"?}`:
+/// evens out the slots over the shards, in the background (`GET
+/// /v1/admin/moves` follows it). `"by": "load"` evens out the keyed load
+/// the coordinators counted over `window` (default `15m`) instead
+/// ([`crate::coord::balance`]); `dry_run` answers its plan and moves
+/// nothing.
 async fn rebalance(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {
+    match body.as_ref().and_then(|b| b.get("by")).and_then(Json::as_str) {
+        None | Some("slots") => {}
+        Some("load") => return rebalance_by_load(app, w, body).await,
+        Some(other) => return Err(ApiError::bad(format!("by {other:?}: slots (the default) or load"))),
+    }
     let j = match app.svc.coordinator()?.rebalance(chunk(&body)?) {
         Ok(j) => j,
         Err(e) => return Ok(tried("even the slots out over the shards".into())(e)),
@@ -3924,6 +3940,37 @@ async fn rebalance(State(app): State<App>, w: Option<axum::Extension<Principal>>
     let j = moves_started(&app, w, j, title, None);
     let detail = format!("rebalancing: {} moves", j["job"]["of"]);
     // cluster2: its event is the moves' (NEW-scenarios-15).
+    Ok(evented(audited(j, detail)))
+}
+
+/// `POST /v1/admin/rebalance {"by": "load"}`: the load of each slot is this
+/// coordinator's count and every other coordinator's over the same window
+/// (`GET /v1/cluster/slots?window=`), since each counts only what it routes.
+async fn rebalance_by_load(app: App, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {
+    let b = body.as_ref().map(|b| b.0.clone()).unwrap_or(Json::Null);
+    let window = b.get("window").and_then(Json::as_str).unwrap_or("15m").to_string();
+    if !crate::coord::heat::WINDOWS.iter().any(|(name, _)| *name == window) {
+        return Err(ApiError::bad(format!("window {window:?}: one of 1m, 5m or 15m")));
+    }
+    let dry_run = b.get("dry_run").and_then(Json::as_bool).unwrap_or(false);
+    let force = b.get("force").and_then(Json::as_bool).unwrap_or(false);
+    let c = app.svc.coordinator()?;
+    let (others, counted) = crate::coord::balance::others_load(&app.svc, &window).await;
+    let j = match c.rebalance_by_load(chunk(&body)?, &window, &others, counted, dry_run, force) {
+        Ok(j) => j,
+        Err(e) if dry_run => return Err(e),
+        Err(e) => return Ok(tried("even the keyed load out over the shards".into())(e)),
+    };
+    if dry_run {
+        let mut r = AxJson(j).into_response();
+        r.extensions_mut().insert(DryRun);
+        return Ok(r);
+    }
+    let plan = j["plan"].clone();
+    let title = format!("Keyed load evens out over the shards: {} moves, skew {} to {}", j["job"]["of"], plan["before"]["skew"], plan["after"]["skew"]);
+    let mut j = moves_started(&app, w, j, title, None);
+    j["plan"] = plan;
+    let detail = format!("rebalancing by load: {} moves", j["job"]["of"]);
     Ok(evented(audited(j, detail)))
 }
 

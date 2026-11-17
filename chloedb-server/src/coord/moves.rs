@@ -228,6 +228,52 @@ impl Coordinator {
         self.start_job("rebalance", plan_even(&map, None, chunk))
     }
 
+    /// Evens out the shards' keyed load rather than their counts of slots
+    /// ([`super::balance::plan_by_load`]), from what this coordinator
+    /// routed to each slot over `window` (`1m`, `5m` or `15m`) and what the
+    /// other coordinators did (`others`: each slot's operations a second,
+    /// already over the same window). `counted` says whose counts are in it.
+    /// `dry_run` plans and starts nothing; `force` moves on counts that
+    /// cover less than most of the window.
+    pub fn rebalance_by_load(self: &Arc<Self>, chunk: usize, window: &str, others: &[Vec<f64>], counted: Json, dry_run: bool, force: bool) -> Result<Json, ApiError> {
+        let map = self.map().ok_or_else(|| ApiError::bad("a coordinator routing by the hash before slots counts no load by slot: rebalance by slots"))?;
+        let len = super::heat::WINDOWS.iter().find(|(name, _)| *name == window).map(|(_, len)| *len)
+            .ok_or_else(|| ApiError::bad(format!("window {window:?}: one of 1m, 5m or 15m")))?;
+        let (mut load, secs) = self.heat.slot_load(self.now_ms(), len);
+        for o in others {
+            for (l, x) in load.iter_mut().zip(o) {
+                *l += x;
+            }
+        }
+        // Rows move on what the counts say: not on a few seconds of them
+        // (a coordinator just started), unless only asked for the plan.
+        let need = (len as f64 / 1e3).min(300.0) * 0.8;
+        let short = secs < need;
+        let keyed: f64 = load.iter().sum();
+        let plan = super::balance::plan_by_load(&map, &load, chunk);
+        let mut j = plan.to_json();
+        j["by"] = json!("load");
+        j["window"] = json!(window);
+        j["secs"] = json!((secs * 10.0).round() / 10.0);
+        j["keyed_per_s"] = json!((keyed * 1000.0).round() / 1000.0);
+        j["coordinators"] = counted;
+        if short {
+            j["warning"] = json!(format!("the counts cover {secs:.0} s of the {window} window: this coordinator started recently"));
+        }
+        if dry_run {
+            return Ok(json!({"plan": j, "job": null}));
+        }
+        if short && !force {
+            return Err(ApiError { code: None, status: 409, message: format!("the counts cover only {secs:.0} s of the {window} window (this coordinator started recently): wait until they cover {need:.0} s, rebalance by slots, or force it") });
+        }
+        if keyed < super::heat::QUIET_PER_S {
+            return Err(ApiError { code: None, status: 409, message: format!("fewer than {} keyed operation a second over the {window} window: too little load to weigh; rebalance by slots", super::heat::QUIET_PER_S) });
+        }
+        let mut out = self.start_job("rebalance by load", plan.moves)?;
+        out["plan"] = j;
+        Ok(out)
+    }
+
     /// Moves every slot of shard `i` to the others, evenly, in the
     /// background: before removing it.
     pub fn drain(self: &Arc<Self>, i: usize, chunk: usize) -> Result<Json, ApiError> {

@@ -112,6 +112,7 @@ use crate::cores::slots as core;
 use crate::slots::{self, hash_shard_of, Move, SlotMap};
 use crate::{json as js, plan_pb, ApiError};
 
+pub mod balance;
 pub mod heat;
 mod moves;
 pub mod plan;

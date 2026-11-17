@@ -1035,3 +1035,62 @@ async fn a_coordinator_says_which_slots_are_hot() {
     assert!(win["skew"].as_f64().unwrap() < 1.3, "{win}");
     assert!(even.slot_heat_keys().is_none());
 }
+
+/// A rebalance by load moves the slots that carry the load, not an even
+/// share of the slots: keys read on one of two shards with even slots make
+/// it hot over many of its slots, the plan moves some of those to the other
+/// shard, and afterwards the shards take about the same load. A plan on
+/// counts of a few seconds is refused unless forced, and a dry run moves
+/// nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebalance_by_load_moves_the_busy_slots() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let (_s0, u0) = serve(create(d, "s0.strata", |_| true), d, "s0.strata").await;
+    let (a, svc) = coordinator(&[u0.clone()]).await;
+    let (_s1, u1) = serve(create(d, "s1.strata", |_| false), d, "s1.strata").await;
+    a.add_shard(vec![u1.clone()], Acks::All).await.unwrap();
+    a.rebalance(4096).unwrap();
+    assert_eq!(job_done(&a).await["job"]["state"], "done");
+    let map = a.map().unwrap();
+    assert_eq!((map.count(0), map.count(1)), (2048, 2048));
+
+    // Every key of shard 0 read ten times, none of shard 1's.
+    let ids: Vec<String> = (0..N).map(|i| key(i).as_str().unwrap().to_string()).filter(|k| map.owner(slots::slot(&Value::from(k.as_str()))) == 0).collect();
+    assert!(ids.len() > 100, "{}", ids.len());
+    let list: Vec<String> = ids.iter().map(|k| format!("'{k}'")).collect();
+    for _ in 0..10 {
+        let r = svc.query(QueryReq { sql: format!("SELECT id FROM products WHERE id IN ({}) LIMIT 1000", list.join(", ")), ..Default::default() }).await.unwrap();
+        assert_eq!(r.rs.rows.len(), ids.len());
+    }
+    assert_eq!(a.slot_heat(false, None)["windows"]["1m"]["verdict"], "hot range");
+
+    // A dry run plans, from shard 0 to shard 1, and moves nothing.
+    let counted = serde_json::json!([{"coordinator": "this", "ok": true}]);
+    let dry = a.rebalance_by_load(4096, "1m", &[], counted.clone(), true, false).unwrap();
+    let plan = &dry["plan"];
+    assert!(dry["job"].is_null(), "{dry}");
+    assert_eq!(plan["before"]["skew"], 2.0, "{plan}");
+    assert!(plan["after"]["skew"].as_f64().unwrap() < 1.1 + 1e-9, "{plan}");
+    assert!(plan["moves"].as_array().unwrap().iter().all(|m| m["from"] == 0 && m["to"] == 1), "{plan}");
+    assert!(plan["warning"].as_str().is_some_and(|w| w.contains("started recently")), "{plan}");
+    assert!(plan["unsplit"].is_null(), "no slot is too busy to move: {plan}");
+    assert_eq!(a.map().unwrap().count(0), 2048, "a dry run moves nothing");
+    // A few seconds of counts: refused unless forced.
+    let e = a.rebalance_by_load(4096, "1m", &[], counted.clone(), false, false).unwrap_err();
+    assert_eq!(e.status, 409, "{}", e.message);
+
+    let j = a.rebalance_by_load(4096, "1m", &[], counted, false, true).unwrap();
+    let moved = j["plan"]["slots_moved"].as_u64().unwrap();
+    assert!(moved > 0 && moved < 2048, "only slots with load move: {moved}");
+    let done = job_done(&a).await;
+    assert_eq!(done["job"]["state"], "done", "{done}");
+    assert_eq!(done["job"]["kind"], "rebalance by load", "{done}");
+    let after = a.map().unwrap();
+    assert_eq!((after.count(0), after.count(1)), (2048 - moved as usize, 2048 + moved as usize));
+    // The counts follow their slots: the same load, now even.
+    let w = a.slot_heat(false, None);
+    assert_eq!(w["windows"]["1m"]["verdict"], "even", "{}", w["windows"]["1m"]);
+    let (products, _) = rows(&svc).await;
+    assert_eq!(products.len(), N, "every row, once, after the moves");
+}

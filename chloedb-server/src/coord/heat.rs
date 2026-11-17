@@ -259,6 +259,14 @@ impl SlotHeat {
         j
     }
 
+    /// Each slot's keyed reads and writes a second over the window of
+    /// `len` ms ending at `now`, and the window's length in seconds: the
+    /// load a rebalance by load weighs ([`super::balance`]).
+    pub fn slot_load(&self, now: u64, len: u64) -> (Vec<f64>, f64) {
+        let (d, secs) = self.window(now, len);
+        ((0..SLOTS).map(|s| (d[READS + s] + d[WRITES + s]) as f64 / secs).collect(), secs)
+    }
+
     /// The short form in `/v1/cluster`: per shard, its keyed operations a
     /// second over the last 5 minutes and its share, and the verdict.
     pub fn brief(&self, now: u64, owner: &dyn Fn(usize) -> usize, shards: usize) -> (Vec<Json>, Json) {

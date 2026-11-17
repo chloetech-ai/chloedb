@@ -866,6 +866,18 @@ fn step_of(k: usize, v: &Json) -> Result<Json, ApiError> {
             }
         }
         "drain" | "remove_shard" => out["shard"] = json!(shard()?),
+        "rebalance" => match v["by"].as_str() {
+            None | Some("slots") => {}
+            Some("load") => {
+                out["by"] = json!("load");
+                let w = v["window"].as_str().unwrap_or("15m");
+                if !super::heat::WINDOWS.iter().any(|(name, _)| *name == w) {
+                    return Err(bad("its window is 1m, 5m or 15m"));
+                }
+                out["window"] = json!(w);
+            }
+            Some(_) => return Err(bad("it evens out by slots or by load")),
+        },
         _ => {}
     }
     // A step sent without its words (a call by hand) is said from its fields.
@@ -878,6 +890,7 @@ fn step_of(k: usize, v: &Json) -> Result<Json, ApiError> {
             "promote" => format!("Make {u} the primary of shard {i}{}", if out["force"] == true { ", forced" } else { "" }),
             "add_shard" => format!("Add a shard served by {}", out["servers"].as_array().into_iter().flatten().filter_map(Json::as_str).collect::<Vec<_>>().join(", ")),
             "move" => format!("Move slots {} to shard {}", out["slots"].as_array().into_iter().flatten().map(|r| format!("{}..{}", r[0], r[1])).collect::<Vec<_>>().join(", "), out["to"]),
+            "rebalance" if out["by"] == "load" => "Even the keyed load out over the shards".to_string(),
             "rebalance" => "Even the slots out over the shards".to_string(),
             "drain" => format!("Drain shard {i}: its slots move to the other shards"),
             _ => format!("Remove shard {i}"),
@@ -1312,6 +1325,7 @@ fn audit_step(svc: &Service, c: &Coordinator, k: usize, status: u16, ms: f64, er
         "promote" => ("POST", "/v1/admin/shards/:i/promote", format!("made {url} the primary of shard {}{}", i.unwrap_or(0), if st["force"] == true { " (forced, asking no votes)" } else { "" })),
         "add_shard" => ("POST", "/v1/admin/shards", format!("added a shard served by {}", st["servers"].as_array().into_iter().flatten().filter_map(Json::as_str).collect::<Vec<_>>().join(", "))),
         "move" => ("POST", "/v1/admin/moves", format!("moved slots to shard {}", st["to"])),
+        "rebalance" if st["by"] == "load" => ("POST", "/v1/admin/rebalance", "evened the keyed load out over the shards".to_string()),
         "rebalance" => ("POST", "/v1/admin/rebalance", "evened the slots out over the shards".to_string()),
         "drain" => ("POST", "/v1/admin/shards/:i/drain", format!("drained shard {}", i.unwrap_or(0))),
         _ => ("DELETE", "/v1/admin/shards/:i", format!("removed shard {}", i.unwrap_or(0))),
@@ -1433,6 +1447,17 @@ async fn run_step(svc: &Arc<Service>, c: &Arc<Coordinator>, k: usize, resuming: 
             let count = slots.len();
             let j = c.start_move(slots, to)?;
             moves_event(svc, c, &by, format!("{count} slots move to shard {to}"), Some(to), &j);
+            wait_job(c, k).await
+        }
+        "rebalance" if st["by"] == "load" => {
+            wait_idle(c, k, resuming).await?;
+            let window = st["window"].as_str().unwrap_or("15m");
+            let (others, counted) = super::balance::others_load(svc, window).await;
+            let j = c.rebalance_by_load(MOVE_SLOTS, window, &others, counted, false, false)?;
+            if j["job"]["of"] == 0 {
+                return Ok(format!("nothing to move: {}", j["plan"]["why"].as_str().unwrap_or("the load was even already")));
+            }
+            moves_event(svc, c, &by, format!("Keyed load evens out over the shards: {} moves", j["job"]["of"]), None, &j);
             wait_job(c, k).await
         }
         "rebalance" => {
@@ -1825,6 +1850,13 @@ mod tests {
         let s = step_of(2, &json!({"kind": "move", "shard": 0, "slots": [[0, 10], [20, 30]], "to": 1})).unwrap();
         assert_eq!(s["slots"], json!([[0, 10], [20, 30]]));
         assert_eq!(step_of(3, &json!({"kind": "even"})).unwrap()["kind"], "rebalance");
+        // A rebalance by load keeps its window, 15 minutes unless said.
+        let l = step_of(3, &json!({"kind": "rebalance", "by": "load"})).unwrap();
+        assert_eq!((l["by"].as_str(), l["window"].as_str(), l["text"].as_str()), (Some("load"), Some("15m"), Some("Even the keyed load out over the shards")));
+        assert_eq!(step_of(3, &json!({"kind": "rebalance", "by": "load", "window": "5m"})).unwrap()["window"], "5m");
+        assert!(step_of(3, &json!({"kind": "rebalance", "by": "load", "window": "2h"})).is_err());
+        assert!(step_of(3, &json!({"kind": "rebalance", "by": "rows"})).is_err());
+        assert!(step_of(3, &json!({"kind": "rebalance"})).unwrap()["by"].is_null());
         // A step sent without its words is said from its fields.
         assert_eq!(step_of(0, &json!({"kind": "move", "slots": [[0, 683]], "to": 1})).unwrap()["text"], "Move slots 0..683 to shard 1");
         assert_eq!(step_of(0, &json!({"kind": "promote", "shard": 2, "url": "http://h:1", "force": true})).unwrap()["text"], "Make http://h:1 the primary of shard 2, forced");

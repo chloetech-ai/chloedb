@@ -11,6 +11,18 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Rebalance by load.** `POST /v1/admin/rebalance {"by": "load"}` evens
+  out the shards' keyed load rather than their counts of slots: it weighs
+  each slot by the reads and writes routed to it over the last 15 minutes
+  (`window`), as every coordinator counted them, and moves the busy slots
+  from the busiest shard to the quietest until it takes under 1.1× the
+  mean. It plans nothing under 1.3×, never moves a slot busier than the
+  gap (a hot slot, which it names), and gives no shard more than 1.5× an
+  even share of the slots. `dry_run` answers the plan (each shard's load
+  and the skew before and after, and the moves) and moves nothing; counts
+  of a coordinator that started recently are refused unless `force`d. A
+  plan's step `{"kind": "rebalance", "by": "load"}` runs it. A rebalance
+  by slots, the default, is unchanged.
 - **The Cluster page shows the load on each key slot.** Under the map,
   **Key slots** draws the 4,096 slots as a 64 × 64 grid, each coloured by
   the reads and writes the coordinator routed to it over 1, 5 or 15
