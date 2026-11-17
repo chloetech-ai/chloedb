@@ -14,7 +14,8 @@ For each round, each build in turn, each collection:
           of the client's time and the server's `took_ms`, and the answers
   writes  on the first collection: --writes inserts of one document a
           request (`POST /v1/write`, each committed and synced before the
-          answer), at 1 client and at 16, then a SIGKILL and a restart: every
+          answer), at 1 client and at 16 (a process each), with how many
+          requests shared each commit, then a SIGKILL and a restart: every
           document answered as written must be there
 
 Each build's answers to the typo queries must be the first build's, key for
@@ -27,6 +28,7 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import multiprocessing
 import os
 import shutil
 import signal
@@ -34,7 +36,6 @@ import socket
 import statistics
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -123,31 +124,43 @@ def typo_pass(port: int, qs: list[str]) -> tuple[list[float], list[float], list[
     return client, server, answers
 
 
+def write_worker(port: int, per: int, c: int, prefix: str) -> tuple[list[float], int]:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+    lat, errors = [], 0
+    for i in range(per):
+        doc = {"id": f"{prefix}-{c}-{i}", "body": f"a new document {c} {i} about wireless headphones"}
+        try:
+            ms, _ = post(conn, "/v1/write", {"ops": [{"op": "insert", "doc": doc}]})
+            lat.append(ms)
+        except (RuntimeError, OSError):
+            errors += 1
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+    return lat, errors
+
+
+def batches(port: int) -> float:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+    conn.request("GET", "/metrics")
+    for line in conn.getresponse().read().decode().splitlines():
+        if line.startswith("chloedb_write_batches_total"):
+            return float(line.split()[-1])
+    return float("nan")
+
+
 def writes(port: int, n: int, clients: int, prefix: str) -> dict:
+    """Each client its own process (Python threads would share one
+    interpreter lock, and at 16 the client, not the server, would be what
+    is timed); `per_commit` is requests per transaction, from the writer's
+    chloedb_write_batches_total."""
     per = n // clients
-    lat: list[list[float]] = [[] for _ in range(clients)]
-    errors = [0] * clients
-
-    def go(c: int) -> None:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
-        for i in range(per):
-            doc = {"id": f"{prefix}-{c}-{i}", "body": f"a new document {c} {i} about wireless headphones"}
-            try:
-                ms, _ = post(conn, "/v1/write", {"ops": [{"op": "insert", "doc": doc}]})
-                lat[c].append(ms)
-            except (RuntimeError, OSError):
-                errors[c] += 1
-                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
-
+    b0 = batches(port)
     t = time.perf_counter()
-    ts = [threading.Thread(target=go, args=(c,)) for c in range(clients)]
-    for x in ts:
-        x.start()
-    for x in ts:
-        x.join()
+    with multiprocessing.get_context("fork").Pool(clients) as pool:
+        out = pool.starmap(write_worker, [(port, per, c, prefix) for c in range(clients)])
     s = time.perf_counter() - t
-    all_ms = [m for l in lat for m in l]
-    return {"clients": clients, "rows": len(all_ms), "errors": sum(errors), "seconds": s, "rows_per_s": len(all_ms) / s, "p50_ms": pct(all_ms, 50), "p99_ms": pct(all_ms, 99)}
+    commits = batches(port) - b0
+    all_ms = [m for l, _ in out for m in l]
+    return {"clients": clients, "rows": len(all_ms), "errors": sum(e for _, e in out), "seconds": s, "rows_per_s": len(all_ms) / s, "p50_ms": pct(all_ms, 50), "p99_ms": pct(all_ms, 99), "commits": commits, "per_commit": len(all_ms) / commits if commits else float("nan")}
 
 
 def count(port: int) -> int:
@@ -203,7 +216,7 @@ def main() -> None:
                     for clients in (1, 16):
                         w = writes(srv.port, a.writes, clients, f"r{rnd}-c{clients}")
                         b["writes"].append(w)
-                        print(f"r{rnd} {label:8s} writes, {clients:2d} clients: {w['rows_per_s']:,.0f} rows/s, p50 {w['p50_ms']:.3f} ms, errors {w['errors']}", flush=True)
+                        print(f"r{rnd} {label:8s} writes, {clients:2d} clients: {w['rows_per_s']:,.0f} rows/s, p50 {w['p50_ms']:.3f} ms, {w['per_commit']:.1f} a commit, errors {w['errors']}", flush=True)
                     answered = sum(w["rows"] for w in b["writes"][-2:])
                     srv.stop(kill=True)
                     srv.start()
@@ -218,14 +231,15 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / "server_check.json").write_text(json.dumps(res, indent=1))
     med = statistics.median
-    print("\n| build | " + " | ".join(f"{c} typo p50" for c in colls) + " | writes 1 client | writes 16 clients | after SIGKILL |")
-    print("|---|" + "---|" * (len(colls) + 3))
+    print("\n| build | " + " | ".join(f"{c} typo p50" for c in colls) + " | writes 1 client | writes 16 clients | requests a commit at 16 | after SIGKILL |")
+    print("|---|" + "---|" * (len(colls) + 4))
     for label, _ in bins:
         b = res["builds"][label]
         w1 = med([w["rows_per_s"] for w in b["writes"] if w["clients"] == 1])
         w16 = med([w["rows_per_s"] for w in b["writes"] if w["clients"] == 16])
+        pc = med([w["per_commit"] for w in b["writes"] if w["clients"] == 16])
         ok = all(x["all_there"] for x in b["durable"])
-        print(f"| {label} | " + " | ".join(f"{med([t['p50_ms'] for t in b['typo'][c]]):.3f} ms" for c in colls) + f" | {w1:,.0f}/s | {w16:,.0f}/s | {'every row' if ok else 'ROWS MISSING'} |")
+        print(f"| {label} | " + " | ".join(f"{med([t['p50_ms'] for t in b['typo'][c]]):.3f} ms" for c in colls) + f" | {w1:,.0f}/s | {w16:,.0f}/s | {pc:.1f} | {'every row' if ok else 'ROWS MISSING'} |")
     print("\nanswers equal to " + first + "'s: " + json.dumps(res["same_answers"]))
 
 
