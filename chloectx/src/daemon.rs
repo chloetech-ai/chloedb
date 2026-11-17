@@ -165,6 +165,14 @@ pub struct Session {
     /// question it asked (a rule asked for, [`crate::capture::standing_rule`]).
     #[serde(default)]
     pub prev_answer: String,
+    /// The session's last final answers, by hash: the transcript may still
+    /// hold one when the next turn's narration is read ([`Daemon::sync_narration`]).
+    #[serde(default)]
+    pub answered: VecDeque<u64>,
+    /// The part of the session's briefing given with its first prompt
+    /// ([`crate::recall::Briefing::tail`]), and the ids it shows.
+    #[serde(default)]
+    pub tail: Option<(String, Vec<String>)>,
     /// When each tool call of the turn was made, by `tool_use_id`, from the
     /// transcript, kept until its result arrives ([`crate::report`]).
     #[serde(skip)]
@@ -190,6 +198,41 @@ struct DeepJob {
 struct State {
     sessions: HashMap<String, Session>,
     active: String,
+}
+
+/// The tag of the event that marks a turn distilled, stored with its notes.
+pub const TURN_DISTILLED: &str = "distilled_turn";
+/// The tag of the event that marks a turn whose distillation failed.
+pub const TURN_FAILED: &str = "distill_failed";
+/// The tag of the event that marks a turn never to be distilled: one that
+/// called `memory_forget`, whose notes would say again what it forgot.
+pub const TURN_SKIPPED: &str = "distill_skipped";
+/// The final answers a session remembers by hash ([`Session::answered`]).
+const ANSWERS_KEPT: usize = 8;
+/// At most this many turns a stopped daemon left are distilled on a start.
+const MISSED_TURNS: usize = 5;
+
+/// The turns [`Daemon::distill_marks`] found marked, by outcome.
+#[derive(Default)]
+struct Marks {
+    ok: HashSet<(String, i64)>,
+    failed: HashSet<(String, i64)>,
+    skipped: HashSet<(String, i64)>,
+    first: Option<i64>,
+}
+
+/// A stored turn, as distilling it again needs it.
+#[derive(Default)]
+struct StoredTurn {
+    session: String,
+    turn: i64,
+    ts: i64,
+    prompt: String,
+    answer: String,
+    commands: Vec<String>,
+    files: Vec<String>,
+    by: Option<crate::record::Source>,
+    prev_answer: String,
 }
 
 /// One sync with the server at a time: a push, a pull, or a forget's
@@ -226,6 +269,9 @@ pub struct Daemon {
     from_hooks: Mutex<(String, Option<crate::deep::DeepConfig>)>,
     /// `CHLOECTX_DISTILL` as the hooks saw it: 0 unset, 1 on, 2 off.
     hook_distill: std::sync::atomic::AtomicU8,
+    /// The turns a stopped daemon did not distill were looked for
+    /// ([`Daemon::distill_missed`]).
+    missed_checked: std::sync::atomic::AtomicBool,
     last_activity: AtomicI64,
     /// Receipts of recalls: opened when they are on or the file exists
     /// (a forget or redact scrubs it while they are off), unset when its
@@ -266,6 +312,36 @@ impl Drop for Held<'_> {
     }
 }
 
+/// What of a store's other files held a forgotten text ([`Daemon::scrub_side`]).
+#[derive(Default)]
+struct Side {
+    sessions: usize,
+    log_lines: usize,
+    daemon_lines: usize,
+    receipts: usize,
+    named: Vec<String>,
+    failed: Vec<String>,
+}
+
+impl Side {
+    /// What was scrubbed, in words.
+    fn said(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let n = |k: usize, one: &str, many: &str| if k == 1 { format!("1 {one}") } else { format!("{k} {many}") };
+        if self.sessions > 0 {
+            out.push(format!("{} scrubbed", n(self.sessions, "session's state", "sessions' state")));
+        }
+        if self.log_lines > 0 {
+            out.push(format!("{} of events.log scrubbed", n(self.log_lines, "line", "lines")));
+        }
+        if self.daemon_lines > 0 {
+            out.push(format!("{} of daemon.log scrubbed", n(self.daemon_lines, "line", "lines")));
+        }
+        out.extend(self.failed.iter().cloned());
+        out
+    }
+}
+
 impl Daemon {
     pub fn open(dir: &Path, project: &str) -> Result<Daemon> {
         let paths = StorePaths::new(dir);
@@ -291,7 +367,7 @@ impl Daemon {
         let receipts_on = std::sync::atomic::AtomicBool::new(cfg.receipts.enabled);
         let snapshots = crate::snapshots::Snapshots::new(dir);
         Ok(Daemon { paths, project: project.to_string(), store, cfg, state: Mutex::new(state), dirty: Default::default(), pending: Default::default(), saving: Mutex::new(()),
-            logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), hook_distill: Default::default(), last_activity: AtomicI64::new(now()),
+            logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), hook_distill: Default::default(), missed_checked: Default::default(), last_activity: AtomicI64::new(now()),
             receipts, receipts_on, unsaved: Default::default(), deferred: Default::default(), no_hook_receipts: Default::default(), snapshots, keep_pending: Default::default(),
             serving: Default::default(), closing: Default::default() })
     }
@@ -351,9 +427,16 @@ impl Daemon {
 
     /// Writes the receipts made while answering.
     fn save_receipts(&self) {
-        let rs = std::mem::take(&mut *self.unsaved.lock().unwrap());
+        let mut rs = std::mem::take(&mut *self.unsaved.lock().unwrap());
         if rs.is_empty() {
             return;
+        }
+        let live = self.store.forgetting.current(now());
+        if !live.is_empty() {
+            let f = crate::receipt::Forgotten { texts: live, ..Default::default() };
+            for r in &mut rs {
+                crate::receipt::scrub_receipt(r, &f);
+            }
         }
         if let Some(b) = self.receipts.get() {
             if let Err(e) = b.put_all(&rs) {
@@ -365,6 +448,12 @@ impl Daemon {
     /// Writes the session state: copied under the session lock, written
     /// outside it, so a hook never waits for the file.
     fn save_state(&self) {
+        // A text forgotten lately is not written back (a prompt that said
+        // it again, a reply).
+        let live = self.store.forgetting.current(now());
+        if !live.is_empty() {
+            self.scrub_sessions(&live, false);
+        }
         let _one = self.saving.lock().unwrap_or_else(|e| e.into_inner());
         let mut st2 = {
             let st = self.state.lock().unwrap();
@@ -395,6 +484,10 @@ impl Daemon {
     fn log(&self, line: &Json) {
         let mut line = line.clone();
         crate::redact::redact_json(&mut line);
+        let live = self.store.forgetting.current(now());
+        if !live.is_empty() {
+            crate::forget::scrub_json(&mut line, &live);
+        }
         let _one = self.logging.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.paths.dir.join("events.log")) {
             let _ = writeln!(f, "{line}");
@@ -421,7 +514,25 @@ impl Daemon {
                 if req.get("event").and_then(|v| v.as_str()) == Some("UserPromptSubmit") {
                     self.note_source(sid, req);
                 }
-                self.hook(req.get("event").and_then(|v| v.as_str()).unwrap_or(""), payload)
+                let res = self.hook(req.get("event").and_then(|v| v.as_str()).unwrap_or(""), payload);
+                // The first hook after a start says which model distills and
+                // whether it is on: the turns a stopped daemon left are
+                // distilled then, after the answer.
+                if self.missed_checked.swap(true, Ordering::AcqRel) {
+                    res
+                } else {
+                    let missed = self.after(|me| me.distill_missed());
+                    res.map(|(j, d)| {
+                        let both: Deferred = match d {
+                            Some(f) => Box::new(move || {
+                                f();
+                                missed();
+                            }),
+                            None => missed,
+                        };
+                        (j, Some(both))
+                    })
+                }
             }
             "search" => self.op_search(req).map(|r| (r, Some(self.after(|me| me.keep_after_recall())))),
             "receipts" => self.op_receipts(req).map(|r| (r, None)),
@@ -442,7 +553,10 @@ impl Daemon {
             "inspect_query" => crate::inspect::query(&self.store, req).map(|r| (r, None)),
             "inspect_layout" => crate::inspect::layout(&self.store).map(|r| (r, None)),
             "inspect_embed" => crate::inspect::embed(&self.store, req).map(|r| (r, None)),
-            "distill_backfill" => self.distill_backfill().map(|(t, n)| (json!({"turns": t, "items": n}), None)),
+            "distill_backfill" => {
+                let flag = |k: &str| req.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+                self.distill_backfill(flag("again"), flag("dry_run")).map(|r| (r, None))
+            }
             "consolidate" => self.op_consolidate().map(|r| (r, None)),
             "repeats" => {
                 let days = req.get("days").and_then(|v| v.as_i64()).unwrap_or(30).max(1);
@@ -512,13 +626,26 @@ impl Daemon {
     /// project's records the server holds and the store lacks): the
     /// sync's state after, or `None` with no server set up. One at a time.
     pub fn sync_now(&self, pull: bool) -> Option<crate::sync::SyncState> {
+        self.sync_with(pull, false)
+    }
+
+    /// [`Daemon::sync_now`]; `again` sends every record again.
+    fn sync_with(&self, pull: bool, again: bool) -> Option<crate::sync::SyncState> {
         // No server set up: done, without asking git what the project is.
         crate::sync::remote(&crate::paths::home())?;
         let key = crate::sync::project_key(&crate::paths::home(), &self.project);
         // Read each time: `chloectx sync setup` may have given the project a key since.
         let remote = crate::sync::remote_for(&crate::paths::home(), &key)?;
         let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
-        let mut st = crate::sync::load_state(&self.paths.dir, &remote.url);
+        let saved = crate::sync::saved_state(&self.paths.dir);
+        let mut st = crate::sync::load_state(&self.paths.dir, &remote.url, &key);
+        if saved.url == remote.url && !saved.key.is_empty() && saved.key != key {
+            // Another name is another table: it gets every record.
+            self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "renamed": {"from": saved.key, "to": key}}));
+        }
+        if again {
+            st.pushed_seq = 0;
+        }
         // The rows of records forgotten here go first (audit CTX-33): a
         // server that did not answer a forget's delete is asked again.
         let forgets = crate::sync::send_forgets(&remote, &key, &self.paths.dir);
@@ -590,15 +717,20 @@ impl Daemon {
         let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else {
             return Ok(json!({"server": null, "note": "no server set up: chloectx sync setup --url URL"}));
         };
+        let again = req.get("again").and_then(|v| v.as_bool()).unwrap_or(false);
         let st = match what {
-            "push" => self.sync_now(false),
+            "push" => self.sync_with(false, again),
             "pull" => self.sync_now(true),
-            "status" => Some(crate::sync::load_state(&self.paths.dir, &remote.url)),
+            "status" => Some(crate::sync::load_state(&self.paths.dir, &remote.url, &key)),
             w => return Err(err(format!("sync: unknown {w:?} (status, push or pull)"))),
         }
         .unwrap_or_default();
         let on_server = if what == "status" { remote.count(&key).map_err(|e| e.to_string()) } else { Err(String::new()) };
+        // What the server should hold of the records sent or taken from it.
+        let upto = self.store.query(&format!("SELECT COUNT(*) FROM memory WHERE seq <= {} LIMIT 1", st.pushed_seq)).ok().and_then(|rs| rs.rows.first().and_then(|r| r[0].as_i64())).unwrap_or(0).max(0) as u64;
+        let warning = on_server.as_ref().ok().and_then(|n| crate::sync::short_on_server(upto, *n));
         Ok(json!({
+            "warning": warning,
             "server": remote.url, "token": remote.has_token(), "key_from": remote.key_from, "project": self.project, "synced_as": key,
             "local_records": self.store.len(), "last_seq": self.store.last_seq(),
             "pushed_seq": st.pushed_seq, "pushed": st.pushed, "pulled": st.pulled,
@@ -658,18 +790,38 @@ impl Daemon {
                 });
                 let mut ck = self.checker_in(&self.tree(&sid));
                 let pinned = self.store.pinned();
-                let (mut text, shown) = recall::briefing_checked(&pinned, &sid, self.cfg.briefing_chars, now(), Some(&mut ck))?;
-                if !shown.is_empty() {
+                // What the notes hold now; what changes with every session
+                // (counts, where the last one left off) comes with the first
+                // prompt, so that this text is the same from one session to
+                // the next and the prompt cache holds it (JONAH-7).
+                let b = recall::briefing_parts(&pinned, &sid, self.cfg.briefing_chars, now(), Some(&mut ck))?;
+                let mut text = b.text.clone();
+                if !b.ids.is_empty() || !b.tail_ids.is_empty() {
                     let inputs = crate::receipt::Inputs::briefing(&sid, self.cfg.briefing_chars);
                     let rows = crate::receipt::retrieve(&pinned, &inputs);
                     if let Ok(mut out) = rows {
                         // The receipt names what was shown, checks and all.
-                        out.ids = shown.clone();
+                        out.ids = b.ids.iter().chain(&b.tail_ids).cloned().collect();
                         let turn = self.state.lock().unwrap().sessions.get(&sid).map_or(0, |s| s.turn);
-                        self.write_receipt(&sid, turn, "briefing", &pinned, inputs, &out, &text);
+                        self.write_receipt(&sid, turn, "briefing", &pinned, inputs, &out, &format!("{}\n{}", b.text, b.tail));
                     }
                 }
-                self.with_session(&sid, |s| s.injected.extend(shown));
+                // A new conversation's first request is cached; after a
+                // compaction or on a resume the conversation goes on, and
+                // the tail (the checkpoint's open tasks) is needed now.
+                let fresh = !matches!(source.as_str(), "compact" | "resume");
+                if !fresh && !b.tail.is_empty() {
+                    text = if text.is_empty() { b.tail.clone() } else { format!("{text}\n{}", b.tail) };
+                }
+                self.with_session(&sid, |s| {
+                    s.injected.extend(b.ids);
+                    if fresh {
+                        s.tail = (!b.tail.is_empty()).then(|| (b.tail, b.tail_ids));
+                    } else {
+                        s.injected.extend(b.tail_ids);
+                        s.tail = None;
+                    }
+                });
                 if source == "compact" && !last_prompts.is_empty() {
                     let q: Vec<String> = last_prompts.iter().rev().take(2).cloned().collect();
                     if let Some((r, _)) = self.recall_for(&sid, &q.join("\n"), true, "compact")? {
@@ -707,8 +859,13 @@ impl Daemon {
                 // A harness's envelopes around the prompt go first: recalled
                 // later, they read as the conversation ([`crate::envelope`]).
                 let prompt = crate::redact::redact(&crate::envelope::clean(p.get("prompt").and_then(|v| v.as_str()).unwrap_or("")));
-                let (turn, recent) = self.with_session(&sid, |s| {
+                let (turn, recent, tail) = self.with_session(&sid, |s| {
                     s.turn += 1;
+                    // The briefing's part that changes every session.
+                    let tail = s.tail.take().map(|(t, ids)| {
+                        s.injected.extend(ids);
+                        t
+                    });
                     s.shown_before = (s.turn, s.injected.clone());
                     s.episode = EpisodeAcc { prompt: prompt.clone(), ..Default::default() };
                     s.episode_stored = false;
@@ -717,12 +874,15 @@ impl Daemon {
                     while s.last_prompts.len() > 4 {
                         s.last_prompts.pop_front();
                     }
-                    (s.turn, recent)
+                    (s.turn, recent, tail)
                 });
                 // Recall first: the prompt is in the live window anyway, and
                 // storing it afterwards keeps the write (and the memtable
                 // rebuild it causes) off the prompt's critical path.
                 let mut text = self.recall_for(&sid, &prompt, false, "prompt")?.map(|x| x.0).unwrap_or_default();
+                if let Some(t) = tail {
+                    text = if text.is_empty() { t } else { format!("{t}\n{text}") };
+                }
                 // The previous turn's search, when it finished after that turn
                 // ended: offered now, once.
                 if let Some(t) = self.take_late_deep(&sid, turn - 1) {
@@ -812,6 +972,16 @@ impl Daemon {
             }
             "PostToolUse" | "PostToolUseFailure" => {
                 let tool = p.get("tool_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                // A forget's own call names what it forgot: it is not
+                // recorded, and its turn's reply is neither stored nor
+                // distilled (JONAH-2, [`Daemon::end_forget_turn`]).
+                if is_forget_tool(&tool) {
+                    let turn = self.with_session(&sid, |s| s.turn);
+                    let text = p.get("tool_input").and_then(|i| i.get("text")).and_then(|v| v.as_str());
+                    self.store.forgetting.forgot_in(&sid, turn, text, now());
+                    self.log(&json!({"ts": now(), "event": "forget_turn", "session": sid, "turn": turn}));
+                    return Ok((json!({"output": null}), None));
+                }
                 let input = p.get("tool_input").cloned().unwrap_or(Json::Null);
                 let mut resp = p.get("tool_response").cloned().unwrap_or(Json::Null);
                 if event == "PostToolUseFailure" {
@@ -909,6 +1079,23 @@ impl Daemon {
                         return Ok((json!({"output": {"decision": "block", "reason": reason}}), None));
                     }
                 }
+                // Without it, a search that has already found a rule or a
+                // decision of the user's that the session was not shown is
+                // given now, without waiting: the turn may be the session's
+                // only one (JONAH-3: the find came after a `-p` answer that
+                // went against the user's rule, and never reached it).
+                if !active && mode == "async" && !deep_cfg.stop_recheck {
+                    if let Some(t) = self.take_unseen_rule(&sid, cur) {
+                        self.log(&json!({"ts": now(), "event": "deep_rule_recheck", "session": sid, "turn": cur, "chars": t.len()}));
+                        let reason = format!(
+                            "{t}\n\nChloeCtx's search for this request finished as you answered, and found a rule or decision of the user's that bears on it. If your answer goes against one of them, correct it now in a sentence or two. If none does, end your turn with one short line saying so; do not repeat your answer."
+                        );
+                        return Ok((json!({"output": {"decision": "block", "reason": reason}}), None));
+                    }
+                }
+                // A turn that called memory_forget: its reply may say again
+                // what it forgot.
+                let forgot = self.store.forgetting.is_forget_turn(&sid, cur);
                 let (turn, ep, first, ex) = self.with_session(&sid, |s| {
                     let first = !s.episode_stored;
                     s.episode_stored = true;
@@ -916,7 +1103,11 @@ impl Daemon {
                     if first {
                         // Redacted: the state is a file too.
                         let tail: Vec<char> = crate::redact::redact(&answer).chars().collect();
-                        s.prev_answer = tail[tail.len().saturating_sub(800)..].iter().collect();
+                        s.prev_answer = if forgot { String::new() } else { tail[tail.len().saturating_sub(800)..].iter().collect() };
+                        s.answered.push_back(crate::sync::fnv(answer.trim()));
+                        while s.answered.len() > ANSWERS_KEPT {
+                            s.answered.pop_front();
+                        }
                     }
                     (s.turn, s.episode.clone(), first, ex)
                 });
@@ -924,6 +1115,9 @@ impl Daemon {
                     return Ok((json!({"output": null}), None));
                 }
                 let tpath = p.get("transcript_path").and_then(|v| v.as_str()).map(String::from);
+                if forgot {
+                    return Ok((json!({"output": null}), Some(self.after(move |me| me.end_forget_turn(&sid, turn, tpath.as_deref())))));
+                }
                 Ok((
                     json!({"output": null}),
                     Some(self.after(move |me| {
@@ -1035,7 +1229,12 @@ impl Daemon {
             Ok(d) => {
                 // What the user said again, of their earlier requests and
                 // instructions most like this one ([`crate::repeats`]).
-                let before: Vec<Record> = if matches!(ex.by, None | Some(crate::record::Source::User)) { crate::repeats::said_before(&self.store, prompt, sid, turn).unwrap_or_default() } else { Vec::new() };
+                let before: Vec<Record> = if matches!(ex.by, None | Some(crate::record::Source::User)) {
+                    let from = self.first_seq_of(sid, turn).unwrap_or(i64::MAX);
+                    crate::repeats::said_before(&self.store, prompt, sid, turn, from).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 let checked = match crate::repeats::check(&self.distill_cfg(), prompt, &ex.prev_answer, &crate::repeats::listed(&before, sid)) {
                     Ok(c) => c,
                     Err(e) => {
@@ -1086,15 +1285,15 @@ impl Daemon {
                     }
                 }
                 let kept = drafts.len();
-                let stored = if drafts.is_empty() {
-                    Vec::new()
-                } else {
-                    match self.store.append(sid, turn, ts, drafts) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            self.log(&json!({"ts": now(), "error": e.to_string(), "event": "distill"}));
-                            Vec::new()
-                        }
+                // The turn is marked distilled with its notes, in one write:
+                // a daemon stopped before it distills the turn again when it
+                // starts (ANA-5), and `chloectx distill` leaves it (ANA-1).
+                drafts.push(Draft::new(Kind::Event, format!("Distilled turn {turn}: {kept} of {n} notes kept")).tag(TURN_DISTILLED));
+                let stored: Vec<Record> = match self.store.append(sid, turn, ts, drafts) {
+                    Ok(r) => r.into_iter().filter(|r| r.kind != Kind::Event).collect(),
+                    Err(e) => {
+                        self.log(&json!({"ts": now(), "error": e.to_string(), "event": "distill"}));
+                        Vec::new()
                     }
                 };
                 // A note is superseded only by a stored note that names it
@@ -1118,7 +1317,13 @@ impl Daemon {
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "items": n, "kept": kept,
                     "replaced": replaced, "done": done, "said_again": checked.again.len(), "said_again_dropped": checked.dropped.len(), "repeated": repeated, "cost_usd": d.cost_usd + checked.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
             }
-            Err(e) => self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "error": e.to_string()})),
+            Err(e) => {
+                self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "error": e.to_string()}));
+                // Failed, not lost: doctor says why, and `chloectx distill`
+                // tries it again; a restart does not.
+                let mark = Draft::new(Kind::Event, format!("Distilling turn {turn} failed: {}", crate::llm::clip(&e.to_string(), 200))).tag(TURN_FAILED);
+                let _ = self.store.append(sid, turn, ts, vec![mark]);
+            }
         }
         let since = self.distilled_since.fetch_add(1, Ordering::AcqRel) + 1;
         let cc = &self.cfg.consolidate;
@@ -1327,6 +1532,18 @@ impl Daemon {
         (text, Some(res))
     }
 
+    /// The sequence number of a turn's first record (its prompt, stored
+    /// with the picks from its words).
+    fn first_seq_of(&self, sid: &str, turn: i64) -> Option<i64> {
+        self.store
+            .query_with(
+                &format!("SELECT seq FROM memory WHERE session = :session AND turn = {turn} ORDER BY seq ASC LIMIT 1"),
+                &Params::new().set("session", Value::Str(sid.to_string())),
+            )
+            .ok()
+            .and_then(|rs| rs.rows.first().and_then(|r| r[0].as_i64()))
+    }
+
     /// The id of a turn's prompt record, which notes and fixes link to.
     fn prompt_of(&self, sid: &str, turn: i64) -> Option<String> {
         self.store
@@ -1379,6 +1596,28 @@ impl Daemon {
             if let Some(j) = self.deep_jobs.lock().unwrap().get_mut(sid) {
                 j.delivered = true;
             }
+            return None;
+        }
+        self.take_deep(sid, turn, Duration::ZERO, true)
+    }
+
+    /// The finished search of `turn`, once, when it is confident and holds
+    /// a rule or decision of the user's that the session was not shown;
+    /// otherwise it is left for the next prompt.
+    fn take_unseen_rule(&self, sid: &str, turn: i64) -> Option<String> {
+        let ids = {
+            let jobs = self.deep_jobs.lock().unwrap();
+            let j = jobs.get(sid).filter(|j| j.turn == turn && j.done && !j.delivered && !j.text.is_empty() && matches!(j.confidence.as_str(), "high" | "medium"))?;
+            j.ids.clone()
+        };
+        let unseen: Vec<String> = {
+            let st = self.state.lock().unwrap();
+            let shown = st.sessions.get(sid).map(|s| s.injected.clone()).unwrap_or_default();
+            ids.into_iter().filter(|i| !shown.contains(i)).collect()
+        };
+        let users = |r: &Record| matches!(r.source(), None | Some(crate::record::Source::User));
+        let rule = self.store.get(&unseen).unwrap_or_default().iter().any(|r| matches!(r.kind, Kind::Preference | Kind::Decision) && users(r) && !crate::record::closed_tag(&r.tag));
+        if !rule {
             return None;
         }
         self.take_deep(sid, turn, Duration::ZERO, true)
@@ -1468,46 +1707,183 @@ impl Daemon {
         Ok(json!({"text": text, "ids": res.ids(), "answer": res.answer, "confidence": res.confidence, "cost_usd": res.cost_usd, "ms": res.ms}))
     }
 
-    /// Distills every past turn of the store that has a prompt (for stores
-    /// recorded before distillation existed). Returns (turns, items).
-    fn distill_backfill(&self) -> Result<(usize, usize)> {
-        let rs = self.store.query(&format!("SELECT {} FROM memory WHERE kind IN ('prompt', 'answer', 'episode') ORDER BY seq ASC LIMIT 1000000", crate::record::COLUMNS))?;
+    /// The stored turns with a prompt, oldest first: (session, turn) ->
+    /// what distilling it again needs.
+    fn stored_turns(&self, since_seq: i64, since_ts: i64) -> Result<Vec<StoredTurn>> {
+        let rs = self.store.query(&format!("SELECT {} FROM memory WHERE kind IN ('prompt', 'answer', 'episode') AND seq > {since_seq} AND ts >= {since_ts} ORDER BY seq ASC LIMIT 1000000", crate::record::COLUMNS))?;
         let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).collect();
-        // (session, turn) -> (prompt, answer, commands, ts, files)
-        let mut turns: Vec<((String, i64), (String, String, Vec<String>, i64, Vec<String>))> = Vec::new();
+        // By turn, in the order they started: sessions that ran at once
+        // interleave their records.
+        let mut turns: Vec<StoredTurn> = Vec::new();
+        let mut at: HashMap<(String, i64), usize> = HashMap::new();
+        let mut prev_answer: HashMap<String, String> = HashMap::new();
         for r in recs {
-            let key = (r.session.clone(), r.turn);
-            if turns.last().map_or(true, |(k, _)| *k != key) {
-                turns.push((key.clone(), Default::default()));
-            }
-            let (_, (p, a, c, ts, files)) = turns.last_mut().unwrap();
-            *ts = (*ts).max(r.ts);
+            let i = *at.entry((r.session.clone(), r.turn)).or_insert_with(|| {
+                let prev = prev_answer.get(&r.session).cloned().unwrap_or_default();
+                turns.push(StoredTurn { session: r.session.clone(), turn: r.turn, prev_answer: prev, ..Default::default() });
+                turns.len() - 1
+            });
+            let t = &mut turns[i];
+            t.ts = t.ts.max(r.ts);
             match r.kind {
                 Kind::Prompt => {
-                    p.push_str(&r.text);
-                    p.push('\n');
+                    if t.prompt.is_empty() {
+                        t.by = r.source();
+                    }
+                    t.prompt.push_str(&r.text);
+                    t.prompt.push('\n');
                 }
                 Kind::Answer if r.tag != "narration" => {
-                    a.push_str(&r.text);
-                    a.push('\n');
+                    t.answer.push_str(&r.text);
+                    t.answer.push('\n');
+                    let tail: Vec<char> = t.answer.trim().chars().collect();
+                    prev_answer.insert(r.session.clone(), tail[tail.len().saturating_sub(800)..].iter().collect());
                 }
                 Kind::Episode => {
                     if let Some(line) = r.text.lines().find(|l| l.starts_with("Ran: ")) {
-                        c.extend(line[5..].split(" ; ").map(String::from));
+                        t.commands.extend(line[5..].split(" ; ").map(String::from));
                     }
-                    files.extend(r.files.split_whitespace().map(String::from));
+                    t.files.extend(r.files.split_whitespace().map(String::from));
                 }
                 _ => {}
             }
         }
+        turns.retain(|t| !t.prompt.trim().is_empty());
+        Ok(turns)
+    }
+
+    /// The turns a distillation marked, by its outcome ([`TURN_DISTILLED`],
+    /// [`TURN_FAILED`], [`TURN_SKIPPED`]), and the oldest mark's sequence
+    /// number.
+    fn distill_marks(&self) -> Result<Marks> {
+        let rs = self.store.query(&format!("SELECT session, turn, tag, seq FROM memory WHERE kind = 'event' AND tag IN ('{TURN_DISTILLED}', '{TURN_FAILED}', '{TURN_SKIPPED}') ORDER BY seq ASC LIMIT 1000000"))?;
+        let mut m = Marks::default();
+        for r in &rs.rows {
+            let (Some(sid), Some(turn), Some(tag)) = (r[0].as_str(), r[1].as_i64(), r[2].as_str()) else { continue };
+            m.first = m.first.or(r[3].as_i64());
+            match tag {
+                TURN_DISTILLED => &mut m.ok,
+                TURN_FAILED => &mut m.failed,
+                _ => &mut m.skipped,
+            }
+            .insert((sid.to_string(), turn));
+        }
+        Ok(m)
+    }
+
+    fn distill_stored(&self, t: &StoredTurn) {
+        let ex = crate::distill::Exchange { by: t.by.clone(), agent: String::new(), prev_answer: t.prev_answer.clone() };
+        self.distill_turn(&t.session, t.turn, t.ts, t.prompt.trim(), t.answer.trim(), &t.commands, &t.files, &ex);
+    }
+
+    /// `chloectx distill`: distills the stored turns that were not, for
+    /// stores recorded before distillation existed or a turn whose
+    /// distillation failed. A turn distilled already is left as it is
+    /// (ANA-1: each run distilled every turn again, and counted the rules
+    /// again), unless `again`; `dry` only says what it would do.
+    fn distill_backfill(&self, again: bool, dry: bool) -> Result<Json> {
+        let m = self.distill_marks()?;
+        // A turn marked never to be distilled is left out, even `again`.
+        let turns: Vec<StoredTurn> = self.stored_turns(0, 0)?.into_iter().filter(|t| !m.skipped.contains(&(t.session.clone(), t.turn))).collect();
+        let todo: Vec<&StoredTurn> = turns.iter().filter(|t| again || !m.ok.contains(&(t.session.clone(), t.turn))).collect();
+        let retried = todo.iter().filter(|t| m.failed.contains(&(t.session.clone(), t.turn))).count();
+        let skipped = turns.len() - todo.len();
+        let active = self.distill_cfg().active();
+        let mut j = json!({"turns": turns.len(), "to_distill": todo.len(), "already": skipped, "failed_before": retried, "again": again, "active": active});
+        if dry || !active {
+            return Ok(j);
+        }
         let before = self.store.len();
-        let n = turns.len();
-        for ((sid, turn), (p, a, c, ts, files)) in turns {
-            if !p.trim().is_empty() {
-                self.distill_turn(&sid, turn, ts, p.trim(), a.trim(), &c, &files, &crate::distill::Exchange::default());
+        let t0 = Instant::now();
+        for t in &todo {
+            self.distill_stored(t);
+        }
+        // Notes only, not the turns' marks.
+        let marks = todo.len() as u64;
+        j["items"] = json!(self.store.len().saturating_sub(before + marks));
+        j["seconds"] = json!(t0.elapsed().as_secs());
+        Ok(j)
+    }
+
+    /// Distills the turns a daemon stopped before distilling (it was killed,
+    /// or the machine slept: ANA-5), once, when the first hook after the
+    /// start says which model and whether distilling is on: the newest few
+    /// that ended (have an answer) with no mark, since the store's first
+    /// mark (a store from before marks has every turn unmarked) and within
+    /// a week.
+    fn distill_missed(&self) {
+        let mut missed = self.missed_turns();
+        let n = missed.len();
+        missed.drain(..n.saturating_sub(MISSED_TURNS));
+        if missed.is_empty() {
+            return;
+        }
+        self.log(&json!({"ts": now(), "event": "distill_missed", "turns": missed.iter().map(|t| json!({"session": t.session, "turn": t.turn})).collect::<Vec<_>>(), "left": n - missed.len()}));
+        for t in &missed {
+            self.distill_stored(t);
+        }
+    }
+
+    /// The turns of the last week, since the store's first distill mark,
+    /// that ended (have an answer) with no mark, oldest first.
+    fn missed_turns(&self) -> Vec<StoredTurn> {
+        let Ok(m) = self.distill_marks() else { return Vec::new() };
+        let Some(first) = m.first else { return Vec::new() };
+        let Ok(turns) = self.stored_turns(first, now() - 7 * 86_400) else { return Vec::new() };
+        let marked = |t: &StoredTurn| [&m.ok, &m.failed, &m.skipped].iter().any(|s| s.contains(&(t.session.clone(), t.turn)));
+        turns.into_iter().filter(|t| !t.answer.trim().is_empty() && !marked(t)).collect()
+    }
+
+    /// How many turns [`Daemon::missed_turns`] finds, unless one is being
+    /// distilled now (its mark is not written yet).
+    fn undistilled(&self) -> usize {
+        if self.pending.load(Ordering::Acquire) > 0 {
+            return 0;
+        }
+        self.missed_turns().len()
+    }
+
+    /// The end of a turn that called `memory_forget` (JONAH-2): its reply,
+    /// its card and the narration in its transcript are not stored, it is
+    /// not distilled (a note would say again what it forgot), and a search
+    /// it left running is not offered at the next prompt. The texts it
+    /// forgot are forgotten once more, so that what was written while it
+    /// ran (a tool's output that came in late) goes too.
+    fn end_forget_turn(&self, sid: &str, turn: i64, transcript: Option<&str>) {
+        if let Some(t) = transcript {
+            let offset = self.state.lock().unwrap().sessions.get(sid).map_or(0, |s| s.transcript_offset);
+            if let Ok((_, next)) = crate::transcript::tail_texts(Path::new(t), offset) {
+                self.with_session(sid, |s| s.transcript_offset = next);
             }
         }
-        Ok((n, (self.store.len() - before) as usize))
+        {
+            let mut jobs = self.deep_jobs.lock().unwrap();
+            if jobs.get(sid).is_some_and(|j| j.turn == turn) {
+                jobs.remove(sid);
+            }
+        }
+        let texts = self.store.forgetting.end_turn(sid, turn).unwrap_or_default();
+        // Marked, so that `chloectx distill` (even `--again`) and a daemon
+        // that starts later leave the turn undistilled too.
+        let mark = Draft::new(Kind::Event, format!("Turn {turn} called memory_forget: not distilled")).tag(TURN_SKIPPED);
+        if let Err(e) = self.store.append(sid, turn, now(), vec![mark]) {
+            self.log(&json!({"ts": now(), "event": "forget_turn", "session": sid, "turn": turn, "error": e.to_string()}));
+        }
+        let mut again = 0;
+        for t in &texts {
+            let left = self.scan_forgotten(std::slice::from_ref(t)).map(|(own, ctx)| own.len() + ctx.len()).unwrap_or(0);
+            let side = self.scrub_side(std::slice::from_ref(t), true);
+            if left == 0 && side.sessions + side.log_lines + side.daemon_lines + side.receipts == 0 {
+                continue;
+            }
+            again += left;
+            // `t` is a needle already: lowercase, long enough.
+            match self.forget(&json!({"op": "forget", "text": t, "wait": true})) {
+                Ok(_) => {}
+                Err(e) => self.log(&json!({"ts": now(), "event": "forget_turn", "session": sid, "turn": turn, "error": e.to_string()})),
+            }
+        }
+        self.log(&json!({"ts": now(), "event": "forget_turn_end", "session": sid, "turn": turn, "texts": texts.len(), "found_again": again}));
     }
 
     /// Stores assistant text written between tool calls since the last scan
@@ -1518,10 +1894,16 @@ impl Daemon {
             st.sessions.get(sid).map_or(0, |s| s.transcript_offset)
         };
         let Ok((texts, next)) = crate::transcript::tail_texts(Path::new(path), offset) else { return };
-        self.with_session(sid, |s| s.transcript_offset = next);
+        // A final answer the transcript held only after its turn's scan is
+        // read with the next turn's: stored already, it is not narration
+        // (ANA-4: 4 of 5 multi-turn sessions stored an answer twice).
+        let answered = self.with_session(sid, |s| {
+            s.transcript_offset = next;
+            s.answered.clone()
+        });
         let drafts: Vec<Draft> = texts
             .iter()
-            .filter(|t| t.trim() != final_answer.trim())
+            .filter(|t| t.trim() != final_answer.trim() && !answered.contains(&crate::sync::fnv(t.trim())))
             .flat_map(|t| capture::narration_drafts(t))
             .map(|d| d.ctx(ctx.to_string()))
             .collect();
@@ -2003,6 +2385,12 @@ impl Daemon {
             Some(k) => Kind::parse(k).filter(|k| k.is_knowledge()).ok_or_else(|| err(format!("no kind {k:?}: a record to remember is a decision, preference, fact, todo or note")))?,
         };
         let text = crate::redact::redact(req.get("text").and_then(|v| v.as_str()).unwrap_or("").trim());
+        if crate::forget::holds(&text, &self.store.forgetting.current(now())) {
+            return Err(err(format!(
+                "not stored: it holds text that was forgotten in the last {} minutes, and nothing that holds it is stored for that long after a forget",
+                crate::forget::LIVE_SECS / 60
+            )));
+        }
         if text.is_empty() {
             return Err(err("text is empty"));
         }
@@ -2047,30 +2435,74 @@ impl Daemon {
     }
 
     /// `{"op": "forget", "id": ID}`, or `{"op": "forget", "ids": [...]}` for
-    /// several at once: each record is deleted and scrubbed from the
-    /// receipts, and the automatic snapshots are dropped; the answer
-    /// (`deleted` and `missing`) goes then, and the segments that held the
-    /// records are rewritten without them after it, once for all, with no
-    /// snapshot taken until that is done. `"wait": true` answers only once
-    /// it is (`chloectx forget`); MCP's 20 s deadline is not spent on it.
+    /// several at once, or `{"op": "forget", "text": TEXT}` for every
+    /// record that holds TEXT (whatever its case): each record is deleted
+    /// and scrubbed from the receipts, and the automatic snapshots are
+    /// dropped; the answer (`deleted` and `missing`) goes then, and the
+    /// segments that held the records are rewritten without them after it,
+    /// once for all, with no snapshot taken until that is done. `"wait":
+    /// true` answers only once it is (`chloectx forget`); MCP's 20 s
+    /// deadline is not spent on it.
+    ///
+    /// With TEXT ([`crate::forget`]), the records whose own text holds it
+    /// are deleted, and those that hold it only in their context (the
+    /// turn's request every record of a turn carries: a rule distilled
+    /// from a prompt that said it too) keep their text and lose the lines
+    /// of their context that held it (`cut`). The session state, events.log,
+    /// daemon.log and every receipt lose it too, and for a while nothing
+    /// that holds it is written ([`crate::forget::Live`]).
     fn op_forget(self: &Arc<Self>, req: &Json) -> Result<(Json, Option<Deferred>)> {
-        let ids: Vec<String> = match req.get("ids").and_then(|v| v.as_array()) {
-            Some(a) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
-            None => vec![req.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string()],
+        let (r, later) = self.forget(req)?;
+        Ok((r, later.map(|f| self.after(f))))
+    }
+
+    /// [`Daemon::op_forget`]'s work, and what it leaves to run after its
+    /// answer (none with `"wait": true`).
+    fn forget(&self, req: &Json) -> Result<(Json, Option<Box<dyn FnOnce(&Daemon) + Send + 'static>>)> {
+        let text = req.get("text").and_then(|v| v.as_str()).map(str::trim).filter(|t| !t.is_empty());
+        let needles: Vec<String> = match text {
+            Some(t) => vec![crate::forget::needle(t).ok_or_else(|| err(format!("give at least {} characters to forget", crate::forget::MIN_CHARS)))?],
+            None => Vec::new(),
         };
+        let mut ids: Vec<String> = match req.get("ids").and_then(|v| v.as_array()) {
+            Some(a) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            None => req.get("id").and_then(|v| v.as_str()).map(|i| vec![i.to_string()]).unwrap_or_default(),
+        };
+        ids.retain(|i| !i.trim().is_empty());
+        if needles.is_empty() && ids.is_empty() {
+            return Err(err(format!("forget needs the id of a record, or the text to forget ({} characters or more)", crate::forget::MIN_CHARS)));
+        }
         let wait = req.get("wait").and_then(|v| v.as_bool()).unwrap_or(false);
+        // From here nothing that holds the text is written.
+        self.store.forgetting.add(&needles, now());
         // Which segment holds how many live rows before the deletes: those
         // whose count falls hold the forgotten records.
         let before = self.store.db().map(|db| segments_live(db)).unwrap_or_default();
         // No snapshot from here until the segments are rewritten.
         self.snapshots.hold();
         let held = Held(&self.snapshots);
+        let mut cut: Vec<Record> = Vec::new();
+        if !needles.is_empty() {
+            let (own, ctx_only) = self.scan_forgotten(&needles)?;
+            for r in own {
+                if !ids.contains(&r.id) {
+                    ids.push(r.id);
+                }
+            }
+            for mut r in ctx_only.into_iter().filter(|r| !ids.contains(&r.id)) {
+                if let Some(c) = crate::forget::scrub_ctx(&r.ctx, &needles) {
+                    r.ctx = c;
+                    cut.push(r);
+                }
+            }
+        }
         // Noted as forgotten for the sync before they are deleted (audit
         // CTX-33): a pull that runs meanwhile then either stores none of
         // them again or stores them before the deletes, which remove them.
         let present: Vec<String> = self.store.get(&ids)?.into_iter().map(|r| r.id).collect();
         let mut noted = crate::sync::forget(&self.paths.dir, &present);
-        let (mut deleted, mut missing, mut forgotten) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut deleted, mut missing) = (Vec::new(), Vec::new());
+        let mut forgotten = crate::receipt::Forgotten { texts: needles.clone(), ..Default::default() };
         for id in &ids {
             let rec = self.store.get(&[id.clone()])?.pop();
             if !self.store.delete(id)? {
@@ -2078,28 +2510,42 @@ impl Daemon {
                 continue;
             }
             deleted.push(id.clone());
-            forgotten.push(crate::receipt::Forgotten { id: id.clone(), prompt: rec.filter(|r| r.kind == Kind::Prompt).map(|r| r.text) });
+            forgotten.ids.push(id.clone());
+            if let Some(r) = rec.filter(|r| r.kind == Kind::Prompt) {
+                forgotten.prompts.push((id.clone(), r.text));
+            }
         }
-        // The receipts are scrubbed of each record; the automatic snapshots
-        // are dropped once, after the last.
+        // The records that keep their text, without the lines of their
+        // context that held it (their old versions leave the file with the
+        // segments rewritten below).
         let mut scrubbed = Vec::new();
-        if let Some((last, rest)) = forgotten.split_last() {
-            if !rest.is_empty() {
-                self.save_receipts();
-                if let Some(b) = self.receipts.get() {
-                    let mut n = 0;
-                    for f in rest {
-                        match b.scrub(Some(f)) {
-                            Ok(k) => n += k,
-                            Err(e) => scrubbed.push(format!("scrubbing the receipts failed: {e}")),
-                        }
-                    }
-                    if n > 0 {
-                        scrubbed.push(format!("{n} receipt{} scrubbed of the others", if n == 1 { "" } else { "s" }));
-                    }
+        if !cut.is_empty() {
+            match self.store.insert(&cut) {
+                Ok(()) => {}
+                Err(e) => {
+                    scrubbed.push(format!("cutting it from the context of {} records failed ({e})", cut.len()));
+                    cut.clear();
                 }
             }
-            scrubbed.push(self.scrub_history(Some(last)));
+        }
+        // The receipts, in one pass; the automatic snapshots are dropped
+        // when a record went or changed.
+        if !deleted.is_empty() || !cut.is_empty() {
+            scrubbed.push(self.scrub_history(Some(&forgotten)));
+        } else if !forgotten.is_empty() {
+            self.save_receipts();
+            if let Some(b) = self.receipts.get() {
+                match b.scrub(Some(&forgotten)) {
+                    Ok(0) => {}
+                    Ok(n) => scrubbed.push(format!("{n} receipt{} scrubbed", if n == 1 { "" } else { "s" })),
+                    Err(e) => scrubbed.push(format!("scrubbing the receipts failed: {e}")),
+                }
+            }
+        }
+        // The session state and the logs.
+        if !needles.is_empty() {
+            let side = self.scrub_side(&needles, false);
+            scrubbed.extend(side.said());
         }
         // One a pull stored after the look above, and the sync server's
         // rows go too.
@@ -2110,86 +2556,229 @@ impl Daemon {
         if let Err(e) = noted {
             scrubbed.push(format!("noting it forgotten for the sync failed ({e}): a pull may bring it back"));
         }
-        let synced = !deleted.is_empty() && crate::sync::remote(&crate::paths::home()).is_some();
+        let synced = (!deleted.is_empty() || !cut.is_empty()) && crate::sync::remote(&crate::paths::home()).is_some();
         let mut later = None;
-        if !deleted.is_empty() {
+        if !deleted.is_empty() || !cut.is_empty() {
             // The hold passes to the compaction, which releases it.
             std::mem::forget(held);
-            let what = if deleted.len() == 1 { "the segment that held it" } else { "the segments that held them" };
+            let what = if deleted.len() + cut.len() == 1 { "the segment that held it" } else { "the segments that held them" };
+            let cut2 = cut.clone();
             if wait {
                 let failed = self.compact_forgotten(&before);
                 scrubbed.push(if failed.is_empty() { format!("{what} rewritten without it") } else { failed });
                 if synced {
                     scrubbed.push(self.forget_on_server());
+                    scrubbed.push(self.cut_on_server(&cut2));
                 }
             } else {
-                later = Some(self.after(move |me| {
+                later = Some(Box::new(move |me: &Daemon| {
                     me.compact_forgotten(&before);
                     if synced {
                         me.forget_on_server();
+                        me.cut_on_server(&cut2);
                     }
-                }));
+                }) as Box<dyn FnOnce(&Daemon) + Send>);
                 scrubbed.push(format!("{what} being rewritten"));
                 if synced {
                     scrubbed.push("its row on the sync server being deleted (a pull never brings it back here)".into());
                 }
             }
         }
-        let scrubbed: Vec<String> = scrubbed.into_iter().filter(|s| !s.is_empty()).collect();
-        let text = match (deleted.as_slice(), missing.as_slice()) {
-            ([], [m]) => format!("No record {m}."),
-            ([], ms) => format!("No records {}.", ms.join(", ")),
-            (ds, ms) => {
-                let mut t = if ds.len() == 1 { format!("Deleted {}", ds[0]) } else { format!("Deleted {} records", ds.len()) };
-                if !scrubbed.is_empty() {
-                    t += &format!("; {}", scrubbed.join("; "));
-                }
-                if !ms.is_empty() {
-                    t += &format!("; no record {}", ms.join(", "));
-                }
-                t + "."
+        if !needles.is_empty() {
+            let old = chloedb::upgrade::old_path(&self.paths.db);
+            if old.exists() {
+                scrubbed.push(format!("an older copy of the store, from before its format was upgraded, still holds it: {} (delete it)", old.display()));
             }
+            self.log(&json!({"ts": now(), "event": "forget", "deleted": deleted.len(), "cut": cut.len()}));
+        }
+        let scrubbed: Vec<String> = scrubbed.into_iter().filter(|s| !s.is_empty()).collect();
+        let cut_ids: Vec<String> = cut.iter().map(|r| r.id.clone()).collect();
+        let text = if needles.is_empty() {
+            match (deleted.as_slice(), missing.as_slice()) {
+                ([], [m]) => format!("No record {m}."),
+                ([], ms) => format!("No records {}.", ms.join(", ")),
+                (ds, ms) => {
+                    let mut t = if ds.len() == 1 { format!("Deleted {}", ds[0]) } else { format!("Deleted {} records", ds.len()) };
+                    if !scrubbed.is_empty() {
+                        t += &format!("; {}", scrubbed.join("; "));
+                    }
+                    if !ms.is_empty() {
+                        t += &format!("; no record {}", ms.join(", "));
+                    }
+                    t + "."
+                }
+            }
+        } else {
+            // At most 20 ids named: the rest counted.
+            let some = |ids: &[String]| {
+                let mut t = ids.iter().take(20).cloned().collect::<Vec<_>>().join(", ");
+                if ids.len() > 20 {
+                    t += &format!(" and {} more", ids.len() - 20);
+                }
+                t
+            };
+            let mut t = match deleted.as_slice() {
+                [] => "No record holds it in its own text".to_string(),
+                [d] => format!("Deleted {d}, the one record that held it"),
+                ds => format!("Deleted {} records that held it ({})", ds.len(), some(ds)),
+            };
+            match cut_ids.as_slice() {
+                [] => {}
+                [c] => t += &format!("; cut it from the context of {c}, which stays"),
+                cs => t += &format!("; cut it from the context of {} records, which stay ({})", cs.len(), some(cs)),
+            }
+            if !scrubbed.is_empty() {
+                t += &format!("; {}", scrubbed.join("; "));
+            }
+            t + "."
         };
-        Ok((json!({"text": text, "deleted": deleted, "missing": missing}), later))
+        let changed = !deleted.is_empty() || !cut_ids.is_empty() || !scrubbed.is_empty();
+        Ok((json!({"text": text, "deleted": deleted, "missing": missing, "cut": cut_ids, "changed": changed}), later))
     }
 
-    /// `{"op": "find", "text": TEXT}`: the records whose text or context
-    /// holds TEXT (whatever its case), and `{"op": "find", "ids": [...]}`:
-    /// those of the ids that exist; each with a snippet around the match,
-    /// for `chloectx forget --everywhere` to show before it forgets them.
-    fn op_find(&self, req: &Json) -> Result<Json> {
-        let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
-        let row = |r: &Record, at: Option<(&str, usize)>| {
-            let (field, snippet) = match at {
-                Some((f, i)) => (f, snippet_at(if f == "ctx" { &r.ctx } else { &r.text }, i, 160)),
-                None => ("text", snippet_at(&r.text, 0, 160)),
-            };
-            json!({"id": r.id, "kind": r.kind.as_str(), "session": r.session, "ts": r.ts, "field": field, "snippet": snippet})
-        };
-        if let Some(ids) = req.get("ids").and_then(|v| v.as_array()) {
-            let ids: Vec<String> = ids.iter().filter_map(|v| v.as_str().map(String::from)).collect();
-            let found: Vec<Json> = self.store.get(&ids)?.iter().map(|r| row(r, None)).collect();
-            return Ok(json!({"matches": found, "total": found.len()}));
-        }
-        let needle = req.get("text").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
-        if needle.chars().count() < 3 {
-            return Err(err("give at least 3 characters to look for"));
-        }
+    /// The records whose own text holds one of `needles`, and those that
+    /// hold one only in their context.
+    fn scan_forgotten(&self, needles: &[String]) -> Result<(Vec<Record>, Vec<Record>)> {
+        use crate::forget::holds;
         let rs = self.store.query(&format!("SELECT id FROM memory LIMIT {}", self.store.len() + 1000))?;
         let ids: Vec<String> = rs.rows.iter().filter_map(|r| r.first().and_then(|v| v.as_str()).map(String::from)).collect();
-        let (mut out, mut total) = (Vec::new(), 0usize);
+        let (mut own, mut ctx) = (Vec::new(), Vec::new());
         for chunk in ids.chunks(500) {
             for r in self.store.get(chunk)? {
-                let hit = find_ci(&r.text, &needle).map(|i| ("text", i)).or_else(|| find_ci(&r.ctx, &needle).map(|i| ("ctx", i)));
-                if let Some(at) = hit {
-                    total += 1;
-                    if out.len() < limit {
-                        out.push(row(&r, Some(at)));
+                if holds(&r.text, needles) {
+                    own.push(r);
+                } else if holds(&r.ctx, needles) {
+                    ctx.push(r);
+                }
+            }
+        }
+        own.sort_by_key(|r| r.seq);
+        ctx.sort_by_key(|r| r.seq);
+        Ok((own, ctx))
+    }
+
+    /// The session state, events.log, daemon.log (and, with `dry`, the
+    /// receipts, counted) without `needles`: what held them, by file.
+    /// With `dry`, only counted.
+    fn scrub_side(&self, needles: &[String], dry: bool) -> Side {
+        let mut side = Side::default();
+        (side.sessions, side.failed) = self.scrub_sessions(needles, dry);
+        if side.sessions > 0 && !dry {
+            self.save_state();
+        }
+        {
+            let _one = self.logging.lock().unwrap_or_else(|e| e.into_inner());
+            // events.log: written by this daemon alone, under this lock: replaced.
+            let path = self.paths.dir.join("events.log");
+            if let Ok(bytes) = std::fs::read(&path) {
+                let (out, n) = crate::forget::scrub_lines(&String::from_utf8_lossy(&bytes), needles);
+                side.log_lines = n;
+                if n > 0 && !dry {
+                    let tmp = path.with_extension("log.tmp");
+                    let done = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(out.as_bytes())).and_then(|_| std::fs::rename(&tmp, &path));
+                    if let Err(e) = done {
+                        side.failed.push(format!("scrubbing events.log failed ({e})"));
+                    }
+                }
+            }
+            // daemon.log: the daemon's error output, which it keeps open:
+            // rewritten in place.
+            if let Ok(bytes) = std::fs::read(&self.paths.log) {
+                let (out, n) = crate::forget::scrub_lines(&String::from_utf8_lossy(&bytes), needles);
+                side.daemon_lines = n;
+                if n > 0 && !dry {
+                    let done = std::fs::OpenOptions::new().write(true).truncate(true).open(&self.paths.log).and_then(|mut f| f.write_all(out.as_bytes()));
+                    if let Err(e) = done {
+                        side.failed.push(format!("scrubbing daemon.log failed ({e})"));
                     }
                 }
             }
         }
-        Ok(json!({"matches": out, "total": total}))
+        if dry {
+            self.save_receipts();
+            if let Some(b) = self.receipts.get() {
+                side.receipts = b.count_holding(needles).unwrap_or(0);
+            }
+            side.named = self.snapshots.list().into_iter().filter(|k| !k.auto).map(|k| k.name).collect();
+        }
+        side
+    }
+
+    /// The sessions' state (in memory, and so in state.json when it is next
+    /// written) without `needles`: how many sessions held one, and what
+    /// failed. With `dry`, only counted.
+    fn scrub_sessions(&self, needles: &[String], dry: bool) -> (usize, Vec<String>) {
+        let (mut n, mut failed) = (0, Vec::new());
+        let mut st = self.state.lock().unwrap();
+        for s in st.sessions.values_mut() {
+            let Ok(mut v) = serde_json::to_value(&*s) else { continue };
+            if !crate::forget::scrub_json(&mut v, needles) {
+                continue;
+            }
+            n += 1;
+            if dry {
+                continue;
+            }
+            match serde_json::from_value::<Session>(v) {
+                Ok(mut new) => {
+                    // What the state does not keep in its file stays.
+                    new.calls = std::mem::take(&mut s.calls);
+                    new.shown_before = std::mem::take(&mut s.shown_before);
+                    *s = new;
+                }
+                Err(e) => failed.push(format!("scrubbing a session's state failed ({e})")),
+            }
+        }
+        (n, failed)
+    }
+
+    /// Sends the records whose context a forget cut to the sync server
+    /// again, replacing its copies. What it says of them.
+    fn cut_on_server(&self, cut: &[Record]) -> String {
+        if cut.is_empty() || crate::sync::remote(&crate::paths::home()).is_none() {
+            return String::new();
+        }
+        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
+        let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else { return String::new() };
+        let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::sync::push_records(&remote, &key, cut) {
+            Ok(_) => "the sync server's copies of the records it was cut from replaced".into(),
+            Err(e) => {
+                self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "error": format!("forget: {e}")}));
+                format!("the sync server's copies of the records it was cut from are not replaced yet ({e}): run `chloectx redact` once it answers")
+            }
+        }
+    }
+
+    /// `{"op": "find", "text": TEXT}`: the records whose own text holds
+    /// TEXT (whatever its case), which a forget of it deletes, those that
+    /// hold it only in their context, which it keeps and cuts it from, and
+    /// how many session states, log lines and receipts hold it;
+    /// `{"op": "find", "ids": [...]}`: those of the ids that exist. Each
+    /// with its first line, for `chloectx forget` to list before it
+    /// forgets them.
+    fn op_find(&self, req: &Json) -> Result<Json> {
+        let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
+        let row = |r: &Record, needles: &[String]| {
+            let at = needles.iter().find_map(|n| crate::forget::find_ci(&r.text, n)).unwrap_or(0);
+            json!({"id": r.id, "kind": r.kind.as_str(), "session": r.session, "ts": r.ts, "line": first_line(&r.text, 120), "snippet": snippet_at(&r.text, at, 160)})
+        };
+        if let Some(ids) = req.get("ids").and_then(|v| v.as_array()) {
+            let ids: Vec<String> = ids.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            let found: Vec<Json> = self.store.get(&ids)?.iter().map(|r| row(r, &[])).collect();
+            return Ok(json!({"matches": found, "total": found.len()}));
+        }
+        let Some(needle) = crate::forget::needle(req.get("text").and_then(|v| v.as_str()).unwrap_or("")) else {
+            return Err(err(format!("give at least {} characters to look for", crate::forget::MIN_CHARS)));
+        };
+        let needles = vec![needle];
+        let (own, ctx) = self.scan_forgotten(&needles)?;
+        let side = self.scrub_side(&needles, true);
+        Ok(json!({
+            "matches": own.iter().take(limit).map(|r| row(r, &needles)).collect::<Vec<_>>(), "total": own.len(),
+            "context": ctx.iter().take(limit).map(|r| row(r, &[])).collect::<Vec<_>>(), "context_total": ctx.len(),
+            "side": {"sessions": side.sessions, "log_lines": side.log_lines + side.daemon_lines, "receipts": side.receipts, "named_snapshots": side.named},
+        }))
     }
 
     /// `{"op": "redact", "dry_run": bool}`, for a store written before
@@ -2475,28 +3064,30 @@ impl Daemon {
                 Err(e) => json!({"error": e}),
             },
             "distill": self.distill_cfg().active(),
+            "undistilled": self.undistilled(),
         }))
     }
 }
 
-/// The byte offset in `hay` where `needle` (already lowercase) starts,
-/// whatever the case of `hay`.
-fn find_ci(hay: &str, needle: &str) -> Option<usize> {
-    if hay.is_ascii() {
-        return hay.to_ascii_lowercase().find(needle);
+/// Whether a tool is ChloeCtx's `memory_forget`, by whichever name its MCP
+/// server has (`mcp__chloectx__…`, the plugin's, an install from before the
+/// rename).
+fn is_forget_tool(tool: &str) -> bool {
+    tool.ends_with("__memory_forget") && capture::is_own_tool(tool)
+}
+
+/// The first line of `text`, at most `width` characters, its spaces
+/// folded.
+fn first_line(text: &str, width: usize) -> String {
+    let line = text.trim().lines().next().unwrap_or("");
+    let s: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.chars().count() > width {
+        s.chars().take(width).collect::<String>() + "…"
+    } else if text.trim().lines().nth(1).is_some() {
+        s + " …"
+    } else {
+        s
     }
-    // Lowercasing can change a character's length: each lowercase
-    // character keeps the offset of the one it came from.
-    let mut low = String::with_capacity(hay.len());
-    let mut from = Vec::with_capacity(hay.len());
-    for (i, c) in hay.char_indices() {
-        for l in c.to_lowercase() {
-            from.push((low.len(), i));
-            low.push(l);
-        }
-    }
-    let at = low.find(needle)?;
-    from.iter().rev().find(|(lo, _)| *lo <= at).map(|(_, i)| *i)
 }
 
 /// About `width` characters of `text` around byte offset `at`, on one line.

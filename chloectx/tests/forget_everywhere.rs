@@ -1,9 +1,11 @@
 //! `chloectx forget --everywhere`: one command finds a fact in every store
-//! `chloectx stores` lists, by its text (in a record's text or its context,
-//! whatever the case) or by record id, lists the matches, asks first (or
-//! takes --yes; --dry-run only lists), and forgets them with each store's
-//! own forget. The real program, with stores in a home of the test's own
-//! and the hash embedder.
+//! `chloectx stores` lists, by its text (whatever the case) or by record
+//! id, lists what goes and what stays, asks first (or takes --yes;
+//! --dry-run only lists), and forgets it with each store's own forget.
+//! A record whose own text holds it goes; one that holds it only in its
+//! context (the turn's request) stays, with it cut from there (JONAH-1).
+//! `chloectx forget TEXT` does the same in this project's store. The real
+//! program, with stores in a home of the test's own and the hash embedder.
 
 #![cfg(unix)]
 
@@ -28,7 +30,11 @@ impl Homes {
     }
 
     fn run(&self, project: &str, args: &[&str]) -> (i32, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_chloectx"))
+        self.run_with(project, args, "")
+    }
+
+    fn run_with(&self, project: &str, args: &[&str], input: &str) -> (i32, String, String) {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_chloectx"))
             .args(args)
             .current_dir(self.project(project))
             .env("HOME", self.t.path())
@@ -38,10 +44,20 @@ impl Homes {
             .env("CHLOECTX_DEEP", "off")
             .env("CHLOECTX_RECEIPTS", "0")
             .env_remove("CLAUDE_PROJECT_DIR")
-            .stdin(Stdio::null())
-            .output()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .unwrap();
+        std::io::Write::write_all(&mut child.stdin.take().unwrap(), input.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
         (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+
+    /// A hook, as Claude Code runs it in the project's folder.
+    fn hook(&self, project: &str, event: &str, payload: serde_json::Value) {
+        let (code, out, err) = self.run_with(project, &["hook", event], &payload.to_string());
+        assert_eq!(code, 0, "{out}{err}");
     }
 
     fn remember(&self, project: &str, text: &str) -> String {
@@ -52,7 +68,11 @@ impl Homes {
     }
 
     fn count(&self, project: &str, needle: &str) -> usize {
-        let (_, out, _) = self.run(project, &["sql", &format!("SELECT id FROM memory WHERE text LIKE '%{needle}%'")]);
+        self.count_where(project, &format!("text LIKE '%{needle}%'"))
+    }
+
+    fn count_where(&self, project: &str, cond: &str) -> usize {
+        let (_, out, _) = self.run(project, &["sql", &format!("SELECT id FROM memory WHERE {cond}")]);
         out.lines().filter(|l| l.contains(':') && !l.contains("id")).count()
     }
 }
@@ -104,4 +124,53 @@ fn a_fact_is_found_in_every_store_and_forgotten_once_asked() {
     let (_, out, _) = h.run("a", &["stores"]);
     assert!(out.contains("\n3 stores, "), "{out}");
     assert!(Path::new(env!("CARGO_BIN_EXE_chloectx")).exists());
+}
+
+/// JONAH-1: a private aside and a rule in one prompt. Forgetting the aside
+/// deletes the records whose own text holds it, keeps the ones that hold
+/// it only in their context (the turn's request) with it cut from there,
+/// and lists each record that goes, with its kind and first line, before
+/// it asks.
+#[test]
+fn forgetting_an_aside_keeps_what_was_said_with_it() {
+    let h = Homes::new();
+    let a = h.project("a");
+    let p = a.to_str().unwrap();
+    h.hook("a", "SessionStart", serde_json::json!({"session_id": "s1", "source": "startup", "cwd": p}));
+    h.hook("a", "UserPromptSubmit", serde_json::json!({"session_id": "s1", "cwd": p, "prompt": "I'll sell tdo later as part of the Walrus-Bundle. From now on, always write the tests with pytest, never with unittest."}));
+    h.hook("a", "Stop", serde_json::json!({"session_id": "s1", "cwd": p, "last_assistant_message": "Understood: every test uses pytest."}));
+    let keep = h.remember("a", "The CLI parses its arguments with argparse");
+    let answers = h.count_where("a", "kind = 'answer'");
+    assert_eq!(answers, 1);
+    assert!(h.count_where("a", "kind = 'answer' AND MATCH(body, 'walrus')") == 1, "the answer holds it in its context");
+
+    let (code, out, err) = h.run("b", &["forget", "--everywhere", "--dry-run", "walrus-bundle"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let deletes = out.split("Keeps").next().unwrap();
+    assert!(deletes.contains("whose own text holds it:") && deletes.contains(" prompt ") && deletes.contains("I'll sell tdo later as part of the Walrus-Bundle"), "{out}");
+    assert!(!deletes.contains(" answer "), "the answer does not go: {out}");
+    let keeps = out.split("Keeps").nth(1).unwrap_or_else(|| panic!("{out}"));
+    assert!(keeps.contains("only in its context") && keeps.contains(" answer ") && keeps.contains("Understood: every test uses pytest."), "{out}");
+    assert!(out.contains("Scrubs it from 1 session's state"), "{out}");
+    assert!(out.contains("Nothing was changed."), "{out}");
+
+    // In the project's own store, without --everywhere: listed, not asked
+    // without a terminal.
+    let (code, out, _) = h.run("a", &["forget", "Walrus-Bundle"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("Deletes") && out.contains("Run it again with --yes"), "{out}");
+
+    let (code, out, err) = h.run("a", &["forget", "--yes", "WALRUS-bundle"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("which stay"), "{out}");
+    assert_eq!(h.count_where("a", "kind = 'answer'"), 1, "the answer stays");
+    assert_eq!(h.count_where("a", "MATCH(body, 'walrus')"), 0, "and holds it no more, in its text or its context");
+    assert_eq!(h.count("a", "argparse"), 1);
+    assert!(h.count_where("a", &format!("id = '{keep}'")) == 1);
+    let dir = h.t.path().join("ctx/projects");
+    let store = std::fs::read_dir(&dir).unwrap().flatten().next().unwrap().path();
+    let state = std::fs::read_to_string(store.join("state.json")).unwrap();
+    assert!(!state.to_lowercase().contains("walrus"), "{state}");
+    let (_, out, _) = h.run("a", &["forget", "--everywhere", "--dry-run", "walrus-bundle"]);
+    assert!(out.contains("No record in any of the stores holds"), "{out}");
 }

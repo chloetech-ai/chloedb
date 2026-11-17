@@ -242,7 +242,7 @@ fn the_book_flushes_pages_its_scrub_prunes_and_reads_late_turns() {
     assert!(wal < 1200 * 600, "the WAL holds every receipt: {wal} bytes");
 
     // R6: scrubbed a page at a time; R2: the rows lose the text's hash.
-    let n = book.scrub(Some(&Forgotten { id: "s1:9".into(), prompt: None })).unwrap();
+    let n = book.scrub(Some(&Forgotten::record("s1:9", None))).unwrap();
     assert_eq!(n, 3);
     let r = book.get("rc-00700").unwrap().unwrap();
     assert!(r.text.contains("forgotten") && r.rows[0].sha.is_empty(), "{:?}", r.text);
