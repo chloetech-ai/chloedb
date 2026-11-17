@@ -165,6 +165,7 @@ python3 -I tools/prepare.py ... --out ./sound-rows --strata http://coordinator:7
 chloedb-sound load --rows ./sound-rows --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot;
 chloedb-sound serve --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --token &quot;$SOUND_TOKEN&quot; --audio ./sound-rows/audio --listen 0.0.0.0:7870
 chloedb-server ... --app sound=http://sound-host:7870     # with CHLOEDB_APP_TOKEN=$SOUND_TOKEN</pre>
+<p>On Kubernetes, <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-sound/deploy/k8s.yaml"><code>deploy/k8s.yaml</code></a> runs it on one small node of its own (2 vCPUs, 4 GB): the server with CLAP, the app and a pod to work in, with the binaries, the model, the rows, the previews and the database on the node's own disk.</p>
 <p><code>--public</code> serves the page at <code>/</code> and its reads to anyone, without the token, within <code>--per-minute</code> requests a minute from one address (120 by default; the previews are not counted) and <code>--listens-per-minute</code> clips heard (6), and refuses calls from another site's pages. It serves no SQL: the page's <em>SQL</em> drawer shows the statements each answer ran.</p>
 <p>A server without CLAP (built without the <code>audio</code> feature, or without the model) still serves the app: searches by words are ranked by BM25 alone and say so, and the pages that hear words or clips answer with an error.</p>
 <h2 id="tables">Tables<a class="anchor" href="#tables" aria-label="Link to this section">#</a></h2>

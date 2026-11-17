@@ -53,6 +53,8 @@ chloedb-sound serve --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --toke
 chloedb-server ... --app sound=http://sound-host:7870     # with CHLOEDB_APP_TOKEN=$SOUND_TOKEN
 ```
 
+On Kubernetes, [`deploy/k8s.yaml`](../../chloedb-sound/deploy/k8s.yaml) runs it on one small node of its own (2 vCPUs, 4 GB): the server with CLAP, the app and a pod to work in, with the binaries, the model, the rows, the previews and the database on the node's own disk.
+
 `--public` serves the page at `/` and its reads to anyone, without the token, within `--per-minute` requests a minute from one address (120 by default; the previews are not counted) and `--listens-per-minute` clips heard (6), and refuses calls from another site's pages. It serves no SQL: the page's *SQL* drawer shows the statements each answer ran.
 
 A server without CLAP (built without the `audio` feature, or without the model) still serves the app: searches by words are ranked by BM25 alone and say so, and the pages that hear words or clips answer with an error.

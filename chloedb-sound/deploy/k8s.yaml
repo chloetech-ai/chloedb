@@ -1,0 +1,110 @@
+# Sound Explorer in a Kubernetes cluster (DOKS strata-e2e, beside the
+# command center), on one small node of its own: one chloedb-server with
+# CLAP (a build with --features audio), the app, and a pod to work in.
+#   sound-db     chloedb-server: the tables, and CLAP for words and clips
+#                (the model in /work/models, fetched by the work pod, so
+#                the server fetches nothing: --no-fetch-models)
+#   sound-app    the app (API, the page, the command center's view and the
+#                previews); public: the page and its reads to anyone within
+#                limits per address (sounds.chloetech.ai, through the web
+#                namespace's Caddy); everything else needs the token the
+#                command center's app proxy sends (secret e2e-admin)
+#   sound-work   Debian with python3, numpy and ffmpeg: fetches the model and
+#                the Commons sample, runs tools/prepare.py against sound-db
+# Everything is on the node's own disk, hostPath /mnt/chloedb/sound:
+#   bin/         chloedb-server (--features audio) and chloedb-sound
+#   models/      clap-htsat-unfused
+#   rows/        tools/prepare.py's rows and audio/ (the MP3 previews)
+#   db/          the database
+# The node is labelled and tainted chloedb/pool=sound (NoSchedule).
+# Secrets: sound-admin (token: the server's), e2e-admin (token: what the
+# command center's app proxy sends).
+#
+# Binaries are copied in: kubectl cp to sound-work:/work/bin/<name>.new,
+# mv over the old one, kubectl rollout restart the deployment.
+apiVersion: v1
+kind: Service
+metadata: {name: sound-db, namespace: strata}
+spec:
+  selector: {app: sound-db}
+  ports: [{name: http, port: 7700, targetPort: 7700}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: sound-app, namespace: strata}
+spec:
+  selector: {app: sound-app}
+  ports: [{name: http, port: 7870, targetPort: 7870}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: sound-work, namespace: strata, labels: {app: sound-work}}
+spec:
+  nodeSelector: {chloedb/pool: sound}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: sound, effect: NoSchedule}]
+  containers:
+  - name: work
+    image: mirror.gcr.io/library/debian:trixie-slim
+    command: ["sh", "-c", "apt-get update -q && apt-get install -yq --no-install-recommends ca-certificates curl python3 python3-numpy ffmpeg >/dev/null && touch /tmp/ready && sleep infinity"]
+    env:
+    - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: sound-admin, key: token}}}
+    resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {memory: 1Gi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/chloedb/sound, type: DirectoryOrCreate}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: sound-db, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: sound-db}}
+  template:
+    metadata: {labels: {app: sound-db}}
+    spec:
+      nodeSelector: {chloedb/pool: sound}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: sound, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: server
+        image: mirror.gcr.io/library/debian:trixie-slim
+        command: ["/work/bin/chloedb-server", "--db", "/work/db/sound.chloedb", "--listen", "0.0.0.0:7700", "--grpc", "off", "--no-fetch-models", "--backup-dir", "/work/backup"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: sound-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /work/models}
+        ports: [{containerPort: 7700}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # A 4 GB node (about 2.9 GiB for pods): CLAP takes about 1 GiB; the
+        # rest of the node's memory is the page cache over its disk.
+        resources: {requests: {cpu: "1", memory: 1536Mi}, limits: {memory: 2560Mi}}
+        volumeMounts: [{name: work, mountPath: /work}]
+      volumes: [{name: work, hostPath: {path: /mnt/chloedb/sound, type: Directory}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: sound-app, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: sound-app}}
+  template:
+    metadata: {labels: {app: sound-app}}
+    spec:
+      nodeSelector: {chloedb/pool: sound}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: sound, effect: NoSchedule}]
+      containers:
+      - name: app
+        image: mirror.gcr.io/library/debian:trixie-slim
+        # --rows: makes the tables and loads the rows when they are empty.
+        # Behind the load balancer every visitor of one node shares an
+        # address, hence the roomy limits.
+        command: ["/work/bin/chloedb-sound", "serve", "--strata", "http://sound-db.strata.svc:7700", "--listen", "0.0.0.0:7870", "--rows", "/work/rows", "--audio", "/work/rows/audio", "--public", "--per-minute", "600", "--listens-per-minute", "30"]
+        env:
+        - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: sound-admin, key: token}}}
+        - {name: CHLOEDB_SOUND_TOKEN, valueFrom: {secretKeyRef: {name: e2e-admin, key: token}}}
+        - {name: RUST_LOG, value: chloedb_sound=info}
+        ports: [{containerPort: 7870}]
+        readinessProbe: {httpGet: {path: /healthz, port: 7870}, periodSeconds: 5}
+        resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {memory: 512Mi}}
+        volumeMounts: [{name: work, mountPath: /work, readOnly: true}]
+      volumes: [{name: work, hostPath: {path: /mnt/chloedb/sound, type: Directory}}]
