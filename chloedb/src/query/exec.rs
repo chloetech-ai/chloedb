@@ -1717,8 +1717,12 @@ impl<'a> Executor<'a> {
             let by = q.group_by.iter().map(|&c| self.col_name(q, c)).collect::<Vec<_>>().join(", ");
             self.step(m, if general { "aggregate" } else { "facet" }, if by.is_empty() { "every row".into() } else { format!("by {by}") }, Some(groups.map.len() as u64));
             // Shards return every group with partial aggregates, for the
-            // coordinator to combine.
-            let rows = if self.opts.shard {
+            // coordinator to combine; a query that groups by the field that
+            // places rows has each group whole on one shard, which returns
+            // only the groups that can be in the answer.
+            let rows = if self.opts.shard && q.limit.is_some() && self.groups_whole_here(q) {
+                agg::top_partial_rows(q, groups, &needed)?
+            } else if self.opts.shard {
                 groups.partial_rows()
             } else {
                 let mut rows = agg::finish(q, groups, &needed)?;
@@ -3464,6 +3468,15 @@ impl<'a> Executor<'a> {
         let mut stats = self.collection_stats(field, &names)?;
         blend_groups(&q, &mut stats);
         Ok((q, stats))
+    }
+
+    /// Whether every group of `q` has all its rows in this database when it
+    /// is a shard: `q` groups by the field that places rows on shards (its
+    /// `shard_by`, else its primary key), so no other shard has a row of
+    /// any of its groups.
+    fn groups_whole_here(&self, q: &Select) -> bool {
+        let Some(place) = self.schema.shard_by_field().or(self.schema.primary_key) else { return false };
+        q.group_by.iter().any(|c| matches!(c, Col::Field(f) if *f == place))
     }
 
     /// Whether facets can count a column's values: a keyword column's, or

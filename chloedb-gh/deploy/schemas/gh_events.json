@@ -1,0 +1,36 @@
+{
+ "table": "gh_events",
+ "shard_by": "repo",
+ "cluster_by": "repo",
+ "compression": "zstd",
+ "fields": [
+  {
+   "name": "t",
+   "type": "int",
+   "stored": false,
+   "not_null": true
+  },
+  {
+   "name": "kind",
+   "type": "keyword",
+   "stored": false,
+   "not_null": true
+  },
+  {
+   "name": "repo",
+   "type": "int",
+   "not_null": true
+  },
+  {
+   "name": "actor",
+   "type": "int",
+   "stored": false,
+   "not_null": true
+  },
+  {
+   "name": "n",
+   "type": "int",
+   "stored": false
+  }
+ ]
+}

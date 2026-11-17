@@ -702,6 +702,39 @@ def test_rows_by_key(db, tmp_path):
     assert db.expire() == 0
 
 
+def test_sync_false_loses_nothing_when_the_program_crashes(tmp_path):
+    # sync=False commits without waiting for the disk. A crash of the
+    # program (os._exit: no close, no flush) still loses no commit; only a
+    # power failure could.
+    import subprocess
+    import sys
+
+    path = tmp_path / "nosync.strata"
+    schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "n", "type": "int"}]}
+    script = (
+        "import json, os, sys, chloedb\n"
+        "db = chloedb.open(sys.argv[1], schema=json.loads(sys.argv[2]), sync=False)\n"
+        "for i in range(50):\n"
+        "    db.insert({'id': f'r{i}', 'n': i})\n"
+        "db.delete('r7')\n"
+        "db.sql(\"UPDATE t SET n = 100 WHERE id = 'r8'\")\n"
+        "os._exit(0)\n"
+    )
+    assert subprocess.run([sys.executable, "-c", script, str(path), json.dumps(schema)], timeout=60).returncode == 0
+    with chloedb.open(path, sync=False) as db:
+        assert len(db) == 49
+        assert db.get("r7") is None and db.get("r8")["n"] == 100
+        db.insert({"id": "r50", "n": 50})
+    with chloedb.Database.open(path) as db:
+        assert len(db) == 50
+    # connect takes it too, for a database its first create_table makes.
+    with chloedb.connect(tmp_path / "later.strata", sync=False) as db:
+        db.create_table("t", [{"id": "a", "n": 1}], key="id")
+        db.insert({"id": "b", "n": 2}, table="t")
+    with chloedb.open(tmp_path / "later.strata") as db:
+        assert db.sql("SELECT COUNT(*) FROM t").scalar() == 2
+
+
 def test_read_only_follows_another_process(tmp_path):
     path = tmp_path / "shared.strata"
     with chloedb.open(path, schema=BOOKS) as w:
