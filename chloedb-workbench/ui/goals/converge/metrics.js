@@ -22,9 +22,16 @@ const CSS = `
 .cv-t td.n { font-family: var(--mono); text-align: right; }
 .cv-hbar { height: 10px; border-radius: 3px; background: var(--accent); opacity: .8; }
 /* Dashboard */
+.cv-outs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: var(--s-5); }
+.cv-out { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px; border-radius: var(--r); border: var(--hair) solid var(--line); background: var(--surface); min-width: 0; }
+.cv-out .v { font-family: var(--mono); font-size: 28px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.cv-out .v .ar { color: var(--muted); margin: 0 6px; } .cv-out .v .up { color: var(--good-ink); } .cv-out .v .down { color: var(--crit-ink); }
+.cv-out .sub { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--text-2); }
+.cv-acth { margin: var(--s-4) 0 var(--s-2); font-size: var(--fs-md); }
+@media (max-width: 900px) { .cv-outs { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } .cv-out { padding: 10px 12px; } .cv-out .v { font-size: 22px; } }
 .cv-dash-bar { gap: 10px; flex-wrap: wrap !important; }
 .cv-dash-bar > .cv-meta { flex: 1 1 100%; }
-.cv-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.cv-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
 .cv-kpi { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left; padding: 12px 14px; min-height: 112px; border-radius: var(--r); border: var(--hair) solid var(--line); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; min-width: 0; }
 .cv-kpi:hover { border-color: var(--accent-line); }
 .cv-kpi .v { font-family: var(--mono); font-size: var(--fs-lg); line-height: var(--lh-lg); font-variant-numeric: tabular-nums; }
@@ -75,7 +82,7 @@ const CSS = `
 .cv-rawg { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 8px; }
 .cv-rawg h3 { font-size: var(--fs-sm); margin: 0 0 6px; }
 .cv-tscroll { overflow-x: auto; }
-@media (max-width: 900px) { .cv-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cv-dash { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .cv-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .cv-dash { grid-template-columns: 1fr; } }
 .cv-chipf { min-height: 36px; padding: 0 12px; border-radius: var(--r-pill); border: var(--hair) solid var(--line-2); background: var(--surface); color: var(--text-2); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
 .cv-chipf.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-text); }
 .cv-seg { display: inline-flex; border: var(--hair) solid var(--line-2); border-radius: var(--r-sm); overflow: hidden; }
@@ -191,6 +198,38 @@ export function metricsScreen(C) {
     return S.tlKey === key ? S.tl : (S.tl && S.tl.range === range ? S.tl : null);
   }
 
+  /** The outcomes (GET /api/converge/metrics → outcomes), read every 30 s. */
+  function outcomesData() {
+    const own = S.d.metrics && S.d.metrics.outcomes;
+    if (own && typeof own === "object") return own;
+    if (!S.moBusy && (!S.moAt || Date.now() - S.moAt > 30000)) {
+      S.moBusy = true;
+      api(`/api/converge/metrics?repo=${enc(repo())}`, { quiet: true }).then((x) => { S.mo = x && x.outcomes && typeof x.outcomes === "object" ? x.outcomes : null; S.moAt = Date.now(); if (S.alive && view() === "metrics" && S.mo) draw(); }, () => { S.moAt = Date.now(); }).finally(() => { S.moBusy = false; });
+    }
+    return S.mo || null;
+  }
+
+  /** What Converge got done: merged this week, found → merged, cost per fix, ease. */
+  function outcomes() {
+    const o = outcomesData() || {};
+    const d = S.d, m = d.metrics || {};
+    const week = Date.now() - 7 * 86400000;
+    const merged = (d.findings || []).filter((f) => f.stage === "merged");
+    const times = merged.map((f) => (toMs(f.stage_since) || 0) - (toMs(f.created) || 0)).filter((x) => x > 0).sort((a, b) => a - b);
+    const num = (x) => (x != null && Number.isFinite(Number(x)) ? Number(x) : null);
+    const mergedWeek = num(o.merged_7d) ?? merged.filter((f) => (toMs(f.stage_since) || 0) >= week).length;
+    const median = num(o.median_found_to_merged_ms) ?? (times.length ? times[Math.floor(times.length / 2)] : null);
+    const cost = num(o.cost_per_merged_fix_usd) ?? num(m.cost_per_merged_fix);
+    const eb = num(o.ease_before), ea = num(o.ease_after);
+    const tile = (label, v, sub) => h("div", { class: "cv-out" }, h("span", { class: "cv-label" }, label), h("span", { class: "v" }, v), h("span", { class: "sub" }, sub));
+    const fx = (x) => (Math.round(x * 10) / 10).toFixed(1);
+    return h("section", { "aria-label": "Outcomes" }, h("div", { class: "cv-outs" },
+      tile("Merged this week", String(mergedWeek), mergedWeek ? "fixes you approved" : "none yet"),
+      tile("Found → merged", median ? secsWords(median).replace(/ \d+ s$/, "") : "–", "median time a fix took"),
+      tile("Cost per merged fix", cost != null ? usd(cost) : "–", "personas, planning and agents, per merge"),
+      tile("Ease", eb != null && ea != null ? [h("span", {}, fx(eb)), h("span", { class: "ar" }, "→"), h("span", { class: ea > eb ? "up" : ea < eb ? "down" : "" }, fx(ea))] : "–", eb != null && ea != null ? "personas, before → after the fixes" : "no replays yet")));
+  }
+
   function metrics() {
     (S.ros || []).forEach((r) => r.disconnect()); S.ros = [];
     const d = S.d, m = d.metrics || {}, st = d.settings || {};
@@ -220,13 +259,14 @@ export function metricsScreen(C) {
     const kpis = h("div", { class: "cv-kpis" },
       tileK("Open issues", open.length, deltaEl(delta(openSeries)), sparkOf(openSeries, "var(--accent)"), goBoard(() => S.pf.sev.clear())),
       tileK("Blockers open", open.filter((f) => f.severity >= 4).length, deltaEl(delta(blkSeries)), sparkOf(blkSeries, sevVar(4)), goBoard(() => { S.pf.sev.clear(); S.pf.sev.add(4); })),
-      tileK("Merged this week", mergedWeek.length, median ? `median ${secsWords(median).replace(/ \d+ s$/, "")} found → merged` : "no merges yet", sparkOf(b.map((x) => x.merged), "var(--good)"), () => { location.hash = C.href("merge", { show: "merged" }); }),
       tileK("Spend today", usd(spent), budget ? `of ${usd(budget)} · ${Math.round((spent / budget) * 100)}%` : "no budget set",
         h("span", { class: "cv-budget", "aria-hidden": "true" }, h("i", { class: spent > budget && budget ? "over" : null, style: { width: `${budget ? Math.min(100, (spent / budget) * 100) : 0}%` } })), () => { location.hash = C.href("settings"); }));
     const panel = (title, sub, ...kids) => h("section", { class: "cv-panel" }, h("div", { class: "cv-ph" }, h("h3", {}, title), sub ? h("div", { class: "sub" }, sub) : null), ...kids);
     const rangeSeg = h("div", { class: "cv-seg", role: "radiogroup", "aria-label": "Range" }, RANGES.map(([k, l]) =>
       h("button", { type: "button", class: range === k ? "on" : null, role: "radio", "aria-checked": String(range === k), onclick: () => { S.range = k; keep(); draw(); } }, l)));
     return h("div", {},
+      outcomes(),
+      h("h2", { class: "cv-acth" }, "Activity"),
       filterStrip(),
       h("div", { class: "cv-bar cv-dash-bar" }, h("span", { class: "cv-label" }, "Range"), rangeSeg, anyFilter() ? h("span", { class: "cv-meta" }, "Filtered by component") : null),
       kpis,
