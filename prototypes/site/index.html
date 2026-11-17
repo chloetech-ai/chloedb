@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ChloeDB × Nodwyn prototypes</title>
+<link rel="stylesheet" href="/shared/ds.css">
+</head>
+<body class="glow grid-bg">
+<main class="wrap" style="padding:64px 0">
+  <p class="eyebrow">Prototypes</p>
+  <h1>ChloeDB × Nodwyn</h1>
+  <p class="lede">Being built tonight. The apps below come up as they are deployed.</p>
+  <div id="apps" class="grid g3" style="margin-top:32px"></div>
+</main>
+<script type="module">
+import { topbar, api, esc } from '/shared/ds.js';
+topbar({});
+const h = await api('/api/hub');
+document.getElementById('apps').innerHTML = h.apps.map(a => `<a class="card" href="/${a.slug}/" style="color:inherit;text-decoration:none"><h3>${esc(a.title || a.slug)}</h3><p class="muted">${esc(a.tagline || '')}</p></a>`).join('') || '<p class="muted">No apps yet.</p>';
+</script>
+</body>
+</html>

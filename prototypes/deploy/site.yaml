@@ -1,0 +1,65 @@
+# The hub server at prototypes.chloetech.ai (the password is checked by the Caddy in namespace web).
+# At start it fetches this branch's prototypes/ folder from GitHub (a sparse, shallow clone),
+# installs the dependencies and runs server.mjs against the protos-db service.
+#   kubectl apply -f deploy/site.yaml
+#   kubectl -n prototypes rollout restart deploy/site     # picks up a new push
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: site, namespace: prototypes}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: site}}
+  template:
+    metadata: {labels: {app: site}}
+    spec:
+      nodeSelector: {pool: protos}
+      tolerations: [{key: pool, operator: Equal, value: protos, effect: NoSchedule}]
+      initContainers:
+      - name: fetch
+        image: node:22.23.4-bookworm
+        workingDir: /work
+        env:
+        - {name: REPO, value: "https://github.com/chloetech-ai/chloedb"}
+        - {name: BRANCH, value: "claude/project-thread-3bjs0w"}
+        command: ["sh", "-ec"]
+        args:
+        - |
+          rm -rf /work/repo /work/app
+          git clone --quiet --depth 1 --filter=blob:none --sparse --branch "$BRANCH" "$REPO" /work/repo
+          cd /work/repo && git sparse-checkout set prototypes
+          git log -1 --format='%H %cI %s' > /work/REVISION && cat /work/REVISION
+          cd prototypes && npm ci --omit=dev --no-audit --no-fund --loglevel=error
+          mv /work/repo/prototypes /work/app && cp /work/REVISION /work/app/REVISION
+        volumeMounts: [{name: work, mountPath: /work}]
+        resources: {requests: {cpu: 200m, memory: 256Mi}, limits: {memory: 1Gi}}
+      containers:
+      - name: hub
+        image: node:22.23.4-bookworm
+        workingDir: /work/app
+        command: ["node", "server.mjs"]
+        env:
+        - {name: PORT, value: "8080"}
+        - {name: NODE_ENV, value: production}
+        - {name: CHLOEDB_URL, value: "http://protos-db.prototypes.svc.cluster.local:7700"}
+        - name: CHLOEDB_TOKEN
+          valueFrom: {secretKeyRef: {name: protos-db, key: token}}
+        - name: ANTHROPIC_API_KEY
+          valueFrom: {secretKeyRef: {name: anthropic, key: key}}
+        # Spend caps for live model calls made by visitors (lib/llm.mjs); measurement runs share them.
+        - {name: PROTOS_LLM_DAILY_USD, value: "25"}
+        - {name: PROTOS_LLM_TOTAL_USD, value: "150"}
+        - {name: PROTOS_LLM_PER_IP_HOUR, value: "40"}
+        ports: [{containerPort: 8080}]
+        readinessProbe: {httpGet: {path: /api/hub, port: 8080}, periodSeconds: 10, timeoutSeconds: 5}
+        livenessProbe: {httpGet: {path: /api/hub, port: 8080}, periodSeconds: 30, timeoutSeconds: 10, failureThreshold: 5}
+        resources: {requests: {cpu: 250m, memory: 256Mi}, limits: {memory: 2Gi}}
+        volumeMounts: [{name: work, mountPath: /work}]
+      volumes: [{name: work, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: site, namespace: prototypes}
+spec:
+  selector: {app: site}
+  ports: [{port: 8080, targetPort: 8080}]

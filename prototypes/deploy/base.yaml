@@ -1,0 +1,46 @@
+# The prototypes' namespace, their database and the public site's service.
+# Pods run on the node pool "protos" (label pool=protos, taint pool=protos:NoSchedule).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prototypes
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: protos-db
+  namespace: prototypes
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: protos-db}}
+  template:
+    metadata: {labels: {app: protos-db}}
+    spec:
+      nodeSelector: {pool: protos}
+      tolerations: [{key: pool, operator: Equal, value: protos, effect: NoSchedule}]
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:58775b84f37b7909c0dac8cec30453ce3198cc2d488bd931a1f81b7238993fb5
+        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/protos.chloedb --listen 0.0.0.0:7700 --grpc off --models /data/models --start-apps off"]
+        env:
+        - name: CHLOEDB_TOKEN
+          valueFrom: {secretKeyRef: {name: protos-db, key: token}}
+        - name: ANTHROPIC_API_KEY
+          valueFrom: {secretKeyRef: {name: anthropic, key: key}}
+        ports: [{containerPort: 7700}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        resources:
+          requests: {cpu: 1000m, memory: 2Gi}
+          limits: {memory: 8Gi}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes:
+      - name: data
+        hostPath: {path: /mnt/protos/db, type: DirectoryOrCreate}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: protos-db, namespace: prototypes}
+spec:
+  selector: {app: protos-db}
+  ports: [{port: 7700, targetPort: 7700}]
