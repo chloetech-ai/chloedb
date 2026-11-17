@@ -52,6 +52,67 @@ Give the answer on a last line starting with "Answer:". If you do not know, say 
 
 JUDGE_BATCH = 10
 
+# LoCoMo: conversations between two people, questions without a date. The
+# same reader instructions as above, with the speakers named; the judge sees
+# only the final answer line, as Mem0's evaluation passes its short answers.
+LOCOMO_READER_SYSTEM = (
+    "You are an assistant with a long-term memory of conversations between two people. "
+    "Answer questions about them from the memory provided."
+)
+
+LOCOMO_READER_PROMPT = """Here is what your memory holds about earlier conversations between {a} and {b}.
+
+<memory>
+{context}
+</memory>
+
+Question: {question}
+
+First list the facts in the memory that bear on the question, with their dates; turn relative times ("last year", "yesterday") into dates from the date of the conversation they were said in. Then give the answer, as a short phrase, on a last line starting with "Answer:". If the memory does not hold the answer, say so."""
+
+LOCOMO_NO_MEMORY_PROMPT = """Question about {a} and {b}: {question}
+
+Give the answer, as a short phrase, on a last line starting with "Answer:". If you do not know, say so."""
+
+# Mem0's LoCoMo judge (mem0ai/mem0 v1.0.0, evaluation/metrics/llm_judge.py,
+# Apache-2.0), the "J" score Mem0, Zep and Letta report. Its last lines ask for
+# a JSON label; graded in batches here, the batch prompt asks for one line per
+# item instead.
+LOCOMO_JUDGE = """Your task is to label an answer to a question as 'CORRECT' or 'WRONG'. You will be given the following data:
+    (1) a question (posed by one user to another user),
+    (2) a 'gold' (ground truth) answer,
+    (3) a generated answer
+which you will score as CORRECT/WRONG.
+
+The point of the question is to ask about something one user should know about the other user based on their prior conversations.
+The gold answer will usually be a concise and short answer that includes the referenced topic, for example:
+Question: Do you remember what I got the last time I went to Hawaii?
+Gold answer: A shell necklace
+The generated answer might be much longer, but you should be generous with your grading - as long as it touches on the same topic as the gold answer, it should be counted as CORRECT.
+
+For time related questions, the gold answer will be a specific date, month, year, etc. The generated answer might be much longer or use relative time references (like "last Tuesday" or "next month"), but you should be generous with your grading - as long as it refers to the same date or time period as the gold answer, it should be counted as CORRECT. Even if the format differs (e.g., "May 7th" vs "7 May"), consider it CORRECT if it's the same date.
+
+Now it's time for the real question:
+Question: {q}
+Gold answer: {a}
+Generated answer: {r}"""
+
+
+def final_answer(text):
+    """The text after the last "Answer:", or the whole reply when there is none."""
+    i = text.rfind("Answer:")
+    return text[i + len("Answer:"):].strip() if i >= 0 else text.strip()
+
+
+def speakers(unit):
+    names = []
+    for t in unit["turns"]:
+        if t["role"] not in names:
+            names.append(t["role"])
+        if len(names) == 2:
+            break
+    return (names + ["the other person"])[:2] if names else ["one person", "another"]
+
 # LongMemEval's judge prompts (evaluate_qa.py), by question type.
 JUDGE = {
     "default": "I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response is equivalent to the correct answer or contains all the intermediate steps to get the correct answer, you should also answer yes. If the response only contains a subset of the information required by the answer, answer no. \n\nQuestion: {q}\n\nCorrect Answer: {a}\n\nModel Response: {r}\n\nIs the model response correct? Answer yes or no only.",
@@ -113,7 +174,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="longmemeval_s.jsonl")
     ap.add_argument("--oracle", default="/home/user/data/memory/longmemeval_oracle.jsonl")
-    ap.add_argument("--config", action="append", required=True, help="name=context.jsonl[@field] | name=none | name=oracle | name=full")
+    ap.add_argument("--config", action="append", required=True,
+                    help="name=context.jsonl[@field] | name=none | name=oracle | name=full | name=answers:answers.jsonl "
+                         "(answers given elsewhere, e.g. by Letta's own agent: {qid, answer[, cost_reader, reader_tokens, context_chars]}; only judged)")
+    ap.add_argument("--abstention", choices=("keep", "skip"), default="keep",
+                    help="skip: leave out abstention questions (LoCoMo's adversarial category, which Mem0, Zep and Letta leave out)")
     ap.add_argument("--out", default="results/reader")
     ap.add_argument("--reader", required=True, help="the reader's --model")
     ap.add_argument("--judge", required=True, help="the judge's --model")
@@ -126,16 +191,26 @@ def main():
 
     qs = load_questions(args.data)
     qids = list(qs)[:: args.every]
+    if args.abstention == "skip":
+        qids = [q for q in qids if not qs[q][0]["abstention"]]
     if args.limit:
         qids = qids[: args.limit]
     oracle = None
 
     contexts = {}
+    given = {}  # name -> {qid: answer row} for answers:FILE configs
     for spec in args.config:
         name, src = spec.split("=", 1)
+        c = {}
+        if src.startswith("answers:"):
+            with open(src[len("answers:"):]) as f:
+                for line in f:
+                    r = json.loads(line)
+                    given.setdefault(name, {})[r["qid"]] = r
+            contexts[name] = {qid: "" for qid in given.get(name, {})}
+            continue
         src, _, field = src.partition("@")
         field = field or "context"
-        c = {}
         if src == "none":
             c = {qid: None for qid in qids}
         elif src == "full":
@@ -168,17 +243,31 @@ def main():
     lock = threading.Lock()
 
     def read(name, qid):
-        q, _ = qs[qid]
+        q, unit = qs[qid]
         ctx = contexts[name].get(qid)
-        date = q.get("question_date") or "unknown"
-        if ctx is None:
-            prompt = NO_MEMORY_PROMPT.format(date=date, question=q["question"])
+        if name in given:
+            g = given[name][qid]
+            answer, cost, tokens, chars = g["answer"], g.get("cost_reader", 0.0), g.get("reader_tokens", 0), g.get("context_chars", 0)
         else:
-            prompt = READER_PROMPT.format(context=ctx.strip() or "(nothing)", date=date, question=q["question"])
-        answer, cost, tokens = call(args.reader, READER_SYSTEM, prompt)
+            if unit.get("dataset") == "locomo":
+                a, b = speakers(unit)
+                system = LOCOMO_READER_SYSTEM
+                if ctx is None:
+                    prompt = LOCOMO_NO_MEMORY_PROMPT.format(a=a, b=b, question=q["question"])
+                else:
+                    prompt = LOCOMO_READER_PROMPT.format(a=a, b=b, context=ctx.strip() or "(nothing)", question=q["question"])
+            else:
+                date = q.get("question_date") or "unknown"
+                system = READER_SYSTEM
+                if ctx is None:
+                    prompt = NO_MEMORY_PROMPT.format(date=date, question=q["question"])
+                else:
+                    prompt = READER_PROMPT.format(context=ctx.strip() or "(nothing)", date=date, question=q["question"])
+            answer, cost, tokens = call(args.reader, system, prompt)
+            chars = len(ctx) if ctx else 0
         r = {
             "config": name, "qid": qid, "qtype": q["question_type"], "abstention": q["abstention"],
-            "context_chars": len(ctx) if ctx else 0, "reader_tokens": tokens, "answer": answer, "cost_reader": cost,
+            "context_chars": chars, "reader_tokens": tokens, "answer": answer, "cost_reader": cost,
         }
         with lock:
             with open(cache_path, "a") as f:
@@ -188,20 +277,26 @@ def main():
     def judge(batch):
         """Grades up to JUDGE_BATCH answers in one call, each with its own LongMemEval prompt."""
         items = []
+        locomo = qs[batch[0]["qid"]][1].get("dataset") == "locomo"
         for k, r in enumerate(batch, 1):
             q, _ = qs[r["qid"]]
             kind = "abstention" if q["abstention"] else q["question_type"]
-            items.append(f"### Item {k}\n" + JUDGE.get(kind, JUDGE["default"]).format(q=q["question"], a=q["answer"], r=r["answer"]))
+            if locomo and kind != "abstention":
+                items.append(f"### Item {k}\n" + LOCOMO_JUDGE.format(q=q["question"], a=q["answer"], r=final_answer(r["answer"])))
+            else:
+                items.append(f"### Item {k}\n" + JUDGE.get(kind, JUDGE["default"]).format(q=q["question"], a=q["answer"], r=r["answer"]))
+        words = ("CORRECT", "WRONG") if locomo else ("yes", "no")
         prompt = (
             "Grade each item below independently, following its own instructions.\n\n" + "\n\n".join(items)
-            + f"\n\nReply with exactly {len(batch)} lines, one per item, in the form '<item number>: yes' or '<item number>: no'."
+            + f"\n\nReply with exactly {len(batch)} lines, one per item, in the form '<item number>: {words[0]}' or '<item number>: {words[1]}'"
+            + (" (an abstention item's yes is CORRECT, its no is WRONG)." if locomo else ".")
         )
         out, cost, _ = call(args.judge, "You grade answers. Reply only with the requested lines.", prompt)
         got = {}
         for line in out.splitlines():
-            m = re.match(r"\s*(?:item\s*)?(\d+)\s*[:.)-]\s*(yes|no)\b", line.strip().lower())
+            m = re.match(r"\s*(?:item\s*)?(\d+)\s*[:.)-]\s*(yes|no|correct|wrong)\b", line.strip().lower())
             if m:
-                got[int(m.group(1))] = m.group(2) == "yes"
+                got[int(m.group(1))] = m.group(2) in ("yes", "correct")
         if sorted(got) != list(range(1, len(batch) + 1)):
             raise RuntimeError(f"judge returned {len(got)} of {len(batch)} verdicts")
         rows = [{"config": r["config"], "qid": r["qid"], "correct": got[k], "cost_judge": cost / len(batch)} for k, r in enumerate(batch, 1)]

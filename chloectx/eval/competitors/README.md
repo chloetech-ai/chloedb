@@ -85,6 +85,17 @@ with the Write tool. The harness records the files it wrote
 (`history_ccmem.json` → `memory_state.auto_memory_files`) and counts tool calls
 that touch `~/.claude/projects` (`memory_path_tool_calls`).
 
+## claudemd: a CLAUDE.md kept by Claude
+
+The history is recorded as in `none` (auto memory off), but each history
+session ends with one more turn, `CLAUDEMD_TURN` in `scripts/memory_bench.py`:
+update `CLAUDE.md` in the repository root with what a later session should
+know (requests, decisions and reasons, rules and conventions, work planned
+later), keeping it concise and changing nothing else. Claude Code loads that
+file into every later session, task runs included. The turns' cost is the
+lane's memory cost (`history_claudemd.json` → `memory.claudemd_upkeep`), and
+the file at the end of the history is in `memory_state.claude_md`.
+
 ## transcripts: raw history + agentic search
 
 `transcripts/export_transcripts.py`. The history is recorded as in `none`.
@@ -169,6 +180,48 @@ calls that touch the folder.
   and adds `--append-system-prompt` telling the agent to search memory before
   work and to save requirements, rules, decisions and facts that will matter
   later (mem0 has no hooks; the agent must call it).
+
+## zep: Graphiti, Zep's open-source engine
+
+- What: [Graphiti](https://github.com/getzep/graphiti) (`graphiti-core`
+  0.31.2), the temporal knowledge graph inside Zep's hosted service (not the
+  service itself), behind `zep/graphiti_mcp.py`, a stdio MCP server with the
+  tools of Graphiti's own MCP server: `add_memory(text)`,
+  `search_memory_facts(query)` and `search_nodes(query)`
+  (`mcp__graphiti__*`). Episodes are added in the background in order, as
+  Graphiti's server does; after each history session the harness adds
+  whatever the session queued and did not finish (`setup.drain`).
+- Model calls: Graphiti calls the Anthropic API itself (structured output
+  through a forced tool call), so this lane needs `BENCH_ANTHROPIC_API_KEY`
+  in the harness's environment; it reaches the MCP server through each
+  `claude` call's environment and is never written to the lane's files.
+  Haiku 5.5, thinking off, no temperature. Each call's usage is logged to
+  `~/.graphiti-bench/llm-results.jsonl` with its cost at list price.
+- Embeddings and reranking: BAAI/bge-small-en-v1.5 and
+  Xenova/ms-marco-MiniLM-L-6-v2 with fastembed on the CPU.
+- Store: Neo4j 5.26 (`GRAPHITI_BENCH_NEO4J`, default bolt://127.0.0.1:7687),
+  one group per scenario and lane, cleared when its history is recorded. The
+  graph lives outside the lane's HOME, so task runs get
+  `GRAPHITI_BENCH_READONLY=1` and add nothing to it, as no lane's runs write
+  anything another run reads.
+- Setup: `zep/setup.py HOME GROUP`; the harness passes the config with
+  `--mcp-config` and the same kind of `--append-system-prompt` as mem0's.
+
+The same Graphiti builds reader contexts for LoCoMo, LongMemEval and BEAM
+(`zep/graphiti_contexts.py`, Zep's own LoCoMo method: an episode per
+message, 20 nodes and 20 facts, Zep's template).
+
+## Letta (reader benchmarks only)
+
+`letta/letta_answers.py` answers LoCoMo, LongMemEval and BEAM questions with
+Letta's own agent, as Letta ran LoCoMo (letta-leaderboard): a folder per
+history with a file per session, a new agent per question with Letta's
+system prompt, `semantic_search_files` and `answer_question`, and its tool
+rules. Server: `letta/letta:0.16.8`, the last release of Letta's Python
+server (later images are Letta Code), with local embeddings from
+`letta/embed_server.py`. There is no Letta lane in the coding A/B: Letta's
+product for coding is its own agent, Letta Code, not a memory for Claude
+Code.
 
 ## ChloeCtx lanes
 

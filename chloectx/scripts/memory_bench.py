@@ -17,11 +17,17 @@ name 'BASE+anything' is BASE with the --lane-env/--lane-bin given for it):
 
   none          no memory: auto memory off, no plugins, no hooks
   ccmem         Claude Code's built-in auto memory, on (its default)
+  claudemd      no memory system, but each history session ends with one more
+                turn asking Claude to update the repository's CLAUDE.md, as a
+                careful user would; that turn's cost is the lane's memory cost
   transcripts   history as in 'none'; runs get the history sessions'
                 transcripts as markdown in a folder (--add-dir) and a system
                 prompt saying they can be grepped
   claude-mem    the claude-mem plugin (eval/competitors/claude_mem)
   mem0          mem0 behind a small MCP server (eval/competitors/mem0)
+  zep           Graphiti, Zep's open-source engine, behind an MCP server with
+                the tools of Graphiti's own (eval/competitors/zep); its model
+                calls go to the Anthropic API (BENCH_ANTHROPIC_API_KEY)
   engram@main   ChloeCtx, the binary built from main
   engram        ChloeCtx, the development build (binary is a lane parameter);
                 its query engine in its default mode (CHLOECTX_DEEP=async)
@@ -119,6 +125,13 @@ TRANSCRIPTS_PROMPT = (
     "with grep (or the Grep tool) when earlier requests, decisions or conventions may matter."
 )
 
+CLAUDEMD_TURN = (
+    "Before this session ends: update CLAUDE.md in the repository root (create it if there is none) with what a later "
+    "session on this project should know from this one: the user's requests and requirements, decisions and their reasons, "
+    "rules and conventions the user set, work planned for later, and anything they would expect to be remembered. Keep what is "
+    "still true, correct what changed, and keep it concise. Change nothing else."
+)
+
 HANDOFF_PROMPT = "A handoff note from the agent who worked on this project before you, in earlier sessions:\n\n{note}"
 
 HANDOFF_WRITER = (
@@ -135,15 +148,18 @@ SHORT_CHARS = 1500
 HANDOFF_MODES = ("none", "summary", "capsule", "summary+capsule", "short", "short+capsule")
 
 
-# kind: plain | transcripts | full | engram | claude-mem | mem0
+# kind: plain | transcripts | full | engram | claude-mem | mem0 | zep
 # auto_memory: leave Claude Code's auto memory on (off otherwise)
+# claudemd: end each history session with CLAUDEMD_TURN (its cost is memory upkeep)
 # env / history_env / run_env: extra variables (all calls / history only / task runs only)
 LANES = {
     "none": {"kind": "plain"},
     "ccmem": {"kind": "plain", "auto_memory": True},
+    "claudemd": {"kind": "plain", "claudemd": True},
     "transcripts": {"kind": "transcripts"},
     "claude-mem": {"kind": "claude-mem", "version": "13.39.0", "mcp": ["mcp__plugin_claude-mem_mcp-search"]},
     "mem0": {"kind": "mem0", "mcp": ["mcp__mem0"]},
+    "zep": {"kind": "zep", "mcp": ["mcp__graphiti"]},
     "engram@main": {"kind": "engram", "binary": "/home/claude/engram-main/chloectx/target/release/chloectx", "mcp": ["mcp__chloectx", "mcp__engram"]},
     "engram": {"kind": "engram", "binary": "/home/claude/engram/chloectx/target/release/chloectx", "mcp": ["mcp__chloectx", "mcp__engram"]},
     # The development build's query engine ("deep" recall): async is its default mode.
@@ -486,6 +502,13 @@ class Lane:
             if phase == "run":
                 # A run is graded on its one turn; what ChloeCtx would write down after it is never read.
                 env["CHLOECTX_DISTILL"] = "0"
+        if self.kind == "zep":
+            # Graphiti calls the API itself; the key reaches its MCP server through this
+            # environment only, never the lane's files. A graded run adds nothing to the graph.
+            if os.environ.get("BENCH_ANTHROPIC_API_KEY"):
+                env["BENCH_ANTHROPIC_API_KEY"] = os.environ["BENCH_ANTHROPIC_API_KEY"]
+            if phase == "run":
+                env["GRAPHITI_BENCH_READONLY"] = "1"
         env.update(self.meta.get("env", {}))
         env.update(self.d.get("env", {}))
         env.update(self.d.get(f"{phase}_env", {}))
@@ -525,7 +548,7 @@ class Lane:
         out = ["--allowedTools", ",".join(BASE_TOOLS + self.d.get("mcp", [])), "--disallowedTools", "WebFetch,WebSearch"]
         if self.kind == "transcripts" and phase == "run":
             out += ["--add-dir", self.extra, "--append-system-prompt", TRANSCRIPTS_PROMPT.format(dir=self.extra)]
-        if self.kind == "mem0":
+        if self.kind in ("mem0", "zep"):
             out += ["--mcp-config", self.meta["mcp_config"], "--append-system-prompt", self.meta["system_prompt"]]
         return out
 
@@ -624,6 +647,14 @@ class Lane:
             meta["mem0"] = info
             meta["env"].update(info["env"])
             meta["mcp_config"], meta["system_prompt"] = info["mcp_config"], info["system_prompt"]
+        elif self.kind == "zep":
+            if not os.environ.get("BENCH_ANTHROPIC_API_KEY"):
+                raise RuntimeError("the zep lane needs BENCH_ANTHROPIC_API_KEY (Graphiti calls the Anthropic API itself)")
+            setup = load_module(os.path.join(COMPETITORS, "zep", "setup.py"), "zep_setup")
+            info = setup.install(self.home, group=f"bench_{slug(self.sc['name'])}_{slug(self.name)}".replace("-", "_"))
+            setup.clear(self.home, info)
+            meta["zep"] = info
+            meta["mcp_config"], meta["system_prompt"] = info["mcp_config"], info["system_prompt"]
         meta["claude_version"] = subprocess.run([os.path.join(self.args.bench_bin, "claude"), "--version"], capture_output=True, text=True).stdout.strip()
         self.meta = meta
         json.dump(meta, open(self.meta_path, "w"), indent=1)
@@ -651,6 +682,12 @@ class Lane:
         if left:
             info["killed"] = [cmdline(p)[:120] for p in left]
             kill_home_procs(self.home)
+        if self.kind == "zep" and phase == "history":
+            # The session's MCP server stops with it; the episodes it had not added yet are added now.
+            t0 = time.time()
+            setup = load_module(os.path.join(COMPETITORS, "zep", "setup.py"), "zep_setup")
+            info["zep_drain"] = setup.drain(self.home, self.meta["zep"])
+            info["zep_drain_s"] = round(time.time() - t0, 1)
         return info
 
     def claude_mem_db(self):
@@ -707,6 +744,8 @@ class Lane:
             offs["claude_mem"] = fsize(self.meta["claude_mem"]["observer_log"])
         if self.kind == "mem0":
             offs["mem0"] = fsize(self.meta["mem0"]["llm_log"])
+        if self.kind == "zep":
+            offs["zep"] = fsize(self.meta["zep"]["llm_log"])
         return offs
 
     def memory_activity(self, offs, phase):
@@ -764,6 +803,11 @@ class Lane:
             out["cost_usd"] = c["cost_usd"]
             out["mem0"] = c
             out["tokens"] = c["tokens"]
+        elif self.kind == "zep":
+            c = result_cost_log(self.meta["zep"]["llm_log"], offs.get("zep", 0))
+            out["cost_usd"] = c["cost_usd"]
+            out["zep"] = c
+            out["tokens"] = c["tokens"]
         return out
 
     def memory_state(self):
@@ -772,6 +816,8 @@ class Lane:
         for path in sorted(glob.glob(os.path.join(self.home, ".claude", "projects", "*", "memory", "**", "*"), recursive=True)):
             if os.path.isfile(path):
                 st["auto_memory_files"][os.path.relpath(path, os.path.join(self.home, ".claude", "projects"))] = open(path, encoding="utf-8", errors="replace").read()[:4000]
+        if self.d.get("claudemd") and os.path.exists(os.path.join(self.repo, "CLAUDE.md")):
+            st["claude_md"] = open(os.path.join(self.repo, "CLAUDE.md"), encoding="utf-8", errors="replace").read()[:20000]
         if self.kind == "engram":
             p = subprocess.run([os.path.join(self.bin, "engram"), "stats", "--project", self.repo], env=self.env("history"), capture_output=True, text=True, timeout=60)
             st["engram_stats"] = (p.stdout + p.stderr)[-3000:]
@@ -790,6 +836,9 @@ class Lane:
         elif self.kind == "mem0":
             setup = load_module(os.path.join(COMPETITORS, "mem0", "setup.py"), "mem0_setup")
             st["mem0"] = setup.dump(self.home, self.meta["mem0"])
+        elif self.kind == "zep":
+            setup = load_module(os.path.join(COMPETITORS, "zep", "setup.py"), "zep_setup")
+            st["zep"] = setup.dump(self.home, self.meta["zep"])
         return st
 
     # -- history
@@ -826,7 +875,7 @@ class Lane:
         t_start = time.time()
         self.setup()
         full = self.kind == "full"
-        sessions, turns, settles, commits = [], [], [], []
+        sessions, turns, settles, commits, upkeep = [], [], [], [], []
         offs = self.memory_offsets()
         session = None
         # Claude Code reports total_cost_usd cumulatively over a session (it grows with each --resume),
@@ -849,6 +898,16 @@ class Lane:
                               "session_cost_usd": cum, "steps": out.get("num_turns"), "error": out.get("is_error"), "wall_s": round(out["wall_s"], 1),
                               "models": list((out.get("modelUsage") or {}).keys())})
                 log(self.name, f"history block {k + 1} prompt {i + 1}: {out.get('num_turns')} steps, ${cost or 0:.3f}, {out['wall_s']:.0f} s{' ERROR ' + str(out.get('result'))[:200] if out.get('is_error') else ''}")
+            if self.d.get("claudemd"):
+                out = self.claude(CLAUDEMD_TURN, "history", f"history_b{k + 1}_claudemd", resume=session)
+                cum = out.get("total_cost_usd")
+                cost = None if cum is None else max(0.0, cum - session_cost.get(session, 0.0))
+                if cum is not None:
+                    session_cost[session] = max(cum, session_cost.get(session, 0.0))
+                upkeep.append({"block": k + 1, "session": session, "cost_usd": cost, "steps": out.get("num_turns"), "error": out.get("is_error"),
+                               "wall_s": round(out["wall_s"], 1), "claude_md_chars": len(open(os.path.join(self.repo, "CLAUDE.md"), errors="replace").read())
+                               if os.path.exists(os.path.join(self.repo, "CLAUDE.md")) else 0})
+                log(self.name, f"history block {k + 1} CLAUDE.md update: {out.get('num_turns')} steps, ${cost or 0:.3f}, {upkeep[-1]['claude_md_chars']} chars")
             settles.append(self.settle("history"))
             commits += self.apply_teammate_commits(k + 1)
         if self.kind == "transcripts":
@@ -856,6 +915,9 @@ class Lane:
             paths = [transcript_path(self.home, s) for s in sessions]
             exporter.export([p for p in paths if p], self.extra)
         activity = self.memory_activity(offs, "history")
+        if upkeep:
+            activity["claudemd_upkeep"] = upkeep
+            activity["cost_usd"] += sum(u["cost_usd"] or 0 for u in upkeep)
         state = self.memory_state()
         settles.append(self.settle("history"))
         ev = transcript_events(self.home, session)

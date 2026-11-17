@@ -9,7 +9,9 @@ way each benchmark scores it (data from scripts/convert_new_benchmarks.py).
 Contexts as in reader_eval.py: name=contexts.jsonl[@field] (chloectx-bench deep
 writes `context`, the query engine's picks, and `base10`, the plain hybrid
 search's top 10), none, or full (the whole history, when it fits in
---max-full-chars; --full-every samples it, being the costly one).
+--max-full-chars; --full-every samples it, being the costly one), or
+answers:FILE, the answers of a system that answers by itself (an agent, such
+as eval/competitors/letta/letta_answers.py), which are only graded.
 
   mab   The reader gets MemoryAgentBench's own FactConsolidation question
         (utils/templates.py, rag_agent) under "[Knowledge Pool]". Scored by
@@ -186,7 +188,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bench", required=True, choices=["mab", "beam"])
     ap.add_argument("--data", required=True)
-    ap.add_argument("--config", action="append", required=True, help="name=context.jsonl[@field] | name=none | name=full")
+    ap.add_argument("--config", action="append", required=True, help="name=context.jsonl[@field] | name=none | name=full | name=answers:FILE (answers made elsewhere, e.g. by an agent; only graded)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--reader", default="haiku")
     ap.add_argument("--judge", default="haiku")
@@ -207,9 +209,20 @@ def main():
     if args.limit:
         qids = qids[: args.limit]
 
-    contexts = {}
+    contexts, given = {}, {}
     for spec in args.config:
         name, src = spec.split("=", 1)
+        if src.startswith("answers:"):
+            # {qid, answer[, cost_reader, reader_tokens, context_chars]} rows from a system
+            # that answers by itself (Letta's agent): graded like the others, not read.
+            g = {}
+            for line in open(src[len("answers:"):]):
+                r = json.loads(line)
+                if r["qid"] in qs:
+                    g[r["qid"]] = r
+            given[name] = g
+            contexts[name] = {q: None for q in g}
+            continue
         src, _, field = src.partition("@")
         if src == "none":
             contexts[name] = {q: None for q in qids}
@@ -243,6 +256,13 @@ def main():
 
     def read(name, qid):
         q, _ = qs[qid]
+        if name in given:
+            a = given[name][qid]
+            r = {"config": name, "qid": qid, "qtype": q["question_type"], "context_chars": a.get("context_chars", 0),
+                 "reader_tokens": a.get("reader_tokens", 0), "answer": a.get("answer") or "", "cost_reader": a.get("cost_reader", 0.0)}
+            with lock, open(ans_path, "a") as f:
+                f.write(json.dumps(r) + "\n")
+            return r
         ctx = contexts[name].get(qid)
         if args.bench == "mab":
             query = MAB_QUERY.format(question=q["question"])
