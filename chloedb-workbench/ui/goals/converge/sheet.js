@@ -108,7 +108,7 @@ export async function openSheet(C, id) {
   }
 
   // ------------------------------------------------------------ moves
-  const busyNow = (f) => !!f.busy;
+  function busyNow(f) { return !!f.busy; }
   function actions(f) {
     const b = blockedOf(f);
     const out = [];
