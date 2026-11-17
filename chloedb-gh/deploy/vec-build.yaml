@@ -1,0 +1,139 @@
+# Builds each node's part of the vector table gh_vec (see vec.yaml) beside
+# its running shard: the repos of /mnt/chloedb/gh/red/repos/sN.parquet that
+# have an etext (ten stars or more, about 818,000 a node), with their stars
+# and language, imported into /mnt/chloedb/gh/vec/gh-vec.chloedb with the
+# shard's own server and model, and the slots file of gh-vN. About 10
+# minutes a node (most of it the merge into one segment, whose graph is
+# built again), at most 3 GiB (most of it page cache). Then apply vec.yaml.
+#   kubectl apply -f vec-build.yaml; kubectl logs -n strata gh-vecb-0 -f
+---
+apiVersion: v1
+data:
+  build.sh: |
+    #!/bin/sh
+    # build.sh N: shard N's repos that have vectors into /work/vec/gh-vec.chloedb,
+    # with the slots file of the vector cluster gh-v0..3 (the slots of gh-sN).
+    set -e
+    N=$1; V=/work/vec; SRV=/work/db/bin/chloedb-server-035p
+    mkdir -p $V
+    [ -e $V/gh-vec.chloedb ] && { echo "$V/gh-vec.chloedb is there already"; exit 1; }
+    ls -la /work/red/repos/s$N.parquet $SRV /work/db/models
+    t=$(date +%s)
+    pip install --quiet --root-user-action=ignore --disable-pip-version-check pyarrow
+    python3 /cfg/filter.py /work/red/repos/s$N.parquet $V/s$N.parquet
+    echo "filtered in $(( $(date +%s)-t )) s"; t=$(date +%s)
+    CHLOEDB_MODELS=/work/db/models $SRV import --db $V/gh-vec.chloedb --schema /cfg/gh_vec.json --table gh_vec $V/s$N.parquet 2>&1 | tail -5
+    echo "imported in $(( $(date +%s)-t )) s"
+    lo=$((N*1024)); hi=$((lo+1024))
+    cat > $V/gh-vec.chloedb.slots <<J
+    {"map": {"epoch": 1, "replicas": [["http://gh-v0.strata.svc:7701"], ["http://gh-v1.strata.svc:7701"], ["http://gh-v2.strata.svc:7701"], ["http://gh-v3.strata.svc:7701"]],
+     "shards": [[[0, 1024]], [[1024, 2048]], [[2048, 3072]], [[3072, 4096]]]}, "shard": $N, "since": 1}
+    J
+    ls -la $V; du -sh $V/gh-vec.chloedb
+    echo done
+  filter.py: |
+    # filter.py SRC DST: the repos of SRC that have a text to embed (etext), with
+    # only the columns the vector table keeps.
+    import sys
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+    src, dst = sys.argv[1], sys.argv[2]
+    cols = ["repo", "stars", "language", "etext"]
+    pf = pq.ParquetFile(src)
+    w, n, seen = None, 0, 0
+    for b in pf.iter_batches(batch_size=100_000, columns=cols):
+        seen += b.num_rows
+        e = b.column("etext")
+        keep = pc.and_kleene(pc.is_valid(e), pc.greater(pc.utf8_length(e), 0))
+        b = b.filter(keep)
+        if w is None:
+            w = pq.ParquetWriter(dst, b.schema, compression="zstd")
+        w.write_batch(b, row_group_size=100_000)
+        n += b.num_rows
+    w.close()
+    print(f"{src}: {seen} repos, {n} with a text to embed")
+  gh_vec.json: |
+    {
+     "table": "gh_vec",
+     "key": "repo",
+     "compression": "zstd",
+     "fields": [
+      {"name": "repo", "type": "int", "not_null": true},
+      {"name": "stars", "type": "int"},
+      {"name": "language", "type": "keyword"},
+      {"name": "etext", "type": "keyword", "indexed": false},
+      {"name": "emb", "type": "vector", "embed": {"from": ["etext"], "model": "potion-retrieval-32M"}}
+     ]
+    }
+kind: ConfigMap
+metadata:
+  name: gh-vec-build
+  namespace: strata
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: gh-vecb-0, namespace: strata, labels: {app: gh-vecb}}
+spec:
+  restartPolicy: Never
+  nodeSelector: {chloedb/gh-shard: '0'}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+  containers:
+  - name: b
+    image: python:3.13-slim-trixie
+    command: [sh, /cfg/build.sh, '0']
+    resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 3Gi}}
+    volumeMounts: [{mountPath: /work, name: work}, {mountPath: /cfg, name: cfg}]
+  volumes:
+  - {name: work, hostPath: {path: /mnt/chloedb/gh, type: Directory}}
+  - {name: cfg, configMap: {name: gh-vec-build}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: gh-vecb-1, namespace: strata, labels: {app: gh-vecb}}
+spec:
+  restartPolicy: Never
+  nodeSelector: {chloedb/gh-shard: '1'}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+  containers:
+  - name: b
+    image: python:3.13-slim-trixie
+    command: [sh, /cfg/build.sh, '1']
+    resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 3Gi}}
+    volumeMounts: [{mountPath: /work, name: work}, {mountPath: /cfg, name: cfg}]
+  volumes:
+  - {name: work, hostPath: {path: /mnt/chloedb/gh, type: Directory}}
+  - {name: cfg, configMap: {name: gh-vec-build}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: gh-vecb-2, namespace: strata, labels: {app: gh-vecb}}
+spec:
+  restartPolicy: Never
+  nodeSelector: {chloedb/gh-shard: '2'}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+  containers:
+  - name: b
+    image: python:3.13-slim-trixie
+    command: [sh, /cfg/build.sh, '2']
+    resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 3Gi}}
+    volumeMounts: [{mountPath: /work, name: work}, {mountPath: /cfg, name: cfg}]
+  volumes:
+  - {name: work, hostPath: {path: /mnt/chloedb/gh, type: Directory}}
+  - {name: cfg, configMap: {name: gh-vec-build}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: gh-vecb-3, namespace: strata, labels: {app: gh-vecb}}
+spec:
+  restartPolicy: Never
+  nodeSelector: {chloedb/gh-shard: '3'}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+  containers:
+  - name: b
+    image: python:3.13-slim-trixie
+    command: [sh, /cfg/build.sh, '3']
+    resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 3Gi}}
+    volumeMounts: [{mountPath: /work, name: work}, {mountPath: /cfg, name: cfg}]
+  volumes:
+  - {name: work, hostPath: {path: /mnt/chloedb/gh, type: Directory}}
+  - {name: cfg, configMap: {name: gh-vec-build}}

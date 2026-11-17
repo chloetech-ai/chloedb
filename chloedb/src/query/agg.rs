@@ -453,6 +453,38 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
     if q.group_by.is_empty() && groups.map.is_empty() {
         groups.map.insert(Vec::new(), needed.iter().map(Acc::new).collect());
     }
+    let value_of = |key: &[Part], accs: &[Acc], p: &Projection| -> Value {
+        match p {
+            Projection::Field(_) | Projection::Path(_) | Projection::Time(_) => q.group_by.iter().position(|g| g.projection() == *p).map_or(Value::Null, |i| key[i].value()),
+            _ => needed.iter().position(|n| n == p).map_or(Value::Null, |i| accs[i].value()),
+        }
+    };
+    Ok(ordered(q, groups, needed)?
+        .into_iter()
+        .skip(q.offset)
+        .take(q.limit.unwrap_or(usize::MAX))
+        .map(|(k, a)| q.projection.iter().map(|(_, p)| value_of(&k, &a, p)).collect())
+        .collect())
+}
+
+/// A shard's groups when every group's rows are on this shard (the query
+/// groups by the field that places rows on shards): only
+/// the ones that can be in the answer, those `HAVING` keeps in the query's
+/// order up to its `OFFSET` and `LIMIT`, as [`Groups::partial_rows`] gives
+/// them. The coordinator merges each group from the one shard that has it,
+/// so the top of every shard's top is the answer's, and it gathers
+/// `LIMIT` groups a shard rather than all of them.
+pub fn top_partial_rows(q: &Select, groups: Groups, needed: &[Projection]) -> Result<Vec<Vec<Value>>> {
+    let keep = q.limit.map_or(usize::MAX, |l| l.saturating_add(q.offset));
+    Ok(ordered(q, groups, needed)?
+        .into_iter()
+        .take(keep)
+        .map(|(k, accs)| k.iter().map(Part::value).chain(accs.iter().map(Acc::partial)).collect())
+        .collect())
+}
+
+/// The groups `HAVING` keeps, in the query's order.
+fn ordered(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<Vec<(Vec<Part>, Vec<Acc>)>> {
     groups.map.values_mut().for_each(|accs| accs.iter_mut().for_each(Acc::settle));
     let value_of = |key: &[Part], accs: &[Acc], p: &Projection| -> Value {
         match p {
@@ -531,12 +563,7 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
         };
         o.then_with(|| by_key(ka, kb))
     });
-    Ok(rows
-        .into_iter()
-        .skip(q.offset)
-        .take(q.limit.unwrap_or(usize::MAX))
-        .map(|(_, k, a)| q.projection.iter().map(|(_, p)| value_of(&k, &a, p)).collect())
-        .collect())
+    Ok(rows.into_iter().map(|(_, k, a)| (k, a)).collect())
 }
 
 impl Having {

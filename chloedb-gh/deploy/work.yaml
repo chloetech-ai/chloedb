@@ -1,0 +1,103 @@
+# The load of GitHub's history into a 4-shard cluster, done on the
+# cluster's own nodes: node pool `gh` (4 x s-4vcpu-8gb-amd, label
+# chloedb/pool=gh, taint chloedb/pool=gh:NoSchedule), each node labelled
+# chloedb/gh-shard=0..3 by hand. Everything lives on the node's own SSD
+# under /mnt/chloedb/gh (hostPath): the binaries in bin/, prepare's rows
+# in out/ (served to the other nodes on port 8000 with a list per shard,
+# manifest-sN.txt, for deploy/pull.py), the shard's rows in in/, and its
+# database in db/.
+#
+# The steps (docs in docs/chloedb/github.md):
+#   1. kubectl cp the chloedb-gh binary and pull.py into each gh-work-N.
+#   2. prepare --from 2015-01-01 --part N/4 on each (actor ids exist from
+#      2015), then on gh-work-0 the years before with --logins and --names
+#      from every node's actors and names (pull.py --shard all).
+#   3. each node writes its manifests; pull.py --shard N into in/.
+#   4. reduce --shard N; gh-import-N loads in/ into db/gh.chloedb.
+#   5. the shard servers and the coordinator (deploy/k8s.yaml) open db/.
+apiVersion: v1
+kind: Pod
+metadata: {name: gh-work-0, namespace: strata, labels: {app: gh-work, shard: "0"}}
+spec:
+  nodeSelector: {chloedb/gh-shard: "0"}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+  containers:
+  - name: work
+    # Debian 13: python3 for the file server and pull.py, and a glibc new
+    # enough for a chloedb-gh built on Ubuntu 24.04.
+    image: python:3.13-slim-trixie
+    command: ["sh", "-c", "mkdir -p /work/out /work/in /work/db /work/bin && cd /work/out && exec python3 -m http.server 8000"]
+    ports: [{containerPort: 8000}]
+    resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 6Gi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/chloedb/gh, type: DirectoryOrCreate}}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: gh-work-1, namespace: strata, labels: {app: gh-work, shard: "1"}}
+spec:
+  nodeSelector: {chloedb/gh-shard: "1"}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+  containers:
+  - name: work
+    # Debian 13: python3 for the file server and pull.py, and a glibc new
+    # enough for a chloedb-gh built on Ubuntu 24.04.
+    image: python:3.13-slim-trixie
+    command: ["sh", "-c", "mkdir -p /work/out /work/in /work/db /work/bin && cd /work/out && exec python3 -m http.server 8000"]
+    ports: [{containerPort: 8000}]
+    resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 6Gi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/chloedb/gh, type: DirectoryOrCreate}}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: gh-work-2, namespace: strata, labels: {app: gh-work, shard: "2"}}
+spec:
+  nodeSelector: {chloedb/gh-shard: "2"}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+  containers:
+  - name: work
+    # Debian 13: python3 for the file server and pull.py, and a glibc new
+    # enough for a chloedb-gh built on Ubuntu 24.04.
+    image: python:3.13-slim-trixie
+    command: ["sh", "-c", "mkdir -p /work/out /work/in /work/db /work/bin && cd /work/out && exec python3 -m http.server 8000"]
+    ports: [{containerPort: 8000}]
+    resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 6Gi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/chloedb/gh, type: DirectoryOrCreate}}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: gh-work-3, namespace: strata, labels: {app: gh-work, shard: "3"}}
+spec:
+  nodeSelector: {chloedb/gh-shard: "3"}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+  containers:
+  - name: work
+    # Debian 13: python3 for the file server and pull.py, and a glibc new
+    # enough for a chloedb-gh built on Ubuntu 24.04.
+    image: python:3.13-slim-trixie
+    command: ["sh", "-c", "mkdir -p /work/out /work/in /work/db /work/bin && cd /work/out && exec python3 -m http.server 8000"]
+    ports: [{containerPort: 8000}]
+    resources: {requests: {cpu: "3", memory: 4Gi}, limits: {memory: 6Gi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/chloedb/gh, type: DirectoryOrCreate}}]
+---
+# What GitHub's search says of each repo with 50+ stars (chloedb-gh
+# api-meta): anonymous, at most 10 calls a minute from this node's address,
+# about a day for the whole walk. It goes on where it stopped (out/
+# api-done-0.txt) when the pod starts again, and outlives the load's pods.
+apiVersion: v1
+kind: Pod
+metadata: {name: gh-meta, namespace: strata, labels: {app: gh-meta}}
+spec:
+  nodeSelector: {chloedb/gh-shard: "1"}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: gh, effect: NoSchedule}]
+  restartPolicy: OnFailure
+  containers:
+  - name: meta
+    image: python:3.13-slim-trixie
+    command: ["sh", "-c", "exec /work/bin/chloedb-gh-api api-meta --out /work/out --part 0/1 --gap 7 >> /work/apimeta.log 2>&1"]
+    resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 1Gi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/chloedb/gh, type: Directory}}]

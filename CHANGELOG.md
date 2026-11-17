@@ -9,6 +9,22 @@ promises about the file format, the shard protocol and the old names.
 Every crate and package carries the release's version; between releases
 changes collect under "Unreleased".
 
+## Unreleased
+
+- **A coordinator's query grouped by the column that places the table's
+  rows** (its `shard_by`, else its primary key) has every group whole on
+  one shard, so each shard now sends only the groups that can be in the
+  answer: those `HAVING` keeps, in the query's order, up to its `OFFSET`
+  and `LIMIT`. `SELECT repo, COUNT(*) ... GROUP BY repo ORDER BY 2 DESC
+  LIMIT 20` over a month of GitHub's events (7.2 million repos) took the
+  coordinator past its memory, gathering every group of every shard, and
+  now sends 20 a shard. Grouped by another column, or without a `LIMIT`,
+  a shard still sends every group. No protocol change: servers of 0.3.7
+  mix with it in either order.
+- A demo app, `chloedb-gh` ([docs](docs/chloedb/github.md)): every public
+  GitHub event since 2011, 11.2 billion of them, on four 8 GB machines,
+  at https://gh.chloetech.ai. It is on the `Demos` train.
+
 ## 0.3.7
 
 The server on PyPI (`pip install chloedb-server`, `uvx chloedb-server`) and
