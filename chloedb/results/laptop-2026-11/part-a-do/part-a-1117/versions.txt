@@ -1,0 +1,8 @@
+duckdb                         2.0.0
+faiss-cpu                      1.16.0
+fastembed                      0.9.1
+lancedb                        0.41.0
+numpy                          2.5.5
+pyarrow                        26.0.1
+sqlite-vec                     0.1.9
+tantivy                        0.27.0

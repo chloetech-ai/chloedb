@@ -1,0 +1,44 @@
+r0 0.3.5    scifact   typo p50 1.461 ms (server 1.141)
+r0 0.3.5    writes,  1 clients: 1,641 rows/s, p50 0.548 ms, 1.0 a commit, errors 0
+r0 0.3.5    writes, 16 clients: 8,586 rows/s, p50 1.476 ms, 5.2 a commit, errors 0
+r0 0.3.5    after SIGKILL: 9183 rows, 5183 + 4000 answered: all there
+r0 0.3.5    nfcorpus  typo p50 1.035 ms (server 0.727)
+r0 0.3.5    fiqa      typo p50 2.557 ms (server 2.180)
+r0 fixes    scifact   typo p50 1.213 ms (server 0.891)
+r0 fixes    writes,  1 clients: 2,248 rows/s, p50 0.405 ms, 1.0 a commit, errors 0
+r0 fixes    writes, 16 clients: 9,529 rows/s, p50 1.214 ms, 3.8 a commit, errors 0
+r0 fixes    after SIGKILL: 9183 rows, 5183 + 4000 answered: all there
+r0 fixes    nfcorpus  typo p50 0.819 ms (server 0.548)
+r0 fixes    fiqa      typo p50 2.105 ms (server 1.749)
+r1 0.3.5    scifact   typo p50 1.424 ms (server 1.107)
+r1 0.3.5    writes,  1 clients: 1,588 rows/s, p50 0.577 ms, 1.0 a commit, errors 0
+r1 0.3.5    writes, 16 clients: 8,454 rows/s, p50 1.455 ms, 5.2 a commit, errors 0
+r1 0.3.5    after SIGKILL: 9183 rows, 5183 + 4000 answered: all there
+r1 0.3.5    nfcorpus  typo p50 1.011 ms (server 0.717)
+r1 0.3.5    fiqa      typo p50 2.528 ms (server 2.149)
+r1 fixes    scifact   typo p50 1.190 ms (server 0.870)
+r1 fixes    writes,  1 clients: 2,237 rows/s, p50 0.415 ms, 1.0 a commit, errors 0
+r1 fixes    writes, 16 clients: 9,466 rows/s, p50 1.276 ms, 4.1 a commit, errors 0
+r1 fixes    after SIGKILL: 9183 rows, 5183 + 4000 answered: all there
+r1 fixes    nfcorpus  typo p50 0.838 ms (server 0.549)
+r1 fixes    fiqa      typo p50 2.090 ms (server 1.733)
+r2 0.3.5    scifact   typo p50 1.452 ms (server 1.138)
+r2 0.3.5    writes,  1 clients: 1,578 rows/s, p50 0.587 ms, 1.0 a commit, errors 0
+r2 0.3.5    writes, 16 clients: 8,367 rows/s, p50 1.486 ms, 5.5 a commit, errors 0
+r2 0.3.5    after SIGKILL: 9183 rows, 5183 + 4000 answered: all there
+r2 0.3.5    nfcorpus  typo p50 0.986 ms (server 0.696)
+r2 0.3.5    fiqa      typo p50 2.487 ms (server 2.125)
+r2 fixes    scifact   typo p50 1.184 ms (server 0.879)
+r2 fixes    writes,  1 clients: 2,304 rows/s, p50 0.393 ms, 1.0 a commit, errors 0
+r2 fixes    writes, 16 clients: 9,653 rows/s, p50 1.234 ms, 4.5 a commit, errors 0
+r2 fixes    after SIGKILL: 9183 rows, 5183 + 4000 answered: all there
+r2 fixes    nfcorpus  typo p50 0.821 ms (server 0.543)
+r2 fixes    fiqa      typo p50 2.082 ms (server 1.728)
+
+| build | scifact typo p50 | nfcorpus typo p50 | fiqa typo p50 | writes 1 client | writes 16 clients | requests a commit at 16 | after SIGKILL |
+|---|---|---|---|---|---|---|---|
+| 0.3.5 | 1.452 ms | 1.011 ms | 2.528 ms | 1,588/s | 8,454/s | 5.2 | every row |
+| fixes | 1.190 ms | 0.821 ms | 2.090 ms | 2,248/s | 9,529/s | 4.1 | every row |
+
+answers equal to 0.3.5's: {"0.3.5": {"scifact": 291, "nfcorpus": 292, "fiqa": 625}, "fixes": {"scifact": 291, "nfcorpus": 292, "fiqa": 625}}
+SERVER CHECK DONE

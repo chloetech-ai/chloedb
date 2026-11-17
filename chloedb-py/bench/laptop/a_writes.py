@@ -1,6 +1,7 @@
 """Part A of the laptop benchmark, writes: inserts, updates and a stream of
 events into one file that has text and vector indexes, Strata against
-SQLite (FTS5 + sqlite-vec, at synchronous FULL and NORMAL), DuckDB (vss
+SQLite (FTS5 + sqlite-vec, at synchronous FULL and NORMAL; Strata too with
+sync=False, as `strata-nosync`, its counterpart of NORMAL), DuckDB (vss
 HNSW; its fts index does not follow writes), LanceDB and Tantivy (text
 only: no vector update or nearest-neighbour check).
 
@@ -93,10 +94,13 @@ def load_events(shop: Path, n: int) -> list[dict]:
 class StrataW:
     name = "strata"
 
-    def __init__(self, work: Path) -> None:
+    def __init__(self, work: Path, sync: bool = True) -> None:
         import strata
 
-        self.strata, self.path = strata, work / "w.strata"
+        # sync=False: a commit does not wait for the disk (SQLite's NORMAL).
+        self.strata, self.path, self.sync = strata, work / "w.strata", sync
+        if not sync:
+            self.name = "strata-nosync"
 
     def files(self):
         return [self.path, Path(str(self.path) + "-wal")]
@@ -104,6 +108,7 @@ class StrataW:
     def create(self, rows, vecs) -> None:
         self.db = self.strata.open(
             str(self.path),
+            sync=self.sync,
             schema={
                 "table": "products",
                 "key": "id",
@@ -704,6 +709,7 @@ def make(name: str, work: Path):
     return {
         "tantivy": lambda: TantivyW(work),
         "strata": lambda: StrataW(work),
+        "strata-nosync": lambda: StrataW(work, sync=False),
         "sqlite-full": lambda: SqliteW(work, "FULL"),
         "sqlite-normal": lambda: SqliteW(work, "NORMAL"),
         "duckdb": lambda: DuckW(work),
@@ -908,7 +914,7 @@ def fresh_vec(rng: random.Random) -> np.ndarray:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--shop", required=True)
-    ap.add_argument("--systems", default="strata,sqlite-full,sqlite-normal,duckdb,lancedb")
+    ap.add_argument("--systems", default="strata,strata-nosync,sqlite-full,sqlite-normal,duckdb,lancedb")
     ap.add_argument("--work", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--seconds", type=float, default=5.0)
