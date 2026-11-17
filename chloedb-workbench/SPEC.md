@@ -3334,6 +3334,13 @@ scope touches (an event `component`, in the feed); you set it by `PUT` or
 load. The overview gives `components: [{name, open}]`;
 `GET /api/converge/metrics` and `/timeline` take `component=`.
 
+`GET /api/converge/findings/:id/diff` (read-only, for the merge pack):
+the card's branch against the base from their merge base, read with git
+in the main checkout, or in the card's worktree when the branch is not
+there: `{base, branch, files: [{path, add, del, binary}], add, del, diff,
+truncated}` (the diff is cut at 400 KB); 404 while the card has no
+branch.
+
 ### The timeline
 
 Each bucket also has `spend_usd` (the runs started in it) and `agents

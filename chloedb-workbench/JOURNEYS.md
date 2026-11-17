@@ -917,7 +917,7 @@ In short:
 |---|---|
 | `#/` | Converge: redirects to `#/converge?project=<the project in focus>`, or `#/converge` with none |
 | `#/converge` | Converge's project picker (a card per project, and Open a project, `#/p`) |
-| `#/converge[/<step>]?project=<project>` | that project's Converge: its pipeline, or one step (`problems`, `reproducing`, `ready`, `building`, `merge`, `personas`) or view under ⋯ (`metrics`, `settings`, `activity`); `?f=<finding>` opens one finding |
+| `#/converge[/<step>]?project=<project>` | that project's Converge: its inbox (Merge this? · Build these? · Worth fixing?, then In progress), or one step (`problems`, `reproducing`, `ready`, `building`, `merge`, `personas`), everything moving without you (`progress`), or a view under ⋯ (`metrics`, `settings`, `activity`); `?f=<finding>` opens one finding, and without `project` it finds the finding's project first |
 | `#/needs` | Needs you, every project's: Blocked on you first, with Done, carry on |
 | `#/workbench` | Workbench's home (⋯ › Workbench), the old Start: its four goals, your projects, agents, tools (More's list), what needs you; the first run when no project is known |
 | `#/` | Start (the first run when no project is known) |
