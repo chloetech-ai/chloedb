@@ -106,6 +106,9 @@ struct PrepareArgs {
     /// Names chosen for the themes (data/theme-names-1m.json names those of the first million).
     #[arg(long)]
     names: Option<PathBuf>,
+    /// Keep the themes of an earlier prepare (its themes.json): their centres, names and places on the map, with every picture placed in the nearest, so that a larger slice keeps the map of a smaller one.
+    #[arg(long)]
+    themes_from: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -274,7 +277,7 @@ async fn main() {
     let cli = Cli::parse();
     let r = match cli.cmd {
         Cmd::Prepare(a) => {
-            let o = prepare::Options { data: a.data, rows: a.rows, models: models_dir(a.models), out: a.out, themes: a.themes, sample: a.sample, iterations: a.iterations, names: a.names };
+            let o = prepare::Options { data: a.data, rows: a.rows, models: models_dir(a.models), out: a.out, themes: a.themes, sample: a.sample, iterations: a.iterations, names: a.names, themes_from: a.themes_from };
             tokio::task::spawn_blocking(move || prepare::run(&o)).await.map_err(|e| e.to_string()).and_then(|r| r)
         }
         Cmd::Load(a) => {

@@ -27,6 +27,38 @@ pub struct Options {
     /// Names chosen for these themes (`{"rows": n, "themes": k, "names": {"0": "..."}}`),
     /// which replace the names made from the words in `NAMES`.
     pub names: Option<PathBuf>,
+    /// An earlier prepare's themes.json whose themes (centres, names,
+    /// places on the map) these pictures are placed in, in place of
+    /// learning new ones.
+    pub themes_from: Option<PathBuf>,
+}
+
+/// The themes of an earlier prepare: their centres, names and places.
+struct Kept {
+    centres: Vec<Vec<f32>>,
+    names: Vec<String>,
+    at: Vec<(usize, usize)>,
+    cols: usize,
+}
+
+fn kept_themes(p: &Path) -> Result<Kept, String> {
+    let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?).map_err(|e| format!("{}: {e}", p.display()))?;
+    let themes = j["themes"].as_array().ok_or_else(|| format!("{}: no themes", p.display()))?;
+    let mut k = Kept { centres: Vec::new(), names: Vec::new(), at: Vec::new(), cols: j["cols"].as_u64().unwrap_or(1) as usize };
+    for (i, t) in themes.iter().enumerate() {
+        if t["id"].as_u64() != Some(i as u64) {
+            return Err(format!("{}: theme {i} is out of order", p.display()));
+        }
+        let mut c: Vec<f32> = t["centre"].as_array().into_iter().flatten().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
+        if c.len() != DIM {
+            return Err(format!("{}: theme {i}'s centre has {} numbers, not {DIM}", p.display(), c.len()));
+        }
+        pd12m::unit(&mut c);
+        k.centres.push(c);
+        k.names.push(t["name"].as_str().unwrap_or("").to_string());
+        k.at.push((t["row"].as_u64().unwrap_or(0) as usize, t["col"].as_u64().unwrap_or(0) as usize));
+    }
+    Ok(k)
 }
 
 /// How many pictures there are to read, and the vector files in order.
@@ -80,20 +112,34 @@ pub fn run(o: &Options) -> Result<(), String> {
     let kind_vecs = clip.texts_now(&KINDS.iter().map(|k| k.1).collect::<Vec<_>>())?;
     let name_vecs = clip.texts_now(NAMES)?;
 
-    // The themes, learnt from every `step`th picture.
-    let step = (rows / o.sample.max(1)).max(1);
-    let mut sample: Vec<f32> = Vec::with_capacity(o.sample * DIM);
-    each_chunk(&vfiles, rows, 50_000, |start, buf| {
-        for (j, v) in buf.chunks_exact(DIM).enumerate() {
-            if (start + j) % step == 0 {
-                sample.extend_from_slice(v);
-            }
+    // The themes, learnt from every `step`th picture, or kept from an
+    // earlier prepare.
+    let kept = match &o.themes_from {
+        Some(p) => Some(kept_themes(p)?),
+        None => None,
+    };
+    let centres = match &kept {
+        Some(k) => {
+            eprintln!("the {} themes of {}", k.centres.len(), o.themes_from.as_ref().map(|p| p.display().to_string()).unwrap_or_default());
+            k.centres.clone()
         }
-        Ok(())
-    })?;
-    eprintln!("k-means of {} pictures into {} themes", sample.len() / DIM, o.themes);
-    let centres = themes::kmeans(&sample, o.themes, o.iterations);
-    drop(sample);
+        None => {
+            let step = (rows / o.sample.max(1)).max(1);
+            let mut sample: Vec<f32> = Vec::with_capacity(o.sample * DIM);
+            each_chunk(&vfiles, rows, 50_000, |start, buf| {
+                for (j, v) in buf.chunks_exact(DIM).enumerate() {
+                    if (start + j) % step == 0 {
+                        sample.extend_from_slice(v);
+                    }
+                }
+                Ok(())
+            })?;
+            eprintln!("k-means of {} pictures into {} themes", sample.len() / DIM, o.themes);
+            let c = themes::kmeans(&sample, o.themes, o.iterations);
+            drop(sample);
+            c
+        }
+    };
 
     // Every picture's kind and theme, and each theme's pictures nearest
     // its middle.
@@ -125,7 +171,10 @@ pub fn run(o: &Options) -> Result<(), String> {
     let mut f = std::fs::File::create(o.out.join("labels.bin")).map_err(|e| e.to_string())?;
     f.write_all(&labels).map_err(|e| e.to_string())?;
 
-    let mut names = themes::name_themes(&centres, &name_vecs, NAMES);
+    let mut names = match &kept {
+        Some(k) => k.names.clone(),
+        None => themes::name_themes(&centres, &name_vecs, NAMES),
+    };
     if let Some(p) = &o.names {
         let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?).map_err(|e| format!("{}: {e}", p.display()))?;
         if j["rows"].as_u64() != Some(rows as u64) || j["themes"].as_u64() != Some(k as u64) {
@@ -139,8 +188,13 @@ pub fn run(o: &Options) -> Result<(), String> {
             }
         }
     }
-    let cols = ((k as f64) * 1.8).sqrt().ceil() as usize;
-    let at = themes::layout(&centres, cols.max(1));
+    let (cols, at) = match &kept {
+        Some(kp) => (kp.cols, kp.at.clone()),
+        None => {
+            let cols = ((k as f64) * 1.8).sqrt().ceil() as usize;
+            (cols, themes::layout(&centres, cols.max(1)))
+        }
+    };
     let mut out = Vec::new();
     for t in 0..k {
         // Nine pictures near the middle that are not near-copies of each other.
