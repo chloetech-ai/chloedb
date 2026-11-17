@@ -36,7 +36,7 @@ export function openRun(C, id) {
       h("span", { class: "cv-meta" }, d.live ? h("span", { class: "cv-tag run" }, h("i", { class: "cv-pulse", "aria-hidden": "true" }), gen ? "reading now" : "playing now") : h("span", { class: `cv-tag ${r.state === "failed" ? "bad" : "ok"}` }, r.state === "failed" ? "failed" : "finished"),
         h("span", {}, dur), r.cost_usd ? h("span", {}, usd(r.cost_usd)) : null, r.ease != null ? h("span", {}, `ease ${r.ease} of 5`) : null, r.use_memory ? h("span", { class: "cv-tag" }, "with memory") : null),
       h("h2", {}, gen ? name : `${name}${r.purpose === "verify" ? " checks a fix" : " plays their journey"}`),
-      h("span", { class: "cv-st" }, h("span", { class: "sg" }, at ? `Step ${at.n} of ${at.of}` : d.live ? "Starting" : "Done"), at && at.name ? h("span", { class: "wh" }, at.name) : null),
+      h("span", { class: "cv-st" }, h("span", { class: "sg" }, !d.live ? (at ? `Done · reached step ${at.n} of ${at.of}` : "Done") : at ? `Step ${at.n} of ${at.of}` : "Starting"), d.live && at && at.name ? h("span", { class: "wh" }, at.name) : null),
       h("span", { class: "cv-thin" }, h("i", { style: { width: `${pct}%` } })));
     if (!tl) {
       tl = taskList(openMap, gen ? "C" : (pe.name || "?").trim()[0] || "?");
