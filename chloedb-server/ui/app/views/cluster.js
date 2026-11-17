@@ -389,6 +389,8 @@ const slo = () => state.fleet?.checks?.find?.((x) => x.id === "p99")?.slo_ms ?? 
 const sloErr = () => state.fleet?.checks?.find?.((x) => x.id === "error_ratio")?.slo ?? 0.01;
 /** The mean keyed load of the shards holding slots, which the Load lens compares with (set by model()). */
 const LOAD = { mean: 0 };
+/** A window's real length, said: "14 min 40 s". */
+const span = (secs) => (secs == null ? "window" : secs < 90 ? `${Math.round(secs)} s` : `${Math.floor(secs / 60)} min${Math.round(secs % 60) ? ` ${Math.round(secs % 60)} s` : ""}`);
 const loadRate = (v) => (v == null ? "–" : v >= 1000 ? kn(v) : v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1) : v.toFixed(2));
 const LENSES = {
   health: { label: "Health", title: "Copies answering, and whatever is wrong with the shard: red when it serves no reads or takes no writes, amber when a copy is down, behind, avoided or full" },
@@ -526,8 +528,8 @@ function problems(M) {
     if (sh && !out.some((p) => p.label === `Hot shard ${sh.i}`)) out.push({ sev: 0, shards: [sh.i], label: vh === "hot slot" ? `One slot makes shard ${sh.i} busy` : `Shard ${sh.i} takes more keyed load`,
       text: `${(M.slotHeat.skew ?? 0).toFixed(2)}× the mean of the shards, ${loadRate(sh.heat.keyed_per_s)} keyed/s · last 5 minutes`,
       impact: vh === "hot slot" ? "moving slots does not split it: the slot takes its load wherever it goes" : "its slots carry more reads and writes than the others'",
-      next: vh === "hot slot" ? "See which slot under Key slots, then cache the key or spread its writes over several keys" : "Move some of its slots to a quieter shard (Draft: drag it onto another)",
-      fix: vh === "hot range" ? { kind: "slots", shard: sh.i } : null });
+      next: vh === "hot slot" ? "See which slot under Key slots, then cache the key or spread its writes over several keys" : "Even out the keyed load: its busy slots move to quieter shards",
+      fix: vh === "hot range" ? { kind: "load", shard: sh.i } : null });
   }
   // A primary avoided for want of a majority is its shard serving no
   // reads, said above already (NEW-scenarios-19).
@@ -778,7 +780,7 @@ function render(page, r) {
   const canvas = h("div", { class: "cc-canvas" });
   mapCard.append(h("div", { class: "bd" }, toolbar, legendBox, attention, canvas));
   // The load on each key slot, under the map (GET /v1/cluster/slots).
-  const slotCard = slotMap({ onShard: (i) => select(i), model: () => M, past: isPast });
+  const slotCard = slotMap({ onShard: (i) => select(i), model: () => M, past: isPast, onBalance: (w) => evenOutByLoad(w), canBalance: () => !managed() });
   left.append(mapCard, slotCard.el);
 
   function drawAll() {
@@ -1205,7 +1207,7 @@ function render(page, r) {
             p.next ? h("div", { class: "small", style: { marginTop: "4px" } }, h("span", { class: "muted" }, "Next: "), p.next + ".") : null,
             h("div", { class: "row", style: { gap: "6px", marginTop: "6px" } },
               p.shards.length ? h("button", { class: "btn xs", onclick: () => select(p.shards[0]) }, p.shards.length === 1 ? `Open shard ${p.shards[0]}` : `Open shard ${p.shards[0]}, the first`) : null,
-              p.fix && !managed() ? h("button", { class: "btn xs", onclick: () => planFix(p.fix) }, p.fix.kind === "slots" ? "Move some slots…" : p.fix.kind === "repair" ? "Plan the repair" : "Plan replacements") : null,
+              p.fix && !managed() ? h("button", { class: "btn xs", onclick: () => planFix(p.fix) }, p.fix.kind === "slots" ? "Move some slots…" : p.fix.kind === "load" ? "Even out by load…" : p.fix.kind === "repair" ? "Plan the repair" : "Plan replacements") : null,
               p.link ? h("a", { class: "btn xs", href: p.link }, "Open") : null))))))
         : empty("okc", "Nothing needs attention", "Every copy answers, the replicas keep up, the disks have room and no shard is hot."),
       foot: h("span", {}, "Pick a shard for its copies; switch to Node or Zone to fail one as a what-if."),
@@ -1565,6 +1567,7 @@ function render(page, r) {
   }
   function planFix(fix) {
     if (managed()) return;
+    if (fix.kind === "load") { evenOutByLoad(); return; }
     mode = "draft";
     if (fix.kind === "repair" || fix.kind === "replace") {
       for (const i of fix.shards || [fix.shard]) {
@@ -2108,7 +2111,7 @@ function render(page, r) {
           h("li", {}, h("b", {}, "Drag a copy"), " (a pip) onto another shard to move it there, or onto a node (Node or Zone) to replace it on that node."),
           h("li", {}, h("b", {}, "Drag a shard"), " onto another to move slots to it: the fix for a hot shard."),
           h("li", {}, h("b", {}, "Drag the end handle"), " (+ shard) to add shards; their servers' URLs go in the plan.")),
-        problems(M).some((p) => p.fix) ? h("div", { class: "row", style: { gap: "6px" } }, problems(M).filter((p) => p.fix).slice(0, 3).map((p) => h("button", { class: "btn sm", onclick: () => planFix(p.fix) }, p.fix.kind === "slots" ? `Cool shard ${p.shards[0]}…` : p.fix.kind === "repair" ? `Repair shard ${p.shards[0]}` : "Replace the copies down"))) : null) });
+        problems(M).some((p) => p.fix) ? h("div", { class: "row", style: { gap: "6px" } }, problems(M).filter((p) => p.fix).slice(0, 3).map((p) => h("button", { class: "btn sm", onclick: () => planFix(p.fix) }, p.fix.kind === "slots" || p.fix.kind === "load" ? `Cool shard ${p.shards[0]}…` : p.fix.kind === "repair" ? `Repair shard ${p.shards[0]}` : "Replace the copies down"))) : null) });
     const P = ownPlan();
     const sp = serverPlan;
     // The server's plan may not remove anything that was not asked (finding CC-1).
@@ -2481,7 +2484,8 @@ function render(page, r) {
       body: h("div", { class: "row", style: { gap: "6px" } },
         h("button", { class: "btn sm", onclick: () => { if (managed()) draft.kube.replicas = (sp.replicas ?? 3) + 1; else for (const sh of M.shards) draft.adds.push({ id: nextId(), shard: sh.i, url: "" }); tab = "map"; mode = "draft"; writeParams(); changed(); drawAll(); } }, icon("plus"), `A copy more for every shard (${plural(M.shards.length, "server")})`),
         h("button", { class: "btn sm", onclick: () => { addShards(Math.max(1, Math.round(M.shards.length / 4))); tab = "map"; mode = "draft"; writeParams(); drawAll(); } }, icon("plus"), `${plural(Math.max(1, Math.round(M.shards.length / 4)), "shard")} more`),
-        !managed() && Math.max(...slotsPer) - Math.min(...slotsPer) > 1 ? h("button", { class: "btn sm", onclick: evenOut }, "Even out the slots…") : null),
+        !managed() && Math.max(...slotsPer) - Math.min(...slotsPer) > 1 ? h("button", { class: "btn sm", onclick: evenOut }, "Even out the slots…") : null,
+        !managed() && M.slotHeat ? h("button", { class: "btn sm", title: "Move the slots that carry the keyed load from the busiest shard to the quietest: see the plan first", onclick: () => evenOutByLoad() }, "Even out by load…") : null),
       foot: h("span", {}, "How much a copy or a shard more would hold, and cost: ", h("a", { href: "#/simulator" }, "test it in the Simulator")) });
     clear(body, h("div", { class: "cc-cap" }, auto1, head1, quick));
   }
@@ -2501,6 +2505,52 @@ function render(page, r) {
     const ok = await ask({ title: "Even out the slots", body: "Slots move from the shards holding the most to those holding the fewest, up to 256 at a time, while the cluster serves. Writes to each run pause for a moment as it flips.", ok: "Move them" });
     if (!ok) return;
     try { takeRun((await api("/v1/admin/plan/apply", { body: { steps: [{ kind: "rebalance", text: "The slots even out over the shards" }] }, reason: ok.reason })).run); }
+    catch (e) { toast(`Not started: ${plainError(e)}`, "bad", 9000); return; }
+    store.set("cluster.planClosed", null);
+    tab = "map"; writeParams(); drawAll();
+  }
+
+  /**
+   * The keyed load evened out (POST /v1/admin/rebalance {"by": "load"}):
+   * its plan asked first as a dry run and shown, shard by shard, before
+   * and after; applied as a plan's step, so that it runs on the
+   * coordinator and every view sees it.
+   */
+  async function evenOutByLoad(window = "15m") {
+    if (managed()) return;
+    if (!mayRun("POST /v1/admin/plan/apply")) { toast(`Not started: ${whyNot("POST /v1/admin/plan/apply")}`, "bad", 8000); return; }
+    let p;
+    try { p = (await api("/v1/admin/rebalance", { body: { by: "load", window, dry_run: true } })).plan; }
+    catch (e) { toast(`No plan: ${plainError(e)}`, "bad", 9000); return; }
+    const before = p.before?.load_per_s || [], after = p.after?.load_per_s || [];
+    const top = Math.max(1e-9, ...before, ...after);
+    const bar = (v, cls) => h("span", { class: "cc-lb " + cls, style: { width: `${Math.max(1, Math.round(100 * v / top))}%` } });
+    const moved = (i) => (p.moves || []).filter((m) => m.from === i).reduce((n, m) => n + m.count, 0) - (p.moves || []).filter((m) => m.to === i).reduce((n, m) => n + m.count, 0);
+    const shards = before.map((v, i) => h("tr", {},
+      h("td", {}, `shard ${i}`),
+      h("td", { class: "cc-lbars" }, bar(v, "before"), bar(after[i] ?? v, "after")),
+      h("td", { class: "num" }, `${loadRate(v)} → ${loadRate(after[i] ?? v)}/s`),
+      h("td", { class: "num dim" }, moved(i) > 0 ? `gives ${fmt.n(moved(i))}` : moved(i) < 0 ? `takes ${fmt.n(-moved(i))}` : "")));
+    const skipped = (p.coordinators || []).filter((c) => !c.ok);
+    const nMoves = (p.moves || []).length;
+    const body = h("div", { class: "stack", style: { gap: "10px" } },
+      h("p", { style: { margin: 0 } }, nMoves
+        ? `${plural(p.slots_moved, "slot")} move in ${plural(nMoves, "move")}, from the busiest shard to the quietest: the busiest goes from ${p.before.skew.toFixed(2)}× the mean of the keyed load to ${p.after.skew.toFixed(2)}×.`
+        : cap(p.why || "nothing to move") + "."),
+      h("table", { class: "t compact cc-lplan" }, h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, h("span", { class: "row nw", style: { gap: "8px" } }, h("i", { class: "cc-lb before sw" }), "now", h("i", { class: "cc-lb after sw" }), "after")), h("th", { class: "num" }, "keyed load"), h("th", { class: "num" }, "slots"))), h("tbody", {}, shards)),
+      p.unsplit ? h("p", { class: "small", style: { margin: 0 } }, `Slot ${p.unsplit.slot} stays on shard ${p.unsplit.shard}: at ${loadRate(p.unsplit.load_per_s)}/s it would make any other shard the hot one. It is one key or one shard_by value: cache it, or spread its writes over several keys.`) : null,
+      p.warning ? h("p", { class: "small cc-warn", style: { margin: 0 } }, `${cap(p.warning)}. Wait until the counts cover most of the window (4 minutes) before moving rows.`) : null,
+      skipped.length ? h("p", { class: "small cc-warn", style: { margin: 0 } }, `Left out of the counts: ${skipped.map((c) => `${c.coordinator} (${c.error})`).join("; ")}.`) : null,
+      h("p", { class: "small dim", style: { margin: 0 } }, `From the reads and writes routed by key over the last ${span(p.secs)}, ${plural((p.coordinators || []).filter((c) => c.ok).length, "coordinator")} counted. The rows of each slot move while the cluster serves; writes to a run pause for a moment as it flips.`));
+    if (!nMoves || p.warning) {
+      const close = h("button", { class: "btn primary" }, "Close");
+      const m = modal({ title: "Even out the keyed load", body, foot: [close] });
+      close.onclick = () => m.close();
+      return;
+    }
+    const ok = await ask({ title: "Even out the keyed load", body, ok: "Move them" });
+    if (!ok) return;
+    try { takeRun((await api("/v1/admin/plan/apply", { body: { steps: [{ kind: "rebalance", by: "load", window, text: "The keyed load evens out over the shards" }] }, reason: ok.reason })).run); }
     catch (e) { toast(`Not started: ${plainError(e)}`, "bad", 9000); return; }
     store.set("cluster.planClosed", null);
     tab = "map"; writeParams(); drawAll();

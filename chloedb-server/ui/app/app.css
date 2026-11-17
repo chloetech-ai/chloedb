@@ -2748,6 +2748,13 @@ a.wl-chip:hover { border-color: var(--accent); }
 .sm-list button { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
 .sm-list button:hover { text-decoration: underline; }
 @media (max-width: 600px) { .sm-top { flex-basis: 100%; } }
+/* The plan of a rebalance by load: each shard's keyed load now and after. */
+.cc-lplan td { vertical-align: middle; }
+.cc-lbars { width: 45%; min-width: 120px; }
+.cc-lb { display: block; height: 6px; border-radius: 3px; margin: 2px 0; }
+.cc-lb.before { background: var(--seq-3); }
+.cc-lb.after { background: var(--seq-6); }
+.cc-lb.sw { display: inline-block; width: 14px; height: 8px; margin: 0; }
 
 .cc-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .cc-find { flex: 1 1 160px; min-width: 140px; max-width: 320px; }

@@ -11,6 +11,14 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **The Cluster page evens out the keyed load.** **Even out by load…**,
+  offered on a hot range (in Key slots and What needs attention) and in
+  Capacity, asks the coordinator for a rebalance by load's plan as a dry
+  run and shows it: each shard's keyed load now and after, the slots each
+  gives or takes, a slot too busy to move, and whose counts are in it.
+  **Move them** runs it as a plan's step, which every coordinator's
+  Cluster page follows; on counts that cover too little of the window the
+  page shows the plan and says to wait.
 - **Rebalance by load.** `POST /v1/admin/rebalance {"by": "load"}` evens
   out the shards' keyed load rather than their counts of slots: it weighs
   each slot by the reads and writes routed to it over the last 15 minutes

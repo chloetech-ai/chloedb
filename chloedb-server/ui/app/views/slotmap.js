@@ -31,7 +31,7 @@ function span(secs) {
  * from the model after a poll of /v1/cluster; the card polls the slots
  * itself, every 10 s while it is on the page.
  */
-export function slotMap({ onShard, model, past }) {
+export function slotMap({ onShard, model, past, onBalance, canBalance }) {
   let win = WINDOWS.some(([k]) => k === store.get("cluster.slotWindow")) ? store.get("cluster.slotWindow") : "5m";
   let data = null, err = null, gone = false, hover = -1, loading = false;
   const owner = new Int16Array(SLOTS).fill(-1);
@@ -91,6 +91,8 @@ export function slotMap({ onShard, model, past }) {
       head.append(h("div", { class: "sm-verdict row", style: { gap: "8px", alignItems: "baseline", flexWrap: "wrap" } },
         h("span", { class: "pill " + cls }, W.verdict),
         W.verdict !== "quiet" ? h("span", { class: "small", title: "The busiest shard's keyed load as a multiple of the mean of the shards holding slots" }, `skew ${W.skew.toFixed(2)}×`) : null,
+        // A hot range is what moving slots cools: offer it, the plan shown first.
+        W.verdict === "hot range" && onBalance && canBalance?.() !== false ? h("button", { class: "btn xs", type: "button", title: "Move the busy slots from the busiest shard to the quietest: the plan is shown first", onclick: () => onBalance(win === "1m" ? "5m" : win) }, "Even out by load…") : null,
         h("span", { class: "small dim" }, `${rate(W.keyed_per_s)} keyed/s · ${rate(W.fanout_per_s)} sent to every shard/s · over ${span(W.secs)}`)),
         h("p", { class: "small dim sm-why" }, W.why[0].toUpperCase() + W.why.slice(1) + "."));
     } else if (!data) head.append(h("p", { class: "small dim" }, "Asking the coordinator…"));
