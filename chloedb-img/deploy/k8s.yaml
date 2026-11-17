@@ -1,0 +1,105 @@
+# Image Explorer on ChloeDB in a Kubernetes cluster: one node (16 GB) with
+#   img-server  a stock chloedb-server: the pictures, themes, colors and
+#               links (about 25 GB on disk for 5 million pictures), and
+#               beside it chloedb-pin (chloedb-gh/tools/pin, built as its
+#               main.rs says and copied to /mnt/img/db), which locks the
+#               vectors' 8-bit codes and graph in memory (4.3 GB for 5
+#               million) so that a search never reads them from the disk;
+#               without it the server runs as before, and its log is
+#               /data/pin.log
+#   img-app     the app: the page, the API, CLIP for words and photos
+#               (1.7 GB of weights, about 2 GB in memory) and the thumbnails
+#   img-work    a shell for putting the binary, the model and PD12M's files
+#               in place, and for prepare and load (kubectl cp, kubectl exec)
+# The node is in pool `img`, tainted chloedb/pool=img:NoSchedule. Everything
+# is on the node's own SSD (hostPath): the database in /mnt/img/db, and in
+# /mnt/img/work the binary (bin/chloedb-img), the model
+# (models/clip-vit-large-patch14), PD12M's files (pd12m/), what prepare made
+# (prepared/) and the thumbnails (cache/). Secrets: img-admin (token: the
+# server's token), e2e-admin (token: what the command center's app proxy
+# sends). See docs/chloedb/img.md.
+apiVersion: v1
+kind: Service
+metadata: {name: img-server, namespace: strata}
+spec:
+  selector: {app: img-server}
+  ports: [{name: http, port: 7700, targetPort: 7700}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: img-app, namespace: strata}
+spec:
+  selector: {app: img-app}
+  ports: [{name: http, port: 7870, targetPort: 7870}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: img-server, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: img-server}}
+  template:
+    metadata: {labels: {app: img-server}}
+    spec:
+      nodeSelector: {doks.digitalocean.com/node-pool: img}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: img, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: server
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
+        command: ["sh", "-c", "([ -x /data/chloedb-pin ] && sleep 20 && exec /data/chloedb-pin /data/img.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /data/img.chloedb --listen 0.0.0.0:7700 --grpc off --backup-dir /data/backup"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: img-admin, key: token}}}
+        ports: [{containerPort: 7700}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # The locked codes and graph count against the limit, as the
+        # server's own memory and its merges do.
+        resources: {requests: {cpu: "2", memory: 6Gi}, limits: {memory: 9Gi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, hostPath: {path: /mnt/img/db, type: DirectoryOrCreate}}]
+---
+# --public serves the page at / to anyone (https://img.chloetech.ai, through
+# the web proxy), within the limits a minute from one address; there is no
+# SQL and there are no MCP tools on it.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: img-app, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: img-app}}
+  template:
+    metadata: {labels: {app: img-app}}
+    spec:
+      nodeSelector: {doks.digitalocean.com/node-pool: img}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: img, effect: NoSchedule}]
+      containers:
+      - name: app
+        image: ubuntu:24.04
+        command: ["/work/bin/chloedb-img", "serve", "--strata", "http://img-server.strata.svc:7700", "--models", "/work/models", "--cache", "/work/cache", "--listen", "0.0.0.0:7870", "--public", "--per-minute", "600", "--photos-per-minute", "20", "--thumbs-per-minute", "600", "--fetch-slots", "8"]
+        env:
+        - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: img-admin, key: token}}}
+        - {name: CHLOEDB_IMG_TOKEN, valueFrom: {secretKeyRef: {name: e2e-admin, key: token}}}
+        - {name: RUST_LOG, value: chloedb_img=info}
+        ports: [{containerPort: 7870}]
+        readinessProbe: {httpGet: {path: /healthz, port: 7870}, periodSeconds: 5}
+        resources: {requests: {cpu: "1", memory: 3Gi}, limits: {memory: 6Gi}}
+        volumeMounts: [{name: work, mountPath: /work}]
+      volumes: [{name: work, hostPath: {path: /mnt/img/work, type: Directory}}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: img-work, namespace: strata, labels: {app: img-work}}
+spec:
+  nodeSelector: {doks.digitalocean.com/node-pool: img}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: img, effect: NoSchedule}]
+  containers:
+  - name: work
+    image: ubuntu:24.04
+    command: ["sleep", "infinity"]
+    env:
+    - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: img-admin, key: token}}}
+    resources: {requests: {cpu: 200m, memory: 512Mi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/img/work, type: DirectoryOrCreate}}]

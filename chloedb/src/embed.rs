@@ -18,6 +18,9 @@
 //! * [`SiglipEmbedder`] (feature `vision`): SigLIP's image and text
 //!   towers through candle, `siglip-base-patch16-224`. A tenth of a second
 //!   an image on a few cores.
+//! * [`ClipEmbedder`] (feature `vision`): OpenAI's CLIP through candle,
+//!   `clip-vit-large-patch14`, the model of the vectors LAION and PD12M
+//!   publish, so that words and pictures are searched against those.
 //! * [`SparseEncoder`] (feature `onnx`): term weights for SPARSE fields,
 //!   a transformer's for documents and an IDF lookup for queries.
 //! * [`OnnxEmbedder`] (feature `onnx`): any encoder exported to ONNX
@@ -345,6 +348,7 @@ pub const KNOWN_MODELS: &[(&str, &str, &str)] = &[
     ("bge-small-en-v1.5", "BAAI/bge-small-en-v1.5", "BERT, 384 dimensions (feature bert)"),
     ("snowflake-arctic-embed-m-v1.5", "Snowflake/snowflake-arctic-embed-m-v1.5", "BERT, 768 dimensions (feature bert)"),
     ("siglip-base-patch16-224", "google/siglip-base-patch16-224", "SigLIP, images and text, 768 dimensions (feature vision)"),
+    ("clip-vit-large-patch14", "openai/clip-vit-large-patch14", "CLIP ViT-L/14, images and text, 768 dimensions (feature vision): the vectors LAION and PD12M publish"),
     ("clap-htsat-unfused", "laion/clap-htsat-unfused", "CLAP, sound and text, 512 dimensions (feature audio)"),
     ("answerai-colbert-small-v1", "answerdotai/answerai-colbert-small-v1", "ColBERT, a 96-dimension vector a token, for a multi-vector field (feature bert)"),
 ];
@@ -358,7 +362,7 @@ pub fn known_dim(model: &str) -> Option<usize> {
     if let Some(k) = crate::hosted::known_model(model) {
         return Some(k.dim);
     }
-    let dims = [("potion-retrieval-32M", 512), ("potion-base-8M", 256), ("potion-retrieval-32M-int8", 512), ("potion-base-8M-int8", 256), ("bge-small-en-v1.5", 384), ("snowflake-arctic-embed-m-v1.5", 768), ("siglip-base-patch16-224", 768), ("clap-htsat-unfused", 512), ("answerai-colbert-small-v1", 96)];
+    let dims = [("potion-retrieval-32M", 512), ("potion-base-8M", 256), ("potion-retrieval-32M-int8", 512), ("potion-base-8M-int8", 256), ("bge-small-en-v1.5", 384), ("snowflake-arctic-embed-m-v1.5", 768), ("siglip-base-patch16-224", 768), ("clip-vit-large-patch14", 768), ("clap-htsat-unfused", 512), ("answerai-colbert-small-v1", 96)];
     dims.iter().find(|(m, _)| m.eq_ignore_ascii_case(model)).map(|&(_, d)| d)
 }
 
@@ -378,7 +382,7 @@ pub struct Listed {
 /// The feature this build lacks to run model `name` of [`KNOWN_MODELS`].
 fn missing_feature(name: &str) -> Option<&'static str> {
     match name {
-        n if n.starts_with("siglip") => (!cfg!(feature = "vision")).then_some("vision"),
+        n if n.starts_with("siglip") || n.starts_with("clip-") => (!cfg!(feature = "vision")).then_some("vision"),
         n if n.starts_with("clap") => (!cfg!(feature = "audio")).then_some("audio"),
         n if n.starts_with("bge") || n.starts_with("snowflake") || n.starts_with("answerai-colbert") => (!cfg!(feature = "bert")).then_some("bert"),
         _ => None,
@@ -509,7 +513,7 @@ pub fn describe(name: &str, models: &Path) -> Described {
     let technique = match config["model_type"].as_str() {
         Some("bert") if dir.join("artifact.metadata").exists() => "late-interaction",
         Some("bert") => "transformer",
-        Some("siglip") => "image-text",
+        Some("siglip") | Some("clip") => "image-text",
         Some("clap") => "sound-text",
         Some("model2vec") => "static",
         Some(_) => "unknown",
@@ -517,7 +521,7 @@ pub fn describe(name: &str, models: &Path) -> Described {
         None if lower.contains("colbert") => "late-interaction",
         None if lower.starts_with("potion") => "static",
         None if lower.starts_with("bge") || lower.starts_with("snowflake") => "transformer",
-        None if lower.starts_with("siglip") => "image-text",
+        None if lower.starts_with("siglip") || lower.starts_with("clip-") => "image-text",
         None if lower.starts_with("clap") => "sound-text",
         None if dir.join("model.safetensors").exists() => "static",
         None => "unknown",
@@ -692,6 +696,12 @@ pub fn open_for(model: &str, dim: Option<usize>, models: &Path) -> Result<Arc<dy
         return Ok(Arc::new(SiglipEmbedder::open(&dir)?));
         #[cfg(not(feature = "vision"))]
         return Err(model_err(format!("model {model} is a SigLIP model: build with the `vision` feature")));
+    }
+    if config["model_type"] == "clip" {
+        #[cfg(feature = "vision")]
+        return Ok(Arc::new(ClipEmbedder::open(&dir)?));
+        #[cfg(not(feature = "vision"))]
+        return Err(model_err(format!("model {model} is a CLIP model: build with the `vision` feature")));
     }
     if config["model_type"] == "clap" {
         #[cfg(feature = "audio")]
@@ -2060,6 +2070,178 @@ impl Embedder for SiglipEmbedder {
             out.extend(self.texts(c).map_err(|e| model_err(format!("{}: {e}", self.name)))?);
         }
         Ok(out)
+    }
+    fn modalities(&self) -> &'static [Modality] {
+        &[Modality::Text, Modality::Image]
+    }
+    fn embed_inputs(&self, inputs: &[Input<'_>]) -> Result<Vec<Vec<f32>>> {
+        if inputs.iter().any(|i| matches!(i, Input::Audio(_))) {
+            return Err(model_err(format!("model {} does not embed sound", self.name)));
+        }
+        let texts: Vec<&str> = inputs.iter().filter_map(|i| if let Input::Text(t) = i { Some(*t) } else { None }).collect();
+        let images: Vec<&Image> = inputs.iter().filter_map(|i| if let Input::Image(m) = i { Some(*m) } else { None }).collect();
+        let (mut texts, mut images) = (self.embed(&texts)?.into_iter(), self.images(&images)?.into_iter());
+        Ok(inputs.iter().map(|i| if let Input::Text(_) = i { texts.next() } else { images.next() }.unwrap_or_default()).collect())
+    }
+}
+
+// ---------------------------------------------------------------- clip
+
+/// CLIP: OpenAI's vision transformer and text transformer trained so that
+/// an image and its caption meet (`openai/clip-vit-large-patch14`, ViT-L/14
+/// at 224 pixels), the model whose vectors LAION and PD12M publish, so that
+/// words and pictures can be searched against vectors made elsewhere.
+/// Images are made as CLIP's own processor makes them: the short side
+/// resized to the model's square (bicubic), the middle square cut out, and
+/// each channel scaled by CLIP's mean and deviation; texts are lowercased
+/// by the tokenizer, cut at the 77 tokens the text tower takes, and pooled
+/// at their end token. Text is embedded alike for documents and queries.
+#[cfg(feature = "vision")]
+pub struct ClipEmbedder {
+    model: candle_transformers::models::clip::ClipModel,
+    tokenizer: tokenizers::Tokenizer,
+    /// The side of the square images are cut to.
+    side: usize,
+    /// The tokens the text tower takes at most.
+    len: usize,
+    dim: usize,
+    name: String,
+}
+
+#[cfg(feature = "vision")]
+impl ClipEmbedder {
+    /// Images a forward pass takes at once.
+    const BATCH: usize = 8;
+    /// CLIP's processor's mean and standard deviation of each channel.
+    const MEAN: [f32; 3] = [0.481_454_66, 0.457_827_5, 0.408_210_73];
+    const STD: [f32; 3] = [0.268_629_54, 0.261_302_58, 0.275_777_1];
+
+    pub fn open(dir: &Path) -> Result<ClipEmbedder> {
+        use candle_nn::VarBuilder;
+        use candle_transformers::models::clip::{text_model::Activation, text_model::ClipTextConfig, vision_model::ClipVisionConfig, ClipConfig, ClipModel};
+        let e = |x: String| model_err(format!("{}: {x}", dir.display()));
+        let text = std::fs::read_to_string(dir.join("config.json")).map_err(|x| e(x.to_string()))?;
+        let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|x| e(x.to_string()))?;
+        let (t, v) = (&cfg["text_config"], &cfg["vision_config"]);
+        let num = |c: &serde_json::Value, k: &str, or: Option<u64>| c[k].as_u64().or(or).map(|n| n as usize).ok_or_else(|| e(format!("config.json has no {k}")));
+        for c in [t, v] {
+            if let Some(act) = c["hidden_act"].as_str().filter(|a| *a != "quick_gelu") {
+                return Err(e(format!("activation {act}: only quick_gelu (OpenAI's CLIP) is run here")));
+            }
+        }
+        let projection = cfg["projection_dim"].as_u64();
+        let text_config = ClipTextConfig {
+            vocab_size: num(t, "vocab_size", Some(49408))?,
+            embed_dim: num(t, "hidden_size", None)?,
+            activation: Activation::QuickGelu,
+            intermediate_size: num(t, "intermediate_size", None)?,
+            max_position_embeddings: num(t, "max_position_embeddings", Some(77))?,
+            pad_with: None,
+            num_hidden_layers: num(t, "num_hidden_layers", None)?,
+            num_attention_heads: num(t, "num_attention_heads", None)?,
+            projection_dim: num(t, "projection_dim", projection)?,
+        };
+        let vision_config = ClipVisionConfig {
+            embed_dim: num(v, "hidden_size", None)?,
+            activation: Activation::QuickGelu,
+            intermediate_size: num(v, "intermediate_size", None)?,
+            num_hidden_layers: num(v, "num_hidden_layers", None)?,
+            num_attention_heads: num(v, "num_attention_heads", None)?,
+            projection_dim: num(v, "projection_dim", projection)?,
+            num_channels: 3,
+            image_size: num(v, "image_size", Some(224))?,
+            patch_size: num(v, "patch_size", None)?,
+        };
+        let (side, len, dim) = (vision_config.image_size, text_config.max_position_embeddings, text_config.projection_dim);
+        let clip = ClipConfig { text_config, vision_config, logit_scale_init_value: cfg["logit_scale_init_value"].as_f64().unwrap_or(2.6592) as f32, image_size: side };
+        let mut tokenizer = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|x| e(x.to_string()))?;
+        tokenizer.with_padding(None);
+        tokenizer.with_truncation(None).map_err(|x| e(x.to_string()))?;
+        let dev = candle_core::Device::Cpu;
+        // SAFETY: the weights file is not modified while mapped.
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[dir.join("model.safetensors")], candle_core::DType::F32, &dev) }.map_err(|x| e(x.to_string()))?;
+        let model = ClipModel::new(vb, &clip).map_err(|x| e(x.to_string()))?;
+        let name = format!("clip:{}", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        Ok(ClipEmbedder { model, tokenizer, side, len, dim, name })
+    }
+
+    /// The text's tokens, its start and end tokens included, cut to the
+    /// tokens the text tower takes, keeping the end token: the text tower
+    /// pools at the highest token id, which is the end token.
+    fn tokens(&self, text: &str) -> std::result::Result<Vec<u32>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut ids = self.tokenizer.encode(text, true)?.get_ids().to_vec();
+        if ids.len() > self.len {
+            let end = *ids.last().expect("longer than the limit");
+            ids.truncate(self.len - 1);
+            ids.push(end);
+        }
+        Ok(ids)
+    }
+
+    fn texts(&self, texts: &[&str]) -> std::result::Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
+        // One text a pass: a text's length is its own (no padding, which
+        // the tower would pool at in place of the end token).
+        let mut out = Vec::with_capacity(texts.len());
+        for t in texts {
+            let ids = self.tokens(t)?;
+            let ids = candle_core::Tensor::new(vec![ids], &candle_core::Device::Cpu)?;
+            let mut v = self.model.get_text_features(&ids)?.to_vec2::<f32>()?.pop().unwrap_or_default();
+            normalize(&mut v);
+            out.push(v);
+        }
+        Ok(out)
+    }
+
+    /// The pixels the image tower takes: the short side resized to `side`,
+    /// the middle `side` by `side` square, channels first, normalised.
+    fn pixels(&self, image: &Image) -> Result<Vec<f32>> {
+        let rgb = image::RgbImage::from_raw(image.width, image.height, image.rgb.clone()).ok_or_else(|| model_err("an image's pixels do not fill its size"))?;
+        let side = self.side as u32;
+        let (w, h) = (image.width.max(1), image.height.max(1));
+        let (nw, nh) = match w <= h {
+            true => (side, ((h as u64 * side as u64 + w as u64 / 2) / w as u64).max(side as u64) as u32),
+            false => (((w as u64 * side as u64 + h as u64 / 2) / h as u64).max(side as u64) as u32, side),
+        };
+        let resized = image::imageops::resize(&rgb, nw, nh, image::imageops::FilterType::CatmullRom);
+        let (x0, y0) = ((nw - side) / 2, (nh - side) / 2);
+        let n = self.side * self.side;
+        let mut out = vec![0f32; 3 * n];
+        for y in 0..side {
+            for x in 0..side {
+                let p = resized.get_pixel(x0 + x, y0 + y);
+                let i = (y * side + x) as usize;
+                for c in 0..3 {
+                    out[c * n + i] = (p[c] as f32 / 255.0 - Self::MEAN[c]) / Self::STD[c];
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn images(&self, images: &[&Image]) -> Result<Vec<Vec<f32>>> {
+        let e = |x: candle_core::Error| model_err(format!("{}: {x}", self.name));
+        let mut out = Vec::with_capacity(images.len());
+        for batch in images.chunks(Self::BATCH) {
+            let pixels = batch.iter().map(|i| self.pixels(i)).collect::<Result<Vec<_>>>()?.concat();
+            let t = candle_core::Tensor::from_vec(pixels, (batch.len(), 3, self.side, self.side), &candle_core::Device::Cpu).map_err(e)?;
+            let mut v = self.model.get_image_features(&t).and_then(|f| f.to_vec2::<f32>()).map_err(e)?;
+            v.iter_mut().for_each(|x| normalize(x));
+            out.extend(v);
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(feature = "vision")]
+impl Embedder for ClipEmbedder {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+    fn dim(&self) -> usize {
+        self.dim
+    }
+    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        self.texts(texts).map_err(|e| model_err(format!("{}: {e}", self.name)))
     }
     fn modalities(&self) -> &'static [Modality] {
         &[Modality::Text, Modality::Image]

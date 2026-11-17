@@ -84,6 +84,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="hn.html">Hacker News</a>
       <a href="arxiv.html">arXiv explorer</a>
       <a href="github.html">GitHub explorer</a>
+      <a href="img.html">Image explorer</a>
       <a href="chloectx.html">ChloeCtx</a>
       <a href="chloectx-setup.html">Install ChloeCtx</a>
       <a href="chloectx-inspector.html">ChloeCtx inspector</a>
@@ -886,6 +887,11 @@ curl -s &#x27;localhost:7700/v1/export&#x27; -o copy.sqlite</pre>
 <td><code>siglip-base-patch16-224</code></td>
 <td>SigLIP base: images and text in one space, 768 dimensions</td>
 <td>build with <code>--features vision</code>; about 0.5 s an image and 80 ms a text on a 4-vCPU cloud VM</td>
+</tr>
+<tr>
+<td><code>clip-vit-large-patch14</code></td>
+<td>OpenAI's CLIP ViT-L/14: images and text in one space, 768 dimensions, the vectors LAION and PD12M publish (its vectors meet transformers' at a cosine over 0.9999 for words and 0.995 for a picture, <code>chloedb/tests/clip.rs</code>)</td>
+<td>build with <code>--features vision</code>; 1.7 GB; about 1.4 s an image and 125 ms a text in a 4-vCPU cloud container</td>
 </tr>
 <tr>
 <td><code>clap-htsat-unfused</code></td>

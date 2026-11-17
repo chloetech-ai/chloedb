@@ -98,7 +98,7 @@ bert = ["embed", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", 
 # Models exported to ONNX (`model.onnx`), run by ONNX Runtime: cross-encoders,
 # embedding models (`OnnxEmbedder`) and learned sparse models (`SparseEncoder`).
 onnx = ["embed", "dep:ort"]
-# Images: decoded with the `image` crate, embedded by SigLIP.
+# Images: decoded with the `image` crate, embedded by SigLIP or CLIP.
 vision = ["bert", "dep:image"]
 # Audio: decoded with symphonia, transcribed by Whisper.
 audio = ["bert", "dep:symphonia"]

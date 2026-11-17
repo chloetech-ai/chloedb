@@ -80,6 +80,15 @@ pub const PINS: &[Pin] = &[
         ],
     },
     Pin {
+        repo: "openai/clip-vit-large-patch14",
+        revision: "32bd64288804d66eefd0ccbe215aa642df71cc41",
+        files: &[
+            ("config.json", "8a09b467700c58138c29d53c605b34ebc69beaadd13274a8a2af8ad2c2f4032a"),
+            ("tokenizer.json", "a83e0809aa4c3af7208b2df632a7a69668c6d48775b3c3fe4e1b1199d1f8b8f4"),
+            ("model.safetensors", "a2bf730a0c7debf160f7a6b50b3aaf3703e7e88ac73de7a314903141db026dcb"),
+        ],
+    },
+    Pin {
         repo: "laion/clap-htsat-unfused",
         revision: "8fa0f1c6d0433df6e97c127f64b2a1d6c0dcda8a",
         files: &[

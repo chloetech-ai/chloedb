@@ -30,6 +30,14 @@ changes collect under "Unreleased".
 - A demo app, `chloedb-gh` ([docs](docs/chloedb/github.md)): every public
   GitHub event since 2011, 11.2 billion of them, on four 8 GB machines,
   at https://gh.chloetech.ai. It is on the `Demos` train.
+- `clip-vit-large-patch14`, OpenAI's CLIP ViT-L/14, is a model ChloeDB
+  knows (feature `vision`): images and words in one space of 768
+  dimensions, the vectors LAION and PD12M publish, so a query meets
+  vectors made elsewhere. Its vectors meet transformers' (`tests/clip.rs`).
+- A demo app, `chloedb-img` ([docs](docs/chloedb/img.md)): public-domain
+  and CC0 pictures (PD12M) searched by what is in them, with words, a
+  photo, a detail of a picture, a picture plus words, colors and a map of
+  themes. It is on the `Demos` train.
 
 ### Sign in with Google
 

@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chloedb-img: pictures searched by what is in them · ChloeDB docs</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="chloedb-img is an explorer of PD12M: 12.4 million pictures that are in the public domain or under CC0, from museums, libraries, archives and Wikimedia Commons, each with a caption written by a model and the vector…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/img.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../features.html">Features</a>
+    <a href="../scale.html">Laptop to cloud</a>
+    <a href="../command-center.html">Command center</a>
+    <a href="../benchmarks.html">Benchmarks</a>
+    <a href="../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="img.html" aria-current="page">Image explorer</a>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Apps</span>
+      <h1>chloedb-img: pictures searched by what is in them</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/img.md">docs/chloedb/img.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.7.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#where-the-data-comes-from">Where the data comes from</a></li><li><a href="#run-it">Run it</a></li><li><a href="#the-tables">The tables</a></li><li><a href="#tests">Tests</a></li></ol></details>
+    <div class="doc-body">
+
+<blockquote>
+<p><strong>A demo.</strong> chloedb-img shows what ChloeDB can do; it is not part of ChloeDB's releases or their promises. It is tested on a train of its own (the <code>Demos</code> workflow, <code>.github/workflows/demos.yml</code>), outside CI's required check, and the command center marks it as a demo (<a href="compatibility.html#demos">compatibility</a>).</p>
+</blockquote>
+<p><code>chloedb-img</code> is an explorer of <a href="https://huggingface.co/datasets/Spawning/PD12M">PD12M</a>: 12.4 million pictures that are in the public domain or under CC0, from museums, libraries, archives and Wikimedia Commons, each with a caption written by a model and the vector OpenAI's CLIP (ViT-L/14) gives it. It is a program of its own, in Rust, that talks to chloedb-server over HTTP, like <a href="arxiv.html">the arXiv explorer</a>, and the command center shows it as an app. It embeds words and photos itself, with ChloeDB's CLIP (<code>clip-vit-large-patch14</code>, feature <code>vision</code>), so the server it searches is the stock build, with no model.</p>
+<p>Every search is one statement over the pictures' table, <code>ORDER BY similarity(clip, :v)</code> on its HNSW index, with the filters a <code>WHERE</code>:</p>
+<ul>
+<li><strong>Search by what is in a picture.</strong> <em>A lighthouse in a storm</em>, <em>botanical drawing of a fern</em>, <em>children on a beach in the 1920s</em>: the words are embedded by CLIP's text tower and meet the pictures' vectors. Kind (photo, old photo, painting, print, drawing, map, text page, object, illustration), source, licence, shape and size are facets of the closest 500, and filters of the query.</li>
+<li><strong>Search with a photo of your own.</strong> It is embedded and thrown away; nothing is kept. The answer is the closest pictures, the closest photos and the closest paintings, prints and drawings.</li>
+<li><strong>Search by a detail.</strong> Draw a box on a picture and get the pictures that look like what is in it.</li>
+<li><strong>More like this, less like that.</strong> Mark pictures up or down and the query moves toward and away from them (Rocchio); <em>strongly</em> moves it twice as far.</li>
+<li><strong>A picture plus words.</strong> <em>This harbour, but at night</em>: the picture's vector and the words' added with a weight the reader slides.</li>
+<li><strong>Between two pictures.</strong> The path from one picture to another in steps along the sphere between their vectors (slerp), the closest picture at each step.</li>
+<li><strong>More variety.</strong> Results re-ranked so that near-copies do not fill a page (maximal marginal relevance).</li>
+<li><strong>Another medium.</strong> A picture's subject as photos, paintings, prints or drawings: its vector plus its subject in words, kept to that medium's kinds.</li>
+<li><strong>Colors.</strong> Pick up to three colors; each picture whose thumbnail has been made has a histogram of its colors in Lab (144 bins, <code>img_colors</code>), and a color search is a vector search on it. The page says how many pictures have colors so far.</li>
+<li><strong>A map of themes.</strong> 42 themes found by k-means over the vectors (ships and harbours, botanical plates, medieval manuscripts, old maps and views, moths, ...), placed so that near themes are near, each with the pictures nearest its middle; a theme's page is its pictures in order of closeness to its centre.</li>
+<li><strong>Every picture's page</strong> shows it large, its licence and source with a link to the original and, for a picture from Wikimedia Commons, its page there (found by the file's SHA-1, since PD12M's records do not give it), with the pictures nearest it.</li>
+</ul>
+<h2 id="where-the-data-comes-from">Where the data comes from<a class="anchor" href="#where-the-data-comes-from" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Pictures</strong>: PD12M's records and CLIP vectors (Parquet and NumPy files on Hugging Face), and the images themselves from PD12M's public bucket on S3. Thumbnails are made the first time a picture is shown and kept on disk: one 400 pixels high for the grids, and one up to 1,600 pixels for a picture's page, made only when that page is opened. The colors and the Commons page are found in the same pass.</li>
+<li><strong>Kinds and themes</strong>: <code>prepare</code> names each picture's kind by the closest of a few CLIP sentences (<em>a photograph</em>, <em>an old black and white photograph</em>, <em>an oil painting</em>, ...) and its theme by k-means of a sample of the vectors (spherical, seeded by k-means++ with a fixed seed, so the same slice gets the same themes). Each theme is named by the closest of a list of subjects, or by <code>--names</code> (<code>data/theme-names-1m.json</code> names those of the first million). <code>--themes-from</code> keeps the themes of an earlier prepare (their centres, names and places on the map) and places every picture in the nearest, so a larger slice keeps a smaller one's map.</li>
+<li><strong>Licences</strong>: every picture is shown with its licence as PD12M gives it (CC0 or the Public Domain Mark) and its source, linked back to where it came from.</li>
+</ul>
+<h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
+<p>PD12M's first million pictures need the first ten Parquet files and the first vector file; CLIP's weights (1.7 GB) come from <code>chloedb-server fetch-model clip-vit-large-patch14</code>.</p>
+<pre data-lang="sh">chloedb-img prepare --data ~/pd12m --rows 1000000 --models ~/.local/share/chloedb/models --out ~/img-prepared --names chloedb-img/data/theme-names-1m.json
+chloedb-img serve --local ~/img-db --models ~/.local/share/chloedb/models --cache ~/img-cache   # starts a chloedb-server with img as its app
+chloedb-img load --data ~/pd12m --prepared ~/img-prepared --rows 1000000                       # about three minutes for a million</pre>
+<p>With <code>--public</code> the app serves the page at <code>/</code> to anyone, within <code>--per-minute</code> requests, <code>--photos-per-minute</code> photos and details and <code>--thumbs-per-minute</code> new thumbnails a minute from one address. There is no SQL from the page and no MCP tools. <code>deploy/k8s.yaml</code> runs it on Kubernetes: one 16 GB node with the server and the app, the database and the thumbnails on the node's own SSD, and beside the server <code>chloedb-gh-pin</code> (<code>chloedb-gh/tools/pin</code>), which locks the vectors' 8-bit codes and graph in memory: over 5 million pictures the vectors (15 GB in float32) no longer fit in the node's memory, and a search that reads its codes from the disk takes seconds rather than tenths of one. <code>--warm-per-theme</code> makes the thumbnails of the pictures nearest each theme's middle at start, and <code>--warm-first N</code> those of the first N pictures, so that colors cover more of them.</p>
+<h2 id="the-tables">The tables<a class="anchor" href="#the-tables" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>table</th>
+<th>what</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>img_pictures</code></td>
+<td>a picture: its file, title (the caption's first clause), caption, source, licence, size, shape, kind, theme, and <code>clip</code>, its CLIP vector (HNSW)</td>
+</tr>
+<tr>
+<td><code>img_themes</code></td>
+<td>a theme: its name, size, place on the map, the pictures nearest its middle, the themes nearest it and its centre</td>
+</tr>
+<tr>
+<td><code>img_colors</code></td>
+<td>the colors of each picture whose thumbnail was made: its palette and a 144-bin Lab histogram as a vector</td>
+</tr>
+<tr>
+<td><code>img_links</code></td>
+<td>a picture's page on Wikimedia Commons, when one was found</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="tests">Tests<a class="anchor" href="#tests" aria-label="Link to this section">#</a></h2>
+<pre data-lang="sh">cd chloedb-img &amp;&amp; cargo test --profile ci</pre>
+<p>They cover titles from captions, licences, shapes and sizes, colors in Lab and color search, k-means and theme names, filters as parameters, and which routes are public. Searching needs CLIP's weights and PD12M, so CI runs no server for it.</p>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/img.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="github.html">← GitHub explorer</a><a href="chloectx.html">ChloeCtx →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>
