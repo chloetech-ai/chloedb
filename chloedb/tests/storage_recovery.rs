@@ -252,7 +252,9 @@ fn wal_with_ten_commits(path: &Path, src: &Arc<MapSource>) -> Vec<u64> {
     (0..10)
         .map(|i| {
             insert(&db, src, i..i + 1);
-            std::fs::metadata(wal_of(path)).unwrap().len()
+            // The records' length: the file is longer, by the zeros
+            // written ahead of them.
+            db.file_stats().wal_bytes
         })
         .collect()
 }

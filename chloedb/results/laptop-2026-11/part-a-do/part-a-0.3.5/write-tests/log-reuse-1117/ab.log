@@ -1,0 +1,217 @@
++ cd /work/ab
++ lscpu
++ grep -E 'Model name|^CPU\(s\)'
+CPU(s):                                  8
+Model name:                              Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz
++ df -h /work
++ tail -1
+/dev/vda1        99G  9.3G   85G  10% /work
++ echo '## fsync micro on /work'
+## fsync micro on /work
++ python3 fsync_micro.py /work/ab 400
+append     p50 0.138 p90 0.170 p99 0.268 mean 0.150 ms
+prealloc   p50 0.048 p90 0.056 p99 0.072 mean 0.050 ms
+overwrite  p50 0.047 p90 0.052 p99 0.066 mean 0.048 ms
+append     p50 0.132 p90 0.189 p99 0.322 mean 0.147 ms
+prealloc   p50 0.047 p90 0.054 p99 0.091 mean 0.050 ms
+overwrite  p50 0.047 p90 0.054 p99 0.072 mean 0.049 ms
++ S='env LD_LIBRARY_PATH=/work/sqlite-3.53.1/lib'
++ echo '## round 1 v035 sync=1'
+## round 1 v035 sync=1
++ SYNC=1
++ v-v035/bin/python3 writes.py /work/ab/db-v035-1 2000
+insert one         p50 0.146 p90 0.194 p99 0.324 max 1.4 ms  6,203/s  slow(>20ms) 0
+update price       p50 0.343 p90 0.402 p99 0.555 max 2.5 ms  2,846/s  slow(>20ms) 0
+delete by id       p50 0.148 p90 0.170 p99 0.308 max 1.0 ms  6,502/s  slow(>20ms) 0
+version 0.3.5 sync True
++ echo '## round 1 main sync=1'
+## round 1 main sync=1
++ SYNC=1
++ v-main/bin/python3 writes.py /work/ab/db-main-1 2000
+insert one         p50 0.150 p90 0.183 p99 0.327 max 1.2 ms  6,221/s  slow(>20ms) 0
+update price       p50 0.314 p90 0.368 p99 0.565 max 2.5 ms  3,054/s  slow(>20ms) 0
+delete by id       p50 0.134 p90 0.149 p99 0.276 max 0.6 ms  7,155/s  slow(>20ms) 0
+version 0.3.7 sync True
++ echo '## round 1 wal sync=1'
+## round 1 wal sync=1
++ SYNC=1
++ v-wal/bin/python3 writes.py /work/ab/db-wal-1 2000
+insert one         p50 0.058 p90 0.067 p99 0.125 max 1.8 ms  16,113/s  slow(>20ms) 0
+update price       p50 0.207 p90 0.237 p99 0.352 max 2.2 ms  4,639/s  slow(>20ms) 0
+delete by id       p50 0.052 p90 0.062 p99 0.086 max 0.8 ms  18,146/s  slow(>20ms) 0
+version 0.3.7 sync True
++ echo '## round 1 main sync=0'
+## round 1 main sync=0
++ SYNC=0
++ v-main/bin/python3 writes.py /work/ab/db-main-0 2000
+insert one         p50 0.008 p90 0.010 p99 0.019 max 1.6 ms  105,707/s  slow(>20ms) 0
+update price       p50 0.113 p90 0.142 p99 0.181 max 2.3 ms  8,246/s  slow(>20ms) 0
+delete by id       p50 0.003 p90 0.004 p99 0.006 max 0.0 ms  280,558/s  slow(>20ms) 0
+version 0.3.7 sync False
++ echo '## round 1 wal sync=0'
+## round 1 wal sync=0
++ SYNC=0
++ v-wal/bin/python3 writes.py /work/ab/db-wal-0 2000
+insert one         p50 0.008 p90 0.009 p99 0.020 max 1.2 ms  106,297/s  slow(>20ms) 0
+update price       p50 0.113 p90 0.149 p99 0.227 max 2.2 ms  8,035/s  slow(>20ms) 0
+delete by id       p50 0.004 p90 0.004 p99 0.006 max 0.2 ms  261,918/s  slow(>20ms) 0
+version 0.3.7 sync False
++ echo '## round 1 sqlite FULL'
+## round 1 sqlite FULL
++ env LD_LIBRARY_PATH=/work/sqlite-3.53.1/lib v-main/bin/python3 sqlite_writes.py /work/ab/db-sq 2000 FULL
+insert one         p50 0.065 p90 0.084 p99 0.239 max 6.0 ms  12,881/s  slow(>20ms) 0
+update price       p50 0.059 p90 0.067 p99 0.182 max 0.7 ms  15,639/s  slow(>20ms) 0
+delete by id       p50 0.064 p90 0.076 p99 0.214 max 0.9 ms  14,027/s  slow(>20ms) 0
+sqlite 3.53.1 FULL
++ echo '## round 1 sqlite NORMAL'
+## round 1 sqlite NORMAL
++ env LD_LIBRARY_PATH=/work/sqlite-3.53.1/lib v-main/bin/python3 sqlite_writes.py /work/ab/db-sq 2000 NORMAL
+insert one         p50 0.012 p90 0.021 p99 0.040 max 8.3 ms  41,164/s  slow(>20ms) 0
+update price       p50 0.009 p90 0.010 p99 0.024 max 2.9 ms  79,167/s  slow(>20ms) 0
+delete by id       p50 0.012 p90 0.013 p99 0.034 max 2.6 ms  55,774/s  slow(>20ms) 0
+sqlite 3.53.1 NORMAL
++ echo '## round 2 v035 sync=1'
+## round 2 v035 sync=1
++ SYNC=1
++ v-v035/bin/python3 writes.py /work/ab/db-v035-1 2000
+insert one         p50 0.147 p90 0.233 p99 1.634 max 6.4 ms  4,841/s  slow(>20ms) 0
+update price       p50 0.308 p90 0.391 p99 2.131 max 5.5 ms  2,710/s  slow(>20ms) 0
+delete by id       p50 0.140 p90 0.178 p99 0.327 max 0.5 ms  6,604/s  slow(>20ms) 0
+version 0.3.5 sync True
++ echo '## round 2 main sync=1'
+## round 2 main sync=1
++ SYNC=1
++ v-main/bin/python3 writes.py /work/ab/db-main-1 2000
+insert one         p50 0.164 p90 0.222 p99 0.998 max 4.7 ms  5,111/s  slow(>20ms) 0
+update price       p50 0.392 p90 0.465 p99 1.510 max 6.7 ms  2,312/s  slow(>20ms) 0
+delete by id       p50 0.138 p90 0.171 p99 0.355 max 0.6 ms  6,772/s  slow(>20ms) 0
+version 0.3.7 sync True
++ echo '## round 2 wal sync=1'
+## round 2 wal sync=1
++ SYNC=1
++ v-wal/bin/python3 writes.py /work/ab/db-wal-1 2000
+insert one         p50 0.058 p90 0.074 p99 0.109 max 1.6 ms  15,780/s  slow(>20ms) 0
+update price       p50 0.210 p90 0.247 p99 0.308 max 2.5 ms  4,579/s  slow(>20ms) 0
+delete by id       p50 0.051 p90 0.058 p99 0.075 max 0.8 ms  18,917/s  slow(>20ms) 0
+version 0.3.7 sync True
++ echo '## round 2 main sync=0'
+## round 2 main sync=0
++ SYNC=0
++ v-main/bin/python3 writes.py /work/ab/db-main-0 2000
+insert one         p50 0.008 p90 0.009 p99 0.016 max 1.1 ms  110,346/s  slow(>20ms) 0
+update price       p50 0.115 p90 0.148 p99 0.205 max 2.2 ms  8,046/s  slow(>20ms) 0
+delete by id       p50 0.003 p90 0.004 p99 0.006 max 0.0 ms  272,543/s  slow(>20ms) 0
+version 0.3.7 sync False
++ echo '## round 2 wal sync=0'
+## round 2 wal sync=0
++ SYNC=0
++ v-wal/bin/python3 writes.py /work/ab/db-wal-0 2000
+insert one         p50 0.008 p90 0.010 p99 0.020 max 1.2 ms  104,582/s  slow(>20ms) 0
+update price       p50 0.116 p90 0.168 p99 0.245 max 2.3 ms  7,629/s  slow(>20ms) 0
+delete by id       p50 0.003 p90 0.004 p99 0.006 max 0.2 ms  270,406/s  slow(>20ms) 0
+version 0.3.7 sync False
++ echo '## round 2 sqlite FULL'
+## round 2 sqlite FULL
++ env LD_LIBRARY_PATH=/work/sqlite-3.53.1/lib v-main/bin/python3 sqlite_writes.py /work/ab/db-sq 2000 FULL
+insert one         p50 0.072 p90 0.094 p99 0.250 max 6.2 ms  11,949/s  slow(>20ms) 0
+update price       p50 0.067 p90 0.077 p99 0.198 max 0.7 ms  14,213/s  slow(>20ms) 0
+delete by id       p50 0.068 p90 0.081 p99 0.206 max 0.6 ms  13,543/s  slow(>20ms) 0
+sqlite 3.53.1 FULL
++ echo '## round 2 sqlite NORMAL'
+## round 2 sqlite NORMAL
++ env LD_LIBRARY_PATH=/work/sqlite-3.53.1/lib v-main/bin/python3 sqlite_writes.py /work/ab/db-sq 2000 NORMAL
+insert one         p50 0.012 p90 0.020 p99 0.036 max 7.6 ms  43,572/s  slow(>20ms) 0
+update price       p50 0.009 p90 0.010 p99 0.016 max 2.6 ms  83,324/s  slow(>20ms) 0
+delete by id       p50 0.011 p90 0.012 p99 0.031 max 2.5 ms  58,471/s  slow(>20ms) 0
+sqlite 3.53.1 NORMAL
++ echo '## round 3 v035 sync=1'
+## round 3 v035 sync=1
++ SYNC=1
++ v-v035/bin/python3 writes.py /work/ab/db-v035-1 2000
+insert one         p50 0.144 p90 0.178 p99 0.291 max 1.6 ms  6,486/s  slow(>20ms) 0
+update price       p50 0.322 p90 0.374 p99 0.565 max 2.6 ms  2,975/s  slow(>20ms) 0
+delete by id       p50 0.139 p90 0.159 p99 0.289 max 0.6 ms  6,910/s  slow(>20ms) 0
+version 0.3.5 sync True
++ echo '## round 3 main sync=1'
+## round 3 main sync=1
++ SYNC=1
++ v-main/bin/python3 writes.py /work/ab/db-main-1 2000
+insert one         p50 0.161 p90 0.187 p99 0.316 max 2.6 ms  5,996/s  slow(>20ms) 0
+update price       p50 0.354 p90 0.407 p99 0.584 max 4.6 ms  2,757/s  slow(>20ms) 0
+delete by id       p50 0.153 p90 0.173 p99 0.326 max 3.8 ms  6,219/s  slow(>20ms) 0
+version 0.3.7 sync True
++ echo '## round 3 wal sync=1'
+## round 3 wal sync=1
++ SYNC=1
++ v-wal/bin/python3 writes.py /work/ab/db-wal-1 2000
+insert one         p50 0.058 p90 0.070 p99 0.098 max 1.7 ms  16,008/s  slow(>20ms) 0
+update price       p50 0.206 p90 0.238 p99 0.291 max 2.5 ms  4,683/s  slow(>20ms) 0
+delete by id       p50 0.051 p90 0.060 p99 0.078 max 0.8 ms  18,687/s  slow(>20ms) 0
+version 0.3.7 sync True
++ echo '## round 3 main sync=0'
+## round 3 main sync=0
++ SYNC=0
++ v-main/bin/python3 writes.py /work/ab/db-main-0 2000
+insert one         p50 0.008 p90 0.009 p99 0.017 max 1.1 ms  109,491/s  slow(>20ms) 0
+update price       p50 0.116 p90 0.149 p99 0.206 max 2.2 ms  7,985/s  slow(>20ms) 0
+delete by id       p50 0.003 p90 0.004 p99 0.006 max 0.0 ms  283,036/s  slow(>20ms) 0
+version 0.3.7 sync False
++ echo '## round 3 wal sync=0'
+## round 3 wal sync=0
++ SYNC=0
++ v-wal/bin/python3 writes.py /work/ab/db-wal-0 2000
+insert one         p50 0.008 p90 0.009 p99 0.014 max 1.2 ms  105,863/s  slow(>20ms) 0
+update price       p50 0.111 p90 0.140 p99 0.196 max 2.6 ms  8,327/s  slow(>20ms) 0
+delete by id       p50 0.004 p90 0.004 p99 0.005 max 0.2 ms  260,044/s  slow(>20ms) 0
+version 0.3.7 sync False
++ echo '## round 3 sqlite FULL'
+## round 3 sqlite FULL
++ env LD_LIBRARY_PATH=/work/sqlite-3.53.1/lib v-main/bin/python3 sqlite_writes.py /work/ab/db-sq 2000 FULL
+insert one         p50 0.065 p90 0.085 p99 0.241 max 6.1 ms  12,801/s  slow(>20ms) 0
+update price       p50 0.059 p90 0.068 p99 0.184 max 0.7 ms  15,713/s  slow(>20ms) 0
+delete by id       p50 0.064 p90 0.079 p99 0.197 max 0.5 ms  14,195/s  slow(>20ms) 0
+sqlite 3.53.1 FULL
++ echo '## round 3 sqlite NORMAL'
+## round 3 sqlite NORMAL
++ env LD_LIBRARY_PATH=/work/sqlite-3.53.1/lib v-main/bin/python3 sqlite_writes.py /work/ab/db-sq 2000 NORMAL
+insert one         p50 0.013 p90 0.022 p99 0.045 max 17.6 ms  30,383/s  slow(>20ms) 0
+update price       p50 0.009 p90 0.013 p99 0.019 max 3.0 ms  75,891/s  slow(>20ms) 0
+delete by id       p50 0.012 p90 0.017 p99 0.046 max 3.0 ms  51,652/s  slow(>20ms) 0
+sqlite 3.53.1 NORMAL
++ TR=trace=fsync,fdatasync,rename,renameat,renameat2,unlink,unlinkat,openat,write,pwrite64,ftruncate,fallocate
++ echo '## v035 under strace -T'
+## v035 under strace -T
++ rm -f mark
++ MARK=/work/ab/mark
++ strace -f -T -o /work/ab/trace-v035.txt -e trace=fsync,fdatasync,rename,renameat,renameat2,unlink,unlinkat,openat,write,pwrite64,ftruncate,fallocate v-v035/bin/python3 writes.py /work/ab/db-v035-s 2000
+insert one         p50 0.219 p90 0.271 p99 0.433 max 2.7 ms  4,215/s  slow(>20ms) 0
+update price       p50 0.407 p90 0.509 p99 0.770 max 4.7 ms  2,288/s  slow(>20ms) 0
+delete by id       p50 0.183 p90 0.231 p99 0.373 max 1.0 ms  5,105/s  slow(>20ms) 0
+version 0.3.5 sync True
++ python3 count.py /work/ab/trace-v035.txt 2000
+insert one     per op: fdatasync 1.00, fsync 0.00   files: app.strata-wal 1.00, WRITER 0.00, app.strata-readers 0.00, db-v035-s 0.00
+update price   per op: fdatasync 1.00   files: app.strata-wal 1.00
+delete by id   per op: fdatasync 1.00   files: app.strata-wal 1.00
++ echo 'pwrite64 calls on app.strata-wal and their times:'
+pwrite64 calls on app.strata-wal and their times:
++ python3 - /work/ab/trace-v035.txt
+fdatasync on the log: 6001 calls, p50 0.156 ms, p90 0.219 ms, mean 0.172 ms
++ echo '## wal under strace -T'
+## wal under strace -T
++ rm -f mark
++ MARK=/work/ab/mark
++ strace -f -T -o /work/ab/trace-wal.txt -e trace=fsync,fdatasync,rename,renameat,renameat2,unlink,unlinkat,openat,write,pwrite64,ftruncate,fallocate v-wal/bin/python3 writes.py /work/ab/db-wal-s 2000
+insert one         p50 0.131 p90 0.151 p99 0.190 max 2.1 ms  7,304/s  slow(>20ms) 0
+update price       p50 0.286 p90 0.335 p99 0.456 max 4.4 ms  3,344/s  slow(>20ms) 0
+delete by id       p50 0.127 p90 0.146 p99 0.211 max 1.0 ms  7,568/s  slow(>20ms) 0
+version 0.3.7 sync True
++ python3 count.py /work/ab/trace-wal.txt 2000
+insert one     per op: fdatasync 1.00, fsync 0.00   files: app.strata-wal 1.00, WRITER 0.00, app.strata-readers 0.00, db-wal-s 0.00
+update price   per op: fdatasync 1.00   files: app.strata-wal 1.00
+delete by id   per op: fdatasync 1.00   files: app.strata-wal 1.00
++ echo 'pwrite64 calls on app.strata-wal and their times:'
+pwrite64 calls on app.strata-wal and their times:
++ python3 - /work/ab/trace-wal.txt
+fdatasync on the log: 6000 calls, p50 0.072 ms, p90 0.087 ms, mean 0.075 ms
++ echo '## AB DONE'
+## AB DONE
