@@ -104,7 +104,8 @@ accelerate = ["chloedb/accelerate"]
 # Cross-encoders, embedding models and learned sparse models exported to
 # ONNX, int8 ones among them, run by ONNX Runtime.
 onnx = ["chloedb/onnx"]
-# Images: decoded, and embedded by SigLIP (siglip-base-patch16-224).
+# Images: decoded, and embedded by SigLIP (siglip-base-patch16-224) or CLIP
+# (clip-vit-large-patch14).
 vision = ["chloedb/vision"]
 # Sound: decoded (WAV, FLAC, MP3, Ogg Vorbis, AAC), and transcribed by
 # Whisper (whisper-small).

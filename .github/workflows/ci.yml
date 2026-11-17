@@ -498,7 +498,7 @@ jobs:
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
         run: |
-          cargo test --locked --profile ci --features vision --test media_vectors --test media_fields --test derived_text --test rank_cross
+          cargo test --locked --profile ci --features vision --test media_vectors --test media_fields --test derived_text --test rank_cross --test clip
           cargo clippy --locked --profile ci --features vision --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
       - name: chloedb-server
         if: matrix.part == 'chloedb-server'

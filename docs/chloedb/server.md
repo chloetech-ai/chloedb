@@ -321,6 +321,7 @@ Each step is SQL the page shows before running, and could be run from the workbe
 | `bge-small-en-v1.5` | BERT encoder, 384 dimensions | build with `--features bert`; milliseconds a row |
 | `snowflake-arctic-embed-m-v1.5` | BERT encoder, 768 dimensions | build with `--features bert`; slower, better |
 | `siglip-base-patch16-224` | SigLIP base: images and text in one space, 768 dimensions | build with `--features vision`; about 0.5 s an image and 80 ms a text on a 4-vCPU cloud VM |
+| `clip-vit-large-patch14` | OpenAI's CLIP ViT-L/14: images and text in one space, 768 dimensions, the vectors LAION and PD12M publish (its vectors meet transformers' at a cosine over 0.9999 for words and 0.995 for a picture, `chloedb/tests/clip.rs`) | build with `--features vision`; 1.7 GB; about 1.4 s an image and 125 ms a text in a 4-vCPU cloud container |
 | `clap-htsat-unfused` | CLAP (HTSAT and RoBERTa): sound and text in one space, 512 dimensions | build with `--features audio`; about 0.27 s for each 10 seconds of sound and 20 ms a text on a 4-vCPU cloud VM |
 | `answerai-colbert-small-v1` | ColBERT (BERT, 33M parameters), a 96-dimension vector a token, for a [multi-vector field](#a-vector-a-token) | build with `--features bert` |
 | `hash:N` | hashed bag of words, *N* dimensions, 1 to 65,536 (on a multi-vector field, a vector a word) | no files; tests and the demo |

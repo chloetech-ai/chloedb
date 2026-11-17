@@ -119,6 +119,7 @@ The same methods work against a server: replace `chloedb.open(...)` with `chloed
 - **[chloedb-netops](docs/chloedb/netops.md)**: a network operations center in tables: the shift's worklist, incidents grouped over the topology with a board per incident, changes, carriers, agents that show their SQL, and a leadership view. Ships with a simulated carrier network.
 - **[chloedb-hn](docs/chloedb/hn.md)**: every Hacker News story and comment, searched by words and meaning, with questions in a sentence ("which post has received the most comments") answered by SQL without a model, autocomplete of questions and phrases, exact text from the FM-index, threads, people and cited answers.
 - **[chloedb-arxiv](docs/chloedb/arxiv.md)**: every arXiv paper searched by words and meaning, with people, topics, trends, citations, what to read next from ChloeDB's recommender, and a weekly feed each reader shapes.
+- **[chloedb-img](docs/chloedb/img.md)**: public-domain and CC0 pictures (PD12M) searched by what is in them: with words, a photo of your own, a detail of a picture, a picture plus words, colors and a map of themes.
 - **[chloedb-apps](docs/chloedb/apps.md)** (a prototype): describe an app in a sentence, and a model writes it, the engine checks it, and you change it by asking.
 - **[chloedb-swarm](chloedb-swarm/README.md)**: simulated users who try ChloeDB through its MCP tools or the command center, and a report of what got in their way.
 
