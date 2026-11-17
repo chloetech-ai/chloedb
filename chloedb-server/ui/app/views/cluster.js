@@ -25,6 +25,7 @@
 import { h, s, icon, clear, fmt, card, api, every, toast, modal, pill, empty, bus, seg, store, tipOn, hideTip, ApiError, copy, debounce, confirm, can, needs, link, when, whenTitle } from "../core.js";
 import * as core from "../core.js";
 import { verifyWords } from "./system.js";
+import { slotMap } from "./slotmap.js";
 import { state, isCoordinator, refreshCluster, fresh, staleText, isProduction, firingNow, isPast } from "../data.js";
 
 /** A phone or a narrow window: the shell's isNarrow() once it has one, else the same breakpoint. */
@@ -336,9 +337,12 @@ function model(c) {
       serves_reads: sh.serves_reads ?? (st === "ok" || st === "degraded" ? true : st === "down" ? false : null),
       takes_writes: sh.takes_writes ?? (st === "ok" || st === "degraded"),
       callRate: sh.call_rate ?? null,
+      heat: sh.heat || null,
     };
   });
   const all = shards.flatMap((x) => x.copies);
+  const holding = shards.filter((x) => x.held > 0 && x.heat);
+  LOAD.mean = holding.length ? holding.reduce((n, x) => n + (x.heat.keyed_per_s || 0), 0) / holding.length : 0;
   // Nodes: the node a copy reports, else the host of its URL.
   const nodes = new Map();
   for (const c of all) {
@@ -365,6 +369,8 @@ function model(c) {
     medCpu: median(shards.map((x) => shardValue("cpu", x))), medP99: median(shards.map((x) => shardValue("p99", x))),
     nodesKnown: all.some((x) => x.node), zonesKnown: all.some((x) => x.zone), nodePrefix: commonPrefix([...nodes.keys()]),
     coordinators: state.fleet?.coordinators?.length || null,
+    // The coordinator's verdict on the keyed load, over 5 minutes (heat.rs).
+    slotHeat: c?.slot_heat || null,
   };
 }
 
@@ -381,6 +387,9 @@ function commonPrefix(keys) {
 /** The p99 the cluster promises, from the fleet's checks, else 250 ms. */
 const slo = () => state.fleet?.checks?.find?.((x) => x.id === "p99")?.slo_ms ?? state.cluster?.cluster?.slo_p99_ms ?? 250;
 const sloErr = () => state.fleet?.checks?.find?.((x) => x.id === "error_ratio")?.slo ?? 0.01;
+/** The mean keyed load of the shards holding slots, which the Load lens compares with (set by model()). */
+const LOAD = { mean: 0 };
+const loadRate = (v) => (v == null ? "–" : v >= 1000 ? kn(v) : v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1) : v.toFixed(2));
 const LENSES = {
   health: { label: "Health", title: "Copies answering, and whatever is wrong with the shard: red when it serves no reads or takes no writes, amber when a copy is down, behind, avoided or full" },
   cpu: { label: "CPU", title: "The busiest copy's CPU as a share of its cores, over its last minute", copy: (c) => c.cpu, fmt: pct0, warn: () => 0.7, bad: () => 0.85 },
@@ -389,9 +398,14 @@ const LENSES = {
   errors: { label: "Errors", title: "The share of searches the copy with the most failures failed, over its last 2 s, against the SLO", copy: (c) => c.err, fmt: (v) => fmt.pct(v, v > 0 && v < 0.01 ? 2 : v < 0.1 ? 1 : 0), tile: (v) => fmt.pct(v, v > 0 && v < 0.01 ? 2 : v < 0.1 ? 1 : 0), warn: () => sloErr() / 4, bad: () => sloErr() },
   version: { label: "Version", title: "The version each copy runs; the one most copies run is neutral" },
   lag: { label: "Lag", title: "Transactions a replica has still to apply from its primary", copy: (c) => (c.primary ? null : c.lag), fmt: (v) => kn(v), warn: () => LAG_WARN, bad: () => LAG_BAD },
+  // The coordinator's count of what it routed to the shard by key, over 5
+  // minutes (`heat` in /v1/cluster), against the mean of the shards holding
+  // slots: 1.3× is where the coordinator calls a shard hot.
+  load: { label: "Load", title: "Reads and writes the coordinator routed to the shard by key, a second over the last 5 minutes, against the mean of the shards: amber from 1.3× the mean, red from 2×", shard: (sh) => sh.heat?.keyed_per_s ?? null, fmt: (v) => `${loadRate(v)}/s`, tile: (v) => loadRate(v), warn: () => (LOAD.mean >= 1 ? LOAD.mean * 1.3 : Infinity), bad: () => (LOAD.mean >= 1 ? LOAD.mean * 2 : Infinity) },
 };
 function shardValue(lens, sh) {
   const L = LENSES[lens];
+  if (L.shard) return L.shard(sh);
   if (!L.copy) return null;
   const vs = sh.copies.filter((c) => !c.down).map(L.copy).filter((v) => v != null && !Number.isNaN(v));
   return vs.length ? Math.max(...vs) : null;
@@ -501,6 +515,19 @@ function problems(M) {
       const text = why === "cpu" ? [`CPU ${pct0(cpu)} on its busiest copy, the median shard ${pct0(M.medCpu)}`, p != null ? `p99 ${fmt.ms(p)} on its slowest` : null, "each copy's last minute"] : [`p99 ${fmt.ms(p)} on its slowest copy, the median shard ${fmt.ms(M.medP99)}`, `CPU ${pct0(cpu)} on its busiest`, "each copy's last minute"];
       out.push({ sev: 1, shards: [sh.i], label: `Hot shard ${sh.i}`, text: [...text, sh.slots.length ? `slots ${runsText(sh.slots)}` : null].filter(Boolean).join(" · "), impact: "a search waits for the slowest shard it asks", next: "Move some of its slots to a quieter shard (Draft: drag it onto another)", fix: { kind: "slots", shard: sh.i } });
     }
+  }
+  // Keyed load uneven over the shards, by the coordinator's count of what
+  // it routed (heat.rs): information, not a fault, since a busier shard
+  // may have room; its CPU and p99 say so above when it has not.
+  const vh = M.slotHeat?.verdict;
+  if (vh === "hot range" || vh === "hot slot") {
+    const sh = M.shards.filter((x) => x.heat).sort((a, b) => (b.heat.keyed_per_s || 0) - (a.heat.keyed_per_s || 0))[0];
+    // Named once: a shard hot by its CPU or p99 is said above already.
+    if (sh && !out.some((p) => p.label === `Hot shard ${sh.i}`)) out.push({ sev: 0, shards: [sh.i], label: vh === "hot slot" ? `One slot makes shard ${sh.i} busy` : `Shard ${sh.i} takes more keyed load`,
+      text: `${(M.slotHeat.skew ?? 0).toFixed(2)}× the mean of the shards, ${loadRate(sh.heat.keyed_per_s)} keyed/s · last 5 minutes`,
+      impact: vh === "hot slot" ? "moving slots does not split it: the slot takes its load wherever it goes" : "its slots carry more reads and writes than the others'",
+      next: vh === "hot slot" ? "See which slot under Key slots, then cache the key or spread its writes over several keys" : "Move some of its slots to a quieter shard (Draft: drag it onto another)",
+      fix: vh === "hot range" ? { kind: "slots", shard: sh.i } : null });
   }
   // A primary avoided for want of a majority is its shard serving no
   // reads, said above already (NEW-scenarios-19).
@@ -750,7 +777,9 @@ function render(page, r) {
   const attention = h("div", { class: "cc-attn" });
   const canvas = h("div", { class: "cc-canvas" });
   mapCard.append(h("div", { class: "bd" }, toolbar, legendBox, attention, canvas));
-  left.append(mapCard);
+  // The load on each key slot, under the map (GET /v1/cluster/slots).
+  const slotCard = slotMap({ onShard: (i) => select(i), model: () => M, past: isPast });
+  left.append(mapCard, slotCard.el);
 
   function drawAll() {
     if (tab !== "map") { sheet(null); bottom(null); }
@@ -807,8 +836,10 @@ function render(page, r) {
     let scale;
     if (lens === "health") scale = [sw("l1", "a copy down, behind, avoided, full or slow"), sw("l2", "no reads or no writes")];
     else if (lens === "version") scale = (M?.versions || []).slice(0, 5).map(([v, n], k) => sw(k ? "v" + Math.min(k, 4) : "l0", `${v} · ${fmt.n(n)}`));
+    else if (lens === "load") scale = !M?.shards.some((x) => x.heat) ? [h("span", { class: "dim" }, "this coordinator does not count load by slot")] : LOAD.mean < 1 ? [h("span", { class: "dim" }, "under one keyed operation a second: too little to compare")]
+      : [sw("l0", "under 1.3× the mean"), sw("l1", "1.3× the mean+"), sw("l2", "2×+"), h("span", { class: "dim" }, `mean ${loadRate(LOAD.mean)}/s`)];
     else scale = [sw("l0", `under ${L.fmt(L.warn())}`), sw("l1", `${L.fmt(L.warn())}+`), sw("l2", `${L.fmt(L.bad())}+${lens === "p99" ? " (the SLO)" : ""}`)];
-    const what = { health: "Copies answering, when one is missing", version: "The version the copies run", cpu: "CPU of the busiest copy, last minute", disk: "Disk used on the fullest copy", p99: "p99 of the slowest copy, last minute, in ms", errors: "Searches failed by the copy that fails most, last 2 s", lag: "Transactions the furthest replica is behind" }[lens];
+    const what = { health: "Copies answering, when one is missing", version: "The version the copies run", cpu: "CPU of the busiest copy, last minute", disk: "Disk used on the fullest copy", p99: "p99 of the slowest copy, last minute, in ms", errors: "Searches failed by the copy that fails most, last 2 s", lag: "Transactions the furthest replica is behind", load: "Keyed reads and writes a second, last 5 minutes" }[lens];
     return [h("b", { class: "dim", style: { fontWeight: 500 } }, isPast() ? `Now: ${what[0].toLowerCase()}${what.slice(1)}` : what), ...scale, h("span", { class: "row nw", style: { gap: "8px" } }, pip("p", "primary"), pip("", "replica"), pip("down", "down"),
       mode === "draft" ? [pip("new", "in the plan"), pip("going", "goes")] : null),
       lens !== "health" ? h("span", { title: "Whatever is wrong with a shard outlines its tile under every lens" }, "outline: health") : null,
@@ -2613,7 +2644,7 @@ function render(page, r) {
     M = state.cluster ? model(state.cluster) : null;
     if (M && draftCount()) { /* keep the draft to what still exists */ }
     const typing = document.activeElement?.matches?.("input, select, textarea") && (side.contains(document.activeElement) || sheetEl?.contains(document.activeElement));
-    if (tab === "map") { drawHead(); drawStrip(); drawToolbar(); drawMap(); if (!typing && !pressed()) drawSide(); }
+    if (tab === "map") { drawHead(); drawStrip(); drawToolbar(); drawMap(); slotCard.update(); if (!typing && !pressed()) drawSide(); }
     else { drawHead(); drawStrip(); if (tab === "capacity" && !document.querySelector(".modal")) drawCapacity(); }
   }
   const mq = matchMedia("(max-width: 900px)");
@@ -2646,6 +2677,7 @@ function render(page, r) {
   refreshCluster();
   return () => {
     alive = false; active = null;
+    slotCard.stop();
     clearTimeout(movesTimer);
     runWatchers.delete(watcher);
     closePop(); hideTip(); sheet(null); bottom(null);

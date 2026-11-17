@@ -2732,6 +2732,23 @@ a.wl-chip:hover { border-color: var(--accent); }
 .cc-side { position: sticky; top: 0; display: flex; flex-direction: column; gap: 12px; max-height: calc(100vh - 96px); overflow: auto; min-width: 0; padding-bottom: 4px; }
 @media (max-width: 1180px) { .cc-main { grid-template-columns: minmax(0, 1fr); } .cc-side { position: static; max-height: none; } }
 
+/* Key slots: the 64 × 64 map of the load on each slot (views/slotmap.js). */
+.sm-head { margin-bottom: 10px; }
+.sm-head p { margin: 4px 0 0; }
+.sm-why { max-width: 72ch; }
+.sm-body { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+.sm-grid { flex: 1 1 320px; min-width: 0; max-width: 576px; display: flex; flex-direction: column; gap: 8px; }
+.sm-canvas { display: block; cursor: pointer; border-radius: 4px; touch-action: manipulation; }
+.sm-scale { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 4px; }
+.sm-sw { display: inline-block; width: 14px; height: 10px; border-radius: 2px; border: 1px solid var(--line); }
+.sm-note { flex-basis: 100%; }
+.sm-top { flex: 0 1 240px; min-width: 200px; }
+.sm-list { margin: 0; padding-left: 22px; font-size: 12.5px; line-height: 1.7; }
+.sm-list .num { text-align: left; }
+.sm-list button { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
+.sm-list button:hover { text-decoration: underline; }
+@media (max-width: 600px) { .sm-top { flex-basis: 100%; } }
+
 .cc-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .cc-find { flex: 1 1 160px; min-width: 140px; max-width: 320px; }
 .cc-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; font-size: 12px; color: var(--muted); margin: 8px 0 8px; min-height: 24px; }

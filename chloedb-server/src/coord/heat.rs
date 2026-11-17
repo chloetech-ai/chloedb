@@ -229,12 +229,19 @@ impl SlotHeat {
     /// The report of `GET /v1/cluster/slots` at `now`: for each window the
     /// load of each shard (by `owner`, of `shards`), the slots most
     /// counted, how uneven the shards are and why. `all` adds every slot
-    /// counted since the start.
-    pub fn report(&self, now: u64, owner: &dyn Fn(usize) -> usize, shards: usize, all: bool) -> Json {
+    /// counted since the start, as `[slot, shard, reads, writes]`; `window`
+    /// (an index of [`WINDOWS`]) adds instead every slot counted in that
+    /// window, which a map of the slots shows as the load now.
+    pub fn report(&self, now: u64, owner: &dyn Fn(usize) -> usize, shards: usize, all: bool, window: Option<usize>) -> Json {
         let held: Vec<usize> = (0..shards).map(|i| (0..SLOTS).filter(|&s| owner(s) == i).count()).collect();
-        let windows: serde_json::Map<String, Json> = WINDOWS.iter().map(|(name, len)| {
+        let mut picked = None;
+        let windows: serde_json::Map<String, Json> = WINDOWS.iter().enumerate().map(|(k, (name, len))| {
             let (d, secs) = self.window(now, *len);
-            (name.to_string(), window_report(&d, secs, owner, &held))
+            let w = window_report(&d, secs, owner, &held);
+            if window == Some(k) {
+                picked = Some((d, secs));
+            }
+            (name.to_string(), w)
         }).collect();
         let (reads, writes, fanout) = self.totals();
         let mut j = json!({
@@ -242,7 +249,11 @@ impl SlotHeat {
             "totals": {"reads": reads.iter().sum::<u64>(), "writes": writes.iter().sum::<u64>(), "fanout": fanout},
             "windows": windows,
         });
-        if all {
+        if let Some((d, secs)) = picked {
+            j["slots"] = (0..SLOTS).filter(|&s| d[READS + s] + d[WRITES + s] > 0).map(|s| json!([s, owner(s), d[READS + s], d[WRITES + s]])).collect();
+            j["slots_window"] = json!(WINDOWS[window.unwrap_or(0)].0);
+            j["slots_secs"] = json!(round(secs));
+        } else if all {
             j["slots"] = (0..SLOTS).filter(|&s| reads[s] + writes[s] > 0).map(|s| json!([s, owner(s), reads[s], writes[s]])).collect();
         }
         j
@@ -407,7 +418,7 @@ mod tests {
         for i in 0..60 {
             h.count(60_000 + i * 1000, 3000, false, Default::default);
         }
-        let r = h.report(120_000, &halves, 2, false);
+        let r = h.report(120_000, &halves, 2, false, None);
         let m1 = &r["windows"]["1m"];
         assert_eq!(m1["secs"], 60.0);
         assert_eq!(m1["shards"][0]["writes_per_s"], 0.0, "{m1}");
@@ -419,6 +430,13 @@ mod tests {
         assert_eq!(m5["shards"][1]["reads_per_s"], 0.5, "{m5}");
         assert_eq!(r["totals"]["writes"], 600);
         assert_eq!(r["totals"]["reads"], 60);
+        // Every slot counted in a window: the last minute has slot 3000's
+        // reads only, the five minutes both slots, and no totals since the start.
+        let w1 = h.report(120_000, &halves, 2, true, Some(0));
+        assert_eq!(w1["slots"], json!([[3000, 1, 60, 0]]), "{w1}");
+        assert_eq!((w1["slots_window"].as_str(), w1["slots_secs"].as_f64()), (Some("1m"), Some(60.0)));
+        let w5 = h.report(120_000, &halves, 2, false, Some(1));
+        assert_eq!(w5["slots"], json!([[1, 0, 0, 600], [3000, 1, 60, 0]]), "{w5}");
     }
 
     #[test]
@@ -428,7 +446,7 @@ mod tests {
             h.count(i, 7, true, Default::default);
         }
         // Nothing counted for ten minutes: the last minute and five minutes saw none.
-        let r = h.report(10 * 60_000, &halves, 2, false);
+        let r = h.report(10 * 60_000, &halves, 2, false, None);
         assert_eq!(r["windows"]["1m"]["keyed_per_s"], 0.0);
         assert_eq!(r["windows"]["5m"]["keyed_per_s"], 0.0);
         assert_eq!(r["windows"]["1m"]["verdict"], "quiet");
@@ -442,11 +460,11 @@ mod tests {
         for i in 0..1200 {
             h.count(i * 50, 10, false, Default::default);
         }
-        let before = h.report(60_000, &halves, 2, false);
+        let before = h.report(60_000, &halves, 2, false, None);
         assert_eq!(before["windows"]["1m"]["shards"][0]["share"], 1.0);
         // Slot 10 moved to shard 1.
         let moved = |s: usize| if s == 10 { 1 } else { halves(s) };
-        let after = h.report(60_000, &moved, 2, false);
+        let after = h.report(60_000, &moved, 2, false, None);
         assert_eq!(after["windows"]["1m"]["shards"][1]["share"], 1.0);
         assert_eq!(after["windows"]["1m"]["shards"][1]["slots"], 2049);
     }
@@ -456,7 +474,7 @@ mod tests {
         let at = |load: &dyn Fn(&SlotHeat)| {
             let h = SlotHeat::new(false);
             load(&h);
-            h.report(59_999, &halves, 2, false)["windows"]["1m"].clone()
+            h.report(59_999, &halves, 2, false, None)["windows"]["1m"].clone()
         };
         // Spread over both halves alike.
         let even = at(&|h| (0..6000).for_each(|i| h.count(i * 10, (i as usize * 7) % SLOTS, true, Default::default)));
@@ -481,7 +499,7 @@ mod tests {
         for i in 0..120 {
             h.fan_out(i * 500);
         }
-        let w = &h.report(60_000, &halves, 2, false)["windows"]["1m"];
+        let w = &h.report(60_000, &halves, 2, false, None)["windows"]["1m"];
         assert_eq!(w["fanout_per_s"], 2.0, "{w}");
         assert_eq!(w["keyed_per_s"], 0.0);
     }

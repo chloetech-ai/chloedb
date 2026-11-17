@@ -977,7 +977,7 @@ async fn a_coordinator_says_which_slots_are_hot() {
     for _ in 0..5 {
         svc.query(QueryReq { sql: "SELECT id FROM products ORDER BY bm25(body, 'kettle') DESC LIMIT 5".into(), ..Default::default() }).await.unwrap();
     }
-    let j = hot.slot_heat(false);
+    let j = hot.slot_heat(false, None);
     assert_eq!(j["by_slot"], true, "{j}");
     assert_eq!(j["totals"]["reads"], 200, "{j}");
     assert_eq!(j["totals"]["writes"], 100, "{j}");
@@ -994,7 +994,11 @@ async fn a_coordinator_says_which_slots_are_hot() {
         assert!(win["fanout_per_s"].as_f64().unwrap() > 0.0, "{w}: {win}");
     }
     assert_eq!(j["slots"], serde_json::Value::Null, "every slot only when asked");
-    assert_eq!(hot.slot_heat(true)["slots"], serde_json::json!([[slot, owner, 200, 100]]));
+    assert_eq!(hot.slot_heat(true, None)["slots"], serde_json::json!([[slot, owner, 200, 100]]));
+    // The same over the last minute, which a map of the slots shows.
+    let w = hot.slot_heat(false, Some("1m"));
+    assert_eq!(w["slots"], serde_json::json!([[slot, owner, 200, 100]]), "{w}");
+    assert_eq!(w["slots_window"], "1m");
     // The key sampled, with its slot and shard.
     let keys = hot.slot_heat_keys().expect("--slot-heat-keys samples keys");
     assert_eq!(keys["keys"][0]["key"], format!("\"{id}\""), "{keys}");
@@ -1023,7 +1027,7 @@ async fn a_coordinator_says_which_slots_are_hot() {
         let a = svc.query(QueryReq { sql: format!("SELECT id FROM products WHERE id IN ({}) LIMIT 1000", all.join(", ")), ..Default::default() }).await.unwrap();
         assert_eq!(a.rs.rows.len(), N);
     }
-    let j = even.slot_heat(false);
+    let j = even.slot_heat(false, None);
     assert_eq!(j["totals"]["reads"], 3 * N as u64, "{j}");
     assert_eq!(j["totals"]["fanout"], 0, "{j}");
     let win = &j["windows"]["1m"];

@@ -11,6 +11,18 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **The Cluster page shows the load on each key slot.** Under the map,
+  **Key slots** draws the 4,096 slots as a 64 × 64 grid, each coloured by
+  the reads and writes the coordinator routed to it over 1, 5 or 15
+  minutes, with a line between shards, the coordinator's verdict (`hot
+  range`: move some of the shard's slots; `hot slot`: one key or `shard_by`
+  value, which moving slots does not split) and the slots most counted;
+  hovering a slot names its shard and rates, and clicking it opens the
+  shard. The map's new **Load** lens colours each shard by its keyed load
+  against the mean of the shards, and **What needs attention** names a
+  shard the verdict calls hot. `GET /v1/cluster/slots?window=1m` (or `5m`,
+  `15m`) answers every slot counted in that window, which the map reads;
+  `?all=1` still answers the counts since the coordinator started.
 - **A command center on Kubernetes forgot the clusters it reaches at every
   restart.** A coordinator kept its hub's book (the **Connections** view,
   the clusters the brand's menu at the top left switches to, and their

@@ -1888,13 +1888,15 @@ impl Coordinator {
 
     /// `GET /v1/cluster/slots`: what this coordinator routed to each slot,
     /// over the last 1, 5 and 15 minutes, by the shards holding them now
-    /// ([`heat::SlotHeat::report`]); `all` adds every slot counted.
-    pub fn slot_heat(&self, all: bool) -> Json {
+    /// ([`heat::SlotHeat::report`]); `all` adds every slot counted since
+    /// the start, `window` (`1m`, `5m` or `15m`) every slot counted in it.
+    pub fn slot_heat(&self, all: bool, window: Option<&str>) -> Json {
         let t = self.topo();
         let Some(m) = &t.slots else {
             return json!({"by_slot": false, "why": "a shard is from before slots (protocol 4): writes go by the old hash, which has no slots to count"});
         };
-        let mut j = self.heat.report(self.now_ms(), &|s| m.owner(s), t.replicas.len(), all);
+        let window = window.and_then(|w| heat::WINDOWS.iter().position(|(name, _)| *name == w));
+        let mut j = self.heat.report(self.now_ms(), &|s| m.owner(s), t.replicas.len(), all, window);
         j["by_slot"] = json!(true);
         j["slot_epoch"] = json!(m.epoch);
         j

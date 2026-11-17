@@ -92,7 +92,7 @@
 //! | `POST /v1/logs/query` | `{sql, params?, timeout_ms?, scope?}` (SQL over tables `logs` and `queries`) | rows of the server's log store ([`crate::logstore`]); on a coordinator, of every server's merged, the other coordinators' stores too, with `nodes`: each server's rows, time and error (`"scope": "local"`: its own store alone; with `"partial": true`, in the form another coordinator merges) |
 //! | `GET /v1/logs/store` | | `{store, schemas, nodes?}`: the log store (its path, rows, bytes, retention, what it wrote, dropped and deleted; null without one), its tables, and on a coordinator every server's |
 //! | `GET /v1/system`, `/v1/cluster?brief=1`, `/v1/routes` | | the process and its limits; the cluster's copies (`brief=1`: without each copy's `detail`); requests by route and queries by kind |
-//! | `GET /v1/cluster/slots?all=1` | | on a coordinator, what it routed to each slot ([`crate::coord::heat`]): per shard and over the last 1, 5 and 15 minutes, keyed reads and writes a second and requests sent to every shard, the slots most counted, and whether a shard is hot over a range of its slots or because of one (`all=1`: every slot counted since it started) |
+//! | `GET /v1/cluster/slots?all=1` | | on a coordinator, what it routed to each slot ([`crate::coord::heat`]): per shard and over the last 1, 5 and 15 minutes, keyed reads and writes a second and requests sent to every shard, the slots most counted, and whether a shard is hot over a range of its slots or because of one (`all=1`: every slot counted since it started; `window=1m`, `5m` or `15m`: every slot counted in that window) |
 //! | `GET /v1/admin/slots/keys` | | on a coordinator started with `--slot-heat-keys`, the keys sampled as routed most, with their slot and shard |
 //! | `GET /v1/coordinators?window=1` | | `{coordinators: [{url, name, this, last_seen_ms, version}], gone, live_ms}`: this cluster's coordinators, from what the shards heard ([`crate::peers`]); `window=1` adds this one's last minute and 5 minutes of searches |
 //! | `GET /v1/whoami` | | `{name, key, scope, root, cluster, caller}`: who the request's credential is ([`crate::keys`]) |
@@ -5425,7 +5425,13 @@ async fn cluster(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
 /// slot ([`crate::coord::heat`]).
 async fn cluster_slots(State(app): State<App>, Query(q): Params) -> Res {
     let all = q.get("all").is_some_and(|v| v == "1" || v == "true");
-    Ok(AxJson(app.svc.coordinator()?.slot_heat(all)))
+    let window = q.get("window").map(String::as_str);
+    if let Some(w) = window {
+        if !crate::coord::heat::WINDOWS.iter().any(|(name, _)| *name == w) {
+            return Err(ApiError { code: None, status: 400, message: format!("window {w:?}: one of 1m, 5m or 15m") });
+        }
+    }
+    Ok(AxJson(app.svc.coordinator()?.slot_heat(all, window)))
 }
 
 /// `GET /v1/admin/slots/keys`: the keys sampled as routed most, which
