@@ -54,7 +54,7 @@ fn ranking_functions_refuse_options_they_do_not_take() {
     let e = err(&db, "SELECT id FROM p ORDER BY bm25(name, 'sofa', algo => 'fast') DESC");
     assert!(e.contains("'maxscore'"), "{e}");
     let e = err(&db, "SELECT id FROM p ORDER BY similarity(emb, :v, ef => 'x') DESC");
-    assert!(e.contains("similarity's ef is a whole number"), "{e}");
+    assert!(e.contains("similarity's ef is a whole number of at least 1"), "{e}");
     let e = err(&db, "SELECT id FROM p ORDER BY similarity(emb, :v, bogus => 1) DESC");
     assert!(e.contains("unknown option bogus for similarity") && e.contains("strategy"), "{e}");
     let e = err(&db, "SELECT id FROM p ORDER BY rrf(bm25(name, 'sofa'), similarity(emb, :v), kk => 60) DESC");

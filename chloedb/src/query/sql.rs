@@ -3429,8 +3429,8 @@ fn without_norm(mut opts: Opts) -> Opts {
 enum OptKind {
     /// A number from the first to the second.
     Num(f64, f64),
-    /// A whole number from the first to the second.
-    Whole(f64, f64),
+    /// A whole number of at least this.
+    Whole(f64),
     /// 0 or 1 (FALSE or TRUE).
     Flag,
     /// One of these words, written as here.
@@ -3446,7 +3446,7 @@ enum OptKind {
 /// set function or `rrf` reads from any of its inputs, and `norm =>
 /// 'none'`, which kept raw scores in a sum before ranking expressions and
 /// now changes nothing.
-const FUSION_OPTS: [(&str, OptKind); 3] = [("depth", OptKind::Whole(1.0, 1e7)), ("exact", OptKind::Flag), ("norm", OptKind::Word(&["none"]))];
+const FUSION_OPTS: [(&str, OptKind); 3] = [("depth", OptKind::Whole(1.0)), ("exact", OptKind::Flag), ("norm", OptKind::Word(&["none"]))];
 
 /// `bm25`'s options. `fuzzy`, `synonyms`, `syntax`, `min`, the guard's
 /// `min_rows` and `max_rows`, expansion's and understanding's are checked
@@ -3475,13 +3475,13 @@ const BM25_OPTS: [(&str, OptKind); 17] = [
 /// and `maxsim`.
 const VECTOR_OPTS: [(&str, OptKind); 4] = [
     ("strategy", OptKind::Word(&["auto", "prefilter", "postfilter", "index", "ivf", "hnsw", "flat", "partition"])),
-    ("ef", OptKind::Whole(1.0, 1e6)),
-    ("nprobe", OptKind::Whole(1.0, 1e6)),
-    ("rerank", OptKind::Whole(0.0, 1e7)),
+    ("ef", OptKind::Whole(1.0)),
+    ("nprobe", OptKind::Whole(1.0)),
+    ("rerank", OptKind::Whole(0.0)),
 ];
 
 /// `maxsim`'s own options, beside [`VECTOR_OPTS`].
-const MAXSIM_OPTS: [(&str, OptKind); 2] = [("max_vectors", OptKind::Whole(1.0, 1e6)), ("candidates", OptKind::Whole(1.0, 1e7))];
+const MAXSIM_OPTS: [(&str, OptKind); 2] = [("max_vectors", OptKind::Whole(1.0)), ("candidates", OptKind::Whole(1.0))];
 
 /// A `SPARSE` field's `similarity`: its top-k algorithm, as `bm25`'s.
 const SPARSE_OPTS: [(&str, OptKind); 1] = [("algo", OptKind::Word(&["maxscore", "bmw", "wand", "exhaustive"]))];
@@ -3490,7 +3490,7 @@ const SPARSE_OPTS: [(&str, OptKind); 1] = [("algo", OptKind::Word(&["maxscore", 
 const DECAY_OPTS: [(&str, OptKind); 3] = [("offset", OptKind::Read), ("decay", OptKind::Read), ("shape", OptKind::Read)];
 
 /// `rrf`'s options.
-const RRF_OPTS: [(&str, OptKind); 3] = [("k", OptKind::Num(0.0, 1e9)), ("depth", OptKind::Whole(1.0, 1e7)), ("weights", OptKind::Weights)];
+const RRF_OPTS: [(&str, OptKind); 3] = [("k", OptKind::Num(0.0, f64::MAX)), ("depth", OptKind::Whole(1.0)), ("weights", OptKind::Weights)];
 
 /// Refuses an option `func` does not take, naming the ones it does, and a
 /// value of the wrong kind: an option no code reads, or one read as a
@@ -3514,9 +3514,11 @@ fn check_opts(func: &str, opts: &Opts, sets: &[&[(&str, OptKind)]]) -> Result<()
                 _ if hi == f64::MAX => format!("a number of at least {lo}"),
                 _ => format!("a number from {lo} to {hi}"),
             },
-            OptKind::Whole(lo, hi) => match v.as_f64() {
-                Some(x) if x.fract() == 0.0 && (lo..=hi).contains(&x) => continue,
-                _ => format!("a whole number from {lo} to {hi}"),
+            // A large one is cut to what there is where it is used, as a
+            // LIMIT is.
+            OptKind::Whole(lo) => match v.as_f64() {
+                Some(x) if x.fract() == 0.0 && x >= lo => continue,
+                _ => format!("a whole number of at least {lo}"),
             },
             OptKind::Flag => match v.as_i64() {
                 Some(0 | 1) => continue,
