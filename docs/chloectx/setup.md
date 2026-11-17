@@ -16,7 +16,7 @@ Python 3 is only needed for the scripted demo and the evaluation harnesses, not 
 
 The CLI login matters more than it looks. The distiller runs `claude -p` in the background, so an expired CLI login breaks it even while interactive sessions (or the desktop app) keep working. Recording and recall still work in that state, but nothing new is written down. `chloectx doctor` checks for it.
 
-ChloeCtx makes model calls of its own, through `claude -p` with a small model (`haiku` by default), billed to the CLI's login: one after each turn to write down decisions and rules (about $0.001); after each of your own turns that is like something you said before, one more to see whether you had to say it again, which makes it a rule (about $0.0005); and, once a project's store holds 20 records, two more after each prompt of four words or more, in the background, to search memory for it ([query understanding](index.md#query-understanding), about $0.001 a prompt). None of them holds up a turn: what the search finds comes with the turn's next tool result, or at the next prompt. `CHLOECTX_DISTILL=0` turns the first two off, `CHLOECTX_DEEP=off` (or `tool`, only when the model asks) the last.
+ChloeCtx makes model calls of its own, through `claude -p` with a small model (`haiku` by default), billed to the CLI's login: one after each turn to write down decisions and rules (about $0.001); after each of your own turns that is like something you said before, one more to see whether you had to say it again, which makes it a rule (about $0.0005); and, once a project's store holds 20 records, two more after each prompt of four words or more, in the background, to search memory for it ([query understanding](index.md#query-understanding), about $0.001 a prompt). None of them holds up a turn: what the search finds comes with the turn's next tool result, or at the next prompt; a find that holds a rule or decision of yours the session was not shown, ready when the turn ends, is given then, and Claude checks its answer against it. `CHLOECTX_DISTILL=0` turns the first two off, `CHLOECTX_DEEP=off` (or `tool`, only when the model asks) the last.
 
 The daemon that makes these calls finds the `claude` CLI where Claude Code's hooks found it, on its own `PATH`, or in the usual install places (`~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`); `CHLOECTX_CLAUDE` names it outright. `chloectx doctor` shows which one the running daemon uses.
 
@@ -229,17 +229,37 @@ The project's daemon rewrites each record whose text redaction changes, redacts 
 
 ### Forget something: `chloectx forget`
 
-`chloectx forget ID...`, in a project's folder, deletes records of its store for good by id (the ids `chloectx search` and the inspector show, `session:seq`). Each record is deleted and scrubbed from the receipts that showed it, the automatic snapshots that hold it are dropped, the segments of the store that held it are rewritten without it, and the free pages of the store's file, where the old copies were, are written with zeros; the other records of its turn stay. Only those segments are rewritten, not every segment with an older delete, so the cost is their size, not the store's. `memory_forget` is the same for the model, except that it answers once the record is deleted and scrubbed and the snapshots dropped, and the segments are rewritten after the answer (no snapshot is taken meanwhile), so a large store does not run past MCP's 20 s deadline; `chloectx forget` waits for all of it and says so. With a [sync](#keep-the-memory-on-a-chloedb-server) set up, the record's row on the server is deleted too, and the store keeps the record's id (in `sync-forgotten.json`) so that no pull stores it again, whichever machine pushes it back; a delete the server did not answer is sent again with each push. A machine that pulled the record before keeps its copy until it forgets it there.
-
-A fact usually lives in more than one record and more than one store: the prompt that said it, the tool output that showed it, the notes written from it, in every project where it came up. `chloectx forget --everywhere` finds it in every store `chloectx stores` lists:
+A fact usually lives in more than one record: the prompt that said it, the tool output that showed it, the answer and the notes written from it. So forget it by its words, in a project's folder:
 
 ```bash
-chloectx forget --everywhere --dry-run "staging codeword"   # list the matches, change nothing
-chloectx forget --everywhere "staging codeword"             # list them, ask, forget
+chloectx forget --dry-run "staging codeword"   # list what goes and what stays, change nothing
+chloectx forget "staging codeword"             # list it, ask, forget
+chloectx forget a1b2c3d4:42                    # one record, by the id chloectx search shows
+```
+
+Given words that are not record ids (3 characters or more, whatever their case), it lists, before it asks:
+
+- the records whose own text holds them, which are deleted, each with its kind and first line;
+- the records that hold them only in their context, which stay. Every record of a turn carries that turn's request as its context, so a rule you gave in the same prompt as a private aside is one of these: the rule is kept, and the lines of its context that held the words are cut;
+- how many session states, log lines and receipts hold them, which are scrubbed.
+
+`--yes` skips the question; without a terminal and without `--yes` it only lists. Then the project's daemon deletes the records, cuts the words from the other records' context, and scrubs them from every file of the store: `state.json` (the session's last prompts), `events.log` and `daemon.log`, and every receipt that holds them (`receipts.strata`). The automatic snapshots are dropped, the segments of `memory.strata` and `receipts.strata` that held the old copies are rewritten, and the free pages of both files, where those copies were, are written with zeros. For five minutes after, nothing that holds the words is stored, so a note being distilled at that moment does not bring them back. Only the segments that held them are rewritten, not every segment with an older delete, so the cost is their size, not the store's.
+
+By id, `chloectx forget ID...` deletes those records only, with the same scrubbing of receipts and snapshots; the other records of their turn stay.
+
+`memory_forget` is the same for the model: asked to forget something, Claude passes its words as `text` (or one record's `id`). The turn that calls it stores no reply, card or narration and is not distilled, so no note says again what was forgotten, and nothing that holds the words is stored until the turn ends. It answers once the records are deleted and the files scrubbed, and the segments are rewritten after the answer (no snapshot is taken meanwhile), so a large store does not run past MCP's 20 s deadline; `chloectx forget` waits for all of it and says so.
+
+With a [sync](#keep-the-memory-on-a-chloedb-server) set up, the deleted records' rows on the server are deleted too, the records whose context was cut are sent again to replace the server's copies, and the store keeps the deleted ids (in `sync-forgotten.json`) so that no pull stores them again, whichever machine pushes them back; a delete the server did not answer is sent again with each push. A machine that pulled a record before keeps its copy until it forgets it there.
+
+To find a fact in every project, `--everywhere` looks in every store `chloectx stores` lists, by text or by id, and lists what it finds by store:
+
+```bash
+chloectx forget --everywhere --dry-run "staging codeword"
+chloectx forget --everywhere "staging codeword"
 chloectx forget --everywhere --yes a1b2c3d4:42              # by id, in whichever store has it
 ```
 
-It matches the records whose text or context holds the words given, whatever their case (3 characters or more), or, when every word is a record id, those records. It lists them by store with a snippet of each and asks before it forgets them (`--yes` skips the question; without a terminal and without `--yes` it only lists). Then each store's own forget runs on its matches. A daemon started to look into a store is stopped afterwards. What it cannot reach: named snapshots (it says which), backups made with `chloectx backup`, the copies other machines pulled from a sync server before the forget, and the server's own backups.
+A daemon started to look into a store is stopped afterwards. What forget cannot reach, and says when it can see it: named snapshots (`chloectx snapshot drop NAME`), a `memory.strata.before-field-ids` copy left by a format upgrade, backups made with `chloectx backup`, packs written with `chloectx pack`, Claude Code's own transcripts of your sessions (under `~/.claude/projects/`), the copies other machines pulled from a sync server before the forget, and the server's own backups.
 
 To back a store up, run `chloectx backup DEST` in the project directory. It copies the store while sessions go on: a consistent checkpoint of `memory.strata` (copying the file itself while the daemon writes can catch it half way through a commit), `state.json`, the config and `events.log`, into a new directory `DEST`. To restore, run `chloectx stop` and copy those files back into the store's directory. A backup is as private as the store.
 
@@ -304,11 +324,13 @@ printf %s "$KEY" | chloectx sync setup --url https://chloedb.example.com --token
 # or: read it, whenever the daemon syncs, from a variable (a cloud environment's, say)
 chloectx sync setup --url https://chloedb.example.com --token-env CHLOEDB_KEY
 chloectx sync status        # what was sent and received, what the server holds
-chloectx sync push          # now, rather than within 30 s
+chloectx sync push          # now, rather than within 30 s; --again sends every record again
 chloectx sync pull
 chloectx sync accept        # what other machines sent that waits, by machine
 chloectx sync accept --origin m-1a2b3c4d5e6f    # or --all
 ```
+
+**A project that is renamed starts its table again.** The table is named by what the project syncs as: its repository (`owner/name`, from `origin`) or, with no remote, its folder. When that changes (an `origin` added, a repository renamed), `setup` says so and the next push sends every record to the new table. `chloectx sync status` warns when the server holds fewer of the project's records than the store sent or took from it, and `chloectx sync push --again` sends them all again.
 
 **One key per project and machine.** A table per project is the boundary between projects: a key limited to one project's table (`"tables": {"chloectx_mem_acme_web_1a2b3c4d": "write"}`) reads and writes that project and nothing else, so a laptop's key reads no other project's sessions, and a key that leaks writes only into its project. On a cluster's command center, "Make a sync key" on the ChloeCtx page (an admin's) asks for the project and the machine, makes the project's table and such a key, and shows the setup line with it (with `--no-create`, since that key cannot make tables). Without it: `setup` creates the project's table, which needs a key with the `admin` scope (`--no-create` skips it; the first push creates it when the key can), and an admin makes the key with `POST /v1/admin/keys`. A machine keeps a key for each project: `setup --token-stdin`, run in the project's folder, keeps the key as that project's (`sync-keys/<table>.token` in ChloeCtx's home), and the first key set up on a machine is the machine's too (`sync.token`), which a project without a key of its own sends. `--every-project` makes the key the machine's as well (an admin's key, or one that may write several projects' tables). `chloectx sync status` says which key the project sends (`key_from`), and `setup` and `chloectx doctor` name the table a refused key needs. A key for operations (role `propose` or `ops`, an on-call agent's) reads no synced memory and no local store through ChloeCtx's app, whatever else it reads.
 

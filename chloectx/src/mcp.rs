@@ -16,7 +16,8 @@ Relevant records are injected automatically when a prompt clearly matches them; 
 memory_ask is the way to answer a question about earlier work (what was decided, why, what was recommended, which error, which numbers): it searches notes, rules, replies and messages at once and returns them packed for the question, in milliseconds. \
 memory_search is one quick hybrid search. \
 memory_timeline shows what happened around a record id. memory_sql answers structured questions (counts, by file, by kind, by time). \
-memory_remember stores a decision, preference, fact or open task worth keeping beyond this session, ideally one sentence that will make sense later.";
+memory_remember stores a decision, preference, fact or open task worth keeping beyond this session, ideally one sentence that will make sense later. \
+memory_forget deletes for good what must not be kept: pass the fact's distinctive words as text, and every record that holds them goes, rather than the ids a search found.";
 
 fn tools() -> Json {
     json!([
@@ -65,8 +66,11 @@ fn tools() -> Json {
         },
         {
             "name": "memory_forget",
-            "description": "Delete a record that is wrong or must not be kept (for example a leaked secret), for good: it cannot be undone. The record is removed from the store and scrubbed from the receipts that showed it, and the automatic snapshots (which hold it) are dropped; with a sync set up, its row on the sync server is deleted and no pull brings it back. It removes that one record, not its turn: the prompt, answer and tool records around it stay, so forget each that holds what must go (memory_timeline shows them). An id that is not in memory is an error.",
-            "inputSchema": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1}}, "required": ["id"]}
+            "description": "Forget, for good, something memory must not keep (a private plan, a leaked secret, a wrong note): it cannot be undone. To forget a fact, pass text (a few distinctive words of it, 3 characters or more): every record whose own text holds it, whatever its case, is deleted (the prompts that said it, the answers and tool output that showed it, the notes written from it); the records that hold it only in their context (the turn's request, which every record of that turn carries, such as a rule given in the same prompt) stay, with it cut from that context; the session state, the event logs and every receipt lose it; and the automatic snapshots that held it are dropped. Nothing that holds it is stored for the rest of this turn and the next few minutes, and this turn is not distilled into notes, so your reply may say what you did. Pass id to delete one record only. With a sync set up, the server's copies go too. The answer says what was deleted and what was cut; named snapshots and backups are not changed (it says so).",
+            "inputSchema": {"type": "object", "properties": {
+                "text": {"type": "string", "minLength": 3, "description": "Words of what must go: every record that holds them goes."},
+                "id": {"type": "string", "minLength": 1, "description": "One record's id, to delete that record only."}
+            }}
         }
     ])
 }
@@ -97,9 +101,9 @@ fn call(dir: &std::path::Path, project: &str, name: &str, args: &Json) -> (Strin
 }
 
 /// Whether a daemon's answer to `op` says it did not do what was asked: a
-/// forget that deleted nothing ("No record nope:1.").
+/// forget that changed nothing ("No record nope:1.").
 fn failed(op: &str, r: &Json) -> bool {
-    op == "forget" && r["deleted"].as_array().is_some_and(|d| d.is_empty())
+    op == "forget" && r["deleted"].as_array().is_some_and(|d| d.is_empty()) && !r["changed"].as_bool().unwrap_or(false)
 }
 
 /// Checks a call's arguments against the input schema its tool publishes
@@ -155,7 +159,7 @@ fn check_value(p: &Json, v: &Json) -> std::result::Result<(), String> {
     }
     if let (Some(min), Some(s)) = (p["minLength"].as_u64(), v.as_str()) {
         if (s.trim().chars().count() as u64) < min {
-            return Err("is empty".into());
+            return Err(if min <= 1 || s.trim().is_empty() { "is empty".into() } else { format!("is at least {min} characters, not {v}") });
         }
     }
     if let Some(x) = v.as_f64() {
@@ -313,7 +317,6 @@ mod tests {
         assert!(bad("memory_search", json!({"query": "x", "kind": "decision"})).contains("has no argument kind"));
         assert!(bad("memory_remember", json!({"kind": "bogus", "text": "x"})).contains("is one of decision, preference, fact, todo, note"));
         assert!(bad("memory_remember", json!({"text": "x"})).contains("kind is required"));
-        assert!(bad("memory_forget", json!({})).contains("id is required"));
         assert!(bad("memory_timeline", json!({"id": "a:1", "before": -3})).contains("at least 0"));
         assert!(bad("memory_sql", json!("SELECT 1")).contains("JSON object"));
         for (name, args) in [
@@ -321,12 +324,16 @@ mod tests {
             ("memory_remember", json!({"kind": "fact", "text": "x", "supersedes": "s:1"})),
             ("memory_ask", json!({"question": "why?", "deep": false})),
             ("memory_forget", json!({"id": "s:1"})),
+            ("memory_forget", json!({"text": "Quokka plan"})),
             ("not_ours", json!({"anything": 1})),
         ] {
             assert_eq!(check_args(&t, name, &args), Ok(()), "{name} {args}");
         }
         assert!(failed("forget", &json!({"text": "No record nope:1.", "deleted": [], "missing": ["nope:1"]})));
         assert!(!failed("forget", &json!({"text": "Deleted s:1.", "deleted": ["s:1"], "missing": []})));
+        assert!(!failed("forget", &json!({"text": "No record holds it in its own text; cut it from the context of s:2, which stays.", "deleted": [], "cut": ["s:2"], "changed": true})));
+        assert!(failed("forget", &json!({"text": "No record holds it in its own text.", "deleted": [], "cut": [], "changed": false})));
+        assert!(bad("memory_forget", json!({"text": "ab"})).contains("at least 3"));
         assert!(!failed("search", &json!({"text": "No matching records."})));
 
         let input = ["{not json", &json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "memory_search", "arguments": {"limit": 5000}}}).to_string()].join("\n");
