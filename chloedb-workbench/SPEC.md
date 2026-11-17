@@ -3522,13 +3522,65 @@ those with a gate running or an agent in its turn (not blocked), and
 the run made; a finding is known when it was merged into an open one, or
 (not checked yet) an older open finding of another run says the same.
 
+### Conflicts, send-backs, agents and spend
+
+- Review reads the pull request's `mergeable` and `mergeable_state`
+  (`dirty`): a conflict goes back to a running fix agent (gate
+  `conflict`, steered to merge the base in), else the card keeps
+  `conflict` and `needs_you: "Conflicts with <base>: …"`. Approve answers
+  409 while it conflicts, and a 405 from GitHub's merge sets the same
+  needs-you instead of gh's error. Commits made after the pull request
+  opened are pushed before CI is read, and CI is read only once the pull
+  request's head is the branch's (pending until then).
+- `back` needs `text` (400 when empty; 8000 bytes at most). Sent back (by
+  you, CI or a conflict) the card keeps `sent_back {head, reason, at}`,
+  and the develop check fails ("no new commit since it was sent back")
+  until the branch has a commit past `head`. Your send-back is not a
+  failed round, and restarts an exited fix agent with your words.
+- The develop check first merges what landed on the base since the
+  branch started (origin's base when it is ahead); new branches start
+  there too. Tests that fail on the base as well (run once per base
+  commit) are noted in the evidence and not required.
+- A card's agents (repro, fix, chat) are stopped when it merges, is
+  dismissed or parked, and a repro agent when its script is taken or it
+  wrote none (its words go on the card; `cant-reproduce` marks it).
+  Unpark in develop restarts the fix agent. `start` without a free agent
+  slot queues the card (`queued`) and the tick starts it. Checks and
+  replays already running leave a parked card alone.
+- Verify fails on a replay's serious finding only when it is new: not
+  like an open card (`DUP`) and, with a repro, passing on the base
+  (`known_before` in the evidence). A card without a persona is verified
+  by its develop check. Without a GitHub origin, `merge-local` merges the
+  branch into the base in the main checkout.
+- WIP counts cards from develop to the merge.
+- Spend: the fix, repro and chat agents' tokens (`token_use`, agents
+  named `cv-`, `cvr-`, `cvs-`, `cvt-`) count with the runs in
+  `spent_today` (the daily budget), `cost_7d` (`cost_7d_by {runs,
+  agents}`), `cost_per_merged_fix` and the timeline's `spend_usd`.
+- Probation: a persona is not retired while its findings wait in Found or
+  Reproduce, joins once one reproduces, and is reviewed every tick. Repro
+  rates (the metrics', a persona's) are reproduced / attempted
+  (reproduced or can't reproduce); `found` leaves out dismissed cards;
+  rates per persona-hour are null below one hour. `Finding::needs_why`
+  (`needs_now` on each card) is the one rule behind every needs-you count.
+- `play` over `runs_at_once` plays and says so (`over_limit`); its `run`
+  is this run. A step marker at or before the current one is not a new
+  step. Settings refuse an empty, infinite or negative number (400).
+  Titles are at most 200 characters. Cards you add answer `similar` (an
+  open card that looks the same). Components include a workspace's
+  packages (`packages/x`, `apps/x`, `crates/x`, `services/x`, `libs/x`,
+  `modules/x`).
+
 ### Tests
 
 `converge_an_ask_becomes_a_card_in_reproduce_and_a_card_by_hand_can_be_picked`,
 `converge_generates_personas_from_the_codebase_and_logs_the_autopilots_decisions`,
 `converge_a_persona_plays_with_its_own_memory_only_when_asked`,
 `converge_talk_reaches_the_cards_agent_at_every_step` (and bulk verbs),
-`converge_blocked_on_you_stops_the_autopilot_and_a_full_slot_queues`, and the
+`converge_blocked_on_you_stops_the_autopilot_and_a_full_slot_queues`,
+`converge_probation_waits_for_untried_findings_and_a_dismissed_card_stops_its_agent`,
+`converge_your_card_is_verified_by_its_repro_and_merges_locally_without_github`
+(and the conflict, send-back and push checks in the merged-fix test), and the
 timeline's, the run summary's, the steps' and `merged_week`'s checks in
 `converge_takes_a_finding_from_a_persona_to_a_merged_fix`;
 the fake runner has `card` and `personas` cases and notes each call's
