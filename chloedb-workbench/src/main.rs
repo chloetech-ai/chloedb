@@ -46,6 +46,7 @@ mod converge;
 mod complete;
 // Sixth build: repositories read without an agent.
 mod repos;
+mod import;
 // Sixth build: what a terminal shows, read for the prompt it waits on.
 mod screen;
 // The goals rewrite (JOURNEYS.md): Review and ship; Debug's turns and records.

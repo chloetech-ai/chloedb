@@ -168,6 +168,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::complete::routes())
         // Sixth build: repositories without an agent, and the user guide.
         .merge(crate::repos::routes())
+        .merge(crate::import::routes())
         // The rewrite around goals (JOURNEYS.md): the one Needs-you count,
         // and the permissions a session was granted.
         .merge(crate::needs::routes())
@@ -266,6 +267,7 @@ const GOALS: &[(&str, &str)] = &[
     ("start.js", include_str!("../ui/goals/start.js")),
     ("newproject.js", include_str!("../ui/goals/newproject.js")),
     ("continue.js", include_str!("../ui/goals/continue.js")),
+    ("github-import.js", include_str!("../ui/goals/github-import.js")),
     ("agent.js", include_str!("../ui/goals/agent.js")),
     ("more.js", include_str!("../ui/goals/more.js")),
     ("needs.js", include_str!("../ui/goals/needs.js")),

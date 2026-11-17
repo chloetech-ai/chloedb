@@ -6,6 +6,7 @@ import { h, useStyle, page, btn, label, kc, pane, stateDot, since, ago, fmtClock
 import { repoPicker } from "/levels/repos.js";
 import { groupOf, fleet, fleetWords, ORDER, sheet } from "/goals/shell.js";
 import { planFrom } from "/goals/newproject.js";
+import { githubImport } from "/goals/github-import.js";
 
 const enc = encodeURIComponent;
 
@@ -102,7 +103,7 @@ export function mount(root, ctx) {
   if (step === "open" || !p) {
     ctx.crumbs([{ label: "Start", href: "#/" }, { label: ctx.params.project || "Open a project", href: location.hash }]);
     el.append(page({ kicker: "Projects", title: ctx.params.project ? `No project named ${ctx.params.project}` : "Open a project", sub: "A git checkout: Workbench reads it without an agent, and agents work in their own worktrees of it." },
-      openList(ctx), h("div", { class: "gp-sec" }, picker(ctx))));
+      openList(ctx), h("div", { class: "gp-sec" }, picker(ctx)), h("div", { class: "gp-sec", id: "from-github" }, githubImport(ctx))));
     return { update() {}, unmount: () => el.remove() };
   }
   const crumbs = { continue: "Since you left", understand: "Understand", change: "Start a change", main: "Preview main" };

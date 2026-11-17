@@ -341,6 +341,13 @@ pub struct Settings {
     /// Set by Stop everything: when, and the autopilot and picks as they
     /// were, for Resume.
     pub stopped: Option<Json>,
+    /// Code you do not own (a GitHub import you cannot push to): fix agents
+    /// ask before anything their list does not allow (`auto` and
+    /// `bypassPermissions` run as `default`), and the UI warns.
+    pub untrusted: bool,
+    /// `owner/name` pull requests go to when origin is your fork of it
+    /// (a GitHub import you cannot push to): the head is `you:branch`.
+    pub upstream: Option<String>,
 }
 
 /// A fix agent's default allow-list: reading, editing, building and testing
@@ -353,6 +360,16 @@ pub fn dev_allow_default() -> Vec<String> {
         v.push(format!("Bash({c}:*)"));
     }
     v
+}
+
+/// The permission mode fix agents run in: the setting, but never one that
+/// answers on its own for code you do not own.
+fn dev_mode(st: &Settings) -> Option<String> {
+    let m = st.dev_permission_mode.clone().filter(|m| !m.is_empty());
+    if st.untrusted && matches!(m.as_deref(), None | Some("auto") | Some("bypassPermissions")) {
+        return Some("default".into());
+    }
+    m
 }
 
 pub fn dev_deny_default() -> Vec<String> {
@@ -389,6 +406,8 @@ impl Default for Settings {
             scope_memory: true,
             dedup_model: "haiku".into(),
             stopped: None,
+            untrusted: false,
+            upstream: None,
         }
     }
 }
@@ -902,7 +921,7 @@ pub fn settings(sup: &Supervisor, repo: &str) -> Settings {
     docs::<Settings>(sup, "SELECT doc FROM cv_settings WHERE repo = :repo LIMIT 1", &Params::new().set("repo", s(repo))).into_iter().next().unwrap_or_default()
 }
 
-fn put_settings(sup: &Supervisor, repo: &str, st: &Settings) -> Result<(), ApiError> {
+pub(crate) fn put_settings(sup: &Supervisor, repo: &str, st: &Settings) -> Result<(), ApiError> {
     let p = Params::new().set("repo", s(repo)).set("doc", s(&serde_json::to_string(st).unwrap())).set("updated", t(now_ms()));
     sup.db().query("INSERT OR REPLACE INTO cv_settings (repo, doc, updated) VALUES (:repo, :doc, :updated)", &p).map(|_| ()).map_err(ApiError::internal)
 }
@@ -1356,7 +1375,7 @@ fn in_background(key: &str, what: &str, f: impl FnOnce() + Send + 'static) -> Op
 // ------------------------------------------------------------------ programs
 
 /// Runs a program with stdin, in `cwd`, with a deadline: (exit code, stdout, stderr).
-fn run_cmd(program: &str, args: &[String], cwd: &Path, stdin: Option<&str>, envs: &[(&str, String)], timeout: Duration) -> Result<(i32, String, String), String> {
+pub(crate) fn run_cmd(program: &str, args: &[String], cwd: &Path, stdin: Option<&str>, envs: &[(&str, String)], timeout: Duration) -> Result<(i32, String, String), String> {
     let mut cmd = Command::new(program);
     cmd.args(args).current_dir(cwd).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped()).env("GIT_TERMINAL_PROMPT", "0");
     for (k, v) in envs {
@@ -2234,7 +2253,7 @@ fn start_repro_agent(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, b
         worktree: Some(true),
         model: st.dev_model.clone(),
         permissions: Some(crate::supervisor::PermissionProfile { allow: st.dev_allow.clone(), ask: Vec::new(), deny: st.dev_deny.clone() }),
-        permission_mode: st.dev_permission_mode.clone().filter(|m| !m.is_empty()),
+        permission_mode: dev_mode(&st),
         env: Some(shared_env(sup, &f.repo)),
         ..Default::default()
     };
@@ -2572,7 +2591,7 @@ fn start_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &
         worktree: Some(true),
         model: st.dev_model.clone(),
         permissions: Some(crate::supervisor::PermissionProfile { allow: st.dev_allow.clone(), ask: Vec::new(), deny: st.dev_deny.clone() }),
-        permission_mode: st.dev_permission_mode.clone().filter(|m| !m.is_empty()),
+        permission_mode: dev_mode(&st),
         env: Some(shared_env(sup, &f.repo)),
         ..Default::default()
     };
@@ -3267,13 +3286,13 @@ fn new_regressions(sup: &Supervisor, f: &Finding, run: &Run) -> (Vec<String>, Ve
     (fresh, known)
 }
 
-fn gh() -> String {
+pub(crate) fn gh() -> String {
     std::env::var("CHLOEDB_WORKBENCH_CONVERGE_GH").ok().filter(|g| !g.is_empty()).unwrap_or_else(|| "gh".into())
 }
 
 /// `owner/name` of the repository's origin on GitHub: from an https or ssh
 /// address, or any address whose path ends in the two (a proxy's).
-fn gh_slug(repo: &Path) -> Option<String> {
+pub(crate) fn gh_slug(repo: &Path) -> Option<String> {
     let url = git(repo, &["remote", "get-url", "origin"]).ok()?;
     let url = url.trim().trim_end_matches('/').trim_end_matches(".git");
     let path = url.rsplit_once(':').filter(|(h, _)| h.starts_with("git@")).map(|(_, p)| p.to_string()).unwrap_or_else(|| url.to_string());
@@ -3296,6 +3315,15 @@ fn pr_of(url: &str) -> Option<(String, String)> {
     let rest = url.split("github.com/").nth(1)?;
     let parts: Vec<&str> = rest.split('/').collect();
     (parts.len() >= 4 && parts[2] == "pull").then(|| (format!("{}/{}", parts[0], parts[1]), parts[3].to_string()))
+}
+
+/// Where a pull request opens, and its head: origin's repository and the
+/// branch, or the upstream of a fork (its head `fork-owner:branch`).
+fn pr_target(st: &Settings, origin: &str, branch: &str) -> (String, String) {
+    match st.upstream.as_deref().filter(|u| !u.is_empty() && *u != origin) {
+        Some(up) => (up.to_string(), format!("{}:{branch}", origin.split('/').next().unwrap_or(origin))),
+        None => (origin.to_string(), branch.to_string()),
+    }
 }
 
 /// Review: push the branch and open its pull request.
@@ -3331,7 +3359,8 @@ fn open_pr(sup: &Arc<Supervisor>, id: &str) -> Result<(), ApiError> {
         return failed(sup, &mut f, "pr", "autopilot", "no GitHub origin", Json::Null);
     };
     let base = base_of(&repo, &st);
-    let args: Vec<String> = vec!["-X".into(), "POST".into(), format!("repos/{slug}/pulls"), "-f".into(), format!("head={branch}"), "-f".into(), format!("base={base}"), "-f".into(), format!("title={}", f.title), "-f".into(), format!("body={body}")];
+    let (slug, head) = pr_target(&st, &slug, &branch);
+    let args: Vec<String> = vec!["-X".into(), "POST".into(), format!("repos/{slug}/pulls"), "-f".into(), format!("head={head}"), "-f".into(), format!("base={base}"), "-f".into(), format!("title={}", f.title), "-f".into(), format!("body={body}")];
     match gh_api(&wt, &args) {
         Ok(v) if v["html_url"].is_string() => {
             let url = v["html_url"].as_str().map(str::to_string);
@@ -4489,7 +4518,7 @@ fn repo_of(r: Option<String>) -> Result<String, ApiError> {
 }
 
 /// Only the user's token: approving, starting a door, settings.
-fn user_only(app: &App, headers: &HeaderMap) -> Result<(), ApiError> {
+pub(crate) fn user_only(app: &App, headers: &HeaderMap) -> Result<(), ApiError> {
     let t = headers.get(axum::http::header::AUTHORIZATION).and_then(|h| h.to_str().ok()).and_then(|h| h.strip_prefix("Bearer ")).map(str::trim).unwrap_or("");
     if crate::server::same_bytes(t, &app.sup.cfg.token) {
         Ok(())
@@ -4671,7 +4700,7 @@ fn restart_fix(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, text: &
             req.permissions = Some(profile);
             req.env = Some(shared_env(sup, &f.repo));
             if req.permission_mode.is_none() {
-                req.permission_mode = st.dev_permission_mode.clone().filter(|m| !m.is_empty());
+                req.permission_mode = dev_mode(&st);
             }
             req
         }
@@ -4687,7 +4716,7 @@ fn restart_fix(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, text: &
                 worktree: Some(true),
                 model: st.dev_model.clone(),
                 permissions: Some(profile),
-                permission_mode: st.dev_permission_mode.clone().filter(|m| !m.is_empty()),
+                permission_mode: dev_mode(&st),
                 env: Some(shared_env(sup, &f.repo)),
                 ..Default::default()
             }
@@ -6335,6 +6364,21 @@ mod tests {
     fn pull_request_addresses_are_read() {
         assert_eq!(pr_of("https://github.com/chloetech-ai/chloedb/pull/560"), Some(("chloetech-ai/chloedb".into(), "560".into())));
         assert_eq!(pr_of("https://example.com/x"), None);
+    }
+
+    #[test]
+    fn a_fork_opens_its_pull_request_against_upstream_and_untrusted_code_asks() {
+        let mut st = Settings::default();
+        assert_eq!(pr_target(&st, "acme/shop", "wb/fix"), ("acme/shop".to_string(), "wb/fix".to_string()));
+        st.upstream = Some("pallets/shop".into());
+        assert_eq!(pr_target(&st, "rkonow/shop", "wb/fix"), ("pallets/shop".to_string(), "rkonow:wb/fix".to_string()));
+        assert_eq!(dev_mode(&st).as_deref(), Some("auto"));
+        st.untrusted = true;
+        assert_eq!(dev_mode(&st).as_deref(), Some("default"));
+        st.dev_permission_mode = Some("bypassPermissions".into());
+        assert_eq!(dev_mode(&st).as_deref(), Some("default"));
+        st.dev_permission_mode = Some("plan".into());
+        assert_eq!(dev_mode(&st).as_deref(), Some("plan"));
     }
 
     #[test]
