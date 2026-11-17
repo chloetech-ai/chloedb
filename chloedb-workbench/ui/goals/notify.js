@@ -17,6 +17,7 @@ import { h, useStyle, btn, icon, label, fmtDur, fmtClock, onEscape } from "/leve
 
 const POLL_MS = 15000;
 const SEEN_KEY = "chloedb-workbench-notified";
+const DIGEST_SHOWN = "chloedb-workbench-digest-shown";
 
 useStyle("notify", `
 .nt-bell{position:relative;display:inline-flex;align-items:center;gap:var(--s-1);height:var(--ctl-h);padding:0 var(--s-2);border:var(--hair) solid transparent;border-radius:var(--r-sm);background:none;color:var(--text-2);cursor:pointer;font:var(--w-mid) var(--fs-sm)/1 var(--sans)}
@@ -139,7 +140,7 @@ export function init(ctx) {
   const N = { pending: null, settings: null, timer: null, open: null, digestKey: null, err: null, stopped: false };
   const seen = readSeen();
   const dot = h("span", { class: "d", hidden: true });
-  const control = h("button", { class: "nt-bell", type: "button", "aria-label": "Notifications", title: "Notifications", onclick: () => open() }, icon("bell"), h("span", { class: "lbl-q", hidden: true }), dot);
+  const control = h("button", { class: "nt-bell", type: "button", "aria-label": "Notifications", title: "Notifications", onclick: () => (N.pending && N.pending.digest ? openDigest() : open()) }, icon("bell"), h("span", { class: "lbl-q", hidden: true }), dot);
 
   function paintControl() {
     const q = N.pending && N.pending.quiet;
@@ -161,7 +162,16 @@ export function init(ctx) {
       deliver(p);
       if (p.digest) {
         const key = `${p.digest.reason}:${p.digest.since_ms}`;
-        if (N.digestKey !== key && document.visibilityState === "visible") { N.digestKey = key; openDigest(); }
+        // On its own at most once a browser session, and never over Converge
+        // (it blocked the page on every load); the bell's dot still says it waits.
+        let shown = null;
+        try { shown = sessionStorage.getItem(DIGEST_SHOWN); } catch { /* no storage */ }
+        const onConverge = (location.hash || "").startsWith("#/converge");
+        if (N.digestKey !== key && !shown && !onConverge && document.visibilityState === "visible") {
+          N.digestKey = key;
+          try { sessionStorage.setItem(DIGEST_SHOWN, key); } catch { /* no storage */ }
+          openDigest();
+        }
       }
     } catch (e) { N.err = e.message; }
     paintControl();
