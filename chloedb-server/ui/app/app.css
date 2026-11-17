@@ -1639,6 +1639,7 @@ a.home-chip:hover { color: var(--text); text-decoration: none; }
 .home-pacts { gap: 5px; margin-top: 6px; flex-wrap: wrap; }
 .home-why { margin: 4px 0 0; padding-left: 16px; color: var(--text-2); }
 .home-why li { margin: 1px 0; }
+.home-sql { margin: 2px 0; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .home-advice { margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: var(--warn-soft); color: var(--text); }
 .home-advice b { font-weight: 650; }
 .disk-bars { width: 100%; height: 48px; display: block; }

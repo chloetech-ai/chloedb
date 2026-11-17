@@ -1675,10 +1675,12 @@ mod tests {
         // One fast reading of three does not clear it; two do.
         let mut three = gh(121_000);
         three["shards"][2]["replicas"][0]["detail"]["load"]["disk_read_ms"] = json!(0.2);
+        three["shards"][2]["replicas"][0]["detail"]["load"]["disk_mb_s"] = json!(600.0);
         let j = f.judge(inputs(&three, &[]));
         assert!(j["problems"].as_array().unwrap().iter().any(|p| p["id"] == "disk-slow-s2-0"), "one fast reading of three: still slow");
         let mut four = gh(181_000);
         four["shards"][2]["replicas"][0]["detail"]["load"]["disk_read_ms"] = json!(0.2);
+        four["shards"][2]["replicas"][0]["detail"]["load"]["disk_mb_s"] = json!(600.0);
         let j = f.judge(inputs(&four, &[]));
         assert!(j["problems"].as_array().unwrap().iter().all(|p| p["id"] != "disk-slow-s2-0"), "{j}");
     }
@@ -1775,7 +1777,7 @@ mod tests {
         let ps = j["problems"].as_array().unwrap();
         assert_eq!(ps.iter().filter(|p| p["id"].as_str().unwrap().starts_with("slow-statement")).count(), 1, "{j}");
         let p = ps.iter().find(|p| p["id"] == "slow-statement-7f3a").unwrap().clone();
-        assert_eq!(p["title"], "Statement 7f3a times out: 14 of its 40 calls in the last 15 min passed the 30 s deadline (it reads gh_events)", "{p}");
+        assert_eq!(p["title"], "A statement on gh_events times out: 14 of its 40 calls in the last 15 min passed the 30 s deadline", "{p}");
         assert_eq!(p["severity"], "warning");
         let why = p["why"].as_array().unwrap();
         assert!(why[0].as_str().unwrap().starts_with("It filters on actor, which gh_events does not index and is not clustered by (it is clustered by repo): each call reads every one of its 11.2 billion rows"), "{p}");

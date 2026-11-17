@@ -622,10 +622,13 @@ struct Size {
     files: u64,
     modified_ms: u64,
     complete: bool,
+    /// Another file system is mounted at it or under it, which a delete
+    /// would reach into.
+    mounts: bool,
 }
 
 fn size_of(p: &Path, dev: u64, walked: &mut usize, t0: Instant, open: &HashSet<PathBuf>, holds_open: &mut bool) -> Size {
-    let mut s = Size { bytes: 0, files: 0, modified_ms: 0, complete: true };
+    let mut s = Size { bytes: 0, files: 0, modified_ms: 0, complete: true, mounts: false };
     let mut stack = vec![p.to_path_buf()];
     while let Some(q) = stack.pop() {
         *walked += 1;
@@ -638,6 +641,7 @@ fn size_of(p: &Path, dev: u64, walked: &mut usize, t0: Instant, open: &HashSet<P
         s.modified_ms = s.modified_ms.max(mtime);
         if m.is_dir() {
             if m.dev() != dev {
+                s.mounts = true;
                 continue;
             }
             stack.extend(std::fs::read_dir(&q).into_iter().flatten().flatten().map(|e| e.path()));
@@ -729,6 +733,8 @@ pub fn list(db: &Path, keep: &[PathBuf]) -> io::Result<Listing> {
                 }
             } else if keep.iter().any(|k| k == &p || k.starts_with(&p)) {
                 "the server's (a flag names it)".to_string()
+            } else if s.mounts {
+                "another file system is mounted in it".to_string()
             } else if holds_open {
                 "the server holds a file in it open".to_string()
             } else {

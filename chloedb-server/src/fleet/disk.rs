@@ -325,7 +325,10 @@ pub(super) fn eviction(m: &mut Memory, copies: &[(usize, Json)], shards: &[Json]
         let other = (used - n.db).max(0.0);
         let why = vec![
             format!("Of its {}, {} is used: {} is the database{}, and {} is not this server's (images, logs, other pods' files, a build's output, a copy left behind)", bytes(n.total), bytes(used), bytes(n.db), if names.len() > 1 { format!(" of {}", super::both(&names)) } else { String::new() }, bytes(other)),
-            format!("The kubelet evicts at {line} free of the node's disk (DigitalOcean's line; --evict-free-ratio to judge by another), and the database's folder is on that disk (a hostPath or an emptyDir), not on a volume of its own"),
+            format!(
+                "The kubelet evicts at {line} free of the node's disk ({}), and the database's folder is on that disk (a hostPath or an emptyDir), not on a volume of its own",
+                if (n.line - crate::disks::EVICT_FREE).abs() < 1e-6 { "DigitalOcean's line; --evict-free-ratio to judge by another" } else { "as the server's --evict-free-ratio says" }
+            ),
         ];
         let (first_name, first_url, first_shard) = n.copies[0].clone();
         let (gib, month) = volume_for(n.db);

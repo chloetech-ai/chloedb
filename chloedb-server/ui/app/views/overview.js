@@ -299,7 +299,7 @@ function render(page, r0) {
       h("div", { class: "row home-bacts" }, acts));
   }
   const VIEWNAME = { tables: "Tables and storage", inspector: "Table details", statement: "the statement", alerts: "Alerts", system: "Settings", sql: "SQL workbench", cluster: "Cluster", rollout: "Rollouts", logs: "Logs", queries: "Queries", performance: "Performance", autoscale: "Autoscaling", access: "Access", timeline: "Timeline", profile: "Profiler", home: "Home" };
-  const nextShort = (n) => n.view === "alerts" ? "Open Alerts" : n.view.startsWith("alert/") ? "Open the alert" : n.params?.shard != null && n.view === "cluster" ? `Shard ${n.params.shard} in Cluster` : `Open in ${VIEWNAME[n.view] || n.view}`;
+  const nextShort = (n) => n.view === "alerts" ? "Open Alerts" : n.view.startsWith("alert/") ? "Open the alert" : n.view.startsWith("statement/") ? "Open the statement" : n.params?.shard != null && n.view === "cluster" ? `Shard ${n.params.shard} in Cluster` : `Open in ${VIEWNAME[n.view] || n.view}`;
 
   // ------------------------------------------------------------ headline numbers
   function kpiDefs() {
@@ -519,6 +519,7 @@ function render(page, r0) {
         h("span", { class: "sv" }),
         h("div", { class: "grow" },
           h("div", { class: "pt" }, p.title),
+          p.sql ? h("div", { class: "small mono home-sql", title: p.sql }, p.sql) : null,
           p.where?.length ? h("div", { class: "small dim" }, p.where.join(" · ")) : null,
           h("div", { class: "small dim" }, [p.to_ms ? h("span", { title: whenTitle(p.from_ms) }, `${when(p.from_ms)}–${when(p.to_ms)}, answering again for ${durTxt(p.to_ms)}`) : p.since_ms ? h("span", { title: whenTitle(p.since_ms) }, `since ${when(p.since_ms)} (${durTxt(p.since_ms)})`) : null, p.impact].filter(Boolean).flatMap((x, i) => i ? [" · ", x] : [x])),
           p.why?.length ? h("ul", { class: "small home-why" }, p.why.map((w) => h("li", {}, w))) : null,

@@ -178,6 +178,8 @@ fn count(n: u64) -> String {
         format!("{:.1} billion", f / 1e9).replace(".0 billion", " billion")
     } else if f >= 1e6 {
         format!("{:.1} million", f / 1e6).replace(".0 million", " million")
+    } else if n >= 1000 {
+        format!("{},{:03}", n / 1000, n % 1000)
     } else {
         n.to_string()
     }
@@ -218,12 +220,12 @@ pub(super) fn check(statements: &[Json], timeout_ms: u64, slo_p99_ms: f64, disk_
         let deadline = if timeout_ms > 0 { format!("the {} deadline", ms(timeout_ms as f64)) } else { "its deadline".into() };
         let (title, headline) = if timeouts > 0 {
             (
-                format!("Statement {id} times out: {timeouts} of its {calls} calls in the last 15 min passed {deadline}{}", table.map_or(String::new(), |t| format!(" (it reads {t})"))),
+                format!("A statement{} times out: {timeouts} of its {calls} calls in the last 15 min passed {deadline}", table.map_or(String::new(), |t| format!(" on {t}"))),
                 format!("A statement times out: {timeouts} of {calls} calls{}", table.map_or(String::new(), |t| format!(" on {t}"))),
             )
         } else {
             (
-                format!("Statement {id} takes {} a call on average over its {calls} calls in the last 15 min (p99 {})", ms(mean), ms(s["p99_ms"].as_f64().unwrap_or(mean))),
+                format!("A statement{} takes {} a call on average over its {calls} calls in the last 15 min (p99 {})", table.map_or(String::new(), |t| format!(" on {t}")), ms(mean), ms(s["p99_ms"].as_f64().unwrap_or(mean))),
                 format!("A statement takes {} a call{}", ms(mean), table.map_or(String::new(), |t| format!(" on {t}"))),
             )
         };

@@ -329,9 +329,6 @@ async function pollFleet() {
   bus.emit("fleet");
 }
 
-/** Fleet health now, not at the next poll: after an action taken from a problem. */
-export async function refreshFleet() { try { await pollFleet(); } catch { /* fresh() says it */ } }
-
 export async function refreshSystem() {
   try { state.system = await api("/v1/system", T); bus.emit("system"); } catch { /* shown by the views */ }
 }
