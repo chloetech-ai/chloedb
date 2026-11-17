@@ -164,9 +164,13 @@ fn a_private_fact_is_forgotten_everywhere_and_the_rules_said_with_it_stay() {
     hook(&d, "PostToolUse", json!({"session_id": "s2", "tool_name": "mcp__chloectx__memory_forget", "tool_use_id": "t3", "tool_input": {"text": FACT}, "tool_response": [{"type": "text", "text": gone["text"]}]}));
     // Late: a search's output that arrives after the forget.
     hook(&d, "PostToolUse", json!({"session_id": "s2", "tool_name": "Bash", "tool_use_id": "t4", "tool_input": {"command": "grep -ri bundle ."}, "tool_response": {"stdout": format!("NOTES.md:bundle: {FACT}"), "stderr": ""}}));
-    let n_before = rows(&d, "SELECT COUNT(*) FROM memory LIMIT 1");
+    let n_before = rows(&d, "SELECT COUNT(*) FROM memory WHERE kind != 'event' LIMIT 1");
     hook(&d, "Stop", json!({"session_id": "s2", "last_assistant_message": format!("Done: I deleted every record about your {FACT} plan, and nothing about it is kept.")}));
-    assert_eq!(rows(&d, "SELECT COUNT(*) FROM memory LIMIT 1"), n_before, "the forget turn stores no reply, card or note");
+    // Only its mark, so that no later distillation takes the turn.
+    assert_eq!(rows(&d, "SELECT COUNT(*) FROM memory WHERE kind != 'event' LIMIT 1"), n_before, "the forget turn stores no reply, card or note");
+    let skipped = rows(&d, "SELECT session, turn, text FROM memory WHERE tag = 'distill_skipped' LIMIT 10");
+    assert_eq!(skipped.len(), 1, "{skipped:?}");
+    assert_eq!(skipped[0][0], "s2");
     // A paraphrase is not stored either: the turn is not distilled.
     assert!(rows(&d, "SELECT id, text FROM memory WHERE session = 's2' AND kind IN ('fact', 'preference', 'decision', 'note', 'todo', 'answer', 'episode') LIMIT 10").is_empty());
     // Said again in the next few minutes, it is not stored.
@@ -197,4 +201,25 @@ fn a_private_fact_is_forgotten_everywhere_and_the_rules_said_with_it_stay() {
     assert_eq!(files_holding(dir, FACT), Vec::<String>::new());
     let log = std::fs::read_to_string(dir.join("daemon.log")).unwrap();
     assert!(log.starts_with("chloectx: started\n") && log.lines().count() == 2, "{log}");
+
+    // (d) `chloectx distill`, even `--again`, leaves a forget turn as it
+    // is, even one whose request does not hold what it forgot: a note of
+    // it would say again what was forgotten.
+    model.says(&[]);
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s4", "prompt": "My gym locker code is 4417."}));
+    hook(&d, "Stop", json!({"session_id": "s4", "last_assistant_message": "Noted."}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s4", "prompt": "Please drop what I told you about the gym."}));
+    let gone = call(&d, json!({"op": "forget", "text": "locker code is 4417"}));
+    hook(&d, "PostToolUse", json!({"session_id": "s4", "tool_name": "mcp__chloectx__memory_forget", "tool_use_id": "t9", "tool_input": {"text": "locker code is 4417"}, "tool_response": [{"type": "text", "text": gone["text"]}]}));
+    hook(&d, "Stop", json!({"session_id": "s4", "last_assistant_message": "Done: it is gone."}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s4", "prompt": "Use tabs in the Makefile."}));
+    hook(&d, "Stop", json!({"session_id": "s4", "last_assistant_message": "OK."}));
+    let marks = rows(&d, "SELECT turn FROM memory WHERE tag = 'distill_skipped' AND session = 's4' LIMIT 10");
+    assert_eq!(marks.len(), 1, "{marks:?}");
+    let turn = marks[0][0].as_i64().unwrap();
+    model.says(&[json!({"kind": "fact", "text": "The user asked for something about the gym to be deleted from memory.", "said_by": "requester"})]);
+    let r = call(&d, json!({"op": "distill_backfill", "again": true}));
+    assert_eq!(r["to_distill"], 1, "only the Makefile turn: {r}");
+    let noted = rows(&d, &format!("SELECT id, text FROM memory WHERE session = 's4' AND turn = {turn} AND kind != 'event' AND kind != 'prompt' LIMIT 10"));
+    assert!(noted.is_empty(), "{noted:?}");
 }
