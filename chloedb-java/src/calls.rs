@@ -800,7 +800,7 @@ fn call_on(h: &Handle, method: &str, a: &mut Args) -> R<Vec<u8>> {
             db.alter_table(&table, &alters)?;
             null()
         }
-        "count" => int(db.snapshot().n_live_docs()),
+        "count" => int(db.count()),
         "query" => {
             let sql = a.str("sql")?;
             let p = a.params(db)?;

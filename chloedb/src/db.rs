@@ -734,6 +734,14 @@ impl Db {
         self.storage.snapshot()
     }
 
+    /// The live rows of the default table ([`Db::default_table`]): the
+    /// rows a client counts when it names no table. In a database made with
+    /// no tables, 0 until one is created.
+    pub fn count(&self) -> u64 {
+        let s = self.snapshot();
+        self.default_table().and_then(|t| s.table(&t.table)).unwrap_or(s).n_live_docs()
+    }
+
     /// Bulk-loads documents into the first table (generated columns are
     /// filled in, and embedded vectors the documents leave out are
     /// computed).
