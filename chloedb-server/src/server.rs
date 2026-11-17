@@ -81,6 +81,12 @@ pub struct Options {
     pub scrub_every_s: u64,
     /// The MiB a second a scheduled scrub reads at most (0: 64).
     pub scrub_mib_s: u64,
+    /// On a database server: how often the disk under it is timed, in
+    /// seconds (0: never; [`crate::disks`]).
+    pub disk_probe_s: u64,
+    /// The free share of a node's disk below which the kubelet evicts its
+    /// pods ([`crate::disks::EVICT_FREE`] when none).
+    pub evict_free_ratio: Option<f64>,
     /// Coordinate these shard servers (gRPC URLs; replicas of a shard
     /// joined by `|`) instead of serving a database.
     pub shards: Vec<String>,
@@ -681,6 +687,8 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.scrubs.every = Duration::from_secs(o.scrub_every_s);
     svc.scrubs.rate = if o.scrub_mib_s == 0 { crate::service::scrub::DEFAULT_RATE } else { o.scrub_mib_s << 20 };
+    svc.disk_probe.every = Duration::from_secs(o.disk_probe_s);
+    svc.disk_probe.evict_free = o.evict_free_ratio.unwrap_or(crate::disks::EVICT_FREE);
     if let Some(dir) = &o.slices {
         svc.set_slices_dir(dir).map_err(|e| e.message)?;
     }
@@ -774,6 +782,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.start_failover();
     svc.start_scrubs();
+    crate::disks::start(&svc);
     // The cluster's keys: a coordinator takes them from its shards before
     // it serves, and a coordinator or primary passes changes on.
     crate::keysync::start(&svc).await;

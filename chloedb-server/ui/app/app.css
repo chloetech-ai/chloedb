@@ -1636,7 +1636,18 @@ a.home-chip:hover { color: var(--text); text-decoration: none; }
 .prob .small { line-height: 1.4; }
 .home-next { display: flex; gap: 4px; align-items: flex-start; margin-top: 3px; color: var(--text); }
 .home-next svg.i { width: 14px; height: 14px; margin-top: 1px; color: var(--accent); }
-.home-pacts { gap: 5px; margin-top: 6px; }
+.home-pacts { gap: 5px; margin-top: 6px; flex-wrap: wrap; }
+.home-why { margin: 4px 0 0; padding-left: 16px; color: var(--text-2); }
+.home-why li { margin: 1px 0; }
+.home-advice { margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: var(--warn-soft); color: var(--text); }
+.home-advice b { font-weight: 650; }
+.disk-bars { width: 100%; height: 48px; display: block; }
+.disk-fill { position: relative; height: 14px; border-radius: 7px; background: var(--line); overflow: visible; }
+.disk-used { height: 100%; border-radius: 7px; background: var(--s1); }
+.disk-used.warn { background: var(--warn); }
+.disk-used.crit { background: var(--crit); }
+.disk-line { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--crit-ink); border-radius: 1px; }
+.wl-warn { color: var(--text); font-weight: 600; }
 .home-oklist { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--text-2); }
 .home-oklist li { display: flex; gap: 7px; align-items: center; }
 .home-oklist svg.i { color: var(--good); width: 14px; height: 14px; }

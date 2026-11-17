@@ -3130,6 +3130,60 @@ async fn a_scrub_finds_data_damaged_on_disk() {
     assert_eq!(svc.sample().gauges.get("damaged_segments").copied(), Some(1.0));
 }
 
+/// The disk under a server (gh, 11-16 and 11-17): its reads timed around
+/// the page cache, the listing of what fills its folder with the
+/// database's own files apart, and a clean that deletes only what was
+/// listed and is not the server's, as it was listed.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_disk_under_a_server_is_measured_listed_and_cleaned() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("d.strata");
+    let opts = DbOptions { layout: Layout::Directory, publish_snapshots: true, ..DbOptions::default() };
+    let db = Db::create(&path, demo::schema(10), opts).unwrap();
+    db.set_embed_later(true);
+    db.load((0..200).map(|i| demo::product(i, 7))).unwrap();
+    // What a build left beside the database.
+    std::fs::create_dir(dir.path().join("build-out")).unwrap();
+    std::fs::write(dir.path().join("build-out").join("big.o"), vec![7u8; 300_000]).unwrap();
+    std::fs::write(dir.path().join("stale.tmp"), b"x").unwrap();
+    let svc = service(db, "http://unused");
+    let url = http(svc.clone(), None).await;
+    let c = chloedb_server::http_client().build().unwrap();
+    let (status, r) = post(&c, &format!("{url}/v1/admin/disk/probe"), json!({})).await;
+    assert_eq!(status, 200, "{r}");
+    assert_eq!(r["reading"]["reads"], 8, "{r}");
+    assert!(r["reading"]["read_ms"].as_f64().unwrap() >= 0.0, "{r}");
+    assert!(svc.sample().gauges.contains_key("disk_read_ms"), "the reading is in the series");
+    let d: Json = c.get(format!("{url}/v1/admin/disk")).send().await.unwrap().json().await.unwrap();
+    let entries = d["entries"].as_array().unwrap().clone();
+    let of = |name: &str| entries.iter().find(|e| e["path"].as_str().unwrap().ends_with(name)).unwrap_or_else(|| panic!("no {name}: {d}")).clone();
+    assert_eq!(of("d.strata")["kind"], "own", "{d}");
+    let build = of("build-out");
+    assert_eq!((build["kind"].as_str(), build["dir"].as_bool(), build["files"].as_u64()), (Some("other"), Some(true), Some(1)), "{d}");
+    assert!(d["other_bytes"].as_u64().unwrap() >= 300_000, "{d}");
+    assert_eq!(d["probe"]["kept"].as_array().unwrap().len(), 1, "{d}");
+    // The database's own is refused; one changed since it was listed too.
+    let stale = of("stale.tmp");
+    std::fs::write(dir.path().join("stale.tmp"), b"changed").unwrap();
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+    std::fs::File::options().write(true).open(dir.path().join("stale.tmp")).unwrap().set_modified(later).unwrap();
+    let own = of("d.strata");
+    let (status, r) = post(&c, &format!("{url}/v1/admin/disk/clean"), json!({"paths": [
+        {"path": build["path"], "modified_ms": build["modified_ms"]},
+        {"path": own["path"], "modified_ms": own["modified_ms"]},
+        {"path": stale["path"], "modified_ms": stale["modified_ms"]},
+    ]})).await;
+    assert_eq!(status, 200, "{r}");
+    assert_eq!(r["deleted"].as_array().unwrap().len(), 1, "{r}");
+    assert!(r["freed_bytes"].as_u64().unwrap() >= 300_000, "{r}");
+    let why: Vec<&str> = r["refused"].as_array().unwrap().iter().map(|x| x["why"].as_str().unwrap()).collect();
+    assert!(why.iter().any(|w| w.starts_with("the server's own")) && why.iter().any(|w| w.contains("changed since")), "{r}");
+    assert!(!dir.path().join("build-out").exists() && path.exists() && dir.path().join("stale.tmp").exists());
+    // Nothing named: refused whole.
+    let (status, _) = post(&c, &format!("{url}/v1/admin/disk/clean"), json!({"paths": []})).await;
+    assert_eq!(status, 400);
+}
+
 /// Checkpoints into `--backup-dir` (a write still in the memtable included,
 /// a directory checkpoint linked to the one before), names that would leave
 /// the directory refused, and the check and vacuum routes.

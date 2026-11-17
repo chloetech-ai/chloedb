@@ -114,6 +114,65 @@ For: `disk-full`, `disk-critical`, `disk-filling`, `disk`
 4. Deleted rows still on disk: `POST /v1/admin/vacuum` frees them for good
    (tier 3: it loses old versions, and is a person's alone).
 
+## A disk reads slowly
+
+For: `disk-slow`, `disk_speed`
+
+1. Read what each copy's disk probe measured: `GET /v1/admin/disk?copy=<url>`
+   on a coordinator (`probe.kept`: the last hour's readings) and the
+   problem's `why`. A disk far slower than its peers' that is not busy
+   (`disk_busy` low) is the disk's fault, or the machine's under it (a
+   degraded cloud volume or host), not the load's.
+2. Measure again (tier 1, an `ops` key with a reason): `POST
+   /v1/admin/disk/probe {"copy": "<url>"}`.
+3. The copy is its shard's primary, and another copy is in sync on a fast
+   disk: hand the primary over (tier 3, a person's), `POST
+   /v1/admin/shards/<i>/promote {"url": "<the fast copy>"}`, so that writes
+   go to a fast disk.
+4. Replace the copy (tier 2, and it costs money: a node or a volume): add a
+   copy of the shard on another node or a volume, wait until it is in sync,
+   then remove the slow one; plan it and file it as a change request.
+
+## A node's disk nears Kubernetes' eviction line
+
+For: `disk-evict`, `disk-evict-now`, `evict`
+
+The database is on the node's own disk (a `hostPath` or an `emptyDir`),
+which the kubelet shares: once that disk has less than its eviction
+threshold free (15% on DigitalOcean, `--evict-free-ratio`), Kubernetes
+evicts every pod of the node, the database's among them.
+
+1. Read what fills the disk: `GET /v1/admin/disk?copy=<url>` lists the
+   database's own files and every other entry beside them, the largest
+   first, with when each last changed (a build's output, a copy left
+   behind).
+2. Delete what is not needed (tier 3, a person's: it loses data): `POST
+   /v1/admin/disk/clean {"copy": "<url>", "paths": [{"path", "modified_ms"}]}`
+   with entries as the listing gave them. The server refuses its own
+   files, anything changed since it was listed, and anything it did not
+   list. Files outside the database's folder (images, other pods' files)
+   are the node's: clean them on the node.
+3. Move the database to a volume of its own (tier 2, and it costs money): a
+   copy of each shard on a volume, in sync, then remove the copies on the
+   node's disk.
+
+## A statement times out
+
+For: `slow-statement`, `statements`
+
+1. Read the statement: `GET /v1/queries/stats/<id>` (its slowest calls,
+   where it waits by shard, who sends it) and the problem's `why` and
+   `reads`: a filter on a field the table neither indexes nor is clustered
+   by reads every row of the table (`reads.every_row`).
+2. One client sending it (tier 1, an `ops` key with a reason): limit it
+   with a contain rule, `POST /v1/admin/contain {"match": {"fingerprint":
+   "..."}, "action": "limit", "concurrency": 2}`, while it is fixed.
+3. A filter no index serves: the application reads a summary table kept
+   by that field, or the table is made again indexed or clustered by it
+   (tier 2, a change of the schema).
+4. A shard that holds it up, on a copy whose disk reads slowly: follow "A
+   disk reads slowly".
+
 ## Writes fail or queue
 
 For: `failing`, `flush-failing`, `merge-failing`, `write-queue`, `write-p99`

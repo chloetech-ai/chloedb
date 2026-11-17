@@ -25,6 +25,7 @@
 import { h, s, icon, clear, fmt, card, api, every, toast, modal, pill, empty, bus, seg, store, tipOn, hideTip, ApiError, copy, debounce, confirm, can, needs, link, when, whenTitle } from "../core.js";
 import * as core from "../core.js";
 import { verifyWords } from "./system.js";
+import { diskDrawer } from "../disk.js";
 import { state, isCoordinator, refreshCluster, fresh, staleText, isProduction, firingNow, isPast } from "../data.js";
 
 /** A phone or a narrow window: the shell's isNarrow() once it has one, else the same breakpoint. */
@@ -1352,6 +1353,8 @@ function render(page, r) {
     // see (finding chaos-6).
     items.push({ label: "Check its data", icon: "okc", no: c.down ? "it does not answer" : unsupported.scrub ? "this server cannot run it from the coordinator (a newer server can)" : !mayRun("POST /v1/admin/copies/scrub") ? whyNot("POST /v1/admin/copies/scrub") : null, run: () => scrubCopy(sh, c) });
     items.push({ label: "Write a checkpoint", icon: "download", no: ckNo, run: () => checkpointCopy(sh, c) });
+    // How fast its disk reads, how full it is, and what fills it.
+    items.push({ label: "Its disk…", icon: "disk", no: c.down ? "it does not answer" : !can("admin", "GET /v1/admin/disk") ? needs("admin", "GET /v1/admin/disk") : null, run: () => diskDrawer(c.url, { onChange: refreshCluster }) });
     // No Remove on a primary (finding CL-3): hand it over first.
     // A dead primary is still the primary to the server, which refuses to
     // remove it: another copy becomes the primary first.

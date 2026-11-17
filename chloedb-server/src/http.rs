@@ -80,6 +80,9 @@
 //! | `GET /v1/index/reads?table=` | | this server's read counts of a table (a coordinator's own, which the others merge into `/v1/index`'s `reads_from`) |
 //! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, on a coordinator its bytes on every copy, its skew, writes and reads a minute, growth over a day and a week, and copies behind, with the totals of all tables; kept 30 s ([`crate::inspect::tables`]) |
 //! | `POST /v1/admin/scrub`, `POST /v1/admin/copies/scrub` | `{rate_mib_s?}`, `{url}` | reads every segment of the database (of a copy, on a coordinator) against its checksum while writes go on, and answers `{scrub: {txn, segments, bytes, damaged, seconds}}`; 409 while one runs ([`crate::service::scrub`]) |
+//! | `GET /v1/admin/disk?copy=` | | the volume under the database (of a copy, its URL or short name, on a coordinator): its bytes, the room left above the kubelet's eviction line when it is the node's own disk, the disk probe's readings, and what fills it, the largest first, each entry the server's own or not ([`crate::disks::report`]) |
+//! | `POST /v1/admin/disk/probe` | `{copy?}` | times the disk's reads now ([`crate::disks::Probe`]), and answers `{reading}` |
+//! | `POST /v1/admin/disk/clean` | `{copy?, paths: [{path, modified_ms}]}` | deletes those entries of the listing that are not the server's own and have not changed since they were listed, and answers `{deleted, refused, freed_bytes}` ([`crate::disks::clean`]) |
 //! | `POST /v1/admin/copies/verify`, `POST /v1/admin/copies/checkpoint` | `{url, timeout_ms?}`, `{url, name, layout?, link_from?}` | on a coordinator, of a copy (its URL or short name): its shard's primary compares the replicas' rows with its own (`{replicas: [{url, in_sync, compared, differing_slots, first_differing_slot, seq_no, error}]}`), or the copy writes a checkpoint into its own `--backup-dir` (`{checkpoint}`) |
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
 //! | `POST /v1/admin/plan/apply` | `{steps: [...], estimate_s?}`, or a plan's body | applies a plan on the coordinator, its steps in order, in the background; kept in a file so that a restart says where it stopped ([`crate::coord::plan::apply`]) |
@@ -343,6 +346,9 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/slices/:table/usage", post(slice_usage))
         .route("/v1/admin/check", post(admin_check))
         .route("/v1/admin/scrub", post(admin_scrub))
+        .route("/v1/admin/disk", get(admin_disk))
+        .route("/v1/admin/disk/probe", post(admin_disk_probe))
+        .route("/v1/admin/disk/clean", post(admin_disk_clean))
         .route("/v1/admin/vacuum", post(admin_vacuum))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
@@ -3777,6 +3783,56 @@ async fn admin_scrub(State(app): State<App>, w: Option<axum::Extension<Principal
     Ok(AxJson(app.svc.scrub(rate, &keys::audit_name(&who(w))).await?))
 }
 
+/// The copy a disk route names on a coordinator (`copy`, its URL or short
+/// name), and none on a database server, which answers for itself.
+async fn disk_copy(app: &App, copy: Option<&str>) -> Result<Option<CopyOf>, ApiError> {
+    match (app.svc.coordinator(), copy.filter(|c| !c.is_empty())) {
+        (Ok(c), Some(name)) => Ok(Some(copy_of(&*c.snapshot().await, name)?)),
+        (Ok(_), None) => Err(ApiError::bad("a coordinator has no disk of its own to judge: name a copy (copy=its URL or short name, as GET /v1/cluster lists them)")),
+        (Err(_), _) => Ok(None),
+    }
+}
+
+/// `GET /v1/admin/disk?copy=` ([`crate::disks::report`]).
+async fn admin_disk(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
+    match disk_copy(&app, q.get("copy").map(String::as_str)).await? {
+        Some(copy) => {
+            let mut j = ask_copy(app.svc.coordinator()?, &copy.url, profiling::Kind::Disk, json!({})).await?;
+            (j["copy"], j["short"], j["shard"]) = (json!(copy.url), json!(copy.short), json!(copy.shard));
+            Ok(AxJson(j))
+        }
+        None => Ok(AxJson(crate::disks::report_of(&app.svc).await?)),
+    }
+}
+
+/// `POST /v1/admin/disk/probe {copy?}`: the disk's reads timed now.
+async fn admin_disk_probe(State(app): State<App>, body: Option<AxJson<Json>>) -> Res {
+    let b = body.map(|AxJson(b)| b).unwrap_or(Json::Null);
+    match disk_copy(&app, b["copy"].as_str()).await? {
+        Some(copy) => Ok(AxJson(ask_copy(app.svc.coordinator()?, &copy.url, profiling::Kind::DiskProbe, json!({})).await?)),
+        None => Ok(AxJson(crate::disks::probe_of(&app.svc).await?)),
+    }
+}
+
+/// `POST /v1/admin/disk/clean {copy?, paths}` ([`crate::disks::clean`]):
+/// audited with what it deleted.
+async fn admin_disk_clean(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let by = keys::audit_name(&who(w));
+    let paths = b["paths"].as_array().cloned().unwrap_or_default();
+    let copy = disk_copy(&app, b["copy"].as_str()).await?;
+    let names: Vec<&str> = paths.iter().filter_map(|p| p["path"].as_str()).collect();
+    keys::note_change(keys::Change { object: Some(copy.as_ref().map_or_else(|| "this server's volume".to_string(), |c| format!("copy {}'s volume", c.short))), before: Some(json!({"paths": names})), ..Default::default() });
+    let j = match &copy {
+        Some(c) => ask_copy(app.svc.coordinator()?, &c.url, profiling::Kind::DiskClean, json!({"paths": paths, "by": by})).await?,
+        None => crate::disks::clean_of(&app.svc, &paths, &by).await?,
+    };
+    let n = j["deleted"].as_array().map_or(0, Vec::len);
+    let freed = j["freed_bytes"].as_u64().unwrap_or(0);
+    let what: Vec<&str> = j["deleted"].as_array().into_iter().flatten().filter_map(|d| d["path"].as_str()).collect();
+    let on = copy.as_ref().map_or_else(|| "this server".to_string(), |c| c.short.clone());
+    Ok(audited(j.clone(), format!("deleted {n} {} ({}) from {on}'s volume{}", if n == 1 { "entry" } else { "entries" }, crate::coord::plan::bytes(freed as f64), if what.is_empty() { String::new() } else { format!(": {}", what.join(", ")) })))
+}
+
 async fn admin_check(State(app): State<App>) -> Res {
     app.svc.check().await?;
     Ok(AxJson(json!({"ok": true})))
@@ -4863,7 +4919,7 @@ async fn query_stat(State(app): State<App>, axum::extract::Path(which): axum::ex
     let mine = st.detail(&which, from, to);
     let missing = || ApiError { code: None, status: 404, message: format!("no statement {which:?} in the last day") };
     let local = q.get("local").is_some_and(|v| v == "1" || v == "true") || crate::peers::from_peer(&headers).is_some();
-    let Some(me) = crate::peers::this(&app.svc).filter(|_| !local) else { return mine.map(AxJson).ok_or_else(missing) };
+    let Some(me) = crate::peers::this(&app.svc).filter(|_| !local) else { return mine.map(|j| AxJson(with_reads(&app.svc, j))).ok_or_else(missing) };
     // R2-workload-1: what every coordinator ran of it.
     let path = format!("/v1/queries/stats/{}?from={from}&to={to}&local=1", crate::peers::encode(&which));
     // A coordinator that did not run it answers 404: it has none, not an error.
@@ -4881,7 +4937,17 @@ async fn query_stat(State(app): State<App>, axum::extract::Path(which): axum::ex
         j["statement"] = s.clone();
     }
     j["coordinators"] = crate::peers::reach(&app.svc, &answers);
-    Ok(AxJson(j))
+    Ok(AxJson(with_reads(&app.svc, j)))
+}
+
+/// A statement's page with what it most likely reads (`reads`,
+/// [`crate::fleet::stmts::reads`]): whether a filter no index serves
+/// makes it read every row of its table, and the table's rows when the
+/// Tables view last counted them.
+fn with_reads(svc: &Service, mut j: Json) -> Json {
+    let sql = j["statement"]["sql"].as_str().unwrap_or_default().to_string();
+    j["reads"] = crate::fleet::stmts::reads(&sql, &svc.catalog(), &svc.table_rows_kept());
+    j
 }
 
 /// Statement pages of several coordinators as one (`parts`: each one's

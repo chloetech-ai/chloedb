@@ -5,11 +5,12 @@
 // ranked with their next step, error ratio and p99 with the changes of the
 // window, capacity, the coordinators side by side, and who is affected.
 
-import { can, h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tipOn, drawer, link, when, whenTitle, span, copyName, copyTitle, copy, timeEl, isPhone, logsLink, limited, cannotSee } from "../core.js";
+import { can, needs, h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tipOn, drawer, link, when, whenTitle, span, copyName, copyTitle, copy, timeEl, isPhone, logsLink, limited, cannotSee, confirm, toast } from "../core.js";
+import { diskDrawer } from "../disk.js";
 import { tables as catalogTables } from "../catalog.js";
 import { isMine } from "../owners.js";
 import { timeChart, sparkline, SERIES } from "../charts.js";
-import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingNow, clusterName, environment, rangeParams, rangeSince, isPast, shardState, homeProblems, homeStatus, kubeInfo, managed, specName, howToSet } from "../data.js";
+import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingNow, clusterName, environment, rangeParams, rangeSince, isPast, shardState, homeProblems, homeStatus, kubeInfo, managed, specName, howToSet, refreshFleet } from "../data.js";
 
 export default { id: "home", title: "Home", icon: "overview", group: "Operate", keywords: "overview home fleet health status incident banner problems slo where capacity coordinators affected dashboard morning check", render };
 // Its count in the navigation is the shell's (main.js), from homeProblems() as here.
@@ -509,15 +510,52 @@ function render(page, r0) {
       actions.push(h("a", { class: "btn xs", href: logsLink({ ...(copyUrl ? { server: copyUrl } : shardW ? { shard: shardW[1] } : {}), level: "warn" }, pFrom ? (p.to_ms ? { from: pFrom - 60e3, to: p.to_ms + 60e3 } : rangeSince(pFrom - 60e3)) : {}), title: pFrom ? `Warnings and errors from ${when(pFrom - 60e3)}` : null }, "Logs"));
       const upCopy = copyUrl && upUrls.has(copyUrl);
       if (upCopy && p.id !== "copies-down") actions.push(h("a", { class: "btn xs", href: link("profile", { tab: "cpu", node: copyUrl }) }, "Profile " + copyName(copyUrl)));
+      // What the server says can be done about it: a call (after a confirm that
+      // says its cost and target, unless it is free and changes nothing), a
+      // drawer, or advice it cannot carry out (a remedy that costs money).
+      const advice = h("div", { class: "small home-advice", hidden: true });
+      for (const a of p.actions || []) actions.push(problemAction(p, a, advice));
       return h("div", { class: "prob " + (p.severity === "critical" ? "crit" : "warn") },
         h("span", { class: "sv" }),
         h("div", { class: "grow" },
           h("div", { class: "pt" }, p.title),
           p.where?.length ? h("div", { class: "small dim" }, p.where.join(" · ")) : null,
           h("div", { class: "small dim" }, [p.to_ms ? h("span", { title: whenTitle(p.from_ms) }, `${when(p.from_ms)}–${when(p.to_ms)}, answering again for ${durTxt(p.to_ms)}`) : p.since_ms ? h("span", { title: whenTitle(p.since_ms) }, `since ${when(p.since_ms)} (${durTxt(p.since_ms)})`) : null, p.impact].filter(Boolean).flatMap((x, i) => i ? [" · ", x] : [x])),
+          p.why?.length ? h("ul", { class: "small home-why" }, p.why.map((w) => h("li", {}, w))) : null,
           p.next?.text ? h("div", { class: "small home-next" }, icon("right"), p.next.text, p.next.runbook ? [" · runbook: ", h("a", { href: RUNBOOKS + p.next.runbook.toLowerCase().replace(/[^a-z0-9 -]/g, "").trim().replace(/\s+/g, "-"), target: "_blank", rel: "noopener" }, p.next.runbook, " ", icon("ext"))] : null) : null,
-          h("div", { class: "row home-pacts" }, actions)));
+          h("div", { class: "row home-pacts" }, actions), advice));
     }), probs.length > 8 ? h("div", { class: "small muted" }, `and ${probs.length - 8} more`) : null);
+  }
+  /** A button for action `a` of problem `p` (fleet health's `actions`). */
+  function problemAction(p, a, advice) {
+    if (a.drawer === "disk") return h("button", { class: "btn xs", onclick: () => diskDrawer(a.copy, { onChange: refreshFleet }) }, icon("disk"), a.label);
+    if (a.advice) return h("button", { class: "btn xs", "aria-expanded": "false", onclick: (e) => {
+      const open = advice.hidden || advice.dataset.of !== a.id;
+      advice.hidden = !open; advice.dataset.of = a.id; e.currentTarget.setAttribute("aria-expanded", String(open));
+      clear(advice, h("b", {}, a.label), ": ", a.text, a.cost ? h("div", { class: "dim", style: { marginTop: "3px" } }, "Cost: ", a.cost, ". Not done from here.") : null);
+    } }, a.label, "…");
+    if (!a.method || !a.path) return null;
+    const route = `${a.method} ${a.path.replace(/\/shards\/\d+\//, "/shards/:i/")}`;
+    const may = can("admin", route);
+    const b = h("button", { class: "btn xs", disabled: !may, title: may ? a.cost || "" : needs("admin", route) }, a.label + (a.confirm ? "…" : ""));
+    b.onclick = async () => {
+      let reason = null;
+      if (a.confirm) {
+        const ok = await confirm({ title: a.label, ok: a.label, reason: "Why: kept in the audit log with the change",
+          body: h("div", { class: "stack", style: { gap: "6px" } }, h("div", {}, p.title), a.target ? h("div", {}, "On: ", h("b", { class: "mono" }, a.target)) : null, a.cost ? h("div", { class: "dim" }, a.cost) : null) });
+        if (!ok) return;
+        reason = ok.reason;
+      }
+      b.disabled = true;
+      try {
+        const j = await api(a.path, { method: a.method, body: a.body || {}, reason });
+        const r = j?.reading;
+        toast(r ? `${a.target || "The disk"}: ${fmt.ms(r.read_ms)} a read${r.mb_s != null ? `, ${fmt.n(r.mb_s)} MB/s in a row` : ""}` : `Done: ${a.label}`, "ok");
+        refreshFleet();
+      } catch (e) { toast(`Not done: ${a.label}. ${e.message}`, "bad", 10000); }
+      finally { b.disabled = !may; }
+    };
+    return b;
   }
   function findUrl(name) {
     for (const s of model().shards) for (const x of s.copies) if (x.name === name || x.url === name) return x.url;

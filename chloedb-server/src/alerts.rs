@@ -268,6 +268,8 @@ pub fn defaults() -> Vec<Rule> {
         (rule("damaged", "Data damaged on disk", "damaged_segments", ">", 0.0, "max", 30, 0, "critical", c, "A scrub found segments that fail their checksums on this copy: searches that read them fail there, and it must not become the primary. Replace the copy (Cluster: Plan the repair), or restore it from a checkpoint."), 0.0),
         (rule("disk-full", "Disk almost full", "disk_used_ratio", ">", 0.9, "mean", 300, 0, "warning", c, "Under 10% of the copy's disk is left."), 0.88),
         (rule("disk-critical", "Disk nearly full", "disk_used_ratio", ">", 0.97, "mean", 120, 0, "critical", c, "Under 3% of the copy's disk is left: writes fail when it is full. Free space or move slots off the copy now."), 0.95),
+        (rule("disk-evict", "Near Kubernetes' eviction line", "disk_evict_headroom_ratio", "<", 0.05, "mean", 120, 0, "warning", c, "The copy's database is on its node's own disk (a hostPath or an emptyDir, which the kubelet shares), and under 5% of that disk is left above the line where Kubernetes evicts every pod of the node (15% free, --evict-free-ratio). Home's problem says what fills the disk; See what fills it lists what may go, the database's own files apart."), 0.07),
+        (rule("disk-evict-now", "At Kubernetes' eviction line", "disk_evict_headroom_ratio", "<", 0.02, "mean", 60, 0, "critical", c, "Under 2% of the node's disk is left above the line where Kubernetes evicts every pod of the node, the copy's among them: free space on it now (Home: See what fills it), or move the database to a volume."), 0.03),
         (rule("disk-filling", "Disk full within 12 hours", "disk_hours_to_full", "<", 12.0, "mean", 1800, 0, "warning", c, "At the rate the copy's disk filled over the last 30 minutes, it is full in under 12 hours."), 24.0),
         (rule("p99", "", "p99_ms", ">", 0.0, "mean", 300, 0, "warning", s, ""), 0.0),
         (rule("p99-jump", "Query p99 doubled", "p99_ms", ">", 2.0, "mean", 300, 0, "warning", s, "The p99 of the last 5 minutes is over twice the p99 of the 5 minutes before, and over half the p99 objective (--slo-p99-ms), 20 ms at least: a lower p99 is not judged."), 1.5),
@@ -310,6 +312,7 @@ pub fn builtins() -> Vec<Rule> {
         (rule("primary-changed", "A shard's primary changed", "primary_changes", ">", 0.0, "max", 10, 0, "info", s, "A shard elected another primary in the last 10 minutes; the alert resolves 10 minutes after the last change."), 0.0),
         (rule("partial-answers", "Partial answers", "partial_s", ">", 0.1, "mean", 120, 0, "warning", s, "Over 2 minutes, more than one answer in 10 seconds left out shards that did not answer."), 0.02),
         (rule("copy-silent", "A copy stopped reporting", "copies_silent", ">", 0.0, "max", 10, 0, "warning", s, "A copy answers but its own numbers are over 60 seconds old."), 0.0),
+        (rule("disk-slow", "A copy's disk reads slowly", "copies_disk_slow", ">", 0.0, "min", 180, 0, "warning", s, "For 3 minutes, a copy's disk read 4 KiB blocks five times slower than the median of its peers' disks and 2 ms slower at least (or took 30 ms a read), or read in a row at a fifth of their speed, as each copy's own probe measures it (--disk-probe-s): every search that reads its shard from it waits on it. Home's problem says whether the disk was busy (the load) or not (the disk, or the machine under it)."), 0.0),
         (rule("availability", "Searches fail", "availability", "<", 0.0, "mean", 300, 0, "critical", s, ""), 0.0),
     ];
     let slo = crate::service::Slo::default();
@@ -355,7 +358,7 @@ fn follow(r: &mut Rule, error_ratio: f64, p99_ms: f64) {
 }
 
 /// Metrics a coordinator computes from its cluster's state.
-pub const CLUSTER_METRICS: [&str; 5] = ["shards_no_majority", "copies_down", "shards_under_replicated", "primary_changes", "copies_silent"];
+pub const CLUSTER_METRICS: [&str; 6] = ["shards_no_majority", "copies_down", "shards_under_replicated", "primary_changes", "copies_silent", "copies_disk_slow"];
 
 /// Built-in rules whose alert explains others ([`Alerts::hold`]).
 pub const CAUSES: [&str; 2] = ["shard-no-majority", "copy-down"];
@@ -1612,6 +1615,24 @@ impl Alerts {
                     c.changes.push_back((t, json!({"shard": i, "name": shard_name, "short": shard_name, "state": "firing", "from": w, "to": p, "at_ms": t})));
                 }
             }
+        }
+        // Disks far slower than their peers', as each copy's probe read them
+        // ([`crate::disks::outliers`]); a reading taken during a scrub is
+        // left out.
+        let measured: Vec<(usize, &Json, f64, Option<f64>)> = shards
+            .iter()
+            .flat_map(|s| {
+                let i = s["shard"].as_u64().unwrap_or(0) as usize;
+                s["replicas"].as_array().into_iter().flatten().map(move |r| (i, r))
+            })
+            .filter(|(_, r)| answers(r) && r["detail"]["load"]["disk_probe_scrubbing"].as_f64() != Some(1.0))
+            .filter_map(|(i, r)| Some((i, r, r["detail"]["load"]["disk_read_ms"].as_f64()?, r["detail"]["load"]["disk_mb_s"].as_f64())))
+            .collect();
+        for o in crate::disks::outliers(&measured.iter().map(|m| (m.2, m.3)).collect::<Vec<_>>()) {
+            let (i, r, read, mb) = measured[o.i];
+            let url = r["url"].as_str().unwrap_or_default().to_string();
+            let short = r["short"].as_str().map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
+            places.entry("copies_disk_slow").or_default().push(json!({"copy": url, "short": short, "shard": i, "state": "firing", "read_ms": read, "peers_read_ms": o.peers_ms, "mb_s": mb, "peers_mb_s": o.peers_mb_s}));
         }
         while c.changes.front().is_some_and(|(ct, _)| ct + PRIMARY_CHANGED_MS < t) {
             c.changes.pop_front();

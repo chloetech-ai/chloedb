@@ -15,6 +15,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value as Json};
 
+mod disk;
+pub mod stmts;
+
 /// The window of the SLO checks, in seconds.
 pub const WINDOW_S: u64 = 300;
 /// How long a copy's disk use is remembered to tell how fast it grows.
@@ -48,6 +51,12 @@ struct Memory {
     /// only from a survey begun since, as one begun before may have asked
     /// while the copy was down for all.
     down_seen: HashMap<String, u64>,
+    /// Each copy's last disk readings (when, random read ms, MB/s), by
+    /// URL ([`disk::speed`]).
+    speed: HashMap<String, VecDeque<(u64, f64, Option<f64>)>>,
+    /// Each node's room above Kubernetes' eviction line over the last
+    /// hour, by node ([`disk::eviction`]).
+    evict: HashMap<String, VecDeque<(u64, f64)>>,
 }
 
 /// The window the headline judges searches by now: the last minute (the
@@ -105,6 +114,12 @@ pub struct Inputs<'a> {
     /// The coordinators the shards stopped hearing from in the last 10
     /// minutes (R2-workload-3): `(name, url, last seen)`.
     pub gone: Vec<(String, String, u64)>,
+    /// The statements of the last 15 minutes here ([`stmts::WINDOW_MS`]),
+    /// as `/v1/queries/stats` lists them, those [`stmts::slow`] finds slow
+    /// with `reads` ([`stmts::reads`]) and `by_shard` added.
+    pub statements: Vec<Json>,
+    /// The server's deadline for a query (`--timeout-ms`).
+    pub timeout_ms: u64,
     pub now_ms: u64,
 }
 
@@ -131,7 +146,7 @@ fn for_agents(mut j: Json) -> Json {
             Some(q) => format!("GET /v1/logs?q={}", crate::mcp::encode(q)),
             None => "GET /v1/logs".to_string(),
         }),
-        v => v.strip_prefix("alert/").map(|r| format!("GET /v1/alerts/{r}")),
+        v => v.strip_prefix("alert/").map(|r| format!("GET /v1/alerts/{r}")).or_else(|| v.strip_prefix("statement/").map(|f| format!("GET /v1/queries/stats/{}", crate::mcp::encode(f)))),
     };
     if let (Some(api), true) = (api, j["next"].is_object()) {
         j["next"]["api"] = json!(api);
@@ -821,9 +836,18 @@ impl Fleet {
             });
         }
 
-        // ----- disk
+        // ----- the disks' speed against their peers', and a node's disk
+        // near the line where Kubernetes evicts its pods ([`disk`])
+        let slow_disks = disk::speed(&mut m, &copies, &shards, alone, &mut checks, &mut problems);
+        let on_node = disk::eviction(&mut m, &copies, &shards, now, &mut checks, &mut problems);
+
+        // ----- statements that time out or take seconds ([`stmts`])
+        stmts::check(&i.statements, i.timeout_ms, i.slo_p99_ms, &slow_disks, &mut checks, &mut problems);
+
+        // ----- disk: how full, of the copies not on a node's own disk
+        // (those are judged by the eviction line, under the full one)
         let mut disks: Vec<(f64, String, usize)> = Vec::new();
-        for (k, r) in copies.iter().filter(|(_, r)| !down(r)) {
+        for (k, r) in copies.iter().filter(|(_, r)| !down(r) && !on_node.contains(r["url"].as_str().unwrap_or_default())) {
             let d = &r["detail"];
             if let Some(v) = d["load"]["disk_used_ratio"].as_f64().or(d["minute"]["disk_used_ratio"].as_f64()) {
                 let name = short(r);
@@ -1182,7 +1206,7 @@ mod tests {
     }
 
     fn inputs<'a>(cluster: &'a Json, points: &'a [Arc<Json>]) -> Inputs<'a> {
-        Inputs { cluster, points, history: &[], slo_error_ratio: 0.01, slo_p99_ms: 250.0, alerts: Vec::new(), partial: false, coordinator: Some(json!({"url": null, "name": "c"})), peers: Vec::new(), gone: Vec::new(), now_ms: 10_000 }
+        Inputs { cluster, points, history: &[], slo_error_ratio: 0.01, slo_p99_ms: 250.0, alerts: Vec::new(), partial: false, coordinator: Some(json!({"url": null, "name": "c"})), peers: Vec::new(), gone: Vec::new(), statements: Vec::new(), timeout_ms: 30_000, now_ms: 10_000 }
     }
 
     /// LIV-6 and LIV-7: both copies of each shard ran on one node, and one
@@ -1607,5 +1631,158 @@ mod tests {
         later.now_ms = 20_000;
         assert_eq!(f.judge(later)["since_ms"], 10_000);
         assert!(j["problems"].as_array().unwrap().is_empty());
+    }
+
+    /// A copy's disk reading as its series has it ([`crate::disks::Probe::gauges`]).
+    fn probed(short: &str, node: &str, read_ms: f64, mb_s: f64, at: u64, extra: Json) -> Json {
+        let mut load = json!({"disk_used_ratio": 0.4, "disk_read_ms": read_ms, "disk_mb_s": mb_s, "disk_probe_at_ms": at, "disk_busy": 0.03, "file_bytes": 120e9, "wal_bytes": 1e9});
+        for (k, v) in extra.as_object().into_iter().flatten() {
+            load[k] = v.clone();
+        }
+        json!({"short": short, "url": format!("http://{short}"), "status": "ok", "detail": {"load": load, "place": {"node": node}, "minute": {"p99_ms": if read_ms > 5.0 { 9000.0 } else { 120.0 }}}})
+    }
+
+    /// gh, 11-17: machine 3's local disk read at 12 ms a block and 4 MB/s,
+    /// its peers at 0.2 ms and 600 MB/s, and it was not busy. Told once two
+    /// readings say so, with what can be done.
+    #[test]
+    fn a_disk_far_slower_than_its_peers_is_a_problem() {
+        let gh = |at: u64| {
+            json!({"shards": (0..4).map(|s| {
+                let slow = s == 2;
+                json!({"shard": s, "state": "ok", "failover": true, "majority": true, "replicas": [probed(&format!("s{s}-0"), &format!("gh-{s}"), if slow { 12.0 } else { 0.2 }, if slow { 4.0 } else { 600.0 }, at, json!({}))]})
+            }).collect::<Vec<_>>()})
+        };
+        let f = Fleet::default();
+        let one = gh(1_000);
+        let j = f.judge(inputs(&one, &[]));
+        assert!(j["problems"].as_array().unwrap().iter().all(|p| !p["id"].as_str().unwrap().starts_with("disk-slow")), "one reading is not enough: {j}");
+        let two = gh(61_000);
+        let j = f.judge(inputs(&two, &[]));
+        let p = j["problems"].as_array().unwrap().iter().find(|p| p["id"] == "disk-slow-s2-0").unwrap_or_else(|| panic!("{j}")).clone();
+        assert_eq!(p["title"], "s2-0's disk reads 60× slower than its peers': 12 ms a read against 0.2 ms, and 4 MB/s in a row against 600", "{p}");
+        assert_eq!(p["where"], json!(["shard 2", "s2-0", "node gh-2"]));
+        assert!(p["impact"].as_str().unwrap().starts_with("Every search that reads shard 2 waits on it"), "{p}");
+        assert!(p["why"][0].as_str().unwrap().contains("busy 3% of the time since the last probe: it is slow without being loaded"), "{p}");
+        let ids: Vec<&str> = p["actions"].as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["probe", "disk", "replace"], "one copy: nothing to hand over to");
+        assert_eq!(p["actions"][0]["body"], json!({"copy": "http://s2-0"}));
+        let replace = &p["actions"][2];
+        assert_eq!(replace["advice"], true);
+        assert!(replace["text"].as_str().unwrap().contains("a volume of about 150 GiB for s2-0's 121 GB (about $15 a month"), "{replace}");
+        let c = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "disk_speed").unwrap().clone();
+        assert_eq!((c["status"].as_str(), c["where"].clone()), (Some("warning"), json!(["s2-0"])));
+        // One fast reading of three does not clear it; two do.
+        let mut three = gh(121_000);
+        three["shards"][2]["replicas"][0]["detail"]["load"]["disk_read_ms"] = json!(0.2);
+        let j = f.judge(inputs(&three, &[]));
+        assert!(j["problems"].as_array().unwrap().iter().any(|p| p["id"] == "disk-slow-s2-0"), "one fast reading of three: still slow");
+        let mut four = gh(181_000);
+        four["shards"][2]["replicas"][0]["detail"]["load"]["disk_read_ms"] = json!(0.2);
+        let j = f.judge(inputs(&four, &[]));
+        assert!(j["problems"].as_array().unwrap().iter().all(|p| p["id"] != "disk-slow-s2-0"), "{j}");
+    }
+
+    /// A slow primary with a replica in sync on a fast disk: hand it over.
+    #[test]
+    fn a_slow_primary_can_hand_over_to_a_fast_copy() {
+        let primary = |at| {
+            let mut p = probed("s0-0", "a", 15.0, 5.0, at, json!({}));
+            p["detail"]["health"] = json!({"replication": {"role": "primary", "replicas": [{"url": "http://s0-1", "in_sync": true}]}});
+            p
+        };
+        let c = |at| json!({"shards": [{"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [primary(at), probed("s0-1", "b", 0.3, 500.0, at, json!({}))]},
+            {"shard": 1, "state": "ok", "failover": true, "majority": true, "replicas": [probed("s1-0", "b", 0.25, 520.0, at, json!({})), probed("s1-1", "c", 0.3, 480.0, at, json!({}))]}]});
+        let f = Fleet::default();
+        let (a, b) = (c(1_000), c(61_000));
+        f.judge(inputs(&a, &[]));
+        let j = f.judge(inputs(&b, &[]));
+        let p = j["problems"].as_array().unwrap().iter().find(|p| p["id"] == "disk-slow-s0-0").unwrap_or_else(|| panic!("{j}")).clone();
+        let promote = p["actions"].as_array().unwrap().iter().find(|a| a["id"] == "promote").unwrap_or_else(|| panic!("{p}")).clone();
+        assert_eq!((promote["path"].as_str(), promote["body"].clone(), promote["confirm"].clone()), (Some("/v1/admin/shards/0/promote"), json!({"url": "http://s0-1"}), json!(true)));
+        assert!(p["next"]["text"].as_str().unwrap().starts_with("Make s0-1 the primary"), "{p}");
+        assert!(p["impact"].as_str().unwrap().contains("and so does every write to the shard"), "{p}");
+    }
+
+    /// gh, 11-16: a build filled a node's disk, and Kubernetes evicted its
+    /// pods. A database on the node's own disk is judged by the eviction
+    /// line, before it is crossed, and not by the full disk's 85%.
+    #[test]
+    fn a_node_disk_near_the_eviction_line_is_a_problem() {
+        let gib = (1u64 << 30) as f64;
+        let on_node = |short: &str, node: &str, avail_gib: f64| {
+            let total = 157.0 * gib;
+            probed(short, node, 0.2, 600.0, 1_000, json!({
+                "disk_on_node": 1.0, "disk_total_bytes": total, "disk_free_bytes": avail_gib * gib, "disk_used_ratio": 1.0 - avail_gib / 157.0,
+                "disk_evict_free_ratio": 0.15, "disk_evict_headroom_bytes": avail_gib * gib - 0.15 * total,
+            }))
+        };
+        let mut c = json!({"shards": [
+            {"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [on_node("s0-0", "pool-a1", 28.0)]},
+            {"shard": 1, "state": "ok", "failover": true, "majority": true, "replicas": [on_node("s1-0", "pool-a2", 60.0)]},
+        ]});
+        // Over the full disk's 85% (reserved blocks), which this disk is not judged by.
+        c["shards"][0]["replicas"][0]["detail"]["load"]["disk_used_ratio"] = json!(0.87);
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        let ps = j["problems"].as_array().unwrap();
+        let p = ps.iter().find(|p| p["id"] == "evict-pool-a1").unwrap_or_else(|| panic!("{j}")).clone();
+        assert_eq!(p["severity"], "warning");
+        assert_eq!(p["title"], "Node pool-a1's disk is 4.8 GB above the line where Kubernetes evicts its pods (15% free)", "{p}");
+        assert_eq!(p["where"], json!(["node pool-a1", "shard 0", "s0-0"]));
+        assert!(p["impact"].as_str().unwrap().contains("shard 0 has no copy on another node, so its searches and writes fail"), "{p}");
+        assert!(p["why"][0].as_str().unwrap().contains("is the database, and "), "{p}");
+        assert_eq!(p["actions"][0]["drawer"], "disk");
+        assert!(ps.iter().all(|p| p["id"] != "evict-pool-a2" && p["id"] != "disk"), "the 87% full disk is judged by the line: {j}");
+        // Past the line: critical.
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [on_node("s0-0", "pool-a1", 20.0)]}]});
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        let p = j["problems"].as_array().unwrap().iter().find(|p| p["id"] == "evict-pool-a1").unwrap_or_else(|| panic!("{j}")).clone();
+        assert_eq!(p["severity"], "critical", "{p}");
+        assert!(p["title"].as_str().unwrap().starts_with("Node pool-a1's disk is past the line where Kubernetes evicts its pods: 21 GB free (13%)"), "{p}");
+        assert_eq!(j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "evict").unwrap()["status"], "critical");
+    }
+
+    /// gh, 11-16: person pages filtered every event by actor, which the
+    /// table neither indexed nor was clustered by, and timed out.
+    #[test]
+    fn a_statement_that_times_out_says_why() {
+        use chloedb::schema::{Field, FieldType, Schema};
+        let mut actor = Field::new("actor", FieldType::Keyword);
+        actor.indexed = false;
+        let t = Schema::new("gh_events", vec![Field::new("id", FieldType::Keyword), Field::new("repo", FieldType::Keyword), actor, Field::new("body", FieldType::Text { positions: true })], Some("id")).unwrap().with_cluster_by("repo").unwrap();
+        let catalog = vec![Arc::new(t)];
+        let rows: HashMap<String, u64> = [("gh_events".to_string(), 11_200_000_000)].into();
+        let reads = stmts::reads("SELECT repo, count(*) FROM gh_events WHERE actor = 'rkonow' GROUP BY repo", &catalog, &rows);
+        assert_eq!(reads, json!({"table": "gh_events", "rows": 11_200_000_000u64, "cluster_by": "repo", "every_row": true, "why": "filter", "fields": ["actor"]}));
+        // Served by the order, the key or a search: not every row.
+        for sql in ["SELECT * FROM gh_events WHERE repo = 'a/b' AND actor = 'x'", "SELECT * FROM gh_events WHERE MATCH(body, 'x') AND actor = 'y'", "SELECT * FROM gh_events WHERE id IN ('1', '2')", "SELECT * FROM gh_events LIMIT 5"] {
+            assert_eq!(stmts::reads(sql, &catalog, &rows)["every_row"], false, "{sql}");
+        }
+        assert_eq!(stmts::reads("SELECT * FROM gh_events WHERE repo = 'a' OR actor = 'b'", &catalog, &rows)["fields"], json!(["actor"]));
+        assert_eq!(stmts::reads("SELECT repo, count(*) FROM gh_events GROUP BY repo", &catalog, &rows)["why"], "no_filter");
+
+        let c = json!({"shards": (0..4).map(|s| json!({"shard": s, "state": "ok", "failover": true, "majority": true, "replicas": [copy(&format!("s{s}-0"), true)]})).collect::<Vec<_>>()});
+        let mut i = inputs(&c, &[]);
+        i.statements = vec![
+            json!({"id": "7f3a", "fingerprint": "SELECT ... WHERE actor = ?", "sql": "SELECT repo, count(*) FROM gh_events WHERE actor = 'rkonow' GROUP BY repo", "calls": 40, "outcomes": {"ok": 26, "timeout": 14},
+                "mean_ms": 21_000.0, "p99_ms": 30_000.0, "total_ms": 840_000.0, "share": 0.7, "rows_per_call": 12.0, "reads": reads,
+                "by_shard": [{"shard": 0, "p99_ms": 900.0}, {"shard": 1, "p99_ms": 1000.0}, {"shard": 2, "p99_ms": 30_000.0}, {"shard": 3, "p99_ms": 950.0}]}),
+            // Fast, and the command center's own slow ones: not told.
+            json!({"id": "1111", "sql": "SELECT 1", "calls": 900, "outcomes": {"ok": 900}, "mean_ms": 2.0, "total_ms": 1800.0}),
+            json!({"id": "2222", "sql": "SELECT count(*) FROM gh_events", "calls": 5, "outcomes": {"timeout": 5}, "mean_ms": 30_000.0, "total_ms": 150_000.0, "command_center": true}),
+        ];
+        let j = Fleet::default().judge(i);
+        let ps = j["problems"].as_array().unwrap();
+        assert_eq!(ps.iter().filter(|p| p["id"].as_str().unwrap().starts_with("slow-statement")).count(), 1, "{j}");
+        let p = ps.iter().find(|p| p["id"] == "slow-statement-7f3a").unwrap().clone();
+        assert_eq!(p["title"], "Statement 7f3a times out: 14 of its 40 calls in the last 15 min passed the 30 s deadline (it reads gh_events)", "{p}");
+        assert_eq!(p["severity"], "warning");
+        let why = p["why"].as_array().unwrap();
+        assert!(why[0].as_str().unwrap().starts_with("It filters on actor, which gh_events does not index and is not clustered by (it is clustered by repo): each call reads every one of its 11.2 billion rows"), "{p}");
+        assert_eq!(why[1], "Shard 2 answers it at p99 30 s against 950 ms on the other shards", "{p}");
+        assert_eq!(p["next"]["view"], "statement/7f3a");
+        assert_eq!(p["next"]["api"], "GET /v1/queries/stats/7f3a");
+        assert_eq!(p["next"]["runbook"], "A statement times out");
+        assert!(p["impact"].as_str().unwrap().starts_with("Its callers wait 30 s and get no rows (504); it took 70% of the queries' time here"), "{p}");
     }
 }

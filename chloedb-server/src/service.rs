@@ -788,6 +788,9 @@ pub struct Service {
     /// Scrubbing: how often, how fast, and what the last scrub found
     /// (`--scrub-every-s`, [`Self::start_scrubs`]).
     pub scrubs: scrub::Scrubs,
+    /// The probe of the disk under the database, and where the database
+    /// is (`--disk-probe-s`, [`crate::disks::start`]).
+    pub disk_probe: crate::disks::Probe,
     /// The command center's Simulator: its test run and the reports kept
     /// ([`crate::traffic::run`]).
     pub simulator: crate::traffic::run::Simulator,
@@ -949,6 +952,7 @@ impl Service {
             replication_file: None,
             failover_after: Duration::ZERO,
             scrubs: Default::default(),
+            disk_probe: Default::default(),
             simulator: Default::default(),
         }
     }
@@ -2232,6 +2236,11 @@ impl Service {
     }
 
     /// The database, unless this is a coordinator.
+    /// The folder checkpoints are written to (`--backup-dir`), if any.
+    pub fn backup_dir(&self) -> Option<&std::path::Path> {
+        self.backup_dir.as_deref()
+    }
+
     pub fn local_db(&self) -> Option<&Arc<Db>> {
         self.local()
     }
@@ -5879,13 +5888,19 @@ impl Service {
             ] {
                 g.insert(k, v);
             }
-            if let Some((total, free, avail)) = telemetry::disk(db.storage().path()) {
+            let fs = telemetry::disk(db.storage().path());
+            if let Some((total, free, avail)) = fs {
                 g.insert("disk_total_bytes", total as f64);
                 g.insert("disk_free_bytes", avail as f64);
                 if let Some(r) = telemetry::disk_used_ratio(total, free, avail) {
                     g.insert("disk_used_ratio", r);
                 }
             }
+            // How fast the disk reads, and its room above the kubelet's
+            // eviction line when it is the node's own ([`crate::disks`]).
+            self.disk_probe.gauges(&mut |k, v| {
+                g.insert(k, v);
+            }, fs.map(|(total, _, avail)| (total, avail)));
             match &self.replication() {
                 Replication::None => {}
                 Replication::Primary(p) => {
@@ -6107,6 +6122,7 @@ impl Service {
         // fleet: the alerts firing that nobody silenced, each rule once, as the bell counts them
         // (alerts2: nor a cause holds back).
         let alerts: Vec<Json> = self.alerts.json()["states"].as_array().map_or_else(Vec::new, |v| v.iter().filter(|s| s["state"] == "firing" && s["silenced"].is_null() && s["held_by"].is_null()).cloned().collect());
+        let statements = self.slow_statements(now);
         self.fleet.judge(crate::fleet::Inputs {
             cluster: &cluster,
             points: &points,
@@ -6118,8 +6134,46 @@ impl Service {
             coordinator,
             peers: crate::peers::windows(self),
             gone: if matches!(self.backend, Backend::Cluster(_)) { crate::peers::gone(self) } else { Vec::new() },
+            statements,
+            timeout_ms: self.timeout.as_millis() as u64,
             now_ms: now,
         })
+    }
+
+    /// Each table's rows, as the Tables view last counted them
+    /// ([`crate::inspect::tables`], kept 30 s and then until asked again);
+    /// none if it never did, or while it counts.
+    pub fn table_rows_kept(&self) -> HashMap<String, u64> {
+        self.tables_kept
+            .try_lock()
+            .ok()
+            .and_then(|k| k.as_ref().map(|(_, j)| j["tables"].as_array().into_iter().flatten().filter_map(|t| Some((t["table"].as_str()?.to_string(), t["docs"].as_u64()?))).collect()))
+            .unwrap_or_default()
+    }
+
+    /// This server's statements of the last 15 minutes, the most time
+    /// first, those that time out or take seconds ([`crate::fleet::stmts::slow`])
+    /// with what they read (`reads`: a filter no index serves) and their
+    /// shards' p99 (`by_shard`), for fleet health. The tables' row counts
+    /// are those the Tables view last counted, if it did: fleet health
+    /// counts nothing itself.
+    fn slow_statements(&self, now: u64) -> Vec<Json> {
+        let st = &self.query_log.statements;
+        let from = now.saturating_sub(crate::fleet::stmts::WINDOW_MS);
+        let mut rows = st.window(from, now, 50)["statements"].as_array().cloned().unwrap_or_default();
+        if !rows.iter().any(|s| crate::fleet::stmts::slow(s, self.slo.p99_ms)) {
+            return rows;
+        }
+        let counts = self.table_rows_kept();
+        let catalog = self.catalog();
+        for s in rows.iter_mut().filter(|s| crate::fleet::stmts::slow(s, self.slo.p99_ms)) {
+            let sql = s["sql"].as_str().unwrap_or_default().to_string();
+            s["reads"] = crate::fleet::stmts::reads(&sql, &catalog, &counts);
+            if let Some(d) = s["id"].as_str().and_then(|id| st.detail(id, from, now)) {
+                s["by_shard"] = d["by_shard"].clone();
+            }
+        }
+        rows
     }
 
     /// This server's health and latest point, as a coordinator's

@@ -11,6 +11,32 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **The command center finds a slow disk, a node near Kubernetes' eviction
+  line and a statement that times out, says why, and offers what can be
+  done.** Three outages on gh.chloetech.ai showed nowhere until pages
+  failed: one machine's local disk read at 12 ms a block and 4 MB/s against
+  0.2 ms and 600 MB/s on the others, without being busy; a build filled a
+  node's disk and Kubernetes evicted its pods; and person pages filtered
+  11.2 billion events by a field the table neither indexed nor was
+  clustered by, and timed out. Each database server now times reads of its
+  own database's file around the page cache every minute (`--disk-probe-s`)
+  and, under Kubernetes, tells whether its database shares the node's disk
+  with the kubelet and how much room is left above the line where it
+  evicts (`--evict-free-ratio`, 15%). Home names a copy whose disk reads
+  five times slower than its peers' (`disk-slow-<copy>`, alert `disk-slow`),
+  a node whose disk nears the eviction line (`evict-<node>`, alerts
+  `disk-evict` and `disk-evict-now`), and a statement that times out or
+  takes seconds (`slow-statement-<id>`), with the lines that point at a
+  cause: whether the disk was busy, what of the node's disk is not the
+  database's, a filter that reads every row, the shard and copy that hold
+  a statement up. Each problem offers actions: measure again, hand the
+  primary to a copy on a fast disk (after a confirm), see what fills the
+  disk in a drawer and delete entries that are not the database's (after
+  typing the copy's name and a reason; `GET /v1/admin/disk`, `POST
+  /v1/admin/disk/clean`, which refuses the server's own files and anything
+  changed since it was listed), and remedies that cost money (a volume, a
+  node) said with their cost and never carried out. A statement's page
+  says the same of it.
 - **A command center on Kubernetes forgot the clusters it reaches at every
   restart.** A coordinator kept its hub's book (the **Connections** view,
   the clusters the brand's menu at the top left switches to, and their

@@ -37,6 +37,7 @@ pub mod apps;
 pub mod aws;
 pub mod cloud;
 pub mod digitalocean;
+pub mod disks;
 pub mod gcp;
 pub mod doctor;
 pub mod auth;

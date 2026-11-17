@@ -43,6 +43,13 @@ pub enum Kind {
     /// Not a profile: a coordinator gives its copy the each_copy alert
     /// rules, or has it backtest one ([`crate::alerts::copy_call`]).
     Alerts,
+    /// Not a profile: the volume under the database and what fills it
+    /// ([`crate::disks::report`]), its reads timed now
+    /// ([`crate::disks::Probe`]), or entries of it deleted
+    /// ([`crate::disks::clean`]).
+    Disk,
+    DiskProbe,
+    DiskClean,
     /// Not a profile: this server's profiling settings ([`settings_json`]),
     /// set first from the body as [`set_settings`] when it sets any, so
     /// that a coordinator reads and sets a copy's over the same call.
@@ -62,6 +69,9 @@ impl Kind {
             "checkpoint" => Kind::Checkpoint,
             "scrub" => Kind::Scrub,
             "alerts" => Kind::Alerts,
+            "disk" => Kind::Disk,
+            "disk_probe" => Kind::DiskProbe,
+            "disk_clean" => Kind::DiskClean,
             "profile_settings" => Kind::Settings,
             _ => return Err(ApiError::bad(format!("no profile of kind {s:?}: cpu, heap, memory, threads or index"))),
         })
@@ -79,6 +89,9 @@ impl Kind {
             Kind::Checkpoint => "checkpoint",
             Kind::Scrub => "scrub",
             Kind::Alerts => "alerts",
+            Kind::Disk => "disk",
+            Kind::DiskProbe => "disk_probe",
+            Kind::DiskClean => "disk_clean",
             Kind::Settings => "profile_settings",
         }
     }
@@ -90,6 +103,10 @@ impl Kind {
         let s = match self {
             Kind::Cpu | Kind::Heap => b.get("seconds").and_then(|v| v.as_f64()).filter(|s| s.is_finite() && *s > 0.0).unwrap_or(5.0).min(profiler::MAX_SECONDS.max(heap::MAX_SECONDS)),
             Kind::Memory | Kind::Threads | Kind::Index | Kind::LogFilter | Kind::Alerts | Kind::Settings => 0.0,
+            // A listing walks the volume for 5 s at most, and a probe reads
+            // for 4; deleting a large folder takes longer.
+            Kind::Disk | Kind::DiskProbe => 10.0,
+            Kind::DiskClean => 300.0,
             // The replicas' digests, waited for `timeout_ms` (60 s).
             Kind::Verify => b.get("timeout_ms").and_then(|v| v.as_f64()).filter(|t| t.is_finite() && *t > 0.0).map_or(60.0, |t| t / 1e3).min(600.0),
             // A checkpoint copies the database: up to 10 minutes.
@@ -217,6 +234,9 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
         }
         Kind::Scrub => Ok(Answer::Json(svc.scrub(b["rate_mib_s"].as_u64().unwrap_or(0) << 20, b["by"].as_str().unwrap_or("a coordinator")).await?)),
         Kind::Alerts => Ok(Answer::Json(crate::alerts::copy_call(svc, b).await?)),
+        Kind::Disk => Ok(Answer::Json(crate::disks::report_of(svc).await?)),
+        Kind::DiskProbe => Ok(Answer::Json(crate::disks::probe_of(svc).await?)),
+        Kind::DiskClean => Ok(Answer::Json(crate::disks::clean_of(svc, b["paths"].as_array().map_or(&[][..], Vec::as_slice), b["by"].as_str().unwrap_or("a coordinator")).await?)),
     }
 }
 

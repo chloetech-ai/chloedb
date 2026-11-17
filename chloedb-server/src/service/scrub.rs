@@ -52,6 +52,11 @@ impl Scrubs {
         self.state().last.as_ref().map_or_else(Vec::new, |(_, r)| r.damaged.clone())
     }
 
+    /// Whether a scrub reads the disk now.
+    pub fn running(&self) -> bool {
+        self.state().running
+    }
+
     /// For `/v1/health` (`scrub`).
     pub fn json(&self) -> Json {
         let st = self.state();
