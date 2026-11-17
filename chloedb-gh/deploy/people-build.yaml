@@ -3,43 +3,56 @@
 # each kept repo, built on each node beside its running shard from
 # the shard's events (/work/all/events/sN, prepare's output) by
 # `chloedb-gh people`, and imported into a copy of the node's vector part,
-# /work/vec/gh-side.chloedb, which vec.yaml then serves: the person pages
+# gh-side.chloedb, which vec.yaml then serves: the person pages
 # read a person's four rows there (one a shard: a shard's repos are its
 # own) rather than the actor column of 11.2 billion events, and a repo's
 # page its people rather than every event of a busy repo.
+#
+# They go on a volume of their own a node (gh-side-N, 20 GB, mounted at
+# /side), not the node's SSD: the copy of the vector part is 4.5 GB, the
+# pass files 3.2 GB and a shard's two tables 2.3 GB once imported, and each
+# SSD has only 4 to 6 GB above the kubelet's eviction line (15%
+# free). Below it the kubelet evicts the node's pods, the shard among them.
 #   kubectl apply -f people-build.yaml; kubectl logs -f gh-peopleb-N
 # Needs /work/vec/chloedb-gh-people (chloedb-gh built for Debian 12) and the shard's server
-# binary /work/db/bin/chloedb-server-035p. About 30 minutes a node (a pass
-# reads the shard's 2.8 billion events in 90 to 100 s; 16 passes keep a
-# pass's sums near 1.5 GB: 12 ran out of the 3 GiB); the
-# pods end when done (delete them after).
+# binary /work/db/bin/chloedb-server-035p. The passes take about 32 minutes a node (a pass
+# reads the shard's 2.8 billion events in 75 to 90 s; 24 passes keep a
+# pass's sums under 2 GB: 12 ran out of the 3 GiB, and one pass of 16 did);
+# the pods end when done (delete them after).
 apiVersion: v1
 kind: ConfigMap
 metadata: {name: gh-people-build, namespace: strata}
 data:
   build.sh: |
     #!/bin/sh
-    # build.sh N: shard N's people into /work/red/people/sN, then a copy of
-    # the vector part with them, /work/vec/gh-side.chloedb.
+    # build.sh N: shard N's people into /side/red/people/sN, then a copy of
+    # the vector part with them, /side/gh-side.chloedb.
     set -e
-    N=$1; V=/work/vec; SRV=/work/db/bin/chloedb-server-035p; GH=/work/vec/chloedb-gh-people
-    [ -e $V/gh-side.chloedb ] && { echo "$V/gh-side.chloedb is there already"; exit 1; }
-    ls -la $GH $SRV $V/gh-vec.chloedb
+    N=$1; V=/work/vec; S=/side; P=${PASSES:-24}
+    SRV=/work/db/bin/chloedb-server-035p; GH=/work/vec/chloedb-gh-people
+    [ -e $S/gh-side.chloedb ] && { echo "$S/gh-side.chloedb is there already"; exit 1; }
+    ls -la $GH $SRV $V/gh-vec.chloedb; df -h /work $S
+    # Everything below is written to the volume, nothing to the SSD.
+    free=$(df -k $S | awk 'NR==2 {print $4}')
+    [ "$free" -gt 16000000 ] || { echo "$S has $free KiB free, under 16 GB"; exit 1; }
     t=$(date +%s)
-    $GH people --input /work/all --shard $N --out /work/red --passes ${PASSES:-16} --threads ${THREADS:-3} --kept /work/red/repos/s$N.parquet
-    $GH repo-people --out /work/red --shard $N --passes 4
+    $GH people --input /work/all --shard $N --out $S/red --passes $P --threads ${THREADS:-3} --kept /work/red/repos/s$N.parquet
+    $GH repo-people --out $S/red --shard $N --passes 4
     echo "summed in $(( $(date +%s)-t )) s"; t=$(date +%s)
-    du -sh /work/red/people/s$N /work/red/people_repos/s$N /work/red/repo_people/s$N
+    du -sh $S/red/people/s$N $S/red/people_repos/s$N $S/red/repo_people/s$N
     # The vector part is only read (its server writes nothing to it), so a
     # copy while it serves is a copy of it.
-    cp $V/gh-vec.chloedb $V/gh-side.chloedb.tmp
-    CHLOEDB_MODELS=/work/db/models $SRV import --db $V/gh-side.chloedb.tmp --schema /cfg/gh_people.json --table gh_people /work/red/people/s$N/p*-of-${PASSES:-16}.parquet 2>&1 | tail -5
-    CHLOEDB_MODELS=/work/db/models $SRV import --db $V/gh-side.chloedb.tmp --schema /cfg/gh_repo_people.json --table gh_repo_people /work/red/repo_people/s$N/p*-of-04.parquet 2>&1 | tail -5
-    cp $V/gh-vec.chloedb.slots $V/gh-side.chloedb.slots
-    mv $V/gh-side.chloedb.tmp $V/gh-side.chloedb
-    for f in $V/gh-side.chloedb.tmp-*; do [ -e "$f" ] && mv "$f" "$V/gh-side.chloedb${f#$V/gh-side.chloedb.tmp}"; done
+    # Each table's files go in as one folder: an import loads an empty table
+    # in bulk from its first source only, and the files after it through the
+    # write path (16 s a pass file, then minutes of merging).
+    cp $V/gh-vec.chloedb $S/gh-side.chloedb.tmp
+    CHLOEDB_MODELS=/work/db/models $SRV import --db $S/gh-side.chloedb.tmp --schema /cfg/gh_people.json --table gh_people $S/red/people/s$N 2>&1 | tail -5
+    CHLOEDB_MODELS=/work/db/models $SRV import --db $S/gh-side.chloedb.tmp --schema /cfg/gh_repo_people.json --table gh_repo_people $S/red/repo_people/s$N 2>&1 | tail -5
+    cp $V/gh-vec.chloedb.slots $S/gh-side.chloedb.slots
+    mv $S/gh-side.chloedb.tmp $S/gh-side.chloedb
+    for f in $S/gh-side.chloedb.tmp-*; do [ -e "$f" ] && mv "$f" "$S/gh-side.chloedb${f#$S/gh-side.chloedb.tmp}"; done
     echo "imported in $(( $(date +%s)-t )) s"
-    ls -la $V; du -sh $V/gh-side.chloedb
+    ls -la $S; du -sh $S/gh-side.chloedb; df -h /work $S
     echo done
   gh_repo_people.json: |
     {"table": "gh_repo_people", "shard_by": "repo", "cluster_by": "repo", "compression": "zstd",
@@ -62,6 +75,38 @@ data:
       {"name": "repos", "type": "keyword", "indexed": false}]}
 ---
 apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: gh-side-0, namespace: strata}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: do-block-storage
+  resources: {requests: {storage: 20Gi}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: gh-side-1, namespace: strata}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: do-block-storage
+  resources: {requests: {storage: 20Gi}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: gh-side-2, namespace: strata}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: do-block-storage
+  resources: {requests: {storage: 20Gi}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: gh-side-3, namespace: strata}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: do-block-storage
+  resources: {requests: {storage: 20Gi}}
+---
+apiVersion: v1
 kind: Pod
 metadata: {name: gh-peopleb-0, namespace: strata}
 spec:
@@ -73,10 +118,11 @@ spec:
     image: python:3.13-slim-trixie
     command: ["sh", "/cfg/build.sh", "0"]
     resources: {requests: {cpu: 50m, memory: 256Mi}, limits: {memory: 3Gi}}
-    volumeMounts: [{name: work, mountPath: /work}, {name: cfg, mountPath: /cfg}]
+    volumeMounts: [{name: work, mountPath: /work}, {name: cfg, mountPath: /cfg}, {name: side, mountPath: /side}]
   volumes:
   - {name: work, hostPath: {path: /mnt/chloedb/gh, type: Directory}}
   - {name: cfg, configMap: {name: gh-people-build}}
+  - {name: side, persistentVolumeClaim: {claimName: gh-side-0}}
 ---
 apiVersion: v1
 kind: Pod
@@ -90,10 +136,11 @@ spec:
     image: python:3.13-slim-trixie
     command: ["sh", "/cfg/build.sh", "1"]
     resources: {requests: {cpu: 50m, memory: 256Mi}, limits: {memory: 3Gi}}
-    volumeMounts: [{name: work, mountPath: /work}, {name: cfg, mountPath: /cfg}]
+    volumeMounts: [{name: work, mountPath: /work}, {name: cfg, mountPath: /cfg}, {name: side, mountPath: /side}]
   volumes:
   - {name: work, hostPath: {path: /mnt/chloedb/gh, type: Directory}}
   - {name: cfg, configMap: {name: gh-people-build}}
+  - {name: side, persistentVolumeClaim: {claimName: gh-side-1}}
 ---
 apiVersion: v1
 kind: Pod
@@ -107,10 +154,11 @@ spec:
     image: python:3.13-slim-trixie
     command: ["sh", "/cfg/build.sh", "2"]
     resources: {requests: {cpu: 50m, memory: 256Mi}, limits: {memory: 3Gi}}
-    volumeMounts: [{name: work, mountPath: /work}, {name: cfg, mountPath: /cfg}]
+    volumeMounts: [{name: work, mountPath: /work}, {name: cfg, mountPath: /cfg}, {name: side, mountPath: /side}]
   volumes:
   - {name: work, hostPath: {path: /mnt/chloedb/gh, type: Directory}}
   - {name: cfg, configMap: {name: gh-people-build}}
+  - {name: side, persistentVolumeClaim: {claimName: gh-side-2}}
 ---
 apiVersion: v1
 kind: Pod
@@ -124,7 +172,8 @@ spec:
     image: python:3.13-slim-trixie
     command: ["sh", "/cfg/build.sh", "3"]
     resources: {requests: {cpu: 50m, memory: 256Mi}, limits: {memory: 3Gi}}
-    volumeMounts: [{name: work, mountPath: /work}, {name: cfg, mountPath: /cfg}]
+    volumeMounts: [{name: work, mountPath: /work}, {name: cfg, mountPath: /cfg}, {name: side, mountPath: /side}]
   volumes:
   - {name: work, hostPath: {path: /mnt/chloedb/gh, type: Directory}}
   - {name: cfg, configMap: {name: gh-people-build}}
+  - {name: side, persistentVolumeClaim: {claimName: gh-side-3}}
