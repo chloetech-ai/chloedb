@@ -61,6 +61,35 @@ changes collect under "Unreleased".
   person beside the hub's key (`person`). This touches the authentication
   door.
 
+### Substring index
+
+`LIKE` and `ILIKE` on a field with `OPTIONS(substring = true)`, for short
+and common strings. The file format does not change. On 4.8 million Hacker
+News titles in four shards on one machine, the 40 queries of `chloedb-hn`'s
+evaluation went from 108 to 31 ms at the 99th percentile for their first 20
+rows and from 222 to 73 ms for their count, and from 500 to 46 ms and 719
+to 71 ms after the page cache was dropped, with the same answers
+(`chloedb/results/substring/costs.md`).
+
+- **`ILIKE` of one string is answered from the index alone**, as `LIKE` of
+  one is (`'%rust%'`, `'error%'`, `'%ssh2'`): the spellings it searches are
+  the matches, so no stored value is read for them. A pattern with `_` or
+  several strings still tests its candidates' values.
+- **The values a pattern tests are read in the table's order**, each block
+  of the doc store once, where each was read as the index found it, a
+  block a candidate.
+- **A `LIMIT` without an `ORDER BY`, on a condition that is one `LIKE` or
+  `ILIKE`, stops at its first rows**, the same rows as before: a segment's
+  values are scanned from its start where a few of its rows walked say the
+  first are near it, and its rows listed where they are not, as for a word
+  that came into use late in a table loaded in time order (`'%covid%'
+  LIMIT 20` took 64 ms a shard and takes 9).
+- **Whether a pattern's rows are listed or its values scanned is decided
+  in bytes of whole stored rows**, which a scan reads, measured anew on
+  Loghub's SSH log and on Hacker News titles: a field that is a small part
+  of its row (a title beside its link and counts) is listed from the index
+  for more rows than before, and one that is most of its row for fewer.
+
 ## 0.3.7
 
 The server on PyPI (`pip install chloedb-server`, `uvx chloedb-server`) and

@@ -11,6 +11,7 @@ and BGL.
 | `NAME.patterns` | the conditions run on a log: `LIKE` or `ILIKE`, a tab and a pattern on `body`, or `WHERE`, a tab and a whole condition |
 | `NAME.json` | `examples/substring_bench.rs DIR NAME.jsonl NAME.patterns`: the log loaded into two tables that differ in the option on `body`, each merged to one segment; their bytes, the seconds each took to build, and per condition the rows it selects and the time of a count and of the first ten rows by `id` on each table |
 | `tables.py` | prints the tables below from the JSON |
+| [`costs.md`](costs.md) | what listing a pattern's rows and scanning its values cost, on SSH and on Hacker News titles, where the rule for choosing between them comes from; and the 40 queries of `chloedb-hn` before and after the change of 16 November that set it, which also answers `ILIKE` of one string from the index alone and stops a `LIMIT` at its first rows |
 
 The table is `logs (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, host KEYWORD,
 service KEYWORD, severity KEYWORD, pid INT, body TEXT)`, as

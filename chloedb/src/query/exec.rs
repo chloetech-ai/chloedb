@@ -610,6 +610,14 @@ impl ExecOptions {
     }
 }
 
+/// [`substring::like::LOCATE_BYTES`] for segment `s`'s substring index
+/// `index`, by the bytes of the segment's stored rows, which a scan reads
+/// ([`substring::like::locate_bytes`]).
+fn locate_bytes(s: &Seg<'_>, index: &SubstringIndex) -> u64 {
+    let stored = s.r.store().ok().flatten().map_or(0, |st| st.byte_sizes().1 as u64);
+    substring::like::locate_bytes(index, stored)
+}
+
 /// The multi-valued INT field whose ranges every condition of `cs` is, when
 /// there are several.
 fn ranges_of_one_list(schema: &Schema, cs: &[Pred]) -> Option<usize> {
@@ -2394,6 +2402,73 @@ impl<'a> Executor<'a> {
         Ok(DocSet::from_sorted(out, s.r.n_docs))
     }
 
+    /// Whether the filter cache keeps `p`'s documents of segment `s`
+    /// ([`Self::kept`] without counting a time it saw them).
+    fn cache_holds(&self, s: &Seg<'a>, p: &Pred) -> bool {
+        match (&self.opts.filter_cache, self.cache_key(s, p)) {
+            (Some(cache), Some(key)) => cache.holds(&s.r, &key),
+            _ => false,
+        }
+    }
+
+    /// The first `need` live documents of segment `s`, by docID, whose
+    /// value of `field` matches the `LIKE` pattern, for a `LIMIT` without
+    /// an `ORDER BY` whose whole condition the pattern is: the index stops
+    /// once it has them ([`substring::like::eval_first`]), and a segment
+    /// without one stops its scan there. They are the documents
+    /// [`Self::filter_set`] would list first; that set is neither made nor
+    /// kept, so the filter cache does not count this query as one that saw
+    /// the pattern.
+    fn first_like(&mut self, s: &Seg<'a>, field: usize, pattern: &str, ci: bool, need: usize) -> Result<Arc<DocSet>> {
+        let t0 = Instant::now();
+        let n = s.r.n_docs;
+        let like = Like::new(pattern, ci);
+        let live = |d: DocId| s.view.live.as_ref().is_none_or(|l| l.contains(d));
+        let store = s.r.store()?;
+        let mut cache = forward::StoreCache::default();
+        let mut value = |d: DocId| -> Result<Option<String>> {
+            Ok(match store {
+                Some(st) => match st.get_fields_cached(d, &[field], &mut cache)?.pop() {
+                    Some(Value::Str(v)) => Some(v),
+                    _ => None,
+                },
+                None => None,
+            })
+        };
+        let mut ticker = Ticker::new(self.opts, Ticker::DOCS);
+        let set = match s.r.substring(field)? {
+            Some(index) => {
+                let mut stats = substring::like::Stats::default();
+                let mut tick = || ticker.tick();
+                let first = substring::like::First { need, live: &live };
+                substring::like::eval_first(index, &like, n, &mut value, locate_bytes(s, index), &mut stats, &mut tick, first)?
+            }
+            None => {
+                let mut hits = Vec::new();
+                for d in 0..n {
+                    if hits.len() >= need {
+                        break;
+                    }
+                    ticker.tick()?;
+                    if live(d) && value(d)?.is_some_and(|v| like.matches(&v)) {
+                        hits.push(d);
+                    }
+                }
+                DocSet::from_sorted(hits, n)
+            }
+        };
+        let set = match &s.view.live {
+            Some(l) => DocSet::from_sorted(set.iter().filter(|&d| l.contains(d)).collect(), n),
+            None => set,
+        };
+        let mut l = Local { filter_docs: set.len() as u64, ..Local::default() };
+        l.plan.push(format!("seg {}: the pattern's first {need} rows, {} docs", s.ord, set.len()));
+        let step = Step { op: "filter".into(), detail: format!("the pattern's first {need} rows"), start_us: steps::us_at(t0), us: steps::tenth(t0.elapsed().as_nanos() as f64 / 1e3), rows: Some(set.len() as u64), seg: Some(s.ord as u32), ..Step::default() };
+        steps::wrap(&mut l.steps, 0, step);
+        self.absorb(l);
+        Ok(Arc::new(set))
+    }
+
     /// The documents of segment `s` whose value of `field` matches the
     /// `LIKE` pattern (`ci`: `ILIKE`), or with `negated` those with a value
     /// that does not: from the field's substring index where the segment
@@ -2430,11 +2505,12 @@ impl<'a> Executor<'a> {
         // part too: a scan of a large segment's values runs for minutes.
         let mut ticker = Ticker::new(self.opts, Ticker::DOCS);
         let mut tick = || ticker.tick();
-        let hits = substring::like::eval_with(index, &like, n, &mut value, substring::like::LOCATE_BYTES, &mut stats, &mut tick)?;
+        let locate = locate_bytes(s, index);
+        let hits = substring::like::eval_with(index, &like, n, &mut value, locate, &mut stats, &mut tick)?;
         if !negated {
             return Ok(hits);
         }
-        let valued = substring::like::eval_with(index, &Like::new("%", false), n, &mut value, substring::like::LOCATE_BYTES, &mut stats, &mut tick)?;
+        let valued = substring::like::eval_with(index, &Like::new("%", false), n, &mut value, locate, &mut stats, &mut tick)?;
         Ok(valued.difference(&hits))
     }
 
@@ -2702,7 +2778,10 @@ impl<'a> Executor<'a> {
             if want.is_some_and(|w| out.len() >= w) {
                 break;
             }
-            let set = self.filter_set(s, p)?;
+            let set = match (p, want) {
+                (Pred::Like { field, pattern, ci, negated: false }, Some(w)) if !self.sets.contains_key(&s.ord) && !self.cache_holds(s, p) => self.first_like(s, *field, pattern, *ci, w - out.len())?,
+                _ => self.filter_set(s, p)?,
+            };
             for d in set.iter() {
                 tick.tick()?;
                 if want.is_some_and(|w| out.len() >= w) {
@@ -5382,7 +5461,7 @@ impl Estimator for SegEst<'_, '_> {
     fn like_estimate(&self, field: usize, pattern: &str, ci: bool) -> (f64, f64) {
         let n = self.s.r.n_docs as f64;
         // The index counts a pattern's rows without walking any.
-        match self.s.r.substring(field).ok().flatten().map(|ix| substring::like::estimate(ix, &Like::new(pattern, ci), substring::like::LOCATE_BYTES)) {
+        match self.s.r.substring(field).ok().flatten().map(|ix| substring::like::estimate(ix, &Like::new(pattern, ci), locate_bytes(self.s, ix))) {
             Some(Ok(e)) => (e.candidates as f64, e.located as f64 * plan::LIKE_LOCATE + e.tested as f64 * plan::LIKE_READ + e.scanned as f64 * plan::LIKE_SCAN),
             _ => (n / 10.0, n * plan::LIKE_SCAN),
         }
