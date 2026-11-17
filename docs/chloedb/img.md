@@ -6,7 +6,7 @@
 
 Every search is one statement over the pictures' table, `ORDER BY similarity(clip, :v)` on its HNSW index, with the filters a `WHERE`:
 
-- **Search by what is in a picture.** *A lighthouse in a storm*, *botanical drawing of a fern*, *children on a beach in the 1920s*: the words are embedded by CLIP's text tower and meet the pictures' vectors. Kind (photo, old photo, painting, print, drawing, map, text page, object, illustration), source, licence, shape and size are facets of the closest 2,000, and filters of the query.
+- **Search by what is in a picture.** *A lighthouse in a storm*, *botanical drawing of a fern*, *children on a beach in the 1920s*: the words are embedded by CLIP's text tower and meet the pictures' vectors. Kind (photo, old photo, painting, print, drawing, map, text page, object, illustration), source, licence, shape and size are facets of the closest 500, and filters of the query.
 - **Search with a photo of your own.** It is embedded and thrown away; nothing is kept. The answer is the closest pictures, the closest photos and the closest paintings, prints and drawings.
 - **Search by a detail.** Draw a box on a picture and get the pictures that look like what is in it.
 - **More like this, less like that.** Mark pictures up or down and the query moves toward and away from them (Rocchio); *strongly* moves it twice as far.
@@ -34,7 +34,7 @@ chloedb-img serve --local ~/img-db --models ~/.local/share/chloedb/models --cach
 chloedb-img load --data ~/pd12m --prepared ~/img-prepared --rows 1000000                       # about three minutes for a million
 ```
 
-With `--public` the app serves the page at `/` to anyone, within `--per-minute` requests, `--photos-per-minute` photos and details and `--thumbs-per-minute` new thumbnails a minute from one address. There is no SQL from the page and no MCP tools. `deploy/k8s.yaml` runs it on Kubernetes: one 16 GB node with the server and the app, the database and the thumbnails on the node's own SSD. `--warm-per-theme` makes the thumbnails of the pictures nearest each theme's middle at start, and `--warm-first N` those of the first N pictures, so that colors cover more of them.
+With `--public` the app serves the page at `/` to anyone, within `--per-minute` requests, `--photos-per-minute` photos and details and `--thumbs-per-minute` new thumbnails a minute from one address. There is no SQL from the page and no MCP tools. `deploy/k8s.yaml` runs it on Kubernetes: one 16 GB node with the server and the app, the database and the thumbnails on the node's own SSD, and beside the server `chloedb-gh-pin` (`chloedb-gh/tools/pin`), which locks the vectors' 8-bit codes and graph in memory: over 5 million pictures the vectors (15 GB in float32) no longer fit in the node's memory, and a search that reads its codes from the disk takes seconds rather than tenths of one. `--warm-per-theme` makes the thumbnails of the pictures nearest each theme's middle at start, and `--warm-first N` those of the first N pictures, so that colors cover more of them.
 
 ## The tables
 

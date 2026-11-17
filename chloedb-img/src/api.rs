@@ -587,7 +587,10 @@ struct SearchQ {
 
 const PER_PAGE: usize = 48;
 
-/// Facet counts of the closest 2,000.
+/// How many of the closest pictures the facets count.
+const FACETS_OF: usize = 500;
+
+/// Facet counts of the closest [`FACETS_OF`].
 fn facets(rows: &[Row]) -> Value {
     let mut out = serde_json::Map::new();
     for col in ["kind", "source", "licence", "shape", "size"] {
@@ -625,7 +628,7 @@ fn varied(rows: Vec<Row>, k: usize) -> Vec<Row> {
 }
 
 /// A search by words, steered by the pictures liked and hidden, with its
-/// facets over the closest 2,000.
+/// facets over the closest [`FACETS_OF`].
 async fn search(State(svc): State<Shared>, Query(a): Query<SearchQ>) -> Answer {
     let t0 = Instant::now();
     let c = Ctx::new(&svc);
@@ -651,10 +654,15 @@ async fn search(State(svc): State<Shared>, Query(a): Query<SearchQ>) -> Answer {
     let page = a.page.min(40);
     let mut fp = serde_json::Map::new();
     fp.insert("v".into(), vjson(&v));
-    let facet_sql = "SELECT kind, source, licence, shape, size FROM img_pictures ORDER BY similarity(clip, :v) DESC LIMIT 2000";
+    // The facets count the 500 closest, in no order, so they are scored on
+    // the vectors' 8-bit codes alone (`rerank => 64`): re-scoring them in
+    // float32 reads each from disk once the vectors outgrow memory. The walk
+    // costs about its k in every segment, so 2,000 took 2 s over 5 million
+    // pictures in 40 segments, and 500 takes a quarter of that.
+    let facet_sql = format!("SELECT kind, source, licence, shape, size FROM img_pictures ORDER BY similarity(clip, :v, rerank => 64) DESC LIMIT {FACETS_OF}");
     let variety = a.order == "variety";
     let (facet_rows, rows) = tokio::join!(
-        c.q("facets", "the facets of the 2,000 closest", facet_sql, Value::Object(fp)),
+        c.q("facets", "the facets of the 500 closest", &facet_sql, Value::Object(fp)),
         async {
             match variety {
                 true => {

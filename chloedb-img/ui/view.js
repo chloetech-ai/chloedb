@@ -650,7 +650,7 @@ async function searchPage(app, main, q, opts, alive) {
   const j = await app.api(`/v1/search?${params}`, { timeout: 60000 });
   if (!alive()) return;
 
-  // Facets over the closest 2,000.
+  // Facets over the closest 500.
   fill(left, FACETS.map(([k, title, names]) => {
     const rows = j.facets?.[k] || [];
     if (!rows.length) return null;
@@ -658,7 +658,7 @@ async function searchPage(app, main, q, opts, alive) {
     return h("div", { class: "ax-facet" }, h("h4", {}, title), rows.map((r) => h("label", { class: "r" },
       h("input", { type: "checkbox", checked: on.has(r.v), onchange: (e) => { const s = new Set(list(k)); e.target.checked ? s.add(r.v) : s.delete(r.v); go(set(k, [...s])); } }),
       h("span", { class: "l" }, names?.[r.v] || r.v), h("span", { class: "n" }, fmt(r.n)))));
-  }), h("p", { class: "ix-note" }, "Counts are over the 2,000 closest pictures."));
+  }), h("p", { class: "ix-note" }, "Counts are over the 500 closest pictures."));
 
   const filtered = ["kind", "source", "licence", "shape", "size"].filter((k) => opts.get(k));
   const variety = opts.get("order") === "variety";
@@ -1153,7 +1153,7 @@ async function builtPage(app, main, alive) {
   const ms = (k, f) => (t[k] ? `${t[k][f].toFixed(1)} ms` : "not asked yet");
   const td = (x, mono) => h("td", { style: { padding: "8px 12px", fontFamily: mono ? "var(--mono)" : null, fontSize: mono ? "12.5px" : null } }, x);
   const table = (head, rows) => h("div", { class: "ix-table" }, h("table", {}, h("thead", {}, h("tr", {}, head.map((x) => h("th", {}, x)))), h("tbody", {}, rows.map((r) => h("tr", {}, r)))));
-  const RECEIPTS = [["words", "Words (and steering)", j.pictures], ["facets", "Facets of the 2,000 closest", j.pictures], ["picture", "More like this", j.pictures], ["photo", "Your photo", j.pictures], ["detail", "A detail", j.pictures], ["mix", "A picture plus words", j.pictures], ["bridge", "Each step of a bridge", j.pictures], ["theme", "Inside a theme", null], ["colors", "Colors", j.colors]];
+  const RECEIPTS = [["words", "Words (and steering)", j.pictures], ["facets", "Facets of the 500 closest", j.pictures], ["picture", "More like this", j.pictures], ["photo", "Your photo", j.pictures], ["detail", "A detail", j.pictures], ["mix", "A picture plus words", j.pictures], ["bridge", "Each step of a bridge", j.pictures], ["theme", "Inside a theme", null], ["colors", "Colors", j.colors]];
   const gb = (j.pictures * 768 * 4) / 1e9;
   fill(main, h("div", { class: "ax-grid two", style: { marginTop: "10px" } },
     h("article", { class: "ax-about" },
@@ -1179,7 +1179,7 @@ async function builtPage(app, main, alive) {
         h("li", {}, h("b", {}, "Bridge: "), "one statement for each step on the great circle between two vectors."),
         h("li", {}, h("b", {}, "More variety: "), "four times as many of the closest, then the ones least like those already picked (maximal marginal relevance)."),
         h("li", {}, h("b", {}, "Colors: "), h("code", {}, "ORDER BY similarity(colors, :c)"), " over img_colors, where each picture's colors are a histogram over CIE Lab, the space where equal distances look equally different, kept as square roots so that the score is how much two histograms overlap."),
-        h("li", {}, h("b", {}, "Facets: "), "the kind, collection, licence, shape and size of the closest 2,000.")),
+        h("li", {}, h("b", {}, "Facets: "), "the kind, collection, licence, shape and size of the closest 500.")),
       h("p", {}, "The footer of each page has “The SQL behind this page”: the statements it ran, with their rows and times."),
       h("h2", {}, "Receipts"),
       h("p", {}, `How long each kind of statement took over its last ${fmt(Math.max(0, ...Object.values(t).map((x) => x?.n || 0)))} runs, measured here since the app started ${(() => { const m = Math.round((j.uptime_s || 0) / 60); return m < 2 ? "a minute ago" : m < 120 ? `${m} minutes ago` : `${Math.round(m / 60)} hours ago`; })()}, not estimated:`),

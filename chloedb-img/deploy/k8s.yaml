@@ -1,7 +1,12 @@
 # Image Explorer on ChloeDB in a Kubernetes cluster: one node (16 GB) with
 #   img-server  a stock chloedb-server: the pictures, themes, colors and
-#               links (about 9 GB on disk and 5 GB in memory for the first
-#               million pictures)
+#               links (about 25 GB on disk for 5 million pictures), and
+#               beside it chloedb-pin (chloedb-gh/tools/pin, built as its
+#               main.rs says and copied to /mnt/img/db), which locks the
+#               vectors' 8-bit codes and graph in memory (4.3 GB for 5
+#               million) so that a search never reads them from the disk;
+#               without it the server runs as before, and its log is
+#               /data/pin.log
 #   img-app     the app: the page, the API, CLIP for words and photos
 #               (1.7 GB of weights, about 2 GB in memory) and the thumbnails
 #   img-work    a shell for putting the binary, the model and PD12M's files
@@ -43,11 +48,13 @@ spec:
       containers:
       - name: server
         image: ghcr.io/chloetech-ai/chloedb-server@sha256:29084d3481fdaef5c5f1eb36fcf3b3363f71cec640ed9f1eaf5366da4226ee1f
-        command: ["sh", "-c", "exec $(command -v chloedb-server || command -v strata-server) --db /data/img.chloedb --listen 0.0.0.0:7700 --grpc off --backup-dir /data/backup"]
+        command: ["sh", "-c", "([ -x /data/chloedb-pin ] && sleep 20 && exec /data/chloedb-pin /data/img.chloedb >/data/pin.log 2>&1) & exec $(command -v chloedb-server || command -v strata-server) --db /data/img.chloedb --listen 0.0.0.0:7700 --grpc off --backup-dir /data/backup"]
         env:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: img-admin, key: token}}}
         ports: [{containerPort: 7700}]
         readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # The locked codes and graph count against the limit, as the
+        # server's own memory and its merges do.
         resources: {requests: {cpu: "2", memory: 6Gi}, limits: {memory: 9Gi}}
         volumeMounts: [{name: data, mountPath: /data}]
       volumes: [{name: data, hostPath: {path: /mnt/img/db, type: DirectoryOrCreate}}]
