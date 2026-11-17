@@ -572,7 +572,8 @@ function render(el, ctx) {
     status: null,
     api: async (path, opts) => {
       const j = await ctx.api(path, opts);
-      if (j && Array.isArray(j.queries)) { app.queries = j.queries; app.took = j.took_ms; drawSql(); }
+      // opts.add: a page's later part, whose statements join its first's.
+      if (j && Array.isArray(j.queries)) { app.queries = opts?.add ? app.queries.concat(j.queries) : j.queries; app.took = opts?.add ? app.took + (j.took_ms || 0) : j.took_ms; drawSql(); }
       return j;
     },
     href: (...parts) => ctx.href(...parts),
@@ -755,9 +756,13 @@ async function repoPage(app, main, name, alive, tab0) {
   const marks = events.slice(-8).map((e, i) => ({ ...e, x: e.t, n: i + 1 }));
   const kept = (j.people_year || []).slice(0, 3).map((p) => p.login).filter(Boolean);
   const owner = r.name.split("/")[0];
-  const tabs = [
-    ["alternatives", "Alternatives", j.alike.length],
-    ["costarred", "Also starred", j.costarred.length],
+  // Alternatives and what its stargazers starred too come after the rest
+  // (/v1/repo-more): they take seconds for a big repo.
+  j.alike = j.alike || null;
+  j.costarred = j.costarred || null;
+  const tabs = () => [
+    ["alternatives", "Alternatives", j.alike ? j.alike.length : "…"],
+    ["costarred", "Also starred", j.costarred ? j.costarred.length : "…"],
     ["people", "People", (j.people_ever || []).length],
     ["names", "Names", (j.names || []).length],
   ];
@@ -765,8 +770,9 @@ async function repoPage(app, main, name, alive, tab0) {
   const tabBody = h("div", {});
   const tabBar = h("div", { class: "gx-tabs" });
   const drawTabs = () => {
-    fill(tabBar, tabs.map(([k, t, n]) => h("button", { class: tab === k ? "on" : "", onclick: () => { tab = k; drawTabs(); } }, t, h("span", { class: "n" }, n))));
-    if (tab === "alternatives") fill(tabBody, h("div", { class: "gx-lead" }, "What does the same job, by the meaning of its name, description and topics, with how starred each is."), h("ul", { class: "gx-list" }, j.alike.map((x) => repoItem(app, x))));
+    fill(tabBar, tabs().map(([k, t, n]) => h("button", { class: tab === k ? "on" : "", onclick: () => { tab = k; drawTabs(); } }, t, h("span", { class: "n" }, n))));
+    if ((tab === "alternatives" && !j.alike) || (tab === "costarred" && !j.costarred)) fill(tabBody, h("div", { class: "gx-lead" }, tab === "alternatives" ? "Finding what does the same job…" : "Reading what its stargazers starred too…"), skel(4));
+    else if (tab === "alternatives") fill(tabBody, h("div", { class: "gx-lead" }, "What does the same job, by the meaning of its name, description and topics, with how starred each is."), h("ul", { class: "gx-list" }, j.alike.map((x) => repoItem(app, x))));
     else if (tab === "costarred") fill(tabBody, h("div", { class: "gx-lead" }, `What the last ${fmt(j.stargazers_sampled)} people who starred it starred too, against how starred each repo is anyway.`), h("ul", { class: "gx-list" }, j.costarred.map((x) => repoItem(app, x, { extra: h("span", { class: "up" }, `${fmt(x.shared)} shared`) }))));
     else if (tab === "people") fill(tabBody, h("div", { class: "gx-lead" }, "Who did the most work in it ever: pushes, pull requests, issues, reviews, comments and releases."), h("table", { class: "gx-tbl" }, h("tr", {}, h("th", {}, "who"), h("th", { class: "r" }, "events"), h("th", {}, "first"), h("th", {}, "last")),
       (j.people_ever || []).map((p) => h("tr", {}, h("td", {}, p.login ? h("a", { href: app.href("person", p.login) }, p.login) : `#${p.actor}`), h("td", { class: "r" }, fmt(p.n)), h("td", {}, dmy(p.first)), h("td", {}, dmy(p.last))))));
@@ -776,6 +782,12 @@ async function repoPage(app, main, name, alive, tab0) {
   const total = (v.year?.pushes || 0) + (v.year?.prs || 0) + (v.year?.issues || 0);
   const people = j.people_year || [];
   const work = people.reduce((a, p) => a + p.n, 0);
+  const coCard = h("div", {});
+  const drawCo = () => fill(coCard, j.costarred?.length ? card("People who starred it also starred", null, h("div", { class: "gx-kv" }, j.costarred.slice(0, 7).flatMap((x) => [repoLink(app, x.name), h("span", {}, `${fmt(x.shared)}`)]))) : null);
+  app.api(`/v1/repo-more/${r.repo}`, { timeout: 20000, add: true })
+    .then((m) => { j.alike = m.alike || []; j.costarred = m.costarred || []; j.stargazers_sampled = m.stargazers_sampled || 0; })
+    .catch(() => { j.alike = j.alike || []; j.costarred = j.costarred || []; })
+    .finally(() => { if (alive()) { drawTabs(); drawCo(); } });
   fill(main, h("div", { class: "gx-grid two" },
     h("div", {},
       h("div", { class: "gx-crumb" }, h("code", {}, `github.com/${r.name}`), lang(r.language), r.license ? h("span", { class: "gx-chip c" }, r.license) : null, r.first_seen ? h("span", {}, `public since ${my(r.first_seen)}`) : null, word(v.word)),
@@ -808,7 +820,7 @@ async function repoPage(app, main, name, alive, tab0) {
       people.length ? card("Who keeps it going", null, h("div", { class: "gx-ppl" }, people.slice(0, 6).map((p) => h("div", { class: "p" },
         h("div", { class: "l" }, p.login ? h("a", { href: app.href("person", p.login) }, p.login) : `#${p.actor}`, h("span", {}, `${Math.round((p.n / Math.max(1, work)) * 100)}%`)),
         h("div", { class: "b" }, h("i", { style: { width: `${(p.n / Math.max(1, people[0].n)) * 100}%` } })))))) : null,
-      j.costarred.length ? card("People who starred it also starred", null, h("div", { class: "gx-kv" }, j.costarred.slice(0, 7).flatMap((x) => [repoLink(app, x.name), h("span", {}, `${fmt(x.shared)}`)]))) : null,
+      coCard,
       j.hn?.submissions?.length ? card("On Hacker News", null, h("div", { class: "gx-kv" }, j.hn.submissions.slice().sort((a, b) => b.points - a.points).slice(0, 6).flatMap((s) => [h("a", { href: s.url, target: "_blank", rel: "noopener" }, s.title), h("span", {}, `${fmt(s.points)} pts`)]))) : null)));
 }
 

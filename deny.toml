@@ -33,6 +33,15 @@ ignore = [
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained, no known flaw; pulled in by dependencies" },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained, no known flaw; pulled in by serde_yaml" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash is unmaintained, no known flaw; pulled in by chloedb-crawl's HTML parser" },
+    # chrono declared unmaintained (2026-11-17, chronotope/chrono#1768), and
+    # with it chrono-tz and humantime, which wrap it. arrow and datafusion
+    # (chloedb's DataFusion engine, Parquet) and object_store pull them into
+    # every crate, and seven app crates use chrono directly; no safe upgrade
+    # exists. Move the app crates to jiff or time, and drop these when arrow
+    # and object_store do.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, no known flaw; arrow, datafusion and the app crates use it, no safe upgrade yet" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz is unmaintained, no known flaw; pulled in by arrow-array, no safe upgrade yet" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime is unmaintained (it wraps chrono), no known flaw; pulled in by object_store, no safe upgrade yet" },
 ]
 
 [licenses]

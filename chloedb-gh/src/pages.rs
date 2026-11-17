@@ -405,7 +405,7 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
     let Some(r) = info.into_iter().next() else {
         return Ok(json!({"found": false, "id": id}));
     };
-    let (recent, ever, gazers) = tokio::join!(
+    let (recent, ever) = tokio::join!(
         c.soft("who did the work this last year", format!("SELECT actor, COUNT(*) AS n FROM gh_events WHERE repo = :id AND t > :since AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 30"), json!({"id": id, "since": year_ago})),
         async {
             // As `chloedb-gh repo-people` summed them; from the events, every
@@ -415,19 +415,59 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
                 Err(_) => c.soft_within("who did the work ever", format!("SELECT actor, COUNT(*) AS n, MIN(t) AS first, MAX(t) AS last FROM gh_events WHERE repo = :id AND kind IN {WORK} GROUP BY actor ORDER BY n DESC LIMIT 30"), p.clone(), EVER_MS).await,
             }
         },
-        c.soft("its latest stargazers", format!("SELECT actor FROM gh_stars WHERE repo = :id ORDER BY t DESC LIMIT {COSTAR_PEOPLE}"), p.clone()),
     );
     let mut people: Vec<i64> = ids(&recent, "actor");
     people.extend(ids(&ever, "actor"));
+    let who = logins(c, &people).await;
+    // Bots (logins ending in "[bot]") do much of the work in big repos:
+    // who keeps a repo going, and its bus factor, are about people.
+    let is_bot = |r: &Row| who.get(&r.i("actor")).is_some_and(|l| l.ends_with("[bot]"));
+    let recent: Vec<Row> = recent.into_iter().filter(|r| !is_bot(r)).collect();
+    let ever: Vec<Row> = ever.into_iter().filter(|r| !is_bot(r)).collect();
+    let named = |rows: &[Row]| -> Vec<Value> {
+        rows.iter()
+            .map(|x| {
+                let mut v = obj(x);
+                v["login"] = json!(who.get(&x.i("actor")).cloned().unwrap_or_default());
+                v
+            })
+            .collect()
+    };
+    let vitals = vitals(
+        &months,
+        &recent,
+        &last,
+        latest,
+        r.get("archived").and_then(Value::as_bool).unwrap_or(false),
+    );
+    let spikes = spikes(&days, &months);
+    Ok(json!({
+        "found": true, "repo": obj(&r), "months": months.iter().map(obj).collect::<Vec<_>>(), "days": days.iter().map(obj).collect::<Vec<_>>(),
+        "names": names.iter().map(obj).collect::<Vec<_>>(),
+        "work": last.first().map(obj), "people_year": named(&recent), "people_ever": named(&ever),
+        "vitals": vitals, "spikes": spikes, "latest": latest,
+    }))
+}
+
+/// The two slow parts of a repo's page, asked for after the rest is shown:
+/// what does the same job, and what the people who starred it starred too
+/// (its stargazers' stars: seconds for a big repo, even from memory).
+pub async fn repo_more(c: &Ctx<'_>, id: i64) -> Result<Value> {
+    let p = json!({"id": id});
+    let (info, gazers) = tokio::join!(
+        c.rows("the repo", format!("SELECT {REPO_COLS} FROM gh_repos WHERE repo = :id"), p.clone()),
+        c.soft("its latest stargazers", format!("SELECT actor FROM gh_stars WHERE repo = :id ORDER BY t DESC LIMIT {COSTAR_PEOPLE}"), p.clone()),
+    );
+    let Some(r) = info?.into_iter().next() else {
+        return Ok(json!({"found": false, "id": id}));
+    };
     let text = format!(
         "{} {} {}",
         r.s("name").replace(['/', '-', '_'], " "),
         r.s("description"),
         r.s("topics").replace(',', " ")
     );
-    let gz = sample_gazers(c, ids(&gazers, "actor")).await;
-    let (who, alike, co) = tokio::join!(
-        logins(c, &people),
+    let (alike, (gz, co)) = tokio::join!(
         async {
             let near = c.near("repos that do the same job (by meaning)", &Near { text: &text, cond: "repo <> :id", boost: 0.1, limit: 40 }, json!({"id": id})).await;
             let info = repos_of(c, "those repos", &ids(&near, "repo")).await;
@@ -440,10 +480,12 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
                 .collect::<Vec<Row>>()
         },
         async {
+            let gz = sample_gazers(c, ids(&gazers, "actor")).await;
             if gz.len() < 20 {
-                return Vec::new();
+                return (gz, Vec::new());
             }
-            c.soft_within("what the same people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:a) GROUP BY repo ORDER BY n DESC LIMIT 60", json!({"a": keys(&gz)}), GAZERS_MS).await
+            let co = c.soft_within("what the same people starred", "SELECT repo, COUNT(*) AS n FROM gh_stars WHERE actor_k IN (:a) GROUP BY repo ORDER BY n DESC LIMIT 60", json!({"a": keys(&gz)}), GAZERS_MS).await;
+            (gz, co)
         },
     );
     let co_ids: Vec<i64> = ids(&co, "repo").into_iter().filter(|x| *x != id).collect();
@@ -518,35 +560,7 @@ pub async fn repo(c: &Ctx<'_>, id: i64, latest: i64) -> Result<Value> {
     });
     alts.truncate(12);
     costar.truncate(12);
-    // Bots (logins ending in "[bot]") do much of the work in big repos:
-    // who keeps a repo going, and its bus factor, are about people.
-    let is_bot = |r: &Row| who.get(&r.i("actor")).is_some_and(|l| l.ends_with("[bot]"));
-    let recent: Vec<Row> = recent.into_iter().filter(|r| !is_bot(r)).collect();
-    let ever: Vec<Row> = ever.into_iter().filter(|r| !is_bot(r)).collect();
-    let named = |rows: &[Row]| -> Vec<Value> {
-        rows.iter()
-            .map(|x| {
-                let mut v = obj(x);
-                v["login"] = json!(who.get(&x.i("actor")).cloned().unwrap_or_default());
-                v
-            })
-            .collect()
-    };
-    let vitals = vitals(
-        &months,
-        &recent,
-        &last,
-        latest,
-        r.get("archived").and_then(Value::as_bool).unwrap_or(false),
-    );
-    let spikes = spikes(&days, &months);
-    Ok(json!({
-        "found": true, "repo": obj(&r), "months": months.iter().map(obj).collect::<Vec<_>>(), "days": days.iter().map(obj).collect::<Vec<_>>(),
-        "names": names.iter().map(obj).collect::<Vec<_>>(),
-        "work": last.first().map(obj), "people_year": named(&recent), "people_ever": named(&ever),
-        "alike": alts, "costarred": costar, "stargazers_sampled": gz.len(),
-        "vitals": vitals, "spikes": spikes, "latest": latest,
-    }))
+    Ok(json!({"found": true, "id": id, "alike": alts, "costarred": costar, "stargazers_sampled": gz.len()}))
 }
 
 /// How alive a repo is: this last year against the one before, how much
