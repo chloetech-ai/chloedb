@@ -1,0 +1,41 @@
+[package]
+name = "chloedb-backbone"
+version = "0.3.7"
+edition = "2021"
+license = "Apache-2.0"
+description = "The internet's backbone on ChloeDB: every BGP update RIPE RIS hears, checked against RPKI, with PeeringDB's exchanges, CAIDA's relationships, RIPE Atlas's measurements and IODA's outages: what is wrong now, where, and how it connects"
+
+# A client of chloedb-server over HTTP, as chloedb-hn, chloedb-arxiv and
+# chloedb-gh are: no ChloeDB crate in its build. `fetch` downloads the public
+# sources into a folder, `load` puts their records in, `feed` reads RIS's BGP
+# updates (its archive of MRT files, then RIS Live) into rows, and `serve` is
+# the app, which runs the alert rules (SQL) and groups what they find.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+bzip2-rs = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "gzip", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs", "io-util"] }
+axum = "0.7"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "ansi"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+rustc-hash = "2"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+
+# CI's tests (cargo test --profile ci), as in the other crates.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
