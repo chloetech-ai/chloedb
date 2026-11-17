@@ -68,6 +68,8 @@ struct Run {
     /// Without `stop`: whether a flush after the last operation succeeded,
     /// and whether the database was poisoned then.
     last_flush: Option<(bool, bool)>,
+    /// The calls the operations made, before that flush and closing.
+    calls: u64,
 }
 
 thread_local! {
@@ -185,6 +187,7 @@ fn workload(path: &Path, src: &Arc<MapSource>, sync: bool, seed: u64, ops: usize
             }
         }
     }
+    run.calls = io::calls();
     if !stop {
         run.last_flush = Some((db.flush().is_ok(), db.is_poisoned()));
     }
@@ -210,12 +213,13 @@ fn transaction(db: &Database, rng: &mut StdRng, src: &MapSource, next: &mut Keys
     tx.commit()
 }
 
-/// The calls a workload makes.
-fn calls_of(name: &str, sync: bool, seed: u64, ops: usize) -> u64 {
+/// The calls a workload without failures makes, those of closing the
+/// database included (`closing`) or not.
+fn calls_of(name: &str, sync: bool, seed: u64, ops: usize, closing: bool) -> u64 {
     let dir = tempfile::tempdir().unwrap();
     let src = Arc::new(MapSource::default());
-    workload(&dir.path().join(name), &src, sync, seed, ops, None, true);
-    let n = io::calls();
+    let run = workload(&dir.path().join(name), &src, sync, seed, ops, None, true);
+    let n = if closing { io::calls() } else { run.calls };
     io::crash();
     n
 }
@@ -228,7 +232,7 @@ fn points(calls: u64) -> impl Iterator<Item = u64> {
 }
 
 fn power_loss(sync: bool, seed: u64, ops: usize) {
-    let calls = calls_of("db.strata", sync, seed, ops);
+    let calls = calls_of("db.strata", sync, seed, ops, true);
     assert!(calls > 100, "{calls} calls");
     for at in points(calls) {
         let dir = tempfile::tempdir().unwrap();
@@ -303,7 +307,10 @@ fn power_loss_without_sync_loses_only_the_newest_commits() {
 }
 
 fn failing_calls(name: &str, errno: i32, sticky: bool, seed: u64, ops: usize) {
-    let calls = calls_of(name, true, seed, ops);
+    // The operations' calls: closing the database (which cuts the zeros
+    // written ahead off the log, and ignores a failure) comes after the
+    // flush checked below.
+    let calls = calls_of(name, true, seed, ops, false);
     for at in points(calls) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(name);
@@ -333,9 +340,9 @@ fn power_loss_while_merges_spill_keeps_every_acknowledged_commit() {
 #[test]
 fn a_failed_call_while_merges_spill_changes_nothing_but_its_operation() {
     // The spills' writes are among the calls that fail.
-    let plain = calls_of("db.strata", true, 8, ops());
+    let plain = calls_of("db.strata", true, 8, ops(), true);
     spilling(|| {
-        let spilled = calls_of("db.strata", true, 8, ops());
+        let spilled = calls_of("db.strata", true, 8, ops(), true);
         assert!(spilled > plain, "{spilled} calls spilling, {plain} not");
         seeds(8, 1).for_each(|s| failing_calls("db.strata", libc::EIO, false, s, ops()))
     });
