@@ -17,7 +17,9 @@ system's closest to Strata's (English stemming and stopwords), and the
 queries the app builds for Tantivy, SQLite and LanceDB drop the words
 Strata's drop (`--stopwords strata`; `classic`: Lucene's 33), so that speed
 and nDCG compare the same queries. `strata-1t` is Strata with each query on
-one thread, as Tantivy, SQLite and DuckDB answer one. Per system and
+one thread, as Tantivy, SQLite and DuckDB answer one, and `strata-ef64`
+Strata with its vector searches at 64 candidates, as DuckDB's HNSW
+searches by default (Strata's own default is 200). Per system and
 collection, each in a process of its own, it writes
 RESULTS_DIR/a2_<system>_<collection>.json: build time, size after the
 system's own compaction (VACUUM, optimize; `bytes_before_compact` before
@@ -160,6 +162,11 @@ class StrataSys(System):
     name = "strata"
     # Threads each query searches segments on (None: every core).
     query_threads: int | None = None
+    # Candidates of a vector search (None: Strata's default, 200).
+    ef: int | None = None
+
+    def _sim(self) -> str:
+        return "similarity(emb, :v)" if self.ef is None else f"similarity(emb, :v, ef => {self.ef})"
 
     def __init__(self) -> None:
         import strata
@@ -232,15 +239,15 @@ class StrataSys(System):
         if kind == "filter":
             return self._keys(f"SELECT id FROM docs {w} ORDER BY rating DESC, id LIMIT 10")
         if kind in ("vector", "filtered_vector"):
-            return self._keys(f"SELECT id FROM docs {w} ORDER BY similarity(emb, :v) DESC LIMIT 10", {"v": q["vec"].tolist()})
+            return self._keys(f"SELECT id FROM docs {w} ORDER BY {self._sim()} DESC LIMIT 10", {"v": q["vec"].tolist()})
         if kind in ("hybrid", "filtered_hybrid"):
             return self._keys(
-                f"SELECT id FROM docs {w} ORDER BY rrf(bm25(body, :t), similarity(emb, :v), depth => {DEPTH}) DESC LIMIT 10",
+                f"SELECT id FROM docs {w} ORDER BY rrf(bm25(body, :t), {self._sim()}, depth => {DEPTH}) DESC LIMIT 10",
                 {"t": q["text"], "v": q["vec"].tolist()},
             )
         if kind == "hybrid_weighted":
             return self._keys(
-                f"SELECT id FROM docs ORDER BY 0.2 * minmax(bm25(body, :t), depth => {DEPTH}) + 0.8 * minmax(similarity(emb, :v), depth => {DEPTH}) DESC LIMIT 10",
+                f"SELECT id FROM docs ORDER BY 0.2 * minmax(bm25(body, :t), depth => {DEPTH}) + 0.8 * minmax({self._sim()}, depth => {DEPTH}) DESC LIMIT 10",
                 {"t": q["text"], "v": q["vec"].tolist()},
             )
         if kind == "facet":
@@ -267,6 +274,16 @@ class StrataOneThread(StrataSys):
 
     name = "strata-1t"
     query_threads = 1
+
+
+class StrataEf64(StrataSys):
+    """Strata built as `strata` is, its vector searches with 64 candidates
+    (`ef => 64`, its default until 10 November and DuckDB vss's
+    `ef_search`), as the cloud comparison runs it: the default searches 200,
+    for a higher recall at a higher cost."""
+
+    name = "strata-ef64"
+    ef = 64
 
 
 def fts5_quote(text: str) -> str:
@@ -786,7 +803,7 @@ class LanceSys(System):
         raise Unsupported(kind)
 
 
-SYSTEMS = {"strata": StrataSys, "strata-1t": StrataOneThread, "sqlite": SqliteSys, "tantivy": TantivySys, "duckdb": DuckSys, "lancedb": LanceSys}
+SYSTEMS = {"strata": StrataSys, "strata-1t": StrataOneThread, "strata-ef64": StrataEf64, "sqlite": SqliteSys, "tantivy": TantivySys, "duckdb": DuckSys, "lancedb": LanceSys}
 
 COLD_KINDS = ("bm25", "vector")  # the kinds timed cold too
 COLD_QUERIES = 100

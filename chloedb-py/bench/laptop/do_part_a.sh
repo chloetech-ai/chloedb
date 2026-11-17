@@ -13,7 +13,9 @@
 #   do_part_a.sh prep        # Shop (Amazon Reviews 2023 Video Games) and the BEIR collections, embedded there
 #   do_part_a.sh run         # A1, A2, writes, A3 in the background; logs in /work/logs
 #                            # (PARTS="a1 a2 writes a3" picks parts; A1_SYSTEMS, A2_SYSTEMS,
-#                            # A2_KINDS, WRITES_SYSTEMS, A3_SYSTEMS narrow them; OUT names the run)
+#                            # A2_KINDS, A2_COLLECTIONS, WRITES_SYSTEMS, A3_SYSTEMS narrow them; OUT names the run;
+#                            # SQLITE_LIB, a directory with a newer libsqlite3 built in the pod,
+#                            # is every part's SQLite, through LD_LIBRARY_PATH)
 #   do_part_a.sh status      # the last log lines and the node's load
 #   do_part_a.sh fetch DIR   # the reports and logs into DIR
 #   do_part_a.sh down        # delete the cluster and check nothing tagged strata-bench is left
@@ -161,11 +163,11 @@ prep)
         echo prep started"
     ;;
 run)
-    in_pod "set -e; . /work/venv/bin/activate; cd /work/strata; export NODE_REGION=$REGION
+    in_pod "set -e; . /work/venv/bin/activate; cd /work/strata; export NODE_REGION=$REGION ${SQLITE_LIB:+LD_LIBRARY_PATH=$SQLITE_LIB}
         B=chloedb-py/bench/laptop OUT=/work/out/$OUT; mkdir -p \$OUT
         steps=''
         case ' $PARTS ' in *' a1 '*) steps=\"\$steps python3 \$B/a1_app.py --shop /work/data/shop --work /work/w/a1 --out \$OUT ${A1_SYSTEMS:+--systems $A1_SYSTEMS};\" ;; esac
-        case ' $PARTS ' in *' a2 '*) steps=\"\$steps python3 \$B/a2_search.py --data /work/data/beir --collections scifact,nfcorpus,fiqa,trec-covid,quora --work /work/w/a2 --out \$OUT ${A2_SYSTEMS:+--systems $A2_SYSTEMS} ${A2_KINDS:+--kinds $A2_KINDS};\" ;; esac
+        case ' $PARTS ' in *' a2 '*) steps=\"\$steps python3 \$B/a2_search.py --data /work/data/beir --collections ${A2_COLLECTIONS:-scifact,nfcorpus,fiqa,trec-covid,quora} --work /work/w/a2 --out \$OUT ${A2_SYSTEMS:+--systems $A2_SYSTEMS} ${A2_KINDS:+--kinds $A2_KINDS};\" ;; esac
         case ' $PARTS ' in *' writes '*) steps=\"\$steps python3 \$B/a_writes.py --shop /work/data/shop --work /work/w/aw --out \$OUT ${WRITES_SYSTEMS:+--systems $WRITES_SYSTEMS};\" ;; esac
         case ' $PARTS ' in *' a3 '*) steps=\"\$steps python3 \$B/a3_recsys.py --shop /work/data/shop --work /work/w/a3 --out \$OUT ${A3_SYSTEMS:+--systems $A3_SYSTEMS};\" ;; esac
         nohup sh -c \"\$steps echo RUN DONE\" >/work/logs/run-$OUT.log 2>&1 &
