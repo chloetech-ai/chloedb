@@ -90,6 +90,7 @@ from ._native import (
     UnauthorizedError,
     UnavailableError,
     error_code,
+    make_error as _make_error,
 )
 from .client import Client, Session, Written
 from ._serve import Server, find_server, serve
@@ -352,7 +353,11 @@ class Database(Search, FrameStore):
         the damaged files are kept first (`<path>.damaged-<time>`,
         `<path>-wal.damaged`), `damaged` says what was lost, and a
         `RuntimeWarning` is issued."""
-        db = cls(_strata.Database.open(os.fspath(path), None if models is None else os.fspath(models), threads, read_only, recover, sync), timeout_ms=timeout_ms, memory=memory)
+        try:
+            inner = _strata.Database.open(os.fspath(path), None if models is None else os.fspath(models), threads, read_only, recover, sync)
+        except BusyError as e:
+            raise _busy(e, path) from None
+        db = cls(inner, timeout_ms=timeout_ms, memory=memory)
         if db.damaged is not None:
             import warnings
 
@@ -769,6 +774,27 @@ class Database(Search, FrameStore):
         if not hasattr(data, "__arrow_c_stream__") and not type(data).__module__.startswith("pandas"):
             data = _arrow_table(data)
         return self.import_arrow(data, table=table)
+
+
+def _busy(e: BusyError, path: str | os.PathLike) -> BusyError:
+    """A writer's open refused (the engine says by whom and why), with the
+    fixes in Python's words: the Flask reloader of the persona study of 17
+    November 2026 (MAYA-3), and a module opened twice in one process."""
+    message = str(e)
+    if "open elsewhere" not in message:
+        return e
+    p = os.fspath(path)
+    if "this process has it open" in message:
+        hint = f"In Python: open it once and share that Database (a module-level name, or functools.cache on a function that opens it), or chloedb.open({p!r}, read_only=True) to read beside it"
+    elif "the parent of this process" in message:
+        hint = (
+            "In Python: open it in a function your routes call, the first time they need it, not at import "
+            "(the reloader's first process imports the app and never serves it); or app.run(debug=True, use_reloader=False); "
+            f"or serve it, chloedb-server --db {p}, and use chloedb.connect('http://127.0.0.1:7700')"
+        )
+    else:
+        hint = f"In Python: chloedb.open({p!r}, read_only=True) reads beside the writer; to write from several processes, serve it (chloedb-server --db {p}) and use chloedb.connect('http://127.0.0.1:7700')"
+    return _make_error(f"{message}. {hint}", code="busy")
 
 
 def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None, read_only: bool = False, recover: bool = False, timeout_ms: int | None = None, memory: int | None = None, sync: bool = True) -> Database:

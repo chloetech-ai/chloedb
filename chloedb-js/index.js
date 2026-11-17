@@ -99,12 +99,25 @@ async function callStatic(op, args) {
   }
 }
 
+/** A writer's open refused (the engine says by whom and why), with the fixes
+ * in JavaScript's words: a dev server's hot reload that runs a module again
+ * in the same process (DEV-11 of the persona study of 17 November 2026), or
+ * another program. */
+function busy(e, path) {
+  if (e?.code !== "busy" || !/open elsewhere/.test(e.message)) return e;
+  const p = JSON.stringify(String(path));
+  const hint = /this process has it open/.test(e.message)
+    ? `In JavaScript: open it once and share that Database, kept on globalThis so that a hot reload finds it (globalThis.db ??= await open(${p})), or open(${p}, { readOnly: true }) to read beside it`
+    : `In JavaScript: open(${p}, { readOnly: true }) reads beside the writer; to write from several processes, serve it (chloedb-server --db ${String(path)}) and use connect("http://127.0.0.1:7700")`;
+  return makeError(`${e.message}. ${hint}`, { cause: e });
+}
+
 async function opened(op, args, limits = {}) {
   let db;
   try {
     db = new Database(await native.NativeDatabase.open(op, encode(given(args))));
   } catch (e) {
-    throw failed(e);
+    throw op === "open" ? busy(failed(e), args.path) : failed(e);
   }
   if (limits.timeoutMs != null || limits.memory != null) db.setLimits(limits);
   return db;

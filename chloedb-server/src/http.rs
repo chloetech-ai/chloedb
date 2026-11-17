@@ -1679,6 +1679,9 @@ fn table_json(svc: &crate::service::Service, s: &chloedb::schema::Schema) -> Jso
         "embeddings": svc.models().iter().filter(|m| m.table.eq_ignore_ascii_case(&s.table)).map(|m| json!({
             "field": m.field, "from": m.spec.from, "model": m.spec.model,
             "loaded": m.model.is_ok(), "error": m.model.as_ref().err(),
+            // A model this server fetches for it: queued, running (with
+            // the bytes so far), done or failed.
+            "fetch": m.model.as_ref().err().and_then(|_| svc.model_fetch(&m.spec.model)),
             // A model behind an API: the requests it sent.
             "usage": m.model.as_ref().ok().and_then(|e| e.usage()).map(|u| json!({"requests": u.requests, "retries": u.retries, "failures": u.failures, "texts": u.texts, "tokens": u.tokens})),
             // Rows stored without a vector, filled in once the model opened.

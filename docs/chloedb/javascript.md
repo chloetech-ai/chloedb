@@ -141,7 +141,7 @@ Errors reject with a `ChloeDBError`, whose message is the database's (`StrataErr
 | `not_found` | `NotFoundError` | no such route, table or cursor (404) |
 | `conflict` | `ConflictError` | refused by the state it met (409): an `ifSeqNo` that no longer holds, an idempotency key still running, a `minSeqNo` past the server's last write |
 | `partial_write` | `PartialWriteError` | a coordinator wrote some shards and not others: send it again with the same idempotency key |
-| `busy` | `BusyError` | the database is open in another process, or another writer holds it |
+| `busy` | `BusyError` | the database is open to write elsewhere, in another process or by another open in this one (the message says which, and what to do instead), or another writer holds it |
 | `overloaded` | `OverloadedError` | refused for the server's load (429), after the client's retries |
 | `timeout` | `DeadlineError` | a deadline passed: `timeoutMs`, a coordinator's wait for a shard (504) |
 | `unavailable` | `UnavailableError` | no copy can serve it now (503) |

@@ -5,7 +5,7 @@ import { existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { Database, Result, StrataError, fromParquet, fromSqlite, open, planParquet, planSqlite, upgrade, version } from "../index.js";
+import { BusyError, Database, Result, StrataError, fromParquet, fromSqlite, open, planParquet, planSqlite, upgrade, version } from "../index.js";
 import { BOOKS, book, books, tempDir } from "./helpers.mjs";
 
 async function booksDb(n = 200) {
@@ -60,6 +60,21 @@ test("one process at a time has a database open", async () => {
   await assert.rejects(Database.open(path), StrataError);
   await db.close();
   await (await Database.open(path)).close();
+});
+
+// DEV-11 (the persona study of 17 November 2026): a second open in the same
+// process, as a dev server's hot reload makes, was told "the database is
+// open elsewhere", which points the other way.
+test("a second open in this process says so, and what to do instead", async () => {
+  const path = join(tempDir(), "twice.strata");
+  const db = await open(path, { schema: BOOKS });
+  const e = await open(path).then(() => null, (e) => e);
+  assert.ok(e instanceof BusyError, String(e));
+  assert.equal(e.code, "busy");
+  assert.match(e.message, /this process has it open for writing already/);
+  assert.match(e.message, /globalThis\.db \?\?= await open/);
+  assert.match(e.message, /readOnly: true/);
+  await db.close();
 });
 
 test("other processes read a database one process writes", async () => {

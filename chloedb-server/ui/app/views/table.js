@@ -362,6 +362,13 @@ function render(page, r) {
         h("div", { class: "small muted hit-f" }, cols.map((c, i) => i === ti || i === bi || i === si || r[i] == null || String(r[i]).length > 80 ? null : h("span", {}, h("span", { class: "k" }, c), " ", typeof r[i] === "number" ? fmt.num(r[i]) : String(r[i])))))))));
   }
 
+  /** A model the server is fetching for a field (its `fetch`), as a line. */
+  function fetchLine(model, f) {
+    if (f?.state === "running" && f.bytes) return `Downloading the model ${model}: ${fmt.bytes(f.bytes)}${f.size > f.bytes ? ` of ${fmt.bytes(f.size)}` : ""}…`;
+    if (f?.state === "done") return "Opening the model…";
+    return `Downloading the model ${model}…`;
+  }
+
   /** The offer of meaning for a table without vectors: one click, the defaults told. */
   function meaningOffer(t, done) {
     const from = proseFields(t)[0];
@@ -380,12 +387,18 @@ function render(page, r) {
         try {
           await api("/v1/sql", { body: { sql } });
           invalidate();
-          for (let i = 0; i < 120 && box.isConnected; i++) {
+          // Until the field searches by meaning, for as long as the model
+          // takes to download (an hour at most): a model the server fetches
+          // is told as a download, not as a model that did not open, which
+          // stayed on screen after it had (MAYA-2, the persona study of 17
+          // November 2026).
+          for (let i = 0; i < 2400 && box.isConnected; i++) {
             const tt = (await tables(true)).find((x) => x.table === t.table);
             const e = (tt?.embeddings || []).find((x) => x.field === name);
             const b = e?.backfill;
-            status.textContent = !e ? "Adding the field…" : e.error ? `The model did not open: ${e.error}` : b && b.state !== "done" && b.missing ? `Filling in vectors: ${fmt.n(b.embedded || 0)} done, ${fmt.n(b.missing)} to go…` : e.loaded ? "Ready" : "Opening the model…";
-            if (e?.error) break;
+            const failed = !e?.error ? null : e.fetch?.state === "failed" ? `The model did not download: ${e.fetch.error}` : !e.fetch ? `The model did not open: ${e.error}` : null;
+            status.textContent = failed || (!e ? "Adding the field…" : e.error ? fetchLine(e.model, e.fetch) : b && b.state !== "done" && b.missing ? `Filling in vectors: ${fmt.n(b.embedded || 0)} done, ${fmt.n(b.missing)} to go…` : e.loaded ? "Ready" : "Opening the model…");
+            if (failed) break;
             if (e?.loaded && (!b || b.state === "done" || !b.missing)) { toast(`${t.table} searches by meaning now`, "ok"); done(); return; }
             await new Promise((res) => setTimeout(res, 1500));
           }

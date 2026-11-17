@@ -274,6 +274,68 @@ fn elsewhere() -> Error {
     Error::Busy("the database is open elsewhere".into())
 }
 
+/// A writer's open refused, saying by whom as far as `WRITER` in `share`
+/// tells ([`holder`]) and what to do instead ([`busy_message`]).
+fn elsewhere_in(share: &Path) -> Error {
+    // SAFETY: getppid has no preconditions and cannot fail.
+    let parent = unsafe { libc::getppid() } as u32;
+    Error::Busy(busy_message(holder(share), std::process::id(), parent, command_of))
+}
+
+/// The process that has the database open for writing, as far as the pid
+/// in `WRITER`'s session record tells (only read: no lock is taken), while
+/// that process is alive; `None` when there is none, or it ended (a writer
+/// that reached the file by another name, a symlink or a hard link, wrote
+/// another `WRITER` or none).
+fn holder(share: &Path) -> Option<u32> {
+    let f = File::open(share.join(WRITER)).ok()?;
+    let (_, pid) = read_record(&f, SESSION_TAG).ok()??;
+    let pid_t = libc::pid_t::try_from(pid).ok().filter(|&p| p > 0)?;
+    // SAFETY: signal 0 checks that the process exists and sends nothing.
+    let alive = unsafe { libc::kill(pid_t, 0) } == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    alive.then_some(pid)
+}
+
+/// Process `pid`'s command line, shortened, where the system shows it
+/// (Linux's `/proc`).
+fn command_of(pid: u32) -> Option<String> {
+    let b = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let words: Vec<String> = b.split(|&c| c == 0).filter(|w| !w.is_empty()).map(|w| String::from_utf8_lossy(w).into_owned()).collect();
+    let line = words.join(" ");
+    match line.chars().count() {
+        0 => None,
+        n if n > 80 => Some(format!("{}…", line.chars().take(79).collect::<String>())),
+        _ => Some(line),
+    }
+}
+
+/// Why a writer's open is refused (the database is open for writing by
+/// process `holder`, when known), for this process `me` whose parent is
+/// `parent`, and what to do instead: a second open in one process (a hot
+/// reload that runs a module again), a reloader's child while its parent
+/// keeps the database (Flask's debug mode), or another program. It starts
+/// "the database is open elsewhere", as it always has.
+pub fn busy_message(holder: Option<u32>, me: u32, parent: u32, command: impl Fn(u32) -> Option<String>) -> String {
+    let named = |p: u32| match command(p) {
+        Some(c) => format!("process {p} ({c})"),
+        None => format!("process {p}"),
+    };
+    let apart = "To read it beside that writer, open it read-only; to write to it from several processes, serve it with chloedb-server and connect each of them to the server";
+    match holder {
+        Some(p) if p == me => "the database is open elsewhere: this process has it open for writing already, and a second open of the same file is refused in the same process as in another \
+             (a module run again, as a hot reload or a test's setup does, opens it again). Keep the database opened first and use it everywhere, or open this one read-only"
+            .to_string(),
+        Some(p) if p == parent && parent > 1 => format!(
+            "the database is open elsewhere: {}, the parent of this process, has it open for writing. A reloader does this (Flask's debug mode, Django's runserver, uvicorn --reload): \
+             it runs the program again in a child process while the first, which only watches the files, keeps the database it opened as the program started. \
+             Open the database when the program first needs it rather than when its module is imported, run without the reloader, or serve it with chloedb-server and connect to the server",
+            named(p)
+        ),
+        Some(p) => format!("the database is open elsewhere: {} has it open for writing, and one process writes a database at a time. {apart}, or stop that process", named(p)),
+        None => format!("the database is open elsewhere: another process, or another open in this one, has it open for writing, and one process writes a database at a time. {apart}"),
+    }
+}
+
 /// The lock of a database being created (no one else can know of it yet)
 /// or of a version of Strata from before readers: exclusive.
 pub fn lock_exclusive(f: &File) -> Result<()> {
@@ -312,13 +374,13 @@ impl WriterLock {
     /// new session into it. `Busy` while another writer has it.
     pub fn take(main: &File, share: &Path) -> Result<WriterLock> {
         if !flock_wait(main, libc::LOCK_SH)? {
-            return Err(elsewhere());
+            return Err(elsewhere_in(share));
         }
         // The file's own lock first: `share` is found by the path, which
         // another name of the file does not share. Held as long as `main`'s
         // description is open (the database keeps it).
         if !writer_byte_wait(main)? {
-            return Err(elsewhere());
+            return Err(elsewhere_in(share));
         }
         match std::fs::create_dir(share) {
             Err(e) if e.kind() != ErrorKind::AlreadyExists => return Err(e.into()),
@@ -326,7 +388,7 @@ impl WriterLock {
         }
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(share.join(WRITER))?;
         if !flock_wait(&file, libc::LOCK_EX)? {
-            return Err(elsewhere());
+            return Err(elsewhere_in(share));
         }
         let session = loop {
             let s: u64 = rand::random();
@@ -561,6 +623,60 @@ mod tests {
             assert_eq!(parse(PIN_TAG, &bad), None, "flip at byte {i}");
         }
         assert_eq!(parse(PIN_TAG, &r[..20]), None);
+    }
+
+    /// MAYA-3, DEV-11 (the persona study of 17 November 2026): a refused
+    /// writer was told only "the database is open elsewhere", for a second
+    /// open in its own process and for a reloader's child alike.
+    #[test]
+    fn a_refused_writer_is_told_who_has_the_database_and_what_to_do() {
+        let none = |_| None;
+        let same = busy_message(Some(10), 10, 9, none);
+        assert!(same.starts_with("the database is open elsewhere: this process has it open"), "{same}");
+        assert!(same.contains("Keep the database opened first") && same.contains("read-only"), "{same}");
+        let parent = busy_message(Some(9), 10, 9, |p| Some(format!("python app.py ({p})")));
+        assert!(parent.contains("process 9 (python app.py (9)), the parent of this process") && parent.contains("Flask's debug mode"), "{parent}");
+        assert!(parent.contains("when the program first needs it") && parent.contains("chloedb-server"), "{parent}");
+        let other = busy_message(Some(77), 10, 9, none);
+        assert!(other.contains("process 77 has it open for writing") && other.contains("read-only") && other.contains("serve it with chloedb-server"), "{other}");
+        // A parent that is init (an orphan) is no reloader.
+        assert!(!busy_message(Some(1), 10, 1, none).contains("parent"));
+        let unknown = busy_message(None, 10, 9, none);
+        assert!(unknown.contains("another process, or another open in this one") && unknown.contains("read-only"), "{unknown}");
+        for m in [same, parent, other, unknown] {
+            assert!(m.starts_with("the database is open elsewhere"), "{m}");
+        }
+    }
+
+    #[test]
+    fn a_writer_names_itself_to_the_open_it_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.strata");
+        std::fs::write(&path, b"").unwrap();
+        let share = share_dir(&path, false);
+        assert_eq!(holder(&share), None);
+        let main = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let w = WriterLock::take(&main, &share).unwrap();
+        assert_eq!(holder(&share), Some(std::process::id()));
+        let again = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        match WriterLock::take(&again, &share) {
+            Err(Error::Busy(m)) => assert!(m.contains("this process has it open for writing already"), "{m}"),
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("a second writer"),
+        }
+        drop(w);
+        drop(main);
+        // A record whose process ended names nobody.
+        std::fs::write(share.join(WRITER), record(SESSION_TAG, 7)).unwrap();
+        let mut b = std::fs::read(share.join(WRITER)).unwrap();
+        b[16..20].copy_from_slice(&(i32::MAX as u32).to_le_bytes());
+        let crc = crc32fast::hash(&b[..20]);
+        b[20..24].copy_from_slice(&crc.to_le_bytes());
+        std::fs::write(share.join(WRITER), &b).unwrap();
+        assert_eq!(holder(&share), None);
+        if cfg!(target_os = "linux") {
+            assert!(command_of(std::process::id()).is_some_and(|c| !c.is_empty()));
+        }
     }
 
     #[test]

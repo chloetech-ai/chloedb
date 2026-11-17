@@ -442,7 +442,7 @@ Every error ChloeDB raises is a `chloedb.ChloeDBError` (`except chloedb.ChloeDBE
 | `conflict` | `ConflictError` | refused by the state it met (409): an `if_seq_no` that no longer holds, an idempotency key still running, a `min_seq_no` past the server's last write |
 | `conflict` | `DuplicateKeyError` | <!-- since 0.3.2 --> an `INSERT` of a key the table already holds; a `ConflictError` and a `BadRequestError` both (it was a `BadRequestError` alone before), with `.table`, `.field` (the key field), `.key` and `.row` (the row's place in the write, from 1) where the message names them |
 | `partial_write` | `PartialWriteError` | a coordinator wrote some shards and not others (`answer["partial"]`): send it again with the same `idempotency_key` |
-| `busy` | `BusyError` | the database is open in another process, or another writer holds it |
+| `busy` | `BusyError` | the database is open to write elsewhere, in another process or by another open in this one (the message says which, and what to do instead), or another writer holds it |
 | `overloaded` | `OverloadedError` | refused for the server's load before any work (429), after the client's retries |
 | `timeout` | `DeadlineError` | a deadline passed: a query's `timeout_ms`, a coordinator's wait for a shard (504), the engine's own |
 | `unavailable` | `UnavailableError` | no copy can serve it now (503): a replica behind, a primary replaced, a hosted model down |
