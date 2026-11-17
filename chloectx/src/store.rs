@@ -169,6 +169,9 @@ pub struct Store {
     /// from it, and a receipt records it, so both use one number however
     /// much is written meanwhile.
     pinned_last: Option<i64>,
+    /// The texts forgotten lately, which [`Store::append`] writes no
+    /// record with ([`crate::forget::Live`]).
+    pub forgetting: Arc<crate::forget::Live>,
 }
 
 /// Where a store's records are.
@@ -254,7 +257,7 @@ impl Store {
         // several daemons.
         db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
         let writer = Arc::new(Writer::start(db.clone(), next)?);
-        Ok(Store { back: Back::Local { db, writer }, embedder, snap: None, pinned_last: None })
+        Ok(Store { back: Back::Local { db, writer }, embedder, snap: None, pinned_last: None, forgetting: Default::default() })
     }
 
     /// Opens a store to read it and nothing else: a kept snapshot
@@ -274,7 +277,7 @@ impl Store {
         let next = last.rows.first().and_then(|r| r[0].as_i64()).map_or(1, |s| s + 1);
         let db = Arc::new(db);
         let writer = Arc::new(Writer::start(db.clone(), next)?);
-        Ok(Store { back: Back::Local { db, writer }, embedder, snap: None, pinned_last: None })
+        Ok(Store { back: Back::Local { db, writer }, embedder, snap: None, pinned_last: None, forgetting: Default::default() })
     }
 
     /// Sets the number of the newest record, which recency is measured
@@ -300,7 +303,7 @@ impl Store {
         let last = cluster.query(&format!("SELECT seq FROM {table} ORDER BY seq DESC LIMIT 1"), &Params::new())?;
         let next = last.rows.first().and_then(|r| r[0].as_i64()).map_or(1, |s| s + 1);
         let remote = Remote { cluster, table: table.to_string(), next_seq: AtomicI64::new(next), writes: Mutex::new(()) };
-        Ok(Store { back: Back::Remote(Arc::new(remote)), embedder, snap: None, pinned_last: None })
+        Ok(Store { back: Back::Remote(Arc::new(remote)), embedder, snap: None, pinned_last: None, forgetting: Default::default() })
     }
 
     /// The Strata file of a local store.
@@ -329,7 +332,7 @@ impl Store {
             Back::Local { db, .. } => Some(self.snap.clone().unwrap_or_else(|| db.snapshot())),
             Back::Remote(_) => None,
         };
-        Store { back: self.back.clone(), embedder: self.embedder.clone(), snap, pinned_last: Some(last) }
+        Store { back: self.back.clone(), embedder: self.embedder.clone(), snap, pinned_last: Some(last), forgetting: self.forgetting.clone() }
     }
 
     /// The version reads see: the pinned one, else the latest (a local
@@ -426,8 +429,24 @@ impl Store {
     /// not seen become records of their own.
     /// Text is redacted ([`crate::redact`]) whichever way it came: what the
     /// hooks captured, a transcript back-fill, `remember`, the distiller.
+    /// A draft whose text holds a text forgotten lately is not stored, and
+    /// the lines of a context that hold one are cut
+    /// ([`crate::forget::Live`]), so fewer records may come back than
+    /// drafts went in.
     pub fn append(&self, session: &str, turn: i64, ts: i64, drafts: Vec<Draft>) -> Result<Vec<Record>> {
         let mut drafts = drafts;
+        let forgotten = self.forgetting.current(crate::now());
+        if !forgotten.is_empty() {
+            use crate::forget::{holds, scrub_ctx};
+            drafts.retain(|d| !holds(&d.text, &forgotten));
+            for d in &mut drafts {
+                if let Some(c) = scrub_ctx(&d.ctx, &forgotten) {
+                    d.ctx = c;
+                }
+                d.when.retain(|w| !holds(w, &forgotten));
+                d.entities.retain(|w| !holds(w, &forgotten));
+            }
+        }
         let mut names: Vec<(String, String)> = Vec::new();
         for d in &mut drafts {
             d.text = redact(&d.text);
