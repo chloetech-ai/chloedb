@@ -34,7 +34,7 @@ chloedb-img serve --local ~/img-db --models ~/.local/share/chloedb/models --cach
 chloedb-img load --data ~/pd12m --prepared ~/img-prepared --rows 1000000                       # about three minutes for a million
 ```
 
-With `--public` the app serves the page at `/` to anyone, within `--per-minute` requests, `--photos-per-minute` photos and details and `--thumbs-per-minute` new thumbnails a minute from one address. There is no SQL from the page and no MCP tools. `--warm-per-theme` makes the thumbnails of the pictures nearest each theme's middle at start, and `--warm-first N` those of the first N pictures, so that colors cover more of them.
+With `--public` the app serves the page at `/` to anyone, within `--per-minute` requests, `--photos-per-minute` photos and details and `--thumbs-per-minute` new thumbnails a minute from one address. There is no SQL from the page and no MCP tools. `deploy/k8s.yaml` runs it on Kubernetes: one 16 GB node with the server and the app, the database and the thumbnails on the node's own SSD. `--warm-per-theme` makes the thumbnails of the pictures nearest each theme's middle at start, and `--warm-first N` those of the first N pictures, so that colors cover more of them.
 
 ## The tables
 
