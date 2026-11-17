@@ -13,18 +13,38 @@ export function closeSheets() {
 export function sheetShell({ label, data = {}, onClose }) {
   closeSheets();
   let closed = false;
+  // Focus goes into the sheet and comes back where it was when it closes.
+  const before = document.activeElement;
   const close = (quiet) => {
     if (closed) return;
     closed = true;
+    sheet.removeEventListener("keydown", trap);
+    unpull();
     sheet.remove(); scrim.remove();
     if (onClose) onClose(quiet);
+    if (before && before.isConnected && typeof before.focus === "function") before.focus({ preventScroll: true });
+  };
+  // aria-modal: Tab walks the sheet only, never the page behind it.
+  const focusables = () => [...sheet.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')].filter((e) => !e.closest("[hidden]") && e.getClientRects().length);
+  const trap = (e) => {
+    if (e.key !== "Tab") return;
+    const f = focusables();
+    if (!f.length) { e.preventDefault(); sheet.focus(); return; }
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === sheet)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   };
   const scrim = h("div", { class: "cv-scrim", onclick: () => close() });
   const head = h("div", { class: "cv-sheet-h" });
   const tools = h("div", { class: "tools" });
   const body = h("div", { class: "cv-sheet-b" });
   const foot = h("div", { class: "cv-sheet-f" });
-  const sheet = h("aside", { class: "cv-sheet", role: "dialog", "aria-modal": "true", "aria-label": label || "Details" }, head, body, foot);
+  const sheet = h("aside", { class: "cv-sheet", role: "dialog", "aria-modal": "true", "aria-label": label || "Details", tabindex: "-1" }, head, body, foot);
+  sheet.addEventListener("keydown", trap);
+  // Focus that wanders out (a click behind, a redraw) is brought back in.
+  const pull = (e) => { if (!closed && sheet.isConnected && !sheet.contains(e.target) && !e.target.closest?.(".cv-menu, .cv-pop, .nt-scrim, .gs-scrim")) sheet.focus({ preventScroll: true }); };
+  document.addEventListener("focusin", pull);
+  const unpull = () => document.removeEventListener("focusin", pull);
   for (const [k, v] of Object.entries(data)) sheet.dataset[k] = v;
   sheet._close = close;
   const x = h("button", { class: "cv-btn icon quiet cv-x", type: "button", "aria-label": "Close", onclick: () => close() }, "×");
@@ -32,6 +52,7 @@ export function sheetShell({ label, data = {}, onClose }) {
   sheet._tools = [];
   setHead();
   document.body.append(scrim, sheet);
+  setTimeout(() => { if (!closed && !sheet.contains(document.activeElement)) sheet.focus({ preventScroll: true }); }, 0);
   return { sheet, head, body, foot, close, setHead, setTools: (t) => { sheet._tools = t; } };
 }
 

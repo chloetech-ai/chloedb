@@ -119,7 +119,8 @@ export function mount(root, ctx) {
       if (f.state !== "active") continue;
       if (blockedOf(f)) { blocked.push(f); continue; }
       if (queuedOf(f)) continue;
-      const why = f.needs_you ? f.needs_you : f.stage === "review" && f.ci === "pass" ? "CI passed: approve the merge." : f.stage === "prioritize" && f.door ? `Touches a one-way door (${f.door}): only you start it.` : null;
+      // The server's one rule (needs_now) when it sends it, so every count agrees.
+      const why = "needs_now" in f ? f.needs_now : f.needs_you ? f.needs_you : f.stage === "review" && f.ci === "pass" ? "CI passed: approve the merge." : f.stage === "prioritize" && f.door ? `Touches a one-way door (${f.door}): only you start it.` : null;
       if (why) rest.push({ f, why });
     }
     return { blocked, rest, count: blocked.length + rest.length };
@@ -149,15 +150,49 @@ export function mount(root, ctx) {
     markSeen: () => { const now = Date.now(); local.set(seenKey(), String(now)); },
   };
 
-  // Where the page is scrolled, kept across a redraw.
+  // Where the page is scrolled, and what has the keyboard's focus, kept
+  // across a redraw. Parts that fill in a moment later (the activity list,
+  // charts) leave the page short at first, so the height is held and the
+  // scroll set again once they have, unless you scrolled in between.
   function scrollState() {
     const els = [];
     for (let e = host; e; e = e.parentElement) if (e.scrollTop) els.push([e, e.scrollTop]);
+    if (document.scrollingElement && document.scrollingElement.scrollTop && !els.some(([e]) => e === document.scrollingElement)) els.push([document.scrollingElement, document.scrollingElement.scrollTop]);
     const strips = [...host.querySelectorAll(".cv-chips")].map((w) => w.scrollLeft);
+    const a = document.activeElement;
+    const focus = a && a !== document.body && host.contains(a) ? focusKey(a) : null;
+    const tall = host.offsetHeight;
+    const moved = S.userMoved || 0;
     return () => {
-      for (const [e, t] of els) e.scrollTop = t;
+      if (tall) host.style.minHeight = `${tall}px`;
+      const apply = () => {
+        if ((S.userMoved || 0) !== moved) return;
+        for (const [e, t] of els) if (Math.abs(e.scrollTop - t) > 1) e.scrollTop = t;
+      };
+      apply();
       host.querySelectorAll(".cv-chips").forEach((w, i) => { if (strips[i] != null) w.scrollLeft = strips[i]; });
+      if (focus && (!document.activeElement || document.activeElement === document.body)) refocus(focus);
+      requestAnimationFrame(apply);
+      setTimeout(apply, 300);
+      clearTimeout(S.heldTimer);
+      S.heldTimer = setTimeout(() => { apply(); host.style.minHeight = ""; }, 1500);
     };
+  }
+  /** How to find an element again after a redraw: its id, its row's id, or its place among the focusable ones. */
+  function focusKey(el) {
+    const row = el.closest("[data-id], [data-fid]");
+    const all = [...host.querySelectorAll("a[href], button, input, select, textarea, [tabindex]")];
+    return { id: el.id || null, row: row ? row.dataset.id || row.dataset.fid : null, tag: el.tagName, label: el.getAttribute("aria-label") || el.textContent.trim().slice(0, 40), i: all.indexOf(el) };
+  }
+  function refocus(k) {
+    const all = [...host.querySelectorAll("a[href], button, input, select, textarea, [tabindex]")];
+    let el = k.id ? host.querySelector(`#${CSS.escape(k.id)}`) : null;
+    if (!el && k.row) {
+      const row = host.querySelector(`[data-id="${CSS.escape(k.row)}"], [data-fid="${CSS.escape(k.row)}"]`);
+      el = row && ([...row.querySelectorAll(k.tag)].find((e) => (e.getAttribute("aria-label") || e.textContent.trim().slice(0, 40)) === k.label) || (row.matches(k.tag) ? row : null));
+    }
+    if (!el) el = all.find((e) => e.tagName === k.tag && (e.getAttribute("aria-label") || e.textContent.trim().slice(0, 40)) === k.label) || (k.i >= 0 ? all[k.i] : null);
+    if (el && typeof el.focus === "function") el.focus({ preventScroll: true });
   }
 
   /** No project: each one as a large card. */
@@ -225,8 +260,14 @@ export function mount(root, ctx) {
   const touched = () => { S.touched = Date.now(); };
   host.addEventListener("pointerdown", touched, { passive: true });
   host.addEventListener("scroll", touched, { passive: true, capture: true });
+  // Your own scrolling: a redraw's late restore must not undo it.
+  const moved = () => { S.userMoved = (S.userMoved || 0) + 1; };
+  for (const ev of ["wheel", "touchmove", "keydown"]) window.addEventListener(ev, moved, { passive: true });
   const onKey = (e) => {
     if (e.key !== "Escape") return;
+    // Esc in a box you are typing in leaves the box, not the sheet (the draft stays).
+    const t = document.activeElement;
+    if (t && t.matches && t.matches("textarea, input[type=text], input:not([type])") && t.value) { t.blur(); e.preventDefault(); return; }
     const pop = document.querySelector(".cv-popscrim"); if (pop) { pop.click(); return; }
     const x = document.querySelector(".cv-sheet .cv-x"); if (x) x.click();
   };
@@ -251,6 +292,7 @@ export function mount(root, ctx) {
       (S.stops || []).forEach((f) => { try { f(); } catch { /* gone */ } });
       window.removeEventListener("hashchange", onHash);
       document.removeEventListener("keydown", onKey);
+      for (const ev of ["wheel", "touchmove", "keydown"]) window.removeEventListener(ev, moved);
       closeSheets();
       document.querySelectorAll(".cv-menu, .cv-pop, .cv-popscrim").forEach((e) => e.remove());
     },
