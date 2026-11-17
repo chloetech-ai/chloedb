@@ -167,7 +167,7 @@ db.sql(&quot;INSERT INTO notes (id, body, year, v) VALUES (:id, :body, 2026, :v)
 db.sql(&quot;UPDATE notes SET year = 2025 WHERE id = &#x27;n1&#x27;&quot;, &amp;Params::new())?;</pre>
 <p><code>db.sql</code> answers <code>SqlResult::Written(n)</code> for a write, with the number of rows it wrote.</p>
 <p>Each SQL statement is a transaction of its own; <code>BEGIN</code> and <code>COMMIT</code> are refused. To write several rows in one transaction, all or none, give <code>db.write_ops</code> a list of operations. A document is the row's values in the order of the table's columns:</p>
-<pre data-lang="rust" data-title="Rust">let doc = |id: &amp;str, body: &amp;str| vec![Value::Str(id.into()), Value::Str(body.into()), Value::Int(2026), Value::Null];
+<pre data-lang="rust" data-title="Rust">let doc = |id: &amp;str, body: &amp;str| vec![Value::Str(id.into()), Value::Str(body.into()), Value::Int(2026), Value::Vector(vec![0.0, 1.0, 0.0].into())];
 db.write_ops(vec![
     WriteOp::Insert { table: &quot;notes&quot;.into(), doc: doc(&quot;n2&quot;, &quot;Prices are integer cents&quot;) },
     WriteOp::Upsert { table: &quot;notes&quot;.into(), doc: doc(&quot;n3&quot;, &quot;The server runs Python 3.8&quot;) },

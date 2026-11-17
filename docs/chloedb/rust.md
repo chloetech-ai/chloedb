@@ -78,7 +78,7 @@ db.sql("UPDATE notes SET year = 2025 WHERE id = 'n1'", &Params::new())?;
 Each SQL statement is a transaction of its own; `BEGIN` and `COMMIT` are refused. To write several rows in one transaction, all or none, give `db.write_ops` a list of operations. A document is the row's values in the order of the table's columns:
 
 ```rust
-let doc = |id: &str, body: &str| vec![Value::Str(id.into()), Value::Str(body.into()), Value::Int(2026), Value::Null];
+let doc = |id: &str, body: &str| vec![Value::Str(id.into()), Value::Str(body.into()), Value::Int(2026), Value::Vector(vec![0.0, 1.0, 0.0].into())];
 db.write_ops(vec![
     WriteOp::Insert { table: "notes".into(), doc: doc("n2", "Prices are integer cents") },
     WriteOp::Upsert { table: "notes".into(), doc: doc("n3", "The server runs Python 3.8") },
