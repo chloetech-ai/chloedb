@@ -15,8 +15,9 @@ results and only rounded. The reports it reads:
   ef-1m, ef-10m  the same run's candidates sweeps (ef.md; Qdrant and Postgres in 1m-ef-lane/)
   cloud-1m-first chloedb-server/results/compare-msmarco-1m-do/   (the first 1M run, three passes)
   laptop     chloedb-server/results/compare-nq-mac/          (compare.sh on kind, one pass)
-  embedded   chloedb/results/laptop-2026-11/part-a-do/       (Part A, no server: part-a-0.3.5/, every
-                 system on one node on 16 November, when it is there)
+  embedded   chloedb/results/laptop-2026-11/part-a-do/       (Part A, no server: part-a-1117/, every
+                 system on one node on 17 November with main's write and typo fixes, when it is there;
+                 else part-a-0.3.5/, 16 November with 0.3.5)
   graph      chloedb-server/results/graph-compare-mac/README.md
   bm25-load  chloedb-server/results/bm25-stats-cache-container/
   bm25-do    chloedb-server/results/bm25-do-1m/ (the same before and after on DigitalOcean)
@@ -336,13 +337,16 @@ def cluster(src, rid, engines=None, extra_runs=None, ranked=None, lanes=None, ta
 def part_a(src):
     def j(name):
         return src.json(name)
-    # Every system from the 0.3.5 rerun of 16 November on one node, when it is
-    # there (part-a-0.3.5/); before it, Strata from the rerun of 6 November
-    # (main, and 2 November's build as the node check, both on one node) and
-    # the other systems from 2 November (part-a/).
-    one = bool(j("part-a-0.3.5/a1_strata.json"))
+    # Every system on one node: 17 November's run (part-a-1117/, main with
+    # #608 and #612, SQLite 3.54.1 in every part) when it is there, else the
+    # 0.3.5 rerun of 16 November (part-a-0.3.5/); before them, Strata from the
+    # rerun of 6 November (main, and 2 November's build as the node check,
+    # both on one node) and the other systems from 2 November (part-a/).
+    r1117 = bool(j("part-a-1117/a1_strata.json"))
+    one = r1117 or bool(j("part-a-0.3.5/a1_strata.json"))
     if one:
-        new, was, base = "part-a-0.3.5", None, "part-a-0.3.5"
+        new = base = "part-a-1117" if r1117 else "part-a-0.3.5"
+        was = None
     else:
         new, was = ("part-a-1106", "part-a-1106-check") if j("part-a-1106/a1_strata.json") else ("part-a", None)
         base = "part-a"
@@ -364,11 +368,12 @@ def part_a(src):
     def us(x):  # ms -> µs
         return r3(x * 1000) if x is not None else None
 
-    scols = [{"name": "Strata", "ver": "0.3.5" if one else "main, 6 Nov", "self": True}] + (
+    scols = [{"name": "Strata", "ver": ("main, 17 Nov" if r1117 else "0.3.5") if one else "main, 6 Nov", "self": True}] + (
         [{"name": "Strata", "ver": "2 Nov build, rerun 6 Nov", "self": True}] if was else [])
     ss = ["strata"] + (["strata-was"] if was else [])
-    cols_a1 = scols + [{"name": "SQLite", "ver": "3.53, FULL"},
-                       {"name": "SQLite", "ver": "3.53, NORMAL"}, {"name": "DuckDB", "ver": "2.0"}]
+    sqv = "3.54" if r1117 else "3.53"
+    cols_a1 = scols + [{"name": "SQLite", "ver": f"{sqv}, FULL"},
+                       {"name": "SQLite", "ver": f"{sqv}, NORMAL"}, {"name": "DuckDB", "ver": "2.0"}]
     sys_a1 = ss + ["sqlite-full", "sqlite-normal", "duckdb"]
 
     def row(label, f, unit=None, better=None, systems=sys_a1, data=a1):
@@ -413,15 +418,19 @@ def part_a(src):
     # A2: one chart per kind, rows = collections, columns = systems
     colls = ["scifact", "nfcorpus", "fiqa", "trec-covid", "quora"]
     a2sys = ss + ["strata-1t", "sqlite", "tantivy", "duckdb", "lancedb"]
+    ef64 = r1117  # 17 November's run has Strata at 64 vector candidates too (strata-ef64)
     a2 = {(s, c): j(f"{base}/a2_{s}_{c}.json") for s in a2sys if not s.startswith("strata") for c in colls}
     a2.update({("strata-1t", c): j(f"{new}/a2_strata-1t_{c}.json" if one else f"part-a-1thread/a2_strata_{c}.json") for c in colls})
+    if ef64:
+        a2.update({("strata-ef64", c): j(f"{new}/a2_strata-ef64_{c}.json") for c in colls})
     for c in colls:
         a2[("strata", c)], a2[("strata-was", c)] = sj("a2", f"_{c}")
     a2cols = scols + [{"name": "Strata", "ver": "1 thread" if one else "1 thread, older build", "self": True},
-                      {"name": "SQLite", "ver": ("3.40, " if one else "") + "FTS5, sqlite-vec (exact)"}, {"name": "Tantivy", "ver": "0.27"},
+                      {"name": "SQLite", "ver": ("3.54, " if r1117 else "3.40, " if one else "") + "FTS5, sqlite-vec (exact)"}, {"name": "Tantivy", "ver": "0.27"},
                       {"name": "DuckDB", "ver": "fts, vss"}, {"name": "LanceDB", "ver": "defaults"}]
     a2note = ("Strata searches a query's segments on up to 8 threads by default; its one-thread column is the same build "
-              "held to one. SQLite's vectors are sqlite-vec's exact scan (it has no ANN index), on Debian's SQLite 3.40.1; it was "
+              "held to one. SQLite's vectors are sqlite-vec's exact scan (it has no ANN index), on "
+              + ("SQLite 3.54.1" if r1117 else "Debian's SQLite 3.40.1") + "; it was "
               "not run on quora, where three timed passes of exact scans take about 9 hours. LanceDB is at its default search "
               "settings.") if one else ("Strata searches a query's segments on up to 8 threads by default; its one-thread column is the older build "
               "128459b, not run on quora. SQLite's vectors are sqlite-vec's exact scan (it has no ANN index); LanceDB is "
@@ -430,9 +439,9 @@ def part_a(src):
                   "type, on which the 2 November build was about 5% slower at search." if was else ""))
     ndocs = {c: a2[("strata", c)]["n_docs"] for c in colls}
 
-    def a2row(c, kind, field="p50_ms"):
+    def a2row(c, kind, field="p50_ms", systems=a2sys):
         cells = []
-        for s in a2sys:
+        for s in systems:
             if a2[(s, c)] is None:
                 cells.append("skip:not run on quora (exact scans)" if one and s == "sqlite" else "skip:not run on this build")
                 continue
@@ -450,20 +459,30 @@ def part_a(src):
             cells.append(cell)
         return {"label": f"{c} ({ndocs[c]:,} docs)", "cells": cells}
 
+    # the vector chart adds Strata at 64 candidates, the default before 10 November, with its recall
+    vsys = a2sys[:2] + ["strata-ef64"] + a2sys[2:] if ef64 else a2sys
+    vcols = a2cols[:2] + [{"name": "Strata", "ver": "64 candidates", "self": True}] + a2cols[2:] if ef64 else a2cols
+    vnote = a2note + (" Strata searches 200 vector candidates by default; its 64-candidate column is the same build at "
+                      "ef => 64, faster at a lower recall." if ef64 else "")
     for kind, title in [("bm25", "BM25 top 10"), ("vector", "Vector top 10"), ("hybrid", "Hybrid: BM25 and vectors by RRF"),
                         ("filtered_hybrid", "Hybrid under a filter")]:
+        v = kind == "vector"
         charts.append({"id": f"emb-a2-{kind.replace('_', '-')}", "title": title,
                        "sub": "Median at one client in µs, log scale, lower is better", "unit": "µs", "better": "lower",
-                       "scale": "log", "run": "embedded", "columns": a2cols, "note": a2note,
-                       "rows": [a2row(c, kind) for c in colls]})
+                       "scale": "log", "run": "embedded", "columns": vcols if v else a2cols, "note": vnote if v else a2note,
+                       "rows": [a2row(c, kind, systems=vsys if v else a2sys) for c in colls]})
     charts.append({"id": "emb-a2-hybrid4", "title": "Hybrid at four client threads", "sub": "Queries a second, higher is better",
                    "unit": "q/s", "better": "higher", "scale": "log", "run": "embedded", "columns": a2cols, "note": a2note,
                    "rows": [a2row(c, "hybrid", "qps4") for c in colls]})
     # writes and streams with indexes
-    wsys = sys_a1 + ["lancedb"]
+    # 17 November's run adds Strata with sync=False beside SQLite at NORMAL
+    nosync = bool(j(f"{new}/writes_strata-nosync.json"))
+    wsys = ss + (["strata-nosync"] if nosync else []) + ["sqlite-full", "sqlite-normal", "duckdb", "lancedb"]
     W = {s: j(f"{base}/writes_{s}.json") for s in wsys if not s.startswith("strata")}
     W["strata"], W["strata-was"] = sj("writes", "")
-    wcols = cols_a1 + [{"name": "LanceDB"}]
+    if nosync:
+        W["strata-nosync"] = j(f"{new}/writes_strata-nosync.json")
+    wcols = scols + ([{"name": "Strata", "ver": "sync=False", "self": True}] if nosync else []) + cols_a1[len(scols):] + [{"name": "LanceDB"}]
     charts.append({
         "id": "emb-writes", "title": "Writes with a text and a vector index", "sub": "137,260 products; rows a second, higher is better",
         "unit": "rows/s", "better": "higher", "scale": "row", "run": "embedded", "columns": wcols,
@@ -479,13 +498,20 @@ def part_a(src):
     # stream: reads a second while 10,000 rows/s arrive
     def phase(d, rate):
         return next((p for p in g(d, "stream", "phases") or [] if p.get("rate") == rate), None)
+
+    def at(d, rate, *p):  # a phase's value, or why there is none: the stream stops at the first rate a system misses
+        ph = phase(d, rate)
+        if ph:
+            return g(ph, *p)
+        last = (g(d, "stream", "phases") or [None])[-1]
+        return f"na:fell behind at {last['rate']:,} rows/s" if last and isinstance(last.get("rate"), int) else None
     charts.append({
         "id": "emb-stream", "title": "Reads while a stream arrives", "sub": "Queries a second answered while rows stream in, higher is better",
         "unit": "q/s", "better": "higher", "scale": "row", "run": "embedded", "columns": wcols,
         "rows": [
-            row("at 1,000 rows/s", lambda d: g(phase(d, 1000), "reads", "qps"), systems=wsys, data=W),
-            row("at 10,000 rows/s", lambda d: g(phase(d, 10000), "reads", "qps"), systems=wsys, data=W),
-            row("lag p99 at 10,000 rows/s", lambda d: g(phase(d, 10000), "lag", "p99_ms"), "ms", "lower", systems=wsys, data=W),
+            row("at 1,000 rows/s", lambda d: at(d, 1000, "reads", "qps"), systems=wsys, data=W),
+            row("at 10,000 rows/s", lambda d: at(d, 10000, "reads", "qps"), systems=wsys, data=W),
+            row("lag p99 at 10,000 rows/s", lambda d: at(d, 10000, "lag", "p99_ms"), "ms", "lower", systems=wsys, data=W),
         ]})
     # A3
     a3sys = ss + ["lancedb", "sqlite-vec", "faiss-sqlite"]
@@ -743,7 +769,9 @@ def main():
         if rid in reports:
             reports[rid]["source"] = src.url()
     charts, machine, machine_t = part_a(pa)
-    if pa.json("part-a-0.3.5/a1_strata.json"):
+    if pa.json("part-a-1117/a1_strata.json"):
+        runs["embedded"] = {"label": "No server, 17 November 2026", "machine": machine, "source": pa.path + "/part-a-1117/", "url": pa.url()}
+    elif pa.json("part-a-0.3.5/a1_strata.json"):
         runs["embedded"] = {"label": "No server, 16 November 2026", "machine": machine, "source": pa.path + "/part-a-0.3.5/", "url": pa.url()}
     else:
         runs["embedded"] = {"label": "No server, 2 and 6 November 2026", "machine": machine, "source": pa.path + "/part-a/ and part-a-1106*/", "url": pa.url()}
