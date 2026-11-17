@@ -4,6 +4,14 @@ Five web apps and a hub page, served by one Node server (`server.mjs`) from one
 chloedb-server that holds every app's tables. Live at prototypes.chloetech.ai behind a
 password; each app at `/<slug>/`.
 
+| app | slug | what it shows |
+|---|---|---|
+| [MCP Atlas](apps/atlas/README.md) | `atlas` | every server in the MCP registry, by the credential it declares, and the Nodwyn binding that would contain it |
+| [Leak Lab](apps/leaklab/README.md) | `leaklab` | 24 exfiltration channels against four ways of holding a secret |
+| [Black Box](apps/blackbox/README.md) | `blackbox` | public agent sessions as hash-chained rows, with blame from a patch line to the step that wrote it |
+| [Memory Firewall](apps/memfw/README.md) | `memfw` | a poisoned page written into two memories that differ only in provenance |
+| [Policy Time Machine](apps/timemachine/README.md) | `timemachine` | a rule written as SQL, replayed over recorded sessions and labelled attacks before it ships |
+
 ```
 prototypes/
   server.mjs          the hub server: / is site/, /<slug>/ is apps/<slug>/public, /<slug>/api/* is apps/<slug>/app.mjs
