@@ -514,6 +514,39 @@ fn disk_checks(shards: &[Shard], gain: &HashMap<usize, f64>, removed: &BTreeSet<
     }
 }
 
+/// What moving slots can cost each shard's disks, from the cluster's
+/// snapshot: per shard, the bytes a slot of its holds (its database's bytes
+/// over the slots it holds), and the bytes it may take before its fullest
+/// copy is [`MOVE_DISK_LIMIT`] full (infinite when its copies do not say).
+pub fn slot_costs(snap: &Json) -> (Vec<f64>, Vec<f64>) {
+    let shards = shards_of(snap);
+    let per_slot = shards.iter().map(|s| s.bytes.map_or(0.0, |b| b as f64 / s.held.max(1) as f64)).collect();
+    let room = shards
+        .iter()
+        .map(|s| s.disks.iter().map(|d| MOVE_DISK_LIMIT * d.total - (d.total - d.free)).fold(f64::INFINITY, f64::min).max(0.0))
+        .collect();
+    (per_slot, room)
+}
+
+/// The most full a copy's disk may be made by slots moved to it.
+pub const MOVE_DISK_LIMIT: f64 = 0.85;
+
+/// The disk checks of moves of slots (`(slots, from, to)`), as a plan's
+/// ([`disk_checks`]): each copy sent rows with its volume now and after
+/// (`disks`), and the checks (`preflight`), failed when what it is sent
+/// does not fit.
+pub fn move_disk_checks(snap: &Json, moves: &[(Vec<usize>, usize, usize)]) -> (Vec<Json>, Vec<Json>) {
+    let shards = shards_of(snap);
+    let (per_slot, _) = slot_costs(snap);
+    let mut gain: HashMap<usize, f64> = HashMap::new();
+    for (slots, from, to) in moves {
+        *gain.entry(*to).or_default() += per_slot.get(*from).copied().unwrap_or(0.0) * slots.len() as f64;
+    }
+    let (mut disks, mut pre) = (Vec::new(), Vec::new());
+    disk_checks(&shards, &gain, &BTreeSet::new(), &mut disks, &mut pre);
+    (disks, pre)
+}
+
 /// Bytes for people: 12 MB, 3.4 GB.
 pub fn bytes(b: f64) -> String {
     let units = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -1453,7 +1486,8 @@ async fn run_step(svc: &Arc<Service>, c: &Arc<Coordinator>, k: usize, resuming: 
             wait_idle(c, k, resuming).await?;
             let window = st["window"].as_str().unwrap_or("15m");
             let (others, counted) = super::balance::others_load(svc, window).await;
-            let j = c.rebalance_by_load(MOVE_SLOTS, window, &others, counted, false, false)?;
+            let snap = c.snapshot().await;
+            let j = c.rebalance_by_load(MOVE_SLOTS, window, &others, counted, false, false, Some(&snap))?;
             if j["job"]["of"] == 0 {
                 return Ok(format!("nothing to move: {}", j["plan"]["why"].as_str().unwrap_or("the load was even already")));
             }
