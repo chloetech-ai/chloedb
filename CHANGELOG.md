@@ -11,6 +11,35 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A command center on Kubernetes forgot the clusters it reaches at every
+  restart.** A coordinator kept its hub's book (the **Connections** view,
+  the clusters the brand's menu at the top left switches to, and their
+  keys) in memory, since it has no database to keep it beside, so each
+  rollout emptied the menu. It now keeps them in a Secret of its namespace,
+  `<cluster>-hub`, an entry per connection, which the operator makes and
+  lets only that cluster's coordinators read and change: a rollout keeps
+  them, and every coordinator of the cluster shares them. An operator
+  without Secrets in the namespace makes neither, and **Connections** says
+  the book is in memory only. The coordinators' Role grants `get` and
+  `patch` on that one Secret.
+- **A statement's page opened through the hub failed** with "a path the hub
+  forwards has no . or .. segment, ? or # in it", and **Profile it** with
+  it: the page's path is the statement's text, whose `?` the hub refused
+  once decoded. The hub now forwards the path as it came, still encoded, so
+  a `?` or `#` stays inside its segment, and still refuses a `.` or `..`
+  segment, as sent or once decoded.
+- **In the command center, an app's screens kept to signed-in people were a
+  dead end**: since 0.3.6 such a screen opens with a sign-in entry (or
+  example rows under a sign-in bar), and the command center refused every
+  sign-in, since the engine's session cookie does not pass through
+  chloedb-server. The app engine now takes the key you signed in to the
+  command center with as one of the app's people (named after the key,
+  "Admin" for the server's own token, the address before its @ for a
+  session of the sign-in with Google, one person over all their sessions;
+  with no email or password; the app's owner when nobody joined before,
+  with its example rows), so
+  `app.me()` there is you and those screens open as they do for the owner.
+  A key that only reads still sees the app as a visitor does.
 - **The command center's Log explorer showed lines with no text** on
   tables that are not logs: it took a table's first text column as each
   line's words, and on HN's `hn_users` that is `about`, empty for most

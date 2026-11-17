@@ -182,7 +182,8 @@ fn the_log_grows_with_commits_and_a_flush_empties_it() {
         assert_eq!(mem, i + 1, "the memtable holds one row per commit");
         last = bytes;
     }
-    assert_eq!(std::fs::metadata(wal_path(&path)).unwrap().len(), last, "wal_bytes is the file's length");
+    let ahead = chloedb::storage::wal::AHEAD;
+    assert_eq!(std::fs::metadata(wal_path(&path)).unwrap().len(), last.div_ceil(ahead) * ahead, "the file is wal_bytes and the zeros written ahead");
     db.storage().flush().unwrap();
     let (bytes, mem, segs) = stats(&db);
     assert_eq!((bytes, mem), (WAL_HEADER, 0), "a flush leaves an empty log and memtable");
@@ -191,8 +192,11 @@ fn the_log_grows_with_commits_and_a_flush_empties_it() {
     assert_eq!(std::fs::metadata(wal_path(&path)).unwrap().len(), WAL_HEADER);
     // Commits after a flush start the log again.
     db.write_ops(vec![insert(1000)]).unwrap();
-    assert!(stats(&db).0 > WAL_HEADER);
+    let bytes = stats(&db).0;
+    assert!(bytes > WAL_HEADER);
     assert_eq!(count(&db), 201);
+    drop(db);
+    assert_eq!(std::fs::metadata(wal_path(&path)).unwrap().len(), bytes, "closing cuts the zeros off");
 }
 
 /// Without a flusher thread the commit that passes `memtable_max_docs`

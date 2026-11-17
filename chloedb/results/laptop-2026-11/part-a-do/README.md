@@ -777,3 +777,38 @@ test of the sync.
   second, p99 106 ms, against 460 and 363 in the first two), which is why
   its 268 a second is below the 556 of the writes test and the 728 to 800
   here.
+
+#### 17 November: writing the log over zeros written ahead
+
+The same writes test (`writes.py`, 2,000 of each, with `SYNC=0` for
+`sync=False`) on another DigitalOcean `g-8vcpu-32gb` node in sfo2, three
+rounds of every build in turns, and SQLite 3.53.1 after each round
+(`part-a-0.3.5/write-tests/log-reuse-1117/`: `build.sh` built the three
+trees there, profile `ci`; `ab.sh` timed them; `ab.log` is the output). The
+log change writes the log over zeros written ahead of its appends, so that a
+commit's sync does not grow the file. This node was an Intel Xeon Platinum
+8358 @ 2.60GHz (8 vCPU, Python 3.12 in `python:3.12-bookworm`), and its disk
+syncs about eight times as fast as 16 November's: `fsync_micro.py` took
+0.138 ms to sync an append that grows the file and 0.047 ms to sync one over
+blocks written before (1.20 and 0.54 ms on the node above). The median of the
+three rounds:
+
+| on this node, one row a commit | insert | update a price | delete by id |
+|---|---|---|---|
+| ChloeDB 0.3.5 | 6,203/s | 2,846/s | 6,604/s |
+| ChloeDB main (17ce0f8) | 5,996/s | 2,757/s | 6,772/s |
+| ChloeDB main with the log change | 16,008/s | 4,639/s | 18,687/s |
+| ChloeDB main, `sync=False` | 109,491/s | 8,046/s | 280,558/s |
+| ChloeDB main with the log change, `sync=False` | 105,863/s | 8,035/s | 261,918/s |
+| SQLite 3.53.1, FULL | 12,801/s | 15,639/s | 14,027/s |
+| SQLite 3.53.1, NORMAL | 41,164/s | 79,167/s | 55,774/s |
+
+- A durable insert took 0.058 ms at the median with the log change, against
+  0.146 ms on 0.3.5, and `strace -T` shows why: still one `fdatasync` of the
+  log per commit, 0.072 ms at the median against 0.156 ms.
+- `sync=False` makes no sync at all, so the log change makes no difference
+  there.
+- An update is still slower than SQLite FULL's: it plans and runs an
+  `UPDATE` statement, which takes 0.11 ms without the sync.
+- Cost: the node for about 25 minutes at $0.375 an hour, about $0.16; the
+  cluster was deleted with its resources at 02:32 UTC.

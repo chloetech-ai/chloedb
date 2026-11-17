@@ -405,6 +405,14 @@ impl Default for CoordinatorStorage {
 /// that says so: given unless `coordinatorArgs` gives the flag itself.
 pub const COORDINATOR_FILES: [(&str, &str); 3] = [("--log-store", "/data/logs"), ("--audit-log", "/data/audit.jsonl"), ("--alerts", "/data/alerts.json")];
 
+/// The Secret a cluster's coordinators keep their hub's book in (the
+/// clusters their command center reaches, and the keys it reaches them
+/// with, [`crate::hub::Hub::in_secret`]): the operator makes it, and only
+/// those coordinators may read and change it.
+pub fn hub_secret(cluster: &str) -> String {
+    format!("{cluster}-hub")
+}
+
 /// Where the coordinators find the federation's file
 /// (`credentials.json`) and the token it reads (`token`).
 pub const GCP_FEDERATION_DIR: &str = "/var/run/secrets/gcp";
