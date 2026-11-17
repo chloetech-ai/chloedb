@@ -1,0 +1,13 @@
+{
+ "table": "gh_repo_people",
+ "shard_by": "repo",
+ "cluster_by": "repo",
+ "compression": "zstd",
+ "fields": [
+  {"name": "repo", "type": "int", "not_null": true},
+  {"name": "actor", "type": "int", "not_null": true},
+  {"name": "n", "type": "int"},
+  {"name": "first", "type": "int"},
+  {"name": "last", "type": "int"}
+ ]
+}
