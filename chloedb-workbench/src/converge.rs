@@ -1418,6 +1418,24 @@ pub(crate) fn run_cmd(program: &str, args: &[String], cwd: &Path, stdin: Option<
 /// The process groups of runs in flight (a persona's `claude -p` and the
 /// builds it starts), ended with the server or a timeout.
 static GROUPS: Mutex<Option<HashSet<i32>>> = Mutex::new(None);
+/// The process group of each persona run in flight, by run id (Stop on one persona).
+static RUN_GROUPS: Mutex<Option<HashMap<String, i32>>> = Mutex::new(None);
+thread_local! {
+    /// The run a runner call on this thread is for (set by `runner_with`).
+    static CALL_RUN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Ends one run's process group (its `claude -p` and its builds); false when it is not running here.
+pub fn stop_run(run: &str) -> bool {
+    let g = RUN_GROUPS.lock().unwrap().as_ref().and_then(|m| m.get(run).copied());
+    match g {
+        Some(g) => {
+            kill_group(g);
+            true
+        }
+        None => false,
+    }
+}
 
 fn kill_group(pgid: i32) {
     // The whole group: the run and every build it started.
@@ -1444,11 +1462,17 @@ fn run_cmd_lines(program: &str, args: &[String], cwd: &Path, stdin: Option<&str>
     let mut child = cmd.spawn().map_err(|e| format!("cannot run {program}: {e}"))?;
     let pgid = child.id() as i32;
     GROUPS.lock().unwrap().get_or_insert_with(HashSet::new).insert(pgid);
+    if let Some(r) = CALL_RUN.with(|c| c.borrow().clone()) {
+        RUN_GROUPS.lock().unwrap().get_or_insert_with(HashMap::new).insert(r, pgid);
+    }
     struct Ungroup(i32);
     impl Drop for Ungroup {
         fn drop(&mut self) {
             if let Some(g) = GROUPS.lock().unwrap().as_mut() {
                 g.remove(&self.0);
+            }
+            if let Some(m) = RUN_GROUPS.lock().unwrap().as_mut() {
+                m.retain(|_, g| *g != self.0);
             }
         }
     }
@@ -1802,6 +1826,15 @@ fn said_lately(key: &str, secs: u64) -> bool {
 /// `runner_live`, with a persona's memory when it plays with one.
 #[allow(clippy::too_many_arguments)]
 fn runner_with(sup: &Supervisor, role: &str, job: &Json, cwd: &Path, model: &str, timeout: u64, run: Option<&str>, mem: Option<&Memory>) -> Result<Json, String> {
+    // The process this call starts is the run's (Stop on its persona ends it).
+    struct CallRun;
+    impl Drop for CallRun {
+        fn drop(&mut self) {
+            CALL_RUN.with(|c| *c.borrow_mut() = None);
+        }
+    }
+    CALL_RUN.with(|c| *c.borrow_mut() = run.map(str::to_string));
+    let _call_run = CallRun;
     let on_line = |l: &str| {
         if let Some(r) = run {
             for (step, at) in steps_of_line(l) {
@@ -6272,6 +6305,13 @@ async fn persona_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, ve
                 let run = runs_of(&sup, &p.repo, 50).into_iter().find(|r| r.persona.as_deref() == Some(p.id.as_str()) && r.purpose == "explore" && r.created >= t0);
                 let over = (playing >= at_once).then(|| format!("{} runs at once now, over the Autopilot's {at_once}: the autopilot waits until they drop below it", playing + 1));
                 return Ok(json!({ "persona": persona_json(&sup, &get_persona(&sup, &id)?), "run": run, "runs": { "playing": playing + 1, "at_once": at_once }, "over_limit": over }));
+            }
+            "stop" => {
+                // Its run in flight ends (its process group, builds included); the run records the end.
+                let run = playing_run(&p.id).ok_or_else(|| ApiError::conflict(format!("{} is not playing", p.name)))?;
+                let stopped = stop_run(&run);
+                log(&sup, &p.repo, "you", "you", &format!("You stopped {}'s run", p.name), json!({ "persona": p.id, "run": run }), json!({ "stopped": stopped }));
+                return Ok(json!({ "persona": persona_json(&sup, &p), "run": run, "stopped": stopped }));
             }
             "retire" => {
                 p.state = "retired".into();

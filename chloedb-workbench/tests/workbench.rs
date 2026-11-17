@@ -7031,6 +7031,7 @@ case "$role" in
         echo '{"outcome":"gave_up","ease":2,"answer":"Still broken.","fixed":false,"findings":[],"cost_usd":0.01}'
       fi
     else
+      if [ -f "$D/slow-play" ]; then sleep 60; fi
       n=$(cat "$D/plays" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$D/plays"
       echo "thinking out loud, then the answer"
       if [ "$n" = 1 ]; then
@@ -7956,6 +7957,55 @@ fn converge_generates_personas_from_the_codebase_and_logs_the_autopilots_decisio
     // limit caps the list.
     let (_, two) = s.get(&format!("/api/converge/activity?repo={}&limit=2", r.display()));
     assert_eq!(two["items"].as_array().unwrap().len(), 2);
+}
+
+/// Stop on one persona ends its run in flight (its process group), not the
+/// others' or the autopilot; a persona that is not playing answers 409.
+#[test]
+fn converge_stop_ends_one_personas_run() {
+    let fakes = tempfile::tempdir().unwrap();
+    let fd = fakes.path().canonicalize().unwrap();
+    let (runner, gh) = converge_fakes(&fd);
+    let s = start_lab(&[("CHLOEDB_WORKBENCH_CONVERGE_CMD", &runner), ("CHLOEDB_WORKBENCH_CONVERGE_GH", &gh)]);
+    let (_d, r) = repo();
+    let (st, p) = s.post("/api/converge/personas", json!({ "repo": r, "name": "Maya, shop owner", "journey": "Export last month's orders." }));
+    assert_eq!(st, 201, "{p}");
+    let pid = p["persona"]["id"].as_str().unwrap().to_string();
+    let (st, v) = s.post(&format!("/api/converge/personas/{pid}/stop"), json!({}));
+    assert_eq!(st, 409, "not playing: {v}");
+    std::fs::write(fd.join("slow-play"), "").unwrap();
+    let (st, v) = s.post(&format!("/api/converge/personas/{pid}/play"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    // It plays (the fake sleeps): its run is live.
+    let t0 = std::time::Instant::now();
+    let run = loop {
+        let (_, v) = s.get(&format!("/api/converge/personas?repo={}", r.display()));
+        if let Some(run) = v["personas"][0]["live_run"].as_str() {
+            break run.to_string();
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(20), "it never started: {v}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    let (st, v) = s.post(&format!("/api/converge/personas/{pid}/stop"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["stopped"], json!(true), "{v}");
+    assert_eq!(v["run"], json!(run), "{v}");
+    // The run ends well before the fake's 60 s, and the persona is free again.
+    let t0 = std::time::Instant::now();
+    loop {
+        let (_, v) = s.get(&format!("/api/converge/runs/{run}"));
+        if v["run"]["state"] != "running" {
+            assert!(v["run"]["ended"].as_i64().is_some(), "{v}");
+            break;
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(20), "the run kept going: {v}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let (_, v) = s.get(&format!("/api/converge/personas?repo={}", r.display()));
+    assert!(v["personas"][0]["live_run"].is_null(), "{v}");
+    assert!(!fd.join("plays").exists(), "the fake was ended before it counted the play");
+    let (_, act) = s.get(&format!("/api/converge/activity?repo={}", r.display()));
+    assert!(act["items"].as_array().unwrap().iter().any(|x| x["summary"].as_str().unwrap_or("").contains("stopped Maya")), "{act}");
 }
 
 #[test]
