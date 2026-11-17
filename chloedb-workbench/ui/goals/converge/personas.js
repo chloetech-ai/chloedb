@@ -76,7 +76,7 @@ async function play(C, p) {
   try {
     const r = await C.api(`/api/converge/personas/${enc(p.id)}/play`, { method: "POST", body: {} });
     const run = typeof r?.run === "string" ? r.run : r?.run?.id;
-    toast(`${firstName(p.name)} is playing${p.use_memory ? ", with their memory" : ""}`);
+    toast(`${firstName(p.name)} is playing${p.use_memory ? ", with their memory" : ""}${r?.over_limit ? `. ${r.over_limit}` : ""}`);
     C.S.sig = ""; await C.load();
     if (run) { C.openRun(run); return; }
     // The run starts a moment later: open it once the persona names it.

@@ -27,7 +27,7 @@ function detail(C, f) {
       return p ? h("span", { class: "cv-blkl", style: { color: "var(--warn-ink)" } }, `Round ${lc.round || f.rounds || 1} of ${rounds}: ${p}`) : null;
     }
     case "review": {
-      return h("span", { class: "r-meta" }, h("span", { style: { color: f.ci === "pass" ? "var(--good-ink)" : f.ci === "fail" ? "var(--crit-ink)" : null } }, f.ci === "pass" ? "CI green" : f.ci === "fail" ? "CI failed" : "CI running"),
+      return h("span", { class: "r-meta" }, f.conflict ? h("span", { style: { color: "var(--crit-ink)" } }, "Conflicts with the base") : h("span", { style: { color: f.ci === "pass" ? "var(--good-ink)" : f.ci === "fail" ? "var(--crit-ink)" : null } }, f.ci === "pass" ? "CI green" : f.ci === "fail" ? "CI failed" : "CI running"),
         f.ease_before != null && f.ease_after != null ? h("span", {}, `ease ${f.ease_before} → ${f.ease_after}`) : null, f.pr_url ? h("span", {}, (f.pr_url.match(/\/pull\/(\d+)/) || [])[1] ? `PR #${f.pr_url.match(/\/pull\/(\d+)/)[1]}` : "PR open") : null);
     }
     default: return null;

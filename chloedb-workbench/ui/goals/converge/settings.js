@@ -24,7 +24,7 @@ export function settingsScreen(C) {
     };
     const panels = h("div", { class: "cv-panels" },
       h("div", { class: "cv-panel" }, h("h3", {}, "Limits"), h("div", { class: "sub" }, "The autopilot never goes past these"),
-        field("budget_usd_day", "Model budget per day (USD)", "Persona runs, scoping and new personas. A spent budget pauses new work."),
+        field("budget_usd_day", "Model budget per day (USD)", "Persona runs, scoping, new personas, and the fix, repro and chat agents. A spent budget pauses new work."),
         field("runs_at_once", "Persona runs at once", "Each in its own checkout."),
         field("wip", "Findings in development at once", "Each agent on its own worktree and branch."),
         field("max_rounds", "Rounds before it asks you", "Develop and verify rounds without passing."),

@@ -36,7 +36,16 @@ export async function openSheet(C, id) {
   let tk = null;
   const acts = h("div", { class: "acts" });
   const reload = async () => { sig = ""; await fetchIt(); C.S.sig = ""; C.load(); };
-  const post = async (verb, body, msg) => { try { await C.post(id, verb, body); if (msg) toast(msg); } catch (err) { toast(err.message || String(err)); } await reload(); };
+  // One call at a time: a second tap while one is pending sends nothing, and
+  // the footer's buttons are disabled until it answers.
+  let pending = false;
+  const post = async (verb, body, msg) => {
+    if (pending) return;
+    pending = true;
+    acts.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    try { await C.post(id, verb, body); if (msg) toast(msg); } catch (err) { toast(err.message || String(err)); } finally { pending = false; }
+    await reload();
+  };
   const putF = async (body, msg) => { try { await C.api(`/api/converge/findings/${enc(id)}`, { method: "PUT", body }); toast(msg); } catch (err) { toast(err.message || String(err)); } await reload(); };
 
   // Draw at once from the overview's copy, then from the card's own data.
@@ -45,7 +54,13 @@ export async function openSheet(C, id) {
 
   async function fetchIt() {
     let x;
-    try { x = await C.api(`/api/converge/findings/${enc(id)}`); } catch (err) { if (!d) put(sh.body, h("p", { class: "cv-empty" }, err.message || String(err))); return; }
+    try { x = await C.api(`/api/converge/findings/${enc(id)}`); } catch (err) {
+      if (d) return;
+      clearInterval(timer);
+      sh.setHead(h("h2", {}, err.status === 404 ? "No such card" : "The card did not open"));
+      put(sh.body, h("p", { class: "cv-empty" }, err.status === 404 ? "This card does not exist (it may have been removed). Close this and pick one from the list." : `It did not load: ${err.message || err}`));
+      return;
+    }
     if (!sh.sheet.isConnected) return;
     // Typing in one of its fields: the next refresh paints it.
     const a = document.activeElement;
@@ -132,7 +147,8 @@ export async function openSheet(C, id) {
       }
       case "review":
         out.push(btn("Send back", "", () => { ui.back = true; paint(d); sh.body.scrollTop = 0; }));
-        if (f.ci === "pass") out.push(btn("Approve and merge", "good", () => { if (confirm(`Merge the pull request of “${f.title}”?`)) post("approve", {}, "Approved: merging"); }));
+        // A pull request that conflicts with the base is never offered for the merge.
+        if (f.ci === "pass" && !f.conflict) out.push(btn("Approve and merge", "good", () => { if (confirm(`Merge the pull request of “${f.title}”?`)) post("approve", {}, "Approved: merging"); }));
         break;
       default: break;
     }
@@ -160,7 +176,7 @@ export async function openSheet(C, id) {
       h("span", { class: "cv-label" }, "Dismiss"), why,
       h("div", { style: { display: "flex", gap: "8px" } },
         h("button", { class: "cv-btn", type: "button", onclick: () => { ui.dismiss = false; paint(d); } }, "Cancel"),
-        h("button", { class: "cv-btn crit", type: "button", onclick: async () => { if (!why.value.trim()) { why.focus(); return; } await post("dismiss", { reason: why.value.trim() }, "Dismissed"); sh.close(); } }, "Dismiss it")));
+        h("button", { class: "cv-btn crit", type: "button", onclick: async () => { if (!why.value.trim()) { why.focus(); toast("Say why first: it teaches the personas"); return; } await post("dismiss", { reason: why.value.trim() }, "Dismissed"); sh.close(); } }, "Dismiss it")));
   }
 
   /** "Send back with a note": the `back` verb with {text}; talking alone does not move a card back. */
@@ -171,7 +187,7 @@ export async function openSheet(C, id) {
       h("span", { class: "cv-label" }, "Send back to Building"), ta,
       h("div", { style: { display: "flex", gap: "8px" } },
         h("button", { class: "cv-btn", type: "button", onclick: () => { ui.back = false; paint(d); } }, "Cancel"),
-        h("button", { class: "cv-btn pri", type: "button", onclick: async () => { if (!ta.value.trim()) { ta.focus(); return; } ui.back = false; await post("back", { text: ta.value.trim() }, "Sent back: the fix agent has your note"); } }, "Send back")));
+        h("button", { class: "cv-btn pri", type: "button", onclick: async () => { if (!ta.value.trim()) { ta.focus(); toast("Say what to change first: the fix agent gets only your note"); return; } ui.back = false; await post("back", { text: ta.value.trim() }, "Sent back: the fix agent has your note"); } }, "Send back")));
   }
 
   function editBox(f) {
@@ -435,7 +451,8 @@ export async function openSheet(C, id) {
     const dev = [...evs].reverse().find((e) => e.gate === "develop" && e.passed);
     const bits = [f.ci === "pass" ? "CI green" : f.ci === "fail" ? "CI failed" : "CI running", dev ? "checks passed, in scope" : null, ver && ver.passed ? "the persona succeeded" : null].filter(Boolean);
     return [
-      h("div", { class: `cv-verdict${f.ci === "pass" ? "" : f.ci === "fail" ? " bad" : " wait"}` }, f.ci === "pass" ? `Ready: ${bits.join(" · ")}` : bits.join(" · ")),
+      f.conflict ? h("div", { class: "cv-verdict bad" }, `${f.conflict}. Not ready to merge.`)
+        : h("div", { class: `cv-verdict${f.ci === "pass" ? "" : f.ci === "fail" ? " bad" : " wait"}` }, f.ci === "pass" ? `Ready: ${bits.join(" · ")}` : bits.join(" · ")),
       f.pr_url ? h("section", {}, h("span", { class: "cv-label" }, "Pull request"), h("a", { href: f.pr_url, target: "_blank", rel: "noopener", style: { overflowWrap: "anywhere" } }, f.pr_url), f.branch ? h("p", { class: "cv-meta" }, `Branch ${f.branch}`) : null) : null,
     ];
   }
@@ -443,7 +460,7 @@ export async function openSheet(C, id) {
   function eventsBox(x) {
     const evs = Array.isArray(x.events) ? x.events : [];
     return h("section", {}, h("span", { class: "cv-label" }, "History"), h("ul", { class: "cv-checks" }, evs.slice(-30).reverse().map((e) =>
-      h("li", {}, h("span", { class: `mk ${e.passed || e.gate === "reported" ? "done" : "fail"}` }, e.passed || e.gate === "reported" ? "✓" : "!"), h("span", {}, h("b", {}, e.gate), e.summary ? `: ${e.summary}` : ""), h("span", { class: "du" }, `${e.by || ""} · ${ago(e.ts_ms)}`)))));
+      h("li", { style: { overflowWrap: "anywhere" } }, h("span", { class: `mk ${e.passed || e.gate === "reported" ? "done" : "fail"}` }, e.passed || e.gate === "reported" ? "✓" : "!"), h("span", {}, h("b", {}, e.gate), e.summary ? `: ${e.summary}` : ""), h("span", { class: "du" }, `${e.by || ""} · ${ago(e.ts_ms)}`)))));
   }
 
   await fetchIt();
