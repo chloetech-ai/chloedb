@@ -45,6 +45,8 @@ pub struct LoadPlan {
     pub unsplit: Option<(usize, usize, f64)>,
     /// Why there are no moves, when there are none.
     pub why: Option<String>,
+    /// Shards passed over as takers because their disks had no room.
+    pub disk_full: Vec<usize>,
 }
 
 /// The busiest shard's load as a multiple of the mean (0 for none).
@@ -60,6 +62,14 @@ pub fn skew(load: &[f64]) -> f64 {
 /// slot's operations a second) over the shards of `map`. Every shard counts
 /// in the mean, one holding no slots too: it is where load goes first.
 pub fn plan_by_load(map: &SlotMap, load: &[f64], chunk: usize) -> LoadPlan {
+    plan_by_load_within(map, load, chunk, &[], &[])
+}
+
+/// [`plan_by_load`] within the shards' disks: `per_slot[i]`, the bytes a
+/// slot of shard `i` holds, and `room[i]`, the bytes shard `i` may take
+/// ([`super::plan::slot_costs`]); a shard is given no slot that does not
+/// fit its room. Empty slices: no limit.
+pub fn plan_by_load_within(map: &SlotMap, load: &[f64], chunk: usize, per_slot: &[f64], room: &[f64]) -> LoadPlan {
     let n = map.shards();
     let mut owner: Vec<usize> = (0..SLOTS).map(|s| map.owner(s)).collect();
     let w = |s: usize| load.get(s).copied().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(0.0);
@@ -90,6 +100,9 @@ pub fn plan_by_load(map: &SlotMap, load: &[f64], chunk: usize) -> LoadPlan {
         return plan;
     }
     let cap = ((SLOTS as f64 / n as f64) * MAX_SLOTS_SHARE).ceil() as usize;
+    let cost = |i: usize| per_slot.get(i).copied().filter(|b| b.is_finite() && *b > 0.0).unwrap_or(0.0);
+    let mut room: Vec<f64> = (0..n).map(|i| room.get(i).copied().unwrap_or(f64::INFINITY)).collect();
+    let mut full = std::collections::BTreeSet::new();
     // Each shard's slots, busiest first.
     let mut by_shard: Vec<Vec<usize>> = vec![Vec::new(); n];
     for s in 0..SLOTS {
@@ -107,7 +120,12 @@ pub fn plan_by_load(map: &SlotMap, load: &[f64], chunk: usize) -> LoadPlan {
         if shard[d] < mean * TARGET_SKEW {
             break;
         }
-        let Some(r) = (0..n).filter(|&i| i != d && count[i] < cap).min_by(|&a, &b| shard[a].total_cmp(&shard[b]).then(a.cmp(&b))) else { break };
+        // The quietest shard with room for a slot of the busiest.
+        let fits = |i: usize| room[i] >= cost(d);
+        for i in (0..n).filter(|&i| i != d && count[i] < cap && !fits(i)) {
+            full.insert(i);
+        }
+        let Some(r) = (0..n).filter(|&i| i != d && count[i] < cap && fits(i)).min_by(|&a, &b| shard[a].total_cmp(&shard[b]).then(a.cmp(&b))) else { break };
         let gap = (shard[d] - mean).min(mean - shard[r]);
         if gap <= 0.0 {
             break;
@@ -118,6 +136,7 @@ pub fn plan_by_load(map: &SlotMap, load: &[f64], chunk: usize) -> LoadPlan {
         };
         let s = by_shard[d].remove(k);
         owner[s] = r;
+        room[r] -= cost(d);
         shard[d] -= w(s);
         shard[r] += w(s);
         count[d] -= 1;
@@ -143,7 +162,10 @@ pub fn plan_by_load(map: &SlotMap, load: &[f64], chunk: usize) -> LoadPlan {
             plan.moves.push((c.to_vec(), from, to));
         }
     }
-    if plan.moves.is_empty() {
+    plan.disk_full = full.into_iter().collect();
+    if plan.moves.is_empty() && !plan.disk_full.is_empty() && plan.unsplit.is_none() {
+        plan.why = Some(format!("the quieter shards ({}) have no room on their disks for the busiest shard's slots: they would pass {:.0}% full", plan.disk_full.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", "), super::plan::MOVE_DISK_LIMIT * 100.0));
+    } else if plan.moves.is_empty() {
         plan.why = Some(match plan.unsplit {
             Some((s, d, l)) => format!("shard {d} is hot because of slot {s} ({l:.1}/s), which no other shard can take without being hot in turn: it is one key or one shard_by value"),
             None => "no slot fits between the busiest shard and the others".into(),
@@ -206,6 +228,7 @@ impl LoadPlan {
             })).collect::<Vec<_>>(),
             "slots_moved": self.moves.iter().map(|(s, ..)| s.len()).sum::<usize>(),
             "unsplit": self.unsplit.map(|(slot, shard, l)| json!({"slot": slot, "shard": shard, "load_per_s": r3(l)})),
+            "disk_full": self.disk_full,
             "why": self.why,
         })
     }
@@ -325,6 +348,25 @@ mod tests {
         assert!(peer_load(&old, "15m").unwrap_err().contains("older version"));
         assert!(peer_load(&j, "5m").is_err(), "another window");
         assert!(peer_load(&json!({"by_slot": false}), "15m").unwrap_err().contains("nothing by slot"));
+    }
+
+    #[test]
+    fn a_shard_without_room_on_its_disks_takes_nothing() {
+        let m = map(3);
+        let load: Vec<f64> = (0..SLOTS).map(|s| if m.owner(s) == 0 { 4.0 } else { 1.0 }).collect();
+        // A slot is 1 MB; shard 1 has room for none, shard 2 for 50.
+        let per_slot = vec![1e6; 3];
+        let room = vec![f64::INFINITY, 0.0, 50.0 * 1e6];
+        let p = plan_by_load_within(&m, &load, 4096, &per_slot, &room);
+        assert!(p.moves.iter().all(|(_, _, to)| *to == 2), "{:?}", p.moves.iter().map(|m| (m.1, m.2)).collect::<Vec<_>>());
+        assert!(p.moves.iter().map(|(s, ..)| s.len()).sum::<usize>() <= 50);
+        // Shard 1 had no room; shard 2 none left once it took its 50.
+        assert_eq!(p.disk_full, vec![1, 2]);
+        assert_eq!(p.moves.iter().map(|(s, ..)| s.len()).sum::<usize>(), 50);
+        // No room anywhere: nothing moves, and it says why.
+        let none = plan_by_load_within(&m, &load, 4096, &per_slot, &[f64::INFINITY, 0.0, 0.0]);
+        assert!(none.moves.is_empty());
+        assert!(none.why.as_deref().unwrap().contains("no room on their disks"), "{:?}", none.why);
     }
 
     #[test]

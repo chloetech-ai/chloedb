@@ -26,7 +26,9 @@ changes collect under "Unreleased".
   from the busiest shard to the quietest until it takes under 1.1× the
   mean. It plans nothing under 1.3×, never moves a slot busier than the
   gap (a hot slot, which it names), and gives no shard more than 1.5× an
-  even share of the slots. `dry_run` answers the plan (each shard's load
+  even share of the slots, nor slots that would take its fullest copy's
+  disk past 85%; the plan's disk checks are answered (`disks`,
+  `preflight`), and a failed one refuses the moves. `dry_run` answers the plan (each shard's load
   and the skew before and after, and the moves) and moves nothing; counts
   of a coordinator that started recently are refused unless `force`d. A
   plan's step `{"kind": "rebalance", "by": "load"}` runs it. A rebalance

@@ -3956,7 +3956,8 @@ async fn rebalance_by_load(app: App, w: Option<axum::Extension<Principal>>, body
     let force = b.get("force").and_then(Json::as_bool).unwrap_or(false);
     let c = app.svc.coordinator()?;
     let (others, counted) = crate::coord::balance::others_load(&app.svc, &window).await;
-    let j = match c.rebalance_by_load(chunk(&body)?, &window, &others, counted, dry_run, force) {
+    let snap = c.snapshot().await;
+    let j = match c.rebalance_by_load(chunk(&body)?, &window, &others, counted, dry_run, force, Some(&snap)) {
         Ok(j) => j,
         Err(e) if dry_run => return Err(e),
         Err(e) => return Ok(tried("even the keyed load out over the shards".into())(e)),

@@ -1067,7 +1067,7 @@ async fn a_rebalance_by_load_moves_the_busy_slots() {
 
     // A dry run plans, from shard 0 to shard 1, and moves nothing.
     let counted = serde_json::json!([{"coordinator": "this", "ok": true}]);
-    let dry = a.rebalance_by_load(4096, "1m", &[], counted.clone(), true, false).unwrap();
+    let dry = a.rebalance_by_load(4096, "1m", &[], counted.clone(), true, false, Some(&*a.snapshot().await)).unwrap();
     let plan = &dry["plan"];
     assert!(dry["job"].is_null(), "{dry}");
     assert_eq!(plan["before"]["skew"], 2.0, "{plan}");
@@ -1075,12 +1075,15 @@ async fn a_rebalance_by_load_moves_the_busy_slots() {
     assert!(plan["moves"].as_array().unwrap().iter().all(|m| m["from"] == 0 && m["to"] == 1), "{plan}");
     assert!(plan["warning"].as_str().is_some_and(|w| w.contains("started recently")), "{plan}");
     assert!(plan["unsplit"].is_null(), "no slot is too busy to move: {plan}");
+    // The disks' room is checked, and the copy sent rows is named.
+    assert!(plan["preflight"].as_array().is_some_and(|p| !p.is_empty() && p.iter().all(|c| c["ok"] == true)), "{plan}");
+    assert!(plan["disks"].as_array().is_some_and(|d| d.iter().all(|x| x["shard"] == 1)), "{plan}");
     assert_eq!(a.map().unwrap().count(0), 2048, "a dry run moves nothing");
     // A few seconds of counts: refused unless forced.
-    let e = a.rebalance_by_load(4096, "1m", &[], counted.clone(), false, false).unwrap_err();
+    let e = a.rebalance_by_load(4096, "1m", &[], counted.clone(), false, false, Some(&*a.snapshot().await)).unwrap_err();
     assert_eq!(e.status, 409, "{}", e.message);
 
-    let j = a.rebalance_by_load(4096, "1m", &[], counted, false, true).unwrap();
+    let j = a.rebalance_by_load(4096, "1m", &[], counted, false, true, Some(&*a.snapshot().await)).unwrap();
     let moved = j["plan"]["slots_moved"].as_u64().unwrap();
     assert!(moved > 0 && moved < 2048, "only slots with load move: {moved}");
     let done = job_done(&a).await;
