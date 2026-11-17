@@ -598,6 +598,21 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(file) = hub {
         let secrets = crate::hub::Secrets::detect(Some(crate::hub::Hub::keys_file_of(&file)));
         svc.hub = Arc::new(crate::hub::Hub::open(file, secrets, o.hub_device.clone())?);
+    } else if let Some(l) = &svc.kube {
+        // A coordinator the operator runs: its book in the cluster's
+        // Secret `<cluster>-hub`, which a rollout keeps and its other
+        // coordinators share; named after the cluster, not the pod.
+        let secret = crate::operator::hub_secret(&l.name);
+        let device = o.hub_device.clone().or_else(|| Some(format!("{}/{}", l.namespace, l.name)));
+        match crate::hub::Hub::in_secret(l.kube().clone(), &l.namespace, &secret, device).await {
+            Ok(h) => {
+                tracing::info!(secret = %format!("{}/{secret}", l.namespace), connections = h.list().len(), "the hub's book is kept in the cluster's Secret");
+                let h = Arc::new(h);
+                crate::hub::Hub::keep(&h);
+                svc.hub = h;
+            }
+            Err(e) => tracing::warn!(secret = %format!("{}/{secret}", l.namespace), error = %e, "the hub's book is kept in memory only: a restart forgets the connections"),
+        }
     }
     let connector_secrets = o.connector_secrets.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::connectors::Connectors::file_of));
     if let Some(file) = connector_secrets {

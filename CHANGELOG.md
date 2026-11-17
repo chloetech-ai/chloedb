@@ -11,6 +11,17 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A command center on Kubernetes forgot the clusters it reaches at every
+  restart.** A coordinator kept its hub's book (the **Connections** view,
+  the clusters the brand's menu at the top left switches to, and their
+  keys) in memory, since it has no database to keep it beside, so each
+  rollout emptied the menu. It now keeps them in a Secret of its namespace,
+  `<cluster>-hub`, an entry per connection, which the operator makes and
+  lets only that cluster's coordinators read and change: a rollout keeps
+  them, and every coordinator of the cluster shares them. An operator
+  without Secrets in the namespace makes neither, and **Connections** says
+  the book is in memory only. The coordinators' Role grants `get` and
+  `patch` on that one Secret.
 - **The app engine's builds failed at once on Linux with `spawn E2BIG`**
   (0 model calls), on the operator's pods too: the forge's system prompt
   grew to 152 KB in 0.3.6, past Linux's limit of 128 KiB on one argument,

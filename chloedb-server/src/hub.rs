@@ -10,6 +10,12 @@
 //! (`<db>.hub-keys.json`, as the clouds' keys are kept). The book itself
 //! (`<db>.hub.json`) holds no secret and can be exported and rebuilt.
 //!
+//! A coordinator the Kubernetes operator runs has no database and often
+//! no volume: it keeps the book and the keys in a Secret of its namespace
+//! instead, `<cluster>-hub`, which the operator makes and lets only that
+//! cluster's coordinators read and change ([`Hub::in_secret`]). A rollout
+//! then keeps the book, and every coordinator of the cluster shares it.
+//!
 //! A connection over HTTPS whose certificate a public authority signed is
 //! checked as any HTTPS call is. One whose certificate is self-signed is
 //! pinned: its SHA-256 is shown when it is added, kept once the person
@@ -161,6 +167,9 @@ pub enum Secrets {
     /// A file only its owner reads; `None`: memory only (tests, a hub
     /// without a database).
     File(Option<PathBuf>),
+    /// The Kubernetes Secret `namespace/name`, with the book
+    /// ([`Hub::in_secret`]); the keys read from it are held in memory.
+    Kube(String),
 }
 
 impl Secrets {
@@ -186,6 +195,7 @@ impl Secrets {
             Secrets::Keychain => json!({"kind": "keychain", "what": "the macOS Keychain"}),
             Secrets::SecretTool => json!({"kind": "secret-service", "what": "the Secret Service (secret-tool)"}),
             Secrets::File(f) => json!({"kind": "file", "what": f.as_ref().map_or("memory only".to_string(), |f| format!("{} (mode 600)", f.display())), "file": f}),
+            Secrets::Kube(s) => json!({"kind": "kubernetes", "what": format!("the Kubernetes Secret {s}, with the book, shared by the cluster's coordinators"), "secret": s}),
         }
     }
 }
@@ -242,7 +252,7 @@ impl Keys {
         let k = match &self.secrets {
             Secrets::Keychain => run("security", &["find-generic-password", "-s", SERVICE, "-a", &acct, "-w"], None)?,
             Secrets::SecretTool => run("secret-tool", &["lookup", "service", SERVICE, "account", &acct], None)?,
-            Secrets::File(_) => return Err(format!("no key kept for {name}: add the connection again")),
+            Secrets::File(_) | Secrets::Kube(_) => return Err(format!("no key kept for {name}: add the connection again")),
         };
         if k.is_empty() {
             return Err(format!("no key kept for {name}: add the connection again"));
@@ -263,7 +273,7 @@ impl Keys {
             Secrets::SecretTool => {
                 run("secret-tool", &["store", "--label", &format!("ChloeDB hub: {name}"), "service", SERVICE, "account", &acct], Some(key))?;
             }
-            Secrets::File(_) => {}
+            Secrets::File(_) | Secrets::Kube(_) => {}
         }
         let mut m = self.lock();
         m.insert(name.to_string(), key.to_string());
@@ -279,7 +289,7 @@ impl Keys {
             Secrets::SecretTool => {
                 let _ = run("secret-tool", &["clear", "service", SERVICE, "account", &acct], None);
             }
-            Secrets::File(_) => {}
+            Secrets::File(_) | Secrets::Kube(_) => {}
         }
         let mut m = self.lock();
         m.remove(name);
@@ -404,10 +414,92 @@ pub enum Added {
     NeedsTrust { url: String, fingerprint: String },
 }
 
+/// A book kept in a Kubernetes Secret ([`Hub::in_secret`]): an entry per
+/// connection, `c.<name>`, the connection and its key as JSON.
+struct InSecret {
+    kube: Kube,
+    namespace: String,
+    name: String,
+    /// The changes to write, a connection at a time and in order: its
+    /// name and its entry, or `None` for one taken out.
+    tx: tokio::sync::mpsc::UnboundedSender<(String, Option<String>)>,
+    rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<(String, Option<String>)>>>,
+    /// Why the Secret was last not read or written, until it is.
+    error: Mutex<Option<String>>,
+}
+
+/// How often a book kept in a Secret is read again, for the changes the
+/// cluster's other coordinators made.
+const REREAD: Duration = Duration::from_secs(20);
+
+impl InSecret {
+    fn path(&self) -> String {
+        format!("/api/v1/namespaces/{}/secrets/{}", self.namespace, self.name)
+    }
+
+    fn noted(&self, r: Result<(), String>) {
+        let mut e = self.error.lock().unwrap_or_else(|e| e.into_inner());
+        match r {
+            Ok(()) => *e = None,
+            Err(m) => {
+                if e.as_deref() != Some(m.as_str()) {
+                    tracing::warn!(secret = %format!("{}/{}", self.namespace, self.name), error = %m, "the hub's book");
+                }
+                *e = Some(m);
+            }
+        }
+    }
+
+    /// Writes one connection's entry (`None`: takes it out). A merge
+    /// patch changes that entry only, so that two coordinators changing
+    /// two connections do not undo each other; a Secret not there yet is
+    /// made.
+    async fn write(&self, name: &str, entry: Option<String>) -> Result<(), String> {
+        let field = format!("c.{name}");
+        let patch = json!({"data": {field.clone(): entry.clone()}});
+        if self.kube.merge(&self.path(), &patch).await?.is_some() {
+            return Ok(());
+        }
+        let Some(entry) = entry else { return Ok(()) };
+        let body = json!({"apiVersion": "v1", "kind": "Secret", "type": "Opaque", "metadata": {"name": self.name, "namespace": self.namespace}, "data": {field: entry}});
+        match self.kube.call(reqwest::Method::POST, &format!("/api/v1/namespaces/{}/secrets", self.namespace), Some(&body)).await? {
+            (200..=299, _) => Ok(()),
+            // Made meanwhile by another coordinator, or the operator.
+            (409, _) => self.kube.merge(&self.path(), &patch).await?.map(|_| ()).ok_or_else(|| format!("{} is gone", self.path())),
+            (s, j) => Err(format!("making the Secret {}/{}: {s}: {}", self.namespace, self.name, j["message"].as_str().unwrap_or("refused"))),
+        }
+    }
+
+    /// The connections and keys the Secret holds (none: no Secret yet).
+    async fn read(&self) -> Result<Vec<(Connection, Option<String>)>, String> {
+        let Some(secret) = self.kube.get(&self.path()).await? else { return Ok(Vec::new()) };
+        Ok(entries(&secret))
+    }
+}
+
+/// The connections of a Secret's entries, oldest first. An entry that is
+/// not one is left out, and said.
+fn entries(secret: &Json) -> Vec<(Connection, Option<String>)> {
+    let mut out = Vec::new();
+    for (k, v) in secret["data"].as_object().into_iter().flatten() {
+        let Some(name) = k.strip_prefix("c.") else { continue };
+        let entry = v.as_str().and_then(crate::operator::kube::base64_decode).and_then(|b| serde_json::from_slice::<Json>(&b).ok());
+        let c = entry.as_ref().and_then(|e| serde_json::from_value::<Connection>(e["connection"].clone()).ok()).filter(|c| c.name == name);
+        match (c, entry) {
+            (Some(c), Some(e)) => out.push((c, e["key"].as_str().map(String::from))),
+            _ => tracing::warn!(entry = %k, "the hub's Secret holds an entry that is not a connection: left out"),
+        }
+    }
+    out.sort_by_key(|(c, _)| c.added_ms);
+    out
+}
+
 /// The book and the keys.
 pub struct Hub {
     book: Mutex<Vec<Connection>>,
     file: Option<PathBuf>,
+    /// Kept in a Kubernetes Secret instead of `file`.
+    secret: Option<InSecret>,
     keys: Keys,
     /// Each connection's client, made once (and again when it changes).
     clients: Mutex<HashMap<String, reqwest::Client>>,
@@ -455,7 +547,101 @@ pub fn default_device() -> String {
 impl Hub {
     /// A book in memory, the keys too.
     pub fn memory() -> Hub {
-        Hub { book: Mutex::new(Vec::new()), file: None, keys: Keys::new(Secrets::File(None), "memory".into()), clients: Mutex::new(HashMap::new()), device: default_device() }
+        Hub { book: Mutex::new(Vec::new()), file: None, secret: None, keys: Keys::new(Secrets::File(None), "memory".into()), clients: Mutex::new(HashMap::new()), device: default_device() }
+    }
+
+    /// The book kept in the Kubernetes Secret `namespace/name`, through
+    /// `kube` (a coordinator's own account, [`crate::operator::kube::Link`]):
+    /// read now, written as it changes and read again every few seconds
+    /// once [`Hub::keep`] runs. A Secret not there yet is an empty book,
+    /// made at its first change; one this account may not read is an
+    /// error, and the caller keeps the book in memory.
+    pub async fn in_secret(kube: Kube, namespace: &str, name: &str, device: Option<String>) -> Result<Hub, String> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let secret = InSecret { kube, namespace: namespace.to_string(), name: name.to_string(), tx, rx: Mutex::new(Some(rx)), error: Mutex::new(None) };
+        let found = secret.read().await?;
+        let keys = Keys::new(Secrets::Kube(format!("{namespace}/{name}")), format!("{namespace}/{name}"));
+        let mut book = Vec::new();
+        {
+            let mut m = keys.lock();
+            for (c, key) in found {
+                if let Some(k) = key {
+                    m.insert(c.name.clone(), k);
+                }
+                book.push(c);
+            }
+        }
+        Ok(Hub { book: Mutex::new(book), file: None, secret: Some(secret), keys, clients: Mutex::new(HashMap::new()), device: device.filter(|d| !d.trim().is_empty()).unwrap_or_else(default_device) })
+    }
+
+    /// Keeps a book of [`Hub::in_secret`] in its Secret, in the
+    /// background: writes each change in order, and reads the Secret again
+    /// every [`REREAD`] for the changes of the cluster's other
+    /// coordinators. Nothing for a book of a file or of memory.
+    pub fn keep(hub: &Arc<Hub>) {
+        let Some(mut rx) = hub.secret.as_ref().and_then(|s| s.rx.lock().unwrap_or_else(|e| e.into_inner()).take()) else { return };
+        let weak = Arc::downgrade(hub);
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(REREAD);
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            every.tick().await;
+            loop {
+                tokio::select! {
+                    biased;
+                    change = rx.recv() => {
+                        let Some((name, entry)) = change else { return };
+                        let Some(hub) = weak.upgrade() else { return };
+                        let Some(s) = &hub.secret else { return };
+                        let r = s.write(&name, entry).await;
+                        s.noted(r);
+                    }
+                    _ = every.tick() => {
+                        let Some(hub) = weak.upgrade() else { return };
+                        hub.reread(&rx).await;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Reads the Secret again and takes what it holds as the book, unless
+    /// a change of this hub's is still to be written (it is read again
+    /// after). The connections' last answers and failures, which the
+    /// Secret is not written for, are this hub's own.
+    async fn reread(&self, pending: &tokio::sync::mpsc::UnboundedReceiver<(String, Option<String>)>) {
+        let Some(s) = &self.secret else { return };
+        let found = match s.read().await {
+            Ok(f) => f,
+            Err(e) => return s.noted(Err(e)),
+        };
+        s.noted(Ok(()));
+        if !pending.is_empty() {
+            return;
+        }
+        let mut list = self.lock();
+        let old: HashMap<String, Connection> = list.drain(..).map(|c| (c.name.clone(), c)).collect();
+        let mut keys = self.keys.lock();
+        let mut clients = self.clients.lock().unwrap_or_else(|e| e.into_inner());
+        keys.clear();
+        for (mut c, key) in found {
+            match old.get(&c.name) {
+                Some(o) => {
+                    c.last_ok_ms = c.last_ok_ms.max(o.last_ok_ms);
+                    c.last_error = o.last_error.clone();
+                    if o.pin != c.pin || o.urls != c.urls {
+                        clients.remove(&c.name);
+                    }
+                }
+                None => drop(clients.remove(&c.name)),
+            }
+            if let Some(k) = key {
+                keys.insert(c.name.clone(), k);
+            }
+            list.push(c);
+        }
+        for name in old.keys().filter(|n| !list.iter().any(|c| &c.name == *n)) {
+            clients.remove(name);
+        }
     }
 
     /// `<db>.hub.json`, beside the database (`<db>.hub-keys.json` for a
@@ -475,7 +661,7 @@ impl Hub {
         };
         let abs = std::fs::canonicalize(file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."))).unwrap_or_default().join(file.file_name().unwrap_or_default());
         let hub = fingerprint(abs.to_string_lossy().as_bytes())[..12].to_string();
-        Ok(Hub { book: Mutex::new(book), file: Some(file), keys: Keys::new(secrets, hub), clients: Mutex::new(HashMap::new()), device: device.filter(|d| !d.trim().is_empty()).unwrap_or_else(default_device) })
+        Ok(Hub { book: Mutex::new(book), file: Some(file), secret: None, keys: Keys::new(secrets, hub), clients: Mutex::new(HashMap::new()), device: device.filter(|d| !d.trim().is_empty()).unwrap_or_else(default_device) })
     }
 
     /// The keys' file, for a book kept in `file` without a keychain.
@@ -488,7 +674,17 @@ impl Hub {
         self.book.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn save(&self, list: &[Connection]) -> Result<(), String> {
+    /// Keeps the book after a change to the connection `name`: the whole
+    /// book in its file, or that connection's entry in the Secret (its
+    /// key with it), written in the background.
+    fn save(&self, list: &[Connection], name: &str) -> Result<(), String> {
+        if let Some(s) = &self.secret {
+            let entry = list.iter().find(|c| c.name == name).map(|c| {
+                let key = self.keys.lock().get(name).cloned();
+                crate::operator::kube::base64_encode(json!({"connection": c, "key": key}).to_string().as_bytes())
+            });
+            return s.tx.send((name.to_string(), entry)).map_err(|_| "the hub's Secret is no longer written".to_string());
+        }
         let Some(f) = &self.file else { return Ok(()) };
         let b = serde_json::to_vec_pretty(list).map_err(|e| e.to_string())?;
         crate::aws::write_private(f, &b).map_err(|e| format!("write {}: {e}", f.display()))
@@ -504,9 +700,13 @@ impl Hub {
 
     /// What `GET /v1/admin/hub` answers.
     pub fn view(&self) -> Json {
+        let mut keys = self.keys.secrets.describe();
+        if let Some(e) = self.secret.as_ref().and_then(|s| s.error.lock().unwrap_or_else(|e| e.into_inner()).clone()) {
+            keys["error"] = json!(e);
+        }
         json!({
             "device": self.device,
-            "keys": self.keys.secrets.describe(),
+            "keys": keys,
             "file": self.file,
             "connections": self.list().iter().map(Connection::view).collect::<Vec<_>>(),
         })
@@ -592,7 +792,7 @@ impl Hub {
         let mut list = self.lock();
         list.retain(|o| o.name != c.name);
         list.push(c.clone());
-        self.save(&list).map_err(ApiError::internal)?;
+        self.save(&list, &c.name).map_err(ApiError::internal)?;
         drop(list);
         self.clients.lock().unwrap_or_else(|e| e.into_inner()).remove(&c.name);
         Ok(Added::Done(c))
@@ -728,7 +928,7 @@ impl Hub {
         let mut list = self.lock();
         list.retain(|o| o.name != c.name);
         list.push(c.clone());
-        self.save(&list).map_err(ApiError::internal)?;
+        self.save(&list, &c.name).map_err(ApiError::internal)?;
         drop(list);
         Ok(c)
     }
@@ -751,7 +951,7 @@ impl Hub {
             Err(err) => e.last_error = Some(err.message.clone()),
         }
         let out = e.clone();
-        let _ = self.save(&list);
+        let _ = self.save(&list, name);
         r.map(|_| out)
     }
 
@@ -767,7 +967,7 @@ impl Hub {
                 e.cluster = who["cluster"].clone();
                 e.keyless = false;
             }
-            self.save(&list).map_err(ApiError::internal)?;
+            self.save(&list, name).map_err(ApiError::internal)?;
         }
         if let Some(color) = b.get("color").and_then(Json::as_str) {
             if !(color.len() == 7 && color.starts_with('#') && color[1..].bytes().all(|b| b.is_ascii_hexdigit())) {
@@ -777,7 +977,7 @@ impl Hub {
             if let Some(e) = list.iter_mut().find(|o| o.name == name) {
                 e.color = color.to_string();
             }
-            self.save(&list).map_err(ApiError::internal)?;
+            self.save(&list, name).map_err(ApiError::internal)?;
         }
         self.get(name).ok_or_else(|| not_found(name))
     }
@@ -789,7 +989,7 @@ impl Hub {
         let mut list = self.lock();
         let i = list.iter().position(|c| c.name == name).ok_or_else(|| not_found(name))?;
         let c = list.remove(i);
-        self.save(&list).map_err(ApiError::internal)?;
+        self.save(&list, name).map_err(ApiError::internal)?;
         drop(list);
         if !c.keyless {
             self.keys.remove(name).map_err(ApiError::internal)?;
@@ -812,7 +1012,11 @@ impl Hub {
             Err(m) if e.last_error.as_deref() == Some(m) => return,
             Err(m) => e.last_error = Some(m.clone()),
         }
-        let _ = self.save(&list);
+        // A book in a Secret is not written for an answer: its
+        // coordinators each note their own.
+        if self.secret.is_none() {
+            let _ = self.save(&list, name);
+        }
     }
 
     /// Sends a request to the connection `name`, at `path` (`/v1/...`,
@@ -995,5 +1199,141 @@ mod tests {
         assert_eq!(again.get("prod").unwrap(), "sk_1_secret");
         again.remove("prod").unwrap();
         assert!(again.get("prod").is_err());
+    }
+
+    /// A Kubernetes API that holds one Secret (`db/orders-hub`): read,
+    /// made, and changed by merge patches of its data.
+    async fn fake_kube() -> (String, Arc<Mutex<Option<Json>>>) {
+        use axum::http::StatusCode;
+        let held: Arc<Mutex<Option<Json>>> = Arc::default();
+        let h = held.clone();
+        let app = axum::Router::new().fallback(move |method: axum::http::Method, uri: axum::http::Uri, body: axum::body::Bytes| {
+            let h = h.clone();
+            async move {
+                let body: Json = serde_json::from_slice(&body).unwrap_or(Json::Null);
+                let mut held = h.lock().unwrap();
+                match (method.as_str(), uri.path()) {
+                    ("GET", "/api/v1/namespaces/db/secrets/orders-hub") => match &*held {
+                        Some(s) => (StatusCode::OK, axum::Json(s.clone())),
+                        None => (StatusCode::NOT_FOUND, axum::Json(json!({"kind": "Status", "message": "not found"}))),
+                    },
+                    ("PATCH", "/api/v1/namespaces/db/secrets/orders-hub") => match held.as_mut() {
+                        Some(s) => {
+                            for (k, v) in body["data"].as_object().unwrap() {
+                                match v {
+                                    Json::Null => drop(s["data"].as_object_mut().unwrap().remove(k)),
+                                    v => s["data"][k] = v.clone(),
+                                }
+                            }
+                            (StatusCode::OK, axum::Json(s.clone()))
+                        }
+                        None => (StatusCode::NOT_FOUND, axum::Json(json!({"kind": "Status", "message": "not found"}))),
+                    },
+                    ("POST", "/api/v1/namespaces/db/secrets") if held.is_none() => {
+                        assert_eq!(body["metadata"]["name"], "orders-hub");
+                        *held = Some(body.clone());
+                        (StatusCode::CREATED, axum::Json(body))
+                    }
+                    _ => (StatusCode::CONFLICT, axum::Json(json!({"kind": "Status", "message": "no"}))),
+                }
+            }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await });
+        (url, held)
+    }
+
+    /// A cluster that takes the key `sk_far` and says who it is.
+    async fn fake_cluster() -> String {
+        let app = axum::Router::new().route(
+            "/v1/whoami",
+            axum::routing::get(|headers: axum::http::HeaderMap| async move {
+                if headers.get("authorization").and_then(|v| v.to_str().ok()) == Some("Bearer sk_far") {
+                    (axum::http::StatusCode::OK, axum::Json(json!({"scope": "admin", "name": "hub key", "cluster": {"name": "far", "environment": "prod"}})))
+                } else {
+                    (axum::http::StatusCode::UNAUTHORIZED, axum::Json(json!({"error": "no"})))
+                }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await });
+        url
+    }
+
+    async fn until(what: &str, f: impl Fn() -> bool) {
+        for _ in 0..100 {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("never: {what}");
+    }
+
+    /// A coordinator's book in its cluster's Secret: what one coordinator
+    /// adds, another (or the same after a restart) finds with its key, and
+    /// what it takes out is gone from the Secret.
+    #[tokio::test]
+    async fn a_book_in_a_secret_outlives_its_coordinator() {
+        use crate::operator::kube::{Kube, Options};
+        let (api, held) = fake_kube().await;
+        let far = fake_cluster().await;
+        let kube = || Kube::new(&Options { api: Some(api.clone()), token: Some("t".into()), ..Default::default() }).unwrap();
+        let a = Arc::new(Hub::in_secret(kube(), "db", "orders-hub", Some("db/orders".into())).await.unwrap());
+        Hub::keep(&a);
+        assert!(a.list().is_empty(), "no Secret yet: an empty book");
+        assert_eq!(a.view()["keys"]["kind"], "kubernetes");
+        assert_eq!(a.device, "db/orders");
+        let added = a.add(Add { name: "far".into(), url: far.clone(), key: "sk_far".into(), color: Some("#112233".into()), ..Default::default() }, "ana").await.unwrap();
+        assert!(matches!(added, Added::Done(_)));
+        until("the Secret is made with the connection", || held.lock().unwrap().as_ref().is_some_and(|s| s["data"]["c.far"].is_string())).await;
+        let entry = held.lock().unwrap().as_ref().unwrap()["data"]["c.far"].as_str().unwrap().to_string();
+        let entry: Json = serde_json::from_slice(&crate::operator::kube::base64_decode(&entry).unwrap()).unwrap();
+        assert_eq!((&entry["key"], &entry["connection"]["urls"][0], &entry["connection"]["color"]), (&json!("sk_far"), &json!(far), &json!("#112233")));
+
+        // Another coordinator, or this one restarted: the connection, with
+        // its key.
+        let b = Arc::new(Hub::in_secret(kube(), "db", "orders-hub", None).await.unwrap());
+        Hub::keep(&b);
+        let c = b.get("far").expect("the connection");
+        assert_eq!((c.cluster["environment"].as_str(), b.key_of(&c).unwrap().as_deref()), (Some("prod"), Some("sk_far")));
+        b.check("far", None).await.expect("its key works");
+        b.update("far", &json!({"color": "#445566"}), None).await.unwrap();
+        until("the color is written", || {
+            let s = held.lock().unwrap();
+            let e = s.as_ref().unwrap()["data"]["c.far"].as_str().unwrap().to_string();
+            String::from_utf8(crate::operator::kube::base64_decode(&e).unwrap()).unwrap().contains("#445566")
+        })
+        .await;
+
+        // The first reads it again, and finds the second's change; then
+        // takes the connection out, and the second finds it gone.
+        let (_tx, none) = tokio::sync::mpsc::unbounded_channel();
+        a.reread(&none).await;
+        assert_eq!(a.get("far").unwrap().color, "#445566");
+        a.remove("far").unwrap();
+        until("the entry is taken out", || held.lock().unwrap().as_ref().unwrap()["data"].get("c.far").is_none()).await;
+        b.reread(&none).await;
+        assert!(b.get("far").is_none() && b.keys.lock().is_empty(), "its key with it");
+        assert!(b.view()["keys"].get("error").is_none());
+    }
+
+    /// An entry of the Secret that is not a connection (written by hand,
+    /// or under another name) is left out, not taken as one.
+    #[test]
+    fn entries_of_a_secret() {
+        let c = |name: &str, at: u64| json!({"name": name, "color": "#000000", "urls": ["http://x:7700"], "added_ms": at, "added_by": "ana"});
+        let enc = |j: Json| crate::operator::kube::base64_encode(j.to_string().as_bytes());
+        let secret = json!({"data": {
+            "c.b": enc(json!({"connection": c("b", 1), "key": "kb"})),
+            "c.a": enc(json!({"connection": c("a", 2), "key": null})),
+            "c.wrong": enc(json!({"connection": c("other", 3), "key": "k"})),
+            "c.junk": "not base64 json",
+            "notes": enc(json!({})),
+        }});
+        let got: Vec<(String, Option<String>)> = entries(&secret).into_iter().map(|(c, k)| (c.name, k)).collect();
+        assert_eq!(got, vec![("b".to_string(), Some("kb".to_string())), ("a".to_string(), None)], "oldest first");
     }
 }
