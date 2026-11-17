@@ -116,28 +116,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </thead>
 <tbody>
 <tr>
-<td>Now</td>
-<td>the open incidents, most serious first, what they share (an announcer, a carrier, a country), the busiest prefixes and what the collector heard in the last minutes</td>
-<td><code>bb_incidents</code>, <code>bb_alerts</code>, <code>bb_updates</code></td>
+<td>Home</td>
+<td>what it is and where its data comes from, the open incidents, the world coloured by them, the slowest countries and the busiest prefixes, and how to read the console</td>
+<td><code>bb_incidents</code>, <code>bb_alerts</code>, <code>bb_updates</code>, <code>bb_ping</code></td>
 </tr>
 <tr>
-<td>Map</td>
-<td>the world, each country coloured by its open alerts and its probes' time to K, and lines where a network in one country announced space owned in another; a country's exchanges and networks with their probes, and where slow traceroutes leave it</td>
-<td><code>bb_alerts</code>, <code>bb_ping</code>, <code>bb_trace</code>, <code>bb_ix</code>, <code>bb_member</code></td>
+<td>Console</td>
+<td>one screen that stays while you move: every update a minute for the last six hours, with the RPKI-invalid ones and the incidents along it (<code>/v1/timeline</code>); the networks you watch, kept in your browser, with their alerts and their routes' updates in the last hour (<code>/v1/watch</code>); the open incidents on the left; a map whose camera flies from the world to a country to a network; and an inspector on the right with what is wrong, what changed, the numbers and the records of what is on the map</td>
+<td>the pages below</td>
+</tr>
+<tr>
+<td>A country</td>
+<td>its buildings, exchanges and RIPE Atlas probes where they are, its networks placed where their buildings are (else their probes), each probe coloured by its time to K, and where slow traceroutes leave it</td>
+<td><code>bb_fac</code>, <code>bb_netfac</code>, <code>bb_ix</code>, <code>bb_member</code>, <code>bb_probe</code>, <code>bb_ping</code>, <code>bb_trace</code></td>
 </tr>
 <tr>
 <td>A network</td>
-<td>what it hangs from and what depends on it (<code>REACHABLE</code> over the relationships), trouble within three hops, its prefixes and their updates a minute, its alerts</td>
+<td>its buildings, exchanges and probes on the map, a line to where it meets each provider, what it hangs from and what depends on it (<code>REACHABLE</code> over the relationships), trouble within three hops, its prefixes and their updates a minute, its alerts</td>
 <td><code>bb_p2c</code>, <code>bb_p2p</code>, <code>bb_updates</code>, <code>bb_roa</code></td>
 </tr>
 <tr>
 <td>A prefix</td>
-<td>every update replayed into who holds a route to it now, its origins and their RPKI state, the path to it, the routes covering it and inside it, its ROAs</td>
+<td>every update replayed into who holds a route to it now, its origins and their RPKI state, its paths now beside an hour ago (the ones that are new and the ones that are gone), drawn country to country on the map, the routes covering it and inside it, its ROAs</td>
 <td><code>bb_updates</code>, <code>bb_roa</code></td>
 </tr>
 <tr>
 <td>An incident</td>
-<td>its alerts, who announced, carried and owns the space, and the updates a minute around it</td>
+<td>its alerts, who announced, carried and owns the space, its countries on the map, its window on the timeline, and the updates a minute around it</td>
 <td><code>bb_alerts</code>, <code>bb_updates</code></td>
 </tr>
 <tr>
@@ -151,7 +156,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <td><code>bb_rules</code></td>
 </tr>
 <tr>
-<td>Data</td>
+<td>How it's built</td>
 <td>the tables, their rows, and where each source stands</td>
 <td>every table</td>
 </tr>

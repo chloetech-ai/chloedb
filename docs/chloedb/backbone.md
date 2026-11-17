@@ -6,14 +6,15 @@
 
 | page | what it shows | from |
 |---|---|---|
-| Now | the open incidents, most serious first, what they share (an announcer, a carrier, a country), the busiest prefixes and what the collector heard in the last minutes | `bb_incidents`, `bb_alerts`, `bb_updates` |
-| Map | the world, each country coloured by its open alerts and its probes' time to K, and lines where a network in one country announced space owned in another; a country's exchanges and networks with their probes, and where slow traceroutes leave it | `bb_alerts`, `bb_ping`, `bb_trace`, `bb_ix`, `bb_member` |
-| A network | what it hangs from and what depends on it (`REACHABLE` over the relationships), trouble within three hops, its prefixes and their updates a minute, its alerts | `bb_p2c`, `bb_p2p`, `bb_updates`, `bb_roa` |
-| A prefix | every update replayed into who holds a route to it now, its origins and their RPKI state, the path to it, the routes covering it and inside it, its ROAs | `bb_updates`, `bb_roa` |
-| An incident | its alerts, who announced, carried and owns the space, and the updates a minute around it | `bb_alerts`, `bb_updates` |
+| Home | what it is and where its data comes from, the open incidents, the world coloured by them, the slowest countries and the busiest prefixes, and how to read the console | `bb_incidents`, `bb_alerts`, `bb_updates`, `bb_ping` |
+| Console | one screen that stays while you move: every update a minute for the last six hours, with the RPKI-invalid ones and the incidents along it (`/v1/timeline`); the networks you watch, kept in your browser, with their alerts and their routes' updates in the last hour (`/v1/watch`); the open incidents on the left; a map whose camera flies from the world to a country to a network; and an inspector on the right with what is wrong, what changed, the numbers and the records of what is on the map | the pages below |
+| A country | its buildings, exchanges and RIPE Atlas probes where they are, its networks placed where their buildings are (else their probes), each probe coloured by its time to K, and where slow traceroutes leave it | `bb_fac`, `bb_netfac`, `bb_ix`, `bb_member`, `bb_probe`, `bb_ping`, `bb_trace` |
+| A network | its buildings, exchanges and probes on the map, a line to where it meets each provider, what it hangs from and what depends on it (`REACHABLE` over the relationships), trouble within three hops, its prefixes and their updates a minute, its alerts | `bb_p2c`, `bb_p2p`, `bb_updates`, `bb_roa` |
+| A prefix | every update replayed into who holds a route to it now, its origins and their RPKI state, its paths now beside an hour ago (the ones that are new and the ones that are gone), drawn country to country on the map, the routes covering it and inside it, its ROAs | `bb_updates`, `bb_roa` |
+| An incident | its alerts, who announced, carried and owns the space, its countries on the map, its window on the timeline, and the updates a minute around it | `bb_alerts`, `bb_updates` |
 | Diagnose | for the slowest countries and those with the most probes, the stack from users to the K root server (time to K, paths that jump, peering, routing alerts, outages) and the lowest layer that is red | `bb_ping`, `bb_trace`, `bb_alerts`, `bb_outage` |
 | Rules | each alert rule's statement, how long it took and what it found | `bb_rules` |
-| Data | the tables, their rows, and where each source stands | every table |
+| How it's built | the tables, their rows, and where each source stands | every table |
 
 ## The rules
 

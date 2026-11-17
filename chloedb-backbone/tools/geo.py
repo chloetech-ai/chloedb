@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Write ui/geo.json: every country's outline on the page's world map, its
-name, its continent and where to put its pin.
+name, its continent, where to put its pin and the box to zoom to.
 
 The outlines are Natural Earth's at 1:110m (world-atlas, public domain);
 the codes, names and continents are Unicode CLDR's. The projection is the
@@ -111,6 +111,46 @@ def area_centroid(r):
     return abs(a) / 2, (cx / (3 * a), cy / (3 * a))
 
 
+def box(polys):
+    """Where to zoom for a country: the box of its outlines that matter, the
+    largest, any at least a third its size, and any at least a tenth its
+    size next to those (by real area, so Alaska does not pull the United
+    States' box north, nor French Guiana France's, and Hokkaido stays in
+    Japan's and Java in Indonesia's)."""
+    import math
+    sized = []
+    for r in polys:
+        r = unwrap(r)
+        a, (cx, cy) = area_centroid(r)
+        lat = TOP - cy / H * SPAN
+        sized.append((a * math.cos(math.radians(lat)), cx, r))
+    top, ref, _ = max(sized, key=lambda t: t[0])
+    # Each outline on the same side of the antimeridian as the largest, in
+    # map units.
+    def bounds(r, cx):
+        pts = [project(lon + 360 * round((ref - cx) / W), max(min(lat, TOP), TOP - SPAN)) for lon, lat in r]
+        return [min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts)]
+    boxes = [(a, bounds(r, cx)) for a, cx, r in sized]
+    keep = [b for a, b in boxes if a >= top / 3]
+    rest = [(a, b) for a, b in boxes if top / 10 <= a < top / 3]
+    def union(bs):
+        return [min(b[0] for b in bs), min(b[1] for b in bs), max(b[2] for b in bs), max(b[3] for b in bs)]
+    grew = True
+    while grew:
+        grew = False
+        u = union(keep)
+        near = 0.05 * max(u[2] - u[0], u[3] - u[1])
+        for a, b in list(rest):
+            gap = max(b[0] - u[2], u[0] - b[2], b[1] - u[3], u[1] - b[3], 0)
+            if gap <= near:
+                keep.append(b)
+                rest.remove((a, b))
+                grew = True
+    xs = [b[0] for b in keep] + [b[2] for b in keep]
+    ys = [b[1] for b in keep] + [b[3] for b in keep]
+    return [round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1)]
+
+
 def main():
     topo = get(ATLAS)
     codes = get(CLDR + "codeMappings.json")["supplemental"]["codeMappings"]
@@ -150,7 +190,7 @@ def main():
         if not d:
             continue
         x, y = project(*PIN[cc]) if cc in PIN else big[1]
-        out[cc] = {"n": names.get(cc, g["properties"].get("name", cc)), "c": continent(cc), "x": round(x, 1), "y": round(y, 1), "d": d}
+        out[cc] = {"n": names.get(cc, g["properties"].get("name", cc)), "c": continent(cc), "x": round(x, 1), "y": round(y, 1), "b": box(outer), "d": d}
     # Countries too small for 1:110m: a name, a continent and no outline;
     # the page places their pins at their exchanges.
     for cc, n in names.items():

@@ -2,26 +2,34 @@
 // (#/app/backbone, loaded through chloedb-server from this app) and on its
 // own (the app's / when it has no token, through ui/index.html). It imports
 // nothing and builds its own elements, so the same file serves both. Its
-// look is NetOps' (chloedb-netops/ui/view.js): a worklist, a map that zooms
-// from the world to one network, an inspector, the stack of a country.
+// look is NetOps' (chloedb-netops/ui/view.js).
 //
-//   (now)                 what is wrong now, how it connects, what ended
-//   map                   the world: countries red where something is wrong
-//   map/<CC>[/<asn>]      a country: its exchanges, networks and probes;
-//                         a network chosen in the inspector beside it
-//   as/<asn>              a network: what it hangs from, its prefixes,
-//                         its changes and faults
-//   prefix/<p>            a prefix: who announces it, through whom, its
-//                         ROAs, every update replayed into a timeline
+// The console is one screen that stays while the reader moves: the last
+// six hours along the top (every update a minute, RPKI-invalid ones, the
+// incidents), the networks they watch, the worklist on the left, a map in
+// the middle whose camera flies from the world to a country to a network
+// (van Wijk and Nuij's zoom path), and an inspector on the right with
+// what is wrong, what changed, the numbers and the records. A click moves
+// the camera and fills the inspector; nothing else is built again.
+//
+//   (home)                what it is, what is wrong now, how to read it
+//   map                   the console on the world: what is wrong now
+//   map/<CC>[/<asn>]      a country: its buildings, exchanges, networks and
+//                         probes; a network in it, its buildings and the
+//                         providers it buys transit from
+//   as/<asn>              a network, over its home country
+//   prefix/<p>            a prefix: its paths now, new and gone in the
+//                         last hour, its ROAs, every update replayed
+//   incident/<id>         one incident: its places on the map, its window
+//                         on the timeline, its alerts and graph
 //   incidents             the last day's incidents
-//   incident/<id>         one incident: its alerts, graph and minutes
 //   diagnose[/<CC>]       each country's stack, from its users down to K
 //   rules                 the alert rules, each a SQL statement
 //   data                  how it is built, and how big it is
 //   search/<q>            a prefix, an address, a network or an exchange
 //
 // Every answer of the API carries the SQL it ran: the "SQL" button shows
-// the queries behind the page in view.
+// the queries behind the view on screen.
 
 export default { render };
 
@@ -497,6 +505,10 @@ a.bn-map-row .btn { pointer-events: none; }
 .bb-mm .bn-otabs button { padding: 8px 5px; }
 
 /* ---- Backbone explorer's own ---- */
+.bn-main { position: relative; transition: opacity .15s; }
+.bn-main.bn-loading { opacity: .6; pointer-events: none; }
+.bn-main.bn-loading::before { content: ""; position: absolute; left: 0; top: -8px; height: 2px; width: 40%; background: var(--accent); border-radius: 2px; animation: bnbar 1s ease-in-out infinite; }
+@keyframes bnbar { 0% { left: 0; width: 10%; } 50% { left: 45%; width: 40%; } 100% { left: 90%; width: 10%; } }
 .bn-root { max-width: 1440px; margin: 0 auto; padding: 16px 0 40px; font: 14px/1.5 var(--sans); color: var(--text); }
 .bn-root * { box-sizing: border-box; }
 .bn-root a { color: inherit; text-decoration: none; }
@@ -590,6 +602,264 @@ a.bn-map-row .btn { pointer-events: none; }
 .bn-map-legend .bn-ln { display: inline-block; width: 16px; height: 0; border-top: 2px dashed var(--crit); border-radius: 0; margin-right: 5px; vertical-align: 3px; }
 @media (max-width: 1100px) { .bn-wm .bn-map-side { contain: none; max-height: 70vh; } }
 .bn-stack .cell.bad { color: #fff; }
+/* ---- the frame */
+.bn-home-link { color: inherit; text-decoration: none; }
+.bn-home-link:hover { color: var(--accent); text-decoration: none; }
+.bn-bar { display: flex; align-items: flex-end; gap: 12px; margin-bottom: 10px; border-bottom: 1px solid var(--line); }
+.bn-bar .bn-tabs { border-bottom: 0; margin: 0; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.bn-bar .bn-cmd { width: min(440px, 40vw); height: 34px; margin-bottom: 6px; flex: none; }
+@media (max-width: 760px) { .bn-bar { flex-direction: column-reverse; align-items: stretch; gap: 6px; } .bn-bar .bn-cmd { width: auto; } }
+.bn-conhost[hidden], .bn-main[hidden], .bn-foot[hidden] { display: none; }
+
+/* ---- the console */
+.bn-con { display: grid; gap: 8px; }
+.bn-con-body { display: grid; grid-template-columns: 300px minmax(0, 1fr) 400px; gap: 10px; height: calc(100vh - 220px); min-height: 540px; transition: grid-template-columns .25s ease; }
+.bn-con.wide .bn-con-body { grid-template-columns: 300px minmax(0, 1fr) 620px; }
+.bn-wl, .bn-in { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow-y: auto; min-width: 0; min-height: 0; position: relative; }
+.bn-stage { position: relative; border: 1px solid var(--line); border-radius: var(--r); background: color-mix(in srgb, var(--accent) 5%, var(--surface-2)); overflow: hidden; min-width: 0; min-height: 0; }
+@media (max-width: 1100px) {
+  .bn-con-body, .bn-con.wide .bn-con-body { grid-template-columns: minmax(0, 1fr); height: auto !important; }
+  .bn-stage { height: 62vh; min-height: 380px; order: 1; }
+  .bn-in { order: 2; max-height: none; }
+  .bn-wl { order: 3; max-height: 70vh; }
+}
+.bn-in.bn-busy::before { content: ""; position: sticky; display: block; top: 0; height: 2px; width: 40%; background: var(--accent); border-radius: 2px; animation: bnbar 1s ease-in-out infinite; z-index: 3; margin-bottom: -2px; }
+.bn-in.bn-busy > :not(.bn-in-hd) { opacity: .6; transition: opacity .2s .15s; }
+.bn-in-hd { padding: 10px 14px 10px; border-bottom: 1px solid var(--line); display: grid; gap: 3px; }
+.bn-in-hd h3 { margin: 0; font-size: 15.5px; overflow-wrap: anywhere; line-height: 1.3; }
+.bn-in-hd h3.mono { font-family: var(--mono); font-size: 15px; }
+.bn-in-crumbs { display: flex; gap: 5px; align-items: center; font-size: 11.5px; color: var(--text-2); min-height: 22px; }
+.bn-in-crumbs a { color: var(--text-2); }
+.bn-in-crumbs a:hover { color: var(--accent); }
+.bn-in-wide { margin-left: auto; padding: 2px 6px; }
+.bn-in-wide .i { width: 13px; height: 13px; }
+.bn-in-sum { padding: 10px 14px 0; font-size: 13px; }
+.bn-in-sum ul { margin: 0 0 8px; padding-left: 18px; display: grid; gap: 4px; }
+.bn-in-sum p { margin: 0 0 8px; color: var(--text-2); }
+.bn-in-body { padding-bottom: 14px; }
+.bn-in .bn-otabs { top: 0; }
+.bn-otabs .n.bad { background: var(--crit-soft); color: var(--crit-ink); }
+.bn-otabs .n.warn { background: var(--warn-soft); color: var(--text); }
+.bn-otabs .n.info { background: var(--accent-soft); color: var(--accent); }
+.bn-none { padding: 2px 0 4px; }
+.bn-btnrow { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.bn-watch-btn .i { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.bn-watch-btn.on { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.bn-watch-btn.on .i { fill: currentColor; }
+.bn-conn { padding: 4px 0 8px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+.bn-conn:last-child { border-bottom: 0; }
+.bn-conn-ids { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.bn-conn-ids .chip { font-size: 11px; }
+.bn-path { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 5px 8px; margin: 0 -6px 3px; border-radius: var(--r-sm); border-left: 3px solid var(--line-2); background: var(--surface-2); font-size: 12px; }
+.bn-path.new { border-left-color: var(--accent); background: var(--accent-soft); }
+.bn-path.gone { border-left-color: var(--line-2); opacity: .75; text-decoration: line-through; text-decoration-color: var(--muted); }
+.bn-path-hops { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; min-width: 0; }
+.bn-path-hops a { color: var(--text); font-weight: 550; }
+.bn-path-hops .sep { color: var(--muted); }
+.bn-path-n { color: var(--text-2); font-size: 11.5px; display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.bn-hist { display: flex; align-items: flex-end; gap: 6px; padding: 4px 0 2px; }
+.bn-hist .c { display: grid; justify-items: center; gap: 2px; flex: 1; min-width: 0; }
+.bn-hist .v { font-size: 10.5px; color: var(--text-2); font-variant-numeric: tabular-nums; min-height: 13px; }
+.bn-hist .b { width: 100%; border-radius: 3px 3px 0 0; background: var(--good); min-height: 1px; }
+.bn-hist .b.warn { background: var(--warn); } .bn-hist .b.bad { background: var(--crit); }
+.bn-hist .l { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.bn-hist .u { font-size: 10px; color: var(--muted); align-self: flex-end; padding-bottom: 1px; }
+
+/* the worklist */
+.bn-wl-hd { padding: 10px 12px 8px; border-bottom: 1px solid var(--line); display: grid; gap: 3px; position: sticky; top: 0; background: var(--surface); z-index: 2; }
+.bn-wl-hd b { font-size: 14px; }
+.bn-wl-kinds { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
+.bn-wl-kinds button { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; font: inherit; font-size: 11.5px; padding: 2px 8px; color: var(--text-2); cursor: pointer; display: inline-flex; gap: 4px; align-items: center; }
+.bn-wl-kinds button span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.bn-wl-kinds button.on { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.bn-wl-list { display: grid; }
+.bn-wi { display: grid; gap: 2px; padding: 8px 12px 9px 11px; border-left: 3px solid var(--line-2); border-bottom: 1px solid var(--line); color: var(--text); text-decoration: none; }
+.bn-wi:hover { background: var(--surface-2); text-decoration: none; }
+.bn-wi.bad { border-left-color: var(--crit); } .bn-wi.warn { border-left-color: var(--warn); } .bn-wi.info { border-left-color: var(--accent); }
+.bn-wi.ended { opacity: .7; }
+.bn-wi.on { background: var(--accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
+.bn-wi .k { display: flex; justify-content: space-between; gap: 6px; font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; color: var(--text-2); }
+.bn-wi.bad .k > span:first-child { color: var(--crit-ink); }
+.bn-wi .k .w { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--muted); white-space: nowrap; }
+.bn-wi .t { font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; line-height: 1.3; }
+.bn-wi .s { font-size: 11.5px; color: var(--text-2); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.bn-wl-more summary { padding: 8px 12px; font-size: 12px; color: var(--text-2); cursor: pointer; border-bottom: 1px solid var(--line); }
+.bn-wl-sec { padding: 10px 12px; display: grid; gap: 3px; border-bottom: 1px solid var(--line); }
+.bn-wl-sec > b { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); margin-bottom: 2px; }
+.bn-wl-wx { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--text); }
+.bn-wl-wx span:last-child { font-variant-numeric: tabular-nums; color: var(--text-2); }
+.bn-wl-wx .bad { color: var(--crit-ink) !important; font-weight: 600; } .bn-wl-wx .warn { color: var(--text) !important; font-weight: 600; }
+.bn-wl-foot { padding: 8px 12px; font-size: 11px; color: var(--muted); }
+
+/* the strip */
+.bn-tl { position: relative; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 6px 10px 2px; }
+.bn-tl-lab { display: flex; gap: 4px 12px; flex-wrap: wrap; align-items: center; font-size: 11.5px; color: var(--text-2); }
+.bn-tl-lab b { color: var(--text); font-weight: 600; margin-right: 4px; }
+.bn-tl-lab .k::before { content: ""; display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: -0.5px; }
+.bn-tl-lab .k.a::before { background: color-mix(in srgb, var(--s1) 55%, transparent); }
+.bn-tl-lab .k.w::before { background: color-mix(in srgb, var(--s2) 60%, transparent); }
+.bn-tl-lab .k.bad::before { background: var(--crit); width: 2px; }
+.bn-tl-lab .k.inc::before { background: var(--warn); height: 4px; }
+.bn-tl-lab .k.me::before { background: var(--text); height: 2px; }
+.bn-tl-lab .now { margin-left: auto; font-variant-numeric: tabular-nums; }
+.bn-tl-plot { height: 74px; }
+.bn-tl-svg { display: block; overflow: visible; }
+.bn-tl-svg .a { fill: color-mix(in srgb, var(--s1) 45%, transparent); stroke: var(--s1); stroke-width: .8; }
+.bn-tl-svg .w { fill: color-mix(in srgb, var(--s2) 50%, transparent); stroke: var(--s2); stroke-width: .8; }
+.bn-tl-svg .mid { stroke: var(--axis); stroke-width: 1; }
+.bn-tl-svg .hr { stroke: var(--grid); stroke-width: 1; }
+.bn-tl-svg .ax { font: 10px var(--sans); fill: var(--muted); }
+.bn-tl-svg .bad { stroke: var(--crit); stroke-width: 1.4; }
+.bn-tl-svg .me { fill: none; stroke: var(--text); stroke-width: 1.6; stroke-linejoin: round; }
+.bn-tl-svg .win { fill: color-mix(in srgb, var(--accent) 12%, transparent); }
+.bn-tl-svg .ib { fill: var(--warn); cursor: pointer; opacity: .55; }
+.bn-tl-svg .ib.old { opacity: .25; }
+.bn-tl-svg .ib:hover, .bn-tl-svg .ib.on { opacity: 1; }
+.bn-tl-svg .ib.bad { fill: var(--crit); } .bn-tl-svg .ib.info { fill: var(--accent); } .bn-tl-svg .ib.ended { fill: var(--line-2); }
+.bn-tl-svg .ib.on { stroke: var(--text); stroke-width: 1.4; }
+.bn-tl-svg .cross { stroke: var(--text-2); stroke-width: 1; stroke-dasharray: 2 2; pointer-events: none; }
+.bn-tl-tip { position: absolute; top: 24px; z-index: 5; pointer-events: none; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 5px 9px; font-size: 11.5px; box-shadow: var(--shadow-2); max-width: 260px; }
+.bn-tl-tip .bad { color: var(--crit-ink); }
+
+/* watching */
+.bn-wb { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; min-height: 26px; }
+.bn-wb .lbl { display: inline-flex; gap: 5px; align-items: center; color: var(--text-2); font-weight: 600; margin-right: 2px; }
+.bn-wb .lbl .i { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.bn-wc { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 2px 4px 2px 9px; color: var(--text); text-decoration: none; }
+.bn-wc:hover { border-color: var(--accent); text-decoration: none; }
+.bn-wc .d { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+.bn-wc.warn .d { background: var(--warn); } .bn-wc.bad .d { background: var(--crit); box-shadow: 0 0 0 3px var(--crit-soft); }
+.bn-wc span { color: var(--text-2); font-size: 11.5px; }
+.bn-wc .x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 4px; border-radius: 50%; }
+.bn-wc .x:hover { color: var(--crit-ink); background: var(--crit-soft); }
+
+/* the map */
+.bn-atlas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; display: block; user-select: none; }
+.bn-atlas.bn-drag { cursor: grabbing; }
+.bn-atlas .mk { transform: scale(var(--k, 1)); }
+.bn-atlas .go { cursor: pointer; }
+.bn-atlas .land { fill: var(--surface-3); stroke: var(--surface); stroke-width: .6; vector-effect: non-scaling-stroke; cursor: pointer; transition: fill .3s, opacity .4s; }
+.bn-atlas .land:hover { fill: color-mix(in srgb, var(--accent) 20%, var(--surface-3)); }
+.bn-atlas .land.c-ok { fill: color-mix(in srgb, var(--good) 16%, var(--surface-3)); }
+.bn-atlas .land.c-warn { fill: color-mix(in srgb, var(--warn) 42%, var(--surface-3)); }
+.bn-atlas .land.c-bad { fill: color-mix(in srgb, var(--crit) 38%, var(--surface-3)); }
+.bn-atlas .land.dim { opacity: .45; }
+.bn-atlas .land.on { stroke: var(--text-2); stroke-width: 1.2; }
+.bn-atlas.in-country .land.on { fill: var(--surface); }
+.bn-atlas .land.hint { stroke: var(--accent); stroke-width: 2; opacity: 1; }
+.bn-atlas .lk { fill: none; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.bn-atlas .lk.own { stroke: var(--crit); stroke-width: 1.3; stroke-dasharray: 4 3; opacity: .8; }
+.bn-atlas .lyr { transition: opacity .35s; }
+.bn-atlas.in-country .links, .bn-atlas.in-places .links { opacity: 0; pointer-events: none; }
+.bn-atlas .wix { opacity: 0; pointer-events: none; }
+.bn-atlas.lv-region:not(.in-country):not(.in-places) .wix, .bn-atlas.lv-near:not(.in-country):not(.in-places) .wix { opacity: 1; pointer-events: auto; }
+.bn-atlas .wx path { fill: var(--s7); opacity: .8; }
+.bn-atlas .pin .dt { stroke: var(--surface); stroke-width: 1; }
+.bn-atlas .pin.bad .dt { fill: var(--crit); } .bn-atlas .pin.warn .dt { fill: var(--warn); } .bn-atlas .pin.info .dt, .bn-atlas .pin.ok .dt { fill: var(--accent); }
+.bn-atlas .pin .halo { fill: none; stroke: var(--crit); stroke-width: 2; transform-box: fill-box; transform-origin: center; animation: bn-pulse 1.8s ease-out infinite; }
+.bn-atlas .pin text { font: 700 8px var(--sans); fill: #fff; pointer-events: none; }
+.bn-atlas.in-country .pins, .bn-atlas.in-places .pins { opacity: .25; }
+.bn-atlas.in-country .pins .m, .bn-atlas.in-places .pins .m { pointer-events: none; }
+.bn-atlas .det { opacity: 0; transition: opacity .45s; }
+.bn-atlas .det.in { opacity: 1; }
+.bn-stage.bn-moving .det.in { opacity: .35; transition: opacity .15s; }
+.bn-atlas .fac rect { fill: var(--surface); stroke: var(--text-2); stroke-width: 1.1; }
+.bn-atlas .fac.mine rect { fill: var(--accent); stroke: var(--surface); }
+.bn-atlas .dots path { fill: none; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.bn-atlas .dots .dot-ring { stroke: var(--surface); }
+.bn-atlas .dots .dot { stroke: var(--line-2); }
+.bn-atlas .dots .dot.ok { stroke: var(--good); } .bn-atlas .dots .dot.warn { stroke: var(--warn); } .bn-atlas .dots .dot.bad { stroke: var(--crit); }
+.bn-atlas.on-dot { cursor: pointer; }
+.bn-atlas .ix path { fill: var(--s7); stroke: var(--surface); stroke-width: 1.2; }
+.bn-atlas .ix .kring { fill: none; stroke: var(--good); stroke-width: 1.6; }
+.bn-atlas .ixl text { font: 600 10px var(--sans); fill: var(--s7); paint-order: stroke; stroke: var(--surface); stroke-width: 3px; pointer-events: none; }
+.bn-atlas .mb { fill: none; stroke: var(--text-2); stroke-width: .7; opacity: .1; vector-effect: non-scaling-stroke; }
+.bn-atlas .mb.bk { stroke: var(--good); opacity: .22; }
+.bn-atlas .mb.on { opacity: .9; stroke-width: 1.4; stroke: var(--accent); }
+.bn-atlas .lead { stroke: var(--text-2); stroke-width: .8; stroke-dasharray: 2 2; opacity: .6; vector-effect: non-scaling-stroke; }
+.bn-atlas .nt .dt { fill: var(--surface); stroke: var(--good); stroke-width: 2; }
+.bn-atlas .nt.warn .dt { stroke: var(--warn); fill: color-mix(in srgb, var(--warn) 18%, var(--surface)); }
+.bn-atlas .nt.bad .dt { stroke: var(--crit); fill: color-mix(in srgb, var(--crit) 15%, var(--surface)); }
+.bn-atlas .nt.none .dt { stroke: var(--line-2); }
+.bn-atlas .nt .c { font: 700 7.5px var(--sans); fill: var(--text); pointer-events: none; }
+.bn-atlas .lbl { font: 600 11px var(--sans); fill: var(--text); paint-order: stroke; stroke: var(--surface); stroke-width: 3.2px; stroke-linejoin: round; pointer-events: none; }
+.bn-atlas .lbl.hid { display: none; }
+.bn-atlas .nt:hover .lbl.hid { display: inline; }
+.bn-atlas .nt:hover .dt { stroke-width: 3; }
+.bn-atlas .det.focus .nets .nt:not(.sel), .bn-atlas .det.focus .pbs, .bn-atlas .det.focus .mbs, .bn-atlas .det.focus .facs { opacity: .22; transition: opacity .4s; }
+.bn-atlas .det.focus .ixs { opacity: .5; }
+.bn-atlas .det.focus .nets .nt:not(.sel) .lbl, .bn-atlas .det.focus .ixl { display: none; }
+.bn-atlas .nt.sel .dt { stroke-width: 3; }
+.bn-atlas .ar { fill: none; stroke-width: calc(1.8px * var(--k, 1)); stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: bndraw .9s ease forwards; }
+.bn-atlas .ar.up { stroke: var(--accent); }
+.bn-atlas .ar.warn { stroke: var(--warn); }
+.bn-atlas .ar.bad { stroke: var(--crit); stroke-width: calc(2.2px * var(--k, 1)); }
+.bn-atlas .ar.tr { stroke: var(--crit); opacity: .75; }
+@keyframes bndraw { to { stroke-dashoffset: 0; } }
+.bn-atlas .netl .m, .bn-atlas .top .m { animation: bnpop .45s ease both .35s; }
+@keyframes bnpop { from { opacity: 0; } to { opacity: 1; } }
+.bn-atlas .up circle { fill: var(--surface); stroke: var(--accent); stroke-width: 2; }
+.bn-atlas .up.bad circle { stroke: var(--crit); } .bn-atlas .up.warn circle { stroke: var(--warn); }
+.bn-atlas .up.tr circle { fill: var(--crit); stroke: var(--surface); }
+.bn-atlas .up text, .bn-atlas .place text { font: 600 10.5px var(--sans); fill: var(--text); paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
+.bn-atlas .me .dt { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.bn-atlas .me.bad .dt { fill: var(--crit); } .bn-atlas .me.warn .dt { fill: var(--warn); }
+.bn-atlas .me .halo2 { fill: none; stroke: var(--accent); stroke-width: 1.5; opacity: .5; transform-box: fill-box; transform-origin: center; animation: bn-pulse 2s ease-out infinite; }
+.bn-atlas .me .lbl { font-size: 12.5px; font-weight: 700; }
+.bn-atlas .place circle { fill: var(--text); stroke: var(--surface); stroke-width: 1.5; }
+.bn-stage .bn-map-crumbs { z-index: 4; }
+.bn-stage .bn-map-crumbs .cur { font-weight: 650; }
+.bn-stage .bn-map-zoom { z-index: 4; }
+.bn-stage .bn-map-foot { z-index: 4; }
+.bn-map-legend .bn-lg-dia { width: 8px; height: 8px; background: var(--s7); border-radius: 1px; transform: rotate(45deg); }
+.bn-map-legend .bn-lg-sq { width: 7px; height: 7px; border: 1.3px solid var(--text-2); border-radius: 1.5px; background: var(--surface); }
+.bn-map-legend .bn-lg-net { width: 9px; height: 9px; border: 2px solid var(--good); background: var(--surface); }
+.bn-map-legend .bn-lg-arc { width: 14px; height: 0; border-top: 2px solid var(--accent); border-radius: 0; vertical-align: 3px; }
+.bn-map-legend .bn-lg-arc.bad { border-top-color: var(--crit); }
+
+/* the home page */
+.bn-home { display: grid; gap: 22px; padding-bottom: 10px; }
+.bn-hero2 { text-align: center; padding: 34px 0 6px; }
+.bn-hero2 h1 { margin: 0; font-size: clamp(28px, 5vw, 40px); letter-spacing: -.03em; line-height: 1.08; font-weight: 760; }
+.bn-hero2 h1 span { background: linear-gradient(90deg, var(--accent), var(--s7)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.bn-hero2 > p { color: var(--text-2); font-size: 15.5px; line-height: 1.55; margin: 14px auto 0; max-width: 760px; }
+.bn-count { display: inline-flex; flex-direction: column; align-items: center; margin: 20px auto 2px; padding: 12px 26px 11px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow-1); text-decoration: none; color: inherit; }
+.bn-count[hidden] { display: none; }
+.bn-count:hover { border-color: var(--line-2); text-decoration: none; }
+.bn-count b { font-size: clamp(28px, 7vw, 42px); line-height: 1.1; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--accent); }
+.bn-count span { margin-top: 4px; font-size: 13.5px; color: var(--text-2); }
+.bn-count small { margin-top: 3px; font-size: 11.5px; color: var(--muted); }
+.bn-stats { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px 24px; margin: 16px 0 4px; color: var(--muted); font-size: 13px; }
+.bn-stats b { color: var(--text); font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; margin-right: 4px; }
+.bn-home-cta { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
+.bn-home-cta .btn { height: 38px; padding: 0 18px; font-size: 14px; }
+.bn-try { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; margin: 14px auto 0; max-width: 820px; }
+.bn-try a { padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); font-size: 12.5px; color: var(--text-2); font-family: var(--mono); }
+.bn-try a:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+.bn-home-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.bn-home-grid > div { display: grid; gap: 14px; min-width: 0; }
+@media (max-width: 1100px) { .bn-home-grid { grid-template-columns: minmax(0, 1fr); } }
+.bn-home-mapcard { display: block; color: inherit; text-decoration: none; }
+.bn-home-mapcard:hover { text-decoration: none; border-color: var(--accent); }
+.bn-mini { display: block; width: 100%; height: auto; margin-bottom: 6px; background: color-mix(in srgb, var(--accent) 5%, var(--surface-2)); border-radius: var(--r-sm); }
+.bn-mini .land { fill: var(--surface-3); stroke: var(--surface); stroke-width: .4; }
+.bn-mini .land.c-ok { fill: color-mix(in srgb, var(--good) 16%, var(--surface-3)); }
+.bn-mini .land.c-warn { fill: color-mix(in srgb, var(--warn) 42%, var(--surface-3)); }
+.bn-mini .land.c-bad { fill: color-mix(in srgb, var(--crit) 38%, var(--surface-3)); }
+.bn-mini .mp { stroke: var(--surface); stroke-width: 1; fill: var(--accent); }
+.bn-mini .mp.bad { fill: var(--crit); } .bn-mini .mp.warn { fill: var(--warn); }
+.bn-home-how { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, .9fr); gap: 22px; border-top: 1px solid var(--line); padding-top: 18px; }
+@media (max-width: 1100px) { .bn-home-how { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 700px) { .bn-stage .bn-map-legend { display: none; } .bn-tl-lab .now { margin-left: 0; } }
+.bn-home-how h2 { font-size: 15px; margin: 0 0 6px; }
+.bn-home-how p { font-size: 13px; margin: 0 0 10px; line-height: 1.5; }
+.bn-watches { display: grid; gap: 6px; }
+.bn-watches > div { display: grid; grid-template-columns: 124px minmax(0, 1fr); gap: 10px; font-size: 12.5px; line-height: 1.45; }
+.bn-watches b { font-weight: 650; }
+.bn-watches span { color: var(--text-2); }
+.bn-steps { margin: 0; padding-left: 18px; display: grid; gap: 8px; font-size: 13px; line-height: 1.5; color: var(--text-2); }
+.bn-steps b { color: var(--text); }
+.bn-srcs { margin: 0; padding-left: 16px; display: grid; gap: 5px; font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
 `;
 
 // ---------------------------------------------------------------- helpers
@@ -684,6 +954,12 @@ function sec(title, how, ...kids) {
 function row(color, title, sub, right, href) {
   return h(href ? "a" : "div", { class: "bn-map-row", href }, dot(color), h("span", { class: "t" }, h("b", {}, title), sub ? h("span", {}, sub) : null), right || h("span"));
 }
+// While the next page loads, the one on screen stays (dimmed, with a bar
+// along the top); a skeleton only when there is nothing to keep.
+function wait(main, n = 6) {
+  if (main.childElementCount && !main.querySelector(":scope > .bn-skel")) { main.classList.add("bn-loading"); return; }
+  fill(main, skel(n));
+}
 function skel(n = 4) { return h("div", { class: "bn-skel" }, Array.from({ length: n }, (_, i) => h("div", { style: { width: `${55 + ((i * 37) % 40)}%` } }))); }
 
 // A bar chart of minutes: `series` [{key, color, label}] stacked, `line`
@@ -737,47 +1013,60 @@ function table(head, rows, { compact = true } = {}) {
 
 // ---------------------------------------------------------------- the frame
 
-const TABS = [["", "Now"], ["map", "Map"], ["diagnose", "Diagnose"], ["incidents", "Incidents"], ["rules", "Rules"], ["data", "Data"]];
+const NAV = [["", "Home"], ["map", "Console"], ["diagnose", "Diagnose"], ["incidents", "Incidents"], ["rules", "Rules"], ["data", "How it's built"]];
+// The routes the console answers; the others are pages of their own.
+const CONSOLE = new Set(["map", "console", "as", "prefix", "incident"]);
 const ICONS = {
   search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4",
   code: "m8 7-5 5 5 5M16 7l5 5-5 5",
   copy: "M8 8h11v11H8zM5 16V5h11",
+  star: "M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.8z",
+  wide: "M4 9V4h5M20 15v5h-5M15 4h5v5M9 20H4v-5",
 };
 const icon = (n) => svg("svg", { class: "i", viewBox: "0 0 24 24", "aria-hidden": "true" }, svg("path", { d: ICONS[n] }));
 
 function render(el, ctx) {
   if (!document.getElementById("bn-css")) document.head.append(h("style", { id: "bn-css" }, CSS));
+  const cache = new Map();
   const app = {
-    ctx, queries: [], took: 0, geo: null, now: null,
-    api: async (path) => {
-      const j = await ctx.api(path, { timeout: 60000 });
-      if (j && Array.isArray(j.queries)) { app.queries = j.queries; app.took = j.took_ms; drawSql(); }
+    ctx, queries: [], took: 0, geo: null, now: null, world: null, tabs: {},
+    // Answers kept 20 seconds, so going back and forth reads nothing again;
+    // `fresh` reads again (the minute's refresh).
+    api: async (path, { fresh = false, sql = true } = {}) => {
+      const hit = cache.get(path);
+      const j = hit && !fresh && Date.now() - hit.t < 20000 ? hit.j : await ctx.api(path, { timeout: 60000 });
+      if (!hit || hit.j !== j) cache.set(path, { t: Date.now(), j });
+      if (cache.size > 200) cache.delete(cache.keys().next().value);
+      if (sql && j && Array.isArray(j.queries)) { app.queries = j.queries; app.took = j.took_ms; drawSql(); }
       return j;
     },
     href: (...parts) => ctx.href(...parts.filter((x) => x !== "" && x != null)),
-    go: (...parts) => { location.hash = app.href(...parts); },
+    go: (...parts) => { const to = app.href(...parts); if (location.hash !== to) location.hash = to; },
     country: (cc) => app.geo?.countries?.[cc]?.n || cc || "",
   };
+  app.watch = makeWatch(app);
   const root = h("div", { class: "bn-root" });
   fill(el, root);
   const state = h("span", { class: "sub" });
-  const sqlBtn = h("button", { class: "btn sm", type: "button", onclick: () => sqlPanel.classList.toggle("on"), title: "The SQL behind this page" });
-  const head = h("div", { class: "bn-head" }, h("h1", {}, "Backbone explorer"), state, h("span", { class: "bn-synth" }, "real, public data"), h("div", { class: "tools" }, sqlBtn));
-  const input = h("input", { class: "bn-cmd-in", type: "search", "aria-label": "Search", autocomplete: "off", spellcheck: "false", placeholder: "Search: a prefix, an address, an ASN, a network or an exchange (84.255.184.0/24, 1.1.1.1, AS6453, Cloudflare, DE-CIX)" });
-  const cmd = h("div", { class: "bn-cmdrow" }, h("div", { class: "bn-cmd" }, h("span", { class: "bn-cmd-ic" }, icon("search")), input));
-  const tabs = h("div", { class: "tabs bn-tabs", role: "tablist" });
+  const sqlBtn = h("button", { class: "btn sm", type: "button", onclick: () => sqlPanel.classList.toggle("on"), title: "The SQL behind what is on screen" });
+  const head = h("div", { class: "bn-head" }, h("h1", {}, h("a", { href: app.href(""), class: "bn-home-link" }, "Backbone explorer")), state, h("span", { class: "bn-synth" }, "real, public data"), h("div", { class: "tools" }, sqlBtn));
+  const input = h("input", { class: "bn-cmd-in", type: "search", "aria-label": "Search", autocomplete: "off", spellcheck: "false", placeholder: "A prefix, an address, an ASN, a network, an exchange or a country" });
+  const nav = h("div", { class: "tabs bn-tabs", role: "tablist" });
+  const bar = h("div", { class: "bn-bar" }, nav, h("div", { class: "bn-cmd compact" }, h("span", { class: "bn-cmd-ic" }, icon("search")), input));
   const main = h("main", { class: "bn-main" });
+  const conHost = h("div", { class: "bn-conhost", hidden: true });
   const sqlPanel = h("div", { class: "bn-sqlp" });
   const foot = h("div", { class: "bn-foot" },
-    "Public data: RIPE RIS (BGP updates), rpki-client (RPKI), CAIDA (relationships, prefix origins), RIPE NCC (names), PeeringDB (exchanges), RIPE Atlas (measurements), IODA (outages). Kept in ChloeDB tables; ",
-    h("a", { href: app.href("data") }, "how it is built"), ".");
-  root.append(head, cmd, tabs, main, sqlPanel, foot);
+    "Public data: RIPE RIS (BGP updates), rpki-client (RPKI), CAIDA (relationships, prefix origins), RIPE NCC (names), PeeringDB (exchanges and buildings), RIPE Atlas (measurements), IODA (outages). ",
+    h("a", { href: app.href("data") }, "How it's built"), ".");
+  root.append(head, bar, conHost, main, sqlPanel, foot);
+  let con = null;
 
   function drawSql() {
     const total = app.queries.reduce((a, q) => a + (q.ms || 0), 0);
     fill(sqlBtn, icon("code"), `SQL · ${plural(app.queries.length, "query", "queries")} · ${(app.took || total).toFixed(1)} ms`);
     fill(sqlPanel,
-      h("div", { class: "bn-sqlp-hd" }, h("b", {}, "The SQL behind this page"), h("span", { class: "muted small" }, "each statement, its rows and its time on the server"),
+      h("div", { class: "bn-sqlp-hd" }, h("b", {}, "The SQL behind what is on screen"), h("span", { class: "muted small" }, "each statement, its rows and its time on the server"),
         h("button", { class: "btn sm ghost", type: "button", onclick: () => sqlPanel.classList.remove("on") }, "Close")),
       app.queries.map((q) => h("div", { class: "q" },
         h("div", { class: "w" }, h("span", {}, q.what), h("span", { class: "muted" }, `${fmt(q.rows)} rows · ${(q.ms ?? 0).toFixed(1)} ms`)),
@@ -786,14 +1075,12 @@ function render(el, ctx) {
   }
   drawSql();
 
-  function drawTabs(page) {
+  function drawNav(page) {
     const open = app.now?.open || [];
     const bad = open.filter((i) => i.severity === "bad").length;
-    const badge = { "": open.length || null, incidents: bad || null, map: app.now ? (app.now.open || []).length || null : null };
-    const map = { as: "map", prefix: "map", incident: "incidents", search: "" };
-    const cur = map[page] ?? page;
-    fill(tabs, TABS.map(([p, t]) => h("button", { type: "button", role: "tab", "aria-selected": String(cur === p), class: cur === p ? "on" : null, onclick: () => app.go(p) },
-      t, badge[p] ? h("span", { class: `n${p === "incidents" ? " bad" : ""}` }, String(badge[p])) : null)));
+    const cur = CONSOLE.has(page) ? "map" : page === "search" ? "" : page;
+    fill(nav, NAV.map(([p, t]) => h("button", { type: "button", role: "tab", "aria-selected": String(cur === p), class: cur === p ? "on" : null, onclick: () => app.go(p) },
+      t, p === "map" && open.length ? h("span", { class: `n${bad ? " bad" : ""}` }, String(open.length)) : null)));
   }
   function drawState() {
     const n = app.now;
@@ -803,17 +1090,35 @@ function render(el, ctx) {
     fill(state, h("span", { class: `dot ${open.length ? (bad ? "bad" : "warn") : "ok"}${open.length ? " pulse" : ""}` }),
       ` ${open.length ? plural(open.length, "problem") + " now" : "Nothing wrong now"}${n.connected ? `, ${n.connected} of them connected` : ""} · as of ${clock(n.as_of)}`);
   }
-  async function refreshNow() {
+  async function refresh() {
     try {
-      const j = await ctx.api("/v1/now", { timeout: 60000 });
-      app.now = j;
+      const [n, w] = await Promise.all([app.api("/v1/now", { fresh: true, sql: false }), app.api("/v1/map", { fresh: true, sql: false })]);
+      app.now = n; app.world = w;
       drawState();
-      drawTabs(current?.[0] || "");
-    } catch { /* the page shows its own errors */ }
+      drawNav(current?.[0] || "");
+      if (con) con.refresh();
+    } catch { /* each view shows its own errors */ }
+    app.watch.refresh();
   }
 
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); const q = input.value.trim(); if (q) app.go("search", q); } });
-  document.addEventListener("keydown", (e) => { if (e.key === "/" && document.activeElement !== input && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "")) { e.preventDefault(); input.focus(); input.select(); } });
+  // Search: a country by name opens it on the map; the rest asks the API.
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const q = input.value.trim();
+    if (!q) return;
+    const low = q.toLowerCase();
+    const cc = Object.entries(app.geo?.countries || {}).find(([k, g]) => g.n?.toLowerCase() === low || (q.length === 2 && k === q.toUpperCase() && !/^\d/.test(q)))?.[0];
+    if (cc) { input.value = ""; input.blur(); return app.go("map", cc); }
+    app.go("search", q);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (!el.isConnected) return;
+    const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "");
+    if (e.key === "/" && !typing) { e.preventDefault(); input.focus(); input.select(); return; }
+    if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (con && !conHost.hidden) con.key(e);
+  });
 
   let current = null, seq = 0;
   async function show(path) {
@@ -821,18 +1126,25 @@ function render(el, ctx) {
     current = path;
     const me = ++seq;
     const alive = () => me === seq;
-    const [page, ...rest] = path;
-    drawTabs(page || "");
+    const [page = "", ...rest] = path;
+    drawNav(page);
     if (page !== "search") input.value = "";
     try {
       if (!app.geo) app.geo = await ctx.api("/ui/geo.json").catch(() => ({ countries: {} }));
-      switch (page || "") {
-        case "": return await nowPage(app, main, alive);
-        case "map": return await mapPage(app, main, rest, alive);
-        case "as": return await networkPage(app, main, rest[0], alive);
-        case "prefix": return await prefixPage(app, main, rest.join("/"), alive);
+      if (CONSOLE.has(page)) {
+        const enter = conHost.hidden;
+        main.hidden = true; foot.hidden = true; conHost.hidden = false;
+        if (!con) { con = makeConsole(app); conHost.append(con.el); }
+        if (enter) { scrollTo({ top: 0 }); con.fit(); }
+        return await con.show(page === "console" ? "map" : page, rest);
+      }
+      const was = !conHost.hidden;
+      conHost.hidden = true; main.hidden = false; foot.hidden = false;
+      if (was) fill(main);
+      scrollTo({ top: 0 });
+      switch (page) {
+        case "": return await homePage(app, main, alive);
         case "incidents": return await incidentsPage(app, main, alive);
-        case "incident": return await incidentPage(app, main, rest.join("/"), alive);
         case "diagnose": return await diagnosePage(app, main, rest[0] || "", alive);
         case "rules": return await rulesPage(app, main, alive);
         case "data": return await dataPage(app, main, alive);
@@ -841,12 +1153,690 @@ function render(el, ctx) {
       }
     } catch (e) {
       if (alive()) fill(main, h("div", { class: "error" }, String(e.message || e)));
+    } finally {
+      if (alive()) main.classList.remove("bn-loading");
     }
   }
-  ctx.onPath((p) => { if (JSON.stringify(p) !== JSON.stringify(current)) { scrollTo({ top: 0 }); show(p); } });
-  refreshNow();
-  setInterval(() => { if (document.visibilityState === "visible" && el.isConnected) refreshNow(); }, 60000);
+  ctx.onPath((p) => { if (JSON.stringify(p) !== JSON.stringify(current)) show(p); });
+  refresh();
+  setInterval(() => { if (document.visibilityState === "visible" && el.isConnected) refresh(); }, 60000);
   show(ctx.path());
+}
+
+// ---------------------------------------------------------------- the home page
+
+const TRY = [["an address", "1.1.1.1"], ["a prefix", "8.8.8.0/24"], ["a network", "AS3320"], ["by name", "Cloudflare"], ["an exchange", "DE-CIX"], ["a country", "Brazil"]];
+const WATCHES = [
+  ["Invalid routes", "a route RPKI gives to another network, or longer than its ROA allows, heard by three peers or more", "rpki-invalid"],
+  ["New origins", "a prefix announced by a network that did not announce it yesterday, and is neither the owner's customer nor its provider", "new-origin"],
+  ["More specifics", "a prefix no one announced yesterday inside space another network announces, from a network that is not its customer", "more-specific"],
+  ["Flapping", "a prefix announced and withdrawn ten thousand times an hour or more", "flapping"],
+  ["Mass withdrawals", "twenty or more of a network's prefixes withdrawn by five or more peers at once", "withdrawn"],
+  ["Blackholing", "a prefix tagged 65535:666: its owner asked the world to drop its traffic", "blackhole"],
+  ["Outages", "a country or region whose routes, pings or traffic IODA sees fall", "ioda"],
+  ["Slow countries", "a country whose RIPE Atlas probes take over 100 ms to reach the nearest K root server", "slow-country"],
+];
+
+async function homePage(app, main, alive) {
+  const count = h("a", { class: "bn-count", href: app.href("data"), hidden: true });
+  const stats = h("div", { class: "bn-stats" });
+  const nowCol = h("div", {}, skel(6));
+  const mapCol = h("div", { class: "bn-home-map" }, skel(6));
+  const wxCol = h("div", {}, skel(6));
+  fill(main, h("div", { class: "bn-home" },
+    h("div", { class: "bn-hero2" },
+      h("h1", {}, "The internet's routing, ", h("span", {}, "as it happens"), "."),
+      h("p", {}, "Every BGP update a RIPE RIS collector hears, checked as it arrives against RPKI and against the origins seen the day before, beside the exchanges and buildings where networks meet, who buys transit from whom, RIPE Atlas's measurements and IODA's outages. It says what is wrong now, where it is, and how the problems connect."),
+      count, stats,
+      h("div", { class: "bn-home-cta" }, h("a", { class: "btn primary", href: app.href("map") }, "Open the console"), h("a", { class: "btn", href: app.href("diagnose") }, "Diagnose a country"), h("a", { class: "btn ghost", href: app.href("rules") }, "The rules")),
+      h("div", { class: "bn-try" }, TRY.map(([k, q]) => h("a", { href: app.href("search", q), title: `Look up ${k}` }, q)))),
+    h("div", { class: "bn-home-grid" }, nowCol, mapCol, wxCol),
+    h("div", { class: "bn-home-how" },
+      h("section", {}, h("h2", {}, "What it watches for"), h("p", { class: "muted" }, "Each is a SQL statement over the tables, run every minute. What one finds is an alert, open while it keeps finding it; alerts that share an owner, an announcer, a carrier or a country become one incident."),
+        h("div", { class: "bn-watches" }, WATCHES.map(([t, d]) => h("div", {}, h("b", {}, t), h("span", {}, d))))),
+      h("section", {}, h("h2", {}, "How to read the console"),
+        h("ol", { class: "bn-steps" },
+          h("li", {}, h("b", {}, "What is wrong, most serious first. "), "The left column is the open incidents. Pick one and the map flies to where it is, with the networks that announced, carried and own the routes."),
+          h("li", {}, h("b", {}, "From the world to one network. "), "Click a country to see its exchanges, its buildings, its networks where they sit and every RIPE Atlas probe coloured by its time to the K root server. Click a network for its buildings, its probes and the lines to its providers."),
+          h("li", {}, h("b", {}, "What changed, and when. "), "The strip along the top is everything heard a minute for six hours, with the incidents on it. The inspector on the right says what is wrong, what changed (who began announcing, which paths are new), the metrics and the records."),
+          h("li", {}, h("b", {}, "Your own networks. "), "Open a network and press Watch: it stays at the top of the console with its alerts and its routes' updates, kept in your browser."))),
+      h("section", {}, h("h2", {}, "Where the data comes from"),
+        h("ul", { class: "bn-srcs" },
+          h("li", {}, h("a", { href: "https://ris.ripe.net", target: "_blank", rel: "noopener" }, "RIPE RIS"), ": every BGP update its collector rrc00 hears from about 90 peers, from its archive and then RIS Live, kept three days."),
+          h("li", {}, h("a", { href: "https://www.rpki-client.org", target: "_blank", rel: "noopener" }, "rpki-client"), ": the validated ROAs, who may announce which prefixes."),
+          h("li", {}, h("a", { href: "https://www.caida.org/catalog/datasets/as-relationships/", target: "_blank", rel: "noopener" }, "CAIDA"), ": who is whose provider, customer or peer; RouteViews' origins of the day before."),
+          h("li", {}, h("a", { href: "https://www.peeringdb.com", target: "_blank", rel: "noopener" }, "PeeringDB"), ": exchanges, buildings, who is at which."),
+          h("li", {}, h("a", { href: "https://atlas.ripe.net", target: "_blank", rel: "noopener" }, "RIPE Atlas"), ": pings and traceroutes from every probe to the K root server."),
+          h("li", {}, h("a", { href: "https://ioda.inetintel.cc.gatech.edu", target: "_blank", rel: "noopener" }, "IODA"), ": outages of countries, regions and networks."))))));
+  const [n, w] = await Promise.all([app.api("/v1/now"), app.api("/v1/map")]);
+  if (!alive()) return;
+  app.now = n; app.world = w;
+  const c = w.counts || {};
+  if (c.bb_updates) {
+    fill(count, h("b", {}, fmt(c.bb_updates)), h("span", {}, "BGP updates kept, every one the collector heard in the last three days"),
+      h("small", {}, n.heard?.updates != null ? `${fmt(n.heard.updates)} in the last ${n.heard.minutes || 5} minutes, from ${fmt(n.heard.peers)} peers` : ""));
+    count.hidden = false;
+  }
+  fill(stats, [[c.bb_as, "networks"], [(c.bb_p2c || 0) + (c.bb_p2p || 0), "links between them"], [c.bb_ix, "exchanges"], [c.bb_fac, "buildings"], [c.bb_roa, "ROAs"], [c.bb_probe, "probes"]]
+    .filter(([v]) => v).map(([v, t]) => h("span", {}, h("b", {}, short(v)), t)));
+  const open = n.open || [];
+  const bad = open.some((i) => i.severity === "bad");
+  fill(nowCol, h("section", { class: "card" },
+    h("div", { class: "hd" }, h("h3", {}, open.length ? plural(open.length, "problem") + " now" : "Nothing wrong now"), h("span", { class: "sub" }, `as of ${clock(n.as_of)}`), open.length ? h("span", { class: `dot ${bad ? "bad" : "warn"} pulse`, style: { marginLeft: "auto" } }) : null),
+    h("div", { class: "bd flush" }, open.length ? open.slice(0, 6).map((i) => incidentRow(app, i)) : empty("No rule finds anything in the last hour.")),
+    open.length > 6 ? h("div", { class: "bd" }, h("a", { href: app.href("map") }, `All ${open.length} in the console`)) : null));
+  fill(mapCol, h("a", { class: "card bn-home-mapcard", href: app.href("map"), title: "Open the console" },
+    h("div", { class: "hd" }, h("h3", {}, "Where it is red"), h("span", { class: "sub" }, `${plural(w.open_alerts || 0, "open alert")} in ${plural((w.countries || []).filter((x) => x.alerts).length, "country", "countries")}`)),
+    h("div", { class: "bd" }, miniWorld(app, w), h("div", { class: "muted small" }, "Click to open the console: the map zooms from the world to a country to one network."))));
+  const world = n.world?.med;
+  fill(wxCol, card("Internet weather", `time to the nearest K root server, slowest countries, last 20 minutes${n.world ? ` · ${fmt(n.world.probes)} probes` : ""}`,
+    (n.weather || []).length ? hbars([
+      ...(n.weather || []).map((x) => ({ label: app.country(x.country), href: app.href("map", x.country), text: ms(x.med), v: x.med, cls: x.med > 150 ? "bad" : x.med > 60 ? "warn" : "ok" })),
+      { label: "World median", text: ms(world), v: world, cls: "ok" },
+    ]) : empty("No Atlas results yet.")),
+    (n.busiest || []).length ? card("Busiest prefixes", "updates in the last hour", n.busiest.slice(0, 5).map((b) => row(SEV.warn, b.prefix, `${b.origin.name || "AS" + b.origin.asn} · ${fmt(b.updates)} updates`, null, app.href("prefix", b.prefix)))) : null);
+}
+
+// The world, coloured, not moving: the home page's way into the console.
+function miniWorld(app, w) {
+  const geo = app.geo, G = geo.countries || {};
+  const byCc = Object.fromEntries((w.countries || []).map((c) => [c.cc, c]));
+  const s = svg("svg", { class: "bn-mini", viewBox: `0 0 ${geo.w} ${geo.h}`, role: "img", "aria-label": "The world, countries coloured by what is wrong there" });
+  const tone = (c) => !c ? "none" : c.severity === "bad" ? "bad" : c.severity === "warn" ? "warn" : c.probes ? "ok" : "none";
+  const g = svg("g", { "clip-path": "url(#bn-mclip)" });
+  for (const [cc, x] of Object.entries(G)) if (x.d) g.append(svg("path", { class: `land c-${tone(byCc[cc])}`, d: x.d }));
+  s.append(svg("defs", {}, svg("clipPath", { id: "bn-mclip" }, svg("rect", { x: 0, y: 0, width: geo.w, height: geo.h }))), g);
+  for (const c of (w.countries || []).filter((c) => c.alerts && G[c.cc]?.x != null)) {
+    const r = Math.min(10, 3 + Math.sqrt(c.alerts));
+    s.append(svg("circle", { cx: G[c.cc].x, cy: G[c.cc].y, r, class: `mp ${c.severity}` }));
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------- watching
+
+// The networks a reader watches, kept in this browser (and nowhere else).
+function makeWatch(app) {
+  const KEY = "bn-watch";
+  const read = () => { try { const v = JSON.parse(localStorage.getItem(KEY) || "[]"); return Array.isArray(v) ? v.map(Number).filter((x) => x > 0).slice(0, 12) : []; } catch { return []; } };
+  let list = read();
+  let info = {};
+  const els = new Set();
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(list)); } catch { /* private window: kept for this visit */ } };
+  function chip(a) {
+    const i = info[a];
+    const what = !i ? "" : i.alerts ? plural(i.alerts, "open alert") : i.updates ? `${short(i.updates)} updates in the hour` : "quiet";
+    return h("a", { class: `bn-wc ${i?.state || ""}`, href: app.href("as", a), title: i?.title || "" },
+      h("i", { class: "d" }), h("b", {}, i?.name || `AS${a}`), what ? h("span", {}, what) : null,
+      h("button", { type: "button", class: "x", title: "Stop watching", "aria-label": `Stop watching AS${a}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); w.toggle(a); } }, "×"));
+  }
+  const w = {
+    has: (a) => list.includes(Number(a)),
+    toggle(a) {
+      a = Number(a);
+      list = list.includes(a) ? list.filter((x) => x !== a) : [...list, a].slice(-12);
+      save(); w.draw(); w.refresh();
+      for (const f of w.listeners) f();
+    },
+    listeners: new Set(),
+    bar() { const e = h("div", { class: "bn-wb" }); els.add(e); w.draw(); return e; },
+    draw() {
+      for (const e of els) fill(e, h("span", { class: "lbl" }, icon("star"), "Watching"),
+        list.length ? list.map(chip) : h("span", { class: "muted small" }, "Open a network and press Watch: it stays here with its alerts and its routes' updates. Kept in this browser."));
+    },
+    async refresh() {
+      if (!list.length) return w.draw();
+      try {
+        const j = await app.api(`/v1/watch?asns=${list.join(",")}`, { fresh: true, sql: false });
+        info = Object.fromEntries((j.networks || []).map((x) => [x.asn, x]));
+      } catch { /* the chips keep what they had */ }
+      w.draw();
+    },
+  };
+  return w;
+}
+
+// ---------------------------------------------------------------- the camera
+
+// Van Wijk and Nuij's smooth zoom and pan ("Smooth and efficient zooming
+// and panning", 2003): the path between two views that zooms out as far as
+// the distance needs and back in, so going from a country to one of its
+// networks, or across the world, is one movement. A view is [x, y, w]: its
+// centre and its width, in map units.
+function zoomPath(p0, p1, rho = Math.SQRT2) {
+  const [ux0, uy0, w0] = p0, [ux1, uy1, w1] = p1;
+  const dx = ux1 - ux0, dy = uy1 - uy0, d2 = dx * dx + dy * dy;
+  const r2 = rho * rho, r4 = r2 * r2;
+  const cosh = (x) => (Math.exp(x) + Math.exp(-x)) / 2, sinh = (x) => (Math.exp(x) - Math.exp(-x)) / 2, tanh = (x) => sinh(x) / cosh(x);
+  let S, f;
+  if (d2 < 1e-9) {
+    S = Math.log(w1 / w0) / rho;
+    f = (t) => [ux0 + t * dx, uy0 + t * dy, w0 * Math.exp(rho * t * S)];
+  } else {
+    const d1 = Math.sqrt(d2);
+    const b0 = (w1 * w1 - w0 * w0 + r4 * d2) / (2 * w0 * r2 * d1);
+    const b1 = (w1 * w1 - w0 * w0 - r4 * d2) / (2 * w1 * r2 * d1);
+    const r0 = Math.log(Math.sqrt(b0 * b0 + 1) - b0), r1 = Math.log(Math.sqrt(b1 * b1 + 1) - b1);
+    S = (r1 - r0) / rho;
+    f = (t) => {
+      const s = t * S, c0 = cosh(r0), u = (w0 / (r2 * d1)) * (c0 * tanh(rho * s + r0) - sinh(r0));
+      return t >= 1 ? [ux1, uy1, w1] : [ux0 + u * dx, uy0 + u * dy, (w0 * c0) / cosh(rho * s + r0)];
+    };
+  }
+  f.S = Math.abs(S);
+  return f;
+}
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+function probeColor(rtt) { return rtt == null ? "none" : rtt < 60 ? "ok" : rtt <= 150 ? "warn" : "bad"; }
+// A curve from a to b, bowed to one side by how far apart they are.
+function arc(a, b, bow = 0.22) {
+  const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, dx = b[0] - a[0], dy = b[1] - a[1];
+  return `M${a[0].toFixed(2)},${a[1].toFixed(2)} Q${(mx - dy * bow).toFixed(2)},${(my + dx * bow - Math.hypot(dx, dy) * 0.05).toFixed(2)} ${b[0].toFixed(2)},${b[1].toFixed(2)}`;
+}
+const quant = (a, f) => a[Math.min(a.length - 1, Math.max(0, Math.round(f * (a.length - 1))))];
+
+// ---------------------------------------------------------------- the map
+
+// One SVG for every zoom: the world's outlines stay, and what a country or a
+// network adds is drawn over them where it is (PeeringDB's coordinates for
+// exchanges and buildings, RIPE Atlas's for probes). The camera moves the
+// viewBox along a zoom path; markers keep their size on screen (--k, map
+// units a pixel); the land and its lines keep their stroke.
+function makeMap(app, stage) {
+  const geo = app.geo, G = geo.countries || {};
+  const W = geo.w || 1000, H = geo.h || 383.3;
+  const MINW = 4, MAXW = W * 1.1;
+  const P = (lat, lon) => [((lon + 180) / 360) * W, ((geo.top - lat) / geo.span) * H];
+  const s = svg("svg", { class: "bn-atlas", role: "img", "aria-label": "The map: the world, a country, a network" });
+  const gLand = svg("g", { "clip-path": "url(#bn-clip)" }), gLinks = svg("g", { class: "lyr links" }), gIx = svg("g", { class: "lyr wix" }), gPins = svg("g", { class: "lyr pins" });
+  const gDet = svg("g", { class: "lyr det" }), gTop = svg("g", { class: "lyr top" });
+  s.append(svg("defs", {}, svg("clipPath", { id: "bn-clip" }, svg("rect", { x: 0, y: -60, width: W, height: H + 120 }))), gLand, gLinks, gIx, gPins, gDet, gTop);
+  const tip = h("div", { class: "bn-map-tip", hidden: true });
+  const crumbs = h("div", { class: "bn-map-crumbs" });
+  const legendEl = h("div", { class: "bn-map-legend" });
+  const stats = h("div", { class: "bn-map-stats" });
+  const btn = (t, title, f) => h("button", { class: "btn sm", type: "button", title, "aria-label": title, onclick: f }, t);
+  stage.append(s, tip, crumbs,
+    h("div", { class: "bn-map-zoom" }, btn("+", "Zoom in", () => zoomBy(1.8)), btn("−", "Zoom out", () => zoomBy(1 / 1.8)), btn("World", "Back to the world", () => app.go("map"))),
+    h("div", { class: "bn-map-foot" }, h("div", { class: "bn-map-foot-row" }, legendEl, stats)));
+
+  // ---- the camera
+  let cam = { x: W / 2, y: H / 2 + 10, w: W };
+  let size = { w: stage.clientWidth || 800, h: stage.clientHeight || 400 };
+  let anim = null, raf = 0;
+  const aspect = () => size.h / Math.max(1, size.w);
+  const clampW = (w) => Math.min(MAXW, Math.max(MINW, w));
+  const clampPos = (v) => ({ w: v.w, x: Math.min(W + v.w * 0.3, Math.max(-v.w * 0.3, v.x)), y: Math.min(H + v.w * aspect() * 0.3, Math.max(-v.w * aspect() * 0.3, v.y)) });
+  let level = "";
+  function apply() {
+    const vw = cam.w, vh = cam.w * aspect();
+    s.setAttribute("viewBox", `${(cam.x - vw / 2).toFixed(3)} ${(cam.y - vh / 2).toFixed(3)} ${vw.toFixed(3)} ${vh.toFixed(3)}`);
+    s.style.setProperty("--k", (vw / Math.max(1, size.w)).toFixed(5));
+    const lv = vw > 420 ? "world" : vw > 90 ? "region" : "near";
+    if (lv !== level) { s.classList.remove(`lv-${level}`); s.classList.add(`lv-${lv}`); level = lv; }
+  }
+  function step(now) {
+    raf = 0;
+    if (anim?.kind === "fly") {
+      const t = Math.min(1, (now - anim.t0) / anim.d);
+      const [x, y, w] = anim.f(ease(t));
+      cam = { x, y, w };
+      if (t >= 1) anim = null;
+    } else if (anim?.kind === "ease") {
+      const g = anim.to;
+      cam = { x: cam.x + (g.x - cam.x) * 0.24, y: cam.y + (g.y - cam.y) * 0.24, w: cam.w * Math.pow(g.w / cam.w, 0.24) };
+      if (Math.abs(g.w / cam.w - 1) < 0.004 && Math.hypot(g.x - cam.x, g.y - cam.y) < cam.w * 0.0015) { cam = { ...g }; anim = null; }
+    }
+    apply();
+    if (anim) raf = requestAnimationFrame(step);
+    else { stage.classList.remove("bn-moving"); for (const f of settled.splice(0)) f(); }
+  }
+  const settled = [];
+  const run = () => { if (!raf) raf = requestAnimationFrame(step); };
+  // Fly along the zoom path; a short hop eases instead.
+  function flyTo(t, { quick = false } = {}) {
+    t = clampPos({ ...t, w: clampW(t.w) });
+    const f = zoomPath([cam.x, cam.y, cam.w], [t.x, t.y, t.w]);
+    if (f.S < 0.05) { anim = { kind: "ease", to: t }; run(); return; }
+    anim = { kind: "fly", f, t0: performance.now(), d: quick ? 420 : Math.min(1700, Math.max(650, f.S * 520)) };
+    stage.classList.add("bn-moving");
+    run();
+  }
+  const after = () => new Promise((r) => (anim ? settled.push(r) : r()));
+  function boxView([x0, y0, x1, y1], pad = 0.1) {
+    const bw = Math.max(x1 - x0, MINW), bh = Math.max(y1 - y0, MINW * 0.5);
+    const w = Math.max(bw * (1 + 2 * pad), (bh * (1 + 2 * pad)) / aspect());
+    return { x: (x0 + x1) / 2, y: (y0 + y1) / 2, w };
+  }
+  function zoomBy(f, px = size.w / 2, py = size.h / 2) {
+    const base = anim?.kind === "ease" ? anim.to : cam;
+    const vw = base.w, vh = base.w * aspect();
+    const mx = base.x - vw / 2 + (px / size.w) * vw, my = base.y - vh / 2 + (py / size.h) * vh;
+    const w = clampW(base.w / f), k = w / base.w;
+    anim = { kind: "ease", to: clampPos({ x: mx + (base.x - mx) * k, y: my + (base.y - my) * k, w }) };
+    run();
+  }
+  s.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const r = s.getBoundingClientRect();
+    const d = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    zoomBy(Math.exp(-d * (e.ctrlKey ? 0.012 : 0.0024)), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+  s.addEventListener("dblclick", (e) => { const r = s.getBoundingClientRect(); zoomBy(2, e.clientX - r.left, e.clientY - r.top); });
+  let drag = null, dragged = false;
+  s.addEventListener("pointerdown", (e) => { if (e.button !== 0) return; drag = { x: e.clientX, y: e.clientY, cam: { ...cam }, moved: false }; dragged = false; });
+  addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+    if (!drag.moved) { drag.moved = true; s.setPointerCapture?.(e.pointerId); s.classList.add("bn-drag"); tipHide(); }
+    anim = null;
+    const k = cam.w / size.w;
+    cam = clampPos({ w: cam.w, x: drag.cam.x - dx * k, y: drag.cam.y - dy * k });
+    apply();
+  });
+  addEventListener("pointerup", () => { if (drag?.moved) { dragged = true; setTimeout(() => { dragged = false; }, 0); } drag = null; s.classList.remove("bn-drag"); });
+  new ResizeObserver(() => {
+    const r = stage.getBoundingClientRect();
+    if (r.width < 10 || r.height < 10) return;
+    size = { w: r.width, h: r.height };
+    apply();
+  }).observe(stage);
+
+  // ---- tooltips and clicks, for every marker at once: each carries its
+  // lines (el.__tip) and where it goes (el.__go).
+  function tipShow(e, lines) {
+    const r = stage.getBoundingClientRect();
+    fill(tip, lines.filter(Boolean).map((l, i) => (i ? h("div", {}, l) : h("b", {}, l))));
+    tip.hidden = false;
+    tip.style.left = `${Math.min(r.width - 260, e.clientX - r.left + 14)}px`;
+    tip.style.top = `${Math.min(r.height - 60, e.clientY - r.top + 14)}px`;
+  }
+  function tipHide() { tip.hidden = true; }
+  s.addEventListener("mousemove", (e) => {
+    if (drag?.moved) return;
+    let t = e.target.closest?.("[data-t]");
+    if (!t || t.classList.contains("land")) t = dotAt(e) || t;
+    s.classList.toggle("on-dot", !!t?.go);
+    if (t?.tip || t?.__tip) { const v = t.tip || t.__tip; tipShow(e, typeof v === "function" ? v() : v); } else tipHide();
+  });
+  s.addEventListener("mouseleave", tipHide);
+  s.addEventListener("click", (e) => {
+    if (dragged) return;
+    let t = e.target.closest?.("[data-t]");
+    if (!t || t.classList.contains("land")) { const d = dotAt(e); if (d?.go) { tipHide(); d.go(); return; } }
+    if (t?.__go) { tipHide(); t.__go(); }
+  });
+  const tag = (el, tipv, go) => { el.setAttribute("data-t", ""); el.__tip = tipv; if (go) { el.__go = go; el.classList.add("go"); } return el; };
+  // A marker at (x, y) whose children are drawn in screen pixels around 0,0.
+  const mk = (x, y, cls, ...kids) => svg("g", { class: `m ${cls || ""}`, transform: `translate(${x.toFixed(3)},${y.toFixed(3)})` }, svg("g", { class: "mk" }, kids));
+  const diamond = (r) => svg("path", { d: `M0,${-r}L${r},0L0,${r}L${-r},0Z` });
+  // Many small dots (probes: two thousand in the United States) as one
+  // path per colour of zero-length strokes with round caps, which keep
+  // their size on screen without a transform each, so a flight redraws
+  // four paths, not thousands of markers. Their tooltips and clicks come
+  // from the nearest dot under the pointer.
+  function dots(cls, r, pts) {
+    const g = svg("g", { class: `dots ${cls}` });
+    const by = {};
+    for (const p of pts) (by[p.c] ||= []).push(`M${p.x.toFixed(2)} ${p.y.toFixed(2)}h0`);
+    for (const [c, d] of Object.entries(by)) {
+      const dd = d.join("");
+      g.append(svg("path", { class: "dot-ring", d: dd, "stroke-width": r * 2 + 1.4 }), svg("path", { class: `dot ${c}`, d: dd, "stroke-width": r * 2 }));
+    }
+    g.__dots = pts;
+    g.__r = r;
+    return g;
+  }
+  function dotAt(e) {
+    const r = s.getBoundingClientRect();
+    const vw = cam.w, vh = cam.w * aspect(), k = vw / Math.max(1, size.w);
+    const mx = cam.x - vw / 2 + ((e.clientX - r.left) / size.w) * vw, my = cam.y - vh / 2 + ((e.clientY - r.top) / size.h) * vh;
+    let best = null, bd = Infinity;
+    for (const g of s.querySelectorAll(".dots")) {
+      if (!g.getClientRects().length || +getComputedStyle(g.closest(".lyr")).opacity < 0.5) continue;
+      const lim = (g.__r + 2) * k;
+      for (const p of g.__dots) {
+        const dx = p.x - mx, dy = p.y - my;
+        if (Math.abs(dx) > lim || Math.abs(dy) > lim) continue;
+        const d = dx * dx + dy * dy;
+        if (d < bd && d <= lim * lim) { bd = d; best = p; }
+      }
+    }
+    return best;
+  }
+
+  // ---- the world
+  const land = {};
+  const pinOf = {};
+  for (const [cc, g] of Object.entries(G)) {
+    if (g.x != null) pinOf[cc] = [g.x, g.y];
+    if (!g.d) continue;
+    land[cc] = tag(svg("path", { class: "land", d: g.d }), () => landTip(cc), () => app.go("map", cc));
+    gLand.append(land[cc]);
+  }
+  let byCc = {};
+  let focusCcs = new Set(), dimOthers = false, hinted = new Set();
+  const tone = (c) => !c ? "none" : c.severity === "bad" ? "bad" : c.severity === "warn" ? "warn" : c.probes ? "ok" : "none";
+  function landTip(cc) {
+    const c = byCc[cc];
+    return [app.country(cc), c?.alerts ? plural(c.alerts, "open alert") : "no open alerts", c?.probes ? `${fmt(c.probes)} probes, median ${ms(c.med)} to K` : "no probes heard from"];
+  }
+  function paintLand() {
+    for (const [cc, p] of Object.entries(land)) {
+      const on = focusCcs.has(cc);
+      p.setAttribute("class", `land c-${tone(byCc[cc])}${on ? " on" : dimOthers ? " dim" : ""}${hinted.has(cc) ? " hint" : ""}`);
+    }
+  }
+  function boxOf(cc) {
+    const g = G[cc];
+    if (g?.b) return g.b;
+    const p = pinOf[cc];
+    return p ? [p[0] - 3, p[1] - 2, p[0] + 3, p[1] + 2] : [0, 0, W, H];
+  }
+  let world = null;
+  function paintWorld(w) {
+    world = w;
+    byCc = Object.fromEntries((w.countries || []).map((c) => [c.cc, c]));
+    for (const x of w.ixes || []) if (x.lat != null && !pinOf[x.cc]) pinOf[x.cc] = P(x.lat, x.lon);
+    paintLand();
+    fill(gLinks);
+    for (const l of w.lines || []) {
+      const a = pinOf[l.from], b = pinOf[l.to];
+      if (!a || !b) continue;
+      gLinks.append(tag(svg("path", { class: "lk own", d: arc(a, b, 0.18) }), [`${app.country(l.from)} → ${app.country(l.to)}`, `a network in ${app.country(l.from)} announced ${plural(l.alerts, "route")} owned in ${app.country(l.to)}`], () => app.go("incident", l.incident)));
+    }
+    fill(gIx);
+    for (const x of w.ixes || []) {
+      if (x.lat == null) continue;
+      const [px, py] = P(x.lat, x.lon);
+      gIx.append(tag(mk(px, py, "wx", diamond(3.2)), [x.name, `${x.city} · ${fmt(x.members)} members`], () => app.go("map", x.cc)));
+    }
+    fill(gPins);
+    const pins = (w.countries || []).filter((c) => (c.alerts > 0 || c.severity !== "ok") && pinOf[c.cc]);
+    pins.sort((a, b) => (a.severity === "bad") - (b.severity === "bad"));
+    for (const c of pins) {
+      const [px, py] = pinOf[c.cc];
+      const r = c.alerts ? Math.min(11, 4 + Math.sqrt(c.alerts) * 1.05) : 3.6;
+      gPins.append(tag(mk(px, py, `pin ${c.severity}`, c.severity === "bad" ? svg("circle", { class: "halo", r }) : null, svg("circle", { class: "dt", r }),
+        c.alerts > 1 ? svg("text", { y: 3.2, "text-anchor": "middle" }, c.alerts > 99 ? "99+" : String(c.alerts)) : null),
+      () => landTip(c.cc), () => app.go("map", c.cc)));
+      gPins.lastChild.dataset.cc = c.cc;
+    }
+    stats.textContent = `${plural(w.open_alerts || 0, "open alert")} in ${plural((w.countries || []).filter((c) => c.alerts).length, "country", "countries")}`;
+  }
+
+  // ---- what a focus draws
+  const legends = {
+    world: [["var(--crit)", "invalid route, hijack or outage"], ["var(--warn)", "flapping, new origin or slow"], ["color-mix(in srgb, var(--good) 45%, var(--surface))", "probes, nothing wrong"], ["line", "announced from another country"]],
+    country: [["var(--good)", "probe under 60 ms to K"], ["var(--warn)", "60 to 150 ms"], ["var(--crit)", "over 150 ms"], ["dia", "exchange"], ["sq", "building"], ["net", "network, where its buildings are"]],
+    network: [["sq", "its buildings"], ["dia", "its exchanges"], ["var(--good)", "its probes, by time to K"], ["arc", "to its providers"], ["bad", "trouble near it"]],
+    places: [["arc", "path of the route"], ["bad", "announced space owned elsewhere"]],
+  };
+  function drawLegend(kind) {
+    fill(legendEl, (legends[kind] || []).map(([c, t]) => h("span", {},
+      c === "line" ? h("i", { class: "bn-ln" }) : c === "dia" ? h("i", { class: "bn-lg-dia" }) : c === "sq" ? h("i", { class: "bn-lg-sq" }) : c === "net" ? h("i", { class: "bn-lg-net" }) : c === "arc" ? h("i", { class: "bn-lg-arc" }) : c === "bad" ? h("i", { class: "bn-lg-arc bad" }) : h("i", { style: { background: c } }), t)));
+  }
+  function setCrumbs(parts) {
+    fill(crumbs, parts.map((p, i) => [i ? h("span", { class: "muted" }, "›") : null, p.href ? h("a", { href: p.href }, p.t) : h("span", { class: i === parts.length - 1 ? "cur" : "muted" }, p.t)]));
+  }
+  const base = { cc: null, country: null };
+  // The country layer: buildings, probes, exchanges, then the networks with
+  // their labels laid out so they do not overlap at the zoom it flies to.
+  function drawCountry(c, view) {
+    fill(gDet);
+    base.cc = c.cc; base.country = c;
+    const upp = view.w / Math.max(1, size.w);
+    const nets = (c.nets || []);
+    const netOf = Object.fromEntries(nets.map((n) => [n.asn, n]));
+    const gF = svg("g", { class: "facs" }), gP = svg("g", { class: "pbs" }), gX = svg("g", { class: "ixs" }), gM = svg("g", { class: "mbs" }), gN = svg("g", { class: "nets" });
+    for (const f of c.facs || []) {
+      const [x, y] = P(f.lat, f.lon);
+      gF.append(tag(mk(x, y, "fac", svg("rect", { x: -2.4, y: -2.4, width: 4.8, height: 4.8, rx: 1 })), [f.name, `${f.city} · ${plural(f.nets, "network")} · ${plural(f.ixes, "exchange")}`]));
+    }
+    gP.append(dots("pb", 2.2, (c.probes_at || []).map(([id, asn, lat, lon, rtt]) => {
+      const [x, y] = P(lat, lon);
+      return { x, y, c: probeColor(rtt), tip: () => [`Probe ${id}`, netOf[asn] ? `${netOf[asn].name} (AS${asn})` : `AS${asn}`, rtt == null ? "no answer from K in 20 minutes" : `${Math.round(rtt)} ms to the K root server`],
+        go: netOf[asn] ? () => app.go("map", c.cc, asn) : null };
+    })));
+    const ixPos = {};
+    const ixes = (c.ixes || []).filter((x) => x.lat != null);
+    ixes.forEach((x, i) => {
+      const [px, py] = P(x.lat, x.lon);
+      ixPos[x.id] = [px, py];
+      const r = 4 + Math.min(5, Math.sqrt(x.members || 1) / 3.5);
+      gX.append(tag(mk(px, py, `ix${x.k ? " kr" : ""}`, x.k ? svg("circle", { class: "kring", r: r + 3.2 }) : null, diamond(r)),
+        [x.name, `${x.city} · ${fmt(x.members)} members`, x.k ? "the K root server is a member" : null]));
+      x._r = r;
+      x._rank = i;
+    });
+    // Networks: where their buildings are, else their probes, else in a
+    // ring round the country's middle.
+    const pin = pinOf[c.cc] || [(boxOf(c.cc)[0] + boxOf(c.cc)[2]) / 2, (boxOf(c.cc)[1] + boxOf(c.cc)[3]) / 2];
+    const nodes = nets.map((n, i) => {
+      const at = n.lat != null ? P(n.lat, n.lon) : [pin[0] + Math.cos(i * 2.4) * 26 * upp, pin[1] + Math.sin(i * 2.4) * 26 * upp];
+      return { n, ax: at[0], ay: at[1], x: at[0], y: at[1], r: 6.5 + Math.min(5, Math.sqrt(n.probes || 0) * 0.8) };
+    });
+    // Push apart, in pixels at the view it flies to.
+    for (let it = 0; it < 80; it++) {
+      let moved = false;
+      for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        let dx = (b.x - a.x) / upp, dy = (b.y - a.y) / upp;
+        const d = Math.hypot(dx, dy), need = a.r + b.r + 5;
+        if (d >= need) continue;
+        if (d < 0.01) { dx = Math.cos(i + j); dy = Math.sin(i + j); }
+        const push = ((need - d) / 2) * upp, nx = dx / (d || 1), ny = dy / (d || 1);
+        a.x -= nx * push; a.y -= ny * push; b.x += nx * push; b.y += ny * push;
+        moved = true;
+      }
+      if (!moved) break;
+    }
+    for (const o of nodes) {
+      const n = o.n;
+      for (const ix of n.ixes || []) {
+        const p = ixPos[ix];
+        if (p) gM.append(svg("path", { class: `mb${ixes.find((x) => x.id === ix)?.k ? " bk" : ""}`, d: `M${o.x},${o.y}L${p[0]},${p[1]}`, "data-asn": n.asn }));
+      }
+      if (Math.hypot((o.x - o.ax) / upp, (o.y - o.ay) / upp) > 6) gM.append(svg("path", { class: "lead", d: `M${o.x},${o.y}L${o.ax},${o.ay}` }));
+    }
+    // Labels: most probes first, each kept only where it hits no other.
+    const boxes = [];
+    const hit = (b) => boxes.some((x) => b[0] < x[2] && b[2] > x[0] && b[1] < x[3] && b[3] > x[1]);
+    for (const o of nodes) { const sx = o.x / upp, sy = o.y / upp; boxes.push([sx - o.r, sy - o.r, sx + o.r, sy + o.r]); }
+    for (const x of ixes.slice(0, 8)) { const [px, py] = ixPos[x.id]; boxes.push([px / upp - x._r, py / upp - x._r, px / upp + x._r, py / upp + x._r]); }
+    nodes.forEach((o) => {
+      const n = o.n;
+      const name = (n.name || `AS${n.asn}`).slice(0, 22);
+      const lw = name.length * 6.3 + 6, sx = o.x / upp, sy = o.y / upp;
+      const lb = [sx + o.r + 3, sy - 7, sx + o.r + 3 + lw, sy + 7];
+      const show = !hit(lb);
+      if (show) boxes.push(lb);
+      const g = tag(mk(o.x, o.y, `nt ${n.state}`, svg("circle", { class: "dt", r: o.r }),
+        n.probes ? svg("text", { class: "c", y: 3.3, "text-anchor": "middle" }, n.probes > 99 ? "99+" : String(n.probes)) : null,
+        svg("text", { class: `lbl${show ? "" : " hid"}`, x: o.r + 4, y: 4 }, name)),
+      [`${n.name || "AS" + n.asn} (AS${n.asn})`, `${plural(n.probes, "probe")}${n.med != null ? `, median ${ms(n.med)} to K` : ""}`, n.ixes_here ? `${plural(n.ixes_here, "exchange")} here${n.at_k ? ", one where K is" : ""}` : n.ixes_anywhere ? "on exchanges abroad only" : "on no exchange", n.at === "probes" ? "placed where its probes are" : n.at === "buildings" ? "placed where its buildings are" : "no buildings or probes with a place"],
+      () => app.go("map", c.cc, n.asn));
+      g.dataset.asn = n.asn;
+      g.addEventListener("mouseenter", () => gM.querySelectorAll(`[data-asn="${n.asn}"]`).forEach((p) => p.classList.add("on")));
+      g.addEventListener("mouseleave", () => gM.querySelectorAll(".on").forEach((p) => p.classList.remove("on")));
+      gN.append(g);
+    });
+    ixes.slice(0, 8).forEach((x) => {
+      const [px, py] = ixPos[x.id], sx = px / upp, sy = py / upp, lw = x.name.length * 6 + 4;
+      const lb = [sx - lw / 2, sy + x._r + 2, sx + lw / 2, sy + x._r + 15];
+      if (hit(lb)) return;
+      boxes.push(lb);
+      gX.append(mk(px, py, "ixl", svg("text", { y: x._r + 12, "text-anchor": "middle" }, x.name)));
+    });
+    gDet.append(gF, gP, gM, gX, gN);
+    gDet.classList.add("in");
+  }
+  // The box to fly to for a country: its outline, unless it is a big one
+  // (the United States, Russia, Brazil: then where its probes, buildings and
+  // exchanges are, at least half its outline each way) or too small for
+  // the world's outlines (then where they are).
+  function countryBox(cc, c) {
+    const gb = boxOf(cc);
+    const pts = [...(c?.probes_at || []).map((p) => P(p[2], p[3])), ...(c?.facs || []).map((f) => P(f.lat, f.lon)), ...(c?.ixes || []).filter((x) => x.lat != null).map((x) => P(x.lat, x.lon))];
+    const gw = gb[2] - gb[0];
+    if (pts.length < 6 || (gw >= 7 && gw <= 120)) return gb;
+    const xs = pts.map((p) => p[0]).sort((a, b) => a - b), ys = pts.map((p) => p[1]).sort((a, b) => a - b);
+    let b = [quant(xs, 0.03), quant(ys, 0.03), quant(xs, 0.97), quant(ys, 0.97)];
+    const mw = (gb[2] - gb[0]) * 0.5, mh = (gb[3] - gb[1]) * 0.5;
+    if (b[2] - b[0] < mw) { const m = (b[0] + b[2]) / 2; b = [m - mw / 2, b[1], m + mw / 2, b[3]]; }
+    if (b[3] - b[1] < mh) { const m = (b[1] + b[3]) / 2; b = [b[0], m - mh / 2, b[2], m + mh / 2]; }
+    return b;
+  }
+  function dimNets(asn) {
+    gDet.classList.toggle("focus", asn != null);
+    gDet.querySelectorAll(".nt").forEach((g) => g.classList.toggle("sel", String(g.dataset.asn) === String(asn)));
+  }
+  // The network layer: its buildings, exchanges and probes, and a line to
+  // each provider where they meet (a building they share, else the
+  // provider's nearest), and to the trouble near it.
+  function drawNetwork(n, cc) {
+    fill(gTop);
+    const t = n.net || {};
+    const home = n.centre ? P(n.centre.lat, n.centre.lon) : pinOf[t.country] || null;
+    const g = svg("g", { class: "netl" });
+    const gl = svg("g", { class: "arcs" });
+    for (const f of n.sites || []) {
+      const [x, y] = P(f.lat, f.lon);
+      g.append(tag(mk(x, y, "fac mine", svg("rect", { x: -3, y: -3, width: 6, height: 6, rx: 1.2 })), [f.name, `${f.city}, ${app.country(f.cc)}`, `a building ${t.name || "it"} is in`]));
+    }
+    for (const x of n.ixes || []) {
+      if (x.lat == null) continue;
+      const [px, py] = P(x.lat, x.lon);
+      g.append(tag(mk(px, py, "ix mine", diamond(4.6)), [x.name, `${x.city}, ${app.country(x.cc)} · ${x.speed >= 1000 ? x.speed / 1000 + " Gb/s" : x.speed + " Mb/s"} port`], () => app.go("map", x.cc)));
+    }
+    g.append(dots("pb mine", 2.8, (n.probes_at || []).map(([id, lat, lon, rtt]) => {
+      const [x, y] = P(lat, lon);
+      return { x, y, c: probeColor(rtt), tip: [`Probe ${id}`, rtt == null ? "no answer from K in 20 minutes" : `${Math.round(rtt)} ms to the K root server`] };
+    })));
+    const ends = [];
+    if (home) {
+      (n.providers || []).slice(0, 8).forEach((p, i) => {
+        const at = p.meet ? P(p.meet.lat, p.meet.lon) : pinOf[p.country];
+        if (!at) return;
+        const far = Math.hypot(at[0] - home[0], at[1] - home[1]);
+        const end = far < 0.3 ? [at[0] + Math.cos(i * 1.7) * 1.2, at[1] - 0.8 - (i % 3) * 0.6] : at;
+        const cls = p.state === "bad" ? "bad" : p.state === "warn" ? "warn" : "up";
+        gl.append(svg("path", { class: `ar ${cls}`, d: arc(home, end, 0.2), pathLength: 1, style: `animation-delay:${0.15 + i * 0.07}s` }));
+        g.append(tag(mk(end[0], end[1], `up ${cls}`, svg("circle", { r: 4.2 }), svg("text", { x: 7, y: 4 }, (p.name || "AS" + p.asn).slice(0, 20))),
+          [`${p.name || "AS" + p.asn} (AS${p.asn})`, `a provider of ${t.name || "it"}${p.meet ? (p.meet.shared ? ", in a building both are in" : ", at its building nearest") : `, in ${app.country(p.country)}`}`, p.state !== "ok" ? "has open alerts" : null], () => app.go("as", p.asn)));
+        ends.push(end);
+      });
+      (n.trouble || []).slice(0, 5).forEach((x, i) => {
+        const at = pinOf[x.country];
+        if (!at) return;
+        gl.append(svg("path", { class: "ar tr", d: arc(home, at, -0.25), pathLength: 1, style: `animation-delay:${0.5 + i * 0.08}s` }));
+        g.append(tag(mk(at[0], at[1], "up tr", svg("circle", { r: 3.6 })), [`${x.name || "AS" + x.asn} (AS${x.asn})`, `${plural(x.hops, "hop")} away: ${x.title || "open alerts"}`], () => app.go("as", x.asn)));
+      });
+      g.append(tag(mk(home[0], home[1], `me ${n.state}`, svg("circle", { class: "halo2", r: 13 }), svg("circle", { class: "dt", r: 8.5 }), svg("text", { class: "lbl", x: 13, y: 4.5 }, (t.name || "AS" + t.asn).slice(0, 26))),
+        [`${t.name || "AS" + t.asn} (AS${t.asn})`, n.centre ? "placed at the middle of its buildings" : `in ${app.country(t.country)}`]));
+    }
+    gTop.append(gl, g);
+    // The box: its buildings and probes (the middle 90%), those in the
+    // country it was opened from when there are a few, so a network seen
+    // from its country is a zoom into it; then its providers near it.
+    let pts = [...(n.sites || []).map((f) => P(f.lat, f.lon)), ...(n.probes_at || []).map((p) => P(p[1], p[2])), ...(n.ixes || []).filter((x) => x.lat != null).map((x) => P(x.lat, x.lon))];
+    if (home) pts.push(home);
+    let least = [8, 5];
+    if (cc) {
+      const cb = boxOf(cc), mx = (cb[2] - cb[0]) * 0.25, my = (cb[3] - cb[1]) * 0.25;
+      const inside = pts.filter(([x, y]) => x >= cb[0] - mx && x <= cb[2] + mx && y >= cb[1] - my && y <= cb[3] + my);
+      if (inside.length >= 3) { pts = inside; least = [Math.max(8, (cb[2] - cb[0]) * 0.6), Math.max(5, (cb[3] - cb[1]) * 0.6)]; }
+    }
+    if (!pts.length) return boxOf(t.country);
+    const xs = pts.map((p) => p[0]).sort((a, b) => a - b), ys = pts.map((p) => p[1]).sort((a, b) => a - b);
+    const lo = pts.length > 12 ? 0.05 : 0, hi = 1 - lo;
+    let b = [quant(xs, lo), quant(ys, lo), quant(xs, hi), quant(ys, hi)];
+    const bw = Math.max(b[2] - b[0], least[0]), bh = Math.max(b[3] - b[1], least[1]);
+    const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+    b = [cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2];
+    // Providers further away leave by their arcs, without pulling it.
+    for (const e of ends) if (Math.abs(e[0] - cx) <= bw * 2 && Math.abs(e[1] - cy) <= bh * 2) b = [Math.min(b[0], e[0]), Math.min(b[1], e[1]), Math.max(b[2], e[0]), Math.max(b[3], e[1])];
+    return b;
+  }
+  // Countries and the routes between them, for a prefix or an incident.
+  function drawPlaces(ccs, arcs) {
+    fill(gTop);
+    const gl = svg("g", { class: "arcs" }), g = svg("g", {});
+    arcs.forEach((a, i) => {
+      const p = typeof a.from === "string" ? pinOf[a.from] : a.from, q = typeof a.to === "string" ? pinOf[a.to] : a.to;
+      if (!p || !q || (p[0] === q[0] && p[1] === q[1])) return;
+      gl.append(tag(svg("path", { class: `ar ${a.cls || "up"}`, d: arc(p, q, a.bow ?? 0.2), pathLength: 1, style: `animation-delay:${0.2 + i * 0.12}s` }), a.tip || null));
+    });
+    for (const cc of ccs) {
+      const p = pinOf[cc];
+      if (p) g.append(tag(mk(p[0], p[1], "place", svg("circle", { r: 4 }), svg("text", { x: 7, y: 4 }, app.country(cc))), [app.country(cc)], () => app.go("map", cc)));
+    }
+    gTop.append(gl, g);
+    let b = null;
+    for (const cc of ccs) {
+      const x = boxOf(cc);
+      b = b ? [Math.min(b[0], x[0]), Math.min(b[1], x[1]), Math.max(b[2], x[2]), Math.max(b[3], x[3])] : x;
+    }
+    return b || [0, 0, W, H];
+  }
+  function clearDetail() { fill(gDet); gDet.classList.remove("in", "focus"); base.cc = null; base.country = null; }
+
+  apply();
+  drawLegend("world");
+  setCrumbs([{ t: "World" }]);
+  return {
+    el: s, paintWorld, after,
+    get world() { return world; },
+    hint(cc) { hinted = new Set(cc || []); paintLand(); },
+    world0() {
+      focusCcs = new Set(); dimOthers = false; paintLand();
+      clearDetail(); fill(gTop);
+      s.classList.remove("in-country", "in-places");
+      drawLegend("world"); setCrumbs([{ t: "World" }]);
+      flyTo({ x: W / 2, y: H / 2 + 10, w: W });
+    },
+    // Fly to a country at once, from its outline; its layer when it comes.
+    country(cc, crumbs) {
+      fill(gTop);
+      focusCcs = new Set([cc]); dimOthers = true; paintLand();
+      s.classList.add("in-country"); s.classList.remove("in-places");
+      if (base.cc !== cc) clearDetail(); else dimNets(null);
+      drawLegend("country"); setCrumbs(crumbs);
+      const v = boxView(boxOf(cc), 0.08);
+      flyTo(v);
+      return v;
+    },
+    countryData(cc, c, { fly = true } = {}) {
+      const v = boxView(countryBox(cc, c), 0.1);
+      if (base.cc !== cc) drawCountry(c, v);
+      if (fly) flyTo(v);
+      dimNets(null);
+    },
+    network(n, { cc = null, crumbs } = {}) {
+      const t = n.net || {};
+      const keep = cc && base.cc === cc;
+      if (!keep) clearDetail();
+      focusCcs = new Set([cc || t.country].filter(Boolean)); dimOthers = true; paintLand();
+      s.classList.add("in-country"); s.classList.remove("in-places");
+      dimNets(keep ? n.asn : null);
+      drawLegend("network"); setCrumbs(crumbs);
+      flyTo(boxView(drawNetwork(n, cc), 0.12));
+    },
+    places(ccs, arcs, crumbs) {
+      clearDetail();
+      focusCcs = new Set(ccs); dimOthers = true; paintLand();
+      s.classList.remove("in-country"); s.classList.add("in-places");
+      drawLegend("places"); setCrumbs(crumbs);
+      flyTo(boxView(drawPlaces(ccs, arcs), 0.25));
+    },
+    // A country's layer under a network opened on its own, without moving.
+    underlay(cc, c, asn) {
+      if (base.cc !== cc) drawCountry(c, boxView(countryBox(cc, c), 0.06));
+      dimNets(asn);
+    },
+    pinOf, boxOf,
+  };
 }
 
 // ---------------------------------------------------------------- Now
@@ -878,459 +1868,490 @@ function summaryLines(n) {
   return lines;
 }
 
-async function nowPage(app, main, alive) {
-  if (!app.now) fill(main, skel(6));
-  const n = await app.api("/v1/now");
-  if (!alive()) return;
-  app.now = n;
-  const open = n.open || [];
-  const bad = open.some((i) => i.severity === "bad");
-  const lines = summaryLines(n);
-  const sentence = open.length
-    ? `${plural(open.length, "problem")} now.${n.connected ? ` ${n.connected} of them are connected.` : ""}${n.ended?.length ? ` ${plural(n.ended.length, "has", "have")} ended in the last hour.`.replace(/^ (\d+) has/, " $1 has") : ""}`
-    : "Nothing wrong now: no rule finds anything in the last hour.";
-  const hero = h("section", { class: `bn-hero${open.length ? (bad ? "" : " warn") : " calm"}` },
-    h("div", {},
-      h("div", { class: "bn-hero-top" }, open.length ? pill(bad ? "bad" : "warn", plural(open.length, "problem") + " now") : pill("ok", "All clear"), h("span", { class: "muted small" }, `The last hour, as of ${clock(n.as_of)}`)),
-      h("h2", {}, sentence.replace(/ (\d+) have ended/, " $1 have ended").replace(/1 has ended/, "1 has ended")),
-      lines.length ? h("ul", { class: "bn-hero-ul" }, lines.map((l) => h("li", {}, l))) : null,
-      h("div", { class: "meta" }, n.heard?.updates != null
-        ? h("span", {}, `Heard by `, h("b", {}, `${fmt(n.heard.peers)} BGP peers at RIPE RIS`), ` in the last ${n.heard.minutes || 5} minutes: ${fmt(n.heard.updates)} updates of ${fmt(n.heard.prefixes)} prefixes.`)
-        : "")),
-    h("div", { class: "bn-hero-act" }, h("button", { class: "btn", type: "button", onclick: (e) => { navigator.clipboard?.writeText([sentence, ...lines.map((l) => "- " + l)].join("\n")); e.currentTarget.textContent = "Copied"; } }, icon("copy"), "Copy the summary")));
+// ---------------------------------------------------------------- the strip
 
-  const work = h("section", { class: "card" },
-    h("div", { class: "hd" }, h("h3", {}, "What is wrong now"), h("span", { class: "sub" }, "most serious first; each row is a row of bb_incidents, and a click from its incident room")),
-    h("div", { class: "bd flush" }, open.length ? open.map((i) => incidentRow(app, i)) : empty("No open incidents. The rules run every minute over the newest updates.")));
-
-  const world = n.world?.med;
-  const weather = card("Internet weather", `the time to the nearest K root server, slowest countries, last 20 minutes${n.world ? ` · ${fmt(n.world.probes)} RIPE Atlas probes` : ""}`,
-    (n.weather || []).length ? hbars([
-      ...(n.weather || []).map((w) => ({ label: app.country(w.country), href: app.href("map", w.country), text: ms(w.med), v: w.med, cls: w.med > 150 ? "bad" : w.med > 60 ? "warn" : "ok" })),
-      { label: "World median", text: ms(world), v: world, cls: "ok" },
-    ]) : empty("No Atlas results yet."));
-
-  const byId = Object.fromEntries(open.map((i) => [i.id, i]));
-  const connect = card("How they connect", "what the open problems share",
-    (n.connect || []).length
-      ? h("ul", { class: "bn-list" }, n.connect.map((c) => h("li", {},
-        h("div", { class: "bn-conn-t" }, c.net ? h("a", { href: app.href("as", c.net.asn) }, c.title) : c.country ? h("a", { href: app.href("map", c.country) }, c.title.replace(c.country, app.country(c.country))) : c.title),
-        h("div", { class: "muted small" }, c.how === "country" ? c.text.replace(c.country, app.country(c.country)) : c.text),
-        h("div", { class: "bn-conn-ids" }, c.incidents.slice(0, 6).map((id) => byId[id] ? h("a", { class: "chip", href: app.href("incident", id) }, byId[id].title.slice(0, 48)) : null)))))
-      : empty(open.length ? "No two open problems share an owner, an announcer, an upstream or a country." : "Nothing open to connect."));
-
-  const ended = card("Ended in the last hour", null,
-    (n.ended || []).length ? h("ul", { class: "bn-list" }, n.ended.slice(0, 8).map((i) => h("li", {},
-      h("a", { class: "bn-conn-t", href: app.href("incident", i.id) }, i.title),
-      h("div", { class: "muted small" }, `${hm(i.first)} to ${hm(i.last)} · ${i.summary}`)))) : empty("None."));
-
-  const busiest = card("Busiest prefixes", "updates in the last hour",
-    (n.busiest || []).length ? table(["prefix", "announced by", { t: "updates", num: true }], n.busiest.map((b) => h("tr", {},
-      h("td", { class: "mono" }, h("a", { href: app.href("prefix", b.prefix) }, b.prefix)),
-      h("td", {}, h("a", { href: app.href("as", b.origin.asn) }, b.origin.name || `AS${b.origin.asn}`), b.origin.country ? h("span", { class: "muted" }, `, ${b.origin.country}`) : null),
-      h("td", { class: "num" }, fmt(b.updates))))) : empty("No updates yet."));
-
-  const sources = card("Sources", "where each feed stands",
-    (n.feed || []).length ? h("ul", { class: "bn-list" }, n.feed.map((f) => h("li", { class: "small" },
-      h("b", {}, f.id), ` · ${f.kind}${f.rows ? ` · ${fmt(f.rows)} rows` : ""} · ${ago(f.at)}`, f.note ? h("div", { class: "muted" }, f.note) : null))) : empty("No feed has run yet."));
-
-  fill(main, hero, h("div", { class: "bn-cols" },
-    h("div", { class: "bn-col" }, work, weather),
-    h("div", { class: "bn-col" }, connect, ended, busiest, sources)));
-}
-
-// ---------------------------------------------------------------- Map: the world
-
-// Pan and zoom an SVG by its viewBox: drag, the wheel, and the buttons.
-function panzoom(svgEl, full, { min = 1, max = 24 } = {}) {
-  let vb = { ...full };
-  const set = () => svgEl.setAttribute("viewBox", `${vb.x.toFixed(2)} ${vb.y.toFixed(2)} ${vb.w.toFixed(2)} ${vb.h.toFixed(2)}`);
-  const clamp = () => {
-    vb.w = Math.min(full.w / min, Math.max(full.w / max, vb.w));
-    vb.h = vb.w * (full.h / full.w);
-    vb.x = Math.min(full.x + full.w - vb.w * 0.5, Math.max(full.x - vb.w * 0.5, vb.x));
-    vb.y = Math.min(full.y + full.h - vb.h * 0.5, Math.max(full.y - vb.h * 0.5, vb.y));
-  };
-  const zoom = (f, cx = vb.x + vb.w / 2, cy = vb.y + vb.h / 2) => {
-    const w = vb.w / f;
-    vb = { x: cx - ((cx - vb.x) * w) / vb.w, y: cy - ((cy - vb.y) * w) / vb.w, w, h: w * (full.h / full.w) };
-    clamp(); set(); svgEl.dispatchEvent(new CustomEvent("zoomed", { detail: full.w / vb.w }));
-  };
-  const toSvg = (e) => { const r = svgEl.getBoundingClientRect(); return { x: vb.x + ((e.clientX - r.left) / r.width) * vb.w, y: vb.y + ((e.clientY - r.top) / r.height) * vb.h }; };
-  svgEl.addEventListener("wheel", (e) => { e.preventDefault(); const p = toSvg(e); zoom(e.deltaY < 0 ? 1.25 : 0.8, p.x, p.y); }, { passive: false });
-  let drag = null;
-  svgEl.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, vb: { ...vb }, moved: false }; });
-  addEventListener("pointermove", (e) => {
-    if (!drag) return;
-    const r = svgEl.getBoundingClientRect();
-    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
-    if (!drag.moved) return;
-    vb.x = drag.vb.x - (dx / r.width) * vb.w; vb.y = drag.vb.y - (dy / r.height) * vb.h; clamp(); set();
-  });
-  addEventListener("pointerup", () => { if (drag?.moved) { svgEl.dataset.dragged = "1"; setTimeout(() => delete svgEl.dataset.dragged, 0); } drag = null; });
-  set();
-  return {
-    zoom, fit: () => { vb = { ...full }; set(); svgEl.dispatchEvent(new CustomEvent("zoomed", { detail: 1 })); },
-    to: (x, y, f) => { const w = full.w / f; vb = { x: x - w / 2, y: y - (w * full.h) / full.w / 2, w, h: (w * full.h) / full.w }; clamp(); set(); svgEl.dispatchEvent(new CustomEvent("zoomed", { detail: f })); },
-  };
-}
-
-function project(geo, lat, lon) { return [((lon + 180) / 360) * geo.w, ((geo.top - lat) / geo.span) * geo.h]; }
-
-async function mapPage(app, main, rest, alive) {
-  const [cc, asn] = rest;
-  if (cc) return countryMap(app, main, cc.toUpperCase(), asn, alive);
-  fill(main, skel(8));
-  const w = await app.api("/v1/map");
-  if (!alive()) return;
-  const geo = app.geo;
-  const G = geo.countries || {};
-  const byCc = Object.fromEntries((w.countries || []).map((c) => [c.cc, c]));
-  // Where to pin each country: its outline's centre, else its largest exchange.
-  const pinOf = {};
-  for (const [cc, g] of Object.entries(G)) if (g.x != null) pinOf[cc] = [g.x, g.y];
-  for (const x of w.ixes || []) if (x.lat != null && !pinOf[x.cc]) pinOf[x.cc] = project(geo, x.lat, x.lon);
-
-  const layers = { problems: true, links: true, exchanges: false, probes: true };
-  const stage = h("div", { class: "bn-map-stage" });
-  const tip = h("div", { class: "bn-map-tip", hidden: true });
-  const VB = { x: 0, y: 0, w: geo.w || 1000, h: geo.h || 383.3 };
-  const s = svg("svg", { class: "bn-map-canvas bn-world", viewBox: `0 0 ${VB.w} ${VB.h}`, preserveAspectRatio: "xMidYMid meet", role: "img", "aria-label": "The world, countries coloured by what is wrong there" });
-  const showTip = (e, html) => { const r = stage.getBoundingClientRect(); tip.innerHTML = html; tip.hidden = false; tip.style.left = `${Math.min(r.width - 260, e.clientX - r.left + 12)}px`; tip.style.top = `${e.clientY - r.top + 12}px`; };
-  const hideTip = () => { tip.hidden = true; };
-  const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-  const tone = (c) => !c ? "none" : c.severity === "bad" ? "bad" : c.severity === "warn" ? "warn" : c.probes ? "ok" : "none";
-  // Outlines that cross the antimeridian are drawn at both edges; the clip keeps them in the frame.
-  const gLand = svg("g", { "clip-path": "url(#bn-frame)" }), gLinks = svg("g", {}), gIx = svg("g", {}), gPins = svg("g", {});
-  for (const [cc, g] of Object.entries(G)) {
-    if (!g.d) continue;
-    const c = byCc[cc];
-    gLand.append(svg("path", {
-      class: `land c-${tone(c)}`, d: g.d,
-      onclick: () => { if (!s.dataset.dragged) app.go("map", cc); },
-      onmousemove: (e) => showTip(e, `<b>${esc(g.n)}</b><br>${c ? [c.alerts ? `${c.alerts} open alert${c.alerts === 1 ? "" : "s"}` : "no open alerts", c.probes ? `${c.probes} probes, median ${Math.round(c.med)} ms to K` : ""].filter(Boolean).join("<br>") : "no probes or alerts"}`),
-      onmouseleave: hideTip,
-    }));
-  }
-  // Lines: a network in one country announcing routes owned in another.
-  for (const l of w.lines || []) {
-    const a = pinOf[l.from], b = pinOf[l.to];
-    if (!a || !b) continue;
-    const mx = (a[0] + b[0]) / 2, my = Math.min(a[1], b[1]) - Math.abs(a[0] - b[0]) * 0.18 - 10;
-    gLinks.append(svg("path", { class: "lk own", d: `M${a[0]},${a[1]} Q${mx},${my} ${b[0]},${b[1]}`, onclick: () => app.go("incident", l.incident) },
-      svg("title", {}, `${app.country(l.from)} announced ${l.alerts} route${l.alerts === 1 ? "" : "s"} owned in ${app.country(l.to)}`)));
-  }
-  for (const x of w.ixes || []) {
-    if (x.lat == null) continue;
-    const [px, py] = project(geo, x.lat, x.lon);
-    gIx.append(svg("path", { class: "ixd", d: `M${px},${py - 3.2}l3.2,3.2-3.2,3.2-3.2-3.2z`, onmousemove: (e) => showTip(e, `<b>${esc(x.name)}</b><br>${esc(x.city)} · ${x.members} members`), onmouseleave: hideTip, onclick: () => app.go("map", x.cc) }));
-  }
-  const pins = (w.countries || []).filter((c) => c.alerts > 0 || c.severity !== "ok").filter((c) => pinOf[c.cc]);
-  pins.sort((a, b) => (a.severity === "bad") - (b.severity === "bad"));
-  for (const c of pins) {
-    const [px, py] = pinOf[c.cc];
-    const r = c.alerts ? Math.min(13, 5 + Math.sqrt(c.alerts) * 1.1) : 4.5;
-    const col = c.severity === "bad" ? "var(--crit)" : c.severity === "warn" ? "var(--warn)" : "var(--accent)";
-    gPins.append(svg("g", { class: "pin", onclick: () => app.go("map", c.cc), onmousemove: (e) => showTip(e, `<b>${esc(app.country(c.cc))}</b><br>${c.alerts ? `${c.alerts} open alert${c.alerts === 1 ? "" : "s"}` : ""}${c.med ? `<br>median ${Math.round(c.med)} ms to K, ${c.probes} probes` : ""}`), onmouseleave: hideTip },
-      c.severity === "bad" ? svg("circle", { class: "halo", cx: px, cy: py, r }) : null,
-      svg("circle", { cx: px, cy: py, r, fill: col, stroke: "var(--surface)", "stroke-width": 1 }),
-      c.alerts > 1 ? svg("text", { x: px, y: py + 2.5, "text-anchor": "middle", class: "pn" }, c.alerts > 99 ? "99+" : String(c.alerts)) : null));
-  }
-  s.append(svg("defs", {}, svg("clipPath", { id: "bn-frame" }, svg("rect", { x: 0, y: 0, width: VB.w, height: VB.h }))), gLand, gLinks, gIx, gPins);
-  const pz = panzoom(s, VB);
-  s.addEventListener("zoomed", (e) => s.style.setProperty("--z", e.detail));
-  const chip = (key, label) => {
-    const b = h("button", { class: "chip", type: "button", "aria-pressed": String(layers[key]), onclick: () => { layers[key] = !layers[key]; b.setAttribute("aria-pressed", String(layers[key])); draw(); } }, label);
-    return b;
-  };
+// Everything heard a minute for six hours: announcements above the line,
+// withdrawals below it, RPKI-invalid announcements as red ticks, and the
+// incidents as bars under it. What the inspector shows (a network's or a
+// prefix's updates, an incident's window) is drawn over it.
+function makeTimeline(app) {
+  const plot = h("div", { class: "bn-tl-plot" });
+  const tip = h("div", { class: "bn-tl-tip", hidden: true });
+  const lab = h("div", { class: "bn-tl-lab" });
+  const el = h("div", { class: "bn-tl" }, lab, plot, tip);
+  let data = null, mark = null;
   function draw() {
-    gLinks.style.display = layers.links ? "" : "none";
-    gIx.style.display = layers.exchanges ? "" : "none";
-    gPins.style.display = layers.problems ? "" : "none";
-  }
-  draw();
-  stage.append(s, tip,
-    h("div", { class: "bn-map-crumbs" }, h("a", {}, "World")),
-    h("div", { class: "bn-map-zoom" }, chip("problems", "Problems"), chip("links", "Who took whose"), chip("exchanges", "Exchanges"),
-      h("button", { class: "btn sm", type: "button", onclick: () => pz.zoom(1.6) }, "+"), h("button", { class: "btn sm", type: "button", onclick: () => pz.zoom(1 / 1.6) }, "−"), h("button", { class: "btn sm", type: "button", onclick: () => pz.fit() }, "Fit")),
-    h("div", { class: "bn-map-foot" }, h("div", { class: "bn-map-foot-row" },
-      h("div", { class: "bn-map-legend" }, h("span", {}, h("i", { style: { background: "var(--crit)" } }), "invalid route, hijack or outage"), h("span", {}, h("i", { style: { background: "var(--warn)" } }), "flapping, new origin or slow"), h("span", {}, h("i", { style: { background: "var(--accent)" } }), "blackholing asked for"), h("span", {}, h("i", { style: { background: "color-mix(in srgb, var(--good) 45%, var(--surface))" } }), "probes, nothing wrong"), h("span", {}, h("i", { class: "bn-ln" }), "announced from another country")),
-      h("div", { class: "bn-map-stats" }, `${plural(w.open_alerts || 0, "open alert")} in ${plural((w.countries || []).filter((c) => c.alerts).length, "country", "countries")} · click a country to zoom in`))));
-
-  const rank = { bad: 0, warn: 1, info: 2, ok: 3 };
-  const open = (w.incidents || []).slice().sort((a, b) => (rank[a.severity] ?? 2) - (rank[b.severity] ?? 2) || (b.alerts || 0) - (a.alerts || 0));
-  const side = h("aside", { class: "bn-map-side" },
-    h("div", { class: "bn-map-head" }, h("h3", {}, "Where it is red"),
-      h("div", { class: "muted small" }, `${fmt(w.counts?.bb_as)} networks, ${fmt((w.counts?.bb_p2c || 0) + (w.counts?.bb_p2p || 0))} links between them, ${fmt(w.counts?.bb_ix)} exchanges and ${fmt(w.counts?.bb_probe)} probes in ChloeDB tables. Zoom in, or click anything.`)),
-    h("div", { class: "bn-map-kpis" },
-      h("div", {}, h("b", {}, fmt(open.length)), h("span", {}, "open incidents")),
-      h("div", {}, h("b", {}, fmt(w.red_countries || 0)), h("span", {}, "countries red")),
-      h("div", {}, h("b", {}, fmt(w.open_alerts || 0)), h("span", {}, "open alerts"))),
-    sec("Incidents", "bb_incidents WHERE state = 'open'",
-      open.length ? open.slice(0, 12).map((i) => row(SEV[i.severity] || SEV.info, i.title, `${i.summary} · since ${hm(i.first)}`, h("span", { class: "btn xs" }, "Open"), app.href("incident", i.id))) : empty("None open.")),
-    sec("Red now", "bb_alerts WHERE state = 'open', newest first",
-      (w.alerts || []).slice(0, 14).map((a) => row(SEV[a.severity] || SEV.info, a.title, [a.detail, a.country ? app.country(a.country) : ""].filter(Boolean).join(" · "), null,
-        a.prefix ? app.href("prefix", a.prefix) : a.asn ? app.href("as", a.asn.asn) : a.country ? app.href("map", a.country) : app.href("incident", a.incident)))));
-
-  const zoomCard = card("Zoom levels", "each level is a few statements over the same tables, so a click never waits for another system",
-    h("div", { class: "bn-map-read" },
-      h("div", {}, h("span", { class: "k" }, "World"), h("span", {}, "countries coloured by their open alerts and their probes' time to the K root server; lines where a network in one country announced routes owned in another.")),
-      h("div", {}, h("span", { class: "k" }, "Country"), h("span", {}, "its exchanges, its networks with probes, each probe coloured by its time to K, and where slow traceroutes leave the country.")),
-      h("div", {}, h("span", { class: "k" }, "Network"), h("span", {}, "what it hangs from (REACHABLE over CAIDA's relationships), trouble within three hops, its prefixes and their RPKI state, its changes and faults.")),
-      h("div", {}, h("span", { class: "k" }, "Prefix"), h("span", {}, "every update of the prefix replayed into who holds it now, its origins, its upstreams and its ROAs."))));
-  fill(main, h("div", { class: "bn-map" }, h("div", { class: "bn-map-main bn-wm" }, stage, side), zoomCard));
-}
-
-// ---------------------------------------------------------------- Map: a country
-
-function probeColor(rtt) { return rtt == null ? "none" : rtt < 60 ? "ok" : rtt <= 150 ? "warn" : "bad"; }
-
-async function countryMap(app, main, cc, asn, alive) {
-  fill(main, skel(8));
-  const c = await app.api(`/v1/country/${cc}`);
-  if (!alive()) return;
-  const name = app.country(cc);
-  const cont = app.geo?.countries?.[cc]?.c || "";
-  const nets = c.nets || [];
-  const ixes = c.ixes || [];
-  const W = 1000, PAD = 24, IXW = 140, IXH = 54, NW = 140, NH = 88;
-  const ixY = 84, cols = 6;
-  const gap = (W - 2 * PAD - 16 - cols * NW) / (cols - 1);
-  const ixX = (i) => PAD + 16 + i * (IXW + gap);
-  const shown = nets.slice(0, 11);
-  const rows = Math.ceil((shown.length + (c.more?.networks ? 1 : 0)) / cols) || 1;
-  const netY = (r) => 244 + r * (NH + 44);
-  const H = netY(rows - 1) + NH + 40 + ((c.abroad || []).length ? 110 : 20);
-  const s = svg("svg", { class: "bb-zm", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${name}: exchanges, networks and RIPE Atlas probes, coloured by their time to the K root server` });
-  s.append(svg("rect", { class: "ct reg", x: 8, y: 8, width: W - 16, height: H - ((c.abroad || []).length ? 118 : 28), rx: 14 }),
-    svg("text", { class: "ctl", x: 24, y: 32 }, name),
-    svg("text", { class: "cts", x: 24 + name.length * 8 + 16, y: 32 }, `${fmt(c.probes || 0)} probes · ${fmt(c.ix_total || 0)} exchanges · median ${ms(c.med)} to K`));
-  const ixPos = {};
-  ixes.forEach((x, i) => {
-    const x0 = ixX(i);
-    ixPos[x.id] = [x0 + IXW / 2, ixY + IXH];
-    s.append(svg("g", { class: `ix${x.k ? " kr" : ""}` },
-      svg("rect", { x: x0, y: ixY, width: IXW, height: IXH, rx: 8 }),
-      svg("path", { class: "dm", d: `M${x0 + 14} ${ixY + 18} l7 -7 7 7 -7 7z` }),
-      svg("text", { x: x0 + 30, y: ixY + 23 }, x.name.length > 15 ? x.name.slice(0, 14) + "…" : x.name),
-      svg("text", { class: "s", x: x0 + 12, y: ixY + 42 }, `${x.members} members${x.k ? " · K root" : ""}`, svg("title", {}, `${x.name}, ${x.city}`))),
-      x.k ? svg("g", { class: "kroot" }, svg("circle", { cx: x0 + IXW - 14, cy: ixY + 14, r: 9 }), svg("text", { x: x0 + IXW - 14, y: ixY + 18, "text-anchor": "middle" }, "K")) : null);
-  });
-  if (!ixes.length) s.append(svg("text", { class: "cts", x: 40, y: ixY + 30 }, "No exchanges in PeeringDB for this country."));
-  const netPos = {};
-  shown.forEach((n, i) => {
-    const r = Math.floor(i / cols), col = i % cols;
-    const x0 = ixX(col), y0 = netY(r);
-    netPos[n.asn] = [x0 + NW / 2, y0];
-    for (const ix of n.ixes || []) {
-      const p = ixPos[ix];
-      if (!p) continue;
-      const k = ixes.find((x) => x.id === ix)?.k;
-      s.insertBefore(svg("path", { class: `mb${k ? " bk" : ""}`, d: `M${x0 + NW / 2} ${y0} C ${x0 + NW / 2} ${y0 - 50}, ${p[0]} ${p[1] + 50}, ${p[0]} ${p[1]}` }), s.firstChild.nextSibling);
+    const W = Math.max(300, Math.round(plot.clientWidth || 900)), H = 74, MID = 30, UP = 27, DN = 18, LANE = 50;
+    const k = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n));
+    if (!data) { fill(plot, h("div", { class: "bn-skel" }, h("div", { style: { width: "70%" } }))); return; }
+    const mins = (data.minutes || []).map(([t, a, w, bad]) => ({ t: Date.parse(t), a, w, bad }));
+    const t1 = Date.parse(data.as_of), t0 = t1 - 6 * 3600e3;
+    const X = (t) => ((t - t0) / (t1 - t0)) * W;
+    // The scale: a peer resending its whole table makes one minute ten
+    // times the others, so the top is the 99th percentile's and such a
+    // minute reaches it (its tooltip has the number).
+    const vals = mins.map((m) => Math.max(m.a, m.w)).sort((p, q) => p - q);
+    const max = Math.max(1, Math.min(vals[vals.length - 1] || 1, (vals[Math.floor((vals.length - 1) * 0.99)] || 1) * 1.4));
+    const cap = (v) => Math.min(v, max);
+    const last = mins[mins.length - 1];
+    fill(lab, h("b", {}, "Everything heard, a minute, the last six hours"),
+      h("span", { class: "k a" }, "announced"), h("span", { class: "k w" }, "withdrawn"), h("span", { class: "k bad" }, "RPKI-invalid"), h("span", { class: "k inc" }, "incidents"),
+      mark?.label ? h("span", { class: "k me" }, mark.label) : null,
+      mins.length ? h("span", { class: "muted" }, `top: ${k(max)} a minute`) : null,
+      last ? h("span", { class: "now" }, `${hm(new Date(last.t).toISOString())}: ${fmt(last.a)} announced, ${fmt(last.w)} withdrawn`) : null);
+    const s = svg("svg", { class: "bn-tl-svg", width: W, height: H, viewBox: `0 0 ${W} ${H}` });
+    // Hours, in Pacific time.
+    const hr = 3600e3;
+    for (let t = Math.ceil(t0 / hr) * hr; t < t1; t += hr) {
+      const x = X(t);
+      s.append(svg("line", { class: "hr", x1: x, x2: x, y1: 0, y2: LANE - 2 }), svg("text", { class: "ax", x: x + 3, y: H - 2 }, new Date(t).toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric" })));
     }
-  });
-  shown.forEach((n, i) => {
-    const r = Math.floor(i / cols), col = i % cols;
-    const x0 = ixX(col), y0 = netY(r);
-    const sel = String(n.asn) === String(asn);
-    const g = svg("g", { class: `nt ${n.state}${sel ? " sel" : ""}`, style: "cursor:pointer", onclick: () => app.go("map", cc, n.asn) },
-      svg("rect", { x: x0, y: y0, width: NW, height: NH, rx: 8 }),
-      svg("text", { x: x0 + 10, y: y0 + 18 }, (n.name || `AS${n.asn}`).slice(0, 17)),
-      svg("text", { class: "s", x: x0 + 10, y: y0 + 33 }, `AS${n.asn} · ${n.ixes_here ? `${n.ixes_here} exchange${n.ixes_here === 1 ? "" : "s"} here` : n.ixes_anywhere ? "abroad only" : "no exchange"}`),
-      svg("title", {}, `${n.name} (AS${n.asn})`));
-    (n.dots || []).slice(0, 16).forEach((d, j) => g.append(svg("circle", { class: `pb ${probeColor(d.rtt)}`, cx: x0 + 14 + (j % 8) * 15, cy: y0 + 50 + Math.floor(j / 8) * 13, r: 5 }, svg("title", {}, `probe ${d.probe}: ${d.rtt == null ? "no answer" : Math.round(d.rtt) + " ms"}`))));
-    g.append(svg("text", { class: "s", x: x0 + 10, y: y0 + NH - 9 }, n.probes ? `${plural(n.probes, "probe")} · ${n.probes > 1 ? `median ${ms(n.med)}` : ms(n.med)}` : "no probes"));
-    s.append(g);
-  });
-  if (c.more?.networks) {
-    const i = shown.length, r = Math.floor(i / cols), col = i % cols;
-    const x0 = ixX(col), y0 = netY(r);
-    s.append(svg("g", { class: "nt more" }, svg("rect", { x: x0, y: y0, width: NW, height: NH, rx: 8 }),
-      svg("text", { x: x0 + 10, y: y0 + 18 }, `${c.more.networks} more networks`),
-      svg("text", { class: "s", x: x0 + 10, y: y0 + 60 }, `${c.more.under20} under 20 ms,`),
-      svg("text", { class: "s", x: x0 + 10, y: y0 + 74 }, `${c.more.over90} over 90 ms`)));
-  }
-  const ab = c.abroad || [];
-  if (ab.length) {
-    const y0 = H - 92;
-    s.append(svg("text", { class: "ctl", x: 24, y: y0 - 10 }, "Abroad"), svg("text", { class: "cts", x: 84, y: y0 - 10 }, "where slow traceroutes from here jump 80 ms or more (RIPE Atlas)"));
-    const worst = shown.filter((n) => n.state === "bad" || n.state === "warn");
-    ab.forEach((a, i) => {
-      const x0 = 40 + i * 236;
-      const from = worst[i % Math.max(1, worst.length)];
-      if (from && netPos[from.asn]) {
-        const [fx, fy] = netPos[from.asn];
-        s.insertBefore(svg("path", { class: "ex", d: `M${fx} ${fy + NH} C ${fx} ${fy + NH + 60}, ${x0 + 110} ${y0 - 60}, ${x0 + 110} ${y0}` }), s.firstChild.nextSibling);
-      }
-      s.append(svg("g", { class: "ab", style: "cursor:pointer", onclick: () => app.go("as", a.net.asn) },
-        svg("rect", { x: x0, y: y0, width: 220, height: 44, rx: 7 }),
-        svg("text", { x: x0 + 10, y: y0 + 18 }, `${(a.net.name || "AS" + a.net.asn).slice(0, 24)}${a.net.country ? `, ${a.net.country}` : ""}`),
-        svg("text", { class: "s", x: x0 + 10, y: y0 + 34 }, `${plural(a.traces, "trace")} · +${Math.round(a.jump)} ms at the jump · ${ms(a.med)}`)));
+    if (mark?.from) {
+      const a = X(Date.parse(mark.from)), b = mark.to ? X(Date.parse(mark.to)) : W;
+      s.append(svg("rect", { class: "win", x: Math.max(0, a), y: 0, width: Math.max(2, Math.min(W, b) - Math.max(0, a)), height: LANE - 2 }));
+    }
+    const up = [], dn = [];
+    for (const m of mins) { const x = X(m.t).toFixed(1); up.push(`${x},${(MID - (cap(m.a) / max) * UP).toFixed(1)}`); dn.push(`${x},${(MID + Math.min(DN, (m.w / max) * DN * 1.5)).toFixed(1)}`); }
+    if (mins.length) {
+      const x0 = X(mins[0].t).toFixed(1), x1 = X(last.t).toFixed(1);
+      s.append(svg("path", { class: "a", d: `M${x0},${MID}L${up.join("L")}L${x1},${MID}Z` }), svg("path", { class: "w", d: `M${x0},${MID}L${dn.join("L")}L${x1},${MID}Z` }));
+    }
+    s.append(svg("line", { class: "mid", x1: 0, x2: W, y1: MID, y2: MID }));
+    for (const m of mins) if (m.bad > 0) { const x = X(m.t); s.append(svg("line", { class: "bad", x1: x, x2: x, y1: 0, y2: Math.min(9, 2 + Math.log10(m.bad + 1) * 3) })); }
+    if (mark?.pts?.length) {
+      const mm = Math.max(1, ...mark.pts.map((p) => p[1]));
+      const d = mark.pts.map((p, i) => `${i ? "L" : "M"}${X(Date.parse(p[0])).toFixed(1)},${(MID - (p[1] / mm) * UP).toFixed(1)}`).join("");
+      s.append(svg("path", { class: "me", d }));
+    }
+    // Incidents in lanes, so bars that overlap in time stack.
+    const lanes = [];
+    const inc = (data.incidents || []).map((i) => ({ i, a: Math.max(0, X(Date.parse(i.first))), b: Math.min(W, i.state === "open" ? W : X(Date.parse(i.last))) })).filter((x) => x.b > 0).sort((p, q) => p.a - q.a);
+    for (const x of inc) {
+      let l = lanes.findIndex((end) => end < x.a - 2);
+      const cur = mark?.incident === x.i.id;
+      if (l < 0) { if (lanes.length < 4) { l = lanes.length; lanes.push(0); } else if (cur) l = 3; else continue; }
+      lanes[l] = Math.max(lanes[l], x.b);
+      const before = Date.parse(x.i.first) < t0;
+      const r = svg("rect", { class: `ib ${x.i.state !== "open" ? "ended" : x.i.severity}${before ? " old" : ""}${cur ? " on" : ""}`, x: x.a, y: LANE + l * 4, width: Math.max(3, x.b - x.a), height: 3, rx: 1 });
+      r.addEventListener("click", () => app.go("incident", x.i.id));
+      r.__i = x.i;
+      s.append(r);
+    }
+    const cross = svg("line", { class: "cross", x1: 0, x2: 0, y1: 0, y2: LANE - 2, visibility: "hidden" });
+    s.append(cross);
+    s.addEventListener("mousemove", (e) => {
+      const r = s.getBoundingClientRect(), x = e.clientX - r.left;
+      const t = t0 + (x / W) * (t1 - t0);
+      let best = null;
+      for (const m of mins) if (!best || Math.abs(m.t - t) < Math.abs(best.t - t)) best = m;
+      const over = e.target.__i;
+      cross.setAttribute("x1", x); cross.setAttribute("x2", x); cross.setAttribute("visibility", "visible");
+      fill(tip, over ? [h("b", {}, over.title), h("div", {}, `${kindWord(over.kind)} · ${hm(over.first)} to ${over.state === "open" ? "now" : hm(over.last)}`), h("div", { class: "muted" }, "click to open")]
+        : best ? [h("b", {}, hm(new Date(best.t).toISOString())), h("div", {}, `${fmt(best.a)} announced, ${fmt(best.w)} withdrawn`), best.bad ? h("div", { class: "bad" }, `${fmt(best.bad)} RPKI-invalid`) : null] : []);
+      tip.hidden = false;
+      tip.style.left = `${Math.min(W - 220, Math.max(0, x + 12))}px`;
     });
+    s.addEventListener("mouseleave", () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); });
+    fill(plot, s);
   }
-  const stage = h("div", { class: "bn-map-stage bn-scroll" },
-    h("div", { class: "bn-zm-wrap" }, s),
-    h("div", { class: "bn-map-crumbs" }, h("a", { href: app.href("map") }, "World"), h("span", { class: "muted" }, "›"), cont ? [h("span", {}, cont), h("span", { class: "muted" }, "›")] : null, h("a", { href: app.href("map", cc) }, name)),
-    h("div", { class: "bn-map-foot" }, h("div", { class: "bn-map-foot-row" },
-      h("div", { class: "bn-map-legend" }, h("span", {}, h("i", { style: { background: "var(--good)" } }), "probe under 60 ms"), h("span", {}, h("i", { style: { background: "var(--warn)" } }), "60 to 150 ms"), h("span", {}, h("i", { style: { background: "var(--crit)" } }), "over 150 ms"),
-        h("span", {}, h("b", { style: { color: "var(--s7)", marginRight: "4px" } }, "◆"), "exchange"), h("span", {}, h("i", { style: { background: "var(--good)", borderRadius: "2px", height: "3px", width: "14px" } }), "member where K is"), ab.length ? h("span", {}, h("i", { style: { background: "var(--crit)", borderRadius: "2px", height: "3px", width: "14px" } }), "slow traces abroad") : null),
-      h("div", { class: "bn-map-stats" }, `${shown.length} of ${nets.length + (c.more?.networks ? 0 : 0)} networks with probes · ${fmt(c.probes || 0)} probes · pings, last 20 min`))));
-
-  const side = h("aside", { class: "bn-map-side" });
-  fill(main, h("div", { class: "bn-map" }, h("div", { class: "bn-map-main bn-tall" }, stage, side)));
-  if (asn) {
-    fill(side, skel(6));
-    const n = await app.api(`/v1/as/${asn}`);
-    if (!alive()) return;
-    fill(side, h("a", { class: "btn xs ghost", href: app.href("map", cc) }, `‹ Back to ${name}`), networkInspector(app, n, { country: c }));
-  } else {
-    const bad = (c.alerts || []).length;
-    fill(side,
-      h("a", { class: "btn xs ghost", href: app.href("map") }, "‹ Back to the world"),
-      h("div", { class: "bn-map-head" },
-        h("div", { class: "row between" }, h("h3", {}, name), c.med > 150 ? pill("bad", "slow") : c.med > 60 ? pill("warn", "slowish") : c.probes ? pill("ok", "fast") : null),
-        h("div", { class: "muted small" }, [cont, `${fmt(c.ix_total || 0)} exchanges in PeeringDB`].filter(Boolean).join(" · ")),
-        c.med != null ? h("div", { class: c.med > 100 ? "bn-map-why" : "bn-map-why ok" }, `${fmt(c.slow || 0)} of ${fmt(c.probes || 0)} probes take over 100 ms to reach the nearest K root server; the country's median is ${ms(c.med)}.`) : null,
-        h("div", { class: "bn-facts" }, h("span", {}, "median ", h("b", {}, ms(c.med))), h("span", {}, "world ", h("b", {}, ms(app.now?.world?.med))), h("span", {}, "open alerts ", h("b", {}, fmt(bad))), h("span", {}, "outages ", h("b", {}, fmt((c.outages || []).length)))),
-        h("a", { class: "btn xs", style: { marginTop: "8px" }, href: app.href("diagnose", cc) }, `Diagnose ${name}'s stack`)),
-      sec("Its networks", "bb_ping GROUP BY asn, most probes first", nets.slice(0, 14).map((n) => row(SEV[n.state] || SEV.none, `${n.name} (AS${n.asn})`, `${plural(n.probes, "probe")} · median ${ms(n.med)} · ${n.ixes_here ? `${n.ixes_here} exchanges here` : "no exchange here"}${n.at_k ? " · meets K" : ""}`, null, app.href("map", cc, n.asn)))),
-      (c.alerts || []).length ? sec("Open alerts", "bb_alerts WHERE country = " + cc, c.alerts.slice(0, 12).map((a) => row(SEV[a.severity], a.title, a.detail, null, a.prefix ? app.href("prefix", a.prefix) : app.href("incident", a.incident)))) : null,
-      (c.outages || []).length ? sec("IODA outages", "bb_outage WHERE open", c.outages.map((o) => row(SEV.bad, o.name || o.id, `${o.kind} · ${o.source} · since ${stamp(o.start)} · score ${short(o.score)}`))) : null,
-      ab.length ? sec("Where slow traces jump", "bb_trace WHERE rtt > 100 GROUP BY jump_as", ab.map((a) => row(SEV.warn, netName(a.net), `${plural(a.traces, "traceroute")} · +${Math.round(a.jump)} ms at that hop · ${ms(a.med)} in all`, null, app.href("as", a.net.asn)))) : null);
-  }
+  new ResizeObserver(() => { if (plot.clientWidth) draw(); }).observe(plot);
+  return {
+    el,
+    async refresh() { try { data = await app.api("/v1/timeline", { fresh: true, sql: false }); } catch { /* keep the last */ } draw(); },
+    mark(m) { mark = m; draw(); },
+  };
 }
 
-// ---------------------------------------------------------------- a network
+// ---------------------------------------------------------------- the console
 
-function networkInspector(app, n, { country = null } = {}) {
-  if (!n.found) return empty(`AS${n.asn} is not in the registries' list of networks.`);
-  const t = n.net;
-  const sevOf = (s) => SEV[s] || SEV.ok;
-  const open = (n.alerts || []).filter((a) => a.state === "open");
-  const tabs = ["Overview", "Metrics", "Events", "Records"];
-  let tab = "Overview";
-  const body = h("div");
-  const tabEl = h("div", { class: "tabs bn-otabs", role: "tablist" });
-  const drawTabs = () => fill(tabEl, tabs.map((x) => h("button", { type: "button", "aria-selected": String(x === tab), class: x === tab ? "on" : null, onclick: () => { tab = x; drawTabs(); draw(); } }, x,
-    x === "Events" && open.length ? h("span", { class: "n", style: { background: "var(--crit-soft)", color: "var(--crit-ink)" } }, String(open.length)) : null)));
-  const why = open.length
-    ? `${plural(open.length, "open alert")}: ${open.slice(0, 2).map((a) => a.title).join("; ")}`
-    : n.med != null && n.med > 150 ? `${plural(n.probes_now, "probe")} reach the K root server in a median ${ms(n.med)}.` : null;
-  const headEl = h("div", { class: "bn-map-head" },
-    h("div", { class: "row between" }, h("h3", {}, `${t.name || t.full || "AS" + t.asn} (AS${t.asn})`), n.state !== "ok" ? pill(n.state, n.state === "bad" ? "red" : "watch") : pill("ok", "ok")),
-    h("div", { class: "muted small" }, [t.kind, t.traffic, t.full && t.full !== t.name ? `registered as ${t.full}` : null].filter(Boolean).join(" · ")),
-    h("div", { class: "muted small" }, [app.geo?.countries?.[t.country]?.c, app.country(t.country), t.scope].filter(Boolean).join(" › ")),
-    why ? h("div", { class: "bn-map-why" }, why) : null,
-    h("div", { class: "bn-facts" },
-      h("span", {}, "providers ", h("b", {}, fmt(t.providers))), h("span", {}, "customers ", h("b", {}, fmt(t.customers))), h("span", {}, "peers ", h("b", {}, fmt(t.peers))),
-      h("span", {}, "exchanges ", h("b", {}, fmt(t.ixes))), h("span", {}, "ROAs ", h("b", {}, fmt(t.roas))),
-      n.med != null ? h("span", {}, "to K ", h("b", {}, ms(n.med))) : null, country?.med != null ? h("span", {}, "country ", h("b", {}, ms(country.med))) : null),
-    h("div", { class: "bn-btnrow" }, h("a", { class: "btn xs", href: app.href("as", t.asn) }, "Open the network"),
-      open[0]?.incident ? h("a", { class: "btn xs primary", href: app.href("incident", open[0].incident) }, "Open its incident") : null));
-  const trouble = n.trouble || [];
-  const verdict = trouble.length
-    ? h("div", { class: "bn-map-verdict" }, h("b", {}, `Trouble ${trouble[0].hops} hop${trouble[0].hops === 1 ? "" : "s"} away: ${trouble[0].name} (AS${trouble[0].asn})`), h("div", { class: "small" }, trouble[0].title || ""))
-    : null;
-  function draw() {
-    if (tab === "Overview") {
-      fill(body,
-        sec("What it hangs from", "REACHABLE(bb_p2c, asn, dir => 'in'): its providers", (n.providers || []).length
-          ? n.providers.slice(0, 8).map((p) => row(sevOf(p.state), `${p.name || "AS" + p.asn} (AS${p.asn})`, `provider · ${p.country || "?"} · ${p.ixes ? `${p.ixes} exchanges` : "at no exchange"} · ${fmt(p.customers)} customers`, null, app.href("as", p.asn)))
-          : h("div", { class: "small muted" }, "No providers in CAIDA's relationships: a transit-free network, or one CAIDA did not see.")),
-        sec("What depends on it", "REACHABLE(bb_p2c, asn, dir => 'out'): its customers",
-          h("div", { class: "small" }, h("b", {}, fmt(t.customers)), ` customer network${t.customers === 1 ? "" : "s"}, `, h("b", {}, fmt(t.roas)), " ROAs, ", h("b", {}, fmt(t.probes)), " Atlas probes"),
-          (n.customers || []).slice(0, 5).map((p) => row(SEV.none, `${p.name || "AS" + p.asn} (AS${p.asn})`, `customer · ${p.country || "?"}${p.customers ? ` · ${fmt(p.customers)} customers of its own` : ""}`, null, app.href("as", p.asn)))),
+// One screen that stays: the worklist on the left, the map in the middle,
+// the inspector on the right, the last six hours along the top and the
+// networks the reader watches under it. A click moves the camera and fills
+// the inspector; nothing else is built again.
+function makeConsole(app) {
+  const tl = makeTimeline(app);
+  const left = h("aside", { class: "bn-wl", "aria-label": "What is wrong now" });
+  const stage = h("div", { class: "bn-stage" });
+  const right = h("aside", { class: "bn-in", "aria-label": "Inspector" });
+  const body = h("div", { class: "bn-con-body" }, left, stage, right);
+  const el = h("div", { class: "bn-con" }, tl.el, app.watch.bar(), body);
+  const map = makeMap(app, stage);
+  let sel = { page: "map", rest: [] }, seq = 0, filter = "";
+  tl.refresh();
+  app.watch.refresh();
+  function fit() {
+    if (matchMedia("(max-width: 1100px)").matches) { body.style.height = ""; return; }
+    const top = body.getBoundingClientRect().top + scrollY;
+    body.style.height = `${Math.max(540, innerHeight - top - 14)}px`;
+  }
+  addEventListener("resize", () => { if (el.isConnected && el.offsetParent) fit(); });
+  app.watch.listeners.add(() => { if (sel.page === "as" || (sel.page === "map" && sel.rest[1])) { const b = right.querySelector(".bn-watch-btn"); if (b) b.replaceWith(watchBtn(Number(b.dataset.asn))); } });
+
+  // ---- the worklist
+  function drawList() {
+    const n = app.now;
+    if (!n) return fill(left, skel(10));
+    const open = n.open || [];
+    const kinds = {};
+    for (const i of open) kinds[i.kind] = (kinds[i.kind] || 0) + 1;
+    if (filter && !kinds[filter]) filter = "";
+    const shown = filter ? open.filter((i) => i.kind === filter) : open;
+    const cur = sel.page === "incident" ? sel.rest.join("/") : null;
+    const scroll = left.scrollTop;
+    fill(left,
+      h("div", { class: "bn-wl-hd" },
+        h("div", { class: "row between" }, h("b", {}, open.length ? plural(open.length, "problem") + " now" : "Nothing wrong now"), h("span", { class: "muted small" }, clock(n.as_of))),
+        h("div", { class: "muted small" }, n.connected ? `${n.connected} of them share an announcer, an upstream or a country` : "most serious first; the rules run every minute"),
+        Object.keys(kinds).length > 1 ? h("div", { class: "bn-wl-kinds" },
+          h("button", { type: "button", class: !filter ? "on" : null, onclick: () => { filter = ""; drawList(); } }, "All"),
+          Object.entries(kinds).sort((a, b) => b[1] - a[1]).map(([k, c]) => h("button", { type: "button", class: filter === k ? "on" : null, onclick: () => { filter = filter === k ? "" : k; drawList(); } }, kindWord(k), h("span", {}, String(c))))) : null),
+      h("div", { class: "bn-wl-list" }, shown.length ? shown.map((i) => item(i, cur)) : empty("No rule finds anything in the last hour.")),
+      (n.ended || []).length ? h("details", { class: "bn-wl-more" }, h("summary", {}, `Ended in the last hour (${n.ended.length})`), n.ended.slice(0, 12).map((i) => item(i, cur))) : null,
+      (n.weather || []).length ? h("div", { class: "bn-wl-sec" }, h("b", {}, "Slowest countries to K"), n.weather.map((w) => h("a", { class: "bn-wl-wx", href: app.href("map", w.country) }, h("span", {}, app.country(w.country)), h("span", { class: w.med > 150 ? "bad" : w.med > 60 ? "warn" : "" }, ms(w.med))))) : null,
+      n.heard?.updates != null ? h("div", { class: "bn-wl-foot" }, `Heard by ${fmt(n.heard.peers)} BGP peers at RIPE RIS in the last ${n.heard.minutes || 5} minutes: ${fmt(n.heard.updates)} updates of ${fmt(n.heard.prefixes)} prefixes.`) : null,
+      h("div", { class: "bn-wl-foot" }, "Keys: j and k move through the list, Esc goes up a level, / searches."));
+    left.scrollTop = scroll;
+  }
+  function item(i, cur) {
+    return h("a", { class: `bn-wi ${i.state !== "open" ? "ended" : i.severity}${i.id === cur ? " on" : ""}`, href: app.href("incident", i.id), "data-id": i.id,
+      onmouseenter: () => map.hint(i.countries), onmouseleave: () => map.hint(null) },
+      h("div", { class: "k" }, h("span", {}, kindWord(i.kind), i.alerts > 1 ? ` ×${i.alerts}` : ""), h("span", { class: "w" }, i.state === "open" ? `since ${hm(i.first)}` : `${hm(i.first)} to ${hm(i.last)}`)),
+      h("div", { class: "t" }, i.title),
+      i.summary ? h("div", { class: "s" }, i.summary) : null);
+  }
+
+  // ---- the inspector
+  const wideBtn = () => h("button", { type: "button", class: "btn xs ghost bn-in-wide", title: "A wider inspector", "aria-label": "A wider inspector", onclick: () => { el.classList.toggle("wide"); } }, icon("wide"));
+  function watchBtn(asn) {
+    const on = app.watch.has(asn);
+    return h("button", { type: "button", class: `btn xs bn-watch-btn${on ? " on" : ""}`, "data-asn": asn, onclick: () => app.watch.toggle(asn) }, icon("star"), on ? "Watching" : "Watch");
+  }
+  function ihead({ crumbs = [], title, mono = false, tag = null, sub = [], why = null, whyOk = false, facts = [], actions = [] }) {
+    return h("div", { class: "bn-in-hd" },
+      h("div", { class: "bn-in-crumbs" }, crumbs.map((c, i) => [i ? h("span", { class: "muted" }, "›") : null, c.href ? h("a", { href: c.href }, c.t) : h("span", {}, c.t)]), wideBtn()),
+      h("div", { class: "row between" }, h("h3", { class: mono ? "mono" : null }, title), tag),
+      sub.filter(Boolean).length ? h("div", { class: "muted small" }, sub.filter(Boolean).join(" · ")) : null,
+      why ? h("div", { class: `bn-map-why${whyOk ? " ok" : ""}` }, why) : null,
+      facts.length ? h("div", { class: "bn-facts" }, facts.filter(Boolean).map(([k, v]) => h("span", {}, `${k} `, h("b", {}, v)))) : null,
+      actions.filter(Boolean).length ? h("div", { class: "bn-btnrow" }, actions) : null);
+  }
+  // Tabs that remember the last one picked for each kind of thing.
+  function tabbed(kind, defs) {
+    const bar = h("div", { class: "tabs bn-otabs", role: "tablist" });
+    const bodyEl = h("div", { class: "bn-in-body" });
+    let cur = defs.some((d) => d[0] === app.tabs[kind]) ? app.tabs[kind] : defs[0][0];
+    const draw = () => {
+      fill(bar, defs.map(([name, n, , tone]) => h("button", { type: "button", role: "tab", "aria-selected": String(name === cur), class: name === cur ? "on" : null, onclick: () => { cur = name; app.tabs[kind] = name; draw(); } },
+        name, n ? h("span", { class: `n${tone ? " " + tone : ""}` }, String(n)) : null)));
+      fill(bodyEl, defs.find((d) => d[0] === cur)[2]());
+    };
+    draw();
+    return [bar, bodyEl];
+  }
+  const none = (t) => h("div", { class: "small muted bn-none" }, t);
+  const crumbsFor = (cc) => {
+    const g = app.geo?.countries?.[cc];
+    return [{ t: "World", href: app.href("map") }, g?.c ? { t: g.c } : null, { t: app.country(cc), href: app.href("map", cc) }].filter(Boolean);
+  };
+
+  function inspectWorld() {
+    const n = app.now, w = app.world;
+    if (!n || !w) return fill(right, skel(10));
+    const open = n.open || [];
+    const bad = open.some((i) => i.severity === "bad");
+    const lines = summaryLines(n);
+    const sentence = open.length ? `${plural(open.length, "problem")} now.${n.connected ? ` ${n.connected} of them are connected.` : ""}` : "Nothing wrong now.";
+    const byId = Object.fromEntries(open.map((i) => [i.id, i]));
+    fill(right,
+      ihead({ crumbs: [{ t: "World" }], title: open.length ? plural(open.length, "problem") + " now" : "All clear", tag: open.length ? pill(bad ? "bad" : "warn", bad ? "red" : "watch") : pill("ok", "ok"),
+        sub: [`the last hour, as of ${clock(n.as_of)}`] }),
+      h("div", { class: "bn-in-sum" }, lines.length ? h("ul", {}, lines.map((l) => h("li", {}, l))) : h("p", {}, "No rule finds anything in the last hour."),
+        h("button", { class: "btn xs", type: "button", onclick: (e) => { navigator.clipboard?.writeText([sentence, ...lines.map((l) => "- " + l)].join("\n")); e.currentTarget.textContent = "Copied"; } }, icon("copy"), "Copy the summary")),
+      h("div", { class: "bn-map-kpis" },
+        h("div", {}, h("b", {}, fmt(open.length)), h("span", {}, "open incidents")),
+        h("div", {}, h("b", {}, fmt(w.red_countries || 0)), h("span", {}, "countries red")),
+        h("div", {}, h("b", {}, fmt(w.open_alerts || 0)), h("span", {}, "open alerts"))),
+      sec("How they connect", "what the open problems share",
+        (n.connect || []).length ? n.connect.map((c) => h("div", { class: "bn-conn" },
+          h("div", { class: "bn-conn-t" }, c.net ? h("a", { href: app.href("as", c.net.asn) }, c.title) : c.country ? h("a", { href: app.href("map", c.country) }, c.title.replace(c.country, app.country(c.country))) : c.title),
+          h("div", { class: "muted small" }, c.how === "country" ? c.text.replace(c.country, app.country(c.country)) : c.text),
+          h("div", { class: "bn-conn-ids" }, c.incidents.slice(0, 5).map((id) => byId[id] ? h("a", { class: "chip", href: app.href("incident", id) }, byId[id].title.slice(0, 44)) : null))))
+          : none(open.length ? "No two open problems share an owner, an announcer, an upstream or a country." : "Nothing open to connect.")),
+      sec("Internet weather", "the slowest countries to the nearest K root server, last 20 minutes",
+        (n.weather || []).length ? hbars([...n.weather.map((x) => ({ label: app.country(x.country), href: app.href("map", x.country), text: ms(x.med), v: x.med, cls: x.med > 150 ? "bad" : x.med > 60 ? "warn" : "ok" })), { label: "World median", text: ms(n.world?.med), v: n.world?.med, cls: "ok" }]) : none("No Atlas results yet.")),
+      sec("Busiest prefixes", "updates in the last hour", (n.busiest || []).length ? n.busiest.map((b) => row(SEV.warn, b.prefix, `${b.origin.name || "AS" + b.origin.asn}${b.origin.country ? `, ${b.origin.country}` : ""} · ${fmt(b.updates)} updates`, null, app.href("prefix", b.prefix))) : none("No updates yet.")),
+      sec("Sources", "where each feed stands", (n.feed || []).map((f) => row(SEV.none, f.id, `${f.kind}${f.rows ? ` · ${fmt(f.rows)} rows` : ""} · ${ago(f.at)}${f.note ? ` · ${f.note}` : ""}`))));
+  }
+
+  function inspectCountry(c) {
+    const cc = c.cc, name = app.country(cc), cont = app.geo?.countries?.[cc]?.c || "";
+    const nets = c.nets || [], alerts = c.alerts || [], outs = c.outages || [], ab = c.abroad || [];
+    const trouble = nets.filter((n) => n.state === "bad" || n.state === "warn");
+    const rtts = (c.probes_at || []).map((p) => p[4]).filter((x) => x != null);
+    const nWrong = alerts.length + outs.length;
+    const mine = [...(app.now?.open || []), ...(app.now?.ended || [])].filter((i) => (i.countries || []).includes(cc));
+    const [bar, bodyEl] = tabbed("country", [
+      ["What's wrong", nWrong, () => [
+        alerts.length ? sec("Open alerts", `bb_alerts WHERE country = '${cc}'`, alerts.slice(0, 20).map((a) => row(SEV[a.severity], a.title, a.detail, null, a.prefix ? app.href("prefix", a.prefix) : app.href("incident", a.incident)))) : null,
+        outs.length ? sec("IODA outages", "bb_outage WHERE open", outs.map((o) => row(SEV.bad, o.name || o.id, `${o.kind} · ${o.source} · since ${stamp(o.start)} · score ${short(o.score)}`))) : null,
+        trouble.length ? sec("Networks slow or with alerts", "its networks with probes, worst first", trouble.map((n) => row(SEV[n.state], `${n.name} (AS${n.asn})`, `${plural(n.probes, "probe")} · median ${ms(n.med)}${n.ixes_here ? "" : " · on no exchange here"}`, null, app.href("map", cc, n.asn)))) : null,
+        ab.length ? sec("Where slow traceroutes leave it", "bb_trace WHERE rtt > 100 GROUP BY jump_as", ab.map((a) => row(SEV.warn, netName(a.net), `${plural(a.traces, "traceroute")} · +${Math.round(a.jump)} ms at that hop · ${ms(a.med)} in all`, null, app.href("as", a.net.asn)))) : null,
+        !nWrong && !trouble.length ? none(`Nothing wrong in ${name}: no open alerts or outages, and its networks with probes reach K in under 60 ms.`) : null], nWrong ? "bad" : null],
+      ["What changed", mine.length, () => [
+        sec("Incidents here, the last hour", "open first", mine.length ? mine.map((i) => row(i.state === "open" ? SEV[i.severity] : SEV.ended, i.title, `${kindWord(i.kind)} · ${i.state === "open" ? `since ${hm(i.first)}` : `${hm(i.first)} to ${hm(i.last)}`}`, null, app.href("incident", i.id))) : none("None in the last hour.")),
+        alerts.length ? sec("When each alert began", "bb_alerts.first_seen", h("div", { class: "bn-map-hist" }, alerts.slice().sort((a, b) => (b.first || "").localeCompare(a.first || "")).slice(0, 16).map((a) => h("div", { class: "fault" }, h("span", { class: "when" }, stamp(a.first)), h("span", {}, a.title))))) : null]],
+      ["Metrics", null, () => [
+        sec("Its probes' time to K", "each probe's latest ping, last 20 minutes", rtts.length ? rttHist(rtts) : none("No probe answered in the last 20 minutes."),
+          h("div", { class: "bn-facts" }, h("span", {}, "median ", h("b", {}, ms(c.med))), h("span", {}, "world ", h("b", {}, ms(app.now?.world?.med))), h("span", {}, "over 100 ms ", h("b", {}, `${fmt(c.slow || 0)} of ${fmt(c.probes || 0)}`)))),
+        nets.length ? sec("Its networks, by median", "bb_ping GROUP BY asn", hbars(nets.filter((n) => n.med != null).slice(0, 14).map((n) => ({ label: n.name || `AS${n.asn}`, href: app.href("map", cc, n.asn), text: ms(n.med), v: n.med, cls: n.med > 150 ? "bad" : n.med > 60 ? "warn" : "ok" })))) : null]],
+      ["Records", null, () => [
+        sec("Exchanges", `bb_ix WHERE country = '${cc}', largest first`, (c.ixes || []).length ? c.ixes.map((x) => row("var(--s7)", x.name, `${x.city} · ${fmt(x.members)} members${x.k ? " · K root is a member" : ""}`)) : none("None in PeeringDB.")),
+        sec("Buildings", "bb_fac, most networks first", (c.facs || []).length ? c.facs.slice(0, 14).map((f) => row(SEV.none, f.name, `${f.city} · ${plural(f.nets, "network")}`)) : none("None in PeeringDB.")),
+        sec("Networks with probes", "bb_ping GROUP BY asn, most probes first", nets.map((n) => row(SEV[n.state] || SEV.none, `${n.name} (AS${n.asn})`, `${plural(n.probes, "probe")} · median ${ms(n.med)} · ${n.ixes_here ? plural(n.ixes_here, "exchange") + " here" : "no exchange here"}${n.at_k ? " · meets K" : ""}`, null, app.href("map", cc, n.asn))),
+          c.more?.networks ? none(`and ${c.more.networks} more: ${c.more.under20} under 20 ms, ${c.more.over90} over 90 ms`) : null)]],
+    ]);
+    fill(right,
+      ihead({ crumbs: crumbsFor(cc).slice(0, -1).concat([{ t: name }]), title: name, tag: c.med > 150 ? pill("bad", "slow") : c.med > 60 ? pill("warn", "slowish") : c.probes ? pill("ok", "fast") : null,
+        sub: [cont, `${fmt(c.ix_total || 0)} exchanges`, `${fmt((c.facs || []).length)}${(c.facs || []).length >= 80 ? "+" : ""} buildings`, `${fmt(c.probes || 0)} probes`],
+        why: c.med != null ? `${fmt(c.slow || 0)} of ${fmt(c.probes || 0)} probes take over 100 ms to reach the nearest K root server; the median is ${ms(c.med)}.` : null, whyOk: !(c.med > 100),
+        facts: [["median", ms(c.med)], ["world", ms(app.now?.world?.med)], ["open alerts", fmt(alerts.length)], ["outages", fmt(outs.length)]],
+        actions: [h("a", { class: "btn xs", href: app.href("diagnose", cc) }, `Diagnose ${name}'s stack`)] }),
+      bar, bodyEl);
+  }
+
+  function inspectNetwork(n, { cc = null, country = null } = {}) {
+    if (!n.found) return fill(right, ihead({ crumbs: [{ t: "World", href: app.href("map") }], title: `AS${n.asn}` }), none(`AS${n.asn} is not in the registries' list of networks.`));
+    const t = n.net;
+    const open = (n.alerts || []).filter((a) => a.state === "open");
+    const trouble = n.trouble || [];
+    const sevOf = (s) => SEV[s] || SEV.ok;
+    const pts = (n.minutes || []).map((m) => ({ t: m.t, a: m.n - m.w, w: m.w }));
+    const [bar, bodyEl] = tabbed("network", [
+      ["What's wrong", open.length + trouble.length, () => [
+        trouble.length ? h("div", { class: "bn-map-verdict" }, h("b", {}, `Trouble ${plural(trouble[0].hops, "hop")} away: ${trouble[0].name || "AS" + trouble[0].asn} (AS${trouble[0].asn})`), h("div", { class: "small" }, trouble[0].title || "")) : null,
+        sec("Its open alerts", "bb_alerts WHERE origin, owner or asn is it", open.length ? open.slice(0, 16).map((a) => row(SEV[a.severity], a.title, `${kindWord(a.kind)} · ${a.detail || ""} · since ${stamp(a.first)}`, null, a.prefix ? app.href("prefix", a.prefix) : app.href("incident", a.incident))) : none("None open.")),
         sec(`Trouble within ${n.trouble_hops === 1 ? "one hop" : "three hops"}`, `REACHABLE(bb_p2c, hops => ${n.trouble_hops}, dir => 'both') AND asn IN (open alerts)`,
-          trouble.length ? trouble.map((x) => row(SEV[x.severity] || SEV.warn, `${x.name || "AS" + x.asn} (AS${x.asn})`, `${plural(x.hops, "hop")} · ${x.title || ""}`, null, app.href("as", x.asn))) : h("div", { class: "small muted" }, "No open alerts on networks that near.")),
+          trouble.length ? trouble.map((x) => row(SEV[x.severity] || SEV.warn, `${x.name || "AS" + x.asn} (AS${x.asn})`, `${plural(x.hops, "hop")} · ${x.title || ""}`, null, app.href("as", x.asn))) : none("No open alerts on networks that near.")),
+        sec("What it hangs from", "REACHABLE(bb_p2c, asn, dir => 'in'): its providers", (n.providers || []).length
+          ? n.providers.slice(0, 8).map((p) => row(sevOf(p.state), `${p.name || "AS" + p.asn} (AS${p.asn})`, `provider · ${p.country || "?"}${p.meet?.shared ? " · in a building with it" : ""} · ${fmt(p.customers)} customers`, null, app.href("as", p.asn)))
+          : none("No providers in CAIDA's relationships: transit-free, or not seen."))], open.length ? "bad" : trouble.length ? "warn" : null],
+      ["What changed", (n.changes || []).length, () => [
+        sec("Changes and faults", "bb_alerts and PeeringDB's records, newest first",
+          (n.changes || []).length ? h("div", { class: "bn-map-hist" }, n.changes.map((c) => h("div", { class: c.kind }, h("span", { class: "when" }, stamp(c.at)), h("span", {}, h("b", {}, c.kind === "fault" ? "Fault " : "Change "), c.text, c.incident ? [" · ", h("a", { href: app.href("incident", c.incident) }, "incident")] : null)))) : none("Nothing recorded.")),
         sec("Its routes now", "bb_updates WHERE origin = asn, last day, GROUP BY rpki",
-          (n.rpki || []).length ? h("div", { class: "bn-facts" }, n.rpki.map((r) => h("span", {}, `${r.rpki} `, h("b", {}, fmt(r.prefixes)), " prefixes"))) : h("div", { class: "small muted" }, "rrc00 heard no announcement from it in the last day."),
-          (n.prefixes || []).slice(0, 8).map((p) => row(SEV.none, p.prefix, `${fmt(p.updates)} updates · ${p.peers} peers · last ${stamp(p.last)}`, null, app.href("prefix", p.prefix)))));
-    } else if (tab === "Metrics") {
-      const pts = (n.minutes || []).map((m) => ({ t: m.t, a: m.n - m.w, w: m.w }));
-      fill(body, sec("Updates of its prefixes a minute", "GROUP BY date_trunc('minute', ts), last three hours", h("div", { class: "bn-chart-box" }, minutes(pts, [{ key: "a", color: "var(--s1)", label: "announcements" }, { key: "w", color: "var(--s2)", label: "withdrawals" }], { height: 150 })), legend([["var(--s1)", "announcements"], ["var(--s2)", "withdrawals"]])),
-        n.med != null ? sec("Its probes to K", "bb_ping, last 20 minutes", h("div", { class: "bn-facts" }, h("span", {}, "probes ", h("b", {}, fmt(n.probes_now))), h("span", {}, "median ", h("b", {}, ms(n.med))))) : null);
-    } else if (tab === "Events") {
-      fill(body, sec("Changes and faults", "bb_alerts and PeeringDB's records, newest first",
-        (n.changes || []).length ? h("div", { class: "bn-map-hist" }, n.changes.map((c) => h("div", { class: c.kind }, h("span", { class: "when" }, stamp(c.at)), h("span", {}, h("b", {}, c.kind === "fault" ? "Fault " : "Change "), c.text, c.incident ? [" · ", h("a", { href: app.href("incident", c.incident) }, "incident")] : null)))) : h("div", { class: "small muted" }, "Nothing recorded.")));
-    } else {
-      fill(body,
-        sec("Exchanges", "bb_member JOIN bb_ix", (n.ixes || []).length ? n.ixes.slice(0, 20).map((x) => row("var(--s7)", x.name, `${x.city}, ${x.cc} · ${x.speed >= 1000 ? x.speed / 1000 + " Gb/s" : x.speed + " Mb/s"}`, null, app.href("map", x.cc))) : h("div", { class: "small muted" }, "At no exchange in PeeringDB.")),
-        sec("ROAs", "bb_roa WHERE asn = asn", (n.roas || []).length ? h("div", { class: "bn-mono-list" }, n.roas.slice(0, 40).map((r) => h("a", { href: app.href("prefix", r.prefix) }, `${r.prefix}${r.maxlen ? ` ≤/${r.maxlen}` : ""}`))) : h("div", { class: "small muted" }, "No ROAs name it.")),
-        t.website ? sec("Record", "bb_as", h("div", { class: "small" }, h("a", { href: t.website, target: "_blank", rel: "noopener" }, t.website), t.pdb ? [" · ", h("a", { href: `https://www.peeringdb.com/net/${t.pdb}`, target: "_blank", rel: "noopener" }, "PeeringDB")] : null)) : null);
+          (n.rpki || []).length ? h("div", { class: "bn-facts" }, n.rpki.map((r) => h("span", { class: /invalid/.test(r.rpki) ? "bad" : null }, `${r.rpki || "not checked"} `, h("b", {}, fmt(r.prefixes)), " prefixes"))) : none("rrc00 heard no announcement from it in the last day."))]],
+      ["Metrics", null, () => [
+        sec("Updates of its prefixes a minute", "GROUP BY date_trunc('minute', ts), last three hours", h("div", { class: "bn-chart-box" }, minutes(pts, [{ key: "a", color: "var(--s1)", label: "announcements" }, { key: "w", color: "var(--s2)", label: "withdrawals" }], { height: 150 })), legend([["var(--s1)", "announcements"], ["var(--s2)", "withdrawals"]])),
+        sec("Its probes to K", "bb_ping, last 20 minutes", (n.probes_at || []).some((p) => p[3] != null) ? rttHist((n.probes_at || []).map((p) => p[3]).filter((x) => x != null)) : none("None of its probes answered in the last 20 minutes."),
+          h("div", { class: "bn-facts" }, h("span", {}, "probes ", h("b", {}, fmt(n.probes_now))), h("span", {}, "median ", h("b", {}, ms(n.med))), country?.med != null ? h("span", {}, "country ", h("b", {}, ms(country.med))) : null)),
+        sec("Its prefixes", "announced in the last day, most updates first", (n.prefixes || []).length ? n.prefixes.slice(0, 12).map((p) => row(SEV.none, p.prefix, `${fmt(p.updates)} updates · ${p.peers} peers · last ${stamp(p.last)}`, null, app.href("prefix", p.prefix))) : none("None heard in the last day."))]],
+      ["Records", null, () => [
+        sec("Customers", `${fmt(t.customers)} in CAIDA's relationships`, (n.customers || []).length ? n.customers.slice(0, 8).map((p) => row(SEV.none, `${p.name || "AS" + p.asn} (AS${p.asn})`, `${p.country || "?"}${p.customers ? ` · ${fmt(p.customers)} customers of its own` : ""}`, null, app.href("as", p.asn))) : none("None.")),
+        sec("Exchanges", "bb_member JOIN bb_ix", (n.ixes || []).length ? n.ixes.slice(0, 20).map((x) => row("var(--s7)", x.name, `${x.city}, ${x.cc} · ${x.speed >= 1000 ? x.speed / 1000 + " Gb/s" : x.speed + " Mb/s"}`, null, app.href("map", x.cc))) : none("At no exchange in PeeringDB.")),
+        sec("Buildings", "bb_netfac JOIN bb_fac", (n.sites || []).length ? n.sites.slice(0, 16).map((f) => row(SEV.none, f.name, `${f.city}, ${app.country(f.cc)}`, null, app.href("map", f.cc))) : none("In no building in PeeringDB.")),
+        sec("ROAs", "bb_roa WHERE asn = asn", (n.roas || []).length ? h("div", { class: "bn-mono-list" }, n.roas.slice(0, 40).map((r) => h("a", { href: app.href("prefix", r.prefix) }, `${r.prefix}${r.maxlen ? ` ≤/${r.maxlen}` : ""}`))) : none("No ROAs name it.")),
+        t.website || t.pdb ? sec("Record", "bb_as", h("div", { class: "small" }, t.website ? h("a", { href: t.website, target: "_blank", rel: "noopener" }, t.website) : null, t.pdb ? [" · ", h("a", { href: `https://www.peeringdb.com/net/${t.pdb}`, target: "_blank", rel: "noopener" }, "PeeringDB")] : null)) : null]],
+    ]);
+    const why = open.length ? `${plural(open.length, "open alert")}: ${open.slice(0, 2).map((a) => a.title).join("; ")}` : n.med != null && n.med > 150 ? `Its ${plural(n.probes_now, "probe")} reach the K root server in a median ${ms(n.med)}.` : null;
+    const home = cc || t.country;
+    fill(right,
+      ihead({ crumbs: [...(home ? crumbsFor(home) : [{ t: "World", href: app.href("map") }]), { t: t.name || `AS${t.asn}` }], title: `${t.name || t.full || "AS" + t.asn} (AS${t.asn})`,
+        tag: n.state !== "ok" ? pill(n.state, n.state === "bad" ? "red" : "watch") : pill("ok", "ok"),
+        sub: [t.kind, t.traffic, t.full && t.full !== t.name ? `registered as ${t.full}` : null, t.scope],
+        why, facts: [["providers", fmt(t.providers)], ["customers", fmt(t.customers)], ["peers", fmt(t.peers)], ["exchanges", fmt(t.ixes)], ["buildings", fmt(t.facs)], ["ROAs", fmt(t.roas)], n.med != null ? ["to K", ms(n.med)] : null],
+        actions: [watchBtn(t.asn), open[0]?.incident ? h("a", { class: "btn xs primary", href: app.href("incident", open[0].incident) }, "Open its incident") : null] }),
+      bar, bodyEl);
+  }
+
+  function inspectPrefix(x) {
+    const held = x.holding || [];
+    const pa = x.paths || {};
+    const status = x.state === "bad" ? "red" : x.state === "warn" ? "watch" : x.state === "ended" ? "ended" : "ok";
+    const headline = held.length
+      ? `${plural(x.held_now, "peer")} of rrc00's ${x.peers_heard} hold a route to it now, from ${held.map((o) => netName(o.origin)).join(" and ")}.`
+      : x.updates ? "No peer holds a route to it now: the last word of each was a withdrawal." : "rrc00 heard nothing of it in the last three days.";
+    const open = (x.alerts || []).filter((a) => a.state === "open");
+    const pathRow = (p) => h("div", { class: `bn-path ${p.mark}` },
+      h("div", { class: "bn-path-hops" }, p.path.map((n, i) => [i ? h("span", { class: "sep" }, "›") : null, h("a", { href: app.href("as", n.asn), title: `${n.name || ""} (AS${n.asn})${n.country ? ", " + n.country : ""}` }, n.name || `AS${n.asn}`)])),
+      h("div", { class: "bn-path-n" }, p.mark === "new" ? h("span", { class: "badge info" }, "new") : p.mark === "gone" ? h("span", { class: "badge" }, "gone") : null, plural(p.peers, "peer")));
+    const changed = (pa.now || []).filter((p) => p.mark === "new").length + (pa.gone || []).length;
+    const pts = x.minutes || [];
+    const [bar, bodyEl] = tabbed("prefix", [
+      ["What's wrong", open.length, () => [
+        sec("Open alerts", "bb_alerts WHERE prefix = the prefix", open.length ? open.map((a) => row(SEV[a.severity], a.title, `${kindWord(a.kind)} · ${a.detail || ""} · since ${stamp(a.first)}`, null, a.incident ? app.href("incident", a.incident) : null)) : none("None open.")),
+        sec("Who holds a route to it now", "each peer's last word, replayed", held.length ? held.map((o) => {
+          const og = (x.origins || []).find((g) => g.origin.asn === o.origin.asn);
+          return row(/invalid/.test(og?.rpki || "") ? SEV.bad : SEV.ok, netName(o.origin), `${plural(o.peers, "peer")} · RPKI ${og?.rpki || "?"} · ${og?.seen || ""}`, null, app.href("as", o.origin.asn));
+        }) : none(headline)),
+        held.length > 1 ? h("div", { class: "bn-map-verdict" }, h("b", {}, "Two or more origins now."), h("div", { class: "small" }, "Different networks announce it at once: a hijack, a move, or anycast.")) : null], open.length ? "bad" : null],
+      ["What changed", changed, () => [
+        sec("Paths now", pa.known ? `each peer's path, against an hour ago; ${plural(pa.now_total || 0, "path")} now, ${plural(pa.then_total || 0, "path")} then` : "each peer's path (the updates kept do not reach back an hour)",
+          (pa.now || []).length ? pa.now.map(pathRow) : none("No peer holds a route.")),
+        (pa.gone || []).length ? sec("Paths gone since an hour ago", "held then, not now", pa.gone.map(pathRow)) : null,
+        sec("Origins and faults", "who began and stopped announcing it, and the alerts", (x.events || []).length ? h("div", { class: "bn-map-hist" }, x.events.slice(0, 24).map((e) => h("div", { class: e.kind }, h("span", { class: "when" }, stamp(e.at)), h("span", {}, e.text, e.incident ? [" · ", h("a", { href: app.href("incident", e.incident) }, "incident")] : null)))) : none("Nothing changed."))], changed ? "info" : null],
+      ["Metrics", null, () => [
+        sec("Its updates a minute, and how many peers held it", "every update of the prefix, replayed in order", h("div", { class: "bn-chart-box" }, minutes(pts, [{ key: "a", color: "var(--s1)", label: "announcements" }, { key: "w", color: "var(--s2)", label: "withdrawals" }], { height: 150, line: "held", lineLabel: "peers holding it" })),
+          legend([["var(--s1)", "announcements"], ["var(--s2)", "withdrawals"], ["var(--s7)", "peers holding a route"]])),
+        h("div", { class: "bn-facts", style: { padding: "0 14px" } }, h("span", {}, "updates kept ", h("b", {}, `${fmt(x.updates)}${x.capped ? "+" : ""}`)), h("span", {}, "peers heard ", h("b", {}, fmt(x.peers_heard))), h("span", {}, "holding now ", h("b", {}, fmt(x.held_now))))]],
+      ["Records", null, () => [
+        sec("Who announced it", "each origin: peers, RPKI, against yesterday", (x.origins || []).length ? x.origins.map((o) => row(/invalid/.test(o.rpki) ? SEV.bad : o.rpki === "valid" ? SEV.ok : SEV.none, netName(o.origin), `${plural(o.peers, "peer")} · ${o.rpki} · ${o.seen} · ${stamp(o.first)} to ${stamp(o.last)}`, null, app.href("as", o.origin.asn))) : none("No announcements.")),
+        sec("Carried by", "the network before the origin", (x.upstreams || []).length ? x.upstreams.map((u) => row(SEV.info, netName(u.net), plural(u.routes, "route"), null, app.href("as", u.net.asn))) : none("None.")),
+        sec("ROAs that cover it", "bb_roa WHERE prefix IN (the prefix at each shorter length)", (x.roas || []).length ? x.roas.map((r) => row(SEV.ok, r.prefix, `AS${r.asn} ${r.name || ""} · up to /${r.maxlen} · ${r.ta} · expires ${day(r.expires)}`, null, app.href("as", r.asn))) : none("No ROA covers it: its RPKI state is unknown.")),
+        sec("Covering it", "last day", (x.covering || []).length ? x.covering.map((r) => row(SEV.none, r.prefix, `${netName(r.origin)} · ${r.peers} peers`, null, app.href("prefix", r.prefix))) : none("None heard.")),
+        sec("Inside it", "last day", (x.inside || []).length ? x.inside.map((r) => row(SEV.none, r.prefix, `${netName(r.origin)} · ${r.peers} peers`, null, app.href("prefix", r.prefix))) : none("None heard."))]],
+    ]);
+    fill(right,
+      ihead({ crumbs: [{ t: "World", href: app.href("map") }, { t: "Prefix" }], title: x.prefix, mono: true, tag: pill(x.state === "ended" ? "info" : x.state, status),
+        sub: [x.owner ? `owner ${netName(x.owner)}` : null, `as of ${clock(x.as_of)}`], why: headline, whyOk: x.state === "ok" || x.state === "ended" }),
+      bar, bodyEl);
+  }
+
+  function inspectIncident(j) {
+    if (!j.found) return fill(right, ihead({ crumbs: [{ t: "World", href: app.href("map") }], title: "No such incident" }), none("It may have ended more than a day ago."));
+    const i = j.incident;
+    const al = j.alerts || [];
+    const pts = (j.minutes || []).map((m) => ({ t: m.t, a: m.a, w: m.w, peers: m.peers }));
+    const [bar, bodyEl] = tabbed("incident", [
+      ["What's wrong", al.filter((a) => a.state === "open").length, () => [
+        h("div", { class: "bn-in-sum" }, h("p", {}, i.summary)),
+        sec("Its alerts", "each a row a rule found", al.map((a) => row(a.state === "open" ? SEV[a.severity] : SEV.ended, a.title, `${kindWord(a.kind)} · ${a.detail || ""}${a.peers ? ` · ${a.peers} peers` : ""}`, null,
+          a.prefix ? app.href("prefix", a.prefix) : a.asn ? app.href("as", a.asn.asn) : a.country ? app.href("map", a.country) : null)))], i.state === "open" ? (i.severity === "bad" ? "bad" : "warn") : null],
+      ["What changed", null, () => [
+        sec("How it went", "when each alert began", h("div", { class: "bn-map-hist" },
+          h("div", { class: "change" }, h("span", { class: "when" }, stamp(i.first)), h("span", {}, "First seen")),
+          al.slice().sort((a, b) => (a.first || "").localeCompare(b.first || "")).slice(0, 20).map((a) => h("div", { class: "fault" }, h("span", { class: "when" }, stamp(a.first)), h("span", {}, a.title))),
+          h("div", { class: "change" }, h("span", { class: "when" }, i.state === "open" ? "now" : stamp(i.last)), h("span", {}, i.state === "open" ? "Still open" : "Ended"))))]],
+      ["Metrics", null, () => [
+        (j.minutes || []).length ? sec("Its prefixes' updates a minute", "from half an hour before to half an hour after", h("div", { class: "bn-chart-box" }, minutes(pts, [{ key: "a", color: "var(--s1)", label: "announcements" }, { key: "w", color: "var(--s2)", label: "withdrawals" }], { height: 150, line: "peers", lineLabel: "peers that sent one" })),
+          legend([["var(--s1)", "announcements"], ["var(--s2)", "withdrawals"], ["var(--s7)", "peers"]])) : none("No routes in it to count.")]],
+      ["Records", null, () => [
+        (j.graph?.nodes || []).length > 1 ? sec("How it connects", "announcers, the networks that carried their routes, the owners", h("div", { class: "bn-graph-box" }, graphSvg(app, j.graph))) : null,
+        (j.upstreams || []).length ? sec("Carried by", "the network before the origin on the routes heard", j.upstreams.map((u) => row(SEV.info, netName(u.net), plural(u.prefixes, "prefix", "prefixes"), null, app.href("as", u.net.asn)))) : null,
+        (i.asns || []).length ? sec("Networks in it", null, i.asns.slice(0, 16).map((a) => row(SEV[i.severity] || SEV.info, `AS${a}`, null, null, app.href("as", a)))) : null,
+        sec("Shared", "what groups its alerts", h("div", { class: "mono small" }, i.shared))]],
+    ]);
+    fill(right,
+      ihead({ crumbs: [{ t: "World", href: app.href("map") }, { t: "Incident" }], title: i.title, tag: pill(i.state === "open" ? i.severity : "info", i.state === "open" ? `${kindWord(i.kind)} · open` : `${kindWord(i.kind)} · ended`),
+        sub: [`${stamp(i.first)} to ${i.state === "open" ? "now" : stamp(i.last)}, ${span(i.first, i.last)}`, plural(i.alerts, "alert"), (i.countries || []).map((c) => app.country(c)).join(", ")] }),
+      bar, bodyEl);
+  }
+
+  // ---- moving between things
+  async function show(page, rest) {
+    const me = ++seq;
+    const alive = () => me === seq;
+    sel = { page, rest };
+    drawList();
+    right.classList.add("bn-busy");
+    try {
+      if (!map.world && app.world) map.paintWorld(app.world);
+      if (page === "map" && !rest[0]) {
+        map.world0(); tl.mark(null);
+        if (!app.now) { fill(right, skel(10)); await new Promise((r) => setTimeout(r, 400)); if (!alive()) return; }
+        return inspectWorld();
+      }
+      if (page === "map" || page === "as") {
+        const cc = page === "map" ? rest[0].toUpperCase() : null;
+        const asn = page === "map" ? rest[1] : rest[0];
+        if (cc) map.country(cc, crumbsFor(cc));
+        if (cc && !asn) {
+          const c = await app.api(`/v1/country/${cc}`);
+          if (!alive()) return;
+          map.countryData(cc, c);
+          tl.mark(null);
+          return inspectCountry(c);
+        }
+        const [n, c] = await Promise.all([app.api(`/v1/as/${encodeURIComponent(asn)}`), cc ? app.api(`/v1/country/${cc}`) : null]);
+        if (!alive()) return;
+        if (c) map.countryData(cc, c, { fly: false });
+        if (!n.found) return inspectNetwork(n);
+        const home = cc || n.net.country;
+        map.network(n, { cc: c ? cc : null, crumbs: [...(home ? crumbsFor(home) : [{ t: "World", href: app.href("map") }]), { t: n.net.name || `AS${n.asn}` }] });
+        tl.mark({ label: `${n.net.name || "AS" + n.asn}'s prefixes`, pts: (n.minutes || []).map((m) => [m.t, m.n]) });
+        inspectNetwork(n, { cc, country: c });
+        // A network opened on its own: its country under it, once it comes.
+        if (!c && n.net.country && n.net.country.length === 2) {
+          app.api(`/v1/country/${n.net.country}`, { sql: false }).then((c2) => { if (alive()) map.underlay(n.net.country, c2, n.asn); }).catch(() => {});
+        }
+        return;
+      }
+      if (page === "prefix") {
+        const p = rest.join("/");
+        const x = await app.api(`/v1/prefix/${p}`);
+        if (!alive()) return;
+        // The path of the newest route, country to country, and the space
+        // taken from its owner.
+        const path = (x.path || []).filter((n) => n.country);
+        const ccs = [...new Set([...path.map((n) => n.country), ...(x.holding || []).map((o) => o.origin.country), x.owner?.country].filter((c) => c && c.length === 2))].slice(0, 10);
+        const arcs = [];
+        for (let i = 1; i < path.length; i++) if (path[i].country !== path[i - 1].country) arcs.push({ from: path[i - 1].country, to: path[i].country, cls: "up", tip: [`${path[i - 1].name || "AS" + path[i - 1].asn} › ${path[i].name || "AS" + path[i].asn}`, "a hop of the newest route to it"] });
+        for (const o of x.holding || []) if (x.owner && o.origin.asn !== x.owner.asn && o.origin.country && x.owner.country && o.origin.country !== x.owner.country) arcs.push({ from: o.origin.country, to: x.owner.country, cls: "bad", bow: -0.3, tip: [`${netName(o.origin)} announces it`, `owned by ${netName(x.owner)}`] });
+        map.places(ccs, arcs, [{ t: "World", href: app.href("map") }, { t: x.prefix }]);
+        tl.mark({ label: `${x.prefix}'s updates`, pts: (x.minutes || []).map((m) => [m.t, m.a + m.w]) });
+        return inspectPrefix(x);
+      }
+      if (page === "incident") {
+        const id = rest.join("/");
+        const j = await app.api(`/v1/incident/${encodeURIComponent(id)}`);
+        if (!alive()) return;
+        drawList();
+        if (!j.found) { tl.mark(null); return inspectIncident(j); }
+        const i = j.incident;
+        const nodes = Object.fromEntries((j.graph?.nodes || []).map((n) => [n.asn, n]));
+        const ccs = [...new Set([...(i.countries || []), ...Object.values(nodes).map((n) => n.country)].filter((c) => c && c.length === 2))].slice(0, 10);
+        const arcs = (j.graph?.edges || []).map((e) => ({ from: nodes[e.from]?.country, to: nodes[e.to]?.country, cls: e.kind === "took" ? "bad" : "up", bow: e.kind === "took" ? -0.3 : 0.2,
+          tip: [`${nodes[e.from]?.name || "AS" + e.from} › ${nodes[e.to]?.name || "AS" + e.to}`, e.kind === "took" ? "announced space this network owns" : "carried its routes"] })).filter((a) => a.from && a.to);
+        map.places(ccs.length ? ccs : [], arcs, [{ t: "World", href: app.href("map") }, { t: i.title.slice(0, 48) }]);
+        tl.mark({ label: "its prefixes' updates", pts: (j.minutes || []).map((m) => [m.t, m.a + m.w]), from: i.first, to: i.state === "open" ? null : i.last, incident: i.id });
+        return inspectIncident(j);
+      }
+    } catch (e) {
+      if (alive()) fill(right, h("div", { class: "error" }, String(e.message || e)));
+    } finally {
+      if (alive()) right.classList.remove("bn-busy");
     }
   }
-  drawTabs();
-  draw();
-  return h("div", {}, headEl, verdict, tabEl, body);
+
+  return {
+    el, fit, show,
+    refresh() {
+      if (app.world) map.paintWorld(app.world);
+      drawList();
+      tl.refresh();
+      if (sel.page === "map" && !sel.rest[0]) inspectWorld();
+    },
+    key(e) {
+      if (e.key === "j" || e.key === "k") {
+        const ids = [...left.querySelectorAll(".bn-wl-list .bn-wi")].map((a) => a.dataset.id);
+        if (!ids.length) return;
+        const cur = sel.page === "incident" ? ids.indexOf(sel.rest.join("/")) : -1;
+        const next = e.key === "j" ? Math.min(ids.length - 1, cur + 1) : Math.max(0, cur < 0 ? 0 : cur - 1);
+        e.preventDefault();
+        app.go("incident", ids[next]);
+        left.querySelector(`[data-id="${CSS.escape(ids[next])}"]`)?.scrollIntoView({ block: "nearest" });
+      } else if (e.key === "Escape") {
+        const { page, rest } = sel;
+        if (page === "map" && rest[1]) app.go("map", rest[0]);
+        else if (page !== "map" || rest[0]) app.go("map");
+      }
+    },
+  };
 }
 
-async function networkPage(app, main, asn, alive) {
-  fill(main, skel(8));
-  const n = await app.api(`/v1/as/${encodeURIComponent(asn || "")}`);
-  if (!alive()) return;
-  if (!n.found) return fill(main, empty(`AS${n.asn} is not in the registries' list of networks.`));
-  const t = n.net;
-  const pts = (n.minutes || []).map((m) => ({ t: m.t, a: m.n - m.w, w: m.w }));
-  const pfx = card("Its prefixes", "announced in the last day, by updates; click one for its timeline",
-    (n.prefixes || []).length ? table(["prefix", { t: "updates", num: true }, { t: "peers", num: true }, "last"], n.prefixes.map((p) => h("tr", {},
-      h("td", { class: "mono" }, h("a", { href: app.href("prefix", p.prefix) }, p.prefix)), h("td", { class: "num" }, fmt(p.updates)), h("td", { class: "num" }, fmt(p.peers)), h("td", {}, stamp(p.last))))) : empty("rrc00 heard none of its announcements in the last day."));
-  const chart = card("Updates a minute", "of the prefixes it originates, last three hours", h("div", { class: "bn-chart-box" }, minutes(pts, [{ key: "a", color: "var(--s1)", label: "announcements" }, { key: "w", color: "var(--s2)", label: "withdrawals" }], { height: 160 })), legend([["var(--s1)", "announcements"], ["var(--s2)", "withdrawals"]]));
-  const alerts = card("Alerts", "about it, as origin, owner or network", (n.alerts || []).length ? h("div", { class: "bn-flush" }, n.alerts.slice(0, 20).map((a) => h("div", { class: `bn-work ${a.state !== "open" ? "u3" : a.severity === "bad" ? "u1" : "u2"}` },
-    h("div", { class: "k" }, kindWord(a.kind)), h("div", {}, h("div", { class: "t" }, a.title), h("div", { class: "s" }, a.detail, ` · ${stamp(a.first)}${a.state !== "open" ? ` to ${stamp(a.last)}` : ", open"}`)),
-    a.prefix ? h("a", { class: "btn xs", href: app.href("prefix", a.prefix) }, "Prefix") : h("span")))) : empty("No alerts about it."));
-  fill(main, h("div", { class: "bn-cols wide" },
-    h("div", { class: "bn-col" }, chart, alerts, pfx),
-    h("div", { class: "bn-col" }, h("section", { class: "card bn-insp" }, networkInspector(app, n)),
-      h("a", { class: "btn sm", href: app.href("map", t.country, t.asn) }, `See it on the map of ${app.country(t.country)}`))));
-}
-
-// ---------------------------------------------------------------- a prefix
-
-async function prefixPage(app, main, p, alive) {
-  fill(main, skel(8));
-  const x = await app.api(`/v1/prefix/${p}`);
-  if (!alive()) return;
-  const held = x.holding || [];
-  const owner = x.owner;
-  const moas = held.length > 1;
-  const status = x.state === "bad" ? "red" : x.state === "warn" ? "watch" : x.state === "ended" ? "ended" : "ok";
-  const headline = held.length
-    ? `${plural(x.held_now, "peer")} of rrc00's ${x.peers_heard} hold a route to it now, from ${held.map((o) => netName(o.origin.asn ? o.origin : null)).join(" and ")}.`
-    : x.updates ? `No peer holds a route to it now: the last word of each was a withdrawal.` : "rrc00 heard nothing of it in the last 3 days.";
-  const top = h("section", { class: `bn-hero ${x.state === "bad" ? "" : x.state === "warn" ? "warn" : "calm"}` },
-    h("div", {},
-      h("div", { class: "bn-hero-top" }, pill(x.state === "ended" ? "info" : x.state, status), h("span", { class: "muted small" }, `as of ${clock(x.as_of)}`)),
-      h("h2", { class: "mono" }, x.prefix),
-      h("p", {}, headline, owner ? [" Its owner, by RPKI and yesterday's origins, is ", h("a", { href: app.href("as", owner.asn) }, netName(owner)), "."] : ""),
-      h("div", { class: "meta" }, h("span", {}, `${fmt(x.updates)}${x.capped ? "+" : ""} updates kept`), moas ? h("span", { class: "bad" }, "two or more origins now") : null)));
-  const pts = x.minutes || [];
-  const chart = card("Its updates a minute, and how many peers held it", "every update of the prefix, replayed in order",
-    h("div", { class: "bn-chart-box" }, minutes(pts, [{ key: "a", color: "var(--s1)", label: "announcements" }, { key: "w", color: "var(--s2)", label: "withdrawals" }], { height: 160, line: "held", lineLabel: "peers holding it" })),
-    legend([["var(--s1)", "announcements"], ["var(--s2)", "withdrawals"], ["var(--s7)", "peers holding a route"]]));
-  const origins = card("Who announced it", "each origin: first and last heard, how many peers, its RPKI state",
-    (x.origins || []).length ? table(["origin", { t: "peers", num: true }, "rpki", "against yesterday", "first", "last"], x.origins.map((o) => h("tr", {},
-      h("td", {}, h("a", { href: app.href("as", o.origin.asn) }, netName(o.origin))), h("td", { class: "num" }, fmt(o.peers)),
-      h("td", {}, h("span", { class: `badge ${o.rpki === "valid" ? "ok" : /invalid/.test(o.rpki) ? "bad" : ""}` }, o.rpki)), h("td", {}, o.seen), h("td", {}, stamp(o.first)), h("td", {}, stamp(o.last))))) : empty("No announcements."));
-  const path = card("The path to it", "the newest announcement's AS path, from rrc00's peer to the origin",
-    (x.path || []).length ? h("div", { class: "bb-hops" }, x.path.map((n, i) => [i ? h("div", { class: "bb-gap" }, h("span", {}, "")) : null, h("a", { class: `bb-hop${i === x.path.length - 1 ? " ok" : ""}`, href: app.href("as", n.asn) }, h("b", {}, n.name || `AS${n.asn}`), h("span", { class: "ip" }, `AS${n.asn}${n.country ? " · " + n.country : ""}`))])) : empty("None held."),
-    (x.upstreams || []).length ? h("div", { class: "bn-facts" }, "upstreams: ", x.upstreams.map((u) => h("span", {}, h("a", { href: app.href("as", u.net.asn) }, u.net.name || `AS${u.net.asn}`), ` ${fmt(u.routes)}`))) : null);
-  const roas = card("ROAs that cover it", "bb_roa WHERE prefix IN (the prefix at each shorter length)",
-    (x.roas || []).length ? table(["ROA", "may announce", { t: "up to", num: true }, "trust anchor", "expires"], x.roas.map((r) => h("tr", {},
-      h("td", { class: "mono" }, r.prefix), h("td", {}, h("a", { href: app.href("as", r.asn) }, `${r.name || ""} (AS${r.asn})`)), h("td", { class: "num" }, `/${r.maxlen}`), h("td", {}, r.ta), h("td", {}, day(r.expires))))) : empty("No ROA covers it: its RPKI state is unknown."));
-  const around = card("Around it", "routes covering it, and inside it (lo and hi within its range), last day",
-    h("div", { class: "bn-two" },
-      h("div", {}, h("div", { class: "lbl" }, "Covering"), (x.covering || []).length ? x.covering.map((r) => row(SEV.none, r.prefix, `${netName(r.origin)} · ${r.peers} peers`, null, app.href("prefix", r.prefix))) : h("div", { class: "small muted" }, "none heard")),
-      h("div", {}, h("div", { class: "lbl" }, "Inside"), (x.inside || []).length ? x.inside.map((r) => row(SEV.none, r.prefix, `${netName(r.origin)} · ${r.peers} peers`, null, app.href("prefix", r.prefix))) : h("div", { class: "small muted" }, "none heard"))));
-  const events = card("Changes and faults", "who began and stopped announcing it, and the alerts",
-    (x.events || []).length ? h("div", { class: "bn-map-hist" }, x.events.slice(0, 30).map((e) => h("div", { class: e.kind }, h("span", { class: "when" }, stamp(e.at)), h("span", {}, e.text, e.incident ? [" · ", h("a", { href: app.href("incident", e.incident) }, "incident")] : null)))) : empty("Nothing changed."));
-  fill(main, top, h("div", { class: "bn-cols" }, h("div", { class: "bn-col" }, chart, origins, path, around), h("div", { class: "bn-col" }, events, roas)));
+// A histogram of probes' times to K, in bands a reader can act on.
+function rttHist(rtts) {
+  const bands = [[0, 20, "ok"], [20, 40, "ok"], [40, 60, "ok"], [60, 100, "warn"], [100, 150, "warn"], [150, 250, "bad"], [250, 1e9, "bad"]];
+  const n = bands.map(([a, b]) => rtts.filter((r) => r >= a && r < b).length);
+  const max = Math.max(1, ...n);
+  return h("div", { class: "bn-hist" }, bands.map(([a, b, cls], i) => h("div", { class: "c", title: `${fmt(n[i])} probes` },
+    h("div", { class: "v" }, n[i] ? fmt(n[i]) : ""), h("div", { class: `b ${cls}`, style: { height: `${Math.round((48 * n[i]) / max)}px` } }), h("div", { class: "l" }, b >= 1e9 ? `${a}+` : `${a}–${b}`))),
+  h("div", { class: "u" }, "ms"));
 }
 
 // ---------------------------------------------------------------- incidents
 
 async function incidentsPage(app, main, alive) {
-  fill(main, skel(8));
+  wait(main, 8);
   const j = await app.api("/v1/incidents");
   if (!alive()) return;
   const list = j.incidents || [];
@@ -1370,38 +2391,12 @@ function graphSvg(app, g) {
   return s;
 }
 
-async function incidentPage(app, main, id, alive) {
-  fill(main, skel(8));
-  const j = await app.api(`/v1/incident/${encodeURIComponent(id)}`);
-  if (!alive()) return;
-  if (!j.found) return fill(main, empty("No such incident: it may have ended more than a day ago."));
-  const i = j.incident;
-  const top = h("section", { class: `bn-hero${i.state !== "open" ? " calm" : i.severity === "bad" ? "" : " warn"}` },
-    h("div", {},
-      h("div", { class: "bn-hero-top" }, pill(i.state === "open" ? i.severity : "info", i.state === "open" ? `${kindWord(i.kind)} · open` : `${kindWord(i.kind)} · ended`), h("span", { class: "muted small" }, `${stamp(i.first)} to ${i.state === "open" ? "now" : stamp(i.last)} · ${span(i.first, i.last)}`)),
-      h("h2", {}, i.title),
-      h("p", {}, i.summary),
-      h("div", { class: "meta" }, h("span", {}, plural(i.alerts, "alert")), (i.countries || []).length ? h("span", {}, i.countries.map((c) => app.country(c)).join(", ")) : null, h("span", { class: "mono muted" }, i.shared))));
-  const pts = (j.minutes || []).map((m) => ({ t: m.t, a: m.a, w: m.w, peers: m.peers }));
-  const chart = (j.minutes || []).length ? card("Its prefixes' updates a minute", "from half an hour before to half an hour after",
-    h("div", { class: "bn-chart-box" }, minutes(pts, [{ key: "a", color: "var(--s1)", label: "announcements" }, { key: "w", color: "var(--s2)", label: "withdrawals" }], { height: 150, line: "peers", lineLabel: "peers that sent one" })),
-    legend([["var(--s1)", "announcements"], ["var(--s2)", "withdrawals"], ["var(--s7)", "peers"]])) : null;
-  const graph = (j.graph?.nodes || []).length > 1 ? card("How it connects", "announcers, the networks that carried their routes, and the owners of the space", h("div", { class: "bn-graph-box" }, graphSvg(app, j.graph))) : null;
-  const alerts = card("Its alerts", "each a row a rule found", h("div", { class: "bn-flush" }, (j.alerts || []).map((a) => h("div", { class: `bn-work ${a.state !== "open" ? "u3" : a.severity === "bad" ? "u1" : "u2"}` },
-    h("div", { class: "k" }, kindWord(a.kind)),
-    h("div", {}, h("div", { class: "t" }, a.title), h("div", { class: "s" }, a.detail, a.peers ? ` · ${a.peers} peers` : "", ` · ${stamp(a.first)}${a.state !== "open" ? ` to ${stamp(a.last)}` : ", open"}`)),
-    a.prefix ? h("a", { class: "btn xs", href: app.href("prefix", a.prefix) }, "Prefix") : a.asn ? h("a", { class: "btn xs", href: app.href("as", a.asn.asn) }, "Network") : a.country ? h("a", { class: "btn xs", href: app.href("map", a.country) }, "Country") : h("span")))));
-  const ups = (j.upstreams || []).length ? card("Carried by", "the network before the origin on the routes heard", (j.upstreams || []).map((u) => row(SEV.info, netName(u.net), `${plural(u.prefixes, "prefix", "prefixes")}`, null, app.href("as", u.net.asn)))) : null;
-  const nets = (i.asns || []).length ? card("Networks in it", null, (i.asns || []).slice(0, 12).map((a) => row(SEV[i.severity] || SEV.info, `AS${a}`, null, null, app.href("as", a)))) : null;
-  fill(main, top, h("div", { class: "bn-cols" }, h("div", { class: "bn-col" }, graph, chart, alerts), h("div", { class: "bn-col" }, ups, nets)));
-}
-
 // ---------------------------------------------------------------- Diagnose
 
 const LAYERS = [["users", "Users", "what RIPE Atlas probes there measure to the nearest K root server"], ["path", "Path", "traceroutes whose time jumps 80 ms or more at one hop: the packets left the region"], ["peering", "Peering", "probes over 100 ms: their networks do not reach a node near them"], ["routing", "Routing", "open routing alerts of networks registered there"], ["outages", "Outages", "IODA's open outages there"], ["server", "K root", "pings the K root server did not answer"]];
 
 async function diagnosePage(app, main, focus, alive) {
-  fill(main, skel(8));
+  wait(main, 8);
   const j = await app.api(`/v1/diagnose${focus ? `?cc=${encodeURIComponent(focus)}` : ""}`);
   if (!alive()) return;
   const cols = j.columns || [];
@@ -1430,7 +2425,7 @@ async function diagnosePage(app, main, focus, alive) {
 // ---------------------------------------------------------------- rules, data, search
 
 async function rulesPage(app, main, alive) {
-  fill(main, skel(8));
+  wait(main, 8);
   const j = await app.api("/v1/rules");
   if (!alive()) return;
   fill(main, h("section", { class: "card" },
@@ -1443,7 +2438,7 @@ async function rulesPage(app, main, alive) {
 }
 
 async function dataPage(app, main, alive) {
-  fill(main, skel(8));
+  wait(main, 8);
   const j = await app.api("/v1/scale");
   if (!alive()) return;
   const c = j.counts || {};
@@ -1463,7 +2458,7 @@ async function dataPage(app, main, alive) {
 }
 
 async function searchPage(app, main, q, alive) {
-  fill(main, skel(6));
+  wait(main, 6);
   const j = await app.api(`/v1/search?q=${encodeURIComponent(q)}`);
   if (!alive()) return;
   if (j.kind === "asn") { location.replace(app.href("as", j.asn)); return; }

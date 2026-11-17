@@ -46,15 +46,22 @@ impl Ctx<'_> {
         json!({"asn": a, "name": self.names.name(a), "country": self.names.country(a)})
     }
 
-    /// The newest update's and ping's times (microseconds).
+    /// The newest update's and ping's times (microseconds). Each only
+    /// grows, so after the first page only rows since the last one seen
+    /// are read: a few minutes of updates rather than three days of them
+    /// (0.6 to 0.9 s on every page before).
     pub async fn clock(&self) -> (i64, i64) {
+        static SEEN: std::sync::Mutex<(i64, i64)> = std::sync::Mutex::new((0, 0));
+        let (su, sp) = *SEEN.lock().unwrap_or_else(|e| e.into_inner());
         let (u, p) = tokio::join!(
-            self.soft("the newest update", "SELECT MAX(ts) AS t FROM bb_updates", Value::Null),
-            self.soft("the newest ping", "SELECT MAX(ts) AS t FROM bb_ping", Value::Null),
+            self.soft("the newest update", "SELECT MAX(ts) AS t FROM bb_updates WHERE ts >= :since", json!({"since": iso(su)})),
+            self.soft("the newest ping", "SELECT MAX(ts) AS t FROM bb_ping WHERE ts >= :since", json!({"since": iso(sp)})),
         );
         let t = |r: &[Row]| r.first().and_then(|x| parse_ts(&x.s("t"))).unwrap_or(0);
         let wall = chrono::Utc::now().timestamp_micros() + 60_000_000;
-        (t(&u).min(wall), t(&p).min(wall))
+        let (u, p) = (t(&u).min(wall).max(su), t(&p).min(wall).max(sp));
+        *SEEN.lock().unwrap_or_else(|e| e.into_inner()) = (u, p);
+        (u, p)
     }
 }
 
@@ -97,6 +104,30 @@ fn alert_json(c: &Ctx<'_>, r: &Row) -> Value {
         }
     }
     v
+}
+
+/// How many of a country's networks with probes the map draws.
+const SHOWN: usize = 20;
+
+/// The middle of some places: the median latitude and longitude, so a few
+/// far away (a building abroad, a probe on an island) do not move it.
+fn middle(p: &[(f64, f64)]) -> Option<(f64, f64)> {
+    if p.is_empty() {
+        return None;
+    }
+    let mut la: Vec<f64> = p.iter().map(|x| x.0).collect();
+    let mut lo: Vec<f64> = p.iter().map(|x| x.1).collect();
+    la.sort_by(|a, b| a.total_cmp(b));
+    lo.sort_by(|a, b| a.total_cmp(b));
+    Some((la[la.len() / 2], lo[lo.len() / 2]))
+}
+
+/// The distance between two places, in degrees of a great circle (enough to
+/// pick the nearest).
+fn far(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (la1, lo1, la2, lo2) = (a.0.to_radians(), a.1.to_radians(), b.0.to_radians(), b.1.to_radians());
+    let x = (la1.sin() * la2.sin() + la1.cos() * la2.cos() * (lo1 - lo2).cos()).clamp(-1.0, 1.0);
+    x.acos().to_degrees()
 }
 
 /// The upstream an origin's routes went through: the AS before the origin
@@ -277,8 +308,8 @@ pub async fn country(c: &Ctx<'_>, cc: &str) -> R<Value> {
     let since_atlas = iso(now_p - 20 * MIN);
     let since_tr = iso(now_p - 60 * MIN);
     let p = json!({"cc": cc, "since": since_atlas});
-    let (ixes, nets, probes, med, alerts, outages, abroad, ixn) = tokio::join!(
-        c.soft("the country's largest exchanges", "SELECT id, short, city, members, lat, lon FROM bb_ix WHERE country = :cc ORDER BY members DESC LIMIT 6", json!({"cc": cc})),
+    let (ixes, nets, probes, med, alerts, outages, abroad, ixn, facs, at) = tokio::join!(
+        c.soft("the country's largest exchanges", "SELECT id, short, city, members, lat, lon FROM bb_ix WHERE country = :cc ORDER BY members DESC LIMIT 24", json!({"cc": cc})),
         c.soft("the country's networks with probes, and their time to K", "SELECT asn, COUNT(DISTINCT probe) AS probes, MEDIAN(rtt) AS med, MIN(rtt) AS best, MAX(rtt) AS worst FROM bb_ping WHERE ts >= :since AND msm = 1001 AND country = :cc AND rtt IS NOT NULL GROUP BY asn ORDER BY probes DESC LIMIT 40", p.clone()),
         c.soft("each probe's latest ping", "SELECT probe, asn, rtt, ts FROM bb_ping WHERE ts >= :since AND msm = 1001 AND country = :cc ORDER BY ts DESC LIMIT 3000", p.clone()),
         c.soft("the country's median", "SELECT MEDIAN(rtt) AS med, COUNT(DISTINCT probe) AS probes, COUNT(DISTINCT probe) FILTER (WHERE rtt > 100) AS slow FROM bb_ping WHERE ts >= :since AND msm = 1001 AND country = :cc AND rtt IS NOT NULL", p.clone()),
@@ -286,21 +317,24 @@ pub async fn country(c: &Ctx<'_>, cc: &str) -> R<Value> {
         c.soft("IODA's open outages in the country", "SELECT id, kind, entity, name, source, start, score FROM bb_outage WHERE open AND country = :cc ORDER BY score DESC LIMIT 10", json!({"cc": cc})),
         c.soft("where slow traceroutes from the country jump", "SELECT jump_as, COUNT(*) AS n, MEDIAN(rtt) AS med, MEDIAN(jump_ms) AS jump FROM bb_trace WHERE ts >= :since AND msm = 5001 AND country = :cc AND rtt > 100 AND jump_as IS NOT NULL GROUP BY jump_as ORDER BY n DESC LIMIT 4", json!({"cc": cc, "since": since_tr})),
         c.soft("how many exchanges the country has", "SELECT COUNT(*) AS n FROM bb_ix WHERE country = :cc", json!({"cc": cc})),
+        c.soft("the country's buildings where networks meet", "SELECT id, short, city, lat, lon, nets, ixes FROM bb_fac WHERE country = :cc AND lat IS NOT NULL ORDER BY nets DESC LIMIT 80", json!({"cc": cc})),
+        c.soft("where its RIPE Atlas probes are", "SELECT id, asn, lat, lon FROM bb_probe WHERE country = :cc AND lat IS NOT NULL LIMIT 5000", json!({"cc": cc})),
     );
     let ix_ids: Vec<i64> = ixes.iter().map(|r| r.i("id")).collect();
-    let mut asns: Vec<i64> = nets.iter().take(11).map(|r| r.i("asn")).filter(|a| *a > 0).collect();
+    let mut asns: Vec<i64> = nets.iter().take(SHOWN).map(|r| r.i("asn")).filter(|a| *a > 0).collect();
     for a in &alerts {
         for k in ["origin", "asn"] {
             let x = a.i(k);
-            if x > 0 && c.names.country(x) == cc && !asns.contains(&x) && asns.len() < 14 {
+            if x > 0 && c.names.country(x) == cc && !asns.contains(&x) && asns.len() < SHOWN + 4 {
                 asns.push(x);
             }
         }
     }
-    let (members, k_at, all_member) = tokio::join!(
+    let (members, k_at, all_member, sites) = tokio::join!(
         c.soft("which of these networks are on which exchange", "SELECT ix, asn FROM bb_member WHERE asn IN (:a) AND ix IN (:x) LIMIT 2000", json!({"a": asns, "x": ix_ids})),
         c.soft("where the K root server is a member", "SELECT ix FROM bb_member WHERE asn = 25152 AND ix IN (:x)", json!({"x": ix_ids})),
         c.soft("the exchanges each network is on, anywhere", "SELECT m.asn AS asn, x.country AS cc, COUNT(*) AS n FROM bb_member m JOIN bb_ix x ON m.ix = x.id WHERE m.asn IN (:a) GROUP BY m.asn, x.country LIMIT 500", json!({"a": asns})),
+        c.soft("the buildings each network is in, in the country", "SELECT n.asn AS asn, f.id AS fac, f.lat AS lat, f.lon AS lon FROM bb_netfac n JOIN bb_fac f ON n.fac = f.id WHERE n.asn IN (:a) AND f.country = :cc AND f.lat IS NOT NULL LIMIT 4000", json!({"a": asns, "cc": cc})),
     );
     let mut latest: FxHashMap<i64, (i64, Option<f64>)> = FxHashMap::default();
     for r in &probes {
@@ -323,6 +357,18 @@ pub async fn country(c: &Ctx<'_>, cc: &str) -> R<Value> {
         }
     }
     let k_ix: Vec<i64> = k_at.iter().map(|r| r.i("ix")).collect();
+    // Where to draw each network: the middle of its buildings in the
+    // country, else of its probes there.
+    let mut probe_at: FxHashMap<i64, Vec<(f64, f64)>> = FxHashMap::default();
+    for r in &at {
+        probe_at.entry(r.i("asn")).or_default().push((r.f("lat"), r.f("lon")));
+    }
+    let mut fac_at: FxHashMap<i64, Vec<(f64, f64)>> = FxHashMap::default();
+    let mut fac_ids: FxHashMap<i64, Vec<i64>> = FxHashMap::default();
+    for r in &sites {
+        fac_at.entry(r.i("asn")).or_default().push((r.f("lat"), r.f("lon")));
+        fac_ids.entry(r.i("asn")).or_default().push(r.i("fac"));
+    }
     let stats: FxHashMap<i64, &Row> = nets.iter().map(|r| (r.i("asn"), r)).collect();
     let bad_nets: FxHashSet<i64> = alerts.iter().flat_map(|a| [a.i("origin"), a.i("asn")]).collect();
     let net_list: Vec<Value> = asns
@@ -333,20 +379,28 @@ pub async fn country(c: &Ctx<'_>, cc: &str) -> R<Value> {
             let mut d = dots.remove(a).unwrap_or_default();
             d.sort_by(|x, y| x["rtt"].as_f64().unwrap_or(9e9).total_cmp(&y["rtt"].as_f64().unwrap_or(9e9)));
             let state = if bad_nets.contains(a) { "bad" } else { match med { Some(m) if m > 150.0 => "bad", Some(m) if m > 60.0 => "warn", Some(_) => "ok", None => "none" } };
+            let (pos, from) = match (fac_at.get(a).and_then(|p| middle(p)), probe_at.get(a).and_then(|p| middle(p))) {
+                (Some(p), _) => (Some(p), "buildings"),
+                (None, Some(p)) => (Some(p), "probes"),
+                _ => (None, ""),
+            };
             json!({
                 "asn": a, "name": c.name(*a), "probes": s.map(|r| r.i("probes")).unwrap_or(0), "med": med, "best": s.map(|r| r.f("best")),
+                "lat": pos.map(|p| p.0), "lon": pos.map(|p| p.1), "at": from, "facs": fac_ids.get(a).cloned().unwrap_or_default(),
                 "dots": d, "ixes": on.get(a).cloned().unwrap_or_default(), "ixes_here": here.get(a).copied().unwrap_or(0),
                 "ixes_anywhere": anywhere.get(a).copied().unwrap_or(0), "state": state, "at_k": on.get(a).is_some_and(|l| l.iter().any(|x| k_ix.contains(x))),
             })
         })
         .collect();
-    let others = nets.len().saturating_sub(11);
-    let rest: Vec<f64> = nets.iter().skip(11).map(|r| r.f("med")).collect();
+    let others = nets.len().saturating_sub(SHOWN);
+    let rest: Vec<f64> = nets.iter().skip(SHOWN).map(|r| r.f("med")).collect();
     let m = med.first();
     Ok(json!({
         "cc": cc, "as_of": iso(now_u), "atlas_as_of": iso(now_p),
         "probes": m.map(|r| r.i("probes")), "med": m.map(|r| r.f("med")), "slow": m.map(|r| r.i("slow")),
-        "ixes": ixes.iter().map(|r| json!({"id": r.i("id"), "name": r.s("short"), "city": r.s("city"), "members": r.i("members"), "k": k_ix.contains(&r.i("id"))})).collect::<Vec<_>>(),
+        "ixes": ixes.iter().map(|r| json!({"id": r.i("id"), "name": r.s("short"), "city": r.s("city"), "members": r.i("members"), "k": k_ix.contains(&r.i("id")), "lat": r.get("lat"), "lon": r.get("lon")})).collect::<Vec<_>>(),
+        "facs": facs.iter().map(|r| json!({"id": r.i("id"), "name": r.s("short"), "city": r.s("city"), "lat": r.f("lat"), "lon": r.f("lon"), "nets": r.i("nets"), "ixes": r.i("ixes")})).collect::<Vec<_>>(),
+        "probes_at": at.iter().map(|r| json!([r.i("id"), r.i("asn"), r.f("lat"), r.f("lon"), latest.get(&r.i("id")).and_then(|x| x.1).map(|v| v.round())])).collect::<Vec<_>>(),
         "ix_total": ixn.first().map(|r| r.i("n")).unwrap_or(0),
         "nets": net_list,
         "more": {"networks": others, "under20": rest.iter().filter(|x| **x < 20.0).count(), "over90": rest.iter().filter(|x| **x > 90.0).count()},
@@ -376,12 +430,40 @@ pub async fn network(c: &Ctx<'_>, asn: i64) -> R<Value> {
         c.soft("the prefixes it announced in the last day", "SELECT prefix, COUNT(*) AS n, COUNT(DISTINCT peer) AS peers, MAX(ts) AS last FROM bb_updates WHERE origin = :a AND ts >= :since GROUP BY prefix ORDER BY n DESC LIMIT 60", json!({"a": asn, "since": since_day})),
         c.soft("its announcements by RPKI state", "SELECT rpki, COUNT(*) AS n, COUNT(DISTINCT prefix) AS prefixes FROM bb_updates WHERE origin = :a AND kind = 'A' AND ts >= :since GROUP BY rpki", json!({"a": asn, "since": since_day})),
         c.soft("alerts about it", format!("SELECT {ALERT_COLS} FROM bb_alerts WHERE origin = :a OR owner = :a OR asn = :a ORDER BY last_seen DESC LIMIT 40"), a.clone()),
-        c.soft("the exchanges it is on", "SELECT m.ix AS ix, x.short AS name, x.city AS city, x.country AS cc, m.speed AS speed, m.created AS created, m.updated AS updated FROM bb_member m JOIN bb_ix x ON m.ix = x.id WHERE m.asn = :a ORDER BY m.speed DESC LIMIT 60", a.clone()),
+        c.soft("the exchanges it is on", "SELECT m.ix AS ix, x.short AS name, x.city AS city, x.country AS cc, x.lat AS lat, x.lon AS lon, m.speed AS speed, m.created AS created, m.updated AS updated FROM bb_member m JOIN bb_ix x ON m.ix = x.id WHERE m.asn = :a ORDER BY m.speed DESC LIMIT 60", a.clone()),
         c.soft("its ROAs", "SELECT prefix, maxlen, plen, ta FROM bb_roa WHERE asn = :a ORDER BY plen LIMIT 300", a.clone()),
         c.soft("its prefixes' updates a minute, last three hours", "SELECT date_trunc('minute', ts) AS m, COUNT(*) AS n, COUNT(*) FILTER (WHERE kind = 'W') AS w FROM bb_updates WHERE origin = :a AND ts >= :since GROUP BY m ORDER BY m LIMIT 200", json!({"a": asn, "since": since3h})),
         c.soft("its probes' latest pings to the K root server", "SELECT probe, rtt, country, ts FROM bb_ping WHERE asn = :a AND msm = 1001 AND ts >= :since ORDER BY ts DESC LIMIT 1000", json!({"a": asn, "since": since_atlas})),
-        c.soft("the buildings it is in", "SELECT COUNT(*) AS n FROM bb_netfac WHERE asn = :a", a.clone()),
+        c.soft("the buildings it is in", "SELECT f.id AS id, f.short AS name, f.city AS city, f.country AS cc, f.lat AS lat, f.lon AS lon FROM bb_netfac n JOIN bb_fac f ON n.fac = f.id WHERE n.asn = :a LIMIT 500", a.clone()),
     );
+    let probe_at = c.soft("where its RIPE Atlas probes are", "SELECT id, lat, lon, country FROM bb_probe WHERE asn = :a AND lat IS NOT NULL LIMIT 3000", a.clone()).await;
+    // Where it is: the middle of its buildings at home, else anywhere, else
+    // of its probes.
+    let home = n.s("country");
+    let pts = |rs: &[Row], cc: Option<&str>| -> Vec<(f64, f64)> {
+        rs.iter().filter(|r| r.get("lat").is_some_and(|v| v.is_number()) && cc.is_none_or(|cc| r.s("cc") == cc || r.s("country") == cc)).map(|r| (r.f("lat"), r.f("lon"))).collect()
+    };
+    let centre = middle(&pts(&facs, Some(&home))).or_else(|| middle(&pts(&facs, None))).or_else(|| middle(&pts(&probe_at, None)));
+    // Where each provider meets it: a building they share, nearest its
+    // middle, else the provider's building nearest it.
+    let pa: Vec<i64> = providers.iter().take(8).map(|r| r.i("asn")).collect();
+    let psites = if pa.is_empty() || centre.is_none() {
+        Vec::new()
+    } else {
+        c.soft("its providers' buildings, to draw where they meet it", "SELECT n.asn AS asn, f.id AS fac, f.lat AS lat, f.lon AS lon FROM bb_netfac n JOIN bb_fac f ON n.fac = f.id WHERE n.asn IN (:p) AND f.lat IS NOT NULL LIMIT 10000", json!({"p": pa})).await
+    };
+    let mine: FxHashSet<i64> = facs.iter().map(|r| r.i("id")).collect();
+    let mut meet: FxHashMap<i64, (bool, f64, f64, f64)> = FxHashMap::default();
+    if let Some(cen) = centre {
+        for r in &psites {
+            let (shared, p) = (mine.contains(&r.i("fac")), (r.f("lat"), r.f("lon")));
+            let d = far(cen, p);
+            let e = meet.entry(r.i("asn")).or_insert((shared, d, p.0, p.1));
+            if (shared && !e.0) || (shared == e.0 && d < e.1) {
+                *e = (shared, d, p.0, p.1);
+            }
+        }
+    }
     // Trouble within three hops: open alerts' networks near it.
     let bad = c.soft("networks with open alerts", "SELECT origin, owner, asn, severity, title FROM bb_alerts WHERE state = 'open' LIMIT 3000", Value::Null).await;
     let mut bad_set: Vec<i64> = bad.iter().flat_map(|r| [r.i("origin"), r.i("owner"), r.i("asn")]).filter(|x| *x > 0 && *x != asn).collect();
@@ -403,6 +485,7 @@ pub async fn network(c: &Ctx<'_>, asn: i64) -> R<Value> {
     for r in &pings {
         latest.entry(r.i("probe")).or_insert((r.get("rtt").and_then(|v| v.as_f64()), r.s("country")));
     }
+    let probes_at: Vec<Value> = probe_at.iter().map(|r| json!([r.i("id"), r.f("lat"), r.f("lon"), latest.get(&r.i("id")).and_then(|x| x.0).map(|v| v.round())])).collect();
     let mut rtts: Vec<f64> = latest.values().filter_map(|x| x.0).collect();
     rtts.sort_by(|a, b| a.total_cmp(b));
     let med = (!rtts.is_empty()).then(|| rtts[rtts.len() / 2]);
@@ -437,11 +520,18 @@ pub async fn network(c: &Ctx<'_>, asn: i64) -> R<Value> {
     Ok(json!({
         "found": true, "asn": asn, "as_of": iso(now_u),
         "net": {"asn": asn, "name": n.s("short"), "full": n.s("name"), "handle": n.s("handle"), "country": n.s("country"), "kind": n.s("kind"), "scope": n.s("scope"),
-                "traffic": n.s("traffic"), "website": n.s("website"), "pdb": n.get("pdb"), "prefixes4": n.get("prefixes4"), "ixes": n.i("ixes"), "facs": facs.first().map(|r| r.i("n")),
+                "traffic": n.s("traffic"), "website": n.s("website"), "pdb": n.get("pdb"), "prefixes4": n.get("prefixes4"), "ixes": n.i("ixes"), "facs": facs.len(),
                 "providers": n.i("providers"), "customers": n.i("customers"), "peers": peers.first().map(|r| r.i("n")).unwrap_or(n.i("peers")), "roas": n.i("roas"),
                 "probes": n.i("probes"), "updated": n.s("updated")},
         "state": state, "med": med, "probes_now": latest.len(),
-        "providers": providers.iter().map(|r| json!({"asn": r.i("asn"), "name": r.s("short"), "country": r.s("country"), "ixes": r.i("ixes"), "customers": r.i("customers"), "state": bad_title.get(&r.i("asn")).map(|x| x.0.clone()).unwrap_or("ok".into())})).collect::<Vec<_>>(),
+        "providers": providers.iter().map(|r| {
+            let m = meet.get(&r.i("asn"));
+            json!({"asn": r.i("asn"), "name": r.s("short"), "country": r.s("country"), "ixes": r.i("ixes"), "customers": r.i("customers"), "state": bad_title.get(&r.i("asn")).map(|x| x.0.clone()).unwrap_or("ok".into()),
+                   "meet": m.map(|m| json!({"shared": m.0, "lat": m.2, "lon": m.3}))})
+        }).collect::<Vec<_>>(),
+        "centre": centre.map(|p| json!({"lat": p.0, "lon": p.1})),
+        "sites": facs.iter().filter(|r| r.get("lat").is_some_and(|v| v.is_number())).map(|r| json!({"id": r.i("id"), "name": r.s("name"), "city": r.s("city"), "cc": r.s("cc"), "lat": r.f("lat"), "lon": r.f("lon")})).collect::<Vec<_>>(),
+        "probes_at": probes_at,
         "customers": customers.iter().map(|r| json!({"asn": r.i("asn"), "name": r.s("short"), "country": r.s("country"), "customers": r.i("customers")})).collect::<Vec<_>>(),
         "trouble": near.iter().map(|r| json!({"asn": r.i("asn"), "name": r.s("short"), "country": r.s("country"), "hops": r.i("h"), "severity": bad_title.get(&r.i("asn")).map(|x| x.0.clone()), "title": bad_title.get(&r.i("asn")).map(|x| x.1.clone())})).collect::<Vec<_>>(),
         "trouble_hops": hops,
@@ -449,7 +539,7 @@ pub async fn network(c: &Ctx<'_>, asn: i64) -> R<Value> {
         "prefixes": pfx,
         "roas": roas.iter().map(|r| json!({"prefix": r.s("prefix"), "maxlen": r.i("maxlen"), "ta": r.s("ta")})).collect::<Vec<_>>(),
         "alerts": alerts.iter().map(|r| alert_json(c, r)).collect::<Vec<_>>(),
-        "ixes": ixes.iter().map(|r| json!({"id": r.i("ix"), "name": r.s("name"), "city": r.s("city"), "cc": r.s("cc"), "speed": r.i("speed")})).collect::<Vec<_>>(),
+        "ixes": ixes.iter().map(|r| json!({"id": r.i("ix"), "name": r.s("name"), "city": r.s("city"), "cc": r.s("cc"), "speed": r.i("speed"), "lat": r.get("lat"), "lon": r.get("lon")})).collect::<Vec<_>>(),
         "minutes": minutes.iter().map(|r| json!({"t": r.s("m"), "n": r.i("n"), "w": r.i("w")})).collect::<Vec<_>>(),
         "changes": changes,
     }))
@@ -489,8 +579,24 @@ pub async fn prefix(c: &Ctx<'_>, p: &Prefix) -> R<Value> {
     let mut origins: BTreeMap<i64, (FxHashSet<String>, i64, i64, String, String, i64)> = BTreeMap::new();
     let mut events: Vec<Value> = Vec::new();
     let mut prev_origins: Vec<i64> = Vec::new();
+    // Each peer's path to it, now and an hour ago (when the updates kept
+    // reach back that far).
+    let cut = now_u - 60 * MIN;
+    let mut paths: FxHashMap<String, Vec<i64>> = FxHashMap::default();
+    let mut before: Option<FxHashMap<String, Vec<i64>>> = None;
+    let known = ups.first().is_some_and(|x| x.0 < cut);
     for (t, r) in &ups {
+        if before.is_none() && *t >= cut {
+            before = Some(paths.clone());
+        }
         let peer = r.s("peer");
+        if r.s("kind") == "A" {
+            let mut p = ints(r, "path");
+            p.dedup();
+            paths.insert(peer.clone(), p);
+        } else {
+            paths.remove(&peer);
+        }
         let m = t / MIN * MIN;
         let e = minutes.entry(m).or_insert((0, 0, 0));
         if r.s("kind") == "A" {
@@ -524,6 +630,28 @@ pub async fn prefix(c: &Ctx<'_>, p: &Prefix) -> R<Value> {
     for o in held.values() {
         *holding.entry(*o).or_default() += 1;
     }
+    let before = if known { Some(before.unwrap_or_else(|| paths.clone())) } else { None };
+    let tally = |m: &FxHashMap<String, Vec<i64>>| -> Vec<(Vec<i64>, usize)> {
+        let mut n: BTreeMap<Vec<i64>, usize> = BTreeMap::new();
+        for p in m.values() {
+            *n.entry(p.clone()).or_default() += 1;
+        }
+        let mut v: Vec<(Vec<i64>, usize)> = n.into_iter().collect();
+        v.sort_by_key(|x| std::cmp::Reverse(x.1));
+        v
+    };
+    let now_paths = tally(&paths);
+    let then_paths = before.as_ref().map(&tally);
+    let path_json = |p: &[i64], n: usize, mark: &str| json!({"path": p.iter().map(|a| c.net(*a)).collect::<Vec<_>>(), "peers": n, "mark": mark});
+    let then_set: FxHashSet<&Vec<i64>> = then_paths.iter().flatten().map(|x| &x.0).collect();
+    let now_set: FxHashSet<&Vec<i64>> = now_paths.iter().map(|x| &x.0).collect();
+    let paths_json = json!({
+        "known": known,
+        "now": now_paths.iter().take(8).map(|(p, n)| path_json(p, *n, if known && !then_set.contains(p) { "new" } else { "" })).collect::<Vec<_>>(),
+        "now_total": now_paths.len(),
+        "gone": then_paths.iter().flatten().filter(|(p, _)| !now_set.contains(p)).take(6).map(|(p, n)| path_json(p, *n, "gone")).collect::<Vec<_>>(),
+        "then_total": then_paths.as_ref().map(|v| v.len()),
+    });
     let peers_heard: FxHashSet<String> = rows.iter().map(|r| r.s("peer")).collect();
     let last_path = rows.iter().find(|r| r.s("kind") == "A").map(|r| ints(r, "path")).unwrap_or_default();
     let mut ups_by: BTreeMap<i64, usize> = BTreeMap::new();
@@ -562,7 +690,102 @@ pub async fn prefix(c: &Ctx<'_>, p: &Prefix) -> R<Value> {
         "inside": inner.iter().map(|r| json!({"prefix": r.s("prefix"), "origin": c.net(r.i("origin")), "updates": r.i("n"), "peers": r.i("peers")})).collect::<Vec<_>>(),
         "minutes": minutes.into_iter().rev().take(240).rev().map(|(t, (a, w, h))| json!({"t": iso(t), "a": a, "w": w, "held": h})).collect::<Vec<_>>(),
         "events": events, "alerts": alerts.iter().map(|r| alert_json(c, r)).collect::<Vec<_>>(),
+        "paths": paths_json,
     }))
+}
+
+// ---------------------------------------------------------------- Timeline
+
+/// The strip over the console: everything heard a minute for six hours,
+/// from the rollup, with the minutes it has not folded in yet read from the
+/// updates, and the incidents of those hours.
+pub async fn timeline(c: &Ctx<'_>) -> R<Value> {
+    let (now_u, _) = c.clock().await;
+    let since = iso(now_u - 360 * MIN);
+    let (roll, inc) = tokio::join!(
+        c.soft("updates a minute by kind and RPKI state, last six hours, from the rollup bb_updates_1m", "SELECT bucket, kind, rpki, SUM(count) AS n FROM bb_updates_1m WHERE bucket >= :since GROUP BY bucket, kind, rpki ORDER BY bucket LIMIT 9000", json!({"since": since})),
+        c.soft("incidents of the last six hours", format!("SELECT {INCIDENT_COLS} FROM bb_incidents WHERE last_seen >= :since OR state = 'open' ORDER BY first_seen LIMIT 400"), json!({"since": since})),
+    );
+    // minute -> (announcements, withdrawals, invalid announcements)
+    let mut m: BTreeMap<i64, (i64, i64, i64)> = BTreeMap::new();
+    for r in &roll {
+        let Some(t) = parse_ts(&r.s("bucket")) else { continue };
+        let e = m.entry(t).or_default();
+        let n = r.i("n");
+        if r.s("kind") == "W" {
+            e.1 += n;
+        } else {
+            e.0 += n;
+            if r.s("rpki").starts_with("invalid") {
+                e.2 += n;
+            }
+        }
+    }
+    // The rollup folds a minute in once it is ten minutes old: the newest
+    // minutes come from the updates themselves.
+    let last = m.keys().next_back().copied().unwrap_or(now_u - 360 * MIN);
+    let from = (last + MIN).max(now_u - 20 * MIN);
+    let fresh = c
+        .soft("updates a minute since the rollup's newest minute, from bb_updates", "SELECT date_trunc('minute', ts) AS b, kind, COUNT(*) AS n, COUNT(*) FILTER (WHERE rpki IN ('invalid', 'invalid-length')) AS bad FROM bb_updates WHERE ts >= :from GROUP BY b, kind LIMIT 200", json!({"from": iso(from)}))
+        .await;
+    for r in &fresh {
+        let Some(t) = parse_ts(&r.s("b")) else { continue };
+        let e = m.entry(t).or_default();
+        if r.s("kind") == "W" {
+            e.1 = r.i("n");
+        } else {
+            e.0 = r.i("n");
+            e.2 = r.i("bad");
+        }
+    }
+    let newest = now_u / MIN * MIN;
+    Ok(json!({
+        "as_of": iso(now_u), "from": since, "folded_to": iso(last),
+        // The minute still being heard is partial: left out.
+        "minutes": m.iter().filter(|(t, _)| **t < newest).map(|(t, (a, w, bad))| json!([iso(*t), a, w, bad])).collect::<Vec<_>>(),
+        "incidents": inc.iter().map(incident_json).collect::<Vec<_>>(),
+    }))
+}
+
+// ---------------------------------------------------------------- Watch
+
+/// The networks a reader watches: for each, what is open about it, its
+/// routes' updates in the last hour, and its probes' time to K.
+pub async fn watch(c: &Ctx<'_>, asns: &[i64]) -> R<Value> {
+    let (now_u, now_p) = c.clock().await;
+    let a = json!({"a": asns});
+    let (recs, alerts, upd, pings) = tokio::join!(
+        c.soft("the networks watched", "SELECT asn, short, country, roas, customers FROM bb_as WHERE asn IN (:a)", a.clone()),
+        c.soft("open alerts about them", "SELECT origin, owner, asn, severity, title, incident FROM bb_alerts WHERE state = 'open' AND (origin IN (:a) OR owner IN (:a) OR asn IN (:a)) LIMIT 1000", a.clone()),
+        c.soft("their routes' updates in the last hour", "SELECT origin, COUNT(*) AS n, COUNT(*) FILTER (WHERE kind = 'W') AS w, COUNT(DISTINCT prefix) AS prefixes FROM bb_updates WHERE origin IN (:a) AND ts >= :since GROUP BY origin LIMIT 100", json!({"a": asns, "since": iso(now_u - 60 * MIN)})),
+        c.soft("their probes' time to the K root server", "SELECT asn, MEDIAN(rtt) AS med, COUNT(DISTINCT probe) AS probes FROM bb_ping WHERE asn IN (:a) AND msm = 1001 AND ts >= :since AND rtt IS NOT NULL GROUP BY asn LIMIT 100", json!({"a": asns, "since": iso(now_p - 20 * MIN)})),
+    );
+    let rec: FxHashMap<i64, &Row> = recs.iter().map(|r| (r.i("asn"), r)).collect();
+    let up: FxHashMap<i64, &Row> = upd.iter().map(|r| (r.i("origin"), r)).collect();
+    let pg: FxHashMap<i64, &Row> = pings.iter().map(|r| (r.i("asn"), r)).collect();
+    let list: Vec<Value> = asns
+        .iter()
+        .map(|x| {
+            let mine: Vec<&Row> = alerts.iter().filter(|r| [r.i("origin"), r.i("owner"), r.i("asn")].contains(x)).collect();
+            let worst = mine.iter().min_by_key(|r| sev_rank(&r.s("severity")));
+            let med = pg.get(x).map(|r| r.f("med"));
+            let state = match worst.map(|r| r.s("severity")) {
+                Some(s) if s == "bad" => "bad",
+                Some(_) => "warn",
+                None if med.is_some_and(|m| m > 150.0) => "warn",
+                None => "ok",
+            };
+            json!({
+                "asn": x, "name": rec.get(x).map(|r| r.s("short")).filter(|s| !s.is_empty()).unwrap_or_else(|| c.name(*x)),
+                "country": rec.get(x).map(|r| r.s("country")).unwrap_or_default(), "found": rec.contains_key(x),
+                "state": state, "alerts": mine.len(), "title": worst.map(|r| r.s("title")), "incident": worst.map(|r| r.s("incident")),
+                "updates": up.get(x).map(|r| r.i("n")).unwrap_or(0), "withdrawals": up.get(x).map(|r| r.i("w")).unwrap_or(0),
+                "prefixes": up.get(x).map(|r| r.i("prefixes")).unwrap_or(0), "med": med, "probes": pg.get(x).map(|r| r.i("probes")).unwrap_or(0),
+                "roas": rec.get(x).map(|r| r.i("roas")).unwrap_or(0),
+            })
+        })
+        .collect();
+    Ok(json!({"as_of": iso(now_u), "networks": list}))
 }
 
 // ---------------------------------------------------------------- Incidents

@@ -49,7 +49,7 @@ pub struct Service {
     pub last_rules: Mutex<Option<(Instant, Value)>>,
     /// The pages everyone sees the same (Now, the world map), kept 20
     /// seconds: the data under them moves by the minute.
-    pub shared: tokio::sync::Mutex<HashMap<&'static str, (Instant, Value)>>,
+    pub shared: HashMap<&'static str, tokio::sync::Mutex<Option<(Instant, Value)>>>,
 }
 
 pub type Shared = Arc<Service>;
@@ -129,7 +129,7 @@ pub async fn serve(o: Opts) -> Result<()> {
         started: Instant::now(),
         names: tokio::sync::RwLock::new(Arc::new(Names::default())),
         last_rules: Mutex::new(None),
-        shared: tokio::sync::Mutex::new(HashMap::new()),
+        shared: ["now", "world", "timeline"].into_iter().map(|k| (k, tokio::sync::Mutex::new(None))).collect(),
     });
     {
         let svc = svc.clone();
@@ -178,6 +178,8 @@ pub fn router(svc: Shared) -> Router {
         .route("/ui/geo.json", get(geo))
         .route("/v1/now", get(now))
         .route("/v1/map", get(world))
+        .route("/v1/timeline", get(timeline))
+        .route("/v1/watch", get(watch))
         .route("/v1/country/:cc", get(country))
         .route("/v1/as/:asn", get(network))
         .route("/v1/prefix/*p", get(prefix))
@@ -316,8 +318,8 @@ macro_rules! ctx {
 /// One answer for everyone for 20 seconds; the lock makes a crowd that
 /// arrives together wait for one reading rather than start one each.
 async fn kept(svc: &Shared, page: &'static str) -> Answer {
-    let mut held = svc.shared.lock().await;
-    if let Some((at, v)) = held.get(page) {
+    let mut held = svc.shared[page].lock().await;
+    if let Some((at, v)) = held.as_ref() {
         if at.elapsed() < Duration::from_secs(20) {
             let mut v = v.clone();
             v["kept_s"] = json!(at.elapsed().as_secs());
@@ -326,9 +328,13 @@ async fn kept(svc: &Shared, page: &'static str) -> Answer {
     }
     let t0 = Instant::now();
     ctx!(svc, trace, c);
-    let v = if page == "now" { pages::now(&c).await? } else { pages::world(&c).await? };
+    let v = match page {
+        "now" => pages::now(&c).await?,
+        "timeline" => pages::timeline(&c).await?,
+        _ => pages::world(&c).await?,
+    };
     let Json(v) = done(&trace, v, t0)?;
-    held.insert(page, (Instant::now(), v.clone()));
+    *held = Some((Instant::now(), v.clone()));
     Ok(Json(v))
 }
 
@@ -338,6 +344,29 @@ async fn now(State(svc): State<Shared>) -> Answer {
 
 async fn world(State(svc): State<Shared>) -> Answer {
     kept(&svc, "world").await
+}
+
+async fn timeline(State(svc): State<Shared>) -> Answer {
+    kept(&svc, "timeline").await
+}
+
+#[derive(serde::Deserialize, Default)]
+struct WatchParams {
+    #[serde(default)]
+    asns: String,
+}
+
+/// `?asns=13335,3320`: at most 12 networks.
+async fn watch(State(svc): State<Shared>, Query(a): Query<WatchParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let mut asns: Vec<i64> = a.asns.split(',').filter_map(|x| x.trim().trim_start_matches(['A', 'S', 'a', 's']).parse::<i64>().ok()).filter(|x| *x > 0).collect();
+    asns.dedup();
+    if asns.is_empty() || asns.len() > 12 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "watch one to twelve networks: ?asns=13335,3320".into()));
+    }
+    let v = pages::watch(&c, &asns).await?;
+    done(&trace, v, t0)
 }
 
 async fn country(State(svc): State<Shared>, Path(cc): Path<String>) -> Answer {
