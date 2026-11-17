@@ -2533,16 +2533,25 @@ function render(page, r) {
       h("td", { class: "num dim" }, moved(i) > 0 ? `gives ${fmt.n(moved(i))}` : moved(i) < 0 ? `takes ${fmt.n(-moved(i))}` : "")));
     const skipped = (p.coordinators || []).filter((c) => !c.ok);
     const nMoves = (p.moves || []).length;
+    // The disks of the copies sent rows (the plan's disk checks).
+    const checks = (p.preflight || []).filter((c) => c.text);
+    const diskFail = checks.some((c) => c.ok === false);
+    const disks = nMoves && (p.disks || []).length ? h("table", { class: "t compact cc-ldisk" },
+      h("thead", {}, h("tr", {}, h("th", {}, "disk of the copies sent rows"), h("th", { class: "num" }, "now"), h("th", { class: "num" }, "after"), h("th", { class: "num" }, "sent"))),
+      h("tbody", {}, p.disks.map((d) => h("tr", {}, h("td", { class: "mono" }, d.copy || short(d.url)), h("td", { class: "num" }, pct0(d.now)), h("td", { class: "num" + (d.after >= 0.98 ? " cc-bad" : d.after >= 0.85 ? " cc-warn" : "") }, pct0(d.after)), h("td", { class: "num dim" }, fmt.bytes(d.adds_bytes)))))) : null;
     const body = h("div", { class: "stack", style: { gap: "10px" } },
       h("p", { style: { margin: 0 } }, nMoves
         ? `${plural(p.slots_moved, "slot")} move in ${plural(nMoves, "move")}, from the busiest shard to the quietest: the busiest goes from ${p.before.skew.toFixed(2)}× the mean of the keyed load to ${p.after.skew.toFixed(2)}×.`
         : cap(p.why || "nothing to move") + "."),
       h("table", { class: "t compact cc-lplan" }, h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, h("span", { class: "row nw", style: { gap: "8px" } }, h("i", { class: "cc-lb before sw" }), "now", h("i", { class: "cc-lb after sw" }), "after")), h("th", { class: "num" }, "keyed load"), h("th", { class: "num" }, "slots"))), h("tbody", {}, shards)),
+      disks,
+      checks.filter((c) => c.level !== "ok" || !disks).map((c) => h("p", { class: "small " + (c.ok === false ? "cc-bad" : c.level === "warn" ? "cc-warn" : "dim"), style: { margin: 0 } }, cap(c.text) + (c.ok === false ? ": nothing can move until it has room." : "."))),
+      (p.disk_full || []).length ? h("p", { class: "small dim", style: { margin: 0 } }, `Passed over for want of disk: ${p.disk_full.map((i) => `shard ${i}`).join(", ")} (it would pass 85% full).`) : null,
       p.unsplit ? h("p", { class: "small", style: { margin: 0 } }, `Slot ${p.unsplit.slot} stays on shard ${p.unsplit.shard}: at ${loadRate(p.unsplit.load_per_s)}/s it would make any other shard the hot one. It is one key or one shard_by value: cache it, or spread its writes over several keys.`) : null,
       p.warning ? h("p", { class: "small cc-warn", style: { margin: 0 } }, `${cap(p.warning)}. Wait until the counts cover most of the window (4 minutes) before moving rows.`) : null,
       skipped.length ? h("p", { class: "small cc-warn", style: { margin: 0 } }, `Left out of the counts: ${skipped.map((c) => `${c.coordinator} (${c.error})`).join("; ")}.`) : null,
       h("p", { class: "small dim", style: { margin: 0 } }, `From the reads and writes routed by key over the last ${span(p.secs)}, ${plural((p.coordinators || []).filter((c) => c.ok).length, "coordinator")} counted. The rows of each slot move while the cluster serves; writes to a run pause for a moment as it flips.`));
-    if (!nMoves || p.warning) {
+    if (!nMoves || p.warning || diskFail) {
       const close = h("button", { class: "btn primary" }, "Close");
       const m = modal({ title: "Even out the keyed load", body, foot: [close] });
       close.onclick = () => m.close();

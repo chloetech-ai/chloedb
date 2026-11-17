@@ -2755,6 +2755,7 @@ a.wl-chip:hover { border-color: var(--accent); }
 .cc-lb.before { background: var(--seq-3); }
 .cc-lb.after { background: var(--seq-6); }
 .cc-lb.sw { display: inline-block; width: 14px; height: 8px; margin: 0; }
+.cc-ldisk td, .cc-ldisk th { padding-top: 3px; padding-bottom: 3px; }
 
 .cc-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .cc-find { flex: 1 1 160px; min-width: 140px; max-width: 320px; }
