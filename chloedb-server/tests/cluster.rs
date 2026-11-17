@@ -946,3 +946,88 @@ async fn a_copy_outrun_moments_after_a_hedge_asked_it_is_not_put_in_its_cool_off
         assert!(hedges >= 1.0, "{}: hedged: {hedges}", route.name());
     }
 }
+
+/// A coordinator counts what it routes to each slot: a key read and
+/// written over and over makes its slot, and its shard, hot; reads spread
+/// over every key are even; a BM25 query is counted as sent to every
+/// shard; and with `--slot-heat-keys` the key itself is named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coordinator_says_which_slots_are_hot() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let (_s0, u0) = serve(create(d, "s0.strata", |i| shard_of(&key(i), 2) == 0), d, "s0.strata").await;
+    let (_s1, u1) = serve(create(d, "s1.strata", |i| shard_of(&key(i), 2) == 1), d, "s1.strata").await;
+    let urls = vec![u0.clone(), u1.clone()];
+
+    // One key, read and written again and again, through a coordinator
+    // that samples keys.
+    let opts = chloedb_server::coord::CoordOptions { slot_heat_keys: true, ..Default::default() };
+    let hot = Arc::new(Coordinator::connect_with(urls.clone(), opts).await.unwrap());
+    let svc = Arc::new(Service::new(Backend::Cluster(hot.clone()), hot.schema.clone(), agent(), 16, Duration::from_secs(10)));
+    let k = key(5);
+    let id = k.as_str().unwrap().to_string();
+    for r in 0..200 {
+        let a = svc.query(QueryReq { sql: format!("SELECT id FROM products WHERE id = '{id}'"), ..Default::default() }).await.unwrap();
+        assert_eq!(a.rs.rows.len(), 1);
+        if r % 2 == 0 {
+            sql(&svc, &format!("INSERT OR REPLACE INTO products (id, title, description, price) VALUES ('{id}', 'Hot kettle', 'Round {r}', {r})")).await.unwrap();
+        }
+    }
+    // A ranking asks every shard: fan-out, not a slot.
+    for _ in 0..5 {
+        svc.query(QueryReq { sql: "SELECT id FROM products ORDER BY bm25(body, 'kettle') DESC LIMIT 5".into(), ..Default::default() }).await.unwrap();
+    }
+    let j = hot.slot_heat(false);
+    assert_eq!(j["by_slot"], true, "{j}");
+    assert_eq!(j["totals"]["reads"], 200, "{j}");
+    assert_eq!(j["totals"]["writes"], 100, "{j}");
+    assert_eq!(j["totals"]["fanout"], 5, "{j}");
+    let slot = slots::slot(&k);
+    let owner = hot.map().unwrap().owner(slot);
+    for w in ["1m", "5m", "15m"] {
+        let win = &j["windows"][w];
+        assert_eq!(win["verdict"], "hot slot", "{w}: {win}");
+        assert_eq!(win["top"][0]["slot"], slot, "{w}: {win}");
+        assert_eq!(win["top"][0]["shard"], owner, "{w}: {win}");
+        assert_eq!(win["shards"][owner]["share"], 1.0, "{w}: {win}");
+        assert_eq!(win["shards"][owner]["top_slot_share"], 1.0, "{w}: {win}");
+        assert!(win["fanout_per_s"].as_f64().unwrap() > 0.0, "{w}: {win}");
+    }
+    assert_eq!(j["slots"], serde_json::Value::Null, "every slot only when asked");
+    assert_eq!(hot.slot_heat(true)["slots"], serde_json::json!([[slot, owner, 200, 100]]));
+    // The key sampled, with its slot and shard.
+    let keys = hot.slot_heat_keys().expect("--slot-heat-keys samples keys");
+    assert_eq!(keys["keys"][0]["key"], format!("\"{id}\""), "{keys}");
+    assert_eq!(keys["keys"][0]["table"], "products", "{keys}");
+    assert_eq!(keys["keys"][0]["slot"], slot, "{keys}");
+    assert_eq!(keys["keys"][0]["shard"], owner, "{keys}");
+    // In /v1/cluster (as the service answers it), the 5 minutes' figures
+    // per shard and the verdict.
+    let cluster = svc.cluster().await;
+    assert_eq!(cluster["slot_heat"]["verdict"], "hot slot", "{}", cluster["slot_heat"]);
+    assert_eq!(cluster["shards"][owner]["heat"]["share"], 1.0, "{}", cluster["shards"]);
+    // In /metrics, per shard and window; no family per slot.
+    let families = hot.metrics();
+    let family = |name: &str| families.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no {name}"));
+    let reads = family("chloedb_shard_keyed_ops_per_second").values.iter().find(|(l, _)| *l == format!("shard=\"{owner}\",kind=\"read\",window=\"1m\"")).map(|(_, v)| *v);
+    assert!(reads.unwrap_or(0.0) > 0.0, "{reads:?}");
+    assert!(family("chloedb_slot_ops_total").values.contains(&("kind=\"write\"".to_string(), 100.0)));
+    assert!(family("chloedb_slot_heat_skew").values[0].1 >= 2.0 - 1e-9);
+    assert!(families.iter().all(|f| f.values.len() < 100), "a family with a series per slot");
+
+    // Every key read alike, through another coordinator: even, and no keys
+    // sampled without the option.
+    let (even, svc) = coordinator(&urls).await;
+    let all: Vec<String> = (0..N).map(|i| format!("'{}'", key(i).as_str().unwrap())).collect();
+    for _ in 0..3 {
+        let a = svc.query(QueryReq { sql: format!("SELECT id FROM products WHERE id IN ({}) LIMIT 1000", all.join(", ")), ..Default::default() }).await.unwrap();
+        assert_eq!(a.rs.rows.len(), N);
+    }
+    let j = even.slot_heat(false);
+    assert_eq!(j["totals"]["reads"], 3 * N as u64, "{j}");
+    assert_eq!(j["totals"]["fanout"], 0, "{j}");
+    let win = &j["windows"]["1m"];
+    assert_eq!(win["verdict"], "even", "{win}");
+    assert!(win["skew"].as_f64().unwrap() < 1.3, "{win}");
+    assert!(even.slot_heat_keys().is_none());
+}

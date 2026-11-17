@@ -974,6 +974,28 @@ A shard also refuses (400) a write of a key whose slot another shard holds, so t
 
 A coordinator routes by slots once every replica speaks protocol 4. While any is older, it routes by the hash before slots (FNV-1a of the key's text, modulo the shard count), gives no map, and logs a warning; it refuses `--slot-map` then. The two hashes place keys differently, so a collection sharded before slots is refused once its shards are upgraded, and has to be loaded again through a coordinator (or with `--demo-shard`). Slots move between running shards [while they serve](#moving-slots).
 
+### Hot shards and hot slots
+
+A coordinator counts what it routes to each slot, so that it can say which shard is hot and whether moving slots would cool it. `GET /v1/cluster/slots` answers, over the last 1, 5 and 15 minutes (`windows`: `1m`, `5m`, `15m`):
+
+- per shard (`shards`): the slots it holds now, its keyed reads and writes a second (`reads_per_s`, `writes_per_s`, `keyed_per_s`), its share of them, its most counted slot (`top_slot`) and that slot's share of the shard's load (`top_slot_share`);
+- the requests sent to every shard, a second (`fanout_per_s`);
+- the 20 slots most counted (`top`), each with its shard;
+- `skew`, the busiest shard's keyed load as a multiple of the mean of the shards holding slots, and a `verdict` with a sentence saying why (`why`):
+
+| verdict | when | what to do |
+|---|---|---|
+| `quiet` | under one keyed operation a second | nothing to tell yet |
+| `even` | the busiest shard takes under 1.3× the mean | nothing |
+| `hot range` | a shard takes 1.3× the mean or more, spread over many of its slots | [move](#moving-slots) some of its slots to other shards (Cluster, Rebalance), or give it a copy more for reads |
+| `hot slot` | as above, with half or more of its load in one slot | moving slots does not split it: the slot takes its load wherever it goes. It is one key, or one `shard_by` value most rows share: cache it, spread its writes over several keys, or place the table by a column with more values |
+
+What is counted, once a request (not again when a newer map sends it to another shard): each operation of a write, at the slot of the value that places its row (its key, or its table's `shard_by` value); each key of a read by key; each value a query's filter pins the placing field to (`id = ...`, `id IN (...)`, up to 4,096 values), however many shards those are on. A request with no slot to count goes to every shard and is counted once as fan-out: a ranking by BM25 (which needs every shard's statistics), a query whose filter does not pin the placing field, `UPDATE` and `DELETE`, and a read by key of a table placed by a column. Fan-out loads every shard alike, so it is not in `skew` or the verdict: `even` does not rule out a shard slow for queries sent to all, which its `took_ms` and the `chloedb_replica_*` metrics show. A scroll is counted once, when it starts, and not for each page. The statistics round of a BM25 query, the fetch round of query then fetch, and a guard's counts are not counted, being parts of a query already counted, and neither are the coordinator's other calls to every shard (a table's JSON paths, the next numbers of a semantic ID, term statistics asked alone). A query sent again after a shard's rank profile changed under it is counted twice.
+
+Counts are kept by slot, and a slot's shard is read from the map when they are shown, so after a move a slot's past load counts for the shard holding it now. `?all=1` adds `slots`, every slot counted since the coordinator started, as `[slot, shard, reads, writes]`; `totals` has the reads, writes and fan-outs since then. The windows are cut at 10 s marks for the minute and 60 s marks for the others, so a window covers 50 to 60 s, 4 to 5 minutes and 14 to 15 minutes, and less while the coordinator is younger (`secs` is its length, which the rates are over). Each coordinator counts what it routes: with several, add their answers. A cluster whose shards route by the hash before slots counts nothing (`by_slot: false`). The counts take a relaxed atomic add each, and the snapshots behind the windows about 1.5 MB at most. `/v1/cluster` carries the 5 minutes' figures (`heat` on each shard: `keyed_per_s`, `share`; `slot_heat`: the verdict and `skew`), and `/metrics` the [rates per shard](#health), with no series per slot.
+
+`--slot-heat-keys` also samples one count in 16 into a list of the 64 keys counted most (space-saving: a key that enters in place of another takes its count, shown as `error`), its counts halved every 5 minutes so that it follows what is hot now. `GET /v1/admin/slots/keys` shows them, an admin's only since they are key values (and not a key limited to tables, nor is `/v1/cluster/slots`): each key (as JSON) with its table, its slot and shard, and its reads and writes estimated (the samples times 16). Without the option it answers 404.
+
 ### Changing the cluster while it serves
 
 From protocol 9 the slot map is the cluster map: besides each shard's slots it names each shard's servers (their gRPC URLs), and every server keeps it beside its database. A coordinator connects to the servers `--shards` lists, asks each the map it holds (`Slots` with no map), and routes by the newest one that names servers, so a coordinator started again on the list it was first given, or on any one server of each shard, serves the cluster as it is now. A list that also names servers new to any cluster lays the cluster out anew: the same slots, on the servers listed, under the next epoch. A list naming a server that the newest map leaves out, but that a map it served under includes (it was removed, or serves another cluster), is refused (400), so that a coordinator started on an old list does not undo the admin calls below. While every server speaks 9, the first map a coordinator gives names the servers `--shards` lists (`a|b` for a shard's copies).
@@ -1687,6 +1709,10 @@ It answers 503 for `down` and `failing`. `/livez` and `/readyz` answer 503 only 
 | `chloedb_stats_cache_terms` | | terms whose statistics a coordinator keeps, over every replica |
 | `chloedb_stale_stats_total` | | queries a shard answered stale, sent kept statistics of an older version |
 | `chloedb_slot_epoch` | | the epoch of the [slot map](#slots) a coordinator routes writes by; 0 while it routes by the hash before slots |
+| `chloedb_shard_keyed_ops_per_second` | `shard`, `kind`, `window` | reads (`kind="read"`) and writes a coordinator routed to a shard by key, a second, over the last `1m`, `5m` or `15m`, by the slots it holds now ([hot slots](#hot-shards-and-hot-slots)); a gauge, since a shard's count falls when its slots move |
+| `chloedb_fanout_queries_per_second` | `window` | requests a coordinator sent to every shard, a second |
+| `chloedb_slot_ops_total` | `kind` | reads, writes and fan-outs (`kind="fanout"`) a coordinator routed, over every slot |
+| `chloedb_slot_heat_skew` | | the busiest shard's keyed load over the last 5 minutes, as a multiple of the shards' mean (0: none counted) |
 | `chloedb_replicas_avoided` | | replicas a coordinator asks last for now, after they failed or were outrun |
 | `chloedb_replication_role` | | 1 on a [primary](#replication-a-primary-and-its-replicas), 2 on a replica |
 | `chloedb_global_checkpoint` | | the highest sequence number every in-sync replica holds (on a replica, as its primary last said) |
