@@ -1,0 +1,14 @@
+# bbsweep-rs: runs ChloeCtx's redactor (chloectx/src/redact.rs, compiled unmodified from the
+# checkout) and the Nosey Parker rules (Rust `regex`, the crate Nosey Parker confirms matches
+# with) over JSON Lines of text, and prints the spans each would remove.
+[package]
+name = "bbsweep-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+regex = "1"
+serde_json = "1"
+
+[profile.release]
+opt-level = 3

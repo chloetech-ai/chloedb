@@ -1,0 +1,10 @@
+# Text taken from third-party datasets stays out of git: prep.mjs rebuilds it from the
+# datasets, and load.mjs loads it into ChloeDB from a machine that has them.
+data/*.jsonl.gz
+# Recorded answers quote the sessions; the planted documents are copies of real steps
+# holding the rule sets' example secrets. measure.mjs rebuilds both.
+data/answers.json
+data/canaries.json
+# Built by measure.mjs from sweep/go and sweep/rs.
+sweep/bin/
+sweep/rs/target/
