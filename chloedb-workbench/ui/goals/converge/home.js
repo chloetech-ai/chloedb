@@ -69,8 +69,11 @@ function movingLine(C, s) {
     if (plan) bits.push(`${plan} being planned`);
     if (top) bits.push(`top: ${top.title}`);
   } else if (s.step === "merge") {
-    const ready = s.items.filter((f) => f.ci === "pass").length;
-    bits.push(ready ? `${ready} ready for your approval` : "CI running");
+    const ready = s.items.filter((f) => f.ci === "pass" && !f.conflict).length;
+    const clash = s.items.filter((f) => f.conflict).length;
+    bits.push(ready ? `${ready} ready for your approval` : clash ? "" : "CI running");
+    if (clash) bits.push(`${clash} conflict${clash > 1 ? "s" : ""} with the base`);
+    if (!bits[0]) bits.shift();
   } else {
     if (live.length) bits.push(`${live.length} moving`);
     const f = live[0] || s.items[0];
@@ -82,7 +85,7 @@ function movingLine(C, s) {
 
 function stepRow(C, s, i) {
   const b = s.items.filter((f) => blockedOf(f));
-  const you = s.step === "problems" && s.count || s.step === "merge" && s.items.some((f) => f.ci === "pass");
+  const you = s.step === "problems" && s.count || s.step === "merge" && s.items.some((f) => (f.ci === "pass" && !f.conflict) || f.needs_now);
   return h("a", { class: `cv-step${s.count ? " has" : ""}${you ? " you" : ""}`, href: C.href(s.step) },
     h("span", { class: "s-no", "aria-hidden": "true" }, String(i + 1)),
     h("span", { class: "s-tx" }, h("span", { class: "s-nm" }, s.name), h("span", { class: "s-mv" }, s.moving ? h("i", { class: "cv-pulse", style: { color: "var(--accent)" }, "aria-hidden": "true" }) : null, movingLine(C, s))),

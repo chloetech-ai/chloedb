@@ -36,7 +36,16 @@ export async function openSheet(C, id) {
   let tk = null;
   const acts = h("div", { class: "acts" });
   const reload = async () => { sig = ""; await fetchIt(); C.S.sig = ""; C.load(); };
-  const post = async (verb, body, msg) => { try { await C.post(id, verb, body); if (msg) toast(msg); } catch (err) { toast(err.message || String(err)); } await reload(); };
+  // One call at a time: a second tap while one is pending sends nothing, and
+  // the footer's buttons are disabled until it answers.
+  let pending = false;
+  const post = async (verb, body, msg) => {
+    if (pending) return;
+    pending = true;
+    acts.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    try { await C.post(id, verb, body); if (msg) toast(msg); } catch (err) { toast(err.message || String(err)); } finally { pending = false; }
+    await reload();
+  };
   const putF = async (body, msg) => { try { await C.api(`/api/converge/findings/${enc(id)}`, { method: "PUT", body }); toast(msg); } catch (err) { toast(err.message || String(err)); } await reload(); };
 
   // Draw at once from the overview's copy, then from the card's own data.
@@ -45,7 +54,13 @@ export async function openSheet(C, id) {
 
   async function fetchIt() {
     let x;
-    try { x = await C.api(`/api/converge/findings/${enc(id)}`); } catch (err) { if (!d) put(sh.body, h("p", { class: "cv-empty" }, err.message || String(err))); return; }
+    try { x = await C.api(`/api/converge/findings/${enc(id)}`); } catch (err) {
+      if (d) return;
+      clearInterval(timer);
+      sh.setHead(h("h2", {}, err.status === 404 ? "No such card" : "The card did not open"));
+      put(sh.body, h("p", { class: "cv-empty" }, err.status === 404 ? "This card does not exist (it may have been removed). Close this and pick one from the list." : `It did not load: ${err.message || err}`));
+      return;
+    }
     if (!sh.sheet.isConnected) return;
     // Typing in one of its fields: the next refresh paints it.
     const a = document.activeElement;
@@ -77,10 +92,12 @@ export async function openSheet(C, id) {
     const parts = [
       ui.dismiss ? dismissBox(f) : null,
       ui.back ? backBox(f) : null,
+      ui.pr ? prBox(f) : null,
       ui.edit ? editBox(f) : null,
       blockedBox(f),
       scopeAskBox(f),
       queuedOf(f) ? h("p", { class: "cv-note" }, `Queued: ${queuedOf(f)}. It starts by itself when a slot frees.`) : null,
+      f.sent_back && f.sent_back.reason && ["develop", "verify"].includes(f.stage) ? h("p", { class: "cv-note", style: { overflowWrap: "anywhere" } }, h("b", {}, "Sent back: "), f.sent_back.reason, " — the next check needs a new commit for it.") : null,
       ...stageParts(f, x),
       ui.events ? eventsBox(x) : null,
       tk.section,
@@ -91,6 +108,7 @@ export async function openSheet(C, id) {
   }
 
   // ------------------------------------------------------------ moves
+  function busyNow(f) { return !!f.busy; }
   function actions(f) {
     const b = blockedOf(f);
     const out = [];
@@ -112,6 +130,7 @@ export async function openSheet(C, id) {
       case "reproduce":
         if (f.needs_you || (f.repro_attempts || 0) >= 2) {
           out.push(btn("Dismiss", "", () => { ui.dismiss = true; paint(d); sh.body.scrollTop = 0; }));
+          if (/wrote no repro|without writing/.test(f.needs_you || "")) out.push(btn("Can't reproduce", "", () => post("cant-reproduce", {}, "Marked can't reproduce")));
           out.push(btn("Give a hint", "pri", () => tk.focus()));
         }
         break;
@@ -132,7 +151,14 @@ export async function openSheet(C, id) {
       }
       case "review":
         out.push(btn("Send back", "", () => { ui.back = true; paint(d); sh.body.scrollTop = 0; }));
-        if (f.ci === "pass") out.push(btn("Approve and merge", "good", () => { if (confirm(`Merge the pull request of “${f.title}”?`)) post("approve", {}, "Approved: merging"); }));
+        // No pull request (no GitHub origin, or opening one failed): merge
+        // it here, or record the one you opened.
+        if (!f.pr_url && f.branch && !busyNow(f)) {
+          out.push(btn("Record a pull request", "", () => { ui.pr = true; paint(d); sh.body.scrollTop = 0; }));
+          out.push(btn("Merge locally", "good", () => { if (confirm(`Merge ${f.branch} into the base branch in the main checkout?`)) post("merge-local", {}, "Merged into the base branch"); }));
+        }
+        // A pull request that conflicts with the base is never offered for the merge.
+        if (f.ci === "pass" && !f.conflict) out.push(btn("Approve and merge", "good", () => { if (confirm(`Merge the pull request of “${f.title}”?`)) post("approve", {}, "Approved: merging"); }));
         break;
       default: break;
     }
@@ -155,23 +181,39 @@ export async function openSheet(C, id) {
 
   function dismissBox(f) {
     const why = h("input", { class: "cv-in", type: "text", placeholder: "Why is it not a problem?", "aria-label": "Why is it not a problem?" });
+    why.value = ui.dismissDraft || "";
+    why.addEventListener("input", () => { ui.dismissDraft = why.value; });
     setTimeout(() => why.focus(), 0);
     return h("section", { class: "cv-note", style: { display: "flex", flexDirection: "column", gap: "8px" } },
       h("span", { class: "cv-label" }, "Dismiss"), why,
       h("div", { style: { display: "flex", gap: "8px" } },
         h("button", { class: "cv-btn", type: "button", onclick: () => { ui.dismiss = false; paint(d); } }, "Cancel"),
-        h("button", { class: "cv-btn crit", type: "button", onclick: async () => { if (!why.value.trim()) { why.focus(); return; } await post("dismiss", { reason: why.value.trim() }, "Dismissed"); sh.close(); } }, "Dismiss it")));
+        h("button", { class: "cv-btn crit", type: "button", onclick: async () => { if (!why.value.trim()) { why.focus(); toast("Say why first: it teaches the personas"); return; } await post("dismiss", { reason: why.value.trim() }, "Dismissed"); sh.close(); } }, "Dismiss it")));
+  }
+
+  /** The address of a pull request you opened yourself: the `pr` verb. */
+  function prBox(f) {
+    const inp = h("input", { class: "cv-in", type: "url", placeholder: "https://github.com/owner/repo/pull/12", "aria-label": "The pull request's address" });
+    setTimeout(() => inp.focus(), 0);
+    return h("section", { class: "cv-note", style: { display: "flex", flexDirection: "column", gap: "8px" } },
+      h("span", { class: "cv-label" }, "Record a pull request"), inp,
+      h("div", { style: { display: "flex", gap: "8px" } },
+        h("button", { class: "cv-btn", type: "button", onclick: () => { ui.pr = false; paint(d); } }, "Cancel"),
+        h("button", { class: "cv-btn pri", type: "button", onclick: async () => { if (!/^https?:\/\//.test(inp.value.trim())) { inp.focus(); toast("The pull request's address, starting with https://"); return; } ui.pr = false; await post("pr", { url: inp.value.trim() }, "Recorded: CI is read from it"); } }, "Record it")));
   }
 
   /** "Send back with a note": the `back` verb with {text}; talking alone does not move a card back. */
   function backBox(f) {
     const ta = h("textarea", { class: "cv-ta", rows: "3", placeholder: "What should the fix agent change?", "aria-label": "What should the fix agent change?", style: { fontFamily: "var(--sans)", fontSize: "16px", minHeight: "88px" } });
+    // What you typed survives a repaint (another tap on Send back, a refresh).
+    ta.value = ui.backDraft || "";
+    ta.addEventListener("input", () => { ui.backDraft = ta.value; });
     setTimeout(() => ta.focus(), 0);
     return h("section", { class: "cv-note", style: { display: "flex", flexDirection: "column", gap: "8px" } },
       h("span", { class: "cv-label" }, "Send back to Building"), ta,
       h("div", { style: { display: "flex", gap: "8px" } },
         h("button", { class: "cv-btn", type: "button", onclick: () => { ui.back = false; paint(d); } }, "Cancel"),
-        h("button", { class: "cv-btn pri", type: "button", onclick: async () => { if (!ta.value.trim()) { ta.focus(); return; } ui.back = false; await post("back", { text: ta.value.trim() }, "Sent back: the fix agent has your note"); } }, "Send back")));
+        h("button", { class: "cv-btn pri", type: "button", onclick: async () => { if (!ta.value.trim()) { ta.focus(); toast("Say what to change first: the fix agent gets only your note"); return; } ui.back = false; const text = ta.value.trim(); ui.backDraft = ""; await post("back", { text }, "Sent back: the fix agent has your note"); } }, "Send back")));
   }
 
   function editBox(f) {
@@ -411,7 +453,9 @@ export async function openSheet(C, id) {
     }
     const files = c && c.x && Array.isArray(c.x.files) ? c.x.files : null;
     if (!files) return null;
-    const num = (o, ...ks) => { for (const q of ks) if (Number.isFinite(Number(o[q]))) return Number(o[q]); return 0; };
+    // Workbench's diff gives each file's hunks: its lines are counted (+ added, - removed).
+    const lines = (o, k) => (Array.isArray(o.hunks) ? o.hunks : []).reduce((a, hk) => a + (Array.isArray(hk.lines) ? hk.lines.filter((l) => l && l.kind === k).length : 0), 0);
+    const num = (o, ...ks) => { for (const q of ks) if (o[q] != null && Number.isFinite(Number(o[q]))) return Number(o[q]); return lines(o, ks[0] === "added" ? "+" : "-"); };
     const add = files.reduce((a, o) => a + num(o, "added", "adds", "insertions", "plus"), 0);
     const del = files.reduce((a, o) => a + num(o, "removed", "deleted", "dels", "deletions", "minus"), 0);
     return fold("The change", `${files.length} file${files.length === 1 ? "" : "s"} · +${add} −${del}`,
@@ -433,9 +477,11 @@ export async function openSheet(C, id) {
     if (f.stage === "merged") return h("div", { class: `cv-verdict${f.guard_ok === false ? " bad" : ""}` }, f.guard_ok === false ? "Merged, but the nightly guard says the problem is back." : "Merged. The nightly guard keeps running its repro.");
     const ver = [...evs].reverse().find((e) => e.gate === "verify");
     const dev = [...evs].reverse().find((e) => e.gate === "develop" && e.passed);
-    const bits = [f.ci === "pass" ? "CI green" : f.ci === "fail" ? "CI failed" : "CI running", dev ? "checks passed, in scope" : null, ver && ver.passed ? "the persona succeeded" : null].filter(Boolean);
+    const bits = [!f.pr_url ? (f.needs_you ? "no pull request yet" : "opening the pull request") : f.ci === "pass" ? "CI green" : f.ci === "fail" ? "CI failed" : "CI running", dev ? "checks passed, in scope" : null, ver && ver.passed ? "the persona succeeded" : null].filter(Boolean);
     return [
-      h("div", { class: `cv-verdict${f.ci === "pass" ? "" : f.ci === "fail" ? " bad" : " wait"}` }, f.ci === "pass" ? `Ready: ${bits.join(" · ")}` : bits.join(" · ")),
+      f.conflict ? h("div", { class: "cv-verdict bad" }, `${f.conflict}. Not ready to merge.`)
+        : !f.pr_url && f.needs_you ? h("div", { class: "cv-verdict wait" }, f.needs_you)
+        : h("div", { class: `cv-verdict${f.ci === "pass" ? "" : f.ci === "fail" ? " bad" : " wait"}` }, f.ci === "pass" ? `Ready: ${bits.join(" · ")}` : bits.join(" · ")),
       f.pr_url ? h("section", {}, h("span", { class: "cv-label" }, "Pull request"), h("a", { href: f.pr_url, target: "_blank", rel: "noopener", style: { overflowWrap: "anywhere" } }, f.pr_url), f.branch ? h("p", { class: "cv-meta" }, `Branch ${f.branch}`) : null) : null,
     ];
   }
@@ -443,7 +489,7 @@ export async function openSheet(C, id) {
   function eventsBox(x) {
     const evs = Array.isArray(x.events) ? x.events : [];
     return h("section", {}, h("span", { class: "cv-label" }, "History"), h("ul", { class: "cv-checks" }, evs.slice(-30).reverse().map((e) =>
-      h("li", {}, h("span", { class: `mk ${e.passed || e.gate === "reported" ? "done" : "fail"}` }, e.passed || e.gate === "reported" ? "✓" : "!"), h("span", {}, h("b", {}, e.gate), e.summary ? `: ${e.summary}` : ""), h("span", { class: "du" }, `${e.by || ""} · ${ago(e.ts_ms)}`)))));
+      h("li", { style: { overflowWrap: "anywhere" } }, h("span", { class: `mk ${e.passed || e.gate === "reported" ? "done" : "fail"}` }, e.passed || e.gate === "reported" ? "✓" : "!"), h("span", {}, h("b", {}, e.gate), e.summary ? `: ${e.summary}` : ""), h("span", { class: "du" }, `${e.by || ""} · ${ago(e.ts_ms)}`)))));
   }
 
   await fetchIt();

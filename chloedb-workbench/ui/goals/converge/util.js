@@ -71,34 +71,56 @@ export function toast(text, o = {}) {
 }
 
 /** What an agent's last event says it is doing, in a few plain words. */
+/** A command as a person would say it: its first line, without heredoc
+ *  bodies, leading `cd …&&`, environment settings or long paths. */
+export function cmdWords(cmd) {
+  let c = String(cmd || "").split("\n")[0];
+  c = c.replace(/<<-?\s*['"]?\w+['"]?.*$/, "").trim();
+  for (let i = 0; i < 4; i++) c = c.replace(/^(cd\s+("[^"]*"|'[^']*'|\S+)\s*(&&|;)\s*|[A-Z_][A-Z0-9_]*=\S*\s+)/, "");
+  c = c.replace(/(^|\s)(\/[^\s'"]*\/|~\/[^\s'"]*\/|\.\.?\/[^\s'"]*\/)([^\s/'"]+)/g, "$1$3").trim();
+  return c;
+}
+const INTERNAL = /^(TaskStop|TaskOutput|TaskCreate|TaskUpdate|TaskList|TaskGet|BashOutput|KillShell|KillBash|ToolSearch|ExitPlanMode|EnterPlanMode|Monitor|SendMessage|ListMcpResources|ReadMcpResource|AskUserQuestion|Skill|SlashCommand)$/;
+
 export function doingWords(ev) {
   if (!ev || typeof ev !== "string") return null;
   if (ev === "turn finished") return "finished its turn";
   if (ev.startsWith("prompt:")) return "reading its task";
   if (ev.startsWith("session started")) return "starting";
-  const m = /^(\w+)( done| failed)?(?::\s*(.*))?$/s.exec(ev);
-  if (!m) return ev.slice(0, 80);
+  const m = /^([\w.-]+)( done| failed)?(?::\s*(.*))?$/s.exec(ev);
+  if (!m) return cmdWords(ev).slice(0, 80) || "working";
   const [, tool, end, detail = ""] = m;
   const base = (p) => p.split("/").filter(Boolean).pop() || p;
+  const fail = end === " failed" ? " (failed)" : "";
   if (tool === "Bash") {
-    const cmd = detail.replace(/^cd\s+\S+\s*&&\s*/, "").trim();
-    const w = cmd.split(/\s+/);
+    const cmd = cmdWords(detail);
+    const w = cmd.split(/\s+/).filter(Boolean);
     let what;
-    if (/repro\.sh/.test(cmd)) what = "running its repro";
+    if (!cmd || /^cd\b/.test(cmd)) what = "moving around the checkout";
+    else if (/repro\.sh/.test(cmd)) what = "running its repro";
     else if (/^cargo (build|b)\b/.test(cmd)) what = "building";
-    else if (/^cargo (test|t|nextest)\b/.test(cmd) || /^(pytest|npm test|go test)/.test(cmd)) what = "running tests";
-    else if (/^cargo (clippy|check)\b/.test(cmd)) what = "checking the code";
+    else if (/^cargo (test|t|nextest)\b/.test(cmd) || /^(pytest|npm test|npm run test|go test|node --test)/.test(cmd)) what = "running tests";
+    else if (/^cargo (clippy|check|fmt)\b/.test(cmd)) what = "checking the code";
     else if (/^git (commit)/.test(cmd)) what = "committing";
     else if (/^git /.test(cmd)) what = `git ${w[1] || ""}`.trim();
-    else if (/^(cat|head|tail|less|sed -n)\b/.test(cmd)) what = `reading ${base(w.at(-1) || "")}`;
-    else if (/^(grep|rg|find|ls)\b/.test(cmd)) what = "looking around the code";
-    else what = `running ${w.slice(0, 3).join(" ")}`.slice(0, 60);
-    return end === " failed" ? `${what} (failed)` : what;
+    else if (/^(cat|tee|printf|echo)\b/.test(cmd) && />|\btee\b/.test(cmd)) what = (/>+\s*(\S+)/.exec(cmd) || /tee\s+(?:-a\s+)?(\S+)/.exec(cmd)) ? `writing ${base((/>+\s*(\S+)/.exec(cmd) || /tee\s+(?:-a\s+)?(\S+)/.exec(cmd))[1])}` : "writing a file";
+    else if (/^(cat|head|tail|less|sed -n|wc)\b/.test(cmd)) what = w.length > 1 && !/^[<>|-]/.test(w.at(-1)) ? `reading ${base(w.at(-1))}` : "reading a file";
+    else if (/^(grep|rg|find|ls|tree)\b/.test(cmd)) what = "looking around the code";
+    else if (/^(mkdir|cp|mv|rm|chmod|touch)\b/.test(cmd)) what = "arranging files";
+    else what = `running ${w.slice(0, 2).join(" ")}`.slice(0, 48);
+    // A search that found nothing exits 1: not a failure.
+    return `${what}${what === "looking around the code" ? "" : fail}`;
   }
-  const words = { Read: "reading", Edit: "editing", MultiEdit: "editing", Write: "writing", Grep: "searching for", Glob: "looking for", WebFetch: "opening", TodoWrite: "planning", Task: "delegating" };
-  const v = words[tool] || tool;
-  const d = /^(Read|Edit|MultiEdit|Write)$/.test(tool) ? base(detail) : detail.slice(0, 50);
-  return `${v}${d ? " " + d : ""}${end === " failed" ? " (failed)" : ""}`;
+  // The tools that manage its own background tasks and sessions: not news.
+  if (INTERNAL.test(tool)) return `managing its work${fail}`;
+  if (tool.startsWith("mcp__")) {
+    const parts = tool.split("__");
+    return `using ${parts[1] || "a tool"}${parts[2] ? ` (${parts[2].replace(/_/g, " ")})` : ""}${fail}`;
+  }
+  const words = { Read: "reading", Edit: "editing", MultiEdit: "editing", Write: "writing", NotebookEdit: "editing", Grep: "searching for", Glob: "looking for", WebFetch: "opening", WebSearch: "searching the web for", TodoWrite: "planning", Task: "delegating", Agent: "delegating" };
+  const v = words[tool] || (/^[A-Z]/.test(tool) ? "working" : tool);
+  const d = /^(Read|Edit|MultiEdit|Write|NotebookEdit)$/.test(tool) ? base(detail) : words[tool] && !/^(TodoWrite|Task|Agent)$/.test(tool) ? cmdWords(detail).slice(0, 50) : "";
+  return `${v}${d ? " " + d : ""}${/^(Grep|Glob)$/.test(tool) ? "" : fail}`;
 }
 
 /** Is an agent at work on it now? */
@@ -121,10 +143,10 @@ export function happening(f, settings = {}) {
     case "found": return f.occurrences > 1 ? `seen ${f.occurrences}×` : "waits for your pick";
     case "reproduce": return f.needs_you ? "needs a hint or a repro" : f.repro_hash ? "repro locked" : f.repro ? "running the repro" : "waits for a repro agent";
     case "scope": return "being planned";
-    case "prioritize": return f.door ? `one-way door: ${f.door}` : "planned, waits for your pick";
+    case "prioritize": return f.door ? `one-way door: ${f.door}` : f.queued ? "waits for a free agent slot" : settings.develop_auto ? "planned, starts when a slot is free" : "planned, waits for your pick";
     case "develop": return f.rounds ? `round ${Math.min(f.rounds + 1, rounds)} of ${rounds}` : "checks run next";
-    case "verify": return "the persona replays it";
-    case "review": return f.ci === "pass" ? "CI passed" : f.ci === "fail" ? "CI failed" : f.pr_url ? "CI running" : "opening the pull request";
+    case "verify": return !f.persona ? "verified by its repro next" : f.busy ? "the persona replays it" : "waits for the replay (budget or a run slot)";
+    case "review": return f.conflict ? "conflicts with the base" : f.ci === "pass" ? "CI passed" : f.ci === "fail" ? "CI failed" : f.pr_url ? "CI running" : f.needs_you ? "waits for you: merge it or record a pull request" : "opening the pull request";
     case "merged": return f.guard_ok === false ? "regressed" : "merged";
     default: return "";
   }

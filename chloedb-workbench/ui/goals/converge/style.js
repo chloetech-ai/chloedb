@@ -39,6 +39,9 @@ const CSS = `
 .cv-ptitle .car { font-size: var(--fs-sm); color: var(--muted); }
 .cv-psel { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 44px; opacity: 0; cursor: pointer; font-size: 16px; }
 .cv-ptitle:focus-within .cv-pname { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+/* A phone: the title takes its own line, so the name is not cut and the buttons do not overlap it. */
+@media (max-width: 480px) { .cv-top { flex-wrap: wrap; } .cv-ptitle { flex: 1 1 100%; } .cv-ptitle .cv-pname { white-space: normal; overflow-wrap: anywhere; } }
+.cv-ptitle:has(.cv-psel:focus-visible) .cv-pname { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .cv-auto { display: flex; align-items: center; gap: 8px; min-height: 32px; margin: -8px 0 var(--s-4); font-size: var(--fs-sm); color: var(--text-2); text-decoration: none; }
 .cv-auto .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .cv-auto .dot.on { background: var(--good); }
@@ -157,6 +160,7 @@ const CSS = `
 /* Sheets */
 .cv-scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 40; }
 .cv-sheet { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100%); background: var(--surface); box-shadow: var(--shadow-3); z-index: 41; display: flex; flex-direction: column; }
+.cv-sheet:focus { outline: none; }
 .cv-sheet-h { position: relative; padding: 14px 20px 12px; border-bottom: var(--hair) solid var(--line); display: flex; flex-direction: column; gap: 6px; }
 .cv-sheet-h > .cv-meta, .cv-sheet-h > .cv-label { margin-right: 96px; min-height: 28px; }
 .cv-sheet-h h2 { margin: 0; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: var(--w-title); overflow-wrap: anywhere; }

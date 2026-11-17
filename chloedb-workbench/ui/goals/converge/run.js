@@ -21,7 +21,13 @@ export function openRun(C, id) {
 
   const paint = async () => {
     let d;
-    try { d = await C.api(`/api/converge/runs/${enc(id)}`); } catch (err) { put(sh.body, h("p", { class: "cv-empty" }, err.message || String(err))); clearInterval(timer); return; }
+    try { d = await C.api(`/api/converge/runs/${enc(id)}`); } catch (err) {
+      clearInterval(timer);
+      if (tl) return; // A run already shown keeps what it showed.
+      sh.setHead(h("h2", {}, err.status === 404 ? "No such run" : "The run did not open"));
+      put(sh.body, h("p", { class: "cv-empty" }, err.status === 404 ? "This run does not exist (it may be from another project). Close this and pick one from Personas." : `It did not load: ${err.message || err}`));
+      return;
+    }
     if (!sh.sheet.isConnected) { clearInterval(timer); return; }
     const r = d.run || {}, pe = d.persona || {};
     const gen = r.purpose === "generate" || (!d.persona && !r.persona);
@@ -36,7 +42,7 @@ export function openRun(C, id) {
       h("span", { class: "cv-meta" }, d.live ? h("span", { class: "cv-tag run" }, h("i", { class: "cv-pulse", "aria-hidden": "true" }), gen ? "reading now" : "playing now") : h("span", { class: `cv-tag ${r.state === "failed" ? "bad" : "ok"}` }, r.state === "failed" ? "failed" : "finished"),
         h("span", {}, dur), r.cost_usd ? h("span", {}, usd(r.cost_usd)) : null, r.ease != null ? h("span", {}, `ease ${r.ease} of 5`) : null, r.use_memory ? h("span", { class: "cv-tag" }, "with memory") : null),
       h("h2", {}, gen ? name : `${name}${r.purpose === "verify" ? " checks a fix" : " plays their journey"}`),
-      h("span", { class: "cv-st" }, h("span", { class: "sg" }, at ? `Step ${at.n} of ${at.of}` : d.live ? "Starting" : "Done"), at && at.name ? h("span", { class: "wh" }, at.name) : null),
+      h("span", { class: "cv-st" }, h("span", { class: "sg" }, !d.live ? (at ? `Done · reached step ${at.n} of ${at.of}` : "Done") : at ? `Step ${at.n} of ${at.of}` : "Starting"), d.live && at && at.name ? h("span", { class: "wh" }, at.name) : null),
       h("span", { class: "cv-thin" }, h("i", { style: { width: `${pct}%` } })));
     if (!tl) {
       tl = taskList(openMap, gen ? "C" : (pe.name || "?").trim()[0] || "?");

@@ -76,7 +76,7 @@ async function play(C, p) {
   try {
     const r = await C.api(`/api/converge/personas/${enc(p.id)}/play`, { method: "POST", body: {} });
     const run = typeof r?.run === "string" ? r.run : r?.run?.id;
-    toast(`${firstName(p.name)} is playing${p.use_memory ? ", with their memory" : ""}`);
+    toast(`${firstName(p.name)} is playing${p.use_memory ? ", with their memory" : ""}${r?.over_limit ? `. ${r.over_limit}` : ""}`);
     C.S.sig = ""; await C.load();
     if (run) { C.openRun(run); return; }
     // The run starts a moment later: open it once the persona names it.
@@ -173,7 +173,7 @@ export function personasScreen(C) {
     stepHead(C, "Run a persona", ps.length || null, "Each persona plays its journey on a fresh checkout and reports what it hit. Ranked by what you pick below, open problems first by default."),
     gens.map((r) => h("button", { class: "cv-btn", type: "button", style: { width: "100%", marginBottom: "12px" }, onclick: () => C.openRun(r.id) }, h("i", { class: "cv-pulse", style: { color: "var(--accent)" } }), "Writing personas from the code: watch")),
     ps.length > 1 ? sel : null,
-    active.length ? table(active) : none("No active personas yet. Write some from the code, or add one by hand below.", h("button", { class: "cv-btn pri", type: "button", onclick: () => gen.click() }, "Write personas from the code")),
+    active.length ? table(active) : prob.length ? h("p", { class: "cv-empty" }, `None active yet: the ${prob.length} below are on probation and play like the others until one of their problems reproduces.`) : none("No active personas yet. Write some from the code, or add one by hand below.", h("button", { class: "cv-btn pri", type: "button", onclick: () => gen.click() }, "Write personas from the code")),
     prob.length ? h("details", { class: "cv-fold", open: true, style: { marginTop: "16px" } }, h("summary", {}, "On probation", h("span", { class: "s" }, `${prob.length} · join once a problem of theirs reproduces`)), table(prob)) : null,
     retired.length ? h("details", { class: "cv-fold", style: { marginTop: "8px" } }, h("summary", {}, "Retired", h("span", { class: "s" }, String(retired.length))),
       h("ul", { class: "cv-checks" }, retired.map((p) => h("li", {}, h("span"), h("span", {}, p.name), h("button", { class: "cv-btn quiet", type: "button", onclick: () => C.act(() => C.api(`/api/converge/personas/${enc(p.id)}/activate`, { method: "POST", body: {} }), "Active again") }, "Bring back"))))) : null,
