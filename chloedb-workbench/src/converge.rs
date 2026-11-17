@@ -1872,7 +1872,28 @@ fn gate_found(sup: &Supervisor, st: &Settings, f: &mut Finding) -> Result<(), Ap
     advance_to(sup, f, "reproduce", "dedup", true, "autopilot", &format!("No open finding says the same (best match {best_sim:.2})"), json!({ "best_similarity": best_sim }))
 }
 
-const READY: &str = "Ready for development: choose Start development to hand it to a fix agent.";
+/// An open card that says the same as `f` (the duplicate check's rule):
+/// a card you pick skips Found, so it is not merged, but you are told.
+fn like_open(sup: &Supervisor, f: &Finding) -> Json {
+    findings_of(sup, &f.repo)
+        .into_iter()
+        .filter(|o| o.id != f.id && o.state == "active")
+        .map(|o| (similarity(f, &o), o))
+        .filter(|(s, _)| *s >= DUP)
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+        .map(|(sim, o)| json!({ "id": o.id, "title": o.title, "stage": o.stage, "similarity": (sim * 100.0).round() / 100.0 }))
+        .unwrap_or(Json::Null)
+}
+
+fn warn_like(sup: &Supervisor, f: &Finding, like: &Json) {
+    if like.is_null() {
+        return;
+    }
+    let st = f.stage.clone();
+    event(sup, f, &st, &st, "dedup", false, "autopilot", &format!("Looks like {} ({}, similarity {}): dismiss this one if it is the same", like["id"].as_str().unwrap_or(""), like["title"].as_str().unwrap_or(""), like["similarity"]), json!({ "similar": like }));
+}
+
+const READY: &str = "Ready for development: choose Build to hand it to a fix agent.";
 const TRIAGE: &str = "New finding: choose Reproduce to chase it, or Dismiss.";
 
 /// One cargo target directory per repository, shared by Converge's agents
@@ -2172,12 +2193,19 @@ fn start_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, by: &
     let short = f.id.trim_start_matches("cv").chars().take(8).collect::<String>();
     let name = format!("cv-{short}");
     let branch = format!("wb/cv-{short}");
+    // From what has merged: origin's base when it is ahead of the local one
+    // (a pull request merged on GitHub), so a new branch does not redo it.
+    let base = base_of(&repo, &st);
+    if git(&repo, &["remote", "get-url", "origin"]).is_ok() {
+        let _ = git(&repo, &["fetch", "-q", "origin", &base]);
+    }
+    let from = diff_base(&repo, &base);
     let req = SpawnRequest {
         repo: f.repo.clone(),
         task: Some(dev_task(f)),
         name: Some(name),
         branch: Some(branch.clone()),
-        base: Some(base_of(&repo, &st)),
+        base: Some(from),
         worktree: Some(true),
         model: st.dev_model.clone(),
         permissions: Some(crate::supervisor::PermissionProfile { allow: st.dev_allow.clone(), ask: Vec::new(), deny: st.dev_deny.clone() }),
@@ -2258,6 +2286,26 @@ fn is_doc(path: &str) -> bool {
     l.ends_with(".md") || l.ends_with(".txt") || l.starts_with("docs/") || l.contains("/docs/")
 }
 
+/// The test command's exit on the base, once per commit of it (kept in memory).
+static BASE_TESTS: Mutex<Option<HashMap<String, (i32, String)>>> = Mutex::new(None);
+
+fn base_tests(sup: &Supervisor, repo: &Path, base: &str, cmd: &str, timeout: u64) -> Option<(i32, String)> {
+    let against = diff_base(repo, base);
+    let rev = crate::git::rev_parse(repo, &against)?;
+    let key = format!("{}\u{0}{rev}\u{0}{cmd}", repo.display());
+    if let Some(x) = BASE_TESTS.lock().unwrap().as_ref().and_then(|m| m.get(&key).cloned()) {
+        return Some(x);
+    }
+    let sc = Scratch::new(sup, repo, &rev, &format!("base-tests-{}", &rev[..rev.len().min(10)])).ok()?;
+    let r = match run_cmd("sh", &["-c".into(), cmd.to_string()], &sc.path, None, &[], Duration::from_secs(timeout)) {
+        Ok((c, out, err)) => (c, tail(&format!("{out}{err}"), 1500)),
+        Err(e) => (-1, e),
+    };
+    drop(sc);
+    BASE_TESTS.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, r.clone());
+    Some(r)
+}
+
 /// Develop's gate: committed, repro green N of N, tests, a test changed, in scope.
 fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(), ApiError> {
     let mut f = get_finding(sup, id)?;
@@ -2286,6 +2334,26 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
         return put_finding(sup, &f);
     }
     let mut problems: Vec<String> = Vec::new();
+    // Sent back: the same head as then is not an answer (checked before the
+    // base is brought in below, which makes a commit of its own).
+    let head0 = git(&wt, &["rev-parse", "HEAD"]).ok();
+    let same_head = f.sent_back.as_ref().filter(|sb| sb["head"].is_string() && sb["head"].as_str() == head0.as_deref()).map(|sb| one_line(sb["reason"].as_str().unwrap_or(""), 200));
+    // What merged since the branch started (another card's fix) comes in
+    // first, so the checks and the replay see today's base; a conflict is
+    // the agent's to resolve.
+    let dirty = git(&wt, &["status", "--porcelain"]).unwrap_or_default();
+    if dirty.trim().is_empty() {
+        if git(&repo, &["remote", "get-url", "origin"]).is_ok() {
+            let _ = git(&repo, &["fetch", "-q", "origin", &base]);
+        }
+        let against = diff_base(&repo, &base);
+        if git(&wt, &["merge-base", "--is-ancestor", &against, "HEAD"]).is_err() {
+            if let Err(e) = git(&wt, &["-c", "commit.gpgsign=false", "-c", "user.name=Workbench", "-c", "user.email=workbench@localhost", "merge", "--no-edit", "-m", &format!("Merge {against} into {}", f.branch.clone().unwrap_or_default()), &against]) {
+                let _ = git(&wt, &["merge", "--abort"]);
+                problems.push(format!("{base} has moved on and conflicts with your branch: merge {against} into it, resolve the conflicts, commit ({})", one_line(&e, 160)));
+            }
+        }
+    }
     let dirty = git(&wt, &["status", "--porcelain"]).unwrap_or_default();
     if !dirty.trim().is_empty() {
         problems.push(format!("uncommitted changes: commit your work ({})", one_line(&dirty.replace('\n', ", "), 200)));
@@ -2295,10 +2363,8 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
     if changed.is_empty() {
         problems.push(format!("no commits on the branch past {base}"));
     }
-    // Sent back: the same head as then is not an answer.
-    let head = git(&wt, &["rev-parse", "HEAD"]).ok();
-    if let Some(sb) = f.sent_back.as_ref().filter(|sb| sb["head"].is_string() && sb["head"].as_str() == head.as_deref()) {
-        problems.push(format!("no new commit since it was sent back ({}): make the change, commit it, and stop", one_line(sb["reason"].as_str().unwrap_or(""), 200)));
+    if let Some(reason) = same_head {
+        problems.push(format!("no new commit since it was sent back ({reason}): make the change, commit it, and stop"));
     }
     if f.repro_hash.as_deref() != f.repro.as_deref().map(repro_hash).as_deref() {
         problems.push("the repro changed after it was locked: it goes back to reproduce".into());
@@ -2311,10 +2377,16 @@ fn gate_develop(sup: &Arc<Supervisor>, lv: &Arc<Levels>, id: &str) -> Result<(),
     let tests = match st.test_cmd.as_deref().filter(|c| !c.trim().is_empty()) {
         Some(cmd) => match run_cmd("sh", &["-c".into(), cmd.to_string()], &wt, None, &[], Duration::from_secs(st.run_timeout_s)) {
             Ok((0, out, err)) => json!({ "cmd": cmd, "exit": 0, "output": tail(&format!("{out}{err}"), 1200) }),
-            Ok((code, out, err)) => {
-                problems.push(format!("the tests failed (exit {code}): {}", one_line(&tail(&format!("{out}{err}"), 300), 300)));
-                json!({ "cmd": cmd, "exit": code, "output": tail(&format!("{out}{err}"), 2000) })
-            }
+            Ok((code, out, err)) => match base_tests(sup, &repo, &base, cmd, st.run_timeout_s) {
+                // Red on the base already: not this fix's to make green; said, not required.
+                Some((bc, bout)) if bc != 0 => {
+                    json!({ "cmd": cmd, "exit": code, "output": tail(&format!("{out}{err}"), 2000), "base_exit": bc, "base_output": tail(&bout, 1200), "note": format!("the tests fail on {base} too (exit {bc}): not required of this fix") })
+                }
+                _ => {
+                    problems.push(format!("the tests failed (exit {code}): {}", one_line(&tail(&format!("{out}{err}"), 300), 300)));
+                    json!({ "cmd": cmd, "exit": code, "output": tail(&format!("{out}{err}"), 2000) })
+                }
+            },
             Err(e) => {
                 problems.push(e.clone());
                 json!({ "cmd": cmd, "error": e })
@@ -2694,7 +2766,7 @@ fn open_pr(sup: &Arc<Supervisor>, id: &str) -> Result<(), ApiError> {
         f.repro.clone().unwrap_or_default()
     );
     let Some(slug) = gh_slug(&repo) else {
-        f.needs_you = Some("The repository has no origin on GitHub: open a pull request and record its URL.".into());
+        f.needs_you = Some("The repository has no origin on GitHub: merge it locally, or open a pull request and record its URL.".into());
         return failed(sup, &mut f, "pr", "autopilot", "no GitHub origin", Json::Null);
     };
     let base = base_of(&repo, &st);
@@ -3022,7 +3094,16 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
                         let _ = set_blocked(sup, &mut g, b);
                     } else if take_repro(sup, &mut g, "autopilot").is_err() {
                         let aid = g.agent.take();
-                        g.needs_you = Some("The repro agent finished without writing .converge/repro.sh: paste a repro, ask again, or park it.".into());
+                        // Its own words: most often why it could not reproduce it.
+                        let said = aid.as_deref().and_then(|a| crate::capsule::last_summary(sup, a)).map(|t| crate::narrate::sentences(&t, 3, 500));
+                        if let Some(a) = aid.as_deref().filter(|a| sup.is_running(a)) {
+                            let _ = sup.stop_with(a, Some(true));
+                        }
+                        g.needs_you = Some(match &said {
+                            Some(w) if !w.trim().is_empty() => format!("The repro agent wrote no repro. It said: {}. Mark it can't reproduce, give a hint, or paste a repro.", w.trim().trim_end_matches('.')),
+                            _ => "The repro agent finished without writing .converge/repro.sh: mark it can't reproduce, give a hint, or paste a repro.".into(),
+                        });
+                        g.note = said.clone().or(g.note.clone());
                         g.repro_attempts += 1;
                         g.updated = now_ms();
                         let _ = put_finding(sup, &g);
@@ -3087,6 +3168,17 @@ fn tick_with(sup: &Arc<Supervisor>, lv: &Arc<Levels>, repo: &str, wait: bool, pe
                     log(sup, repo, "agent", &who(sup, &aid), &format!("{}: the fix agent finished its turn; checking its branch", short(&f.title, 70)), json!({ "finding": id, "agent": aid }), json!({ "branch": f.branch, "round": f.rounds + 1 }));
                 }
                 h
+            }
+            // A card of yours has no persona to replay it: its develop check
+            // (the locked repro green N of N, the tests) is the verification.
+            "verify" if f.persona.is_none() => {
+                if let Ok(mut g) = get_finding(sup, &id) {
+                    g.needs_you = None;
+                    let _ = advance_to(sup, &mut g, "review", "verify", true, "autopilot", "No persona to replay it: the locked repro passing on the branch and the tests are its verification", json!({ "replay": false }));
+                    started.push(format!("{id} verified"));
+                    did.push(format!("verified {} by its repro", short(&f.title, 50)));
+                }
+                None
             }
             "verify" if budget_left > 0.0 => match f.persona.clone() {
                 // The replay plays in the mode of the run that found it, so their eases compare.
@@ -3762,10 +3854,20 @@ async fn overview_route(State(app): State<App>, Query(q): Query<RepoQ>) -> ApiRe
         let all = findings_of(&sup, &repo);
         let moving = |f: &Finding| busy_what(&f.id).is_some() || f.agent.as_deref().and_then(|a| sup.agent_row(a)).is_some_and(|a| matches!(a.state.as_str(), "starting" | "working"));
         let steps = steps_of(&all, &moving);
-        Ok(json!({ "repo": repo, "settings": settings(&sup, &repo), "stages": gates(), "themes": THEMES, "components": components_open(&repo, &all), "findings": fs, "personas": ps, "runs": runs, "metrics": metrics(&sup, &repo), "busy": BUSY.lock().unwrap().clone().unwrap_or_default(), "last_tick": last_tick(&sup, &repo), "chloectx": chloectx_check(&sup, &repo), "steps": steps, "merged_week": merged_week(&all, now_ms()) }))
+        Ok(json!({ "repo": repo, "settings": settings(&sup, &repo), "stages": gates(), "themes": THEMES, "components": components_open(&repo, &all), "findings": fs, "personas": ps, "runs": runs, "metrics": metrics(&sup, &repo), "busy": busy_of(&all, &ps_ids(&sup, &repo)), "last_tick": last_tick(&sup, &repo), "chloectx": chloectx_check(&sup, &repo), "steps": steps, "merged_week": merged_week(&all, now_ms()) }))
     })
     .await?;
     Ok(AxJson(v).into_response())
+}
+
+fn ps_ids(sup: &Supervisor, repo: &str) -> HashSet<String> {
+    personas_of(sup, repo).into_iter().map(|p| format!("persona:{}", p.id)).collect()
+}
+
+/// What runs now for this project only: its cards' and its personas' keys.
+fn busy_of(fs: &[Finding], personas: &HashSet<String>) -> HashMap<String, String> {
+    let ids: HashSet<&str> = fs.iter().map(|f| f.id.as_str()).collect();
+    BUSY.lock().unwrap().clone().unwrap_or_default().into_iter().filter(|(k, _)| ids.contains(k.as_str()) || personas.contains(k)).collect()
 }
 
 /// The findings that wait for you, for the inbox (`/api/needs`): one item
@@ -4515,7 +4617,12 @@ async fn finding_new(State(app): State<App>, headers: HeaderMap, body: Bytes) ->
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
     let v = blocking(move || {
         let repo = repo_of(b.repo)?;
-        let title = b.title.as_deref().map(str::trim).filter(|x| !x.is_empty() && x.len() <= 200).ok_or_else(|| ApiError::bad("title is required, at most 200 bytes"))?.to_string();
+        let title = b.title.as_deref().map(str::trim).filter(|x| !x.is_empty()).ok_or_else(|| ApiError::bad("title is required"))?.to_string();
+        // Characters, as the page's box counts them (not bytes).
+        let n = title.chars().count();
+        if n > 200 {
+            return Err(ApiError::bad(format!("the title is {n} characters: at most 200 (put the rest in the detail)")));
+        }
         if let Some(p) = b.persona.as_deref() {
             get_persona(&sup, p)?;
         }
@@ -4547,8 +4654,10 @@ async fn finding_new(State(app): State<App>, headers: HeaderMap, body: Bytes) ->
         event(&sup, &f, "", "found", "reported", true, &by, &format!("Reported by {by}"), Json::Null);
         ensure_settings(&sup, &repo)?;
         let refs = json!({ "finding": f.id, "persona": f.persona });
+        let like = like_open(&sup, &f);
         if pick {
             advance_to(&sup, &mut f, "reproduce", "asked", true, "you", "You added it and picked it: on to Reproduce", Json::Null)?;
+            warn_like(&sup, &f, &like);
             log(&sup, &repo, "you", "you", &format!("You added {} by hand and sent it to Reproduce", short(&f.title, 70)), refs, json!({ "component": f.component, "severity": sev_name(f.severity) }));
             kick(&sup, &lv, &repo);
         } else if by == "you" {
@@ -4556,7 +4665,7 @@ async fn finding_new(State(app): State<App>, headers: HeaderMap, body: Bytes) ->
         } else {
             log(&sup, &repo, "agent", &who(&sup, &by), &format!("Reported {}", short(&f.title, 70)), json!({ "finding": f.id, "agent": by }), json!({ "component": f.component, "severity": sev_name(f.severity) }));
         }
-        Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup) }))
+        Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup), "similar": like }))
     })
     .await?;
     Ok((StatusCode::CREATED, AxJson(v)).into_response())
@@ -4700,7 +4809,7 @@ fn after_edit(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, before: 
 
 async fn finding_verb(State(app): State<App>, headers: HeaderMap, AxPath((id, verb)): AxPath<(String, String)>, body: Bytes) -> ApiResult {
     let v: Json = if body.is_empty() { json!({}) } else { parse_body(&body)? };
-    if matches!(verb.as_str(), "approve" | "start" | "reproduce" | "dismiss" | "back" | "park" | "unpark" | "pin" | "unpin" | "pr" | "unblock" | "scope-ok" | "scope-no") {
+    if matches!(verb.as_str(), "approve" | "merge-local" | "cant-reproduce" | "start" | "reproduce" | "dismiss" | "back" | "park" | "unpark" | "pin" | "unpin" | "pr" | "unblock" | "scope-ok" | "scope-no") {
         user_only(&app, &headers)?;
     }
     let (sup, lv) = (app.sup.clone(), app.lv.clone());
@@ -4870,8 +4979,56 @@ fn do_verb(sup: &Arc<Supervisor>, lv: &Arc<Levels>, f: &mut Finding, verb: &str,
                     Ok(v) if merge_conflicted(&v.to_string()) => return Err(merge_conflict(sup, f, &v.to_string())),
                     Ok(v) => return Err(ApiError::new(502, "merge_failed", format!("GitHub did not merge it: {}", one_line(&v.to_string(), 300)))),
                     Err(e) if merge_conflicted(&e) => return Err(merge_conflict(sup, f, &e)),
+                    Err(e) if e.to_ascii_lowercase().contains("already in progress") => return Err(ApiError::conflict("GitHub is merging it already: the card moves to Merged when it is done")),
                     Err(e) => return Err(ApiError::new(502, "merge_failed", e)),
                 }
+            }
+            // No GitHub to merge on: the branch is merged into the base in
+            // the main checkout, as you would by hand.
+            "merge-local" => {
+                if f.stage != "review" {
+                    return Err(ApiError::conflict(format!("{} is in {}, not review", f.id, f.stage)));
+                }
+                if f.pr_url.is_some() {
+                    return Err(ApiError::conflict("it has a pull request: approve it there (Approve and merge)"));
+                }
+                let branch = f.branch.clone().ok_or_else(|| ApiError::conflict("no branch to merge"))?;
+                let repo = PathBuf::from(&f.repo);
+                let st = settings(sup, &f.repo);
+                let base = base_of(&repo, &st);
+                if crate::git::current_branch(&repo).as_deref() != Some(base.as_str()) {
+                    return Err(ApiError::conflict(format!("the main checkout is not on {base}: switch it to {base} first")));
+                }
+                if !git(&repo, &["status", "--porcelain", "--untracked-files=no"]).unwrap_or_default().trim().is_empty() {
+                    return Err(ApiError::conflict(format!("the main checkout has uncommitted changes: commit or stash them before merging into {base}")));
+                }
+                let msg = format!("Merge {branch}: {}", one_line(&f.title, 120));
+                if let Err(e) = git(&repo, &["-c", "commit.gpgsign=false", "merge", "--no-ff", "-m", &msg, &branch]) {
+                    let _ = git(&repo, &["merge", "--abort"]);
+                    let why = format!("Conflicts with {base}: merging {branch} locally stopped ({})", one_line(&e, 160));
+                    f.conflict = Some(why.clone());
+                    f.needs_you = Some(format!("{why}. Talk to the fix agent to merge {base} into its branch, then merge again."));
+                    failed(sup, f, "conflict", "you", &why, json!({ "error": e }))?;
+                    return Err(ApiError::conflict(why));
+                }
+                let sha = crate::git::rev_parse(&repo, "HEAD");
+                f.approved_by = Some("you".into());
+                f.needs_you = None;
+                f.conflict = None;
+                advance_to(sup, f, "merged", "approved", true, "you", &format!("Merged {branch} into {base} locally"), json!({ "branch": branch, "base": base, "sha": sha, "local": true }))?;
+            }
+            // Yours to say, after a repro agent found nothing to reproduce.
+            "cant-reproduce" => {
+                if f.stage != "reproduce" {
+                    return Err(ApiError::conflict(format!("{} is in {}, not reproduce", f.id, f.stage)));
+                }
+                if let Some(a) = f.agent.take().filter(|a| sup.is_running(a)) {
+                    let _ = sup.stop_with(&a, Some(true));
+                }
+                f.state = "cant_reproduce".into();
+                f.needs_you = None;
+                let why = v["reason"].as_str().map(str::trim).filter(|r| !r.is_empty()).map(str::to_string).or(f.note.clone()).unwrap_or_else(|| "You said it can't be reproduced".into());
+                failed(sup, f, "repro_fails", "you", &format!("Can't reproduce: {}", one_line(&why, 200)), json!({ "reason": why }))?;
             }
             "repro-agent" => {
                 if f.stage != "reproduce" {
@@ -5105,10 +5262,12 @@ async fn ask_route(State(app): State<App>, headers: HeaderMap, body: Bytes) -> A
         f.run = Some(run.id.clone());
         put_finding(&sup, &f)?;
         event(&sup, &f, "", "found", "reported", true, "you", &format!("You asked: {}", one_line(&text, 300)), json!({ "run": run.id, "text": text }));
+        let like = like_open(&sup, &f);
         advance_to(&sup, &mut f, "reproduce", "asked", true, "you", "Yours, so already picked: on to Reproduce", json!({ "run": run.id }))?;
+        warn_like(&sup, &f, &like);
         log(&sup, &repo, "ask", "you", &format!("You asked: {} → card {} in Reproduce", short(&text, 60), short(&f.title, 60)), json!({ "finding": f.id, "run": run.id }), json!({ "text": text, "kind": f.kind, "theme": f.theme, "component": f.component, "severity": sev_name(f.severity), "acceptance": f.scope.as_ref().map(|s| s.acceptance.clone()), "cost_usd": run.cost_usd }));
         kick(&sup, &lv, &repo);
-        Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup), "run": run }))
+        Ok(json!({ "finding": get_finding(&sup, &f.id)?.to_json(&sup), "run": run, "similar": like }))
     })
     .await?;
     Ok((StatusCode::CREATED, AxJson(v)).into_response())

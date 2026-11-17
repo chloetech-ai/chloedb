@@ -7466,6 +7466,79 @@ fn converge_probation_waits_for_untried_findings_and_a_dismissed_card_stops_its_
     assert_eq!(m["funnel"]["dismissed"], 1, "{m}");
 }
 
+/// A card of yours has no persona to replay it: its develop check is its
+/// verification. With no GitHub origin, you merge it locally.
+#[test]
+fn converge_your_card_is_verified_by_its_repro_and_merges_locally_without_github() {
+    let fakes = tempfile::tempdir().unwrap();
+    let fd = fakes.path().canonicalize().unwrap();
+    let (runner, gh) = converge_fakes(&fd);
+    let s = start_lab(&[("CHLOEDB_WORKBENCH_CONVERGE_CMD", &runner), ("CHLOEDB_WORKBENCH_CONVERGE_GH", &gh)]);
+    let (_d, r) = repo();
+    std::fs::create_dir(r.join("src")).unwrap();
+    std::fs::write(r.join("src/app.sh"), "echo export\n").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "app"]);
+    let (st, v) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "repro_runs": 1, "test_cmd": "test -f src/FIXED", "follow_picks": false } }));
+    assert_eq!(st, 200, "{v}");
+    // A huge or empty budget is refused, not saved as 0.
+    for bad in [json!(null), json!(""), json!(-1)] {
+        let (st, e) = s.put("/api/converge/settings", json!({ "repo": r, "settings": { "budget_usd_day": bad } }));
+        assert_eq!(st, 400, "{e}");
+    }
+    assert_eq!(s.get(&format!("/api/converge/settings?repo={}", r.display())).1["settings"]["budget_usd_day"], 20.0);
+    // A title of 200 characters is fine, whatever its bytes.
+    let long: String = "é".repeat(200);
+    assert_eq!(s.post("/api/converge/findings", json!({ "repo": r, "title": long })).0, 201);
+    let (st, e) = s.post("/api/converge/findings", json!({ "repo": r, "title": "é".repeat(201) }));
+    assert_eq!(st, 400, "{e}");
+    assert!(e["error"].as_str().unwrap().contains("201 characters"), "{e}");
+
+    let fid = cv_new(&s, json!({ "repo": r, "title": "Totals in the footer are wrong", "repro": "test -f src/FIXED", "pick": true }));
+    let step = |want: &str| {
+        let end = Instant::now() + Duration::from_secs(30);
+        loop {
+            cv_tick(&s, &r);
+            let f = cv_finding(&s, &fid);
+            if f["finding"]["stage"] == want || Instant::now() > end {
+                return f;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    let f = step("prioritize");
+    assert_eq!(f["finding"]["stage"], "prioritize", "{f}");
+    let (st, v) = s.post(&format!("/api/converge/findings/{fid}/start"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    let aid = v["finding"]["agent"].as_str().unwrap().to_string();
+    let wt = PathBuf::from(v["finding"]["worktree"].as_str().unwrap());
+    s.wait(&aid, "idle");
+    std::fs::write(wt.join("src/FIXED"), "yes\n").unwrap();
+    std::fs::create_dir_all(wt.join("tests")).unwrap();
+    std::fs::write(wt.join("tests/footer_test.sh"), "test -f src/FIXED\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "-q", "-m", "fix the footer"]);
+    // Develop passes, Verify is its repro (no persona), and Review has no GitHub to open a pull request on.
+    let f = step("review");
+    assert_eq!(f["finding"]["stage"], "review", "{f}");
+    assert!(f["events"].as_array().unwrap().iter().any(|e| e["gate"] == "verify" && e["passed"] == true), "{f}");
+    let f = loop {
+        cv_tick(&s, &r);
+        let f = cv_finding(&s, &fid);
+        if f["finding"]["needs_you"].is_string() {
+            break f;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(f["finding"]["needs_you"].as_str().unwrap().contains("merge it locally"), "{f}");
+    // Merged locally, into main in the main checkout; its agent is stopped.
+    let (st, v) = s.post(&format!("/api/converge/findings/{fid}/merge-local"), json!({}));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["finding"]["stage"], "merged", "{v}");
+    assert!(r.join("src/FIXED").is_file(), "main has the fix");
+    s.wait(&aid, "exited");
+}
+
 #[test]
 fn converge_seed_loads_the_personas_and_their_findings_once() {
     let s = start_lab(&[]);
