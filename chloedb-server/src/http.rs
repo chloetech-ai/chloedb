@@ -2786,13 +2786,14 @@ fn tables_param(q: &std::collections::HashMap<String, String>) -> Vec<String> {
 
 /// A SQLite file's tables ([`Service::import_sqlite`]): `?tables=a,b`
 /// imports only those, `?blobs_base64=true` keeps BLOB columns as base64
-/// text, and `?plan=true` answers what the import would do and writes
-/// nothing.
+/// text, `?append=true` adds rows to tables without a key that have rows
+/// (refused otherwise), and `?plan=true` answers what the import would do
+/// and writes nothing.
 async fn import_sqlite(app: &App, who: &Principal, q: &std::collections::HashMap<String, String>, body: Bytes) -> Res {
     if q.contains_key("table") {
         return Err(ApiError::bad("table is for rows: a SQLite file's tables go to the tables of their names (?tables= picks them)"));
     }
-    let opts = chloedb::sqlite::ImportOptions { tables: tables_param(q), schemas: Vec::new(), blobs_base64: flag(q, "blobs_base64", false)? };
+    let opts = chloedb::sqlite::ImportOptions { tables: tables_param(q), schemas: Vec::new(), blobs_base64: flag(q, "blobs_base64", false)?, append: flag(q, "append", false)? };
     let plan = flag(q, "plan", false)?;
     let t0 = std::time::Instant::now();
     let mut j = app.svc.import_sqlite(who, body, opts, plan, 0).await?;

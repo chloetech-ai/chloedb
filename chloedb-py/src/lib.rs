@@ -423,8 +423,14 @@ impl Database {
     }
 
     fn sqlite_options(tables: Option<Vec<String>>, schemas: Option<&str>, blobs_base64: bool) -> PyResult<sqlite::ImportOptions> {
+        Database::sqlite_import_options(tables, schemas, blobs_base64, false)
+    }
+
+    /// [`Database::sqlite_options`] of an import, which may append
+    /// ([`sqlite::ImportOptions::append`]).
+    fn sqlite_import_options(tables: Option<Vec<String>>, schemas: Option<&str>, blobs_base64: bool, append: bool) -> PyResult<sqlite::ImportOptions> {
         let schemas = schemas.map(sqlite::schemas_from_json).transpose().map_err(err)?.unwrap_or_default();
-        Ok(sqlite::ImportOptions { tables: tables.unwrap_or_default(), schemas, blobs_base64 })
+        Ok(sqlite::ImportOptions { tables: tables.unwrap_or_default(), schemas, blobs_base64, append })
     }
 
     /// Documents of `rows`, the first numbered `first` in errors.
@@ -524,26 +530,28 @@ fn table_of(db: &Db, table: Option<&str>) -> chloedb::Result<Arc<Schema>> {
 
 #[pymethods]
 impl Database {
-    /// Creates a database at `path` with a schema (JSON text, either form).
+    /// Creates a database at `path` with a schema (JSON text, either form);
+    /// `sync = false` to commit without an `fsync` (see `DbOptions::sync`).
     #[staticmethod]
-    #[pyo3(signature = (path, schema, directory = false, models = None, threads = None))]
-    fn create(py: Python<'_>, path: PathBuf, schema: &str, directory: bool, models: Option<PathBuf>, threads: Option<usize>) -> PyResult<Self> {
+    #[pyo3(signature = (path, schema, directory = false, models = None, threads = None, sync = true))]
+    fn create(py: Python<'_>, path: PathBuf, schema: &str, directory: bool, models: Option<PathBuf>, threads: Option<usize>, sync: bool) -> PyResult<Self> {
         let schema = Schema::from_json(schema).map_err(err)?;
         let threads = threads_or_cores(threads)?;
-        let opts = db_options(directory, threads);
+        let opts = DbOptions { sync, ..db_options(directory, threads) };
         let models = models.unwrap_or_else(chloedb::embed::models_dir);
         let db = py.detach(|| Db::create_in(&path, schema, opts, &models)).map_err(err)?;
         Ok(Database::new(with_threads(db, threads), Some(models)))
     }
 
     /// Opens the database at `path`; `read_only` to read it while another
-    /// process writes it.
+    /// process writes it; `sync = false` to commit without an `fsync`
+    /// (see `DbOptions::sync`).
     #[staticmethod]
-    #[pyo3(signature = (path, models = None, threads = None, read_only = false, recover = false))]
-    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>, read_only: bool, recover: bool) -> PyResult<Self> {
+    #[pyo3(signature = (path, models = None, threads = None, read_only = false, recover = false, sync = true))]
+    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>, read_only: bool, recover: bool, sync: bool) -> PyResult<Self> {
         let threads = threads_or_cores(threads)?;
         // The layout comes from the file; the option only matters to a create.
-        let opts = DbOptions { read_only, recover, ..db_options(false, threads) };
+        let opts = DbOptions { read_only, recover, sync, ..db_options(false, threads) };
         let db = py.detach(|| Db::open(&path, opts)).map_err(err)?;
         Ok(Database::new(with_threads(db, threads), models))
     }
@@ -908,10 +916,10 @@ impl Database {
 
     /// Imports the tables of the SQLite file `path` ([`sqlite::import`]);
     /// returns what it did as JSON.
-    #[pyo3(signature = (path, tables = None, schemas = None, blobs_base64 = false))]
-    fn import_sqlite(&self, py: Python<'_>, path: PathBuf, tables: Option<Vec<String>>, schemas: Option<&str>, blobs_base64: bool) -> PyResult<String> {
+    #[pyo3(signature = (path, tables = None, schemas = None, blobs_base64 = false, append = false))]
+    fn import_sqlite(&self, py: Python<'_>, path: PathBuf, tables: Option<Vec<String>>, schemas: Option<&str>, blobs_base64: bool, append: bool) -> PyResult<String> {
         let db = self.get()?;
-        let opts = Database::sqlite_options(tables, schemas, blobs_base64)?;
+        let opts = Database::sqlite_import_options(tables, schemas, blobs_base64, append)?;
         let r = py.detach(|| local(&path).and_then(|l| sqlite::import(&db, &l.path, &opts))).map_err(err)?;
         Ok(r.to_json().to_string())
     }

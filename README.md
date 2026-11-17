@@ -48,6 +48,8 @@ docker run --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-sec
   ghcr.io/chloetech-ai/chloedb-server:latest
 ```
 
+Or, from release 0.3.7, take it from PyPI, the same prebuilt server in a wheel per platform: `pipx install chloedb-server` (or `uv tool install chloedb-server`) puts it on your `PATH`, and `uvx chloedb-server --demo 20000 --db products.chloedb` runs it without installing it.
+
 Or build it from source (Rust stable and a C compiler; the first build takes several minutes):
 
 ```sh
@@ -116,6 +118,8 @@ The same methods work against a server: replace `chloedb.open(...)` with `chloed
 - **[chloedb-sheets](docs/chloedb/sheets.md)**: spreadsheets whose cells are rows, with formulas, charts, pivots and SQL queries of the cluster.
 - **[chloedb-netops](docs/chloedb/netops.md)**: a network operations center in tables: the shift's worklist, incidents grouped over the topology with a board per incident, changes, carriers, agents that show their SQL, and a leadership view. Ships with a simulated carrier network.
 - **[chloedb-hn](docs/chloedb/hn.md)**: every Hacker News story and comment, searched by words and meaning, with questions in a sentence ("which post has received the most comments") answered by SQL without a model, autocomplete of questions and phrases, exact text from the FM-index, threads, people and cited answers.
+- **[chloedb-arxiv](docs/chloedb/arxiv.md)**: every arXiv paper searched by words and meaning, with people, topics, trends, citations, what to read next from ChloeDB's recommender, and a weekly feed each reader shapes.
+- **[chloedb-gh](docs/chloedb/github.md)**: every public GitHub event since 2011 (11.2 billion) on four 8 GB machines: repos found by what they do, why their stars moved, what people use instead, who keeps them going, what is rising, and what to star next.
 - **[chloedb-apps](docs/chloedb/apps.md)** (a prototype): describe an app in a sentence, and a model writes it, the engine checks it, and you change it by asking.
 - **[chloedb-swarm](chloedb-swarm/README.md)**: simulated users who try ChloeDB through its MCP tools or the command center, and a report of what got in their way.
 

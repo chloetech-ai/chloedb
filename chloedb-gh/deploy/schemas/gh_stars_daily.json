@@ -1,0 +1,29 @@
+{
+ "table": "gh_stars_daily",
+ "shard_by": "repo",
+ "cluster_by": "repo",
+ "compression": "zstd",
+ "fields": [
+  {
+   "name": "repo",
+   "type": "int",
+   "not_null": true
+  },
+  {
+   "name": "day",
+   "type": "int",
+   "stored": false,
+   "not_null": true
+  },
+  {
+   "name": "stars",
+   "type": "int",
+   "stored": false
+  },
+  {
+   "name": "forks",
+   "type": "int",
+   "stored": false
+  }
+ ]
+}

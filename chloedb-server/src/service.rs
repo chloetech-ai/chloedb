@@ -649,6 +649,10 @@ pub struct Service {
     backfills: Mutex<HashMap<(String, String), Backfill>>,
     /// The models a fetch was tried for, once each.
     fetch_tried: Mutex<HashSet<String>>,
+    /// The tables without a key that a SQLite import is writing (lower
+    /// case), which another import may not write too
+    /// ([`Self::import_sqlite`]).
+    keyless_imports: Arc<Mutex<HashSet<String>>>,
     /// The fetches and conversions asked for over HTTP, by the model each
     /// makes (lower case).
     model_jobs: Mutex<HashMap<String, ModelJob>>,
@@ -789,6 +793,22 @@ pub struct Service {
     pub simulator: crate::traffic::run::Simulator,
 }
 
+/// The tables without a key a SQLite import writes, given back when it
+/// ends ([`Service::import_sqlite`]).
+struct KeylessClaim {
+    set: Arc<Mutex<HashSet<String>>>,
+    tables: Vec<String>,
+}
+
+impl Drop for KeylessClaim {
+    fn drop(&mut self) {
+        let mut held = self.set.lock().unwrap_or_else(|e| e.into_inner());
+        for t in &self.tables {
+            held.remove(t);
+        }
+    }
+}
+
 /// A server's part in replication.
 #[derive(Clone, Default)]
 pub enum Replication {
@@ -877,6 +897,7 @@ impl Service {
             models_changed: tokio::sync::watch::Sender::new(0),
             backfills: Mutex::new(HashMap::new()),
             fetch_tried: Mutex::new(HashSet::new()),
+            keyless_imports: Default::default(),
             model_jobs: Mutex::new(HashMap::new()),
             ranking: Models::default(),
             timeout,
@@ -5312,6 +5333,10 @@ impl Service {
     /// and the server's log says how it ended.
     pub async fn import_sqlite(self: &Arc<Self>, who: &Principal, body: axum::body::Bytes, opts: chloedb::sqlite::ImportOptions, plan_only: bool, timeout_ms: u64) -> Result<Json, ApiError> {
         who.may(Scope::Write, "an import")?;
+        if body.is_empty() {
+            // As an empty file is: a database with no table.
+            return Err(ApiError::coded(400, "bad_request", "the request has no body: send the SQLite file as it (curl --data-binary @file.sqlite)".to_string()));
+        }
         let catalog = self.catalog();
         let bytes = body.len();
         // A file in WAL mode keeps its latest writes in its -wal file until
@@ -5360,10 +5385,42 @@ impl Service {
         let creates: Vec<&str> = plan.tables.iter().filter(|t| !t.exists).map(|t| t.schema.table.as_str()).collect();
         if !creates.is_empty() {
             who.may(Scope::Admin, &format!("an import that creates tables ({})", creates.join(", ")))?;
+        }
+        // Rows of a table without a key would go in beside its rows, or
+        // beside those of another import of the same file at once: one
+        // import at a time writes such a table, and only while it is empty.
+        let _claim = if plan.append {
+            None
+        } else {
+            let keyless: Vec<String> = plan.tables.iter().filter(|t| t.schema.primary_key.is_none()).map(|t| t.schema.table.to_lowercase()).collect();
+            let mut held = self.keyless_imports.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(t) = plan.tables.iter().find(|t| t.schema.primary_key.is_none() && held.contains(&t.schema.table.to_lowercase())) {
+                return Err(ApiError::coded(
+                    409,
+                    "conflict",
+                    format!("table {} has no primary key and another import is writing it, so this one would add the file's rows beside that one's: import with append (?append=true) to add them", t.schema.table),
+                ));
+            }
+            held.extend(keyless.iter().cloned());
+            Some(KeylessClaim { set: self.keyless_imports.clone(), tables: keyless })
+        };
+        let mut has_rows = Vec::new();
+        for t in plan.tables.iter().filter(|t| t.schema.primary_key.is_none() && !plan.append) {
+            if self.has_rows(&t.schema.table, timeout_ms).await? {
+                has_rows.push(t.schema.table.clone());
+            }
+        }
+        plan.check_appends(|name| Ok(has_rows.iter().any(|t| t == name))).map_err(|e| match e {
+            chloedb::Error::Schema(m) => ApiError::coded(409, "conflict", m),
+            e => ApiError::from(e),
+        })?;
+        if !creates.is_empty() {
             keys::note(format!("SQLite import created tables {}", creates.join(", ")));
         }
         let svc = self.clone();
         let write = async move {
+            // Held to the import's end, though the client hangs up.
+            let _claim = _claim;
             let t0 = Instant::now();
             let r = svc.write_sqlite(dir, src, &plan, timeout_ms).await;
             let (out, failed) = match r {
@@ -5410,34 +5467,51 @@ impl Service {
     ) -> Result<chloedb::sqlite::Imported, (chloedb::sqlite::Imported, ApiError)> {
         enum Step {
             Table(usize),
-            Ops(Vec<Json>),
+            /// Rows to write, with how many are of each table (by its place
+            /// in the plan): the rows of small tables go in one request.
+            Ops(Vec<Json>, Vec<(usize, u64)>),
+        }
+        // In one commit, rather than one a table: a commit writes the list
+        // of every table, so that a file of many tables would take the
+        // square of their number. On a failure (another import made one
+        // of them since the plan), one by one as the rows come.
+        let new: Vec<usize> = (0..plan.tables.len()).filter(|&i| !plan.tables[i].exists).collect();
+        let mut made = vec![false; plan.tables.len()];
+        if new.len() > 1 && matches!(self.backend, Backend::Local(_)) && self.create_tables(new.iter().map(|&i| plan.tables[i].schema.clone()).collect(), timeout_ms).await.is_ok() {
+            new.iter().for_each(|&i| made[i] = true);
         }
         let tables = plan.tables.clone();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<chloedb::Result<Step>>(1);
         let reader = tokio::task::spawn_blocking(move || {
             let _dir = dir;
+            let (mut ops, mut counts) = (Vec::new(), Vec::new());
             for (i, t) in tables.iter().enumerate() {
                 if tx.blocking_send(Ok(Step::Table(i))).is_err() {
                     return;
                 }
                 let op = if t.schema.primary_key.is_some() { "upsert" } else { "insert" };
                 let r = src.documents(t, |docs| {
-                    loop {
-                        let chunk: chloedb::Result<Vec<Json>> =
-                            (&mut *docs).take(IMPORT_OPS).map(|d| d.map(|d| json!({"op": op, "table": t.schema.table, "doc": js::document_json(&t.schema, &d)}))).collect();
-                        let last = chunk.as_ref().map_or(true, |c| c.len() < IMPORT_OPS);
-                        // The writing side stopped: a write failed.
-                        if tx.blocking_send(chunk.map(Step::Ops)).is_err() {
-                            return Err(chloedb::Error::Query("stopped".into()));
-                        }
-                        if last {
-                            return Ok(());
+                    counts.push((i, 0));
+                    for d in docs {
+                        ops.push(json!({"op": op, "table": t.schema.table, "doc": js::document_json(&t.schema, &d?)}));
+                        counts.last_mut().expect("pushed").1 += 1;
+                        if ops.len() == IMPORT_OPS {
+                            // The writing side stopped: a write failed.
+                            if tx.blocking_send(Ok(Step::Ops(std::mem::take(&mut ops), std::mem::take(&mut counts)))).is_err() {
+                                return Err(chloedb::Error::Query("stopped".into()));
+                            }
+                            counts.push((i, 0));
                         }
                     }
+                    Ok(())
                 });
-                if r.is_err() {
+                if let Err(e) = r {
+                    let _ = tx.blocking_send(Err(e));
                     return;
                 }
+            }
+            if !ops.is_empty() {
+                let _ = tx.blocking_send(Ok(Step::Ops(ops, counts)));
             }
         });
         let mut out = chloedb::sqlite::Imported { tables: Vec::new(), skipped: plan.skipped.clone() };
@@ -5447,7 +5521,7 @@ impl Service {
                     Step::Table(i) => {
                         let t = &plan.tables[i];
                         let mut created = !t.exists;
-                        if created {
+                        if created && !made[i] {
                             if let Err(e) = self.create_table(t.schema.clone(), timeout_ms).await {
                                 // Another import of the same file made it since
                                 // the plan: its rows go in as into a table that was there.
@@ -5460,12 +5534,10 @@ impl Service {
                         }
                         out.tables.push(chloedb::sqlite::TableImport { source: t.source.clone(), table: t.schema.table.clone(), rows: 0, created, bulk: false, notes: t.notes.clone() });
                     }
-                    Step::Ops(ops) => {
-                        if !ops.is_empty() {
-                            let n = self.write_ops(ops, None).await?.rows;
-                            if let Some(t) = out.tables.last_mut() {
-                                t.rows += n;
-                            }
+                    Step::Ops(ops, counts) => {
+                        self.write_ops(ops, None).await?;
+                        for (i, n) in counts {
+                            out.tables[i].rows += n;
                         }
                     }
                 }
@@ -5595,13 +5667,22 @@ impl Service {
     /// database, once no write holds the writer; a primary ships it with
     /// the rows. A coordinator creates tables only through `CREATE TABLE`.
     async fn create_table(self: &Arc<Self>, schema: Schema, timeout_ms: u64) -> Result<(), ApiError> {
+        self.create_tables(vec![schema], timeout_ms).await
+    }
+
+    /// Creates tables as [`Self::create_table`] creates one: on a local
+    /// database in one commit ([`Db::create_tables`], all or none), on a
+    /// coordinator one by one.
+    async fn create_tables(self: &Arc<Self>, schemas: Vec<Schema>, timeout_ms: u64) -> Result<(), ApiError> {
         let db = match &self.backend {
             Backend::Local(db) => db,
             // On every shard, as CREATE TABLE through the coordinator, so
             // that an import makes the table its plan says it makes.
             Backend::Cluster(_) => {
-                let sql = chloedb::query::ddl::create_sql(&schema);
-                self.ddl(sql.trim_end_matches(';'), &Params::new(), timeout_ms, "import").await?;
+                for schema in &schemas {
+                    let sql = chloedb::query::ddl::create_sql(schema);
+                    self.ddl(sql.trim_end_matches(';'), &Params::new(), timeout_ms, "import").await?;
+                }
                 return Ok(());
             }
         };
@@ -5610,9 +5691,25 @@ impl Service {
         self.not_held()?;
         let deadline = Instant::now() + self.timeout_of(timeout_ms);
         let db = db.clone();
-        tokio::task::spawn_blocking(move || wait_for_writer(deadline, || Ok(db.create_table(schema.clone())?))).await.map_err(ApiError::internal)??;
+        tokio::task::spawn_blocking(move || wait_for_writer(deadline, || Ok(db.create_tables(schemas.clone())?))).await.map_err(ApiError::internal)??;
         self.refresh_models();
         Ok(())
+    }
+
+    /// Whether the table named `table` is there and has a row (on a
+    /// coordinator, on any shard).
+    async fn has_rows(self: &Arc<Self>, table: &str, timeout_ms: u64) -> Result<bool, ApiError> {
+        if let Backend::Local(db) = &self.backend {
+            return Ok(db.snapshot().table(table).is_some_and(|s| s.n_live_docs() > 0));
+        }
+        if !self.catalog_now().await.iter().any(|s| s.table.eq_ignore_ascii_case(table)) {
+            return Ok(false);
+        }
+        let sql = format!("SELECT 1 FROM {} LIMIT 1", chloedb::query::sql::quoted(table));
+        match self.sql(&Principal::admin("import", false), &sql, &Params::new(), After::Any, timeout_ms).await? {
+            SqlAnswer::Rows(a) => Ok(!a.rs.rows.is_empty()),
+            SqlAnswer::Written { .. } => Ok(false),
+        }
     }
 
     /// Writes the tables (all, or `opts.tables`) to a new SQLite file, from

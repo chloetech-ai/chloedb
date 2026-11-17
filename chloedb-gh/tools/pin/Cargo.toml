@@ -1,0 +1,17 @@
+[package]
+name = "chloedb-gh-pin"
+version = "0.3.7"
+edition = "2021"
+license = "Apache-2.0"
+description = "Locks a database's vector codes and graphs in memory, beside the server that reads them"
+publish = false
+
+# Its own workspace: a tool of the demo, built only by hand (see main.rs).
+[workspace]
+
+[dependencies]
+chloedb = { path = "../../../chloedb", default-features = false, features = ["embed"] }
+libc = "0.2"
+
+[profile.release]
+codegen-units = 16

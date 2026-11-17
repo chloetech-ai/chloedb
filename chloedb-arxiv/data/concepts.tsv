@@ -1,0 +1,195 @@
+# kind	slug	name	phrases (lowercase, ; separated, matched on word boundaries)	acronyms (case-sensitive tokens, ; separated)	groups (only papers of these category groups, ; separated; empty: any)
+# Techniques: methods a paper uses or proposes.
+technique	transformer	Transformers	transformer;transformers;transformer-based;transformer architecture;self-attention;multi-head attention		cs;stat;eess;q-bio;q-fin;econ;physics;astro-ph;quant-ph;cond-mat;math
+technique	llm	Large language models	large language model;large language models;foundation model;foundation models;language model;language models	LLM;LLMs	
+technique	diffusion	Diffusion models	diffusion model;diffusion models;denoising diffusion;score-based generative;score-based model;latent diffusion;diffusion probabilistic	DDPM;DDIM	
+technique	gan	Generative adversarial networks	generative adversarial network;generative adversarial networks;adversarial generative	GAN;GANs;StyleGAN;CycleGAN	
+technique	vae	Variational autoencoders	variational autoencoder;variational autoencoders;variational auto-encoder	VAE;VAEs	
+technique	normalizing-flow	Normalizing flows	normalizing flow;normalizing flows;normalising flow;normalising flows
+technique	flow-matching	Flow matching	flow matching;rectified flow;rectified flows
+technique	autoregressive	Autoregressive models	autoregressive model;autoregressive models;next-token prediction;autoregressive generation
+technique	rlhf	RLHF	reinforcement learning from human feedback;human feedback;preference optimization;reward model;reward models	RLHF;RLAIF	
+technique	dpo	Direct preference optimization	direct preference optimization	DPO;GRPO;PPO	
+technique	rlvr	RL with verifiable rewards	verifiable rewards;verifiable reward;reinforcement learning with verifiable	RLVR	
+technique	lora	LoRA / parameter-efficient fine-tuning	low-rank adaptation;parameter-efficient fine-tuning;parameter efficient fine-tuning;adapter tuning;prefix tuning;prompt tuning	LoRA;QLoRA;PEFT	
+technique	fine-tuning	Fine-tuning	fine-tuning;fine-tuned;finetuning;finetuned;supervised fine-tuning	SFT	
+technique	instruction-tuning	Instruction tuning	instruction tuning;instruction-tuned;instruction following;instruction-following
+technique	in-context-learning	In-context learning	in-context learning;few-shot prompting;in-context examples	ICL	
+technique	chain-of-thought	Chain-of-thought reasoning	chain-of-thought;chain of thought;step-by-step reasoning;reasoning traces;test-time compute;test-time scaling	CoT	
+technique	prompting	Prompt engineering	prompt engineering;prompting;prompt design;prompt optimization
+technique	rag	Retrieval-augmented generation	retrieval-augmented generation;retrieval augmented generation;retrieval-augmented	RAG	
+technique	agents	LLM agents	llm agent;llm agents;language agent;language agents;agentic;tool use;tool-use;function calling;multi-agent framework
+technique	quantization	Quantization	model quantization;weight quantization;post-training quantization;quantization-aware;low-bit quantization;quantized neural;quantized model;quantized models;quantized llms;4-bit;8-bit		cs;stat;eess
+technique	distillation	Knowledge distillation	knowledge distillation;distillation;distilled;teacher-student
+technique	pruning	Pruning and sparsity	pruning;pruned;sparse training;structured sparsity;lottery ticket
+technique	moe	Mixture of experts	mixture of experts;mixture-of-experts;sparse experts;expert routing	MoE	
+technique	ssm	State space models	state space model;state space models;state-space model;selective state space	SSM;SSMs;Mamba	
+technique	speculative-decoding	Speculative decoding	speculative decoding;speculative sampling
+technique	kv-cache	KV cache and efficient inference	kv cache;key-value cache;efficient inference;inference acceleration;flashattention;flash attention;paged attention
+technique	long-context	Long-context modeling	long context;long-context;context window;context length extrapolation;length generalization
+technique	scaling-laws	Scaling laws	scaling law;scaling laws;compute-optimal
+technique	tokenization	Tokenization	tokenization;tokenizer;tokenizers;byte-pair encoding	BPE	
+technique	embeddings	Text embeddings	text embedding;text embeddings;sentence embedding;sentence embeddings;embedding model;embedding models
+technique	word2vec	Word embeddings	word embedding;word embeddings;word2vec;glove;fasttext
+technique	bert	BERT-style encoders	bert;roberta;masked language model;masked language modeling	BERT;RoBERTa;DeBERTa	
+technique	contrastive	Contrastive learning	contrastive learning;contrastive loss;contrastive objective;infonce;simclr;moco
+technique	self-supervised	Self-supervised learning	self-supervised;self supervised;pretext task;masked autoencoder;masked autoencoders
+technique	semi-supervised	Semi-supervised learning	semi-supervised;semi supervised;pseudo-label;pseudo-labels;pseudo-labeling
+technique	transfer-learning	Transfer learning	transfer learning;domain adaptation;domain generalization
+technique	meta-learning	Meta-learning	meta-learning;meta learning;learning to learn;few-shot learning;few shot learning
+technique	continual-learning	Continual learning	continual learning;lifelong learning;catastrophic forgetting;incremental learning
+technique	active-learning	Active learning	active learning
+technique	multitask	Multi-task learning	multi-task learning;multitask learning;multi-task
+technique	cnn	Convolutional neural networks	convolutional neural network;convolutional neural networks;convolutional network;convolutional networks;resnet;residual network	CNN;CNNs;ResNet	
+technique	rnn	Recurrent networks and LSTMs	recurrent neural network;recurrent neural networks;long short-term memory;gated recurrent	RNN;RNNs;LSTM;LSTMs;GRU	
+technique	gnn	Graph neural networks	graph neural network;graph neural networks;graph convolutional;graph convolution;message passing neural;graph attention network	GNN;GNNs;GCN;GAT	
+technique	vit	Vision transformers	vision transformer;vision transformers	ViT;ViTs;DeiT;Swin	
+technique	clip	Vision-language models	vision-language model;vision-language models;vision language model;multimodal large language model;multimodal llm;image-text	CLIP;VLM;VLMs;MLLM;MLLMs;LLaVA	
+technique	unet	U-Net	u-net;unet	U-Net	
+technique	object-detection	Object detection models	object detection;object detector;detection transformer	YOLO;DETR;R-CNN	
+technique	segmentation	Image segmentation	semantic segmentation;instance segmentation;panoptic segmentation;image segmentation;segment anything
+technique	nerf	Neural radiance fields	neural radiance field;neural radiance fields;radiance field;radiance fields	NeRF;NeRFs	
+technique	gaussian-splatting	Gaussian splatting	gaussian splatting;3d gaussian splatting;3d gaussians	3DGS	
+technique	implicit-neural	Implicit neural representations	implicit neural representation;implicit neural representations;neural implicit;signed distance function	INR	
+technique	rl	Reinforcement learning	reinforcement learning;policy gradient;q-learning;actor-critic;deep q-network	RL;DQN	
+technique	offline-rl	Offline reinforcement learning	offline reinforcement learning;offline rl;batch reinforcement learning
+technique	imitation	Imitation learning	imitation learning;behavior cloning;behaviour cloning;learning from demonstrations;inverse reinforcement learning
+technique	mcts	Monte Carlo tree search	monte carlo tree search	MCTS	
+technique	bandits	Multi-armed bandits	multi-armed bandit;multi-armed bandits;contextual bandit;contextual bandits;bandit
+technique	bayesian-optimization	Bayesian optimization	bayesian optimization;bayesian optimisation
+technique	gaussian-process	Gaussian processes	gaussian process;gaussian processes
+technique	variational-inference	Variational inference	variational inference;variational bayes;evidence lower bound	ELBO	
+technique	mcmc	MCMC	markov chain monte carlo;hamiltonian monte carlo;gibbs sampling;metropolis-hastings;langevin dynamics	MCMC;HMC	
+technique	bayesian	Bayesian inference	bayesian inference;bayesian model;bayesian models;posterior distribution;bayesian neural network
+technique	causal-inference	Causal inference	causal inference;causal discovery;causal effect;treatment effect;counterfactual;instrumental variable
+technique	conformal	Conformal prediction	conformal prediction;conformal inference
+technique	uncertainty	Uncertainty quantification	uncertainty quantification;uncertainty estimation;calibration;epistemic uncertainty;aleatoric
+technique	kernel	Kernel methods	kernel method;kernel methods;reproducing kernel;kernel regression;support vector machine;support vector machines	SVM;SVMs;RKHS	
+technique	tree-ensembles	Tree ensembles	random forest;random forests;gradient boosting;boosted trees;decision tree;decision trees	XGBoost;LightGBM	
+technique	federated	Federated learning	federated learning;federated
+technique	differential-privacy	Differential privacy	differential privacy;differentially private
+technique	adversarial	Adversarial robustness	adversarial attack;adversarial attacks;adversarial examples;adversarial robustness;adversarial training;jailbreak;jailbreaking
+technique	interpretability	Interpretability	interpretability;explainability;explainable ai;mechanistic interpretability;saliency map;feature attribution;sparse autoencoder;sparse autoencoders	XAI;SHAP	
+technique	knowledge-graph	Knowledge graphs	knowledge graph;knowledge graphs;knowledge base;knowledge bases
+technique	optimization-sgd	Stochastic optimization	stochastic gradient descent;stochastic optimization;adam optimizer;learning rate schedule;convergence rate	SGD	
+technique	convex	Convex optimization	convex optimization;convex optimisation;semidefinite programming;linear programming;mixed-integer
+technique	evolutionary	Evolutionary algorithms	evolutionary algorithm;evolutionary algorithms;genetic algorithm;genetic algorithms;evolution strategies;particle swarm
+technique	neural-ode	Neural ODEs	neural ode;neural odes;neural ordinary differential
+technique	pinn	Physics-informed neural networks	physics-informed neural network;physics-informed neural networks;physics-informed	PINN;PINNs	
+technique	neural-operator	Neural operators	neural operator;neural operators;fourier neural operator;deeponet	FNO	
+technique	equivariant	Equivariant networks	equivariant;equivariance;group convolution
+technique	hashing-ann	Approximate nearest neighbor search	approximate nearest neighbor;approximate nearest neighbour;vector search;similarity search;product quantization	HNSW	
+technique	learning-to-rank	Learning to rank	learning to rank;learning-to-rank;reranking;re-ranking;reranker;rerankers
+technique	dense-retrieval	Dense retrieval	dense retrieval;dense retriever;dense passage retrieval;bi-encoder;late interaction;colbert	DPR;ColBERT	
+technique	sparse-retrieval	Sparse retrieval	sparse retrieval;learned sparse;bm25;splade	BM25;SPLADE	
+technique	collaborative-filtering	Collaborative filtering	collaborative filtering;matrix factorization;implicit feedback;sequential recommendation
+technique	generative-retrieval	Generative retrieval and semantic IDs	generative retrieval;semantic id;semantic ids;generative recommendation
+technique	topic-models	Topic models	topic model;topic models;topic modeling;latent dirichlet allocation
+technique	speech-models	Speech models	speech recognition model;text-to-speech;speech synthesis;wav2vec;whisper;speech language model	ASR;TTS	
+technique	world-models	World models	world model;world models
+technique	synthetic-data	Synthetic data	synthetic data;data augmentation;data generation
+technique	model-merging	Model merging	model merging;model soup;weight averaging;task arithmetic
+technique	watermarking	Watermarking	watermarking;watermark;watermarks
+technique	unlearning	Machine unlearning	machine unlearning;unlearning
+technique	hallucination	Hallucination	hallucination;hallucinations;factuality;faithfulness
+technique	alignment	Alignment	ai alignment;value alignment;human alignment;aligning language models;aligned with human preferences;human values
+technique	evaluation	LLM evaluation	llm-as-a-judge;llm as a judge;llm evaluation;evaluating llms
+technique	code-llm	Code generation models	code generation;code llm;code llms;program synthesis
+technique	spiking	Spiking neural networks	spiking neural network;spiking neural networks;neuromorphic	SNN;SNNs	
+technique	quantum-ml	Quantum machine learning	quantum machine learning;quantum neural network;variational quantum;quantum kernel	QML	
+technique	vqe	Variational quantum algorithms	variational quantum eigensolver;quantum approximate optimization;variational quantum algorithm	VQE;QAOA	
+technique	quantum-error-correction	Quantum error correction	quantum error correction;surface code;error-correcting code;logical qubit;logical qubits;stabilizer code	QEC	
+technique	tensor-networks	Tensor networks	tensor network;tensor networks;matrix product state;matrix product states;density matrix renormalization	MPS;DMRG;PEPS	
+technique	dft	Density functional theory	density functional theory;first-principles;first principles calculations;ab initio	DFT	cond-mat;physics;quant-ph;nucl;astro-ph
+technique	molecular-dynamics	Molecular dynamics	molecular dynamics;molecular dynamics simulations
+technique	monte-carlo	Monte Carlo methods	monte carlo simulation;monte carlo simulations;monte carlo method;quantum monte carlo
+technique	lattice-qcd	Lattice QCD	lattice qcd;lattice gauge;lattice simulations
+technique	effective-field-theory	Effective field theory	effective field theory;effective field theories	EFT;SMEFT	
+technique	holography	Holography and AdS/CFT	ads/cft;holographic;holography;gauge/gravity duality
+technique	string-theory	String theory	string theory;superstring;string compactification;d-branes
+technique	numerical-relativity	Numerical relativity	numerical relativity
+technique	n-body	N-body and hydrodynamical simulations	n-body simulation;n-body simulations;cosmological simulations;hydrodynamical simulations;hydrodynamic simulations
+technique	fem	Finite element methods	finite element;finite elements;finite element method;galerkin;discontinuous galerkin	FEM	
+technique	finite-volume	Finite difference and finite volume	finite difference;finite volume;spectral method
+technique	pde-numerics	Numerical PDE solvers	numerical scheme;numerical schemes;multigrid;preconditioner;iterative solver
+technique	sat-smt	SAT/SMT solving	sat solver;smt solver;satisfiability modulo	SAT;SMT	
+technique	formal-verification	Formal verification	formal verification;model checking;theorem proving;proof assistant;interactive theorem	Coq;Isabelle	
+technique	fuzzing	Fuzzing	fuzzing;fuzzer;fuzz testing
+technique	zero-knowledge	Zero-knowledge proofs	zero-knowledge;zero knowledge proof;zk-snark;snarks	ZKP	
+technique	homomorphic	Homomorphic encryption	homomorphic encryption;fully homomorphic	FHE	
+technique	blockchain	Blockchain	blockchain;smart contract;smart contracts;consensus protocol
+technique	compressed-sensing	Compressed sensing	compressed sensing;sparse recovery;compressive sensing
+technique	kalman	Kalman filtering	kalman filter;kalman filtering;particle filter;state estimation
+technique	mpc	Model predictive control	model predictive control	MPC	
+technique	slam	SLAM	simultaneous localization and mapping;visual odometry	SLAM	
+technique	optimal-transport	Optimal transport	optimal transport;wasserstein distance;wasserstein;sinkhorn
+technique	graph-algorithms	Graph algorithms	graph algorithm;graph algorithms;shortest path;spanning tree;graph partitioning
+technique	approximation-algorithms	Approximation algorithms	approximation algorithm;approximation algorithms;approximation ratio;polynomial-time approximation	PTAS	
+technique	game-theory	Game-theoretic methods	nash equilibrium;mechanism design;game theory;game-theoretic
+# Domains: what a paper is about or applied to.
+domain	nlp	Natural language processing	natural language processing;language understanding;text classification;sentiment analysis;named entity recognition	NLP;NER	
+domain	machine-translation	Machine translation	machine translation;neural machine translation;translation quality	NMT	
+domain	question-answering	Question answering	question answering;question-answering;reading comprehension;open-domain qa	QA	
+domain	summarization	Summarization	summarization;summarisation;abstractive summarization
+domain	dialogue	Dialogue and conversational AI	dialogue system;dialogue systems;dialog system;conversational agent;conversational agents;chatbot;chatbots
+domain	speech	Speech and audio	speech recognition;automatic speech recognition;speaker verification;audio classification;music generation;speech enhancement
+domain	information-retrieval	Search and information retrieval	information retrieval;search engine;search engines;document retrieval;passage retrieval;query expansion;ad hoc retrieval
+domain	recommender-systems	Recommender systems	recommender system;recommender systems;recommendation system;recommendation systems;click-through rate;ctr prediction;recommendation	CTR	
+domain	computer-vision	Computer vision	image classification;visual recognition;computer vision;visual representation
+domain	video	Video understanding and generation	video generation;video understanding;action recognition;video prediction;text-to-video
+domain	image-generation	Image generation and editing	image generation;text-to-image;image editing;image synthesis;image-to-image;style transfer
+domain	3d-vision	3D vision	3d reconstruction;point cloud;point clouds;depth estimation;novel view synthesis;3d generation
+domain	medical-imaging	Medical imaging	medical imaging;medical image;medical images;radiology;mri;ct scans;histopathology;chest x-ray	MRI	
+domain	healthcare	Healthcare and clinical AI	clinical;electronic health records;healthcare;patients;diagnosis;disease prediction	EHR	
+domain	drug-discovery	Drug discovery and molecules	drug discovery;molecular generation;molecule generation;drug design;binding affinity;molecular property
+domain	protein	Proteins and structural biology	protein structure;protein design;protein folding;protein language model;proteins
+domain	genomics	Genomics	genomics;gene expression;single-cell;dna sequencing;genome-wide;rna-seq
+domain	neuroscience	Neuroscience	neuroscience;neural activity;brain;cortex;fmri;eeg;neural recordings	EEG;fMRI	
+domain	autonomous-driving	Autonomous driving	autonomous driving;self-driving;autonomous vehicles;autonomous vehicle;trajectory prediction;motion planning
+domain	robotics	Robotics	robot;robots;robotic;manipulation;locomotion;humanoid;grasping;embodied
+domain	remote-sensing	Remote sensing and earth observation	remote sensing;satellite imagery;satellite images;earth observation;hyperspectral
+domain	climate	Climate and weather	climate change;climate model;weather forecasting;weather prediction;precipitation;climate
+domain	energy	Energy and power systems	power grid;power systems;power system;renewable energy;smart grid;battery;batteries;electricity
+domain	finance	Finance and trading	stock market;portfolio;asset pricing;trading;financial markets;option pricing;credit risk
+domain	economics-markets	Economics and markets	labor market;monetary policy;inflation rate;auction;auctions;market design
+domain	education	Education	education;educational;learning analytics;tutoring;teaching
+domain	legal	Legal	legal;court decisions;legal documents;legal reasoning
+domain	security	Cybersecurity	malware;intrusion detection;vulnerability;vulnerabilities;cybersecurity;attack detection;phishing
+domain	privacy	Privacy	privacy;privacy-preserving;anonymization
+domain	fairness	Fairness and bias	social bias;gender bias;algorithmic fairness;fairness;debiasing;discrimination
+domain	safety	AI safety	ai safety;safety alignment;harmful content;red teaming;red-teaming;misuse
+domain	social-media	Social media and online platforms	social media;twitter;misinformation;fake news;online communities;hate speech
+domain	networks	Computer networks and wireless	wireless;5g;6g;mimo;wireless networks;network traffic;internet of things;edge computing	IoT;MIMO	
+domain	systems	Computer systems	distributed systems;operating system;cloud computing;datacenter;gpu kernels;compiler;compilers;scheduling
+domain	databases	Databases and data management	database;databases;query optimization;sql;data management;data lake;query processing	SQL	
+domain	software-engineering	Software engineering	software engineering;bug;bugs;program repair;code review;software development;technical debt;unit tests
+domain	math-reasoning	Mathematical reasoning	mathematical reasoning;math word problems;theorem proving;olympiad;gsm8k
+domain	code	Code and programming	source code;code completion;code search;programming languages
+domain	time-series	Time series	time series;time-series;forecasting;anomaly detection
+domain	tabular	Tabular data	tabular data;tabular
+domain	graphs-networks	Graphs and complex networks	complex networks;social network;social networks;community detection;link prediction;network science
+domain	quantum-computing	Quantum computing	quantum computing;quantum computer;quantum computers;quantum circuit;quantum circuits;qubit;qubits;quantum algorithm;quantum algorithms
+domain	quantum-information	Quantum information	quantum information;entanglement;quantum entanglement;quantum communication;quantum key distribution;quantum channel	QKD	
+domain	cosmology	Cosmology	cosmology;cosmological;dark energy;cosmic microwave background;cosmic inflation;inflationary;large-scale structure	CMB	
+domain	dark-matter	Dark matter	dark matter
+domain	gravitational-waves	Gravitational waves	gravitational wave;gravitational waves;gravitational-wave;binary black hole;binary neutron star	LIGO	
+domain	black-holes	Black holes	black hole;black holes
+domain	exoplanets	Exoplanets	exoplanet;exoplanets;planetary systems;transiting planet
+domain	galaxies	Galaxies	galaxy;galaxies;galaxy formation;star formation
+domain	stars	Stars and stellar physics	stellar;stars;supernova;supernovae;white dwarf;neutron star;neutron stars
+domain	particle-physics	Particle physics	higgs;standard model;large hadron collider;neutrino;neutrinos;quark;quarks;collider	LHC;QCD	
+domain	nuclear	Nuclear physics	nuclear structure;nuclei;heavy-ion collisions;nuclear matter
+domain	condensed-matter	Condensed matter	superconductivity;superconductor;topological insulator;magnetism;spin liquid;phase transition;phase transitions
+domain	materials	Materials science	materials science;material properties;thin films;alloys;2d materials;graphene;perovskite
+domain	photonics	Optics and photonics	photonic;photonics;laser;lasers;optics;metasurface;metasurfaces
+domain	fluids	Fluid dynamics	turbulence;turbulent;fluid dynamics;navier-stokes;flow simulation
+domain	plasma	Plasma physics	plasma;tokamak;nuclear fusion;fusion plasma;fusion reactor
+domain	chemistry	Chemistry	chemical reactions;catalysis;catalyst;chemistry
+domain	biology	Biology and ecology	ecology;evolution;population dynamics;epidemic;epidemics;epidemiology;covid-19;sars-cov-2	COVID-19	
+domain	control	Control systems	control system;control systems;feedback control;controller;stability analysis;lyapunov
+domain	signal-processing	Signal processing	signal processing;radar;beamforming;channel estimation
+domain	hci	Human-computer interaction	user study;user studies;user interface;user experience;visualization;accessibility
+domain	multilingual	Multilingual and low-resource languages	multilingual;low-resource;cross-lingual
+domain	games	Games	video game;video games;game playing;chess;go game;atari
+domain	transport	Transportation and mobility	traffic;transportation;mobility;urban
+domain	manufacturing	Industry and manufacturing	manufacturing;industrial;supply chain;logistics

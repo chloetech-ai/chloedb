@@ -82,6 +82,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="sheets.html">Sheets</a>
       <a href="netops.html">Network operations</a>
       <a href="hn.html" aria-current="page">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
       <a href="chloectx.html">ChloeCtx</a>
       <a href="chloectx-setup.html">Install ChloeCtx</a>
       <a href="chloectx-inspector.html">ChloeCtx inspector</a>
@@ -96,7 +98,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Apps</span>
       <h1>chloedb-hn: Hacker News on ChloeDB</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/hn.md">docs/chloedb/hn.md</a>.</p>
-      <p class="doc-version">These docs describe release 0.3.6.</p>
+      <p class="doc-version">These docs describe release 0.3.7.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#the-questions-it-reads">The questions it reads</a></li><li><a href="#read-the-linked-pages">Read the linked pages</a></li><li><a href="#tables">Tables</a></li><li><a href="#the-api">The API</a></li><li><a href="#measured-against-hnalgoliacom">Measured against hn.algolia.com</a></li></ol></details>
     <div class="doc-body">
@@ -111,7 +113,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <li><strong>Instant, a keystroke at a time.</strong> Each keystroke shows the stories whose titles hold the words typed so far, the last one as a word or the start of one (<code>rust asy</code> is <code>MATCH(title, 'rust (asy OR asy*)')</code>), by points while that word is being typed and by BM25 times the votes once a space follows it: one statement, no count, no meaning. Enter runs the full search, which reads the last word whole. It is off until the <em>Instant</em> switch beside the box turns it on, and it and <em>Fast</em> are one at a time: switching one on switches the other off. A question being typed still gets its completions.</li>
 <li><strong>Words and meaning together.</strong> Titles, texts and the words of each link are ranked by BM25 with typos, stems and synonyms, fused with a static embedding model's similarity on the server, and weighed by points (<code>pow(points + 1, 0.35)</code>) and a gentle decay for age. Every word must be there for searches of up to three words, and most of them for longer ones, so the counts and facets match the results.</li>
 <li><strong>Exact text, punctuation and all.</strong> <code>`C++`</code>, <code>`std::move`</code>, <code>`k8s.io/api`</code> in backticks, or <em>Match by → exact text</em>, are matched where their characters are, by <code>ILIKE</code> answered from each segment's FM-index (<code>OPTIONS(substring = true)</code>), which tokenized search cannot do.</li>
-<li><strong>Highlights the way the index reads.</strong> A server of 0.3.6 or later marks each result with <code>POST /v1/highlight</code>: stems, synonyms, typos and code as the field's analyzer reads them, cut to the stretch with the most matches.</li>
+<li><strong>Highlights the way the index reads.</strong> A server of 0.3.7 or later marks each result with <code>POST /v1/highlight</code>: stems, synonyms, typos and code as the field's analyzer reads them, cut to the stretch with the most matches.</li>
 <li><strong>Filters in the words.</strong> <code>by:pg</code>, <code>site:github.com</code>, <code>points&gt;500</code>, <code>comments&gt;100</code>, <code>2019..2021</code>, <code>before 2015</code>, <code>-crypto</code>, <code>show hn</code>, <code>ask hn</code>, <code>"exact phrase"</code>; each is shown as a removable chip of what was understood.</li>
 <li><strong>Threads, people and the graph.</strong> A story opens as its whole thread; a comment opens in place with the path to it. People pages show what someone writes about, when, and who they talk to (the reply graph, <code>hn_replies</code>). <em>Who knows</em> ranks the people who comment most on a subject, weighed by the discussion they start. Similar stories by meaning, and the same link discussed again.</li>
 <li><strong>What HN thinks.</strong> A question about opinions gathers the comments that speak to it, packed into a model's budget by the database (<code>PACK n TOKENS ... DEDUPE ... WITH RECEIPT</code>), and a model behind the server's <code>llm()</code> sums them up with every claim cited to a numbered comment. Answers are kept, so a question asked again costs nothing. It, <em>Weekly</em> and <em>Changed minds</em> are the parts that call a model.</li>
@@ -308,7 +310,7 @@ chloedb-server ... --app hn=http://hn-host:7850     # with CHLOEDB_APP_TOKEN=$HN
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/hn.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="netops.html">← Network operations</a><a href="chloectx.html">ChloeCtx →</a></span>
+      <span class="pager"><a href="netops.html">← Network operations</a><a href="arxiv.html">arXiv explorer →</a></span>
     </footer>
   </article>
 </div></main>

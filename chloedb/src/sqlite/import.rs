@@ -27,6 +27,9 @@ pub struct ImportOptions {
     /// Keep BLOB columns as base64 text, in a stored KEYWORD field that is
     /// not indexed, rather than leave them out.
     pub blobs_base64: bool,
+    /// Add the rows to a table without a primary key that has rows
+    /// already, which an import refuses otherwise ([`Plan::check_appends`]).
+    pub append: bool,
 }
 
 /// A schema given for a table an import creates
@@ -79,14 +82,26 @@ pub struct TablePlan {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Read {
     /// As the field's type takes them; integers and reals in a TIMESTAMP
-    /// field as Unix time in units of this many microseconds (reals under
-    /// 10^7 as Julian days).
+    /// field as Unix time in units of this many microseconds, or with 0,
+    /// each in the unit of its size ([`time_unit_of`]); reals under 10^7
+    /// as Julian days.
     Plain { time_unit: i64 },
     /// BLOB values as base64 text.
     Base64,
 }
 
 const SECONDS: Read = Read::Plain { time_unit: 1_000_000 };
+
+/// The microseconds in a unit of Unix time `n` (in absolute value) is
+/// likely written in: seconds up to 10^11 (the year 5138), else
+/// milliseconds up to 10^14, else microseconds.
+fn time_unit_of(n: u64) -> i64 {
+    match n {
+        0..100_000_000_000 => 1_000_000,
+        100_000_000_000..100_000_000_000_000 => 1_000,
+        _ => 1,
+    }
+}
 
 /// What an import would do ([`plan`]).
 #[derive(Clone, Debug, Default)]
@@ -96,9 +111,34 @@ pub struct Plan {
     pub tables: Vec<TablePlan>,
     /// The SQLite tables and views left out, each with the reason.
     pub skipped: Vec<(String, String)>,
+    /// Whether rows go into tables without a primary key that have rows
+    /// already ([`ImportOptions::append`]).
+    pub append: bool,
 }
 
 impl Plan {
+    /// Refuses the import, unless it appends ([`ImportOptions::append`]),
+    /// when a table it writes has no primary key and has rows already
+    /// (`has_rows` says): nothing tells its rows from the file's, so they
+    /// would go in beside them, and a second import of the same file
+    /// would repeat every row. A table with a key takes the file's rows
+    /// in place of those with the same keys. Asked of every table without
+    /// a key, as one the plan makes may have been made since, and filled.
+    pub fn check_appends(&self, mut has_rows: impl FnMut(&str) -> Result<bool>) -> Result<()> {
+        if self.append {
+            return Ok(());
+        }
+        for t in self.tables.iter().filter(|t| t.schema.primary_key.is_none()) {
+            if has_rows(&t.schema.table)? {
+                return Err(Error::Schema(format!(
+                    "table {} has rows and no primary key, so the import would add the file's rows beside them (and importing the same file again would repeat them): import with append (--append, ?append=true) to add them, or drop the table (DROP TABLE {}) and import again to replace them",
+                    t.schema.table, t.schema.table
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// The plan as JSON: `{"tables": [..], "skipped": {name: why}}`, each
     /// table its schema's short form ([`Schema::to_short_json`]) with its
     /// `source`, whether it `exists`, the `columns` (column: field) and
@@ -231,6 +271,10 @@ impl Source {
     /// a server's, which may hold them on shards.
     pub fn plan_over(&self, existing: &[Arc<Schema>], opts: &ImportOptions) -> Result<Plan> {
         let cat = catalog(&self.conn)?;
+        if cat.tables.is_empty() && cat.skipped.is_empty() && cat.shadows.is_empty() {
+            // An empty file (an upload of nothing) is an empty database too.
+            return Err(Error::Schema("no table to import: the SQLite file holds no table or view".into()));
+        }
         let mut skipped = cat.skipped.clone();
         let mut tables: Vec<&Table> = Vec::new();
         if opts.tables.is_empty() {
@@ -249,7 +293,7 @@ impl Source {
             skipped.retain(|(n, _)| opts.tables.iter().any(|t| t.eq_ignore_ascii_case(n)) && !tables.iter().any(|t| t.name.eq_ignore_ascii_case(n)));
         }
         // Strata's names for the tables, distinct in any case.
-        let names = idents(&tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>());
+        let names = idents(&tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), "table");
         let given = |t: &Table, name: &str| {
             let by_source = opts.schemas.iter().find(|g| g.source.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(&t.name)));
             by_source.or_else(|| opts.schemas.iter().find(|g| g.source.is_none() && (g.schema.table.eq_ignore_ascii_case(name) || g.schema.table.eq_ignore_ascii_case(&t.name))))
@@ -284,7 +328,7 @@ impl Source {
         }
         resolve_references(&mut plans, &inferred, &tables)?;
         let plans = order(plans);
-        Ok(Plan { tables: plans, skipped })
+        Ok(Plan { tables: plans, skipped, append: opts.append })
     }
 
     /// Drops the key of `p`, a table made from SQLite's declarations, when
@@ -336,33 +380,47 @@ impl Source {
         Ok((cat.tables.into_iter().map(|t| t.name).collect(), cat.skipped))
     }
 
-    /// Creates the tables of `plan` that `db` lacks and writes their rows:
-    /// into an empty table in one bulk load each (all or nothing), unless
-    /// the database numbers its writes (a bulk load would reach no replica);
-    /// into a table with rows, and then, upserted by key ([`IMPORT_BATCH`] rows a
-    /// transaction). Embedded vectors the rows leave out are computed when
-    /// `db` has the field's model ([`Db::open_embedders`]).
+    /// Creates the tables of `plan` that `db` lacks, in one commit, and
+    /// writes their rows: into the empty tables in one bulk load (one
+    /// commit for all of them, all or nothing), unless the database numbers
+    /// its writes (a bulk load would reach no replica); into a table with
+    /// rows, and then, upserted by key ([`IMPORT_BATCH`] rows a
+    /// transaction), or added to a table without a key when the plan
+    /// appends ([`Plan::check_appends`], which refuses it otherwise, before
+    /// anything is written). Embedded vectors the rows leave out are
+    /// computed when `db` has the field's model ([`Db::open_embedders`]).
     pub fn load(&self, db: &Db, plan: &Plan) -> Result<Imported> {
-        let mut out = Imported { tables: Vec::new(), skipped: plan.skipped.clone() };
-        for t in &plan.tables {
-            let name = t.schema.table.clone();
-            if db.storage().table(&name).is_none() {
-                db.create_table(t.schema.clone())?;
+        let snap = db.snapshot();
+        let has_rows = |name: &str| snap.table(name).is_some_and(|s| s.n_live_docs() > 0);
+        plan.check_appends(|name| Ok(has_rows(name)))?;
+        // In one commit each, rather than one a table: a commit writes the
+        // list of every table, so that a file of many tables would take
+        // the square of their number.
+        let new: Vec<Schema> = plan.tables.iter().filter(|t| db.storage().table(&t.schema.table).is_none()).map(|t| t.schema.clone()).collect();
+        db.create_tables(new)?;
+        let numbered = db.storage().seq_no().is_some();
+        let bulk: Vec<bool> = plan.tables.iter().map(|t| !numbered && !has_rows(&t.schema.table)).collect();
+        drop(snap);
+        let mut rows = vec![0u64; plan.tables.len()];
+        db.try_load_tables(|l| {
+            for (i, t) in plan.tables.iter().enumerate().filter(|(i, _)| bulk[*i]) {
+                rows[i] = self.documents(t, |docs| l.load_into(&t.schema.table, docs))?;
             }
-            let empty = db.storage().seq_no().is_none() && db.snapshot().table(&name).is_none_or(|s| s.n_live_docs() == 0);
-            let rows = if empty {
-                self.documents(t, |docs| {
-                    let mut n = 0u64;
-                    db.try_load_into(&name, docs.inspect(|d| n += d.is_ok() as u64))?;
-                    Ok(n)
-                })?
-            } else {
-                let keyed = db.storage().table(&name).is_some_and(|s| s.primary_key.is_some());
-                self.documents(t, |docs| write(db, &name, keyed, docs))?
-            };
-            out.tables.push(TableImport { source: t.source.clone(), table: name, rows, created: !t.exists, bulk: empty, notes: t.notes.clone() });
+            Ok(())
+        })?;
+        for (i, t) in plan.tables.iter().enumerate().filter(|(i, _)| !bulk[*i]) {
+            let name = &t.schema.table;
+            let keyed = db.storage().table(name).is_some_and(|s| s.primary_key.is_some());
+            rows[i] = self.documents(t, |docs| write(db, name, keyed, docs))?;
         }
-        Ok(out)
+        let tables = plan
+            .tables
+            .iter()
+            .zip(rows)
+            .zip(bulk)
+            .map(|((t, rows), bulk)| TableImport { source: t.source.clone(), table: t.schema.table.clone(), rows, created: !t.exists, bulk, notes: t.notes.clone() })
+            .collect();
+        Ok(Imported { tables, skipped: plan.skipped.clone() })
     }
 
     /// Calls `f` with the rows of `t.source` as documents of `t.schema`
@@ -783,8 +841,51 @@ fn outside_quotes_eq(a: &str) -> bool {
 // ------------------------------------------------------------------ names
 
 /// `name` as a Strata identifier: letters, digits and underscores, not
-/// starting with a digit.
+/// starting with a digit. Latin letters lose their accents (`née` is
+/// `nee`, `Größe` is `Grosse`), and other characters are underscores.
 fn ident(name: &str) -> String {
+    use unicode_normalization::char::is_combining_mark;
+    use unicode_normalization::UnicodeNormalization;
+    let mut s = String::with_capacity(name.len());
+    for c in name.nfkd() {
+        match c {
+            c if c.is_ascii_alphanumeric() || c == '_' => s.push(c),
+            c if is_combining_mark(c) => {}
+            c => s.push_str(latin(c).unwrap_or("_")),
+        }
+    }
+    if s.is_empty() || s.starts_with(|c: char| c.is_ascii_digit()) {
+        s.insert(0, '_');
+    }
+    s
+}
+
+/// The ASCII spelling of a Latin letter that has no decomposition.
+fn latin(c: char) -> Option<&'static str> {
+    Some(match c {
+        'ß' => "ss",
+        'ẞ' => "SS",
+        'æ' => "ae",
+        'Æ' => "AE",
+        'œ' => "oe",
+        'Œ' => "OE",
+        'ø' => "o",
+        'Ø' => "O",
+        'đ' | 'ð' => "d",
+        'Đ' | 'Ð' => "D",
+        'ł' => "l",
+        'Ł' => "L",
+        'þ' => "th",
+        'Þ' => "Th",
+        'ı' => "i",
+        _ => return None,
+    })
+}
+
+/// [`ident`] as imports before 0.3.6 spelled names, every character but
+/// ASCII letters, digits and underscores an underscore: the name of the
+/// field a column took in a table such an import made.
+fn ascii_ident(name: &str) -> String {
     let mut s: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
     if s.is_empty() || s.starts_with(|c: char| c.is_ascii_digit()) {
         s.insert(0, '_');
@@ -795,13 +896,19 @@ fn ident(name: &str) -> String {
 /// Strata's names for SQLite's `names` ([`ident`]), distinct in any case:
 /// a name Strata spells as SQLite does keeps it, and a respelled one that
 /// meets another takes a suffix (`x-y` is `x_y_2` beside a table `x_y`,
-/// whichever comes first).
-fn idents(names: &[&str]) -> Vec<String> {
+/// whichever comes first). A name of no letter or digit Strata can spell
+/// (`名前`, which would be `__`) is the `kind` and its place instead
+/// (`column_2`).
+fn idents(names: &[&str], kind: &str) -> Vec<String> {
     let mut used = HashSet::new();
     let mut out: Vec<Option<String>> = names.iter().map(|n| (ident(n) == *n && used.insert(n.to_ascii_lowercase())).then(|| n.to_string())).collect();
-    for (o, n) in out.iter_mut().zip(names) {
+    for (i, (o, n)) in out.iter_mut().zip(names).enumerate() {
         if o.is_none() {
-            *o = Some(distinct(ident(n), &mut used));
+            let mut s = ident(n);
+            if !s.chars().any(|c| c.is_ascii_alphanumeric()) && n.chars().any(char::is_alphanumeric) {
+                s = format!("{kind}_{}", i + 1);
+            }
+            *o = Some(distinct(s, &mut used));
         }
     }
     out.into_iter().map(|o| o.expect("named")).collect()
@@ -878,6 +985,8 @@ struct Stats {
     blobs: u64,
     /// The largest integer, in absolute value.
     max_abs: u64,
+    /// The smallest integer but 0, in absolute value (`u64::MAX`: none).
+    min_abs: u64,
     /// Reals that are infinite (SQLite keeps no NaN).
     infinite: u64,
     /// Vectors of the hinted dimension holding NaN or an infinity.
@@ -916,6 +1025,7 @@ impl Default for Stats {
             texts: 0,
             blobs: 0,
             max_abs: 0,
+            min_abs: u64::MAX,
             infinite: 0,
             nonfinite_vectors: 0,
             invalid_utf8: 0,
@@ -951,6 +1061,9 @@ impl Stats {
             ValueRef::Integer(i) => {
                 self.ints += 1;
                 self.max_abs = self.max_abs.max(i.unsigned_abs());
+                if i != 0 {
+                    self.min_abs = self.min_abs.min(i.unsigned_abs());
+                }
                 self.not_bool_number |= !(0..=1).contains(&i);
             }
             ValueRef::Real(r) => {
@@ -1004,15 +1117,17 @@ impl Stats {
         }
     }
 
-    /// The microseconds in a unit of the Unix time the integers hold:
-    /// seconds up to 10^11 (the year 5138), else milliseconds up to 10^14,
-    /// else microseconds.
+    /// The microseconds in a unit of the Unix time the integers hold
+    /// ([`time_unit_of`] their largest), or 0 when they mix units, the
+    /// smallest in another than the largest: each is then read in the unit
+    /// of its size, as a column written in seconds and then in
+    /// milliseconds holds them.
     fn time_unit(&self) -> i64 {
-        match self.max_abs {
-            0..100_000_000_000 => 1_000_000,
-            100_000_000_000..100_000_000_000_000 => 1_000,
-            _ => 1,
+        let unit = time_unit_of(self.max_abs);
+        if self.min_abs != u64::MAX && time_unit_of(self.min_abs) != unit {
+            return 0;
         }
+        unit
     }
 
     fn numbers(&self) -> u64 {
@@ -1155,7 +1270,7 @@ fn infer(t: &Table, name: &str, stats: &[Stats], cat: &Catalog, tables: &[&Table
     let mut fields = Vec::new();
     let mut columns = Vec::new();
     let mut reads = Vec::new();
-    let fnames = idents(&t.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
+    let fnames = idents(&t.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), "column");
     for ((c, st), fname) in t.columns.iter().zip(stats).zip(fnames) {
         let role = Role { key: key.as_deref() == Some(&lower(&c.name)), reference: referencing.contains(&lower(&c.name)), indexed: t.indexed.contains(&lower(&c.name)), fts: fts.get(&lower(&c.name)).copied() };
         let h = hint(&c.decl);
@@ -1193,11 +1308,12 @@ fn infer(t: &Table, name: &str, stats: &[Stats], cat: &Catalog, tables: &[&Table
         }
         if f.logical == Some(Logical::Timestamp) && st.numbers() > 0 {
             let unit = match read {
-                Read::Plain { time_unit: 1_000_000 } => "seconds",
-                Read::Plain { time_unit: 1_000 } => "milliseconds",
-                _ => "microseconds",
+                Read::Plain { time_unit: 1_000_000 } => "in seconds",
+                Read::Plain { time_unit: 1_000 } => "in milliseconds",
+                Read::Plain { time_unit: 0 } => "each in the unit of its size, as they mix units (seconds under 10^11, milliseconds under 10^14, else microseconds)",
+                _ => "in microseconds",
             };
-            notes.push(format!("column {:?}: integers read as Unix time in {unit}, reals under 10^7 as Julian days", c.name));
+            notes.push(format!("column {:?}: integers read as Unix time {unit}, reals under 10^7 as Julian days", c.name));
         }
         if c.generated {
             notes.push(format!("column {:?} is generated in SQLite: its values are imported", c.name));
@@ -1270,7 +1386,7 @@ fn into_schema(t: &Table, stats: &[Stats], schema: &Schema, exists: bool, meta: 
     let mut columns = Vec::new();
     let mut reads = Vec::new();
     for (c, st) in t.columns.iter().zip(stats) {
-        let Some(f) = schema.field_index(&c.name).or_else(|| schema.field_index(&ident(&c.name))) else {
+        let Some(f) = schema.field_index(&c.name).or_else(|| schema.field_index(&ident(&c.name))).or_else(|| schema.field_index(&ascii_ident(&c.name))) else {
             notes.push(format!("column {:?} left out: {} has no field of its name", c.name, schema.table));
             continue;
         };
@@ -1387,6 +1503,11 @@ fn value(schema: &Schema, f: usize, v: ValueRef<'_>, read: Read) -> Result<Value
         return Ok(Value::Str(base64(b)));
     }
     if let (Some(Logical::Timestamp), Read::Plain { time_unit }) = (field.logical, read) {
+        let time_unit = match v {
+            ValueRef::Integer(i) if time_unit == 0 => time_unit_of(i.unsigned_abs()),
+            ValueRef::Real(r) if time_unit == 0 => time_unit_of(r.abs().min(u64::MAX as f64) as u64),
+            _ => time_unit,
+        };
         match v {
             ValueRef::Integer(i) => return i.checked_mul(time_unit).map(Value::Int).ok_or_else(|| bad(format!("{i} is out of range"))),
             // To the millisecond, as SQLite's date functions read them: a
@@ -1521,13 +1642,17 @@ mod tests {
     fn names() {
         assert_eq!(ident("Order Details"), "Order_Details");
         assert_eq!(ident("2024 sales"), "_2024_sales");
-        assert_eq!(ident("née"), "n_e");
+        assert_eq!(ident("née"), "nee");
+        assert_eq!(ident("Größe"), "Grosse");
+        assert_eq!(ident("ﬁle №"), "file_No");
+        assert_eq!(ascii_ident("née"), "n_e");
+        assert_eq!(idents(&["名前", "年齢", "price_円", "-"], "column"), ["column_1", "column_2", "price__", "_"]);
         let mut used = HashSet::new();
         assert_eq!(distinct("a".into(), &mut used), "a");
         assert_eq!(distinct("A".into(), &mut used), "A_2");
         // A name that needs no respelling keeps it, whatever comes first.
-        assert_eq!(idents(&["x-y", "x_y", "a", "A", "x y"]), ["x_y_2", "x_y", "a", "A_2", "x_y_3"]);
-        assert_eq!(idents(&["x_y", "x-y"]), ["x_y", "x_y_2"]);
+        assert_eq!(idents(&["x-y", "x_y", "a", "A", "x y"], "table"), ["x_y_2", "x_y", "a", "A_2", "x_y_3"]);
+        assert_eq!(idents(&["x_y", "x-y"], "table"), ["x_y", "x_y_2"]);
     }
 
     #[test]

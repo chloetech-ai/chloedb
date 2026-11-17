@@ -5,9 +5,11 @@
 //! A copy is one SQLite file: the source's export of the tables (their rows
 //! and their kept Strata schemas: fields, key, shard and cluster keys),
 //! sent as it is read into the target's import, which makes the tables it
-//! lacks and writes each row by its key into those it has. Run again, a
-//! copy writes the same rows again; it keeps no offset, and it does not
-//! follow later writes (that would be replication between clusters).
+//! lacks and writes each row by its key into those it has (into a table
+//! without a key only while it is empty, since nothing would tell its rows
+//! from the copy's). Run again, a copy writes the same rows again; it keeps
+//! no offset, and it does not follow later writes (that would be
+//! replication between clusters).
 //!
 //! The source holds the rows: this server, or a connection that is one
 //! server. A cluster's coordinators hold none (their shards' servers do),
@@ -91,7 +93,7 @@ pub async fn copy(svc: &Arc<Service>, who: &Principal, from: &End, to: &End, tab
     let mut answer = match to {
         End::Here => {
             let data = axum::body::to_bytes(file, svc.max_body).await.map_err(|e| ApiError { code: None, status: 502, message: format!("the file from {}: {e} (this server takes at most {} MiB)", from.describe(), svc.max_body >> 20) })?;
-            let opts = chloedb::sqlite::ImportOptions { tables: tables.to_vec(), schemas: Vec::new(), blobs_base64: false };
+            let opts = chloedb::sqlite::ImportOptions { tables: tables.to_vec(), schemas: Vec::new(), blobs_base64: false, append: false };
             let mut j = svc.import_sqlite(who, data, opts, false, 0).await?;
             let written: u64 = j["tables"].as_array().map_or(0, |t| t.iter().filter_map(|t| t["rows"].as_u64()).sum());
             j["written"] = json!(written);

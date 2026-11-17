@@ -15,7 +15,7 @@
  *                               kind, q/s at 16 and the median at 1;
  *                               data-labels="before,after" names the two)
  *   data-versus="cloud-1m,cloud-10m" ChloeDB's speed over each engine's
- *   data-ef="ef-1m"             recall and speed at each ef
+ *   data-ef="ef-1m"             recall and speed at each ef (data-engines="ChloeDB,Qdrant" to show only those)
  *   data-num="cloud-1m:p50:strata:bm25" one number, inline
  *   data-overall="cloud-1m"     ChloeDB's overall place (data-mode="tile" or "line")
  *   data-variants="cloud-1m"    the ranking under other rules
@@ -406,7 +406,10 @@
     var rep = R[el.getAttribute("data-ef")];
     if (!rep || !rep.rows || !rep.rows.length) return pending(el);
     var engines = [], kinds = [], efs = [], by = {};
+    var only = el.getAttribute("data-engines");  // e.g. "ChloeDB,Qdrant": the sweep's other engines left out
+    only = only ? only.split(",") : null;
     rep.rows.forEach(function (r) {
+      if (only && only.indexOf(r.engine) < 0) return;
       if (engines.indexOf(r.engine) < 0) engines.push(r.engine);
       if (kinds.indexOf(r.kind) < 0) kinds.push(r.kind);
       if (efs.indexOf(r.ef) < 0) efs.push(r.ef);
@@ -486,7 +489,7 @@
   }
 
   /* ----------------------------------------------- overall, as a tile */
-  var LABELS = { "cloud-10m": "10M passages · DigitalOcean", "cloud-10m-h2h": "10M · latest main, same nodes", "cloud-1m": "1M passages · DigitalOcean", "cloud-1m-first": "1M · first run", laptop: "1M passages · laptop cluster" };
+  var LABELS = { "cloud-10m": "10M passages · DigitalOcean", "cloud-10m-h2h": "10M · head to head, same nodes", "cloud-1m": "1M passages · DigitalOcean", "cloud-1m-first": "1M · first run", laptop: "1M passages · laptop cluster" };
   var CHIPS = { "cloud-10m": "at 10M documents in the cloud", "cloud-10m-h2h": "at 10M against Elasticsearch and OpenSearch on the same nodes", "cloud-1m": "at 1M in the cloud", "cloud-1m-first": "in the first 1M run", laptop: "on a laptop's cluster" };
   function renderOverall(el) {
     var id = el.getAttribute("data-overall"), rep = R[id], mode = el.getAttribute("data-mode") || "line";

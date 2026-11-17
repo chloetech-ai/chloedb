@@ -869,6 +869,17 @@ impl State {
         Capture { version: self.version, txn: self.txn, numbered, seq: self.seq, pin: pins.pin(pinned), tables }
     }
 
+    /// [`State::capture`] of the table with id `table` alone, without the
+    /// memtables (`None` once it is dropped): what a merge of its segments
+    /// reads, at the cost of that table rather than of every table.
+    pub(crate) fn capture_one(&mut self, pins: &Arc<Pins>, table: u32) -> Option<Capture> {
+        let t = self.table_index(table)?;
+        let numbered = self.manifest.seq_no.is_some();
+        let tables = vec![self.capture_table(t, false, numbered)];
+        let pinned = if self.pin_versions { self.meta.txn } else { self.txn };
+        Some(Capture { version: self.version, txn: self.txn, numbered, seq: self.seq, pin: pins.pin(pinned), tables })
+    }
+
     fn capture_table(&mut self, t: usize, with_mem: bool, numbered: bool) -> TableCapture {
         let handles = self.tables[t].handles.clone();
         let mut disk = Vec::with_capacity(handles.len());

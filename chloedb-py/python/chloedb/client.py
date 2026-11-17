@@ -202,6 +202,9 @@ class Client(Search, FrameStore):
         self._schemas: dict[str | None, dict] = {}
         self._json_only = False  # a server that answers no Arrow
         self._conns = threading.local()
+        # The chloedb-server `chloedb.serve` started for this client, which
+        # close() stops.
+        self.server: Any = None
 
     # Connections. Each thread keeps one connection to the server alive
     # between its requests, rather than a TLS handshake and a socket per
@@ -294,10 +297,13 @@ class Client(Search, FrameStore):
         state = dict(self.__dict__)
         state.pop("_conns", None)
         state.pop("_lock", None)
+        # A copy talks to the same server, which stays this client's to stop.
+        state["server"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
         self.__dict__.update(state)
+        self.__dict__.setdefault("server", None)
         self._conns = threading.local()
         if isinstance(self, Session):
             self._lock = threading.Lock()
@@ -733,15 +739,17 @@ class Client(Search, FrameStore):
         q.update({k: "true" if v else "false" for k, v in flags.items()})
         return q
 
-    def import_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, blobs_base64: bool = False) -> dict:
+    def import_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, blobs_base64: bool = False, append: bool = False) -> dict:
         """Uploads a SQLite database file (up to the server's 256 MB) and
         imports its tables (all, or `tables`), each into the table of its
         name: one the server has keeps its schema, and a missing one is
         created from the SQLite table's declarations and values; rows are
         upserted by key. BLOB columns are left out unless `blobs_base64`.
-        Returns {tables: [{source, table, rows, created, notes}], skipped:
-        {name: why}, written}."""
-        return self._sqlite(path, self._sqlite_query(tables, blobs_base64=blobs_base64))
+        A table without a key that has rows is refused, since importing the
+        file again would repeat its rows, unless `append`. Returns {tables:
+        [{source, table, rows, created, notes}], skipped: {name: why},
+        written}."""
+        return self._sqlite(path, self._sqlite_query(tables, blobs_base64=blobs_base64, append=append))
 
     def plan_sqlite(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, blobs_base64: bool = False) -> dict:
         """What `import_sqlite` would do, writing nothing: each table's
@@ -896,7 +904,10 @@ class Client(Search, FrameStore):
         return self._call("POST", "/v1/agent", body)
 
     def close(self) -> None:
-        pass
+        """Stops the server, when `chloedb.serve` started it for this
+        client; a client of any other server keeps nothing open to close."""
+        if self.server is not None:
+            self.server.stop()
 
     def __enter__(self) -> "Client":
         return self

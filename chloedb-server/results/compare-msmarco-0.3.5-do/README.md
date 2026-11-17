@@ -1,11 +1,18 @@
 # The engine comparison on ChloeDB 0.3.5, result caches off (DigitalOcean, 15 and 16 November 2026)
 
-The website's comparison ([compare-msmarco-same-nodes-do](../compare-msmarco-same-nodes-do/),
-4 November) ran ChloeDB `055f6bf7`, from before the beam's default moved
-from 64 to 200 (cf17355e) and before 143 later pull requests. This run is
-the same comparison on 0.3.5, laid out the same way (each lane's engines on
-one set of nodes, one after another, ChloeDB first and again last), with
-the harness of #575 and three changes to how it is run:
+The website's 1M and 10M comparisons are the 4 November run
+([compare-msmarco-same-nodes-do](../compare-msmarco-same-nodes-do/),
+ChloeDB `055f6bf7`) with each engine that changed since taken from a later
+run: ChloeDB from 7 November ([rerun-1107-do](../rerun-1107-do/), image
+`861ab1d`), Elasticsearch and OpenSearch from 5 November
+([bigger-items-do](../bigger-items-do/), their result caches off since
+#262) and Manticore from 6 November ([rerun-1106-do](../rerun-1106-do/), its
+query cache off). Every ChloeDB number there predates the beam's default
+moving from 64 to 200 (cf17355e) and about 140 later pull requests. This
+run is the whole comparison again on 0.3.5, every engine in one run, laid
+out as on 4 November (each lane's engines on one set of nodes, one after
+another, ChloeDB first and again last), with the harness of #575 and three
+changes to how it is run:
 
 - Every engine's result cache is off, and each run records the cache's
   counters before and after (`result_cache` in each `run-*.json`):
@@ -37,7 +44,7 @@ the harness of #575 and three changes to how it is run:
 | 1M Milvus | alone, as the 4 November run ended up running it: 1 x `m-8vcpu-64gb` (Gold 5318Y) and a `c-8` client (8358) |
 | 1M candidates lane | Qdrant and Postgres, each at 64, 128, 256 and 512: 1 x `m-8vcpu-64gb` (8168) and a `c-8` client (8168) |
 | 10M lane | ChloeDB, Elasticsearch, OpenSearch, ChloeDB again: 2 x `m3-4vcpu-32gb` (8280 and 8280) and a `c-8` client (8168) |
-| CPUs and memory | as in the 4 November run: 6.8 CPUs per engine (a sharded engine's two data pods 3.4 each, or ChloeDB's shards 2.9 each and its coordinator 1), 52 GiB for a one-node engine |
+| CPUs and memory | 6.8 CPUs per engine: a sharded engine's two data pods 3.4 each, ChloeDB's two pods 3.4 each, a shard with a coordinator in its process (`STRATA_COORD=process`, the harness's default since #299, 7 November; on 4 November its shards had 2.9 each and one coordinator 1 CPU in a pod on the clients' node); 52 GiB for a one-node engine |
 | passes | three passes of every kind after warm-up rounds; `tables.md` shows pass 1, `passes.md`, the rankings and every number below are the median of the three |
 | data | the 4 November run's collections: `docs.jsonl`, the vectors, queries and judgments are byte for byte the same (`data/SHA256SUMS`); `meta.json` has three more fields, which the newer prep writes |
 | time | 16 November 00:58 to 11:28 UTC (15 November 4:58 PM to 16 November 3:28 AM PST): the 1M sharded lane 4.8 h, one-node lane 8.3 h, Milvus 0.5 h, candidates lane 4.2 h, Vespa lane 2.5 h (from 06:15), 10M lane 10.2 h, all at once |
@@ -123,7 +130,9 @@ BM25 queries a second (820 against 650). Its SQL aggregate went from 2.9 s
 to 36 ms; Elasticsearch's and OpenSearch's, uncached now, take 0.5 and
 0.65 s (7.11 and 4.08 ms on 4 November, from their request caches).
 ChloeDB's vector search at 16 clients is 13% slower than on 4 November, at
-the same 64 candidates.
+the same 64 candidates, and 6% faster than on 7 November (1,247), the
+website's; there its BM25 p50 was 3.56 ms and 625 queries a second at 16
+clients, its SQL aggregate 36.81 ms.
 ChloeDB's offline build of the two shards took 93 minutes (68 on 4
 November); Elasticsearch's load 151 (153), OpenSearch's 183 (200).
 
@@ -166,15 +175,36 @@ rows changing most:
 ChloeDB serves more queries a second at 4 and 16 clients and answers SQL
 aggregates 25 times faster, but its p50 at one client is about 0.25 ms a
 query higher on key lookups, BM25 and vectors, where the Lucene engines did
-not move. On a cloud container (4 CPUs, Xeon at 2.1 GHz),
-`scripts/perf-gate.py`'s in-process BM25 timings of 0.3.5 against 055f6bf7
-are faster on four of five measures (plain BM25 on ArguAna 15% slower on
-its median, not a regression by the gate's rule), and
-`chloedb-server-bench` at one client on SciFact answers 6 to 17% slower
-over HTTP on one database (0.02 to 0.04 ms a request; vectors 25%, since
-its default beam is now 200) and from -10% to +11% through a coordinator
-over two shards. So the extra quarter of a millisecond is in the server and
-coordinator path on those machines, not the engine; it is not bisected yet.
+not move. That is the layout, not the code: on 4 November the client's
+request reached a coordinator on its own node, which asked both shards;
+since #287 (6 November) the coordinator runs in each shard's pod, and since
+#299 (7 November) in the shard's process, so a request crosses the network
+to a coordinator and then again to the other shard. The 7 November rerun,
+with this layout, already had 1.03, 2.38 and 2.48 ms there.
+
+Against the website's ChloeDB numbers (7 November, two m-4vcpu-32gb nodes
+with Platinum 8168s, the same layout):
+
+| 1M ChloeDB, median of passes | 7 November | 0.3.5 |
+|---|---|---|
+| key lookup p50 ms | 1.03 | 1.03 |
+| bm25 p50 ms | 2.38 | 2.03 |
+| bm25 q/s, 16 clients | 2,196 | 2,387 |
+| bm25 + filter q/s, 16 clients | 1,954 | 2,079 |
+| phrase p50 ms | 1.96 | 1.65 |
+| prefix p50 ms | 2.52 | 2.15 |
+| vector p50 ms | 2.48 | 2.17 |
+| vector q/s, 16 clients | 2,442 | 2,374 |
+| sql aggregate p50 ms | 8.13 | 7.47 |
+| typo p50 ms | 11.90 | 16.52 |
+| typo q/s, 16 clients | 253 | 177 |
+
+Typo queries are the one kind that got slower: 39% at one client and 30%
+fewer queries a second at 16 clients at 1M, and at 10M 45.82 to 55.06 ms
+and 47 to 35 queries a second, while Elasticsearch's and OpenSearch's typo
+queries are as fast as on 5 November or faster (up to 13% more a second)
+at both sizes. Something
+between `861ab1d` and 0.3.5 slowed them; it is not bisected yet.
 
 The one-node lane got a Gold 6248 where it had a Platinum 8280, and every
 engine there is slower by a median of 5 to 15% (Qdrant 12.1%, Meilisearch
@@ -189,7 +219,8 @@ candidates (pgvector's default is 40): its vector recall is 0.808 (0.792 on
 
 Elasticsearch's and OpenSearch's SQL aggregates take 49 and 55 ms with
 their request caches off, against 6.44 and 4.69 on 4 November, when the
-cache answered them.
+cache answered them; the website already shows 5 November's, with the
+caches off (50.07 and 59.88 ms).
 
 ## How far the nodes drifted
 
