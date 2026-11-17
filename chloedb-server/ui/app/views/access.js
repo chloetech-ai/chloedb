@@ -92,6 +92,8 @@ function whoSub(e) {
   else if (e.who === "cluster") parts.push("the cluster's token");
   else if (e.actor === "agent") parts.push(agentText(e));
   else if (e.who && e.who !== "unknown" && e.who !== "open") parts.push(e.scope ? `${e.scope} key` : "key");
+  // A call through a hub: the person signed in to it, as the hub says.
+  if (e.person) parts.push(`for ${e.person}, through a hub`);
   const c = clientName(e.client);
   if (c) parts.push(c);
   if (e.addr) parts.push(e.addr);
@@ -417,7 +419,8 @@ function render(page, r) {
   }
   const unusedAdmin = (k) => k.scope === "admin" && !k.revoked_ms && ((k.last_used_ms && now() - k.last_used_ms > 30 * DAY) || (!k.last_used_ms && now() - k.created_ms > 7 * DAY));
   // An agent's key lasts one task by design: its short life is no warning.
-  const expiringSoon = (k) => !k.revoked_ms && !k.agent && k.expires_ms && k.expires_ms - now() < 14 * DAY;
+  // A session (a person signed in) lasts a week at most by design too.
+  const expiringSoon = (k) => !k.revoked_ms && !k.agent && !k.session && k.expires_ms && k.expires_ms - now() < 14 * DAY;
   const tokenUsed = () => Math.max(0, ...[...(audit?.all || audit?.changes || []), ...(audit?.refusals || [])].filter((e) => isToken(e.who) && e.status < 400).map((e) => e.ts_ms));
 
   // ---------------------------------------------------------- drawing
@@ -541,7 +544,7 @@ function render(page, r) {
   function filtered(list) {
     const q = f.q.toLowerCase();
     return list.filter((e) => (!f.who || (f.who === AGENTS ? e.actor === "agent" : whoName(e) === f.who)) && (!f.area || area(e) === f.area) &&
-      (!q || [titleText(e), e.object, e.detail, e.addr, e.client, e.who, e.route, e.reason, e.request_id, whoName(e)].some((x) => x && String(x).toLowerCase().includes(q))))
+      (!q || [titleText(e), e.object, e.detail, e.addr, e.client, e.who, e.person, e.route, e.reason, e.request_id, whoName(e)].some((x) => x && String(x).toLowerCase().includes(q))))
       .sort((a, b) => b.ts_ms - a.ts_ms);
   }
 
@@ -747,14 +750,16 @@ function render(page, r) {
   function keyRow(k, rots) {
     const asOld = rots.find((x) => x.old.id === k.id), asNew = rots.find((x) => x.next.id === k.id);
     const flag = unusedAdmin(k);
-    const sub = asNew ? (asNew.old.name === k.name ? `the new one, made ${ago(k.created_ms)}` : `successor of ${asNew.old.name}`)
+    // A person's session (signed in with Google): whose, and that it ends unused.
+    const sub = k.session ? `${k.owner}, signed in with Google · ends ${until(Math.min(k.idle_ends_ms || k.expires_ms, k.expires_ms))} unless used`
+      : asNew ? (asNew.old.name === k.name ? `the new one, made ${ago(k.created_ms)}` : `successor of ${asNew.old.name}`)
       : k.owner ? (k.owner === k.name ? "their own" : k.owner) : k.owner === undefined ? null : "no owner set";
     const exp = !k.expires_ms ? h("span", { class: k.scope === "admin" && flag ? "ac-warn-t" : "" }, "never")
       : h("span", { class: k.expires_ms < now() ? "ac-bad-t" : expiringSoon(k) ? "ac-warn-t" : "", title: whenT(k.expires_ms) }, k.expires_ms < now() ? "expired" : until(k.expires_ms));
     const used = h("span", { class: flag ? "ac-warn-t" : "", title: k.last_used_ms ? `${whenT(k.last_used_ms)}${k.last_addr ? " · from " + k.last_addr : ""}` : "No request has used it" }, ago(k.last_used_ms));
     const more = h("button", { class: "btn xs ghost", "aria-label": `What to do with ${k.name}`, title: "Rotate, revoke…" }, icon("dots"));
     more.onclick = () => menu(more, [
-      !asOld && !asNew ? { label: "Rotate…", icon: "refresh", onclick: () => rotate(k) } : null,
+      !asOld && !asNew && !k.session ? { label: "Rotate…", icon: "refresh", onclick: () => rotate(k) } : null,
       { label: "Revoke…", icon: "trash", danger: true, onclick: () => revoke(k) },
       "-",
       { label: "Its changes", icon: "filter", onclick: () => { f.who = k.name; tab = "changes"; setParams(); draw(); } },

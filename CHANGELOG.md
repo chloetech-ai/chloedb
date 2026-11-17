@@ -21,6 +21,19 @@ changes collect under "Unreleased".
   app's owner when nobody joined before, with its example rows), so
   `app.me()` there is you and those screens open as they do for the owner.
   A key that only reads still sees the app as a visitor does.
+- **The command center's Log explorer showed lines with no text** on
+  tables that are not logs: it took a table's first text column as each
+  line's words, and on HN's `hn_users` that is `about`, empty for most
+  people, so the lines were only times. A line is now its text column (a
+  log's message; another table's title before its body), moved to a fuller
+  one when most of the newest lines leave it empty, with the row's other
+  fields beside it when the table is not a log (no level or host column)
+  or the text is empty. The text, the time column and the fields can be
+  changed under the search box, and stay per table. Tables with a
+  `TIMESTAMP` and no text column (BGP updates, events, metrics) are listed
+  too, their lines their fields, and a word searched in them is a field's
+  exact value; a text column with no index of its words (a title kept
+  unindexed) is searched with `ILIKE` rather than `MATCH`.
 - **The app engine's builds failed at once on Linux with `spawn E2BIG`**
   (0 model calls), on the operator's pods too: the forge's system prompt
   grew to 152 KB in 0.3.6, past Linux's limit of 128 KiB on one argument,
@@ -40,6 +53,23 @@ changes collect under "Unreleased".
 - A demo app, `chloedb-gh` ([docs](docs/chloedb/github.md)): every public
   GitHub event since 2011, 11.2 billion of them, on four 8 GB machines,
   at https://gh.chloetech.ai. It is on the `Demos` train.
+
+### Sign in with Google
+
+- **The command center takes a Google sign-in, from any browser, a
+  phone's too.** `--google-client-id ID --google-allow you@example.com=admin`
+  (an address, or `@domain` for a Google Workspace domain, each `read`,
+  `write` or `admin`) puts Google's button in the sign-in dialog. The server
+  checks Google's ID token itself (Google's published keys, the client,
+  the issuer, its time, the verified address, a nonce of the page's) and
+  makes the person a session: a key owned by their address, listed in
+  Access, set in a `__Host-` cookie the page's scripts cannot read, 12 hours
+  unused and 7 days at most, checked against the allow list on each request,
+  and refused by servers from before sessions. A change made with it needs
+  the page's own origin. No client secret is involved. On the hub, one
+  sign-in reaches every connection, and each cluster's audit log names the
+  person beside the hub's key (`person`). This touches the authentication
+  door.
 
 ## 0.3.7
 
