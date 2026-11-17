@@ -111,6 +111,8 @@ function render(page) {
         note, h("div", { class: "row" }, go)) }),
       card({ title: "Where the keys are", body: h("div", { class: "stack small", style: { gap: "6px" } },
         h("div", {}, icon("lock"), " ", h("b", {}, keys.what || "?")),
+        keys.kind === "file" && !keys.file ? h("div", {}, h("b", {}, "In memory only:"), " a restart of this server forgets these connections. A coordinator the operator runs keeps them in its cluster's Secret <cluster>-hub once its account may read and change it.") : null,
+        keys.error ? h("div", { class: "error small" }, "Not kept: ", keys.error) : null,
         h("div", { class: "dim" }, "The browser never holds a cluster's key: this server adds it to each call it forwards, and names itself in the call (", h("span", { class: "mono" }, `x-strata-via: hub ${hub.device}`), ")."),
         h("div", { class: "dim" }, "Taking a connection out removes its key from here; the key still works on its cluster until it expires or is revoked there."),
         hub.file ? h("div", { class: "dim" }, "The book (no keys in it): ", h("span", { class: "mono" }, hub.file)) : null) }));
