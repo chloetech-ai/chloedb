@@ -61,7 +61,8 @@ pub struct Filter {
     /// Only this session.
     pub session: Option<String>,
     /// Only records that quote no third party ([`Record::third_party`],
-    /// audit CTX-32): what recall puts into a prompt by itself.
+    /// audit CTX-32) and are no [`crate::record::ASIDE`]: what recall puts
+    /// into a prompt by itself.
     pub first_party: bool,
 }
 
@@ -103,6 +104,7 @@ impl Filter {
         }
         if self.first_party {
             parts.push(crate::record::FIRST_PARTY.into());
+            parts.push(crate::record::NOT_ASIDE.into());
         }
         // An instruction given for one task ([`crate::record::TASK_TAG`])
         // is that session's only: never a rule another session is given.

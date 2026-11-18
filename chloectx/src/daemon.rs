@@ -205,7 +205,8 @@ pub const TURN_DISTILLED: &str = "distilled_turn";
 /// The tag of the event that marks a turn whose distillation failed.
 pub const TURN_FAILED: &str = "distill_failed";
 /// The tag of the event that marks a turn never to be distilled: one that
-/// called `memory_forget`, whose notes would say again what it forgot.
+/// called `memory_forget`, whose notes would say again what it forgot, or
+/// a question that stood on its own ([`EpisodeAcc::only_a_question`]).
 pub const TURN_SKIPPED: &str = "distill_skipped";
 /// The final answers a session remembers by hash ([`Session::answered`]).
 const ANSWERS_KEPT: usize = 8;
@@ -862,10 +863,7 @@ impl Daemon {
                 let (turn, recent, tail) = self.with_session(&sid, |s| {
                     s.turn += 1;
                     // The briefing's part that changes every session.
-                    let tail = s.tail.take().map(|(t, ids)| {
-                        s.injected.extend(ids);
-                        t
-                    });
+                    let tail = s.tail.take().inspect(|(_, ids)| s.injected.extend(ids.iter().cloned()));
                     s.shown_before = (s.turn, s.injected.clone());
                     s.episode = EpisodeAcc { prompt: prompt.clone(), ..Default::default() };
                     s.episode_stored = false;
@@ -879,9 +877,32 @@ impl Daemon {
                 // Recall first: the prompt is in the live window anyway, and
                 // storing it afterwards keeps the write (and the memtable
                 // rebuild it causes) off the prompt's critical path.
-                let mut text = self.recall_for(&sid, &prompt, false, "prompt")?.map(|x| x.0).unwrap_or_default();
-                if let Some(t) = tail {
-                    text = if text.is_empty() { t } else { format!("{t}\n{text}") };
+                let recalled = self.recall_for(&sid, &prompt, false, "prompt")?;
+                // A question that stands on its own, for which nothing was
+                // recalled, gets nothing: the tail waits for the session's
+                // next prompt, no search runs after it, and a session that
+                // starts with the question the last one started with sends
+                // the same first request, which the prompt cache serves
+                // (JONAH-202). Claude Code puts every hook's text after the
+                // prompt, so the briefing is cached across sessions only then.
+                let alone = recalled.is_none() && recall::stands_alone(&prompt);
+                if alone {
+                    self.with_session(&sid, |s| s.episode.alone = true);
+                }
+                let mut text = recalled.map(|x| x.0).unwrap_or_default();
+                if let Some((t, ids)) = tail {
+                    if alone {
+                        self.with_session(&sid, |s| {
+                            for i in &ids {
+                                s.injected.remove(i);
+                                s.shown_before.1.remove(i);
+                            }
+                            s.tail = Some((t, ids));
+                        });
+                        self.log(&json!({"ts": now(), "event": "tail_held", "session": sid, "turn": turn}));
+                    } else {
+                        text = if text.is_empty() { t } else { format!("{t}\n{text}") };
+                    }
                 }
                 // The previous turn's search, when it finished after that turn
                 // ended: offered now, once.
@@ -890,7 +911,7 @@ impl Daemon {
                     let t = format!("ChloeCtx's search for your previous request finished after that turn ended:\n{t}");
                     text = if text.is_empty() { t } else { format!("{text}\n\n{t}") };
                 }
-                let deep = deep_cfg.wants(&prompt, self.store.len());
+                let deep = !alone && deep_cfg.wants(&prompt, self.store.len());
                 let deep_async = deep && mode == "async";
                 if deep && mode == "sync" {
                     let (t, _) = self.deep_for(&sid, &prompt, &recent, "sync");
@@ -920,7 +941,13 @@ impl Daemon {
                             me.keep_after_recall();
                         }
                         let by = me.source_of(&sid);
-                        if let Err(e) = me.store.append(&sid, turn, now(), capture::prompt_drafts_by(&prompt, &by)) {
+                        let mut drafts = capture::prompt_drafts_by(&prompt, &by);
+                        if alone {
+                            for d in drafts.iter_mut().filter(|d| d.kind == Kind::Prompt) {
+                                d.tag = crate::record::ASIDE.into();
+                            }
+                        }
+                        if let Err(e) = me.store.append(&sid, turn, now(), drafts) {
                             me.log(&json!({"ts": now(), "error": e.to_string(), "event": "UserPromptSubmit"}));
                         }
                         if !due {
@@ -1127,10 +1154,24 @@ impl Daemon {
                         }
                         let mut drafts: Vec<Draft> = capture::answer_drafts(&answer).into_iter().map(|d| d.ctx(ctx.clone())).collect();
                         drafts.extend(ep.card(turn, &answer));
+                        if ep.only_a_question() {
+                            for d in &mut drafts {
+                                d.tag = crate::record::ASIDE.into();
+                            }
+                        }
                         if let Err(e) = me.store.append(&sid, turn, now(), drafts) {
                             me.log(&json!({"ts": now(), "error": e.to_string(), "event": "Stop"}));
                         }
                         me.store.warm();
+                        if ep.only_a_question() {
+                            // Marked, so that a later daemon or `chloectx distill` leaves it too.
+                            let mark = Draft::new(Kind::Event, format!("Turn {turn} was a question that stood on its own, answered without a tool: not distilled")).tag(TURN_SKIPPED);
+                            if let Err(e) = me.store.append(&sid, turn, now(), vec![mark]) {
+                                me.log(&json!({"ts": now(), "error": e.to_string(), "event": "Stop"}));
+                            }
+                            me.log(&json!({"ts": now(), "event": "distill_skipped", "session": sid, "turn": turn, "why": "a question that stood on its own"}));
+                            return;
+                        }
                         let files: Vec<String> = ep.files.iter().cloned().collect();
                         me.distill_turn(&sid, turn, now(), &ep.prompt, &answer, &ep.commands, &files, &ex);
                     })),
@@ -2193,7 +2234,8 @@ impl Daemon {
     /// `{"op": "receipts", "session"?, "limit"?}`: the newest receipts.
     fn op_receipts(&self, req: &Json) -> Result<Json> {
         let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-        let rs = self.book()?.latest(req.get("session").and_then(|v| v.as_str()), limit)?;
+        let session = req.get("session").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty());
+        let rs = self.book()?.latest(session, limit)?;
         let mut text = String::new();
         for r in &rs {
             text += &format!(
@@ -2210,7 +2252,10 @@ impl Daemon {
             );
         }
         if text.is_empty() {
-            text = "No receipts yet.".into();
+            text = match session {
+                Some(s) => format!("No receipts for session {s} (no session id starts with it)."),
+                None => "No receipts yet.".into(),
+            };
         }
         // The rows each one showed, with their text as it is now (none
         // when deleted since), for programs (`chloectx receipts --json`).
@@ -2960,7 +3005,15 @@ impl Daemon {
         if !dest.is_absolute() {
             return Err(err(format!("{} is not an absolute path", dest.display())));
         }
-        std::fs::create_dir(&dest).map_err(|e| err(format!("create {}: {e}", dest.display())))?;
+        // The folders it goes in are made, and the backup is as private
+        // as the store: its folder 0700 and its files 0600 (ANA-208).
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| err(format!("create {}: {e}", parent.display())))?;
+        }
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o700).create(&dest).map_err(|e| err(format!("create {}: {e}", dest.display())))?;
+        }
         let db = self.store.db().ok_or_else(|| err("the store is a table of a ChloeDB server"))?;
         let stats = db.storage().checkpoint(&dest.join("memory.strata"), &chloedb::storage::CheckpointOptions::default())?;
         self.persist();
@@ -2974,6 +3027,7 @@ impl Daemon {
             let whole = log.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
             std::fs::write(dest.join("events.log"), &log[..whole]).map_err(|e| err(format!("write events.log: {e}")))?;
         }
+        private_tree(&dest).map_err(|e| err(format!("make {} private: {e}", dest.display())))?;
         Ok(json!({"dest": dest, "records": stats.live_docs, "bytes": stats.bytes_written, "txn": stats.txn, "seconds": stats.seconds}))
     }
 
@@ -3074,6 +3128,23 @@ impl Daemon {
 /// rename).
 fn is_forget_tool(tool: &str) -> bool {
     tool.ends_with("__memory_forget") && capture::is_own_tool(tool)
+}
+
+/// Makes the folders under `dir` (and it) 0700 and its files 0600, as the
+/// store's own folder is.
+fn private_tree(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    for e in std::fs::read_dir(dir)? {
+        let e = e?;
+        let t = e.file_type()?;
+        if t.is_dir() {
+            private_tree(&e.path())?;
+        } else if t.is_file() {
+            std::fs::set_permissions(e.path(), std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(())
 }
 
 /// The first line of `text`, at most `width` characters, its spaces

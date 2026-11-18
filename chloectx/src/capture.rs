@@ -618,9 +618,22 @@ pub struct EpisodeAcc {
     pub commands: Vec<String>,
     pub errors: Vec<String>,
     pub tools: usize,
+    /// The prompt was a question that stood on its own and nothing was
+    /// recalled for it ([`crate::recall::stands_alone`]).
+    #[serde(default)]
+    pub alone: bool,
 }
 
 impl EpisodeAcc {
+    /// A question that stood on its own, answered without a tool: the
+    /// project took no part in it, the user's words in it state no rule or
+    /// decision, and it is not distilled (JONAH-202: each "What is 17
+    /// times 3?" cost a distillation, and one wrote "a trivial arithmetic
+    /// check ... contained no project decisions" into the briefing).
+    pub fn only_a_question(&self) -> bool {
+        self.alone && self.tools == 0
+    }
+
     pub fn add_tool(&mut self, tool: &str, input: &Json, resp: &Json, project: &str) {
         self.tools += 1;
         for k in ["file_path", "notebook_path"] {

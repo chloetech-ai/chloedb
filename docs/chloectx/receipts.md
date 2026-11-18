@@ -154,7 +154,7 @@ process started the daemon. With receipts off, `memory_forget` and
 ```bash
 chloectx blame src/retry.rs:88       # or a whole file: chloectx blame src/retry.rs
 chloectx blame src/retry.rs:88 --json --no-replay
-chloectx receipts [--session S] [--limit N]
+chloectx receipts [--session S] [--limit N]   # S: a session id, or its first characters as listings show them
 chloectx receipts off [--purge] | on
 chloectx receipt rc-19a6… [--text] [--no-replay] [--json]
 chloectx snapshot keep before-release | list | drop before-release

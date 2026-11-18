@@ -724,7 +724,9 @@ impl Book {
     pub fn latest(&self, session: Option<&str>, limit: usize) -> Result<Vec<Receipt>> {
         let limit = limit.clamp(1, 500);
         match session {
-            Some(s) => self.read(&format!("SELECT body FROM receipts WHERE session = :s ORDER BY ts DESC LIMIT {limit}"), &Params::new().set("s", Value::Str(s.into()))),
+            // The start of an id is enough, as listings show 8 characters
+            // of it (ANA-209).
+            Some(s) => self.read(&format!("SELECT body FROM receipts WHERE PREFIX(session, :s) ORDER BY ts DESC LIMIT {limit}"), &Params::new().set("s", Value::Str(s.trim().into()))),
             None => self.read(&format!("SELECT body FROM receipts ORDER BY ts DESC LIMIT {limit}"), &Params::new()),
         }
     }
