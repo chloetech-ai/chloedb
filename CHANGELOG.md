@@ -48,6 +48,30 @@ changes collect under "Unreleased".
   app (400,000 searches in about 5 seconds) or served as logged queries
   to the server, and sites and experiments are rows of ChloeDB
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#the-app)).
+- **Search as you type and typos find the words the stemmer changes**
+  (persona study round 2, DEV-201, DEV-202, DEV-203, MAYA-201,
+  MAYA-202). A prefix also stands for the stems of the words it may be
+  the start of, so `headphone*`, `battery*`, `running*` and `runni*` find
+  their rows, as every letter typed before them did; `MATCH`, `bm25`'s
+  `word*` and highlights agree. A typo is counted on the word as typed,
+  not on its stem: `choclate` is one edit from *chocolate*, and
+  `fuzzy => 'auto'`, `word~` and "did you mean" forgive it. "Did you mean"
+  offers a real word (`wireles` gives *wireless*, not *wirees*).
+  OpenSearch's `match_bool_prefix` and `multi_match`'s `bool_prefix` take
+  `operator`, `minimum_should_match` and `fuzziness`. The command center's
+  table search forgives a typo in each word and offers a correction when
+  nothing is found ([search guide](docs/guide/search.md#as-you-type-prefixes),
+  [query-language.md](docs/chloedb/query-language.md#full-text-match)).
+
+### What changes by default
+
+- **A prefix finds more rows**: `word*` also finds the words it begins
+  whose stems do not start with it, and a whole word typed and then `*`
+  finds that word's rows. A ranking by `bm25(field, 'word*')` scores them
+  too.
+- **A correction's `edits` counts edits from the word as typed** to the
+  word shown, rather than from its stem, and the word shown is one that
+  stems to the term. The answer's fields are unchanged.
 
 ### ChloeCtx
 
