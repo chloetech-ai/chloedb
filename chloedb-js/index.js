@@ -28,7 +28,8 @@
 
 import { Buffer } from "node:buffer";
 import { createRequire } from "node:module";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -112,23 +113,63 @@ function busy(e, path) {
   return makeError(`${e.message}. ${hint}`, { cause: e });
 }
 
-async function opened(op, args, limits = {}) {
+async function opened(op, args, limits = {}, temp) {
   let db;
   try {
-    db = new Database(await native.NativeDatabase.open(op, encode(given(args))));
+    db = new Database(await native.NativeDatabase.open(op, encode(given(args))), temp);
   } catch (e) {
+    if (temp) gone(temp);
     throw op === "open" ? busy(failed(e), args.path) : failed(e);
   }
-  if (limits.timeoutMs != null || limits.memory != null) db.setLimits(limits);
+  if (limits.timeoutMs != null || limits.memory != null || limits.maxResultWindow != null) db.setLimits(limits);
   return db;
+}
+
+// ---------------------------------------------------------------- :memory:
+
+/** The path that names a database of its own each time, as SQLite's does:
+ * one in a new temporary directory, removed when it closes or the process
+ * exits (DEV-208 of the persona study of 17 November 2026: it was a file
+ * named ":memory:" in the working directory, kept between runs). */
+const MEMORY = ":memory:";
+
+const temps = new Set();
+process.on("exit", () => {
+  for (const d of temps) rmSync(d, { recursive: true, force: true });
+});
+
+/** A new temporary directory for a database of `:memory:`. */
+function tempHome() {
+  const d = mkdtempSync(join(tmpdir(), "chloedb-memory-"));
+  temps.add(d);
+  return d;
+}
+
+function gone(dir) {
+  temps.delete(dir);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+function noMemoryOpen() {
+  return new ChloeDBError(`${MEMORY} is a new database each time, with nothing to open: create one with open("${MEMORY}", { schema }) or Database.create("${MEMORY}", schema). It lives in a temporary directory until it closes`);
+}
+
+/** A whole number at least 0, or null and undefined. */
+function wholeOrNone(k, v) {
+  if (v != null && !(Number.isInteger(v) && v >= 0)) throw new RangeError(`${k} is a whole number, at least 0`);
 }
 
 /** A query's `timeoutMs` and `memory` as the native call takes them. */
 function limitArgs({ timeoutMs, memory } = {}) {
-  for (const [k, v] of [["timeoutMs", timeoutMs], ["memory", memory]]) {
-    if (v != null && !(Number.isInteger(v) && v >= 0)) throw new RangeError(`${k} is a whole number, at least 0`);
-  }
+  for (const [k, v] of [["timeoutMs", timeoutMs], ["memory", memory]]) wholeOrNone(k, v);
   return { timeout_ms: timeoutMs ?? undefined, memory: memory ?? undefined };
+}
+
+/** A cursor's `pageSize` and `keepAliveMs` as the native call takes them. */
+function pageArgs({ pageSize, keepAliveMs } = {}) {
+  if (pageSize != null && !(Number.isInteger(pageSize) && pageSize >= 1)) throw new RangeError("pageSize is a whole number, at least 1");
+  if (keepAliveMs != null && !(Number.isInteger(keepAliveMs) && keepAliveMs >= 1)) throw new RangeError("keepAliveMs is a whole number, at least 1");
+  return { page_size: pageSize ?? undefined, keep_alive_ms: keepAliveMs ?? undefined };
 }
 
 /** A schema given as an object, JSON text or the path of a JSON file, as
@@ -194,11 +235,14 @@ function base64(bytes) {
 export class Database extends Searchable {
   #n;
   #tag = 0;
+  /** The temporary directory of a database of `:memory:`. */
+  #temp;
 
   /** @internal Use `Database.create`, `Database.open` or `open`. */
-  constructor(nativeDb) {
+  constructor(nativeDb, temp) {
     super();
     this.#n = nativeDb;
+    this.#temp = temp;
     /** What the import that made it, or the last import into it, did
      * (`fromSqlite`, `importSqlite`, `fromParquet`, `importParquet`). */
     this.lastImport = nativeDb.lastImport == null ? null : decode(nativeDb.lastImport);
@@ -211,17 +255,23 @@ export class Database extends Searchable {
    * is where embedded fields' models are (default $CHLOEDB_MODELS or
    * ~/.local/share/chloedb/models). `threads` is how many cores vector
    * indexes build on and each query searches segments on (default: every
-   * core). `timeoutMs` and `memory` limit its queries (see `setLimits`).
+   * core). `timeoutMs`, `memory` and `maxResultWindow` limit its queries
+   * (see `setLimits`). `path` ":memory:" makes a database of its own each
+   * time, in a temporary directory removed when it closes (or the process
+   * exits), as SQLite's ":memory:" is one of its own.
    */
-  static create(path, schema, { directory = false, models, threads, timeoutMs, memory } = {}) {
-    return opened("create", { path: paths(path), schema: schemaJson(schema), directory, models: paths(models), threads }, { timeoutMs, memory });
+  static create(path, schema, { directory = false, models, threads, timeoutMs, memory, maxResultWindow } = {}) {
+    const temp = path === MEMORY ? tempHome() : undefined;
+    const at = temp ? join(temp, "memory.chloedb") : paths(path);
+    return opened("create", { path: at, schema: schemaJson(schema), directory, models: paths(models), threads }, { timeoutMs, memory, maxResultWindow }, temp);
   }
 
-  /** Opens the database at `path`; `models`, `threads`, `timeoutMs` and
-   * `memory` as `create` takes them. `readOnly` opens it to read while
-   * another process writes it. */
-  static open(path, { models, threads, readOnly = false, timeoutMs, memory } = {}) {
-    return opened("open", { path: paths(path), models: paths(models), threads, read_only: readOnly }, { timeoutMs, memory });
+  /** Opens the database at `path`; `models`, `threads`, `timeoutMs`,
+   * `memory` and `maxResultWindow` as `create` takes them. `readOnly`
+   * opens it to read while another process writes it. */
+  static open(path, { models, threads, readOnly = false, timeoutMs, memory, maxResultWindow } = {}) {
+    if (path === MEMORY) return Promise.reject(noMemoryOpen());
+    return opened("open", { path: paths(path), models: paths(models), threads, read_only: readOnly }, { timeoutMs, memory, maxResultWindow });
   }
 
   /**
@@ -232,11 +282,21 @@ export class Database extends Searchable {
    * `memory` bytes that its queries share (0: none; none, the default: the
    * budget every database of the process shares, a quarter of the
    * machine's memory or $CHLOEDB_QUERY_MEMORY_MB MiB), past which a query
-   * stops and rejects with a ChloeDBError of code "memory".
+   * stops and rejects with a ChloeDBError of code "memory". And at most
+   * `maxResultWindow` rows a query answers (none, the default: 10,000,
+   * chloedb-server's `--max-result-window`; 0: no window), past which a
+   * query rejects with BadRequestError, as a server refuses it: a cursor
+   * (`pageSize`, `scroll`) reads past it a page at a time.
    */
-  setLimits({ timeoutMs, memory } = {}) {
+  setLimits({ timeoutMs, memory, maxResultWindow } = {}) {
     const a = limitArgs({ timeoutMs, memory });
-    this.#n.setLimits(a.timeout_ms, a.memory);
+    wholeOrNone("maxResultWindow", maxResultWindow);
+    this.#n.setLimits(a.timeout_ms, a.memory, maxResultWindow ?? undefined);
+  }
+
+  /** The most rows a query answers at once (null: no window). */
+  get maxResultWindow() {
+    return this.#n.maxResultWindow ?? null;
   }
 
   /** The deadline every query gets unless it gives its own, in ms (null:
@@ -346,9 +406,49 @@ export class Database extends Searchable {
    * past which it rejects with a ChloeDBError of code "memory" (0: none;
    * none: the database's). `signal`, an AbortSignal, stops it when it
    * aborts: it rejects with the signal's reason, as an aborted fetch
-   * does. */
-  async query(sql, params, { timeoutMs, memory, signal } = {}) {
-    return new Result(await this.#query("query", { sql, params }, { timeoutMs, memory, signal }));
+   * does.
+   *
+   * With `pageSize`, it answers the first page of at most that many rows
+   * (and at most `maxResultWindow`), past the window, and while rows are
+   * left the result's `cursor`, for `next(cursor)`: every page reads the
+   * version of the database the first read, as a server's scroll does.
+   * The cursor is kept for `keepAliveMs` after each page (60 s; an hour at
+   * most). */
+  async query(sql, params, { timeoutMs, memory, signal, pageSize, keepAliveMs } = {}) {
+    if (pageSize == null && keepAliveMs != null) throw new TypeError("keepAliveMs is a cursor's: it goes with pageSize");
+    const paging = pageSize != null ? pageArgs({ pageSize, keepAliveMs }) : {};
+    return new Result(await this.#query("query", { sql, params, ...paging }, { timeoutMs, memory, signal }));
+  }
+
+  /** The next page of a cursor (`query` with `pageSize`): a `Result`
+   * whose `cursor` is the same while rows are left, and null after the
+   * last page. `keepAliveMs` changes how long it is kept after this
+   * page; `timeoutMs`, `memory` and `signal` as `query` takes them. */
+  async next(cursor, { keepAliveMs, timeoutMs, memory, signal } = {}) {
+    if (typeof cursor !== "string") throw new TypeError("next(cursor): the cursor of a page, a string");
+    try {
+      return new Result(await this.#query("next", { cursor, keep_alive_ms: pageArgs({ keepAliveMs }).keep_alive_ms }, { timeoutMs, memory, signal }));
+    } catch (e) {
+      // A cursor gone is not found, as a server's 404 says.
+      if (e?.code === "bad_request" && /no such cursor/.test(e.message)) throw makeError(e.message.replace(/^query error: /, ""), { code: "not_found", cause: e });
+      throw e;
+    }
+  }
+
+  /** Ends a cursor before its last page, letting go of the version it
+   * reads; whether it was open. */
+  async closeCursor(cursor) {
+    return this.#call("close_cursor", { cursor });
+  }
+
+  /** @internal */
+  async _highlight(body) {
+    return this.#call("highlight", body);
+  }
+
+  /** @internal */
+  async _correct(body) {
+    return this.#call("correct", body);
   }
 
   /** Runs any statement: a SELECT's `Result`, or the number of rows an
@@ -530,7 +630,11 @@ export class Database extends Searchable {
    * system when it is an eighth of the file or more, and closes the
    * database. Calls after it fail. */
   async close() {
-    await this.#call("close");
+    try {
+      await this.#call("close");
+    } finally {
+      if (this.#temp) gone(this.#temp);
+    }
   }
 
   get closed() {
@@ -544,13 +648,15 @@ export class Database extends Searchable {
 
 /**
  * Opens the database at `path`, creating it with `schema` if it does not
- * exist; `directory`, `models` and `threads` as `Database.create` takes
- * them.
+ * exist; `directory`, `models`, `threads` and the limits as
+ * `Database.create` takes them. ":memory:" with a schema is a database of
+ * its own, in a temporary directory removed when it closes.
  */
-export async function open(path, { schema, directory = false, models, threads, readOnly = false, timeoutMs, memory } = {}) {
-  if (existsSync(paths(path)) || readOnly) return Database.open(path, { models, threads, readOnly, timeoutMs, memory });
+export async function open(path, { schema, directory = false, models, threads, readOnly = false, timeoutMs, memory, maxResultWindow } = {}) {
+  if (path === MEMORY && (schema == null || readOnly)) throw noMemoryOpen();
+  if (path !== MEMORY && (existsSync(paths(path)) || readOnly)) return Database.open(path, { models, threads, readOnly, timeoutMs, memory, maxResultWindow });
   if (schema == null) throw new ChloeDBError(`${paths(path)} does not exist: pass a schema to create it`);
-  return Database.create(path, schema, { directory, models, threads, timeoutMs, memory });
+  return Database.create(path, schema, { directory, models, threads, timeoutMs, memory, maxResultWindow });
 }
 
 /** Creates a database at `path` from the tables of a SQLite database file

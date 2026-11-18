@@ -111,7 +111,7 @@ pub fn live_notes(store: &Store, limit: usize) -> Result<Vec<Record>> {
     Ok(store
         .latest(&KNOWLEDGE, limit, &Filter::default())?
         .into_iter()
-        .filter(|r| r.tag != "superseded" && r.tag != "done" && r.tag != "cue" && (r.kind != Kind::Todo || r.tag == "planned"))
+        .filter(|r| !crate::record::closed_tag(&r.tag) && r.tag != "done" && r.tag != "cue" && (r.kind != Kind::Todo || r.tag == "planned"))
         .collect())
 }
 

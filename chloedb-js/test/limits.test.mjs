@@ -37,8 +37,9 @@ function rows(n) {
   return Array.from({ length: n }, (_, i) => ({ id: i, a: (i * 7919) % n, c: i % 3, note: `${String(i).padStart(8, "0")} `.repeat(20) }));
 }
 
+// No result window: `SELECT * FROM t` answers every row, to hold memory.
 async function made(n, options = {}) {
-  const db = await Database.create(join(tempDir(), "t.strata"), SCHEMA, options);
+  const db = await Database.create(join(tempDir(), "t.strata"), SCHEMA, { maxResultWindow: 0, ...options });
   await db.insert(rows(n));
   return db;
 }

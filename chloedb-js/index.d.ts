@@ -1,6 +1,7 @@
-import { Input, Params, Plan, Result, Row, Schema, Searchable, Value } from "./common.js";
+/// <reference lib="esnext.disposable" />
+import { Input, PageOptions, Params, Plan, Result, Row, Schema, Searchable, Value } from "./common.js";
 
-export { Field, Input, LogOptions, ExportOptions, Params, Plan, Result, Row, Schema, SearchOptions, ChloeDBError, StrataError, ErrorCode, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError, ReadAfter, Value } from "./common.js";
+export { Corrected, CorrectedWord, Field, FieldType, HighlightOptions, Input, LogOptions, ExportOptions, PageOptions, Params, Plan, Result, Row, Schema, ScrollOptions, SearchOptions, ChloeDBError, StrataError, ErrorCode, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError, ReadAfter, Value } from "./common.js";
 export { Client, ClientOptions, Session, Written, connect } from "./client.js";
 
 type Path = string | URL;
@@ -21,6 +22,9 @@ export interface OpenOptions {
   timeoutMs?: number;
   /** The memory budget its queries share, in bytes (see `setLimits`). */
   memory?: number;
+  /** The most rows a query answers at once (10,000, chloedb-server's
+   * --max-result-window, by default; 0: no window). */
+  maxResultWindow?: number;
 }
 
 /** A query's limits. */
@@ -73,35 +77,47 @@ export declare class Database extends Searchable {
   renameColumn(from: string, to: string, options?: { table?: string }): Promise<void>;
 
   /** Limits every query from now on: a deadline of `timeoutMs` (none or
-   * 0: none, the default) and a memory budget of `memory` bytes its
-   * queries share (0: none; none, the default: the process's, a quarter of
-   * the machine's memory or $CHLOEDB_QUERY_MEMORY_MB MiB). */
-  setLimits(limits?: { timeoutMs?: number; memory?: number }): void;
+   * 0: none, the default), a memory budget of `memory` bytes its queries
+   * share (0: none; none, the default: the process's, a quarter of the
+   * machine's memory or $CHLOEDB_QUERY_MEMORY_MB MiB), and the most rows a
+   * query answers, `maxResultWindow` (none, the default: 10,000, as
+   * chloedb-server's --max-result-window; 0: no window). */
+  setLimits(limits?: { timeoutMs?: number; memory?: number; maxResultWindow?: number }): void;
   /** The deadline every query gets unless it gives its own, in ms. */
   readonly timeoutMs: number | null;
   /** The memory budget its queries share, in bytes. */
   readonly memory: number | null;
+  /** The most rows a query answers at once (null: no window). */
+  readonly maxResultWindow: number | null;
   /** Stops the queries running now (they reject with DeadlineError);
    * returns how many. */
   interrupt(): number;
 
-  /** Runs a SELECT. */
-  query(sql: string, params?: Params | null, options?: QueryLimits): Promise<Result>;
+  /** Runs a SELECT; its rows are `T`s (unchecked). With `pageSize`, the
+   * first page of a cursor's, and its `cursor` while rows are left. */
+  query<T = Record<string, Value>>(sql: string, params?: Params | null, options?: QueryLimits & PageOptions): Promise<Result<T>>;
+  /** The next page of a cursor; `cursor` is null after the last. */
+  next<T = Record<string, Value>>(cursor: string, options?: QueryLimits & { keepAliveMs?: number }): Promise<Result<T>>;
+  /** Ends a cursor before its last page; whether it was open. */
+  closeCursor(cursor: string): Promise<boolean>;
   /** Runs any statement: a SELECT's Result, or the rows a write wrote; a
    * SELECT limited by `options`. */
-  sql(sql: string, params?: Params | null, options?: QueryLimits): Promise<Result | number>;
+  sql<T = Record<string, Value>>(sql: string, params?: Params | null, options?: QueryLimits): Promise<Result<T> | number>;
+  /** Runs an INSERT, UPDATE or DELETE (or a statement that makes or
+   * changes a table): the rows it wrote. A SELECT is refused. */
+  execute(sql: string, params?: Params | null, options?: QueryLimits): Promise<number>;
   /** The plan of a statement, without running it. */
   plan(sql: string, params?: Params | null): Promise<Plan>;
   /** Runs a plan; a read limited by `options`. */
-  run(plan: Plan, options?: QueryLimits): Promise<Result | number>;
+  run<T = Record<string, Value>>(plan: Plan, options?: QueryLimits): Promise<Result<T> | number>;
 
   /** Inserts rows whose keys are new; all or none. Returns how many. */
   insert(rows: Row | Iterable<Row>, options?: { table?: string }): Promise<number>;
   /** Inserts rows, replacing the rows with their keys. Returns how many. */
   upsert(rows: Row | Iterable<Row>, options?: { table?: string }): Promise<number>;
   /** The row with this key, or null. */
-  get(key: Input, options?: { table?: string }): Promise<Record<string, Value> | null>;
-  getMany(keys: Iterable<Input>, options?: { table?: string }): Promise<(Record<string, Value> | null)[]>;
+  get<T = Record<string, Value>>(key: Input, options?: { table?: string }): Promise<T | null>;
+  getMany<T = Record<string, Value>>(keys: Iterable<Input>, options?: { table?: string }): Promise<(T | null)[]>;
   /** Deletes the rows with this key or these keys; returns how many. */
   delete(keys: Input | Iterable<Input>, options?: { table?: string }): Promise<number>;
   /** Deletes the rows whose `expire_by` time has passed. */
@@ -138,7 +154,8 @@ export declare class Database extends Searchable {
 }
 
 /** Opens the database at `path`, creating it with `schema` if it does not
- * exist. */
+ * exist. ":memory:" with a schema is a database of its own each time, in a
+ * temporary directory removed when it closes. */
 export declare function open(path: Path, options?: CreateOptions & ReadOnlyOption & { schema?: SchemaInput }): Promise<Database>;
 export declare function fromSqlite(sqlitePath: Path, path: Path, options?: CreateOptions & { tables?: Tables; schemas?: unknown; blobsBase64?: boolean }): Promise<Database>;
 export declare function planSqlite(sqlitePath: Path, options?: { tables?: Tables; schemas?: unknown; blobsBase64?: boolean }): Promise<Record<string, unknown>>;
