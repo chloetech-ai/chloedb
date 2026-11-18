@@ -1,9 +1,11 @@
 //! A live run against a real chloedb-server: simulated users at a rate,
 //! their searches logged and their clicks written back, every metric each
 //! second; AI agents played through a stand-in of the Messages API (so
-//! no model is called, and what the app sends it is checked), stopped by
-//! their budget; a visitor's search; the rate changed while it runs; and,
-//! once stopped, the run as an experiment with its report.
+//! no model is called, and what the app sends it is checked), split
+//! evenly over the arms and stopped by their budget; a visitor's search;
+//! the rate changed while it runs; once stopped, the run as an experiment
+//! with its report and a sentence per arm on why its agents gave up. And a
+//! second run that stops itself once it is decided.
 //!
 //! It needs the chloedb-server binary, as tests/app.rs does.
 
@@ -38,10 +40,19 @@ async fn messages(State(seen): State<Seen>, headers: HeaderMap, Json(b): Json<Va
     if b["model"] != "claude-opus-5-5" || b["fallbacks"] != "default" || !headers.get("anthropic-beta").and_then(|v| v.to_str().ok()).unwrap_or("").contains("server-side-fallback-2026-07-01") {
         return bad("the model, or its fallbacks");
     }
-    if b["tool_choice"]["type"] != "auto" || b["output_config"]["effort"] != "low" {
-        return bad("tool_choice or effort");
+    if b["output_config"]["effort"] != "low" {
+        return bad("effort");
     }
     let msgs = b["messages"].as_array().cloned().unwrap_or_default();
+    // No tools: the sum-up of why the agents gave up, a line per arm named.
+    if b["tools"].is_null() {
+        let prompt = msgs[0]["content"].as_str().unwrap_or("");
+        let lines: Vec<String> = (0..5).filter(|a| prompt.contains(&format!("\nArm {a} ("))).map(|a| format!("{a}: the rows it showed were about something else")).collect();
+        return (StatusCode::OK, Json(json!({"id": "msg_s", "type": "message", "role": "assistant", "model": "claude-opus-5-5", "stop_reason": "end_turn", "content": [{"type": "text", "text": lines.join("\n")}], "usage": {"input_tokens": 500, "output_tokens": 50}})));
+    }
+    if b["tool_choice"]["type"] != "auto" {
+        return bad("tool_choice");
+    }
     let first = msgs[0]["content"].as_str().unwrap_or("");
     let need = first.split("looking for this:\n\n\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string();
     let turns = msgs.iter().filter(|m| m["role"] == "assistant").count();
@@ -56,6 +67,8 @@ async fn messages(State(seen): State<Seen>, headers: HeaderMap, Json(b): Json<Va
     let call = match turns {
         0 => json!({"name": "search", "input": {"query": need, "why": "my words"}}),
         1 => json!({"name": "open", "input": {"result": 1, "why": "the first looks right"}}),
+        // A need of odd length is given up on.
+        _ if need.len() % 2 == 1 => json!({"name": "done", "input": {"found": false, "note": "nothing on it"}}),
         _ => json!({"name": "done", "input": {"found": true, "result": 1, "note": "that was it"}}),
     };
     let id = format!("toolu_{}_{turns}", need.len());
@@ -97,7 +110,7 @@ async fn a_live_run_counts_every_second_and_ends_as_an_experiment() {
 
     // Two agents at $0.008 a call ($4 and $20 a million tokens), and a
     // budget of six cents: two tasks of three calls each, or near.
-    let spec = json!({"name": "live title vs body", "site": "shop", "arms": arms, "users": 2000, "rate": 80, "minutes": 5, "agents": 2, "budget": 0.06});
+    let spec = json!({"name": "live title vs body", "site": "shop", "arms": arms, "users": 2000, "rate": 80, "minutes": 5, "agents": 2, "budget": 0.06, "until": "time"});
     let id = c.post("/v1/live", spec.clone()).await["id"].as_str().unwrap().to_string();
     let (s, v) = c.call(reqwest::Method::POST, "/v1/live", Some(spec), Some("t")).await;
     assert_eq!(s, 409, "one live run at a time: {v}");
@@ -136,14 +149,19 @@ async fn a_live_run_counts_every_second_and_ends_as_an_experiment() {
     assert!(feed.iter().any(|f| f["kind"] == "user"), "the feed shows simulated users");
     assert!(feed.iter().any(|f| f["kind"] == "agent" && f["action"] == "open"), "and the agents");
 
-    // The agents: every task three calls, the first result opened and found;
+    // The agents: every task three calls, the first result opened (found
+    // when the need is of an even length, the fake says);
     // the budget spent, and not by much more.
     let tally: Vec<Value> = v["agent_tally"].as_array().unwrap().clone();
     let tasks: u64 = tally.iter().map(|t| t["tasks"].as_u64().unwrap()).sum();
     let found: u64 = tally.iter().map(|t| t["found"].as_u64().unwrap()).sum();
-    assert!(tasks >= 2 && found >= 1, "{tally:?}");
+    assert!(tasks >= 2 && found <= tasks, "{tally:?}");
+    assert!(tally.iter().all(|t| t["tasks"].as_u64().unwrap() >= 1), "the agents are split over the arms: {tally:?}");
+    let arms_of: Vec<Value> = v["agents"].as_array().unwrap().iter().map(|a| a["arm"].clone()).collect();
+    assert_ne!(arms_of[0], arms_of[1], "two agents, one in each arm: {arms_of:?}");
+    // The budget is spent but for what the sum-up keeps (a tenth of it here).
     let cost = v["cost"].as_f64().unwrap();
-    assert!((0.06..=0.06 + 2.0 * 0.008 + 1e-9).contains(&cost), "spent ${cost}");
+    assert!((0.054..=0.06 + 2.0 * 0.008 + 1e-9).contains(&cost), "spent ${cost}");
     let calls = seen.lock().unwrap().len();
     assert!((cost / 0.008 - calls as f64).abs() < 1e-6, "{calls} calls cost ${cost}");
     let agent = &v["agents"][0];
@@ -200,6 +218,20 @@ async fn a_live_run_counts_every_second_and_ends_as_an_experiment() {
     let srch = rep["metrics"].as_array().unwrap().iter().find(|m| m["key"] == "success").unwrap();
     assert!(srch["comparisons"][0]["series"].as_array().unwrap().len() >= 2);
     assert!(rep["live"]["agent_tally"][0]["tasks"].is_number());
+    // Why the agents gave up: per arm, counted, and summed up by the model
+    // where some did.
+    let why = &rep["live"]["why"];
+    let gave: u64 = why["arms"].as_array().unwrap().iter().map(|a| a["gave_up"].as_u64().unwrap()).sum();
+    if gave > 0 {
+        assert_eq!(why["by"], "claude-opus-5-5", "{why}");
+        let a = why["arms"].as_array().unwrap().iter().find(|a| a["gave_up"].as_u64().unwrap() > 0).unwrap();
+        assert_eq!(a["text"], "the rows it showed were about something else", "{why}");
+    } else {
+        assert_eq!(why["by"], "counts", "{why}");
+    }
+    assert!(why["arms"].as_array().unwrap().iter().all(|a| a["text"].as_str().unwrap().len() > 10), "{why}");
+    assert_eq!(rep["live"]["until"], "time");
+    assert!(rep["live"]["decided"].is_null());
     assert_eq!(rep["live"]["visitor_tally"].as_array().unwrap().iter().map(|t| t["found"].as_u64().unwrap()).sum::<u64>(), 1);
     assert!(rep["cohorts"]["country"].is_object());
     assert_eq!(r["summary"]["mode"], "live");
@@ -220,4 +252,33 @@ async fn a_live_run_counts_every_second_and_ends_as_an_experiment() {
     assert!(server.query(&format!("SELECT COUNT(*) FROM exp_log_{id}"), json!({}), None).await.is_err());
     let (s, _) = c.call(reqwest::Method::GET, &format!("/v1/live/{id}"), None, Some("t")).await;
     assert_eq!(s, 404);
+
+    // A run that stops once decided: the body ranking against its own
+    // matches shuffled, a loss no test misses, with two scripted agents.
+    let shuffled = format!("(({}) * 7919) % 1", common::BODY);
+    let spec = json!({"name": "decided", "site": "shop", "arms": [{"name": "Body", "rank": common::BODY}, {"name": "Shuffled", "rank": shuffled}], "users": 2000, "rate": 200, "minutes": 3, "agents": 2, "brain": "scripted"});
+    let id = c.post("/v1/live", spec).await["id"].as_str().unwrap().to_string();
+    let r = c.done(&id).await;
+    let live = &r["report"]["live"];
+    let d = &live["decided"];
+    if d.is_object() {
+        assert!(d["searches"].as_u64().unwrap() >= 1000 && d["elapsed"].as_f64().unwrap() < 180.0, "{d}");
+        assert_eq!(d["verdicts"][0]["call"], "worse", "{d}");
+        assert!(d["text"].as_str().unwrap().starts_with("Decided at "), "{d}");
+        // It stopped there, not at its three minutes.
+        assert!(live["elapsed"].as_f64().unwrap() < d["elapsed"].as_f64().unwrap() + 5.0, "{live}");
+        assert!(live["waiting"].is_null(), "{live}");
+    } else {
+        // The call is made at once, but a guardrail can stay unread for the
+        // three minutes: the query time is measured, so noisy on a busy
+        // machine, and abandonment barely moves on this small site, so its
+        // interval needs more searches than that to sit within its 1%. The
+        // run says which it waits on.
+        let w = live["waiting"].as_str().unwrap_or_default();
+        assert!(w.starts_with("the guardrail "), "it decided, or says what it waits on: {live}");
+        assert_eq!(r["report"]["verdicts"][0]["call"], "worse");
+    }
+    assert_eq!(live["why"]["by"], "counts");
+    let agents = r["report"]["live"]["agent_tally"].as_array().unwrap().clone();
+    assert!(agents.iter().all(|t| t["tasks"].as_u64().unwrap() >= 1), "scripted agents in both arms: {agents:?}");
 }

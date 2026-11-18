@@ -211,6 +211,31 @@ or one server), so shards of older versions need nothing new.
   full report and an Agents tab
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#live-runs)).
 
+- **`hash()` in a ranking.** `hash(field, seed)` of the key or a stored
+  field is now a leaf of a ranking expression, the same number it is in
+  `WHERE` and `ORDER BY`: `ORDER BY bm25(body, :q) * 0 + hash(id, 7) DESC`
+  shows what a search finds in a seeded random order (an experiment's
+  shuffled arm, a logged query's), and a small share of it breaks ties.
+  It ranks as a rank-safe boost, every row the text matches; `rrf` does
+  not fuse it. A plan with it needs the feature `hash`, and a shard from
+  before this release refuses it in a ranking
+  ([query language](docs/chloedb/query-language.md#samples-splits-and-shuffles-hash)).
+
+- **Experiments: checks, interleaving and test arms** (`chloedb-experiments`,
+  a demo). Check this runs a finished experiment again 30 times on the same
+  users, each time split anew, and shows how often each metric's 95%
+  interval held the truth, the primary metric's intervals around the true
+  lift, and the calls the repeats made. Interleaving (`"mode":
+  "interleave"`) shows two rankings in one team-drafted list, with its
+  exact truth from every pattern of coins, and the A/B of the same pair
+  beside it with the users each would need. The builder makes test arms
+  from the control (shuffled, reversed, first row demoted, through an
+  arm's `then`), a live run stops once it is decided (`"until"`), its AI
+  agents are split evenly across arms with a line per arm on why they gave
+  up, each experiment takes a fresh seed, and a report's Queries tab shows
+  where the difference came from
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#checking-a-result)).
+
 ### Query plans
 
 Rules that read only the rows that can be in an answer, from what ChloeDB
