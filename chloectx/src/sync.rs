@@ -39,10 +39,21 @@
 //!
 //! Records retagged after they were pushed are not sent again: the server
 //! keeps the version it was sent first. Records that `chloectx redact`
-//! rewrites are ([`push_records`]). A record forgotten here has its row
-//! deleted on the server, and a pull never stores it again
-//! ([`Forgotten`], audit CTX-33).
+//! rewrites are ([`push_records`]), and so is a rule retired for the whole
+//! project (`chloectx sync retire`, [`retire`]). A record forgotten here
+//! has its row on the server replaced by a tombstone ([`FORGOTTEN_KIND`]),
+//! and a pull never stores it again ([`Forgotten`], audit CTX-33).
+//!
+//! What another machine changed reaches this one on its next pull
+//! ([`Pulled`], WEI-304, WEI-303, WEI-306): a tombstone is forgotten here
+//! too; a row of another machine that a pull saw before and no longer
+//! finds (an admin deleted it) is forgotten here; a row retired or
+//! superseded there is here; and a row whose context a forget cut there
+//! is cut here. A push sends this machine's own records only (`--again`
+//! sends the pulled ones too), so what was deleted on the server stays
+//! deleted.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -107,6 +118,31 @@ pub fn create_for(project: &str) -> String {
 pub const SYNCED_FROM: &str = "synced_from";
 /// The label once a person accepted the machine (`chloectx sync accept`).
 pub const ACCEPTED: &str = "accepted_from";
+/// The kind of a row that says its record was forgotten: a forget replaces
+/// the record's row by one of this kind, with no text, which every
+/// machine's next pull reads and forgets there too (WEI-304). A client
+/// from before 0.3.9 knows no such kind and passes it over.
+pub const FORGOTTEN_KIND: &str = "forgotten";
+/// The label of the link a record retired for the whole project carries
+/// to the name of the key that retired it ([`retire`]).
+pub const RETIRED_BY: &str = "retired_by";
+
+/// Whether `r` was pulled from another machine (accepted or not).
+pub fn pulled(r: &Record) -> bool {
+    r.links.iter().any(|l| l.label == SYNCED_FROM || l.label == ACCEPTED)
+}
+
+/// Who said `r`, when another machine sent it: `alice-laptop`, as the key
+/// it pushed with names it, else the machine's id ([`origin`]). `None` for
+/// this machine's own records.
+pub fn sent_by(r: &Record) -> Option<String> {
+    let o = r.links.iter().find(|l| l.label == SYNCED_FROM || l.label == ACCEPTED)?;
+    Some(match pushed_by(r) {
+        Some(k) => machine_name(k).to_string(),
+        None => o.to.clone(),
+    })
+}
+
 /// The label of the link a row carries to the name of the key that pushed
 /// it, as the server told the pushing machine (`GET /v1/whoami`): the
 /// machine's name in `chloectx sync accept`, the inspector and the command
@@ -618,7 +654,7 @@ impl Remote {
 
     /// How many records of `project` the server holds.
     pub fn count(&self, project: &str) -> Result<i64> {
-        let rows = self.rows(&format!("SELECT COUNT(*) FROM {} WHERE project = :p", table_for(project)), json!({ "p": project }))?;
+        let rows = self.rows(&format!("SELECT COUNT(*) FROM {} WHERE project = :p AND kind != '{FORGOTTEN_KIND}'", table_for(project)), json!({ "p": project }))?;
         Ok(rows.first().and_then(|r| r.first()).and_then(|v| v.as_i64()).unwrap_or(0))
     }
 }
@@ -727,8 +763,9 @@ pub fn forget(store_dir: &Path, ids: &[String]) -> Result<()> {
     save_forgotten(store_dir, &f)
 }
 
-/// Deletes the server's rows of the records forgotten in the store at
-/// `store_dir` that it may still hold: in the project's table, and in the
+/// Replaces the server's rows of the records forgotten in the store at
+/// `store_dir` by tombstones ([`tombstone`]), which every machine's next
+/// pull forgets too (WEI-304), in the project's table; deletes them in the
 /// table projects shared before 0.3.4 where the key may write it (a key of
 /// the project's table alone may not, and the store's list keeps those
 /// from coming back here all the same). How many were sent.
@@ -740,15 +777,16 @@ pub fn send_forgets(remote: &Remote, project: &str, store_dir: &Path) -> Result<
     if unsent.is_empty() {
         return Ok(0);
     }
-    let table = table_for(project);
-    for batch in unsent.chunks(BATCH) {
-        let ops = |t: &str| -> Vec<Json> { batch.iter().map(|id| json!({"op": "delete", "table": t, "key": format!("{project}:{id}")})).collect() };
-        match remote.post("/v1/write", &json!({ "ops": ops(&table) })) {
+    let (table, me, now) = (table_for(project), origin(&remote.header_dir), crate::now());
+    for (b, batch) in unsent.chunks(BATCH).enumerate() {
+        let tombs: Vec<Json> = batch.iter().enumerate().map(|(i, id)| json!({"op": "upsert", "table": table, "doc": tombstone(project, &me, id, now, (b * BATCH + i) as i64)})).collect();
+        match remote.post("/v1/write", &json!({ "ops": tombs })) {
             // A server with no table of the project holds none of its rows.
             Err(e) if no_table(&e, &table) => {}
             r => drop(r?),
         }
-        let _ = remote.post("/v1/write", &json!({ "ops": ops(TABLE) }));
+        let deletes: Vec<Json> = batch.iter().map(|id| json!({"op": "delete", "table": TABLE, "key": format!("{project}:{id}")})).collect();
+        let _ = remote.post("/v1/write", &json!({ "ops": deletes }));
     }
     let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
     let mut f = load_forgotten(store_dir);
@@ -757,6 +795,16 @@ pub fn send_forgets(remote: &Remote, project: &str, store_dir: &Path) -> Result<
     }
     save_forgotten(store_dir, &f)?;
     Ok(unsent.len())
+}
+
+/// The row that replaces record `id`'s once it is forgotten: its key and
+/// id, the machine that forgot it, and nothing it said. Numbered after
+/// every record (`now`, in seconds, times a million, then `n`).
+fn tombstone(project: &str, origin: &str, id: &str, now: i64, n: i64) -> Json {
+    json!({
+        "origin": origin, "id": format!("{project}:{id}"), "project": project, "rid": id, "session": "", "kind": FORGOTTEN_KIND, "tag": "",
+        "turn": 0, "seq": now.saturating_mul(1_000_000).saturating_add(n % 1_000_000), "ts": now, "importance": 0.0, "files": "", "content": "", "context": "", "links_json": "[]",
+    })
 }
 
 /// A record as the server's row, redacted, pushed by machine `origin`
@@ -816,23 +864,33 @@ fn no_table(e: &crate::Error, table: &str) -> bool {
     e.to_string().contains(&format!("no such table: {table}"))
 }
 
+/// [`push_with`] of this machine's own records.
+pub fn push(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -> Result<usize> {
+    push_with(remote, store, project, st, false)
+}
+
 /// [`push_once`], creating the project's table first where the server
 /// lacks it (a key with the `admin` scope can; the Inspector does it as it
-/// makes a project's key).
-pub fn push(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -> Result<usize> {
-    match push_once(remote, store, project, st) {
+/// makes a project's key). With `pulled`, the records pulled from other
+/// machines go too (`chloectx sync push --again`, to fill a table that
+/// lost them).
+pub fn push_with(remote: &Remote, store: &Store, project: &str, st: &mut SyncState, pulled: bool) -> Result<usize> {
+    match push_once(remote, store, project, st, pulled) {
         Err(e) if no_table(&e, &table_for(project)) => {
             remote.create_table(project).map_err(|c| {
                 err(format!("{e}; creating it failed too ({c}): an admin makes it, and a key for it, with \"Make a sync key\" on the command center's ChloeCtx page, or with `chloectx sync setup` and an admin's key"))
             })?;
-            push_once(remote, store, project, st)
+            push_once(remote, store, project, st, pulled)
         }
         r => r,
     }
 }
 
-/// Sends the records of `store` after `st.pushed_seq`; how many.
-fn push_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -> Result<usize> {
+/// Sends the records of `store` after `st.pushed_seq`; how many. A record
+/// pulled from another machine is not sent back (unless `pulled`): its
+/// machine sent it, and sending it again would undo a delete or a
+/// forget on the server made since (WEI-303, WEI-304).
+fn push_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState, pulled: bool) -> Result<usize> {
     let table = table_for(project);
     let me = origin(&remote.header_dir);
     // Asked once there is something to send: the daemon pushes every 30 s.
@@ -840,7 +898,7 @@ fn push_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) 
     let mut sent = 0;
     loop {
         let rs = store.query_with(&format!("SELECT {COLUMNS} FROM memory WHERE seq > :s ORDER BY seq ASC LIMIT {BATCH}"), &Params::new().set("s", chloedb::Value::Int(st.pushed_seq)))?;
-        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).collect();
+        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| pulled || !self::pulled(r)).collect();
         let Some(top) = rs.rows.iter().filter_map(|r| r.get(5).and_then(|v| v.as_i64())).max() else { break };
         if !recs.is_empty() {
             let by = by.get_or_insert_with(|| remote.key_name()).as_deref();
@@ -865,15 +923,79 @@ fn push_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) 
 }
 
 /// Sends `recs` again, replacing the server's rows with the same ids (the
-/// records `chloectx redact` rewrote); how many.
+/// records `chloectx redact` rewrote, or one retired for the project);
+/// how many.
 pub fn push_records(remote: &Remote, project: &str, recs: &[Record]) -> Result<usize> {
     let (table, me, by) = (table_for(project), origin(&remote.header_dir), remote.key_name());
     for batch in recs.chunks(BATCH) {
         let ops: Vec<Json> = batch.iter().map(|r| json!({"op": "upsert", "table": table, "doc": remote_doc(project, &me, by.as_deref(), r)})).collect();
-        let ids = batch.iter().map(|r| r.id.as_str()).collect::<Vec<_>>().join(",");
-        remote.post("/v1/write", &json!({ "ops": ops, "idempotency_key": format!("chloectx-redact-{:016x}-{:016x}-{}", fnv(project), fnv(&ids), crate::now()) }))?;
+        // Named by what it writes, and when: the same records changed
+        // twice in a second (cut, then retired) are two requests, not one
+        // key reused, which the server refuses.
+        let what = serde_json::to_string(&ops).unwrap_or_default();
+        remote.post("/v1/write", &json!({ "ops": ops, "idempotency_key": format!("chloectx-redact-{:016x}-{:016x}-{}", fnv(project), fnv(&what), crate::now()) }))?;
     }
     Ok(recs.len())
+}
+
+/// `chloectx sync retire ID`: retires record `r` (a rule, decision, fact,
+/// to-do or note) for the whole project: tagged `retired` here, with a
+/// link to the key that retired it ([`RETIRED_BY`]), and its row on the
+/// server replaced so, which every machine's next pull applies (WEI-306).
+/// Whoever may write the project's table may; the server's audit log
+/// names the key. The record as retired.
+pub fn retire(remote: &Remote, store: &Store, project: &str, r: &Record) -> Result<Record> {
+    if !r.kind.is_knowledge() {
+        return Err(err(format!("{} is a {}, not a rule, decision, fact, to-do or note", r.id, r.kind.as_str())));
+    }
+    let mut r = r.clone();
+    r.tag = crate::record::RETIRED.into();
+    let by = remote.key_name().unwrap_or_else(|| "the server's token".into());
+    r.links.retain(|l| l.label != RETIRED_BY);
+    r.links.push(Link { label: RETIRED_BY.into(), to: by });
+    push_records(remote, project, std::slice::from_ref(&r))?;
+    store.insert(std::slice::from_ref(&r))?;
+    Ok(r)
+}
+
+/// What a pull did ([`pull`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pulled {
+    /// Records stored.
+    pub stored: usize,
+    /// Records of this store the server says are gone: forgotten on
+    /// another machine (a tombstone, [`FORGOTTEN_KIND`]), or another
+    /// machine's that an admin deleted there (a row a pull saw before and
+    /// no longer finds). Noted forgotten already ([`Forgotten`]); the
+    /// daemon forgets them here as `chloectx forget` does, receipts and
+    /// segments included.
+    pub forget: Vec<String>,
+    /// Records of this store that took the server's version: retired or
+    /// superseded there, or with lines of their context a forget cut.
+    pub changed: usize,
+}
+
+/// The rows of other machines the last pull found in a project's table
+/// (`sync-seen.json` beside the store): one it no longer finds was
+/// deleted on the server ([`pull`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct Seen {
+    url: String,
+    table: String,
+    ids: std::collections::BTreeSet<String>,
+}
+
+fn seen_path(store_dir: &Path) -> PathBuf {
+    store_dir.join("sync-seen.json")
+}
+
+/// What one table's rows held, as [`store_new`] read them.
+#[derive(Default)]
+struct Read {
+    /// Every row's record id, tombstones too.
+    all: std::collections::HashSet<String>,
+    /// Those of other machines' records.
+    others: std::collections::BTreeSet<String>,
 }
 
 /// Stores the records of `project` the server holds and `store` lacks:
@@ -881,31 +1003,58 @@ pub fn push_records(remote: &Remote, project: &str, recs: &[Record]) -> Result<u
 /// 0.3.4 ([`TABLE`]) where the key may read it. A server without a table
 /// holds nothing to pull from it. The records forgotten in the store
 /// (its [`Forgotten`], in `store_dir`) are never stored again (audit
-/// CTX-33).
-pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState, store_dir: &Path) -> Result<usize> {
+/// CTX-33). What the server says of records the store has is applied
+/// ([`Pulled`]): tombstones, deletes of other machines' rows (from the
+/// project's table, against what the last pull found there; not when the
+/// table holds no row at all, which is a table made again, not a delete),
+/// tags that closed a note, and cut contexts.
+pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState, store_dir: &Path) -> Result<Pulled> {
     let cfg = load_config(&remote.header_dir);
     let me = origin(&remote.header_dir);
     let table = table_for(project);
-    let mut got = match pull_once(remote, store, project, &table, PROJECT_COLUMNS, &me, &cfg, store_dir) {
-        Err(e) if no_table(&e, &table) => 0,
-        r => r?,
-    };
+    let mut out = Pulled::default();
+    let mut read = Read::default();
+    match pull_once(remote, store, project, &table, PROJECT_COLUMNS, &me, &cfg, store_dir, &mut out, &mut read) {
+        Err(e) if no_table(&e, &table) => {}
+        r => {
+            r?;
+            let before: Seen = std::fs::read_to_string(seen_path(store_dir)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+            if before.url == remote.url && before.table == table && !read.all.is_empty() {
+                let gone: Vec<String> = before.ids.iter().filter(|id| !read.all.contains(*id)).cloned().collect();
+                if !gone.is_empty() {
+                    let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut f = load_forgotten(store_dir);
+                    f.ids.extend(gone.iter().cloned());
+                    save_forgotten(store_dir, &f)?;
+                    for r in store.get(&gone)?.into_iter().filter(pulled) {
+                        if !out.forget.contains(&r.id) {
+                            out.forget.push(r.id);
+                        }
+                    }
+                }
+            }
+            let now = Seen { url: remote.url.clone(), table: table.clone(), ids: read.others };
+            let tmp = seen_path(store_dir).with_extension("json.tmp");
+            std::fs::write(&tmp, serde_json::to_string(&now).unwrap_or_default())?;
+            std::fs::rename(tmp, seen_path(store_dir))?;
+        }
+    }
     // The shared table may be gone, or not for this key (a project's key
     // is refused it): neither is an error of this project's sync.
-    got += pull_once(remote, store, project, TABLE, REMOTE_COLUMNS, &me, &cfg, store_dir).unwrap_or(0);
-    st.pulled += got as u64;
+    let _ = pull_once(remote, store, project, TABLE, REMOTE_COLUMNS, &me, &cfg, store_dir, &mut out, &mut Read::default());
+    st.pulled += out.stored as u64;
     st.last_pull = crate::now();
-    Ok(got)
+    Ok(out)
 }
 
 /// The records of `project` in `table`, read as `cols`, that `store`
-/// lacks, stored. Paged by sequence number: each machine numbers its own
+/// lacks, stored, and what the rows say of those it has applied
+/// ([`store_new`]). Paged by sequence number: each machine numbers its own
 /// records, so the server holds several of one number, and a full page
 /// may end inside them, so its last number's records are read whole
 /// before the next page starts after it.
 #[allow(clippy::too_many_arguments)]
-fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &str, me: &str, cfg: &SyncConfig, store_dir: &Path) -> Result<usize> {
-    let mut got = 0;
+fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &str, me: &str, cfg: &SyncConfig, store_dir: &Path, out: &mut Pulled, read: &mut Read) -> Result<()> {
     let mut after = i64::MIN;
     loop {
         let mut rows = remote.rows(&format!("SELECT {cols} FROM {table} WHERE project = :p AND seq > :s ORDER BY seq ASC LIMIT {BATCH}"), json!({ "p": project, "s": after }))?;
@@ -915,35 +1064,67 @@ fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &
             rows.retain(|r| r.get(5).and_then(|v| v.as_i64()) != Some(top));
             rows.extend(remote.rows(&format!("SELECT {cols} FROM {table} WHERE project = :p AND seq = :s LIMIT 10000"), json!({ "p": project, "s": top }))?);
         }
-        got += store_new(store, &rows, project, me, cfg, store_dir)?;
+        store_new(store, &rows, project, me, cfg, store_dir, out, read)?;
         after = top;
         if !full {
             break;
         }
     }
-    Ok(got)
+    Ok(())
+}
+
+/// Whether context `server` is `local` with lines a forget cut
+/// ([`crate::forget::scrub_ctx`]): as many lines, each the same or
+/// replaced by [`crate::forget::REMOVED`] (keeping its turn's label). A
+/// row that says anything else does not change a record here.
+fn is_cut(local: &str, server: &str) -> bool {
+    use crate::forget::REMOVED;
+    if local == server || !server.contains(REMOVED) {
+        return false;
+    }
+    let (a, b): (Vec<&str>, Vec<&str>) = (local.lines().collect(), server.lines().collect());
+    a.len() == b.len() && a.iter().zip(&b).all(|(l, s)| l == s || s.strip_suffix(REMOVED).is_some_and(|label| l.starts_with(label)))
 }
 
 /// Stores the server's `rows` that `store` lacks, redacted and embedded
-/// here; how many. A row another machine pushed (its `origin`, the
-/// thirteenth column, is not `me`; a row of the shared table names none)
-/// is linked [`SYNCED_FROM`] that machine, or [`ACCEPTED`] when `cfg`
-/// accepted it for `project` ([`SyncConfig::trusts`]). A record forgotten here ([`Forgotten`], in `store_dir`) is
-/// passed over: the server, or another machine that pushes it again, may
-/// still hold it. The list is read, and the records stored, while a forget
-/// cannot add to it, so that one that deletes a record as it is pulled
-/// either finds it stored, and deletes it, or keeps it out.
-fn store_new(store: &Store, rows: &[Vec<Json>], project: &str, me: &str, cfg: &SyncConfig, store_dir: &Path) -> Result<usize> {
+/// here (counted in `out.stored`). A row another machine pushed (its
+/// `origin`, the thirteenth column, is not `me`; a row of the shared table
+/// names none) is linked [`SYNCED_FROM`] that machine, or [`ACCEPTED`]
+/// when `cfg` accepted it for `project` ([`SyncConfig::trusts`]). A record
+/// forgotten here ([`Forgotten`], in `store_dir`) is passed over: the
+/// server, or another machine that pushes it again, may still hold it. A
+/// tombstone ([`FORGOTTEN_KIND`]) notes its record forgotten, and one the
+/// store has goes to `out.forget`. A record the store has takes the row's
+/// tag when it closes the note there and not here, and the row's context
+/// when a forget cut it there ([`is_cut`]). The list is read, and the
+/// records stored, while a forget cannot add to it, so that one that
+/// deletes a record as it is pulled either finds it stored, and deletes
+/// it, or keeps it out. `read` gathers the ids the rows held.
+#[allow(clippy::too_many_arguments)]
+fn store_new(store: &Store, rows: &[Vec<Json>], project: &str, me: &str, cfg: &SyncConfig, store_dir: &Path, out: &mut Pulled, read: &mut Read) -> Result<()> {
     let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
-    let forgotten = load_forgotten(store_dir).ids;
+    let mut forgotten = load_forgotten(store_dir);
     let mut recs: Vec<Record> = Vec::new();
+    let mut tombs: Vec<String> = Vec::new();
     for row in rows {
+        let (rid, kind) = (row.first().and_then(|v| v.as_str()).unwrap_or(""), row.get(2).and_then(|v| v.as_str()).unwrap_or(""));
+        if rid.is_empty() {
+            continue;
+        }
+        read.all.insert(rid.to_string());
+        if kind == FORGOTTEN_KIND {
+            tombs.push(rid.to_string());
+            continue;
+        }
         let Some(mut r) = remote_record(row) else { continue };
-        if forgotten.contains(&r.id) {
+        let from = row.get(12).and_then(|v| v.as_str()).filter(|o| !o.is_empty()).unwrap_or("unknown");
+        if from != me {
+            read.others.insert(r.id.clone());
+        }
+        if forgotten.ids.contains(&r.id) {
             continue;
         }
         crate::redact::redact_record(&mut r);
-        let from = row.get(12).and_then(|v| v.as_str()).filter(|o| !o.is_empty()).unwrap_or("unknown");
         if from != me {
             let ok = cfg.trusts(project, from);
             r.links.retain(|l| l.label != SYNCED_FROM && l.label != ACCEPTED);
@@ -951,17 +1132,57 @@ fn store_new(store: &Store, rows: &[Vec<Json>], project: &str, me: &str, cfg: &S
         }
         recs.push(r);
     }
+    if !tombs.is_empty() {
+        if tombs.iter().any(|t| !forgotten.ids.contains(t)) {
+            forgotten.ids.extend(tombs.iter().cloned());
+            save_forgotten(store_dir, &forgotten)?;
+        }
+        // Each pull, not only the first that read it: a forget that did
+        // not finish here is finished by the next.
+        for r in store.get(&tombs)? {
+            if !out.forget.contains(&r.id) {
+                out.forget.push(r.id);
+            }
+        }
+    }
     let ids: Vec<String> = recs.iter().map(|r| r.id.clone()).collect();
-    let have: std::collections::HashSet<String> = store.get(&ids)?.into_iter().map(|r| r.id).collect();
-    let new: Vec<Record> = recs.into_iter().filter(|r| !have.contains(&r.id)).collect();
+    let have: HashMap<String, Record> = store.get(&ids)?.into_iter().map(|r| (r.id.clone(), r)).collect();
+    let mut changed: Vec<Record> = Vec::new();
+    let mut new: Vec<Record> = Vec::new();
+    for r in recs {
+        let Some(mine) = have.get(&r.id) else {
+            new.push(r);
+            continue;
+        };
+        let mut c = mine.clone();
+        if crate::record::closed_tag(&r.tag) && !crate::record::closed_tag(&c.tag) {
+            c.tag = r.tag.clone();
+            for l in r.links.iter().filter(|l| matches!(l.label.as_str(), "superseded_by" | RETIRED_BY)) {
+                if !c.links.contains(l) {
+                    c.links.push(l.clone());
+                }
+            }
+        }
+        if is_cut(&c.ctx, &r.ctx) {
+            c.ctx = r.ctx.clone();
+        }
+        if c.tag != mine.tag || c.ctx != mine.ctx {
+            changed.push(c);
+        }
+    }
+    if !changed.is_empty() {
+        store.insert(&changed)?;
+        out.changed += changed.len();
+    }
     if new.is_empty() {
-        return Ok(0);
+        return Ok(());
     }
     let texts: Vec<String> = new.iter().map(|r| r.embed_text()).collect();
     let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
     let embs = store.embedder.embed(&refs)?;
     store.bulk_insert(&new, embs)?;
-    Ok(new.len())
+    out.stored += new.len();
+    Ok(())
 }
 
 /// A machine whose records wait to be accepted (`chloectx sync accept`).
