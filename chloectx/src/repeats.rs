@@ -340,7 +340,10 @@ pub fn parse_check(text: &str, request: &str, said: &[(String, String)]) -> (Vec
             quote: m["quote"].as_str().unwrap_or("").trim().to_string(),
             rule: m["rule"].as_str().unwrap_or("").trim().to_string(),
         };
-        if a.ids.is_empty() || a.rule.is_empty() || !quoted_from(&a.quote, request) || asks_what_holds(&a.quote, request) {
+        // How to do this turn ("no code changes", "just answer") is said
+        // again with each turn that wants it, not because a rule failed
+        // (JONAH-303).
+        if a.ids.is_empty() || a.rule.is_empty() || !quoted_from(&a.quote, request) || asks_what_holds(&a.quote, request) || crate::capture::for_this_turn(&a.quote) {
             dropped.push(Again { ids, ..a });
         } else {
             kept.push(a);
@@ -917,5 +920,16 @@ mod tests {
         assert_eq!((g[0]["sessions"].as_u64(), g[0]["times"].as_u64()), (Some(2), Some(3)));
         assert_eq!(g[0]["rule"], "Build the app from SQL CREATE statements (the user has said this in 2 sessions)");
         assert!(r["text"].as_str().unwrap().contains("1 said again in nearly the same words"), "{}", r["text"]);
+    }
+
+    /// JONAH-303: "no code changes" said in two sessions is each turn's
+    /// instruction, not a rule broken.
+    #[test]
+    fn an_instruction_for_the_turn_said_again_is_not_a_rule() {
+        let said = vec![("a:1".to_string(), "No code changes, just answer: why is the export slow?".to_string())];
+        let request = "No code changes, just answer: why does the export buffer every row?";
+        let reply = json!({"said_again": [{"ids": ["a:1"], "quote": "No code changes, just answer", "rule": "Make no code changes."}]});
+        let (kept, dropped) = parse_check(&reply.to_string(), request, &said);
+        assert!(kept.is_empty() && dropped.len() == 1, "{kept:?}");
     }
 }

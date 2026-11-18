@@ -40,6 +40,68 @@ changes collect under "Unreleased".
   JavaScript and over HTTP, and for a field of no model the error says
   so. The error for text against such a field names the query's own
   parameter (`:v`), not `:q`.
+- **chloedb-server's OpenSearch API: a filtered alias keeps to its
+  documents, unknown keys are refused, and an alias swap is seen whole**
+  (persona study round 3, KENJI-301, KENJI-302, KENJI-303, KENJI-305;
+  #680). `_aliases` kept an alias's name and dropped its `filter`, so a
+  tenant's alias over a shared index searched, counted and aggregated
+  every tenant. An alias now keeps its `filter`, `is_write_index`, routing
+  and `is_hidden`, and every read through a filtered alias applies the
+  filter: searches, `_count`, aggregations (`global` too), `_msearch`,
+  scrolls, `_delete_by_query`, `_cat/count`, and gets by id, which
+  OpenSearch does not filter. An index is no longer deleted through an
+  alias, and a write through an alias of several indexes goes to its
+  `is_write_index`. A key a search body, a query, `_count`,
+  `_delete_by_query` or an `_aliases` action doesn't read (`qeury`,
+  `bool.filtr`, `match.operater`) was ignored and every document matched;
+  it is now a 400 that names the key and the one meant (`did you mean
+  [filter]?`), and the search features ChloeDB doesn't answer (`pit`,
+  `rescore`, `suggest`, `runtime_mappings`, `slice`, ...) are refused. An
+  alias swap in one `_aliases` request was written index by index, so a
+  search in between got a 404 or both indexes; every alias is now one row
+  of a new table, `opensearch_aliases`, written once per request, on one
+  server and over shards. Aliases kept by 0.3.8 are read until the first
+  alias change carries them over; a database taken back to 0.3.8 after
+  that sees its aliases as they were before the change. The docs say
+  Elasticsearch 7: Elasticsearch 8's clients refuse the server, so use
+  OpenSearch's client of the same language
+  ([opensearch.md](docs/chloedb/opensearch.md#elasticsearch-8s-clients)).
+- **ChloeCtx keeps a private aside nowhere, and only the user's words
+  make rules** (persona study round 3, WEI-301, JONAH-301, LENA-310,
+  JONAH-303, JONAH-304, ANA-308, and WEI-304's restated aside). A part
+  of a prompt marked private ("off the record, please don't save this
+  anywhere: ...", "keep that name private") was stored word for word, became a rule every later session
+  was told and was synced to the team, while Claude said it was not saved.
+  It is cut before anything is stored, distilled or synced, with
+  `[private aside left out]` in its place; the session is told what was
+  left out, the sentences of the session's replies that repeat it ("I
+  didn't save your interview note") are cut, and a prompt
+  private as a whole keeps nothing of its turn. Rules a store took from
+  asides before are retired when the daemon starts, and sync sends old
+  records without them. A rule an agent keeps (with `said_by: assistant`,
+  or as the user's in words the user never wrote) is its suggestion,
+  briefed apart from the user's rules. How to do one turn ("don't commit
+  yet", "no code changes") is not a rule, however often it is said; a
+  question how to build something is not planned work; a remembered note
+  replaces the session's copy of it, and a decision does not keep "not
+  implemented yet". The command center's overview lists the user's rules,
+  not a prompt's raw sentences ([what is kept](docs/chloectx/index.md#where-it-keeps-what-it-stores)).
+- **Blends: one list from several queries, after each has ranked its own.**
+  `CREATE BLEND name AS SOURCES (stories AS (SELECT ...), comments AS
+  (SELECT ...))` with calibrated heads (`HEADS (relevance CALIBRATE tmm,
+  quality CALIBRATE minmax MISSING zero)`), a utility of them (`UTILITY 1 *
+  relevance + 0.2 * quality`, `BOOST`), and the slate's rules: `SLOT n`,
+  `QUOTA (... BETWEEN 20% AND 40% IN TOP 10)`, `SPACING`, `MAX n PER`,
+  `DIVERSIFY λ ON emb` and `DEDUPE t ON emb`. `SELECT ... FROM
+  blend('name[@version]', q => :q)` answers each slot's row with its source,
+  utility and why (`blend_decision`); the receipts add the rows passed over,
+  each quota's count and what each rule costs the slate. A blend is a
+  stored function, so it is versioned, replicated and written on every
+  shard of a coordinator, which runs each source over the cluster and
+  answers as one database. On chloedb-server, `/v1/blends` lists, versions,
+  writes and drops them and `/v1/blends/preview` runs a draft, and the
+  command center's Labs → Blending edits one with a live preview
+  ([query-language.md](docs/chloedb/query-language.md#blends-create-blend-and-blend)).
 - **ChloeCtx: a team's forgets, deletions and retired rules reach every
   machine, and a teammate's notes say whose they are** (persona study
   round 3, WEI-304, WEI-303, WEI-306). A forget deleted the record's row
@@ -293,6 +355,32 @@ knows of its tables; no answer changes.
   only the shards of those keys, as other reads by key do. Its statistics
   still come from every shard, so the scores are a fan-out's. No protocol
   change: servers of 0.3.8 mix with it in either order.
+
+### Security
+
+- **The installers check 0.3.8's build provenance** (persona study round
+  3, LENA-303): 0.3.8 is the first release whose archives have it, but the
+  website's installer, `install.sh` and ChloeCtx's plugin checked it only
+  from 0.3.9, so they installed 0.3.8 on its SHA-256 alone, saying it was
+  older than provenance, and `CHLOEDB_VERIFY=require`
+  (`CHLOECTX_VERIFY=require`) refused it as having none. Where `gh` is
+  installed they now check 0.3.8's archives against their bundles, refuse
+  one that does not verify, and `require` installs it. The website's
+  installer and the plugin's launcher run from main, so they do from
+  this change on; `install.sh`, in a checkout, from the next release's.
+- **npm's packages carry provenance, and the JavaScript release names what
+  npm serves** (persona study round 3, LENA-305, the npm part of LENA-11):
+  `js-release.yml` published without npm's provenance on the path every
+  release took (`from_run`), so `chloedb` and `@chloedb/<platform>` 0.3.5
+  to 0.3.8 have the registry's signatures alone. Every publish now carries
+  it (`npm publish --provenance`; `npm audit signatures` checks it), and a
+  run with `from_run` runs on the release's tag, publishing what the tag's
+  own run built: one on main or a branch publishes nothing. The release's
+  `SHA256SUMS` listed a tarball per platform that npm does not serve (the
+  JavaScript and the addon together) and left out `chloedb` itself; the
+  release now also carries the packages npm serves, under the names
+  `npm pack` gives them, and `SHA256SUMS` lists them
+  ([SECURITY.md](SECURITY.md#checking-what-you-download)).
 
 ## 0.3.8
 

@@ -205,11 +205,16 @@ pub fn overview(store: &Store) -> Result<Json> {
     let mut lists: HashMap<&'static str, Vec<Json>> = HashMap::new();
     let by_id: HashMap<&str, &Record> = all.iter().map(|r| (r.id.as_str(), r)).collect();
     let mut changes = Vec::new();
+    // The rules are the ones every context gets: once notes are distilled,
+    // a prompt's raw sentence picked as a rule (`cue`) only repeats them,
+    // and a rule an agent kept is its suggestion, listed with the notes
+    // (ANA-308, LENA-310).
+    let distilled = all.iter().any(|r| r.tag == "distilled");
     for r in &all {
-        if !current(r) {
+        if !current(r) || (distilled && r.kind == Kind::Preference && r.tag == "cue") {
             continue;
         }
-        let name = super::kind_name(r);
+        let name = if r.kind == Kind::Preference && !crate::recall::users_rule(r) { "note" } else { super::kind_name(r) };
         *live.entry(name).or_default() += 1;
         let l = lists.entry(name).or_default();
         if l.len() < OVERVIEW_NOTES {

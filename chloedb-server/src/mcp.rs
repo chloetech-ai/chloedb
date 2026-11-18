@@ -790,7 +790,7 @@ pub fn check_sql(sql: &str, tables: &[std::sync::Arc<chloedb::Schema>]) -> Resul
 
 /// The statements `execute` takes before SQL's own (as `POST /v1/sql`
 /// does, [`crate::service::Service::sql_in`]): rollups, classifiers,
-/// recommenders and a table's synonyms, checked against the tables.
+/// recommenders, blends and a table's synonyms, checked against the tables.
 fn check_own_statement(sql: &str, tables: &[std::sync::Arc<chloedb::Schema>]) -> Result<Option<Json>, String> {
     use chloedb::query::{classify, recommend, rollup, table_synonyms};
     let find = |t: &str| tables.iter().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| format!("query error: no table {t}"));
@@ -828,6 +828,19 @@ fn check_own_statement(sql: &str, tables: &[std::sync::Arc<chloedb::Schema>]) ->
                 json!({"statement": "create recommender", "name": def.name, "events": def.events, "replace": replace, "needs": "an admin key"})
             }
             recommend::Statement::Drop { name, if_exists } => json!({"statement": "drop recommender", "name": name, "if_exists": if_exists, "needs": "an admin key"}),
+        }));
+    }
+    if let Some(st) = chloedb::query::blend::parse_statement(sql).map_err(|e| e.to_string())? {
+        return Ok(Some(match st {
+            chloedb::query::blend::Statement::Create { def, replace } => {
+                for s in &def.sources {
+                    for t in crate::scoped::named_tables(&s.sql) {
+                        find(&t)?;
+                    }
+                }
+                json!({"statement": "create blend", "name": def.name, "sources": def.sources.iter().map(|s| s.name.clone()).collect::<Vec<_>>(), "k": def.k, "replace": replace, "needs": "an admin key", "note": "the blend is a stored function: each CREATE OR REPLACE is a new version, and SELECT ... FROM blend('name') reads it"})
+            }
+            chloedb::query::blend::Statement::Drop { name, if_exists } => json!({"statement": "drop blend", "name": name, "if_exists": if_exists, "needs": "an admin key"}),
         }));
     }
     if let Some(st) = table_synonyms::parse_statement(sql).map_err(|e| e.to_string())? {

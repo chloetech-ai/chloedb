@@ -153,6 +153,42 @@ fn machines_that_number_alike_sync_every_record() {
     assert_eq!(sync::pull(&remote, &c, project, &mut sc, dir.path()).unwrap().stored, 0);
 }
 
+/// WEI-301: records a store kept before private asides were cut out (the
+/// prompt, a rule picked from it, the turn's request in a note's context)
+/// go to the server without the aside, or not at all.
+#[test]
+fn a_private_aside_is_not_pushed() {
+    let Some(bin) = server_bin() else {
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, url) = serve(&bin, dir.path(), None);
+    let home = dir.path().join("home");
+    sync::setup(&home, &dir.path().to_string_lossy(), &url, None, "", &[], false).unwrap();
+    let remote = sync::remote(&home).unwrap();
+    let project = "acme/ledger";
+    let prompt = "Off the record, please don't save this anywhere: I'm interviewing at another company next week. Anyway, add a .env.example with placeholders for the staging settings.";
+    let ctx = format!("Turn 1 request: {prompt}");
+    let rec = |kind: Kind, tag: &str, text: &str, seq: i64| Record { tag: tag.into(), ctx: ctx.clone(), ..note("w", kind, text, seq) };
+    let a = store(dir.path(), "a.strata");
+    load(&a, &[
+        rec(Kind::Prompt, "-", prompt, 1),
+        rec(Kind::Preference, "cue", &format!("User preference: {}", &prompt[..96]), 2),
+        rec(Kind::Decision, "distilled", "Staging settings are documented in .env.example with placeholders.", 3),
+    ]);
+    let mut sa = SyncState::default();
+    assert_eq!(sync::push(&remote, &a, project, &mut sa).unwrap(), 2, "the rule is not sent");
+    let c = store(dir.path(), "c.strata");
+    assert_eq!(sync::pull(&remote, &c, project, &mut SyncState::default(), dir.path()).unwrap().stored, 2);
+    let got = c.get(&["w-00001".to_string(), "w-00002".to_string(), "w-00003".to_string()]).unwrap();
+    assert_eq!(got.len(), 2, "{got:?}");
+    for r in &got {
+        assert!(!r.text.contains("interviewing") && !r.ctx.contains("interviewing"), "{r:?}");
+    }
+    assert!(got.iter().any(|r| r.text.contains(".env.example") && r.text.contains("[private aside left out]")), "{got:?}");
+}
+
 fn note(id: &str, kind: Kind, text: &str, seq: i64) -> Record {
     Record { kind, text: text.into(), ..records(id, seq..=seq).pop().unwrap() }
 }
