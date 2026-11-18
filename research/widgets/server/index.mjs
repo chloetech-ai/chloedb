@@ -20,6 +20,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { RESOURCE_MIME_TYPE, registerAppResource, registerAppTool } from '@modelcontextprotocol/ext-apps/server'
 
+import { RUNNER, SHELF, registerApps } from './apps.mjs'
 import { tableBook, tableSearch } from './widgets/booking.mjs'
 import flight from './widgets/flight.mjs'
 import { recipeGet, recipesBrowse } from './widgets/recipes.mjs'
@@ -38,11 +39,23 @@ export const VIEWS = {
   shop: { title: 'Shopping widget', domains: ['https://cdn.dummyjson.com'] },
 }
 
+// The views of instant apps (apps.mjs): the one any app draws in, which may
+// show the pictures of every tool's data, and the person's apps.
+const ALL = [...new Set([...Object.values(VIEWS).flatMap(v => v.domains), ...TOOLS.flatMap(t => t.domains ?? [])])]
+export const APP_VIEWS = {
+  app: { uri: RUNNER, title: 'Instant app', domains: ALL },
+  apps: { uri: SHELF, title: 'Your apps', domains: [] },
+}
+
 export const INSTRUCTIONS = [
-  'These tools open small live apps (widgets) in the conversation: stock_quote for a stock, ETF, index or',
-  'crypto price; flight_track for where a flight is; shop_search, cart_add and cart_view for finding and',
-  'buying products. When a request is about one of these, call the tool first, even if the person did not',
-  'ask for a widget, then answer in one or two sentences: the widget already shows the details.',
+  'These tools open small live apps (widgets) in the conversation, and keep the ones the person likes.',
+  'When a request would be answered better by an app than by text (live data such as a price or a flight,',
+  'things to compare side by side, something to book or buy, things to browse for ideas), call apps_find first,',
+  'even if the person did not ask for an app. Open the saved app that does the job with app_open; when none does,',
+  'read app_kit, write one and show it with app_make. After an app is shown, answer in one or two sentences: it',
+  'already shows the details. A change the person asks for in an app is app_change; app_save keeps it when they',
+  'ask, and my_apps shows what they kept. The tools stock_quote, flight_track and shop_search open the apps made',
+  'by hand directly.',
 ].join(' ')
 
 const here = path => new URL(path, import.meta.url)
@@ -63,7 +76,21 @@ function sdk() {
 
 let SDK
 export function html(view) {
-  return page(readFileSync(here(`./views/${view}.html`), 'utf8'), VIEWS[view]?.domains ?? [])
+  return page(readFileSync(here(`./views/${view}.html`), 'utf8'), (VIEWS[view] ?? APP_VIEWS[view])?.domains ?? [])
+}
+
+// An app's source as the app view mounts it: a made app's fragment as it
+// is, and a view made by hand as one too (its styles and its body, the kit
+// being the view's own).
+export function fragmentOf(source) {
+  if (!source.startsWith('view:')) return source
+  const doc = readFileSync(here(`./views/${source.slice(5)}.html`), 'utf8')
+  const head = /<head>([\s\S]*?)<\/head>/i.exec(doc)?.[1] ?? ''
+  const styles = head.match(/<style>[\s\S]*?<\/style>/gi) ?? []
+  const body = (/<body>([\s\S]*?)<\/body>/i.exec(doc)?.[1] ?? '').replace(/<!-- kit:\w+ -->/g, '')
+  return [...styles, body]
+    .join('\n')
+    .replace('/* kit:world */', () => `globalThis.WORLD=${readFileSync(here('./assets/world.json'), 'utf8')};`)
 }
 
 // A made app is a fragment (its <style>, markup and <script type="module">)
@@ -142,8 +169,9 @@ export function build() {
     )
   }
 
-  for (const [view, { title, domains }] of Object.entries(VIEWS)) {
-    const uri = `ui://widgets/${view}.html`
+  registerApps(server, { TOOLS, callTool, fragmentOf })
+
+  for (const [view, { title, domains, uri = `ui://widgets/${view}.html` }] of Object.entries({ ...VIEWS, ...APP_VIEWS })) {
     registerAppResource(server, title, uri, { description: `The view the ${view} tools draw in` }, async () => ({
       contents: [
         {

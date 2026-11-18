@@ -16,6 +16,7 @@
   .tool code { font: 12px ui-monospace, Menlo, monospace; }
   .frame { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
   iframe { display: block; width: 100%; border: 0; height: 120px; }
+  .reply p { margin: 0 0 10px; } .reply ul { margin: 0 0 10px; padding-left: 22px; }
   .sent { align-self: flex-end; max-width: 80%; border: 1px dashed var(--line); border-radius: 16px; padding: 8px 14px; color: var(--ink-2); }
 </style>
 </head>
@@ -35,7 +36,9 @@ const add = (cls, html) => { const el = document.createElement('div'); el.classN
 window.events = []
 
 if (q.get('prompt')) add('user', q.get('prompt'))
-add('tool', `<span>⚙</span> <code>${tool}(${JSON.stringify(args)})</code>`)
+// A made app's html in the arguments is shown by its size.
+const brief = JSON.stringify(args, (k, v) => (typeof v === 'string' && v.length > 80 ? `${v.slice(0, 32)}… (${(v.length / 1024).toFixed(1)} KB)` : v))
+add('tool', `<span>⚙</span> <code>${tool}(${brief.replace(/</g, '&lt;')})</code>`)
 
 const { tools } = await (await fetch('/tools')).json()
 const uri = tools.find(t => t.name === tool)?._meta?.ui?.resourceUri
@@ -47,7 +50,16 @@ const frame = add('frame', '')
 const iframe = document.createElement('iframe')
 iframe.setAttribute('sandbox', 'allow-scripts')
 frame.append(iframe)
-if (q.get('reply')) add('reply', q.get('reply'))
+// The reply as a chat draws it: paragraphs, lists and bold.
+const md = text =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').split(/\n\s*\n/).map(block => {
+    const lines = block.split('\n')
+    const inline = t => t.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    return lines.every(l => /^\s*[-*] /.test(l))
+      ? `<ul>${lines.map(l => `<li>${inline(l.replace(/^\s*[-*] /, ''))}</li>`).join('')}</ul>`
+      : `<p>${inline(lines.join('<br>'))}</p>`
+  }).join('')
+if (q.get('reply')) add('reply', md(q.get('reply')))
 
 const bridge = new AppBridge(
   null,

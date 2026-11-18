@@ -12,7 +12,7 @@ import { after, before, test } from 'node:test'
 
 process.env.WIDGETS_SIMULATE = '1'
 const { start } = await import('../chat/server.mjs')
-const { Apps } = await import('../chat/store.mjs')
+const { Apps } = await import('../server/store.mjs')
 const { findServerBinary } = await import('../../../chloedb-apps/engine/strata.mjs')
 
 const bin = process.env.CHLOEDB_SERVER_BIN || findServerBinary(new URL('../../../', import.meta.url).pathname)
@@ -63,7 +63,7 @@ before(async () => {
   if (skip) return
   dir = mkdtempSync(path.join(os.tmpdir(), 'instant-apps-test-'))
   model = scripted()
-  chat = await start({ port: 0, data: dir, model, log: () => {} })
+  chat = await start({ port: 0, data: dir, model, log: () => {}, shared: false })
 })
 
 after(() => {
@@ -149,11 +149,11 @@ test('a saved app is recalled by meaning, with no word in common', { skip }, asy
 test('a store opened again keeps its apps, and recall by meaning', { skip }, async () => {
   const again = mkdtempSync(path.join(os.tmpdir(), 'instant-apps-reopen-'))
   try {
-    const first = await Apps.open({ dir: again })
+    const first = await Apps.open({ dir: again, shared: false })
     const app = await first.put({ name: 'Table booking', about: 'Find a restaurant with a free table and book it.', kind: 'action', tool: 'table_search', tools: ['table_search', 'table_book'], source: 'view:stock', args: {}, examples: 'book a table', saved: true }, 'made')
     first.close()
     await new Promise(resolve => setTimeout(resolve, 500))
-    const second = await Apps.open({ dir: again })
+    const second = await Apps.open({ dir: again, shared: false })
     try {
       assert.ok((await second.saved()).some(a => a.id === app.id), 'the saved app is still there')
       assert.equal(second.meaning, first.meaning, 'it still recalls by meaning')
@@ -163,5 +163,25 @@ test('a store opened again keeps its apps, and recall by meaning', { skip }, asy
     }
   } finally {
     rmSync(again, { recursive: true, force: true })
+  }
+})
+
+test('every process with one folder of apps shares one chloedb-server, started once', { skip }, async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'instant-apps-shared-'))
+  try {
+    // Two at once, as two Claude Code sessions starting the MCP server.
+    const [a, b] = await Promise.all([Apps.open({ dir }), Apps.open({ dir })])
+    assert.equal(a.db.url, b.db.url)
+    const app = await a.put({ name: 'Product comparison', about: 'Puts products side by side.', kind: 'info', tool: 'shop_search', tools: ['shop_search'], source: '<div></div>', args: {}, saved: true }, 'made')
+    assert.ok((await b.saved()).some(x => x.id === app.id), 'one sees what the other wrote')
+    a.close()
+    b.close()
+    // Closing them leaves it running for the next one.
+    const c = await Apps.open({ dir })
+    assert.equal(c.db.url, a.db.url)
+    c.close()
+  } finally {
+    Apps.stop(dir)
+    rmSync(dir, { recursive: true, force: true })
   }
 })

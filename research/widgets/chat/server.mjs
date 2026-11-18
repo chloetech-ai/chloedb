@@ -18,9 +18,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { described } from '../server/guide.mjs'
 import { TOOLS, callTool, domainsOf, render } from '../server/index.mjs'
 import { claude } from './model.mjs'
-import { Apps } from './store.mjs'
+import { Apps } from '../server/store.mjs'
 
 const require = createRequire(new URL('../server/', import.meta.url))
 
@@ -40,27 +41,10 @@ async function bridge() {
   return out.outputFiles[0].text
 }
 
-// Each tool as the model reads it: its name, what it does and its arguments.
-function described(tools) {
-  return tools.map(t => ({
-    name: t.name,
-    description: t.description,
-    args: Object.fromEntries(Object.entries(t.input).map(([k, v]) => [k, `${v.isOptional() ? 'optional ' : ''}${typeName(v)}: ${v.description ?? ''}`])),
-  }))
-}
-
-// By the schema's own type name: the tools' zod is the server package's.
-function typeName(schema) {
-  const inner = schema._def.typeName === 'ZodOptional' ? schema._def.innerType : schema
-  if (inner._def.typeName === 'ZodEnum') return `one of ${inner._def.values.join(', ')}`
-  if (inner._def.typeName === 'ZodNumber') return 'number'
-  return 'text'
-}
-
 const KNOWN = new Set(TOOLS.map(t => t.name))
 
-export async function start({ port = 8800, data, model = claude(), apps, log = console.error } = {}) {
-  apps ??= await Apps.open({ dir: data ?? path.join(os.tmpdir(), 'instant-apps'), log })
+export async function start({ port = 8800, data, model = claude(), apps, log = console.error, shared = true } = {}) {
+  apps ??= await Apps.open({ dir: data ?? path.join(os.tmpdir(), 'instant-apps'), log, shared })
   const page = readFileSync(new URL('./index.html', import.meta.url), 'utf8')
   const bridgeJs = await bridge()
   // What each app shown in this process last drew, so a change redraws it

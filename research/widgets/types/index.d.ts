@@ -1,7 +1,36 @@
 // The widgets mod's state: what each widget tool answered (by the call's
-// tool_use_id), the widgets pinned to the live pane and their latest data.
+// tool_use_id), the widgets pinned to the live pane and their latest data,
+// and the person's saved apps for the Your apps pane.
 
-export type Kind = 'stock_quote' | 'flight_track' | 'shop_search' | 'cart_add' | 'cart_view'
+export type Kind = 'stock_quote' | 'flight_track' | 'shop_search' | 'cart_add' | 'cart_view' | 'app_open' | 'app_make' | 'app_change'
+
+// The app an instant-app tool (app_open, app_make, app_change) answered with.
+export type Instant = {
+  id: string
+  name: string
+  about: string
+  kind: 'info' | 'action' | 'discover'
+  tool: string
+  tools: string[]
+  version: number
+  saved: boolean
+  how: string
+  // What it was filled with, and what the model is told to do next.
+  args?: { [key: string]: unknown }
+  note?: string
+}
+
+// A made app's data that no card here knows (recipes, tables): drawn as a
+// list of what it holds.
+export type Made = {
+  widget: 'app'
+  summary: string
+  instant: Instant
+  [field: string]: unknown
+}
+
+// A saved app, as Your apps lists it.
+export type Shelved = { id: string; name: string; about: string; kind: Instant['kind']; uses?: number }
 
 export type Stock = {
   widget: 'stock'
@@ -76,7 +105,7 @@ export type Shop = {
   note?: string
 }
 
-export type Data = Stock | Flight | Shop
+export type Data = ((Stock | Flight | Shop) & { instant?: Instant }) | Made
 
 // One widget the model opened: which tool on which server, with what
 // arguments, and what it answered.
@@ -96,6 +125,7 @@ declare module 'claude-code' {
       cards: Shaped<{ [toolUseId: string]: Card }>
       pins: Shaped<Pin[]>
       cart: Shaped<CartLine[]>
+      shelf: Shaped<{ server: string; apps: Shelved[]; at: number }>
     }
   }
 }

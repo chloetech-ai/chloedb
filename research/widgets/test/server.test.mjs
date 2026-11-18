@@ -28,20 +28,20 @@ const call = async (name, args) => {
   return result
 }
 
-test('the server says when to open a widget', () => {
-  assert.match(client.getInstructions(), /call the tool first/)
+test('the server says when to open an app', () => {
+  assert.match(client.getInstructions(), /call apps_find first/)
 })
 
 test('every widget tool names its view, and the sources are plain tools', async () => {
   const { tools } = await client.listTools()
   const names = tools.map(t => t.name).sort()
-  assert.deepEqual(names, ['cart_add', 'cart_view', 'flight_track', 'recipe_get', 'recipes_browse', 'shop_search', 'stock_quote', 'table_book', 'table_search'])
+  assert.deepEqual(names, ['app_call', 'app_change', 'app_kit', 'app_make', 'app_open', 'app_save', 'app_source', 'app_undo', 'apps_find', 'cart_add', 'cart_view', 'flight_track', 'my_apps', 'recipe_get', 'recipes_browse', 'shop_search', 'stock_quote', 'table_book', 'table_search'])
   for (const tool of tools) {
-    if (/^(table|recipe)/.test(tool.name)) {
+    if (/^(table|recipe)|^(apps_find|app_kit|app_save|app_undo)$/.test(tool.name)) {
       assert.equal(tool._meta?.ui, undefined, tool.name)
       continue
     }
-    assert.match(tool._meta.ui.resourceUri, /^ui:\/\/widgets\/(stock|flight|shop)\.html$/, tool.name)
+    assert.match(tool._meta.ui.resourceUri, /^ui:\/\/widgets\/(stock|flight|shop|app|apps)\.html$/, tool.name)
     // No output schema: Claude Code would hand the model structuredContent
     // (the chart's every point) in place of the short text.
     assert.equal(tool.outputSchema, undefined, tool.name)
@@ -82,7 +82,7 @@ test('shop_search filters by price and the cart adds up', async () => {
 })
 
 test('every view is an MCP App resource that carries its own client', async () => {
-  for (const view of ['stock', 'flight', 'shop']) {
+  for (const view of ['stock', 'flight', 'shop', 'app', 'apps']) {
     const { contents } = await client.readResource({ uri: `ui://widgets/${view}.html` })
     assert.equal(contents[0].mimeType, 'text/html;profile=mcp-app')
     assert.match(contents[0].text, /globalThis\.McpApps=\{/)

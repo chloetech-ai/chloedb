@@ -2,7 +2,7 @@
 // pane: the terminal gets text art, the other surfaces an SVG chart or map.
 import type { Elements, RenderElement } from 'claude-code'
 
-import type { Card, CartLine, Flight, Shop, Stock } from '../types'
+import type { Card, CartLine, Flight, Instant, Made, Shop, Stock } from '../types'
 import { bars, brailleMap, flightSvg, stockSvg } from './charts'
 
 // The elements every surface has, and Svg where the surface has it.
@@ -14,6 +14,7 @@ export type Actions = {
   unpin: () => void
   ask: (text: string) => void
   add: (id: number) => void
+  save: () => void
 }
 
 export type Place = {
@@ -36,6 +37,7 @@ const ago = (ms: number, now: number) => {
 
 export function title(card: Card): string {
   const d = card.data
+  if (d.instant) return d.instant.name
   if (d.widget === 'stock') return `${d.symbol} ${money(d.price, d.currency)}`
   if (d.widget === 'flight') return d.callsign
   return d.mode === 'cart' ? 'Cart' : `Shop: ${d.query}`
@@ -43,9 +45,69 @@ export function title(card: Card): string {
 
 export function drawCard(t: Kit, card: Card, place: Place, act: Actions): RenderElement {
   const d = card.data
-  if (d.widget === 'stock') return stock(t, d, place, act)
-  if (d.widget === 'flight') return flight(t, d, place, act)
-  return shop(t, d, place, act)
+  const body =
+    d.widget === 'stock' ? stock(t, d, place, act) : d.widget === 'flight' ? flight(t, d, place, act) : d.widget === 'shop' ? shop(t, d, place, act) : made(t, d, place)
+  if (!d.instant) return body
+  const { Box } = t
+  return (
+    <Box flexDirection="column">
+      {appBar(t, d.instant, place, act)}
+      {body}
+    </Box>
+  )
+}
+
+const CHIP: { [how: string]: string } = { made: 'new app', recalled: 'from your apps', opened: 'opened again', changed: 'changed', saved: 'saved' }
+
+// An instant app's line above its card: its name, how it came, and Save
+// while it is a draft. Claude Code draws no HTML, so a made app shows here
+// as the card of its data; Claude Desktop and claude.ai draw the app itself.
+function appBar(t: Kit, app: Instant, place: Place, act: Actions): RenderElement {
+  const { Box, Text, Button } = t
+  const how = app.how
+  return (
+    <Box justifyContent="space-between" gap={1}>
+      <Text>
+        <Text bold color="suggestion">
+          {app.name}
+        </Text>{' '}
+        <Text dimColor>
+          {CHIP[how] ?? how}
+          {app.version > 1 ? ` · v${app.version}` : ''}
+        </Text>
+      </Text>
+      {!app.saved && !place.compact && <Button key="save" label="Save to your apps" onPress={act.save} />}
+    </Box>
+  )
+}
+
+// What a made app holds, when no card here knows its data: its sentence,
+// and the first list in it, a line for each of the first few.
+function made(t: Kit, d: Made, place: Place): RenderElement {
+  const { Box, Text } = t
+  const list = Object.values(d).find(v => Array.isArray(v) && v.length && typeof v[0] === 'object') as { [k: string]: unknown }[] | undefined
+  const width = Math.max(20, place.columns - 4)
+  const line = (row: { [k: string]: unknown }) => {
+    const name = ['title', 'name', 'label'].map(k => row[k]).find(v => typeof v === 'string') as string | undefined
+    const rest = Object.entries(row)
+      .filter(([k, v]) => (typeof v === 'number' || (typeof v === 'string' && v.length < 24)) && !['id', 'title', 'name', 'label', 'thumbnail', 'image'].includes(k) && !/^https?:/.test(String(v)))
+      .slice(0, 3)
+      .map(([k, v]) => `${k} ${v}`)
+      .join(' · ')
+    const text = `${name ?? '?'}${rest ? `  ${rest}` : ''}`
+    return text.length > width ? `${text.slice(0, width - 1)}…` : text
+  }
+  return (
+    <Box flexDirection="column">
+      <Text>{d.summary}</Text>
+      {(list ?? []).slice(0, place.compact ? 3 : 6).map((row, i) => (
+        <Text key={`row-${i}`}>
+          <Text dimColor>{i + 1} </Text>
+          {line(row)}
+        </Text>
+      ))}
+    </Box>
+  )
 }
 
 function pinButton(t: Kit, act: Actions, label: string): RenderElement {

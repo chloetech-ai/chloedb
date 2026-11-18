@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your apps</title>
+<!-- kit:css -->
+<style>
+  .group { margin-top: 14px; }
+  .group:first-of-type { margin-top: 4px; }
+  .group h3 { margin: 0 0 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+  .item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 6px; cursor: pointer; background: var(--bg); }
+  .item:hover { border-color: var(--ink-3); }
+  .tile { flex: none; width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; font-size: 14px; background: var(--bg-2); }
+  .tile.info { color: #2f6fdf; } .tile.action { color: var(--up); } .tile.discover { color: #b14fc5; }
+  .what { flex: 1; min-width: 0; }
+  .what b { display: block; font-size: 13px; font-weight: 600; }
+  .what span { display: block; font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .uses { font-size: 11px; color: var(--ink-3); }
+  .out { border: 0; background: none; color: var(--ink-3); font-size: 15px; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+  .out:hover { color: var(--down); background: var(--down-bg); }
+</style>
+</head>
+<body>
+<div id="root" class="empty">Loading your apps…</div>
+<!-- kit:sdk -->
+<!-- kit:js -->
+<script type="module">
+// The person's saved apps, as the rail beside the prototype chat shows them:
+// one opens in the conversation (Claude is asked to open it), and one can
+// be taken out.
+const { connect, call, ask, tell, esc } = globalThis.Kit
+const root = document.getElementById('root')
+const GROUPS = [['info', 'Look things up', '↗'], ['action', 'Get things done', '✓'], ['discover', 'Discover', '✦']]
+let app = null
+let apps = []
+
+function draw(data) {
+  apps = data.apps ?? []
+  if (!apps.length) {
+    root.className = 'empty'
+    root.textContent = 'No saved apps yet. Save one from an app’s bar, and it opens by itself next time.'
+    return
+  }
+  root.className = ''
+  root.innerHTML = `<div class="row between"><span class="title">Your apps</span><span class="faint">${apps.length} kept · opened by words and meaning</span></div>` +
+    GROUPS.map(([kind, label, mark]) => {
+      const mine = apps.filter(a => a.kind === kind)
+      if (!mine.length) return ''
+      return `<div class="group"><h3>${label}</h3>${mine.map(a => `<div class="item" data-id="${esc(a.id)}" title="Open it in the conversation"><span class="tile ${kind}">${mark}</span><span class="what"><b>${esc(a.name)}</b><span>${esc(a.about)}</span></span><span class="uses">${a.uses ?? 0}×</span><button class="out" data-out="${esc(a.id)}" title="Take it out of your apps">×</button></div>`).join('')}</div>`
+    }).join('')
+}
+
+root.addEventListener('click', async e => {
+  const out = e.target.closest('[data-out]')
+  if (out) {
+    e.stopPropagation()
+    const a = apps.find(x => x.id === out.dataset.out)
+    out.disabled = true
+    await call(app, 'app_save', { id: a.id, saved: false })
+    tell(app, `The person took the app "${a.name}" out of their apps.`)
+    draw({ apps: apps.filter(x => x.id !== a.id) })
+    return
+  }
+  const item = e.target.closest('.item')
+  if (!item) return
+  const a = apps.find(x => x.id === item.dataset.id)
+  await ask(app, `Open my "${a.name}" app (id ${a.id}).`)
+})
+
+app = await connect('your-apps', draw)
+</script>
+</body>
+</html>

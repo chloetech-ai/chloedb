@@ -15,7 +15,7 @@ Apps serve three kinds of need, and the rail groups them so:
 
 ## How a request is answered
 
-1. **Recall.** The apps are rows in ChloeDB (`chat/store.mjs`, table
+1. **Recall.** The apps are rows in ChloeDB (`server/store.mjs`, table
    `ia_apps`). The request is searched against the saved ones by words
    (BM25 over each app's name, what it does and the requests it served) and
    by meaning (a static embedding of the same text, `potion-retrieval-32M`),
@@ -102,27 +102,61 @@ Settings: `WIDGETS_MAKE_MODEL` (the model that writes apps, default
 (made-up data for every tool, no network). In a container behind a proxy,
 Node's `fetch` needs `NODE_USE_ENV_PROXY=1`.
 
-## The same apps elsewhere
+## Inside Claude
 
-- **Claude Code**: `claude --plugin-dir research/widgets` (after the
-  `npm install` above). Claude Code draws no HTML, so the plugin's mod
-  (`hooks/`) draws the stock, flight and shop widgets as native cards under
-  the tool call, on the terminal, the desktop app, VS Code and the phone, and
-  a Pin keeps one live in a pane. The model reads one sentence, not the data.
+The MCP server (`server/`) does what the chat does, with the Claude of the
+conversation as the model: Claude Desktop, claude.ai and Claude Code make,
+save and reopen apps through it, and an app made in one opens in the others.
+
+| tool | what it does |
+|---|---|
+| `apps_find` | searches the saved apps for the request (words and meaning, as above); the server's instructions tell Claude to call it first when an app would answer better than text |
+| `app_open` | opens a saved app with this request's arguments |
+| `app_kit` | the kit's guide, the tools an app may call and a sample of its first tool's data, for Claude to write a new app from |
+| `app_make` | shows the fragment Claude wrote, as a draft |
+| `app_change`, `app_undo` | a new version of an app, and back |
+| `app_save` | keeps an app in the person's apps (its Save button calls it too), or takes it out |
+| `my_apps` | the saved apps, grouped as the rail groups them; clicking one asks Claude to open it |
+| `app_source`, `app_call` | for the view only (`visibility: ['app']`): an app's source, and its calls, which run only the tools it was made with |
+
+Every app draws in one view, `ui://widgets/app.html`: the tool result names
+the app (`structuredContent.instant`), the view fetches its source, mounts it
+and hands it the data, with a bar above it (its name, how it came, Save and
+Change). Your apps is `ui://widgets/apps.html`. The apps are rows in ChloeDB,
+in `~/.local/share/instant-apps` (`WIDGETS_DATA`), the folder the chat uses
+too. Each Claude session starts its own MCP server, and they share one
+chloedb-server per folder (`server.json` there names it; the first to start
+starts it). It is this checkout's build, one on the `PATH`, or
+`CHLOEDB_SERVER_BIN`.
+
 - **Claude Desktop**: add the server to `claude_desktop_config.json` as
   `{"command": "node", "args": ["/path/to/research/widgets/server/index.mjs"]}`.
 - **claude.ai**: `node server/index.mjs --http 8787` serves Streamable HTTP at
   `/mcp`; behind a public HTTPS address it can be added as a custom connector.
+- **Claude Code**: `claude --plugin-dir research/widgets` (after the
+  `npm install` above). Claude Code draws no HTML, so the plugin's mod
+  (`hooks/`) draws each app as the card of its data under the tool call, with
+  a line above it (its name, how it came and Save), on the terminal, the
+  desktop app, VS Code and the phone; data no card knows (recipes, tables)
+  shows as a list. `/apps`, or Claude's `my_apps`, opens Your apps in a pane,
+  and each app's Open asks for it. A Pin keeps a stock or a flight live in a
+  pane. The model reads the server's sentences, not the data.
 
-Made apps live in the chat for now; serving them from the MCP server too
-(one `open_app` tool and a view that runs any saved app) is the next step.
+A run with Claude Code (`claude -p --plugin-dir research/widgets`, a fresh
+folder, four sessions one after the other, 2026-11-18): asked to put two
+blenders side by side and save it, Claude called `apps_find` (no fit),
+`app_kit`, `app_make` (a 6 KB comparison table) and `app_save`. A new
+session asked to compare two headphones called `apps_find`, which ranked the
+saved comparison first, and `app_open` with `{"query": "headphones"}`; a
+third did the same for smartphones, and "Which apps have I saved?" called
+`my_apps`.
 
 ## Tests
 
 ```bash
-cd research/widgets/server && npm test      # the MCP server, and the chat's flow with a scripted model on a real chloedb-server
+cd research/widgets/server && npm test      # the MCP server and its app tools, and the chat's flow with a scripted model, on a real chloedb-server
 claude plugin test research/widgets          # the Claude Code mod on every surface
-node test/host/host.mjs                      # a small MCP Apps host to look at the hand-written views
+node test/host/host.mjs                      # a small MCP Apps host to look at the views: ?tool=app_open&args={"id":"stock-chart"}
 (mkdir -p rec && cd rec && node ../test/conversation.cjs)   # record a conversation against the running chat (real models)
 ```
 

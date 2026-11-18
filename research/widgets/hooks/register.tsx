@@ -6,16 +6,24 @@
 //
 // The server is ../server (an MCP server any MCP Apps host can draw as
 // HTML); this module is how Claude Code, which draws no HTML, shows the same
-// widgets.
+// widgets. An instant app (app_open, app_make, app_change) draws as the card
+// of its data under a line with its name and Save; Your apps (/apps, or the
+// model's my_apps) is a pane of the saved ones.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Card, CartLine, Data, Kind, Pin } from '../types'
+import type { Card, CartLine, Data, Kind, Pin, Shelved } from '../types'
 import { drawCard, title } from './cards'
 import type { Actions, Kit } from './cards'
 
 const PANE = 'widgets'
-const KINDS: Kind[] = ['stock_quote', 'flight_track', 'shop_search', 'cart_add', 'cart_view']
+const SHELF = 'apps'
+const KINDS: Kind[] = ['stock_quote', 'flight_track', 'shop_search', 'cart_add', 'cart_view', 'app_open', 'app_make', 'app_change']
+// The app tools without a card of their own, which the model reaches for
+// first (apps_find) or after a card (app_save, my_apps).
+const APP_TOOL = /^mcp__.+__(apps_find|app_kit|app_save|app_undo|my_apps)$/
+// The server's name when this plugin starts it.
+const SERVER = 'plugin_widgets_widgets'
 const MAX_CARDS = 40
 const REFRESH_MS = 20_000
 
@@ -23,6 +31,7 @@ const REFRESH_MS = 20_000
 const cards = atom({ plugin: 'widgets', key: 'cards' } as const, {}, { shape: 'cards-1' })
 const pins = atom({ plugin: 'widgets', key: 'pins' } as const, [], { shape: 'pins-1' })
 const cart = atom({ plugin: 'widgets', key: 'cart' } as const, [], { shape: 'cart-1' })
+const shelf = atom({ plugin: 'widgets', key: 'shelf' } as const, { server: SERVER, apps: [], at: 0 }, { shape: 'shelf-1' })
 
 // `mcp__<server>__<tool>` for one of the widget tools, whatever the server
 // is called: `widgets` configured by hand, `plugin_widgets_widgets` when
@@ -35,13 +44,34 @@ export function widgetOf(tool: string): { server: string; kind: Kind } | null {
 
 // Claude Code hands on a tool's structuredContent as JSON text.
 export function parse(text: unknown): Data | null {
+  const data = json(text)
+  if (!data) return null
+  if (['stock', 'flight', 'shop'].includes(data.widget as string)) return data as Data
+  // A made app's data no card knows (recipes, tables).
+  return data.instant ? ({ ...data, widget: 'app' } as Data) : null
+}
+
+function json(text: unknown): { [key: string]: unknown } | null {
+  if (text && typeof text === 'object') return text as { [key: string]: unknown }
   if (typeof text !== 'string' || !text.startsWith('{')) return null
   try {
     const data = JSON.parse(text)
-    return data && typeof data === 'object' && ['stock', 'flight', 'shop'].includes(data.widget) ? (data as Data) : null
+    return data && typeof data === 'object' ? data : null
   } catch {
     return null
   }
+}
+
+// Your apps, from my_apps's answer.
+function shelved(text: unknown): Shelved[] | null {
+  const apps = json(text)?.apps
+  return Array.isArray(apps) ? (apps as Shelved[]) : null
+}
+
+async function loadShelf($: EngineInterface) {
+  const { server } = await read($, shelf)
+  const apps = shelved(await dataOf($, server, 'my_apps', {}).catch(() => null))
+  if (apps) await update($, shelf, now => ({ ...now, apps, at: Date.now() }))
 }
 
 function newest<T extends { at: number }>(all: { [id: string]: T }, keep: number): { [id: string]: T } {
@@ -56,16 +86,21 @@ type Args = Card['args']
 function argsOf(e: { [key: string]: unknown }): Args {
   const args: Args = {}
   for (const [key, value] of Object.entries(e)) {
-    if (key === 'tool' || key === 'tool_use_id') continue
+    if (key === 'tool' || key === 'tool_use_id' || key === 'html') continue
     if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) args[key] = value as Args[string]
   }
   return args
 }
 
-async function callTool($: EngineInterface, server: string, kind: Kind, args: Args): Promise<Data | null> {
-  const result = await $.mcp.call(server, kind, args)
-  const block = result.content.find(c => c.type === 'text')
-  return result.isError ? null : parse(block?.text ?? result.structuredContent)
+async function callTool($: EngineInterface, server: string, kind: Kind, args: { [key: string]: unknown }): Promise<Data | null> {
+  return parse(await dataOf($, server, kind, args))
+}
+
+// A tool's data, whatever it is: structuredContent, or its JSON text.
+async function dataOf($: EngineInterface, server: string, tool: string, args: { [key: string]: unknown }) {
+  const result = await $.mcp.call(server, tool, args)
+  if (result.isError) return null
+  return json(result.structuredContent) ?? json(result.content.find(c => c.type === 'text')?.text)
 }
 
 function remember($: EngineInterface, data: Data) {
@@ -75,7 +110,12 @@ function remember($: EngineInterface, data: Data) {
 async function refresh($: EngineInterface) {
   const list = await read($, pins)
   for (const pin of list) {
-    const data = await callTool($, pin.server, pin.kind, pin.args).catch(() => null)
+    // An app refreshes by its own tool, with what it was filled with: the
+    // app tools would count a use, or make the app again.
+    const app = pin.data.instant
+    const data = app
+      ? await dataOf($, pin.server, app.tool, app.args ?? {}).then(d => d && parse({ ...d, instant: app }), () => null)
+      : await callTool($, pin.server, pin.kind, pin.args).catch(() => null)
     if (!data) continue
     await update($, pins, now => now.map(p => (p.id === pin.id ? { ...p, data, at: Date.now() } : p)))
   }
@@ -84,9 +124,17 @@ async function refresh($: EngineInterface) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'widgets', description: 'Show the widgets pinned live beside the chat' })
+    await $.command.register({ name: 'apps', description: 'Show your saved instant apps beside the chat' })
     $.clock.every(REFRESH_MS, () => void refresh($))
     if ((await read($, pins)).length) void $.ui.open({ id: PANE, title: 'Live widgets' })
     return next(e)
+  })
+
+  on('command.run', { command: 'apps' }, async $ => {
+    await loadShelf($)
+    await $.ui.open({ id: SHELF, title: 'Your apps' })
+    const { apps } = await read($, shelf)
+    return { text: apps.length ? `${apps.length} saved app(s).` : 'No saved apps yet: press Save on an app’s card.' }
   })
 
   on('command.run', { command: 'widgets' }, async $ => {
@@ -99,10 +147,30 @@ export const register: Register = on => {
   // behind ToolSearch, so a request that needs one opens it in one step.
   on('tool.describe', async ($, e, next) => {
     const described = await next(e)
-    return widgetOf(e.tool) ? { ...described, isDeferred: false } : described
+    return widgetOf(e.tool) || APP_TOOL.test(e.tool) ? { ...described, isDeferred: false } : described
   })
 
   on('tool.call', async ($, e, next) => {
+    // Your apps, asked of the model: the pane shows them.
+    const shelfCall = /^mcp__(.+)__my_apps$/.exec(e.tool)
+    if (shelfCall) {
+      const ran = await next(e)
+      const apps = ran.deny === undefined && !ran.isError ? shelved(ran.text ?? ran.result) : null
+      if (apps) {
+        await update($, shelf, () => ({ server: shelfCall[1]!, apps, at: Date.now() }))
+        await $.ui.open({ id: SHELF, title: 'Your apps' })
+        const said = json(ran.text ?? ran.result)?.summary
+        if (typeof said === 'string') return { result: said }
+      }
+      return ran
+    }
+    // The other app tools: Claude Code hands the model their data as JSON,
+    // and the sentence the server wrote for it rides first in that.
+    if (APP_TOOL.test(e.tool)) {
+      const ran = await next(e)
+      const said = ran.deny === undefined && !ran.isError ? json(ran.text ?? ran.result)?.summary : undefined
+      return typeof said === 'string' ? { result: said } : ran
+    }
     const widget = widgetOf(e.tool)
     if (!widget) return next(e)
     const ran = await next(e)
@@ -112,8 +180,11 @@ export const register: Register = on => {
     const card: Card = { kind: widget.kind, server: widget.server, args: argsOf(e), data, at: Date.now() }
     await update($, cards, all => newest({ ...all, [e.tool_use_id]: card }, MAX_CARDS))
     await remember($, data)
-    // The card shows the data; the model reads the sentence the server wrote.
-    return data.summary ? { result: data.summary } : ran
+    if (data.instant) await update($, shelf, now => ({ ...now, server: widget.server }))
+    // The card shows the data; the model reads the sentence the server
+    // wrote, and for an app what to do next.
+    const said = [data.summary, data.instant?.note].filter(Boolean).join('\n\n')
+    return said ? { result: said } : ran
   }).catch(($, e, next) => next(e))
 
   // A run of calls the transcript folds into one line keeps its line, and
@@ -165,6 +236,38 @@ export const register: Register = on => {
     if (!widgetOf(e.props.tool) || e.props.isExpanded || e.props.isErrored) return next(e)
     const { Box } = $.ui.resolve(e)
     return <Box />
+  })
+
+  // Your apps, grouped as the chat's rail groups them; Open asks for one.
+  on('ui.render', { component: 'Pane', requestId: SHELF }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const { apps } = await read($, shelf)
+    if (!apps.length) return <Text dimColor>No saved apps yet. Press Save on an app’s card, or ask for one: “compare two blenders side by side”.</Text>
+    const groups: [Shelved['kind'], string][] = [['info', 'Look things up'], ['action', 'Get things done'], ['discover', 'Discover']]
+    return (
+      <Box flexDirection="column" gap={1}>
+        {groups
+          .filter(([kind]) => apps.some(a => a.kind === kind))
+          .map(([kind, label]) => (
+            <Box key={kind} flexDirection="column">
+              <Text dimColor bold>
+                {label.toUpperCase()}
+              </Text>
+              {apps
+                .filter(a => a.kind === kind)
+                .map(a => (
+                  <Box key={a.id} justifyContent="space-between" gap={1}>
+                    <Text>
+                      <Text bold>{a.name}</Text> <Text dimColor>{a.about}</Text>
+                    </Text>
+                    <Button key={`open-${a.id}`} label="Open" onPress={() => void $.prompt.fill({ text: `Open my "${a.name}" app` })} />
+                  </Box>
+                ))}
+            </Box>
+          ))}
+        <Text dimColor>Kept in ChloeDB; a saved app opens by itself when you ask for something like what it did.</Text>
+      </Box>
+    )
   })
 
   // The pane of pinned widgets, newest first.
@@ -234,6 +337,22 @@ function actions($: EngineInterface, id: string, card: Card, isPinned: boolean):
       })(),
     unpin: () => void update($, pins, list => list.filter(p => p.id !== id)),
     ask: text => void $.prompt.fill({ text }),
+    save: () =>
+      void (async () => {
+        const app = card.data.instant
+        if (!app) return
+        const result = await $.mcp.call(card.server, 'app_save', { id: app.id }).catch(() => null)
+        if (!result || result.isError) {
+          $.ui.toast(`Could not save ${app.name}`)
+          return
+        }
+        await update($, cards, all => {
+          const mine = all[id]
+          return mine?.data.instant ? { ...all, [id]: { ...mine, data: { ...mine.data, instant: { ...mine.data.instant, saved: true, how: 'saved' } } as Data } } : all
+        })
+        await loadShelf($)
+        $.ui.toast(`Saved ${app.name}: it opens by itself next time`)
+      })(),
     add: productId =>
       void (async () => {
         const data = await callTool($, card.server, 'cart_add', { id: productId }).catch(() => null)

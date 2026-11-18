@@ -207,3 +207,110 @@ test('other tools keep their own rows', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /engine row/ }))?.text).toBe('engine row')
   await ui.unmount()
 })
+
+// An instant app made from the shop's data, as app_make answers it.
+const APP = { id: 'product-comparison-fbbbf8', name: 'Product comparison', about: 'Puts chosen products side by side.', kind: 'info', tool: 'shop_search', tools: ['shop_search', 'cart_add'], version: 1, saved: false, how: 'made', args: { query: 'blender' } }
+const MADE = { ...SHOP, instant: { ...APP, note: 'Made for this request. It is a draft until it is saved.' } }
+// One no card knows: a list of recipes.
+const RECIPES = { summary: '2 recipes.', meals: [{ id: 1, name: 'Shakshuka', area: 'Tunisian' }, { id: 2, name: 'Dal', area: 'Indian' }], instant: { ...APP, id: 'recipe-ideas-01ab23', name: 'Recipe ideas', tool: 'recipes_browse', kind: 'discover', how: 'recalled', saved: true } }
+const SHELF = { summary: '1 saved app.', widget: 'apps', apps: [{ id: APP.id, name: APP.name, about: APP.about, kind: 'info', uses: 1 }] }
+
+// The engine for app tools: app_save and my_apps answer as the server does.
+function appEngine(on: any, data: object) {
+  const seen = { id: '', mcp: [] as unknown[], opened: [] as string[], toasts: [] as string[], filled: [] as string[] }
+  const json = JSON.stringify(data)
+  on('tool.call', (_: unknown, e: { tool_use_id: string; tool: string }) => {
+    seen.id = e.tool_use_id
+    const text = e.tool.endsWith('__my_apps') ? JSON.stringify(SHELF) : json
+    return { result: text, text }
+  })
+  on('clock.now', () => ({ value: NOW }))
+  on('ui.toast', (_: unknown, e: { text: string }) => {
+    seen.toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('prompt.fill', (_: unknown, e: { text: string }) => {
+    seen.filled.push(e.text)
+    return { isFilled: true, text: e.text, cursor: e.text.length }
+  })
+  on('ui.open', (_: unknown, e: { id: string }) => {
+    seen.opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('mcp.call', (_: unknown, e: { server: string; tool: string; args: unknown }) => {
+    seen.mcp.push([e.server, e.tool, e.args])
+    const answer = e.tool === 'my_apps' ? SHELF : { summary: 'Saved.', id: APP.id, saved: true }
+    return { value: { content: [{ type: 'text', text: JSON.stringify(answer) }], isError: false } }
+  })
+  return seen
+}
+
+test('a made app is its card under a line with its name and Save, and the model is told what next', async ($, on) => {
+  const seen = appEngine(on, MADE)
+  const tool = 'mcp__widgets__app_make'
+  const ran = await $.tool.call({ tool, name: APP.name, html: '<div>…</div>' } as any)
+  expect((ran as any).result).toBe(`${SHOP.summary}\n\n${MADE.instant.note}`)
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...row(seen.id, tool), surface } as any)
+    expect(await ui.find({ type: 'Text', text: /Product comparison/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /new app/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /AirPods Max/ })).toBeDefined()
+    expect(await ui.find({ key: 'save' })).toBeDefined()
+    await ui.unmount()
+  }
+
+  const ui = await $.ui.mount({ ...row(seen.id, tool), surface: 'terminal' } as any)
+  await ui.press({ key: 'save' })
+  await settle()
+  expect(seen.mcp).toEqual([
+    ['widgets', 'app_save', { id: APP.id }],
+    ['widgets', 'my_apps', {}],
+  ])
+  expect(seen.toasts.some(t => /Saved Product comparison/.test(t))).toBe(true)
+  await ui.unmount()
+  const again = await $.ui.mount({ ...row(seen.id, tool), surface: 'terminal' } as any)
+  expect(await again.find({ key: 'save' })).toBeUndefined()
+  expect(await again.find({ type: 'Text', text: /saved/ })).toBeDefined()
+  await again.unmount()
+
+  // Your apps now lists it, and Open asks for it in the prompt.
+  const pane = await $.ui.mount({
+    plugin: 'widgets',
+    component: 'Pane',
+    requestId: 'apps',
+    surface: 'desktop',
+    props: { title: 'Your apps', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+  } as any)
+  expect(await pane.find({ type: 'Text', text: /LOOK THINGS UP/ })).toBeDefined()
+  await pane.press({ key: `open-${APP.id}` })
+  await settle()
+  expect(seen.filled).toEqual(['Open my "Product comparison" app'])
+  await pane.unmount()
+})
+
+test('an app of data no card knows lists what it holds', async ($, on) => {
+  const seen = appEngine(on, RECIPES)
+  const tool = 'mcp__widgets__app_open'
+  await $.tool.call({ tool, id: RECIPES.instant.id } as any)
+  const ui = await $.ui.mount({ ...row(seen.id, tool), surface: 'terminal' } as any)
+  expect(await ui.find({ type: 'Text', text: /Recipe ideas/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /from your apps/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Shakshuka/ })).toBeDefined()
+  expect(await ui.find({ key: 'save' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test("the model's my_apps opens Your apps beside the chat", async ($, on) => {
+  const seen = appEngine(on, SHELF)
+  const ran = await $.tool.call({ tool: 'mcp__widgets__my_apps' } as any)
+  expect((ran as any).result).toBe(SHELF.summary)
+  expect(seen.opened).toEqual(['apps'])
+})
+
+test('the other app tools answer the model in the sentence the server wrote', async ($, on) => {
+  const found = { summary: 'The person’s saved apps that may fit "compare two headphones", best first: …', apps: [{ id: APP.id, score: 0.05 }] }
+  appEngine(on, found)
+  const ran = await $.tool.call({ tool: 'mcp__plugin_widgets_widgets__apps_find', request: 'compare two headphones' } as any)
+  expect((ran as any).result).toBe(found.summary)
+})
