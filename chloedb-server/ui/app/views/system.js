@@ -559,8 +559,27 @@ function render(page, r) {
         tools: h("a", { class: "btn sm", href: link("cluster") }, "Open Cluster", icon("right")),
         body: h("div", { class: "stack", style: { gap: "8px" } },
           h("div", { class: "small" }, "Open a shard on the canvas, then a copy's ⋯ menu: compare its replicas, write a checkpoint into its server's --backup-dir, make it the primary, or remove it. Each says there why it is not offered when it is not."),
+          h("div", { class: "row", style: { gap: "8px" } },
+            h("button", { class: "btn sm", disabled: !can("admin", "POST /v1/admin/checkpoint"), title: can("admin", "POST /v1/admin/checkpoint") ? "" : needs("admin", "POST /v1/admin/checkpoint"), onclick: checkpointEveryShard }, icon("download"), "Write a checkpoint of every shard…"),
+            h("span", { class: "small dim" }, "Each shard's primary writes it into its own --backup-dir, with the cluster map and keys beside it: what a restore needs.")),
           h("div", { class: "small dim" }, lastCp ? [`Last checkpoint asked through this coordinator: ${fmt.ago(lastCp.ts_ms)}${lastCp.who ? ` by ${lastCp.who}` : ""}`, lastCp.detail ? ` (${lastCp.detail})` : "", lastCp.status && lastCp.status >= 400 ? `, which failed (${lastCp.status})` : "", "."]
             : audit && !auditErr ? "No checkpoint asked through this coordinator in its audit log." : auditErr instanceof ApiError && auditErr.status === 403 ? "Its audit log, which says the last checkpoint asked, needs an admin key." : "")) });
+    }
+    function checkpointEveryShard() {
+      const inp = h("input", { class: "input", value: core.checkpointName("cluster") });
+      const go = h("button", { class: "btn primary" }, "Write them");
+      const m = modal({ title: "Write a checkpoint of every shard", body: [h("p", { class: "dim", style: { margin: 0 } }, "The primary of each shard writes a consistent copy of its database into its server's --backup-dir, under this name, with the cluster map and the keys beside it. Queries and writes go on."), h("label", { class: "f" }, "Name", inp)], foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), go] });
+      go.onclick = async () => {
+        const name = inp.value.trim(), bad = core.checkpointNameProblem(name);
+        if (bad) { toast(`Not a checkpoint's name: ${bad}`, "bad", 6000); inp.focus(); return; }
+        m.close();
+        try {
+          const j = await api("/v1/admin/checkpoint", { body: { name }, timeout: 600000 });
+          const rows = (j.shards || []).reduce((n, s) => n + (s.checkpoint?.live_docs || 0), 0);
+          toast(`Checkpoint ${name} written on ${plural((j.shards || []).length, "shard")}: ${fmt.n(rows)} rows, under cluster map epoch ${j.slot_epoch ?? "–"}`, "ok", 8000);
+          loadAudit();
+        } catch (e) { toast(`No checkpoint of every shard: ${errText(e)}`, "bad", 10000); }
+      };
     }
     function statsCard() {
       const res = results.get("coord:reset");
@@ -658,12 +677,16 @@ function render(page, r) {
       drawOps();
     }
     function checkpoint(op) {
-      const name = "cp-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const name = core.checkpointName("cp");
       const inp = h("input", { class: "input", value: name });
       const layout = h("select", { class: "select" }, h("option", { value: "file" }, "one file"), h("option", { value: "dir" }, "a directory"));
       const go = h("button", { class: "btn primary" }, "Write it");
       const m = modal({ title: "Write a checkpoint", body: [h("label", { class: "f" }, `Name, in ${state.system.features.backup_dir}`, inp), h("label", { class: "f" }, "Layout", layout)], foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), go] });
-      go.onclick = () => { m.close(); runOp(op, "/v1/admin/checkpoint", { name: inp.value.trim(), layout: layout.value }, null, false, { name: inp.value.trim() }); };
+      go.onclick = () => {
+        const bad = core.checkpointNameProblem(inp.value.trim());
+        if (bad) { toast(`Not a checkpoint's name: ${bad}`, "bad", 6000); inp.focus(); return; }
+        m.close(); runOp(op, "/v1/admin/checkpoint", { name: inp.value.trim(), layout: layout.value }, null, false, { name: inp.value.trim() });
+      };
     }
     function drawOps() {
       if (!opsBox) return;

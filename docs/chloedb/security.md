@@ -106,7 +106,7 @@ ChloeDB does not encrypt its files: use the encryption of the disk or the volume
 
 The database, its `-wal`, the log store (`DB.logs`), the audit log file (`--audit-log`) and checkpoints are made with the server's umask, so under the common 022 anyone on the machine may read them. The keys file, connector secrets, the cloud view's credentials and the hub's keys are mode 0600 whatever the umask. Start the server with `umask 077` (systemd: `UMask=0077`) and every file it makes is its user's alone, or keep its folder mode 0700.
 
-A checkpoint (`--backup-dir`) holds every row of the database: keep it as you keep the database. It does not hold the keys file.
+A checkpoint (`--backup-dir`) holds every row of the database: keep it as you keep the database. Beside it are the keys file as it was (`NAME.keys.json`, mode 0600: the keys' names, scopes and the SHA-256 of their secrets, never a secret) and the shard's cluster map (`NAME.slots`), which [`chloedb-server restore`](server.md#restoring-a-checkpoint) puts back.
 
 ## Logs
 

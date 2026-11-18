@@ -169,6 +169,50 @@ For: `rollout`, `held`
    (`POST /v1/admin/kube {"rollback": <the version before>}`), also a
    change request.
 
+## Restore from checkpoints
+
+For: `restore`, `lost-data`, `bad-write`
+
+Rows were deleted or overwritten by mistake, or a shard's copies all lost
+their disks, and the cluster has to go back to its checkpoints. Restoring
+is a person's alone (tier 3): it stops the cluster and takes back every
+write since the checkpoint. These steps are for servers you start
+yourself (by hand, from systemd, in a container); on Kubernetes the
+operator keeps its pods running and has no restore step yet.
+
+1. Have checkpoints of every shard from one cluster map: `POST
+   /v1/admin/checkpoint {"name": "nightly"}` on the coordinator writes
+   one on each shard's primary, into its `--backup-dir`, with the shard's
+   cluster map (`nightly.slots`) and the cluster's API keys
+   (`nightly.keys.json`) beside it, and answers the `slot_epoch` they are
+   of. Copy the three files of each shard off the machine. A checkpoint
+   of one copy is `POST /v1/admin/copies/checkpoint {"url": "...",
+   "name": "..."}`.
+2. Read what you are going back to: each shard's checkpoint names its
+   shard and epoch (`nightly.slots`), and `GET /v1/cluster` gives the
+   epoch now (`slot_epoch`). Slots moved since the checkpoint when the
+   two differ: then restore every shard, never one alone, or rows would
+   be in two shards or in none.
+3. Stop the coordinator and every copy of the shards you restore.
+4. On each copy, put its shard's checkpoint in place of its database:
+   `chloedb-server restore --from /backups/nightly --db /data/shop.chloedb`
+   (with `--keys FILE` when the server has `--keys FILE`). It checks the
+   checkpoint before it changes anything, moves the database's own files
+   aside into `/data/shop.chloedb.before-restore-<time>/`, puts the
+   shard's map beside it and merges the keys in (keys revoked since stay
+   revoked). It refuses while a server has the database open and when
+   the checkpoint is of another shard than the copy's. A copy on an empty
+   disk is restored the same way, or started empty: its primary sends it
+   every row, and the coordinator gives it the cluster map.
+5. Start each copy with the flags it had (`--replicas` on the shard's
+   primary, `--replica` on the others, the same `--cluster-token` and
+   `--seq-no`), then the coordinator with its `--shards`.
+6. Check before you let writes in: `GET /v1/health` on the coordinator,
+   and `GET /v1/cluster`, where each copy of a shard says the same
+   `slot_epoch` and the same `seq_no`, its replicas in sync, and the
+   shards' rows add up to the checkpoint's (`SELECT count(*)` through the
+   coordinator). The files moved aside can go once it does.
+
 ## Upgrades outside Kubernetes
 
 On Kubernetes the operator rolls a new version through the cluster

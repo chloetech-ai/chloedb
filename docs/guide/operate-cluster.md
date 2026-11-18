@@ -301,14 +301,18 @@ written by http://127.0.0.1:7722
 written by http://127.0.0.1:7725
 s0b/backups:
 s0b-before-upgrade
+s0b-before-upgrade.keys.json
+s0b-before-upgrade.slots
 
 s1b/backups:
 s1b-before-upgrade
+s1b-before-upgrade.keys.json
+s1b-before-upgrade.slots
 ```
 
-A name is letters, digits, `.`, `_` and `-`, and an existing one is never overwritten. The command center writes one from a copy's menu on its **Cluster** page; give it a name of that form. Copy the checkpoints off the machines: with `"layout": "dir"` a checkpoint is a directory of segment files, which a sync to object storage sends only the new ones of ([backups](../chloedb/server.md#backups)).
+Beside each checkpoint the copy writes its shard's cluster map (`NAME.slots`) and the cluster's API keys (`NAME.keys.json`: names, scopes and the hashes of their secrets), under the names a server serving the checkpoint reads. `POST /v1/admin/checkpoint {"name": "..."}` on the coordinator writes one on every shard's primary at once, all of one cluster map. A name is letters, digits, `.`, `_` and `-`, and an existing one is never overwritten. The command center writes one from a copy's menu on its **Cluster** page, and one of every shard from **Settings > Upkeep**. Copy the three files of each checkpoint off the machines: with `"layout": "dir"` a checkpoint is a directory of segment files, which a sync to object storage sends only the new ones of ([backups](../chloedb/server.md#backups)).
 
-What a checkpoint restores today is one server's database: stop the server and serve the checkpoint with `--db`. It holds the database alone, not the files beside it: the keys (`db.chloedb.keys.json`), the cluster map (`db.chloedb.slots`) and the copy's part in replication (`db.chloedb.replication`). A procedure for restoring a sharded, replicated cluster from its checkpoints is not documented yet, and there is no point-in-time recovery between checkpoints.
+To restore, stop the server and put the checkpoint in place of its database with `chloedb-server restore --from s0b/backups/s0b-before-upgrade --db s0b/db.chloedb`: it checks the checkpoint before it changes anything, moves the database's own files aside, puts the map beside it and merges the keys in. A copy's part in replication (`db.chloedb.replication`) is not in a checkpoint: start a restored copy with the role flags it had. The runbook [Restore from checkpoints](../chloedb/runbooks.md#restore-from-checkpoints) restores a whole cluster, a shard or one copy this way, and [restoring a checkpoint](../chloedb/server.md#restoring-a-checkpoint) says what the command does. There is no point-in-time recovery between checkpoints.
 
 ## Upgrade one server at a time
 
