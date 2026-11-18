@@ -550,6 +550,9 @@ impl Place {
     /// Its version: this build's, and the image's.
     pub fn version(&self) -> Json {
         let mut v = json!({"version": env!("CARGO_PKG_VERSION")});
+        if let Some(c) = crate::BUILD_COMMIT {
+            v["commit"] = json!(c);
+        }
         if let Some(i) = &self.image {
             v["image"] = json!(i);
         }
@@ -2599,7 +2602,10 @@ impl Service {
     /// long, stopped at the request's deadline (`timeout_ms`, 0: the
     /// server's) or once the caller goes, within `budget`.
     pub async fn plan_for_explain(self: &Arc<Self>, sql: &str, params: &Params, timeout_ms: u64, budget: chloedb::query::budget::Budget) -> Result<Plan, ApiError> {
-        self.plan_read(sql, params, Instant::now() + self.timeout_of(timeout_ms), budget).await
+        // Bound as the query is, with the texts it gives where vectors go
+        // embedded (`similarity(emb, :q)` with :q text): what runs explains
+        // (persona study PRIYA-202).
+        self.bound_read(sql, params, self.timeout_of(timeout_ms), budget).await
     }
 
     /// Query `sql` written out with the rank profile it ranks by
@@ -3252,9 +3258,11 @@ impl Service {
             if df > 0 {
                 continue;
             }
+            // The terms the word's typo expansion scores (near its stem,
+            // near it as typed and the stems of words near it), which
+            // `correct` measures from the word as typed.
             let near = stats_of(sql(&format!(", fuzzy => {}", w.edits)), w.word.clone()).await?;
-            let typed: Vec<char> = w.term.chars().collect();
-            let near: Vec<(String, u64, u8)> = near.into_iter().filter(|(n, _)| *n != w.term).filter_map(|(n, ndf)| chloedb::text::fuzzy::within(&typed, &n, w.edits).map(|d| (n, ndf, d))).collect();
+            let near: Vec<(String, u64)> = near.into_iter().collect();
             out.extend(w.correct(df, &near, analyzer));
         }
         if out.is_empty() {
@@ -4149,6 +4157,10 @@ impl Service {
                     // A statement that nests deep runs on a thread with the stack for it.
                     let r = chloedb::query::parse::deep_stack(deep, || {
                         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+                        // This server runs the leaves itself, so their
+                        // aggregates of expressions move into them.
+                        let mut plan = (*plan).clone();
+                        chloedb::query::compound::fuse_columns(&mut plan, &tables);
                         ops::run_on_engine(
                             &plan,
                             &tables,
@@ -6169,7 +6181,7 @@ impl Service {
             Backend::Cluster(_) => Json::Null,
         };
         json!({
-            "version": env!("CARGO_PKG_VERSION"), "pid": std::process::id(), "started_ms": started, "uptime_s": uptime,
+            "version": env!("CARGO_PKG_VERSION"), "commit": crate::BUILD_COMMIT, "pid": std::process::id(), "started_ms": started, "uptime_s": uptime,
             "cores": self.cores, "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "simd": chloedb::simd::describe(),
             "rss_bytes": rss, "cpu_seconds": cpu, "memory_limit_bytes": chloedb::storage::memory_limit(),
             "backend": match self.backend { Backend::Local(_) => "local", Backend::Cluster(_) => "coordinator" },

@@ -308,6 +308,7 @@ pub fn fetch(q: &Select, schema: &Schema, keys: Vec<Value>) -> Result<Select> {
         group_by: Vec::new(),
         paths: q.paths.clone(),
         times: q.times.clone(),
+        exprs: q.exprs.clone(),
         having: None,
         tiebreak: None,
         phases: Vec::new(),

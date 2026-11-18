@@ -96,6 +96,8 @@ An app is a program of its own (the crawler, Sheets, ChloeCtx, network operation
 ## Requests the server makes
 
 - **Connectors** reach the public internet only, unless a connector's config says `"allow_internal": true`; cloud metadata addresses are refused even then. Their credentials go to the origin of their `url` alone, and a redirect to another origin fails the run ([what a connector reaches](connectors.md#what-a-connector-reaches)). Their secrets are kept in `DB.connectors.json`, mode 0600, and a push connector's key writes its table and reads nothing ([keys](connectors.md#keys)).
+- **Alert routes** post to the public internet only, unless a route says `"allow_internal": true` (the command center's "Inside this network"), which lets it reach a private or loopback address; a link-local one (cloud metadata) is refused even then. The URL is checked when routes are saved and every address it resolves to when a message is sent, and a redirect to another origin is not followed: a route posts to its own origin alone, and a redirect fails the send. The webhook of `--alert-webhook`, set by whoever starts the server, may be inside the network ([routes](server.md#alerts)).
+- **Hub connections** (the command center's other clusters) may be inside the network, as a cluster usually is, but never at a link-local address, and follow no redirect to another origin: a cluster's key goes to the address it was added with alone.
 - **Media fields** read a URL or a file only when `--media-fetch` lists it; nothing is fetched by default ([media fields](server.md#media-fields)).
 - **Models** are names: a query names a model in `--models` or a provider's, never a path, and an `endpoint.json` names only a provider's key variable or a `CHLOEDB_MODEL_KEY_*` one.
 - **Cloud credentials and the hub.** The command center's cloud view keeps the AWS and DigitalOcean credentials it saves in `DB.aws.json` and `DB.digitalocean.json`, mode 0600; the hub keeps other clusters' keys in the macOS Keychain or the Secret Service where there is one, else in `DB.hub-keys.json`, mode 0600.
@@ -130,4 +132,4 @@ ChloeCtx's stores hold transcripts of your Claude Code sessions, which may conta
 - Mutual TLS between the servers or with clients.
 - Limit the rate of requests per key or per client address.
 - Keep a separate log of reads and of clients' writes of rows.
-- Sign release archives: each comes with a `.sha256`, PyPI's packages carry attestations ([SECURITY.md](../../SECURITY.md#checking-what-you-download)).
+- Sign release archives with a key of its own: from 0.3.8 each carries GitHub's build provenance and an SBOM, signed with Sigstore by the workflow that built it, beside its `.sha256`, and PyPI's packages carry attestations ([SECURITY.md](../../SECURITY.md#checking-what-you-download) says how to check them).

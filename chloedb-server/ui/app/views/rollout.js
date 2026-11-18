@@ -300,7 +300,8 @@ function render(page, r) {
           url: rr.url, short: rr.short || (typeof core.copyName === "function" ? core.copyName(rr.url, state.cluster) : `s${x.shard ?? i}-${j}`),
           shard: x.shard ?? i, role: rr.takes_writes ? "primary" : rr.role || "replica", node: rr.node || rr.name || null,
           down: rr.status === "down" || rr.role === "unknown", since: rr.down_since_ms || null, was: rr.last_role || null,
-          ver: rr.version?.digest || rr.version?.image || rr.version?.version || rr.detail?.system?.version || null,
+          // Two builds of one version (a hotfix) are told apart by their commit.
+          ver: rr.version?.digest || rr.version?.image || (rr.version?.version && rr.version?.commit ? `${rr.version.version} (${rr.version.commit.slice(0, 7)})` : rr.version?.version) || rr.detail?.system?.version || null,
           release: rr.version?.version || rr.detail?.system?.version || null,
           load: rr.detail?.load || {}, up_s: rr.detail?.system?.uptime_s,
         });

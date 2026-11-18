@@ -104,6 +104,16 @@ impl TermTable {
         out
     }
 
+    /// [`Self::fuzzy_either`], and the ranks of the terms within `edits`
+    /// edits of a prefix of `b` of `lo` letters or more, marked `false`
+    /// ([`super::fuzzy::walk_stems`]).
+    pub fn fuzzy_stems(&self, a: &str, b: &str, edits: u8, lo: usize) -> Vec<(u32, u8, bool)> {
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        let mut out = Vec::new();
+        super::fuzzy::walk_stems(&a, &b, edits, lo, &mut self.cursor(), |c, _, d, whole| out.push((c.pos() as u32, d, whole)));
+        out
+    }
+
     /// A cursor on the first term.
     pub fn cursor(&self) -> TableCursor<'_> {
         TableCursor { table: self, pos: 0 }

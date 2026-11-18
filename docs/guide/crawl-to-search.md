@@ -11,7 +11,7 @@ You need `chloedb-server` and `chloedb-crawl` on your `PATH`. <!-- since 0.3.2 -
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl
 ```
 
-Release 0.3.0 and earlier have no prebuilt crawler. With those, or to build from source, use a checkout of the repository (Rust and a C compiler, several minutes): `(cd chloedb-server && cargo build --release) && (cd chloedb-crawl && cargo build --release)`, then add both `target/release` directories to `PATH`.
+Release 0.3.0 and earlier have no prebuilt crawler. With those, or to build from source, use a checkout of the repository (Rust and a C compiler, several minutes): `(cd chloedb-server && cargo build --release --bin chloedb-server) && (cd chloedb-crawl && cargo build --release)`, then add both `target/release` directories to `PATH`.
 
 ## A site to crawl
 

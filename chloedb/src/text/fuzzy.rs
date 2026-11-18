@@ -183,11 +183,11 @@ pub enum Match {
 /// A row is `k + 1` bit masks, one per number of edits, of the prefixes
 /// of `q` within that many ([`BitRows`]) when `q` has fewer than 64
 /// letters, else its cells ([`CellRows`]).
-pub fn walk<S: Sorted>(q: &[char], k: u8, m: Match, terms: &mut S, hit: impl FnMut(&S, std::ops::Range<usize>, u8)) {
+pub fn walk<S: Sorted>(q: &[char], k: u8, m: Match, terms: &mut S, mut hit: impl FnMut(&S, std::ops::Range<usize>, u8)) {
     if q.len() < 64 {
-        walk_rows(BitRows::new(q, k), q, k, m, terms, hit)
+        walk_rows(BitRows::new(q, k), q, k, m, None, terms, |s, r, d, _| hit(s, r, d))
     } else {
-        walk_rows(CellRows::new(q, k), q, k, m, terms, hit)
+        walk_rows(CellRows::new(q, k), q, k, m, None, terms, |s, r, d, _| hit(s, r, d))
     }
 }
 
@@ -195,13 +195,37 @@ pub fn walk<S: Sorted>(q: &[char], k: u8, m: Match, terms: &mut S, hit: impl FnM
 /// or of `b`, each once, with the fewer edits of the two: one walk of the
 /// dictionary for both, so the trie's nodes the two reach (most of them
 /// when one starts the other, as a word does its stem) are read once.
-pub fn walk_either<S: Sorted>(a: &[char], b: &[char], k: u8, terms: &mut S, hit: impl FnMut(&S, std::ops::Range<usize>, u8)) {
+pub fn walk_either<S: Sorted>(a: &[char], b: &[char], k: u8, terms: &mut S, mut hit: impl FnMut(&S, std::ops::Range<usize>, u8)) {
+    either_rows(a, b, k, None, terms, |s, r, d, _| hit(s, r, d))
+}
+
+/// [`walk_either`], and besides the terms within `k` edits of `a` or `b`
+/// (`whole` true) the terms within `k` edits of a prefix of `b` of at
+/// least `lo` letters but shorter than `b` (`whole` false, with those
+/// edits): the stems that words near `b` may have, when `b` is a word as
+/// typed and the terms are stems. `choclate` is three edits from
+/// `chocol`, the stem of chocolate, but `chocl` is one; whether `chocol`
+/// with the rest of the word (`ate`) stems to `chocol` is for the caller,
+/// who knows the stemmer. The walk is [`walk_either`]'s: it goes down
+/// every path within `k` edits of any prefix of either word already.
+pub fn walk_stems<S: Sorted>(a: &[char], b: &[char], k: u8, lo: usize, terms: &mut S, hit: impl FnMut(&S, std::ops::Range<usize>, u8, bool)) {
+    if a == b {
+        let m = Match::Whole;
+        return match b.len() < 64 {
+            true => walk_rows(BitRows::new(b, k), b, k, m, Some(lo), terms, hit),
+            false => walk_rows(CellRows::new(b, k), b, k, m, Some(lo), terms, hit),
+        };
+    }
+    either_rows(a, b, k, Some(lo), terms, hit)
+}
+
+fn either_rows<S: Sorted>(a: &[char], b: &[char], k: u8, lo: Option<usize>, terms: &mut S, hit: impl FnMut(&S, std::ops::Range<usize>, u8, bool)) {
     let m = Match::Whole;
     match (a.len() < 64, b.len() < 64) {
-        (true, true) => walk_rows(Either(BitRows::new(a, k), BitRows::new(b, k)), a, k, m, terms, hit),
-        (true, false) => walk_rows(Either(BitRows::new(a, k), CellRows::new(b, k)), a, k, m, terms, hit),
-        (false, true) => walk_rows(Either(CellRows::new(a, k), BitRows::new(b, k)), a, k, m, terms, hit),
-        (false, false) => walk_rows(Either(CellRows::new(a, k), CellRows::new(b, k)), a, k, m, terms, hit),
+        (true, true) => walk_rows(Either(BitRows::new(a, k), BitRows::new(b, k)), a, k, m, lo, terms, hit),
+        (true, false) => walk_rows(Either(BitRows::new(a, k), CellRows::new(b, k)), a, k, m, lo, terms, hit),
+        (false, true) => walk_rows(Either(CellRows::new(a, k), BitRows::new(b, k)), a, k, m, lo, terms, hit),
+        (false, false) => walk_rows(Either(CellRows::new(a, k), CellRows::new(b, k)), a, k, m, lo, terms, hit),
     }
 }
 
@@ -223,6 +247,11 @@ impl<A: Rows, B: Rows> Rows for Either<A, B> {
     fn whole(&self, depth: usize) -> u8 {
         self.0.whole(depth).min(self.1.whole(depth))
     }
+
+    /// The second query's ([`walk_stems`]).
+    fn least_prefix(&self, depth: usize, lo: usize) -> u8 {
+        self.1.least_prefix(depth, lo)
+    }
 }
 
 /// The rows of the edit-distance table along a walk's path: per depth
@@ -238,6 +267,10 @@ trait Rows {
     fn push(&mut self, c: char, last: Option<char>) -> (u8, u8);
     /// The edits from the path's first `depth` letters to the whole query.
     fn whole(&self, depth: usize) -> u8;
+    /// The fewest edits from the path's first `depth` letters to a prefix
+    /// `q[..i]` of the query with `lo <= i < q.len()`, `k + 1` for none
+    /// within `k`.
+    fn least_prefix(&self, depth: usize, lo: usize) -> u8;
 }
 
 /// Rows of `q.len() + 1` cells.
@@ -282,6 +315,11 @@ impl Rows for CellRows<'_> {
     fn whole(&self, depth: usize) -> u8 {
         let w = self.q.len() + 1;
         self.rows[depth * w + w - 1]
+    }
+
+    fn least_prefix(&self, depth: usize, lo: usize) -> u8 {
+        let (w, n) = (self.q.len() + 1, self.q.len());
+        self.rows[depth * w + lo.min(n)..depth * w + n].iter().copied().min().unwrap_or(self.k + 1)
     }
 }
 
@@ -385,9 +423,23 @@ impl Rows for BitRows {
         let at = depth * (self.k + 2);
         self.least(&self.rows[at..at + self.k + 1], 1u64 << self.n)
     }
+
+    fn least_prefix(&self, depth: usize, lo: usize) -> u8 {
+        if lo >= self.n {
+            return self.k as u8 + 1;
+        }
+        // Bits lo..n: the prefixes from lo letters to all but the last.
+        let bits = ((1u64 << self.n) - 1) & !((1u64 << lo) - 1);
+        let at = depth * (self.k + 2);
+        self.least(&self.rows[at..at + self.k + 1], bits)
+    }
 }
 
-fn walk_rows<S: Sorted, R: Rows>(mut rows: R, q: &[char], k: u8, m: Match, terms: &mut S, mut hit: impl FnMut(&S, std::ops::Range<usize>, u8)) {
+/// The walk of [`walk`], [`walk_either`] and [`walk_stems`]: with `stems`,
+/// a whole term too far from the query is a hit (`false`) when it is
+/// within `k` of a prefix of the query of `stems` letters or more
+/// ([`Rows::least_prefix`]).
+fn walk_rows<S: Sorted, R: Rows>(mut rows: R, q: &[char], k: u8, m: Match, stems: Option<usize>, terms: &mut S, mut hit: impl FnMut(&S, std::ops::Range<usize>, u8, bool)) {
     let (n, k) = (q.len(), k as usize);
     let cap = |x: usize| x.min(k + 1) as u8;
     // The path's letters and their ends in bytes.
@@ -404,7 +456,7 @@ fn walk_rows<S: Sorted, R: Rows>(mut rows: R, q: &[char], k: u8, m: Match, terms
             let start = terms.pos();
             skip_rest(terms);
             if terms.pos() > start {
-                hit(terms, start..terms.pos(), 0);
+                hit(terms, start..terms.pos(), 0, true);
             }
             return;
         }
@@ -474,9 +526,14 @@ fn walk_rows<S: Sorted, R: Rows>(mut rows: R, q: &[char], k: u8, m: Match, terms
                 Match::Whole => rows.whole(path.len()),
                 Match::Prefix => bests[path.len()],
             };
+            let p = terms.pos();
             if d as usize <= k {
-                let p = terms.pos();
-                hit(terms, p..p + 1, d);
+                hit(terms, p..p + 1, d, true);
+            } else if let Some(lo) = stems {
+                let e = rows.least_prefix(path.len(), lo);
+                if e as usize <= k {
+                    hit(terms, p..p + 1, e, false);
+                }
             }
             terms.next();
             continue;
@@ -485,7 +542,7 @@ fn walk_rows<S: Sorted, R: Rows>(mut rows: R, q: &[char], k: u8, m: Match, terms
         let start = terms.pos();
         terms.skip_prefix(bytes.len());
         if let Some(d) = run {
-            hit(terms, start..terms.pos(), d);
+            hit(terms, start..terms.pos(), d, true);
         }
     }
 }
@@ -572,7 +629,7 @@ mod tests {
                     assert_eq!(got, want, "{q:?} within {k}");
                     // The rows of cells (a query of 64 letters or more) find the same.
                     let mut cells = Vec::new();
-                    walk_rows(CellRows::new(&q, k), &q, k, Match::Whole, &mut SliceTerms::new(&terms), |_, r, d| cells.push((r.start, d)));
+                    walk_rows(CellRows::new(&q, k), &q, k, Match::Whole, None, &mut SliceTerms::new(&terms), |_, r, d, _| cells.push((r.start, d)));
                     assert_eq!(cells, want, "{q:?} within {k}, by cells");
                     // Each term with a prefix within k, and the fewest
                     // edits of its prefixes.
@@ -590,7 +647,7 @@ mod tests {
                     let want = if q.is_empty() { (0..terms.len()).map(|i| (i, 0)).collect() } else { want };
                     assert_eq!(got, want, "{q:?} prefix within {k}");
                     let mut cells = Vec::new();
-                    walk_rows(CellRows::new(&q, k), &q, k, Match::Prefix, &mut SliceTerms::new(&terms), |_, r, d| cells.extend(r.map(|i| (i, d))));
+                    walk_rows(CellRows::new(&q, k), &q, k, Match::Prefix, None, &mut SliceTerms::new(&terms), |_, r, d, _| cells.extend(r.map(|i| (i, d))));
                     assert_eq!(cells, want, "{q:?} prefix within {k}, by cells");
                 }
             }
@@ -672,7 +729,7 @@ mod tests {
                     assert_eq!(got, want, "{a:?} or {b:?} within {k}");
                     let mut cells = Vec::new();
                     let rows = Either(CellRows::new(&a, k), BitRows::new(&b, k));
-                    walk_rows(rows, &a, k, Match::Whole, &mut SliceTerms::new(&terms), |_, r, d| cells.push((r.start, d)));
+                    walk_rows(rows, &a, k, Match::Whole, None, &mut SliceTerms::new(&terms), |_, r, d, _| cells.push((r.start, d)));
                     assert_eq!(cells, want, "{a:?} or {b:?} within {k}, by cells and bits");
                 }
             }
@@ -689,5 +746,64 @@ mod tests {
             walk_either(&a, &b, k, &mut SliceTerms::new(&terms), |_, r, d| got.push((r.start, d)));
             assert_eq!(got, scan(&terms, &a, &b, k), "66 letters or 62 within {k}");
         }
+    }
+
+    /// A walk for stems finds the terms near either word (marked whole),
+    /// and besides them each term within k of a prefix of the second of
+    /// `lo` letters or more but shorter than it, at the fewest edits of
+    /// those prefixes: what a full scan finds; with rows of bits and of
+    /// cells, and with the two words the same.
+    #[test]
+    fn a_walk_for_stems_finds_the_terms_near_a_prefix_of_the_word() {
+        let mut x = 0x3c6e_f372_fe94_f82bu64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let letters: Vec<char> = "abcdeé日".chars().collect();
+        let word = |next: &mut dyn FnMut() -> u64, max: u64| -> String { (0..next() % max).map(|_| letters[(next() % letters.len() as u64) as usize]).collect() };
+        let scan = |terms: &[String], a: &[char], b: &[char], k: u8, lo: usize| -> Vec<(usize, u8, bool)> {
+            terms
+                .iter()
+                .enumerate()
+                .filter_map(|(i, t)| match (within(a, t, k), within(b, t, k)) {
+                    (None, None) => (lo..b.len()).filter_map(|j| within(&b[..j], t, k)).min().map(|d| (i, d, false)),
+                    (da, db) => Some((i, da.unwrap_or(u8::MAX).min(db.unwrap_or(u8::MAX)), true)),
+                })
+                .collect()
+        };
+        for round in 0..40 {
+            let mut terms: Vec<String> = (0..300).map(|_| word(&mut next, 8)).collect();
+            if round % 5 == 0 {
+                terms.push(String::from_utf8_lossy(&[0xffu8, 0x61]).into_owned());
+            }
+            terms.sort();
+            terms.dedup();
+            for i in 0..20 {
+                let b: Vec<char> = word(&mut next, 9).chars().collect();
+                // A stem of `b`, or `b` itself.
+                let a: Vec<char> = if i % 3 == 0 { b.clone() } else { b[..b.len() - b.len().min((next() % 3) as usize)].to_vec() };
+                let lo = (next() % 5) as usize;
+                for k in 0..=2u8 {
+                    let want = scan(&terms, &a, &b, k, lo);
+                    let mut got = Vec::new();
+                    walk_stems(&a, &b, k, lo, &mut SliceTerms::new(&terms), |_, r, d, whole| got.push((r.start, d, whole)));
+                    assert_eq!(got, want, "{a:?} or {b:?} within {k}, prefixes from {lo}");
+                    let mut cells = Vec::new();
+                    let rows = Either(BitRows::new(&a, k), CellRows::new(&b, k));
+                    walk_rows(rows, &a, k, Match::Whole, Some(lo), &mut SliceTerms::new(&terms), |_, r, d, whole| cells.push((r.start, d, whole)));
+                    assert_eq!(cells, want, "{a:?} or {b:?} within {k}, prefixes from {lo}, by cells");
+                }
+            }
+        }
+        // chocol is one edit from chocl, a prefix of choclate, and three
+        // from the word and from its stem.
+        let terms = ["choc", "chocol", "chocolati", "chop"];
+        let (a, b): (Vec<char>, Vec<char>) = ("choclat".chars().collect(), "choclate".chars().collect());
+        let mut got = Vec::new();
+        walk_stems(&a, &b, 2, 4, &mut SliceTerms::new(&terms), |_, r, d, whole| got.push((terms[r.start], d, whole)));
+        assert_eq!(got, [("choc", 0, false), ("chocol", 1, false), ("chocolati", 2, true), ("chop", 1, false)]);
     }
 }

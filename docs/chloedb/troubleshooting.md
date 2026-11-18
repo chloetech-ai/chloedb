@@ -136,7 +136,7 @@ The prebuilt programs (the install script's archives, the PyPI wheels, the npm p
 - **A model that runs in every build**: `potion-retrieval-32M` (Model2Vec, 512 dimensions, the one the guides use) or the smaller `potion-base-8M`, and their int8 copies ([embedded vector fields](server.md#embedded-vector-fields)).
 - **A hosted model**: `openai/text-embedding-3-small`, `cohere/embed-v4.0`, `voyage/voyage-3.5`, or `ollama/nomic-embed-text` from an Ollama on your own machine, with no key ([hosted models](server.md#hosted-models)). The prebuilt programs call them.
 - **Your own vectors**: make them with any library (fastembed, sentence-transformers) and write them into a `VECTOR` field with its `dim` and no `embed`, then pass the query's vector the same way (`ORDER BY similarity(emb, :v)`, with `v` a list of floats or a numpy array).
-- **A build from source with the feature**: `cargo build --release --features bert` in `chloedb-server/` (`--features accelerate` on a Mac), or `MATURIN_PEP517_ARGS="--features bert" pip install ./chloedb-py` for Python ([from source](python.md#from-source)).
+- **A build from source with the feature**: `cargo build --release --bin chloedb-server --features bert` in `chloedb-server/` (`--features accelerate` on a Mac), or `MATURIN_PEP517_ARGS="--features bert" pip install ./chloedb-py` for Python ([from source](python.md#from-source)).
 
 ## Running a server
 

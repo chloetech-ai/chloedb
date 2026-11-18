@@ -229,6 +229,9 @@ pub struct Db {
     /// Writes may store rows without the vector of an embedded field whose
     /// model is not open here ([`Db::set_embed_later`]).
     embed_later: std::sync::atomic::AtomicBool,
+    /// Why the model of an embedded field did not open, by table and field
+    /// ([`Db::open_embedders`]), for the write that needs it to say so.
+    open_failures: RwLock<HashMap<(String, String), String>>,
     /// Models of derived TEXT fields ([`Db::set_deriver_in`]).
     derivers: RwLock<Vec<Deriving>>,
     /// The dictionaries among them ([`crate::content::DictEntities`]), by
@@ -356,6 +359,7 @@ impl Db {
             embedders: RwLock::new(Vec::new()),
             named_models: RwLock::new(HashMap::new()),
             embed_later: std::sync::atomic::AtomicBool::new(false),
+            open_failures: RwLock::new(HashMap::new()),
             derivers: RwLock::new(Vec::new()),
             dicts: RwLock::new(Vec::new()),
             classifiers: RwLock::new(Vec::new()),
@@ -962,6 +966,12 @@ impl Db {
         self.embedder_in(&self.schema().table, field)
     }
 
+    /// Why the model of embedded field `field` of table `table` did not
+    /// open the last time [`Db::open_embedders`] tried it, if it did not.
+    pub fn model_open_failure(&self, table: &str, field: &str) -> Option<String> {
+        self.open_failures.read().unwrap_or_else(|e| e.into_inner()).get(&(table.to_string(), field.to_string())).cloned()
+    }
+
     /// The model of embedded field `field` of the table named `table`.
     pub fn embedder_in(&self, table: &str, field: &str) -> Option<Arc<dyn Embedder>> {
         let schema = self.storage.table(table)?;
@@ -989,7 +999,8 @@ impl Db {
         for (m, f) in models.iter_mut().zip(&schema.fields) {
             if let (None, Some(e), FieldType::Vector { dim, .. }) = (&m, &f.embed, &f.ty) {
                 if crate::embed::known_dim(&e.model).is_some() {
-                    *m = Some(Arc::new(crate::embed::NotOpen { table: schema.table.clone(), field: f.name.clone(), model: e.model.clone(), dim: *dim }));
+                    let why = self.open_failures.read().unwrap_or_else(|e| e.into_inner()).get(&(schema.table.clone(), f.name.clone())).cloned();
+                    *m = Some(Arc::new(crate::embed::NotOpen { table: schema.table.clone(), field: f.name.clone(), model: e.model.clone(), dim: *dim, why }));
                 }
             }
         }
@@ -1241,8 +1252,17 @@ impl Db {
                 (_, Some(spec)) => crate::derive::open_for(spec, models).and_then(|m| self.set_deriver_in(table, &f.name, m)),
                 _ => continue,
             };
-            if let Err(e) = opened {
-                failed.push((f.name.clone(), e));
+            let key = (table.to_string(), f.name.clone());
+            match opened {
+                Err(e) => {
+                    if f.embed.is_some() {
+                        self.open_failures.write().unwrap_or_else(|e| e.into_inner()).insert(key, e.to_string());
+                    }
+                    failed.push((f.name.clone(), e));
+                }
+                Ok(()) => {
+                    self.open_failures.write().unwrap_or_else(|e| e.into_inner()).remove(&key);
+                }
             }
         }
         failed
@@ -2816,6 +2836,7 @@ impl Db {
                     group_by: Vec::new(),
                     paths: Vec::new(),
                     times: Vec::new(),
+                    exprs: Vec::new(),
                     having: None,
                     tiebreak: None,
                     phases: Vec::new(),
@@ -3916,15 +3937,22 @@ impl crate::query::embed_sql::Embeds for Db {
     }
 }
 
+/// This database runs the plan itself, so the aggregates of expressions
+/// of its leaves' fields are computed from the columns
+/// ([`compound::fuse_columns`]).
 fn plan_of(snap: &Snapshot, q: &sqlparser::ast::Query, params: &Params, functions: &FunctionSet) -> Result<Plan> {
     let catalog: Vec<&Schema> = snap.schemas().collect();
-    compound::plan_read_query(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)
+    let mut plan = compound::plan_read_query(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)?;
+    compound::fuse_columns(&mut plan, &catalog);
+    Ok(plan)
 }
 
 /// [`plan_of`] of a query [`qsql::parse_query_cached`] parsed.
 fn plan_of_parsed(snap: &Snapshot, q: &qsql::Parsed, params: &Params, functions: &FunctionSet) -> Result<Plan> {
     let catalog: Vec<&Schema> = snap.schemas().collect();
-    compound::plan_read_parsed(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)
+    let mut plan = compound::plan_read_parsed(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)?;
+    compound::fuse_columns(&mut plan, &catalog);
+    Ok(plan)
 }
 
 

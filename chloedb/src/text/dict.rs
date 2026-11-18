@@ -399,6 +399,19 @@ impl Dict {
         out
     }
 
+    /// [`Self::fuzzy_either`], and the terms within `edits` edits of a
+    /// prefix of `b` of `lo` letters or more, marked `false`
+    /// ([`super::fuzzy::walk_stems`]).
+    pub fn fuzzy_stems(&self, a: &str, b: &str, edits: u8, lo: usize) -> Vec<(String, TermInfo, u8, bool)> {
+        use super::fuzzy::Sorted;
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        let mut out = Vec::new();
+        super::fuzzy::walk_stems(&a, &b, edits, lo, &mut self.cursor(), |c, _, d, whole| {
+            out.push((String::from_utf8_lossy(c.term().unwrap_or_default()).into_owned(), c.info(), d, whole));
+        });
+        out
+    }
+
     /// [`Self::fuzzy`] by a test of every term, as Strata found them before
     /// the walk; for comparisons.
     pub fn fuzzy_scan(&self, term: &str, edits: u8) -> Vec<(String, TermInfo, u8)> {

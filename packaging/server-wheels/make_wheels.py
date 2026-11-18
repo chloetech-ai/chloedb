@@ -146,7 +146,7 @@ def wheel_platform(platform, data):
 # ---------------------------------------------------------------- the wheel
 
 
-def metadata(version):
+def metadata(version, notices=False):
     readme = (HERE / "README.md").read_text()
     head = [
         "Metadata-Version: 2.4",
@@ -155,6 +155,7 @@ def metadata(version):
         f"Summary: {SUMMARY}",
         "License-Expression: Apache-2.0",
         "License-File: LICENSE",
+        *(["License-File: THIRD-PARTY-NOTICES.md"] if notices else []),
         "Project-URL: Homepage, https://chloetech-ai.github.io/chloedb/",
         "Project-URL: Documentation, https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md",
         "Project-URL: Source, https://github.com/chloetech-ai/chloedb",
@@ -178,8 +179,10 @@ def record_line(path, data):
     return f"{path},sha256={digest},{len(data)}"
 
 
-def make_wheel(version, platform, binary, license_text, out):
-    """Writes the wheel of one platform into `out`; returns its path."""
+def make_wheel(version, platform, binary, license_text, out, notices=None):
+    """Writes the wheel of one platform into `out`; returns its path.
+    `notices`, the archive's THIRD-PARTY-NOTICES.md (the licences of the
+    crates compiled into the binary, from 0.3.9), goes beside LICENSE."""
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?", version):
         raise Refused(f"version {version!r} is not one PyPI takes as it is")
     tag = f"py3-none-{wheel_platform(platform, binary)}"
@@ -191,7 +194,8 @@ def make_wheel(version, platform, binary, license_text, out):
         (f"{DIST}/__main__.py", (module / "__main__.py").read_bytes(), 0o644),
         (f"{data_dir}/scripts/{NAME}", binary, 0o755),
         (f"{info}/licenses/LICENSE", license_text, 0o644),
-        (f"{info}/METADATA", metadata(version), 0o644),
+        *([(f"{info}/licenses/THIRD-PARTY-NOTICES.md", notices, 0o644)] if notices is not None else []),
+        (f"{info}/METADATA", metadata(version, notices is not None), 0o644),
         (f"{info}/WHEEL", f"Wheel-Version: 1.0\nGenerator: chloedb make_wheels.py\nRoot-Is-Purelib: false\nTag: {tag}\n".encode(), 0o644),
     ]
     record = "\n".join([record_line(p, d) for p, d, _ in files] + [f"{info}/RECORD,,"]) + "\n"
@@ -210,22 +214,26 @@ def make_wheel(version, platform, binary, license_text, out):
 
 
 def from_archive(archive):
-    """(platform, binary, license) of a release archive chloedb-server-<platform>.tar.gz."""
+    """(platform, binary, license, notices) of a release archive
+    chloedb-server-<platform>.tar.gz; notices is None in an archive older
+    than 0.3.9, which has no THIRD-PARTY-NOTICES.md."""
     m = re.fullmatch(rf"{NAME}-({'|'.join(PLATFORMS)})\.tar\.gz", pathlib.Path(archive).name)
     if not m:
         raise Refused(f"{archive} is not named {NAME}-<platform>.tar.gz, <platform> one of {', '.join(PLATFORMS)}")
     platform = m.group(1)
     folder = f"{NAME}-{platform}"
     with tarfile.open(archive) as t:
-        def read(name):
+        def read(name, needed=True):
             try:
                 member = t.getmember(f"{folder}/{name}")
             except KeyError:
+                if not needed:
+                    return None
                 raise Refused(f"{archive} has no {folder}/{name}") from None
             if not member.isfile():
                 raise Refused(f"{archive}: {folder}/{name} is not a file")
             return t.extractfile(member).read()
-        return platform, read(NAME), read("LICENSE")
+        return platform, read(NAME), read("LICENSE"), read("THIRD-PARTY-NOTICES.md", needed=False)
 
 
 def main(argv=None):
@@ -241,8 +249,8 @@ def main(argv=None):
         ap.error("--version and at least one archive are needed")
     try:
         for archive in args.archives:
-            platform, binary, license_text = from_archive(archive)
-            path = make_wheel(args.version, platform, binary, license_text, args.out)
+            platform, binary, license_text, notices = from_archive(archive)
+            path = make_wheel(args.version, platform, binary, license_text, args.out, notices)
             print(f"{path} ({path.stat().st_size / 1e6:.1f} MB, from {archive})")
     except Refused as e:
         print(f"make_wheels.py: {e}", file=sys.stderr)
@@ -322,6 +330,19 @@ def _self_test():
         archive = pathlib.Path(tmp) / f"{NAME}-linux-x86_64.tar.gz"
         with tarfile.open(archive, "w:gz") as t:
             t.add(folder, arcname=folder.name)
+        # An archive from 0.3.9 has the third-party notices, which the
+        # wheel carries beside LICENSE.
+        (folder / "THIRD-PARTY-NOTICES.md").write_text("# Third-party notices\n")
+        noticed = pathlib.Path(tmp) / "with-notices" / archive.name
+        noticed.parent.mkdir()
+        with tarfile.open(noticed, "w:gz") as t:
+            t.add(folder, arcname=folder.name)
+        assert main(["--version", "0.3.9", "--out", f"{tmp}/w4", str(noticed)]) == 0
+        with zipfile.ZipFile(f"{tmp}/w4/{DIST}-0.3.9-py3-none-manylinux_2_34_x86_64.whl") as z:
+            assert z.read(f"{DIST}-0.3.9.dist-info/licenses/THIRD-PARTY-NOTICES.md") == b"# Third-party notices\n"
+            assert z.read(f"{DIST}-0.3.9.dist-info/licenses/LICENSE") == b"Apache License\n"
+            meta = z.read(f"{DIST}-0.3.9.dist-info/METADATA").decode()
+            assert "License-File: LICENSE\nLicense-File: THIRD-PARTY-NOTICES.md\n" in meta, meta[:400]
         assert main(["--version", "0.3.7", "--out", f"{tmp}/w1", str(archive)]) == 0
         assert main(["--version", "0.3.7", "--out", f"{tmp}/w2", str(archive)]) == 0
         whl = pathlib.Path(f"{tmp}/w1/{DIST}-0.3.7-py3-none-manylinux_2_34_x86_64.whl")
@@ -334,6 +355,7 @@ def _self_test():
             assert b'__version__ = "0.3.7"' in z.read(f"{DIST}/__init__.py")
             meta = z.read(f"{DIST}-0.3.7.dist-info/METADATA").decode()
             assert "Name: chloedb-server\nVersion: 0.3.7\n" in meta and "\n\n# chloedb-server\n" in meta, meta[:300]
+            assert "THIRD-PARTY-NOTICES" not in meta and f"{DIST}-0.3.7.dist-info/licenses/LICENSE" in names
             assert "Tag: py3-none-manylinux_2_34_x86_64\n" in z.read(f"{DIST}-0.3.7.dist-info/WHEEL").decode()
             record = z.read(f"{DIST}-0.3.7.dist-info/RECORD").decode().splitlines()
             assert sorted(line.split(",")[0] for line in record) == sorted(names), (record, names)

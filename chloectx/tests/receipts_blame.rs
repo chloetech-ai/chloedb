@@ -139,6 +139,29 @@ fn a_line_is_blamed_on_the_recall_before_its_edit_and_the_recall_replays() {
     assert!(ok(call(&d, json!({"op": "receipt", "id": id, "replay": false})))["receipt"]["id"] == json!(id));
 }
 
+/// ANA-209: listings show 8 characters of a session id, and the receipts
+/// of a session are found by them; a start that matches no session says so.
+#[test]
+fn receipts_by_the_start_of_a_session_id() {
+    let store = tempfile::tempdir().unwrap();
+    std::fs::write(store.path().join("config.json"), r#"{"embedder": "hash:64", "sync": false, "distill": {"enabled": false}}"#).unwrap();
+    let d = Arc::new(Daemon::open(store.path(), "/proj").unwrap());
+    let sid = "36b62bcb-d6a9-404e-871b-e45fdb49160e";
+    hook(&d, "SessionStart", json!({"session_id": "a1b2c3d4-0000", "source": "startup"}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "a1b2c3d4-0000", "prompt": "Payment retries use a fixed 2 second backoff."}));
+    hook(&d, "Stop", json!({"session_id": "a1b2c3d4-0000", "last_assistant_message": "Noted."}));
+    hook(&d, "SessionStart", json!({"session_id": sid, "source": "startup"}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": sid, "prompt": "How do payment retries back off?"}));
+    let whole = ok(call(&d, json!({"op": "receipts", "session": sid})));
+    let n = whole["receipts"].as_array().unwrap().len();
+    assert!(n >= 1, "{whole}");
+    let short = ok(call(&d, json!({"op": "receipts", "session": "36b62bcb"})));
+    assert_eq!(short["receipts"].as_array().unwrap().len(), n, "{short}");
+    assert!(short["receipts"].as_array().unwrap().iter().all(|r| r["session"] == json!(sid)), "{short}");
+    let none = ok(call(&d, json!({"op": "receipts", "session": "ffff0000"})));
+    assert!(none["text"].as_str().unwrap().starts_with("No receipts for session ffff0000"), "{none}");
+}
+
 #[test]
 fn receipts_can_be_turned_off() {
     let store = tempfile::tempdir().unwrap();

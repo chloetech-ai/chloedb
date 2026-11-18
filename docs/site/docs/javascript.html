@@ -448,7 +448,7 @@ export function hitsSql(whole: string) {
 
 /** The brands of all the rows that match, with how many each: a facet. */
 export const BRANDS_SQL = `SELECT brand, COUNT(*) AS n FROM products WHERE ${WHERE} GROUP BY brand ORDER BY n DESC LIMIT 10`;</pre>
-<p>Typed <code>lether so</code>, the hits are filtered by <code>MATCH(name, 'lether so*', fuzzy =&gt; 'auto')</code> and ranked by <code>bm25(name, 'lether', fuzzy =&gt; 'auto')</code>; typed <code>so</code>, they are filtered by <code>MATCH(name, 'so*', fuzzy =&gt; 'auto')</code> and ranked by rating.</p>
+<p>Typed <code>lether so</code>, the hits are filtered by <code>MATCH(name, 'lether so*', fuzzy =&gt; 'auto')</code> and ranked by <code>bm25(name, 'lether', fuzzy =&gt; 'auto')</code>; typed <code>so</code>, they are filtered by <code>MATCH(name, 'so*', fuzzy =&gt; 'auto')</code> and ranked by rating. Each letter of the last word keeps its rows, also once it is a whole word the analyzer stems: a prefix stands for the stems of the words it may be the start of too, so <code>headphone*</code>, <code>battery*</code> and <code>runni*</code> find <em>headphones</em>, <em>batteries</em> and <em>running</em>, which the index keeps as <code>headphon</code>, <code>batteri</code> and <code>run</code> (<a href="sql.html#full-text-match">full text</a>). <strong>Changed:</strong> against a server or package of 0.3.8 or earlier they find nothing, though <code>headphon*</code> and <code>batter*</code> do, so the hits come and go as a word is typed; and a typo whose stem the analyzer cuts differently (<code>choclate</code>, stemmed <code>choclat</code>, against <code>chocol</code>) is not forgiven.</p>
 <h3 id="a-route-over-http">A route over HTTP<a class="anchor" href="#a-route-over-http" aria-label="Link to this section">#</a></h3>
 <p>A Next.js route handler (the App Router's <code>app/api/search/route.ts</code>) answers the hits, a facet of their brands, each hit's name with the words that matched marked (<code>highlight</code>, the server's <a href="server.html#http-api"><code>POST /v1/highlight</code></a>) and a "did you mean" (<code>correct</code>, <a href="sql.html#did-you-mean-correcting-a-querys-words"><code>POST /v1/correct</code></a>). The client needs nothing but <code>fetch</code>, so it runs on Node and on the Edge runtime alike:</p>
 <pre data-lang="ts" data-title="TypeScript">// app/api/search/route.ts: the search box&#x27;s answers, from chloedb-server
@@ -582,7 +582,7 @@ npm test                                  # node --test</pre>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

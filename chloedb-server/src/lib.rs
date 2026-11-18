@@ -28,6 +28,12 @@
 // them Send passes the default limit of 128.
 #![recursion_limit = "256"]
 
+/// The commit this binary was built from (ten hex digits), when it was
+/// built in a git checkout: `--version`, `/v1/system`, each copy's
+/// `version` in `/v1/cluster` and `chloedb_build_info` carry it, since two
+/// builds of one version (a hotfix, a branch) say the same version.
+pub const BUILD_COMMIT: Option<&str> = option_env!("CHLOEDB_BUILD_COMMIT");
+
 pub mod agent;
 pub mod answers;
 pub mod alerts;

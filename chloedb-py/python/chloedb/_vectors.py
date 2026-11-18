@@ -19,6 +19,99 @@ from ._native import ChloeDBError
 from ._search import quote
 
 MODES = ("vector", "text", "hybrid")
+# How a hybrid search fuses its two rankings: reciprocal rank fusion, or a
+# weighted sum of each score put on one scale (theoretical min-max, min-max
+# over the rows found, or z-scores).
+FUSIONS = ("rrf", "tmm", "minmax", "zscore")
+
+
+def _number(what: str, v: Any, *, positive: bool = False) -> float:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"{what} is a number, not {v!r}") from None
+    if x != x or x in (float("inf"), float("-inf")) or x < 0 or (positive and x == 0):
+        raise ValueError(f"{what} is a {'positive' if positive else 'non-negative'} finite number, not {v!r}")
+    return x
+
+
+def _lit(x: float) -> str:
+    return repr(int(x)) if float(x).is_integer() else repr(float(x))
+
+
+def fusion_of(fusion: Any) -> tuple[str, dict]:
+    """The kind and options of a hybrid search's `fusion`: None or "rrf"
+    (reciprocal rank fusion, k 60, equal weights), "tmm", "minmax" or
+    "zscore" (a weighted sum of the two scores on one scale, half each), or
+    one of them with its options as a dict, such as `{"rrf": {"k": 10}}`,
+    `{"rrf": {"weights": {"vector": 1, "text": 0.5}}}` or
+    `{"tmm": {"text": 0.1}}` (the words' weight; the meaning's is the rest
+    of 1 unless `"vector"` says)."""
+    if fusion is None:
+        return "rrf", {}
+    if isinstance(fusion, str):
+        kind, opts = fusion, {}
+    elif isinstance(fusion, Mapping) and len(fusion) == 1:
+        kind, opts = next(iter(fusion.items()))
+        opts = dict(opts or {})
+    else:
+        raise ValueError(f"fusion is one of {', '.join(FUSIONS)}, or one of them with its options, such as {{'rrf': {{'k': 10}}}} or {{'tmm': {{'text': 0.1}}}}; not {fusion!r}")
+    if kind not in FUSIONS:
+        raise ValueError(f"fusion is one of {', '.join(FUSIONS)}, not {kind!r}")
+    allowed = ("k", "depth", "weights") if kind == "rrf" else ("text", "vector")
+    for k in opts:
+        if k not in allowed:
+            raise ValueError(f"{kind} fusion takes the options {', '.join(allowed)}, not {k!r}")
+    return kind, opts
+
+
+def _weights(kind: str, w: Any) -> tuple[float, float]:
+    """(vector, text) weights of `w`: {"vector": a, "text": b}, either
+    alone (the other the rest of 1 for a weighted sum, 1 for rrf)."""
+    w = dict(w or {})
+    for k in w:
+        if k not in ("vector", "text"):
+            raise ValueError(f"the weights are of 'vector' and 'text', not {k!r}")
+    rest = (lambda x: max(0.0, 1.0 - x)) if kind != "rrf" else (lambda x: 1.0)
+    if "vector" in w and "text" in w:
+        v, t = _number("the vector's weight", w["vector"]), _number("the text's weight", w["text"])
+    elif "text" in w:
+        t = _number("the text's weight", w["text"])
+        v = rest(t)
+    elif "vector" in w:
+        v = _number("the vector's weight", w["vector"])
+        t = rest(v)
+    else:
+        v, t = (1.0, 1.0) if kind == "rrf" else (0.5, 0.5)
+    if v == 0 and t == 0:
+        raise ValueError("the weights are not both 0")
+    return v, t
+
+
+def fused(fusion: Any, vector_score: str, text_score: str) -> tuple[str, float]:
+    """The ORDER BY of a hybrid search fusing `vector_score` and
+    `text_score` by `fusion` ([fusion_of]), and the best score it can give
+    (a row first in both rankings): what a score is divided by to read as
+    relevance from 0 to 1."""
+    kind, opts = fusion_of(fusion)
+    if kind == "rrf":
+        k = _number("rrf's k", opts.get("k", 60), positive=True)
+        args = [vector_score, text_score]
+        if "k" in opts:
+            args.append(f"k => {_lit(k)}")
+        if "depth" in opts:
+            d = _number("rrf's depth", opts["depth"], positive=True)
+            if not float(d).is_integer():
+                raise ValueError(f"rrf's depth is a whole number, not {opts['depth']!r}")
+            args.append(f"depth => {int(d)}")
+        v, t = _weights(kind, opts.get("weights"))
+        if (v, t) != (1.0, 1.0):
+            args.append(f"weights => [{_lit(v)}, {_lit(t)}]")
+        return f"rrf({', '.join(args)})", (v + t) / (k + 1)
+    v, t = _weights(kind, opts)
+    terms = [f"{_lit(w)} * {kind}({score})" for w, score in ((v, vector_score), (t, text_score)) if w > 0]
+    # tmm and minmax put a score from 0 to 1; a z-score has no such top.
+    return " + ".join(terms), (v + t) if kind != "zscore" else float("nan")
 
 
 class VectorTable:
@@ -183,10 +276,11 @@ class VectorTable:
                     out[row["id"]] = [float(x) for x in row["embedding"]]
         return out
 
-    def search(self, k: int, *, mode: str = "vector", vector: Sequence[float] | None = None, text: str | None = None, cond: str | None = None, params: Mapping[str, Any] | None = None) -> list[tuple[dict, float]]:
+    def search(self, k: int, *, mode: str = "vector", vector: Sequence[float] | None = None, text: str | None = None, cond: str | None = None, params: Mapping[str, Any] | None = None, fusion: Any = None) -> list[tuple[dict, float]]:
         """The `k` best rows by `mode`: "vector" (similarity to `vector`),
-        "text" (BM25 of `text`) or "hybrid" (both, fused by reciprocal
-        rank), among the rows `cond` keeps; with each row its score."""
+        "text" (BM25 of `text`) or "hybrid" (both, fused by `fusion`:
+        reciprocal rank by default, see [fusion_of]), among the rows `cond`
+        keeps; with each row its score."""
         if mode not in MODES:
             raise ValueError(f"mode is one of {', '.join(MODES)}, not {mode!r}")
         if self._schema is None or k <= 0:
@@ -203,7 +297,7 @@ class VectorTable:
                 raise ValueError(f"a {mode} search needs the query's text")
             params["_qt"] = text
             scores.append("bm25(text, :_qt, syntax => 'plain')")
-        rank = scores[0] if len(scores) == 1 else f"rrf({', '.join(scores)})"
+        rank = scores[0] if len(scores) == 1 else fused(fusion, scores[0], scores[1])[0]
         sql = f"SELECT *, score() FROM {quote(self.table)} {conditions(cond)} ORDER BY {rank} DESC LIMIT {int(k)}"
         r = self.store.query(sql, params)
         out = []

@@ -22,7 +22,7 @@ curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with s
 Or build both from a checkout (any platform with Rust; the only way before release 0.3.2):
 
 ```bash
-(cd chloedb-server && cargo build --release)
+(cd chloedb-server && cargo build --release --bin chloedb-server)
 cd chloedb-sheets && cargo build --release
 target/release/chloedb-sheets serve --local ./sheets-cluster --server-bin ../chloedb-server/target/release/chloedb-server
 ```

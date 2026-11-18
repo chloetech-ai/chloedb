@@ -365,6 +365,7 @@ curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-serv
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz.sha256
 sha256sum -c chloedb-server-$p.tar.gz.sha256 &amp;&amp; tar xzf chloedb-server-$p.tar.gz
 sudo install chloedb-server-$p/chloedb-server /usr/local/bin/chloedb-server   # where the unit runs it from</pre>
+<p>From 0.3.8, <code>gh attestation verify</code> checks that the release workflow built the archive, before you install it on every machine: <a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md#checking-what-you-download">checking what you download</a>.</p>
 <p>Here the new binary is the one on your <code>PATH</code> already, so the upgrade is a rolling restart in the same order, which is how you rehearse one. <code>restart</code> stops a copy with SIGTERM (it ends the requests under way first), starts it again without role flags, waits until the copy's own <code>/v1/health</code> says it serves reads (a replica does once it holds its primary's last transaction), and then until the coordinator sees the whole cluster well. Wait for both before the next copy: two copies of a shard down at once leave it without a majority. <code>handover</code> makes a copy its shard's primary:</p>
 <pre data-lang="sh">restart() {  # restart NAME
   kill $(cat $1/pid); while kill -0 $(cat $1/pid) 2&gt; /dev/null; do sleep 0.2; done
@@ -418,7 +419,7 @@ curl -s localhost:7700/v1/sql -H &quot;authorization: Bearer $APP_KEY&quot; -H &
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

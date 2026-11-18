@@ -85,8 +85,8 @@ pub(crate) const STATS: [&str; 9] = ["stddev", "stddev_samp", "stddev_pop", "var
 pub(crate) const PERCENTILES: [&str; 4] = ["median", "percentile_cont", "percentile_disc", "approx_percentile"];
 /// Functions whose value a ranking computes (a score, a graph's, a model's,
 /// a set function's, a row's sequence number), not the row evaluator.
-const RANKING: [&str; 18] = [
-    "bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops", "score", "seq_no", "ranked", "features", "minmax", "rank", "gbdt", "cross_encoder", "rank_profile", "match",
+const RANKING: [&str; 20] = [
+    "bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops", "score", "seq_no", "ranked", "features", "minmax", "tmm", "zscore", "rank", "gbdt", "cross_encoder", "rank_profile", "match",
 ];
 
 fn fname(f: &sql::Function) -> String {
@@ -142,7 +142,7 @@ pub(crate) fn needs(q: &sql::Query, schema: &Schema) -> bool {
         TableFactor::Table { name, .. } if is_table(name, schema) => {}
         _ => return true,
     }
-    if orders_by_text(q, s, schema) || orders_by_row_values(q, s) || filters_rows(s, schema) || orders_by_several(q, s, schema) || aggregates_rows(q, s, schema) || groups_rows(s, schema) {
+    if orders_by_text(q, s, schema) || orders_by_row_values(q, s) || filters_rows(s, schema) || orders_by_several(q, s, schema) || aggregates_rows(q, s, schema) || groups_rows(s, schema) || orders_groups_nulls_first(q, s) {
         return true;
     }
     let mut found = false;
@@ -697,6 +697,17 @@ fn groups_rows(s: &sql::Select, schema: &Schema) -> bool {
 
 fn filters_rows(s: &sql::Select, schema: &Schema) -> bool {
     s.selection.as_ref().is_some_and(|w| split_and(w).iter().any(|c| of_rows_filter(c, schema)))
+}
+
+/// Whether a grouped SELECT over one table orders its groups with `NULLS
+/// FIRST` (`GROUP BY passenger_count ORDER BY passenger_count DESC NULLS
+/// FIRST`): the executor's groups put the group without a value last, so
+/// the row evaluator groups the scan's rows and sorts them as asked
+/// (SAM-204: the query was refused, though the docs' differences from
+/// PostgreSQL recommend it).
+fn orders_groups_nulls_first(q: &sql::Query, s: &sql::Select) -> bool {
+    let grouped = !matches!(&s.group_by, sql::GroupByExpr::Expressions(es, _) if es.is_empty()) || has_aggregate(s) || matches!(s.distinct, Some(sql::Distinct::Distinct));
+    grouped && matches!(&q.order_by, Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) if es.iter().any(|o| o.options.nulls_first == Some(true)))
 }
 
 /// Whether a SELECT over one table orders by more keys than its scan
@@ -1328,9 +1339,20 @@ fn plan_query_fused(q: &sql::Query, catalog: &[&Schema], params: &Params, fuse: 
     let p = Planner { catalog, params, ctes: RefCell::new(Vec::new()), outer: RefCell::new(None) };
     let mut node = p.query(&q)?.node;
     if fuse {
-        ir::fuse_paths(&mut node, catalog);
+        ir::fuse_paths(&mut node, catalog, false);
     }
     Ok(ir::Plan::new(node))
+}
+
+/// Moves the aggregates of expressions of a leaf's fields (`SUM(a * b)`,
+/// `COUNT(*) FILTER (WHERE c)`, `GROUP BY CASE .. END`, `STDDEV(x)`'s
+/// sums) into the leaf, whose executor computes them from the columns
+/// rather than the rows being read out for operators above it: for a plan
+/// that this process runs on its own database (an embedded one, a server
+/// of one database). A coordinator sends its leaves to shards, which may be
+/// of a version from before these leaves, so its plans keep them above.
+pub fn fuse_columns(plan: &mut ir::Plan, catalog: &[&Schema]) {
+    ir::fuse_paths(&mut plan.root, catalog, true);
 }
 
 /// The plan of a compound SELECT ([`plan_read`]) that reads the paths of
@@ -1974,7 +1996,8 @@ impl<'a> Planner<'a> {
                 || filters_rows(&s, schema)
                 || orders_by_several(&q, &s, schema)
                 || aggregates_rows(&q, &s, schema)
-                || groups_rows(&s, schema) =>
+                || groups_rows(&s, schema)
+                || orders_groups_nulls_first(&q, &s) =>
             {
                 return self.join(&q, &s)
             }
@@ -2385,9 +2408,9 @@ impl<'a> Planner<'a> {
             };
             let sql::JoinConstraint::On(on) = c else {
                 return Err(err(if kind == ir::JoinKind::AsOf {
-                    "ASOF JOIN needs ON, e.g. ASOF JOIN feats f MATCH_CONDITION (s.ts >= f.ts) ON s.usr = f.usr"
+                    "ASOF JOIN needs ON, e.g. ASOF JOIN feats f MATCH_CONDITION (s.ts >= f.ts) ON s.usr = f.usr".to_string()
                 } else {
-                    "JOIN needs ON, e.g. JOIN papers b ON a.cites = b.id"
+                    join_needs_on(srcs.last().map_or("a", |s| s.alias.as_str()), &j.relation, c)
                 }));
             };
             let on = match &j.join_operator {
@@ -2491,7 +2514,8 @@ impl<'a> Planner<'a> {
                 }
             }
             if keys[i].is_empty() {
-                return Err(err(format!("JOIN {} needs an equality with the tables before it in ON, e.g. a.cites = {}.id or a.category = {}.category", srcs[i].alias, srcs[i].alias, srcs[i].alias)));
+                let (a, b) = (&srcs[i - 1].alias, &srcs[i].alias);
+                return Err(err(format!("JOIN {b} needs an equality with the tables before it in ON, e.g. {a}.id = {b}.id or {a}.{b}_id = {b}.id; a join on other conditions alone (<, >, !=) is not supported")));
             }
             // A scanned side is restricted to the left's join values.
             for (le, c) in &keys[i] {
@@ -3160,6 +3184,33 @@ pub(crate) fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     }
 }
 
+/// Why a join without `ON` is refused, with the `ON` to write, built from
+/// the tables the query names (SAM-208: the example named tables of
+/// another database): `JOIN Artist USING (ArtistId)` after `Album` is
+/// `JOIN Artist ON Album.ArtistId = Artist.ArtistId`.
+fn join_needs_on(left: &str, right: &TableFactor, c: &sql::JoinConstraint) -> String {
+    let name = match right {
+        TableFactor::Table { name, alias, .. } => alias.as_ref().map_or_else(|| super::sql::table_name(name), |a| a.name.value.clone()),
+        TableFactor::Derived { alias: Some(a), .. } => a.name.value.clone(),
+        _ => "b".to_string(),
+    };
+    match c {
+        sql::JoinConstraint::Using(cols) if !cols.is_empty() => {
+            let cols: Vec<String> = cols.iter().map(|c| c.to_string()).collect();
+            let on = cols.iter().map(|c| format!("{left}.{c} = {name}.{c}")).collect::<Vec<_>>().join(" AND ");
+            format!(
+                "JOIN ... USING ({}) is not supported: name the columns with ON, JOIN {right} ON {on}, and qualify {} where the query names {} ({left}.{})",
+                cols.join(", "),
+                cols.join(", "),
+                if cols.len() == 1 { "it" } else { "them" },
+                cols[0]
+            )
+        }
+        sql::JoinConstraint::Natural => format!("NATURAL JOIN is not supported: name the columns with ON, e.g. JOIN {right} ON {left}.id = {name}.id"),
+        _ => format!("JOIN needs ON, e.g. JOIN {right} ON {left}.id = {name}.id"),
+    }
+}
+
 /// Why a join other than `JOIN`, `LEFT JOIN` and `FULL JOIN` is refused, and what to
 /// write instead.
 fn unsupported_join(o: &sql::JoinOperator) -> String {
@@ -3729,7 +3780,9 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
             }
         }
         e @ (Expr::Identifier(_) | Expr::CompoundIdentifier(_)) => return Err(err(format!("no such column: {e}"))),
+        Expr::Substring { shorthand: true, .. } => return Err(err(unknown_function("substr"))),
         Expr::Substring { .. } => return Err(err(unknown_function("substring"))),
+        Expr::Rollup(_) | Expr::Cube(_) | Expr::GroupingSets(_) => return Err(err(grouping_sets(e))),
         Expr::Trim { .. } => return Err(err(unknown_function("trim"))),
         Expr::Position { .. } => return Err(err(unknown_function("position"))),
         Expr::Overlay { .. } => return Err(err(unknown_function("replace"))),
@@ -3742,6 +3795,29 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
         }
         e => return Err(err(format!("{e} is not something ChloeDB computes for a row: {}", ROW_EXPRESSIONS))),
     })
+}
+
+/// Why `GROUP BY ROLLUP (..)`, `CUBE (..)` or `GROUPING SETS (..)` is
+/// refused, and the query to write instead: a GROUP BY for each level,
+/// joined by UNION ALL (SAM-208: the refusal read ROLLUP as a function and
+/// listed the scalar ones).
+pub(crate) fn grouping_sets(e: &Expr) -> String {
+    let list = |es: &[Expr]| es.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ");
+    let (what, levels): (&str, Vec<String>) = match e {
+        Expr::Rollup(sets) => {
+            let cols: Vec<Expr> = sets.iter().flatten().cloned().collect();
+            ("ROLLUP", (0..=cols.len()).rev().map(|k| list(&cols[..k])).collect())
+        }
+        Expr::Cube(_) => ("CUBE", Vec::new()),
+        Expr::GroupingSets(sets) => ("GROUPING SETS", sets.iter().map(|s| list(s)).collect()),
+        _ => ("this grouping", Vec::new()),
+    };
+    let levels = if levels.is_empty() {
+        "a GROUP BY for each combination of the columns".to_string()
+    } else {
+        levels.iter().map(|l| if l.is_empty() { "no GROUP BY (the total)".to_string() } else { format!("GROUP BY {l}") }).collect::<Vec<_>>().join(", ")
+    };
+    format!("GROUP BY {e}: {what} is not supported; write {levels}, each selecting NULL AS the columns it leaves out, and join them with UNION ALL")
 }
 
 /// What the row evaluator computes, for an error about what it does not.

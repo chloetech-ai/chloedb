@@ -260,6 +260,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <h2 id="requests-the-server-makes">Requests the server makes<a class="anchor" href="#requests-the-server-makes" aria-label="Link to this section">#</a></h2>
 <ul>
 <li><strong>Connectors</strong> reach the public internet only, unless a connector's config says <code>"allow_internal": true</code>; cloud metadata addresses are refused even then. Their credentials go to the origin of their <code>url</code> alone, and a redirect to another origin fails the run (<a href="connectors.html#what-a-connector-reaches">what a connector reaches</a>). Their secrets are kept in <code>DB.connectors.json</code>, mode 0600, and a push connector's key writes its table and reads nothing (<a href="connectors.html#keys">keys</a>).</li>
+<li><strong>Alert routes</strong> post to the public internet only, unless a route says <code>"allow_internal": true</code> (the command center's "Inside this network"), which lets it reach a private or loopback address; a link-local one (cloud metadata) is refused even then. The URL is checked when routes are saved and every address it resolves to when a message is sent, and a redirect to another origin is not followed: a route posts to its own origin alone, and a redirect fails the send. The webhook of <code>--alert-webhook</code>, set by whoever starts the server, may be inside the network (<a href="server.html#alerts">routes</a>).</li>
+<li><strong>Hub connections</strong> (the command center's other clusters) may be inside the network, as a cluster usually is, but never at a link-local address, and follow no redirect to another origin: a cluster's key goes to the address it was added with alone.</li>
 <li><strong>Media fields</strong> read a URL or a file only when <code>--media-fetch</code> lists it; nothing is fetched by default (<a href="server.html#media-fields">media fields</a>).</li>
 <li><strong>Models</strong> are names: a query names a model in <code>--models</code> or a provider's, never a path, and an <code>endpoint.json</code> names only a provider's key variable or a <code>CHLOEDB_MODEL_KEY_*</code> one.</li>
 <li><strong>Cloud credentials and the hub.</strong> The command center's cloud view keeps the AWS and DigitalOcean credentials it saves in <code>DB.aws.json</code> and <code>DB.digitalocean.json</code>, mode 0600; the hub keeps other clusters' keys in the macOS Keychain or the Secret Service where there is one, else in <code>DB.hub-keys.json</code>, mode 0600.</li>
@@ -289,7 +291,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <li>Mutual TLS between the servers or with clients.</li>
 <li>Limit the rate of requests per key or per client address.</li>
 <li>Keep a separate log of reads and of clients' writes of rows.</li>
-<li>Sign release archives: each comes with a <code>.sha256</code>, PyPI's packages carry attestations (<a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md#checking-what-you-download">SECURITY.md</a>).</li>
+<li>Sign release archives with a key of its own: from 0.3.8 each carries GitHub's build provenance and an SBOM, signed with Sigstore by the workflow that built it, beside its <code>.sha256</code>, and PyPI's packages carry attestations (<a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md#checking-what-you-download">SECURITY.md</a> says how to check them).</li>
 </ul>
     </div>
     <footer class="doc-foot">
@@ -306,7 +308,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

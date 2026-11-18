@@ -3,6 +3,7 @@
 //! merges the per-segment results.
 
 mod agg_columns;
+mod agg_exprs;
 mod graph;
 mod filter_cache;
 mod scroll;
@@ -111,32 +112,74 @@ pub(crate) fn words_of(text: &str) -> Vec<(usize, &str)> {
     out
 }
 
-/// A word that analyses to `term`, nearest to `typed` by edits: the term
-/// itself or it with a common ending (`vaccin` gives `vaccines` for
-/// `vacines`), else the term.
-pub(crate) fn surface(typed: &str, term: &str, analyzer: text::Analyzer) -> String {
-    let lower = typed.to_lowercase();
-    // The typed word's own ending on the corrected term: `ifnlammation`,
-    // analysed `ifnlamm`, gives `inflammation` for `inflamm`.
-    if let Some(typed_term) = analyzer.query_term_seq(&lower, false).first() {
-        if let Some(rest) = lower.strip_prefix(typed_term.as_str()) {
-            let c = format!("{term}{rest}");
-            if analyzer.query_term_seq(&c, false).as_slice() == [term.to_string()] {
-                return c;
+/// Endings English words take, for the words a term is the stem of
+/// ([`surface_edits`]).
+const ENDINGS: [&str; 30] = [
+    "", "s", "e", "es", "ed", "ing", "y", "er", "ers", "ion", "ions", "al", "ly", "ment", "ments", "ness", "ity", "ive", "ate", "ates", "ated", "ation",
+    "ations", "able", "ic", "ical", "ous", "ism", "ist", "ists",
+];
+
+/// A word that analyses to `term`, nearest to the word as typed `typed`
+/// (normalized as the analyzer reads a token: [`typed_form`]), and its
+/// edits from it, if within `k`: the typed word's own ending on the term,
+/// where the term stands for letters before it rather than starting the
+/// word (`chocol` + `ate` is chocolate for `choclate`, `inflamm` + `ation`
+/// inflammation for `ifnlammation`), or the term with a common ending
+/// (`vaccin` + `es` for `vacines`, `chocol` + `ate` for `chocolatte`). A
+/// word that starts with the term ends as a word of it does: wire + `es`
+/// stems to wire, but nobody writes "wirees", and `wireles` is two edits
+/// from wires, one from wireless. The edits are what "did you mean"
+/// counts, and what a typo walk counts for a stem it found near a prefix
+/// of the word ([`Executor::near_terms_of`]).
+pub(crate) fn surface_edits(typed: &str, term: &str, analyzer: text::Analyzer, k: u8) -> Option<(String, u8)> {
+    let typed: Vec<char> = typed.chars().collect();
+    let tc: Vec<char> = term.chars().collect();
+    let (n, t) = (typed.len(), tc.len());
+    // Only words within `k` letters of the typed word's length can be
+    // within `k` edits of it: the others are not written out.
+    let near = |len: usize| len.abs_diff(n) <= k as usize;
+    let mut cands: Vec<String> = Vec::new();
+    if !typed.starts_with(&tc) {
+        // term + typed[i..] has t + n - i letters.
+        cands.extend((1..=n).filter(|i| near(t + n - i)).map(|i| format!("{term}{}", typed[i..].iter().collect::<String>())));
+    }
+    if analyzer == text::Analyzer::English {
+        // An ending that starts with a vowel takes the place of a final
+        // e (wire: wired, wiring, wires; not "wirees").
+        let base = term.strip_suffix('e');
+        for e in ENDINGS {
+            let (b, len) = match (base, e.chars().next()) {
+                (Some(b), Some(c)) if "aeiouy".contains(c) => (b, t - 1 + e.len()),
+                _ => (term, t + e.len()),
+            };
+            if near(len) {
+                cands.push(format!("{b}{e}"));
             }
         }
+        if let Some(stem) = term.strip_suffix('i') {
+            cands.extend(["y", "ies", "ied"].iter().filter(|e| near(t - 1 + e.len())).map(|e| format!("{stem}{e}")));
+        }
+    } else if near(t) {
+        cands.push(term.to_string());
     }
-    let typed: Vec<char> = lower.chars().collect();
-    let mut cands: Vec<String> = ["", "s", "e", "es", "ed", "ing", "y", "er", "ers", "ion", "ions", "al", "ly", "ment", "ments", "ness", "ity", "ive"].iter().map(|e| format!("{term}{e}")).collect();
-    if let Some(stem) = term.strip_suffix('i') {
-        cands.extend(["y", "ies", "ied"].iter().map(|e| format!("{stem}{e}")));
-    }
-    cands
-        .into_iter()
-        .filter(|c| analyzer.query_term_seq(c, false).as_slice() == [term.to_string()])
-        .filter_map(|c| text::fuzzy::within(&typed, &c, 8).map(|d| (d, c)))
-        .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.len().cmp(&b.1.len())))
-        .map_or_else(|| term.to_string(), |(_, c)| c)
+    // The nearest first, then the shortest: the first that analyses to
+    // the term is the word, so the analyzer runs on few of them.
+    let mut near: Vec<(u8, String)> = cands.into_iter().filter_map(|c| text::fuzzy::within(&typed, &c, k).map(|d| (d, c))).collect();
+    near.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.len().cmp(&b.1.len())).then_with(|| a.1.cmp(&b.1)));
+    near.dedup_by(|a, b| a.1 == b.1);
+    near.into_iter().find(|(_, c)| analyzer.query_term_seq(c, false).as_slice() == [term.to_string()]).map(|(d, c)| (c, d))
+}
+
+/// A word as the analyzer reads it before it stems it (lowercased,
+/// folded): the form [`surface_edits`] measures.
+pub(crate) fn typed_form(word: &str, analyzer: text::Analyzer) -> String {
+    let mut out = None;
+    analyzer.for_each_token(word, |t| {
+        if out.is_none() {
+            out = Some(analyzer.prefix_of(t));
+        }
+    });
+    out.unwrap_or_else(|| word.to_lowercase())
 }
 
 /// `text` with each corrected word replaced by its [`Correction::to_word`],
@@ -188,19 +231,26 @@ pub fn correction_words(text: &str, analyzer: text::Analyzer) -> Vec<CorrectionW
 impl CorrectionWord {
     /// The correction of a word in `df` documents (0: a word of the
     /// collection is not corrected) among its indexed neighbours `near`
-    /// (term, documents, edits): the most likely one by
-    /// [`correction_chance`], if at least [`CORRECTION_CHANCE`]. A
-    /// coordinator passes its shards' counts summed.
-    pub fn correct(&self, df: u64, near: &[(String, u64, u8)], analyzer: text::Analyzer) -> Option<Correction> {
+    /// (terms and their documents): the most likely one by
+    /// [`correction_chance`], if at least [`CORRECTION_CHANCE`], each
+    /// counted the edits from the word as typed to the nearest word that
+    /// analyses to it ([`surface_edits`]), at most [`Self::edits`]: a
+    /// suggestion is a word to write. A coordinator passes its shards'
+    /// counts summed.
+    pub fn correct(&self, df: u64, near: &[(String, u64)], analyzer: text::Analyzer) -> Option<Correction> {
         if df > 0 {
             return None;
         }
-        let (n, d, chance) = near
+        let typed = typed_form(&self.word, analyzer);
+        let (n, to_word, d, chance) = near
             .iter()
-            .filter(|x| x.2 > 0 && x.2 <= self.edits && x.1 > df)
-            .map(|(n, ndf, d)| (n, *d, correction_chance(df, *ndf, *d)))
-            .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.1.cmp(&a.1)).then_with(|| b.0.cmp(a.0)))?;
-        (chance >= CORRECTION_CHANCE).then(|| Correction { word: self.word.clone(), term: self.term.clone(), to: n.clone(), to_word: surface(&self.word, n, analyzer), edits: d, chance })
+            .filter(|x| x.0 != self.term && x.1 > df)
+            .filter_map(|(n, ndf)| {
+                let (w, d) = surface_edits(&typed, n, analyzer, self.edits).filter(|x| x.1 > 0)?;
+                Some((n, w, d, correction_chance(df, *ndf, d)))
+            })
+            .max_by(|a, b| a.3.total_cmp(&b.3).then_with(|| b.2.cmp(&a.2)).then_with(|| b.0.cmp(a.0)))?;
+        (chance >= CORRECTION_CHANCE).then(|| Correction { word: self.word.clone(), term: self.term.clone(), to: n.clone(), to_word, edits: d, chance })
     }
 }
 
@@ -1380,7 +1430,9 @@ impl<'a> Executor<'a> {
             if df > 0 {
                 continue;
             }
-            let near = self.near_terms(field, &w.term, w.edits)?;
+            let raw = typed_form(&w.word, analyzer);
+            let near = self.near_terms_of(field, &w.term, Some(&raw), w.edits)?;
+            let near: Vec<(String, u64)> = near.iter().map(|(t, df, _)| (t.clone(), *df)).collect();
             out.extend(w.correct(df, &near, analyzer));
         }
         Ok(out)
@@ -2789,6 +2841,9 @@ impl<'a> Executor<'a> {
                 (Pred::Like { field, pattern, ci, negated: false }, Some(w)) if !self.sets.contains_key(&s.ord) && !self.cache_holds(s, p) => self.first_like(s, *field, pattern, *ci, w - out.len())?,
                 _ => self.filter_set(s, p)?,
             };
+            // Room for the segment's rows at once, not one push at a time.
+            let more = want.map_or(set.len(), |w| set.len().min(w.saturating_sub(out.len())));
+            self.charge.reserve(&mut out, more)?;
             for d in set.iter() {
                 tick.tick()?;
                 if want.is_some_and(|w| out.len() >= w) {
@@ -3386,7 +3441,29 @@ impl<'a> Executor<'a> {
             }
         }
         let fields = self.stat_segs().iter().map(|s| self.text(s, field)).collect::<Result<Vec<_>>>()?;
-        let mut v = TextFieldReader::fuzzy_across_of(&fields, term, other, edits);
+        let analyzer = self.schema.fields[field].text_analyzer();
+        let mut v = match other {
+            // A misspelling as typed: also the stems near a prefix of it
+            // that a word near it has ([`surface_edits`]).
+            Some(raw) if matches!(analyzer, text::Analyzer::English | text::Analyzer::Language(_)) => {
+                let n = raw.chars().count();
+                let lo = stem_floor(n);
+                let first = raw.chars().next();
+                TextFieldReader::fuzzy_across_stems(&fields, term, raw, edits, lo)
+                    .into_iter()
+                    .filter_map(|(t, df, d, whole)| match whole {
+                        true => Some((t, df, d)),
+                        // A typo seldom changes the first letter, and a
+                        // stem keeps more than half of a word: the many
+                        // short terms near its first letters are no stems
+                        // of it.
+                        false if t.chars().next() == first && t.chars().count() > n / 2 => surface_edits(raw, &t, analyzer, edits).map(|(_, d)| (t, df, d)),
+                        false => None,
+                    })
+                    .collect()
+            }
+            _ => TextFieldReader::fuzzy_across_of(&fields, term, other.filter(|o| *o != term), edits),
+        };
         v.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
         let v = Arc::new(v);
         if let Some((x, k)) = shared {
@@ -3397,21 +3474,23 @@ impl<'a> Executor<'a> {
     }
 
     /// [`Self::near_terms`] of `term`, and when the index has no `term` at
-    /// all (a misspelling) and the word was written otherwise before it
-    /// was stemmed (`raw`), the terms near that form too: `wireles` stems
-    /// to `wirel`, three edits from `wireless`, but is one edit from it as
-    /// written. Each term once, at its nearest. The two forms share one
-    /// walk of the terms: they share most of their letters, so the walk
-    /// reads most of the terms near one for the other too.
+    /// all (a misspelling), the terms near the word as it was written
+    /// before it was stemmed (`raw`, the term itself when `None`), and the
+    /// stems of the words near that, found near a prefix of it: `wireles`
+    /// stems to `wirel`, three edits from `wireless`, but is one edit from
+    /// it as written; `choclate` stems to `choclat`, three edits from
+    /// `chocol`, and is one from chocolate, which stems to it. Each term
+    /// once, at its nearest. The forms share one walk of the terms: they
+    /// share most of their letters, so the walk reads most of the terms
+    /// near one for the other too.
     fn near_terms_of(&self, field: usize, term: &str, raw: Option<&str>, edits: u8) -> Result<Arc<Vec<(String, u64, u8)>>> {
-        let Some(raw) = raw.filter(|r| *r != term) else { return self.near_terms(field, term, edits) };
         // A word the index has is no misspelling: a lookup in each
         // segment's dictionary, not a walk, says so.
         let fields = self.stat_segs().iter().map(|s| self.text(s, field)).collect::<Result<Vec<_>>>()?;
         if fields.iter().any(|f| f.dict.get(term).is_some()) {
             return self.near_terms(field, term, edits);
         }
-        self.near_either(field, term, Some(raw), edits)
+        self.near_either(field, term, Some(raw.unwrap_or(term)), edits)
     }
 
     /// A `MATCH` query with its synonyms and typos expanded to the indexed
@@ -3426,7 +3505,7 @@ impl<'a> Executor<'a> {
         if !expand.is_none() {
             let syn = if expand.synonyms { Some(self.synonyms()?.of(analyzer)) } else { None };
             let edits = |t: &str| expand.fuzzy.map_or(0, |f| f.edits(t.chars().count()));
-            q = text::query::expand(q, syn, &edits);
+            q = text::query::expand(q, syn, &edits, analyzer);
         }
         let mut failed = None;
         let raw = raw_forms(analyzer, query);
@@ -3567,14 +3646,17 @@ impl<'a> Executor<'a> {
         // well it holds a word the prefix begins rather than by how rare
         // its completion is. Every row `MATCH(field, 'sof*')` keeps holds
         // one of them, unless the prefix begins more terms than that.
-        for (p, w) in &ranked.prefixes {
+        // The stems it stands for besides ([`text::query::prefix_stems`]:
+        // `headphon` for `headphone*`) are in its group too.
+        for (p, w, stems) in &ranked.prefixes {
             let (found, all) = &*self.prefix_terms(field, p)?;
             if *all > found.len() {
                 out.notes.push(format!("bm25 {p}*: the {} terms in the most rows, of the {all} it begins", found.len()));
             }
             let g = out.groups.len();
             out.groups.push(Vec::new());
-            for (t, _) in found {
+            let stems = self.held_terms(field, stems)?;
+            for t in found.iter().map(|(t, _)| t).chain(&stems) {
                 match out.terms.iter().position(|(x, _)| x == t) {
                     // A term the text names, or another prefix's, scores
                     // once, at the larger weight.
@@ -3614,6 +3696,16 @@ impl<'a> Executor<'a> {
         Ok(v)
     }
 
+    /// Those of `terms` that a segment of the snapshot holds in `field`,
+    /// by the counts [`Self::prefix_terms`] goes by.
+    fn held_terms(&self, field: usize, terms: &[String]) -> Result<Vec<String>> {
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let fields = self.stat_segs().iter().map(|s| self.text(s, field)).collect::<Result<Vec<_>>>()?;
+        Ok(terms.iter().filter(|t| fields.iter().any(|f| f.dict.get(t).is_some())).cloned().collect())
+    }
+
     /// The terms of a `bm25` query and the collection statistics it scores
     /// with, each group's terms sharing the largest document frequency
     /// among them.
@@ -3640,7 +3732,7 @@ impl<'a> Executor<'a> {
         let field = match c {
             Col::Field(f) => f,
             Col::Path(_) => return true,
-            Col::Time(_) => return false,
+            Col::Time(_) | Col::Expr(_) => return false,
         };
         let f = &self.schema.fields[field];
         f.ty == FieldType::Keyword || (f.ty == FieldType::Int && f.multi)
@@ -3658,6 +3750,17 @@ impl<'a> Executor<'a> {
                 TimeOf::Bin { width, origin: 0 } => format!("date_bin('{}', {})", crate::timestamp::stride_text(*width), self.field_name(tc.field)),
                 TimeOf::Bin { width, origin } => format!("date_bin('{}', {}, '{}')", crate::timestamp::stride_text(*width), self.field_name(tc.field), crate::timestamp::format(*origin)),
             }),
+            Col::Expr(e) => {
+                let mut fields = Vec::new();
+                q.exprs[e].visit(&mut |x| {
+                    if let crate::query::ir::Expr::Field(f) = x {
+                        if !fields.contains(f) {
+                            fields.push(*f);
+                        }
+                    }
+                });
+                format!("an expression of {}", fields.iter().map(|&f| self.field_name(f as usize)).collect::<Vec<_>>().join(", "))
+            }
         }
     }
 
@@ -3715,6 +3818,28 @@ impl<'a> Executor<'a> {
     fn col_values(&self, s: &Seg<'a>, q: &Select, c: Col, d: DocId, multi: &HashMap<usize, HashMap<DocId, Vec<u32>>>, paths: &HashMap<usize, crate::json::PathValues>, key: bool, out: &mut Vec<Value>) -> Result<()> {
         let p = match c {
             Col::Field(f) => return self.agg_values(s, f, d, multi, out),
+            // Its value of the row's fields, as the row evaluator computes
+            // it (each field single-valued, as queries give it); none for
+            // NULL.
+            Col::Expr(e) => {
+                out.clear();
+                let v = crate::query::ir::eval::eval(&q.exprs[e], &|r| match r {
+                    crate::query::ir::eval::Ref::Field(f) => {
+                        let mut one = Vec::new();
+                        self.agg_values(s, f as usize, d, multi, &mut one)?;
+                        let v = one.pop().unwrap_or(Value::Null);
+                        Ok(match self.schema.fields[f as usize].logical {
+                            Some(l) => l.output(v),
+                            None => v,
+                        })
+                    }
+                    _ => Err(err("an expression of the columns reads the row's fields")),
+                })?;
+                if !matches!(v, Value::Null) {
+                    out.push(v);
+                }
+                return Ok(());
+            }
             Col::Path(p) => p,
             // The function of the field's time; none without one.
             Col::Time(t) => {
@@ -3777,8 +3902,9 @@ impl<'a> Executor<'a> {
                         paths.insert(p, pv);
                         continue;
                     }
-                    // A TIMESTAMP field of one value.
-                    Col::Time(_) => continue,
+                    // A TIMESTAMP field of one value, or an expression of
+                    // fields of one.
+                    Col::Time(_) | Col::Expr(_) => continue,
                 };
                 if self.schema.fields[f].multi {
                     let kw = self.keyword(s, f)?;
@@ -4910,6 +5036,7 @@ impl<'a> Executor<'a> {
                 crate::json::extract(j.and_then(|j| fetched.get(j)).unwrap_or(&Value::Null), &pc.path, pc.kind)?
             }
             Projection::Time(_) => return Err(err("a part of a time is a column of groups (GROUP BY date_trunc('day', at)); of rows, the row evaluator computes it")),
+            Projection::Expr(_) => return Err(err("an expression of the columns is a column of groups; of rows, the row evaluator computes it")),
         }))
     }
 
@@ -4938,12 +5065,224 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
+    /// [`Executor::project_arrow`] a column at a time, when each column is
+    /// the primary key, a single-valued INT or FLOAT field read from its
+    /// column (a TIMESTAMP or BOOL too), or a single-valued KEYWORD read
+    /// from its column, and no segment of `hits` has values of them written
+    /// in place: an INT or FLOAT column is decoded a block of
+    /// [`forward::BLOCK`] rows at a time, as the column aggregates read it,
+    /// rather than a value at a time through [`Executor::cell`] (Sam's
+    /// aggregates of 224,056 rows spent 15-45 ms here, 70 ns a row and
+    /// column). The arrays are [`Executor::project_arrow`]'s, value for
+    /// value and of the same types: a column of NULLs alone is a
+    /// `NullArray`, and a column whose segments read it as INT in one and
+    /// FLOAT in another gives `None` here as it does there. `None` too for
+    /// any other projection, which goes a row at a time.
+    #[cfg(feature = "datafusion")]
+    fn project_arrow_columns(&self, q: &Select, hits: &[Hit]) -> Result<Option<(Vec<datafusion::arrow::array::ArrayRef>, datafusion::arrow::array::ArrayRef)>> {
+        use crate::query::arrow::Builder;
+        use crate::schema::Logical;
+        use datafusion::arrow::array::{ArrayRef, BooleanArray, Float64Array, Int64Array, NullArray, TimestampMicrosecondArray};
+        use datafusion::arrow::buffer::{Buffer, NullBuffer, ScalarBuffer};
+
+        /// Where a column's values come from, and what it builds.
+        enum Src {
+            /// An INT or FLOAT field's column: its values (FLOAT ones as
+            /// their bits) and whether each row has one.
+            Num { field: usize, float: bool, logical: Option<Logical>, values: Vec<i64>, valid: Vec<bool>, any: bool, all: bool },
+            /// A KEYWORD field's column, or the primary key.
+            Built { field: Option<usize>, b: Builder },
+        }
+        /// The block of a numeric column decoded last.
+        struct Block {
+            b: usize,
+            keys: [i64; forward::BLOCK],
+            mask: [u64; 2],
+        }
+        let n = hits.len();
+        let pk = self.schema.primary_key;
+        let mut srcs = Vec::with_capacity(q.projection.len());
+        for (c, (_, proj)) in q.projection.iter().enumerate() {
+            let Projection::Field(i) = *proj else { return Ok(None) };
+            let logical = q.types.get(c).copied().flatten();
+            srcs.push(match () {
+                _ if Some(i) == pk && logical.is_none() => Src::Built { field: None, b: Builder::new() },
+                _ if Some(i) == pk => return Ok(None),
+                _ if self.numeric_column(i) => Src::Num { field: i, float: matches!(self.schema.fields[i].ty, FieldType::Float), logical, values: Vec::with_capacity(n), valid: Vec::with_capacity(n), any: false, all: true },
+                _ if self.keyword_column(i) && logical.is_none() => Src::Built { field: Some(i), b: Builder::new() },
+                _ => return Ok(None),
+            });
+        }
+        // The keys' array: the key column's when the projection has one,
+        // else built beside the columns.
+        let key_col = srcs.iter().position(|s| matches!(s, Src::Built { field: None, .. }));
+        // A table without a primary key gives each row a NULL key.
+        let keyless = pk.is_none();
+        // INT keys go straight into their array; any other key into a
+        // builder, the INT ones before it with it.
+        let mut int_keys: Option<Vec<i64>> = Some(Vec::with_capacity(if key_col.is_none() { n } else { 0 }));
+        let mut keys = Builder::new();
+        let cell = std::mem::size_of::<Value>() as u64;
+        let mut bytes = 0u64;
+        let mut blocks: Vec<Block> = (0..srcs.len()).map(|_| Block { b: usize::MAX, keys: [0; forward::BLOCK], mask: [0; 2] }).collect();
+        let mut r = 0usize;
+        // A run of hits in one segment at a time, each column's reader
+        // opened once for it.
+        while r < hits.len() {
+            let seg = hits[r].seg;
+            let end = r + hits[r..].iter().position(|h| h.seg != seg).unwrap_or(hits.len() - r);
+            let s = self.seg_by_ord(seg);
+            let seg_keys = self.snap.pk(seg);
+            let mut cols: Vec<Option<&NumericColumn>> = vec![None; srcs.len()];
+            let mut kws: Vec<Option<&KeywordColumn>> = vec![None; srcs.len()];
+            for (c, src) in srcs.iter().enumerate() {
+                match src {
+                    Src::Num { field, float, .. } => {
+                        if self.updates(&s, *field).is_some() {
+                            return Ok(None);
+                        }
+                        let col = s.r.numeric(*field)?.map(|n| n.col());
+                        // A column read as INT in one segment and FLOAT in
+                        // another is of mixed values, for the rows.
+                        if col.is_some_and(|col| (col.kind() == forward::NumericKind::Int) == *float) {
+                            return Ok(None);
+                        }
+                        cols[c] = col;
+                    }
+                    Src::Built { field: Some(field), .. } => {
+                        if self.updates(&s, *field).is_some() {
+                            return Ok(None);
+                        }
+                        kws[c] = s.r.keyword(*field)?;
+                    }
+                    Src::Built { field: None, .. } => {}
+                }
+                blocks[c].b = usize::MAX;
+            }
+            for h in &hits[r..end] {
+                bytes += 24;
+                for (c, src) in srcs.iter_mut().enumerate() {
+                    match src {
+                        Src::Num { values, valid, any, all, .. } => {
+                            bytes += cell;
+                            let Some(col) = cols[c] else {
+                                values.push(0);
+                                valid.push(false);
+                                *all = false;
+                                continue;
+                            };
+                            let bl = &mut blocks[c];
+                            let (b, j) = (h.doc as usize / forward::BLOCK, h.doc as usize % forward::BLOCK);
+                            if bl.b != b {
+                                bl.mask = col.block_keys_of(b, &mut bl.keys);
+                                bl.b = b;
+                            }
+                            let present = (bl.mask[j / 64] >> (j % 64)) & 1 == 1;
+                            let k = bl.keys[j];
+                            values.push(match col.kind() {
+                                forward::NumericKind::Int => k,
+                                kind => kind.decode(k).to_bits() as i64,
+                            });
+                            valid.push(present);
+                            *any |= present;
+                            *all &= present;
+                        }
+                        Src::Built { field: Some(_), b } => {
+                            let pushed = match kws[c].and_then(|k| k.value_of_doc(h.doc)) {
+                                Some(x) => {
+                                    bytes += cell + x.len() as u64;
+                                    b.push_str(x, n)
+                                }
+                                None => {
+                                    bytes += cell;
+                                    b.push(Value::Null, n)
+                                }
+                            };
+                            if pushed.is_err() {
+                                return Ok(None);
+                            }
+                        }
+                        Src::Built { field: None, b } => {
+                            let v = self.key(h);
+                            bytes += crate::query::memory::value_bytes(&v);
+                            if b.push(v, n).is_err() {
+                                return Ok(None);
+                            }
+                        }
+                    }
+                }
+                if key_col.is_none() && !keyless {
+                    match (int_keys.as_mut(), seg_keys.map(|k| k.key_ref(h.doc))) {
+                        (Some(ints), Some(KeyRef::Int(k))) => ints.push(k),
+                        (_, key) => {
+                            for k in int_keys.take().into_iter().flatten() {
+                                if keys.push(Value::Int(k), n).is_err() {
+                                    return Ok(None);
+                                }
+                            }
+                            let pushed = match key {
+                                Some(KeyRef::Str(b)) => match std::str::from_utf8(b) {
+                                    Ok(x) => keys.push_str(x, n),
+                                    Err(_) => keys.push(Value::Str(String::from_utf8_lossy(b).into_owned()), n),
+                                },
+                                Some(KeyRef::Int(k)) => keys.push(Value::Int(k), n),
+                                None => keys.push(Value::Null, n),
+                            };
+                            if pushed.is_err() {
+                                return Ok(None);
+                            }
+                        }
+                    }
+                }
+                if bytes >= 1 << 16 {
+                    self.charge.add(std::mem::take(&mut bytes))?;
+                }
+            }
+            r = end;
+        }
+        self.charge.add(bytes)?;
+        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(srcs.len());
+        for src in srcs {
+            arrays.push(match src {
+                Src::Num { any: false, .. } => Arc::new(NullArray::new(n)),
+                Src::Num { float, logical, values, valid, all, .. } => {
+                    let nulls = (!all).then(|| NullBuffer::from(valid));
+                    match (float, logical) {
+                        // The FLOAT values' bits, as they are.
+                        (true, _) => Arc::new(Float64Array::new(ScalarBuffer::new(Buffer::from_vec(values), 0, n), nulls)),
+                        (false, Some(Logical::Timestamp)) => Arc::new(TimestampMicrosecondArray::new(values.into(), nulls)),
+                        (false, Some(Logical::Bool)) => Arc::new(BooleanArray::new(values.iter().map(|&x| x != 0).collect(), nulls)),
+                        (false, None) => Arc::new(Int64Array::new(values.into(), nulls)),
+                    }
+                }
+                Src::Built { b, .. } => match b.finish(n) {
+                    Ok(a) => a,
+                    Err(_) => return Ok(None),
+                },
+            });
+        }
+        let keys = match (key_col, int_keys) {
+            (Some(c), _) => arrays[c].clone(),
+            (None, _) if keyless => Arc::new(NullArray::new(n)),
+            (None, Some(ints)) if !ints.is_empty() => Arc::new(Int64Array::from(ints)),
+            (None, _) if n == 0 => Arc::new(NullArray::new(0)),
+            (None, _) => match keys.finish(n) {
+                Ok(k) => k,
+                Err(_) => return Ok(None),
+            },
+        };
+        Ok(Some((arrays, keys)))
+    }
+
     /// [`Executor::project`] into Arrow arrays, typed as the answer types
     /// them ([`Select::typed`]), with the keys' array: `None` when a
     /// column holds values of more than one type, which only rows can.
     #[cfg(feature = "datafusion")]
     fn project_arrow(&self, q: &Select, hits: &[Hit]) -> Result<Option<(Vec<datafusion::arrow::array::ArrayRef>, datafusion::arrow::array::ArrayRef)>> {
         use crate::query::arrow::Builder;
+        if let Some(out) = self.project_arrow_columns(q, hits)? {
+            return Ok(Some(out));
+        }
         let n = hits.len();
         let mut p = self.projecting(q, hits)?;
         let mut cols: Vec<Builder> = q.projection.iter().map(|_| Builder::new()).collect();
@@ -5370,15 +5709,15 @@ fn ranked_terms(q: &str, opts: &Opts, analyzer: text::Analyzer) -> Result<Ranked
             let shape = if item.phrase { None } else { text::query::word_shape(item.text) };
             // The item's terms; a prefix's own (`sof` of `sof*`) are the
             // indexed terms that start with it, found where it runs.
-            let (seq, prefix) = match shape {
+            let (seq, prefix, stems) = match shape {
                 Some(text::query::WordShape::Prefix(stem)) => {
                     let mut words = Vec::new();
                     analyzer.for_each_token(stem, |x| words.push(x.to_string()));
                     let Some(last) = words.pop() else { continue };
-                    (analyzer.query_term_seq(&words.join(" "), drop), Some(analyzer.prefix_of(&last)))
+                    (analyzer.query_term_seq(&words.join(" "), drop), Some(analyzer.prefix_of(&last)), text::query::prefix_stems(analyzer, &last))
                 }
-                Some(text::query::WordShape::Typo(word, _)) => (analyzer.query_term_seq(word, drop), None),
-                None => (analyzer.query_term_seq(item.text, drop), None),
+                Some(text::query::WordShape::Typo(word, _)) => (analyzer.query_term_seq(word, drop), None, Vec::new()),
+                None => (analyzer.query_term_seq(item.text, drop), None, Vec::new()),
             };
             if seq.is_empty() && prefix.as_deref().is_none_or(str::is_empty) {
                 continue;
@@ -5410,7 +5749,7 @@ fn ranked_terms(q: &str, opts: &Opts, analyzer: text::Analyzer) -> Result<Ranked
                 }
                 out.terms.extend(seq.into_iter().map(|t| (t, w)));
                 if let Some(p) = prefix.filter(|p| !p.is_empty()) {
-                    out.prefixes.push((p, w));
+                    out.prefixes.push((p, w, stems));
                 }
             }
         }
@@ -5439,9 +5778,10 @@ struct RankedText {
     /// How many optional items it has, which `min` counts.
     optional: usize,
     /// Its prefixes (`sof` of `sof*`, folded as `MATCH` folds one), each
-    /// with its word's weight: they score as the indexed terms that start
-    /// with them ([`Executor::prefix_terms`]).
-    prefixes: Vec<(String, f32)>,
+    /// with its word's weight and the stems it stands for besides
+    /// ([`text::query::prefix_stems`]): they score as the indexed terms
+    /// that start with them ([`Executor::prefix_terms`]) and those stems.
+    prefixes: Vec<(String, f32, Vec<String>)>,
     /// The terms of its typo-tolerant words (`lether~`, `lether~1`), each
     /// with its edits (`None`: by length). Each is in `terms` too.
     typos: Vec<(String, Option<u8>)>,
@@ -5721,6 +6061,15 @@ struct PartPick {
     rest: Pred,
     /// The partitions' rows.
     rows: usize,
+}
+
+/// The fewest letters of a word as typed that a stem near it stands for
+/// ([`text::fuzzy::walk_stems`]): half of them, 3 at least, and all but
+/// the 6 an ending may take, so that `vegt` of `vegtable` reaches `veget`
+/// (vegetable). The stem itself has more than half of them
+/// ([`Executor::near_either`]).
+fn stem_floor(n: usize) -> usize {
+    (n / 2).max(3).max(n.saturating_sub(6))
 }
 
 /// Each stemmed term of `text` whose word was written otherwise, with that

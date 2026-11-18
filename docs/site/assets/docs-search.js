@@ -1,7 +1,8 @@
 // The docs' search box, above the sidebar of every page build_docs.py
 // writes. The first time it is used it loads search-index.js (every page cut
 // at its h2 and h3 headings), then ranks the sections that hold every word
-// typed, by BM25 with their headings and page titles counting extra. "/" or Ctrl+K focuses it; the arrows and Enter pick a result; a
+// typed first and those that hold some of them after (more of them first),
+// each by BM25 with their headings and page titles counting extra. "/" or Ctrl+K focuses it; the arrows and Enter pick a result; a
 // page opened with ?q=words searches at once.
 (function () {
   "use strict";
@@ -56,20 +57,23 @@
   // BM25 over the sections, as ChloeDB ranks text: a rare word counts more
   // than a common one, and a word said often in a short section more than
   // in a long one. A word in the section's heading or the page's title adds
-  // to that, more when a word of the heading starts with it.
+  // to that, more when a word of the heading starts with it. A section with
+  // more of the words comes first, so one that holds them all leads, and a
+  // question in a beginner's words ("similar recipes") still finds the
+  // sections that hold one of them ("similar").
   function search(q) {
     var ws = words(q);
     if (!ws.length) return [];
     var phrase = ws.length > 1 ? ws.join(" ") : "";
     var n = rows.length, df = ws.map(function () { return 0; }), found = [];
     rows.forEach(function (r, i) {
-      var per = [], all = true;
+      var per = [], got = 0;
       ws.forEach(function (w, k) {
         var x = { h: r.lh.indexOf(w) >= 0, p: r.lp.indexOf(w) >= 0, tf: count(r.lt, w, 50) };
-        if (x.h || x.p || x.tf) df[k]++; else all = false;
+        if (x.h || x.p || x.tf) { df[k]++; got++; }
         per.push(x);
       });
-      if (all) found.push({ r: r, i: i, per: per });
+      if (got) found.push({ r: r, i: i, per: per, got: got });
     });
     var idf = df.map(function (d) { return Math.log(1 + (n - d + 0.5) / (d + 0.5)); });
     found.forEach(function (x) {
@@ -83,7 +87,7 @@
       if (phrase && (r.lh.indexOf(phrase) >= 0 || r.lt.indexOf(phrase) >= 0)) s *= 1.5;
       x.s = s;
     });
-    found.sort(function (a, b) { return b.s - a.s || a.i - b.i; });
+    found.sort(function (a, b) { return b.got - a.got || b.s - a.s || a.i - b.i; });
     // At most three sections of one page among the first results, so one
     // long page does not hide the others.
     var seen = {}, top = [], rest = [];
@@ -92,7 +96,7 @@
       seen[page] = (seen[page] || 0) + 1;
       (seen[page] <= 3 ? top : rest).push(x);
     });
-    return top.concat(rest).slice(0, 12).map(function (x) { return x.r; });
+    return top.concat(rest).slice(0, 12).map(function (x) { return { r: x.r, all: x.got === ws.length }; });
   }
 
   // The text around the first word found, with every word marked.
@@ -144,9 +148,11 @@
     input.removeAttribute("aria-activedescendant");
     if (!q) { hits = []; open(false); return; }
     var ws = words(q);
-    hits = search(q);
-    if (!hits.length) { note("No section has every word of “" + q + "”. Try fewer or shorter words."); return; }
+    var found = search(q);
+    hits = found.map(function (x) { return x.r; });
+    if (!hits.length) { note("No section has a word of “" + q + "”. Try other or shorter words."); return; }
     box.replaceChildren();
+    if (ws.length > 1 && !found[0].all) box.appendChild(el("p", "doc-search-none", "No section has every word of “" + q + "”. These have some of them:"));
     hits.forEach(function (r, i) {
       var a = el("a", "doc-search-hit");
       a.href = r.u;

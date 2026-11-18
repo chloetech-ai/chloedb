@@ -4,7 +4,10 @@
 //! The page talks to this server; the server reads each store through its
 //! project's daemon (starting it if needed), as the hooks and `chloectx rpc`
 //! do, so the inspector can stay open while sessions write to a store.
-//! Only read-only daemon operations are exposed. The server listens on
+//! The page may call only read-only daemon operations, and forget records
+//! (`POST /api/forget`, which shows what would go before it deletes
+//! anything); that, like an update, only the page itself can ask for
+//! ([`from_page`]). The server listens on
 //! 127.0.0.1 by default and every request must carry the random token from
 //! the URL it prints (kept in a cookie after the first page load): stores
 //! hold transcripts, and other local users or web pages must not read them.
@@ -46,6 +49,34 @@ fn base64(b: &[u8]) -> String {
     }
     out
 }
+/// What `POST /api/forget` asks the daemon, from the page's request
+/// `{"ids": [...]}` or `{"text": TEXT}`, with `"dry_run": true` for the
+/// list of what would go (`find`) and without it to forget them (`forget`,
+/// answered once the records are gone from the store's files), with how
+/// long to wait for the answer.
+fn forget_request(body: &Json) -> std::result::Result<(Json, u64), String> {
+    let dry = body.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+    let ids: Vec<&str> = body.get("ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str()).filter(|i| !i.trim().is_empty()).collect()).unwrap_or_default();
+    let text = body.get("text").and_then(|v| v.as_str()).map(str::trim).filter(|t| !t.is_empty());
+    let what = match (ids.is_empty(), text) {
+        (false, None) if ids.len() <= 1000 => json!({"ids": ids}),
+        (false, None) => return Err("at most 1000 records at a time".into()),
+        (true, Some(t)) => json!({"text": t}),
+        (false, Some(_)) => return Err("give either ids or text, not both".into()),
+        (true, None) => return Err("give the ids of the records to forget, or the text to forget".into()),
+    };
+    let mut req = what;
+    if dry {
+        req["op"] = json!("find");
+        req["limit"] = json!(200);
+        Ok((req, 60))
+    } else {
+        req["op"] = json!("forget");
+        req["wait"] = json!(true);
+        Ok((req, 600))
+    }
+}
+
 /// Daemon ops the page may call (all read-only).
 const RPC_OPS: [&str; 7] = ["inspect_query", "inspect_layout", "inspect_embed", "search", "timeline", "stats", "briefing"];
 const MAX_BODY: usize = 1 << 20;
@@ -455,6 +486,17 @@ impl Server {
                 }
                 respond_json(&mut stream, "200 OK", &self.rpc(&s, &body, 120));
             }
+            ("POST", "/api/forget") => {
+                if !from_page(&req) {
+                    return respond_json(&mut stream, "403 Forbidden", &json!({"error": "forgetting starts from the inspector's own page"}));
+                }
+                let Some(s) = self.store(&req) else { return respond_json(&mut stream, "404 Not Found", &json!({"error": "no such store"})) };
+                let body: Json = serde_json::from_slice(&req.body).unwrap_or(Json::Null);
+                match forget_request(&body) {
+                    Ok((r, secs)) => respond_json(&mut stream, "200 OK", &self.rpc(&s, &r, secs)),
+                    Err(e) => respond_json(&mut stream, "400 Bad Request", &json!({"error": e})),
+                }
+            }
             ("GET", "/api/version") => respond_json(&mut stream, "200 OK", &self.version(&req)),
             ("POST", "/api/update") => {
                 if !from_page(&req) {
@@ -628,6 +670,25 @@ mod tests {
         assert!(!from_page(&post(&[host])), "a form post carries no such header");
         assert!(!from_page(&post(&[host, ("X-ChloeCtx-UI", "1"), ("Origin", "https://example.com")])));
         assert!(!from_page(&post(&[host, ("X-ChloeCtx-UI", "1"), ("Origin", "http://127.0.0.1:9999")])));
+    }
+
+    /// The page's forget asks the daemon for the list first (`find`), and
+    /// forgets only what it names, by id or by text, waiting for it.
+    #[test]
+    fn forget_from_the_page_lists_then_forgets() {
+        let (r, _) = forget_request(&json!({"ids": ["s1:3", " "], "dry_run": true})).unwrap();
+        assert_eq!(r, json!({"op": "find", "ids": ["s1:3"], "limit": 200}));
+        let (r, secs) = forget_request(&json!({"ids": ["s1:3", "s1:4"]})).unwrap();
+        assert_eq!(r, json!({"op": "forget", "ids": ["s1:3", "s1:4"], "wait": true}));
+        assert!(secs >= 60);
+        let (r, _) = forget_request(&json!({"text": "  the staging password  "})).unwrap();
+        assert_eq!(r, json!({"op": "forget", "text": "the staging password", "wait": true}));
+        assert!(forget_request(&json!({})).is_err());
+        assert!(forget_request(&json!({"ids": [], "text": " "})).is_err());
+        assert!(forget_request(&json!({"ids": ["a"], "text": "both"})).is_err());
+        let many: Vec<String> = (0..1001).map(|i| format!("s:{i}")).collect();
+        assert!(forget_request(&json!({"ids": many})).is_err());
+        assert!(PAGE.contains("/api/forget"), "the page has the control");
     }
 
     #[test]

@@ -218,14 +218,20 @@ b03 | Dragons of the Salt Coast</pre>
 b03 | Dragons of the Salt Coast
 b01 | The River and the Dragon
 b10 | The Dragon Accords</pre>
-<p><code>db.search(text)</code> ranks with <code>bm25</code> too, so it finds nothing for a word half typed unless the word ends in <code>*</code>. A prefix is lowercased but not stemmed, and matches the stemmed words that start with it. To complete whole values instead (the searches people ran before, names kept as <code>KEYWORD</code>), <code>PREFIX(field, :typed)</code> reads a keyword field's sorted values, with typos if asked (<a href="sql.html#prefixes-and-autocomplete">prefixes and autocomplete</a>).</p>
+<p>A prefix is lowercased, and finds the words that start with it and the words it may be the start of whose stems do not. The index keeps stems (<em>mystery</em> as <em>mysteri</em>, <em>running</em> as <em>run</em>), so a prefix also looks up the stem of what was typed as a word, and in English the stems of what was typed completed by a common ending (<code>runni*</code> finds <em>running</em>). Every letter of a word typed keeps its rows:</p>
+<pre data-lang="sql">SELECT id, title FROM books WHERE MATCH(description, &#x27;mystery*&#x27;)</pre>
+<pre data-lang="text" data-title="Output" class="output">id  | title
+----+--------------
+b02 | Winter Garden</pre>
+<p><strong>Changed:</strong> a prefix matched only the stems that start with it before, so against a server or package of 0.3.7 or earlier a word typed in full and then <code>*</code> (<code>mystery*</code>, <code>battery*</code>, <code>headphone*</code>) finds nothing, though each letter before it found the rows.</p>
+<p><code>db.search(text)</code> ranks with <code>bm25</code> too, so it finds nothing for a word half typed unless the word ends in <code>*</code>. To complete whole values instead (the searches people ran before, names kept as <code>KEYWORD</code>), <code>PREFIX(field, :typed)</code> reads a keyword field's sorted values, with typos if asked (<a href="sql.html#prefixes-and-autocomplete">prefixes and autocomplete</a>).</p>
 <h2 id="typos">Typos<a class="anchor" href="#typos" aria-label="Link to this section">#</a></h2>
-<p><code>fuzzy =&gt; 'auto'</code> lets a word be an edit or two away, more for longer words; ranked, it corrects a typo rather than widening every word:</p>
+<p><code>fuzzy =&gt; 'auto'</code> lets a word be an edit or two away, more for longer words, counted on the word as typed rather than on its stem: <em>choclate</em> is one edit from <em>chocolate</em>, though its stem, <em>choclat</em>, is three from <em>chocol</em>. Ranked, it corrects a typo rather than widening every word:</p>
 <pre data-lang="sql">SELECT id, title FROM books ORDER BY bm25(description, &#x27;lighthuose keeper&#x27;, fuzzy =&gt; &#x27;auto&#x27;) DESC LIMIT 1</pre>
 <pre data-lang="text" data-title="Output" class="output">id  | title
 ----+--------------------
 b04 | The Last Lighthouse</pre>
-<p><code>db.search(text)</code> searches the words as written, and so does the search box on a table's page in the command center: a search that should forgive typos asks for it in its SQL, or writes <code>~</code> after a word (<code>dragn~</code>), which <code>bm25</code> reads as <code>fuzzy =&gt; 'auto'</code> for that word. With a <code>MATCH</code>, a row must have every word, each as typed or within its edits, and a <code>bm25</code> of the same text on the same field takes the <code>MATCH</code>'s <code>fuzzy</code>:</p>
+<p><code>db.search(text)</code> searches the words as written. The search box on a table's page in the command center forgives a typo in each word, and when nothing is found offers the correction ("did you mean") if there is one. A search that should forgive typos asks for it in its SQL, or writes <code>~</code> after a word (<code>dragn~</code>), which <code>bm25</code> reads as <code>fuzzy =&gt; 'auto'</code> for that word. With a <code>MATCH</code>, a row must have every word, each as typed or within its edits, and a <code>bm25</code> of the same text on the same field takes the <code>MATCH</code>'s <code>fuzzy</code>:</p>
 <pre data-lang="python">import chloedb
 
 db = chloedb.open(&quot;books.chloedb&quot;, read_only=True)
@@ -350,7 +356,7 @@ seg 0: bm25 MaxScore, filter Probe</pre>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

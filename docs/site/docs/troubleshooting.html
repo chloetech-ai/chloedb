@@ -217,7 +217,7 @@ parameter :v: no table has a field this server can embed text for; pass a vector
 <li><strong>A model that runs in every build</strong>: <code>potion-retrieval-32M</code> (Model2Vec, 512 dimensions, the one the guides use) or the smaller <code>potion-base-8M</code>, and their int8 copies (<a href="server.html#embedded-vector-fields">embedded vector fields</a>).</li>
 <li><strong>A hosted model</strong>: <code>openai/text-embedding-3-small</code>, <code>cohere/embed-v4.0</code>, <code>voyage/voyage-3.5</code>, or <code>ollama/nomic-embed-text</code> from an Ollama on your own machine, with no key (<a href="server.html#hosted-models">hosted models</a>). The prebuilt programs call them.</li>
 <li><strong>Your own vectors</strong>: make them with any library (fastembed, sentence-transformers) and write them into a <code>VECTOR</code> field with its <code>dim</code> and no <code>embed</code>, then pass the query's vector the same way (<code>ORDER BY similarity(emb, :v)</code>, with <code>v</code> a list of floats or a numpy array).</li>
-<li><strong>A build from source with the feature</strong>: <code>cargo build --release --features bert</code> in <code>chloedb-server/</code> (<code>--features accelerate</code> on a Mac), or <code>MATURIN_PEP517_ARGS="--features bert" pip install ./chloedb-py</code> for Python (<a href="python.html#from-source">from source</a>).</li>
+<li><strong>A build from source with the feature</strong>: <code>cargo build --release --bin chloedb-server --features bert</code> in <code>chloedb-server/</code> (<code>--features accelerate</code> on a Mac), or <code>MATURIN_PEP517_ARGS="--features bert" pip install ./chloedb-py</code> for Python (<a href="python.html#from-source">from source</a>).</li>
 </ul>
 <h2 id="running-a-server">Running a server<a class="anchor" href="#running-a-server" aria-label="Link to this section">#</a></h2>
 <h3 id="the-address-is-in-use"><code>the address is in use</code><a class="anchor" href="#the-address-is-in-use" aria-label="Link to this section">#</a></h3>
@@ -251,7 +251,7 @@ ERROR chloedb_server: listen on 127.0.0.1:7701: the address is in use, by anothe
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

@@ -111,14 +111,14 @@ python3 ingest.py
 
 ## Retrieve
 
-One query does the retrieval. `rrf` fuses a BM25 ranking over the text with a vector ranking, which finds passages that use the question's words and passages that mean the same thing in others; `MAX 2 PER doc` keeps at most two passages of a file:
+One query does the retrieval. `rrf` fuses a BM25 ranking over the text with a vector ranking, which finds passages that use the question's words and passages that mean the same thing in others; `MAX 2 PER doc` keeps at most two passages of a file. `syntax => 'plain'` reads the question as words: by default `bm25` reads a search box's operators, where `-word` leaves out the passages with that word and `+word` keeps only those, so a question such as "why does the linker fail without -fPIC" would drop the very passage about `-fPIC` ([the SQL reference](../chloedb/query-language.md#bm25field-text)):
 
 ```python file=retrieve.py
 import chloedb
 
 QUERY = """
 SELECT id, doc, heading, body FROM passages
-ORDER BY rrf(bm25(text, :q), similarity(emb, :v)) DESC
+ORDER BY rrf(bm25(text, :q, syntax => 'plain'), similarity(emb, :v)) DESC
 MAX 2 PER doc
 LIMIT :k
 """

@@ -131,7 +131,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p><img loading="lazy" decoding="async" alt="The studio: an app on the left, and on the right the request box, the version's summary, and the Model and web switches" src="../../assets/img/strata-apps-studio.png" /></p>
 <h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
 <p>You need Node.js 20 or later, chloedb-server, and Claude Code signed in (<code>claude</code> on the PATH). The engine calls <code>claude -p</code>, so it uses that sign-in and needs no API key of its own.</p>
-<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release)
+<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release --bin chloedb-server)
 cd chloedb-apps &amp;&amp; npm ci
 ./run.sh                     # the studio at http://127.0.0.1:7730/</pre>
 <p><code>run.sh</code> starts a chloedb-server of its own on <code>127.0.0.1:7720</code>, with its database in <code>chloedb-apps/data/</code>. <code>--strata URL</code> uses a server that is already running instead (started with <code>--seq-no</code>, for live updates). Every option is in <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-apps/README.md#run-it">the engine's README</a>.</p>
@@ -278,7 +278,7 @@ kubectl -n strata patch strata demo --type merge -p &#x27;{&quot;spec&quot;: {
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

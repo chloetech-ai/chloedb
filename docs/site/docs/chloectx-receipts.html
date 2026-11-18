@@ -278,7 +278,7 @@ process started the daemon. With receipts off, <code>memory_forget</code> and
 <h2 id="commands">Commands<a class="anchor" href="#commands" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">chloectx blame src/retry.rs:88       # or a whole file: chloectx blame src/retry.rs
 chloectx blame src/retry.rs:88 --json --no-replay
-chloectx receipts [--session S] [--limit N]
+chloectx receipts [--session S] [--limit N]   # S: a session id, or its first characters as listings show them
 chloectx receipts off [--purge] | on
 chloectx receipt rc-19a6… [--text] [--no-replay] [--json]
 chloectx snapshot keep before-release | list | drop before-release</pre>
@@ -412,7 +412,7 @@ longer be exact.</p>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

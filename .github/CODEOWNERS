@@ -62,11 +62,13 @@
 /chloedb-apps/engine/access.mjs    @rkonow
 
 # door: what people install
-# The install script `curl | sh` runs and the images clusters pull: a
-# change reaches every machine that installs next, before any review of
-# a release.
+# The install script `curl | sh` runs, the launcher ChloeCtx's plugin runs
+# from main (it downloads and checks chloectx), and the images clusters
+# pull: a change reaches every machine that installs next, before any
+# review of a release.
 /docs/install.sh                   @rkonow
 /install.sh                        @rkonow
+/chloectx/plugin/scripts/chloectx-launch @rkonow
 /chloedb-server/deploy/Dockerfile  @rkonow
 /chloedb-apps/deploy/Dockerfile    @rkonow
 
