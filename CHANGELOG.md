@@ -11,6 +11,32 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **chloedb-server's OpenSearch API: a filtered alias keeps to its
+  documents, unknown keys are refused, and an alias swap is seen whole**
+  (persona study round 3, KENJI-301, KENJI-302, KENJI-303, KENJI-305;
+  #680). `_aliases` kept an alias's name and dropped its `filter`, so a
+  tenant's alias over a shared index searched, counted and aggregated
+  every tenant. An alias now keeps its `filter`, `is_write_index`, routing
+  and `is_hidden`, and every read through a filtered alias applies the
+  filter: searches, `_count`, aggregations (`global` too), `_msearch`,
+  scrolls, `_delete_by_query`, `_cat/count`, and gets by id, which
+  OpenSearch does not filter. An index is no longer deleted through an
+  alias, and a write through an alias of several indexes goes to its
+  `is_write_index`. A key a search body, a query, `_count`,
+  `_delete_by_query` or an `_aliases` action doesn't read (`qeury`,
+  `bool.filtr`, `match.operater`) was ignored and every document matched;
+  it is now a 400 that names the key and the one meant (`did you mean
+  [filter]?`), and the search features ChloeDB doesn't answer (`pit`,
+  `rescore`, `suggest`, `runtime_mappings`, `slice`, ...) are refused. An
+  alias swap in one `_aliases` request was written index by index, so a
+  search in between got a 404 or both indexes; every alias is now one row
+  of a new table, `opensearch_aliases`, written once per request, on one
+  server and over shards. Aliases kept by 0.3.8 are read until the first
+  alias change carries them over; a database taken back to 0.3.8 after
+  that sees its aliases as they were before the change. The docs say
+  Elasticsearch 7: Elasticsearch 8's clients refuse the server, so use
+  OpenSearch's client of the same language
+  ([opensearch.md](docs/chloedb/opensearch.md#elasticsearch-8s-clients)).
 - **ChloeCtx keeps a private aside nowhere, and only the user's words
   make rules** (persona study round 3, WEI-301, JONAH-301, LENA-310,
   JONAH-303, JONAH-304, ANA-308, and WEI-304's restated aside). A part
