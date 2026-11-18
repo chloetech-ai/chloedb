@@ -197,7 +197,10 @@ check "an archive and .sha256 replaced together: refused" [ "$status" = 1 ]
 check "  saying gh did not verify it" said "gh could not verify the build provenance"
 check "  with gh's reason" said "no matching attestation"
 check "  installing nothing" [ ! -e "$work/bin/chloedb-server" ]
+# (A variable set before a function call stays set after it in some
+# shells, macOS's sh among them: each is unset again.)
 VERIFY=off run_given
+unset VERIFY
 check "  CHLOEDB_VERIFY=off installs it on the SHA-256 alone" [ "$status" = 0 ]
 cp "$work/good.tar.gz" "$rel/chloedb-server-$here.tar.gz"
 cp "$work/good.sha256" "$rel/chloedb-server-$here.tar.gz.sha256"
@@ -212,12 +215,14 @@ mv "$work/bundle" "$rel/chloedb-server-$here.tar.gz.sigstore.jsonl"
 
 # A release from before provenance: on its SHA-256, saying so.
 V=0.3.7 run_given
+unset V
 check "a release older than provenance installs with gh here" installed 0.3.7
 check "  on its SHA-256 alone, saying so" said "release 0.3.7 is older than build provenance (0.3.9)"
 check "  asking gh nothing" [ ! -e "$web/gh-asked" ]
 
 # require: no gh, no install.
 GH_FOR_TEST="$web/no-gh" VERIFY=require run_given
+unset VERIFY
 check "CHLOEDB_VERIFY=require without gh: refused" [ "$status" = 1 ]
 check "  saying why" said "CHLOEDB_VERIFY=require, and there is no gh here"
 unset GH_FOR_TEST
