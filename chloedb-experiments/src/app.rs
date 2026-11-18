@@ -259,6 +259,7 @@ pub fn router(app: Shared) -> Router {
         .route("/v1/live/:id/try", post(try_search))
         .route("/v1/live/:id/try/open", post(try_open))
         .route("/v1/live/:id/try/done", post(try_done))
+        .route("/v1/live/:id/cohorts", post(live_cohorts))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(app)
@@ -703,6 +704,23 @@ async fn try_open(State(app): State<Shared>, Path(id): Path<String>, Json(b): Js
     let request = b["request"].as_str().ok_or_else(|| bad("which page (request)?"))?;
     let n = b["result"].as_u64().ok_or_else(|| bad("which result?"))? as usize;
     Ok(Json(l.try_open(request, n).await.map_err(bad)?))
+}
+
+/// Every metric by one or two attributes, over the live run's users so far.
+async fn live_cohorts(State(app): State<Shared>, Path(id): Path<String>, Json(b): Json<Value>) -> Answer {
+    let by: Vec<String> = b["by"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect();
+    if by.is_empty() || by.len() > 2 || by.iter().any(|a| !ATTRIBUTES.contains(&a.as_str())) || (by.len() == 2 && by[0] == by[1]) {
+        return Err(bad(format!("cut by one or two of {}", ATTRIBUTES.join(", "))));
+    }
+    let l = live_or_404(&app, &id)?;
+    let d = l.run_data().ok_or_else(|| ApiError(StatusCode::CONFLICT, "the run is still starting".into()))?;
+    let v = tokio::task::spawn_blocking(move || {
+        let by: Vec<&str> = by.iter().map(String::as_str).collect();
+        ab::cohort_table(&d, &by)
+    })
+    .await
+    .map_err(|e| upstream(e.to_string()))?;
+    Ok(Json(v))
 }
 
 async fn try_done(State(app): State<Shared>, Path(id): Path<String>, Json(b): Json<Value>) -> Answer {

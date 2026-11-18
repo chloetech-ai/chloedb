@@ -65,6 +65,7 @@ query's share of the traffic) and their judged rows (`query`, `doc`,
 | `GET /v1/live/<id>?after=&since=` | a live run now: every metric per arm, the points after `after`, the feed after `since`, the agents |
 | `POST /v1/live/<id>/stop`, `POST /v1/live/<id>/rate` | stop it (it becomes an experiment), or change its searches a second |
 | `POST /v1/live/<id>/try`, `/try/open`, `/try/done` | search the site as a visitor in the run, open a result, say it answered |
+| `POST /v1/live/<id>/cohorts` | every metric by one or two attributes (`by`), over the users the run has seen so far |
 
 Sites and experiments are rows of the server (`exp_sites`,
 `exp_experiments`); a served run's rank log and events are tables of their
@@ -81,8 +82,9 @@ logged query to ChloeDB under the user's arm and its clicks written back as
 events. Each second the page shows every metric per arm with its interval,
 its fixed-size p value beside the always-valid one (only the second may be
 read at every second), the truth from the click model, and the judged
-quality (nDCG) of what each arm showed. The call is made on the
-always-valid p value. When the time is up, or you stop it, the run becomes
+quality (nDCG) of what each arm showed, and every few seconds the picked
+metric by cohort (one attribute, or a cross of two). The call is made on
+the always-valid p value. When the time is up, or you stop it, the run becomes
 an experiment with the full report and an Agents tab.
 
 AI agents are people of the population, each in the arm the split gives

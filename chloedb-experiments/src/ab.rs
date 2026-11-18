@@ -959,6 +959,14 @@ pub fn cells(d: &RunData, by: &[&str]) -> (Vec<(String, usize)>, Vec<usize>) {
 /// values, or a cross of two), with q values across the cells.
 pub fn cohort_table(d: &RunData, by: &[&str]) -> Value {
     let (cells, of) = cells(d, by);
+    // The users of each cell who searched (a live run's population is
+    // larger than the users it has seen).
+    let mut active = vec![0u64; cells.len()];
+    for (u, c) in of.iter().enumerate() {
+        if d.sums[u][N] > 0.0 {
+            active[*c] += 1;
+        }
+    }
     let mut out = serde_json::Map::new();
     for m in METRICS.iter() {
         let mut per_arm = Vec::new();
@@ -966,10 +974,10 @@ pub fn cohort_table(d: &RunData, by: &[&str]) -> Value {
             let mut rows: Vec<Value> = cells
                 .iter()
                 .enumerate()
-                .map(|(ci, (name, n))| {
+                .map(|(ci, (name, _))| {
                     let mut c = compare(d, &|u| of[u] == ci, a, m);
                     c["cell"] = json!(name);
-                    c["users"] = json!(n);
+                    c["users"] = json!(active[ci]);
                     c
                 })
                 .collect();

@@ -173,6 +173,18 @@ async fn a_live_run_counts_every_second_and_ends_as_an_experiment() {
     assert_eq!(c.post(&format!("/v1/live/{id}/rate"), json!({"rate": 20})).await["rate"], 20.0);
     let (s, _) = c.call(reqwest::Method::POST, &format!("/v1/live/{id}/rate"), Some(json!({"rate": 1e9})), Some("t")).await;
     assert_eq!(s, 400);
+
+    // The cohorts so far: each cell's users are those who searched.
+    let co = c.post(&format!("/v1/live/{id}/cohorts"), json!({"by": ["device"]})).await;
+    let cells = co["metrics"]["success"][0]["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 3, "{co}");
+    let seen: u64 = cells.iter().map(|x| x["users"].as_u64().unwrap()).sum();
+    assert!(seen > 0 && seen < 2000, "only the users seen, of 2,000: {seen}");
+    let cross = c.post(&format!("/v1/live/{id}/cohorts"), json!({"by": ["age", "device"]})).await;
+    assert!(cross["metrics"]["clicks"][0]["cells"].as_array().unwrap()[0]["cell"].as_str().unwrap().contains(" · "));
+    let (s, _) = c.call(reqwest::Method::POST, &format!("/v1/live/{id}/cohorts"), Some(json!({"by": ["shoe size"]})), Some("t")).await;
+    assert_eq!(s, 400);
+
     let list = c.get("/v1/experiments").await;
     assert_eq!(list["experiments"][0]["status"], "live");
     assert!(list["experiments"][0]["live"]["searches"].as_u64().unwrap() > 0);

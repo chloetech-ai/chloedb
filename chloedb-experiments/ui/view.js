@@ -868,30 +868,36 @@ function cohorts(ctx, rep, id, cuttable) {
       return;
     }
     const cells = rep.cohorts[attr].metrics[metric][arm].cells;
-    const [lo, hi] = domain(cells.flatMap((c) => [c.lift_lo, c.lift_hi, c.true_lift]).filter((x) => Number.isFinite(x) && Math.abs(x) < 3));
-    const overall = m.comparisons[arm];
-    const rows = cells.map((c) => {
-      const t = tone(m, c.lift_lo, c.lift_hi);
-      const sig = c.q < 0.05;
-      return h("tr", {},
-        h("td", { style: { fontWeight: 600 } }, c.cell),
-        h("td", { class: "num ex-num" }, core.fmt.n(c.users)),
-        h("td", { class: "num ex-num" }, unitValue(m, c.control.value)),
-        h("td", { class: "num ex-num " + toneClass(t) }, pctS(c.lift)),
-        h("td", {}, forest(core, { lo: c.lift_lo, hi: c.lift_hi, mid: c.lift, truth: c.true_lift, min: lo, max: hi, color: toneColor(t), width: 240 })),
-        h("td", { class: "num ex-num" }, pText(c.p), h("div", { class: "small " + (sig ? "" : "dim") }, `q ${pText(c.q)}`)),
-        h("td", { class: "num ex-num" }, power(c.power)),
-        h("td", { class: "num ex-num" }, c.true_lift == null ? "–" : [pctS(c.true_lift, 2), h("div", { class: "small " + (c.covers ? "dim" : "ex-bad") }, c.covers ? "inside" : "outside")]));
-    });
-    const differ = cells.filter((c) => c.true_lift != null && overall.true_lift != null && Math.abs(c.true_lift - overall.true_lift) > Math.abs(overall.true_lift) * 0.5 + 0.005);
-    box.replaceChildren(
-      h("p", { class: "ex-note" }, `Overall: ${pctS(overall.lift)} (${pctS(overall.lift_lo)} to ${pctS(overall.lift_hi)}), truly ${pctS(overall.true_lift, 2)}. Each ${attr} below is a test of its own; q is Benjamini-Hochberg over the ${cells.length} cells, the one to read before believing a cohort differs.`, differ.length ? ` Truly different from the rest: ${differ.map((c) => c.cell).join(", ")}.` : ""),
-      h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
-        h("thead", {}, h("tr", {}, h("th", {}, attr), h("th", { class: "num" }, "Users"), h("th", { class: "num" }, rep.arms[0].name), h("th", { class: "num" }, "Lift"), h("th", {}, "95% interval ◇ truth"), h("th", { class: "num" }, "p · q"), h("th", { class: "num" }, "Power"), h("th", { class: "num" }, "Truth"))),
-        h("tbody", {}, rows))));
+    box.replaceChildren(...cohortTable(ctx, m, cells, m.comparisons[arm], attr, rep.arms[0].name));
   }
   draw();
   return core.card({ title: "Cohorts", tools: h("div", { class: "row" }, attrSeg, secondSel, metricSel, armSel), body: box });
+}
+
+/** One attribute's cells of metric `m`: each a test of its own, with q over the cells and the truth. */
+function cohortTable(ctx, m, cells, overall, attr, control) {
+  const { core } = ctx;
+  const { h } = core;
+  const [lo, hi] = domain(cells.flatMap((c) => [c.lift_lo, c.lift_hi, c.true_lift]).filter((x) => Number.isFinite(x) && Math.abs(x) < 3));
+  const rows = cells.map((c) => {
+    const t = tone(m, c.lift_lo, c.lift_hi);
+    const sig = c.q < 0.05;
+    return h("tr", {},
+      h("td", { style: { fontWeight: 600 } }, c.cell),
+      h("td", { class: "num ex-num" }, core.fmt.n(c.users)),
+      h("td", { class: "num ex-num" }, unitValue(m, c.control.value)),
+      h("td", { class: "num ex-num " + toneClass(t) }, pctS(c.lift)),
+      h("td", {}, forest(core, { lo: c.lift_lo, hi: c.lift_hi, mid: c.lift, truth: c.true_lift, min: lo, max: hi, color: toneColor(t), width: 240 })),
+      h("td", { class: "num ex-num" }, pText(c.p), h("div", { class: "small " + (sig ? "" : "dim") }, `q ${pText(c.q)}`)),
+      h("td", { class: "num ex-num" }, power(c.power)),
+      h("td", { class: "num ex-num" }, c.true_lift == null ? "–" : [pctS(c.true_lift, 2), h("div", { class: "small " + (c.covers ? "dim" : "ex-bad") }, c.covers ? "inside" : "outside")]));
+  });
+  const differ = cells.filter((c) => c.true_lift != null && overall.true_lift != null && Math.abs(c.true_lift - overall.true_lift) > Math.abs(overall.true_lift) * 0.5 + 0.005);
+  return [
+    h("p", { class: "ex-note" }, `Overall: ${pctS(overall.lift)} (${pctS(overall.lift_lo)} to ${pctS(overall.lift_hi)}), truly ${pctS(overall.true_lift, 2)}. Each ${attr} below is a test of its own; q is Benjamini-Hochberg over the ${cells.length} cells, the one to read before believing a cohort differs.`, differ.length ? ` Truly different from the rest: ${differ.map((c) => c.cell).join(", ")}.` : ""),
+    h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
+      h("thead", {}, h("tr", {}, h("th", {}, attr), h("th", { class: "num" }, "Users"), h("th", { class: "num" }, control), h("th", { class: "num" }, "Lift"), h("th", {}, "95% interval ◇ truth"), h("th", { class: "num" }, "p · q"), h("th", { class: "num" }, "Power"), h("th", { class: "num" }, "Truth"))),
+        h("tbody", {}, rows)))];
 }
 
 function heat(ctx, m, cells, a, b) {
@@ -1135,6 +1141,32 @@ async function livePage(ctx, root, go, meta, id, onStop) {
   const chartTitle = h("span"), pTitle = h("span", {}, "Peeking, safely");
   const table = h("div", { class: "tbl-wrap" });
   const agentsBox = h("div", { class: "ex-agents" });
+  // Cohorts, now: the picked metric by one or two attributes, every few seconds.
+  const ATTRS = meta.attributes || ["age", "gender", "country", "device", "tenure"];
+  let coAttr = "device", coSecond = "", coArm = 0, coBusy = false, coLast = 0;
+  const coBox = h("div", {}, h("div", { class: "small dim" }, "The cohorts come once users have searched."));
+  const coTitle = h("span", {}, "Cohorts, now");
+  const coSeg = core.seg(ATTRS.map((x) => [x, x]), coAttr, (x) => { coAttr = x; drawCohorts(true); });
+  const coSecondSel = h("select", { class: "select sm", onchange: () => { coSecond = coSecondSel.value; drawCohorts(true); } }, h("option", { value: "" }, "and by…"), ATTRS.map((x) => h("option", { value: x }, x)));
+  const coArmSel = k > 2 ? h("select", { class: "select sm", onchange: () => { coArm = +coArmSel.value; drawCohorts(true); } }, arms.slice(1).map((x, i) => h("option", { value: i }, x.name))) : null;
+  async function drawCohorts(force) {
+    if (coBusy || (!force && Date.now() - coLast < 3000)) return;
+    const ms = v.metrics || [];
+    // nDCG is the judges', the same for every user of a query: the cohorts are cut on the users' metrics.
+    const mk = ms.some((x) => x.key === metricKey && x.key !== "ndcg") ? metricKey : v.spec?.primary || "success";
+    const m = ms.find((x) => x.key === mk);
+    if (!m || !(v.searches > 0)) return;
+    coBusy = true;
+    coLast = Date.now();
+    const by = coSecond && coSecond !== coAttr ? [coAttr, coSecond] : [coAttr];
+    try {
+      const t = await ctx.api(`${path}/cohorts`, { method: "POST", body: { by } });
+      const cells = t.metrics[mk][coArm].cells;
+      coTitle.textContent = `Cohorts, now: ${m.title} by ${by.join(" and ")}${mk !== metricKey ? " (nDCG is the judges', the same for everyone)" : ""}`;
+      coBox.replaceChildren(...(by.length === 2 ? [heat(ctx, m, cells, by[0], by[1])] : cohortTable(ctx, m, cells, m.comparisons[coArm], coAttr, arms[0].name)));
+    } catch (e) { coBox.replaceChildren(h("div", { class: "error" }, e.message)); }
+    coBusy = false;
+  }
   const agentScore = h("div");
   const feedBox = h("div", { class: "ex-feed" });
 
@@ -1175,13 +1207,14 @@ async function livePage(ctx, root, go, meta, id, onStop) {
   root.append(...[head, clock, banner, kpiBox, verdictBox,
     core.card({ title: h("span", {}, chartTitle), sub: "each arm against the control, as the searches come: the line, its 95% interval, and the truth", body: h("div", {}, pick, h("div", { class: "ex-g2" }, chartL, h("div", {}, h("div", { class: "small", style: { fontWeight: 600, marginBottom: "4px" } }, pTitle), chartR, chartNote))) }),
     core.card({ title: "Every metric, now", sub: "a row charts it above; ◇ marks the truth", body: table, flush: true }),
+    core.card({ title: coTitle, sub: "the metric picked above, each cohort a test of its own, every few seconds", tools: h("div", { class: "row" }, coSeg, coSecondSel, coArmSel), body: coBox }),
     v.spec?.agents ? agentsCard : null,
     h("div", { class: "ex-g3" },
       core.card({ title: "What's happening", sub: "a sample of the simulated users' searches, and everything the agents and you do", body: feedBox }),
       core.card({ title: "Try it yourself", body: h("div", { style: { display: "grid", gap: "8px", gridTemplateColumns: "minmax(0, 1fr)" } }, h("div", { class: "row nw" }, tryIn, tryBtn), tryOut) })),
     v.spec?.agents ? null : agentsCard].filter(Boolean));
 
-  const pickMetric = (key) => { metricKey = key; drawChart(); drawTable(); };
+  const pickMetric = (key) => { metricKey = key; drawChart(); drawTable(); drawCohorts(true); };
   function drawPick() {
     pick.replaceChildren(...(v.metrics || []).map((m) => h("button", { type: "button", "aria-pressed": String(m.key === metricKey), onclick: () => pickMetric(m.key) }, m.title)));
   }
@@ -1296,6 +1329,7 @@ async function livePage(ctx, root, go, meta, id, onStop) {
     if (pick.children.length !== (v.metrics || []).length) drawPick();
     drawChart();
     drawTable();
+    drawCohorts(st !== "live");
     agentsBox.replaceChildren(...(v.agents || []).map((a) => agentCard(core, a, arms)));
     agentScore.replaceChildren(v.spec?.agents || (v.visitor_tally || []).some((t) => t.searches) ? agentTable(core, v.agent_tally || [], v.visitor_tally, arms) : h("span"));
     drawFeed(fresh);
