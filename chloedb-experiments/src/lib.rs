@@ -10,6 +10,7 @@ pub mod app;
 pub mod check;
 pub mod click;
 pub mod estimate;
+pub mod live;
 pub mod policy;
 pub mod server;
 pub mod sim;

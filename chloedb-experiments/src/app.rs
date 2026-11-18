@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 
 use crate::ab::{self, Progress, RunData, Spec};
 use crate::click::Model;
+use crate::live::{self, Brain, Live, LiveSpec};
 use crate::policy::Policy;
 use crate::server::{lit, Server};
 use crate::site::{self, Site, Tables};
@@ -43,6 +44,11 @@ pub struct Opts {
     pub token: Option<String>,
     /// BEIR collections to load as sites at the start: (directory, name).
     pub beir: Vec<(PathBuf, String)>,
+    /// The key AI agents call Claude with (ANTHROPIC_API_KEY); without
+    /// one, live runs offer only scripted agents.
+    pub anthropic_key: Option<String>,
+    /// The Messages API's address (default https://api.anthropic.com).
+    pub anthropic_base: Option<String>,
 }
 
 pub struct App {
@@ -53,6 +59,10 @@ pub struct App {
     progress: Mutex<HashMap<String, Arc<Progress>>>,
     kept: Mutex<VecDeque<(String, Arc<RunData>)>>,
     turn: tokio::sync::Semaphore,
+    /// The live runs in memory, newest first: the one running, and a few that ended.
+    lives: Mutex<VecDeque<Arc<Live>>>,
+    anthropic_key: Option<String>,
+    anthropic_base: String,
 }
 
 type Shared = Arc<App>;
@@ -138,6 +148,10 @@ impl App {
         k.truncate(KEPT);
     }
 
+    fn live(&self, id: &str) -> Option<Arc<Live>> {
+        self.lives.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|l| l.id == id).cloned()
+    }
+
     fn kept_run(&self, id: &str) -> Option<Arc<RunData>> {
         self.kept.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(x, _)| x == id).map(|(_, d)| d.clone())
     }
@@ -152,6 +166,9 @@ pub async fn serve(server: Server, listener: tokio::net::TcpListener, o: Opts) -
         progress: Mutex::new(HashMap::new()),
         kept: Mutex::new(VecDeque::new()),
         turn: tokio::sync::Semaphore::new(1),
+        lives: Mutex::new(VecDeque::new()),
+        anthropic_key: o.anthropic_key.filter(|k| !k.trim().is_empty()),
+        anthropic_base: o.anthropic_base.filter(|b| !b.trim().is_empty()).unwrap_or_else(|| "https://api.anthropic.com".into()),
     });
     {
         let app = app.clone();
@@ -186,7 +203,7 @@ async fn start(app: Shared, beir: Vec<(PathBuf, String)>) {
         }
     }
     // Runs left queued or running by a process that ended.
-    if let Ok(a) = s.query(&format!("SELECT id FROM {EXPERIMENTS} WHERE status IN ('queued', 'running')"), json!({}), None).await {
+    if let Ok(a) = s.query(&format!("SELECT id FROM {EXPERIMENTS} WHERE status IN ('queued', 'running', 'live')"), json!({}), None).await {
         for r in a["rows"].as_array().into_iter().flatten() {
             if let Some(id) = r[0].as_str() {
                 if let Ok(mut row) = app.row(id).await {
@@ -235,6 +252,13 @@ pub fn router(app: Shared) -> Router {
         .route("/v1/experiments", get(experiments).post(create))
         .route("/v1/experiments/:id", get(experiment).delete(remove))
         .route("/v1/experiments/:id/cut", post(cut))
+        .route("/v1/live", get(lives).post(create_live))
+        .route("/v1/live/:id", get(one_live))
+        .route("/v1/live/:id/stop", post(stop_live))
+        .route("/v1/live/:id/rate", post(rate_live))
+        .route("/v1/live/:id/try", post(try_search))
+        .route("/v1/live/:id/try/open", post(try_open))
+        .route("/v1/live/:id/try/done", post(try_done))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(app)
@@ -295,8 +319,9 @@ async fn view(headers: HeaderMap) -> Response {
 
 /// What the builder offers: click models, metrics, cohorts, defaults and
 /// limits.
-async fn meta() -> Json<Value> {
+async fn meta(State(app): State<Shared>) -> Json<Value> {
     let d: Spec = serde_json::from_value(json!({"name": "", "site": "", "arms": []})).expect("the defaults");
+    let live_defaults: LiveSpec = serde_json::from_value(json!({"name": "", "site": "", "arms": []})).expect("the defaults");
     let models: Vec<Value> = [
         (Model::Pbm, "Position-based: a row is seen by its position alone, clicked if it looks right."),
         (Model::Cascade, "Cascade: people read down, click the first row that looks right and stop."),
@@ -315,6 +340,12 @@ async fn meta() -> Json<Value> {
         "values": {"age": AGES, "gender": GENDERS, "country": COUNTRIES, "device": DEVICES, "tenure": TENURES},
         "defaults": d,
         "limits": {"users": ab::MAX_USERS, "fast": ab::MAX_FAST, "served": ab::MAX_SERVED, "arms": ab::MAX_ARMS},
+        "live": {
+            "defaults": live_defaults,
+            "limits": {"users": live::MAX_USERS, "rate": live::MAX_RATE, "minutes": live::MAX_MINUTES, "agents": live::MAX_AGENTS, "budget": live::MAX_BUDGET, "steps": live::AGENT_STEPS},
+            "models": live::AGENT_MODELS.iter().map(|(id, name, pin, pout, fallbacks)| json!({"id": id, "name": name, "input": pin, "output": pout, "fallbacks": fallbacks})).collect::<Vec<_>>(),
+            "claude": app.anthropic_key.is_some(),
+        },
         "policies": [
             {"name": "Softmax over the top 10", "explore": {"policy": "softmax", "tau": 1.0, "top": 10, "by": "rank"}},
             {"name": "Epsilon 0.3 over the top 10", "explore": {"policy": "epsilon", "epsilon": 0.3, "top": 10}},
@@ -419,7 +450,11 @@ async fn experiments(State(app): State<Shared>) -> Answer {
         .flatten()
         .map(|r| {
             let id = r[0].as_str().unwrap_or_default();
-            json!({"id": r[0], "name": r[1], "site": r[2], "created": r[3], "status": r[4], "summary": r[5].as_str().and_then(|s| serde_json::from_str::<Value>(s).ok()), "error": r[6], "seconds": r[7], "progress": progress.get(id).map(|p| progress_of(p))})
+            let live = (r[4] == "live").then(|| app.live(id)).flatten().map(|l| {
+                let v = l.view(Some(u64::MAX), u64::MAX);
+                json!({"status": v["status"], "stage": v["stage"], "elapsed": v["elapsed"], "limit_s": v["limit_s"], "searches": v["searches"], "agents": l.spec.agents})
+            });
+            json!({"id": r[0], "name": r[1], "site": r[2], "created": r[3], "status": r[4], "summary": r[5].as_str().and_then(|s| serde_json::from_str::<Value>(s).ok()), "error": r[6], "seconds": r[7], "progress": progress.get(id).map(|p| progress_of(p)), "live": live})
         })
         .collect();
     Ok(Json(json!({"experiments": rows})))
@@ -436,16 +471,18 @@ async fn experiment(State(app): State<Shared>, Path(id): Path<String>) -> Answer
         r["progress"] = progress_of(p);
     }
     r["cuttable"] = json!(app.kept_run(&id).is_some());
+    r["live"] = json!(app.live(&id).is_some());
     Ok(Json(r))
 }
 
 async fn remove(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
     let r = app.row(&id).await?;
-    if r["status"] == "running" || r["status"] == "queued" {
+    if r["status"] == "running" || r["status"] == "queued" || r["status"] == "live" {
         return Err(ApiError(StatusCode::CONFLICT, "this experiment is running: wait for it to end".into()));
     }
     app.server.write(vec![json!({"op": "delete", "table": EXPERIMENTS, "key": id})]).await.map_err(upstream)?;
-    if r["spec"]["mode"] == "served" {
+    app.lives.lock().unwrap_or_else(|e| e.into_inner()).retain(|l| l.id != id);
+    if r["spec"]["mode"] == "served" || r["spec"]["mode"] == "live" {
         for t in [format!("exp_log_{id}"), format!("exp_events_{id}")] {
             let _ = app.server.sql(&format!("DROP TABLE IF EXISTS {t}"), json!({})).await;
         }
@@ -528,4 +565,149 @@ async fn run_one(app: &Shared, spec: &Spec, id: &str, mut site: Site, progress: 
     });
     app.keep_run(id, d);
     Ok((summary, report, seconds))
+}
+
+// ------------------------------------------------------------ live runs
+
+async fn lives(State(app): State<Shared>) -> Answer {
+    let ls: Vec<Arc<Live>> = app.lives.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
+    let out: Vec<Value> = ls
+        .iter()
+        .map(|l| {
+            let v = l.view(Some(u64::MAX), u64::MAX);
+            json!({"id": l.id, "name": l.spec.name, "site": l.spec.site, "created": l.created, "status": v["status"], "elapsed": v["elapsed"], "limit_s": v["limit_s"], "searches": v["searches"], "agents": l.spec.agents})
+        })
+        .collect();
+    Ok(Json(json!({"live": out})))
+}
+
+async fn create_live(State(app): State<Shared>, Json(spec): Json<LiveSpec>) -> Answer {
+    spec.check().map_err(bad)?;
+    if let Some(on) = app.lives.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|l| matches!(l.status(), "starting" | "live" | "ending")) {
+        return Err(ApiError(StatusCode::CONFLICT, format!("a live run is on ({}): stop it first", on.spec.name)));
+    }
+    let brain = if spec.agents == 0 || spec.brain == "scripted" {
+        Brain::Scripted
+    } else {
+        match &app.anthropic_key {
+            Some(k) => Brain::Claude { key: k.clone(), model: spec.agent_model.clone(), base: app.anthropic_base.clone() },
+            None => return Err(bad("Claude agents need an API key: start the app with ANTHROPIC_API_KEY, or choose scripted agents")),
+        }
+    };
+    let site = app.site(&spec.site).await?;
+    let t = app.tables(&spec.site).await?;
+    let about = if t.about.trim().is_empty() { format!("the site {}, a table of ChloeDB", t.name) } else { t.about.clone() };
+    let created = now_ms();
+    let id = format!("l{created}{:04x}", crate::policy::Rng::of(&format!("{}{created}", spec.name)).next_u64() & 0xffff);
+    let mut saved = serde_json::to_value(&spec).map_err(|e| bad(e.to_string()))?;
+    saved["mode"] = json!("live");
+    let saved = saved.to_string();
+    app.save(&id, json!({"name": spec.name, "site": spec.site, "created": created, "status": "live", "spec": saved})).await.map_err(upstream)?;
+    let l = Arc::new(Live::new(app.server.clone(), &id, spec.clone(), about, brain, created));
+    {
+        let mut ls = app.lives.lock().unwrap_or_else(|e| e.into_inner());
+        ls.push_front(l.clone());
+        ls.truncate(3);
+    }
+    {
+        let (app, id) = (app.clone(), id.clone());
+        tokio::spawn(async move {
+            let base = json!({"name": spec.name, "site": spec.site, "created": created, "spec": saved});
+            let r = l.clone().run((*site).clone()).await;
+            let result: Result<(Value, Value, f64, Arc<RunData>), String> = async {
+                r?;
+                let d = Arc::new(l.run_data().ok_or("the run never started")?);
+                let d2 = d.clone();
+                let mut report = tokio::task::spawn_blocking(move || ab::report(&d2)).await.map_err(|e| e.to_string())?;
+                let seconds = d.seconds;
+                report["seconds"] = json!(seconds);
+                report["spec"] = json!(d.spec);
+                report["live"] = l.live_part();
+                let summary = json!({
+                    "verdicts": report["verdicts"], "srm": report["srm"]["ok"], "users": report["users"], "searches": report["searches"],
+                    "primary": d.spec.primary, "arms": d.spec.arms.iter().map(|a| &a.name).collect::<Vec<_>>(), "mode": "live", "model": d.spec.model,
+                    "agents": l.spec.agents, "cost": report["live"]["cost"],
+                });
+                Ok((summary, report, seconds, d))
+            }
+            .await;
+            let mut row = base;
+            let failed = match result {
+                Ok((summary, report, seconds, d)) => {
+                    row["status"] = json!("done");
+                    row["summary"] = json!(summary.to_string());
+                    row["report"] = json!(report.to_string());
+                    row["seconds"] = json!(seconds);
+                    app.keep_run(&id, d);
+                    None
+                }
+                Err(e) => {
+                    row["status"] = json!("failed");
+                    row["error"] = json!(e);
+                    Some(e)
+                }
+            };
+            if let Err(e) = app.save(&id, row).await {
+                eprintln!("chloedb-experiments: saving {id}: {e}");
+            }
+            match failed {
+                None => l.done(),
+                Some(e) => l.failed(e),
+            }
+        });
+    }
+    Ok(Json(json!({"id": id})))
+}
+
+#[derive(serde::Deserialize)]
+struct ViewQ {
+    after: Option<u64>,
+    since: Option<u64>,
+}
+
+fn live_or_404(app: &App, id: &str) -> Result<Arc<Live>, ApiError> {
+    app.live(id).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("live run {id} is not in memory (the app keeps the last three): open its report")))
+}
+
+async fn one_live(State(app): State<Shared>, Path(id): Path<String>, Query(q): Query<ViewQ>) -> Answer {
+    let l = live_or_404(&app, &id)?;
+    Ok(Json(l.view(q.after, q.since.unwrap_or(0))))
+}
+
+async fn stop_live(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
+    let l = live_or_404(&app, &id)?;
+    l.stop();
+    Ok(Json(json!({"stopping": true})))
+}
+
+async fn rate_live(State(app): State<Shared>, Path(id): Path<String>, Json(b): Json<Value>) -> Answer {
+    let l = live_or_404(&app, &id)?;
+    let r = l.set_rate(b["rate"].as_f64().ok_or_else(|| bad("give a rate: searches a second"))?).map_err(bad)?;
+    Ok(Json(json!({"rate": r})))
+}
+
+async fn try_search(State(app): State<Shared>, Path(id): Path<String>, Json(b): Json<Value>) -> Answer {
+    let l = live_or_404(&app, &id)?;
+    let q = b["q"].as_str().unwrap_or("").trim();
+    if q.is_empty() || q.chars().count() > 300 {
+        return Err(bad("search for something (up to 300 characters)"));
+    }
+    if l.status() != "live" {
+        return Err(ApiError(StatusCode::CONFLICT, "the run is not live".into()));
+    }
+    Ok(Json(l.try_search(b["who"].as_str().unwrap_or("you"), q).await.map_err(bad)?))
+}
+
+async fn try_open(State(app): State<Shared>, Path(id): Path<String>, Json(b): Json<Value>) -> Answer {
+    let l = live_or_404(&app, &id)?;
+    let request = b["request"].as_str().ok_or_else(|| bad("which page (request)?"))?;
+    let n = b["result"].as_u64().ok_or_else(|| bad("which result?"))? as usize;
+    Ok(Json(l.try_open(request, n).await.map_err(bad)?))
+}
+
+async fn try_done(State(app): State<Shared>, Path(id): Path<String>, Json(b): Json<Value>) -> Answer {
+    let l = live_or_404(&app, &id)?;
+    let request = b["request"].as_str().ok_or_else(|| bad("which page (request)?"))?;
+    let n = b["result"].as_u64().unwrap_or(0) as usize;
+    Ok(Json(l.try_done(request, n, b["found"].as_bool().unwrap_or(false)).map_err(bad)?))
 }

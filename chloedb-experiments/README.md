@@ -61,12 +61,44 @@ query's share of the traffic) and their judged rows (`query`, `doc`,
 | `GET /v1/experiments`, `POST /v1/experiments` | the experiments; a spec starts one in the background |
 | `GET /v1/experiments/<id>`, `DELETE /v1/experiments/<id>` | one experiment, its progress and its report |
 | `POST /v1/experiments/<id>/cut` | every metric by two attributes at once, for the last three runs |
+| `GET /v1/live`, `POST /v1/live` | live runs; a spec starts one (one at a time) |
+| `GET /v1/live/<id>?after=&since=` | a live run now: every metric per arm, the points after `after`, the feed after `since`, the agents |
+| `POST /v1/live/<id>/stop`, `POST /v1/live/<id>/rate` | stop it (it becomes an experiment), or change its searches a second |
+| `POST /v1/live/<id>/try`, `/try/open`, `/try/done` | search the site as a visitor in the run, open a result, say it answered |
 
 Sites and experiments are rows of the server (`exp_sites`,
 `exp_experiments`); a served run's rank log and events are tables of their
 own (`exp_log_<id>`, `exp_events_<id>`), dropped with it. The page is
 `ui/view.js`, compiled in; `CHLOEDB_EXPERIMENTS_UI_DIR=ui` reads it from
 disk.
+
+### Live runs
+
+A live run (the builder's Live mode, or Watch one live on the home page) is
+an experiment you watch as it happens. Simulated users arrive at the rate
+you set (up to 400 searches a second, changed while it runs), each search a
+logged query to ChloeDB under the user's arm and its clicks written back as
+events. Each second the page shows every metric per arm with its interval,
+its fixed-size p value beside the always-valid one (only the second may be
+read at every second), the truth from the click model, and the judged
+quality (nDCG) of what each arm showed. The call is made on the
+always-valid p value. When the time is up, or you stop it, the run becomes
+an experiment with the full report and an Agents tab.
+
+AI agents are people of the population, each in the arm the split gives
+it, sent to the site's search with a need of their own (a query of the
+site, which the judges graded): they search, read the page, open results
+and say whether one answered. Claude plays them through the Messages API
+when the app has `ANTHROPIC_API_KEY` (`ANTHROPIC_BASE_URL` for another
+endpoint): the model is picked in the builder, each call at low effort with
+server-side fallbacks on a refusal for the models that have them, and the
+agents stop when the run's budget (at most $20) is spent, the cost worked
+out from the tokens each call reports. Without a key, scripted agents do
+the same with no model. Their finds are scored apart from the simulated
+users': whether they found it, whether the judges grade what they found
+relevant, searches and opens a task, and each task's first page nDCG. You
+can search the site in the run yourself, from the page, as one more
+visitor.
 
 ## The simulator
 
@@ -257,7 +289,9 @@ fast mode.
 cargo test --profile ci
 ```
 
-`tests/served.rs` and `tests/app.rs` (the app's API, a fast and a served
-experiment, on a site of its own tables) need the chloedb-server binary: `CHLOEDB_SERVER_BIN`, or
+`tests/served.rs`, `tests/app.rs` (the app's API, a fast and a served
+experiment, on a site of its own tables) and `tests/live.rs` (a live run
+with Claude agents against a fake Messages API, a visitor, the rate
+changed, stopped into a report) need the chloedb-server binary: `CHLOEDB_SERVER_BIN`, or
 `../chloedb-server/target/{ci,release}/chloedb-server`. Without it, they
 are skipped unless `CHLOEDB_EXPERIMENTS_NEED_SERVER` is set.
