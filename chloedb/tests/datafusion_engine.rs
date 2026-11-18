@@ -582,3 +582,70 @@ fn a_function_of_a_case_holds_on_every_row_of_a_batch() {
     assert!(on_datafusion(&got), "{:?}", got.stats.plan);
     assert_eq!(got.rows, (1..=3).map(|i| vec![int(i), int(5)]).collect::<Vec<_>>());
 }
+
+/// SAM-203 (persona study, round 2): a `SUM` or `AVG` of `FLOAT` values is
+/// exact on DataFusion too, the same bits as the operators', so an answer
+/// does not change when a table grows past the 4,096 rows at which `auto`
+/// hands a plan to DataFusion. Two customers of Chinook spent 43.62 each;
+/// added in order, one total is 43.620000000000005, and a RANK of the two
+/// broke their tie once the table had 4,414 rows.
+#[test]
+fn float_sums_are_exact_on_either_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create_empty(&dir.path().join("pay.strata"), DbOptions { sync: false, ..DbOptions::default() }).unwrap();
+    let none = Params::new();
+    db.sql("CREATE TABLE pay (id INT PRIMARY KEY, cid INT, amount FLOAT)", &none).unwrap();
+    db.sql("CREATE TABLE cust (id INT PRIMARY KEY, name KEYWORD)", &none).unwrap();
+    db.sql("INSERT INTO cust (id, name) VALUES (1, 'A'), (2, 'B'), (3, 'pad'), (4, 'big'), (5, 'inf')", &none).unwrap();
+    let a = [1.98, 15.86, 8.91, 1.98, 7.96, 5.94, 0.99];
+    let b = [1.98, 13.86, 8.91, 1.98, 3.96, 11.94, 0.99];
+    let mut rows: Vec<String> = Vec::new();
+    for (cid, xs) in [(1, &a[..]), (2, &b[..]), (4, &[1e308, 1e308, -1e308][..])] {
+        for x in xs {
+            rows.push(format!("({}, {cid}, {x:?})", rows.len() + 1));
+        }
+    }
+    // A frame whose sum passes f64's largest and comes back as it moves.
+    for x in ["1e308", "1e308", "1.0", "-1e308", "3.0"] {
+        rows.push(format!("({}, 5, {x})", rows.len() + 1));
+    }
+    // Rows the WHERE leaves out, past 4,096.
+    for i in 0..4200 {
+        rows.push(format!("({}, 3, 1.0)", 1000 + i));
+    }
+    db.sql(&format!("INSERT INTO pay (id, cid, amount) VALUES {}", rows.join(", ")), &none).unwrap();
+    let ran_on_datafusion = |rs: &ResultSet| rs.stats.plan.iter().any(|l| l.starts_with("datafusion:"));
+    let f = Value::Float;
+    let t = |s: &str| Value::Str(s.into());
+    let tie = "SELECT c.name, SUM(p.amount) AS s, AVG(p.amount) AS a, RANK() OVER (ORDER BY SUM(p.amount) DESC) AS r FROM pay p JOIN cust c ON p.cid = c.id WHERE c.name IN ('A', 'B') GROUP BY c.name ORDER BY c.name";
+    let avg = 43.62 / 7.0;
+    let want = vec![vec![t("A"), f(43.62), f(avg), Value::Int(1)], vec![t("B"), f(43.62), f(avg), Value::Int(1)]];
+    let big = "WITH q AS (SELECT cid, amount FROM pay) SELECT cid, SUM(amount), AVG(amount), COUNT(amount) FROM q GROUP BY cid ORDER BY cid";
+    let windows = "SELECT id, SUM(amount) OVER (PARTITION BY cid ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS w, AVG(amount) OVER (PARTITION BY cid ORDER BY id) AS run FROM pay WHERE cid <> 3 ORDER BY id";
+    for sql in [tie, big, windows] {
+        let ops = run(&db, sql, Engine::Operators);
+        for engine in [Engine::DataFusion, Engine::Auto] {
+            let got = run(&db, sql, engine);
+            assert!(ran_on_datafusion(&got) || engine == Engine::Auto, "{sql} ({engine:?}): {:?}", got.stats.plan);
+            // The same bits, not only near.
+            assert_eq!(got.rows, ops.rows, "{sql} ({engine:?})");
+        }
+        if sql == tie {
+            assert_eq!(ops.rows, want);
+        }
+        if sql == big {
+            let r = &ops.rows;
+            assert_eq!(r[0][1], f(43.62));
+            assert_eq!(r[2], vec![Value::Int(3), f(4200.0), f(1.0), Value::Int(4200)]);
+            assert_eq!(r[3], vec![Value::Int(4), f(1e308), f(1e308 / 3.0), Value::Int(3)], "summed exactly, not through infinity");
+            assert_eq!((&r[4][1], &r[4][3]), (&f(1e308), &Value::Int(5)), "{:?}", r[4]);
+        }
+        if sql == windows {
+            // 1e308 + 1e308 rounds to infinity, but the frame after it,
+            // 1e308 + 1, is 1e308 again: taken away exactly, not from
+            // infinity.
+            let five: Vec<Value> = ops.rows.iter().rev().take(5).rev().map(|r| r[1].clone()).collect();
+            assert_eq!(five, vec![f(1e308), f(f64::INFINITY), f(1e308), f(-1e308), f(-1e308)], "{:?}", ops.rows);
+        }
+    }
+}
