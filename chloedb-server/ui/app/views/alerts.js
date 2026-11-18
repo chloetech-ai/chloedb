@@ -954,12 +954,28 @@ function alertHub(page, id, r) {
     noteIn.placeholder = !fleet ? "Notes need a newer server" : !w8 ? Needs("write", ACK) : "Add a note: what you found, what you did";
   }
 
+  // What this alert sent a route (GRACE-305): its own messages of the
+  // episode firing now, or of the last one, as the server that sent them
+  // keeps them; never another alert's delivery or a route's test.
+  function notifiedOf(rt, named) {
+    const pre = named ? `${rt.name}: ` : "";
+    const mine = (x.notified || []).filter((n) => n.route === rt.name);
+    const last = mine[mine.length - 1];
+    const word = (n) => n.state === "resolved" ? "RESOLVED" : "FIRING";
+    if (last && !last.ok) return h("span", { class: "al-bad", title: last.error || "" }, `${pre}${word(last)} not delivered (${hm(last.at_ms)}): ${last.error || "it failed"}`);
+    if (last) return h("span", { class: "al-good", title: mine.map((n) => `${word(n)} ${n.ok ? "delivered" : "failed"} ${hm(n.at_ms)}${n.context ? ` (${n.context})` : ""}`).join("\n") }, `${pre}${word(last)} delivered ${when(last.at_ms)}`);
+    const pg = pagerOf(m);
+    if (x.paged && pg && !pg.me) return `${pre}sent by ${hostOf(x.paged.by)}: its page there shows the delivery`;
+    if (x.state === "firing" && x.paged) return x.paged.routes && !x.paged.routes.includes(rt.name) ? `${pre}not sent yet: a route added after it fired gets it within seconds` : `${pre}sent before this server started`;
+    if (x.state === "firing" || x.state === "pending") return `${pre}nothing sent yet`;
+    return `${pre}no message of this alert since this server started`;
+  }
+
   function drawKpis() {
     loadRunbooks(drawKpis);
     // Who is told: the rule's own route, or else every route that takes its severity (as the server sends).
     const takes = (rt) => rt.legacy || !rt.severities?.length || rt.severities.includes(rule.severity);
     const told = rule.route ? m.routes.filter((rt) => rt.name === rule.route) : m.routes.filter(takes);
-    const failing = (rt) => rt.last_error && (!rt.last_ok_ms || (rt.last_error_ms || 0) > rt.last_ok_ms);
     const route = told.length === 1 ? told[0] : null;
     const evs = (one?.events || m.events).filter((e) => e.rule === id);
     const fired = evs.filter((e) => e.what === "fired").sort((a, b) => a.ts - b.ts);
@@ -972,10 +988,8 @@ function alertHub(page, id, r) {
       kp("Owner", rule.owner || h("span", { class: "muted" }, "No owner"), rule.owner ? null : can("admin") ? h("button", { class: "al-link", onclick: ed }, "Set an owner") : "the rule names none"),
       kp("Runbook", (() => { const rb = runbookOf({ ...rule, id }); return rb ? h("a", { href: rb.url, target: "_blank", rel: "noopener", title: rb.own ? rb.url : `The server's runbook: ${rb.title}` }, rb.title, " ", icon("ext")) : h("span", { class: "muted" }, "No runbook"); })(), rule.description ? h("span", { title: rule.description }, rule.description) : rule.runbook ? null : builtInRunbook(id) ? "built in" : can("admin") ? h("button", { class: "al-link", onclick: ed }, "Add one") : null),
       kp("Notified", told.length > 1 ? told.map((rt) => rt.name).join(", ") : route ? (route.legacy ? "the webhook" : route.name) : h("span", { class: "muted" }, "Nobody"),
-        told.length > 1 ? h("span", { title: "Each route's last delivery, of any alert" }, told.map((rt, i) => [i ? " · " : "", failing(rt) ? h("span", { class: "al-bad", title: rt.last_error }, `${rt.name}: last send failed`) : rt.last_ok_ms ? `${rt.name} delivered ${hm(rt.last_ok_ms)}` : `${rt.name}: none sent since this server started`]))
-        : !route ? (rule.route ? `route ${rule.route} does not exist` : m.routes.length ? `no route takes ${rule.severity}` : "no route: add one in Routes") : route.legacy ? "--alert-webhook; delivery is not tracked by this server"
-          : failing(route) ? h("span", { class: "al-bad" }, `last send failed: ${route.last_error}`)
-            : route.last_ok_ms ? h("span", { class: "al-good", title: `${fmt.n(route.sent || 0)} sent since this server started` }, `delivered ${when(route.last_ok_ms)}`) : "none sent since this server started"),
+        !told.length ? (rule.route ? `route ${rule.route} does not exist` : m.routes.length ? `no route takes ${rule.severity}` : "no route: add one in Routes") : route?.legacy ? "--alert-webhook; delivery is not tracked by this server"
+          : h("span", {}, told.map((rt, i) => [i ? " · " : "", notifiedOf(rt, told.length > 1)]))),
       kp(`Noise${one ? " (7 days)" : " (in memory)"}`, `${fmt.plural(fired.length, "fire")} · ${fmt.plural(flaps, "flap")}`, lens.length ? `median ${dur(median(lens))} firing` : fired.length ? "still firing" : "it did not fire"));
   }
 
@@ -1209,16 +1223,31 @@ function editRule(rule, opts = {}) {
   // A rule on a query watches no metric: say so where the metric was.
   const sqlOpt = h("option", { value: "", hidden: true }, "the query below");
   metric.prepend(sqlOpt);
+  // On a query, the rule has no metric's unit, description or chart
+  // (MARCO-302): the threshold is the query's own number, as typed.
+  let sqlMode = !!x.sql;
+  // The metric picked before the query, to go back to when it is cleared.
+  let lastMetric = sqlMode ? null : x.metric;
   const syncSql = () => {
     const on = !!sqlIn.value.trim();
     metric.disabled = dis("metric") || on;
-    if (on) sqlOpt.selected = true;
-    else if (sqlOpt.selected) metric.value = metrics.includes(x.metric) && !/^sql_/.test(x.metric) ? x.metric : metrics.find((k) => !/^sql_/.test(k)) || "";
+    if (on) { if (!sqlMode && !/^sql_/.test(metric.value)) lastMetric = metric.value; sqlOpt.selected = true; }
+    else if (sqlOpt.selected) metric.value = [lastMetric, x.metric, "error_ratio"].find((k) => k && metrics.includes(k) && !/^sql_/.test(k)) || metrics.find((k) => !/^sql_/.test(k)) || "";
+    if (on !== sqlMode) {
+      // The thresholds as typed, read in the mode they were typed in.
+      x.threshold = fromInput(thr.value) ?? x.threshold;
+      const rv = fromInput(res.value);
+      x.resolve = rv == null ? undefined : rv;
+      sqlMode = on;
+      x.metric = on ? "sql_" + x.id : metric.value;
+      thr.value = toInput(x.threshold); res.value = toInput(x.resolve);
+      hintMetric();
+    }
+    run();
   };
   sqlIn.addEventListener("input", syncSql);
   setTimeout(syncSql, 0);
-  const hintMetric = () => { const d = METRICS[x.metric]; metricHint.textContent = d ? `${d[0]}${d[2] === "copy" ? " (copies only)" : ""} · unit: ${unitOf(x.metric) === "pct" ? "%" : unitOf(x.metric)}` : "a value of the server's points"; };
-  hintMetric();
+  const hintMetric = () => { const d = METRICS[x.metric]; metricHint.textContent = sqlMode ? "the query below: its first number, in the query's own unit" : d ? `${d[0]}${d[2] === "copy" ? " (copies only)" : ""} · unit: ${unitOf(x.metric) === "pct" ? "%" : unitOf(x.metric)}` : "a value of the server's points"; };
   const scopeSeg = seg(single() ? [["self", "this server"], ["each_copy", "this server's copy", "On one server, its own copy: the same points"]] : [["self", coordinator() ? "this coordinator" : "this server"], ["each_copy", `each copy (${fmt.n(allCopies())})`]], x.scope || "self", (v) => { x.scope = v; run(); }, { "aria-label": "Evaluated on" });
   const evalSeg = seg(Object.entries(EVAL).map(([k, l]) => [k, l]), x.eval || "all", (v) => { x.eval = v; run(); }, { "aria-label": "Value" });
   // The window keeps its seconds: a 10 s or 30 s window must not round to a minute on save.
@@ -1227,9 +1256,9 @@ function editRule(rule, opts = {}) {
   const winUnit = h("select", { class: "select", disabled: dis("window_s"), "aria-label": "Window unit", style: { width: "auto" } }, h("option", { value: "60", selected: inMin }, "min"), h("option", { value: "1", selected: !inMin }, "s"));
   const opSeg = seg(OPS.map((o) => [o, o]), x.op, (v) => { x.op = v; run(); }, { "aria-label": "Fires when the value is" });
   // Against the threshold, or against the same window just before (S4-5): then the threshold is a factor.
-  const pct = () => unitOf(x.metric) === "pct" && x.vs !== "before";
+  const pct = () => !sqlMode && unitOf(x.metric) === "pct" && x.vs !== "before";
   const vsSeg = seg([["", "a threshold"], ["before", "the window before"]], x.vs || "", (v) => { const was = pct(); read(); x.vs = v || undefined; if (pct() !== was) { thr.value = toInput(x.threshold); res.value = toInput(x.resolve); } if (v === "before" && !(Number(x.threshold) > 1)) { x.threshold = 2; x.resolve = 1.5; thr.value = 2; res.value = 1.5; } run(); }, { "aria-label": "Compared with" });
-  const unit = () => x.vs === "before" ? "times" : pct() ? "%" : unitOf(x.metric) === "ms" ? "ms" : unitOf(x.metric) === "/s" ? "/s" : unitOf(x.metric) === "h" ? "h" : "";
+  const unit = () => x.vs === "before" ? "times" : sqlMode ? "" : pct() ? "%" : unitOf(x.metric) === "ms" ? "ms" : unitOf(x.metric) === "/s" ? "/s" : unitOf(x.metric) === "h" ? "h" : "";
   const toInput = (v) => v == null || v === "" ? "" : pct() ? +(v * 100).toPrecision(6) : v;
   const fromInput = (v) => v === "" ? null : pct() ? Number(v) / 100 : Number(v);
   const thr = h("input", { class: "input", type: "number", step: "any", value: toInput(x.threshold), style: { width: "120px" }, disabled: dis("threshold"), "aria-label": "Threshold" });
@@ -1250,15 +1279,40 @@ function editRule(rule, opts = {}) {
   let span = fleet ? "7d" : "1h";
   const spanSeg = seg([["1h", "1 h"], ["24h", "24 h"], ["7d", "7 days"]], span, (v) => { span = v; run(); }, { "aria-label": "Backtest over" });
   const btChart = alertChart(220);
+  // A query rule has no past to shade or a span to pick (MARCO-302).
+  const btSub = h("span", { class: "sub" }, "shaded: when it would have fired");
+  const btTools = h("div", { class: "tools" }, spanSeg);
   const verdict = h("div", { class: "stack al-verdict", style: { gap: "4px" } });
   const btTitle = h("h3");
   const note = (t) => h("div", { class: "row nw small muted", style: { gap: "6px" } }, icon("info"), h("span", {}, t));
   const field = (label, el, hint) => h("label", { class: "f" }, label, el, hint ? h("span", { class: "tiny muted" }, hint) : null);
+  hintMetric();
 
   let btGen = 0;
+  // A query rule's query, run once now as the server runs it (its window's
+  // :since and :now): its value, to judge the threshold against.
+  async function tryQuery(r) {
+    const now = Date.now(), t0 = performance.now();
+    const j = await api("/v1/query", { body: { sql: r.sql, params: { since: new Date(now - (r.window_s || 300) * 1000).toISOString(), now: new Date(now).toISOString() }, timeout_ms: 10000 } });
+    const v = ((j.rows || [])[0] || []).find((c) => typeof c === "number" && Number.isFinite(c));
+    return { value: v ?? null, ms: performance.now() - t0 };
+  }
+  // Whether threshold `t` can be crossed by a query that answers `v` now:
+  // a share (0 to 1) against a threshold over 1, or a threshold a hundred
+  // times off, reads as a unit mistaken (20 typed for 20 %).
+  function thresholdOff(v, t) {
+    if (v == null || !Number.isFinite(t) || x.vs === "before") return null;
+    if (v >= 0 && v <= 1 && t > 1 && (x.op === ">" || x.op === ">=")) return `It answers ${fmt.n(v, 4)} now, a share between 0 and 1, so a threshold of ${t} can never be crossed: for ${t} %, write ${+(t / 100).toPrecision(6)}.`;
+    if (v !== 0 && t !== 0 && Math.sign(v) === Math.sign(t) && (Math.abs(t / v) >= 100 || Math.abs(v / t) >= 100)) return `It answers ${fmt.n(v, 4)} now, and the threshold is ${t}: over a hundred times ${Math.abs(t) > Math.abs(v) ? "more" : "less"}. Check the threshold is in the query's unit.`;
+    return null;
+  }
   async function backtest(r, from, to) {
-    // A query's value exists only from when its rule runs: nothing to replay.
-    if (r.sql) return { pts: [], spans: [], source: "sql", server: true, note: "A rule on a query has no past to replay: the server runs the query every 30 seconds once the rule is saved, and its values show on the rule's page from then on." };
+    // A query's value exists only from when its rule runs: nothing to replay; it is run once now.
+    if (r.sql) {
+      const base = "A rule on a query has no past to replay: the server runs the query every 30 seconds once the rule is saved, and its values show on the rule's page from then on.";
+      try { const t = await tryQuery(r); return { pts: [], spans: [], source: "sql", server: true, note: base, tried: t }; }
+      catch (e) { return { pts: [], spans: [], source: "sql", server: true, note: base, triedError: e.message }; }
+    }
     try {
       const j = await api("/v1/alerts/backtest", { body: { rule: cleanRule(r), from: Math.round(from), to: Math.round(to) } });
       return { pts: (j.points || []).map(btPoint), spans: (j.fired || []).map((f) => [f.from_ms, f.to_ms]), source: j.source, server: true, note: j.note || j.error, coveredFrom: j.covered_from || null, copies: j.copies || null, answered: j.answered, asked: j.asked };
@@ -1284,7 +1338,18 @@ function editRule(rule, opts = {}) {
       const changedRule = saved && JSON.stringify(cleanRule(saved)) !== JSON.stringify(cleanRule(x));
       const [a, b] = await Promise.all([backtest(x, from, now), changedRule ? backtest(saved, from, now).catch(() => null) : null]);
       if (my !== btGen) return;
-      if (a.source === "sql") { btTitle.textContent = "A rule on a query"; clear(verdict, note(a.note)); return; }
+      for (const el of [btChart, btSub, btTools]) el.style.display = a.source === "sql" ? "none" : "";
+      if (a.source === "sql") {
+        btTitle.textContent = "A rule on a query";
+        const off = a.tried && thresholdOff(a.tried.value, Number(x.threshold));
+        clear(verdict,
+          a.triedError ? h("div", { class: "row nw error small", style: { gap: "8px" } }, icon("warn"), h("span", {}, `Run now, the query failed: ${a.triedError}`))
+            : a.tried?.value == null ? h("div", { class: "row nw small", style: { gap: "8px" } }, icon("warn"), h("span", {}, "Run now, the query answered no number: the rule would have no data."))
+              : h("div", { class: "row nw", style: { gap: "8px" } }, icon(off ? "warn" : "okc"), h("span", {}, "Run now, it answers ", h("b", {}, fmt.n(a.tried.value, 6)), ` (in ${fmt.ms(a.tried.ms)}), against a threshold of ${x.threshold}.`)),
+          off ? h("div", { class: "row nw small warn al-thr-off", style: { gap: "8px" } }, icon("warn"), h("span", {}, off)) : null,
+          note(a.note));
+        return;
+      }
       const fmtv = (v) => fvr(x, v);
       const perCopy = (a.copies || []).filter((c) => c.points?.length);
       const series = perCopy.length
@@ -1344,7 +1409,7 @@ function editRule(rule, opts = {}) {
       x.sql_run ? h("div", { class: "small " + (x.sql_run.error ? "error" : "muted") }, x.sql_run.error ? `Its last run failed: ${x.sql_run.error}` : `Last run ${fmt.ago(x.sql_run.at_ms)}: ${fmt.n(x.sql_run.value, 3)} in ${fmt.ms(x.sql_run.took_ms)}`) : null,
       h("div", { class: "row al-ed-row" }, field("Evaluated on", scopeSeg), field("Value", evalSeg), h("label", { class: "f" }, "Window", h("span", { class: "row nw", style: { gap: "4px" } }, win, winUnit)), field("Compared with", vsSeg, "the window before: fires when the value is the threshold times the one before")),
       h("div", { class: "row al-ed-row" }, field("Fires when the value is", opSeg), h("label", { class: "f" }, "Threshold", h("span", { class: "row nw", style: { gap: "4px" } }, thr, unitEls[0])), field("Held for, seconds", forS), field("Severity", sevSeg), h("label", { class: "f" }, "Resolves at", h("span", { class: "row nw", style: { gap: "4px" } }, res, unitEls[1]))),
-      h("section", { class: "card al-edbt", style: { marginTop: "4px" } }, h("div", { class: "hd" }, btTitle, h("span", { class: "sub" }, "shaded: when it would have fired"), h("div", { class: "tools" }, spanSeg)), h("div", { class: "bd" }, btChart, verdict)),
+      h("section", { class: "card al-edbt", style: { marginTop: "4px" } }, h("div", { class: "hd" }, btTitle, btSub, btTools), h("div", { class: "bd" }, btChart, verdict)),
       h("div", { class: "grid g2" }, field("Owner", owner), field("Runbook", runbook)),
       h("div", { class: "grid g2" }, field("Route", routeSel, "who is told: routes are set in Routes"), field("Description (sent with the message)", desc)),
     ],

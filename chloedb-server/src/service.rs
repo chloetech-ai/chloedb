@@ -6106,11 +6106,17 @@ impl Service {
         }
         g.insert("running", self.running() as f64);
         g.insert("live", self.live.len() as f64);
-        // A cluster that follows another: its follow processes' lag.
+        // A cluster that follows another, or a Postgres follower: their
+        // follow processes' lag (the alert follow-behind's).
         let lags = self.follow_lags();
         if !lags.is_empty() {
-            g.insert("follow_lag_s", lags.iter().map(|l| l.1).fold(0.0, f64::max));
-            g.insert("follow_behind", lags.iter().map(|l| l.2).fold(0.0, f64::max));
+            g.insert("follow_lag_s", lags.iter().map(|l| l.lag_s).fold(0.0, f64::max));
+            if lags.iter().any(|l| l.behind.is_some()) {
+                g.insert("follow_behind", lags.iter().filter_map(|l| l.behind).fold(0.0, f64::max));
+            }
+            if lags.iter().any(|l| l.behind_bytes.is_some()) {
+                g.insert("follow_behind_bytes", lags.iter().filter_map(|l| l.behind_bytes).fold(0.0, f64::max));
+            }
         }
         g.insert("slots_free", self.admission.available_permits() as f64);
         if let Some(b) = &self.query_memory {
@@ -6487,11 +6493,18 @@ impl Service {
         ];
         let lags = self.follow_lags();
         if !lags.is_empty() {
-            let family = |name, help, f: fn(&(String, f64, f64)) -> f64| Family { name, ty: "gauge", help, values: lags.iter().map(|l| (format!("name=\"{}\"", metrics::esc(&l.0)), f(l))).collect() };
-            more.extend([
-                family("chloedb_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by the source's name: since the source first reached a transaction it has not applied (and while it is silent, since it last said).", |l| l.1),
-                family("chloedb_follow_behind_transactions", "Transactions of the source a follow process writing through this server has not applied, over the source's shards.", |l| l.2),
-            ]);
+            let label = |l: &crate::service::feed::FollowLag| format!("name=\"{}\",kind=\"{}\"", metrics::esc(&l.name), l.kind);
+            let family = |name, help, f: fn(&crate::service::feed::FollowLag) -> Option<f64>| Family { name, ty: "gauge", help, values: lags.iter().filter_map(|l| Some((label(l), f(l)?))).collect() };
+            more.extend(
+                [
+                    family("chloedb_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by its name and kind (cluster: a cluster following another; postgres: chloedb-server follow-postgres): since the source first reached a transaction (a cluster) or a WAL position (Postgres) it has not applied, and while it is silent, since it last said.", |l| Some(l.lag_s)),
+                    family("chloedb_follow_up", "1 while a follow process writing through this server says it follows (or copies, or catches up), and said so within the last 10 s; 0 while it retries, failed or is silent.", |l| Some(if l.up { 1.0 } else { 0.0 })),
+                    family("chloedb_follow_behind_transactions", "Transactions of the source a cluster's follow process writing through this server has not applied, over the source's shards.", |l| l.behind),
+                    family("chloedb_follow_behind_bytes", "Bytes of Postgres's WAL a Postgres follower writing through this server has not confirmed: Postgres's position (pg_current_wal_lsn()) less the follower's, as it last said.", |l| l.behind_bytes),
+                ]
+                .into_iter()
+                .filter(|f| !f.values.is_empty()),
+            );
         }
         if let Some(s) = &self.log_store {
             more.extend(s.metrics());
