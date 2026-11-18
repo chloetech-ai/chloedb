@@ -26,8 +26,10 @@ changes collect under "Unreleased".
     fields".
   - `'a' || NULL` is `NULL` (it was `'a'`), and a `FLOAT`'s `ROUND(x)` and
     `CAST(x AS INT)` round half to even, as Postgres rounds a `double
-    precision` (2.5 is 2; it was 3); a number written in the statement
-    still rounds half away from zero, as Postgres's `numeric` does.
+    precision` (2.5 is 2; it was 3); a number written in the statement,
+    or a value made of such numbers alone (`CASE WHEN qty > 0 THEN 2.5
+    END`), still rounds half away from zero, as Postgres's `numeric` does,
+    and so does `ROUND(x, digits)`, `ROUND(x, 0)` included.
   - `n != 1.5`, `n <> 1.5` and `NOT (n = 1.5)` of an `INT` (a value no
     integer holds) left in the rows whose `n` is `NULL`; they leave them
     out.

@@ -3371,6 +3371,22 @@ fn value(e: &ir::Expr) -> Result<Value> {
     eval::eval(e, &|r| Err(err(format!("{r:?} is not a value of no row"))))
 }
 
+/// Whether the value of `x` is made of numbers written in the statement
+/// alone (conditions aside): a number, or a CASE, COALESCE, LEAST,
+/// GREATEST, ABS, negation or arithmetic of them, which PostgreSQL types
+/// `numeric` and rounds half away from zero. A value that reads a column
+/// may be a FLOAT's, which rounds half to even (persona study SAM-5).
+fn written_number(x: &ir::Expr) -> bool {
+    match x {
+        ir::Expr::Lit(v) => matches!(v, Value::Int(_) | Value::Float(_) | Value::Null),
+        ir::Expr::Neg(x) => written_number(x),
+        ir::Expr::Arith { left, right, .. } => written_number(left) && written_number(right),
+        ir::Expr::Case { whens, otherwise, .. } => whens.iter().all(|w| written_number(&w.then)) && otherwise.as_deref().is_none_or(written_number),
+        ir::Expr::Call { func: Func::Coalesce | Func::Least | Func::Greatest | Func::Abs | Func::Round, args } => args.iter().all(written_number),
+        _ => false,
+    }
+}
+
 fn literal(v: &sql::Value, params: &Params) -> Result<Value> {
     Ok(match v {
         sql::Value::Number(s, _) => s.parse::<i64>().map(Value::Int).or_else(|_| s.parse::<f64>().map(Value::Float)).map_err(|_| err(format!("bad number {s}")))?,
@@ -3675,6 +3691,12 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
             if let (Func::Round, Some(values)) = (func, args.iter().map(|a| match a { ir::Expr::Lit(v) => Some(v.clone()), _ => None }).collect::<Option<Vec<Value>>>()) {
                 return Ok(ir::Expr::Lit(ir::eval::round_written(&values)?));
             }
+            // A value made of numbers written out alone, such as `CASE WHEN
+            // qty > 0 THEN 2.5 END`, is a numeric to PostgreSQL too: half
+            // away, as `round(x, 0)` rounds.
+            if func == Func::Round && args.len() == 1 && written_number(&args[0]) {
+                args.push(ir::Expr::Lit(Value::Int(0)));
+            }
             ir::Expr::Call { func, args }
         }
         // CAST(x AS type) and x::type: a value cast now; a column of the
@@ -3689,6 +3711,9 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 x if day => ir::Expr::Call { func: Func::DateTrunc, args: vec![ir::Expr::Lit(Value::Str("day".into())), x] },
                 x => match to {
                     CastTo::Float => ir::Expr::Arith { op: ArithOp::Mul, left: Box::new(x), right: Box::new(ir::Expr::Lit(Value::Float(1.0))) },
+                    // As round(x): half away for a value of numbers written
+                    // out alone, half to even for a FLOAT's.
+                    CastTo::Int if written_number(&x) => ir::Expr::Call { func: Func::Round, args: vec![x, ir::Expr::Lit(Value::Int(0))] },
                     CastTo::Int => ir::Expr::Call { func: Func::Round, args: vec![x] },
                     CastTo::Text => ir::Expr::Case {
                         operand: None,

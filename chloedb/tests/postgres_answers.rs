@@ -222,8 +222,18 @@ fn floats_round_half_to_even() {
     ]);
     // Numbers written out, as PostgreSQL's numeric.
     assert_eq!(sql(&db, "SELECT ROUND(0.5), CAST(0.5 AS INT), ROUND(2.5), CAST(-2.5 AS INT)"), vec![vec![Value::Int(1), Value::Int(1), Value::Int(3), Value::Int(-3)]]);
-    // ROUND with digits keeps its rule (PostgreSQL has it for numeric alone).
+    // ROUND with digits keeps its rule (PostgreSQL has it for numeric alone),
+    // ROUND(x, 0) too, as round(x::numeric, 0) rounds.
     assert_eq!(sql(&db, "SELECT ROUND(x, 1) FROM notes WHERE id = 'g'"), vec![vec![Value::Float(0.3)]]);
+    assert_eq!(sql(&db, "SELECT ROUND(x, 0) FROM notes WHERE id = 'c'"), vec![vec![Value::Int(3)]]);
+    // A value made of numbers written out alone is a numeric to
+    // PostgreSQL (`CASE WHEN .. THEN 2.5 END`), on either engine; one that
+    // reads x is a float8's.
+    for engine in [Engine::Operators, Engine::DataFusion] {
+        let opts = ExecOptions { engine, ..db.exec.clone() };
+        let q = "SELECT ROUND(CASE WHEN x > 0 THEN 2.5 ELSE -2.5 END), CAST(CASE WHEN x > 0 THEN 2.5 END AS INT), ROUND(coalesce(NULL, 0.5)), ROUND(x * 1) FROM notes WHERE id = 'c'";
+        assert_eq!(db.query_with(q, &Params::new(), &opts).unwrap().rows, vec![vec![Value::Int(3), Value::Int(3), Value::Int(1), Value::Int(2)]], "{q} ({engine:?})");
+    }
 }
 
 /// SAM-6: a comparison with a value no INT holds is FALSE of each row with
