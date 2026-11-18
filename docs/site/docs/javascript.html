@@ -347,7 +347,7 @@ db.timeoutMs, db.memory;          // the limits now (null: none)</pre>
 <tr>
 <td><code>busy</code></td>
 <td><code>BusyError</code></td>
-<td>the database is open in another process, or another writer holds it</td>
+<td>the database is open to write elsewhere, in another process or by another open in this one (the message says which, and what to do instead), or another writer holds it</td>
 </tr>
 <tr>
 <td><code>overloaded</code></td>

@@ -15,14 +15,17 @@ Pick one. Each gives you a `chloedb-server` program, prebuilt (a download of abo
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh
 ```
 
-If it stops with these lines, it could not ask GitHub's API (`api.github.com`) which release is the newest: a proxy or firewall blocks that address, or your network's address has used up GitHub's 60 requests an hour for clients without an account (an office, a school, a CI runner):
+It asks GitHub's API (`api.github.com`) which release is the newest, and when a proxy or firewall blocks that address, or your network's address has used up GitHub's 60 requests an hour for clients without an account (an office, a school, a CI runner), it asks `github.com` and then this website instead, and says which one answered. If it stops with these lines, none answered:
 
 ```text
-curl: (22) The requested URL returned error: 403
-chloedb install: could not find a chloedb-server release on https://github.com/chloetech-ai/chloedb/releases (set CHLOEDB_VERSION to pick one)
+chloedb install: could not tell which chloedb-server release is the newest:
+  https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
+  ...
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.7 was the newest when this script was written):
+  curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=<version> sh
 ```
 
-Name the version instead, and the script downloads it without asking. The variable goes after the pipe, where `sh` reads it (in front of `curl`, the script never sees it):
+A copy of the script from before 18 November 2026 asked GitHub's API alone, and stopped with `could not find a chloedb-server release on https://github.com/chloetech-ai/chloedb/releases (set CHLOEDB_VERSION to pick one)`. Either way, name the version, and the script downloads it without asking. The variable goes after the pipe, where `sh` reads it (in front of `curl`, the script never sees it):
 
 ```sh
 # install

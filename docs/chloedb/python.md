@@ -385,7 +385,7 @@ Every error ChloeDB raises is a `chloedb.ChloeDBError` (`except chloedb.ChloeDBE
 | `conflict` | `ConflictError` | refused by the state it met (409): an `if_seq_no` that no longer holds, an idempotency key still running, a `min_seq_no` past the server's last write |
 | `conflict` | `DuplicateKeyError` | <!-- since 0.3.2 --> an `INSERT` of a key the table already holds; a `ConflictError` and a `BadRequestError` both (it was a `BadRequestError` alone before), with `.table`, `.field` (the key field), `.key` and `.row` (the row's place in the write, from 1) where the message names them |
 | `partial_write` | `PartialWriteError` | a coordinator wrote some shards and not others (`answer["partial"]`): send it again with the same `idempotency_key` |
-| `busy` | `BusyError` | the database is open to write already, in another process or in this one, or another writer holds it ([common errors](#busyerror-busy-the-database-is-open-elsewhere)) |
+| `busy` | `BusyError` | the database is open to write already, in another process or in this one (the message says which, and what to do instead), or another writer holds it ([common errors](#busyerror-busy-the-database-is-open-elsewhere)) |
 | `overloaded` | `OverloadedError` | refused for the server's load before any work (429), after the client's retries |
 | `timeout` | `DeadlineError` | a deadline passed: a query's `timeout_ms`, a coordinator's wait for a shard (504), the engine's own |
 | `unavailable` | `UnavailableError` | no copy can serve it now (503): a replica behind, a primary replaced, a hosted model down |
@@ -444,12 +444,13 @@ The errors people meet first, each as the last line of its traceback, with what 
 ### `BusyError: busy: the database is open elsewhere`
 
 ```text
-chloedb._native.BusyError: busy: the database is open elsewhere
+chloedb._native.BusyError: busy: the database is open elsewhere: process 3541 (python app.py), the parent of this process, has it open for writing. A reloader (Flask's debug mode, Django's runserver, uvicorn --reload) runs the program again in a child while its first process keeps what it opened at start: ... In Python: open it in a function the routes call (functools.cache keeps one), app.run(debug=True, use_reloader=False), or chloedb.connect('http://127.0.0.1:7700') to chloedb-server --db shop.chloedb
 ```
 
-`chloedb.open` of a file that is open to write already: in another process (a second script, a chloedb-server serving it, the process that Flask's debug reloader starts beside yours, a second gunicorn worker), or in this one, by an earlier `chloedb.open` of the same path that is still open (a module imported under two names, a notebook cell run again before the old `db` was closed, a test that never closed its database). The message is the same in each case.
+`chloedb.open` of a file that is open to write already: in another process (a second script, a chloedb-server serving it, the process that Flask's debug reloader starts beside yours, a second gunicorn worker), or in this one, by an earlier `chloedb.open` of the same path that is still open (a module imported under two names, a notebook cell run again before the old `db` was closed, a test that never closed its database). <!-- since 0.3.8 --> The message goes on to say which, from the process id the writer keeps beside the file: `this process has it open for writing already`, `process N (command), the parent of this process` (a reloader, as above), or `process N (command) has it open for writing` for any other process (the command on Linux), with what to do in each case, in Python's words at the end. Before 0.3.8 it stopped at `the database is open elsewhere`.
 
 - In one process, open a database once and share the object: a `db` at module level that every request and thread uses (threads may query and write it at once). `db.close()`, or a `with` block, closes it, and the next `open` then succeeds.
+- Under a reloader (Flask's `debug=True`, Django's runserver, `uvicorn --reload`), open the database in a function the routes call, with `functools.cache` on it so that one is kept, rather than at import: the reloader's first process imports the module and never serves, so only the process that serves opens it. Or run without the reloader: `app.run(debug=True, use_reloader=False)`.
 - To read it from other processes while one writes it, open it there with `chloedb.open(path, read_only=True)`: each query sees the writer's commits, and writes raise `ChloeDBError`.
 - To write from several processes (a web app's workers, a reloader), serve the file with `chloedb-server --db path` and connect each process with `chloedb.connect(url)`, as [Build a search page](../guide/search-page.md) does.
 - `chloedb-server --db path` on a file a script has open stops with `ERROR chloedb_server: open path: busy: the database is open elsewhere`: stop the script, or let it use the server.
