@@ -90,8 +90,11 @@ once it is decided: after 1,000 searches, when every arm's primary metric
 has an always-valid p value below 0.05 and every guardrail is read (moved
 by its own always-valid p value, or held within its margin by its
 interval); since the always-valid p value may be read at every second,
-stopping there keeps its error rate. `"until": "time"` runs to the end of
-its minutes. When it stops, or you stop it, the run becomes an experiment
+stopping there keeps its error rate. Until then the run says what it waits
+on (`waiting`): often a guardrail that barely moves, whose interval needs
+many searches to sit within its margin (abandonment's is 1%), or the query
+time, measured rather than modelled and so noisy on a busy machine. `"until":
+"time"` runs to the end of its minutes. When it stops, or you stop it, the run becomes an experiment
 with the full report and an Agents tab.
 
 AI agents are people of the population, each in the arm the split gives
@@ -144,7 +147,9 @@ B from the control: Shuffled (the control's ranking under
 (`0 - (R)`, least relevant first) or First row demoted. An arm's `then`
 reorders what its ranking returns before it is shown: `demote_first`
 moves the first row to the end (an arm with an exploring share keeps
-the control as ranked).
+the control as ranked). On a server with `hash()` in rankings (after
+0.3.8), `(R) * 0 + hash(id, 7)` is a shuffle by the key; the kit's
+arithmetic one works on any server.
 
 ### Interleaving
 

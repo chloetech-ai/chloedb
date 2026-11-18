@@ -1581,7 +1581,7 @@ async function livePage(ctx, root, go, meta, id, onStop) {
     const share = Math.min(1, (v.elapsed || 0) / (v.limit_s || 1));
     bar.style.width = Math.round(share * 100) + "%";
     const byDecision = v.until === "decided";
-    clockTxt.textContent = `${clockText(v.elapsed)} of ${byDecision ? "at most " : ""}${clockText(v.limit_s)}${byDecision && st === "live" ? " · stops once decided" : ""}`;
+    clockTxt.textContent = `${clockText(v.elapsed)} of ${byDecision ? "at most " : ""}${clockText(v.limit_s)}${byDecision && st === "live" ? ` · stops once decided${v.waiting ? `; waiting on ${v.waiting}` : ""}` : ""}`;
     const dec = v.decided ? h("div", { class: "line" }, h("b", {}, "Decided. "), v.decided.text) : null;
     if (st === "starting") banner.replaceChildren(h("p", { class: "ex-note" }, `Starting: ${v.stage || ""}…`));
     else if (st === "ending") banner.replaceChildren(...[v.decided ? h("div", { class: "ex-verdict ex-decided", style: { marginBottom: "10px" } }, dec) : null, h("p", { class: "ex-note" }, `Ending: ${v.stage || "writing the report"}…`)].filter(Boolean));

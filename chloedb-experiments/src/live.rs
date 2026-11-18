@@ -346,6 +346,8 @@ struct State {
     ended: Option<f64>,
     /// When the run was decided and stopped ([`Live::decided`]).
     decided: Option<Value>,
+    /// While it is not, what it waits on ([`decision`]).
+    waiting: Option<String>,
     /// Per query and arm (`q * arms + a`): searches, successes, clicks,
     /// abandoned searches.
     by_query: Vec<[f64; 4]>,
@@ -504,6 +506,7 @@ impl Live {
                 visit_order: VecDeque::new(),
                 cost: 0.0,
                 decided: None,
+                waiting: None,
                 by_query: Vec::new(),
                 gave_up: Vec::new(),
                 why: None,
@@ -660,10 +663,15 @@ impl Live {
                 break;
             }
             if self.spec.until == "decided" {
-                if let Some(d) = self.decided(elapsed) {
-                    self.feed(json!({"kind": "note", "text": d["text"]}));
-                    self.st().decided = Some(d);
-                    break;
+                match self.decided(elapsed) {
+                    Ok(d) => {
+                        self.feed(json!({"kind": "note", "text": d["text"]}));
+                        let mut st = self.st();
+                        st.decided = Some(d);
+                        st.waiting = None;
+                        break;
+                    }
+                    Err(w) => self.st().waiting = Some(w),
                 }
             }
         }
@@ -966,6 +974,7 @@ impl Live {
         v["brain"] = json!(self.brain.name());
         v["until"] = json!(self.spec.until);
         v["decided"] = st.decided.clone().unwrap_or(Value::Null);
+        v["waiting"] = json!(st.waiting);
         v["why"] = st.why.clone().unwrap_or(Value::Null);
         v
     }
@@ -1000,7 +1009,7 @@ impl Live {
     /// the cost.
     pub fn live_part(&self) -> Value {
         let v = self.view(Some(u64::MAX), u64::MAX);
-        json!({"agents": v["agents"], "agent_tally": v["agent_tally"], "visitor_tally": v["visitor_tally"], "cost": v["cost"], "budget": v["budget"], "brain": v["brain"], "rate": v["rate"], "minutes": self.spec.minutes, "elapsed": v["elapsed"], "errors": v["errors"], "until": v["until"], "decided": v["decided"], "why": v["why"]})
+        json!({"agents": v["agents"], "agent_tally": v["agent_tally"], "visitor_tally": v["visitor_tally"], "cost": v["cost"], "budget": v["budget"], "brain": v["brain"], "rate": v["rate"], "minutes": self.spec.minutes, "elapsed": v["elapsed"], "errors": v["errors"], "until": v["until"], "decided": v["decided"], "waiting": v["waiting"], "why": v["why"]})
     }
 
     // ------------------------------------------------------------ the search page
@@ -1135,38 +1144,14 @@ impl Live {
         self.st().cost >= self.spec.budget - reserve
     }
 
-    /// Whether the run is decided, at `elapsed` seconds: after
-    /// [`MIN_DECIDE`] searches, every arm's primary metric called by its
-    /// always-valid p value (below 0.05), and every guardrail read, either
-    /// moved by its own always-valid p value or held within its margin by
-    /// its 95% interval. The snapshot is the last second's count.
-    fn decided(&self, elapsed: f64) -> Option<Value> {
+    /// The run decided at `elapsed` seconds ([`decision`]), or what it
+    /// still waits on.
+    fn decided(&self, elapsed: f64) -> std::result::Result<Value, String> {
         let st = self.st();
-        if st.searches < MIN_DECIDE {
-            return None;
-        }
-        let metrics = st.snapshot["metrics"].as_array()?;
-        let primary = metrics.iter().find(|m| m["key"] == json!(self.spec.primary))?;
-        let mut read = Vec::new();
-        for a in 1..self.spec.arms.len() {
-            if primary["comparisons"][a - 1]["p_always_valid"].as_f64().unwrap_or(1.0) >= 0.05 {
-                return None;
-            }
-            for m in metrics.iter().filter(|m| m["guardrail"] == json!(true)) {
-                let c = &m["comparisons"][a - 1];
-                let moved = c["p_always_valid"].as_f64().unwrap_or(1.0) < 0.05;
-                let margin = m["margin"].as_f64().unwrap_or(0.0);
-                let (lo, hi) = (c["lift_lo"].as_f64().unwrap_or(f64::NAN), c["lift_hi"].as_f64().unwrap_or(f64::NAN));
-                let held = if m["higher"].as_bool().unwrap_or(true) { lo > -margin } else { hi < margin };
-                if !moved && !held {
-                    return None;
-                }
-                read.push(json!({"arm": a, "metric": m["key"], "moved": moved, "held": held && !moved}));
-            }
-        }
+        let read = decision(&st.snapshot, &self.spec.primary, self.spec.arms.len(), st.searches)?;
         let calls: Vec<String> = st.snapshot["verdicts"].as_array().into_iter().flatten().map(|v| format!("{}: {}", v["arm"].as_str().unwrap_or(""), v["call"].as_str().unwrap_or(""))).collect();
         let text = format!("Decided at {} searches, after {}: {}. The guardrails are read, so the run stops here.", fmt_n(st.searches), clock(elapsed), calls.join("; "));
-        Some(json!({"searches": st.searches, "elapsed": num(elapsed), "verdicts": st.snapshot["verdicts"], "guardrails": read, "text": text}))
+        Ok(json!({"searches": st.searches, "elapsed": num(elapsed), "verdicts": st.snapshot["verdicts"], "guardrails": read, "text": text}))
     }
 
     /// One line per arm on why its agents gave up, once the run ends: from
@@ -1668,6 +1653,44 @@ async fn call(http: &reqwest::Client, base: &str, key: &str, fallbacks: bool, bo
     unreachable!()
 }
 
+/// Whether a live run whose last second's numbers are `snapshot` is
+/// decided, after `searches` of them: at least [`MIN_DECIDE`], every arm's
+/// `primary` metric called by its always-valid p value (below 0.05), and
+/// every guardrail read, either moved by its own always-valid p value or
+/// held within its margin by its 95% interval. The guardrails as read, or
+/// one line on what it waits on.
+pub fn decision(snapshot: &Value, primary: &str, arms: usize, searches: u64) -> std::result::Result<Vec<Value>, String> {
+    if searches < MIN_DECIDE {
+        return Err(format!("at least {} searches", fmt_n(MIN_DECIDE)));
+    }
+    let metrics = snapshot["metrics"].as_array().ok_or("the first numbers")?;
+    let p = metrics.iter().find(|m| m["key"] == json!(primary)).ok_or("the primary metric")?;
+    let name = |a: usize| snapshot["verdicts"][a - 1]["arm"].as_str().map_or(format!("arm {a}"), str::to_string);
+    let mut read = Vec::new();
+    for a in 1..arms {
+        if p["comparisons"][a - 1]["p_always_valid"].as_f64().unwrap_or(1.0) >= 0.05 {
+            return Err(format!("{} for {}: its always-valid p value is not below 0.05 yet", p["title"].as_str().unwrap_or(primary), name(a)));
+        }
+        for m in metrics.iter().filter(|m| m["guardrail"] == json!(true)) {
+            let c = &m["comparisons"][a - 1];
+            let moved = c["p_always_valid"].as_f64().unwrap_or(1.0) < 0.05;
+            let margin = m["margin"].as_f64().unwrap_or(0.0);
+            let (lo, hi) = (c["lift_lo"].as_f64().unwrap_or(f64::NAN), c["lift_hi"].as_f64().unwrap_or(f64::NAN));
+            let held = if m["higher"].as_bool().unwrap_or(true) { lo > -margin } else { hi < margin };
+            if !moved && !held {
+                return Err(format!(
+                    "the guardrail {} for {}: neither moved nor held within its {:.0}% margin yet",
+                    m["title"].as_str().unwrap_or(""),
+                    name(a),
+                    margin * 100.0
+                ));
+            }
+            read.push(json!({"arm": a, "metric": m["key"], "moved": moved, "held": held && !moved}));
+        }
+    }
+    Ok(read)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1680,6 +1703,29 @@ mod tests {
         let worse = ndcg(&g, 2, &k(&["b", "a", "c"]), 3);
         assert!(worse < 1.0 && worse > 0.0);
         assert_eq!(ndcg(&g, 2, &k(&["x", "y"]), 3), 0.0);
+    }
+
+    #[test]
+    fn a_run_is_decided_once_the_call_is_made_and_the_guardrails_read() {
+        let snap = |p_av: f64, lat_hi: f64, lat_p: f64| {
+            json!({
+                "verdicts": [{"arm": "B", "call": "worse"}],
+                "metrics": [
+                    {"key": "success", "title": "Success rate", "guardrail": false, "comparisons": [{"p_always_valid": p_av}]},
+                    {"key": "abandonment", "title": "Abandonment", "guardrail": true, "higher": false, "margin": 0.01, "comparisons": [{"p_always_valid": 0.001, "lift_lo": 0.2, "lift_hi": 0.4}]},
+                    {"key": "latency", "title": "Query time", "guardrail": true, "higher": false, "margin": 0.1, "comparisons": [{"p_always_valid": lat_p, "lift_lo": -0.05, "lift_hi": lat_hi}]},
+                ],
+            })
+        };
+        let read = decision(&snap(0.001, 0.04, 0.6), "success", 2, 1500).unwrap();
+        assert_eq!(read, vec![json!({"arm": 1, "metric": "abandonment", "moved": true, "held": false}), json!({"arm": 1, "metric": "latency", "moved": false, "held": true})]);
+        assert!(decision(&snap(0.001, 0.04, 0.6), "success", 2, 999).unwrap_err().contains("1,000 searches"));
+        assert!(decision(&snap(0.2, 0.04, 0.6), "success", 2, 1500).unwrap_err().starts_with("Success rate for B"));
+        // A query time that may still be 10% slower, and has not moved.
+        let w = decision(&snap(0.001, 0.15, 0.6), "success", 2, 1500).unwrap_err();
+        assert_eq!(w, "the guardrail Query time for B: neither moved nor held within its 10% margin yet");
+        // Or that has moved: read.
+        assert!(decision(&snap(0.001, 0.15, 0.01), "success", 2, 1500).is_ok());
     }
 
     #[test]
