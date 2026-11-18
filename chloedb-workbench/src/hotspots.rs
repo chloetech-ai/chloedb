@@ -1104,9 +1104,11 @@ fn names_of(sup: &Supervisor, repo: &str) -> HashMap<String, String> {
     sup.agent_rows().into_iter().filter(|a| a.repo == repo).map(|a| (a.id, a.name)).collect()
 }
 
-/// Scores `repo`'s files since `since_ms`.
-pub fn make(sup: &Supervisor, repo: &str, since_ms: i64) -> Made {
-    let now = now_ms();
+/// Scores `repo`'s files from `since_ms` to `now`. The caller's `now` is
+/// the one its window was measured back from: reading the clock again here
+/// put the window a millisecond past its days, and rounded it up to one day
+/// more.
+pub fn make(sup: &Supervisor, repo: &str, since_ms: i64, now: i64) -> Made {
     let names = names_of(sup, repo);
     let mut s = collect(sup.db(), repo, since_ms, &names);
     undone_edits(sup, repo, since_ms, &mut s);
@@ -1199,7 +1201,7 @@ pub fn refresh(sup: &Supervisor, repo: &str) -> Result<(usize, u128), ApiError> 
     let _g = lock.lock().unwrap();
     let t0 = Instant::now();
     let now = now_ms();
-    let m = make(sup, repo, now - WINDOW_DAYS * 86_400_000);
+    let m = make(sup, repo, now - WINDOW_DAYS * 86_400_000, now);
     let db = sup.db();
     let rp = Params::new().set("repo", Value::Str(repo.to_string()));
     db.query("DELETE FROM hotspots WHERE repo = :repo", &rp).map_err(ApiError::internal)?;
@@ -1293,7 +1295,7 @@ pub fn list(sup: &Supervisor, q: &ListQ) -> Result<Json, ApiError> {
     let (mut list, meta) = if since.is_none() && days == WINDOW_DAYS {
         stored(sup, &repo, if q.file.is_some() { 1000 } else { limit })?
     } else {
-        let m = make(sup, &repo, since.unwrap_or(now - days * 86_400_000));
+        let m = make(sup, &repo, since.unwrap_or(now - days * 86_400_000), now);
         let meta = json!({ "updated_ms": now, "missing": m.missing, "ctx": m.ctx, "totals": m.totals });
         (m.hotspots.into_iter().map(|h| decorate(sup, h)).collect::<Vec<_>>(), meta)
     };
