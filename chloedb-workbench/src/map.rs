@@ -322,7 +322,7 @@ fn counted(main: &Path) -> Result<Counted, String> {
             return Ok(c.clone());
         }
     }
-    let out = std::process::Command::new("git").arg("-C").arg(main).args(["ls-files", "-z"]).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| format!("cannot run git: {e}"))?;
+    let out = std::process::Command::new("git").arg("-C").arg(main).args(["ls-files", "-z"]).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output().map_err(|e| format!("cannot run git: {e}"))?;
     if !out.status.success() {
         return Err(format!("git ls-files failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }

@@ -1112,7 +1112,7 @@ fn pre_of(evs: &[(i64, i64, String, Json)], use_id: Option<&str>, command: &str)
 /// (`clean` without any): together, "the same code".
 fn code_of(dir: &Path) -> (Option<String>, String) {
     let git = |args: &[&str]| -> Option<String> {
-        let out = Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+        let out = Command::new("git").arg("-C").arg(dir).args(args).env("GIT_OPTIONAL_LOCKS", "0").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     };
     let commit = git(&["rev-parse", "HEAD"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());

@@ -845,7 +845,7 @@ fn today_questions(sup: &Supervisor, repo: &str, main: &Path, field: &str) -> Ve
         out.push(Prop { sub: "question", go: go(&qn), text: qn, because: format!("{n} edit{} today, last {}", if n == 1 { "" } else { "s" }, super::ago(last)), prio: 8.0 + (n as f64).ln(), refj: json!({ "file": f }) });
     }
     // Today's commits, every branch.
-    let log = Command::new("git").arg("-C").arg(main).args(["log", "--all", "--since=midnight", "-n", "5", "--format=%h%x1f%an%x1f%s%x1f%ct"]).env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).output();
+    let log = Command::new("git").arg("-C").arg(main).args(["log", "--all", "--since=midnight", "-n", "5", "--format=%h%x1f%an%x1f%s%x1f%ct"]).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").stdin(Stdio::null()).output();
     if let Ok(o) = log {
         for line in String::from_utf8_lossy(&o.stdout).lines().take(2) {
             let parts: Vec<&str> = line.split('\u{1f}').collect();

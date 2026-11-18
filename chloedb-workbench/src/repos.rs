@@ -372,7 +372,7 @@ struct AddB {
 pub fn init_project(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let dir = dir.canonicalize().map_err(|e| e.to_string())?;
-    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&dir).args(args).env("GIT_TERMINAL_PROMPT", "0").output();
+    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&dir).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output();
     let ok = |args: &[&str]| git(args).map(|o| o.status.success()).unwrap_or(false);
     if !ok(&["rev-parse", "--is-inside-work-tree"]) {
         let o = git(&["init", "-q"]).map_err(|e| format!("cannot run git: {e}"))?;

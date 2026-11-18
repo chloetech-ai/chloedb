@@ -5,12 +5,17 @@ use std::process::Command;
 
 use serde_json::{json, Value as Json};
 
+/// Runs git in `dir`. Workbench's own git commands take no optional lock
+/// (`GIT_OPTIONAL_LOCKS=0`): a `git status` or `git diff` it runs in a
+/// session's worktree refreshes no index, so it never holds `index.lock`
+/// while the agent there runs `git add` or `git commit`.
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
         .map_err(|e| format!("cannot run git: {e}"))?;
     if out.status.success() {
