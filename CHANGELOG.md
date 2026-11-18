@@ -13,7 +13,8 @@ changes collect under "Unreleased".
 
 - **ChloeCtx keeps a private aside nowhere, and only the user's words
   make rules** (persona study round 3, WEI-301, JONAH-301, LENA-310,
-  JONAH-303, JONAH-304, ANA-308, and WEI-304's restated aside). A part of a prompt marked private ("off
+  JONAH-303, JONAH-304, ANA-308, and WEI-304's restated aside). A part
+  of a prompt marked private ("off
   the record, please don't save this anywhere: ...", "keep that name
   private") was stored word for word, became a rule every later session
   was told and was synced to the team, while Claude said it was not saved.
@@ -31,6 +32,22 @@ changes collect under "Unreleased".
   replaces the session's copy of it, and a decision does not keep "not
   implemented yet". The command center's overview lists the user's rules,
   not a prompt's raw sentences ([what is kept](docs/chloectx/index.md#where-it-keeps-what-it-stores)).
+- **Blends: one list from several queries, after each has ranked its own.**
+  `CREATE BLEND name AS SOURCES (stories AS (SELECT ...), comments AS
+  (SELECT ...))` with calibrated heads (`HEADS (relevance CALIBRATE tmm,
+  quality CALIBRATE minmax MISSING zero)`), a utility of them (`UTILITY 1 *
+  relevance + 0.2 * quality`, `BOOST`), and the slate's rules: `SLOT n`,
+  `QUOTA (... BETWEEN 20% AND 40% IN TOP 10)`, `SPACING`, `MAX n PER`,
+  `DIVERSIFY λ ON emb` and `DEDUPE t ON emb`. `SELECT ... FROM
+  blend('name[@version]', q => :q)` answers each slot's row with its source,
+  utility and why (`blend_decision`); the receipts add the rows passed over,
+  each quota's count and what each rule costs the slate. A blend is a
+  stored function, so it is versioned, replicated and written on every
+  shard of a coordinator, which runs each source over the cluster and
+  answers as one database. On chloedb-server, `/v1/blends` lists, versions,
+  writes and drops them and `/v1/blends/preview` runs a draft, and the
+  command center's Labs → Blending edits one with a live preview
+  ([query-language.md](docs/chloedb/query-language.md#blends-create-blend-and-blend)).
 - **ChloeCtx: a team's forgets, deletions and retired rules reach every
   machine, and a teammate's notes say whose they are** (persona study
   round 3, WEI-304, WEI-303, WEI-306). A forget deleted the record's row
