@@ -69,9 +69,11 @@ fn a_union_of_ints_and_floats_is_float() {
     let dir = tempfile::tempdir().unwrap();
     let db = db(dir.path());
     let rows = |sql: &str, opts: &chloedb::query::exec::ExecOptions| db.query_with(sql, &Params::new(), opts).unwrap_or_else(|e| panic!("{sql}: {e}"));
-    let mut engines = vec![chloedb::query::exec::Engine::Operators];
-    #[cfg(feature = "datafusion")]
-    engines.push(chloedb::query::exec::Engine::DataFusion);
+    let engines = [
+        chloedb::query::exec::Engine::Operators,
+        #[cfg(feature = "datafusion")]
+        chloedb::query::exec::Engine::DataFusion,
+    ];
     for engine in engines {
         let opts = chloedb::query::exec::ExecOptions { engine, ..db.exec.clone() };
         let r = rows("SELECT 1 AS v UNION ALL SELECT 2.5", &opts);

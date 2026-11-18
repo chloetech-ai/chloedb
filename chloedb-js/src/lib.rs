@@ -125,7 +125,13 @@ fn param(db: &Db, j: &Json, from: Option<&str>) -> Result<Value> {
                 Some(f) => f.to_string(),
                 None => s.fields.iter().find(|f| db.embedder_in(&s.table, &f.name).is_some()).map(|f| f.name.clone()).ok_or_else(|| bad("no embedded field has its model open"))?,
             };
-            let e = db.embedder_in(&s.table, &field).ok_or_else(|| bad(format!("{field} has no embedding model open (see open's models)")))?;
+            let e = db.embedder_in(&s.table, &field).ok_or_else(|| {
+                bad(match s.field(&field) {
+                    Some(f) if f.embed.is_some() => format!("{field} has no embedding model open (see open's models)"),
+                    Some(_) => format!("{}.{field} has no model: its vectors are the rows' own, so pass the query's vector (an array of numbers) rather than {{embed: ...}}", s.table),
+                    None => format!("{} has no field {field}", s.table),
+                })
+            })?;
             match &o["embed"] {
                 // A multi-vector field's: the list of the tokens' vectors.
                 Json::String(t) => db.embed_query_in(&s.table, &field, t)?,

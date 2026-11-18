@@ -48,7 +48,7 @@ async function answersAsTyped(db) {
   assert.deepEqual([u.rows, u.types], [[[1], [2.5]], ["float"]]);
   const q = "SELECT id FROM docs ORDER BY similarity(bge, :v) DESC LIMIT 2";
   assert.deepEqual((await db.query(q, { v: { vector_of: "b" } })).rows, [["b"], ["a"]]);
-  await assert.rejects(db.query(q, { v: { embed: "vitamin d" } }), /bge (has no model|is embedded by no model)/);
+  await assert.rejects(db.query(q, { v: { embed: "vitamin d" } }), /docs\.bge (has no model: its vectors are the rows' own|is embedded by no model)/);
 }
 
 test("an answer types each column by its values, in this process", async () => {
