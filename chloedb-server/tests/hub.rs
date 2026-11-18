@@ -207,6 +207,74 @@ async fn a_self_signed_certificate_is_pinned_once_trusted() {
     let (s, j) = call("POST", &format!("{hub_url}/v1/admin/hub/connections"), None, Some(json!({"name": "plain", "url": format!("http://10.255.255.1:{port}"), "key": "k"}))).await;
     assert_eq!(s, 409, "{j}");
     assert!(j["error"].as_str().unwrap().contains("plain HTTP"), "{j}");
+
+    // Never cloud metadata, whatever else is allowed (CLU-5, LENA-7): the
+    // key would go with every call.
+    for url in ["http://169.254.169.254", "https://169.254.169.254/latest", "http://[fe80::1]:7700"] {
+        let (s, j) = call("POST", &format!("{hub_url}/v1/admin/hub/connections"), None, Some(json!({"name": "meta", "url": url, "key": "k", "allow_plain": true}))).await;
+        assert_eq!(s, 400, "{url}: {j}");
+        assert!(j["error"].as_str().unwrap().contains("not an address a hub connection may reach"), "{j}");
+    }
+}
+
+/// A connection's calls follow no redirect to another origin (CLU-5,
+/// LENA-7): they carry the cluster's key, and a 307 keeps a write's body.
+/// The redirect is answered as it came, and the other origin hears nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_connection_follows_no_redirect_to_another_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let remote = service(dir.path(), "remote.strata");
+    let (_, secret) = remote.keys.create("hub-laptop", Scope::Write, None, true, false).unwrap();
+    let (remote_url, _) = serve(remote.clone(), Access { token: Some(Secret::new("remote-root")), ..Access::default() }).await;
+    let hub = service(dir.path(), "hub.strata");
+    let (hub_url, _) = serve(hub.clone(), Access::default()).await;
+
+    // A canary on another port (another origin) notes what reaches it.
+    let heard = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let keep = heard.clone();
+    let canary = axum::Router::new().fallback(move |req: axum::extract::Request| {
+        let keep = keep.clone();
+        async move {
+            keep.lock().unwrap().push(format!("{} {} auth={}", req.method(), req.uri(), req.headers().contains_key("authorization")));
+            "ok"
+        }
+    });
+    let cl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let canary_url = format!("http://127.0.0.1:{}", cl.local_addr().unwrap().port());
+    tokio::spawn(async move { axum::serve(cl, canary).await });
+    // The cluster's address: it answers the hub's checks as the cluster
+    // does, and redirects everything else to the canary.
+    let (to, upstream) = (canary_url.clone(), remote_url.clone());
+    let front = axum::Router::new().fallback(move |req: axum::extract::Request| {
+        let (to, upstream) = (to.clone(), upstream.clone());
+        async move {
+            let path = req.uri().to_string();
+            if path == "/livez" || path == "/v1/whoami" {
+                let mut r = chloedb_server::http_client().build().unwrap().get(format!("{upstream}{path}"));
+                if let Some(a) = req.headers().get("authorization") {
+                    r = r.header("authorization", a.clone());
+                }
+                let a = r.send().await.unwrap();
+                let status = axum::http::StatusCode::from_u16(a.status().as_u16()).unwrap();
+                return (status, [("content-type", "application/json".to_string())], a.text().await.unwrap());
+            }
+            (axum::http::StatusCode::TEMPORARY_REDIRECT, [("location", format!("{to}{path}"))], String::new())
+        }
+    });
+    let fl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let front_url = format!("http://127.0.0.1:{}", fl.local_addr().unwrap().port());
+    tokio::spawn(async move { axum::serve(fl, front).await });
+    let (s, j) = call("POST", &format!("{hub_url}/v1/admin/hub/connections"), None, Some(json!({"name": "remote", "url": front_url, "key": secret}))).await;
+    assert_eq!(s, 201, "{j}");
+
+    // Asked by a client that follows no redirect either.
+    let asker = chloedb_server::http_client().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let a = asker.post(format!("{hub_url}/c/remote/v1/write")).json(&json!({"ops": [{"op": "upsert", "table": "products", "doc": {"id": "x"}}]})).send().await.unwrap();
+    assert_eq!(a.status().as_u16(), 307, "the redirect is answered as it came");
+    let a = asker.get(format!("{hub_url}/c/remote/v1/stats")).send().await.unwrap();
+    assert_eq!(a.status().as_u16(), 307);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(heard.lock().unwrap().is_empty(), "the other origin heard nothing: {:?}", heard.lock().unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

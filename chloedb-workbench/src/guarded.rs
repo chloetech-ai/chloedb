@@ -129,7 +129,7 @@ pub struct GuardRule {
 /// else the main checkout's branch.
 fn default_branch(main: &Path) -> String {
     let git = |args: &[&str]| -> Option<String> {
-        let out = Command::new("git").arg("-C").arg(main).args(args).env("GIT_TERMINAL_PROMPT", "0").output().ok()?;
+        let out = Command::new("git").arg("-C").arg(main).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output().ok()?;
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
     };
     if let Some(r) = git(&["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]) {

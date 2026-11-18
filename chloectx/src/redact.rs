@@ -15,8 +15,10 @@
 //! - `Authorization:` headers and `Bearer` tokens, `curl -u user:pass`, and
 //!   the password of a URL (`scheme://user:pass@host`);
 //! - assignments whose name ends in a word for a secret (token, secret,
-//!   password, passwd, passphrase, credential, a qualified key such as
-//!   `api_key` or `AWS_SECRET_ACCESS_KEY`): `NAME=value` in an environment
+//!   password, passwd, pass, passphrase, credential, a qualified key such as
+//!   `api_key` or `AWS_SECRET_ACCESS_KEY`), also with a number or a word such
+//!   as `prod`, `old` or `ro` after it (`STAGING_PASS2`, `GITHUB_TOKEN_RO`,
+//!   `API_KEY_2`): `NAME=value` in an environment
 //!   dump or a `.env` file, `name: value` in YAML, `"name": "value"` in
 //!   JSON, `name = "value"` in code. The name is kept.
 //!
@@ -88,7 +90,7 @@ fn rules() -> &'static [Rule] {
 /// is returned as it is without running the rules.
 fn worth_a_look() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"(?i)key|token|secret|passw|passphrase|credential|auth|bearer|-u|--user|://|sk[-_]|gh[pousr]_|github_pat_|glpat-|npm_|AKIA|ASIA|AIza|ya29\.|xox|whsec_|_v1_|hf_|SG\.|eyJ").unwrap())
+    R.get_or_init(|| Regex::new(r"(?i)key|token|secret|pass|credential|auth|bearer|-u|--user|://|sk[-_]|gh[pousr]_|github_pat_|glpat-|npm_|AKIA|ASIA|AIza|ya29\.|xox|whsec_|_v1_|hf_|SG\.|eyJ").unwrap())
 }
 
 /// The marker that replaces a secret of `kind`.
@@ -246,15 +248,36 @@ const NOT_SECRET_KEYS: &[&str] = &[
     "table", "host", "file", "s3", "translation", "i18n", "message", "label", "config", "setting", "env", "react", "foreign", "registry", "music", "piano",
 ];
 
+/// Words that may follow the word for a secret in its name and do not make
+/// it something else: `GITHUB_TOKEN_RO`, `DB_PASSWORD_STAGING`, `KEY_OLD`.
+const SECRET_QUALIFIERS: &[&str] = &[
+    "old", "new", "prev", "next", "current", "prod", "production", "staging", "stage", "dev", "test", "qa", "local", "ro", "rw", "readonly", "admin", "root",
+    "main", "backup", "alt", "secondary", "b64", "base64", "raw", "plain", "value",
+];
+
 /// What kind of secret a name says its value is, if any: its last word
-/// (split at `_`, `-`, `.` and camel case) is a word for a secret, or ends
-/// in one (`PGPASSWORD`), or is `key` after a word that makes it one
-/// (`api_key`, `AWS_SECRET_ACCESS_KEY`, `apiKey`, but not `primary_key`).
+/// (split at `_`, `-`, `.` and camel case; after the qualifiers and numbers
+/// that may follow it: `STAGING_PASS2`, `TOKEN_2`, `API_KEY_PROD`) is a word
+/// for a secret, or ends in one (`PGPASSWORD`), or is `pass` after another
+/// word (`DB_PASS`, not Go's `--- PASS: TestX`), or is `key` after a word that
+/// makes it one (`api_key`, `AWS_SECRET_ACCESS_KEY`, `apiKey`, but not
+/// `primary_key`).
 fn secret_name(name: &str) -> Option<&'static str> {
-    let words = words(name);
+    let mut words = words(name);
+    // A number or a qualifier after the word for a secret (CTX-35, LENA-10:
+    // `STAGING_PASS2=` was stored as it was).
+    while words.len() > 1 && words.last().is_some_and(|w| SECRET_QUALIFIERS.contains(&w.as_str()) || is_version(w)) {
+        words.pop();
+    }
+    if let Some(w) = words.last_mut() {
+        let kept = w.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+        if kept > 0 {
+            w.truncate(kept);
+        }
+    }
     let last = words.last()?.as_str();
     let has = |w: &str| words.iter().any(|x| x == w);
-    let kind = if last.ends_with("password") || last.ends_with("passwd") || last == "passphrase" {
+    let kind = if last.ends_with("password") || last.ends_with("passwd") || last == "passphrase" || (last == "pass" && words.len() >= 2) {
         "password"
     } else if last.ends_with("token") {
         "token"
@@ -272,6 +295,12 @@ fn secret_name(name: &str) -> Option<&'static str> {
     // `AWS_SECRET_ACCESS_KEY`, and `SecretAccessKey` in what `aws sts` prints.
     let aws = (has("aws") && (has("secret") || last == "secretkey")) || (has("secret") && has("access") && last == "key");
     Some(if aws { "aws-secret-key" } else { kind })
+}
+
+/// `2`, `v2`: a number after a name's word.
+fn is_version(w: &str) -> bool {
+    let d = w.strip_prefix('v').unwrap_or(w);
+    !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// A name's words, lowercased: `AWS_SECRET_ACCESS_KEY`, `x-api-key`,
@@ -502,6 +531,13 @@ mod tests {
             ("access_token=ab12cd34ef56&expires_in=3600", "ab12cd34ef56", "token"),
             ("\"refreshToken\": \"1//0abc-def\"", "1//0abc-def", "token"),
             ("echo \\\"PASSWORD=\\\"hunter2\\\"\\\"", "hunter2", "password"),
+            // A number or a qualifier after the word (CTX-35, LENA-10).
+            ("STAGING_PASS2=plainCanary-55q", "plainCanary", "password"),
+            ("DB_PASS=hunter2hunter2", "hunter2hunter2", "password"),
+            ("GITHUB_TOKEN_RO=ghx-abcdef123456", "ghx-abcdef123456", "token"),
+            ("API_KEY_2=9f8e7d6c5b4a", "9f8e7d6c5b4a", "key"),
+            ("DB_PASSWORD_STAGING=correct-horse-battery", "correct-horse", "password"),
+            ("client_secret_v2: abcd1234efgh", "abcd1234efgh", "secret"),
         ];
         for (text, secret, kind) in cases {
             caught(text, secret, kind);
@@ -528,6 +564,7 @@ mod tests {
             "max_tokens=4096 token_count: 1234567 USE_TOKEN=1 keyboard: true",
             "\"primary_key\": \"id\", \"sort_key\": \"created_at\", \"key\": \"ArrowUp\"",
             "monkey: banana-split-42, hotkey: ctrl+alt+k",
+            "--- PASS: TestRedactNames (0.00s)\nPASS\nok  \texample.com/pkg\t0.012s",
             "\"token\": \"The token to send with each request\"",
             "password: ********",
             "commit 3f786850e387550fdab836ed7e6dc881de23001b (HEAD -> main)",
@@ -567,5 +604,12 @@ mod tests {
         assert_eq!(secret_name("password_hash"), None);
         assert_eq!(secret_name("PGPASSWORD"), Some("password"));
         assert_eq!(secret_name("_authToken"), Some("token"));
+        assert_eq!(secret_name("STAGING_PASS2"), Some("password"));
+        assert_eq!(secret_name("API_TOKEN_2"), Some("token"));
+        assert_eq!(secret_name("SECRET_V2"), Some("secret"));
+        // What only ends like one, or names something else, still is not.
+        for name in ["PASS", "PASS_2", "BYPASS", "COMPASS", "PASS_THROUGH", "token_url", "PASSWORD_MIN_LENGTH", "max_tokens_2", "primary_key_2", "TOKEN_COUNT", "key2", "v2", "PWD", "PWD_OLD"] {
+            assert_eq!(secret_name(name), None, "{name}");
+        }
     }
 }

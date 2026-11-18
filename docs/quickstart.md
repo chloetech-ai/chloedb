@@ -8,7 +8,7 @@ You need macOS 11 or later (Apple silicon or Intel), or Linux on x86-64 or aarch
 
 Pick one. Each gives you a `chloedb-server` program, prebuilt (a download of about 50 MB), in under a minute.
 
-**The install script** puts it in `~/.local/bin` (it says what to add to your `PATH` if that folder is not on it yet). It checks the download against the release's SHA-256 and changes nothing else. [Read it](install.sh) first if you like.
+**The install script** puts it in `~/.local/bin` (it says what to add to your `PATH` if that folder is not on it yet). It checks the download against the release's SHA-256 and, where [GitHub's CLI](https://cli.github.com) (`gh`) is installed, its build provenance (releases from 0.3.9: that this repository's release workflow built it), and changes nothing else. [Read it](install.sh) first if you like.
 
 ```sh
 # install
@@ -59,6 +59,8 @@ v=0.3.8 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz && mkdir -p ~/.local/bin && mv chloedb-server-$p/chloedb-server ~/.local/bin/
 ```
+
+From 0.3.9 each archive also has GitHub's build provenance and an SBOM of what is compiled into it: [checking what you download](../SECURITY.md#checking-what-you-download) shows the `gh attestation verify` command that checks them.
 
 Check that it runs:
 

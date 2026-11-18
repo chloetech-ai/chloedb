@@ -564,7 +564,7 @@ fn case_ref(id: &str) -> String {
 }
 
 fn git_in(dir: &Path, args: &[&str]) -> bool {
-    std::process::Command::new("git").arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").output().is_ok_and(|o| o.status.success())
+    std::process::Command::new("git").arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output().is_ok_and(|o| o.status.success())
 }
 
 /// A user's prompt line of a transcript: its text, or `None` for every
