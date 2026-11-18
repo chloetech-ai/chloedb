@@ -94,9 +94,11 @@ fn sessions_tools_compaction_and_memory_tools() {
     assert_eq!(stats["by_kind"]["error"], json!(1));
     assert_eq!(stats["by_kind"]["episode"], json!(1));
 
-    // Within session one, nothing is outside the live window.
+    // Within session one, what its window holds is left out (its notes,
+    // such as the preference, are not: ANA-210).
     let s = call(&d, json!({"op": "search", "query": "ledger mismatched types", "limit": 5}));
-    assert_eq!(s["text"], json!("No matching records."), "{s}");
+    assert!(!s["text"].as_str().unwrap().contains("E0308"), "{s}");
+    assert!(s["ids"].as_array().unwrap().iter().all(|i| i == "s1:2"), "{s}");
 
     // Session two starts with a briefing that carries the preference and the episode.
     let brief = hook(&d, "SessionStart", json!({"session_id": "s2", "source": "startup"}));
@@ -167,6 +169,79 @@ fn sessions_tools_compaction_and_memory_tools() {
     assert!(r["text"].as_str().unwrap().contains("checked_add"), "{r}");
 }
 
+/// ANA-201: two sessions share a store (two worktrees, one daemon). Each
+/// memory tool call is filed under the session that made it, whichever
+/// session's hook came last; a note typed in a terminal is `manual`; and a
+/// session's own notes are not hidden from its memory tools (ANA-210).
+#[test]
+fn notes_are_filed_under_the_session_that_made_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path());
+    // Claude Code processes 4101 (session a) and 4202 (session b), as their hooks say.
+    let pid = |p: u32| json!({"claude_pid": p});
+    hook_from(&d, "SessionStart", json!({"session_id": "a", "source": "startup"}), pid(4101));
+    hook_from(&d, "UserPromptSubmit", json!({"session_id": "a", "prompt": "List endpoints paginate with opaque cursors."}), pid(4101));
+    hook_from(&d, "SessionStart", json!({"session_id": "b", "source": "startup"}), pid(4202));
+    hook_from(&d, "UserPromptSubmit", json!({"session_id": "b", "prompt": "List endpoints paginate with page numbers."}), pid(4202));
+    // Session b's hook came last; session a's MCP server (a child of 4101,
+    // and Claude Code named session a in its environment) calls remember.
+    let mcp = |session: &str, pid: u32| json!({"via": "mcp", "session": session, "pid": pid});
+    let remember = |text: &str, caller: Json| {
+        let r = call(&d, json!({"op": "remember", "kind": "decision", "text": text, "caller": caller}));
+        assert!(r.get("error").is_none(), "{r}");
+        r["id"].as_str().unwrap().to_string()
+    };
+    assert!(remember("List endpoints paginate with opaque cursor tokens.", mcp("a", 4101)).starts_with("a:"));
+    // By its parent alone, or by the session named alone.
+    assert!(remember("Page numbers start at 1.", mcp("", 4202)).starts_with("b:"));
+    assert!(remember("Cursors expire after an hour.", mcp("a", 0)).starts_with("a:"));
+    // A command typed in a terminal: nobody's session, whatever came last.
+    let cli = |session: &str, pid: u32| json!({"via": "cli", "session": session, "pid": pid});
+    assert!(remember("The API is versioned in the path.", cli("", 0)).starts_with("manual:"));
+    // ... or run by a session's agent in its Bash tool (CLAUDE_PID is its
+    // Claude Code), and one from a session of another store is a person's.
+    assert!(remember("Errors are JSON problem documents.", cli("", 4101)).starts_with("a:"));
+    assert!(remember("Rates come from the ECB.", cli("elsewhere", 0)).starts_with("manual:"));
+    // The terminal's note did not make "manual" the active session: a
+    // request from an older client still gets the session that hooked last.
+    assert!(call(&d, json!({"op": "remember", "kind": "fact", "text": "Old clients send no caller."}))["id"].as_str().unwrap().starts_with("b:"));
+    // A /clear in process 4101 starts session c; the MCP server keeps the
+    // environment it started with (session a), and its notes go to c.
+    hook_from(&d, "SessionStart", json!({"session_id": "c", "source": "clear"}), pid(4101));
+    assert!(remember("Cursor tokens are base64url.", mcp("a", 4101)).starts_with("c:"));
+    // An MCP server of a Claude Code that names its session but whose
+    // hooks never reached this daemon: its session all the same.
+    assert!(remember("Rate limits are per key.", mcp("d", 0)).starts_with("d:"));
+
+    // JONAH-205: who stated it. The user's prompt said it: the user's.
+    hook_from(&d, "UserPromptSubmit", json!({"session_id": "a", "prompt": "Keep the todos in ~/.local/share/tado/todos.db, with ISO 8601 dates."}), pid(4101));
+    let by = |text: &str, extra: Json| {
+        let mut req = json!({"op": "remember", "kind": "decision", "text": text, "caller": mcp("a", 4101)});
+        for (k, v) in extra.as_object().unwrap() {
+            req[k] = v.clone();
+        }
+        call(&d, req)["by"].as_str().unwrap().to_string()
+    };
+    assert_eq!(by("tado's database is ~/.local/share/tado/todos.db and its dates are ISO 8601.", json!({})), "user");
+    assert_eq!(by("The todo list is sorted by due date.", json!({})), "assistant");
+    assert_eq!(by("The todo list is sorted by due date.", json!({"said_by": "user"})), "user");
+    assert_eq!(by("Todos are kept in ~/.local/share/tado/todos.db.", json!({"said_by": "assistant"})), "assistant");
+
+    // ANA-210: session a's memory tools see the notes it made, though they
+    // are in its window; not the prompts its window holds.
+    let s = call(&d, json!({"op": "search", "query": "opaque cursor tokens", "limit": 8, "caller": mcp("a", 0)}));
+    let text = s["text"].as_str().unwrap();
+    assert!(text.contains("opaque cursor tokens."), "{s}");
+    assert!(!text.contains("paginate with opaque cursors."), "the window's prompt: {s}");
+    let r = call(&d, json!({"op": "ask", "question": "How do list endpoints paginate?", "caller": mcp("a", 0)}));
+    assert!(r["text"].as_str().unwrap().contains("opaque cursor tokens"), "{r}");
+    // Session b's window is its own: from a, b's prompt is not in a's window.
+    let s = call(&d, json!({"op": "search", "query": "page numbers", "limit": 8, "kinds": ["prompt"], "caller": mcp("a", 0)}));
+    assert!(s["text"].as_str().unwrap().contains("paginate with page numbers"), "{s}");
+    let s = call(&d, json!({"op": "search", "query": "page numbers", "limit": 8, "kinds": ["prompt"], "caller": mcp("b", 4202)}));
+    assert!(!s["text"].as_str().unwrap().contains("paginate with page numbers"), "{s}");
+}
+
 #[test]
 fn hook_payloads_never_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -227,6 +302,78 @@ fn distilled_knowledge_reaches_later_sessions() {
     assert!(tag["text"].as_str().unwrap().contains("done"), "{tag}");
     let ctx = hook(&d, "UserPromptSubmit", json!({"session_id": "s3", "prompt": "Is the CSV export of the ledger planned?"}));
     assert!(!ctx.contains("[planned]"), "{ctx}");
+}
+
+/// JONAH-201: when work is scrapped, the notes written about it (its design,
+/// its decisions, how it behaves) leave the briefing: the model names them
+/// retired, and the turn's note that says it was scrapped replaces them.
+#[test]
+fn notes_about_scrapped_work_leave_the_briefing() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let script = dir.path().join("fake-model.sh");
+    std::fs::write(&script, format!("#!/bin/sh\ncat > /dev/null\ncat '{}'\n", out.display())).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let cfg = json!({"embedder": "hash:64", "sync": false, "briefing_chars": 4000, "distill": {"command": script, "model": "m"}});
+    std::fs::write(dir.path().join("config.json"), cfg.to_string()).unwrap();
+    let d = Arc::new(Daemon::open(dir.path(), "/proj").unwrap());
+    let model_says = |lines: &[Json]| {
+        let result: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        std::fs::write(&out, json!({"is_error": false, "total_cost_usd": 0.001, "result": result.join("\n")}).to_string()).unwrap();
+    };
+    let turn = |sid: &str, prompt: &str, answer: &str| {
+        hook(&d, "SessionStart", json!({"session_id": sid, "source": "startup"}));
+        hook(&d, "UserPromptSubmit", json!({"session_id": sid, "prompt": prompt}));
+        hook(&d, "Stop", json!({"session_id": sid, "last_assistant_message": answer}));
+    };
+    model_says(&[json!({"kind": "decision", "text": "tado stores todos in ~/.local/share/tado/todos.db with ISO 8601 due dates."})]);
+    turn("s1", "Keep the todos in ~/.local/share/tado/todos.db, dates in ISO 8601.", "Done.");
+    model_says(&[
+        json!({"kind": "decision", "text": "Recurring todos: tado add takes --every with the values daily, weekly or monthly."}),
+        json!({"kind": "decision", "text": "Recurring todos are stored in todos.json as objects {text, every, due}."}),
+        json!({"kind": "fact", "text": "The list subcommand shows a recurring todo with its next due date."}),
+    ]);
+    turn("s2", "Add recurring todos with --every daily|weekly|monthly.", "Added --every; todos.json stores {text, every, due}.");
+    let ids = |q: &str| -> Vec<String> { sql(&d, q).iter().map(|r| r[0].as_str().unwrap().to_string()).collect() };
+    let recurring = ids("SELECT id FROM memory WHERE session = 's2' AND kind IN ('decision', 'fact') LIMIT 10");
+    assert_eq!(recurring.len(), 3, "{recurring:?}");
+    let brief = hook(&d, "SessionStart", json!({"session_id": "s3", "source": "startup"}));
+    assert!(brief.contains("--every") && brief.contains("{text, every, due}"), "{brief}");
+
+    // Scrapped: the model names the three retired and says why.
+    let mut lines: Vec<Json> = recurring.iter().map(|id| json!({"kind": "retired", "id": id})).collect();
+    lines.push(json!({"kind": "decision", "text": "Recurring todos were scrapped and the code restored with git restore: tado v1 stays small, with no --every and no due dates."}));
+    model_says(&lines);
+    turn("s3", "Scrap the recurring todos completely: git restore . -- v1 stays small.", "Restored the working tree; no recurring todos.");
+    let brief = hook(&d, "SessionStart", json!({"session_id": "s4", "source": "startup"}));
+    assert!(brief.contains("Recurring todos were scrapped"), "{brief}");
+    assert!(!brief.contains("takes --every") && !brief.contains("{text, every, due}") && !brief.contains("next due date"), "{brief}");
+    assert!(brief.contains("todos.db"), "the decision it does not touch stays: {brief}");
+    // Replaced by the note that says so, where they share its words; else retired.
+    let tags = sql(&d, &format!("SELECT id, tag FROM memory WHERE id IN ('{}') LIMIT 5", recurring.join("', '")));
+    assert!(tags.iter().all(|r| r[1] == "superseded" || r[1] == "retired"), "{tags:?}");
+    assert!(tags.iter().any(|r| r[1] == "superseded"), "{tags:?}");
+    // ANA-204: the decision a prompt states, kept at once in its words, is
+    // one note with the turn's distilled decision; the rest of the prompt
+    // is not part of it.
+    // A near-copy is not kept beside it.
+    model_says(&[json!({"kind": "decision", "text": "List endpoints paginate with opaque cursor tokens, never page numbers."})]);
+    turn("s5", "Decision: list endpoints paginate with opaque cursor tokens, never page numbers. Then run echo beta-1 and echo beta-2.", "Done.");
+    let decisions = sql(&d, "SELECT text, tag FROM memory WHERE session = 's5' AND kind = 'decision' LIMIT 5");
+    assert_eq!(decisions, [json!(["The user decided: Decision: list endpoints paginate with opaque cursor tokens, never page numbers.", "stated"])], "{decisions:?}");
+    // One that says more replaces it.
+    model_says(&[json!({"kind": "decision", "text": "Search results paginate with opaque cursor tokens rather than offsets, because offsets skip rows when items are inserted between pages."})]);
+    turn("s6", "Decision: search results paginate with opaque cursor tokens, not offsets. Then run echo beta-3.", "Done.");
+    let decisions = sql(&d, "SELECT text, tag FROM memory WHERE session = 's6' AND kind = 'decision' LIMIT 5");
+    assert_eq!(decisions.len(), 2, "{decisions:?}");
+    assert!(decisions.iter().any(|r| r[0] == "The user decided: Decision: search results paginate with opaque cursor tokens, not offsets." && r[1] == "superseded"), "{decisions:?}");
+    let brief = hook(&d, "SessionStart", json!({"session_id": "s7", "source": "startup"}));
+    assert_eq!(brief.matches("Search results paginate").count() + brief.matches("search results paginate").count(), 1, "{brief}");
+    assert!(!brief.contains("echo beta"), "{brief}");
+    // An id the model was not shown is left alone.
+    model_says(&[json!({"kind": "retired", "id": "nope:1"})]);
+    turn("s8", "Scrap nothing.", "OK.");
+    assert!(hook(&d, "SessionStart", json!({"session_id": "s9", "source": "startup"})).contains("todos.db"));
 }
 
 /// An instruction the user gives for one task stays that session's; given

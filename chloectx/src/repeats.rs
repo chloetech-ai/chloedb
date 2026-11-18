@@ -37,9 +37,11 @@
 //! again in nearly the same words ([`same`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::OnceLock;
 
 use chloedb::query::Params;
 use chloedb::Value;
+use regex::Regex;
 use serde_json::{json, Value as Json};
 
 use crate::record::{Draft, Kind, Record, Source, COLUMNS, TASK_TAG};
@@ -133,7 +135,7 @@ fn users(r: &Record) -> bool {
 /// Whether a record is an instruction the user gave: a note for one task,
 /// or a rule.
 fn users_instruction(r: &Record) -> bool {
-    users(r) && ((r.kind == Kind::Note && r.tag == TASK_TAG) || (r.kind == Kind::Preference && r.tag != "superseded"))
+    users(r) && ((r.kind == Kind::Note && r.tag == TASK_TAG) || (r.kind == Kind::Preference && !crate::record::closed_tag(&r.tag)))
 }
 
 /// Whether a draft is an instruction the user gave: for one task, or as a
@@ -159,7 +161,7 @@ pub fn said_before(store: &Store, request: &str, session: &str, turn: i64, from_
     let words = !chloedb::text::analyze_query(&q).is_empty();
     let mut found: BTreeMap<String, Record> = BTreeMap::new();
     let mut turns: BTreeSet<(String, i64)> = BTreeSet::new();
-    let instructions = format!("((kind = 'note' AND tag = '{TASK_TAG}') OR (kind = 'preference' AND tag != 'superseded'))");
+    let instructions = format!("((kind = 'note' AND tag = '{TASK_TAG}') OR (kind = 'preference' AND tag NOT IN ('superseded', 'retired')))");
     for (cond, n, keep) in [(instructions.as_str(), CANDIDATES, users_instruction as fn(&Record) -> bool), ("kind = 'prompt'", PROMPTS, users_request as fn(&Record) -> bool)] {
         // More than kept: some are another's words.
         let by_vec = format!("SELECT {COLUMNS}, score() FROM memory WHERE {cond} ORDER BY similarity(emb, :v) DESC LIMIT {}", n * 3);
@@ -238,6 +240,8 @@ const CHECK: &str = r#"A user works with AI coding agents. Below are things the 
 
 Say which of said_before the request says again. The request says one again when the user has to ask again for what they asked before: the same thing in any words, shorter, longer or more specific, or a complaint or question that the agent still has not done it or did the opposite ("why does it still say Strata?", "these still look bad", "I told you to build it from the SQL"). An earlier saying can be a complaint or a question too: it counts when the request asks for the same thing.
 
+A question that asks what holds ("what error code do we return when ...?", "when can I deploy to staging?", "should I upgrade X?") asks memory, not for something again, even when an earlier saying answers it: it is not said again, unless it complains that the agent did not do it ("why does it still ...?", "didn't I say ...?").
+
 Words the user puts on each request the same way (a format pasted onto every task, such as "reply with the code only; do not edit any files") are part of each task, not said again. The request does not say one again when it only shares a subject or words with it, asks for something else about the same thing, asks for the opposite or changes its mind, or answers the agent's question. Judge the request's own words only: something in said_before or in previous_reply that the request does not ask for again is not said again.
 
 For each thing the request says again, give:
@@ -284,6 +288,31 @@ fn quoted_from(quote: &str, request: &str) -> bool {
     qt.iter().filter(|t| rt.contains(*t)).count() * 5 >= qt.len() * 4
 }
 
+/// Whether a quote is a question that asks what holds ("What error code do
+/// we return when a client retries a payment?", "When can I deploy to
+/// staging?", "Should I upgrade iso8601?"): asking memory, not saying it
+/// again, though the model may take a rule that answers it for one said
+/// again (ANA-203: three answered questions made rules "said in 2
+/// sessions", and `repeats` reported failures that did not happen). A
+/// question that complains it was not done ("why does it still say
+/// Strata?", "didn't I tell you to use cents?") or asks for it politely
+/// ("could you always run ruff?") says it again.
+fn asks_what_holds(quote: &str, request: &str) -> bool {
+    static ASK: OnceLock<Regex> = OnceLock::new();
+    static POLITE: OnceLock<Regex> = OnceLock::new();
+    static COMPLAINT: OnceLock<Regex> = OnceLock::new();
+    let ask = ASK.get_or_init(|| Regex::new(r"(?i)^\W*(?:(?:and|so|ok|okay|also|quick question|one more thing)\W+)*(?:what|when|where|which|who|whose|how|is|are|was|were|do|does|did|can|could|should|shall|will|would|may|might|has|have|any)\b").unwrap());
+    let polite = POLITE.get_or_init(|| Regex::new(r"(?i)^\W*(?:please\b|(?:can|could|would|will) you\b)").unwrap());
+    let complaint = COMPLAINT.get_or_init(|| Regex::new(r"(?i)\b(?:still|again|yet|anymore|already|told you|i (?:said|asked|told|wanted|meant)|didn[’']?t i|did i not|forgot|forget|keeps?|kept|stop|instead|wrong|why\b.*(?:\bnot\b|n[’']t\b))").unwrap());
+    let q = plain(quote);
+    let q = q.trim();
+    // The question mark ends the quote, or the request's sentence that holds it.
+    let r = plain(request);
+    let after = r.find(q.trim_end_matches('?')).map(|i| &r[i + q.trim_end_matches('?').len()..]).unwrap_or("");
+    let ends = after.find(['.', '!', '?', '\n']).map(|i| after[i..].starts_with('?')).unwrap_or(false);
+    (q.ends_with('?') || ends) && ask.is_match(q) && !polite.is_match(q) && !complaint.is_match(q)
+}
+
 /// The id of `said` a mark names: as listed, or in another style, as a
 /// model copies one from the request ("cmsg_B3" for "B3": the one listed id
 /// it ends with, after a separator).
@@ -307,7 +336,7 @@ pub fn parse_check(text: &str, request: &str, said: &[(String, String)]) -> (Vec
             quote: m["quote"].as_str().unwrap_or("").trim().to_string(),
             rule: m["rule"].as_str().unwrap_or("").trim().to_string(),
         };
-        if a.ids.is_empty() || a.rule.is_empty() || !quoted_from(&a.quote, request) {
+        if a.ids.is_empty() || a.rule.is_empty() || !quoted_from(&a.quote, request) || asks_what_holds(&a.quote, request) {
             dropped.push(Again { ids, ..a });
         } else {
             kept.push(a);
@@ -707,6 +736,31 @@ mod tests {
         assert_eq!(kept[3].ids, ["a:1"], "an id in another style is the one it ends with, after a separator");
         assert_eq!(dropped.len(), 2, "copied from what it was shown, or naming nothing it was shown: {dropped:?}");
         assert_eq!(parse_check("not json", request, &said), (vec![], vec![]));
+    }
+
+    /// ANA-203 and JONAH-204: a question that asks what holds is not the
+    /// user saying a rule again, though the model may mark it (haiku marked
+    /// Ana's first question so); a question that complains, or asks for it
+    /// politely, says it again.
+    #[test]
+    fn an_answered_question_is_not_said_again() {
+        let said = vec![("k:3".to_string(), "Return error code LDG-0007 when a client retries a payment with a seen idempotency key.".to_string())];
+        let mark = |request: &str, quote: &str| {
+            let reply = json!({"said_again": [{"ids": ["k:3"], "quote": quote, "rule": "Return error code LDG-0007 for a retried idempotency key."}]});
+            parse_check(&reply.to_string(), request, &said).0.len()
+        };
+        let q = "What error code do we return when a client retries a payment with a duplicate idempotency key?";
+        assert_eq!(mark(q, q), 0, "haiku's mark on Ana's question");
+        assert_eq!(mark("When can I deploy to staging?", "When can I deploy to staging?"), 0);
+        assert_eq!(mark("Should I upgrade the iso8601 library to the latest version?", "Should I upgrade the iso8601 library"), 0);
+        assert_eq!(mark("What error code do we return for a retried key? Just checking.", "What error code do we return for a retried key"), 0);
+        assert_eq!(mark("Is recurring todos a good next feature?", "Is recurring todos a good next feature?"), 0, "JONAH-204");
+        // Complaints and requests are sayings again.
+        assert_eq!(mark("Why does it still return 409? It should be LDG-0007.", "Why does it still return 409?"), 1);
+        assert_eq!(mark("Didn't I tell you to return LDG-0007 for those?", "Didn't I tell you to return LDG-0007"), 1);
+        assert_eq!(mark("Why doesn't the retry return LDG-0007?", "Why doesn't the retry return LDG-0007?"), 1);
+        assert_eq!(mark("Could you always return LDG-0007 for a retried key?", "Could you always return LDG-0007 for a retried key?"), 1);
+        assert_eq!(mark("Return LDG-0007 for a retried key, as I said.", "Return LDG-0007 for a retried key"), 1);
     }
 
     #[test]
