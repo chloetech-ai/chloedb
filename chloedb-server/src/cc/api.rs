@@ -463,7 +463,7 @@ mod tests {
         // MARCO-313: a key limited to tables does not read the server's own
         // log, but the log tables it reads.
         let oncall = Who::of(&json!({"key": {"name": "netops"}, "scope": "write", "tables": {"logs_*": "write", "ctx_incidents": "read"}}));
-        assert_eq!(oncall.limited.as_deref(), Some("logs_* write, ctx_incidents read"));
+        assert_eq!(oncall.limited.as_deref(), Some("ctx_incidents read, logs_* write"));
         assert!(!oncall.reads_server_log() && admin.reads_server_log());
         assert_eq!(reads(&logs, &oncall)[2], ("log_tables", "/v1/tables".to_string()));
         let writer = Who::of(&json!({"key": {"name": "w"}, "scope": "write"}));
