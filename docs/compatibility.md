@@ -3,7 +3,7 @@
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.3.7 but the early
+(November 2026, every crate and package at version 0.3.8 but the early
 Workbench, `chloedb-workbench`, at 0.1.0). The
 [changelog](../CHANGELOG.md) says what changed.
 
@@ -106,7 +106,7 @@ server of their own commit.
 **Not promised.** A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.7; `chloedb-workbench` its own, 0.1.0),
+version of the last release (0.3.8; `chloedb-workbench` its own, 0.1.0),
 and keeps it between releases: name a
 build from a commit after a release by its commit.
 
@@ -166,6 +166,13 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   replaced. Finish the upgrade before moving slots.
   0.3.7 keeps the shard protocol at 21 and adds no plan feature and no
   field, so 0.3.6 and 0.3.7 mix in either order.
+  0.3.8 keeps the shard protocol at 21 and adds no plan feature and no
+  field, so 0.3.7 and 0.3.8 mix in either order. A cluster that follows
+  Postgres (`follow-postgres`) upgrades its coordinators before its
+  shards: a coordinator of 0.3.8 passes the follower's name on to its
+  shards (`x-chloedb-postgres-follower`), and a server of 0.3.8 refuses
+  other writes to a table a follower follows, so behind a 0.3.7
+  coordinator a 0.3.8 shard can refuse the follower's own writes.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer

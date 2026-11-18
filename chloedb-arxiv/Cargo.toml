@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-arxiv"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2021"
 license = "Apache-2.0"
 description = "arXiv on ChloeDB: every paper searched by words and meaning, questions in a sentence, topics, trends, authors, techniques and domains, citations, what to read next by ChloeDB's recommender, and digests tailored to each reader, kept current from arXiv's OAI-PMH"

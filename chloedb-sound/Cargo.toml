@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-sound"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2021"
 license = "Apache-2.0"
 description = "Sound Explorer on ChloeDB: free sounds and music searched by words and by how they sound, inside long recordings too, with the clip you hum, scenes, a map and drifts, each credited and linked to its source"
