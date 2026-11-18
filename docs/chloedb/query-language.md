@@ -1557,6 +1557,55 @@ DROP RECOMMENDER shop;
 - **`FROM recommend(...)`** is a table of the items, best first, with `item`, `score`, and each list's rank of the item (`next`, `co`, `similar`, `popular`, `NULL` where it is not in a list); a `LIMIT` lowers `k`. It takes no join, `WHERE`, `ORDER BY` or `GROUP BY`: rank a table by `ORDER BY recommend(...)` for those.
 - **Where it runs.** On one database, and on chloedb-server over its own tables (`CREATE` and `DROP RECOMMENDER` need an admin key). A coordinator refuses both the statement and the call, since a user's events are spread over shards ([cluster limits](cluster-limits.md)); counts of your own in an [edge table](#edge-tables) or a [next-items table](next-items.md) work there. A version of ChloeDB from before recommenders opens the database, but does not feed the counts.
 
+## Blends: `CREATE BLEND` and `blend()`
+
+A blend makes one list from the rows of several queries, after each has ranked its own: stories and comments on one results page, sponsored rows among organic ones, fresh items beside popular ones. Each row is worth a utility, a weighted sum of values the sources name alike (its heads), each calibrated within its source, and the slots are filled best utility first under the slate's rules: a slot kept for a kind of row, a kind's share of the top rows, its spacing, a cap per value, diversity and near copies.
+
+```sql
+CREATE BLEND serp AS
+  SOURCES (
+    stories  AS (SELECT id, title, author, emb, score() AS relevance, ln(1 + points) AS quality
+                 FROM items WHERE kind = 'story' ORDER BY bm25(title, :q) DESC LIMIT 100),
+    comments AS (SELECT id, text AS title, author, emb, score() AS relevance, ln(1 + replies) AS quality
+                 FROM comments ORDER BY bm25(text, :q) DESC LIMIT 60)
+  )
+  HEADS (relevance CALIBRATE tmm, quality CALIBRATE minmax MISSING zero)
+  UTILITY 1 * relevance + 0.2 * quality
+  SLOT 1 => source = 'stories'
+  QUOTA (source = 'comments' BETWEEN 20% AND 40% IN TOP 10)
+  DIVERSIFY 0.3 ON emb
+  MAX 2 PER author
+  DEDUPE 0.95 ON emb
+  WITH (k => 10, note => 'stories first, a few comments');
+
+SELECT slot, source, id, title, utility, blend_decision FROM blend('serp', q => :q);
+-- slot | source     | id   | title           | utility | blend_decision
+-- 1    | 'stories'  | 's9' | 'Async Rust...' | 1.18    | 'slot 1 is kept for source = ''stories'''
+-- 2    | 'comments' | 'c4' | 'I moved our...'| 0.97    | 'the best utility left'
+SELECT * FROM blend('serp@3', q => 'rust async') LIMIT 20;   -- version 3
+DROP BLEND serp;
+```
+
+- **The definition**: `CREATE [OR REPLACE] BLEND name AS SOURCES (name AS (SELECT ...), ...)` and then, each optional and in this order:
+  - `HEADS (head [CALIBRATE tmm|minmax|rank|raw] [LO n] [MISSING neutral|zero], ...)`: the columns a row is worth by. A head is a column the sources name alike (`... AS relevance`), or `score`, each source's own ranking score, which needs no column. `tmm` (the default) divides by the source's best value, from `LO` (0 by default); `minmax` spans the source's lowest to its best; `rank` keeps only the order, as `rrf` does (61 / (60 + rank)); `raw` keeps the value. A source without the head gives its rows the mean of the others' (`MISSING neutral`, the default) or 0 (`MISSING zero`). Without `HEADS`, the one head is `score CALIBRATE tmm`.
+  - `UTILITY 1 * relevance + 0.2 * quality - 0.1 * age`: the heads' weights (a head not named weighs 0; a name not among the heads adds one, `tmm`). `BOOST (source w, ...)` adds `w` to every row of a source.
+  - `SLOT n => column = 'value'`, more than one: slot *n* is kept for rows of that value.
+  - `QUOTA (column = 'value' BETWEEN a% AND b% IN TOP n, ...)`, or `AT LEAST a%` or `AT MOST b%`, `IN TOP n` the blend's `k` by default; `IF ANY` holds the least only when the sources answered a row of the kind. A kind that could only reach its least by being placed now is placed now; one at its most is passed over.
+  - `SPACING (column = 'value' AT MOST n PER m ROWS, ...)`: at most *n* rows of the kind in any *m* in a row.
+  - `DIVERSIFY λ ON column`: each candidate loses λ (0 to 1) of the utilities' range for its likeness to the rows placed, the cosine of a vector column's values or 1 for an equal value of another column (maximal marginal relevance).
+  - `MAX n PER column`, more than one: at most *n* rows of one value, as [`MAX k PER`](#at-most-k-rows-of-a-value-max-k-per) does for one query.
+  - `DEDUPE t ON vector_column`: a row whose cosine to a row placed is *t* or more is left out.
+  - `WITH (k => 10, note => '...')`: the slots filled (1 to 1,000), and a note kept with the version.
+
+  At most 16 sources, each a `SELECT` (any ranking: a rank profile, `rrf`, `recommend(...)`, a stored function), named once. The rules' numbers are checked (a quota's least at most its most, spacing's *n* under its *m*, λ from 0 to 1), and so is that the quotas' least shares and the slots kept fit in their top rows. `CREATE` answers one row: `blend`, `version`, `sources`, `k`.
+- **A row's key** is its table's key, or the first column where it reads none: rows of one key from two sources are one row, kept where its utility is higher (`also` in the receipts names the others). Its `source` is the source's name, and a rule's column may be `source` or any column the sources answer.
+- **The fill** places the rows slot by slot. A slot kept by `SLOT` takes the best row of its kind; otherwise a quota that would fall short if not met now takes its kind's best row; otherwise the best utility left (less its diversity cost) of the rows no rule bars. When no row fits every rule, the fill sets rules aside for that slot, in this order, until one does: spacing, the caps, a quota's least, the slots kept, a quota's most; the row says so (`no row fit every rule: MAX 2 PER author set aside`), so a blend fills its slots while rows are left (`DEDUPE` is never set aside).
+- **`FROM blend('name[@version]' [, parameter => value, ...]) [LIMIT k]`** runs each source with the call's arguments and the query's parameters as its parameters (`:q`), and answers a row per slot, best first: `slot`, `source`, the sources' columns (all of them for `*`, each source's `NULL` where it has none), `utility` and `blend_decision`, the reason the row is in its slot. A `LIMIT` fills that many slots instead of `k` (a quota's least may then not fit). A call takes no join, `WHERE`, `ORDER BY` or `GROUP BY`; select the columns, and alias them, as `SELECT id, title AS name FROM blend('serp', q => :q)`. The answer's plan lines say what it did: `blend serp@2: 2 sources, 160 rows (stories 100 rows in 3.1 ms, comments 60 rows in 1.4 ms)`, then `blend placed 10 of 10 slots in 0.04 ms: stories 7, comments 3` and a line for each quota's count.
+- **Versions.** A blend is a [stored function](#stored-functions) `name()` whose body is the definition, so `CREATE OR REPLACE BLEND` writes the next version, `blend('serp@1')` reads an old one, `DROP BLEND [IF EXISTS] name` writes a tombstone (its versions stay readable by number), and versions are kept by checkpoints and copies and shipped to replicas as functions are. A function of the name that is not a blend is not replaced by one.
+- **From Rust**, `Db::sql` runs the statements and the calls, `Db::blends` lists each blend's current definition, and `Db::blend_run(&def, version, &params, k, Want { costs: true })` runs a definition, stored or not, into a `Blended` whose `receipts()` is the JSON of every row's heads, raw and as weighted parts of its utility, its slot and why, the rows passed over and what barred them, each quota's count and each rule's cost: the share of the slate's discounted utility (each slot's over log2(slot + 1), as DCG discounts) that it gives up, from filling the slate again without it.
+- **On chloedb-server**, `CREATE` and `DROP BLEND` need an admin key, and a key limited to tables reads a blend only when it may read every source's tables, of every version the call could read. `GET /v1/blends` lists the blends (each current version's definition, its SQL and how many versions), `GET /v1/blends/:name` every version, `PUT /v1/blends/:name {"def": {...}, "note": "..."}` writes the next version from a definition as JSON, and `DELETE /v1/blends/:name` drops it. `POST /v1/blends/preview {"name": "serp"}` (or `"version"`, or a definition not stored, `"def"`) with `"params"` and `"k"` runs it and answers the receipts, rule costs included unless `"costs": false`. The command center's **Labs → Blending** page edits a blend on these routes, previewing the draft as it changes.
+- **Through a coordinator** a blend's versions are written on every shard, as functions are, and each source runs as a query of the cluster, merged from the shards, before the fill: the slate is the one database's.
+
 ## Chunks of a table's text: `chunks_of()`
 
 > **Experimental.** This is new in 0.3.0, and its options and answers may change in a later release.
