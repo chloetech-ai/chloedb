@@ -14,9 +14,8 @@ changes collect under "Unreleased".
 - **ChloeCtx keeps a private aside nowhere, and only the user's words
   make rules** (persona study round 3, WEI-301, JONAH-301, LENA-310,
   JONAH-303, JONAH-304, ANA-308, and WEI-304's restated aside). A part
-  of a prompt marked private ("off
-  the record, please don't save this anywhere: ...", "keep that name
-  private") was stored word for word, became a rule every later session
+  of a prompt marked private ("off the record, please don't save this
+  anywhere: ...", "keep that name private") was stored word for word, became a rule every later session
   was told and was synced to the team, while Claude said it was not saved.
   It is cut before anything is stored, distilled or synced, with
   `[private aside left out]` in its place; the session is told what was
