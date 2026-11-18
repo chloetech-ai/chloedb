@@ -90,6 +90,9 @@ fn call(dir: &std::path::Path, project: &str, name: &str, args: &Json) -> (Strin
         req = json!({});
     }
     req["op"] = json!(op);
+    // Whose call it is: this server's session, not the one whose hook came
+    // last (ANA-201).
+    req["caller"] = daemon::caller("mcp");
     let wait = Duration::from_secs(if op == "ask" { 300 } else { 20 });
     match daemon::request(dir, project, &req, wait) {
         Ok(r) => match r.get("error") {

@@ -680,7 +680,7 @@ fn main() {
         }
         // A person ran it, or Workbench on one's behalf (an answer, a rule):
         // the user's.
-        Cmd::Remember { kind, text: t } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t, "by": "user"}), 30)),
+        Cmd::Remember { kind, text: t } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t, "by": "user", "caller": daemon::caller("cli")}), 30)),
         Cmd::Repeats { days, json: as_json, store, judge, model } => {
             let r = match (store, judge) {
                 (store, Some(file)) => {

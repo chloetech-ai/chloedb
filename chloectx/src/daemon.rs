@@ -181,6 +181,12 @@ pub struct Session {
     /// the turn, and the records shown ([`crate::repeats::promote`]).
     #[serde(skip)]
     pub shown_before: (i64, HashSet<String>),
+    /// The pid of the Claude Code process the session runs in, as its
+    /// hooks are told it (`CLAUDE_PID`): the parent of the session's MCP
+    /// server, whose calls are filed under the session by it
+    /// ([`Daemon::caller_session`]). 0 when no hook said.
+    #[serde(default)]
+    pub pid: u32,
 }
 
 /// A query-understanding search started after a prompt (`async` mode).
@@ -505,6 +511,19 @@ impl Daemon {
                 let payload = req.get("payload").unwrap_or(&Json::Null);
                 let sid = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown");
                 self.note_worktree(sid, req);
+                // The Claude Code process it runs in, whose MCP server
+                // names it as its parent ([`Daemon::caller_session`]).
+                // A process runs one session at a time: after a `/clear`
+                // the new one.
+                if let Some(pid) = req.get("claude_pid").and_then(|v| v.as_u64()).filter(|p| *p > 1 && *p <= u32::MAX as u64).map(|p| p as u32) {
+                    let mut st = self.state.lock().unwrap();
+                    if st.sessions.get(sid).is_none_or(|s| s.pid != pid) {
+                        for s in st.sessions.values_mut().filter(|s| s.pid == pid) {
+                            s.pid = 0;
+                        }
+                        st.sessions.entry(sid.to_string()).or_default().pid = pid;
+                    }
+                }
                 if let Some(a) = req.get("agent").and_then(|v| v.as_str()).filter(|a| !a.is_empty()) {
                     let mut st = self.state.lock().unwrap();
                     if let crate::record::Source::Agent(n) = crate::record::Source::parse(&format!("agent:{a}")) {
@@ -753,6 +772,53 @@ impl Daemon {
         let st = self.state.lock().unwrap();
         let w = st.sessions.get(&st.active).map_or(0, |s| s.window_start);
         (st.active.clone(), w)
+    }
+
+    /// The session a request comes from, and where its window starts:
+    /// the one its `caller` names ([`caller`]), not the session whose hook
+    /// came last, which is another one whenever two sessions share the
+    /// store (the worktrees of a repository share one daemon; ANA-201).
+    /// - The Claude Code process's session (a hook said its pid): its
+    ///   current one, which after a `/clear` is the new session.
+    /// - Else the session Claude Code named in the caller's environment.
+    /// - Else, for the MCP server, the active session (an older Claude Code
+    ///   that names neither), and for the CLI none: a person typed it.
+    ///
+    /// A request without `caller` (an older client) gets the active
+    /// session, as before. None (or an empty id) means no session.
+    fn caller_session(&self, req: &Json) -> Option<(String, i64)> {
+        let Some(c) = req.get("caller").filter(|c| c.is_object()) else {
+            return Some(self.active_session()).filter(|(s, _)| !s.is_empty());
+        };
+        let pid = c.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let named = c.get("session").and_then(|v| v.as_str()).unwrap_or("");
+        let mcp = c.get("via").and_then(|v| v.as_str()) == Some("mcp");
+        let st = self.state.lock().unwrap();
+        let by_pid = st.sessions.iter().find(|(_, s)| pid > 0 && s.pid == pid);
+        if let Some((id, s)) = by_pid.or_else(|| st.sessions.get_key_value(named)) {
+            return Some((id.clone(), s.window_start));
+        }
+        if mcp && !named.is_empty() {
+            return Some((named.to_string(), 0));
+        }
+        if mcp {
+            let w = st.sessions.get(&st.active).map_or(0, |s| s.window_start);
+            return Some((st.active.clone(), w)).filter(|(s, _)| !s.is_empty());
+        }
+        None
+    }
+
+    /// `base` for a memory tool's search: without what the asking
+    /// session's window holds already (unless `include_current`), but with
+    /// the notes written during it (ANA-210).
+    fn tool_filter(&self, req: &Json, mut base: Filter) -> Filter {
+        if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if let Some(w) = self.caller_session(req) {
+                base.exclude_window = Some(w);
+                base.window_notes = true;
+            }
+        }
+        base
     }
 
     // ------------------------------------------------------------ hooks
@@ -1663,11 +1729,7 @@ impl Daemon {
         // By search alone unless a model is asked to plan and pick.
         let deep = req.get("deep").and_then(|v| v.as_bool()).unwrap_or(false) || req.get("model").and_then(|v| v.as_str()).is_some_and(|m| !m.is_empty());
         if !deep {
-            let (active, w) = self.active_session();
-            let mut filter = Filter::default();
-            if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
-                filter.exclude_window = Some((active.clone(), w));
-            }
+            let filter = self.tool_filter(req, Filter::default());
             let built = crate::context::build(&self.store, &q, &filter, &crate::context::ContextParams::default())?;
             let text = if built.text.is_empty() { "ChloeCtx found nothing relevant in memory.".to_string() } else { built.text };
             let ids: Vec<String> = built.records.iter().map(|r| r.id.clone()).collect();
@@ -1679,11 +1741,7 @@ impl Daemon {
             cfg.planner_model = m.to_string();
             cfg.ranker_model = m.to_string();
         }
-        let (active, w) = self.active_session();
-        let mut filter = Filter::default();
-        if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
-            filter.exclude_window = Some((active.clone(), w));
-        }
+        let filter = self.tool_filter(req, Filter::default());
         let tree = self.tree_of(req);
         let project = Path::new(&tree);
         let distill = self.distill_cfg();
@@ -2107,11 +2165,7 @@ impl Daemon {
         let q = req.get("query").and_then(|v| v.as_str()).unwrap_or("");
         let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(8).clamp(1, 50) as usize;
         let kinds: Vec<Kind> = req.get("kinds").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|k| k.as_str().and_then(Kind::parse)).collect()).unwrap_or_default();
-        let (active, w) = self.active_session();
-        let mut f = Filter { kinds, ..Default::default() };
-        if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
-            f.exclude_window = Some((active.clone(), w));
-        }
+        let mut f = self.tool_filter(req, Filter { kinds, ..Default::default() });
         if let Some(days) = req.get("since_days").and_then(|v| v.as_f64()) {
             f.since_ts = Some(now() - (days * 86_400.0) as i64);
         }
@@ -2130,6 +2184,8 @@ impl Daemon {
         if text.is_empty() {
             text = "No matching records.".into();
         }
+        // The receipt is the asking session's (ANA-201).
+        let active = self.caller_session(req).map(|(s, _)| s).unwrap_or_default();
         let turn = self.state.lock().unwrap().sessions.get(&active).map_or(0, |s| s.turn);
         let receipt = self.write_receipt(&active, turn, "search", &store, inputs, &out, &text);
         if let Some(id) = receipt.as_ref().filter(|_| !out.ids.is_empty()) {
@@ -2395,9 +2451,9 @@ impl Daemon {
             return Err(err("text is empty"));
         }
         let files: Vec<String> = req.get("files").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-        let (sid, _) = self.active_session();
-        let sid = if sid.is_empty() { "manual".to_string() } else { sid };
-        let turn = self.with_session(&sid, |s| s.turn);
+        // The session that asked (ANA-201), else a person's note: `manual`.
+        let sid = self.caller_session(req).map(|(s, _)| s).unwrap_or_else(|| "manual".to_string());
+        let turn = self.state.lock().unwrap().sessions.get(&sid).map_or(0, |s| s.turn);
         let old = match req.get("supersedes").and_then(|v| v.as_str()).filter(|o| !o.is_empty()) {
             Some(o) => Some(self.store.get(&[o.to_string()])?.pop().ok_or_else(|| err(format!("no record {o} to supersede: nothing was stored")))?),
             None => None,
@@ -3335,6 +3391,27 @@ fn try_request(socket: &Path, req: &Json, deadline: Instant) -> std::io::Result<
         return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "it closed the connection without answering (it stopped, or failed on the request)"));
     }
     serde_json::from_str(&line).map_err(|e| std::io::Error::other(e.to_string()))
+}
+
+/// Who sends a request, for the daemon to file what it stores under the
+/// session that made it ([`Daemon::caller_session`]): `via` is `mcp` (the
+/// session's MCP server) or `cli`. Claude Code names its session in the
+/// environment of the processes it starts (`CLAUDE_CODE_SESSION_ID`, as it
+/// was when it started them: a `/clear` makes a new one) and tells its
+/// hooks and commands its own pid (`CLAUDE_PID`); an MCP server is its
+/// child, so its parent is that process (an MCP server's `CLAUDE_PID`, when
+/// it has one, is an outer Claude Code's). A command typed in a terminal
+/// names neither, and its note is a person's (`manual`).
+pub fn caller(via: &str) -> Json {
+    let session = std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default();
+    let pid = if via == "mcp" { std::os::unix::process::parent_id() } else { claude_pid().unwrap_or(0) };
+    json!({"via": via, "session": session.trim(), "pid": if pid > 1 { pid } else { 0 }})
+}
+
+/// The pid of the Claude Code process a hook runs under (`CLAUDE_PID`), if
+/// it says.
+pub fn claude_pid() -> Option<u32> {
+    std::env::var("CLAUDE_PID").ok().and_then(|p| p.trim().parse::<u32>().ok()).filter(|p| *p > 1)
 }
 
 /// Sends one request to the project's daemon, starting it if needed.

@@ -94,9 +94,11 @@ fn sessions_tools_compaction_and_memory_tools() {
     assert_eq!(stats["by_kind"]["error"], json!(1));
     assert_eq!(stats["by_kind"]["episode"], json!(1));
 
-    // Within session one, nothing is outside the live window.
+    // Within session one, what its window holds is left out (its notes,
+    // such as the preference, are not: ANA-210).
     let s = call(&d, json!({"op": "search", "query": "ledger mismatched types", "limit": 5}));
-    assert_eq!(s["text"], json!("No matching records."), "{s}");
+    assert!(!s["text"].as_str().unwrap().contains("E0308"), "{s}");
+    assert!(s["ids"].as_array().unwrap().iter().all(|i| i == "s1:2"), "{s}");
 
     // Session two starts with a briefing that carries the preference and the episode.
     let brief = hook(&d, "SessionStart", json!({"session_id": "s2", "source": "startup"}));
@@ -165,6 +167,65 @@ fn sessions_tools_compaction_and_memory_tools() {
     assert_eq!(stats["sessions"], json!(2));
     let r = call(&d, json!({"op": "search", "query": "checked_add", "limit": 3, "include_current": true}));
     assert!(r["text"].as_str().unwrap().contains("checked_add"), "{r}");
+}
+
+/// ANA-201: two sessions share a store (two worktrees, one daemon). Each
+/// memory tool call is filed under the session that made it, whichever
+/// session's hook came last; a note typed in a terminal is `manual`; and a
+/// session's own notes are not hidden from its memory tools (ANA-210).
+#[test]
+fn notes_are_filed_under_the_session_that_made_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path());
+    // Claude Code processes 4101 (session a) and 4202 (session b), as their hooks say.
+    let pid = |p: u32| json!({"claude_pid": p});
+    hook_from(&d, "SessionStart", json!({"session_id": "a", "source": "startup"}), pid(4101));
+    hook_from(&d, "UserPromptSubmit", json!({"session_id": "a", "prompt": "List endpoints paginate with opaque cursors."}), pid(4101));
+    hook_from(&d, "SessionStart", json!({"session_id": "b", "source": "startup"}), pid(4202));
+    hook_from(&d, "UserPromptSubmit", json!({"session_id": "b", "prompt": "List endpoints paginate with page numbers."}), pid(4202));
+    // Session b's hook came last; session a's MCP server (a child of 4101,
+    // and Claude Code named session a in its environment) calls remember.
+    let mcp = |session: &str, pid: u32| json!({"via": "mcp", "session": session, "pid": pid});
+    let remember = |text: &str, caller: Json| {
+        let r = call(&d, json!({"op": "remember", "kind": "decision", "text": text, "caller": caller}));
+        assert!(r.get("error").is_none(), "{r}");
+        r["id"].as_str().unwrap().to_string()
+    };
+    assert!(remember("List endpoints paginate with opaque cursor tokens.", mcp("a", 4101)).starts_with("a:"));
+    // By its parent alone, or by the session named alone.
+    assert!(remember("Page numbers start at 1.", mcp("", 4202)).starts_with("b:"));
+    assert!(remember("Cursors expire after an hour.", mcp("a", 0)).starts_with("a:"));
+    // A command typed in a terminal: nobody's session, whatever came last.
+    let cli = |session: &str, pid: u32| json!({"via": "cli", "session": session, "pid": pid});
+    assert!(remember("The API is versioned in the path.", cli("", 0)).starts_with("manual:"));
+    // ... or run by a session's agent in its Bash tool (CLAUDE_PID is its
+    // Claude Code), and one from a session of another store is a person's.
+    assert!(remember("Errors are JSON problem documents.", cli("", 4101)).starts_with("a:"));
+    assert!(remember("Rates come from the ECB.", cli("elsewhere", 0)).starts_with("manual:"));
+    // The terminal's note did not make "manual" the active session: a
+    // request from an older client still gets the session that hooked last.
+    assert!(call(&d, json!({"op": "remember", "kind": "fact", "text": "Old clients send no caller."}))["id"].as_str().unwrap().starts_with("b:"));
+    // A /clear in process 4101 starts session c; the MCP server keeps the
+    // environment it started with (session a), and its notes go to c.
+    hook_from(&d, "SessionStart", json!({"session_id": "c", "source": "clear"}), pid(4101));
+    assert!(remember("Cursor tokens are base64url.", mcp("a", 4101)).starts_with("c:"));
+    // An MCP server of a Claude Code that names its session but whose
+    // hooks never reached this daemon: its session all the same.
+    assert!(remember("Rate limits are per key.", mcp("d", 0)).starts_with("d:"));
+
+    // ANA-210: session a's memory tools see the notes it made, though they
+    // are in its window; not the prompts its window holds.
+    let s = call(&d, json!({"op": "search", "query": "opaque cursor tokens", "limit": 8, "caller": mcp("a", 0)}));
+    let text = s["text"].as_str().unwrap();
+    assert!(text.contains("opaque cursor tokens."), "{s}");
+    assert!(!text.contains("paginate with opaque cursors."), "the window's prompt: {s}");
+    let r = call(&d, json!({"op": "ask", "question": "How do list endpoints paginate?", "caller": mcp("a", 0)}));
+    assert!(r["text"].as_str().unwrap().contains("opaque cursor tokens"), "{r}");
+    // Session b's window is its own: from a, b's prompt is not in a's window.
+    let s = call(&d, json!({"op": "search", "query": "page numbers", "limit": 8, "kinds": ["prompt"], "caller": mcp("a", 0)}));
+    assert!(s["text"].as_str().unwrap().contains("paginate with page numbers"), "{s}");
+    let s = call(&d, json!({"op": "search", "query": "page numbers", "limit": 8, "kinds": ["prompt"], "caller": mcp("b", 4202)}));
+    assert!(!s["text"].as_str().unwrap().contains("paginate with page numbers"), "{s}");
 }
 
 #[test]
