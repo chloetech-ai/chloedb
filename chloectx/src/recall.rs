@@ -955,7 +955,8 @@ impl Default for KnowledgeParams {
 pub const KNOWLEDGE: [Kind; 5] = [Kind::Preference, Kind::Decision, Kind::Fact, Kind::Todo, Kind::Note];
 
 /// Knowledge records that match a prompt well enough on their own text,
-/// best first, leaving out `skip` and records closed as done or superseded.
+/// best first, leaving out `skip`, records closed as done or superseded,
+/// and the rules and decisions of a machine not accepted yet.
 pub fn knowledge(store: &Store, query: &str, filter: &Filter, skip: &HashSet<String>, p: &KnowledgeParams) -> Result<Vec<(Record, f64, f64)>> {
     let store = &store.pinned();
     let mut f = filter.clone();
@@ -977,7 +978,10 @@ pub fn knowledge(store: &Store, query: &str, filter: &Filter, skip: &HashSet<Str
     let todo_open = |r: &Record| r.kind != Kind::Todo || r.tag == "planned";
     let mut out: Vec<(Record, f64, f64)> = by
         .into_values()
-        .filter(|(r, _)| !skip.contains(&r.id) && !crate::record::closed_tag(&r.tag) && r.tag != "done" && todo_open(r) && !crate::envelope::is_envelope_record(r))
+        // A rule or decision another machine pushed waits for a person to
+        // accept that machine (`chloectx sync accept`), here as in the
+        // briefing and the searches (WEI-302).
+        .filter(|(r, _)| !skip.contains(&r.id) && !crate::record::closed_tag(&r.tag) && r.tag != "done" && todo_open(r) && !crate::envelope::is_envelope_record(r) && !crate::sync::held_back(r))
         .map(|(r, c)| {
             // A note's `When:` line counts: it names the requests it bears on.
             let have = analyzed(&r.key_text());
@@ -1039,7 +1043,13 @@ pub fn fmt_knowledge_checked(items: &[(Record, f64, f64)], now: i64, mut check: 
         let t = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
         let fresh = check.as_deref_mut().map(|c| c.label_record(r)).unwrap_or_default();
         let w = r.said_by();
-        let whose = if w.is_empty() || t.to_lowercase().starts_with(&w.to_lowercase()) { String::new() } else { format!(", {w} said") };
+        // A teammate's note says whose it is (WEI-306): their machine's
+        // name, not "the user", who is someone else here.
+        let whose = match crate::sync::sent_by(r) {
+            Some(m) => format!(", from {m}"),
+            None if w.is_empty() || t.to_lowercase().starts_with(&w.to_lowercase()) => String::new(),
+            None => format!(", {w} said"),
+        };
         s += &format!("- [{}{whose}] {t} ({}, {}){fresh}\n", note_label(r), r.id, fmt_ago(r.ts, now));
     }
     s
@@ -1154,7 +1164,9 @@ pub fn briefing_parts(store: &Store, current_session: &str, max_chars: usize, no
             }
             let (text, cut) = clip_words(&r.text, n);
             let more = if cut { format!("; memory_timeline {} shows the rest", r.id) } else { String::new() };
-            let line = format!("- {} ({}, {}{more}){}\n", crate::envelope::defuse(&text), r.id, day_of(r.ts), label);
+            // A teammate's, by their machine's name (WEI-306).
+            let from = crate::sync::sent_by(&r).map(|m| format!(", from {m}")).unwrap_or_default();
+            let line = format!("- {} ({}, {}{from}{more}){}\n", crate::envelope::defuse(&text), r.id, day_of(r.ts), label);
             if lines.len() == keep || len + line.len() > budget {
                 unshown.push(r);
                 continue;
@@ -1628,5 +1640,47 @@ mod tests {
         // A record of the user's, or of a local tool, is shown as it was.
         let local = all.iter().find(|h| h.record.tag == "Bash").unwrap();
         assert!(!fmt_record(&local.record, &local.record.text, 200).contains("third_party_text"));
+    }
+
+    /// WEI-302: a decision pulled from a machine no one accepted reached
+    /// the prompt's context through the knowledge list (and a deep
+    /// search's candidates), though the briefing held it back.
+    #[test]
+    fn a_machine_not_accepted_reaches_no_prompt() {
+        use crate::embed::HashEmbedder;
+        use crate::record::Draft;
+        use crate::store::StoreOptions;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("m.strata"), std::sync::Arc::new(HashEmbedder { dim: 64 }), StoreOptions { sync: false, ..Default::default() }).unwrap();
+        let theirs = "Use Postgres SKIP LOCKED for the job queue, not Redis: one fewer service to run";
+        let ours = "The job queue's workers run under systemd on the queue hosts";
+        let recs = store
+            .append("s1", 1, 1_000, vec![
+                Draft::new(Kind::Decision, theirs).tag("distilled").link(crate::sync::SYNCED_FROM, "m-44fb96669a15"),
+                Draft::new(Kind::Preference, "User preference: always claim jobs with SKIP LOCKED in the job queue").tag("distilled").link(crate::sync::SYNCED_FROM, "m-44fb96669a15"),
+                Draft::new(Kind::Fact, ours).tag("distilled"),
+            ])
+            .unwrap();
+        assert!(crate::sync::held_back(&recs[0]) && crate::sync::held_back(&recs[1]));
+        let q = "How should the job queue claim jobs: Redis or Postgres SKIP LOCKED?";
+        let p = KnowledgeParams { min_cos: 0.0, min_cov: 0.0, ..Default::default() };
+        let got: Vec<String> = knowledge(&store, q, &Filter::default(), &HashSet::new(), &p).unwrap().into_iter().map(|x| x.0.text).collect();
+        assert_eq!(got, vec![ours.to_string()], "held back: {got:?}");
+        // A deep search's own searches leave them out too.
+        for kind in ["notes", "keywords", "semantic", "text"] {
+            let query = crate::deep::Query { kind: kind.into(), q: q.into(), names: vec![], path: String::new(), sql_where: String::new(), sql_order: String::new(), kinds: vec![] };
+            let found = crate::deep::run_query(&store, &query, &Filter::default(), 20).unwrap();
+            assert!(!found.iter().any(crate::sync::held_back), "{kind}: {:?}", found.iter().map(|r| &r.text).collect::<Vec<_>>());
+        }
+        // Accepted, it is knowledge like any other.
+        let mut accepted = recs[0].clone();
+        accepted.links.iter_mut().filter(|l| l.label == crate::sync::SYNCED_FROM).for_each(|l| l.label = crate::sync::ACCEPTED.into());
+        store.insert(&[accepted]).unwrap();
+        let items = knowledge(&store, q, &Filter::default(), &HashSet::new(), &p).unwrap();
+        let got: Vec<String> = items.iter().map(|x| x.0.text.clone()).collect();
+        assert!(got.contains(&theirs.to_string()) && got.len() == 2, "{got:?}");
+        // WEI-306: and reads as the other machine's, not "the user's".
+        let block = fmt_knowledge(&items, 2_000);
+        assert!(block.contains("[decision, from m-44fb96669a15] Use Postgres") && block.contains("[fact] The job queue's"), "{block}");
     }
 }

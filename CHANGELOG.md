@@ -11,6 +11,37 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **ChloeCtx: a team's forgets, deletions and retired rules reach every
+  machine, and a teammate's notes say whose they are** (persona study
+  round 3, WEI-304, WEI-303, WEI-306). A forget deleted the record's row
+  on the server, and every teammate who had pulled it kept it; an admin's
+  `DELETE` of a leaver's rows reached no store; and a rule could be
+  retired on one laptop only. Now a forget leaves a tombstone (a row of
+  kind `forgotten`) that each machine's next pull forgets, receipts and
+  segments too; another machine's rows deleted on the server are forgotten
+  on each machine that pulled them; a record retired or replaced on the
+  server, or whose context a forget cut, is so on each machine that has
+  it; and a push no longer sends back what it pulled (`--again` does).
+  `chloectx sync retire ID`, or Retire on a synced project's Memories in
+  the command center (`POST /v1/memory/retire`, with write on the
+  project's table), retires a note for the whole project and records who
+  did (`retired_by`). A teammate's note reads `from alice-laptop` in the
+  briefing and the prompt's context, and a rule said again counts only
+  this machine's sayings. setup.md says how to offboard someone
+  ([setup.md](docs/chloectx/setup.md#keep-the-memory-on-a-chloedb-server)).
+- **ChloeCtx: what an unaccepted machine sent stays out of every prompt,
+  and `sync accept` names machines** (persona study round 3, WEI-302,
+  WEI-308). A decision pulled from a machine no one had accepted reached
+  the prompt's context through the knowledge list (and a deep search's
+  candidates, and the notes on a file being edited), though the briefing
+  held it back; it no longer does. Each row a machine pushes names the key
+  it pushed with (`pushed_by` in `links_json`, from `GET /v1/whoami`), and
+  `chloectx sync accept` lists machines by it (`alice-laptop
+  (m-44fb96669a15)`) and accepts one by that name, its key's or its id.
+  `--all` accepts the machines listed now in this project, not every
+  machine to come in every project (`trusted: ["*"]`, which it wrote
+  before, is no longer honoured); a machine is accepted per project
+  (`accepted` in `sync.json`), and those accepted before stay accepted.
 - **ChloeCtx: `chloectx sync setup` syncs the project it runs in, and no
   other** (persona study round 3, LENA-301; audit CTX-34). The first key
   set up on a machine was kept as the machine's too (`sync.token`), and
@@ -159,6 +190,31 @@ or one server), so shards of older versions need nothing new.
   site in the run yourself. When it ends it becomes an experiment with the
   full report and an Agents tab
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#live-runs)).
+
+- **`hash()` in a ranking.** `hash(field, seed)` of the key or a stored
+  field is now a leaf of a ranking expression, the same number it is in
+  `WHERE` and `ORDER BY`: `ORDER BY bm25(body, :q) * 0 + hash(id, 7) DESC`
+  shows what a search finds in a seeded random order (an experiment's
+  shuffled arm, a logged query's), and a small share of it breaks ties.
+  It ranks as a rank-safe boost, every row the text matches; `rrf` does
+  not fuse it. A plan with it needs the feature `hash`, and a shard from
+  before this release refuses it in a ranking
+  ([query language](docs/chloedb/query-language.md#samples-splits-and-shuffles-hash)).
+
+- **Experiments: checks, interleaving and test arms** (`chloedb-experiments`,
+  a demo). Check this runs a finished experiment again 30 times on the same
+  users, each time split anew, and shows how often each metric's 95%
+  interval held the truth, the primary metric's intervals around the true
+  lift, and the calls the repeats made. Interleaving (`"mode":
+  "interleave"`) shows two rankings in one team-drafted list, with its
+  exact truth from every pattern of coins, and the A/B of the same pair
+  beside it with the users each would need. The builder makes test arms
+  from the control (shuffled, reversed, first row demoted, through an
+  arm's `then`), a live run stops once it is decided (`"until"`), its AI
+  agents are split evenly across arms with a line per arm on why they gave
+  up, each experiment takes a fresh seed, and a report's Queries tab shows
+  where the difference came from
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#checking-a-result)).
 
 ### Query plans
 

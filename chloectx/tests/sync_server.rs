@@ -138,7 +138,7 @@ fn machines_that_number_alike_sync_every_record() {
     // C pulls both machines' records, the second 500 too.
     let c = store(dir.path(), "c.strata");
     let mut sc = SyncState::default();
-    assert_eq!(sync::pull(&remote, &c, project, &mut sc, dir.path()).unwrap(), 501);
+    assert_eq!(sync::pull(&remote, &c, project, &mut sc, dir.path()).unwrap().stored, 501);
     assert_eq!(c.len(), 501);
     let got = c.get(&["a-00500".to_string(), "b-00500".to_string()]).unwrap();
     assert_eq!(got.len(), 2, "both records numbered 500");
@@ -150,7 +150,7 @@ fn machines_that_number_alike_sync_every_record() {
     assert!(sent >= 3, "C's own records were sent: {sent}");
     assert_eq!(remote.count(project).unwrap(), 504);
     // And a second pull stores nothing new.
-    assert_eq!(sync::pull(&remote, &c, project, &mut sc, dir.path()).unwrap(), 0);
+    assert_eq!(sync::pull(&remote, &c, project, &mut sc, dir.path()).unwrap().stored, 0);
 }
 
 fn note(id: &str, kind: Kind, text: &str, seq: i64) -> Record {
@@ -193,20 +193,20 @@ fn a_project_key_reads_its_project_only_and_what_another_machine_sent_waits_to_b
     // B pulls acme/web: the rule is stored, marked as from A, and kept out
     // of the briefing until B accepts A.
     let b = store(dir.path(), "b.strata");
-    assert_eq!(sync::pull(&rb, &b, "acme/web", &mut SyncState::default(), dir.path()).unwrap(), 2);
+    assert_eq!(sync::pull(&rb, &b, "acme/web", &mut SyncState::default(), dir.path()).unwrap().stored, 2);
     let rule = b.get(&["a-00001".to_string()]).unwrap().pop().unwrap();
     assert!(sync::held_back(&rule), "{:?}", rule.links);
     assert_eq!(sync::pending_origin(&rule), Some(sync::origin(&home_a).as_str()));
     let (brief, _) = chloectx::recall::briefing(&b, "s-now", 8000, 1_800_000_000).unwrap();
     assert!(!brief.contains("bootstrap.sh") && brief.contains("deploys on Tuesdays"), "{brief}");
-    let pending = sync::accept(&home_b, &b, &[]).unwrap();
-    assert_eq!(pending.iter().map(|(o, n, _)| (o.clone(), *n)).collect::<Vec<_>>(), vec![(sync::origin(&home_a), 2)]);
-    sync::accept(&home_b, &b, &[sync::origin(&home_a)]).unwrap();
+    let (pending, _) = sync::accept(&home_b, &b, "acme/web", &[], false).unwrap();
+    assert_eq!(pending.iter().map(|p| (p.origin.clone(), p.records)).collect::<Vec<_>>(), vec![(sync::origin(&home_a), 2)]);
+    sync::accept(&home_b, &b, "acme/web", &[sync::origin(&home_a)], false).unwrap();
     let (brief, _) = chloectx::recall::briefing(&b, "s-now", 8000, 1_800_000_000).unwrap();
     assert!(brief.contains("bootstrap.sh"), "{brief}");
-    assert!(sync::accept(&home_b, &b, &[]).unwrap().is_empty());
-    // A machine accepted once: its later records come in accepted.
-    assert!(sync::load_config(&home_b).trusted.contains(&sync::origin(&home_a)));
+    assert!(sync::accept(&home_b, &b, "acme/web", &[], false).unwrap().0.is_empty());
+    // A machine accepted once: its later records of the project come in accepted.
+    assert!(sync::load_config(&home_b).trusts("acme/web", &sync::origin(&home_a)));
 
     // A key limited to acme/web's table reads and writes it, and no other
     // project: neither payroll's table nor the shared one.
@@ -229,7 +229,7 @@ fn a_project_key_reads_its_project_only_and_what_another_machine_sent_waits_to_b
     assert_eq!(code, 200, "{j}");
     let (rc, _) = machine("home-c", admin);
     let c = store(dir.path(), "c.strata");
-    assert_eq!(sync::pull(&rc, &c, "acme/web", &mut SyncState::default(), dir.path()).unwrap(), 3);
+    assert_eq!(sync::pull(&rc, &c, "acme/web", &mut SyncState::default(), dir.path()).unwrap().stored, 3);
     let old = c.get(&["old-1".to_string()]).unwrap().pop().unwrap();
     assert_eq!(sync::pending_origin(&old), Some("unknown"));
 }
@@ -313,15 +313,31 @@ fn a_record_forgotten_here_leaves_the_server_and_is_never_pulled_back() {
     assert_eq!(code, 0, "{out}");
     assert_eq!(count_here(&home_b, "Zebra-Quartz"), 1);
 
-    // A forgets the secret: its row on the server goes too.
+    // A forgets the secret: its row on the server is replaced by a
+    // tombstone, which the server's count leaves out.
     let (code, out) = chloectx(&home_a, &project, &url, &["forget", &secret]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("sync server deleted too"), "{out}");
+    assert!(out.contains("replaced by a tombstone"), "{out}");
     assert_eq!(remote.count(&key).unwrap(), on_server - 1);
     assert_eq!(count_here(&home_a, "Zebra-Quartz"), 0);
 
-    // B, which pulled it before, keeps its copy and sends it back; A's
-    // next pull does not store it again.
+    // WEI-304: B, which pulled it before, forgets it on its next pull, and
+    // a machine that pulls for the first time never stores it.
+    let (code, out) = chloectx(&home_b, &project, &url, &["sync", "pull"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(count_here(&home_b, "Zebra-Quartz"), 0, "B kept what A forgot");
+    assert_eq!(count_here(&home_b, "Tuesdays"), 1);
+    let (code, out) = chloectx(&home_b, &project, &url, &["sync", "push"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(remote.count(&key).unwrap(), on_server - 1, "B sent it back");
+    let home_c = dir.path().join("home-c");
+    let _stop_c = Stop(vec![(&home_c, &project, &url)]);
+    let (code, out) = chloectx(&home_c, &project, &url, &["sync", "pull"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!((count_here(&home_c, "Zebra-Quartz"), count_here(&home_c, "Tuesdays")), (0, 1));
+
+    // A machine from before 0.3.9, which pulled it and sends it back,
+    // replaces the tombstone; A's next pull does not store it again.
     let doc = serde_json::json!({"id": format!("{key}:{secret}"), "origin": "m-b", "project": key, "rid": secret, "session": "s", "kind": "fact", "tag": "", "turn": 1, "seq": 1, "ts": 1, "importance": 1.0, "files": "", "content": "The staging codeword is Zebra-Quartz-77", "context": "", "links_json": "[]"});
     let (code, j) = post(&url, ADMIN, "/v1/write", serde_json::json!({"ops": [{"op": "upsert", "table": sync::table_for(&key), "doc": doc}]}));
     assert_eq!(code, 200, "{j}");
@@ -330,6 +346,12 @@ fn a_record_forgotten_here_leaves_the_server_and_is_never_pulled_back() {
     assert_eq!(code, 0, "{out}");
     assert_eq!(count_here(&home_a, "Zebra-Quartz"), 0, "pulled back");
     assert_eq!(count_here(&home_a, "Tuesdays"), 1);
+    // Nor do B's and C's, which forgot it.
+    for home in [&home_b, &home_c] {
+        let (code, out) = chloectx(home, &project, &url, &["sync", "pull"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(count_here(home, "Zebra-Quartz"), 0, "pulled back");
+    }
 }
 
 #[test]
@@ -358,8 +380,8 @@ fn a_delete_the_server_did_not_answer_is_sent_again() {
     assert_eq!(remote.count(project).unwrap(), 3);
     // Another store pulls it meanwhile, and this one does not.
     let b = store(&db, "memory.strata");
-    assert_eq!(sync::pull(&remote, &b, project, &mut SyncState::default(), &db).unwrap(), 3);
-    assert_eq!(sync::pull(&remote, &a, project, &mut SyncState::default(), &da).unwrap(), 0);
+    assert_eq!(sync::pull(&remote, &b, project, &mut SyncState::default(), &db).unwrap().stored, 3);
+    assert_eq!(sync::pull(&remote, &a, project, &mut SyncState::default(), &da).unwrap().stored, 0);
     assert!(a.get(&["a-00002".to_string()]).unwrap().is_empty());
 
     // The next push sends the delete again.
@@ -368,6 +390,285 @@ fn a_delete_the_server_did_not_answer_is_sent_again() {
     let f = sync::load_forgotten(&da);
     assert!(f.unsent.is_empty() && f.ids.contains("a-00002"), "{f:?}");
     assert_eq!(sync::send_forgets(&remote, project, &da).unwrap(), 0);
+}
+
+#[test]
+fn accept_names_each_machine_by_its_key_and_all_reaches_only_the_machines_listed_now() {
+    // WEI-308: `sync accept` listed `m-44fb96669a15: 73 records`, and
+    // `accept --all` wrote `trusted: ["*"]`: every machine to come, for
+    // every project of the laptop.
+    let Some(bin) = server_bin() else {
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    std::env::remove_var("CHLOECTX_SYNC_ORIGIN");
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, url) = serve(&bin, dir.path(), Some(ADMIN));
+    let (ledger, payroll) = ("acme/ledger", "acme/payroll");
+    let machine = |name: &str, key: &str| {
+        let home = dir.path().join(name);
+        sync::setup(&home, &dir.path().to_string_lossy(), &url, Some(key), "", &[], true).unwrap();
+        (sync::remote(&home).unwrap(), home)
+    };
+    // The key "Make a sync key" makes for alice's laptop.
+    let table = sync::table_for(ledger);
+    let name = format!("chloectx-sync-alice-laptop-{}", &table[table.len() - 8..]);
+    let admin = admin_remote(&dir.path().join("home-admin"), &url);
+    admin.create_table(ledger).unwrap();
+    let (code, k) = post(&url, ADMIN, "/v1/admin/keys", serde_json::json!({"name": name, "scope": "write", "tables": {table.clone(): "write"}}));
+    assert_eq!(code, 200, "{k}");
+    let (ra, home_a) = machine("home-alice", k["secret"].as_str().unwrap());
+    assert_eq!(ra.key_name().as_deref(), Some(name.as_str()));
+    assert_eq!(sync::machine_name(&name), "alice-laptop");
+    // carol syncs with the server's own token, which names no one.
+    let (rc, home_c) = machine("home-carol", ADMIN);
+    assert_eq!(rc.key_name(), None);
+    let (rb, home_b) = machine("home-bob", ADMIN);
+
+    let a = store(dir.path(), "a.strata");
+    load(&a, &[note("a", Kind::Decision, "Use Postgres SKIP LOCKED for the job queue, not Redis", 1)]);
+    sync::push(&ra, &a, ledger, &mut SyncState::default()).unwrap();
+    let c = store(dir.path(), "c.strata");
+    load(&c, &[note("c", Kind::Preference, "User preference: money is integer cents", 1)]);
+    sync::push(&rc, &c, ledger, &mut SyncState::default()).unwrap();
+
+    // bob lists them: alice's by her key's name, carol's by its id.
+    let b = store(dir.path(), "b.strata");
+    assert_eq!(sync::pull(&rb, &b, ledger, &mut SyncState::default(), dir.path()).unwrap().stored, 2);
+    let (waiting, _) = sync::accept(&home_b, &b, ledger, &[], false).unwrap();
+    let (oa, oc) = (sync::origin(&home_a), sync::origin(&home_c));
+    let labels: Vec<String> = waiting.iter().map(|p| p.label()).collect();
+    assert!(labels.contains(&format!("alice-laptop ({oa})")) && labels.contains(&oc), "{labels:?}");
+    assert_eq!(waiting.iter().find(|p| p.origin == oa).unwrap().key.as_deref(), Some(name.as_str()));
+    // The server's row names the key too, for an admin's SQL.
+    let (code, j) = post(&url, ADMIN, "/v1/query", serde_json::json!({"sql": format!("SELECT links_json FROM {table} WHERE origin = :o LIMIT 5"), "params": {"o": oa}}));
+    assert_eq!(code, 200, "{j}");
+    assert!(j["rows"][0][0].as_str().unwrap().contains(&name), "{j}");
+
+    // By the machine's name; a name that matches no machine says so.
+    let (_, unknown) = sync::accept(&home_b, &b, ledger, &["alice-laptop".into(), "dave-laptop".into()], false).unwrap();
+    assert_eq!(unknown, vec!["dave-laptop".to_string()]);
+    let held = |id: &str| sync::held_back(&b.get(&[id.to_string()]).unwrap().pop().unwrap());
+    assert!(!held("a-00001") && held("c-00001"));
+    // WEI-306: her decision reads as hers.
+    let (brief, _) = chloectx::recall::briefing(&b, "s-now", 8000, 1_800_000_000).unwrap();
+    let line = brief.lines().find(|l| l.contains("SKIP LOCKED")).unwrap_or_else(|| panic!("{brief}"));
+    assert!(line.contains("from alice-laptop)"), "{line}");
+
+    // --all: the machines listed now, in this project, written by name.
+    let (left, _) = sync::accept(&home_b, &b, ledger, &[], true).unwrap();
+    assert_eq!(left.iter().map(|p| p.origin.clone()).collect::<Vec<_>>(), vec![oc.clone()]);
+    assert!(!held("c-00001"));
+    let cfg = sync::load_config(&home_b);
+    assert!(cfg.trusted.is_empty() && cfg.accepted.get(ledger).is_some_and(|o| o.contains(&oa) && o.contains(&oc)), "{cfg:?}");
+
+    // A machine that pushes later waits, as does an accepted machine's
+    // record of another project.
+    let (rd, _) = machine("home-dan", ADMIN);
+    let d = store(dir.path(), "d.strata");
+    load(&d, &[note("d", Kind::Preference, "User preference: add Redis for the job queue", 1)]);
+    sync::push(&rd, &d, ledger, &mut SyncState::default()).unwrap();
+    let ap = store(dir.path(), "ap.strata");
+    load(&ap, &[note("ap", Kind::Preference, "User preference: payroll runs on the 25th", 1)]);
+    sync::push(&rc, &ap, payroll, &mut SyncState::default()).unwrap();
+    assert_eq!(sync::pull(&rb, &b, ledger, &mut SyncState::default(), dir.path()).unwrap().stored, 1);
+    assert!(held("d-00001"), "a machine that pushed after --all");
+    let bp = store(dir.path(), "bp.strata");
+    assert_eq!(sync::pull(&rb, &bp, payroll, &mut SyncState::default(), dir.path()).unwrap().stored, 1);
+    assert!(sync::held_back(&bp.get(&["ap-00001".to_string()]).unwrap().pop().unwrap()), "carol was accepted in acme/ledger only");
+
+    // `*`, as --all wrote it before, accepts no machine any more.
+    let cfg = sync::SyncConfig { trusted: vec!["*".into()], ..Default::default() };
+    assert!(cfg.trusted_everyone() && !cfg.trusts(ledger, "m-anyone"));
+    let cfg = sync::SyncConfig { trusted: vec![oa.clone()], ..Default::default() };
+    assert!(cfg.trusts(payroll, &oa), "a machine accepted before 0.3.9 stays accepted");
+}
+
+/// A machine of the server at `url` with key `key`, set up in `dir/name`.
+fn machine_of(dir: &Path, url: &str, name: &str, key: &str) -> (sync::Remote, PathBuf) {
+    let home = dir.join(name);
+    sync::setup(&home, &dir.to_string_lossy(), url, Some(key), "", &[], true).unwrap();
+    (sync::remote(&home).unwrap(), home)
+}
+
+/// A key that writes `project`'s table alone, named as the command
+/// center's "Make a sync key" names one for machine `who`.
+fn sync_key(url: &str, project: &str, who: &str) -> (String, String) {
+    let table = sync::table_for(project);
+    let name = format!("chloectx-sync-{who}-{}", &table[table.len() - 8..]);
+    let (code, k) = post(url, ADMIN, "/v1/admin/keys", serde_json::json!({"name": name, "scope": "write", "tables": {table: "write"}}));
+    assert_eq!(code, 200, "{k}");
+    (name, k["secret"].as_str().unwrap().to_string())
+}
+
+#[test]
+fn what_an_admin_deletes_on_the_server_leaves_every_machine_that_pulled_it() {
+    // WEI-303: bob left, and an admin deleted his machine's rows on the
+    // server; alice, who had pulled them, kept them, and her next push
+    // sent them back.
+    let Some(bin) = server_bin() else {
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    std::env::remove_var("CHLOECTX_SYNC_ORIGIN");
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, url) = serve(&bin, dir.path(), Some(ADMIN));
+    let project = "acme/ledger";
+    let table = sync::table_for(project);
+    let (ra, _) = machine_of(dir.path(), &url, "home-alice", ADMIN);
+    let (rb, home_b) = machine_of(dir.path(), &url, "home-bob", ADMIN);
+    let b = store(dir.path(), "b.strata");
+    load(&b, &[note("b", Kind::Todo, "Add Redis for the job queue", 1), note("b", Kind::Fact, "The ledger runs on MySQL", 2), note("b", Kind::Decision, "Invoices are numbered per year", 3)]);
+    assert_eq!(sync::push(&rb, &b, project, &mut SyncState::default()).unwrap(), 3);
+    let da = dir.path().join("store-a");
+    std::fs::create_dir_all(&da).unwrap();
+    let a = store(&da, "memory.strata");
+    load(&a, &[note("a", Kind::Note, "The ledger deploys on Tuesdays", 1)]);
+    let mut sa = SyncState::default();
+    assert_eq!(sync::push(&ra, &a, project, &mut sa).unwrap(), 1);
+    assert_eq!(sync::pull(&ra, &a, project, &mut sa, &da).unwrap().stored, 3);
+
+    // The admin deletes what bob's machine sent, but for his decision.
+    let ob = sync::origin(&home_b);
+    let (code, j) = post(&url, ADMIN, "/v1/sql", serde_json::json!({"sql": format!("DELETE FROM {table} WHERE origin = '{ob}' AND kind <> 'decision'")}));
+    assert_eq!(code, 200, "{j}");
+    assert_eq!(ra.count(project).unwrap(), 2);
+
+    // alice's next pull names those she holds, noted forgotten (the
+    // daemon then forgets them as `chloectx forget` does).
+    let got = sync::pull(&ra, &a, project, &mut sa, &da).unwrap();
+    let mut gone = got.forget.clone();
+    gone.sort();
+    assert_eq!((gone, got.stored), (vec!["b-00001".to_string(), "b-00002".to_string()], 0));
+    assert!(sync::load_forgotten(&da).ids.contains("b-00002"));
+    for id in &got.forget {
+        assert!(a.delete(id).unwrap());
+    }
+    // Her push sends none of what she pulled back: her own records only.
+    load(&a, &[note("a", Kind::Note, "The ledger's backups run at 02:00", 2)]);
+    assert_eq!(sync::push(&ra, &a, project, &mut sa).unwrap(), 1, "sent what it pulled");
+    assert_eq!(ra.count(project).unwrap(), 3);
+    assert!(sync::pull(&ra, &a, project, &mut sa, &da).unwrap().forget.is_empty());
+
+    // A row of her own deleted on the server stays here: hers to forget.
+    let (code, j) = post(&url, ADMIN, "/v1/sql", serde_json::json!({"sql": format!("DELETE FROM {table} WHERE rid = 'a-00001'")}));
+    assert_eq!(code, 200, "{j}");
+    assert!(sync::pull(&ra, &a, project, &mut sa, &da).unwrap().forget.is_empty());
+    assert_eq!(a.get(&["a-00001".to_string()]).unwrap().len(), 1);
+
+    // A table made again holds no row: no delete of every record.
+    let (code, j) = post(&url, ADMIN, "/v1/sql", serde_json::json!({"sql": format!("DROP TABLE {table}")}));
+    assert_eq!(code, 200, "{j}");
+    ra.create_table(project).unwrap();
+    assert!(sync::pull(&ra, &a, project, &mut sa, &da).unwrap().forget.is_empty());
+    assert_eq!(a.get(&["b-00003".to_string()]).unwrap().len(), 1, "bob's decision stays");
+}
+
+#[test]
+fn a_rule_retired_on_one_machine_is_retired_on_every_machine() {
+    // WEI-306: a synced rule could be retired in no one place: the command
+    // center shows a synced project's memories read-only, and a rule
+    // retired on one laptop stayed on every other.
+    let Some(bin) = server_bin() else {
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    std::env::remove_var("CHLOECTX_SYNC_ORIGIN");
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, url) = serve(&bin, dir.path(), Some(ADMIN));
+    let project = "acme/ledger";
+    let admin = admin_remote(&dir.path().join("home-admin"), &url);
+    admin.create_table(project).unwrap();
+    let (bob_key, bob_secret) = sync_key(&url, project, "bob-laptop");
+    let (ra, home_a) = machine_of(dir.path(), &url, "home-alice", ADMIN);
+    let (rb, home_b) = machine_of(dir.path(), &url, "home-bob", &bob_secret);
+    let (rc, _) = machine_of(dir.path(), &url, "home-carol", ADMIN);
+    let rule = "User preference: always run make lint before a push";
+    let (da, db, dc) = (dir.path().join("a"), dir.path().join("b"), dir.path().join("c"));
+    for d in [&da, &db, &dc] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let a = store(&da, "memory.strata");
+    load(&a, &[note("a", Kind::Preference, rule, 1), note("a", Kind::Prompt, "why does lint fail?", 2)]);
+    assert_eq!(sync::push(&ra, &a, project, &mut SyncState::default()).unwrap(), 2);
+    let (b, c) = (store(&db, "memory.strata"), store(&dc, "memory.strata"));
+    assert_eq!(sync::pull(&rb, &b, project, &mut SyncState::default(), &db).unwrap().stored, 2);
+    assert_eq!(sync::pull(&rc, &c, project, &mut SyncState::default(), &dc).unwrap().stored, 2);
+    sync::accept(&home_b, &b, project, &[sync::origin(&home_a)], false).unwrap();
+
+    // bob retires alice's rule, with his key.
+    let got = |s: &Store, id: &str| s.get(&[id.to_string()]).unwrap().pop().unwrap();
+    let r = sync::retire(&rb, &b, project, &got(&b, "a-00001")).unwrap();
+    assert_eq!(r.tag, chloectx::record::RETIRED);
+    assert_eq!(got(&b, "a-00001").tag, chloectx::record::RETIRED);
+    let by = |r: &Record| r.links.iter().find(|l| l.label == sync::RETIRED_BY).map(|l| l.to.clone());
+    assert_eq!(by(&r).as_deref(), Some(bob_key.as_str()));
+    assert!(sync::retire(&rb, &b, project, &got(&b, "a-00002")).is_err(), "a prompt is not a rule");
+    let (code, j) = post(&url, ADMIN, "/v1/query", serde_json::json!({"sql": format!("SELECT tag, origin FROM {} WHERE rid = 'a-00001'", sync::table_for(project))}));
+    assert_eq!(code, 200, "{j}");
+    assert_eq!(j["rows"][0], serde_json::json!(["retired", sync::origin(&home_a)]), "still alice's row");
+
+    // alice's next pull retires her own record; carol's, her copy.
+    let (brief, _) = chloectx::recall::briefing(&a, "s-now", 8000, 1_800_000_000).unwrap();
+    assert!(brief.contains("make lint"), "{brief}");
+    for (r, s, d) in [(&ra, &a, &da), (&rc, &c, &dc)] {
+        let p = sync::pull(r, s, project, &mut SyncState::default(), d).unwrap();
+        assert_eq!((p.stored, p.changed), (0, 1));
+        let mine = got(s, "a-00001");
+        assert_eq!((mine.tag.as_str(), by(&mine)), (chloectx::record::RETIRED, Some(bob_key.clone())));
+        assert_eq!(sync::pull(r, s, project, &mut SyncState::default(), d).unwrap().changed, 0);
+    }
+    let (brief, _) = chloectx::recall::briefing(&a, "s-now", 8000, 1_800_000_000).unwrap();
+    assert!(!brief.contains("make lint"), "{brief}");
+    // Retired stays retired: a row that says otherwise does not reopen it.
+    let (code, _) = post(&url, ADMIN, "/v1/sql", serde_json::json!({"sql": format!("UPDATE {} SET tag = '' WHERE rid = 'a-00001'", sync::table_for(project))}));
+    assert_eq!(code, 200);
+    assert_eq!(sync::pull(&rc, &c, project, &mut SyncState::default(), &dc).unwrap().changed, 0);
+    assert_eq!(got(&c, "a-00001").tag, chloectx::record::RETIRED);
+}
+
+#[test]
+fn a_context_a_forget_cut_on_another_machine_is_cut_here() {
+    // WEI-304: a forget on one machine cut the text from the context of
+    // the records that kept theirs, and sent them again; a machine that
+    // had pulled them kept the old context.
+    let Some(bin) = server_bin() else {
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    std::env::remove_var("CHLOECTX_SYNC_ORIGIN");
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, url) = serve(&bin, dir.path(), Some(ADMIN));
+    let project = "acme/hiring";
+    let (ra, _) = machine_of(dir.path(), &url, "home-alice", ADMIN);
+    let (rb, _) = machine_of(dir.path(), &url, "home-bob", ADMIN);
+    let (da, db) = (dir.path().join("a"), dir.path().join("b"));
+    for d in [&da, &db] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let a = store(&da, "memory.strata");
+    let ctx = "Turn 3 request: the candidate Dana Ortiz asked for 140k\nTurn 4 request: write the offer letter";
+    let mut rec = note("a", Kind::Decision, "Offer letters go out from the hiring alias", 1);
+    rec.ctx = ctx.into();
+    load(&a, &[rec.clone()]);
+    assert_eq!(sync::push(&ra, &a, project, &mut SyncState::default()).unwrap(), 1);
+    let b = store(&db, "memory.strata");
+    assert_eq!(sync::pull(&rb, &b, project, &mut SyncState::default(), &db).unwrap().stored, 1);
+
+    // alice forgets "Dana Ortiz": the decision keeps its text, and its
+    // context loses the line (as the daemon's forget sends it).
+    let cut = chloectx::forget::scrub_ctx(ctx, &[chloectx::forget::needle("Dana Ortiz").unwrap()]).unwrap();
+    assert!(!cut.contains("Dana") && cut.contains("offer letter"), "{cut}");
+    sync::push_records(&ra, project, &[Record { ctx: cut.clone(), ..rec.clone() }]).unwrap();
+    let p = sync::pull(&rb, &b, project, &mut SyncState::default(), &db).unwrap();
+    assert_eq!((p.stored, p.changed), (0, 1));
+    let mine = b.get(&["a-00001".to_string()]).unwrap().pop().unwrap();
+    assert_eq!((mine.ctx.as_str(), mine.text.as_str()), (cut.as_str(), rec.text.as_str()));
+
+    // A row whose context says anything else changes nothing here.
+    sync::push_records(&ra, project, &[Record { ctx: "Turn 3 request: something else".into(), ..rec }]).unwrap();
+    assert_eq!(sync::pull(&rb, &b, project, &mut SyncState::default(), &db).unwrap().changed, 0);
+    assert_eq!(b.get(&["a-00001".to_string()]).unwrap().pop().unwrap().ctx, cut);
 }
 
 /// The program, in project folder `project` with ChloeCtx's home `home`,

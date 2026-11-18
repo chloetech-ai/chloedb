@@ -159,7 +159,7 @@ impl<'s> Rank<'s> {
     /// ranks by directly (BM25, similarity, a column...). `default_depth`
     /// is the depth where neither an `rrf()` nor a leaf sets one.
     pub fn of(score: &'s Score, default_depth: usize) -> Option<Rank<'s>> {
-        if score.is_leaf() && !matches!(score, Score::SeqNo | Score::Cond(_)) {
+        if score.is_leaf() && !matches!(score, Score::SeqNo | Score::Hash { .. } | Score::Cond(_)) {
             return None;
         }
         let mut c = Compile { leaves: Vec::new(), generates: Vec::new(), rrf_depth: None, depth: None, exact: false };
@@ -449,7 +449,7 @@ impl<'s> Rank<'s> {
         for (j, l) in self.leaves.iter().enumerate() {
             match l {
                 Score::Bm25 { .. } | Score::Sparse { .. } if text.is_none() => text = Some(j),
-                Score::Column { .. } | Score::Decay { .. } | Score::Cond(_) | Score::SeqNo if !self.generates[j] => {}
+                Score::Column { .. } | Score::Decay { .. } | Score::Cond(_) | Score::SeqNo | Score::Hash { .. } if !self.generates[j] => {}
                 _ => return None,
             }
         }
@@ -851,6 +851,7 @@ fn leaf_name(s: &Score, schema: &Schema) -> String {
         Score::Ppr { .. } => "ppr()".into(),
         Score::Hops { .. } => "hops()".into(),
         Score::SeqNo => "seq_no()".into(),
+        Score::Hash { field, seed } => format!("hash({}, {seed})", name(field)),
         Score::CrossEncoder { model, fields, .. } => format!("cross_encoder('{model}', {})", fields.iter().map(name).collect::<Vec<_>>().join(", ")),
         Score::Ranked { keys } => format!("ranked({} keys)", keys.len()),
         Score::Cond(p) => {
