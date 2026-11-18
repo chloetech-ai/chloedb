@@ -60,7 +60,7 @@ curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-serv
 tar xzf chloedb-server-$p.tar.gz && mkdir -p ~/.local/bin && mv chloedb-server-$p/chloedb-server ~/.local/bin/
 ```
 
-From 0.3.9 each archive also has GitHub's build provenance and an SBOM of what is compiled into it: [checking what you download](../SECURITY.md#checking-what-you-download) shows the `gh attestation verify` command that checks them.
+From 0.3.8 each archive also has GitHub's build provenance and an SBOM of what is compiled into it: [checking what you download](../SECURITY.md#checking-what-you-download) shows the `gh attestation verify` command that checks them (the install script runs it for you from 0.3.9).
 
 Check that it runs:
 

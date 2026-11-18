@@ -169,10 +169,10 @@ chloedb-server-$p/chloedb-server --demo 20000 --db products.chloedb   # a demo c
 uvx chloedb-server --demo 20000 --db products.chloedb    # or run it without installing it (pipx run chloedb-server too)
 pip install chloedb-server                               # or into a virtualenv, beside the code that uses it</pre>
 <p>The wheels are tagged for what the binary needs: <code>manylinux_2_34</code> (glibc 2.34 or later: RHEL 9, Ubuntu 22.04, Debian 12 and newer) on Linux x86_64 and aarch64, <code>macosx_11_0</code> on macOS, so pip takes one only where it runs; there is none for Windows or Alpine, and no source distribution. The program lands in the environment's <code>bin</code>; <code>python -m chloedb_server ARGS</code> runs it where that is not on the <code>PATH</code>, and <a href="python.html#a-server-started-from-python"><code>chloedb.serve()</code></a> starts one from Python and returns a client of it (<code>pip install "chloedb[server]"</code> installs the client and the server of the same release). The server-release workflow makes the wheels from the archives above, installs and runs each on its platform, and publishes them on the tag.</p>
-<p>From source (Rust stable and a C compiler; the first build takes several minutes):</p>
-<pre data-lang="sh">cd chloedb-server &amp;&amp; cargo build --release
+<p>From source (Rust stable and a C compiler; the first build takes several minutes). <code>--bin chloedb-server</code> builds the server alone: without it, cargo also builds the ten tools and benchmarks in the crate's <code>src/bin/</code> (the simulator, <code>chloedb-server-bench</code> and others), each about as big as the server:</p>
+<pre data-lang="sh">cd chloedb-server &amp;&amp; cargo build --release --bin chloedb-server
 target/release/chloedb-server --demo 20000 --db products.chloedb</pre>
-<p><code>cargo build --release --no-default-features</code> builds a server without DataFusion, Parquet and <code>s3://</code> paths, from 321 crates rather than 412: joins, groups and sorts then run on ChloeDB's own operators (<code>CHLOEDB_ENGINE</code>, below), and <code>import</code> and <code>export</code> take no Parquet files or <code>s3://</code> paths.</p>
+<p><code>cargo build --release --bin chloedb-server --no-default-features</code> builds a server without DataFusion, Parquet and <code>s3://</code> paths, from 321 crates rather than 412: joins, groups and sorts then run on ChloeDB's own operators (<code>CHLOEDB_ENGINE</code>, below), and <code>import</code> and <code>export</code> take no Parquet files or <code>s3://</code> paths.</p>
 <p>Or from the image every merge to main publishes (<code>linux/amd64</code> and <code>linux/arm64</code>). Beyond the container's own loopback the server needs a token, which the command center then asks for:</p>
 <pre data-lang="sh">docker run --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
   ghcr.io/chloetech-ai/chloedb-server:latest --db /data/my.chloedb --listen 0.0.0.0:7700
@@ -2819,8 +2819,8 @@ curl -s localhost:7700/v1/query -H &#x27;content-type: application/json&#x27; -d
 <tbody>
 <tr>
 <td><code>chloedb_build_info</code></td>
-<td><code>version</code>, <code>simd</code></td>
-<td>always 1: the server's version and the SIMD kernels it runs</td>
+<td><code>version</code>, <code>commit</code>, <code>simd</code></td>
+<td>always 1: the server's version, the commit it was built from (empty for a build outside a git checkout) and the SIMD kernels it runs</td>
 </tr>
 <tr>
 <td><code>process_start_time_seconds</code>, <code>process_cpu_seconds_total</code></td>
@@ -3626,7 +3626,7 @@ chloedb-server admin call GET /v1/admin/jobs</pre>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

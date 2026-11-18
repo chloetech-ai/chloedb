@@ -123,7 +123,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>This page starts a server with Sheets and ChloeCtx beside it and uses both through the server, the way the command center does.</p>
 <p>You need <code>chloedb-server</code>, <code>chloedb-sheets</code> and <code>chloectx</code> on your <code>PATH</code>. <span class="since">since 0.3.2</span> From release 0.3.2, the installer puts the three there prebuilt, with nothing to compile:</p>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with sheets,ctx</pre>
-<p>Release 0.3.0 and earlier have no prebuilt Sheets or ChloeCtx. With those, or to build from source, build each in its directory of a checkout of the repository (<code>cargo build --release</code>; Rust and a C compiler, several minutes) and add their <code>target/release</code> directories to <code>PATH</code>.</p>
+<p>Release 0.3.0 and earlier have no prebuilt Sheets or ChloeCtx. With those, or to build from source, build each in its directory of a checkout of the repository with <code>cargo build --release --bin</code> and its name (<code>chloedb-server</code>, <code>chloedb-sheets</code>, <code>chloectx</code>; Rust and a C compiler, several minutes) and add their <code>target/release</code> directories to <code>PATH</code>.</p>
 <h2 id="how-an-app-attaches">How an app attaches<a class="anchor" href="#how-an-app-attaches" aria-label="Link to this section">#</a></h2>
 <p>The server learns of an app from <code>--app name=URL</code>, and sends each request under <code>/v1/apps/&lt;name&gt;/</code> on to it with a token of its own, <code>CHLOEDB_APP_TOKEN</code>, in place of the caller's key. Callers never reach an app directly: the server checks their key first (read scope to read, admin to change anything), and an app refuses requests that do not carry the token.</p>
 <pre class="mermaid">flowchart LR
@@ -244,7 +244,7 @@ Notes from earlier sessions, in their current versions, oldest first (date, kind
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

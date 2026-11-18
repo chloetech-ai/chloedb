@@ -18,7 +18,7 @@ It is a program of its own, in Node.js, that talks to chloedb-server over HTTP. 
 You need Node.js 20 or later, chloedb-server, and Claude Code signed in (`claude` on the PATH). The engine calls `claude -p`, so it uses that sign-in and needs no API key of its own.
 
 ```bash
-(cd chloedb-server && cargo build --release)
+(cd chloedb-server && cargo build --release --bin chloedb-server)
 cd chloedb-apps && npm ci
 ./run.sh                     # the studio at http://127.0.0.1:7730/
 ```

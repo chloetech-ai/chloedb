@@ -27,7 +27,7 @@ Like [the crawler](crawler.md) and [network operations](netops.md), it is a prog
 Build both programs, then prepare the archive and start the app with a server of its own:
 
 ```bash
-(cd chloedb-server && cargo build --release)
+(cd chloedb-server && cargo build --release --bin chloedb-server)
 cd chloedb-hn && cargo build --release
 target/release/chloedb-hn prepare --parquet ./hn-parquet --out ./hn-rows --download
 target/release/chloedb-hn complete --rows ./hn-rows
