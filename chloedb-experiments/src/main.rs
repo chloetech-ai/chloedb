@@ -40,6 +40,25 @@ enum Cmd {
     Check(CheckArgs),
     /// Run one simulation, served or fast, and check it.
     Sim(SimArgs),
+    /// Serve the Experiments app of the command center (chloedb-server --app experiments=URL).
+    Serve(ServeArgs),
+}
+
+#[derive(Args)]
+struct ServeArgs {
+    #[command(flatten)]
+    target: Conn,
+    #[arg(long, env = "CHLOEDB_EXPERIMENTS_LISTEN", default_value = "127.0.0.1:7795")]
+    listen: String,
+    /// A token every request must carry (Authorization: Bearer); chloedb-server sends its CHLOEDB_APP_TOKEN_EXPERIMENTS. With --local and no token, one is made for the server.
+    #[arg(long, env = "CHLOEDB_EXPERIMENTS_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+    /// A directory of BEIR collections (as tests/fixtures/beir/fetch.sh makes) to load as sites.
+    #[arg(long)]
+    beir: Option<PathBuf>,
+    /// The collections of --beir to load.
+    #[arg(long, default_value = "nfcorpus,scifact")]
+    collections: String,
 }
 
 #[derive(Args, Clone)]
@@ -173,7 +192,7 @@ struct Local {
 }
 
 impl Local {
-    async fn start(dir: &Path, bin: PathBuf, listen: &str) -> Result<(Local, String), String> {
+    async fn start(dir: &Path, bin: PathBuf, listen: &str, app: Option<(String, Option<String>)>) -> Result<(Local, String), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let url = format!("http://{listen}");
         let s = Server::new(&url, None);
@@ -186,6 +205,13 @@ impl Local {
         let err = log.try_clone().map_err(|e| e.to_string())?;
         let mut cmd = Command::new(&bin);
         cmd.args(["--db", &dir.join("experiments.strata").to_string_lossy(), "--listen", listen, "--grpc", "off"]);
+        // The app this process serves, shown in the server's command center.
+        if let Some((url, token)) = &app {
+            cmd.args(["--app", &format!("experiments={url}")]);
+            if let Some(t) = token {
+                cmd.env("CHLOEDB_APP_TOKEN_EXPERIMENTS", t);
+            }
+        }
         cmd.env("CHLOEDB_START_APPS", "off").stdout(Stdio::from(log)).stderr(Stdio::from(err)).stdin(Stdio::null()).kill_on_drop(true);
         // On Linux the server goes when this process does, however it ends.
         #[cfg(target_os = "linux")]
@@ -227,10 +253,14 @@ impl Local {
 }
 
 async fn connect(t: &Conn) -> (Server, Option<Local>) {
+    connect_as(t, None).await
+}
+
+async fn connect_as(t: &Conn, app: Option<(String, Option<String>)>) -> (Server, Option<Local>) {
     match (&t.local, &t.server) {
         (Some(_), Some(_)) => fail("give --server or --local, not both"),
         (Some(dir), None) => {
-            let (l, url) = Local::start(dir, server_bin(&t.server_bin), &t.local_listen).await.unwrap_or_else(|e| fail(e));
+            let (l, url) = Local::start(dir, server_bin(&t.server_bin), &t.local_listen, app).await.unwrap_or_else(|e| fail(e));
             eprintln!("chloedb-experiments: a chloedb-server in {} answers at {url}", dir.display());
             (Server::new(&url, t.key.clone()), Some(l))
         }
@@ -291,6 +321,52 @@ fn main() {
     match cli.cmd {
         Cmd::Check(a) => rt.block_on(run_check(a)),
         Cmd::Sim(a) => rt.block_on(run_sim(a)),
+        Cmd::Serve(a) => rt.block_on(run_serve(a)),
+    }
+}
+
+/// 32 random bytes as hex.
+fn random_token() -> String {
+    let mut b = [0u8; 32];
+    match std::fs::File::open("/dev/urandom") {
+        Ok(mut f) => {
+            use std::io::Read;
+            let _ = f.read_exact(&mut b);
+        }
+        Err(_) => {
+            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+            b[..16].copy_from_slice(&(t ^ ((std::process::id() as u128) << 64)).to_le_bytes());
+        }
+    }
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+async fn run_serve(a: ServeArgs) {
+    let token = a.token.clone().or_else(|| a.target.local.as_ref().map(|_| random_token()));
+    let listener = tokio::net::TcpListener::bind(&a.listen).await.unwrap_or_else(|e| fail(format!("{}: {e}", a.listen)));
+    let me = format!("http://{}", listener.local_addr().map(|x| x.to_string()).unwrap_or(a.listen.clone()));
+    let (server, local) = connect_as(&a.target, Some((me.clone(), token.clone()))).await;
+    if local.is_some() {
+        eprintln!("chloedb-experiments: open the command center at {} (Apps → Experiments)", server.url);
+    } else if std::env::var_os("CHLOEDB_APP_OF").is_none() {
+        eprintln!("chloedb-experiments: to see it in the command center, start chloedb-server with --app experiments={me}{}", if token.is_some() { " and CHLOEDB_APP_TOKEN_EXPERIMENTS set to its token" } else { "" });
+    }
+    let mut beir = Vec::new();
+    if let Some(dir) = &a.beir {
+        for c in a.collections.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+            let d = dir.join(c);
+            if !d.join("corpus.jsonl").exists() {
+                fail(format!("{}: no BEIR collection there (tests/fixtures/beir/fetch.sh in chloedb fetches them)", d.display()));
+            }
+            beir.push((d, c.to_ascii_lowercase()));
+        }
+    }
+    let r = chloedb_experiments::app::serve(server, listener, chloedb_experiments::app::Opts { token, beir }).await;
+    if let Some(l) = local {
+        l.stop().await;
+    }
+    if let Err(e) = r {
+        fail(e);
     }
 }
 

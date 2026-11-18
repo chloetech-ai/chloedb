@@ -39,6 +39,9 @@ pub struct User {
     /// The chance a session goes on after a query that satisfied, and
     /// after one that did not.
     pub go_on: (f64, f64),
+    /// How readily this user clicks: every row's attractiveness is
+    /// multiplied by it (1 for all when [`Shape::appetite`] is 0).
+    pub appetite: f64,
 }
 
 impl User {
@@ -67,11 +70,14 @@ pub struct Shape {
     pub taste: f64,
     /// How much users differ from their cohort (the log of η's multiplier).
     pub spread: f64,
+    /// How much users differ in how readily they click: the log of each
+    /// user's [`User::appetite`] has this standard deviation (0: none).
+    pub appetite: f64,
 }
 
 impl Default for Shape {
     fn default() -> Shape {
-        Shape { taste: 0.35, spread: 0.15 }
+        Shape { taste: 0.35, spread: 0.15, appetite: 0.0 }
     }
 }
 
@@ -115,7 +121,10 @@ impl Population {
                 let dwell_mu = 3.3 + [0.15, -0.2, 0.0][device as usize] + if age >= 4 { 0.2 } else { 0.0 } + 0.2 * normal(&mut rng);
                 let activity = (0.8 * normal(&mut rng)).exp() * [0.6, 1.0, 1.6][tenure as usize];
                 let go_on = ((0.45f64 + [0.0, 0.05, 0.1][tenure as usize]).min(0.9), (0.6 + 0.05 * normal(&mut rng)).clamp(0.3, 0.85));
-                User { id, age, gender, country, device, tenure, behaviour: Behaviour { eta, gamma, lambda, trust, dwell_mu }, activity, go_on }
+                // From a stream of its own, so that the rest is the same
+                // whatever the appetite's spread.
+                let appetite = if shape.appetite > 0.0 { (shape.appetite * normal(&mut Rng::of(&format!("{seed}/appetite/{id}"))) - shape.appetite * shape.appetite / 2.0).exp() } else { 1.0 };
+                User { id, age, gender, country, device, tenure, behaviour: Behaviour { eta, gamma, lambda, trust, dwell_mu }, activity, go_on, appetite }
             })
             .collect();
         let pick = Alias::new(&users.iter().map(|u| u.activity).collect::<Vec<_>>());
