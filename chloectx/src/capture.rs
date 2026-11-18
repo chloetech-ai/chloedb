@@ -130,7 +130,7 @@ pub fn preference_sentences(prompt: &str) -> Vec<String> {
     for s in sentences(prompt) {
         // "Please don't commit yet" says how to do this turn (JONAH-303):
         // what is left of the sentence without it must still read as a rule.
-        let rest: Vec<&str> = clauses(s).into_iter().filter(|c| !for_this_turn(c)).collect();
+        let rest = beyond_this_turn(s);
         if s.len() >= 12 && s.len() <= 400 && re.is_match(&rest.join(", ")) {
             out.push(s.to_string());
         }
@@ -165,6 +165,26 @@ pub fn for_this_turn(text: &str) -> bool {
     static NO: OnceLock<Regex> = OnceLock::new();
     let no = NO.get_or_init(|| Regex::new(r"(?i)^\W*(?:(?:and|but|also|so|please)\s+)*(?:no|not|never mind)\b").unwrap());
     sentences(text).into_iter().flat_map(clauses).any(|c| turn_mode_re().is_match(c) || ((restrictive_re().is_match(c) || no.is_match(c)) && temporary_re().is_match(c)))
+}
+
+/// The clauses of `sentence` that do not say how to do this turn
+/// ([`for_this_turn`]): a restriction joined to one that does goes with it
+/// ("don't write tests and don't commit yet": the "yet" is both's).
+fn beyond_this_turn(sentence: &str) -> Vec<&str> {
+    let cs = clauses(sentence);
+    let mut keep = vec![true; cs.len()];
+    for i in 0..cs.len() {
+        if !for_this_turn(cs[i]) {
+            continue;
+        }
+        keep[i] = false;
+        let mut j = i;
+        while j > 0 && cs[j].trim_start().to_lowercase().starts_with("and ") && restrictive_re().is_match(cs[j - 1]) {
+            j -= 1;
+            keep[j] = false;
+        }
+    }
+    cs.into_iter().zip(keep).filter(|(_, k)| *k).map(|(c, _)| c).collect()
 }
 
 /// Whether a request asks how to do something, for advice, rather than for
@@ -373,6 +393,9 @@ fn task_scope_re() -> &'static Regex {
 /// Anything else the user told an agent to do or not do is an instruction
 /// for that task ("Don't touch money.py or cart.py").
 pub fn standing_rule(request: &str, prev_answer: &str, rule: &str) -> bool {
+    if for_this_turn(rule) {
+        return false;
+    }
     let re = standing_re();
     let terms = |t: &str| -> BTreeSet<String> { chloedb::text::analyze(t).into_iter().collect() };
     let rule_terms = terms(rule);
@@ -390,7 +413,7 @@ pub fn standing_rule(request: &str, prev_answer: &str, rule: &str) -> bool {
         // What says how to do this turn is no rule, even in a list of them
         // ("A few ground rules: ... Don't write tests and don't commit yet",
         // JONAH-303).
-        let rest: Vec<&str> = clauses(s).into_iter().filter(|c| !for_this_turn(c)).collect();
+        let rest = beyond_this_turn(s);
         if rest.is_empty() {
             continue;
         }
@@ -1065,6 +1088,8 @@ mod tests {
         assert_eq!(preference_sentences("From now on, always run ruff before committing, but don't commit yet."), ["From now on, always run ruff before committing, but don't commit yet"]);
         let r = "Ground rules for this repo: always use ruff for linting. Sketch the export command; don't write tests and don't commit yet.";
         assert!(!standing_rule(r, "", "Don't write tests and don't commit yet."));
+        assert_eq!(beyond_this_turn("Sketch the export command; don't write tests and don't commit yet."), ["Sketch the export command"], "the \"yet\" is both's");
+        assert!(standing_rule(r, "", "Use ruff for linting."));
     }
 
     /// ANA-308: a question how to build something asks for advice.
