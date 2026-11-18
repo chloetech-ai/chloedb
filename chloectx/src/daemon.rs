@@ -715,28 +715,49 @@ impl Daemon {
     fn op_sync(&self, req: &Json) -> Result<Json> {
         let what = req.get("what").and_then(|v| v.as_str()).unwrap_or("status");
         if what == "accept" {
-            let origins: Vec<String> = req.get("origins").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
-            let by = crate::sync::accept(&crate::paths::home(), &self.store, &origins)?;
+            let names: Vec<String> = req.get("origins").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+            let all = req.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
+            let home = crate::paths::home();
+            let key = crate::sync::project_key(&home, &self.project);
+            let everyone = crate::sync::load_config(&home).trusted_everyone();
+            let (by, unknown) = crate::sync::accept(&home, &self.store, &key, &names, all)?;
             let mut text = String::new();
             if by.is_empty() {
-                text = "No records from other machines wait to be accepted.".into();
+                text = format!("No records from other machines wait to be accepted in {key}.\n");
             }
-            for (o, n, some) in &by {
-                let done = origins.iter().any(|x| x == "*" || x == o);
-                text += &format!("{o}: {n} record{}{}\n", if *n == 1 { "" } else { "s" }, if done { ", accepted" } else { "" });
-                for t in some {
+            for p in &by {
+                let done = all || names.iter().any(|n| n == "*" || p.named(n));
+                text += &format!("{}: {} record{}{}\n", p.label(), p.records, if p.records == 1 { "" } else { "s" }, if done { ", accepted" } else { "" });
+                for t in &p.some {
                     text += &format!("    {}\n", crate::envelope::defuse(t));
                 }
             }
-            if origins.is_empty() && !by.is_empty() {
-                text += "Accept a machine's records (its rules and decisions then reach the briefing): chloectx sync accept --origin ID, or --all";
+            for n in &unknown {
+                text += &format!("No machine {n} has records waiting here: give a machine as listed (its name or its id).\n");
             }
-            let me = crate::sync::origin(&crate::paths::home());
-            return Ok(json!({"text": text.trim_end(), "this_machine": me, "pending": by.iter().map(|(o, n, _)| json!({"origin": o, "records": n})).collect::<Vec<_>>()}));
+            if names.is_empty() && !all && !by.is_empty() {
+                text += &format!("Accept a machine's records in {key} (its rules and decisions then reach the briefing and the prompt's context): chloectx sync accept --origin NAME, or --all for the machines listed here (no machine that pushes later)\n");
+            }
+            if everyone {
+                text += "sync.json trusts every machine (\"*\", from `accept --all` before 0.3.9), which is no longer honoured: a project's machines are accepted one by one, or those listed now with --all.\n";
+            }
+            let me = crate::sync::origin(&home);
+            return Ok(json!({"text": text.trim_end(), "this_machine": me, "project": key, "unknown": unknown,
+                "pending": by.iter().map(|p| json!({"origin": p.origin, "key": p.key, "name": p.key.as_deref().map(crate::sync::machine_name), "records": p.records})).collect::<Vec<_>>()}));
         }
-        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
-        let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else {
-            return Ok(json!({"server": null, "note": "no server set up: chloectx sync setup --url URL"}));
+        let home = crate::paths::home();
+        let key = crate::sync::project_key(&home, &self.project);
+        let Some(remote) = crate::sync::remote_for(&home, &key) else {
+            let Some(server) = crate::sync::remote(&home) else {
+                return Ok(json!({"server": null, "syncs": false, "note": "no server set up: chloectx sync setup --url URL"}));
+            };
+            // A server is set up for other projects of the machine, not this one (LENA-301).
+            let mut note = format!("this project ({key}) does not sync: {}. To sync it, run `chloectx sync setup --url {}` in its folder", crate::sync::scope_line(&home), server.url);
+            note += &crate::sync::sent_before(&crate::sync::saved_state(&self.paths.dir), &server.url);
+            return Ok(json!({
+                "server": server.url, "syncs": false, "project": self.project, "synced_as": key,
+                "projects": crate::sync::set_up_projects(&home), "every_project": false, "warning": note,
+            }));
         };
         let again = req.get("again").and_then(|v| v.as_bool()).unwrap_or(false);
         let st = match what {
@@ -752,7 +773,8 @@ impl Daemon {
         let warning = on_server.as_ref().ok().and_then(|n| crate::sync::short_on_server(upto, *n));
         Ok(json!({
             "warning": warning,
-            "server": remote.url, "token": remote.has_token(), "key_from": remote.key_from, "project": self.project, "synced_as": key,
+            "server": remote.url, "syncs": true, "why": crate::sync::syncs(&home, &key), "scope": crate::sync::scope_line(&home),
+            "token": remote.has_token(), "key_from": remote.key_from, "project": self.project, "synced_as": key,
             "local_records": self.store.len(), "last_seq": self.store.last_seq(),
             "pushed_seq": st.pushed_seq, "pushed": st.pushed, "pulled": st.pulled,
             "last_push": st.last_push, "last_pull": st.last_pull, "last_error": st.last_error,
@@ -2197,7 +2219,8 @@ impl Daemon {
         where_.push("MATCH(files, :files)".into());
         let params = filter.params().set("files", Value::Str(terms.join(" AND ")));
         let rs = self.store.query_with(&format!("SELECT {} FROM memory WHERE {} ORDER BY seq DESC LIMIT 3", crate::record::COLUMNS, where_.join(" AND ")), &params)?;
-        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).collect();
+        // A rule or decision of a machine not accepted yet stays out (WEI-302).
+        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| !crate::sync::held_back(r)).collect();
         if recs.is_empty() {
             return Ok(String::new());
         }
@@ -2244,7 +2267,7 @@ impl Daemon {
             where_.push("MATCH(files, :files)".into());
             let params = filter.params().set("files", Value::Str(terms.join(" AND ")));
             let rs = self.store.query_with(&format!("SELECT {} FROM memory WHERE {} ORDER BY seq DESC LIMIT 12", crate::record::COLUMNS, where_.join(" AND ")), &params)?;
-            let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| !shown.contains(&format!("[{}]", r.id))).collect();
+            let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| !shown.contains(&format!("[{}]", r.id)) && !crate::sync::held_back(r)).collect();
             if let Some(r) = recs.iter().find(|r| r.kind.is_knowledge()).or(recs.first()).cloned() {
                 let snip: String = r.text.chars().take(300).collect();
                 let label = ck.label_record(&r);

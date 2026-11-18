@@ -10,6 +10,12 @@
 //! git repository (`owner/name`, see [`project_key`]), so every checkout
 //! of it, under any folder or an old name, shares one memory.
 //!
+//! A project syncs once `chloectx sync setup` ran in its folder (it is in
+//! `sync.json`'s `projects`, or has a key of its own), or when the machine
+//! was set up for every project (`--every-project`, or `CHLOECTX_SYNC_URL`
+//! in the environment): setting up one project uploads no other's store
+//! (LENA-301, audit CTX-34). See [`syncs`].
+//!
 //! A table per project is the boundary: a key limited to one project's
 //! table (`{"chloectx_mem_<project>": "write"}`, which the Inspector makes
 //! per machine) reads and writes that project only. Before 0.3.4 every
@@ -101,6 +107,38 @@ pub fn create_for(project: &str) -> String {
 pub const SYNCED_FROM: &str = "synced_from";
 /// The label once a person accepted the machine (`chloectx sync accept`).
 pub const ACCEPTED: &str = "accepted_from";
+/// The label of the link a row carries to the name of the key that pushed
+/// it, as the server told the pushing machine (`GET /v1/whoami`): the
+/// machine's name in `chloectx sync accept`, the inspector and the command
+/// center, rather than its random [`origin`] (WEI-308, WEI-303). The key's
+/// name is what an admin gave it; the command center's "Make a sync key"
+/// names it `chloectx-sync-<whose machine>-<table>` ([`machine_name`]).
+pub const PUSHED_BY: &str = "pushed_by";
+
+/// The name of the key that pushed `r`, when its row said ([`PUSHED_BY`]).
+pub fn pushed_by(r: &Record) -> Option<&str> {
+    r.links.iter().find(|l| l.label == PUSHED_BY).map(|l| l.to.as_str()).filter(|n| !n.is_empty())
+}
+
+/// The machine a key's name names: `ana-laptop` of the command center's
+/// `chloectx-sync-ana-laptop-2f73d8c1`; any other name as it is.
+pub fn machine_name(key: &str) -> &str {
+    let k = key.trim();
+    let Some(rest) = k.strip_prefix("chloectx-sync-") else { return k };
+    match rest.rsplit_once('-') {
+        Some((who, hex)) if !who.is_empty() && hex.len() == 8 && hex.chars().all(|c| c.is_ascii_hexdigit()) => who,
+        _ => rest,
+    }
+}
+
+/// How a pulled record's machine reads: `ana-laptop (m-44fb96669a15)`
+/// when the row named its key, else the machine's id.
+pub fn machine_label(origin: &str, key: Option<&str>) -> String {
+    match key {
+        Some(k) => format!("{} ({origin})", machine_name(k)),
+        None => origin.to_string(),
+    }
+}
 
 /// This machine, as the rows it pushes name it: `$CHLOECTX_SYNC_ORIGIN`
 /// (a cloud environment started afresh each time sets one), else a random
@@ -145,10 +183,10 @@ pub fn pending_origin(r: &Record) -> Option<&str> {
     r.links.iter().find(|l| l.label == SYNCED_FROM).map(|l| l.to.as_str())
 }
 
-/// Where the sync is set up: `sync.json` (the URL), and the keys,
-/// readable by their owner only, in ChloeCtx's home: each project's own
-/// ([`project_token_path`]) and `sync.token`, the machine's, for the
-/// projects without one.
+/// Where the sync is set up: `sync.json` (the URL, the projects that
+/// sync), and the keys, readable by their owner only, in ChloeCtx's home:
+/// each project's own ([`project_token_path`]) and `sync.token`, the
+/// machine's, which `--every-project` keeps for the projects without one.
 pub fn config_path(home: &Path) -> PathBuf {
     home.join("sync.json")
 }
@@ -176,10 +214,49 @@ pub struct SyncConfig {
     /// either name syncs as the new one.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub renames: std::collections::BTreeMap<String, String>,
-    /// Machines ([`origin`]) whose records a pull takes as this one's own
-    /// (`chloectx sync accept --origin`), `*` for every machine.
+    /// Machines ([`origin`]) whose records a pull of any project took as
+    /// accepted, from before 0.3.9, which accepted a machine for every
+    /// project. Still read; `*` (what `accept --all` wrote, trusting every
+    /// machine to come, for every project: WEI-308) no longer is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trusted: Vec<String>,
+    /// Each project's accepted machines (`chloectx sync accept`), by the
+    /// name it syncs as ([`project_key`]): a pull of that project takes
+    /// their records as accepted, and of no other.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub accepted: std::collections::BTreeMap<String, Vec<String>>,
+    /// The projects ([`project_key`]) `chloectx sync setup` ran in: only
+    /// they sync, unless `every_project` (LENA-301).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<String>,
+    /// `chloectx sync setup --every-project`: every project on the machine
+    /// syncs, and sends the machine's key (`sync.token`) when it has none
+    /// of its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub every_project: bool,
+}
+
+impl SyncConfig {
+    /// Whether a pull of `project` takes the records of machine `origin`
+    /// as accepted.
+    pub fn trusts(&self, project: &str, origin: &str) -> bool {
+        self.accepted.get(project).is_some_and(|o| o.iter().any(|x| x == origin)) || self.trusted.iter().any(|t| t != "*" && t == origin)
+    }
+
+    /// Whether `sync.json` still says `*` (every machine), which is no
+    /// longer honoured.
+    pub fn trusted_everyone(&self) -> bool {
+        self.trusted.iter().any(|t| t == "*")
+    }
+}
+
+fn save_config(home: &Path, cfg: &SyncConfig) -> Result<()> {
+    crate::paths::create_private_dir(home)?;
+    let p = config_path(home);
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(cfg).unwrap_or_default())?;
+    std::fs::rename(tmp, p)?;
+    Ok(())
 }
 
 pub fn load_config(home: &Path) -> SyncConfig {
@@ -210,34 +287,114 @@ pub fn project_key(home: &Path, project: &str) -> String {
     }
 }
 
-/// The server to sync with, and the machine's key ([`remote_for`] with no
-/// project's own). `None` when no URL is set.
+fn env_var(k: &str) -> Option<String> {
+    std::env::var(k).ok().filter(|v| !v.trim().is_empty()).map(|t| t.trim().to_string())
+}
+
+/// Whether a server is set up on this machine at all (`$CHLOECTX_SYNC_URL`
+/// or `sync.json`), whichever projects sync with it ([`syncs`]), and the
+/// machine's key when it was set up for every project. `None` when no URL
+/// is set.
 pub fn remote(home: &Path) -> Option<Remote> {
     remote_with(home, None)
 }
 
-/// The server to sync project `project` (its [`project_key`]) with:
-/// `$CHLOECTX_SYNC_URL`, else `sync.json`; the key: `$CHLOECTX_SYNC_TOKEN`,
-/// else the variable `sync.json` names, else the project's own
-/// ([`project_token_path`]), else the machine's, `sync.token` (none: the
-/// server is open, or a proxy adds it). `None` when no URL is set.
+/// The server to sync project `project` (its [`project_key`]) with, when
+/// it syncs ([`syncs`]): `$CHLOECTX_SYNC_URL`, else `sync.json`; the key:
+/// `$CHLOECTX_SYNC_TOKEN`, else the variable `sync.json` names, else the
+/// project's own ([`project_token_path`]), else, when the machine was set
+/// up for every project, the machine's, `sync.token` (none: the server is
+/// open, or a proxy adds it). `None` when no URL is set or the project
+/// does not sync.
 pub fn remote_for(home: &Path, project: &str) -> Option<Remote> {
+    syncs(home, project)?;
     remote_with(home, Some(project))
+}
+
+/// Why project `project` (its [`project_key`]) syncs, or `None` when it
+/// does not: `chloectx sync setup` ran in its folder (it is in `sync.json`'s
+/// `projects`, or has a key of its own from a setup before they were
+/// listed), or the machine syncs every project (`--every-project`, or
+/// `$CHLOECTX_SYNC_URL`, which a cloud environment sets for all it runs).
+/// A setup in one project made every other one upload its store with the
+/// first project's key (LENA-301).
+pub fn syncs(home: &Path, project: &str) -> Option<&'static str> {
+    if env_var("CHLOECTX_SYNC_URL").is_some() {
+        return Some("$CHLOECTX_SYNC_URL is set: every project this environment runs syncs");
+    }
+    let cfg = load_config(home);
+    if cfg.url.trim().is_empty() {
+        return None;
+    }
+    if cfg.every_project {
+        Some("set up for every project on this machine (--every-project)")
+    } else if cfg.projects.iter().any(|p| p == project) || project_token_path(home, project).exists() {
+        Some("set up in this project")
+    } else {
+        None
+    }
+}
+
+/// The projects set up to sync on this machine ([`syncs`]), by name; a key
+/// kept before projects were listed is named by its table. Empty when the
+/// machine syncs every project.
+pub fn set_up_projects(home: &Path) -> Vec<String> {
+    let cfg = load_config(home);
+    let mut out = cfg.projects.clone();
+    let listed: std::collections::HashSet<String> = out.iter().map(|p| table_for(p)).collect();
+    let mut tables: Vec<String> = std::fs::read_dir(home.join("sync-keys"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".token").map(String::from))
+        .filter(|t| !listed.contains(t))
+        .collect();
+    tables.sort();
+    out.extend(tables.into_iter().map(|t| format!("the project of table {t}")));
+    out
+}
+
+/// One line on which projects of this machine sync, for `setup`, `sync
+/// status` and doctor.
+pub fn scope_line(home: &Path) -> String {
+    if env_var("CHLOECTX_SYNC_URL").is_some() {
+        return "every project this environment runs syncs ($CHLOECTX_SYNC_URL is set)".into();
+    }
+    if load_config(home).every_project {
+        return "every project on this machine syncs (set up with --every-project; `chloectx sync off --every-project` stops that)".into();
+    }
+    let ps = set_up_projects(home);
+    match ps.len() {
+        0 => "no project on this machine syncs yet".into(),
+        1 => format!("only {} syncs on this machine; another project syncs once `chloectx sync setup` runs in its folder", ps[0]),
+        n => format!("{n} projects sync on this machine: {}; another syncs once `chloectx sync setup` runs in its folder", ps.join(", ")),
+    }
+}
+
+/// What a store that does not sync now sent to `url` before (`st`, its
+/// saved state), and how it leaves the server: empty when nothing.
+pub fn sent_before(st: &SyncState, url: &str) -> String {
+    if st.pushed == 0 || st.url != url {
+        return String::new();
+    }
+    let table = if st.key.is_empty() { "its table".to_string() } else { table_for(&st.key) };
+    format!("; it sent {} record{} to {url} before, into {table}, which keeps them until an admin removes them there (DROP TABLE {table})", st.pushed, if st.pushed == 1 { "" } else { "s" })
 }
 
 fn remote_with(home: &Path, project: Option<&str>) -> Option<Remote> {
     let cfg = load_config(home);
-    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty()).map(|t| t.trim().to_string());
     let file = |p: PathBuf| std::fs::read_to_string(p).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-    let url = env("CHLOECTX_SYNC_URL").or_else(|| Some(cfg.url.clone()).filter(|u| !u.trim().is_empty()))?;
+    let url = env_var("CHLOECTX_SYNC_URL").or_else(|| Some(cfg.url.clone()).filter(|u| !u.trim().is_empty()))?;
     let named = Some(cfg.token_env.as_str()).filter(|k| !k.is_empty());
-    let (token, key_from) = if let Some(t) = env("CHLOECTX_SYNC_TOKEN") {
+    let (token, key_from) = if let Some(t) = env_var("CHLOECTX_SYNC_TOKEN") {
         (Some(t), "$CHLOECTX_SYNC_TOKEN".to_string())
-    } else if let Some((k, t)) = named.and_then(|k| env(k).map(|t| (k, t))) {
+    } else if let Some((k, t)) = named.and_then(|k| env_var(k).map(|t| (k, t))) {
         (Some(t), format!("${k}"))
     } else if let Some(t) = project.and_then(|p| file(project_token_path(home, p))) {
         (Some(t), "the project's key".to_string())
-    } else if let Some(t) = file(token_path(home)) {
+    } else if let Some(t) = Some(token_path(home)).filter(|_| cfg.every_project).and_then(file) {
+        // Only for every project: a key an earlier setup kept as the
+        // machine's (the first one set up, LENA-301) is sent for none.
         (Some(t), "the machine's key (sync.token)".to_string())
     } else {
         (None, "no key".to_string())
@@ -279,10 +436,13 @@ pub fn check_url(url: &str) -> Result<()> {
     Err(err(format!("sync server {u}: plain HTTP to another machine would send your sessions and the key in the clear; use https:// (or set CHLOECTX_SYNC_ALLOW_HTTP=1)")))
 }
 
-/// Writes the sync's settings, and the key, owner-only, when given: as
-/// the own key of the project in folder `folder` (by its [`project_key`]),
-/// and as the machine's (`sync.token`, for projects without one) when there
-/// is none yet or `every_project`. Where the key went.
+/// Writes the sync's settings, and the key, owner-only, when given. The
+/// project in folder `folder` (by its [`project_key`]) syncs from now on,
+/// and the key is its own; with `every_project` every project on the
+/// machine syncs, and the key is the machine's too (`sync.token`, for the
+/// projects without one). No other project syncs because of it (LENA-301:
+/// the first key set up was the machine's, and every project's daemon
+/// uploaded its store with it). Where the key went.
 pub fn setup(home: &Path, folder: &str, url: &str, token: Option<&str>, token_env: &str, renames: &[String], every_project: bool) -> Result<Vec<PathBuf>> {
     check_url(url)?;
     crate::paths::create_private_dir(home)?;
@@ -291,18 +451,23 @@ pub fn setup(home: &Path, folder: &str, url: &str, token: Option<&str>, token_en
         let (old, new) = r.split_once('=').ok_or_else(|| err(format!("--rename {r}: give OLD=NEW, as owner/old=owner/new")))?;
         map.insert(old.trim().to_lowercase(), new.trim().to_lowercase());
     }
-    let trusted = load_config(home).trusted;
-    let cfg = SyncConfig { url: url.trim().to_string(), token_env: token_env.trim().to_string(), renames: map, trusted };
+    let was = load_config(home);
+    let mut cfg = SyncConfig { url: url.trim().to_string(), token_env: token_env.trim().to_string(), renames: map, trusted: was.trusted, accepted: was.accepted, projects: was.projects, every_project: was.every_project || every_project };
+    // Written first: the project's name ([`project_key`]) reads the renames from it.
     std::fs::write(config_path(home), serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+    let project = project_key(home, folder);
+    if !cfg.projects.contains(&project) {
+        cfg.projects.push(project.clone());
+        std::fs::write(config_path(home), serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+    }
     let mut kept = Vec::new();
     if let Some(t) = token.map(str::trim).filter(|t| !t.is_empty()) {
         // The project's key is the one its daemon sends; the machine's is
-        // for the projects without one, so a later project's key does not
-        // replace it unless asked.
-        let own = project_token_path(home, &project_key(home, folder));
+        // for the projects without one, kept only when every project syncs.
+        let own = project_token_path(home, &project);
         crate::paths::create_private_dir(own.parent().expect("under sync-keys"))?;
         let mut paths = vec![own];
-        if every_project || !token_path(home).exists() {
+        if every_project {
             paths.push(token_path(home));
         }
         for p in paths {
@@ -315,6 +480,45 @@ pub fn setup(home: &Path, folder: &str, url: &str, token: Option<&str>, token_en
         }
     }
     Ok(kept)
+}
+
+/// `chloectx sync off`: the project in folder `folder` stops syncing, and
+/// its own key is removed; with `every_project`, the machine stops syncing
+/// every project (the projects set up in their folders go on) and its key,
+/// `sync.token`, is removed. What it did, one line each. The server keeps
+/// what it was sent.
+pub fn off(home: &Path, folder: &str, every_project: bool) -> Result<Vec<String>> {
+    let mut cfg = load_config(home);
+    let mut did = Vec::new();
+    if every_project {
+        if cfg.every_project {
+            cfg.every_project = false;
+            did.push("the machine no longer syncs every project".to_string());
+        }
+        if token_path(home).exists() {
+            std::fs::remove_file(token_path(home))?;
+            did.push(format!("removed the machine's key, {}", token_path(home).display()));
+        }
+    } else {
+        let project = project_key(home, folder);
+        let before = cfg.projects.len();
+        cfg.projects.retain(|p| *p != project);
+        let own = project_token_path(home, &project);
+        if own.exists() {
+            std::fs::remove_file(&own)?;
+            did.push(format!("removed this project's key, {}", own.display()));
+        }
+        if before != cfg.projects.len() || !did.is_empty() {
+            did.insert(0, format!("{project} no longer syncs"));
+        }
+        if cfg.every_project {
+            did.push("the machine still syncs every project (`chloectx sync off --every-project` stops that)".into());
+        }
+    }
+    if config_path(home).exists() {
+        std::fs::write(config_path(home), serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+    }
+    Ok(did)
 }
 
 /// A ChloeDB server's HTTP API, called with `curl`.
@@ -336,12 +540,29 @@ impl Remote {
     /// POSTs `body` to `route`; the answer's JSON, or an error with the
     /// server's message.
     fn post(&self, route: &str, body: &Json) -> Result<Json> {
+        self.call("POST", route, Some(body))
+    }
+
+    /// The name of the key this machine sends, as the server knows it
+    /// (`GET /v1/whoami`): what the rows it pushes say pushed them
+    /// ([`PUSHED_BY`]). `None` for the server's own token or an open
+    /// server, which name no one, and when the server does not answer.
+    pub fn key_name(&self) -> Option<String> {
+        let j = self.call("GET", "/v1/whoami", None).ok()?;
+        let name = j.get("name").and_then(|v| v.as_str())?.trim();
+        (j.get("key").is_some_and(|k| !k.is_null()) && !name.is_empty()).then(|| name.to_string())
+    }
+
+    fn call(&self, method: &str, route: &str, body: Option<&Json>) -> Result<Json> {
         if self.token.as_deref().is_some_and(is_anthropic_key) {
             return Err(err(format!("the sync's key is an Anthropic API key (sk-ant-...), not a ChloeDB token or API key (sk_<id>_<secret>): it was not sent to {}. It came from {}: put the server's key there instead", self.url, self.key_from)));
         }
         check_url(&self.url)?;
         let mut cmd = Command::new("curl");
-        cmd.args(["-sS", "-m", &TIMEOUT_SECS.to_string(), "-X", "POST", "-H", "content-type: application/json", "-H", "x-chloedb-client: chloectx-sync", "--data-binary", "@-", "-w", "\n%{http_code}"]);
+        cmd.args(["-sS", "-m", &TIMEOUT_SECS.to_string(), "-X", method, "-H", "x-chloedb-client: chloectx-sync", "-w", "\n%{http_code}"]);
+        if body.is_some() {
+            cmd.args(["-H", "content-type: application/json", "--data-binary", "@-"]);
+        }
         let header = match &self.token {
             Some(t) => {
                 // A file of this request's own: a push and an explicit `sync`
@@ -360,7 +581,11 @@ impl Remote {
         cmd.arg(format!("{}{route}", self.url));
         let out = (|| {
             let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| err(format!("curl: {e}")))?;
-            child.stdin.take().expect("stdin").write_all(body.to_string().as_bytes())?;
+            let mut stdin = child.stdin.take().expect("stdin");
+            if let Some(b) = body {
+                stdin.write_all(b.to_string().as_bytes())?;
+            }
+            drop(stdin);
             child.wait_with_output().map_err(|e| err(format!("curl: {e}")))
         })();
         if let Some(p) = header {
@@ -534,12 +759,17 @@ pub fn send_forgets(remote: &Remote, project: &str, store_dir: &Path) -> Result<
     Ok(unsent.len())
 }
 
-/// A record as the server's row, redacted, pushed by machine `origin`.
-/// A record this store pulled keeps the machine it came from.
-fn remote_doc(project: &str, origin: &str, r: &Record) -> Json {
+/// A record as the server's row, redacted, pushed by machine `origin`
+/// with the key named `by` ([`PUSHED_BY`]). A record this store pulled
+/// keeps the machine it came from, and the key that pushed it.
+fn remote_doc(project: &str, origin: &str, by: Option<&str>, r: &Record) -> Json {
     let mut r = r.clone();
     crate::redact::redact_record(&mut r);
-    let origin = r.links.iter().find(|l| l.label == SYNCED_FROM || l.label == ACCEPTED).map_or(origin.to_string(), |l| l.to.clone());
+    let from = r.links.iter().find(|l| l.label == SYNCED_FROM || l.label == ACCEPTED).map(|l| l.to.clone());
+    if let (None, Some(by), None) = (&from, by, pushed_by(&r)) {
+        r.links.push(Link { label: PUSHED_BY.into(), to: by.to_string() });
+    }
+    let origin = from.unwrap_or_else(|| origin.to_string());
     r.links.retain(|l| l.label != SYNCED_FROM && l.label != ACCEPTED);
     json!({
         "origin": origin,
@@ -605,13 +835,16 @@ pub fn push(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -
 fn push_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) -> Result<usize> {
     let table = table_for(project);
     let me = origin(&remote.header_dir);
+    // Asked once there is something to send: the daemon pushes every 30 s.
+    let mut by: Option<Option<String>> = None;
     let mut sent = 0;
     loop {
         let rs = store.query_with(&format!("SELECT {COLUMNS} FROM memory WHERE seq > :s ORDER BY seq ASC LIMIT {BATCH}"), &Params::new().set("s", chloedb::Value::Int(st.pushed_seq)))?;
         let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).collect();
         let Some(top) = rs.rows.iter().filter_map(|r| r.get(5).and_then(|v| v.as_i64())).max() else { break };
         if !recs.is_empty() {
-            let ops: Vec<Json> = recs.iter().map(|r| json!({"op": "upsert", "table": table, "doc": remote_doc(project, &me, r)})).collect();
+            let by = by.get_or_insert_with(|| remote.key_name()).as_deref();
+            let ops: Vec<Json> = recs.iter().map(|r| json!({"op": "upsert", "table": table, "doc": remote_doc(project, &me, by, r)})).collect();
             // Named by the records it holds: a retry of this batch is the
             // same request, and another machine's batch of the same
             // project and sequence numbers (each store numbers its own) is
@@ -634,9 +867,9 @@ fn push_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) 
 /// Sends `recs` again, replacing the server's rows with the same ids (the
 /// records `chloectx redact` rewrote); how many.
 pub fn push_records(remote: &Remote, project: &str, recs: &[Record]) -> Result<usize> {
-    let (table, me) = (table_for(project), origin(&remote.header_dir));
+    let (table, me, by) = (table_for(project), origin(&remote.header_dir), remote.key_name());
     for batch in recs.chunks(BATCH) {
-        let ops: Vec<Json> = batch.iter().map(|r| json!({"op": "upsert", "table": table, "doc": remote_doc(project, &me, r)})).collect();
+        let ops: Vec<Json> = batch.iter().map(|r| json!({"op": "upsert", "table": table, "doc": remote_doc(project, &me, by.as_deref(), r)})).collect();
         let ids = batch.iter().map(|r| r.id.as_str()).collect::<Vec<_>>().join(",");
         remote.post("/v1/write", &json!({ "ops": ops, "idempotency_key": format!("chloectx-redact-{:016x}-{:016x}-{}", fnv(project), fnv(&ids), crate::now()) }))?;
     }
@@ -653,13 +886,13 @@ pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState, s
     let cfg = load_config(&remote.header_dir);
     let me = origin(&remote.header_dir);
     let table = table_for(project);
-    let mut got = match pull_once(remote, store, project, &table, PROJECT_COLUMNS, &me, &cfg.trusted, store_dir) {
+    let mut got = match pull_once(remote, store, project, &table, PROJECT_COLUMNS, &me, &cfg, store_dir) {
         Err(e) if no_table(&e, &table) => 0,
         r => r?,
     };
     // The shared table may be gone, or not for this key (a project's key
     // is refused it): neither is an error of this project's sync.
-    got += pull_once(remote, store, project, TABLE, REMOTE_COLUMNS, &me, &cfg.trusted, store_dir).unwrap_or(0);
+    got += pull_once(remote, store, project, TABLE, REMOTE_COLUMNS, &me, &cfg, store_dir).unwrap_or(0);
     st.pulled += got as u64;
     st.last_pull = crate::now();
     Ok(got)
@@ -671,7 +904,7 @@ pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState, s
 /// may end inside them, so its last number's records are read whole
 /// before the next page starts after it.
 #[allow(clippy::too_many_arguments)]
-fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &str, me: &str, trusted: &[String], store_dir: &Path) -> Result<usize> {
+fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &str, me: &str, cfg: &SyncConfig, store_dir: &Path) -> Result<usize> {
     let mut got = 0;
     let mut after = i64::MIN;
     loop {
@@ -682,7 +915,7 @@ fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &
             rows.retain(|r| r.get(5).and_then(|v| v.as_i64()) != Some(top));
             rows.extend(remote.rows(&format!("SELECT {cols} FROM {table} WHERE project = :p AND seq = :s LIMIT 10000"), json!({ "p": project, "s": top }))?);
         }
-        got += store_new(store, &rows, me, trusted, store_dir)?;
+        got += store_new(store, &rows, project, me, cfg, store_dir)?;
         after = top;
         if !full {
             break;
@@ -694,13 +927,13 @@ fn pull_once(remote: &Remote, store: &Store, project: &str, table: &str, cols: &
 /// Stores the server's `rows` that `store` lacks, redacted and embedded
 /// here; how many. A row another machine pushed (its `origin`, the
 /// thirteenth column, is not `me`; a row of the shared table names none)
-/// is linked [`SYNCED_FROM`] that machine, or [`ACCEPTED`] when it is in
-/// `trusted`. A record forgotten here ([`Forgotten`], in `store_dir`) is
+/// is linked [`SYNCED_FROM`] that machine, or [`ACCEPTED`] when `cfg`
+/// accepted it for `project` ([`SyncConfig::trusts`]). A record forgotten here ([`Forgotten`], in `store_dir`) is
 /// passed over: the server, or another machine that pushes it again, may
 /// still hold it. The list is read, and the records stored, while a forget
 /// cannot add to it, so that one that deletes a record as it is pulled
 /// either finds it stored, and deletes it, or keeps it out.
-fn store_new(store: &Store, rows: &[Vec<Json>], me: &str, trusted: &[String], store_dir: &Path) -> Result<usize> {
+fn store_new(store: &Store, rows: &[Vec<Json>], project: &str, me: &str, cfg: &SyncConfig, store_dir: &Path) -> Result<usize> {
     let _one = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
     let forgotten = load_forgotten(store_dir).ids;
     let mut recs: Vec<Record> = Vec::new();
@@ -712,7 +945,7 @@ fn store_new(store: &Store, rows: &[Vec<Json>], me: &str, trusted: &[String], st
         crate::redact::redact_record(&mut r);
         let from = row.get(12).and_then(|v| v.as_str()).filter(|o| !o.is_empty()).unwrap_or("unknown");
         if from != me {
-            let ok = trusted.iter().any(|t| t == "*" || t == from);
+            let ok = cfg.trusts(project, from);
             r.links.retain(|l| l.label != SYNCED_FROM && l.label != ACCEPTED);
             r.links.push(Link { label: if ok { ACCEPTED } else { SYNCED_FROM }.into(), to: from.to_string() });
         }
@@ -731,13 +964,44 @@ fn store_new(store: &Store, rows: &[Vec<Json>], me: &str, trusted: &[String], st
     Ok(new.len())
 }
 
-/// `chloectx sync accept`: the store's records pulled from machines not
-/// accepted yet, by machine (`origin`, count, a few of their texts); with
-/// `origins` (`*` for all), those machines' records are accepted, and the
-/// machines added to `sync.json`'s `trusted`, so that later pulls take
-/// theirs as accepted too. Returns the machines and how many records each
-/// had pending.
-pub fn accept(home: &Path, store: &Store, origins: &[String]) -> Result<Vec<(String, usize, Vec<String>)>> {
+/// A machine whose records wait to be accepted (`chloectx sync accept`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pending {
+    /// The machine, as its rows name it ([`origin`]).
+    pub origin: String,
+    /// The name of the key it pushed them with, when its rows said
+    /// ([`PUSHED_BY`]).
+    pub key: Option<String>,
+    /// How many of its records wait.
+    pub records: usize,
+    /// A few of its rules, decisions and notes, as they read.
+    pub some: Vec<String>,
+}
+
+impl Pending {
+    /// `ana-laptop (m-44fb96669a15)`, or the id alone.
+    pub fn label(&self) -> String {
+        machine_label(&self.origin, self.key.as_deref())
+    }
+
+    /// Whether `name` names this machine: its id, its key's name, or the
+    /// machine that name names ([`machine_name`]).
+    pub fn named(&self, name: &str) -> bool {
+        let n = name.trim();
+        !n.is_empty() && (n == self.origin || self.key.as_deref().is_some_and(|k| k == n || machine_name(k) == n))
+    }
+}
+
+/// `chloectx sync accept` in project `project` (its [`project_key`]): the
+/// store's records pulled from machines not accepted yet, by machine
+/// ([`Pending`], named by the key that pushed them where the rows say:
+/// WEI-308). With `names` (a machine's id, its key's name, or the machine
+/// that key names), or `all` (every machine listed now, and no other),
+/// those machines' records are accepted, and the machines added to the
+/// project's accepted machines in `sync.json`, so that later pulls of this
+/// project take theirs as accepted too. Returns the machines that waited,
+/// and the names that matched none.
+pub fn accept(home: &Path, store: &Store, project: &str, names: &[String], all: bool) -> Result<(Vec<Pending>, Vec<String>)> {
     // Pulled records keep the server's sequence numbers: paged by them.
     let mut recs: Vec<Record> = Vec::new();
     let mut after = i64::MIN;
@@ -758,39 +1022,47 @@ pub fn accept(home: &Path, store: &Store, origins: &[String]) -> Result<Vec<(Str
         }
         after = top;
     }
-    let mut by: std::collections::BTreeMap<String, (usize, Vec<String>)> = Default::default();
+    let mut by: std::collections::BTreeMap<String, Pending> = Default::default();
     for r in &recs {
-        let e = by.entry(pending_origin(r).unwrap_or("unknown").to_string()).or_default();
-        e.0 += 1;
-        if e.1.len() < 3 && r.kind.is_knowledge() {
-            e.1.push(r.text.chars().take(120).collect());
+        let o = pending_origin(r).unwrap_or("unknown").to_string();
+        let e = by.entry(o.clone()).or_insert_with(|| Pending { origin: o, key: None, records: 0, some: Vec::new() });
+        e.records += 1;
+        if e.key.is_none() {
+            e.key = pushed_by(r).map(String::from);
+        }
+        if e.some.len() < 3 && r.kind.is_knowledge() {
+            e.some.push(r.text.chars().take(120).collect());
         }
     }
-    if !origins.is_empty() {
-        let all = origins.iter().any(|o| o == "*");
-        let mut changed = Vec::new();
-        for mut r in recs {
-            let from = pending_origin(&r).unwrap_or("unknown").to_string();
-            if all || origins.contains(&from) {
+    let waiting: Vec<Pending> = by.into_values().collect();
+    let unknown: Vec<String> = names.iter().filter(|n| *n != "*" && !waiting.iter().any(|p| p.named(n))).cloned().collect();
+    // `*` from an older client is every machine listed now, as --all.
+    let all = all || names.iter().any(|n| n == "*");
+    let chosen: Vec<String> = waiting.iter().filter(|p| all || names.iter().any(|n| p.named(n))).map(|p| p.origin.clone()).collect();
+    if !chosen.is_empty() {
+        let changed: Vec<Record> = recs
+            .into_iter()
+            .filter(|r| chosen.iter().any(|o| Some(o.as_str()) == pending_origin(r)))
+            .map(|mut r| {
                 for l in r.links.iter_mut().filter(|l| l.label == SYNCED_FROM) {
                     l.label = ACCEPTED.into();
                 }
-                changed.push(r);
-            }
-        }
-        if !changed.is_empty() {
-            store.insert(&changed)?;
-        }
+                r
+            })
+            .collect();
+        store.insert(&changed)?;
         let mut cfg = load_config(home);
-        for o in origins {
-            if !cfg.trusted.contains(o) {
-                cfg.trusted.push(o.clone());
+        let list = cfg.accepted.entry(project.to_string()).or_default();
+        for o in &chosen {
+            if !list.contains(o) {
+                list.push(o.clone());
             }
         }
-        crate::paths::create_private_dir(home)?;
-        std::fs::write(config_path(home), serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+        // Every machine to come, for every project: no longer (WEI-308).
+        cfg.trusted.retain(|t| t != "*");
+        save_config(home, &cfg)?;
     }
-    Ok(by.into_iter().map(|(o, (n, t))| (o, n, t)).collect())
+    Ok((waiting, unknown))
 }
 
 /// Whether `t` is an Anthropic API key, which a ChloeDB server never takes:
@@ -828,9 +1100,9 @@ mod tests {
     }
 
     #[test]
-    fn each_project_syncs_with_its_own_key_and_the_first_is_the_machines() {
-        // A key is limited to one project's table: one sync.token for the
-        // machine sent the first project's key for every other, refused.
+    fn a_project_syncs_once_set_up_there_and_no_other_because_of_it() {
+        // LENA-301: the first key set up was the machine's too, and every
+        // other project's daemon uploaded its store with it.
         if std::env::var_os("CHLOECTX_SYNC_TOKEN").is_some() || std::env::var_os("CHLOECTX_SYNC_URL").is_some() {
             return;
         }
@@ -840,27 +1112,65 @@ mod tests {
         let url = "https://chloedb.example.com";
         let (web_key, shop_key) = (project_key(&home, &web.to_string_lossy()), project_key(&home, &shop.to_string_lossy()));
         let kept = setup(&home, &web.to_string_lossy(), url, Some("sk_web_1\n"), "", &[], false).unwrap();
-        assert_eq!(kept, vec![project_token_path(&home, &web_key), token_path(&home)], "the first key is the machine's too");
-        let kept = setup(&home, &shop.to_string_lossy(), url, Some("sk_shop_2"), "", &[], false).unwrap();
-        assert_eq!(kept, vec![project_token_path(&home, &shop_key)], "a later one is its project's only");
+        assert_eq!(kept, vec![project_token_path(&home, &web_key)], "the project's key only");
+        assert!(!token_path(&home).exists());
         let token = |r: Option<Remote>| r.and_then(|r| r.token).unwrap_or_default();
+        assert_eq!(token(remote_for(&home, &web_key)), "sk_web_1");
+        assert_eq!(syncs(&home, &web_key), Some("set up in this project"));
+        // Another project of the machine does not sync, with any key.
+        assert!(remote_for(&home, &shop_key).is_none());
+        assert_eq!(syncs(&home, &shop_key), None);
+        assert!(remote(&home).is_some_and(|r| !r.has_token()), "a server is set up, and the machine has no key");
+        assert_eq!(set_up_projects(&home), vec![web_key.clone()]);
+        assert!(scope_line(&home).starts_with(&format!("only {web_key} syncs")), "{}", scope_line(&home));
+        // Set up there, it syncs with its own key.
+        let kept = setup(&home, &shop.to_string_lossy(), url, Some("sk_shop_2"), "", &[], false).unwrap();
+        assert_eq!(kept, vec![project_token_path(&home, &shop_key)]);
         assert_eq!(token(remote_for(&home, &web_key)), "sk_web_1");
         assert_eq!(token(remote_for(&home, &shop_key)), "sk_shop_2");
         assert_eq!(remote_for(&home, &shop_key).unwrap().key_from, "the project's key");
-        // A project without one sends the machine's.
-        assert_eq!(token(remote_for(&home, "acme/other")), "sk_web_1");
-        assert_eq!(remote_for(&home, "acme/other").unwrap().key_from, "the machine's key (sync.token)");
-        assert_eq!(token(remote(&home)), "sk_web_1");
-        // --every-project replaces the machine's; no key given keeps them all.
-        setup(&home, &shop.to_string_lossy(), url, Some("sk_admin_3"), "", &[], true).unwrap();
+        assert!(remote_for(&home, "acme/other").is_none());
+        // A setup without a key (an open server, or --token-env) lists the project too.
+        let open = t.path().join("open");
+        let open_key = project_key(&home, &open.to_string_lossy());
+        assert!(setup(&home, &open.to_string_lossy(), url, None, "", &[], false).unwrap().is_empty());
+        assert_eq!(remote_for(&home, &open_key).map(|r| r.key_from), Some("no key".to_string()));
+        assert_eq!(set_up_projects(&home), vec![web_key.clone(), shop_key.clone(), open_key.clone()]);
+        // --every-project: every project syncs, and one without a key sends the machine's.
+        let kept = setup(&home, &shop.to_string_lossy(), url, Some("sk_admin_3"), "", &[], true).unwrap();
+        assert_eq!(kept, vec![project_token_path(&home, &shop_key), token_path(&home)]);
         assert_eq!(token(remote_for(&home, "acme/other")), "sk_admin_3");
+        assert_eq!(remote_for(&home, "acme/other").unwrap().key_from, "the machine's key (sync.token)");
+        assert!(scope_line(&home).starts_with("every project on this machine syncs"));
+        // A later setup without the flag keeps it; no key given keeps the keys.
         assert!(setup(&home, &web.to_string_lossy(), url, None, "", &[], false).unwrap().is_empty());
         assert_eq!(token(remote_for(&home, &web_key)), "sk_web_1");
+        assert!(remote_for(&home, "acme/other").is_some());
         // Each file is its owner's only.
         use std::os::unix::fs::PermissionsExt;
         for p in [project_token_path(&home, &web_key), token_path(&home)] {
             assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o077, 0, "{}", p.display());
         }
+        // `sync off --every-project`: back to the projects set up, and the machine's key is gone.
+        let did = off(&home, &web.to_string_lossy(), true).unwrap();
+        assert_eq!(did.len(), 2, "{did:?}");
+        assert!(remote_for(&home, "acme/other").is_none() && !token_path(&home).exists());
+        assert_eq!(token(remote_for(&home, &shop_key)), "sk_admin_3");
+        // `sync off` in a project: it stops, and its key goes.
+        let did = off(&home, &shop.to_string_lossy(), false).unwrap();
+        assert!(did[0].contains("no longer syncs"), "{did:?}");
+        assert!(remote_for(&home, &shop_key).is_none() && !project_token_path(&home, &shop_key).exists());
+        assert!(remote_for(&home, &web_key).is_some());
+        // A key kept by a setup before projects were listed still counts as set up there.
+        let mut cfg = load_config(&home);
+        cfg.projects.clear();
+        std::fs::write(config_path(&home), serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(token(remote_for(&home, &web_key)), "sk_web_1");
+        assert!(remote_for(&home, &open_key).is_none());
+        assert_eq!(set_up_projects(&home), vec![format!("the project of table {}", table_for(&web_key))]);
+        // ... and the machine's key an earlier setup kept (the first one) is sent for no other.
+        std::fs::write(token_path(&home), "sk_web_1").unwrap();
+        assert!(remote_for(&home, "acme/other").is_none());
         // A 403 says which key the project needs; another error, nothing.
         let h = key_hint("acme/web", "https://x/v1/write: 403: a write touches table chloectx_mem_acme_web_9, which the key \"k\" may not");
         assert!(h.contains(&table_for("acme/web")) && h.contains("Make a sync key") && h.contains("acme/web"), "{h}");
@@ -925,7 +1235,7 @@ mod tests {
             ctx: "Turn 3".into(),
             links: vec![Link { label: "about".into(), to: "e:chloedb".into() }],
         };
-        let d = remote_doc("/home/me/p", "m-1", &r);
+        let d = remote_doc("/home/me/p", "m-1", None, &r);
         assert_eq!(d["origin"], "m-1");
         assert_eq!(d["id"], "/home/me/p:abcd1234:7");
         let row: Vec<Json> = REMOTE_COLUMNS.split(", ").map(|c| d[c].clone()).collect();
@@ -955,7 +1265,7 @@ mod tests {
             ctx: format!("Turn 3 request: use the key {key}"),
             links: Vec::new(),
         };
-        let d = remote_doc("p", "m-1", &r).to_string();
+        let d = remote_doc("p", "m-1", None, &r).to_string();
         assert!(!d.contains(&pw) && !d.contains(&key), "{d}");
         assert!(d.contains("DB_PASSWORD=[REDACTED:password]") && d.contains("use the key [REDACTED:chloedb-key]"), "{d}");
     }
