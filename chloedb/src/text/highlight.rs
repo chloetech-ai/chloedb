@@ -132,7 +132,11 @@ impl Marks {
             }
             let t = tok.trim_start_matches(['(', '+']).trim_end_matches([')', ',', ';', '?', '!']);
             if let Some(p) = t.strip_suffix('*').filter(|p| !p.is_empty() && p.chars().all(is_word_char)) {
-                m.prefixes.push(analyzer.prefix_of(&normalize_word(p)));
+                let token = normalize_word(p);
+                m.prefixes.push(analyzer.prefix_of(&token));
+                // The stems the prefix stands for, as MATCH finds them:
+                // "run" in "run tracker" for `running*`.
+                m.seqs.extend(super::query::prefix_stems(analyzer, &token).into_iter().map(|t| vec![t]));
                 continue;
             }
             let (t, typo) = match t.strip_suffix('~') {
@@ -405,6 +409,12 @@ mod tests {
     fn marks_stems_prefixes_and_phrases() {
         let m = Marks::new("running bro*", Analyzer::English, None);
         assert_eq!(highlight("He runs. The brown dog is running.", &m, &plain()), "He [runs]. The [brown] dog is [running].");
+        // A prefix marks the words that start with it as typed and those
+        // of the stems it stands for, as MATCH finds them (DEV-201).
+        let m = Marks::new("wireless headphone*", Analyzer::English, None);
+        assert_eq!(highlight("Wireless Headphones, a headphone stand", &m, &plain()), "[Wireless] [Headphones], a [headphone] stand");
+        let m = Marks::new("runni*", Analyzer::English, None);
+        assert_eq!(highlight("running shoes for a run", &m, &plain()), "[running] shoes for a [run]");
         let m = Marks::new("\"memory safety\" -rust", Analyzer::English, None);
         assert_eq!(highlight("Memory safety without Rust; safety first, memory later", &m, &plain()), "[Memory safety] without Rust; safety first, memory later");
         // Stopwords between a phrase's words are not counted, as an index does not.

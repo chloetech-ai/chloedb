@@ -247,7 +247,7 @@ export function hitsSql(whole: string) {
 export const BRANDS_SQL = `SELECT brand, COUNT(*) AS n FROM products WHERE ${WHERE} GROUP BY brand ORDER BY n DESC LIMIT 10`;
 ```
 
-Typed `lether so`, the hits are filtered by `MATCH(name, 'lether so*', fuzzy => 'auto')` and ranked by `bm25(name, 'lether', fuzzy => 'auto')`; typed `so`, they are filtered by `MATCH(name, 'so*', fuzzy => 'auto')` and ranked by rating.
+Typed `lether so`, the hits are filtered by `MATCH(name, 'lether so*', fuzzy => 'auto')` and ranked by `bm25(name, 'lether', fuzzy => 'auto')`; typed `so`, they are filtered by `MATCH(name, 'so*', fuzzy => 'auto')` and ranked by rating. Each letter of the last word keeps its rows, also once it is a whole word the analyzer stems: a prefix stands for the stems of the words it may be the start of too, so `headphone*`, `battery*` and `runni*` find *headphones*, *batteries* and *running*, which the index keeps as `headphon`, `batteri` and `run` ([full text](query-language.md#full-text-match)). **Changed:** against a server or package of 0.3.8 or earlier they find nothing, though `headphon*` and `batter*` do, so the hits come and go as a word is typed; and a typo whose stem the analyzer cuts differently (`choclate`, stemmed `choclat`, against `chocol`) is not forgiven.
 
 ### A route over HTTP
 

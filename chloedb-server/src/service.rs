@@ -3252,9 +3252,11 @@ impl Service {
             if df > 0 {
                 continue;
             }
+            // The terms the word's typo expansion scores (near its stem,
+            // near it as typed and the stems of words near it), which
+            // `correct` measures from the word as typed.
             let near = stats_of(sql(&format!(", fuzzy => {}", w.edits)), w.word.clone()).await?;
-            let typed: Vec<char> = w.term.chars().collect();
-            let near: Vec<(String, u64, u8)> = near.into_iter().filter(|(n, _)| *n != w.term).filter_map(|(n, ndf)| chloedb::text::fuzzy::within(&typed, &n, w.edits).map(|d| (n, ndf, d))).collect();
+            let near: Vec<(String, u64)> = near.into_iter().collect();
             out.extend(w.correct(df, &near, analyzer));
         }
         if out.is_empty() {
