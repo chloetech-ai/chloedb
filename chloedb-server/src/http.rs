@@ -3922,7 +3922,8 @@ fn chunk(b: &Option<AxJson<Json>>) -> Result<usize, ApiError> {
 
 /// `POST /v1/admin/rebalance {"chunk"?, "by"?, "window"?, "dry_run"?, "force"?}`:
 /// evens out the slots over the shards, in the background (`GET
-/// /v1/admin/moves` follows it). `"by": "load"` evens out the keyed load
+/// /v1/admin/moves` follows it), once the disks of the copies sent rows
+/// are checked; `dry_run` answers the plan and moves nothing. `"by": "load"` evens out the keyed load
 /// the coordinators counted over `window` (default `15m`) instead
 /// ([`crate::coord::balance`]); `dry_run` answers its plan and moves
 /// nothing.
@@ -3932,8 +3933,17 @@ async fn rebalance(State(app): State<App>, w: Option<axum::Extension<Principal>>
         Some("load") => return rebalance_by_load(app, w, body).await,
         Some(other) => return Err(ApiError::bad(format!("by {other:?}: slots (the default) or load"))),
     }
-    let j = match app.svc.coordinator()?.rebalance(chunk(&body)?) {
+    let c = app.svc.coordinator()?;
+    let dry_run = body.as_ref().and_then(|b| b.get("dry_run")).and_then(Json::as_bool).unwrap_or(false);
+    let snap = c.snapshot().await;
+    let j = match c.rebalance_checked(chunk(&body)?, Some(&snap), dry_run) {
+        Ok(j) if dry_run => {
+            let mut r = AxJson(j).into_response();
+            r.extensions_mut().insert(DryRun);
+            return Ok(r);
+        }
         Ok(j) => j,
+        Err(e) if dry_run => return Err(e),
         Err(e) => return Ok(tried("even the slots out over the shards".into())(e)),
     };
     let title = format!("Slots even out over the shards: {} moves", j["job"]["of"]);

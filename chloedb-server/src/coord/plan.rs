@@ -1496,7 +1496,8 @@ async fn run_step(svc: &Arc<Service>, c: &Arc<Coordinator>, k: usize, resuming: 
         }
         "rebalance" => {
             wait_idle(c, k, resuming).await?;
-            let j = c.rebalance(MOVE_SLOTS)?;
+            let snap = c.snapshot().await;
+            let j = c.rebalance_checked(MOVE_SLOTS, Some(&snap), false)?;
             if j["job"]["of"] == 0 {
                 return Ok("the slots were even already".into());
             }

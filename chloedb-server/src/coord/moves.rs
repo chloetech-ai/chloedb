@@ -224,8 +224,38 @@ impl Coordinator {
     /// Evens out the slots over the shards, `chunk` slots per move at most
     /// ([`plan_even`]), in the background: after adding a shard.
     pub fn rebalance(self: &Arc<Self>, chunk: usize) -> Result<Json, ApiError> {
+        self.rebalance_checked(chunk, None, false)
+    }
+
+    /// [`Self::rebalance`], its moves checked against the disks of the
+    /// copies they send rows to, from the cluster's snapshot `snap` (as a
+    /// plan's are: `disks`, `preflight` in `plan`), a failed check refusing
+    /// them (409); `dry_run` answers the plan and starts nothing.
+    pub fn rebalance_checked(self: &Arc<Self>, chunk: usize, snap: Option<&Json>, dry_run: bool) -> Result<Json, ApiError> {
         let map = self.map().ok_or_else(|| ApiError::bad("a coordinator routing by the hash before slots cannot move slots"))?;
-        self.start_job("rebalance", plan_even(&map, None, chunk))
+        let moves = plan_even(&map, None, chunk);
+        let mut plan = json!({
+            "by": "slots",
+            "moves": super::balance::moves_json(&moves),
+            "slots_moved": moves.iter().map(|(s, ..)| s.len()).sum::<usize>(),
+            "why": moves.is_empty().then_some("the slots are even already"),
+        });
+        let mut fail = None;
+        if let Some(s) = snap {
+            let (disks, preflight) = super::plan::move_disk_checks(s, &moves);
+            fail = preflight.iter().find(|p| p["ok"] == false).and_then(|p| p["text"].as_str()).map(String::from);
+            plan["disks"] = json!(disks);
+            plan["preflight"] = json!(preflight);
+        }
+        if dry_run {
+            return Ok(json!({"plan": plan, "job": null}));
+        }
+        if let Some(why) = fail.filter(|_| !moves.is_empty()) {
+            return Err(ApiError { code: None, status: 409, message: format!("the moves would not fit: {why}") });
+        }
+        let mut out = self.start_job("rebalance", moves)?;
+        out["plan"] = plan;
+        Ok(out)
     }
 
     /// Evens out the shards' keyed load rather than their counts of slots
