@@ -876,7 +876,13 @@ pub async fn fetch_model_with(name: &str, dir: &std::path::Path, progress: &(dyn
         None => model_dir.clone(),
     };
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let client = crate::http_client().build().map_err(|e| e.to_string())?;
+    // A connection that stops sending fails the fetch after a minute rather
+    // than waiting for ever; a slow one that keeps sending is let finish.
+    let client = crate::http_client()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
     // Each file's path in the repository, and its name here.
     let files: Vec<(&str, &str)> = match (derives, cross_encoder::fetch_files(&local)) {
         (true, _) => chloedb::derive::model_files(&local).iter().map(|&f| (f, f)).collect(),

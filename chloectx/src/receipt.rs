@@ -79,6 +79,9 @@ pub struct FilterSpec {
     /// [`Filter::first_party`]; a receipt from before it read every record.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub first_party: bool,
+    /// [`Filter::window_notes`]; a receipt from before it left them out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub window_notes: bool,
 }
 
 impl FilterSpec {
@@ -90,6 +93,7 @@ impl FilterSpec {
             until_ts: f.until_ts,
             session: f.session.clone(),
             first_party: f.first_party,
+            window_notes: f.window_notes,
         }
     }
 
@@ -101,6 +105,7 @@ impl FilterSpec {
             until_ts: self.until_ts,
             session: self.session.clone(),
             first_party: self.first_party,
+            window_notes: self.window_notes,
         }
     }
 }
@@ -724,7 +729,9 @@ impl Book {
     pub fn latest(&self, session: Option<&str>, limit: usize) -> Result<Vec<Receipt>> {
         let limit = limit.clamp(1, 500);
         match session {
-            Some(s) => self.read(&format!("SELECT body FROM receipts WHERE session = :s ORDER BY ts DESC LIMIT {limit}"), &Params::new().set("s", Value::Str(s.into()))),
+            // The start of an id is enough, as listings show 8 characters
+            // of it (ANA-209).
+            Some(s) => self.read(&format!("SELECT body FROM receipts WHERE PREFIX(session, :s) ORDER BY ts DESC LIMIT {limit}"), &Params::new().set("s", Value::Str(s.trim().into()))),
             None => self.read(&format!("SELECT body FROM receipts ORDER BY ts DESC LIMIT {limit}"), &Params::new()),
         }
     }

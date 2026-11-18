@@ -75,6 +75,11 @@ pub fn run(event: &str, user: bool) -> i32 {
     if let Ok(a) = std::env::var("CHLOECTX_AGENT_NAME") {
         req["agent"] = json!(a);
     }
+    // The Claude Code process the session runs in: its MCP server's
+    // parent, by which the daemon knows the session of a memory tool's call.
+    if let Some(pid) = daemon::claude_pid() {
+        req["claude_pid"] = json!(pid);
+    }
     if event == "UserPromptSubmit" {
         let prompt = payload.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
         let log = std::env::var_os("CHLOECTX_PROMPT_LOG").map(std::path::PathBuf::from);

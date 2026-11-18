@@ -114,7 +114,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Server and cluster</span>
       <h1>Operate a cluster</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
-      <p class="doc-version">These docs describe release 0.3.7.</p>
+      <p class="doc-version">These docs follow main (0.3.8, unreleased). The latest release is 0.3.7 (<a href="v0.3.7/index.html">its docs</a>); what is newer is marked "since 0.3.8".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-layout">The layout</a></li><li><a href="#tokens">Tokens</a></li><li><a href="#start-the-copies">Start the copies</a></li><li><a href="#start-the-coordinator">Start the coordinator</a></li><li><a href="#check-its-health">Check its health</a></li><li><a href="#keys-for-clients">Keys for clients</a></li><li><a href="#load-and-search">Load and search</a></li><li><a href="#kill-a-primary">Kill a primary</a></li><li><a href="#checkpoints">Checkpoints</a></li><li><a href="#upgrade-one-server-at-a-time">Upgrade one server at a time</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
@@ -361,7 +361,7 @@ s1b-before-upgrade.slots</pre>
 </ol>
 <p>While versions are mixed, the cluster serves what the oldest server involved speaks, and <a href="compatibility.html#a-cluster-of-mixed-versions">versions and compatibility</a> says, release by release, what has an order of its own. Read the <a href="https://github.com/chloetech-ai/chloedb/blob/main/CHANGELOG.md">changelog</a> of every release you skip.</p>
 <p>On each machine, the new binary is the release's archive, checked against its <code>.sha256</code>:</p>
-<pre data-lang="sh">v=0.3.7 p=linux-x86_64
+<pre data-lang="sh">v=0.3.8 p=linux-x86_64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz.sha256
 sha256sum -c chloedb-server-$p.tar.gz.sha256 &amp;&amp; tar xzf chloedb-server-$p.tar.gz

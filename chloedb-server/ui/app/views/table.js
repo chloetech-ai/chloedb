@@ -65,7 +65,9 @@ export function shownFields(t, text, vec = null) {
  * meaning or both. Words alone over one field rank by bm25 with a guard
  * (all the words while 20 rows have them, else fewer), so a sentence
  * finds rows; over several, a row needs a word of one of them and the
- * scores add up. Meaning ranks every row by similarity; both fuse the
+ * scores add up. A word in no row is taken for a typo of the words near
+ * it (fuzzy => 'auto'), as the search page a shop or a recipe site has
+ * does (MAYA-202). Meaning ranks every row by similarity; both fuse the
  * rankings (rrf). `body` and `fnParams` are the same search as a stored
  * function's (the words :q, the vector :v, the count :k).
  */
@@ -77,10 +79,11 @@ export function searchSql(t, { q, fields, vec, mode, limit = 20 }) {
   let where = "", order;
   const words = mode !== "meaning" && W.length;
   const meaning = mode !== "words" && vec;
-  if (words && meaning) order = `rrf(${W.map((f) => `bm25(${f}, :q)`).join(", ")}, similarity(${quoteName(vec.name)}, :v))`;
+  const fz = ", fuzzy => 'auto'";
+  if (words && meaning) order = `rrf(${W.map((f) => `bm25(${f}, :q${fz})`).join(", ")}, similarity(${quoteName(vec.name)}, :v))`;
   else if (meaning) order = `similarity(${quoteName(vec.name)}, :v)`;
-  else if (W.length === 1) order = `bm25(${W[0]}, :q, min => 1, min_rows => 20)`;
-  else if (W.length) { where = `\nWHERE ${W.map((f) => `MATCH(${f}, :q, min => 1)`).join("\n   OR ")}`; order = W.map((f) => `bm25(${f}, :q)`).join(" + "); }
+  else if (W.length === 1) order = `bm25(${W[0]}, :q${fz}, min => 1, min_rows => 20)`;
+  else if (W.length) { where = `\nWHERE ${W.map((f) => `MATCH(${f}, :q${fz}, min => 1)`).join("\n   OR ")}`; order = W.map((f) => `bm25(${f}, :q${fz})`).join(" + "); }
   else return null;
   const head = `SELECT ${[...cols, "score()"].join(", ")}\nFROM ${from}${where}\nORDER BY ${order} DESC`;
   const params = {};
@@ -306,6 +309,13 @@ function render(page, r) {
         last = { s, j, q };
         clear(out, results(t, j, q, s.shown));
         drawTail();
+        // No rows for words: "did you mean" the words the field holds.
+        const field = [...picked][0];
+        if (!(j.rows || []).length && s.params.q != null && field) {
+          api("/v1/correct", { body: { table: t.table, field, text: q }, signal: mine.signal }).then((c) => {
+            if (c?.changed && c.text && last?.q === q && inp.value.trim() === q) clear(out, noRows(c.text));
+          }).catch(() => {});
+        }
       } catch (e) { if (e.name !== "AbortError") clear(out, h("div", { class: "error" }, e.message)); }
       finally { if (mine === running) { out.classList.remove("loading"); running = null; } }
     }
@@ -321,6 +331,12 @@ function render(page, r) {
         h("details", { class: "card-ish" }, h("summary", {}, "The query"), sqlBlock(s.sql), h("div", { class: "small muted", style: { marginTop: "6px" } }, Object.keys(s.params).length ? `Parameters: ${JSON.stringify(s.params)}` : "")),
         h("details", { class: "card-ish" }, h("summary", {}, "Use this search from code"), useFromCode({ sql: s.sql, params: s.params })));
     }
+    /** No rows, with the words the field holds if `fix`, else what to try. */
+    function noRows(fix) {
+      return empty("search", "No rows", fix
+        ? h("span", {}, "Did you mean ", h("button", { class: "btn sm", onclick: () => { inp.value = fix; go(); } }, fix), "?")
+        : "Other words, fewer of them, or search by meaning. Typos are forgiven, one in a short word and two in a long one; word~2 allows two in any word.");
+    }
     inp.oninput = debounce(go, 250);
     inp.onkeydown = (e) => { if (e.key === "Enter") go(); };
     pane.append(h("section", { class: "card" }, h("div", { class: "bd stack", style: { gap: "10px" } }, h("div", { class: "row nw search-row", style: { gap: "8px" } }, icon("search"), inp, modeBox), fieldsBox)), meaningBox, out, tail);
@@ -333,7 +349,7 @@ function render(page, r) {
   /** The answer of a search as a list: a title, the text with the words marked, the other fields. */
   function results(t, j, q, shown) {
     const rows = j.rows || [], cols = j.columns || [];
-    if (!rows.length) return empty("search", "No rows", "Other words, fewer of them, or search by meaning.");
+    if (!rows.length) return empty("search", "No rows", "Other words, fewer of them, or search by meaning. Typos are forgiven, one in a short word and two in a long one; word~2 allows two in any word.");
     const words = q.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
     const start = words.length ? `(?<![\\p{L}\\p{N}])(${words.join("|")})` : null;
     const ti = shown.title ? cols.indexOf(shown.title) : -1;

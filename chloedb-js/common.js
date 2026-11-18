@@ -178,12 +178,13 @@ export function decode(text) {
 
 /** A query's answer: `columns`, `rows` (arrays of values in column order),
  * each row's primary key in `keys` and the score it was ranked by in
- * `scores`, and what the engine did in `stats`.
+ * `scores`, and what the engine did in `stats`; a page of a cursor's, its
+ * `cursor` while rows are left.
  *
  * Iterating gives each row as an object of column to value; `at(i)` is row
  * `i` as one, and `length` the number of rows. */
 export class Result {
-  constructor({ columns = [], rows = [], keys = [], scores = [], stats = {}, took_ms, request, teams } = {}) {
+  constructor({ columns = [], rows = [], keys = [], scores = [], stats = {}, took_ms, request, teams, cursor } = {}) {
     this.columns = columns;
     this.rows = rows;
     this.keys = keys ?? [];
@@ -195,6 +196,10 @@ export class Result {
     this.request = request;
     /** An interleaved query's: per row, the ranking that placed it. */
     this.teams = teams;
+    /** A page of a cursor's (`pageSize`): the cursor of the next page, for
+     * `next(cursor)`, or null after the last one (and for a query without
+     * `pageSize`). */
+    this.cursor = cursor ?? null;
   }
 
   get length() {
@@ -249,7 +254,9 @@ export class Result {
   }
 
   toJSON() {
-    return { columns: this.columns, rows: this.rows, keys: this.keys, scores: this.scores, stats: this.stats };
+    const out = { columns: this.columns, rows: this.rows, keys: this.keys, scores: this.scores, stats: this.stats };
+    if (this.cursor != null) out.cursor = this.cursor;
+    return out;
   }
 }
 
@@ -292,10 +299,95 @@ function time(t) {
   return t instanceof Date ? t.toISOString() : t;
 }
 
-/** `search` and the rank log, shared by `Database` and `Client`, which give
- * `schema()`, `tables()`, `_embedded()` (the embedded vector fields whose
- * model is open), `query`, `_queryLogged` and `_exportRankLog`. */
+/** The TEXT field `highlight` and `correct` read when they are given
+ * none: the table's one indexed TEXT field. */
+function textField(s, what) {
+  const texts = s.fields.filter((f) => f.type === "text" && (f.indexed ?? true)).map((f) => f.name);
+  if (texts.length === 1) return texts[0];
+  if (!texts.length) throw new ChloeDBError(`${s.table} has no indexed text field to ${what}`);
+  throw new ChloeDBError(`${what}(): name the field, { field }: ${s.table} has text fields ${texts.join(", ")}`);
+}
+
+/** An answer's keys in JavaScript's words: `to_word` as `toWord`. */
+function camel(o) {
+  return Object.fromEntries(Object.entries(o).map(([k, v]) => [k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()), v]));
+}
+
+/** `search`, highlighting, "did you mean", cursors and the rank log,
+ * shared by `Database` and `Client`, which give `schema()`, `tables()`,
+ * `_embedded()` (the embedded vector fields whose model is open), `query`,
+ * `next`, `closeCursor`, `sql`, `_highlight`, `_correct`, `_queryLogged`
+ * and `_exportRankLog`. */
 export class Searchable {
+  /**
+   * `texts` (one text, or a list of them: a page's hits' names, say) with
+   * the words `query` matches marked, as a search of TEXT field `field`
+   * reads it: by the field's analyzer and the synonyms (stems, synonyms,
+   * typos, prefixes such as `so*` and phrases), each cut to the stretch of
+   * about `size` characters with the most matches (160; 0: the whole
+   * text), HTML-escaped between `<mark>` tags, or between `pre` and
+   * `post` as given (escaped only with `html: true`). `field` may be left
+   * out when the table has one indexed TEXT field. At most 10,000 texts a
+   * call; a null text is "".
+   */
+  async highlight(query, texts, { field, table, size, pre, post, html } = {}) {
+    const one = typeof texts === "string";
+    const list = one ? [texts] : [...texts].map((t) => (t == null ? "" : String(t)));
+    const s = await this.schema(table);
+    const out = await this._highlight(given({ table: s.table, field: field ?? textField(s, "highlight"), query, texts: list, size, pre, post, html }));
+    return one ? out[0] : out;
+  }
+
+  /**
+   * "Did you mean": `text` with its words that no row of TEXT field
+   * `field` holds, and that look like typos of the field's terms,
+   * replaced by the words they most likely meant. Answers `{text,
+   * changed, words}`, each word `{word, term, to, toWord, edits,
+   * chance}`: as written, its analysed term, the term it was taken for,
+   * the word shown, the edits between, and the chance it was meant.
+   * `field` may be left out when the table has one indexed TEXT field.
+   */
+  async correct(text, { field, table } = {}) {
+    const s = await this.schema(table);
+    const a = await this._correct({ table: s.table, field: field ?? textField(s, "correct"), text });
+    return { ...a, words: (a.words ?? []).map(camel) };
+  }
+
+  /**
+   * Runs a SELECT and yields its answer a page at a time: `Result`s of at
+   * most `pageSize` rows (10,000 by default, the most a page holds), all
+   * read from the version of the database the first page read, past the
+   * window that caps one answer. Leaving the loop early closes the
+   * cursor. The other options are `query`'s.
+   *
+   *     for await (const page of db.scroll("SELECT id FROM products")) send(page.objects());
+   */
+  async *scroll(sql, params, { pageSize = 10_000, keepAliveMs, ...options } = {}) {
+    const { minSeqNo, minSeqNos, ...each } = options;
+    let page = await this.query(sql, params, { ...options, pageSize, keepAliveMs });
+    let cursor = page.cursor;
+    try {
+      yield page;
+      while (cursor) {
+        page = await this.next(cursor, { keepAliveMs, ...each });
+        cursor = page.cursor;
+        if (page.length) yield page;
+      }
+    } finally {
+      if (cursor) await this.closeCursor(cursor).catch(() => false);
+    }
+  }
+
+  /** Runs an INSERT, UPDATE or DELETE (or a statement that makes or
+   * changes a table): the number of rows it wrote, a number, as `sql`
+   * answers it. A SELECT is refused, after it ran: `query` runs one.
+   * The options are `sql`'s. */
+  async execute(sql, params, options) {
+    const r = await (options === undefined ? this.sql(sql, params) : this.sql(sql, params, options));
+    if (typeof r !== "number") throw new TypeError("execute() answers the rows a write wrote: a SELECT answers rows, through query() or sql()");
+    return r;
+  }
+
   /**
    * Runs a SELECT ranked by an ORDER BY and logs what it served to a log
    * table, for training on later: one row per row answered, with its

@@ -61,8 +61,15 @@ pub struct Filter {
     /// Only this session.
     pub session: Option<String>,
     /// Only records that quote no third party ([`Record::third_party`],
-    /// audit CTX-32): what recall puts into a prompt by itself.
+    /// audit CTX-32) and are no [`crate::record::ASIDE`]: what recall puts
+    /// into a prompt by itself.
     pub first_party: bool,
+    /// With `exclude_window`: the window's notes (decisions, rules, facts,
+    /// tasks, notes the distiller or the memory tool wrote during it) are
+    /// still results. The memory tools ask for them: the window holds the
+    /// exchanges, not the notes written from them, and an agent that does
+    /// not see them says they were never stored (ANA-210).
+    pub window_notes: bool,
 }
 
 impl Filter {
@@ -82,7 +89,11 @@ impl Filter {
     pub fn conds(&self) -> Vec<String> {
         let mut parts = Vec::new();
         if let Some((_, w)) = &self.exclude_window {
-            parts.push(format!("NOT (session = :window_session AND seq >= {w})"));
+            parts.push(if self.window_notes {
+                format!("NOT (session = :window_session AND seq >= {w} AND kind NOT IN ('decision', 'preference', 'fact', 'todo', 'note'))")
+            } else {
+                format!("NOT (session = :window_session AND seq >= {w})")
+            });
         }
         if !self.kinds.is_empty() {
             let ks: Vec<String> = self.kinds.iter().map(|k| format!("'{}'", k.as_str())).collect();
@@ -103,6 +114,7 @@ impl Filter {
         }
         if self.first_party {
             parts.push(crate::record::FIRST_PARTY.into());
+            parts.push(crate::record::NOT_ASIDE.into());
         }
         // An instruction given for one task ([`crate::record::TASK_TAG`])
         // is that session's only: never a rule another session is given.

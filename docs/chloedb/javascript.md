@@ -26,7 +26,7 @@ If importing `chloedb` throws an error that calls it a placeholder, npm installe
 Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) also has a tarball per platform with the addon built in, for a machine that cannot reach npm's registry. Install the tarball for your platform, or its URL:
 
 ```sh
-npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.7/chloedb-0.3.7-darwin-arm64.tgz
+npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.8/chloedb-0.3.8-darwin-arm64.tgz
 ```
 
 The workflow [`js-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml) builds both on a `chloedb-js-v<version>` tag, the way napi-rs packages are laid out (`chloedb` names each platform's package as an optional dependency, of which npm installs the one of your machine), and installs each into an empty app and runs it there before attaching the tarballs to the release and publishing the packages to npm (the workflow's header says what publishing needs). `node scripts/pack.mjs <platform>` packs a tarball by hand, and `--npm <platform>` and `--npm-main` the packages npm gets.
@@ -79,8 +79,12 @@ Every call answers a promise and runs on a worker thread of Node's pool, so quer
 
 | call | what |
 |---|---|
-| `db.query(sql, params, {timeoutMs, memory, signal})` | a SELECT: a `Result` ([limits](#limits-memory-deadlines-aborting)) |
-| `db.sql(sql, params, {timeoutMs, memory, signal})` | any statement: a SELECT's `Result`, or the rows an INSERT, UPDATE or DELETE wrote; `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE` too |
+| `db.query<T>(sql, params, {timeoutMs, memory, signal, pageSize, keepAliveMs})` | a SELECT: a `Result` ([limits](#limits-memory-deadlines-aborting)); with `pageSize`, its first page and a `cursor` ([past the window](#reading-past-the-window-cursors)) |
+| `db.sql<T>(sql, params, {timeoutMs, memory, signal})` | any statement: a SELECT's `Result`, or the rows an INSERT, UPDATE or DELETE wrote; `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE` too |
+| `db.execute(sql, params)` | an INSERT, UPDATE or DELETE (or a `CREATE`, `ALTER` or `DROP`): the rows it wrote, a number; a SELECT is refused (`TypeError`) |
+| `db.next<T>(cursor, {keepAliveMs})`, `db.closeCursor(cursor)`, `db.scroll<T>(sql, params, {pageSize})` | a cursor's next page (its `cursor` null after the last), a cursor ended (true if it was open), and every page of a SELECT as an async iterator |
+| `db.highlight(query, texts, {field, size, pre, post, html})` | `texts` (one, or a list) with the words `query` matches marked, as TEXT field `field` reads them (stems, synonyms, typos, `so*`), cut to about `size` characters (160; 0: whole), HTML-escaped around `<mark>` tags |
+| `db.correct(text, {field})` | "did you mean": `{text, changed, words}`, the words no row holds and that look like typos replaced by those meant, each word `{word, term, to, toWord, edits, chance}` ([did you mean](query-language.md#did-you-mean-correcting-a-querys-words)) |
 | `db.search(text, {limit, where, columns, mode, textFields, vectorField, params, table})` | the rows that best match a text: BM25 over the text fields (`mode: "text"`), the similarity of an embedded vector field (`"vector"`), or both fused by reciprocal rank (`"hybrid"`, what `"auto"` picks when a model is open) |
 | `db.plan(sql, params)`, `db.run(plan)` | a statement's [plan](query-language.md) as JSON, without running it; running a plan |
 | `db.embed(text, {field, image, audio})`, `db.embedTokens(text, field)` | a query vector by an embedded field's model (of an image's or a sound's bytes too), a multi-vector field's token vectors |
@@ -89,7 +93,29 @@ Every call answers a promise and runs on a worker thread of Node's pool, so quer
 
 Parameters are `:name` in the SQL and an object of values: numbers, strings, booleans, null, `Date`s, arrays (an array of numbers or a `Float32Array` is a vector), an object of numbers (sparse term weights), `{embed: "some text"}` (the text's vector by an embedded field's model) or `{vector_of: key}` (a stored row's vector).
 
-A `Result` has `columns`, `rows` (arrays in column order), `keys` (each row's primary key), `scores` (what it was ranked by) and `stats` (what the engine did). Iterating it gives each row as an object; `r.at(i)`, `r.objects()`, `r.column(name)` and `r.scalar()` (a count, a sum) read it other ways.
+A `Result` has `columns`, `rows` (arrays in column order), `keys` (each row's primary key), `scores` (what it was ranked by), `stats` (what the engine did) and, a page of a cursor's, `cursor`. Iterating it gives each row as an object; `r.at(i)`, `r.objects()`, `r.column(name)` and `r.scalar()` (a count, a sum) read it other ways.
+
+`field` may be left out of `highlight` and `correct` when the table has one indexed TEXT field. Both are chloedb-server's routes (`POST /v1/highlight` and `POST /v1/correct`) on a `Client`, and the same answers from the database in the process, so a search page's code runs on either.
+
+### Reading past the window: cursors
+
+A query answers at most 10,000 rows, counted to the end of its `OFFSET`, as chloedb-server's does (`--max-result-window`): `LIMIT 10 OFFSET 10000` is refused with a `BadRequestError` that says how to read on, and so is a query without `LIMIT` that matches more. (**changed:** a `Database` had no window before, and the same query worked in the process and failed on a server.) `{ maxResultWindow: 0 }` when it opens, or `db.setLimits({ maxResultWindow: 0 })`, lifts it for that database, as `--max-result-window 0` does for a server; another number moves it.
+
+Every row of a query, past the window, comes a page at a time from a cursor. `pageSize` on `query` answers the first page and its `cursor`; `next(cursor)` answers the next one, until a page whose `cursor` is null. Every page reads the version of the database the first one read, so rows written or deleted meanwhile neither appear nor go missing, and a page holds at most the window's rows:
+
+```js
+let page = await db.query("SELECT id, name FROM products ORDER BY price", null, { pageSize: 1000 });
+for (;;) {
+  send(page.objects());
+  if (!page.cursor) break;
+  page = await db.next(page.cursor);
+}
+
+// The same, closing the cursor when the loop is left early:
+for await (const page of db.scroll("SELECT id, name FROM products ORDER BY price", null, { pageSize: 1000 })) send(page.objects());
+```
+
+A cursor not read for `keepAliveMs` (60 seconds, at most an hour) is gone, and `next` rejects with `NotFoundError`; `closeCursor(cursor)` ends one sooner. A plain scan of one table (no `ORDER BY`, groups or counts) reads its pages as they are asked for; any other query runs whole when the cursor starts and holds what it answered (an ordered one, its rows' places and scores; a join or groups, the rows), up to a million rows, the most the cursors of one database hold at once, as a server's `--max-scroll-rows`. On a `Client` the cursor is the server's [scroll](server.md#reading-past-the-window-scrolls), with the same options.
 
 ### Limits: memory, deadlines, aborting
 
@@ -101,8 +127,8 @@ A query has no deadline unless it is given one. `db.query`, `db.sql`, `db.run` a
 const db = await open("books.chloedb", { timeoutMs: 5000, memory: 512 * 2 ** 20 });  // 5 s, and 512 MiB its queries share
 await db.query("SELECT genres, COUNT(*) FROM books GROUP BY genres", null, { timeoutMs: 200 });
 await db.query("SELECT * FROM books", null, { memory: 0, signal: AbortSignal.timeout(1000) });
-db.setLimits({});                 // back to the defaults: no deadline, the process's budget
-db.timeoutMs, db.memory;          // the limits now (null: none)
+db.setLimits({});                 // back to the defaults: no deadline, the process's budget, 10,000 rows
+db.timeoutMs, db.memory, db.maxResultWindow;   // the limits now (null: none)
 ```
 
 A query checks its deadline and its signal between segments and every 1,024 rows it groups, orders, walks or joins, so it stops within milliseconds; it holds a thread of libuv's pool (`UV_THREADPOOL_SIZE`, 4 by default, which `fs` and `dns` share) until then. A write is not cut short: `sql`'s limits apply to a SELECT.
@@ -160,7 +186,7 @@ await client.upsert([{ id: "b2", title: "A second book", year: 2001 }]);
 const r = await client.search("book", { limit: 5 });
 ```
 
-`Client` has the methods of `Database` that a server offers, over its [HTTP API](server.md#http-api), and more of the server's own: `health()`, `stats()`, `explain(sql)`, `put(key, row, {ifSeqNo})`, `stream(events)` (an iterable or async iterable of [stream events](server.md#streams), applied once), `source(name)` and `sources()`, `ask(question)` (the server's agent), and the file calls, which upload a path's bytes (Node, Bun, Deno) or bytes given (a `Uint8Array`, a `Blob`). `exportSqlite(null)` and `exportParquet(null)` give the file's bytes instead of writing it. Rows are written 1,000 a request, keys read 10,000 a request. An error the server answers rejects with a `ChloeDBError` whose `status` is the HTTP status and `answer` its JSON; one where the server cannot be reached rejects with `fetch`'s error. `count()` reads the server's `/v1/health`, whose `docs` counts its first table: on a server started without a schema, whose tables were made since by `CREATE TABLE`, that is an empty placeholder table, and `count()` answers 0; `(await client.query("SELECT COUNT(*) FROM products")).scalar()` counts a table on any server. Highlighting (`POST /v1/highlight`), "did you mean" (`POST /v1/correct`) and scrolls have no method: call them with `fetch` ([a route over HTTP](#a-route-over-http)). `timeout` (milliseconds, 30 seconds by default) bounds each request, and `fetch` takes another fetch. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retryFor` milliseconds (10 seconds; 0 sends each request once), and rejects with the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
+`Client` has the methods of `Database` that a server offers, over its [HTTP API](server.md#http-api), and more of the server's own: `health()`, `stats()`, `explain(sql)`, `put(key, row, {ifSeqNo})`, `stream(events)` (an iterable or async iterable of [stream events](server.md#streams), applied once), `source(name)` and `sources()`, `ask(question)` (the server's agent), and the file calls, which upload a path's bytes (Node, Bun, Deno) or bytes given (a `Uint8Array`, a `Blob`). `exportSqlite(null)` and `exportParquet(null)` give the file's bytes instead of writing it. Rows are written 1,000 a request, keys read 10,000 a request. An error the server answers rejects with a `ChloeDBError` whose `status` is the HTTP status and `answer` its JSON; one where the server cannot be reached rejects with `fetch`'s error. `count()` reads the server's `/v1/health`, whose `docs` counts its first table: on a server started without a schema, whose tables were made since by `CREATE TABLE`, that is an empty placeholder table, and `count()` answers 0; `(await client.query("SELECT COUNT(*) FROM products")).scalar()` counts a table on any server. `highlight`, `correct` and cursors (`pageSize`, `next`, `closeCursor`, `scroll`) are the server's `POST /v1/highlight`, `POST /v1/correct` and [scrolls](server.md#reading-past-the-window-scrolls). `timeout` (milliseconds, 30 seconds by default) bounds each request, and `fetch` takes another fetch. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retryFor` milliseconds (10 seconds; 0 sends each request once), and rejects with the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
 
 `write(ops, {idempotencyKey})` and `sql(sql, params, {idempotencyKey})` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator rejects with a `ChloeDBError` whose `answer` says so (`partial: true`) and names its key: `await client.write(ops, { idempotencyKey: e.answer.idempotency_key })` writes the rest.
 
@@ -221,43 +247,30 @@ export function hitsSql(whole: string) {
 export const BRANDS_SQL = `SELECT brand, COUNT(*) AS n FROM products WHERE ${WHERE} GROUP BY brand ORDER BY n DESC LIMIT 10`;
 ```
 
-Typed `lether so`, the hits are filtered by `MATCH(name, 'lether so*', fuzzy => 'auto')` and ranked by `bm25(name, 'lether', fuzzy => 'auto')`; typed `so`, they are filtered by `MATCH(name, 'so*', fuzzy => 'auto')` and ranked by rating.
+Typed `lether so`, the hits are filtered by `MATCH(name, 'lether so*', fuzzy => 'auto')` and ranked by `bm25(name, 'lether', fuzzy => 'auto')`; typed `so`, they are filtered by `MATCH(name, 'so*', fuzzy => 'auto')` and ranked by rating. Each letter of the last word keeps its rows, also once it is a whole word the analyzer stems: a prefix stands for the stems of the words it may be the start of too, so `headphone*`, `battery*` and `runni*` find *headphones*, *batteries* and *running*, which the index keeps as `headphon`, `batteri` and `run` ([full text](query-language.md#full-text-match)). **Changed:** against a server or package of 0.3.8 or earlier they find nothing, though `headphon*` and `batter*` do, so the hits come and go as a word is typed; and a typo whose stem the analyzer cuts differently (`choclate`, stemmed `choclat`, against `chocol`) is not forgiven.
 
 ### A route over HTTP
 
-A Next.js route handler (the App Router's `app/api/search/route.ts`) answers the hits, a facet of their brands and, from two routes of chloedb-server that the client has no method for, each hit's name with the words that matched marked ([`POST /v1/highlight`](server.md#http-api)) and a "did you mean" ([`POST /v1/correct`](query-language.md#did-you-mean-correcting-a-querys-words)). It needs nothing but `fetch`, so it runs on Node and on the Edge runtime alike:
+A Next.js route handler (the App Router's `app/api/search/route.ts`) answers the hits, a facet of their brands, each hit's name with the words that matched marked (`highlight`, the server's [`POST /v1/highlight`](server.md#http-api)) and a "did you mean" (`correct`, [`POST /v1/correct`](query-language.md#did-you-mean-correcting-a-querys-words)). The client needs nothing but `fetch`, so it runs on Node and on the Edge runtime alike:
 
 ```ts
 // app/api/search/route.ts: the search box's answers, from chloedb-server
-import { connect, type Result } from "chloedb/client";
+import { connect } from "chloedb/client";
 import { BRANDS_SQL, hitsSql, words, type Hit } from "../../../lib/search";
 
-const SERVER = process.env.CHLOEDB_URL ?? "http://127.0.0.1:7700";
-const TOKEN = process.env.CHLOEDB_TOKEN;
-const chloedb = connect(SERVER, { token: TOKEN });
-
-/** A route of chloedb-server that the client has no method for. */
-async function post(path: string, body: object) {
-  const r = await fetch(SERVER + path, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...(TOKEN ? { authorization: `Bearer ${TOKEN}` } : {}) },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`${path}: ${r.status} ${await r.text()}`);
-  return r.json();
-}
+const chloedb = connect(process.env.CHLOEDB_URL ?? "http://127.0.0.1:7700", { token: process.env.CHLOEDB_TOKEN });
 
 export async function GET(request: Request) {
   const { text, match, whole } = words(new URL(request.url).searchParams.get("q") ?? "");
   if (!text) return Response.json({ hits: [], brands: [], didYouMean: null });
   const [hits, brands, corrected] = await Promise.all([
-    chloedb.query(hitsSql(whole), { match, whole }) as Promise<Result<Hit>>,
+    chloedb.query<Hit>(hitsSql(whole), { match, whole }),
     chloedb.query(BRANDS_SQL, { match }),
-    post("/v1/correct", { table: "products", field: "name", text }),
+    chloedb.correct(text, { field: "name" }),
   ]);
-  const marked = await post("/v1/highlight", { table: "products", field: "name", query: match, texts: hits.column("name") });
+  const marked = await chloedb.highlight(match, hits.column("name"), { field: "name" });
   return Response.json({
-    hits: hits.objects().map((hit, i) => ({ ...hit, marked: marked.texts[i] })),
+    hits: hits.objects().map((hit, i) => ({ ...hit, marked: marked[i] })),
     brands: brands.objects(),
     didYouMean: corrected.changed ? corrected.text : null,
   });
@@ -272,11 +285,11 @@ export async function GET(request: Request) {
  "didYouMean": "leather so"}
 ```
 
-`marked` is HTML-escaped around its `<mark>` tags, so the page can set it as HTML (React's `dangerouslySetInnerHTML`); every other value is plain text, for the page to escape as usual. `/v1/correct` changes a word only when no row holds it and a neighbour one edit away is in 5 rows or more, so a small table gets few corrections. A deep page of hits comes from a [scroll](server.md#reading-past-the-window-scrolls) (`page_size` and a `cursor` on `POST /v1/query`), which has no client method either.
+`marked` is HTML-escaped around its `<mark>` tags, so the page can set it as HTML (React's `dangerouslySetInnerHTML`); every other value is plain text, for the page to escape as usual. `correct` changes a word only when no row holds it and a neighbour one edit away is in 5 rows or more, so a small table gets few corrections. A deep page of hits comes from a [cursor](#reading-past-the-window-cursors) (`pageSize`, then `next(cursor)`), as `OFFSET` past 10,000 rows is refused.
 
 ### The same in the process
 
-With the database in the app's process, there is no server to run, and no highlighting or "did you mean": those are chloedb-server's routes, and a `Database` has neither. Open the file once and share the `Database`:
+With the database in the app's process, there is no server to run, and the route is the same: a `Database` has `highlight` and `correct` too, and answers them as the server does. Open the file once and share the `Database`:
 
 ```ts
 // lib/chloedb.ts: the one Database of the process
@@ -293,19 +306,24 @@ export function db(): Promise<Database> {
 
 ```ts
 // app/api/search/route.ts, with the database in the process
-import type { Result } from "chloedb";
 import { db } from "../../../lib/chloedb";
 import { BRANDS_SQL, hitsSql, words, type Hit } from "../../../lib/search";
 
 export async function GET(request: Request) {
   const { text, match, whole } = words(new URL(request.url).searchParams.get("q") ?? "");
-  if (!text) return Response.json({ hits: [], brands: [] });
+  if (!text) return Response.json({ hits: [], brands: [], didYouMean: null });
   const products = await db();
-  const [hits, brands] = await Promise.all([
-    products.query(hitsSql(whole), { match, whole }) as Promise<Result<Hit>>,
+  const [hits, brands, corrected] = await Promise.all([
+    products.query<Hit>(hitsSql(whole), { match, whole }),
     products.query(BRANDS_SQL, { match }),
+    products.correct(text, { field: "name" }),
   ]);
-  return Response.json({ hits: hits.objects(), brands: brands.objects() });
+  const marked = await products.highlight(match, hits.column("name"), { field: "name" });
+  return Response.json({
+    hits: hits.objects().map((hit, i) => ({ ...hit, marked: marked[i] })),
+    brands: brands.objects(),
+    didYouMean: corrected.changed ? corrected.text : null,
+  });
 }
 ```
 
@@ -324,9 +342,9 @@ The route runs on Node, Next.js's default for route handlers: on the Edge runtim
 
 ### TypeScript
 
-`query()` answers a `Result` whose rows are `Record<string, Value>`. A row type of your own is a cast, `as Result<Hit>` (or `as Promise<Result<Hit>>`), which nothing checks against the query's columns. Declare the row with `type`, not `interface`: TypeScript does not take an interface for a `Record<string, Value>` ("Index signature for type 'string' is missing").
+`query()` answers a `Result` whose rows are `Record<string, Value>`; `query<Hit>()` (and `sql<Hit>()`, `next<Hit>()`, `scroll<Hit>()`, `get<Hit>()`, `getMany<Hit>()`) types its rows as `Hit`, a `type` or an `interface`. Nothing checks the type against the query's columns: it says what the query answers. `sql()` answers `Result | number`, a SELECT's rows or the rows a write wrote; `execute()` answers a number. A schema's field types are checked (`type: "keywrd"` is an error).
 
-The declarations use `Symbol.asyncDispose`, from TypeScript's `esnext.disposable` library. TypeScript 7 includes no `@types` package that `types` does not name, so with `skipLibCheck` off and a `target` older than `ESNext`, `tsc` stops with "Property 'asyncDispose' does not exist on type 'SymbolConstructor'". Name Node's types (`"types": ["node"]`, with `@types/node` installed), or, for code that runs in a page or a worker, give the library: `"lib": ["ES2022", "DOM", "ESNext.Disposable"]`. The `tsconfig.json` that Next.js writes has `skipLibCheck` on and `esnext` in `lib`.
+The declarations type-check as they are, with `skipLibCheck` off, any `target` from ES2020 and no Node types: they name TypeScript's `esnext.disposable` library themselves, for `Symbol.asyncDispose` (`await using db = await open(...)`), so code for a page or a worker needs neither `"types": ["node"]` nor `"lib": [..., "ESNext.Disposable"]`. (**changed:** before, with TypeScript 7, which includes no `@types` package that `types` does not name, `tsc` stopped with "Property 'asyncDispose' does not exist on type 'SymbolConstructor'", a row type was a cast, `as Result<Hit>`, and an `interface` was refused for one.)
 
 ## Search on the device
 
@@ -349,14 +367,11 @@ Bun loads the addon as Node does: `bun run app.js`. Deno loads it through its No
 
 ### Your app's tests
 
-A test opens a database of its own in a directory of its own, and removes the directory after. A database is the file and two entries beside it, `<name>-wal` and the directory `<name>-readers`, and there is no database in memory only: `open(":memory:")` makes the three in the working directory, named `:memory:`.
+A test opens a database of its own. `open(":memory:", { schema })` (or `Database.create(":memory:", schema)`) is a new, empty one each time, in a directory of its own under the system's temporary directory that `close()` removes (and the process's exit, for one left open); `open(":memory:")` without a schema, or `Database.open(":memory:")`, is refused, as there is nothing to open. (**changed:** `open(":memory:")` made a file named `:memory:` in the working directory before, which the next run opened again.)
 
 ```js
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { open } from "chloedb";
 
 const SCHEMA = {
@@ -368,8 +383,7 @@ const SCHEMA = {
 };
 
 test("a word being typed finds the sofa", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "shop-"));
-  const db = await open(join(dir, "products.chloedb"), { schema: SCHEMA });
+  const db = await open(":memory:", { schema: SCHEMA });
   try {
     await db.upsert([
       { id: "p1", name: "Leather sofa", rating: 4.1, in_stock: true },
@@ -382,10 +396,11 @@ test("a word being typed finds the sofa", async () => {
     assert.deepEqual(r.column("id"), ["p1"]);
   } finally {
     await db.close();
-    await rm(dir, { recursive: true, force: true });
   }
 });
 ```
+
+A test of a file opens it in a directory of its own (`mkdtemp`) and removes the directory after: a database in a file is the file and two entries beside it, `<name>-wal` and the directory `<name>-readers`.
 
 A test against chloedb-server starts a server of its own, on other ports than the app's server: `--listen` moves only the HTTP port, and a second server left on gRPC's 7701 stops with "the address is in use", so give it `--grpc` another port too, or `--grpc off`:
 
@@ -401,4 +416,4 @@ npm run build -- --profile ci             # optimised, built faster than release
 npm test                                  # node --test
 ```
 
-The client's tests start `chloedb-server/target/release/chloedb-server` (or `$CHLOEDB_SERVER`) and are skipped when it is not built.
+The client's tests start `chloedb-server/target/release/chloedb-server` (or `$CHLOEDB_SERVER`) and are skipped when it is not built. `test/types.test.mjs` type-checks `test/types/example.ts`, a typed app, with TypeScript 7.0.2 (by `npx`, or `$CHLOEDB_TSC`) and no Node types, and is skipped only when `npx` cannot fetch it.

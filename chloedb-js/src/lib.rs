@@ -14,10 +14,11 @@
 //! and writes leave the event loop free and run at once from many callers;
 //! [`NativeDatabase::call_sync`] runs one on the calling thread.
 
+use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use napi::bindgen_prelude::{AsyncTask, Float32Array};
 use napi::{Env, Task};
@@ -25,7 +26,7 @@ use napi_derive::napi;
 use serde_json::{json, Map, Value as Json};
 use chloedb::db::{Db, SqlResult, WriteOp};
 use chloedb::ingest::{self, Format};
-use chloedb::query::exec::{ExecOptions, Interrupts, ResultSet};
+use chloedb::query::exec::{ExecOptions, Interrupts, ResultSet, Scroll};
 use chloedb::query::memory::{self as qmemory, MemoryBudget};
 use chloedb::query::ir::Plan;
 use chloedb::query::sql::{ident, quoted};
@@ -35,7 +36,7 @@ use chloedb::schema::Schema;
 use chloedb::segment::build::BuildOptions;
 use chloedb::sid::{Codebook, TrainOptions};
 use chloedb::sqlite;
-use chloedb::storage::{DbOptions, Layout, MergerOptions};
+use chloedb::storage::{DbOptions, Layout, MergerOptions, Snapshot};
 use chloedb::{Error, FieldType, Result, Value};
 
 /// Rows a write transaction of an upsert carries (as `chloedb-server
@@ -668,22 +669,222 @@ fn train_options(a: &Args) -> Result<TrainOptions> {
     })
 }
 
+// ---------------------------------------------------------------- cursors
+
+/// A query's answer read a page at a time from one version of the
+/// database (`query(sql, params, { pageSize })`, then `next(cursor)`), as
+/// chloedb-server's scrolls read one ([`Db::scroll_sql`]): its cursor is
+/// kept here, with the snapshot its pages read, until its last page, until
+/// it is closed, or until no page is asked for over its keep-alive.
+struct Open {
+    /// `None` while a page is read.
+    scroll: Option<Scroll>,
+    snap: Snapshot,
+    page: usize,
+    keep_alive: Duration,
+    until: Instant,
+    held: usize,
+}
+
+/// A database's open cursors.
+#[derive(Default)]
+struct Cursors(Mutex<HashMap<String, Open>>);
+
+fn no_cursor() -> Error {
+    Error::Query("no such cursor: it was read to its last page, closed, or not read for its keep-alive (keepAliveMs)".into())
+}
+
+/// A keep-alive asked for in milliseconds (none: [`KEEP_ALIVE`]), an hour
+/// at most.
+fn keep_alive(ms: Option<u64>) -> Result<Duration> {
+    match ms {
+        None => Ok(KEEP_ALIVE),
+        Some(0) => Err(bad("keepAliveMs: at least 1")),
+        Some(ms) => Ok(Duration::from_millis(ms).min(MAX_KEEP_ALIVE)),
+    }
+}
+
+impl Cursors {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Open>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Drops the cursors whose keep-alive passed (those whose page is
+    /// being read stay).
+    fn sweep(open: &mut HashMap<String, Open>, now: Instant) {
+        open.retain(|_, c| c.scroll.is_none() || c.until > now);
+    }
+
+    /// Keeps what is left of a scroll, and returns its cursor: `None` when
+    /// no rows are left. Refused when the open cursors would hold more
+    /// than [`MAX_SCROLL_ROWS`] rows between them.
+    fn keep(&self, scroll: Scroll, snap: Snapshot, page: usize, keep_alive: Duration) -> Result<Option<String>> {
+        if scroll.done() {
+            return Ok(None);
+        }
+        let held = scroll.held();
+        let mut open = self.lock();
+        let now = Instant::now();
+        Self::sweep(&mut open, now);
+        let holding: usize = open.values().map(|c| c.held).sum();
+        if holding.saturating_add(held) > MAX_SCROLL_ROWS {
+            return Err(Error::Query(format!(
+                "the open cursors hold {holding} rows of the {MAX_SCROLL_ROWS} they may hold together, and this one would hold {held}: close some (closeCursor), or read them to their last page"
+            )));
+        }
+        let id = format!("{:016x}{:016x}", rand_u64(), rand_u64());
+        open.insert(id.clone(), Open { scroll: Some(scroll), snap, page, keep_alive, until: now + keep_alive, held });
+        Ok(Some(id))
+    }
+
+    /// The scroll of cursor `id`, taken while its page is read, with its
+    /// snapshot and page size.
+    fn take(&self, id: &str, keep: Option<Duration>) -> Result<(Scroll, Snapshot, usize)> {
+        let mut open = self.lock();
+        let now = Instant::now();
+        Self::sweep(&mut open, now);
+        let c = open.get_mut(id).ok_or_else(no_cursor)?;
+        let scroll = c.scroll.take().ok_or_else(|| bad("this cursor's page is being read: ask for the next once it is answered"))?;
+        if let Some(k) = keep {
+            c.keep_alive = k;
+        }
+        Ok((scroll, c.snap.clone(), c.page))
+    }
+
+    /// Puts a scroll back after a page (`done`: its last, which ends it).
+    fn put_back(&self, id: &str, scroll: Scroll) {
+        let mut open = self.lock();
+        if scroll.done() {
+            open.remove(id);
+            return;
+        }
+        if let Some(c) = open.get_mut(id) {
+            c.held = scroll.held();
+            c.until = Instant::now() + c.keep_alive;
+            c.scroll = Some(scroll);
+        }
+    }
+
+    /// Ends cursor `id`: whether it was open.
+    fn close(&self, id: &str) -> bool {
+        self.lock().remove(id).is_some()
+    }
+
+    fn clear(&self) {
+        self.lock().clear();
+    }
+}
+
+/// A random number for a cursor's name, from the standard library's
+/// randomly keyed hasher (a new key each call) of a count and the time:
+/// names no other cursor of the process has had.
+fn rand_u64() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(N.fetch_add(1, Ordering::Relaxed));
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+    h.finish()
+}
+
+/// The first page of a scroll of a SELECT (`query` with `page_size`):
+/// the page, and its cursor while rows are left. A page holds at most the
+/// result window's rows, as chloedb-server's do.
+fn scroll_start(db: &Db, a: &Args, opts: &ExecOptions, cursors: &Cursors) -> Result<Json> {
+    let sql = a.need_str("sql")?;
+    let p = params(db, a.get("params"), sql)?;
+    let page = a.uint("page_size")?.filter(|&n| n > 0).ok_or_else(|| bad("pageSize is a whole number, at least 1"))? as usize;
+    let page = page.min(opts.max_rows.unwrap_or(usize::MAX)).max(1);
+    let keep = keep_alive(a.uint("keep_alive_ms")?)?;
+    let (rs, scroll, snap) = db.scroll_sql(sql, &p, opts, page, MAX_SCROLL_ROWS)?;
+    let mut out = result_json(&rs);
+    out["cursor"] = json!(cursors.keep(scroll, snap, page, keep)?);
+    Ok(out)
+}
+
+/// The next page of cursor `cursor`, with the cursor again while rows are
+/// left (null after the last). A page that fails leaves the cursor where
+/// it was.
+fn scroll_next(db: &Db, a: &Args, opts: &ExecOptions, cursors: &Cursors) -> Result<Json> {
+    let id = a.need_str("cursor")?;
+    let keep = a.uint("keep_alive_ms")?.map(|ms| keep_alive(Some(ms))).transpose()?;
+    let (mut scroll, snap, page) = cursors.take(id, keep)?;
+    let r = db.scroll_next(&snap, &mut scroll, opts, page);
+    let done = scroll.done();
+    cursors.put_back(id, scroll);
+    let mut out = result_json(&r?);
+    out["cursor"] = if done { Json::Null } else { json!(id) };
+    Ok(out)
+}
+
+/// The texts with what a search query of a TEXT field matches marked, each
+/// cut to its best stretch, as chloedb-server's `POST /v1/highlight` marks
+/// them ([`Db::highlight_marks`]): `{table?, field, query, texts, size?,
+/// pre?, post?, html?}`.
+fn highlight(db: &Db, a: &Args) -> Result<Json> {
+    use chloedb::text::highlight::{snippet, Tags};
+    let s = table_of(db, a.str("table")?)?;
+    let texts: Vec<String> = match a.get("texts") {
+        Some(Json::Array(xs)) => xs.iter().map(|t| t.as_str().unwrap_or("").to_string()).collect(),
+        _ => return Err(bad("texts: a list of the texts to highlight")),
+    };
+    if texts.len() > 10_000 {
+        return Err(bad("texts: at most 10,000 a call"));
+    }
+    let size = a.uint("size")?.unwrap_or(160).min(100_000) as usize;
+    let tags = match (a.str("pre")?, a.str("post")?) {
+        (None, None) => Tags::default(),
+        (pre, post) => Tags { pre: pre.unwrap_or("").to_string(), post: post.unwrap_or("").to_string(), html: a.bool("html", false)? },
+    };
+    let marks = db.highlight_marks(&s.table, a.need_str("field")?, a.need_str("query")?)?;
+    Ok(json!(texts.iter().map(|t| snippet(t, &marks, size, &tags)).collect::<Vec<_>>()))
+}
+
 // ---------------------------------------------------------------- limits
 
+/// The most rows a query answers at once unless the database says
+/// otherwise (`maxResultWindow`): chloedb-server's `--max-result-window`
+/// by default, so that a query refused there is refused here too, and a
+/// test of the database in the process meets the window the server's
+/// clients meet (DEV-205 of the persona study of 17 November 2026). A
+/// cursor (`pageSize`) reads past it, a page at a time.
+const WINDOW: usize = 10_000;
+
+/// The rows the open cursors of a database hold between them, as
+/// chloedb-server's `--max-scroll-rows`: an ordered query's rows' places,
+/// or the rows of a query of groups or of several tables.
+const MAX_SCROLL_ROWS: usize = 1_000_000;
+
+/// How long a cursor is kept after each page unless its call says
+/// (`keepAliveMs`): chloedb-server's lease of a snapshot.
+const KEEP_ALIVE: Duration = Duration::from_secs(60);
+
+/// The longest keep-alive a cursor may ask for, as on chloedb-server.
+const MAX_KEEP_ALIVE: Duration = Duration::from_secs(3600);
+
 /// A database's limits on its queries (`setLimits`): the deadline each
-/// gets, and the memory budget they share.
-#[derive(Clone, Default)]
+/// gets, the memory budget they share, and the most rows one answers.
+#[derive(Clone)]
 struct Limits {
     timeout: Option<Duration>,
     /// `None`: the database's own options', the process's budget
     /// ([`qmemory::process_budget`]); `Some(None)`: no budget.
     memory: Option<Option<Arc<MemoryBudget>>>,
+    /// The result window ([`ExecOptions::max_rows`]; `None`: none).
+    window: Option<usize>,
+}
+
+impl Default for Limits {
+    fn default() -> Limits {
+        Limits { timeout: None, memory: None, window: Some(WINDOW) }
+    }
 }
 
 /// The operations that run a query, and take `timeout_ms`, `memory` and
 /// `tag` (the AbortSignal's, for [`Interrupts::interrupt`]).
 fn limits_query(op: &str) -> bool {
-    matches!(op, "query" | "sql" | "run")
+    matches!(op, "query" | "sql" | "run" | "next")
 }
 
 /// The options a query runs with, made of the database's limits and its
@@ -692,6 +893,9 @@ struct Limited {
     opts: ExecOptions,
     timeout: Option<Duration>,
 }
+
+/// The remedy of a query past the result window, in JavaScript's words.
+const PAST_WINDOW: &str = " (or read every row a page at a time: db.scroll(sql, params, { pageSize }), or query(sql, params, { pageSize }) and next(cursor); a Database opened with { maxResultWindow: 0 } has no window, as chloedb-server --max-result-window 0 has none)";
 
 impl Limited {
     /// The options of a call `a` of a query (`timeout_ms`: 0 or none, the
@@ -703,8 +907,8 @@ impl Limited {
         let timeout = a.uint("timeout_ms")?.filter(|&ms| ms > 0).map(Duration::from_millis).or(limits.timeout);
         let memory = a.uint("memory")?;
         let base = match limits.memory {
-            Some(budget) => ExecOptions { memory: budget, ..db.exec.clone() },
-            None => db.exec.clone(),
+            Some(budget) => ExecOptions { memory: budget, max_rows: limits.window, ..db.exec.clone() },
+            None => ExecOptions { max_rows: limits.window, ..db.exec.clone() },
         };
         Ok(Limited { opts: base.limited(timeout, memory, Some(running.start(a.uint("tag")?.unwrap_or(0)))), timeout })
     }
@@ -717,6 +921,7 @@ impl Limited {
                 None => Error::Timeout(m),
             },
             Error::Timeout(m) if m.contains("cancelled") => Error::Timeout(format!("{m} by its AbortSignal or Database.interrupt()")),
+            Error::Query(m) if m.contains("a query returns at most") || m.contains("the most a query returns") => Error::Query(format!("{m}{PAST_WINDOW}")),
             e => e,
         }
     }
@@ -724,7 +929,7 @@ impl Limited {
 
 /// Runs operation `op` of a database with its arguments; a query with
 /// the options `q` gives it (else the database's).
-fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>, q: Option<Limited>) -> Result<Json> {
+fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>, q: Option<Limited>, cursors: &Cursors) -> Result<Json> {
     if !vectors.is_empty() && !matches!(op, "insert" | "upsert") {
         return Err(bad(format!("{op} takes no vectors apart from its arguments")));
     }
@@ -744,9 +949,17 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>, q: Option<Li
             db.alter_table(&table, &alters)?;
             Ok(Json::Null)
         }
+        "query" if a.get("page_size").is_some() => scroll_start(db, a, opts, cursors).map_err(stopped),
         "query" => {
             let p = params(db, a.get("params"), a.need_str("sql")?)?;
             Ok(result_json(&db.query_with(a.need_str("sql")?, &p, opts).map_err(stopped)?))
+        }
+        "next" => scroll_next(db, a, opts, cursors).map_err(stopped),
+        "close_cursor" => Ok(json!(cursors.close(a.need_str("cursor")?))),
+        "highlight" => highlight(db, a),
+        "correct" => {
+            let s = table_of(db, a.str("table")?)?;
+            serde_json::to_value(db.correct(&s.table, a.need_str("field")?, a.need_str("text")?)?).map_err(|e| bad(e.to_string()))
         }
         "sql" => {
             let p = params(db, a.get("params"), a.need_str("sql")?)?;
@@ -760,6 +973,9 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>, q: Option<Li
             out["request"] = json!(l.request);
             if !l.teams.is_empty() {
                 out["teams"] = json!(l.teams);
+            }
+            if !l.propensities.is_empty() {
+                out["propensities"] = json!(l.propensities);
             }
             Ok(out)
         }
@@ -964,7 +1180,7 @@ impl Task for OpenJob {
     }
 
     fn resolve(&mut self, _: Env, o: Opened) -> napi::Result<NativeDatabase> {
-        Ok(NativeDatabase { db: Arc::new(RwLock::new(Some(Arc::new(o.db)))), embed_errors: o.embed_errors, last_import: o.last_import, limits: Arc::new(RwLock::new(Limits::default())), running: Arc::new(Interrupts::default()) })
+        Ok(NativeDatabase { db: Arc::new(RwLock::new(Some(Arc::new(o.db)))), embed_errors: o.embed_errors, last_import: o.last_import, limits: Arc::new(RwLock::new(Limits::default())), running: Arc::new(Interrupts::default()), cursors: Arc::new(Cursors::default()) })
     }
 }
 
@@ -987,6 +1203,8 @@ pub struct NativeDatabase {
     limits: Arc<RwLock<Limits>>,
     /// The queries running now, which `interrupt` cancels.
     running: Arc<Interrupts>,
+    /// The open cursors (`pageSize`), with the snapshots they read.
+    cursors: Arc<Cursors>,
 }
 
 impl NativeDatabase {
@@ -1030,6 +1248,8 @@ impl NativeDatabase {
         let vectors = copied(vectors);
         if op == "close" {
             let held = self.db.clone();
+            // The snapshots of its cursors go first.
+            self.cursors.clear();
             return Ok(job(move || {
                 let db = held.write().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(db) = db {
@@ -1044,18 +1264,32 @@ impl NativeDatabase {
         let db = self.get()?;
         let a = Args::parse(&args).map_err(napi_err)?;
         let q = self.limited(&db, &op, &a)?;
-        Ok(job(move || dispatch(&db, &op, a, vectors, q)))
+        let cursors = self.cursors.clone();
+        Ok(job(move || dispatch(&db, &op, a, vectors, q, &cursors)))
     }
 
     /// Limits every query of this database from now on: a deadline of
-    /// `timeout_ms` (none or 0: none), and a memory budget of `memory`
-    /// bytes its queries share (0: none; none: the process's).
+    /// `timeout_ms` (none or 0: none), a memory budget of `memory` bytes
+    /// its queries share (0: none; none: the process's), and the most rows
+    /// one answers, `max_result_window` (0: no window; none: chloedb-server's
+    /// default, [`WINDOW`]).
     #[napi]
-    pub fn set_limits(&self, timeout_ms: Option<f64>, memory: Option<f64>) -> napi::Result<()> {
+    pub fn set_limits(&self, timeout_ms: Option<f64>, memory: Option<f64>, max_result_window: Option<f64>) -> napi::Result<()> {
         let timeout = whole(timeout_ms, "timeoutMs")?.filter(|&ms| ms > 0).map(Duration::from_millis);
         let memory = whole(memory, "memory")?.map(|b| qmemory::budget_of(b, "this database's queries may hold at once (its memory option)"));
-        *self.limits.write().unwrap_or_else(|e| e.into_inner()) = Limits { timeout, memory };
+        let window = match whole(max_result_window, "maxResultWindow")? {
+            None => Some(WINDOW),
+            Some(0) => None,
+            Some(n) => Some(n as usize),
+        };
+        *self.limits.write().unwrap_or_else(|e| e.into_inner()) = Limits { timeout, memory, window };
         Ok(())
+    }
+
+    /// The most rows a query answers at once (none: no window).
+    #[napi(getter)]
+    pub fn max_result_window(&self) -> Option<f64> {
+        self.limits.read().unwrap_or_else(|e| e.into_inner()).window.map(|n| n as f64)
     }
 
     /// The deadline every query gets unless it gives its own, in ms.
@@ -1085,7 +1319,7 @@ impl NativeDatabase {
         let vectors = copied(vectors);
         let a = Args::parse(&args).map_err(napi_err)?;
         let q = self.limited(&db, &op, &a)?;
-        guarded(|| dispatch(&db, &op, a, vectors, q)).map(|j| j.to_string()).map_err(napi_err)
+        guarded(|| dispatch(&db, &op, a, vectors, q, &self.cursors)).map(|j| j.to_string()).map_err(napi_err)
     }
 
     /// Embedded fields whose model did not open, with the reason, as JSON

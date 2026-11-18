@@ -61,8 +61,9 @@ pub const CODES: &[Code] = &[
     c("plan_stale", false, "the cluster changed since the change was planned: file it again to see the new plan", "agents-and-administration"),
     c("table_not_found", false, "list the tables the key may read (GET /v1/tables, or the list_tables tool)", "schemas"),
     c("column_not_found", false, "describe the table (GET /v1/schema?table=..., or the describe_table tool) for its fields", "schemas"),
-    c("query_invalid", false, "the statement does not parse or bind: check it with check_sql, and look up the syntax with search_docs", "http-api"),
+    c("query_invalid", false, "the statement is refused as the error says (a word that does not parse, or a table, column or value it does not bind): POST /v1/sql/check, or the check_sql tool, checks one without running it", "http-api"),
     c("schema_invalid", false, "the schema is refused as the error says (check_sql, or POST /v1/schema/check, checks one without making it)", "schemas"),
+    c("value_invalid", false, "a row's value does not fit its field, as the error says (which row, field and value): fix the value; the schema is fine as it is", "schemas"),
     c("idempotency_conflict", false, "this idempotency key was used for another request: send a new key", "writes-from-many-clients"),
     c("contained", true, "a contain rule limits or refuses these queries for a while (GET /v1/admin/contain); wait, or ask an operator", "who-sends-the-queries-and-containing-them"),
     c("overloaded", true, "the server is busy: send it again after Retry-After seconds", "limits"),
@@ -111,6 +112,9 @@ pub fn classify(status: u16, message: &str) -> &'static str {
         _ if has("no such table") || has("unknown table") => "table_not_found",
         _ if has("no such column") || has("unknown field") || has("no such field") => "column_not_found",
         400 if m.starts_with("query error") || has("parse error") => "query_invalid",
+        // A row's value that its field refuses, not the schema (persona
+        // study PRIYA-203).
+        400 if m.starts_with("schema error") && (has("bad value for") || has("of the vector is")) => "value_invalid",
         400 if m.starts_with("schema error") => "schema_invalid",
         400 => "bad_request",
         404 => "not_found",
@@ -128,11 +132,12 @@ pub fn code_of(e: &ApiError) -> &'static str {
     }
 }
 
-/// A query that matches more rows than a query returns
-/// (`--max-result-window`): it parses and binds, so its code's hint
-/// (`query_invalid`, "does not parse or bind") misleads; the code stays.
-const ROW_CAP: (&str, &str, &str) = (
-    "the most a query returns",
+/// A query that matches more rows than a query returns, or whose LIMIT and
+/// OFFSET reach past them (`--max-result-window`): it parses and binds, so
+/// its code's hint (`query_invalid`, how to check a statement) misleads;
+/// the code stays.
+const ROW_CAP: (&[&str], &str, &str) = (
+    &["the most a query returns", "a query returns at most"],
     "the query matches more rows than one answer holds (--max-result-window): add a LIMIT, or read every row a page at a time (page_size, then each page's cursor)",
     "reading-past-the-window-scrolls",
 );
@@ -141,7 +146,7 @@ const ROW_CAP: (&str, &str, &str) = (
 pub fn fields(e: &ApiError) -> Json {
     let code = code_of(e);
     match lookup(code) {
-        Some(c) if c.code == "query_invalid" && e.message.contains(ROW_CAP.0) => json!({"error_code": c.code, "retryable": c.retryable, "hint": ROW_CAP.1, "docs": format!("{DOCS}#{}", ROW_CAP.2)}),
+        Some(c) if c.code == "query_invalid" && ROW_CAP.0.iter().any(|m| e.message.contains(m)) => json!({"error_code": c.code, "retryable": c.retryable, "hint": ROW_CAP.1, "docs": format!("{DOCS}#{}", ROW_CAP.2)}),
         Some(c) => json!({"error_code": c.code, "retryable": c.retryable, "hint": c.hint, "docs": format!("{DOCS}#{}", c.docs)}),
         None => json!({"error_code": code, "retryable": false}),
     }
@@ -208,6 +213,11 @@ mod tests {
         assert_eq!(classify(400, "query error: no such column: price"), "column_not_found");
         assert_eq!(classify(403, "POST /v1/sql needs a key with the admin scope; \"bot\" has read"), "scope_refused");
         assert_eq!(classify(429, "refused by contain rule c1"), "contained");
+        // A row's value is not the schema (PRIYA-203).
+        let nan = "schema error: row 1: schema error: bad value for v: element 1 of the vector is NaN, an infinity or null (JSON writes NaN and infinities as null): a vector's elements are finite numbers";
+        assert_eq!(classify(400, nan), "value_invalid");
+        assert_eq!(classify(400, "schema error: bad value for field e: element 1 of the vector is not a finite 32-bit float (from -3.4e38 to 3.4e38)"), "value_invalid");
+        assert_eq!(classify(400, "schema error: a field twice"), "schema_invalid");
     }
 
     /// UIA-2: a query past the window parses and binds; its hint says to
@@ -220,6 +230,21 @@ mod tests {
         assert!(j["hint"].as_str().unwrap().contains("page_size") && !j["hint"].as_str().unwrap().contains("parse"), "{j}");
         assert!(j["docs"].as_str().unwrap().ends_with("#reading-past-the-window-scrolls"), "{j}");
         assert!(answer(&ApiError::bad("query error: expected FROM"))["hint"].as_str().unwrap().contains("parse"));
+        // An OFFSET past the window is told the same (DEV-206 of the
+        // persona study of 17 November 2026).
+        let e = ApiError::bad("query error: LIMIT and OFFSET reach row 10010; a query returns at most 10000 rows (or read every row a page at a time: a scroll, page_size)");
+        assert!(answer(&e)["hint"].as_str().unwrap().contains("page_size"), "{}", answer(&e));
+    }
+
+    /// DEV-206: the hint of a statement refused names the HTTP route that
+    /// checks one first, not only the MCP tools a client over HTTP has not.
+    #[test]
+    fn a_refused_statement_is_told_the_route_that_checks_it() {
+        let e = ApiError::bad("query error: price is a FLOAT: compare it with a number, not the text 'cheap'");
+        let j = answer(&e);
+        assert_eq!(j["error_code"], "query_invalid");
+        let hint = j["hint"].as_str().unwrap();
+        assert!(hint.contains("POST /v1/sql/check") && !hint.contains("search_docs"), "{hint}");
     }
 
     #[test]

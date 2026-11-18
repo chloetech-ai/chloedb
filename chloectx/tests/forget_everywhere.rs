@@ -63,7 +63,7 @@ impl Homes {
     fn remember(&self, project: &str, text: &str) -> String {
         let (code, out, err) = self.run(project, &["remember", "fact", text]);
         assert_eq!(code, 0, "{out}{err}");
-        // "Stored fact as <id> in ChloeCtx (<store>), where Workbench and every later session see it."
+        // "Stored fact as <id> in ChloeCtx (<store>), where every later session sees it."
         out.split("Stored fact as ").nth(1).and_then(|r| r.split_whitespace().next()).unwrap_or_else(|| panic!("no id in {out}")).trim_end_matches('.').to_string()
     }
 
