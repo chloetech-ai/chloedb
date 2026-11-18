@@ -32,6 +32,22 @@ changes collect under "Unreleased".
   when the log does not support a target. `check` replays each over many
   logs against the exact truth
   ([chloedb-experiments/README.md](chloedb-experiments/README.md)).
+- **The Experiments app** (`chloedb-experiments serve`, the command
+  center's app `experiments`, a demo). It runs A/B tests of a site's
+  rankings on simulated users: any table with queries and grades is a
+  site (BEIR's collections load as sites), each arm is a ranking
+  in SQL, and users are split by a hash of their id. Its report gives
+  every metric (success, clicks, satisfied clicks, abandonment, first-row
+  clicks, dwell, searches per session, query time) with delta-method intervals,
+  p and q values, CUPED against a pre-period, power and the smallest
+  effect it could see, always-valid p values beside fixed ones for
+  peeking, a sample ratio check, cohorts by age, gender, country, device
+  and tenure with a two-way heatmap, and what each arm would have
+  done valued off-policy from an exploring share's log. Every number is
+  shown beside the simulated users' exact truth. Runs are drawn in the
+  app (400,000 searches in about 5 seconds) or served as logged queries
+  to the server, and sites and experiments are rows of ChloeDB
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#the-app)).
 
 ## 0.3.8
 
