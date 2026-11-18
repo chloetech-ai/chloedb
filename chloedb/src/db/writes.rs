@@ -102,12 +102,22 @@ pub struct WriteStats {
 pub struct Footprints {
     /// The keys written so far by table; `None`: any row.
     tables: HashMap<String, Option<HashSet<Part>>>,
+    /// Whether a write admitted reads rows beyond its table's (an UPDATE
+    /// or DELETE whose pick has a subquery): it has the transaction to
+    /// itself, since its pick reads the last commit, not the others'
+    /// writes.
+    alone: bool,
 }
 
 impl Footprints {
     /// Adds write `p` if it may share a transaction with the writes added
     /// before; whether it was added. The first one always is.
     pub fn admit(&mut self, p: &PreparedWrite) -> bool {
+        let alone = p.write.pick().is_some_and(|k| k.reads_others);
+        if self.alone || (alone && !self.tables.is_empty()) {
+            return false;
+        }
+        self.alone = alone;
         let keys = p.keys_touched();
         match self.tables.get_mut(&p.schema.table) {
             None => {
@@ -136,7 +146,9 @@ impl PreparedWrite {
         };
         let keys = match &self.write {
             Write::Insert { docs, .. } => return Some(docs.iter().map(|d| Part::of(&d[pk])).collect()),
-            Write::Update { select, .. } | Write::Delete { select } => pinned(&select.filter, pk)?,
+            // Its rows are those its pick finds as it runs: any.
+            Write::Update { pick: Some(_), .. } | Write::Delete { pick: Some(_), .. } => return None,
+            Write::Update { select, .. } | Write::Delete { select, .. } => pinned(&select.filter, pk)?,
         };
         // A value of another type than the key's could match it as text
         // ('7' for 7): no footprint then.
@@ -153,7 +165,7 @@ impl PreparedWrite {
     pub fn weight(&self) -> usize {
         match &self.write {
             Write::Insert { docs, .. } => docs.len().max(1),
-            Write::Update { select, .. } | Write::Delete { select } => self.schema.primary_key.and_then(|pk| pinned(&select.filter, pk)).map_or(1, |k| k.len().max(1)),
+            Write::Update { select, .. } | Write::Delete { select, .. } => self.schema.primary_key.and_then(|pk| pinned(&select.filter, pk)).map_or(1, |k| k.len().max(1)),
         }
     }
 }

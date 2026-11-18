@@ -210,6 +210,44 @@ async fn update_and_delete_with_a_limit_change_that_many_rows() {
     assert!(e.contains("16 rows") || !e.contains("rows"), "{e}");
 }
 
+/// Finding SAM-2 through a coordinator: an UPDATE or DELETE takes the
+/// WHERE a SELECT takes. One that reads only its own row (a TEXT column
+/// compared with `=`, `LIKE`) runs on each shard, which picks its own rows;
+/// one with a subquery, whose rows may be on another shard, has its keys
+/// picked over every shard first.
+#[tokio::test]
+async fn update_and_delete_take_the_where_a_select_takes() {
+    let (_dir, api) = api().await;
+    let ops: Vec<Json> = (0..20).map(|i| json!({"op": "upsert", "table": "prods", "doc": {"id": format!("w{i:02}"), "sku": format!("S{}", i % 7), "title": if i % 4 == 0 { "red mug" } else { "blue cup" }, "stock": i}})).collect();
+    let (s, a) = api.post("/v1/write", json!({"ops": ops})).await;
+    assert_eq!(s, 200, "{a}");
+    let (s, a) = api.sql("CREATE TABLE gone (id KEYWORD PRIMARY KEY, prod KEYWORD)").await;
+    assert_eq!(s, 200, "{a}");
+    let (s, a) = api.post("/v1/write", json!({"ops": [{"op": "upsert", "table": "gone", "doc": {"id": "g1", "prod": "w01"}}, {"op": "upsert", "table": "gone", "doc": {"id": "g2", "prod": "w02"}}, {"op": "upsert", "table": "gone", "doc": {"id": "g3", "prod": "w03"}}]})).await;
+    assert_eq!(s, 200, "{a}");
+    let reds = api.count("SELECT COUNT(*) FROM prods WHERE title = 'red mug'").await;
+    assert_eq!(reds, 5);
+    // A TEXT column compared with `=`, and LIKE on it: each shard's rows.
+    let (s, a) = api.sql("UPDATE prods SET stock = 500 WHERE title = 'red mug'").await;
+    assert_eq!((s, a["written"].as_u64()), (200, Some(5)), "{a}");
+    assert_eq!(api.count("SELECT COUNT(*) FROM prods WHERE stock = 500").await, 5);
+    let (s, a) = api.sql("UPDATE prods SET stock = 1 WHERE title LIKE '%cup' AND stock > 15").await;
+    assert_eq!((s, a["written"].as_u64()), (200, Some(3)), "{a}");
+    // A subquery: the keys over every shard first.
+    let (s, a) = api.sql("UPDATE prods SET stock = 0 WHERE id IN (SELECT prod FROM gone)").await;
+    assert_eq!((s, a["written"].as_u64()), (200, Some(3)), "{a}");
+    assert_eq!(api.count("SELECT COUNT(*) FROM prods WHERE stock = 0").await, 3);
+    let (s, a) = api.sql("DELETE FROM prods WHERE NOT EXISTS (SELECT 1 FROM gone g WHERE g.prod = prods.id) AND stock = 500").await;
+    assert_eq!((s, a["written"].as_u64()), (200, Some(5)), "{a}");
+    assert_eq!(api.count("SELECT COUNT(*) FROM prods").await, 15);
+    // The write check says so, and refuses what the SELECT would.
+    let (s, a) = api.post("/v1/sql/check", json!({"sql": "DELETE FROM prods WHERE id IN (SELECT prod FROM gone)"})).await;
+    assert_eq!((s, a["runs"].as_bool()), (200, Some(true)), "{a}");
+    assert!(a["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("subquery")), "{a}");
+    let (_, a) = api.post("/v1/sql/check", json!({"sql": "DELETE FROM prods WHERE id IN (SELECT nope FROM gone)"})).await;
+    assert_eq!(a["runs"], false, "{a}");
+}
+
 #[tokio::test]
 async fn a_cluster_exports_a_table_s_rows() {
     let (_dir, api) = api().await;

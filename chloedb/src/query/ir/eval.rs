@@ -165,11 +165,13 @@ pub fn eval(e: &Expr, row: &Row) -> Result<Value> {
             Value::Float(x) => Value::Float(-x),
             v => return Err(err(format!("cannot negate {}", sv(&v)))),
         },
+        // NULL if a side is NULL, as PostgreSQL's `||` (persona study
+        // SAM-5): coalesce(x, '') keeps the other side.
         Expr::Concat(xs) => {
             let mut out = String::new();
             for x in xs {
                 match eval(x, row)? {
-                    Value::Null => {}
+                    Value::Null => return Ok(Value::Null),
                     Value::Str(s) => out.push_str(&s),
                     Value::Int(x) => out.push_str(&x.to_string()),
                     Value::Float(x) => out.push_str(&x.to_string()),
@@ -424,21 +426,7 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
             Value::Null => Value::Null,
             v => return Err(err(format!("abs takes a number, not {}", sv(&v)))),
         }),
-        Func::Round => {
-            let d = match args.get(1) {
-                None => 0,
-                Some(Value::Int(d)) => (*d).clamp(-30, 30) as i32,
-                Some(v) => return Err(err(format!("round takes a whole number of decimals, not {}", sv(&v)))),
-            };
-            let x = match one {
-                Value::Null => return Ok(Value::Null),
-                Value::Int(x) if d == 0 => return Ok(Value::Int(x)),
-                v => v.as_f64().ok_or_else(|| err(format!("round takes a number, not {}", sv(&v))))?,
-            };
-            let m = 10f64.powi(d);
-            let r = (x * m).round() / m;
-            Ok(if d <= 0 { Value::Int(r as i64) } else { Value::Float(r) })
-        }
+        Func::Round => round(args, false),
         // A list without values is NULL here, as to IS NULL.
         Func::Coalesce => Ok(args.iter().find(|v| !matches!(v, Value::Null) && !matches!(v, Value::List(xs) if xs.is_empty())).cloned().unwrap_or(Value::Null)),
         Func::Ln | Func::Log | Func::Exp | Func::Sqrt | Func::Pow | Func::Least | Func::Greatest | Func::Sigmoid | Func::Clamp => {
@@ -625,6 +613,42 @@ pub(crate) fn like(s: &[char], p: &[char]) -> bool {
     j == p.len()
 }
 
+/// `round(x[, digits])`: an INT to whole numbers (no digits, or fewer
+/// than none), else a FLOAT. A FLOAT rounded to a whole number rounds half
+/// to even, as PostgreSQL's float8 does (`round(2.5::float8)` is 2,
+/// `2.5::float8::int` is 2; persona study SAM-5), and so does CAST(x AS
+/// INT), which is `round(x)`. With digits, `round(x, 0)` too, and for a
+/// number written out (`written`, folded when a statement is planned:
+/// [`round_written`]), half rounds away from zero, as PostgreSQL's
+/// numeric does (`round(2.5)` is 3, `round(x::numeric, 0)` of 2.5 is 3):
+/// the planner writes `round(x, 0)` for a value made of numbers written
+/// out alone (`CASE WHEN .. THEN 2.5 END`), which PostgreSQL types numeric.
+fn round(args: &[Value], written: bool) -> Result<Value> {
+    let one = args.first().cloned().unwrap_or(Value::Null);
+    let d = match args.get(1) {
+        None => 0,
+        Some(Value::Int(d)) => (*d).clamp(-30, 30) as i32,
+        Some(v) => return Err(err(format!("round takes a whole number of decimals, not {}", sv(v)))),
+    };
+    let x = match one {
+        Value::Null => return Ok(Value::Null),
+        Value::Int(x) if d == 0 => return Ok(Value::Int(x)),
+        v => v.as_f64().ok_or_else(|| err(format!("round takes a number, not {}", sv(&v))))?,
+    };
+    if args.len() < 2 && !written {
+        return Ok(Value::Int(x.round_ties_even() as i64));
+    }
+    let m = 10f64.powi(d);
+    let r = (x * m).round() / m;
+    Ok(if d <= 0 { Value::Int(r as i64) } else { Value::Float(r) })
+}
+
+/// [`Func::Round`] of numbers written out in a statement, as PostgreSQL
+/// rounds its numeric literals: half away from zero (`round(0.5)` is 1).
+pub(crate) fn round_written(args: &[Value]) -> Result<Value> {
+    round(args, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,7 +743,8 @@ mod tests {
         let like = |x: &str, p: &str, ci| Expr::Like { expr: lit(s(x)), pattern: lit(s(p)), case_insensitive: ci };
         assert_eq!((val(&like("Graph", "gr%", false)), val(&like("Graph", "gr%", true))), (F, T));
         assert_eq!(val(&Expr::Like { expr: lit(N), pattern: lit(s("%")), case_insensitive: false }), N);
-        assert_eq!(val(&Expr::Concat(vec![Expr::Lit(s("a")), Expr::Lit(N), Expr::Lit(Value::Int(1))])), s("a1"));
+        assert_eq!(val(&Expr::Concat(vec![Expr::Lit(s("a")), Expr::Lit(Value::Int(1))])), s("a1"));
+        assert_eq!(val(&Expr::Concat(vec![Expr::Lit(s("a")), Expr::Lit(N), Expr::Lit(Value::Int(1))])), N);
         let case = |operand: Option<Value>| Expr::Case {
             operand: operand.map(lit),
             whens: vec![super::super::When { when: Expr::Lit(N), then: Expr::Lit(s("null")) }, super::super::When { when: Expr::Lit(T), then: Expr::Lit(s("true")) }],
@@ -731,7 +756,14 @@ mod tests {
         assert_eq!(f(Func::Lower, vec![s("ÄB")]), s("äb"));
         assert_eq!(f(Func::Length, vec![s("ñu")]), Value::Int(2));
         assert_eq!(f(Func::Round, vec![Value::Float(2.567), Value::Int(2)]), Value::Float(2.57));
-        assert_eq!(f(Func::Round, vec![Value::Float(2.5)]), Value::Int(3));
+        assert_eq!(f(Func::Round, vec![Value::Float(2.5)]), Value::Int(2));
+        assert_eq!(f(Func::Round, vec![Value::Float(3.5)]), Value::Int(4));
+        assert_eq!(f(Func::Round, vec![Value::Float(-0.5)]), Value::Int(0));
+        assert_eq!(round_written(&[Value::Float(2.5)]).unwrap(), Value::Int(3));
+        // round(x, 0), as PostgreSQL's round(numeric, int): half away.
+        assert_eq!(f(Func::Round, vec![Value::Float(2.5), Value::Int(0)]), Value::Int(3));
+        assert_eq!(f(Func::Round, vec![Value::Float(-2.5), Value::Int(0)]), Value::Int(-3));
+        assert_eq!(f(Func::Round, vec![Value::Float(0.125), Value::Int(2)]), Value::Float(0.13));
         assert_eq!(f(Func::Coalesce, vec![N, Value::Int(4), Value::Int(5)]), Value::Int(4));
         assert_eq!(f(Func::Coalesce, vec![Value::List(Vec::new()), Value::Int(4)]), Value::Int(4));
         assert_eq!(f(Func::Upper, vec![N]), N);
