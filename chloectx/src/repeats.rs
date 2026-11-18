@@ -127,9 +127,13 @@ fn same_terms(ta: &BTreeSet<String>, tb: &BTreeSet<String>) -> bool {
 }
 
 /// Whether a record holds the user's own words (a record with no `By:`
-/// line was written before sources were kept, and is the user's).
+/// line was written before sources were kept, and is the user's): said on
+/// this machine. One pulled from a teammate's machine holds their words,
+/// not this user's: repeats count per person (WEI-306), so a teammate's
+/// request or rule is not this user's earlier saying, nor theirs, said
+/// once, a second saying of this user's.
 fn users(r: &Record) -> bool {
-    matches!(r.source(), None | Some(Source::User))
+    !crate::sync::pulled(r) && matches!(r.source(), None | Some(Source::User))
 }
 
 /// Whether a record is an instruction the user gave: a note for one task,
@@ -674,6 +678,25 @@ mod tests {
         assert!(l[1].1.contains("another session, a rule of the user's: Always") && l[2].1.contains("another session, the user asked: why"), "{l:?}");
         let p = check_prompt("Build it from the CREATE statements!", "I built it from a JSON file.", &l);
         assert!(p.contains(&format!("[{}] 1970-01-01, this session", before[0].id)) && p.contains("<previous_reply>\nI built it from a JSON file.") && p.contains("<request>\nBuild it from the CREATE statements!"), "{p}");
+    }
+
+    /// WEI-306: a teammate's request and rule, pulled from their machine,
+    /// counted as this user's earlier sayings: what two people said once
+    /// each became a rule "said 2 times".
+    #[test]
+    fn a_teammates_sayings_are_not_the_users_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let from = |d: Draft, label: &str| d.link(label, "m-44fb96669a15");
+        s.append("t1", 1, 100, vec![from(task("Add Redis for the job queue."), crate::sync::SYNCED_FROM)]).unwrap();
+        s.append("t1", 2, 110, vec![from(Draft::new(Kind::Prompt, "why is there still no Redis for the job queue?"), crate::sync::ACCEPTED)]).unwrap();
+        s.append("t2", 1, 120, vec![from(Draft::new(Kind::Preference, "Always use Redis for the job queue.").by(&Source::User), crate::sync::ACCEPTED)]).unwrap();
+        let mine = s.append("s1", 1, 130, vec![task("Add Redis to the job queue.")]).unwrap().remove(0);
+        let before = said_before(&s, "Add Redis for the job queue, please", "s2", 1, i64::MAX).unwrap();
+        assert_eq!(before.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), [mine.id.as_str()], "only this user's own saying");
+        // Nor does the scan group a teammate's note with this user's.
+        let j = scan(&s, 0, 100).unwrap();
+        assert_eq!(j["text"].as_str().unwrap().lines().next().unwrap(), "1 of your instructions for one task, since 1970-01-01; 0 said again in nearly the same words; 0 rules kept for being said again.", "{j}");
     }
 
     /// ANA-1: a rule said once, in one turn, was counted "said 2 times":

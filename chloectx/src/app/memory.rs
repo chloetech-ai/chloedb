@@ -12,9 +12,11 @@
 //! | `GET /v1/memory/sessions?project=` | `{sessions: [{session, records, first, last, turns}]}`, the latest first |
 //! | `GET /v1/memory/records?project=&session=&kind=&q=&limit=&before=` | `{records}`: a session's in the order recorded, else the latest first (`before`: a `seq` to page back from), or the best matches for `q` |
 //!
-//! Only reads: the page changes nothing, and a key that may read a
-//! project's table is enough for that project; the list shows the projects
-//! whose tables the caller reads.
+//! | `POST /v1/memory/retire` `{project, id}` | the note, retired for every machine of the project |
+//!
+//! Reads, but for a retire: a key that may read a project's table is
+//! enough to read that project, and the list shows the projects whose
+//! tables the caller reads; a retire needs write on the project's table.
 
 use std::collections::HashMap;
 
@@ -82,7 +84,7 @@ impl App {
         let tables: Vec<String> = self.cluster.tables()?.into_iter().filter(|t| t == TABLE || t.starts_with(crate::sync::PREFIX)).collect();
         let mut by: HashMap<String, Json> = HashMap::new();
         for t in tables.iter().filter(|t| caller.reads_table(t)) {
-            let rs = self.cluster.query(&format!("SELECT project, COUNT(*), COUNT(DISTINCT session), MAX(ts) FROM {t} GROUP BY project LIMIT 1000"), &Params::new())?;
+            let rs = self.cluster.query(&format!("SELECT project, COUNT(*), COUNT(DISTINCT session), MAX(ts) FROM {t} WHERE kind != 'forgotten' GROUP BY project LIMIT 1000"), &Params::new())?;
             for r in &rs.rows {
                 let project = str_of(r.first());
                 // A project with a table of its own is read from it; its
@@ -109,7 +111,7 @@ impl App {
             return Ok(json!({"sessions": []}));
         };
         let rs = self.cluster.query(
-            &format!("SELECT session, COUNT(*), MIN(ts), MAX(ts) FROM {t} WHERE project = :p AND kind != 'entity' GROUP BY session LIMIT 5000"),
+            &format!("SELECT session, COUNT(*), MIN(ts), MAX(ts) FROM {t} WHERE project = :p AND kind NOT IN ('entity', 'forgotten') GROUP BY session LIMIT 5000"),
             &Params::new().set("p", Value::Str(project.to_string())),
         )?;
         let mut sessions: Vec<Json> = rs
@@ -138,7 +140,7 @@ impl App {
         }
         sessions.sort_by_key(|s| std::cmp::Reverse(s["last"].as_i64().unwrap_or(0)));
         // What each kind of the project counts, for the page's filters.
-        let kinds = self.cluster.query(&format!("SELECT kind, COUNT(*) FROM {t} WHERE project = :p GROUP BY kind LIMIT 50"), &Params::new().set("p", Value::Str(project.to_string())))?;
+        let kinds = self.cluster.query(&format!("SELECT kind, COUNT(*) FROM {t} WHERE project = :p AND kind != 'forgotten' GROUP BY kind LIMIT 50"), &Params::new().set("p", Value::Str(project.to_string())))?;
         let by_kind: HashMap<String, i64> = kinds.rows.iter().map(|r| (str_of(r.first()), int_of(r.get(1)))).collect();
         Ok(json!({"project": project, "sessions": sessions, "by_kind": by_kind}))
     }
@@ -154,7 +156,7 @@ impl App {
             return Ok(json!({"records": []}));
         };
         let limit = limit.clamp(1, MAX_RECORDS);
-        let mut conds = vec!["project = :p".to_string()];
+        let mut conds = vec!["project = :p".to_string(), format!("kind != '{}'", crate::sync::FORGOTTEN_KIND)];
         let mut params = Params::new().set("p", Value::Str(project.to_string()));
         if let Some(s) = session.filter(|s| !s.is_empty()) {
             conds.push("session = :s".into());
@@ -222,7 +224,7 @@ impl App {
             }
         }
         if !all {
-            notes.retain(|n| n["tag"] != "superseded" && n["tag"] != "done");
+            notes.retain(|n| !crate::record::closed_tag(n["tag"].as_str().unwrap_or("")) && n["tag"] != "done");
         }
         Ok(json!({"notes": notes}))
     }
@@ -239,7 +241,7 @@ impl App {
             return Ok(json!({"records": 0, "sessions": 0, "by_kind": {}, "live": {}, "rules": [], "decisions": [], "facts": [], "todos": [], "notes": [], "changes": [], "recent_sessions": []}));
         };
         let p = || Params::new().set("p", Value::Str(project.to_string()));
-        let span = self.cluster.query(&format!("SELECT MIN(ts), MAX(ts), COUNT(*) FROM {t} WHERE project = :p AND kind != 'entity'"), &p())?;
+        let span = self.cluster.query(&format!("SELECT MIN(ts), MAX(ts), COUNT(*) FROM {t} WHERE project = :p AND kind NOT IN ('entity', 'forgotten')"), &p())?;
         let (first, last, records) = span.rows.first().map_or((0, 0, 0), |r| (int_of(r.first()), int_of(r.get(1)), int_of(r.get(2))));
         let rs = self.cluster.query(
             &format!("SELECT {COLUMNS} FROM {t} WHERE project = :p AND kind IN ('decision', 'preference', 'fact', 'todo', 'note') ORDER BY seq DESC LIMIT 5000"),
@@ -286,6 +288,46 @@ impl App {
             "rules": list("rule"), "decisions": list("decision"), "facts": list("fact"), "todos": list("todo"), "notes": list("note"),
             "changes": changes, "recent_sessions": recent,
         }))
+    }
+}
+
+impl App {
+    /// `POST /v1/memory/retire {project, id}`: retires a synced project's
+    /// rule (or decision, fact, to-do or note) for every machine of the
+    /// project (WEI-306): its row tagged `retired`, with a link to the key
+    /// that retired it (`by`, [`crate::sync::RETIRED_BY`]), which each
+    /// machine's next pull applies to its copy, as `chloectx sync retire`
+    /// does from a machine. The route asks for write on the project's table.
+    pub fn memory_retire(&self, project: &str, id: &str, by: &str) -> Answer {
+        let (project, id) = (project.trim(), id.trim());
+        if project.is_empty() || id.is_empty() {
+            return Err(bad("which note? {\"project\": \"owner/name\", \"id\": \"its id\"}"));
+        }
+        let t = crate::sync::table_for(project);
+        if self.memory_table(project)?.as_deref() != Some(t.as_str()) {
+            return Err(super::Fail(404, format!("project {project} has no table of its own ({t}): a project synced only before 0.3.4 retires a note with `chloectx sync retire ID` on one of its machines")));
+        }
+        let rs = self.cluster.query(&format!("SELECT {COLUMNS}, origin FROM {t} WHERE id = :k LIMIT 1"), &Params::new().set("k", Value::Str(format!("{project}:{id}"))))?;
+        let row = rs.rows.first().ok_or_else(|| super::Fail(404, format!("no note {id} in {project}")))?;
+        let kind = str_of(row.get(2));
+        if !matches!(kind.as_str(), "preference" | "decision" | "fact" | "todo" | "note") {
+            return Err(bad(format!("{id} is a {kind}, not a rule, decision, fact, to-do or note")));
+        }
+        let mut links: Vec<Json> = serde_json::from_str(&str_of(row.get(11))).unwrap_or_default();
+        links.retain(|l| l["label"] != crate::sync::RETIRED_BY);
+        links.push(json!({"label": crate::sync::RETIRED_BY, "to": by}));
+        let links = serde_json::to_string(&links).unwrap_or_else(|_| "[]".into());
+        let doc = json!({
+            "id": format!("{project}:{id}"), "project": project, "rid": id, "session": str_of(row.get(1)), "kind": kind, "tag": crate::record::RETIRED,
+            "turn": int_of(row.get(4)), "seq": int_of(row.get(5)), "ts": int_of(row.get(6)), "importance": row.get(7).and_then(|v| v.as_f64()).unwrap_or(0.0),
+            "files": str_of(row.get(8)), "content": str_of(row.get(9)), "context": str_of(row.get(10)), "links_json": links, "origin": str_of(row.get(12)),
+        });
+        self.cluster.write(vec![json!({"op": "upsert", "table": t, "doc": doc})])?;
+        let mut row = row.clone();
+        row[3] = Value::Str(crate::record::RETIRED.into());
+        let mut n = note(&row);
+        n["retired_by"] = json!(by);
+        Ok(n)
     }
 }
 

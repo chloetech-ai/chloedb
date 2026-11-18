@@ -194,9 +194,10 @@ pub fn drafts(events: &[Timed], project: &str) -> Vec<Batch> {
     let mut ep = EpisodeAcc::default();
     // Narration batches of the current turn: (index in out, text).
     let mut narr: Vec<(usize, String)> = Vec::new();
-    // The current turn's private asides ([`crate::private`]): what its
-    // reply must not say again, and whether nothing of it is kept.
+    // The session's private asides ([`crate::private`]): what a reply must
+    // not say again, and whether nothing of the current turn is kept.
     let mut private: Option<(crate::private::Echo, bool)> = None;
+    let mut asides: Vec<String> = Vec::new();
     let unsaid = |p: &Option<(crate::private::Echo, bool)>, t: &str| match p {
         Some((e, _)) => crate::private::scrub(t, e),
         None => t.to_string(),
@@ -214,7 +215,8 @@ pub fn drafts(events: &[Timed], project: &str) -> Vec<Batch> {
             Event::Prompt { text } => {
                 turn += 1;
                 let cut = crate::private::cut(&crate::redact::redact(&crate::envelope::clean(text)));
-                private = cut.any().then(|| (crate::private::Echo::new(&cut.asides, &cut.kept), cut.whole));
+                asides.extend(cut.asides.iter().cloned());
+                private = (!asides.is_empty()).then(|| (crate::private::Echo::new(&asides, &cut.kept), cut.whole));
                 let kept = if cut.any() { cut.kept } else { text.clone() };
                 ep = EpisodeAcc { prompt: kept.clone(), ..Default::default() };
                 (capture::prompt_drafts(&kept), false)

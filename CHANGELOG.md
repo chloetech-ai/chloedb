@@ -30,6 +30,37 @@ changes collect under "Unreleased".
   replaces the session's copy of it, and a decision does not keep "not
   implemented yet". The command center's overview lists the user's rules,
   not a prompt's raw sentences ([what is kept](docs/chloectx/index.md#where-it-keeps-what-it-stores)).
+- **ChloeCtx: a team's forgets, deletions and retired rules reach every
+  machine, and a teammate's notes say whose they are** (persona study
+  round 3, WEI-304, WEI-303, WEI-306). A forget deleted the record's row
+  on the server, and every teammate who had pulled it kept it; an admin's
+  `DELETE` of a leaver's rows reached no store; and a rule could be
+  retired on one laptop only. Now a forget leaves a tombstone (a row of
+  kind `forgotten`) that each machine's next pull forgets, receipts and
+  segments too; another machine's rows deleted on the server are forgotten
+  on each machine that pulled them; a record retired or replaced on the
+  server, or whose context a forget cut, is so on each machine that has
+  it; and a push no longer sends back what it pulled (`--again` does).
+  `chloectx sync retire ID`, or Retire on a synced project's Memories in
+  the command center (`POST /v1/memory/retire`, with write on the
+  project's table), retires a note for the whole project and records who
+  did (`retired_by`). A teammate's note reads `from alice-laptop` in the
+  briefing and the prompt's context, and a rule said again counts only
+  this machine's sayings. setup.md says how to offboard someone
+  ([setup.md](docs/chloectx/setup.md#keep-the-memory-on-a-chloedb-server)).
+- **ChloeCtx: what an unaccepted machine sent stays out of every prompt,
+  and `sync accept` names machines** (persona study round 3, WEI-302,
+  WEI-308). A decision pulled from a machine no one had accepted reached
+  the prompt's context through the knowledge list (and a deep search's
+  candidates, and the notes on a file being edited), though the briefing
+  held it back; it no longer does. Each row a machine pushes names the key
+  it pushed with (`pushed_by` in `links_json`, from `GET /v1/whoami`), and
+  `chloectx sync accept` lists machines by it (`alice-laptop
+  (m-44fb96669a15)`) and accepts one by that name, its key's or its id.
+  `--all` accepts the machines listed now in this project, not every
+  machine to come in every project (`trusted: ["*"]`, which it wrote
+  before, is no longer honoured); a machine is accepted per project
+  (`accepted` in `sync.json`), and those accepted before stay accepted.
 - **ChloeCtx: `chloectx sync setup` syncs the project it runs in, and no
   other** (persona study round 3, LENA-301; audit CTX-34). The first key
   set up on a machine was kept as the machine's too (`sync.token`), and

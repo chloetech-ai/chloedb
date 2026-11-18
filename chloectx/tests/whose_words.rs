@@ -1,5 +1,6 @@
 //! Whose words ChloeCtx keeps, and as what (persona study round 3, w1): a
-//! private aside is kept nowhere (WEI-301, JONAH-301), a rule an agent
+//! private aside is kept nowhere, nor a later reply that says it again
+//! (WEI-301, JONAH-301, WEI-304), a rule an agent
 //! keeps is its suggestion until the user says it (LENA-310), how to do one
 //! turn is not a rule (JONAH-303), a remembered copy replaces its twin and a
 //! decision does not keep its status (JONAH-304), and a question is not
@@ -134,6 +135,13 @@ fn an_off_the_record_aside_is_kept_nowhere() {
     // Nor any file of the store: state, events, receipts, the database.
     let left = files_holding(store.path(), "interviewing");
     assert!(left.is_empty(), "the aside is in {left:?}");
+
+    // A later turn's reply that says it again loses that sentence too
+    // (WEI-304: "I didn't save your interview note" survived a forget).
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s1", "prompt": "Did you save any of that to memory?"}));
+    hook(&d, "Stop", json!({"session_id": "s1", "last_assistant_message": "No. I didn't save your interview note or any of the credentials to memory. The .env.example only holds placeholders."}));
+    let all = every_text(&d);
+    assert!(!all.contains("interview note") && all.contains("only holds placeholders"), "{all}");
 
     // A later session is not told it, nor finds it.
     let brief = hook(&d, "SessionStart", json!({"session_id": "s2", "source": "startup"}));

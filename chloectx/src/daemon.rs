@@ -311,11 +311,19 @@ pub struct Daemon {
     private: Mutex<HashMap<String, PrivateTurn>>,
 }
 
-/// A turn whose prompt held a private aside.
+/// The private asides of a session, as of its latest turn: a reply of a
+/// later turn that says one again ("I didn't save your interview note")
+/// loses that sentence too (WEI-304).
 struct PrivateTurn {
+    /// The latest turn, and whether its prompt was private as a whole.
     turn: i64,
-    echo: crate::private::Echo,
     whole: bool,
+    /// The latest turn whose prompt held one.
+    aside_turn: i64,
+    /// What of the session's asides a reply could repeat, less what the
+    /// latest prompt says itself.
+    echo: crate::private::Echo,
+    asides: Vec<String>,
 }
 
 /// Work to do after the response is sent (so hooks return at once).
@@ -681,7 +689,8 @@ impl Daemon {
         // The rows of records forgotten here go first (audit CTX-33): a
         // server that did not answer a forget's delete is asked again.
         let forgets = crate::sync::send_forgets(&remote, &key, &self.paths.dir);
-        let pushed = crate::sync::push(&remote, &self.store, &key, &mut st);
+        // `--again` sends the records pulled from other machines too.
+        let pushed = crate::sync::push_with(&remote, &self.store, &key, &mut st, again);
         // What a pull stores keeps the server's sequence numbers, and the
         // next push sends again those past what was pushed: the same rows,
         // replaced by themselves. Taking them as pushed (pushed_seq set to
@@ -692,11 +701,22 @@ impl Daemon {
             (Err(e), _, _) | (_, Err(e), _) | (_, _, Some(Err(e))) => e.to_string(),
             _ => String::new(),
         };
-        let (p, g) = (pushed.as_ref().map_or(0, |n| *n), pulled.as_ref().and_then(|r| r.as_ref().ok()).copied().unwrap_or(0));
-        if p > 0 || g > 0 || !st.last_error.is_empty() {
-            self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "pushed": p, "pulled": g, "error": st.last_error}));
+        let got = pulled.and_then(|r| r.ok()).unwrap_or_default();
+        let p = pushed.as_ref().map_or(0, |n| *n);
+        if p > 0 || got.stored > 0 || got.changed > 0 || !got.forget.is_empty() || !st.last_error.is_empty() {
+            self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "pushed": p, "pulled": got.stored, "changed": got.changed, "forgotten": got.forget.len(), "error": st.last_error}));
         }
         crate::sync::save_state(&self.paths.dir, &st);
+        drop(_one);
+        // What another machine forgot, or an admin deleted on the server,
+        // is forgotten here as `chloectx forget` does it: receipts
+        // scrubbed and segments rewritten (WEI-304, WEI-303). The pull
+        // noted them forgotten for the sync already.
+        if !got.forget.is_empty() {
+            if let Err(e) = self.forget(&json!({"ids": got.forget, "wait": true, "pulled": true})) {
+                self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "error": format!("forgetting what the server forgot: {e}")}));
+            }
+        }
         Some(st)
     }
 
@@ -714,7 +734,7 @@ impl Daemon {
         let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else { return String::new() };
         let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
         match crate::sync::send_forgets(&remote, &key, &self.paths.dir) {
-            Ok(_) => "its row on the sync server deleted too (a machine that pulled it before keeps its copy)".into(),
+            Ok(_) => "its row on the sync server replaced by a tombstone, which every machine that pulled it forgets on its next pull".into(),
             Err(e) => {
                 self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "error": format!("forget: {e}")}));
                 format!("the sync server's row is not deleted yet ({e}): each push asks again, and a pull never brings it back here")
@@ -726,24 +746,35 @@ impl Daemon {
     fn op_sync(&self, req: &Json) -> Result<Json> {
         let what = req.get("what").and_then(|v| v.as_str()).unwrap_or("status");
         if what == "accept" {
-            let origins: Vec<String> = req.get("origins").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
-            let by = crate::sync::accept(&crate::paths::home(), &self.store, &origins)?;
+            let names: Vec<String> = req.get("origins").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+            let all = req.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
+            let home = crate::paths::home();
+            let key = crate::sync::project_key(&home, &self.project);
+            let everyone = crate::sync::load_config(&home).trusted_everyone();
+            let (by, unknown) = crate::sync::accept(&home, &self.store, &key, &names, all)?;
             let mut text = String::new();
             if by.is_empty() {
-                text = "No records from other machines wait to be accepted.".into();
+                text = format!("No records from other machines wait to be accepted in {key}.\n");
             }
-            for (o, n, some) in &by {
-                let done = origins.iter().any(|x| x == "*" || x == o);
-                text += &format!("{o}: {n} record{}{}\n", if *n == 1 { "" } else { "s" }, if done { ", accepted" } else { "" });
-                for t in some {
+            for p in &by {
+                let done = all || names.iter().any(|n| n == "*" || p.named(n));
+                text += &format!("{}: {} record{}{}\n", p.label(), p.records, if p.records == 1 { "" } else { "s" }, if done { ", accepted" } else { "" });
+                for t in &p.some {
                     text += &format!("    {}\n", crate::envelope::defuse(t));
                 }
             }
-            if origins.is_empty() && !by.is_empty() {
-                text += "Accept a machine's records (its rules and decisions then reach the briefing): chloectx sync accept --origin ID, or --all";
+            for n in &unknown {
+                text += &format!("No machine {n} has records waiting here: give a machine as listed (its name or its id).\n");
             }
-            let me = crate::sync::origin(&crate::paths::home());
-            return Ok(json!({"text": text.trim_end(), "this_machine": me, "pending": by.iter().map(|(o, n, _)| json!({"origin": o, "records": n})).collect::<Vec<_>>()}));
+            if names.is_empty() && !all && !by.is_empty() {
+                text += &format!("Accept a machine's records in {key} (its rules and decisions then reach the briefing and the prompt's context): chloectx sync accept --origin NAME, or --all for the machines listed here (no machine that pushes later)\n");
+            }
+            if everyone {
+                text += "sync.json trusts every machine (\"*\", from `accept --all` before 0.3.9), which is no longer honoured: a project's machines are accepted one by one, or those listed now with --all.\n";
+            }
+            let me = crate::sync::origin(&home);
+            return Ok(json!({"text": text.trim_end(), "this_machine": me, "project": key, "unknown": unknown,
+                "pending": by.iter().map(|p| json!({"origin": p.origin, "key": p.key, "name": p.key.as_deref().map(crate::sync::machine_name), "records": p.records})).collect::<Vec<_>>()}));
         }
         let home = crate::paths::home();
         let key = crate::sync::project_key(&home, &self.project);
@@ -759,12 +790,25 @@ impl Daemon {
                 "projects": crate::sync::set_up_projects(&home), "every_project": false, "warning": note,
             }));
         };
+        if what == "retire" {
+            // A rule (or any note) retired for the whole project: here, on
+            // the server, and on every machine's next pull (WEI-306).
+            let id = req.get("id").and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
+            let Some(r) = self.store.get(&[id.to_string()])?.pop() else {
+                return Err(err(format!("no record {id:?} here: give a rule's id as chloectx search, the briefing or the command center shows it")));
+            };
+            let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
+            let r = crate::sync::retire(&remote, &self.store, &key, &r)?;
+            let line: String = r.text.lines().next().unwrap_or("").chars().take(120).collect();
+            self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "retired": r.id}));
+            return Ok(json!({"id": r.id, "kind": r.kind.as_str(), "text": format!("Retired {} ({}: {line}) here and on {}: every machine of {key} retires it on its next pull.", r.id, r.kind.as_str(), remote.url)}));
+        }
         let again = req.get("again").and_then(|v| v.as_bool()).unwrap_or(false);
         let st = match what {
             "push" => self.sync_with(false, again),
             "pull" => self.sync_now(true),
             "status" => Some(crate::sync::load_state(&self.paths.dir, &remote.url, &key)),
-            w => return Err(err(format!("sync: unknown {w:?} (status, push or pull)"))),
+            w => return Err(err(format!("sync: unknown {w:?} (status, push, pull, accept or retire)"))),
         }
         .unwrap_or_default();
         let on_server = if what == "status" { remote.count(&key).map_err(|e| e.to_string()) } else { Err(String::new()) };
@@ -971,11 +1015,17 @@ impl Daemon {
                 });
                 {
                     let mut private = self.private.lock().unwrap();
+                    let (mut asides, mut aside_turn) = private.remove(&sid).map(|p| (p.asides, p.aside_turn)).unwrap_or_default();
+                    asides.extend(cut.asides.iter().cloned());
                     if cut.any() {
-                        private.insert(sid.clone(), PrivateTurn { turn, echo: crate::private::Echo::new(&cut.asides, &cut.kept), whole });
+                        aside_turn = turn;
+                    }
+                    if cut.any() {
                         self.log(&json!({"ts": now(), "event": "private_aside", "session": sid, "turn": turn, "asides": cut.asides.len(), "whole": whole}));
-                    } else {
-                        private.remove(&sid);
+                    }
+                    if !asides.is_empty() {
+                        let echo = crate::private::Echo::new(&asides, &prompt);
+                        private.insert(sid.clone(), PrivateTurn { turn, whole, aside_turn, echo, asides });
                     }
                 }
                 // Recall first: the prompt is in the live window anyway, and
@@ -1419,11 +1469,13 @@ impl Daemon {
                 };
                 // A question how to build something plans nothing (ANA-308).
                 let (drafts, asked) = crate::distill::not_planned(d.drafts, prompt, !files.is_empty());
-                // The model never sees a private aside; a note that says one
-                // again all the same (from a note it knew, from a reply) is
-                // not kept (WEI-301).
+                // The model never sees a private aside; a note of the aside's
+                // turn that says it again all the same (from a note it knew)
+                // is not kept (WEI-301). A later turn's note that shares a
+                // word with it is the later turn's.
                 let n_drafts = drafts.len();
-                let drafts: Vec<Draft> = drafts.into_iter().filter(|x| !crate::private::holds_aside(&x.text) && self.unsaid(sid, turn, &x.text) == x.text).collect();
+                let in_aside_turn = self.private.lock().unwrap().get(sid).is_some_and(|p| p.aside_turn == turn);
+                let drafts: Vec<Draft> = drafts.into_iter().filter(|x| !crate::private::holds_aside(&x.text) && (!in_aside_turn || self.unsaid(sid, turn, &x.text) == x.text)).collect();
                 let aside_dropped = n_drafts - drafts.len();
                 let promoted = crate::repeats::promote(drafts, &checked.again, sid, &shown, &before);
                 // Near-copies of what is noted (other than what they replace,
@@ -2075,7 +2127,7 @@ impl Daemon {
     /// turn's private asides ([`crate::private::scrub`]).
     fn unsaid(&self, sid: &str, turn: i64, text: &str) -> String {
         match self.private.lock().unwrap().get(sid) {
-            Some(p) if p.turn == turn && !p.whole => crate::private::scrub(text, &p.echo),
+            Some(p) if !(p.whole && p.turn == turn) => crate::private::scrub(text, &p.echo),
             _ => text.to_string(),
         }
     }
@@ -2365,7 +2417,8 @@ impl Daemon {
         where_.push("MATCH(files, :files)".into());
         let params = filter.params().set("files", Value::Str(terms.join(" AND ")));
         let rs = self.store.query_with(&format!("SELECT {} FROM memory WHERE {} ORDER BY seq DESC LIMIT 3", crate::record::COLUMNS, where_.join(" AND ")), &params)?;
-        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).collect();
+        // A rule or decision of a machine not accepted yet stays out (WEI-302).
+        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| !crate::sync::held_back(r)).collect();
         if recs.is_empty() {
             return Ok(String::new());
         }
@@ -2412,7 +2465,7 @@ impl Daemon {
             where_.push("MATCH(files, :files)".into());
             let params = filter.params().set("files", Value::Str(terms.join(" AND ")));
             let rs = self.store.query_with(&format!("SELECT {} FROM memory WHERE {} ORDER BY seq DESC LIMIT 12", crate::record::COLUMNS, where_.join(" AND ")), &params)?;
-            let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| !shown.contains(&format!("[{}]", r.id))).collect();
+            let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| !shown.contains(&format!("[{}]", r.id)) && !crate::sync::held_back(r)).collect();
             if let Some(r) = recs.iter().find(|r| r.kind.is_knowledge()).or(recs.first()).cloned() {
                 let snip: String = r.text.chars().take(300).collect();
                 let label = ck.label_record(&r);
@@ -2839,6 +2892,9 @@ impl Daemon {
             return Err(err(format!("forget needs the id of a record, or the text to forget ({} characters or more)", crate::forget::MIN_CHARS)));
         }
         let wait = req.get("wait").and_then(|v| v.as_bool()).unwrap_or(false);
+        // Forgotten because the sync server said so: noted for the sync
+        // already, and nothing to send it.
+        let from_server = req.get("pulled").and_then(|v| v.as_bool()).unwrap_or(false);
         // From here nothing that holds the text is written.
         self.store.forgetting.add(&needles, now());
         // Which segment holds how many live rows before the deletes: those
@@ -2866,7 +2922,7 @@ impl Daemon {
         // CTX-33): a pull that runs meanwhile then either stores none of
         // them again or stores them before the deletes, which remove them.
         let present: Vec<String> = self.store.get(&ids)?.into_iter().map(|r| r.id).collect();
-        let mut noted = crate::sync::forget(&self.paths.dir, &present);
+        let mut noted = if from_server { Ok(()) } else { crate::sync::forget(&self.paths.dir, &present) };
         let (mut deleted, mut missing) = (Vec::new(), Vec::new());
         let mut forgotten = crate::receipt::Forgotten { texts: needles.clone(), ..Default::default() };
         for id in &ids {
@@ -2916,13 +2972,13 @@ impl Daemon {
         // One a pull stored after the look above, and the sync server's
         // rows go too.
         let late: Vec<String> = deleted.iter().filter(|d| !present.contains(d)).cloned().collect();
-        if noted.is_ok() {
+        if noted.is_ok() && !from_server {
             noted = crate::sync::forget(&self.paths.dir, &late);
         }
         if let Err(e) = noted {
             scrubbed.push(format!("noting it forgotten for the sync failed ({e}): a pull may bring it back"));
         }
-        let synced = (!deleted.is_empty() || !cut.is_empty()) && crate::sync::remote(&crate::paths::home()).is_some();
+        let synced = !from_server && (!deleted.is_empty() || !cut.is_empty()) && crate::sync::remote(&crate::paths::home()).is_some();
         let mut later = None;
         if !deleted.is_empty() || !cut.is_empty() {
             // The hold passes to the compaction, which releases it.
@@ -2946,7 +3002,7 @@ impl Daemon {
                 }) as Box<dyn FnOnce(&Daemon) + Send>);
                 scrubbed.push(format!("{what} being rewritten"));
                 if synced {
-                    scrubbed.push("its row on the sync server being deleted (a pull never brings it back here)".into());
+                    scrubbed.push("its row on the sync server being replaced by a tombstone, which every machine that pulled it forgets on its next pull".into());
                 }
             }
         }
