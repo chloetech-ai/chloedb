@@ -974,6 +974,9 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>, q: Option<Li
             if !l.teams.is_empty() {
                 out["teams"] = json!(l.teams);
             }
+            if !l.propensities.is_empty() {
+                out["propensities"] = json!(l.propensities);
+            }
             Ok(out)
         }
         "export_rank_log" => {

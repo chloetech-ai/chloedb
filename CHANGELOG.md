@@ -9,6 +9,30 @@ promises about the file format, the shard protocol and the old names.
 Every crate and package carries the release's version; between releases
 changes collect under "Unreleased".
 
+## Unreleased
+
+- **A rank log that evaluates rankings it never served.** A query's
+  `log` option takes `explore`, a logging policy: `epsilon`, `shuffle`,
+  `swap` or `softmax` (Plackett–Luce, by score or by rank) over the top
+  rows. The list is drawn by the request's id, so the same request draws
+  the same list. Each shown row's exact chance of being shown where it
+  was is answered (`propensities`) and logged with the chance of the list
+  down to it, the policy and the query's time (columns `propensity`,
+  `prefix_propensity`, `policy`, `took_ms`; an older log gains them with
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`). A coordinator draws the
+  same list as one database. The Python package passes it and answers
+  `propensities`, as the JavaScript package's embedded database does
+  ([query-language.md](docs/chloedb/query-language.md#exploring-a-log-that-evaluates-rankings-it-never-served)).
+- **chloedb-experiments** (a demo, phase 1 of the Experiments app). It
+  has simulated users in cohorts and five click models with trust bias,
+  over any table with queries and grades. Each impression is served as a
+  logged, exploring query, or drawn in the process bit for bit the same.
+  Eleven off-policy estimators (IPS, SNIPS, IIPS, RIPS, click models,
+  doubly robust, cascade doubly robust) come with intervals and warnings
+  when the log does not support a target. `check` replays each over many
+  logs against the exact truth
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md)).
+
 ## 0.3.8
 
 Durable one-row writes about 2.6 times as fast, typo and short substring
