@@ -9,11 +9,25 @@ ChloeDB is an embedded search database with SQL: full text, structured columns, 
 <a href="../chloedb/query-language.md"><b>SQL reference</b><span>Every statement, function and option.</span></a>
 </div>
 
+## Where to start
+
+| you are making | start with | then |
+|---|---|---|
+| a Python app, script or notebook, with the database in your process | [the quickstart's Python section](../quickstart.md#chloedb-from-python-with-no-server) (`pip install chloedb`, no server) | [Python](../chloedb/python.md), the [search guide](search.md), and [Build a search page](search-page.md) for a web app |
+| a JavaScript or TypeScript app (Node, Bun, Deno, a framework's server code) | [JavaScript](../chloedb/javascript.md): `npm install chloedb` and a database in your process | the [search guide](search.md), whose queries run as `await db.query(sql, params)` |
+| a server that several programs, languages or machines use | [the quickstart](../quickstart.md): install `chloedb-server`, a table, a search, the command center | [chloedb-server](../chloedb/server.md), and [Build an app on chloedb-server](../chloedb/build-an-app.md) for an app over its HTTP API |
+| a cluster: shards, replicas, failover | [Operate a cluster](operate-cluster.md), on one machine first | [Runbooks](../chloedb/runbooks.md) and [cluster limits](../chloedb/cluster-limits.md) |
+| retrieval for a language model | [Retrieval for RAG](rag.md) | [LangChain, LangGraph, LlamaIndex](frameworks.md) |
+| long-term memory for Claude Code | [Install ChloeCtx](../chloectx/setup.md): it plugs into Claude Code, and needs neither chloedb-server nor Python | [ChloeCtx](../chloectx/index.md) |
+
+Something failed? [Troubleshooting](../chloedb/troubleshooting.md) has the usual messages, each with what to do, and `chloedb-server doctor` checks this machine for their causes.
+
 ## Cookbook
 
 Complete programs for common jobs. Each one runs, as written, every time the code changes.
 
 <div class="doc-cards" markdown="1">
+<a href="search-page.md"><b>Build a search page</b><span>A search box for a small web app: typos, highlights, did you mean, more like this and a filter.</span></a>
 <a href="rag.md"><b>Retrieval for RAG</b><span>Chunk documents, search them by words and meaning, and hand a model the passages with their sources.</span></a>
 <a href="agent-memory.md"><b>Memory for an agent</b><span>Remember turns and facts, recall what matters to a new message, and keep facts current.</span></a>
 <a href="crawl-to-search.md"><b>Crawl a site into search</b><span>Point the crawler at a site, get a table with its fields, and search it.</span></a>

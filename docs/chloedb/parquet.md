@@ -43,6 +43,20 @@ Parquet columns have types, so a table made from a file takes them, and reads th
 
 Text reads as labels when no value is over 256 bytes and the values have 2.5 words or fewer on average, or each value repeats ten times on average (as the [SQLite import](sqlite.md#how-sqlite-columns-become-fields) judges). Column names that are not ChloeDB identifiers are respelled (`City Name` becomes `City_Name`; the plan lists each). A column named `id` (in any case) of integers or text without NULLs in the sample is the key; `--key` names another, and `--key ""` makes a table without one. A NaN or infinite float is read as NULL, and the import says how many were.
 
+A column fills only the field of its own name, and nothing renames one on the way in. A key column named otherwise, such as `_id` in BEIR's corpora and in MongoDB's documents, therefore does not fill a table keyed `id`: an import into one fails with `bad value for field id: NULL does not fit a KEYWORD field`, and a table made from the file has no key unless `--key` names one, since only a column named `id` becomes the key by itself. The plan's `columns` says which field each column fills, but it is read, not followed: a plan given back as `--schema` (or `schema=`) gives the table's schema, and a `columns` edited to `{"_id": "id"}` fails the same way. Two ways through:
+
+- **Keep the column's name as the key.** `--key _id` (`key="_id"` in Python, `?key=_id` over HTTP) makes `_id` the key of the table the import creates, and SQL reads it as any column (`WHERE _id = 'd1'`). To choose the fields' types, analyzers or an embedded vector field, create the table first with a key named `_id` and import into it with `--table`.
+- **Rename the column before the import**, in Arrow from Python, and write the rows with [`import_arrow`](#arrow-from-python) into the table you made:
+
+  ```python
+  import pyarrow.parquet as pq
+  t = pq.read_table("corpus.parquet")
+  t = t.rename_columns(["id" if c == "_id" else c for c in t.column_names])
+  db.import_arrow(t, table="docs")
+  ```
+
+A table made from a file without `--table` is named for the file, so Hugging Face's `corpus-00000-of-00001.parquet` makes `corpus_00000_of_00001`: give `--table corpus` (`table="corpus"`).
+
 Into a table that exists, a column fills its field when its values do: any integer, float or decimal for a number, dates, timestamps and ISO 8601 text for a `TIMESTAMP`, a list of `n` numbers (or `4n` little-endian float32 bytes) for a `VECTOR(n)`, a list for a multi-valued field, structs, maps and lists for a `JSON` field. Integers that are Unix times (seconds, milliseconds or microseconds, by their size) fill a `TIMESTAMP` too.
 
 ### Directories and Hive partitions

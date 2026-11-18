@@ -3,7 +3,8 @@
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.3.7). The
+(November 2026, every crate and package at version 0.3.7 but the early
+Workbench, `chloedb-workbench`, at 0.1.0). The
 [changelog](../CHANGELOG.md) says what changed.
 
 ChloeDB is pre-1.0: the statements below are the current behaviour, which
@@ -105,7 +106,8 @@ server of their own commit.
 **Not promised.** A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.7), and keeps it between releases: name a
+version of the last release (0.3.7; `chloedb-workbench` its own, 0.1.0),
+and keeps it between releases: name a
 build from a commit after a release by its commit.
 
 ## A cluster of mixed versions
@@ -237,7 +239,7 @@ the command center marks their pages.
 
 | feature | routes | what it is |
 |---|---|---|
-| `cloud` | `/v1/admin/cloud/*`, `/v1/admin/aws/*`, `/v1/admin/digitalocean/*` | [clusters made on AWS or DigitalOcean](chloedb/server.md#in-the-cloud) from the command center |
+| `cloud` | `/v1/admin/cloud/*`, `/v1/admin/aws/*`, `/v1/admin/digitalocean/*`, `/v1/admin/gcp/*` | [clusters made on AWS, DigitalOcean or Google Cloud](chloedb/server.md#in-the-cloud) from the command center |
 | `hub` | `/v1/admin/hub/*`, `/c/<name>/` | [the hub](chloedb/server.md#many-clusters-from-one-command-center): a book of other clusters, and calls forwarded to them |
 | `autoscale` | `/v1/admin/kube/autoscale/*`, `/v1/admin/autoscale/*`, the `StrataCluster`'s `spec.autoscale` | [the operator's autoscaler](chloedb/server.md#autoscaling) |
 | `oncall` | `/v1/admin/oncall/*` | [the on-call agent](chloedb/server.md#the-on-call-agent) |
@@ -247,8 +249,9 @@ leaves it when its shape is settled; the changelog says so.
 
 ## Demos
 
-These apps show what ChloeDB can do and are not part of its releases or
-their promises:
+These apps show what ChloeDB can do and are not part of ChloeDB's
+promises (`chloedb-netops` is attached prebuilt to the server's release, as
+the crawler and Sheets are, but carries no promise of its own):
 
 - `chloedb-netops`, network operations on a simulated carrier network;
 - `chloedb-hn`, Hacker News searched, asked in sentences and completed as typed;
@@ -275,7 +278,9 @@ one does not wait for the engine's tests. An app whose manifest says
   ([SECURITY.md](../SECURITY.md)).
 - That a release tag is never rebuilt: the release workflows replace the
   assets of an existing tag (`--clobber`). Check a download against the
-  release's `SHA256SUMS` (Python, JavaScript) or `.sha256` (server).
+  release's `SHA256SUMS` (Python, JavaScript) or `.sha256` (server), or
+  PyPI's attestations ([checking what you download](../SECURITY.md#checking-what-you-download)).
+- Signed release archives, or an SBOM.
 - Stability of anything not described above: the Rust crate's API, the
   command center's routes, the operator's resource beyond its documented
   fields.

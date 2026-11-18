@@ -1,6 +1,6 @@
 use std::fmt;
 
-/// Errors of every Strata layer.
+/// Errors of every ChloeDB layer.
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),
@@ -17,7 +17,7 @@ pub enum Error {
     /// A query needed more memory than its budget had left
     /// ([`crate::query::memory`]).
     Memory(String),
-    /// A service Strata calls refused or did not answer: a hosted
+    /// A service ChloeDB calls refused or did not answer: a hosted
     /// embedding model ([`crate::hosted`]), after its retries.
     Unavailable(String),
 }

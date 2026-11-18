@@ -19,7 +19,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
 </head>
 <body class="docs">
 <!-- Google Tag Manager (noscript) -->
@@ -40,6 +40,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
@@ -48,8 +54,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
       <a href="next-items.html">Next items</a>
@@ -64,18 +72,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
       <a href="java.html">Java and JDBC</a>
       <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
       <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -86,15 +105,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
-      <a href="chloectx.html">ChloeCtx</a>
-      <a href="chloectx-setup.html">Install ChloeCtx</a>
-      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
-      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
-      <a href="chloectx-capsules.html">Context capsules</a>
-      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
       <span class="eyebrow">Cookbook</span>
@@ -102,7 +116,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
       <p class="doc-version">These docs describe release 0.3.7.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-documents">The documents</a></li><li><a href="#split-and-store">Split and store</a></li><li><a href="#retrieve">Retrieve</a></li><li><a href="#ask">Ask</a></li><li><a href="#make-it-better">Make it better</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-documents">The documents</a></li><li><a href="#split-and-store">Split and store</a></li><li><a href="#retrieve">Retrieve</a></li><li><a href="#ask">Ask</a></li><li><a href="#make-it-better">Make it better</a></li><li><a href="#another-embedding-model">Another embedding model</a></li></ol></details>
     <div class="doc-body">
 
 <p>A model answers questions about your documents well when it is handed the right passages, with their sources. This recipe splits documents into passages, stores them in ChloeDB with a vector each, and retrieves for a question by words and meaning at once, at most two passages from any one document, so that the model sees several sources. Then it builds the prompt and, if you have an Anthropic API key, asks Claude.</p>
@@ -137,7 +151,7 @@ The warranty does not cover water damage or a cracked screen.
 To make a claim, the customer needs the order number and a description of the fault.
 A repaired or replaced item keeps the remaining warranty of the original.</pre>
 <h2 id="split-and-store">Split and store<a class="anchor" href="#split-and-store" aria-label="Link to this section">#</a></h2>
-<p>A passage is a section of a file: the text under one heading, cut further if it is long. Each passage keeps its file and heading, so an answer can cite them. The <code>emb</code> field is computed from the heading and the text by the embedding model when a row is written:</p>
+<p>A passage is a section of a file: the text under one heading, cut further if it is long. Each passage keeps its file and heading, so an answer can cite them. <code>text</code> is generated from the heading and the body, so that BM25 reads all of a passage's words as one field (it is indexed, not stored), and the <code>emb</code> field is computed from the same two by the embedding model when a row is written:</p>
 <pre data-lang="python" data-title="ingest.py">import pathlib
 import re
 import chloedb
@@ -150,6 +164,7 @@ SCHEMA = {
         {&quot;name&quot;: &quot;doc&quot;, &quot;type&quot;: &quot;keyword&quot;},
         {&quot;name&quot;: &quot;heading&quot;, &quot;type&quot;: &quot;text&quot;},
         {&quot;name&quot;: &quot;body&quot;, &quot;type&quot;: &quot;text&quot;},
+        {&quot;name&quot;: &quot;text&quot;, &quot;type&quot;: &quot;text&quot;, &quot;from&quot;: [&quot;heading&quot;, &quot;body&quot;]},
         {&quot;name&quot;: &quot;n&quot;, &quot;type&quot;: &quot;int&quot;},
         {&quot;name&quot;: &quot;emb&quot;, &quot;type&quot;: &quot;vector&quot;,
          &quot;embed&quot;: {&quot;from&quot;: [&quot;heading&quot;, &quot;body&quot;], &quot;model&quot;: &quot;potion-retrieval-32M&quot;}},
@@ -191,7 +206,7 @@ db.close()</pre>
 
 QUERY = &quot;&quot;&quot;
 SELECT id, doc, heading, body FROM passages
-ORDER BY rrf(bm25(body, :q), bm25(heading, :q), similarity(emb, :v)) DESC
+ORDER BY rrf(bm25(text, :q), similarity(emb, :v)) DESC
 MAX 2 PER doc
 LIMIT :k
 &quot;&quot;&quot;
@@ -211,6 +226,7 @@ warranty.md#1 | Claims
 returns.md#0 | Returns
 shipping.md#1 | Express</pre>
 <p>The question says <em>parcel</em> and <em>broken</em>, which no passage does: the vector side finds the damaged-items passage by meaning, and BM25 still ranks exact terms such as an order number or a product name first when a question has them.</p>
+<p>BM25 ranks <code>text</code>, one field with all of a passage's words, rather than each field on its own. <code>rrf</code> gives every ranking it fuses the same weight, so <code>rrf(bm25(heading, :q), bm25(body, :q), similarity(emb, :v))</code> counts the words twice against the meaning once, and a heading of two words as much as the body. On BEIR's SciFact with potion-retrieval-32M's vectors, nDCG@10 was 0.7006 for <code>rrf(bm25(body, :q), similarity(emb, :v))</code> over one field of title and text, against 0.6513 for <code>rrf(bm25(text, :q), bm25(title, :q), similarity(emb, :v))</code> over the two fields (measured on 17 November 2026 on a shared 4-core cloud container). Give a table one generated field of the text you search (<code>"from": [...]</code>), and keep the separate fields for showing and filtering.</p>
 <h2 id="ask">Ask<a class="anchor" href="#ask" aria-label="Link to this section">#</a></h2>
 <p>The passages go into the prompt with their sources, and the model is told to answer from them and cite them. Without <code>ANTHROPIC_API_KEY</code> set, the script prints the prompt it would send:</p>
 <pre data-lang="python" data-title="ask.py">import os
@@ -276,10 +292,34 @@ Question: Can I get express delivery for a sofa?</pre>
 <ul>
 <li><strong>Rank by more than text.</strong> Multiply in what you know about a passage: <code>ORDER BY rrf(...) * (1 + 0.2 * is_current) DESC</code>, or decay old ones by date with <a href="sql.html#decayfield-origin-scale--closeness-to-a-value"><code>decay</code></a>.</li>
 <li><strong>Filter before ranking.</strong> A <code>WHERE</code> clause (a product line, a language, what a user may see) is planned with the search, not applied after it: <code>WHERE audience IN ('public', :team)</code>.</li>
-<li><strong>Rerank the top.</strong> A cross-encoder reads the question and each of the top passages together and scores them more precisely, in the same query: <a href="sql.html#rerank-phases">rerank phases</a>.</li>
+<li><strong>Rerank the top.</strong> A cross-encoder reads the question and each of the top passages together and scores them more precisely, in the same query: <a href="sql.html#cross-encoders-cross_encodermodel-fields-query">cross-encoders</a>. The released builds run the hosted ones (<code>cohere/rerank-v3.5</code>, <code>voyage/rerank-2.5</code> or <code>jina/jina-reranker-v2-base-multilingual</code>, with the provider's key), not the local ones (below).</li>
 <li><strong>Serve it.</strong> The same query runs on chloedb-server over HTTP (<code>chloedb.connect(url)</code> has the same <code>query</code>), so several workers can retrieve from one index, and on a cluster when the documents outgrow a machine.</li>
-<li><strong>Bring your own vectors.</strong> A <code>VECTOR(1024)</code> field without <code>embed</code> takes vectors you computed, and <code>similarity(emb, :v)</code> takes the question's vector as a list. Hosted models (<code>openai/text-embedding-3-small</code>, <code>voyage/voyage-3.5</code> and others) can also fill a field: <a href="server.html#embedded-vector-fields">embedded vector fields</a>.</li>
 </ul>
+<h2 id="another-embedding-model">Another embedding model<a class="anchor" href="#another-embedding-model" aria-label="Link to this section">#</a></h2>
+<p>The released builds, <code>pip install chloedb</code>, <code>npm install chloedb</code>, the prebuilt chloedb-server (from PyPI, the install script or the image), run three kinds of embedding model:</p>
+<ul>
+<li>the static models this page uses, <code>potion-retrieval-32M</code> and <code>potion-base-8M</code> (and their <code>-int8</code> copies), which <code>chloedb-server fetch-model</code> downloads;</li>
+<li>hosted models, which ChloeDB calls with your key, such as <code>openai/text-embedding-3-small</code> or <code>voyage/voyage-3.5</code>, and models served by Ollama on your machine, such as <code>ollama/bge-m3</code>, with no key (<a href="server.html#hosted-models">hosted models</a>);</li>
+<li>vectors you compute yourself.</li>
+</ul>
+<p>They do not run BERT models such as <code>bge-small-en-v1.5</code> and <code>snowflake-arctic-embed-m-v1.5</code>, ColBERT models, or local cross-encoders such as <code>ms-marco-MiniLM-L-6-v2</code>: those need a build with the <code>bert</code> feature (or <code>onnx</code> for the int8 cross-encoders), which only a build from source has (<code>cargo build --release --features bert</code> in <code>chloedb-server</code>, <code>maturin develop --release --features bert</code> in <code>chloedb-py</code>). On a released build, <code>chloedb-server fetch-model bge-small-en-v1.5</code> downloads the model and then stops with an error that it is a BERT model, which needs a build with the <code>bert</code> feature. The numbers the <a href="server.html#embedded-vector-fields">server reference</a> gives for bge-small were measured with such a build.</p>
+<p>To use one of those models, or any other, compute the vectors where it runs and store them: a vector field without <code>embed</code>, with the model's dimensions, takes the vectors each row brings, and <code>similarity(emb, :v)</code> takes the question's vector as a list. Embed the question with the same model:</p>
+<pre data-lang="python"># ingest.py and retrieve.py with vectors of your own, here from fastembed (pip install fastembed)
+from fastembed import TextEmbedding
+
+model = TextEmbedding(&quot;BAAI/bge-small-en-v1.5&quot;)
+
+# ingest.py: the vector field takes the model&#x27;s dimensions instead of the model,
+SCHEMA[&quot;fields&quot;][-1] = {&quot;name&quot;: &quot;emb&quot;, &quot;type&quot;: &quot;vector&quot;, &quot;dim&quot;: 384}
+# and each row brings its vector (rows as ingest.py builds them)
+for row, vector in zip(rows, model.embed([f&quot;{r[&#x27;heading&#x27;]}\n{r[&#x27;body&#x27;]}&quot; for r in rows])):
+    row[&quot;emb&quot;] = vector.tolist()
+db.upsert(rows)
+
+# retrieve.py: the question&#x27;s vector by the same model, as a list
+v = next(iter(model.query_embed(question))).tolist()
+hits = db.query(QUERY, q=question, v=v, k=k)</pre>
+<p>The block is not run with this page, as it needs a library besides <code>chloedb</code>. A row written without a vector has none: a vector ranking leaves it out, and <code>rrf</code> finds it by its words alone.</p>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/guide/rag.md">Edit this page on GitHub</a>
@@ -295,6 +335,7 @@ Question: Can I get express delivery for a sofa?</pre>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
