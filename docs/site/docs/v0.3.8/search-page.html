@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Build a search page · ChloeDB docs</title>
+<link rel="icon" href="../../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="This page builds the search page of a small shop in Python: a search box that forgives typos, the words it matched highlighted in the results, &quot;did you mean&quot; under a misspelt search, a filter by category with the…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/guide/search-page.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../../features.html">Features</a>
+    <a href="../../scale.html">Laptop to cloud</a>
+    <a href="../../command-center.html">Command center</a>
+    <a href="../../benchmarks.html">Benchmarks</a>
+    <a href="../../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html" aria-current="page">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Search and SQL</span>
+      <h1>Build a search page</h1>
+      <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.8/docs/guide/run.py">docs/guide/run.py</a>).</p>
+      <p class="doc-version">These docs describe release 0.3.8. <a href="../../docs/index.html">The docs of main</a> describe the code as it is now.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#why-the-page-talks-to-a-server">Why the page talks to a server</a></li><li><a href="#the-catalogue">The catalogue</a></li><li><a href="#the-queries-as-functions">The queries, as functions</a></li><li><a href="#the-page">The page</a></li><li><a href="#the-same-page-in-flask">The same page in Flask</a></li><li><a href="#before-other-people-use-it">Before other people use it</a></li><li><a href="#next">Next</a></li></ol></details>
+    <div class="doc-body">
+
+<p>This page builds the search page of a small shop in Python: a search box that forgives typos, the words it matched highlighted in the results, "did you mean" under a misspelt search, a filter by category with the count of each, and "more like this" under every product. The web page runs on Python's own <code>http.server</code>, so it needs nothing but the standard library and <code>chloedb</code>; the <a href="#the-same-page-in-flask">Flask version</a> at the end uses the same functions.</p>
+<p>You need Python 3.10 or later with the <code>chloedb</code> package and <code>chloedb-server</code> on your <code>PATH</code>. The package's <code>server</code> extra installs both, prebuilt (from 0.3.7):</p>
+<pre data-lang="sh">python3 -m venv .venv &amp;&amp; . .venv/bin/activate
+pip install &quot;chloedb[server]&quot;     # chloedb, and chloedb-server of the same release</pre>
+<h2 id="why-the-page-talks-to-a-server">Why the page talks to a server<a class="anchor" href="#why-the-page-talks-to-a-server" aria-label="Link to this section">#</a></h2>
+<p>Two parts of a search page are routes of <a href="server.html#http-api">chloedb-server</a>, not methods of a database opened in your process: highlighting (<code>POST /v1/highlight</code>) and did you mean (<code>POST /v1/correct</code>). A web app also tends to run as more than one process: Flask's debug reloader runs your module twice, and gunicorn starts several workers. Only one process at a time can open a database file to write it, and a second one fails with <code>BusyError: busy: the database is open elsewhere</code>.</p>
+<p>So the catalogue lives in chloedb-server, and the page is its client through <code>chloedb.connect</code>, which has the same methods as a database in your process (<code>query</code>, <code>insert</code>, <code>search</code>, <code>get</code>). Every process of the app can connect, and none of them holds the file. A page that needs neither highlights nor did you mean can skip the server: each process opens the file with <code>chloedb.open(path, read_only=True)</code>, and one other process writes it (<a href="python.html#a-database-in-your-process">Python</a>).</p>
+<h2 id="the-catalogue">The catalogue<a class="anchor" href="#the-catalogue" aria-label="Link to this section">#</a></h2>
+<p>Seventeen products, one JSON object a line:</p>
+<pre data-lang="json" data-title="products.jsonl">{&quot;id&quot;: &quot;p01&quot;, &quot;name&quot;: &quot;Waterproof hiking jacket&quot;, &quot;description&quot;: &quot;A light shell jacket that keeps the rain out on long hikes.&quot;, &quot;category&quot;: &quot;jackets&quot;, &quot;price&quot;: 129.0}
+{&quot;id&quot;: &quot;p02&quot;, &quot;name&quot;: &quot;Insulated winter jacket&quot;, &quot;description&quot;: &quot;A warm down jacket for cold city winters.&quot;, &quot;category&quot;: &quot;jackets&quot;, &quot;price&quot;: 189.0}
+{&quot;id&quot;: &quot;p03&quot;, &quot;name&quot;: &quot;Packable rain jacket&quot;, &quot;description&quot;: &quot;A waterproof jacket that folds into its own pocket.&quot;, &quot;category&quot;: &quot;jackets&quot;, &quot;price&quot;: 89.0}
+{&quot;id&quot;: &quot;p04&quot;, &quot;name&quot;: &quot;Fleece jacket&quot;, &quot;description&quot;: &quot;A soft fleece layer for cold mornings and campfires.&quot;, &quot;category&quot;: &quot;jackets&quot;, &quot;price&quot;: 69.0}
+{&quot;id&quot;: &quot;p05&quot;, &quot;name&quot;: &quot;Kids&#x27; rain jacket&quot;, &quot;description&quot;: &quot;A bright waterproof jacket with a hood, for children.&quot;, &quot;category&quot;: &quot;jackets&quot;, &quot;price&quot;: 49.0}
+{&quot;id&quot;: &quot;p06&quot;, &quot;name&quot;: &quot;Softshell cycling jacket&quot;, &quot;description&quot;: &quot;A windproof jacket for cool rides, with reflective trim.&quot;, &quot;category&quot;: &quot;jackets&quot;, &quot;price&quot;: 109.0}
+{&quot;id&quot;: &quot;p07&quot;, &quot;name&quot;: &quot;Trail running shoes&quot;, &quot;description&quot;: &quot;Grippy, waterproof shoes for muddy trails.&quot;, &quot;category&quot;: &quot;shoes&quot;, &quot;price&quot;: 99.0}
+{&quot;id&quot;: &quot;p08&quot;, &quot;name&quot;: &quot;Leather office shoes&quot;, &quot;description&quot;: &quot;Classic leather shoes for the office.&quot;, &quot;category&quot;: &quot;shoes&quot;, &quot;price&quot;: 149.0}
+{&quot;id&quot;: &quot;p09&quot;, &quot;name&quot;: &quot;Hiking boots&quot;, &quot;description&quot;: &quot;Waterproof leather boots with ankle support for rocky paths.&quot;, &quot;category&quot;: &quot;shoes&quot;, &quot;price&quot;: 159.0}
+{&quot;id&quot;: &quot;p10&quot;, &quot;name&quot;: &quot;Wool hiking socks&quot;, &quot;description&quot;: &quot;Warm socks that dry fast on wet hikes.&quot;, &quot;category&quot;: &quot;shoes&quot;, &quot;price&quot;: 15.0}
+{&quot;id&quot;: &quot;p11&quot;, &quot;name&quot;: &quot;Rain cover for backpacks&quot;, &quot;description&quot;: &quot;A waterproof cover that fits 20 to 40 litre packs.&quot;, &quot;category&quot;: &quot;gear&quot;, &quot;price&quot;: 19.0}
+{&quot;id&quot;: &quot;p12&quot;, &quot;name&quot;: &quot;Daypack, 25 litres&quot;, &quot;description&quot;: &quot;A light backpack for day hikes, with a pocket for a water bladder.&quot;, &quot;category&quot;: &quot;gear&quot;, &quot;price&quot;: 75.0}
+{&quot;id&quot;: &quot;p13&quot;, &quot;name&quot;: &quot;Headlamp&quot;, &quot;description&quot;: &quot;A bright rechargeable headlamp for night hikes and camping.&quot;, &quot;category&quot;: &quot;gear&quot;, &quot;price&quot;: 35.0}
+{&quot;id&quot;: &quot;p14&quot;, &quot;name&quot;: &quot;Camping stove&quot;, &quot;description&quot;: &quot;A small gas stove that boils a litre of water in four minutes.&quot;, &quot;category&quot;: &quot;gear&quot;, &quot;price&quot;: 59.0}
+{&quot;id&quot;: &quot;p15&quot;, &quot;name&quot;: &quot;Down sleeping bag&quot;, &quot;description&quot;: &quot;A warm sleeping bag for cold nights in the mountains.&quot;, &quot;category&quot;: &quot;gear&quot;, &quot;price&quot;: 219.0}
+{&quot;id&quot;: &quot;p16&quot;, &quot;name&quot;: &quot;Insulated water bottle&quot;, &quot;description&quot;: &quot;Keeps drinks cold for a day or hot for twelve hours.&quot;, &quot;category&quot;: &quot;gear&quot;, &quot;price&quot;: 25.0}
+{&quot;id&quot;: &quot;p17&quot;, &quot;name&quot;: &quot;Trekking poles&quot;, &quot;description&quot;: &quot;Light aluminium poles that take the load off your knees on steep descents.&quot;, &quot;category&quot;: &quot;gear&quot;, &quot;price&quot;: 65.0}</pre>
+<p>"More like this" compares products by meaning, with a vector that ChloeDB computes from each product's name and description by a small embedding model. Fetch the model once (about 130 MB, into <code>~/.local/share/chloedb/models</code>, or wherever <code>CHLOEDB_MODELS</code> says), then start the server on a new database file. It listens on <code>127.0.0.1:7700</code>, which only this machine can reach:</p>
+<pre data-lang="sh">chloedb-server fetch-model potion-retrieval-32M
+chloedb-server --db shop.chloedb &gt; server.log 2&gt;&amp;1 &amp;
+server=$!
+until curl -sf http://127.0.0.1:7700/livez &gt; /dev/null; do sleep 0.2; done</pre>
+<p>On your own machine, run <code>chloedb-server --db shop.chloedb</code> in a terminal of its own instead, and leave it running.</p>
+<p>The table has the fields to show (<code>name</code>, <code>description</code>, <code>price</code>), a keyword to filter on (<code>category</code>), <code>body</code>, a text field generated from the name and the description, which is what the search box searches, and <code>emb</code>, the vector:</p>
+<pre data-lang="python" data-title="load.py">import json
+import chloedb
+
+db = chloedb.connect(&quot;http://127.0.0.1:7700&quot;)
+db.sql(&quot;&quot;&quot;
+    CREATE TABLE products (
+        id KEYWORD PRIMARY KEY,
+        name TEXT,
+        description TEXT,
+        category KEYWORD,
+        price FLOAT,
+        body TEXT OPTIONS(from = &#x27;name, description&#x27;),
+        emb VECTOR OPTIONS(embed = &#x27;name, description&#x27;, model = &#x27;potion-retrieval-32M&#x27;)
+    )
+&quot;&quot;&quot;)
+with open(&quot;products.jsonl&quot;) as f:
+    print(db.insert([json.loads(line) for line in f], table=&quot;products&quot;), &quot;products&quot;)</pre>
+<pre data-lang="sh">python3 load.py</pre>
+<pre data-lang="text" data-title="Output" class="output">17 products</pre>
+<h2 id="the-queries-as-functions">The queries, as functions<a class="anchor" href="#the-queries-as-functions" aria-label="Link to this section">#</a></h2>
+<p>Everything the page asks the database is in one module. Values always go in as parameters (<code>:q</code>, <code>:category</code>), never into the SQL text, so nothing a visitor types can change a statement:</p>
+<pre data-lang="python" data-title="shop.py">&quot;&quot;&quot;The shop&#x27;s search: what the page asks chloedb-server, as functions.&quot;&quot;&quot;
+import json
+import urllib.request
+
+import chloedb
+
+SERVER = &quot;http://127.0.0.1:7700&quot;
+db = chloedb.connect(SERVER)
+
+
+def where(q, category=None, max_price=None):
+    &quot;&quot;&quot;The WHERE clause and parameters of a search for q.&quot;&quot;&quot;
+    conds, params = [&quot;MATCH(body, :q, fuzzy =&gt; &#x27;auto&#x27;)&quot;], {&quot;q&quot;: q}
+    if category:
+        conds.append(&quot;category = :category&quot;)
+        params[&quot;category&quot;] = category
+    if max_price is not None:
+        conds.append(&quot;price &lt;= :max_price&quot;)
+        params[&quot;max_price&quot;] = max_price
+    return &quot; AND &quot;.join(conds), params
+
+
+def search(q, category=None, max_price=None, limit=10):
+    &quot;&quot;&quot;The products with q&#x27;s words, typos forgiven, best match first.&quot;&quot;&quot;
+    cond, params = where(q, category, max_price)
+    sql = f&quot;&quot;&quot;SELECT id, name, description, category, price FROM products
+              WHERE {cond} ORDER BY bm25(body, :q) DESC LIMIT :limit&quot;&quot;&quot;
+    return db.query(sql, params, limit=limit).dicts()
+
+
+def categories(q, max_price=None):
+    &quot;&quot;&quot;How many products each category has for q: the filter&#x27;s counts.&quot;&quot;&quot;
+    cond, params = where(q, max_price=max_price)
+    sql = f&quot;&quot;&quot;SELECT category, COUNT(*) AS n FROM products
+              WHERE {cond} GROUP BY category ORDER BY n DESC, category&quot;&quot;&quot;
+    return db.query(sql, params).rows
+
+
+def more_like(key, limit=3):
+    &quot;&quot;&quot;The products nearest in meaning to the product with this key.&quot;&quot;&quot;
+    sql = &quot;&quot;&quot;SELECT id, name, price FROM products WHERE id &lt;&gt; :key
+             ORDER BY similarity(emb, :v) DESC LIMIT :limit&quot;&quot;&quot;
+    return db.query(sql, key=key, v={&quot;vector_of&quot;: key}, limit=limit).dicts()
+
+
+def post(route, body):
+    &quot;&quot;&quot;Sends a JSON body to a route of the server and returns its answer.&quot;&quot;&quot;
+    request = urllib.request.Request(SERVER + route, data=json.dumps(body).encode(),
+                                     headers={&quot;content-type&quot;: &quot;application/json&quot;})
+    with urllib.request.urlopen(request) as answer:
+        return json.load(answer)
+
+
+def highlight(q, texts):
+    &quot;&quot;&quot;Each text, HTML-escaped, with the words q matches between &lt;mark&gt; tags.&quot;&quot;&quot;
+    answer = post(&quot;/v1/highlight&quot;, {&quot;table&quot;: &quot;products&quot;, &quot;field&quot;: &quot;body&quot;,
+                                    &quot;query&quot;: q, &quot;texts&quot;: texts, &quot;size&quot;: 0})
+    return answer[&quot;texts&quot;]
+
+
+def did_you_mean(q):
+    &quot;&quot;&quot;q with its misspelt words corrected, or None when it has none.&quot;&quot;&quot;
+    answer = post(&quot;/v1/correct&quot;, {&quot;table&quot;: &quot;products&quot;, &quot;field&quot;: &quot;body&quot;, &quot;text&quot;: q})
+    return answer[&quot;text&quot;] if answer[&quot;changed&quot;] else None</pre>
+<p>The sections below try each function from Python before the page puts them together.</p>
+<h3 id="typos">Typos<a class="anchor" href="#typos" aria-label="Link to this section">#</a></h3>
+<p><code>MATCH(body, :q, fuzzy =&gt; 'auto')</code> keeps the products that have every word of the search, each spelt as typed or an edit away (two edits for words of six letters or more; none for words of one or two letters). <code>bm25(body, :q)</code> ranks them, and since it ranks the same text on the same field, it takes the <code>MATCH</code>'s <code>fuzzy</code> too (<a href="sql.html#typos-and-synonyms">typos</a>). So "jaket" finds every jacket:</p>
+<pre data-lang="python">import shop
+
+for p in shop.search(&quot;jaket&quot;):
+    print(p[&quot;id&quot;], p[&quot;name&quot;], p[&quot;price&quot;])</pre>
+<pre data-lang="text" data-title="Output" class="output">p05 Kids&#x27; rain jacket 49.0
+p02 Insulated winter jacket 189.0
+p03 Packable rain jacket 89.0
+p06 Softshell cycling jacket 109.0
+p01 Waterproof hiking jacket 129.0
+p04 Fleece jacket 69.0</pre>
+<p>Typos are forgiven only where a query asks for it: <code>db.search(text)</code> and the table page of the command center search the words as written, so a search box should send its text through a query with <code>fuzzy =&gt; 'auto'</code>, as <code>shop.search</code> does. Every word of the search must be there; for a box where any word will do, rank with <code>bm25(body, :q, fuzzy =&gt; 'auto')</code> and leave the <code>MATCH</code> out (a ranked <code>bm25</code> returns the rows that have any of its words).</p>
+<h3 id="a-filter-with-its-counts">A filter, with its counts<a class="anchor" href="#a-filter-with-its-counts" aria-label="Link to this section">#</a></h3>
+<p>The filter is one more condition in the <code>WHERE</code>, and its counts are a <code>GROUP BY</code> over the same conditions, so each count is the number of products its link shows:</p>
+<pre data-lang="python">import shop
+
+print(shop.categories(&quot;waterprof&quot;))
+for p in shop.search(&quot;waterprof&quot;, category=&quot;shoes&quot;, max_price=150):
+    print(p[&quot;id&quot;], p[&quot;name&quot;], p[&quot;price&quot;])</pre>
+<pre data-lang="text" data-title="Output" class="output">[[&#x27;jackets&#x27;, 3], [&#x27;shoes&#x27;, 2], [&#x27;gear&#x27;, 1]]
+p07 Trail running shoes 99.0</pre>
+<h3 id="highlights">Highlights<a class="anchor" href="#highlights" aria-label="Link to this section">#</a></h3>
+<p><code>POST /v1/highlight</code> marks the words a search matches in any texts you send it, as the field's analyzer reads them, so "waterprof" marks <em>Waterproof</em> and "jaket" marks <em>jacket</em>. The answer is HTML-escaped, with <code>&lt;mark&gt;</code> tags around each match, ready to put in a page (<code>size</code> cuts each text to the stretch of about that many characters with the most matches; <code>0</code> keeps it whole):</p>
+<pre data-lang="python">import shop
+
+hits = shop.search(&quot;waterprof jaket&quot;)
+for text in shop.highlight(&quot;waterprof jaket&quot;, [p[&quot;name&quot;] for p in hits] + [p[&quot;description&quot;] for p in hits]):
+    print(text)</pre>
+<pre data-lang="text" data-title="Output" class="output">Kids&amp;#x27; rain &lt;mark&gt;jacket&lt;/mark&gt;
+Packable rain &lt;mark&gt;jacket&lt;/mark&gt;
+&lt;mark&gt;Waterproof&lt;/mark&gt; hiking &lt;mark&gt;jacket&lt;/mark&gt;
+A bright &lt;mark&gt;waterproof&lt;/mark&gt; &lt;mark&gt;jacket&lt;/mark&gt; with a hood, for children.
+A &lt;mark&gt;waterproof&lt;/mark&gt; &lt;mark&gt;jacket&lt;/mark&gt; that folds into its own pocket.
+A light shell &lt;mark&gt;jacket&lt;/mark&gt; that keeps the rain out on long hikes.</pre>
+<p>Highlighting reads typos a little more strictly than the search does: a word of four letters or fewer is marked only where it is spelt as typed.</p>
+<h3 id="did-you-mean">Did you mean<a class="anchor" href="#did-you-mean" aria-label="Link to this section">#</a></h3>
+<p><code>POST /v1/correct</code> replaces the words of a search that no product has with the word of the field they most likely meant. It suggests a word only when it is fairly sure, which on a small catalogue means a word that many products use: one edit from what was typed, and in five products or more (<a href="sql.html#did-you-mean-correcting-a-querys-words">did you mean</a>). Six products say "jacket", and two say "leather", so the first typo gets a suggestion and the second does not, although the search finds both:</p>
+<pre data-lang="python">import shop
+
+print(shop.did_you_mean(&quot;waterprof jaket&quot;))
+print(shop.did_you_mean(&quot;lether&quot;))
+print([p[&quot;name&quot;] for p in shop.search(&quot;lether&quot;)])</pre>
+<pre data-lang="text" data-title="Output" class="output">waterproof jacket
+None
+[&#x27;Leather office shoes&#x27;, &#x27;Hiking boots&#x27;]</pre>
+<h3 id="more-like-this">More like this<a class="anchor" href="#more-like-this" aria-label="Link to this section">#</a></h3>
+<p><code>{"vector_of": key}</code> is the stored vector of the row with that key, so ordering by <code>similarity(emb, :v)</code> lists the products nearest it in meaning. <code>id &lt;&gt; :key</code> leaves out the product itself, and any other condition (the same category, in stock) goes in the same <code>WHERE</code>:</p>
+<pre data-lang="python">import shop
+
+for p in shop.more_like(&quot;p01&quot;):
+    print(p[&quot;id&quot;], p[&quot;name&quot;])</pre>
+<pre data-lang="text" data-title="Output" class="output">p03 Packable rain jacket
+p05 Kids&#x27; rain jacket
+p11 Rain cover for backpacks</pre>
+<h2 id="the-page">The page<a class="anchor" href="#the-page" aria-label="Link to this section">#</a></h2>
+<p><code>app.py</code> serves the page at <code>http://127.0.0.1:8000</code>: a form with the search box and a highest price, did you mean, the category links with their counts, and the results with their words marked and a "More like this" link each. It escapes everything it did not get from <code>/v1/highlight</code>, which escapes for it, and shows an error page when chloedb-server does not answer:</p>
+<pre data-lang="python" data-title="app.py">&quot;&quot;&quot;The shop&#x27;s search page, on Python&#x27;s own web server.&quot;&quot;&quot;
+import html
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlencode, urlparse
+
+import chloedb
+import shop
+
+FORM = &quot;&quot;&quot;&lt;!doctype html&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;&lt;title&gt;Shop search&lt;/title&gt;
+&lt;style&gt;mark {{ background: #fde68a; }} li {{ margin: 0.6em 0; }}&lt;/style&gt;
+&lt;form&gt;&lt;input name=&quot;q&quot; value=&quot;{q}&quot; placeholder=&quot;Search the shop&quot; autofocus&gt;
+&lt;input name=&quot;max_price&quot; value=&quot;{max_price}&quot; placeholder=&quot;Highest price&quot; size=&quot;10&quot;&gt; &lt;button&gt;Search&lt;/button&gt;&lt;/form&gt;&quot;&quot;&quot;
+
+
+def link(text, **params):
+    &quot;&quot;&quot;A link to this page with these parameters.&quot;&quot;&quot;
+    return f&#x27;&lt;a href=&quot;/?{html.escape(urlencode(params))}&quot;&gt;{html.escape(text)}&lt;/a&gt;&#x27;
+
+
+def page(q, category, max_price, like):
+    lines = [FORM.format(q=html.escape(q), max_price=html.escape(max_price))]
+    if like:
+        lines.append(&quot;&lt;h2&gt;More like this&lt;/h2&gt;&quot;)
+        for p in shop.more_like(like, limit=5):
+            lines.append(f&quot;&lt;li&gt;{html.escape(p[&#x27;name&#x27;])}, ${p[&#x27;price&#x27;]:.2f}&lt;/li&gt;&quot;)
+        return &quot;\n&quot;.join(lines)
+    if not q:
+        return &quot;\n&quot;.join(lines)
+    try:
+        price = float(max_price) if max_price else None
+    except ValueError:
+        price = None
+    suggestion = shop.did_you_mean(q)
+    if suggestion:
+        lines.append(f&quot;&lt;p&gt;Did you mean {link(suggestion, q=suggestion)}?&lt;/p&gt;&quot;)
+    counts = [link(f&quot;{c} ({n})&quot;, q=q, category=c, max_price=max_price) for c, n in shop.categories(q, price)]
+    lines.append(&quot;&lt;p&gt;&quot; + &quot; · &quot;.join([link(&quot;All&quot;, q=q, max_price=max_price)] + counts) + &quot;&lt;/p&gt;&quot;)
+    hits = shop.search(q, category=category or None, max_price=price)
+    marked = shop.highlight(q, [p[&quot;name&quot;] for p in hits] + [p[&quot;description&quot;] for p in hits]) if hits else []
+    for p, name, description in zip(hits, marked, marked[len(hits):]):
+        lines.append(f&quot;&lt;li&gt;&lt;b&gt;{name}&lt;/b&gt; ${p[&#x27;price&#x27;]:.2f}: {description} {link(&#x27;More like this&#x27;, like=p[&#x27;id&#x27;])}&lt;/li&gt;&quot;)
+    if not hits:
+        lines.append(&quot;&lt;p&gt;No products have those words.&lt;/p&gt;&quot;)
+    return &quot;\n&quot;.join(lines)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        url = urlparse(self.path)
+        if url.path != &quot;/&quot;:
+            self.send_error(404)
+            return
+        args = {k: v[0] for k, v in parse_qs(url.query).items()}
+        try:
+            text = page(args.get(&quot;q&quot;, &quot;&quot;).strip(), args.get(&quot;category&quot;, &quot;&quot;),
+                        args.get(&quot;max_price&quot;, &quot;&quot;), args.get(&quot;like&quot;, &quot;&quot;))
+            body = (text + &quot;\n&quot;).encode()
+        except (chloedb.ChloeDBError, OSError) as e:  # OSError: chloedb-server does not answer
+            self.send_error(503, &quot;The search is not available&quot;, str(e))
+            return
+        self.send_response(200)
+        self.send_header(&quot;content-type&quot;, &quot;text/html; charset=utf-8&quot;)
+        self.send_header(&quot;content-length&quot;, str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+if __name__ == &quot;__main__&quot;:
+    ThreadingHTTPServer((&quot;127.0.0.1&quot;, 8000), Handler).serve_forever()</pre>
+<p>Start it, and ask it for a search with a typo, as a browser would:</p>
+<pre data-lang="sh">python3 app.py &gt; app.log 2&gt;&amp;1 &amp;
+app=$!
+until curl -sf http://127.0.0.1:8000/ &gt; /dev/null; do sleep 0.2; done
+curl -s &#x27;http://127.0.0.1:8000/?q=waterprof+jaket&amp;max_price=100&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">&lt;!doctype html&gt;
+...
+&lt;p&gt;Did you mean &lt;a href=&quot;/?q=waterproof+jacket&quot;&gt;waterproof jacket&lt;/a&gt;?&lt;/p&gt;
+&lt;p&gt;&lt;a href=&quot;/?q=waterprof+jaket&amp;amp;max_price=100&quot;&gt;All&lt;/a&gt; · &lt;a href=&quot;/?q=waterprof+jaket&amp;amp;category=jackets&amp;amp;max_price=100&quot;&gt;jackets (2)&lt;/a&gt;&lt;/p&gt;
+&lt;li&gt;&lt;b&gt;Kids&amp;#x27; rain &lt;mark&gt;jacket&lt;/mark&gt;&lt;/b&gt; $49.00: A bright &lt;mark&gt;waterproof&lt;/mark&gt; &lt;mark&gt;jacket&lt;/mark&gt; with a hood, for children. &lt;a href=&quot;/?like=p05&quot;&gt;More like this&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;b&gt;Packable rain &lt;mark&gt;jacket&lt;/mark&gt;&lt;/b&gt; $89.00: A &lt;mark&gt;waterproof&lt;/mark&gt; &lt;mark&gt;jacket&lt;/mark&gt; that folds into its own pocket. &lt;a href=&quot;/?like=p03&quot;&gt;More like this&lt;/a&gt;&lt;/li&gt;</pre>
+<p>Open <a href="http://127.0.0.1:8000">http://127.0.0.1:8000</a> in a browser and try "sleping bag", "lether", "warm" or "hiking boots" with a highest price. The server's own command center, at <a href="http://127.0.0.1:7700">http://127.0.0.1:7700</a>, shows the same table and the queries the page sent (<strong>Queries</strong>).</p>
+<p>The browser talks only to the app, and the app to chloedb-server. That keeps the server's address and keys out of the page, and it is also the only way that works: chloedb-server refuses requests from pages of other sites, reads included (<a href="server.html#security">security</a>).</p>
+<p>When you are done, stop both (the catalogue stays in <code>shop.chloedb</code>):</p>
+<pre data-lang="sh">kill $app $server</pre>
+<h2 id="the-same-page-in-flask">The same page in Flask<a class="anchor" href="#the-same-page-in-flask" aria-label="Link to this section">#</a></h2>
+<p>The functions of <code>shop.py</code> drop into any web framework. This is the page in <a href="https://flask.palletsprojects.com">Flask</a> (<code>pip install flask</code>, then <code>flask --app flask_app run --debug</code>), shortened to the search and "more like this". It is shown, not run with this page, which installs nothing but <code>chloedb</code>:</p>
+<pre data-lang="python" data-title="flask_app.py">from flask import Flask, render_template_string, request
+
+import shop
+
+app = Flask(__name__)
+
+PAGE = &quot;&quot;&quot;&lt;!doctype html&gt;
+&lt;form&gt;&lt;input name=&quot;q&quot; value=&quot;{{ q }}&quot; autofocus&gt; &lt;button&gt;Search&lt;/button&gt;&lt;/form&gt;
+{% if suggestion %}&lt;p&gt;Did you mean &lt;a href=&quot;/?q={{ suggestion | urlencode }}&quot;&gt;{{ suggestion }}&lt;/a&gt;?&lt;/p&gt;{% endif %}
+{% for p, name in hits %}
+  &lt;li&gt;&lt;b&gt;{{ name | safe }}&lt;/b&gt; ${{ &quot;%.2f&quot; | format(p.price) }} &lt;a href=&quot;/like/{{ p.id }}&quot;&gt;More like this&lt;/a&gt;&lt;/li&gt;
+{% endfor %}
+{% for p in similar %}&lt;li&gt;{{ p.name }}, ${{ &quot;%.2f&quot; | format(p.price) }}&lt;/li&gt;{% endfor %}
+&quot;&quot;&quot;
+
+
+@app.get(&quot;/&quot;)
+def index():
+    q = request.args.get(&quot;q&quot;, &quot;&quot;).strip()
+    hits = shop.search(q) if q else []
+    names = shop.highlight(q, [p[&quot;name&quot;] for p in hits]) if hits else []
+    return render_template_string(PAGE, q=q, suggestion=q and shop.did_you_mean(q), hits=zip(hits, names), similar=[])
+
+
+@app.get(&quot;/like/&lt;key&gt;&quot;)
+def like(key):
+    return render_template_string(PAGE, q=&quot;&quot;, suggestion=None, hits=[], similar=shop.more_like(key, limit=5))</pre>
+<p><code>| safe</code> is for the highlighted names alone, which <code>/v1/highlight</code> has escaped already; Jinja escapes the rest. With <code>--debug</code>, Flask runs this module in two processes, one that watches the files and one that serves. Both are clients of the one chloedb-server, so the second starts as the first did. Had the module opened the file itself with <code>chloedb.open("shop.chloedb")</code>, the second would have failed with <code>BusyError: busy: the database is open elsewhere</code>, since the first holds it, and every request with it (<a href="troubleshooting.html#busy-the-database-is-open-elsewhere">troubleshooting</a>). For an asyncio framework such as FastAPI, <code>chloedb.AsyncClient</code> has the same methods as coroutines (<a href="python.html#from-asyncio">from asyncio</a>).</p>
+<h2 id="before-other-people-use-it">Before other people use it<a class="anchor" href="#before-other-people-use-it" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>Give chloedb-server a token before it listens beyond this machine, and the app a key: <code>chloedb.connect(SERVER, token=...)</code>, or <code>$CHLOEDB_TOKEN</code> (<a href="server.html#security">security</a>). A key that can only read the products table is enough for this page.</li>
+<li>Change a product with <code>UPDATE</code> or <code>upsert</code>: <code>upsert</code> replaces the whole row, so it needs every field, while <code>UPDATE products SET price = 79 WHERE id = 'p03'</code> changes one. Writes are searchable on the next query.</li>
+<li><a href="troubleshooting.html">Troubleshooting</a> has the errors people meet first, each with its message and what to do.</li>
+</ul>
+<h2 id="next">Next<a class="anchor" href="#next" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><a href="search.html">The search guide</a>: phrases, prefixes as you type, vectors, hybrid ranking and results spread across a field.</li>
+<li><a href="python.html">Python</a>: every method of <code>chloedb.connect</code> and <code>chloedb.open</code>, and their errors.</li>
+<li><a href="sql.html">The SQL reference</a>: boosts by a column (<code>bm25(body, :q) * (1 + 0.1 * rating)</code>), synonyms and rank profiles.</li>
+</ul>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/chloedb-server-v0.3.8/docs/guide/search-page.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="search.html">← Search guide</a><a href="sql.html">SQL reference →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.8/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../../assets/site.js?v=699f360f4f"></script>
+<script src="../../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>
