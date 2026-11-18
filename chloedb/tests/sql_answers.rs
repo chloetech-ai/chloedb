@@ -8,7 +8,7 @@
 //!   error, where `'a.b'` worked and `'$.a.b'` worked in `WHERE`.
 //! - SAM-204: `ORDER BY x DESC NULLS FIRST` was refused in a grouped
 //!   query, though the docs recommend it to get PostgreSQL's order.
-//! - SAM-208: refusals of ROLLUP, GROUPING SETS, `substr`, `JOIN ...
+//! - SAM-208: refusals of ROLLUP, GROUPING SETS, `left`, `JOIN ...
 //!   USING`, `INSERT ... SELECT`, `CREATE TABLE ... AS SELECT`, temporary
 //!   tables, a join on no equality and a time minus a time that did not say
 //!   what to write, or named tables that are not in the database.
@@ -157,10 +157,11 @@ fn refusals_say_what_to_write_instead() {
     assert!(e.contains("GROUPING SETS is not supported") && e.contains("GROUP BY country, no GROUP BY (the total)"), "{e}");
     let e = refused(&db, "SELECT country, COUNT(*) FROM invoice GROUP BY CUBE (country)");
     assert!(e.contains("CUBE is not supported"), "{e}");
-    let e = refused(&db, "SELECT substr(country, 1, 2) FROM invoice");
-    assert!(e.contains("unknown function substr()") && e.contains("LIKE"), "{e}");
-    let e = refused(&db, "SELECT substring(country, 1, 2) FROM invoice");
-    assert!(e.contains("unknown function substring()"), "{e}");
+    // substr and substring are functions since SAM-7; left() names substr.
+    let r = rows(&db, "SELECT substr('Brazil', 1, 2), substring('Brazil', 3), SUBSTRING('Brazil' FROM 2 FOR 2)");
+    assert_eq!(r, vec![vec![text("Br"), text("azil"), text("ra")]]);
+    let e = refused(&db, "SELECT left(country, 2) FROM invoice");
+    assert!(e.contains("unknown function left()") && e.contains("substr(s, 1, n)"), "{e}");
     let e = refused(&db, "SELECT i.id FROM invoice i JOIN trips USING (id)");
     assert!(e.contains("USING (id) is not supported") && e.contains("JOIN trips ON i.id = trips.id"), "{e}");
     assert!(!e.contains("papers"), "{e}");
@@ -171,7 +172,7 @@ fn refusals_say_what_to_write_instead() {
     let e = refused(&db, "SELECT i.id FROM invoice i NATURAL JOIN trips");
     assert!(e.contains("NATURAL JOIN is not supported") && e.contains("trips"), "{e}");
     let e = refused(&db, "SELECT CAST('2026-01-02' AS TIMESTAMP) - CAST('2026-01-01' AS TIMESTAMP) AS d");
-    assert!(e.contains("INTERVAL") && e.contains("EXTRACT(epoch FROM"), "{e}");
+    assert!(e.contains("INTERVAL") && e.contains("date_diff('second', a, b)") && e.contains("EXTRACT(epoch FROM"), "{e}");
     let e = refused_write(&db, "INSERT INTO invoice (id, country, total) SELECT id + 100, country, total FROM invoice");
     assert!(e.contains("INSERT ... SELECT is not supported") && e.contains("INSERT ... VALUES"), "{e}");
     let e = refused_write(&db, "INSERT INTO invoice (id, country, total) SELECT id + 100, country, total FROM invoice ORDER BY id LIMIT 2");

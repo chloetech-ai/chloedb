@@ -66,10 +66,10 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 36] = [
+pub const FEATURES: [&str; 37] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
     SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE, ASOF_JOIN, TERMS_SYNTAX, DATE_BIN, APPROX_PERCENTILES,
-    FULL_JOIN,
+    FULL_JOIN, SQL_FUNCTIONS,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
@@ -207,6 +207,14 @@ pub const DATES: &str = "dates";
 /// ([`Func::DateBin`], `date_bin('5 minutes', at)`), which a ChloeDB from
 /// before it does not have.
 pub const DATE_BIN: &str = "date_bin";
+
+/// The feature of a plan with the everyday SQL functions a ChloeDB from
+/// before them does not have (persona study SAM-7): [`Func::Floor`],
+/// [`Func::Ceil`], [`Func::Substr`], [`Func::Trim`], [`Func::Ltrim`],
+/// [`Func::Rtrim`], [`Func::Replace`] and [`Func::DateDiff`], and the
+/// aggregate [`AggFn::StringAgg`]. (`nullif` and `concat` are written
+/// with CASE, `||` and `coalesce`, which every version reads.)
+pub const SQL_FUNCTIONS: &str = "sql_functions";
 
 /// The feature of a plan with a percentile ([`AggFn::PercentileCont`],
 /// [`AggFn::PercentileDisc`]), which a Strata from before them cannot read.
@@ -529,6 +537,16 @@ pub struct Agg {
     pub func: AggFn,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arg: Option<Expr>,
+    /// [`AggFn::StringAgg`]'s separator, which goes between its values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sep: Option<String>,
+}
+
+impl Agg {
+    /// `func` of `arg` (`COUNT(*)` without one).
+    pub fn of(func: AggFn, arg: Option<Expr>) -> Agg {
+        Agg { func, arg, sep: None }
+    }
 }
 
 /// A window function of a [`Node::Window`]: `func`, for each row, over the
@@ -841,6 +859,42 @@ pub enum Func {
     /// a seeded sample, split or shuffle of rows: `WHERE hash(id, 7) % 10
     /// < 8`, `ORDER BY hash(id, 7)`. Needs [`HASH`].
     Hash,
+    /// `floor(x)`: the greatest whole number at most `x`, an INT (as
+    /// `round(x)` is one; PostgreSQL's float8 `floor` is a whole float8).
+    /// Needs [`SQL_FUNCTIONS`].
+    Floor,
+    /// `ceil(x)` and `ceiling(x)`: the least whole number at least `x`, an
+    /// INT. Needs [`SQL_FUNCTIONS`].
+    Ceil,
+    /// `substr(s, start [, count])` and `SUBSTRING(s FROM start FOR
+    /// count)`: the characters of `s` from the `start`-th (from 1) on, at
+    /// most `count` of them, as PostgreSQL counts: a `start` before the
+    /// first character shortens `count` by as many (`substr('abc', 0, 2)`
+    /// is `'a'`), and a negative `count` is an error. Needs
+    /// [`SQL_FUNCTIONS`].
+    Substr,
+    /// `trim(s)`, `btrim(s, chars)` and `TRIM([BOTH] [chars] FROM s)`: `s`
+    /// without the characters of `chars` (spaces without it) at its start
+    /// and end. Needs [`SQL_FUNCTIONS`].
+    Trim,
+    /// `ltrim(s [, chars])` and `TRIM(LEADING [chars] FROM s)`: without
+    /// them at its start. Needs [`SQL_FUNCTIONS`].
+    Ltrim,
+    /// `rtrim(s [, chars])` and `TRIM(TRAILING [chars] FROM s)`: without
+    /// them at its end. Needs [`SQL_FUNCTIONS`].
+    Rtrim,
+    /// `replace(s, from, to)`: `s` with every `from` replaced by `to`;
+    /// `s` itself where `from` is empty. Needs [`SQL_FUNCTIONS`].
+    Replace,
+    /// `date_diff(unit, start, end)` (and `datediff`): how many boundaries
+    /// of `unit` (`args[0]`, text: `'microsecond'`, `'millisecond'`,
+    /// `'second'`, `'minute'`, `'hour'`, `'day'`, `'week'`, `'month'`,
+    /// `'quarter'`, `'year'`) there are from the TIMESTAMP `start` to
+    /// `end`, an INT, negative when `end` is earlier, as DuckDB's and
+    /// Snowflake's `date_diff` count them ([`crate::timestamp::diff`]):
+    /// `date_diff('month', '2026-01-31', '2026-02-01')` is 1. Needs
+    /// [`SQL_FUNCTIONS`].
+    DateDiff,
 }
 
 impl Func {
@@ -871,7 +925,20 @@ impl Func {
             Func::Strftime => "strftime",
             Func::DateBin => "date_bin",
             Func::Hash => "hash",
+            Func::Floor => "floor",
+            Func::Ceil => "ceil",
+            Func::Substr => "substr",
+            Func::Trim => "trim",
+            Func::Ltrim => "ltrim",
+            Func::Rtrim => "rtrim",
+            Func::Replace => "replace",
+            Func::DateDiff => "date_diff",
         }
+    }
+
+    /// Whether a plan with the function needs [`SQL_FUNCTIONS`].
+    pub fn needs_sql_functions(self) -> bool {
+        matches!(self, Func::Floor | Func::Ceil | Func::Substr | Func::Trim | Func::Ltrim | Func::Rtrim | Func::Replace | Func::DateDiff)
     }
 
     /// The numeric function named `name` (as SQL writes it), which a
@@ -897,10 +964,11 @@ impl Func {
     /// Whether the function takes `n` arguments, or else how many it takes.
     pub fn arity(self, n: usize) -> std::result::Result<(), &'static str> {
         let ok = match self {
-            Func::Lower | Func::Upper | Func::Length | Func::Abs | Func::Ln | Func::Exp | Func::Sqrt | Func::Sigmoid => n == 1,
-            Func::Round | Func::Log | Func::Hash => n == 1 || n == 2,
+            Func::Lower | Func::Upper | Func::Length | Func::Abs | Func::Ln | Func::Exp | Func::Sqrt | Func::Sigmoid | Func::Floor | Func::Ceil => n == 1,
+            Func::Round | Func::Log | Func::Hash | Func::Trim | Func::Ltrim | Func::Rtrim => n == 1 || n == 2,
             Func::Pow | Func::Dot | Func::SidAt | Func::DateTrunc | Func::DatePart | Func::Strftime => n == 2,
-            Func::Clamp => n == 3,
+            Func::Substr => n == 2 || n == 3,
+            Func::Clamp | Func::Replace | Func::DateDiff => n == 3,
             Func::Coalesce | Func::Least | Func::Greatest | Func::CountTrue => n >= 1,
             Func::JsonExtract | Func::DateBin => n == 2 || n == 3,
         };
@@ -917,6 +985,10 @@ impl Func {
             (_, Func::Strftime) => Err("two arguments: a format ('%Y-%m-%d') and a TIMESTAMP"),
             (_, Func::DateBin) => Err("two or three arguments: a width ('5 minutes', '1 hour', '30s'), a TIMESTAMP, and an origin TIMESTAMP"),
             (_, Func::Hash) => Err("one or two arguments: a value and an INT seed"),
+            (_, Func::Substr) => Err("two or three arguments: a text, the first character's position (from 1) and how many characters"),
+            (_, Func::Trim | Func::Ltrim | Func::Rtrim) => Err("one or two arguments: a text and the characters to take off (spaces without them)"),
+            (_, Func::Replace) => Err("three arguments: a text, what to replace in it and what to replace that with"),
+            (_, Func::DateDiff) => Err("three arguments: a unit ('day', 'month', 'hour', ...), the start TIMESTAMP and the end TIMESTAMP"),
             _ => Err("one argument"),
         }
     }
@@ -934,7 +1006,25 @@ impl Func {
         }
         let x = args.first().copied().unwrap_or(f64::NAN);
         let r = match self {
-            Func::Lower | Func::Upper | Func::Length | Func::Dot | Func::SidAt | Func::JsonExtract | Func::DateTrunc | Func::DatePart | Func::Strftime | Func::DateBin | Func::Hash => f64::NAN,
+            Func::Lower
+            | Func::Upper
+            | Func::Length
+            | Func::Dot
+            | Func::SidAt
+            | Func::JsonExtract
+            | Func::DateTrunc
+            | Func::DatePart
+            | Func::Strftime
+            | Func::DateBin
+            | Func::Hash
+            | Func::Substr
+            | Func::Trim
+            | Func::Ltrim
+            | Func::Rtrim
+            | Func::Replace
+            | Func::DateDiff => f64::NAN,
+            Func::Floor => x.floor(),
+            Func::Ceil => x.ceil(),
             Func::Abs => x.abs(),
             Func::Round => {
                 let d = args.get(1).map_or(0.0, |d| d.clamp(-30.0, 30.0).trunc());
@@ -1360,6 +1450,12 @@ impl Node {
     /// percentile ([`PERCENTILES`]).
     fn has_percentiles(&self) -> bool {
         matches!(self, Node::Aggregate { aggs, .. } if aggs.iter().any(|a| a.func.percentile().is_some())) || self.inputs().into_iter().any(Node::has_percentiles)
+    }
+
+    /// Whether the node or one below it (outside subqueries) has a
+    /// [`AggFn::StringAgg`] ([`SQL_FUNCTIONS`]).
+    fn has_string_aggs(&self) -> bool {
+        matches!(self, Node::Aggregate { aggs, .. } if aggs.iter().any(|a| a.func == AggFn::StringAgg)) || self.inputs().into_iter().any(Node::has_string_aggs)
     }
 
     /// Whether the node or one below it (outside subqueries) has an
@@ -2140,7 +2236,12 @@ impl Plan {
             features.push(RANK_EXPRESSIONS.to_string());
         }
         let (mut sid_at, mut json, mut dates, mut hash, mut date_bin) = (false, false, false, false, false);
+        let mut sql_functions = root.has_string_aggs();
         root.visit_exprs(&mut |e| {
+            sql_functions |= matches!(e, Expr::Call { func, .. } if func.needs_sql_functions());
+            if let Expr::Subquery(n) | Expr::Values(n) | Expr::Keys(n) | Expr::Exists(n) | Expr::Scalar(n) | Expr::Encode { rows: n, .. } = e {
+                sql_functions |= n.has_string_aggs();
+            }
             sid_at |= matches!(e, Expr::Call { func: Func::SidAt, .. });
             json |= matches!(e, Expr::Call { func: Func::JsonExtract, .. });
             dates |= matches!(e, Expr::Call { func: Func::DateTrunc | Func::DatePart | Func::Strftime | Func::DateBin, .. });
@@ -2149,6 +2250,9 @@ impl Plan {
         });
         if dates {
             features.push(DATES.to_string());
+        }
+        if sql_functions {
+            features.push(SQL_FUNCTIONS.to_string());
         }
         if date_bin {
             features.push(DATE_BIN.to_string());

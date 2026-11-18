@@ -41,7 +41,8 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::arrow::array::{
-    Array, ArrayRef, AsArray, BinaryArray, BooleanArray, BooleanBuilder, Float64Array, Float64Builder, Int64Builder, UInt64Array,
+    Array, ArrayRef, AsArray, BinaryArray, BooleanArray, BooleanBuilder, Float64Array, Float64Builder, Int64Builder, StringBuilder,
+    UInt64Array,
 };
 use datafusion::arrow::compute::kernels::numeric;
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Float64Type, Int64Type, Schema as ArrowSchema};
@@ -813,7 +814,7 @@ impl<'a> Lower<'a, '_> {
         search.phases.clear();
         search.per = None;
         let count = Node::Project {
-            input: Box::new(Node::Aggregate { input: Box::new(Node::Search(search)), keys: Vec::new(), aggs: vec![Agg { func: AggFn::Count, arg: None }] }),
+            input: Box::new(Node::Aggregate { input: Box::new(Node::Search(search)), keys: Vec::new(), aggs: vec![Agg::of(AggFn::Count, None)] }),
             columns: vec![crate::query::ir::Column { name: "n".into(), expr: Expr::Output(0) }],
         };
         self.opts.check()?;
@@ -2313,6 +2314,17 @@ impl<'a> Lower<'a, '_> {
             Func::Hash if ts.iter().all(|t| !matches!(t, DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(..))) => {
                 ScalarUDF::new_from_impl(StrataCall::new(func, DataType::Int64)).call(xs)
             }
+            // The evaluator's own functions, so the values agree to the bit:
+            // floor and ceil of numbers (an INT), date_diff of times (an
+            // INT), and the text functions of text.
+            Func::Floor | Func::Ceil if ts.iter().all(|t| is_int(t) || is_float(t) || *t == DataType::Null) => ScalarUDF::new_from_impl(StrataCall::new(func, DataType::Int64)).call(xs),
+            Func::DateDiff if ts.iter().skip(1).all(|t| matches!(t, DataType::Timestamp(..) | DataType::Null)) && ts.first().is_some_and(|t| is_text(t) || *t == DataType::Null) => {
+                ScalarUDF::new_from_impl(StrataCall::new(func, DataType::Int64)).call(xs)
+            }
+            Func::Substr if ts.first().is_some_and(|t| is_text(t) || *t == DataType::Null) && ts.iter().skip(1).all(|t| is_int(t) || *t == DataType::Null) => {
+                ScalarUDF::new_from_impl(StrataCall::new(func, DataType::Utf8)).call(xs)
+            }
+            Func::Trim | Func::Ltrim | Func::Rtrim | Func::Replace if text => ScalarUDF::new_from_impl(StrataCall::new(func, DataType::Utf8)).call(xs),
             Func::DatePart | Func::DateTrunc | Func::DateBin | Func::Strftime => match time_fn(func, args, ts) {
                 Some((op, ret, at)) => ScalarUDF::new_from_impl(TimeFn::new(op, ret)).call(vec![xs[at].clone()]),
                 None => return no(format!("{}({ts:?}) above a leaf", func.name())),
@@ -2961,6 +2973,17 @@ impl ScalarUDFImpl for StrataCall {
                         Value::Null => b.append_null(),
                         Value::Int(x) => b.append_value(x),
                         v => return Err(DataFusionError::Execution(format!("chloedb: {} gave {v:?} for an INT column", self.func.name()))),
+                    }
+                }
+                Arc::new(b.finish())
+            }
+            DataType::Utf8 => {
+                let mut b = StringBuilder::with_capacity(rows.len(), rows.len() * 16);
+                for r in &rows {
+                    match crate::query::ir::eval::call(self.func, r).map_err(fail)? {
+                        Value::Null => b.append_null(),
+                        Value::Str(x) => b.append_value(x),
+                        v => return Err(DataFusionError::Execution(format!("chloedb: {} gave {v:?} for a TEXT column", self.func.name()))),
                     }
                 }
                 Arc::new(b.finish())

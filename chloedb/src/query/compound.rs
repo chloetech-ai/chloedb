@@ -73,7 +73,7 @@ fn err(m: impl Into<String>) -> Error {
 const NATIVE: [&str; 14] = ["match", "bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "reachable", "path", "hops", "score", "now", "near"];
 /// Score functions, which order a side's scan.
 const SCORES: [&str; 8] = ["bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops"];
-pub(crate) const AGGREGATES: [&str; 9] = ["count", "sum", "avg", "min", "max", "median", "percentile_cont", "percentile_disc", "approx_percentile"];
+pub(crate) const AGGREGATES: [&str; 10] = ["count", "sum", "avg", "min", "max", "median", "percentile_cont", "percentile_disc", "approx_percentile", "string_agg"];
 /// Statistical aggregates, which [`stats_as_sums`] writes as sums and
 /// counts: every path that aggregates (a shard's partial groups among
 /// them) computes those.
@@ -634,6 +634,11 @@ fn aggregates_rows(q: &sql::Query, s: &sql::Select, schema: &Schema) -> bool {
     let mut check = |e: &Expr| {
         walk(e, &mut |x| {
             let Expr::Function(f) = x else { return };
+            // STRING_AGG is the row evaluator's alone.
+            if is_aggregate(f) && fname(f) == "string_agg" {
+                found = true;
+                return;
+            }
             if !is_aggregate(f) || PERCENTILES.contains(&fname(f).as_str()) {
                 return;
             }
@@ -838,8 +843,33 @@ fn orders_by_row_values(q: &sql::Query, s: &sql::Select) -> bool {
         }
         walk(&o.expr, &mut |x| {
             found |= match x {
-                Expr::Function(f) => matches!(fname(f).as_str(), "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "date_bin" | "time_bucket"),
-                Expr::Extract { .. } => true,
+                Expr::Function(f) => matches!(
+                    fname(f).as_str(),
+                    "lower"
+                        | "upper"
+                        | "length"
+                        | "hash"
+                        | "date_trunc"
+                        | "date_part"
+                        | "strftime"
+                        | "date_bin"
+                        | "time_bucket"
+                        | "floor"
+                        | "ceil"
+                        | "ceiling"
+                        | "substr"
+                        | "substring"
+                        | "trim"
+                        | "btrim"
+                        | "ltrim"
+                        | "rtrim"
+                        | "replace"
+                        | "concat"
+                        | "nullif"
+                        | "date_diff"
+                        | "datediff"
+                ),
+                Expr::Extract { .. } | Expr::Substring { .. } | Expr::Trim { .. } | Expr::Ceil { .. } | Expr::Floor { .. } => true,
                 _ => false,
             }
         });
@@ -892,11 +922,31 @@ pub(crate) fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
             for a in func_args(func) {
                 walk(a, f);
             }
+            // STRING_AGG(x, sep ORDER BY y).
+            if let FunctionArguments::List(l) = &func.args {
+                for c in &l.clauses {
+                    if let sql::FunctionArgumentClause::OrderBy(os) = c {
+                        os.iter().for_each(|o| walk(&o.expr, f));
+                    }
+                }
+            }
+            func.within_group.iter().for_each(|o| walk(&o.expr, f));
             if let Some(sql::WindowType::WindowSpec(w)) = &func.over {
                 w.partition_by.iter().for_each(|x| walk(x, f));
                 w.order_by.iter().for_each(|o| walk(&o.expr, f));
             }
         }
+        Expr::Substring { expr, substring_from, substring_for, .. } => {
+            walk(expr, f);
+            substring_from.iter().for_each(|x| walk(x, f));
+            substring_for.iter().for_each(|x| walk(x, f));
+        }
+        Expr::Trim { expr, trim_what, trim_characters, .. } => {
+            walk(expr, f);
+            trim_what.iter().for_each(|x| walk(x, f));
+            trim_characters.iter().flatten().for_each(|x| walk(x, f));
+        }
+        Expr::Ceil { expr, .. } | Expr::Floor { expr, .. } => walk(expr, f),
         Expr::Case { operand, conditions, else_result, .. } => {
             operand.iter().for_each(|x| walk(x, f));
             for c in conditions {
@@ -965,7 +1015,7 @@ pub(crate) fn filters_as_case(q: &mut sql::Query) -> Result<()> {
         };
         // Which arguments are values: a percentile's second is its fraction.
         let values = match name.as_str() {
-            "percentile_cont" | "percentile_disc" => 1,
+            "percentile_cont" | "percentile_disc" | "string_agg" => 1,
             _ => list.args.len(),
         };
         for a in list.args.iter_mut().take(values) {
@@ -2847,6 +2897,7 @@ fn grouped_first(n: &ir::Node, sort: &[ir::SortKey], catalog: &[&Schema]) -> Opt
                 let typed = match a.func {
                     AggFn::Count | AggFn::CountDistinct => matches!(fl.ty, FieldType::Keyword | FieldType::Int | FieldType::Float),
                     AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) | AggFn::ApproxPercentile(_) => matches!(fl.ty, FieldType::Int | FieldType::Float),
+                    AggFn::StringAgg => false,
                 };
                 if !plain(fl) || !typed {
                     return None;
@@ -2855,7 +2906,7 @@ fn grouped_first(n: &ir::Node, sort: &[ir::SortKey], catalog: &[&Schema]) -> Opt
             }
             _ => return None,
         };
-        let agg = ir::Agg { func: a.func, arg };
+        let agg = ir::Agg::of(a.func, arg);
         at.push(1 + first.iter().position(|x| *x == agg).unwrap_or_else(|| {
             first.push(agg);
             first.len() - 1
@@ -2893,7 +2944,7 @@ fn grouped_first(n: &ir::Node, sort: &[ir::SortKey], catalog: &[&Schema]) -> Opt
             Some(k)
         })
         .collect::<Option<Vec<_>>>()?;
-    let aggs = at.into_iter().map(|j| ir::Agg { func: AggFn::Min, arg: Some(ir::Expr::Output(j as u32)) }).collect();
+    let aggs = at.into_iter().map(|j| ir::Agg::of(AggFn::Min, Some(ir::Expr::Output(j as u32)))).collect();
     Some(ir::Node::Aggregate { input: Box::new(join), keys, aggs })
 }
 
@@ -3167,11 +3218,30 @@ pub(crate) fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
             for a in func_args_mut(func) {
                 walk_mut(a, f);
             }
+            if let FunctionArguments::List(l) = &mut func.args {
+                for c in &mut l.clauses {
+                    if let sql::FunctionArgumentClause::OrderBy(os) = c {
+                        os.iter_mut().for_each(|o| walk_mut(&mut o.expr, f));
+                    }
+                }
+            }
+            func.within_group.iter_mut().for_each(|o| walk_mut(&mut o.expr, f));
             if let Some(sql::WindowType::WindowSpec(w)) = &mut func.over {
                 w.partition_by.iter_mut().for_each(|x| walk_mut(x, f));
                 w.order_by.iter_mut().for_each(|o| walk_mut(&mut o.expr, f));
             }
         }
+        Expr::Substring { expr, substring_from, substring_for, .. } => {
+            walk_mut(expr, f);
+            substring_from.iter_mut().for_each(|x| walk_mut(x, f));
+            substring_for.iter_mut().for_each(|x| walk_mut(x, f));
+        }
+        Expr::Trim { expr, trim_what, trim_characters, .. } => {
+            walk_mut(expr, f);
+            trim_what.iter_mut().for_each(|x| walk_mut(x, f));
+            trim_characters.iter_mut().flatten().for_each(|x| walk_mut(x, f));
+        }
+        Expr::Ceil { expr, .. } | Expr::Floor { expr, .. } => walk_mut(expr, f),
         Expr::Case { operand, conditions, else_result, .. } => {
             operand.iter_mut().for_each(|x| walk_mut(x, f));
             for c in conditions {
@@ -3710,6 +3780,31 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 "date_bin" => Func::DateBin,
                 "time_bucket" => Func::DateBin,
                 "hash" => Func::Hash,
+                "floor" => Func::Floor,
+                "ceil" | "ceiling" => Func::Ceil,
+                "substr" | "substring" => Func::Substr,
+                "trim" | "btrim" => Func::Trim,
+                "ltrim" => Func::Ltrim,
+                "rtrim" => Func::Rtrim,
+                "replace" => Func::Replace,
+                "date_diff" | "datediff" => Func::DateDiff,
+                // nullif(a, b): CASE WHEN a = b THEN NULL ELSE a END.
+                "nullif" => {
+                    let [a, b] = func_args(f)[..] else { return Err(err("nullif() takes two arguments: a value, and the value that makes it NULL")) };
+                    let a = go(a)?;
+                    let when = ir::Expr::Cmp { op: CmpOp::Eq, left: Box::new(a.clone()), right: Box::new(go(b)?) };
+                    return Ok(ir::Expr::Case { operand: None, whens: vec![When { when, then: ir::Expr::Lit(Value::Null) }], otherwise: Some(Box::new(a)) });
+                }
+                // concat(a, b, ..): the values that are not NULL, as `||`
+                // writes them: coalesce(a, '') || coalesce(b, '') || ...
+                "concat" => {
+                    let args = func_args(f);
+                    if args.is_empty() {
+                        return Err(err("concat() takes at least one argument"));
+                    }
+                    let parts = args.into_iter().map(|a| Ok(ir::Expr::Call { func: Func::Coalesce, args: vec![go(a)?, ir::Expr::Lit(Value::Str(String::new()))] })).collect::<Result<_>>()?;
+                    return Ok(ir::Expr::Concat(parts));
+                }
                 n if Func::numeric(n).is_some() => Func::numeric(n).expect("a numeric function"),
                 n if NATIVE.contains(&n) => {
                     return Err(err(format!("{}(...) works on one table's scan, in its WHERE or ORDER BY (in a join, on that table's column: a.body), not on values of rows", n.to_uppercase())))
@@ -3780,14 +3875,41 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
             }
         }
         e @ (Expr::Identifier(_) | Expr::CompoundIdentifier(_)) => return Err(err(format!("no such column: {e}"))),
-        Expr::Substring { shorthand: true, .. } => return Err(err(unknown_function("substr"))),
-        Expr::Substring { .. } => return Err(err(unknown_function("substring"))),
+        // SUBSTRING(s FROM start FOR count), substr(s, start, count) and
+        // substring(s, start, count).
+        Expr::Substring { expr, substring_from, substring_for, .. } => {
+            let mut args = vec![go(expr)?, substring_from.as_deref().map_or(Ok(ir::Expr::Lit(Value::Int(1))), &go)?];
+            if let Some(n) = substring_for {
+                args.push(go(n)?);
+            }
+            ir::Expr::Call { func: Func::Substr, args }
+        }
+        // TRIM([BOTH | LEADING | TRAILING] [chars FROM] s), and trim(s, chars).
+        Expr::Trim { expr, trim_where, trim_what, trim_characters } => {
+            let func = match trim_where {
+                Some(sql::TrimWhereField::Leading) => Func::Ltrim,
+                Some(sql::TrimWhereField::Trailing) => Func::Rtrim,
+                _ => Func::Trim,
+            };
+            let mut args = vec![go(expr)?];
+            match (trim_what, trim_characters.as_deref()) {
+                (Some(w), _) => args.push(go(w)?),
+                (None, Some([c])) => args.push(go(c)?),
+                (None, None | Some([])) => {}
+                (None, Some(_)) => return Err(err(format!("{e}: TRIM takes one text of the characters to take off"))),
+            }
+            ir::Expr::Call { func, args }
+        }
         Expr::Rollup(_) | Expr::Cube(_) | Expr::GroupingSets(_) => return Err(err(grouping_sets(e))),
-        Expr::Trim { .. } => return Err(err(unknown_function("trim"))),
         Expr::Position { .. } => return Err(err(unknown_function("position"))),
-        Expr::Overlay { .. } => return Err(err(unknown_function("replace"))),
-        Expr::Ceil { .. } => return Err(err(unknown_function("ceil"))),
-        Expr::Floor { .. } => return Err(err(unknown_function("floor"))),
+        Expr::Overlay { .. } => return Err(err(unknown_function("overlay"))),
+        Expr::Ceil { expr, field } | Expr::Floor { expr, field } => {
+            let func = if matches!(e, Expr::Ceil { .. }) { Func::Ceil } else { Func::Floor };
+            match field {
+                sql::CeilFloorKind::DateTimeField(sql::DateTimeField::NoDateTime) => ir::Expr::Call { func, args: vec![go(expr)?] },
+                _ => return Err(err(format!("{e}: {}(x) takes one number and gives a whole number; round(x, n) rounds to n decimals, and date_trunc('day', at) cuts a time", func.name()))),
+            }
+        }
         // EXTRACT(part FROM t) is date_part('part', t).
         Expr::Extract { field, expr, .. } => {
             let part = extract_part(field);
@@ -3821,7 +3943,7 @@ pub(crate) fn grouping_sets(e: &Expr) -> String {
 }
 
 /// What the row evaluator computes, for an error about what it does not.
-const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part, strftime, time_bucket and hash";
+const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT, SUBSTRING, TRIM and the functions lower, upper, length, substr, trim, ltrim, rtrim, replace, concat, nullif, abs, round, floor, ceil, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part, date_diff, strftime, time_bucket and hash";
 
 /// The part `EXTRACT(part FROM t)` names, as `date_part` takes it.
 pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
@@ -3837,19 +3959,21 @@ pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
 /// Why a function is not one the row evaluator knows: the one meant, if
 /// the name is near one, or what there is.
 fn unknown_function(n: &str) -> String {
-    const ROW_FUNCTIONS: [&str; 22] = [
-        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime", "date_bin", "time_bucket", "hash",
+    const ROW_FUNCTIONS: [&str; 32] = [
+        "lower", "upper", "length", "substr", "trim", "ltrim", "rtrim", "replace", "concat", "nullif", "abs", "round", "floor", "ceil", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot",
+        "date_trunc", "date_part", "date_diff", "strftime", "date_bin", "time_bucket", "hash",
     ];
     let hint = match n {
-        "substr" | "substring" | "left" | "right" | "trim" | "ltrim" | "rtrim" | "replace" | "concat" | "position" | "instr" | "strpos" | "split_part" | "reverse" => {
-            "; to match part of a text, use LIKE '%part%' (ILIKE ignores case) or PREFIX(field, 'start'); to join texts, use ||"
+        "left" | "right" => "; substr(s, 1, n) is a text's first n characters",
+        "position" | "instr" | "strpos" | "split_part" | "reverse" | "overlay" => {
+            "; to match part of a text, use LIKE '%part%' (ILIKE ignores case) or PREFIX(field, 'start'); to take part of one, substr(s, start, count); to join texts, use || or concat"
         }
-        "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "datediff" | "date_add" | "date_sub" | "dayofweek" | "weekday" => {
-            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), date_bin('5 minutes', at) (its bucket of a fixed width), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + n or at - n, n in microseconds"
+        "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "date_add" | "date_sub" | "dayofweek" | "weekday" | "age" => {
+            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), date_bin('5 minutes', at) (its bucket of a fixed width), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); the days or months between two times are date_diff('day', start, end); a time later or earlier is at + n or at - n, n in microseconds"
         }
         "random" | "rand" => "; ORDER BY random() is not supported: for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0",
         "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",
-        "floor" | "ceil" | "ceiling" | "trunc" | "truncate" => "; round(x) rounds to a whole number, round(x, n) to n decimals",
+        "trunc" | "truncate" => "; floor(x) and ceil(x) are the whole numbers below and above x, round(x) the nearest, round(x, n) to n decimals",
         "char_length" | "character_length" | "len" => "; length(text) counts its characters",
         "llm" => "; llm() asks a language model about the rows a query returns, after the query finds them: Db::query and a server's queries run it, not a plan",
         "lcase" => "; lower(text)",
@@ -3869,6 +3993,10 @@ struct AggCall {
     text: String,
     func: Option<AggFn>,
     arg: Option<Expr>,
+    /// STRING_AGG's separator.
+    sep: Option<String>,
+    /// STRING_AGG's `ORDER BY` of the values.
+    order: Vec<sql::OrderByExpr>,
 }
 
 fn agg_calls(exprs: &[&Expr], params: &Params) -> Result<Vec<AggCall>> {
@@ -3882,6 +4010,16 @@ fn agg_calls(exprs: &[&Expr], params: &Params) -> Result<Vec<AggCall>> {
                 return;
             }
             let distinct = matches!(&f.args, FunctionArguments::List(l) if l.duplicate_treatment == Some(sql::DuplicateTreatment::Distinct));
+            let (sep, order) = match name.as_str() {
+                "string_agg" => match string_agg(f, distinct, params) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        failed.get_or_insert(e);
+                        return;
+                    }
+                },
+                _ => (None, Vec::new()),
+            };
             let (func, arg) = if name == "count" && is_star(f) {
                 (None, None)
             } else {
@@ -3892,6 +4030,7 @@ fn agg_calls(exprs: &[&Expr], params: &Params) -> Result<Vec<AggCall>> {
                     "avg" => AggFn::Avg,
                     "min" => AggFn::Min,
                     "max" => AggFn::Max,
+                    "string_agg" => AggFn::StringAgg,
                     _ => match percentile(f, &name, distinct, params) {
                         Ok(func) => func,
                         Err(e) => {
@@ -3902,10 +4041,37 @@ fn agg_calls(exprs: &[&Expr], params: &Params) -> Result<Vec<AggCall>> {
                 };
                 (Some(func), func_args(f).first().map(|a| (*a).clone()))
             };
-            out.push(AggCall { text: x.to_string(), func, arg });
+            out.push(AggCall { text: x.to_string(), func, arg, sep, order });
         });
     }
     failed.map_or(Ok(out), Err)
+}
+
+/// `STRING_AGG(x, sep [ORDER BY ..])`'s separator, a constant text (NULL
+/// as none), and its order.
+fn string_agg(f: &sql::Function, distinct: bool, params: &Params) -> Result<(Option<String>, Vec<sql::OrderByExpr>)> {
+    if distinct {
+        return Err(err("STRING_AGG(DISTINCT ..) is not supported: aggregate the distinct values of a subquery (SELECT STRING_AGG(x, ', ') FROM (SELECT DISTINCT x FROM t) d)"));
+    }
+    let usage = "STRING_AGG(x, ', ' [ORDER BY y]): the values of x, joined by a constant text";
+    let [_, sep] = func_args(f)[..] else { return Err(err(usage)) };
+    let sep = match compile(sep, params, &|_| None, &[]).and_then(|e| value(&e)) {
+        Ok(Value::Str(s)) => s,
+        Ok(Value::Null) => String::new(),
+        _ => return Err(err(format!("{usage}, not {sep}"))),
+    };
+    let FunctionArguments::List(l) = &f.args else { return Err(err(usage)) };
+    let mut order = Vec::new();
+    for c in &l.clauses {
+        match c {
+            sql::FunctionArgumentClause::OrderBy(o) => order.extend(o.iter().cloned()),
+            c => return Err(err(format!("STRING_AGG(.. {c}) is not supported: {usage}"))),
+        }
+    }
+    if !f.within_group.is_empty() {
+        order.extend(f.within_group.iter().cloned());
+    }
+    Ok((Some(sep), order))
 }
 
 /// The percentile a call of one of [`PERCENTILES`] computes: `MEDIAN(x)`,
@@ -4050,7 +4216,7 @@ fn window_fn(f: &sql::Function, params: &Params, compile: &dyn Fn(&Expr) -> Resu
                     Some(compile(args[0])?)
                 }
             };
-            ir::WindowFunc::Agg(ir::Agg { func, arg })
+            ir::WindowFunc::Agg(ir::Agg::of(func, arg))
         }
         _ => {
             return Err(err(format!(
@@ -4253,9 +4419,24 @@ impl Planner<'_> {
             let keys = group_exprs.iter().map(|g| compile_row(g, cols, multi, params, &subs)).collect::<Result<Vec<_>>>()?;
             let mut aggs: Vec<ir::Agg> = calls
                 .iter()
-                .map(|c| Ok(ir::Agg { func: c.func.unwrap_or(AggFn::Count), arg: c.arg.as_ref().map(|a| compile_row(a, cols, multi, params, &subs)).transpose()? }))
+                .map(|c| Ok(ir::Agg { func: c.func.unwrap_or(AggFn::Count), arg: c.arg.as_ref().map(|a| compile_row(a, cols, multi, params, &subs)).transpose()?, sep: c.sep.clone() }))
                 .collect::<Result<_>>()?;
-            aggs.push(ir::Agg { func: AggFn::Count, arg: None });
+            // STRING_AGG(x, sep ORDER BY y): the rows in that order, which
+            // the Aggregate reads them in.
+            let ordered: Vec<&AggCall> = calls.iter().filter(|c| !c.order.is_empty()).collect();
+            if let Some(first) = ordered.first() {
+                let text = |c: &AggCall| c.order.iter().map(ToString::to_string).collect::<Vec<_>>();
+                if ordered.iter().any(|c| text(c) != text(first)) {
+                    return Err(err("STRING_AGG(.. ORDER BY ..): the aggregates of one SELECT order their values one way; compute one in a subquery"));
+                }
+                let keys = first
+                    .order
+                    .iter()
+                    .map(|o| Ok(ir::SortKey { expr: compile_row(&o.expr, cols, multi, params, &subs)?, desc: o.options.asc == Some(false), nulls_first: o.options.nulls_first == Some(true) }))
+                    .collect::<Result<Vec<_>>>()?;
+                node = ir::Node::Sort { input: Box::new(node), keys };
+            }
+            aggs.push(ir::Agg::of(AggFn::Count, None));
             node = ir::Node::Aggregate { input: Box::new(node), keys, aggs };
             let group_slot = |e: &Expr| -> Option<Result<ir::Expr>> {
                 if let Some(i) = calls.iter().position(|c| c.text == e.to_string()) {
