@@ -39,7 +39,7 @@ use crate::keys::{Principal, Scope};
 use crate::service::{After, QueryReq, Service, SqlAnswer, Written};
 use crate::ApiError;
 use dsl::{Compiled, Ctx, Score, Target};
-use mapping::{ident, lit, Index, Kind, HASH, ID, META, VERSION};
+use mapping::{ident, lit, Index, Kind, ALIASES, ALIASES_KEY, HASH, ID, META, VERSION};
 
 /// The version the root answers by default: OpenSearch 2's API.
 pub const VERSION_NUMBER: &str = "2.11.0";
@@ -896,18 +896,75 @@ impl Os {
         self.svc.table(META).await.is_ok()
     }
 
-    /// Every index, by name.
+    /// Every index, by name, with its aliases ([`Os::catalog`]).
     async fn all(&self) -> Result<Vec<Arc<Index>>, OsError> {
+        Ok(self.catalog().await?.0)
+    }
+
+    /// Every index, by name, and every alias: the aliases [`ALIASES`]
+    /// keeps, or, before it is written, those each index's row lists.
+    /// Each index's `aliases` are the map's.
+    async fn catalog(&self) -> Result<(Vec<Arc<Index>>, Aliases), OsError> {
         if !self.meta_exists().await {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Aliases::default()));
         }
+        let kept = self.kept_aliases().await?;
         let r = self.rows(&format!("SELECT name, aliases, meta FROM {META} LIMIT 10000"), &[]).await?;
+        let mut listed = Aliases::default();
         let mut out = Vec::new();
         for row in r.rows {
-            out.push(Arc::new(index_of_row(&row)?));
+            let ix = index_of_row(&row)?;
+            for a in &ix.aliases {
+                listed.set(&ix.name, a, json!({}));
+            }
+            out.push(ix);
         }
+        let al = kept.unwrap_or(listed);
+        let mut out: Vec<Arc<Index>> = out
+            .into_iter()
+            .map(|mut ix| {
+                ix.aliases = al.on(&ix.name).into_iter().map(|(a, _)| a).collect();
+                Arc::new(ix)
+            })
+            .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(out)
+        Ok((out, al))
+    }
+
+    /// The aliases [`ALIASES`] keeps, if it has been written.
+    async fn kept_aliases(&self) -> Result<Option<Aliases>, OsError> {
+        if self.svc.table(ALIASES).await.is_err() {
+            return Ok(None);
+        }
+        let got = self.svc.get_rows(Some(ALIASES), vec![Value::Str(ALIASES_KEY.to_string())], Some(vec!["name".into(), "meta".into()]), &After::Any, 0, false).await?;
+        match got.rows.into_iter().next().flatten() {
+            Some((row, _)) => {
+                let meta = row.get(1).map(crate::json::to_json).and_then(|j| j.as_str().map(String::from)).unwrap_or_else(|| "{}".into());
+                Ok(Some(Aliases::of_meta(&meta)?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Every alias: one row read, or, before the first change of an alias
+    /// since they moved into that row, every index's.
+    async fn aliases(&self) -> Result<Aliases, OsError> {
+        match self.kept_aliases().await? {
+            Some(al) => Ok(al),
+            None => Ok(self.catalog().await?.1),
+        }
+    }
+
+    /// Writes every alias, as `al` has them, in one row: one write of one
+    /// key, which a reader sees all of or none of, on one server and over
+    /// shards alike (finding KENJI-303).
+    async fn save_aliases(&self, al: &Aliases) -> Result<(), OsError> {
+        if self.svc.table(ALIASES).await.is_err() {
+            self.statement(&Principal::open(), &mapping::create_aliases_sql()).await?;
+        }
+        self.write(vec![json!({"op": "upsert", "table": ALIASES, "doc": {"name": ALIASES_KEY, "meta": al.meta()}})]).await?;
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        Ok(())
     }
 
     /// The index named `name` (not an alias), read again after
@@ -936,6 +993,11 @@ impl Os {
 
     /// The indexes an expression names: names, aliases and patterns
     /// (`logs-*`, `_all`, `*`), separated by commas; `-x` leaves one out.
+    /// An index reached through an alias with a filter carries the filter
+    /// ([`Index::alias_filter`]), which every read of it applies; one
+    /// named too, or reached through an alias without one, carries none,
+    /// and one reached through several filtered aliases the documents
+    /// any of their filters matches, as in OpenSearch.
     async fn resolve(&self, expr: &str) -> Result<Vec<Arc<Index>>, OsError> {
         let parts: Vec<&str> = expr.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
         let simple = parts.len() == 1 && !parts[0].contains('*') && parts[0] != "_all" && !parts[0].starts_with('-');
@@ -943,32 +1005,53 @@ impl Os {
             if let Some(ix) = self.index(parts[0]).await? {
                 return Ok(vec![ix]);
             }
-            // An alias.
+            // An alias: the indexes one read of the aliases names.
             if !self.meta_exists().await {
                 return Ok(Vec::new());
             }
-            let r = self.rows(&format!("SELECT name, aliases, meta FROM {META} WHERE aliases = {} LIMIT 10000", lit(parts[0])), &[]).await?;
-            return r.rows.iter().map(|row| index_of_row(row).map(Arc::new)).collect();
+            let al = self.aliases().await?;
+            let mut out = Vec::new();
+            for (name, spec) in al.indexes_of(parts[0]) {
+                if let Some(ix) = self.index(&name).await? {
+                    out.push(reached(ix, vec![Some(spec)]));
+                }
+            }
+            return Ok(out);
         }
-        let all = self.all().await?;
-        let mut out: Vec<Arc<Index>> = Vec::new();
+        let (all, al) = self.catalog().await?;
+        // Each index, and how it was reached: `None` by its name, else
+        // through an alias (its spec).
+        let mut out: Vec<(Arc<Index>, Vec<Option<Json>>)> = Vec::new();
         for p in &parts {
             if let Some(not) = p.strip_prefix('-') {
-                out.retain(|ix| !dsl::glob(not, &ix.name));
+                out.retain(|(ix, _)| !dsl::glob(not, &ix.name));
                 continue;
             }
             let pat = if *p == "_all" { "*" } else { p };
             for ix in &all {
-                let hit = dsl::glob(pat, &ix.name) || ix.aliases.iter().any(|a| dsl::glob(pat, a));
+                let by_name = dsl::glob(pat, &ix.name);
+                let by_alias: Vec<Json> = al.on(&ix.name).into_iter().filter(|(a, _)| dsl::glob(pat, a)).map(|(_, s)| s).collect();
                 // Patterns leave out hidden indexes (`.name`) unless they
                 // name them.
                 let hidden = ix.name.starts_with('.') && !pat.starts_with('.');
-                if hit && !hidden && !out.iter().any(|o| o.name == ix.name) {
-                    out.push(ix.clone());
+                if hidden || (!by_name && by_alias.is_empty()) {
+                    continue;
+                }
+                let at = match out.iter().position(|(o, _)| o.name == ix.name) {
+                    Some(i) => i,
+                    None => {
+                        out.push((ix.clone(), Vec::new()));
+                        out.len() - 1
+                    }
+                };
+                if by_name {
+                    out[at].1.push(None);
+                } else {
+                    out[at].1.extend(by_alias.into_iter().map(Some));
                 }
             }
         }
-        Ok(out)
+        Ok(out.into_iter().map(|(ix, via)| reached(ix, via)).collect())
     }
 
     /// The one index an expression names, for a search or a write.
@@ -1035,22 +1118,71 @@ impl Os {
             }
         }
         let settings = b.get("settings").cloned().unwrap_or_else(|| json!({}));
-        let aliases: Vec<String> = b.get("aliases").and_then(Json::as_object).map(|m| m.keys().cloned().collect()).unwrap_or_default();
         let uuid = new_id()[..22.min(20)].to_string();
-        let ix = Index::new(name, &mapping::table_of(name), &uuid, crate::telemetry::now_ms() as i64, mappings, settings, aliases)?;
+        let ix = Index::new(name, &mapping::table_of(name), &uuid, crate::telemetry::now_ms() as i64, mappings, settings, Vec::new())?;
+        // The aliases it is made with, checked as `_aliases` checks them.
+        let mut al = None;
+        if let Some(asked) = b.get("aliases").filter(|a| !a.is_null()) {
+            let asked = asked.as_object().ok_or_else(|| OsError::parsing("[aliases] is an object of aliases"))?;
+            let (all, mut kept) = self.catalog().await?;
+            for (alias, spec) in asked {
+                if alias == name {
+                    return Err(OsError::new(400, "invalid_alias_name_exception", format!("Invalid alias name [{alias}]: an alias may not have the name of its index")));
+                }
+                let spec = alias_spec(alias, spec, &ix, &all)?;
+                kept.set(name, alias, spec);
+            }
+            check_write_indexes(&kept)?;
+            al = Some(kept);
+        }
         who.may(Scope::Admin, "creating an index").map_err(OsError::from)?;
         self.ensure_meta().await?;
         self.statement(who, &mapping::create_sql(&ix)).await.map_err(|e| e.index(name))?;
         self.save(&ix).await?;
+        if let Some(al) = al {
+            self.save_aliases(&al).await?;
+        }
         Ok(Arc::new(ix))
     }
 
+    /// Deletes the indexes an expression names: names and patterns of
+    /// names, not aliases. OpenSearch refuses to delete through an alias,
+    /// which would delete every document behind it (a tenant's alias the
+    /// index all tenants share).
     async fn delete_index(&self, who: &Principal, expr: &str) -> Result<Reply, OsError> {
-        let ixs = self.resolve(expr).await?;
+        let (all, al) = self.catalog().await?;
+        let mut ixs: Vec<Arc<Index>> = Vec::new();
+        for p in expr.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            if let Some(not) = p.strip_prefix('-') {
+                ixs.retain(|ix| !dsl::glob(not, &ix.name));
+                continue;
+            }
+            let pat = if p == "_all" { "*" } else { p };
+            let hit: Vec<&Arc<Index>> = all.iter().filter(|ix| dsl::glob(pat, &ix.name) && !(ix.name.starts_with('.') && !pat.starts_with('.'))).collect();
+            if hit.is_empty() && al.is_alias(p) {
+                return Err(OsError::new(400, "illegal_argument_exception", format!("The provided expression [{p}] matches an alias, specify the corresponding concrete indices instead.")));
+            }
+            for ix in hit {
+                if !ixs.iter().any(|o| o.name == ix.name) {
+                    ixs.push(ix.clone());
+                }
+            }
+        }
         if ixs.is_empty() {
             return Err(OsError::not_found(expr));
         }
         let _g = self.ddl.lock().await;
+        // Their aliases go with them, first, so that no alias names an
+        // index that is gone.
+        if let Some(mut kept) = self.kept_aliases().await? {
+            let before = kept.clone();
+            for ix in &ixs {
+                kept.0.remove(&ix.name);
+            }
+            if kept != before {
+                self.save_aliases(&kept).await?;
+            }
+        }
         for ix in ixs {
             self.statement(who, &format!("DROP TABLE IF EXISTS {}", ix.table)).await?;
             self.write(vec![json!({"op": "delete", "table": META, "key": ix.name})]).await?;
@@ -1064,7 +1196,12 @@ impl Os {
         if ixs.is_empty() {
             return Err(OsError::not_found(expr));
         }
-        ok(Json::Object(ixs.iter().map(|ix| (ix.name.clone(), ix.json())).collect()))
+        let al = self.aliases().await?;
+        ok(Json::Object(ixs.iter().map(|ix| {
+            let mut j = ix.json();
+            j["aliases"] = Json::Object(al.on(&ix.name).into_iter().collect());
+            (ix.name.clone(), j)
+        }).collect()))
     }
 
     async fn get_mapping(&self, expr: &str) -> Result<Reply, OsError> {
@@ -1159,14 +1296,32 @@ impl Os {
         Ok(Arc::new(next))
     }
 
+    /// `POST _aliases`: its actions (`add`, `remove`, `remove_index`)
+    /// applied to every alias as one read found them, and the aliases
+    /// written in one row, so that a reader sees all of a request's
+    /// changes or none of them: an alias moved from one index to another
+    /// names the old one or the new one, never neither or both (finding
+    /// KENJI-303). A filter is checked against each index it is added to,
+    /// and an unknown key is refused, as OpenSearch refuses them.
     async fn post_aliases(&self, body: &Bytes) -> Result<Reply, OsError> {
         let b = body_json(body)?;
-        let actions = b.get("actions").and_then(Json::as_array).ok_or_else(|| OsError::new(400, "action_request_validation_exception", "Validation Failed: 1: no actions specified;"))?;
-        // index name -> aliases, as the actions leave them.
-        let mut changed: BTreeMap<String, Arc<Index>> = BTreeMap::new();
-        let mut drops = Vec::new();
+        dsl::only(&b, "aliases", &["actions"]).map_err(|e| e.kind("x_content_parse_exception"))?;
+        let actions = b.get("actions").and_then(Json::as_array).filter(|a| !a.is_empty()).ok_or_else(|| OsError::new(400, "action_request_validation_exception", "Validation Failed: 1: no actions specified;"))?;
+        let _g = self.ddl.lock().await;
+        let (all, mut al) = self.catalog().await?;
+        let mut drops: Vec<Arc<Index>> = Vec::new();
         for a in actions {
-            let (kind, spec) = a.as_object().and_then(|m| m.iter().next()).ok_or_else(|| OsError::parsing("an alias action is {\"add\": {...}}"))?;
+            let m = a.as_object().filter(|m| m.len() == 1).ok_or_else(|| OsError::parsing("an alias action is one of {\"add\": {...}}, {\"remove\": {...}} or {\"remove_index\": {...}}"))?;
+            let (kind, spec) = m.iter().next().expect("one");
+            let known: &[&str] = match kind.as_str() {
+                "add" => &["index", "indices", "alias", "aliases", "filter", "routing", "index_routing", "search_routing", "is_write_index", "is_hidden", "must_exist"],
+                "remove" => &["index", "indices", "alias", "aliases", "must_exist"],
+                "remove_index" => &["index", "indices", "must_exist"],
+                other => return Err(OsError::parsing(format!("unknown alias action [{other}]: ChloeDB's _aliases takes add, remove and remove_index{}", dsl::did_you_mean(other, &["add", "remove", "remove_index"])))),
+            };
+            if let Some(k) = spec.as_object().and_then(|o| o.keys().find(|k| !known.contains(&k.as_str()))) {
+                return Err(OsError::new(400, "x_content_parse_exception", format!("[{kind}] unknown field [{k}]{}", dsl::did_you_mean(k, known))));
+            }
             let list = |k: &str, ks: &str| -> Vec<String> {
                 match spec.get(ks).or_else(|| spec.get(k)) {
                     Some(Json::String(s)) => vec![s.clone()],
@@ -1175,43 +1330,49 @@ impl Os {
                 }
             };
             let (indexes, aliases) = (list("index", "indices"), list("alias", "aliases"));
-            let mut targets = Vec::new();
+            if indexes.is_empty() {
+                return Err(OsError::new(400, "action_request_validation_exception", "Validation Failed: 1: One of [index] or [indices] is required;"));
+            }
+            if kind != "remove_index" && aliases.is_empty() {
+                return Err(OsError::new(400, "action_request_validation_exception", "Validation Failed: 1: One of [alias] or [aliases] is required;"));
+            }
+            // The indexes the action names: names, patterns of names, and
+            // the indexes of an alias.
+            let mut targets: Vec<Arc<Index>> = Vec::new();
             for i in &indexes {
-                for ix in self.resolve(i).await? {
-                    targets.push(ix);
+                for ix in &all {
+                    let hit = dsl::glob(i, &ix.name) || (!i.contains('*') && al.on(&ix.name).iter().any(|(a, _)| a == i));
+                    if hit && !drops.iter().any(|d| d.name == ix.name) && !targets.iter().any(|t| t.name == ix.name) {
+                        targets.push(ix.clone());
+                    }
                 }
             }
             if targets.is_empty() {
                 return Err(OsError::not_found(&indexes.join(",")));
             }
+            let must_exist = spec.get("must_exist").and_then(Json::as_bool) == Some(true);
             for t in targets {
-                let cur = changed.get(&t.name).cloned().unwrap_or(t);
-                let mut al = cur.aliases.clone();
                 match kind.as_str() {
                     "add" => {
-                        for a in &aliases {
-                            if !al.contains(a) {
-                                al.push(a.clone());
-                            }
+                        for alias in &aliases {
+                            al.set(&t.name, alias, alias_spec(alias, spec, &t, &all)?);
                         }
                     }
-                    "remove" => al.retain(|a| !aliases.iter().any(|p| dsl::glob(p, a))),
-                    "remove_index" => {
-                        drops.push(cur.clone());
-                        continue;
+                    "remove" => {
+                        if al.remove(&t.name, &aliases) == 0 && must_exist {
+                            return Err(OsError::new(404, "aliases_not_found_exception", format!("aliases [{}] missing", aliases.join(","))).index(&t.name));
+                        }
                     }
-                    other => return Err(OsError::parsing(format!("unknown alias action [{other}]"))),
+                    _ => {
+                        al.0.remove(&t.name);
+                        drops.push(t);
+                    }
                 }
-                let next = Index::new(&cur.name, &cur.table, &cur.uuid, cur.created_ms, cur.mappings.clone(), cur.settings.clone(), al)?;
-                changed.insert(cur.name.clone(), Arc::new(next));
             }
         }
-        let _g = self.ddl.lock().await;
-        for ix in changed.values() {
-            if !drops.iter().any(|d| d.name == ix.name) {
-                self.save(ix).await?;
-            }
-        }
+        check_write_indexes(&al)?;
+        // One write of one row: the aliases as every action leaves them.
+        self.save_aliases(&al).await?;
         for d in drops {
             self.statement(&Principal::open(), &format!("DROP TABLE IF EXISTS {}", d.table)).await?;
             self.write(vec![json!({"op": "delete", "table": META, "key": d.name})]).await?;
@@ -1220,16 +1381,20 @@ impl Os {
         ok(json!({"acknowledged": true}))
     }
 
+    /// `GET _alias`: each index with its aliases, as one read of them
+    /// found them, and what each holds (its `filter`, `is_write_index`
+    /// and routing).
     async fn get_aliases(&self, ix: Option<&str>, name: Option<&str>) -> Result<Reply, OsError> {
         let ixs = match ix {
             Some(e) => self.resolve(e).await?,
             None => self.all().await?,
         };
+        let al = self.aliases().await?;
         let mut out = Map::new();
         for i in &ixs {
-            let al: Map<String, Json> = i.aliases.iter().filter(|a| name.is_none_or(|n| n.split(',').any(|p| dsl::glob(p, a)))).map(|a| (a.clone(), json!({}))).collect();
-            if name.is_none() || !al.is_empty() {
-                out.insert(i.name.clone(), json!({"aliases": al}));
+            let mine: Map<String, Json> = al.on(&i.name).into_iter().filter(|(a, _)| name.is_none_or(|n| n.split(',').any(|p| dsl::glob(p, a)))).collect();
+            if name.is_none() || !mine.is_empty() {
+                out.insert(i.name.clone(), json!({"aliases": mine}));
             }
         }
         if name.is_some() && out.is_empty() {
@@ -1276,9 +1441,15 @@ impl Os {
             }
             "aliases" => {
                 let mut out = Vec::new();
-                for ix in self.all().await? {
-                    for a in &ix.aliases {
-                        out.push(row(&[("alias", a.clone()), ("index", ix.name.clone()), ("filter", "-".into()), ("routing.index", "-".into()), ("routing.search", "-".into()), ("is_write_index", "-".into())]));
+                let (all, al) = self.catalog().await?;
+                for ix in all {
+                    for (a, spec) in al.on(&ix.name) {
+                        if expr.is_some_and(|e| !e.split(',').any(|p| dsl::glob(p, &a))) {
+                            continue;
+                        }
+                        let cell = |k: &str| spec.get(k).filter(|v| !v.is_null()).map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string())).unwrap_or_else(|| "-".into());
+                        let filter = if spec.get("filter").is_some() { "*".to_string() } else { "-".to_string() };
+                        out.push(row(&[("alias", a.clone()), ("index", ix.name.clone()), ("filter", filter), ("routing.index", cell("index_routing")), ("routing.search", cell("search_routing")), ("is_write_index", cell("is_write_index"))]));
                     }
                 }
                 out
@@ -1295,7 +1466,10 @@ impl Os {
                 };
                 let mut n = 0;
                 for ix in &ixs {
-                    n += self.count_of(ix, &None, &[]).await?;
+                    // Through a filtered alias, the documents it reaches.
+                    let mut cx = Ctx::new(ix);
+                    let c = self.query_of(&mut cx, &json!({}), &HashMap::new())?;
+                    n += self.count_of(ix, &c.pred, &cx.params).await?;
                 }
                 vec![row(&[("epoch", epoch()), ("timestamp", "00:00:00".into()), ("count", n.to_string())])]
             }
@@ -1370,20 +1544,30 @@ impl Os {
         // Each item's index.
         let mut ixs: BTreeMap<String, Arc<Index>> = BTreeMap::new();
         let mut of_item: Vec<Option<String>> = vec![None; n];
+        // The index each name an item gives writes to.
+        let mut named: HashMap<String, String> = HashMap::new();
         for (i, it) in items.iter().enumerate() {
             let id = it.id.clone().unwrap_or_default();
             let Some(name) = it.index.clone().or_else(|| default_index.map(String::from)) else {
                 out[i] = Some(Outcome::failed(it.action, "", &id, OsError::new(400, "action_request_validation_exception", "Validation Failed: 1: index is missing;")));
                 continue;
             };
-            if let Some(ix) = ixs.values().find(|x| x.name == name || x.aliases.contains(&name)) {
-                of_item[i] = Some(ix.name.clone());
+            if let Some(ix) = named.get(&name) {
+                of_item[i] = Some(ix.clone());
                 continue;
             }
+            // Through an alias, its write index: its one index, unless
+            // `is_write_index` is false there, or of several the one it
+            // says is.
+            let no_write = || OsError::new(400, "illegal_argument_exception", format!("no write index is defined for alias [{name}]. The write index may be explicitly disabled using is_write_index=false or the alias points to multiple indices without one being designated as a write index"));
             let found = match self.resolve(&name).await {
+                Ok(v) if v.len() == 1 && v[0].is_write_index == Some(false) => Err(no_write()),
                 Ok(mut v) if v.len() == 1 => Ok(v.pop()),
                 Ok(v) if v.is_empty() => Ok(None),
-                Ok(_) => Err(OsError::new(400, "illegal_argument_exception", format!("no write index is defined for alias [{name}]: ChloeDB writes to an alias of one index"))),
+                Ok(v) => {
+                    let mut w: Vec<Arc<Index>> = v.into_iter().filter(|ix| ix.is_write_index == Some(true)).collect();
+                    if w.len() == 1 { Ok(w.pop()) } else { Err(no_write()) }
+                }
                 Err(e) => Err(e),
             };
             let ix = match found {
@@ -1396,7 +1580,8 @@ impl Os {
             match ix {
                 Ok(ix) => {
                     of_item[i] = Some(ix.name.clone());
-                    ixs.insert(ix.name.clone(), ix);
+                    named.insert(name.clone(), ix.name.clone());
+                    ixs.entry(ix.name.clone()).or_insert(ix);
                 }
                 Err(e) => out[i] = Some(Outcome::failed(it.action, &name, &id, e)),
             }
@@ -1664,14 +1849,30 @@ impl Os {
         self.one_item(who, item, q).await
     }
 
-    /// Documents by id, as `_doc` and `_mget` answer them.
+    /// Documents by id, as `_doc` and `_mget` answer them. Through an
+    /// alias with a filter, a document the filter does not match is not
+    /// found: one tenant's alias reads none of another's documents, even
+    /// by id (OpenSearch applies an alias's filter to searches alone, and
+    /// a get by id through it finds any document of the index).
     async fn docs(&self, ix: &Index, ids: &[String], src: &SourceFilter) -> Result<Vec<Json>, OsError> {
         let cols = if src.on { ix.read_columns() } else { vec![ID.into(), VERSION.into()] };
         let got = self.svc.get_rows(Some(&ix.table), ids.iter().map(|k| Value::Str(k.clone())).collect(), Some(cols), &After::Any, 0, false).await?;
+        let kept: Option<std::collections::HashSet<String>> = match &ix.alias_filter {
+            Some(_) if !ids.is_empty() => {
+                let mut cx = Ctx::new(ix);
+                let c = self.query_of(&mut cx, &json!({}), &HashMap::new())?;
+                let list: Vec<String> = ids.iter().map(|i| lit(i)).collect();
+                let pred = format!("{} IN ({}){}", ident(ID), list.join(", "), c.pred.map(|p| format!(" AND ({p})")).unwrap_or_default());
+                let r = self.rows(&format!("SELECT {} FROM {} WHERE {pred} LIMIT {}", ident(ID), ix.table, ids.len()), &cx.params).await?;
+                Some(r.rows.iter().filter_map(|row| row.first().map(dsl::id_text)).collect())
+            }
+            _ => None,
+        };
         Ok(ids
             .iter()
             .zip(got.rows)
             .map(|(id, row)| match row {
+                Some(_) if kept.as_ref().is_some_and(|k| !k.contains(id)) => json!({"_index": ix.name, "_id": id, "found": false}),
                 None => json!({"_index": ix.name, "_id": id, "found": false}),
                 Some((r, _)) => {
                     let vals: Vec<Json> = r.iter().map(crate::json::to_json).collect();
@@ -1794,6 +1995,9 @@ impl Os {
 
     async fn count(&self, expr: &str, body: &Bytes, q: &HashMap<String, String>) -> Result<Reply, OsError> {
         let b = body_json(body)?;
+        if let Some(k) = b.as_object().and_then(|m| m.keys().find(|k| k.as_str() != "query")) {
+            return Err(OsError::parsing(format!("request does not support [{k}]: ChloeDB's _count takes a query{}", dsl::did_you_mean(k, &["query"]))));
+        }
         let ixs = self.resolve(expr).await?;
         if ixs.is_empty() && !(expr == "*" || expr == "_all") {
             return Err(OsError::not_found(expr));
@@ -1807,8 +2011,26 @@ impl Os {
         ok(json!({"count": n, "_shards": shards()}))
     }
 
-    /// The query of a search body, or of `q=` (a query string).
+    /// The query of a search body, or of `q=` (a query string), and the
+    /// filter of the alias the index was reached through
+    /// ([`Index::alias_filter`]), which every search, count, aggregation
+    /// and delete by query through the alias applies (finding KENJI-301).
     fn query_of(&self, cx: &mut Ctx, b: &Json, q: &HashMap<String, String>) -> Result<Compiled, OsError> {
+        let c = self.asked_query(cx, b, q)?;
+        let Some(f) = cx.ix.alias_filter.clone() else { return Ok(c) };
+        // A filter: it scores nothing, and its words are not highlighted.
+        let words = cx.words.clone();
+        let fc = dsl::unscored(cx, |cx| dsl::compile(&f, cx))?;
+        cx.words = words;
+        let pred = match (c.pred, fc.pred) {
+            (Some(a), Some(b)) => Some(format!("({a}) AND ({b})")),
+            (a, b) => a.or(b),
+        };
+        Ok(Compiled { pred, score: c.score })
+    }
+
+    /// The query a request asks for, from its body or its `q=`.
+    fn asked_query(&self, cx: &mut Ctx, b: &Json, q: &HashMap<String, String>) -> Result<Compiled, OsError> {
         if let Some(text) = q.get("q") {
             let mut qs = json!({"query": text});
             if let Some(df) = q.get("df") {
@@ -1832,7 +2054,14 @@ impl Os {
     /// page is full or every hit is read.
     async fn search(&self, expr: &str, b: &Json, q: &HashMap<String, String>) -> Result<(Json, Arc<Index>), OsError> {
         let t0 = Instant::now();
+        check_search_body(b)?;
         let ixs = self.resolve(expr).await?;
+        if ixs.is_empty() {
+            if expr == "*" || expr == "_all" {
+                return Ok((empty_search(), Arc::new(Index::new("", "", "", 0, json!({}), json!({}), Vec::new())?)));
+            }
+            return Err(OsError::not_found(expr));
+        }
         let collapse = match b.get("collapse") {
             None => None,
             Some(c) => {
@@ -1842,8 +2071,8 @@ impl Os {
                 Some(c.get("field").and_then(Json::as_str).ok_or_else(|| OsError::parsing("[collapse] requires field"))?.to_string())
             }
         };
-        if ixs.len() <= 1 && collapse.is_none() {
-            return self.search_one(expr, b, q).await;
+        if ixs.len() == 1 && collapse.is_none() {
+            return self.search_one(ixs[0].clone(), b, q).await;
         }
         let scrolling = q.contains_key("scroll") || b.get("scroll").is_some() || b.get(SCROLL_AFTER).is_some() || b.get("_scroll_from").is_some();
         if scrolling {
@@ -1890,7 +2119,7 @@ impl Os {
         let mut fetch = if collapse.is_some() { (want * 2).max(want + 10).min(MAX_WINDOW) } else { want };
         loop {
             inner["size"] = json!(fetch);
-            let answers = futures::future::join_all(ixs.iter().map(|ix| self.search_one(&ix.name, &inner, &q2))).await;
+            let answers = futures::future::join_all(ixs.iter().map(|ix| self.search_one(ix.clone(), &inner, &q2))).await;
             let answers: Vec<Json> = answers.into_iter().map(|r| r.map(|(j, _)| j)).collect::<Result<_, _>>()?;
             let mut all: Vec<(usize, usize, Json)> = Vec::new();
             let mut more = false;
@@ -1942,15 +2171,10 @@ impl Os {
         }
     }
 
-    /// A search of one index.
-    async fn search_one(&self, expr: &str, b: &Json, q: &HashMap<String, String>) -> Result<(Json, Arc<Index>), OsError> {
+    /// A search of one index, as the request reached it (through an
+    /// alias, with its filter).
+    async fn search_one(&self, ix: Arc<Index>, b: &Json, q: &HashMap<String, String>) -> Result<(Json, Arc<Index>), OsError> {
         let t0 = Instant::now();
-        let ix = match self.resolve(expr).await? {
-            v if v.is_empty() && (expr == "*" || expr == "_all") => return Ok((empty_search(), Arc::new(Index::new("", "", "", 0, json!({}), json!({}), Vec::new())?))),
-            mut v if v.len() == 1 => v.pop().expect("one"),
-            v if v.is_empty() => return Err(OsError::not_found(expr)),
-            v => return Err(OsError::new(400, "illegal_argument_exception", format!("[{expr}] names {} indexes ({}); ChloeDB's OpenSearch API searches one index (or an alias of one) at a time", v.len(), v.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", ")))),
-        };
         let num = |k: &str, d: usize| -> Result<usize, OsError> {
             match q.get(k).map(|s| s.parse::<i64>()).or_else(|| b.get(k).map(|v| v.as_i64().ok_or(()).or_else(|_| v.as_str().unwrap_or("x").parse::<i64>().map_err(|_| ())).map_err(|_| "x".parse::<i64>().unwrap_err()))) {
                 None => Ok(d),
@@ -2353,6 +2577,17 @@ impl Os {
     async fn delete_by_query(&self, who: &Principal, expr: &str, body: &Bytes, q: &HashMap<String, String>) -> Result<Reply, OsError> {
         let t0 = Instant::now();
         let b = body_json(body)?;
+        if let Some(k) = b.as_object().and_then(|m| m.keys().find(|k| !matches!(k.as_str(), "query" | "conflicts"))) {
+            let why = match k.as_str() {
+                "max_docs" | "size" => "ChloeDB's _delete_by_query deletes every document its query matches: it takes no max_docs".to_string(),
+                "slice" => "ChloeDB's _delete_by_query is not sliced: it deletes every match in one request".to_string(),
+                _ => format!("request does not support [{k}]{}", dsl::did_you_mean(k, &["query", "conflicts"])),
+            };
+            return Err(OsError::parsing(why));
+        }
+        if q.contains_key("max_docs") || q.get("slices").is_some_and(|n| n != "1") {
+            return Err(OsError::parsing("ChloeDB's _delete_by_query deletes every document its query matches, in one request: it takes no max_docs or slices"));
+        }
         if b.get("query").is_none() && !q.contains_key("q") {
             return Err(OsError::new(400, "action_request_validation_exception", "Validation Failed: 1: query is missing;"));
         }
@@ -2389,6 +2624,68 @@ impl Os {
         let n = self.count_of(&ix, &c.pred, &cx.params).await?;
         ok(json!({"took": t0.elapsed().as_millis() as u64, "timed_out": false, "total": n, "updated": 0, "noops": n, "deleted": 0, "batches": 1, "version_conflicts": 0, "retries": {"bulk": 0, "search": 0}, "failures": []}))
     }
+}
+
+/// The keys of a search body ChloeDB reads, and those it takes and
+/// leaves alone because they change no hit (`timeout`: a search is not
+/// cut short; `track_scores`; `terminate_after`: every match is counted;
+/// `stats`). Any other is refused ([`check_search_body`]).
+const SEARCH_KEYS: &[&str] = &[
+    "query", "from", "size", "sort", "_source", "aggs", "aggregations", "post_filter", "highlight", "search_after", "collapse", "track_total_hits",
+    "version", "seq_no_primary_term", "docvalue_fields", "stored_fields", "fields", "timeout", "track_scores", "terminate_after", "stats",
+];
+
+/// Refuses a search body's key that ChloeDB does not read, as OpenSearch
+/// refuses one it does not know (`Unknown key for a START_OBJECT in
+/// [qeury]`), and the parts of OpenSearch's search it does not answer
+/// (`pit`, `rescore`, `suggest`, `runtime_mappings`...), each with what
+/// to do instead: left out, they would answer another search than the one
+/// asked for, a misspelt `query` all documents (finding KENJI-302).
+fn check_search_body(b: &Json) -> Result<(), OsError> {
+    let m = match b {
+        Json::Object(m) => m,
+        Json::Null => return Ok(()),
+        _ => return Err(OsError::parsing("a search body is an object: {\"query\": {...}}")),
+    };
+    for (k, v) in m {
+        if SEARCH_KEYS.contains(&k.as_str()) || matches!(k.as_str(), "scroll" | "_scroll_from" | SCROLL_AFTER) {
+            continue;
+        }
+        let empty = match v {
+            Json::Null | Json::Bool(false) => true,
+            Json::Object(o) => o.is_empty(),
+            Json::Array(a) => a.is_empty(),
+            _ => false,
+        };
+        let why = match k.as_str() {
+            "explain" | "profile" | "ext" | "runtime_mappings" | "script_fields" | "indices_boost" if empty => continue,
+            "pit" => "ChloeDB keeps no point-in-time searches: page with search_after on a sort, or with a scroll".to_string(),
+            "rescore" => "ChloeDB does not rescore a search's top hits: put the rescoring query in the query itself (a bool's should, or function_score)".to_string(),
+            "suggest" => "ChloeDB's OpenSearch API answers no suggesters: search with match_bool_prefix or fuzzy instead".to_string(),
+            "runtime_mappings" => "ChloeDB's OpenSearch API has no runtime fields: map and index the field, or compute it from the hits".to_string(),
+            "script_fields" => "ChloeDB runs no scripts for fields: read the values from _source or fields".to_string(),
+            "slice" => "ChloeDB does not slice a scroll: scroll once over the whole search".to_string(),
+            "indices_boost" => "ChloeDB does not boost hits by their index".to_string(),
+            "knn" => "ChloeDB's knn is a query: {\"query\": {\"knn\": {\"field\": {\"vector\": [...], \"k\": 10}}}}".to_string(),
+            "min_score" => "ChloeDB's search takes no min_score".to_string(),
+            "explain" => "ChloeDB's OpenSearch API does not explain scores".to_string(),
+            "profile" => "ChloeDB's OpenSearch API does not profile searches".to_string(),
+            "ext" => "ChloeDB runs no search plugins (ext)".to_string(),
+            _ => {
+                let token = match v {
+                    Json::Object(_) => "START_OBJECT",
+                    Json::Array(_) => "START_ARRAY",
+                    Json::String(_) => "VALUE_STRING",
+                    Json::Number(_) => "VALUE_NUMBER",
+                    Json::Bool(_) => "VALUE_BOOLEAN",
+                    Json::Null => "VALUE_NULL",
+                };
+                format!("Unknown key for a {token} in [{k}]{}", dsl::did_you_mean(k, SEARCH_KEYS))
+            }
+        };
+        return Err(OsError::parsing(why));
+    }
+    Ok(())
 }
 
 /// A hit's sort value as OpenSearch gives it: a date in milliseconds, an
@@ -2490,6 +2787,147 @@ fn scroll_id(expr: &str, b: &Json, q: &HashMap<String, String>, answer: &Json) -
     nq.remove("scroll_id");
     let s = json!({"i": expr, "b": nb, "q": nq});
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s.to_string())
+}
+
+/// Every alias: for each index, its aliases and what each holds
+/// (`filter`, `is_write_index`, `index_routing`, `search_routing`,
+/// `is_hidden`), as `GET _alias` answers them. One row of [`ALIASES`]
+/// keeps them all.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Aliases(BTreeMap<String, BTreeMap<String, Json>>);
+
+impl Aliases {
+    /// The aliases [`ALIASES`]'s row keeps in its `meta`.
+    fn of_meta(meta: &str) -> Result<Aliases, OsError> {
+        let m: Json = serde_json::from_str(meta).map_err(|e| OsError::internal(format!("the aliases' row is not JSON: {e}")))?;
+        let mut al = Aliases::default();
+        for (ix, aliases) in m.get("indexes").and_then(Json::as_object).into_iter().flatten() {
+            for (name, spec) in aliases.as_object().into_iter().flatten() {
+                al.set(ix, name, spec.clone());
+            }
+        }
+        Ok(al)
+    }
+
+    fn meta(&self) -> String {
+        json!({"indexes": self.0}).to_string()
+    }
+
+    fn set(&mut self, index: &str, alias: &str, spec: Json) {
+        self.0.entry(index.to_string()).or_default().insert(alias.to_string(), spec);
+    }
+
+    /// The aliases of `index`, with what each holds.
+    fn on(&self, index: &str) -> Vec<(String, Json)> {
+        self.0.get(index).map(|m| m.iter().map(|(a, s)| (a.clone(), s.clone())).collect()).unwrap_or_default()
+    }
+
+    /// The indexes alias `alias` names, with what it holds on each.
+    fn indexes_of(&self, alias: &str) -> Vec<(String, Json)> {
+        self.0.iter().filter_map(|(ix, m)| m.get(alias).map(|s| (ix.clone(), s.clone()))).collect()
+    }
+
+    fn is_alias(&self, name: &str) -> bool {
+        self.0.values().any(|m| m.contains_key(name))
+    }
+
+    /// Takes `index`'s aliases that `patterns` match off it: how many.
+    fn remove(&mut self, index: &str, patterns: &[String]) -> usize {
+        let Some(m) = self.0.get_mut(index) else { return 0 };
+        let before = m.len();
+        m.retain(|a, _| !patterns.iter().any(|p| dsl::glob(p, a)));
+        let n = before - m.len();
+        if m.is_empty() {
+            self.0.remove(index);
+        }
+        n
+    }
+}
+
+/// What alias `alias` holds on index `ix`, from an `add` action or an
+/// index's `aliases` (`filter`, `is_write_index`, `routing`,
+/// `index_routing`, `search_routing`, `is_hidden`): its name checked as an
+/// index's is, and not an index's; its filter compiled against `ix`, so
+/// that one ChloeDB cannot apply is refused now rather than at the first
+/// search. Routing is kept and shown, and routes nothing: an index is one
+/// table, which every search reads.
+fn alias_spec(alias: &str, spec: &Json, ix: &Index, all: &[Arc<Index>]) -> Result<Json, OsError> {
+    mapping::check_name(alias).map_err(|e| OsError::new(400, "invalid_alias_name_exception", e.reason.replace("index name", "alias name")))?;
+    if alias.contains('*') {
+        return Err(OsError::new(400, "invalid_alias_name_exception", format!("Invalid alias name [{alias}]: must not contain '*'")));
+    }
+    if all.iter().any(|i| i.name == alias) {
+        return Err(OsError::new(400, "invalid_alias_name_exception", format!("Invalid alias name [{alias}]: an index or data stream exists with the same name as the alias")));
+    }
+    let known = ["filter", "routing", "index_routing", "search_routing", "is_write_index", "is_hidden"];
+    let mut out = Map::new();
+    if let Some(o) = spec.as_object() {
+        for (k, v) in o {
+            if v.is_null() || !known.contains(&k.as_str()) {
+                continue;
+            }
+            match k.as_str() {
+                "filter" => {
+                    let mut cx = Ctx::new(ix);
+                    dsl::compile(v, &mut cx).map_err(|e| OsError::new(400, "illegal_argument_exception", format!("failed to parse filter for alias [{alias}]: {}", e.reason)))?;
+                    if !cx.params.is_empty() || cx.knn_k.is_some() {
+                        return Err(OsError::new(400, "illegal_argument_exception", format!("failed to parse filter for alias [{alias}]: ChloeDB's alias filters take no knn query")));
+                    }
+                    out.insert(k.clone(), v.clone());
+                }
+                "routing" => {
+                    out.insert("index_routing".into(), v.clone());
+                    out.insert("search_routing".into(), v.clone());
+                }
+                "is_write_index" | "is_hidden" => {
+                    let b = v.as_bool().ok_or_else(|| OsError::parsing(format!("[{k}] is true or false")))?;
+                    out.insert(k.clone(), json!(b));
+                }
+                _ => {
+                    out.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+    Ok(Json::Object(out))
+}
+
+/// Refuses aliases of which more than one index is the write index.
+fn check_write_indexes(al: &Aliases) -> Result<(), OsError> {
+    let mut writes: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (ix, m) in &al.0 {
+        for (a, spec) in m {
+            if spec.get("is_write_index").and_then(Json::as_bool) == Some(true) {
+                writes.entry(a.as_str()).or_default().push(ix.as_str());
+            }
+        }
+    }
+    match writes.iter().find(|(_, v)| v.len() > 1) {
+        Some((a, v)) => Err(OsError::new(400, "illegal_state_exception", format!("alias [{a}] has more than one write index [{}]", v.join(",")))),
+        None => Ok(()),
+    }
+}
+
+/// `ix` as a request reached it: by its name (`None` in `via`), or
+/// through aliases (what each holds). Reached through aliases alone, it
+/// carries their filter (several: any of them, as OpenSearch ORs them)
+/// and, through one, its `is_write_index`.
+fn reached(ix: Arc<Index>, via: Vec<Option<Json>>) -> Arc<Index> {
+    if via.is_empty() || via.iter().any(Option::is_none) {
+        return ix;
+    }
+    let specs: Vec<Json> = via.into_iter().flatten().collect();
+    let write = if specs.len() == 1 { specs[0].get("is_write_index").and_then(Json::as_bool) } else { None };
+    // An alias without a filter reaches every document.
+    let filters: Option<Vec<Json>> = specs.iter().map(|s| s.get("filter").filter(|f| !f.is_null()).cloned()).collect();
+    let filter = filters.map(|mut fs| if fs.len() == 1 { fs.pop().unwrap_or_default() } else { json!({"bool": {"should": fs, "minimum_should_match": 1}}) });
+    if filter.is_none() && write.is_none() {
+        return ix;
+    }
+    let mut i = (*ix).clone();
+    i.alias_filter = filter;
+    i.is_write_index = write;
+    Arc::new(i)
 }
 
 /// An index of a [`META`] row (`name`, `aliases`, `meta`).

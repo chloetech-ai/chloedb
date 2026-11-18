@@ -26,6 +26,20 @@ use super::OsError;
 /// The table that holds the indexes' names, mappings and aliases.
 pub const META: &str = "opensearch_indices";
 
+/// The table whose one row ([`ALIASES_KEY`]) keeps every alias, in its
+/// `meta`: one row, so that the actions of one `_aliases` request apply
+/// at once, on one server and over shards alike. Before the first change
+/// of an alias since 0.3.9 there is no such table, and each index's row
+/// of [`META`] lists its aliases (as an older version, which reads them
+/// there alone, still does).
+pub const ALIASES: &str = "opensearch_aliases";
+pub const ALIASES_KEY: &str = "aliases";
+
+/// `CREATE TABLE` of [`ALIASES`].
+pub fn create_aliases_sql() -> String {
+    format!("CREATE TABLE IF NOT EXISTS {ALIASES} (name KEYWORD PRIMARY KEY, meta TEXT OPTIONS(indexed = false))")
+}
+
 /// The key, version and document columns of an index's table.
 pub const ID: &str = "_id";
 pub const VERSION: &str = "_version";
@@ -184,6 +198,14 @@ pub struct Index {
     pub mappings: Json,
     pub settings: Json,
     pub aliases: Vec<String>,
+    /// The filter of the alias a request reached the index through
+    /// (a query): every read through it keeps only the documents the
+    /// filter matches. `None` for a request that named the index, or an
+    /// alias without one.
+    pub alias_filter: Option<Json>,
+    /// The `is_write_index` of the alias a request reached the index
+    /// through, when it says.
+    pub is_write_index: Option<bool>,
     /// Every field a query may name, by name.
     pub fields: BTreeMap<String, Field>,
     /// The number fields no document holds an array of, when a search has
@@ -197,7 +219,7 @@ impl Index {
         if let Some(props) = mappings.get("properties") {
             walk_properties(props, "", &settings, &mut fields)?;
         }
-        Ok(Index { name: name.into(), table: table.into(), uuid: uuid.into(), created_ms, mappings, settings, aliases, fields, single_numbers: None })
+        Ok(Index { name: name.into(), table: table.into(), uuid: uuid.into(), created_ms, mappings, settings, aliases, alias_filter: None, is_write_index: None, fields, single_numbers: None })
     }
 
     /// The index's `dynamic` setting: `true` (the default), `false` or
