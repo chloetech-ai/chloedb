@@ -130,6 +130,8 @@ fn text_for_a_field_of_no_model_names_the_parameter() {
     let db = Db::create_empty(&dir.path().join("v.chloedb"), DbOptions { sync: false, ..DbOptions::default() }).unwrap();
     let p = Params::new();
     db.sql("CREATE TABLE docs (id KEYWORD PRIMARY KEY, title TEXT, emb VECTOR(16) OPTIONS(embed = 'title', model = 'hash:16'), bge VECTOR(4))", &p).unwrap();
+    // No model opens here: emb's vectors wait for embed_backfill.
+    db.set_embed_later(true);
     db.sql("INSERT INTO docs (id, title, bge) VALUES ('a', 'vitamin d', '[1,0,0,0]')", &p).unwrap();
     let e = db.query("SELECT id FROM docs ORDER BY similarity(bge, :v) DESC LIMIT 3", &Params::new().set("v", Value::Str("vitamin d".into()))).unwrap_err().to_string();
     assert!(e.contains("\"params\": {\"v\": {\"vector_of\"") && e.contains("embed('<model>', :v)"), "{e}");
