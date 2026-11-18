@@ -172,7 +172,7 @@ pub fn run_in(plan: &Plan, catalog: &[&Schema], runner: &mut Runner, opts: &Exec
     let pool = Arc::new(Pool { charge: charge.clone(), limited: opts.memory.is_some(), used: AtomicUsize::new(0), refused: Mutex::new(None) });
     let env = RuntimeEnvBuilder::new().with_memory_pool(pool.clone()).build_arc().map_err(|e| Error::Query(format!("datafusion: {e}")))?;
     let ctx = SessionContext::new_with_config_rt(config, env);
-    let mut l = Lower { catalog, runner, opts, ctx, pool, next: 0, ctes: Vec::new(), driver: None, per: None, lines: Vec::new(), charge, filter_docs: 0, scored: 0, clock: Clock::new(opts.profile), prof: Vec::new(), dropped: 0, tables: HashMap::new(), leaf_rows: 0, ran: Vec::new(), depth: 0 };
+    let mut l = Lower { catalog, runner, opts, ctx, pool, next: 0, ctes: Vec::new(), driver: None, per: None, semi: Vec::new(), lines: Vec::new(), charge, filter_docs: 0, scored: 0, clock: Clock::new(opts.profile), prof: Vec::new(), dropped: 0, tables: HashMap::new(), leaf_rows: 0, ran: Vec::new(), depth: 0 };
     match l.answer(&plan.root) {
         Ok(rs) => Ok(Outcome::Done(rs)),
         Err(Fail::No(why)) => Ok(Outcome::Fallback(why, l.ran())),
@@ -321,6 +321,9 @@ struct Lower<'a, 'r> {
     /// The cap a `MAX k PER` right above the driven scan puts on its rows,
     /// which the scan keeps itself ([`crate::query::ir::Search::per`]).
     per: Option<(*const Node, crate::query::ir::PerCap)>,
+    /// The conditions joins read first put on scans of their left sides
+    /// ([`ops::semi_target`]), as the operators' do.
+    semi: Vec<(*const Node, Expr, usize)>,
     lines: Vec<String>,
     charge: Charge,
     /// The leaves' rows passing their filters, and scored, summed, as the
@@ -809,17 +812,18 @@ impl<'a> Lower<'a, '_> {
     fn count(&mut self, n: &Node) -> R<Option<u64>> {
         let leaf = self.prepared(n)?;
         let Some(s) = leaf.search() else { return Ok(None) };
-        let mut search = s.clone();
-        search.order.clear();
-        search.phases.clear();
-        search.per = None;
-        let count = Node::Project {
-            input: Box::new(Node::Aggregate { input: Box::new(Node::Search(search)), keys: Vec::new(), aggs: vec![Agg::of(AggFn::Count, None)] }),
-            columns: vec![crate::query::ir::Column { name: "n".into(), expr: Expr::Output(0) }],
-        };
+        let count = ops::count_plan(s);
         self.opts.check()?;
-        let n = match (self.runner)(&Plan::new(count), usize::MAX) {
-            Ok(Leaf::Rows(rs)) => rs.rows.first().and_then(|r| r.first()).and_then(Value::as_i64).map(|n| n.max(0) as u64),
+        let n = match (self.runner)(&count, usize::MAX) {
+            Ok(Leaf::Rows(rs)) => {
+                let n = rs.rows.first().and_then(|r| r.first()).and_then(Value::as_i64).map(|n| n.max(0) as u64);
+                // Kept as a leaf's rows are, for the operators to take a
+                // join's choice over without counting again.
+                if self.leaf_rows <= SMALL {
+                    self.ran.push((count, rs));
+                }
+                n
+            }
             Ok(Leaf::Arrow(_)) | Err(_) => None,
         };
         self.opts.check()?;
@@ -828,6 +832,8 @@ impl<'a> Lower<'a, '_> {
 
     fn leaf(&mut self, node: &Node, what: &str, restrict: Vec<Expr>) -> R<Rel> {
         let mut leaf = self.prepared(node)?;
+        // A join read first restricts this scan ([`Lower::semi`]).
+        let restrict: Vec<Expr> = self.semi.iter().filter(|(p, ..)| std::ptr::eq(*p, node)).map(|(_, c, _)| c.clone()).chain(restrict).collect();
         let restricted = restrict.iter().map(|c| if let Expr::In { list, .. } = c { list.len() } else { 0 }).max().unwrap_or(0);
         if !restrict.is_empty() {
             let s = leaf.search_mut().expect("a leaf");
@@ -1591,6 +1597,20 @@ impl<'a> Lower<'a, '_> {
         if kind == JoinKind::Full {
             return no("a FULL JOIN");
         }
+        // A small right side read first, restricting a scan of the left.
+        let mark = self.semi.len();
+        let whole = match ops::semi_target(left, right, kind, keys, self.catalog) {
+            Some((t, f, j)) if !self.per.is_some_and(|(p, _)| std::ptr::eq(p, t)) => self.semi(right, t, f, j),
+            _ => Ok(None),
+        };
+        let ran = whole.and_then(|w| match w {
+            Some(r) => Ok(Some((self.node(left, "scan")?, r))),
+            None => Ok(None),
+        });
+        self.semi.truncate(mark);
+        if let Some((l, r)) = ran? {
+            return self.joined(l, r, kind, keys, on);
+        }
         let mut l = self.node(left, "scan")?;
         // Past RESTRICT_ALWAYS rows read on the left, a right side of at most
         // RESTRICT_ALWAYS rows (a table of zones, of genres) is read whole:
@@ -1599,7 +1619,7 @@ impl<'a> Lower<'a, '_> {
         // 224,056 trips to 265 zones spent 42 of their 80 ms there, persona
         // study round 2). A small left side keeps the restricted read, the
         // one the operators make when they take a small plan over.
-        let right_rows = match right.is_leaf() && plain(right) && self.leaf_rows > RESTRICT_ALWAYS {
+        let right_rows = match right.is_leaf() && ops::plain_leaf(right) && self.leaf_rows > RESTRICT_ALWAYS {
             true => self.count(right)?,
             false => None,
         };
@@ -1616,7 +1636,7 @@ impl<'a> Lower<'a, '_> {
             // Many values cost the restricted scan more than reading the
             // rows they would cut: the right side is read whole and hashed.
             let whole = left_rows > RESTRICT_ALWAYS
-                && plain(right)
+                && ops::plain_leaf(right)
                 && match right_rows.map_or_else(|| self.count(right), |rows| Ok(Some(rows)))? {
                     // More than RESTRICT_ALWAYS values, and more than a
                     // RESTRICT_RATIO-th of the rows.
@@ -1656,6 +1676,30 @@ impl<'a> Lower<'a, '_> {
             self.node(right, "join")?
         };
         self.joined(l, r, kind, keys, on)
+    }
+
+    /// A join's right side read first, whole, when it restricts the scan
+    /// `t` of its left side on its field `f` (by the right rows' column
+    /// `j`), as [`ops::semi_target`] and the operators' `Ops::semi` have
+    /// it: the right side counts at most [`ops::SEMI_MAX`] rows and the
+    /// scan [`ops::SEMI_RATIO`] times as many, and the scan is restricted
+    /// to the right rows' key values when that at least halves its rows.
+    fn semi(&mut self, right: &Node, t: &Node, f: u32, j: usize) -> R<Option<Rel>> {
+        let Some(nr) = self.count(right)?.filter(|&n| n > 0 && n <= ops::SEMI_MAX) else { return Ok(None) };
+        let Some(nt) = self.count(t)?.filter(|&n| n > nr.saturating_mul(ops::SEMI_RATIO)) else { return Ok(None) };
+        let r = self.leaf(right, "join", Vec::new())?;
+        let (r, held) = self.materialized(r)?;
+        let e = self.top(&Expr::Output(j as u32), &r.cols, r.plan.schema())?;
+        let vals = self.key_values(&r, &held, e)?;
+        let vals = ops::equal_to(Some(self.table(t)?), Some(f as usize), vals)?;
+        if !vals.is_empty() {
+            let n = vals.len();
+            let c = Expr::In { expr: Box::new(Expr::Field(f)), list: vals.into_iter().map(Expr::Lit).collect() };
+            if self.count(&ops::with_condition(t, c.clone()))?.is_some_and(|k| k.saturating_mul(2) <= nt) {
+                self.semi.push((t as *const Node, c, n));
+            }
+        }
+        Ok(Some(r))
     }
 
     /// How many distinct values, NULL aside, the join keys take in the
@@ -2457,21 +2501,6 @@ fn operator_name(name: &str) -> String {
         out.extend(c.to_lowercase());
     }
     out
-}
-
-/// Whether the leaf `n` returns the same rows restricted or not, but for
-/// the rows the restriction drops: `Project [Sort] [Filter] Search`, with
-/// no LIMIT or aggregate whose rows would change with it.
-fn plain(n: &Node) -> bool {
-    let Node::Project { input, .. } = n else { return false };
-    let mut n: &Node = input;
-    loop {
-        match n {
-            Node::Sort { input, .. } | Node::Filter { input, .. } => n = input,
-            Node::Search(s) => return s.per.is_none(),
-            _ => return false,
-        }
-    }
 }
 
 /// `a op b` of two INT columns: exact, failing (so the plan falls back to
