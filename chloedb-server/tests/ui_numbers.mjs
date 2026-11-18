@@ -81,7 +81,10 @@ assert.deepEqual([shown.title, shown.text], ["title", "description"]);
 assert.ok(!shown.cols.includes("body") && !shown.cols.includes("emb"), shown.cols.join());
 const s = tableView.searchSql(products, { q: "rain jacket", fields: [body], vec: emb, mode: "both" });
 assert.match(s.body, /^SELECT id, title, description, brand, price, score\(\)\nFROM products/);
-assert.match(s.body, /bm25\(body, :q\)/);
+// MAYA-202: a typo in the box is forgiven, as on a shop's search page.
+assert.match(s.body, /rrf\(bm25\(body, :q, fuzzy => 'auto'\), similarity\(emb, :v\)\)/);
+const sw = tableView.searchSql(products, { q: "jaket", fields: [body], vec: null, mode: "words" });
+assert.match(sw.body, /bm25\(body, :q, fuzzy => 'auto', min => 1, min_rows => 20\)/);
 // A stored searched field shows itself.
 const docs = { table: "docs", short: { key: "id", fields: [{ name: "id", type: "keyword" }, { name: "title", type: "text" }, { name: "text", type: "text" }, { name: "n", type: "int" }] } };
 assert.deepEqual(tableView.shownFields(docs, [docs.short.fields[2]]), { cols: ["id", "title", "text", "n"], title: "title", text: "text" });
