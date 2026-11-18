@@ -705,7 +705,7 @@ function render(page, r) {
     clear(outBody, h("div", { class: "plan-view" },
       h("div", { class: "grid g2" },
         h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Plan"), h("span", { class: "sub" }, "the statement as bound: rows flow up")), h("div", { class: "bd" }, planTree(j.tree))),
-        h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "What ran"), h("span", { class: "sub" }, `${fmt.n(j.filter_docs)} passed the filter · ${fmt.n(j.scored)} scored`)), h("div", { class: "bd" }, segments(j.plan)))),
+        h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "What ran"), h("span", { class: "sub", title: "rows in the filters the executor materialised, segment by segment (a LIMIT stops it early, so not how many rows match), and rows the ranking scored" }, `${fmt.n(j.filter_docs)} rows in materialised filters · ${fmt.n(j.scored)} scored`)), h("div", { class: "bd" }, segments(j.plan)))),
       hits ? h("section", { class: "card", style: { marginTop: "14px" } }, h("div", { class: "hd" }, h("h3", {}, "The top rows and the values they were ranked by")), h("div", { class: "bd flush" }, hits)) : null,
       h("details", { class: "more" }, h("summary", {}, "The plan as JSON, which runs on its own (POST /v1/plan)"),
         h("div", { class: "row", style: { margin: "8px 0" } }, h("button", { class: "btn sm", onclick: () => copy(JSON.stringify(j.ir), "Plan copied") }, icon("copy"), "Copy")),

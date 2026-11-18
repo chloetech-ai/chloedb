@@ -1476,9 +1476,11 @@ impl<'a> Binder<'a> {
             "path" => GraphKind::Path { to: self.seeds(args[2])?, max_hops: count("max_hops", 6.0)? },
             "ppr" => {
                 let alpha = num("alpha", 0.15)?;
-                let eps = num("eps", 1e-4)?;
-                if !(alpha > 0.0 && alpha < 1.0) || eps <= 0.0 {
-                    return Err(err("ppr needs 0 < alpha < 1 and eps > 0"));
+                // Not given: 0, which the walk reads as 10⁻⁴ lowered while
+                // it settles less than half of its mass.
+                let eps = num("eps", 0.0)?;
+                if !(alpha > 0.0 && alpha < 1.0) || (eps <= 0.0 && opts.contains_key("eps")) {
+                    return Err(err("ppr needs 0 < alpha < 1 and eps > 0 (or no eps, to let the walk lower it from 1e-4 as it needs)"));
                 }
                 GraphKind::Ppr { alpha, eps, max_pushes: num("max_pushes", 1e6)? as u64, weighted: num("weighted", 0.0)? != 0.0 }
             }

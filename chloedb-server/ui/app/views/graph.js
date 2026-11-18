@@ -15,6 +15,29 @@ export default { id: "graph", title: "Graph explorer", icon: "graph", group: "La
 
 const lit = (v) => typeof v === "number" ? String(v) : `'${String(v).replace(/'/g, "''")}'`;
 
+/** PageRank's eps choices: none lets the walk lower it from 1e-4 as it needs. */
+export const EPS = [["", "auto"], ["1e-5", "1e-5"], ["1e-6", "1e-6"], ["1e-7", "1e-7"]];
+
+/** The walk that ranks the graph from `id`: `cols` and `nodes` quoted, `graph` the edges, `eps` "" for the walk's own. */
+export function pprSql({ cols, nodes, graph, id, dir, eps }) {
+  const opts = `${dir && dir !== "both" ? `, dir => '${dir}'` : ""}${eps ? `, eps => ${Number(eps)}` : ""}`;
+  return `SELECT ${cols.join(", ")}, score() FROM ${nodes} ORDER BY ppr(${graph}, ${id}${opts}) DESC LIMIT 15`;
+}
+
+/**
+ * What the walk says of itself, from an answer's stats: the eps it ended
+ * at if it lowered it, the share of the walk its scores hold, and a
+ * warning when that is less than half (NADIA-302).
+ */
+export function pprNote(stats) {
+  const line = (stats?.plan || []).find((l) => / ppr over /.test(l)) || "";
+  const lowered = /eps lowered to ([0-9.e+-]+)/.exec(line)?.[1] || null;
+  const settled = /(\d+)% settled/.exec(line)?.[1];
+  const warn = stats?.ppr_unsettled ? `the walk stayed near the node: its scores hold ${settled ?? "less than half"}${settled ? "%" : ""} of the walk${stats.max_pushes_reached ? " (it stopped at max_pushes)" : ""}; pick a lower eps for rows further away`
+    : stats?.max_pushes_reached ? "the walk stopped at max_pushes: these are the scores of a shorter walk" : null;
+  return { lowered, settled: settled != null ? Number(settled) : null, warn };
+}
+
 /** Every graph the catalog holds: edge tables, EDGES fields, and nearest rows by a vector field. */
 function graphs(ts) {
   const out = [];
@@ -36,7 +59,7 @@ function graphs(ts) {
 function render(page) {
   let gs = [], g = null, st = store.get("graph.state", null);
   const nodes = new Map(), edges = new Map();
-  let sel = null, hover = null, pathEnds = [], ranks = new Map(), path = [], sim = null, vp = null, lastSql = "";
+  let sel = null, hover = null, pathEnds = [], ranks = new Map(), path = [], sim = null, vp = null, lastSql = "", rankedFrom = null, rankNote = null;
   const save = () => store.set("graph.state", st);
   const top = h("div", { class: "gx-top" });
   const stage = h("div", { class: "gx-stage" });
@@ -73,6 +96,7 @@ function render(page) {
     clear(top,
       h("label", { class: "rx-lbl" }, "graph", h("select", { class: "select sm", onchange: (e) => { st = fresh(gs.find((x) => x.id === e.target.value)); g = gs.find((x) => x.id === st.graph); save(); drawTop(); reset(); start(); } }, gs.map((x) => h("option", { value: x.id, selected: x.id === g.id }, x.label)))),
       g.kind !== "sim" ? h("label", { class: "rx-lbl" }, "follow", seg([["out", "out"], ["in", "in"], ["both", "both"]], st.dir, (v) => { st.dir = v; save(); })) : null,
+      g.kind !== "sim" ? h("label", { class: "rx-lbl", title: "How far PageRank walks: a row is pushed while its residual is at least eps times its links. Auto starts at 1e-4 and lowers it until half of the walk is settled; lower is further and slower." }, "PageRank eps", seg(EPS, st.eps || "", (v) => { st.eps = v; save(); if (rankedFrom != null && nodes.has(rankedFrom)) pagerank(rankedFrom); })) : null,
       h("label", { class: "rx-lbl" }, "color", h("select", { class: "select sm mono", onchange: (e) => { st.color = e.target.value; save(); refetch(); } }, h("option", { value: "" }, "(none)"), fs.filter((f) => f.type === "keyword" && !f.multi && f.name !== key()).map((f) => h("option", { value: f.name, selected: f.name === st.color }, f.name)))),
       h("label", { class: "rx-lbl" }, "size", h("select", { class: "select sm mono", onchange: (e) => { st.size = e.target.value; save(); refetch(); } }, h("option", { value: "" }, "(links)"), fs.filter((f) => f.type === "int" || f.type === "float").map((f) => h("option", { value: f.name, selected: f.name === st.size }, f.name)))),
       h("span", { class: "rl-qwrap" }, icon("search"), q),
@@ -369,7 +393,7 @@ function render(page) {
     rebuild(); drawSide();
   }
   async function pagerank(id) {
-    const sql = `SELECT ${nodeCols().map(quoteName).join(", ")}, score() FROM ${quoteName(g.nodes)} ORDER BY ppr(${G()}, ${idLit(id)}${st.dir !== "both" ? `, dir => '${st.dir}'` : ""}) DESC LIMIT 15`;
+    const sql = pprSql({ cols: nodeCols().map(quoteName), nodes: quoteName(g.nodes), graph: G(), id: idLit(id), dir: st.dir, eps: st.eps || "" });
     lastSql = sql;
     try {
       const j = await api("/v1/query", { body: { sql } });
@@ -378,8 +402,9 @@ function render(page) {
       const before = new Set(nodes.keys());
       j.rows.forEach((r, i) => { const row = Object.fromEntries(j.columns.slice(0, -1).map((c, k) => [c, r[k]])); const m = addNode(row, n); m.ppr = r[r.length - 1]; ranks.set(m.id, i); });
       await linksAmong([...nodes.keys()].filter((k) => !before.has(k)));
+      rankedFrom = id; rankNote = pprNote(j.stats);
       rebuild(); kick(0.4); drawSide();
-      toast(`Ranked ${fmt.plural(j.rows.length, "row")} by personalized PageRank from ${id}`, "ok");
+      toast(`Ranked ${fmt.plural(j.rows.length, "row")} by personalized PageRank from ${id}${rankNote.warn ? `: ${rankNote.warn}` : ""}`, rankNote.warn ? "warn" : "ok");
     } catch (e) { toast(e.message, "bad"); }
   }
   async function findPath(a, b) {
@@ -408,7 +433,7 @@ function render(page) {
           h("div", {}, h("b", {}, "Shift-click"), " a second node to find the shortest path between them (PATH)."),
           h("div", {}, "Opening a node adds its neighbours; PageRank ranks the whole graph from it (ppr)."),
           lastSql ? [h("div", { class: "small muted" }, "The last walk"), sqlBlock(lastSql)] : null)),
-        ranks.size ? rankCard() : null);
+        ranks.size || rankNote ? rankCard() : null);
       return;
     }
     const row = n.row || {};
@@ -426,12 +451,17 @@ function render(page) {
           h("div", { class: "rl-qwrap", style: { padding: "0 10px", flex: "none" } }, icon("route"), h("input", { class: "input rl-q", style: { fontSize: "13px", padding: "6px 0" }, placeholder: "Shortest path to a key (or shift-click a node)", onkeydown: (e) => { if (e.key === "Enter" && e.target.value.trim()) findPath(n.id, e.target.value.trim()); } })),
           path.length ? h("div", {}, h("div", { class: "small muted" }, `The shortest path, ${fmt.plural(path.length - 1, "link")}`), h("ol", { class: "gx-steps" }, path.map((k) => h("li", { tabindex: 0, onclick: () => select(k), onkeydown: (e) => { if (e.key === "Enter") select(k); } }, h("span", { class: "ellipsis" }, String(nodes.get(k)?.row?.[st.label] ?? k)), h("span", { class: "mono small muted" }, k))))) : null,
           lastSql ? [h("div", { class: "small muted" }, "The last walk"), sqlBlock(lastSql)] : null)),
-      ranks.size ? rankCard() : null);
+      ranks.size || rankNote ? rankCard() : null);
   }
   function rankCard() {
     const list = [...ranks.entries()].sort((a, b) => a[1] - b[1]);
     const max = Math.max(...list.map(([k]) => nodes.get(k)?.ppr || 0), 1e-12);
-    return h("div", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "PageRank from the node"), h("div", { class: "tools" }, h("button", { class: "btn xs ghost", onclick: () => { ranks = new Map(); rebuild(); drawSide(); } }, "Clear"))),
+    const note = rankNote || {};
+    return h("div", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "PageRank from the node"), h("div", { class: "tools" }, h("button", { class: "btn xs ghost", onclick: () => { ranks = new Map(); rankedFrom = null; rankNote = null; rebuild(); drawSide(); } }, "Clear"))),
+      h("div", { class: "bd small muted", style: { paddingBottom: "4px" } },
+        st.eps ? `eps ${st.eps}` : note.lowered ? `eps lowered to ${note.lowered}` : "eps 1e-4",
+        note.settled != null ? ` · ${note.settled}% of the walk settled` : "",
+        note.warn ? h("div", { class: "pill warn", style: { marginTop: "6px", whiteSpace: "normal" } }, icon("warn"), " ", note.warn) : null),
       h("div", { class: "bd flush" }, list.map(([k, i]) => { const m = nodes.get(k); return h("div", { class: "gx-rrow", onclick: () => select(k) }, h("span", { class: "rl-n" }, i + 1), h("span", { class: "ellipsis grow" }, String(m?.row?.[st.label] ?? k)), h("span", { class: "sd-cbar", style: { width: "70px" } }, h("i", { style: { width: ((m?.ppr || 0) / max * 100) + "%" } })), h("span", { class: "num small dim", style: { whiteSpace: "nowrap" } }, Number((m?.ppr ?? 0).toPrecision(2)))); })));
   }
 
