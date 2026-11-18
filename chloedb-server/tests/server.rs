@@ -2395,7 +2395,7 @@ async fn embedded_fields_over_http() {
     let base = http(Arc::new(svc), None).await;
     let c = chloedb_server::http_client().build().unwrap();
     let r: Json = c.get(format!("{base}/v1/schema")).send().await.unwrap().json().await.unwrap();
-    assert_eq!(r["embeddings"], json!([{"field": "emb", "from": ["title", "description"], "model": "hash:64", "loaded": true, "error": null, "usage": null, "backfill": null}]));
+    assert_eq!(r["embeddings"], json!([{"field": "emb", "from": ["title", "description"], "model": "hash:64", "loaded": true, "error": null, "usage": null, "backfill": null, "fetch": null}]));
 
     let docs: Vec<Json> = (0..500).map(|i| js::document_json(&demo::schema(500), &demo::product(i, 7))).collect();
     let mut ops: Vec<Json> = docs.iter().map(|d| json!({"op": "insert", "doc": d})).collect();
