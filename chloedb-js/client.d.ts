@@ -1,6 +1,7 @@
-import { Input, Params, Plan, ReadAfter, Result, Row, Schema, Searchable, Value } from "./common.js";
+/// <reference lib="esnext.disposable" />
+import { Input, PageOptions, Params, Plan, ReadAfter, Result, Row, Schema, Searchable, Value } from "./common.js";
 
-export { Field, Input, LogOptions, ExportOptions, Params, Plan, Result, Row, Schema, SearchOptions, ChloeDBError, StrataError, ErrorCode, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError, ReadAfter, Value } from "./common.js";
+export { Corrected, CorrectedWord, Field, FieldType, HighlightOptions, Input, LogOptions, ExportOptions, PageOptions, Params, Plan, Result, Row, Schema, ScrollOptions, SearchOptions, ChloeDBError, StrataError, ErrorCode, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError, ReadAfter, Value } from "./common.js";
 
 /** A write's answer: the rows written, and its sequence numbers when the
  * server numbers its writes (--seq-no): `seqNo` from a server, `seqNos`
@@ -47,13 +48,23 @@ export declare class Client extends Searchable {
   stats(): Promise<Record<string, unknown>>;
   count(): Promise<number>;
 
-  query(sql: string, params?: Params | null, options?: { timeoutMs?: number } & ReadAfter): Promise<Result>;
+  /** Runs a SELECT; its rows are `T`s (unchecked). With `pageSize`, the
+   * first page of the server's scroll, and its `cursor` while rows are
+   * left. */
+  query<T = Record<string, Value>>(sql: string, params?: Params | null, options?: { timeoutMs?: number } & ReadAfter & PageOptions): Promise<Result<T>>;
+  /** The next page of a cursor; `cursor` is null after the last. */
+  next<T = Record<string, Value>>(cursor: string, options?: { keepAliveMs?: number; timeoutMs?: number }): Promise<Result<T>>;
+  /** Ends a cursor before its last page; whether it was open. */
+  closeCursor(cursor: string): Promise<boolean>;
   /** With `idempotencyKey`, a write sent again (after a lost answer, or
    * the `idempotency_key` of an error that says it failed partway through
    * a coordinator) is not applied twice. */
-  sql(sql: string, params?: Params | null, options?: { idempotencyKey?: string } & ReadAfter): Promise<Result | number>;
+  sql<T = Record<string, Value>>(sql: string, params?: Params | null, options?: { idempotencyKey?: string } & ReadAfter): Promise<Result<T> | number>;
+  /** Runs an INSERT, UPDATE or DELETE (or a statement that makes or
+   * changes a table): the rows it wrote. A SELECT is refused. */
+  execute(sql: string, params?: Params | null, options?: { idempotencyKey?: string }): Promise<number>;
   explain(sql: string, params?: Params | null): Promise<Record<string, unknown>>;
-  run(plan: Plan, options?: ReadAfter): Promise<Result | number>;
+  run<T = Record<string, Value>>(plan: Plan, options?: ReadAfter): Promise<Result<T> | number>;
   embed(text?: string | null, options?: { field?: string; table?: string; image?: Uint8Array | ArrayBuffer | Blob; audio?: Uint8Array | ArrayBuffer | Blob }): Promise<number[]>;
   embedTokens(text: string, field: string, options?: { table?: string }): Promise<number[][]>;
   sidNext(prefixes: Iterable<string>, options: { field: string; where?: string; params?: Params; table?: string } & ReadAfter): Promise<Record<string, Record<string, number>>>;
@@ -66,8 +77,8 @@ export declare class Client extends Searchable {
   insert(rows: Row | Iterable<Row>, options?: { table?: string }): Promise<number>;
   upsert(rows: Row | Iterable<Row>, options?: { table?: string }): Promise<number>;
   delete(keys: Input | Iterable<Input>, options?: { table?: string; routing?: Input }): Promise<number>;
-  get(key: Input, options?: { table?: string } & ReadAfter): Promise<Record<string, Value> | null>;
-  getMany(keys: Iterable<Input>, options?: { table?: string; columns?: Iterable<string> } & ReadAfter): Promise<(Record<string, Value> | null)[]>;
+  get<T = Record<string, Value>>(key: Input, options?: { table?: string } & ReadAfter): Promise<T | null>;
+  getMany<T = Record<string, Value>>(keys: Iterable<Input>, options?: { table?: string; columns?: Iterable<string> } & ReadAfter): Promise<(T | null)[]>;
   put(key: Input, row: Row, options?: { table?: string; ifSeqNo?: number }): Promise<number>;
   stream(events: Iterable<Record<string, Input>> | AsyncIterable<Record<string, Input>>): Promise<Record<string, unknown>>;
   source(name: string): Promise<number | null>;
