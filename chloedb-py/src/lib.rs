@@ -707,6 +707,9 @@ impl Database {
         if !l.teams.is_empty() {
             d.set_item("teams", l.teams)?;
         }
+        if !l.propensities.is_empty() {
+            d.set_item("propensities", l.propensities)?;
+        }
         Ok(d)
     }
 

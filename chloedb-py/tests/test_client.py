@@ -260,6 +260,15 @@ def test_client_rank_log(client):
         client.export_rank_log(table="books")
 
 
+def test_client_exploring_query(client):
+    sql = "SELECT id FROM books ORDER BY bm25(title, :q) + 0.1 * rating DESC LIMIT 3"
+    r = client.query_logged(sql, {"q": "river"}, request="xq", explore={"policy": "epsilon", "epsilon": 0.5, "top": 6})
+    assert len(r.keys) == 3 and len(r.propensities) == 3 and all(1 / 12 <= p <= 1 for p in r.propensities)
+    assert client.query_logged(sql, {"q": "river"}, request="xq", explore={"policy": "epsilon", "epsilon": 0.5, "top": 6}).keys == r.keys
+    records = [x for x in client.export_rank_log() if x["request"] == "xq"]
+    assert len(records) == 6 and sorted(x["propensity"] for x in records if x["shown"]) == sorted(r.propensities)
+
+
 def test_client_rows_by_key(client):
     got = client.get("b0007")
     assert got["id"] == "b0007" and got["year"] == book(7)["year"]
