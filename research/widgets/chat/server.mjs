@@ -10,7 +10,9 @@
 // iframe through the MCP Apps SDK's AppBridge, filled by a tool of
 // ../server, which is also the MCP server Claude Desktop and claude.ai use.
 //
-//   node chat/server.mjs [--port 8800] [--data DIR]
+//   node chat/server.mjs [--port 8800] [--host 127.0.0.1] [--data DIR]
+//
+// CHLOEDB_URL uses a running chloedb-server instead of starting one.
 import { mkdirSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
@@ -43,7 +45,25 @@ async function bridge() {
 
 const KNOWN = new Set(TOOLS.map(t => t.name))
 
-export async function start({ port = 8800, data, model = claude(), apps, log = console.error, shared = true } = {}) {
+// How many requests that call Claude one visitor may make in an hour, on a
+// site others use (WIDGETS_PER_IP_HOUR): by the address the proxy in front
+// says, or the socket's.
+function limiter(perHour) {
+  const seen = new Map()
+  return req => {
+    if (!perHour) return false
+    const ip = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() || req.socket.remoteAddress
+    const now = Date.now()
+    const recent = (seen.get(ip) ?? []).filter(t => now - t < 3_600_000)
+    if (recent.length >= perHour) return true
+    seen.set(ip, [...recent, now])
+    return false
+  }
+}
+
+export async function start({ port = 8800, host = '127.0.0.1', data, model = claude(), apps, log = console.error, shared = true, perHour = Number(process.env.WIDGETS_PER_IP_HOUR || 0) } = {}) {
+  const limited = limiter(perHour)
+  const tooMany = 'You’ve asked a lot this hour. Please try again in a little while.'
   apps ??= await Apps.open({ dir: data ?? path.join(os.tmpdir(), 'instant-apps'), log, shared })
   const page = readFileSync(new URL('./index.html', import.meta.url), 'utf8')
   const bridgeJs = await bridge()
@@ -194,10 +214,12 @@ export async function start({ port = 8800, data, model = claude(), apps, log = c
     const parts = url.pathname.split('/').filter(Boolean)
     try {
       if (req.method === 'GET' && url.pathname === '/') return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(page)
+      if (req.method === 'GET' && url.pathname === '/healthz') return json(res, { ok: true, spend: model.budget?.status() })
       if (req.method === 'GET' && url.pathname === '/bridge.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end(bridgeJs)
       if (req.method === 'GET' && url.pathname === '/api/apps') return json(res, { apps: (await apps.saved()).map(view) })
       if (req.method === 'POST' && url.pathname === '/api/turn') {
         const input = await body(req)
+        if (limited(req)) return stream(res, () => Promise.reject(new Error(tooMany)))
         return stream(res, send => turn(input, send))
       }
       // A tool an app calls from its view: only the tools it was made with.
@@ -218,6 +240,7 @@ export async function start({ port = 8800, data, model = claude(), apps, log = c
         const { app: appId, summary, history = [] } = await body(req)
         const app = await apps.get(appId)
         if (!app) return json(res, { error: 'no such app' }, 404)
+        if (limited(req)) return json(res, { text: String(summary ?? '') })
         const said = model.note ? await model.note({ app: view(app), summary: String(summary ?? ''), history: history.slice(-6) }).catch(() => '') : ''
         return json(res, { text: said || String(summary ?? '') })
       }
@@ -225,7 +248,7 @@ export async function start({ port = 8800, data, model = claude(), apps, log = c
         const appId = decodeURIComponent(parts[2])
         const input = await body(req)
         if (!(await apps.get(appId))) return json(res, { error: 'no such app' }, 404)
-        if (parts[3] === 'change') return stream(res, send => change(appId, String(input.text ?? ''), send))
+        if (parts[3] === 'change') return stream(res, send => (limited(req) ? Promise.reject(new Error(tooMany)) : change(appId, String(input.text ?? ''), send)))
         if (parts[3] === 'open') return stream(res, send => open(appId, send))
         if (parts[3] === 'save') return json(res, { app: view(await apps.save(appId, true, input.name)) })
         if (parts[3] === 'unsave') return json(res, { app: view(await apps.save(appId, false)) })
@@ -240,9 +263,9 @@ export async function start({ port = 8800, data, model = claude(), apps, log = c
       json(res, { error: error.message }, 500)
     }
   })
-  await new Promise(resolve => server.listen(port, '127.0.0.1', resolve))
+  await new Promise(resolve => server.listen(port, host, resolve))
   return {
-    url: `http://127.0.0.1:${server.address().port}/`,
+    url: `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${server.address().port}/`,
     apps,
     close() {
       server.close()
@@ -259,7 +282,7 @@ function flag(name, fallback) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const data = flag('--data', path.join(os.homedir(), '.local/share/instant-apps'))
   mkdirSync(data, { recursive: true })
-  start({ port: Number(flag('--port', 8800)), data })
+  start({ port: Number(flag('--port', 8800)), host: flag('--host', '127.0.0.1'), data })
     .then(({ url }) => console.error(`Instant apps on ${url} (apps kept in ${data})`))
     .catch(error => {
       console.error(error.message)

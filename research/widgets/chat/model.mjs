@@ -3,8 +3,12 @@
 // change one as asked, and write the short answer under it.
 //
 // WIDGETS_CLAUDE names the claude binary, WIDGETS_FAST_MODEL the model that
-// routes and answers, WIDGETS_MAKE_MODEL the one that writes apps.
+// routes and answers, WIDGETS_MAKE_MODEL the one that writes apps. On a
+// site others use, WIDGETS_DAILY_USD and WIDGETS_TOTAL_USD cap what Claude
+// may spend (kept in WIDGETS_SPEND_FILE), and WIDGETS_MODEL_SLOTS how many
+// calls run at once.
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -17,12 +21,80 @@ export { fragment }
 // session, project and memory.
 const PRIVATE = /^(CLAUDECODE|CLAUDE_CODE_(SESSION_ID|REMOTE_SESSION_ID|CHILD_SESSION|PROJECTS_SESSION|ENTRYPOINT|ADDITIONAL_DIRECTORIES_CLAUDE_MD|SYNC_SESSION_REFS|SESSION_ATTENDED)|CLAUDE_MEMORY_STORES|CLAUDE_COWORK_MEMORY_PATH_OVERRIDE|CLAUDE_ADDITIONAL_DIRECTORIES)$/
 
+// What Claude has cost here, as claude -p reports each call's cost: by UTC
+// day and in all, kept in a file when one is named. A call past a cap is
+// refused before it starts.
+export class Budget {
+  constructor({ daily = 0, total = 0, file = null } = {}) {
+    this.daily = daily
+    this.total = total
+    this.file = file
+    this.spent = { total: 0, day: '', today: 0 }
+    if (file) {
+      try {
+        this.spent = { ...this.spent, ...JSON.parse(readFileSync(file, 'utf8')) }
+      } catch {
+        // None spent yet.
+      }
+    }
+  }
+
+  roll() {
+    const day = new Date().toISOString().slice(0, 10)
+    if (this.spent.day !== day) this.spent = { ...this.spent, day, today: 0 }
+  }
+
+  check() {
+    this.roll()
+    if (this.daily && this.spent.today >= this.daily) throw new Error('Today’s budget for Claude on this site is spent. It starts again at 4 PM Pacific time.')
+    if (this.total && this.spent.total >= this.total) throw new Error('This site’s budget for Claude is spent.')
+  }
+
+  async add(usd) {
+    if (!(usd > 0)) return
+    this.roll()
+    this.spent = { ...this.spent, total: this.spent.total + usd, today: this.spent.today + usd }
+    if (this.file) await writeFile(this.file, JSON.stringify(this.spent)).catch(() => {})
+  }
+
+  status() {
+    this.roll()
+    return { ...this.spent, daily: this.daily, cap: this.total }
+  }
+}
+
+// At most `n` calls at once; the others wait their turn.
+function slots(n) {
+  let busy = 0
+  const waiting = []
+  return async work => {
+    if (busy >= n) await new Promise(resolve => waiting.push(resolve))
+    busy++
+    try {
+      return await work()
+    } finally {
+      busy--
+      waiting.shift()?.()
+    }
+  }
+}
+
+const num = name => Number(process.env[name] || 0)
+
 export function claude({
   bin = process.env.WIDGETS_CLAUDE || 'claude',
   fast = process.env.WIDGETS_FAST_MODEL || 'claude-sonnet-5-5',
   strong = process.env.WIDGETS_MAKE_MODEL || 'claude-opus-5-5',
+  budget = new Budget({ daily: num('WIDGETS_DAILY_USD'), total: num('WIDGETS_TOTAL_USD'), file: process.env.WIDGETS_SPEND_FILE || null }),
+  at = num('WIDGETS_MODEL_SLOTS') || 4,
 } = {}) {
-  async function run({ system, prompt, model, schema, timeoutMs = 240_000 }) {
+  const turn = slots(at)
+  const run = input => {
+    budget.check()
+    return turn(() => call(input))
+  }
+  async function call({ system, prompt, model, schema, timeoutMs = 240_000 }) {
+    budget.check()
     const dir = await mkdtemp(path.join(os.tmpdir(), 'widgets-claude-'))
     try {
       const systemFile = path.join(dir, 'system.txt')
@@ -47,6 +119,7 @@ export function claude({
         child.stdin.end(prompt)
       })
       const answer = JSON.parse(out)
+      await budget.add(Number(answer.total_cost_usd))
       if (answer.is_error) throw new Error(`the model failed: ${String(answer.result).slice(0, 300)}`)
       return schema ? answer.structured_output ?? JSON.parse(answer.result) : String(answer.result ?? '')
     } finally {
@@ -55,6 +128,7 @@ export function claude({
   }
 
   return {
+    budget,
     async route(input) {
       return run({ system: ROUTE, prompt: routePrompt(input), model: fast, schema: ROUTE_SCHEMA, timeoutMs: 90_000 })
     },

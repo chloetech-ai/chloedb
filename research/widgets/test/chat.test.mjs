@@ -185,3 +185,40 @@ test('every process with one folder of apps shares one chloedb-server, started o
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// On a site others use: Claude's spend is capped and kept across restarts,
+// and one visitor's requests in an hour are limited.
+test('the spend cap refuses calls past it, and remembers what was spent', async () => {
+  const { claude, Budget } = await import('../chat/model.mjs')
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'instant-apps-budget-'))
+  try {
+    // A claude that answers every call for 4 cents.
+    const fake = path.join(tmp, 'claude')
+    ;(await import('node:fs')).writeFileSync(fake, '#!/bin/sh\ncat > /dev/null\necho \'{"result":"Hi.","total_cost_usd":0.04}\'\n', { mode: 0o755 })
+    const file = path.join(tmp, 'spend.json')
+    const model = claude({ bin: fake, budget: new Budget({ daily: 0.05, file }) })
+    assert.equal(await model.reply({ request: 'hi', summary: 'x' }), 'Hi.')
+    assert.equal(await model.reply({ request: 'hi', summary: 'x' }), 'Hi.')
+    await assert.rejects(model.reply({ request: 'hi', summary: 'x' }), /budget for Claude/)
+    // Started again, it still knows.
+    const again = claude({ bin: fake, budget: new Budget({ daily: 0.05, file }) })
+    await assert.rejects(again.reply({ request: 'hi', summary: 'x' }), /budget for Claude/)
+    assert.ok(Math.abs(again.budget.status().today - 0.08) < 1e-9)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('one visitor’s requests in an hour are limited', { skip }, async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'instant-apps-limit-'))
+  const chat = await start({ port: 0, data: dir, model: scripted(), log: () => {}, shared: false, perHour: 1 })
+  try {
+    const turn = async () => (await fetch(new URL('/api/turn', chat.url), { method: 'POST', headers: { 'x-forwarded-for': '203.0.113.7' }, body: JSON.stringify({ text: 'hello' }) })).text()
+    assert.match(await turn(), /"Just text\."/)
+    assert.match(await turn(), /asked a lot this hour/)
+    assert.equal((await fetch(new URL('/healthz', chat.url))).status, 200)
+  } finally {
+    chat.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
