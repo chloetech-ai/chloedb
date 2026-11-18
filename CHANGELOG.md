@@ -11,6 +11,19 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **ChloeCtx: what an unaccepted machine sent stays out of every prompt,
+  and `sync accept` names machines** (persona study round 3, WEI-302,
+  WEI-308). A decision pulled from a machine no one had accepted reached
+  the prompt's context through the knowledge list (and a deep search's
+  candidates, and the notes on a file being edited), though the briefing
+  held it back; it no longer does. Each row a machine pushes names the key
+  it pushed with (`pushed_by` in `links_json`, from `GET /v1/whoami`), and
+  `chloectx sync accept` lists machines by it (`alice-laptop
+  (m-44fb96669a15)`) and accepts one by that name, its key's or its id.
+  `--all` accepts the machines listed now in this project, not every
+  machine to come in every project (`trusted: ["*"]`, which it wrote
+  before, is no longer honoured); a machine is accepted per project
+  (`accepted` in `sync.json`), and those accepted before stay accepted.
 - **ChloeCtx: `chloectx sync setup` syncs the project it runs in, and no
   other** (persona study round 3, LENA-301; audit CTX-34). The first key
   set up on a machine was kept as the machine's too (`sync.token`), and
