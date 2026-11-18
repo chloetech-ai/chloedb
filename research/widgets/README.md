@@ -151,6 +151,16 @@ saved comparison first, and `app_open` with `{"query": "headphones"}`; a
 third did the same for smartphones, and "Which apps have I saved?" called
 `my_apps`.
 
+## On instant.chloetech.ai
+
+The chat runs for friends at https://instant.chloetech.ai, behind a password
+that the site's Caddy checks (namespace `web`). `deploy/k8s.yaml` is the pod:
+the chat, fetched from this branch with Claude Code at start, beside its own
+chloedb-server, on the `protos` node, with the apps on the node's disk. Claude
+is capped at $20 a day and $100 in all (`/healthz` says what was spent), 40
+requests a visitor an hour and 3 calls at once. Everyone who signs in shares
+the same saved apps.
+
 ## Tests
 
 ```bash
