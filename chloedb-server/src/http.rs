@@ -1958,7 +1958,7 @@ async fn arrow_answer(_: crate::service::Answer) -> Result<Response, ApiError> {
 async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: bool) -> Res {
     let log = chloedb::rank_log::Log::from_json(log)?;
     let skip = req.skip_steps;
-    let (mut a, served, w) = app.svc.query_logged(who, req, log).await?;
+    let (mut a, served, w) = app.svc.query_logged(who, req, log.clone()).await?;
     hide_hosts(who, &mut a.rs.stats.steps);
     let mut j = answer(&a);
     if skip {
@@ -1970,6 +1970,10 @@ async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: 
     j["request"] = json!(served.request);
     if !served.teams.is_empty() {
         j["teams"] = json!(served.teams);
+    }
+    let propensities = chloedb::rank_log::shown_propensities(&served, &log);
+    if !propensities.is_empty() {
+        j["propensities"] = json!(propensities);
     }
     let mut l = json!({"rows": w.rows});
     seq_json(&mut l, &app.svc.termed(w));

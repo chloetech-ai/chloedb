@@ -58,6 +58,7 @@ class Search:
         table: str = "rank_log",
         interleave: str | None = None,
         variants: Sequence[str] | None = None,
+        explore: Mapping[str, Any] | None = None,
     ) -> Result:
         """Runs a SELECT ranked by an ORDER BY and logs what it served to a
         log table, which the first query logged to it makes: one row per
@@ -72,9 +73,14 @@ class Search:
         request = ... AND row_key = ...`. `interleave`, a second SELECT of
         the same table and columns, shows both rankings in one list by
         team draft, each row logged with the name of the one that placed it
-        (`variants`, ("a", "b") unless named); `result.teams` names them."""
+        (`variants`, ("a", "b") unless named); `result.teams` names them.
+        `explore`, a logging policy (`{"policy": "softmax", "tau": 0.5,
+        "top": 20}`, or epsilon, shuffle, swap), shows the top rows in the
+        order it draws, seeded by the request, and logs each row's chance
+        of being where it was shown; `result.propensities` has the shown
+        rows'."""
         il = None if interleave is None else {"sql": interleave, **({"variants": list(variants)} if variants else {})}
-        opts = {"table": table, "request": request, "context": context, "variant": variant, "candidates": candidates, "ts": _time(ts), "interleave": il}
+        opts = {"table": table, "request": request, "context": context, "variant": variant, "candidates": candidates, "ts": _time(ts), "interleave": il, "explore": dict(explore) if explore is not None else None}
         return self._query_logged(sql, params, {k: v for k, v in opts.items() if v is not None})
 
     def export_rank_log(
