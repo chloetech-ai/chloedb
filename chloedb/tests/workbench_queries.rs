@@ -225,7 +225,7 @@ fn errors_say_where_why_and_what_to_write() {
     has("SELECT pricee FROM products", &["no such column: pricee", "did you mean price?", "its columns are id, title"]);
     has("SELECT * FROM product", &["no such table: product", "did you mean products?", "brands"]);
     has("SELECT * FROM information_schema.tables", &["no such table", "no system tables"]);
-    has("SELECT id, substr(title, 1, 3) FROM products", &["unknown function substr", "LIKE"]);
+    has("SELECT id, left(title, 3) FROM products", &["unknown function left", "substr(s, 1, n)"]);
     // A field that is stored but has no words to search.
     has("SELECT id FROM products WHERE MATCH(title, 'tent')", &["title is stored but not indexed", "body"]);
     has("SELECT id FROM products ORDER BY bm25(title, 'tent') DESC", &["title is stored but not indexed", "body"]);

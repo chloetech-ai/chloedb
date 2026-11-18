@@ -102,6 +102,9 @@ pub enum Acc {
     Quantile(Box<Quantile>),
     /// An approximate percentile's sketch.
     Sketch(Box<Sketch>),
+    /// `STRING_AGG`'s values so far, as text with `sep` between them;
+    /// `None` before the first.
+    Text { sep: String, out: Option<String> },
 }
 
 impl Acc {
@@ -117,8 +120,17 @@ impl Acc {
                 AggFn::PercentileCont(p) => Acc::Quantile(Box::new(Quantile::new(p.get(), true))),
                 AggFn::PercentileDisc(p) => Acc::Quantile(Box::new(Quantile::new(p.get(), false))),
                 AggFn::ApproxPercentile(p) => Acc::Sketch(Box::new(Sketch::new(p.get()))),
+                AggFn::StringAgg => Acc::Text { sep: ",".into(), out: None },
             },
             _ => Acc::Count(0),
+        }
+    }
+
+    /// The state of a plan's aggregate: `STRING_AGG` with its separator.
+    pub fn of(a: &crate::query::ir::Agg) -> Acc {
+        match (a.func, &a.sep) {
+            (AggFn::StringAgg, sep) => Acc::Text { sep: sep.clone().unwrap_or_default(), out: None },
+            (func, _) => Acc::new(&Projection::Agg { func, of: crate::query::logical::Col::Field(0) }),
         }
     }
 
@@ -182,6 +194,16 @@ impl Acc {
             }
             Acc::Quantile(q) => return q.add(v),
             Acc::Sketch(s) => return s.add(v),
+            Acc::Text { sep, out } => {
+                let before = out.as_ref().map_or(0, String::len);
+                match out {
+                    Some(o) => o.push_str(sep),
+                    None => *out = Some(String::new()),
+                }
+                let o = out.as_mut().expect("the text so far");
+                eval::push_text(o, v);
+                return (o.len() - before) as u64;
+            }
         }
         0
     }
@@ -219,6 +241,7 @@ impl Acc {
             Acc::Distinct(s) => Value::Int(s.len() as i64),
             Acc::Quantile(q) => q.value(),
             Acc::Sketch(s) => s.value(),
+            Acc::Text { out, .. } => out.clone().map_or(Value::Null, Value::Str),
         }
     }
 
@@ -265,6 +288,9 @@ impl Acc {
             (Acc::Distinct(s), Value::List(xs)) => s.extend(xs.iter().map(Part::of)),
             (Acc::Quantile(q), p) => q.merge(p).ok_or_else(bad)?,
             (Acc::Sketch(s), p) => s.merge(p).map_err(err)?,
+            (a @ Acc::Text { .. }, p) => {
+                a.add(p);
+            }
             _ => return Err(bad()),
         }
         Ok(())
@@ -294,6 +320,10 @@ impl Acc {
             (Acc::Distinct(s), Acc::Distinct(t)) => s.extend(t),
             (Acc::Quantile(q), Acc::Quantile(r)) => q.absorb(*r),
             (Acc::Sketch(s), Acc::Sketch(t)) => s.absorb(*t),
+            (a @ Acc::Text { .. }, Acc::Text { out: Some(o), .. }) => {
+                a.add(&Value::Str(o));
+            }
+            (Acc::Text { .. }, _) => {}
             (a, b) => unreachable!("absorbing {b:?} into {a:?}"),
         }
     }

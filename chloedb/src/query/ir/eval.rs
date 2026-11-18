@@ -172,12 +172,7 @@ pub fn eval(e: &Expr, row: &Row) -> Result<Value> {
             for x in xs {
                 match eval(x, row)? {
                     Value::Null => return Ok(Value::Null),
-                    Value::Str(s) => out.push_str(&s),
-                    Value::Int(x) => out.push_str(&x.to_string()),
-                    Value::Float(x) => out.push_str(&x.to_string()),
-                    Value::Bool(b) => out.push_str(&b.to_string()),
-                    Value::Timestamp(t) => out.push_str(&crate::timestamp::format(t)),
-                    v => out.push_str(&format!("{v:?}")),
+                    v => push_text(&mut out, &v),
                 }
             }
             Value::Str(out)
@@ -386,6 +381,19 @@ fn arith(op: ArithOp, a: &Value, b: &Value) -> Result<Value> {
     })
 }
 
+/// `v` written as text, as `||` (and `concat`, `STRING_AGG`) write it.
+pub(crate) fn push_text(out: &mut String, v: &Value) {
+    match v {
+        Value::Null => {}
+        Value::Str(s) => out.push_str(s),
+        Value::Int(x) => out.push_str(&x.to_string()),
+        Value::Float(x) => out.push_str(&x.to_string()),
+        Value::Bool(b) => out.push_str(&b.to_string()),
+        Value::Timestamp(t) => out.push_str(&crate::timestamp::format(*t)),
+        v => out.push_str(&format!("{v:?}")),
+    }
+}
+
 /// A scalar function of evaluated arguments; NULL in, NULL out (but for
 /// `coalesce`).
 pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
@@ -443,6 +451,9 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
         Func::DateTrunc | Func::DatePart | Func::Strftime => dates(func, &one, args.get(1).unwrap_or(&Value::Null)),
         Func::DateBin => date_bin(&one, args.get(1).unwrap_or(&Value::Null), args.get(2)),
         Func::Hash => hash(&one, args.get(1).unwrap_or(&Value::Int(0))),
+        Func::Floor | Func::Ceil => whole(func, &one),
+        Func::Substr | Func::Trim | Func::Ltrim | Func::Rtrim | Func::Replace => texts(func, args),
+        Func::DateDiff => date_diff(&one, args.get(1).unwrap_or(&Value::Null), args.get(2).unwrap_or(&Value::Null)),
         // With the kernel similarity() uses, so the two agree to the bit.
         Func::Dot => match (vector(&one)?, vector(args.get(1).unwrap_or(&Value::Null))?) {
             (Some(a), Some(b)) if a.len() == b.len() => Ok(Some(crate::vector::kernels::dot_f32(&a, &b) as f64).filter(|d| d.is_finite()).map_or(Value::Null, Value::Float)),
@@ -450,6 +461,103 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
             _ => Ok(Value::Null),
         },
     }
+}
+
+/// `floor(x)` and `ceil(x)` ([`Func::Floor`], [`Func::Ceil`]): an INT
+/// (itself) or a FLOAT's whole number below or above it, an INT; a FLOAT
+/// whose whole number is beyond an INT's range is an error, where
+/// PostgreSQL's float8 `floor` keeps it a float8.
+fn whole(func: Func, x: &Value) -> Result<Value> {
+    let f = match x {
+        Value::Null => return Ok(Value::Null),
+        Value::Int(i) => return Ok(Value::Int(*i)),
+        Value::Float(f) => *f,
+        v => return Err(err(format!("{} takes a number, not {}", func.name(), sv(v)))),
+    };
+    let w = if func == Func::Floor { f.floor() } else { f.ceil() };
+    // From -2^63 (an INT) to below 2^63.
+    if (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&w) {
+        Ok(Value::Int(w as i64))
+    } else {
+        Err(err(format!("{}({f}) is beyond an INT's range (from -9223372036854775808 to 9223372036854775807)", func.name())))
+    }
+}
+
+/// A whole number argument of `func` (`what` names it): an INT, or a FLOAT
+/// that is one; `None` for NULL.
+fn whole_arg(func: Func, what: &str, v: &Value) -> Result<Option<i64>> {
+    match v {
+        Value::Null => Ok(None),
+        Value::Int(i) => Ok(Some(*i)),
+        Value::Float(f) if f.fract() == 0.0 && f.abs() < 9.2e18 => Ok(Some(*f as i64)),
+        v => Err(err(format!("{}'s {what} is a whole number, not {}", func.name(), sv(v)))),
+    }
+}
+
+/// `substr`, `trim`, `ltrim`, `rtrim` and `replace` ([`Func::Substr`] and
+/// the others): of text, NULL for any NULL argument, as PostgreSQL's.
+fn texts(func: Func, args: &[Value]) -> Result<Value> {
+    let mut text = Vec::with_capacity(args.len());
+    for (i, a) in args.iter().enumerate() {
+        text.push(match a {
+            Value::Null => return Ok(Value::Null),
+            Value::Str(s) => Some(s.as_str()),
+            // substr's positions are numbers.
+            _ if func == Func::Substr && i > 0 => None,
+            v => return Err(err(format!("{} takes text, not {}", func.name(), sv(v)))),
+        });
+    }
+    let s = text[0].unwrap_or_default();
+    Ok(Value::Str(match func {
+        Func::Substr => {
+            let Some(start) = whole_arg(func, "start", &args[1])? else { return Ok(Value::Null) };
+            let count = match args.get(2) {
+                None => None,
+                Some(c) => match whole_arg(func, "length", c)? {
+                    None => return Ok(Value::Null),
+                    Some(c) if c < 0 => return Err(err(format!("substr's length is a count of characters, at least 0, not {c}"))),
+                    Some(c) => Some(c),
+                },
+            };
+            // The characters at positions from `start` (from 1) to before
+            // `start + count`, of those that are there.
+            let from = start.max(1);
+            let to = count.map_or(i64::MAX, |c| start.saturating_add(c));
+            if to <= from {
+                String::new()
+            } else {
+                s.chars().skip(usize::try_from(from - 1).unwrap_or(usize::MAX)).take(usize::try_from(to - from).unwrap_or(usize::MAX)).collect()
+            }
+        }
+        Func::Trim | Func::Ltrim | Func::Rtrim => {
+            let set: Vec<char> = text.get(1).map_or(vec![' '], |c| c.unwrap_or_default().chars().collect());
+            let cut = |c: char| set.contains(&c);
+            match func {
+                Func::Trim => s.trim_matches(cut),
+                Func::Ltrim => s.trim_start_matches(cut),
+                _ => s.trim_end_matches(cut),
+            }
+            .to_string()
+        }
+        // An empty `from` replaces nothing, as PostgreSQL's.
+        _ => match (text[1].unwrap_or_default(), text[2].unwrap_or_default()) {
+            ("", _) => s.to_string(),
+            (from, to) => s.replace(from, to),
+        },
+    }))
+}
+
+/// `date_diff(unit, start, end)` ([`Func::DateDiff`]): NULL for a NULL
+/// argument.
+fn date_diff(unit: &Value, start: &Value, end: &Value) -> Result<Value> {
+    use crate::timestamp as ts;
+    let unit = match unit {
+        Value::Null => return Ok(Value::Null),
+        Value::Str(u) => ts::DiffUnit::parse(u).ok_or_else(|| err(format!("date_diff has no unit {u:?}: it counts {}", ts::DiffUnit::names().iter().map(|n| format!("'{n}'")).collect::<Vec<_>>().join(", "))))?,
+        v => return Err(err(format!("date_diff's first argument is text, a unit ('day', 'month', ...), not {}", sv(v)))),
+    };
+    let (Some(a), Some(b)) = (time_arg(Func::DateDiff, start)?, time_arg(Func::DateDiff, end)?) else { return Ok(Value::Null) };
+    ts::diff(unit, a, b).map(Value::Int).ok_or_else(|| err(format!("date_diff of {} and {}: beyond an INT's range", sv(start), sv(end))))
 }
 
 /// `hash(x, seed)` ([`Func::Hash`]): the 64-bit FNV-1a of the seed's 8

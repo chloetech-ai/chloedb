@@ -1033,8 +1033,9 @@ fn output(e: &Expr, keys: &[Col], aggs: &[Agg], of: &[Option<Col>]) -> Result<Pr
     }
     let j = i - keys.len();
     match (aggs.get(j), of.get(j)) {
-        (Some(Agg { func: AggFn::Count, arg: None }), _) => Ok(Projection::Count),
-        (Some(Agg { func, arg: Some(_) }), Some(Some(c))) => Ok(Projection::Agg { func: *func, of: *c }),
+        (Some(Agg { func: AggFn::StringAgg, .. }), _) => Err(err("STRING_AGG is computed over rows, not by a table's scan")),
+        (Some(Agg { func: AggFn::Count, arg: None, .. }), _) => Ok(Projection::Count),
+        (Some(Agg { func, arg: Some(_), .. }), Some(Some(c))) => Ok(Projection::Agg { func: *func, of: *c }),
         _ => Err(err(format!("the Aggregate has no output {i}"))),
     }
 }

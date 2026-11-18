@@ -168,6 +168,74 @@ pub fn trunc(micros: i64, unit: Unit) -> Option<i64> {
     start.checked_mul(MICROS_PER_DAY)
 }
 
+/// A unit `date_diff` counts: one of `date_trunc`'s, or a millisecond or
+/// microsecond.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffUnit {
+    Microsecond,
+    Millisecond,
+    Of(Unit),
+}
+
+impl DiffUnit {
+    /// The unit `name` names, in any case and singular or plural.
+    pub fn parse(name: &str) -> Option<DiffUnit> {
+        let n = name.trim().to_ascii_lowercase();
+        Some(match n.strip_suffix('s').unwrap_or(&n) {
+            "microsecond" => DiffUnit::Microsecond,
+            "millisecond" => DiffUnit::Millisecond,
+            _ => DiffUnit::Of(Unit::parse(name)?),
+        })
+    }
+
+    /// The names `parse` reads, singular, smallest first.
+    pub fn names() -> Vec<&'static str> {
+        ["microsecond", "millisecond"].into_iter().chain(Unit::ALL.map(Unit::name)).collect()
+    }
+}
+
+/// `date_diff(unit, start, end)`: how many boundaries of `unit` there
+/// are from `start` to `end` (negative when `end` is earlier), as DuckDB's
+/// and Snowflake's `date_diff` count them: the difference of the two
+/// times cut to the unit (`date_trunc`, weeks from Monday), in units, so
+/// `date_diff('month', '2026-01-31', '2026-02-01')` is 1 and
+/// `date_diff('day', '2026-01-01 23:00', '2026-01-02 01:00')` is 1.
+/// `None` where it is beyond 64 bits (only microseconds can be).
+pub fn diff(unit: DiffUnit, start: i64, end: i64) -> Option<i64> {
+    let per = |n: i64| end.div_euclid(n).checked_sub(start.div_euclid(n));
+    let months = |t: i64| {
+        let (y, m, _) = civil_from_days(t.div_euclid(MICROS_PER_DAY));
+        (y, m)
+    };
+    let unit = match unit {
+        DiffUnit::Microsecond => return end.checked_sub(start),
+        DiffUnit::Millisecond => return per(1_000),
+        DiffUnit::Of(u) => u,
+    };
+    match unit {
+        Unit::Second => per(1_000_000),
+        Unit::Minute => per(60_000_000),
+        Unit::Hour => per(3_600_000_000),
+        Unit::Day => per(MICROS_PER_DAY),
+        Unit::Week => {
+            let monday = |t: i64| {
+                let d = t.div_euclid(MICROS_PER_DAY);
+                d - weekday(d)
+            };
+            Some((monday(end) - monday(start)).div_euclid(7))
+        }
+        Unit::Month => {
+            let ((y0, m0), (y1, m1)) = (months(start), months(end));
+            Some((y1 - y0) * 12 + (m1 - m0))
+        }
+        Unit::Quarter => {
+            let ((y0, m0), (y1, m1)) = (months(start), months(end));
+            Some((y1 * 4 + (m1 - 1) / 3) - (y0 * 4 + (m0 - 1) / 3))
+        }
+        Unit::Year => Some(months(end).0 - months(start).0),
+    }
+}
+
 /// The units a [`bin`] width is written in, as [`parse_stride`] reads
 /// them: microseconds each, largest first.
 const STRIDE_UNITS: [(i64, &str); 7] = [
@@ -565,6 +633,30 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn date_diff_counts_boundaries() {
+        let t = |s: &str| parse(s).unwrap();
+        let d = |u: &str, a: &str, b: &str| diff(DiffUnit::parse(u).unwrap(), t(a), t(b)).unwrap();
+        assert_eq!(d("month", "2026-01-31", "2026-02-01"), 1);
+        assert_eq!(d("months", "2026-02-01", "2026-01-31"), -1);
+        assert_eq!(d("day", "2026-01-01T23:00:00Z", "2026-01-02T01:00:00Z"), 1);
+        assert_eq!(d("hour", "2026-01-01T23:59:00Z", "2026-01-02T00:01:00Z"), 1);
+        assert_eq!(d("minute", "2026-01-01T00:00:59Z", "2026-01-01T00:01:00Z"), 1);
+        assert_eq!(d("second", "2026-01-01T00:00:00.9Z", "2026-01-01T00:00:01.1Z"), 1);
+        assert_eq!(d("millisecond", "2026-01-01T00:00:00.0009Z", "2026-01-01T00:00:00.0011Z"), 1);
+        assert_eq!(d("microsecond", "2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z"), 1_000_000);
+        // 2026-11-15 is a Sunday, 11-16 a Monday.
+        assert_eq!(d("week", "2026-11-15", "2026-11-16"), 1);
+        assert_eq!(d("week", "2026-11-16", "2026-11-22"), 0);
+        assert_eq!(d("quarter", "2026-03-31", "2026-04-01"), 1);
+        assert_eq!(d("year", "2025-12-31", "2027-01-01"), 2);
+        // Before 1970, boundaries too.
+        assert_eq!(d("day", "1969-12-31T23:00:00Z", "1970-01-01T01:00:00Z"), 1);
+        assert_eq!(d("year", "1958-12-08", "2002-05-01"), 44);
+        assert_eq!(DiffUnit::parse("fortnight"), None);
+        assert_eq!(diff(DiffUnit::Microsecond, i64::MIN, i64::MAX), None);
+    }
 
     #[test]
     fn strides_read_and_bins_count_from_the_origin() {

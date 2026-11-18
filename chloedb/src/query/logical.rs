@@ -878,6 +878,12 @@ pub enum AggFn {
     /// many values it has ([`crate::query::agg::sketch`]), a FLOAT. Needs
     /// [`crate::query::ir::APPROX_PERCENTILES`].
     ApproxPercentile(Fraction),
+    /// `STRING_AGG(x, sep [ORDER BY ..])`: the values that are not NULL,
+    /// as text (as `||` writes them), in the order the rows come, with
+    /// [`crate::query::ir::Agg::sep`] between them; NULL for none, as in
+    /// PostgreSQL. Only operators compute it. Needs
+    /// [`crate::query::ir::SQL_FUNCTIONS`].
+    StringAgg,
 }
 
 impl AggFn {

@@ -130,6 +130,9 @@ const COMPOUND: &[&str] = &[
     "SELECT category, COUNT(*) AS n, RANK() OVER (ORDER BY COUNT(*) DESC) AS r FROM papers GROUP BY category QUALIFY r <= 2 ORDER BY n DESC",
     "SELECT category FROM papers WHERE year > 2000 UNION SELECT category FROM papers WHERE rating > 4 INTERSECT ALL SELECT category FROM papers EXCEPT SELECT title FROM papers ORDER BY category LIMIT 3",
     "SELECT id FROM papers WHERE id IN (SELECT id FROM papers WHERE year = 2001 UNION ALL SELECT id FROM papers WHERE rating > 4)",
+    // The everyday functions and STRING_AGG with its separator and order
+    // (persona study SAM-7).
+    "SELECT category, STRING_AGG(substr(title, 1, 3) || concat(nullif(category, 'x'), floor(rating), ceil(rating)), '; ' ORDER BY year DESC), COUNT(*) FROM papers WHERE trim(title) <> '' AND ltrim(title, 'g') <> rtrim(title) AND replace(title, 'a', 'b') <> '' AND date_diff('day', published, '2026-11-01') > 3 GROUP BY category",
 ];
 
 /// Writes of each kind.

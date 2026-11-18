@@ -30,7 +30,6 @@ use crate::query::ir::{Agg, CmpOp, Expr, Graph, GraphKind, JoinKey, JoinKind, Ke
 use crate::query::logical::Direction;
 use crate::query::memory::Charge;
 use crate::query::steps::{self, Clock, Step};
-use crate::query::Projection;
 use crate::schema::{FieldType, Schema};
 use crate::value::Value;
 
@@ -1440,7 +1439,7 @@ impl<'a> Ops<'a, '_> {
         let rows = self.node(input, what)?;
         let keys: Vec<Expr> = keys.iter().map(|k| self.resolved(k)).collect::<Result<_>>()?;
         let args: Vec<Option<Expr>> = aggs.iter().map(|a| a.arg.as_ref().map(|x| self.resolved(x)).transpose()).collect::<Result<_>>()?;
-        let new_accs = || aggs.iter().map(|a| Acc::new(&Projection::Agg { func: a.func, of: crate::query::logical::Col::Field(0) })).collect::<Vec<_>>();
+        let new_accs = || aggs.iter().map(Acc::of).collect::<Vec<_>>();
         let mut at: HashMap<Vec<Part>, usize> = HashMap::new();
         let mut groups: Vec<(Vec<Value>, Vec<Acc>)> = Vec::new();
         for r in &rows.rows {

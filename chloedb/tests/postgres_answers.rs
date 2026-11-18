@@ -13,9 +13,15 @@
 //!   does).
 //! - SAM-6 (audit ENG-Q4): `n != 1.5` and `NOT (n = 1.5)` on an INT column,
 //!   which no row's value equals, leave out the rows without a value.
+//! - SAM-7: the everyday functions `nullif`, `floor`, `ceil`, `substr`,
+//!   `trim` (`ltrim`, `rtrim`, `btrim`), `replace`, `concat`, `date_diff`
+//!   and the aggregate `STRING_AGG`, with PostgreSQL's answers (DuckDB's
+//!   for `date_diff`, which PostgreSQL does not have), over one table,
+//!   derived rows and both engines.
 
 use chloedb::db::{Db, SqlResult};
 use chloedb::query::exec::{Engine, ExecOptions};
+use chloedb::query::ir::{self, Plan};
 use chloedb::query::Params;
 use chloedb::schema::{Field, FieldType, Schema};
 use chloedb::storage::DbOptions;
@@ -262,4 +268,178 @@ fn impossible_comparisons_leave_out_nulls() {
     assert_eq!(keys(&db, "SELECT id FROM notes WHERE n != 2"), ["a", "d", "e", "g", "h"]);
     assert_eq!(written(&db, "DELETE FROM notes WHERE n != 1.5"), 6);
     assert_eq!(keys(&db, "SELECT id FROM notes"), ["c", "f"]);
+}
+
+/// The rows of `q` on each engine, which must agree.
+fn on_both(db: &Db, q: &str) -> Vec<Vec<Value>> {
+    let mut seen: Option<Vec<Vec<Value>>> = None;
+    for engine in [Engine::Operators, Engine::DataFusion] {
+        let opts = ExecOptions { engine, ..db.exec.clone() };
+        let rows = db.query_with(q, &Params::new(), &opts).unwrap_or_else(|e| panic!("{q} ({engine:?}): {e}")).rows;
+        if let Some(first) = &seen {
+            assert_eq!(&rows, first, "{q}: {engine:?} against the operators");
+        }
+        seen = Some(rows);
+    }
+    seen.expect("rows")
+}
+
+fn err_of(db: &Db, q: &str) -> String {
+    match db.sql(q, &Params::new()) {
+        Ok(_) => panic!("{q}: expected an error"),
+        Err(e) => e.to_string(),
+    }
+}
+
+const N: Value = Value::Null;
+
+fn i(x: i64) -> Value {
+    Value::Int(x)
+}
+
+/// SAM-7: nullif, floor, ceil, substr, trim, replace and concat of values
+/// written out, as PostgreSQL 16 answers them (floor and ceil are INTs, as
+/// round(x) is).
+#[test]
+fn everyday_functions_of_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = db(dir.path());
+    assert_eq!(sql(&db, "SELECT nullif(1, 1), nullif(1, 2), nullif('a', 'b'), nullif(NULL, 1), NULLIF('', '')"), vec![vec![N, i(1), s("a"), N, N]]);
+    assert_eq!(sql(&db, "SELECT floor(2.7), ceil(2.2), floor(-2.5), ceiling(-2.5), floor(3), ceil(NULL), FLOOR(-0.5), CEIL(-0.5)"), vec![vec![i(2), i(3), i(-3), i(-2), i(3), N, i(-1), i(0)]]);
+    assert_eq!(
+        sql(&db, "SELECT substr('hello', 2), substr('hello', 2, 3), substr('hello', 0, 2), substr('hello', -1, 3), substr('hello', 4, 10), substr('hello', 9), substr(NULL, 1), substr('hello', NULL)"),
+        vec![vec![s("ello"), s("ell"), s("h"), s("h"), s("lo"), s(""), N, N]]
+    );
+    assert_eq!(sql(&db, "SELECT SUBSTRING('hello' FROM 2 FOR 3), SUBSTRING('hello' FROM 3), substring('héllo', 2, 2), SUBSTR('hello', 1, 0)"), vec![vec![s("ell"), s("llo"), s("él"), s("")]]);
+    assert_eq!(
+        sql(&db, "SELECT trim('  a b  '), ltrim('  a '), rtrim('  a '), btrim('xxaxx', 'x'), TRIM(BOTH 'x' FROM 'xxaxx'), TRIM(LEADING 'x' FROM 'xxaxx'), TRIM(TRAILING 'x' FROM 'xxaxx'), trim('xyaxy', 'yx'), TRIM(NULL)"),
+        vec![vec![s("a b"), s("a "), s("  a"), s("a"), s("a"), s("axx"), s("xxa"), s("a"), N]]
+    );
+    assert_eq!(sql(&db, "SELECT replace('a-b-c', '-', '+'), replace('abc', '', 'x'), replace('aaa', 'aa', 'b'), replace(NULL, 'a', 'b'), replace('abc', 'b', '')"), vec![vec![s("a+b+c"), s("abc"), s("ba"), N, s("ac")]]);
+    // concat leaves out the NULLs, where || is NULL.
+    assert_eq!(sql(&db, "SELECT concat('a', NULL, 'b', 1, 2.5), concat(NULL), concat(NULL, NULL) IS NULL, 'a' || NULL"), vec![vec![s("ab12.5"), s(""), Value::Bool(false), N]]);
+    // A typo, a bad argument, and what is beyond an INT.
+    assert!(err_of(&db, "SELECT substr('abc', 1, -1)").contains("at least 0"));
+    assert!(err_of(&db, "SELECT substr('abc', 'x')").contains("whole number"));
+    assert!(err_of(&db, "SELECT floor(1e300)").contains("beyond an INT"));
+    assert!(err_of(&db, "SELECT floor('x')").contains("takes a number"));
+    assert!(err_of(&db, "SELECT nullif(1)").contains("two arguments"));
+    assert!(err_of(&db, "SELECT replace('a', 'b')").contains("three arguments"));
+}
+
+/// SAM-7: the functions over a table's rows, in SELECT, WHERE, GROUP BY
+/// and ORDER BY, over one table and derived rows, on both engines.
+#[test]
+fn everyday_functions_of_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = db(dir.path());
+    // cat: a x, b x, c xy, d y, e NULL, f Y, g x, h zz; body: a 'first
+    // note', b 'second note', c third, d NULL, e fifth, f sixth, g seventh,
+    // h eighth; n: 1, 2, NULL, 4, 5, NULL, 7, 8; x: 0.5, 1.5, 2.5, -0.5,
+    // -2.5, 3.5, 0.25, NULL.
+    let want = vec![
+        vec![s("a"), N, i(0), i(1), s("irs"), s("first notE"), s("x/1"), s("irst note")],
+        vec![s("b"), N, i(1), i(2), s("eco"), s("sEcond notE"), s("x/2"), s("econd note")],
+        vec![s("c"), s("xy"), i(2), i(3), s("hir"), s("third"), s("xy/"), s("third")],
+        vec![s("d"), s("y"), i(-1), i(0), N, N, s("y/4"), N],
+        vec![s("e"), N, i(-3), i(-2), s("ift"), s("fifth"), s("/5"), s("ifth")],
+        vec![s("f"), s("Y"), i(3), i(4), s("ixt"), s("sixth"), s("Y/"), s("ixth")],
+        vec![s("g"), N, i(0), i(1), s("eve"), s("sEvEnth"), s("x/7"), s("eventh")],
+        vec![s("h"), s("zz"), N, N, s("igh"), s("Eighth"), s("zz/8"), s("eighth")],
+    ];
+    let cols = "id, nullif(cat, 'x'), floor(x), ceil(x), substr(body, 2, 3), replace(body, 'e', 'E'), concat(cat, '/', n), ltrim(body, 'fs')";
+    assert_eq!(on_both(&db, &format!("SELECT {cols} FROM notes ORDER BY id")), want);
+    assert_eq!(on_both(&db, &format!("SELECT {cols} FROM (SELECT * FROM notes) t ORDER BY id")), want);
+    assert_eq!(keys(&db, "SELECT id FROM notes WHERE substr(cat, 1, 1) = 'x'"), ["a", "b", "c", "g"]);
+    assert_eq!(keys(&db, "SELECT id FROM notes WHERE floor(x) = 0"), ["a", "g"]);
+    assert_eq!(keys(&db, "SELECT id FROM notes WHERE nullif(n, 4) IS NULL"), ["c", "d", "f"]);
+    assert_eq!(keys(&db, "SELECT id FROM notes WHERE trim(TRAILING 'h' FROM body) = 'fift'"), ["e"]);
+    assert_eq!(
+        on_both(&db, "SELECT floor(x) AS b, COUNT(*) FROM notes WHERE x IS NOT NULL GROUP BY b ORDER BY b"),
+        vec![vec![i(-3), i(1)], vec![i(-1), i(1)], vec![i(0), i(2)], vec![i(1), i(1)], vec![i(2), i(1)], vec![i(3), i(1)]]
+    );
+    assert_eq!(sql(&db, "SELECT id FROM notes ORDER BY replace(id, 'a', 'z') DESC LIMIT 2"), vec![vec![s("a")], vec![s("h")]]);
+    assert_eq!(sql(&db, "SELECT id FROM notes ORDER BY ceil(x) DESC, id LIMIT 3"), vec![vec![s("f")], vec![s("c")], vec![s("b")]]);
+    // In an UPDATE's SET.
+    assert_eq!(written(&db, "UPDATE notes SET body = concat(upper(substr(body, 1, 1)), substr(body, 2)) WHERE id IN ('c', 'd')"), 2);
+    assert_eq!(sql(&db, "SELECT id, body FROM notes WHERE id IN ('c', 'd') ORDER BY id"), vec![vec![s("c"), s("Third")], vec![s("d"), s("")]]);
+}
+
+/// SAM-7: date_diff(unit, start, end) counts the unit's boundaries from
+/// start to end, as DuckDB's and Snowflake's do (PostgreSQL has `end -
+/// start`, an INTERVAL ChloeDB does not have).
+#[test]
+fn date_diff_counts_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = db(dir.path());
+    sql(&db, "CREATE TABLE ev (id INT PRIMARY KEY, a TIMESTAMP, b TIMESTAMP)");
+    sql(&db, "INSERT INTO ev (id, a, b) VALUES (1, '2026-01-31T10:00:00Z', '2026-02-01T09:00:00Z'), (2, '1958-12-08', '2002-05-01'), (3, '2026-11-16', NULL)");
+    let q = "SELECT id, date_diff('day', a, b), date_diff('month', a, b), datediff('year', a, b), date_diff('hour', a, b), date_diff('weeks', b, a) FROM ev ORDER BY id";
+    assert_eq!(
+        on_both(&db, q),
+        vec![vec![i(1), i(1), i(1), i(0), i(23), i(0)], vec![i(2), i(15850), i(521), i(44), i(15850 * 24), i(-2264)], vec![i(3), N, N, N, N, N]]
+    );
+    assert_eq!(on_both(&db, &q.replace("FROM ev", "FROM (SELECT * FROM ev) t")), on_both(&db, q));
+    assert_eq!(keys(&db, "SELECT CAST(id AS TEXT) FROM ev WHERE date_diff('day', a, b) > 100"), ["2"]);
+    assert_eq!(sql(&db, "SELECT date_diff('month', '2026-01-31', '2026-02-01'), date_diff('quarter', '2026-03-31', '2026-04-01'), date_diff('second', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z')"), vec![vec![i(1), i(1), i(60)]]);
+    let e = err_of(&db, "SELECT date_diff('fortnight', a, b) FROM ev");
+    assert!(e.contains("'millisecond'") && e.contains("'quarter'"), "{e}");
+}
+
+/// SAM-7: STRING_AGG(x, sep [ORDER BY ..]) joins the values that are not
+/// NULL, as text, in the order asked for; NULL for none, as in PostgreSQL.
+#[test]
+fn string_agg_joins_the_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = db(dir.path());
+    assert_eq!(on_both(&db, "SELECT STRING_AGG(id, ',' ORDER BY id) FROM notes"), vec![vec![s("a,b,c,d,e,f,g,h")]]);
+    assert_eq!(on_both(&db, "SELECT string_agg(id, ',' ORDER BY x DESC) FROM notes WHERE x IS NOT NULL"), vec![vec![s("f,c,b,a,g,d,e")]]);
+    assert_eq!(
+        on_both(&db, "SELECT cat, STRING_AGG(id, '+' ORDER BY id DESC), COUNT(*) FROM notes WHERE cat IN ('x', 'y') GROUP BY cat ORDER BY cat"),
+        vec![vec![s("x"), s("g+b+a"), i(3)], vec![s("y"), s("d"), i(1)]]
+    );
+    assert_eq!(on_both(&db, "SELECT STRING_AGG(body, ' | ' ORDER BY id) FROM notes WHERE id IN ('c', 'd', 'e')"), vec![vec![s("third | fifth")]]);
+    assert_eq!(on_both(&db, "SELECT STRING_AGG(id, ',') FROM notes WHERE id = 'zz'"), vec![vec![N]]);
+    assert_eq!(on_both(&db, "SELECT STRING_AGG(n, ', ' ORDER BY n) FROM notes"), vec![vec![s("1, 2, 4, 5, 7, 8")]]);
+    assert_eq!(on_both(&db, "SELECT STRING_AGG(id, '' ORDER BY id) FILTER (WHERE n > 4) FROM notes"), vec![vec![s("egh")]]);
+    assert_eq!(on_both(&db, "SELECT STRING_AGG(id, ',' ORDER BY id) FROM (SELECT id FROM notes WHERE n > 4) t"), vec![vec![s("e,g,h")]]);
+    // Over a join, with an expression and two in one SELECT.
+    assert_eq!(
+        on_both(&db, "SELECT STRING_AGG(concat(n.id, ':', r.ok), ';' ORDER BY r.id), STRING_AGG(n.cat, '' ORDER BY r.id) FROM refs r JOIN notes n ON n.id = r.note"),
+        vec![vec![s("a:1;c:0;g:1"), s("xxyx")]]
+    );
+    assert_eq!(on_both(&db, "SELECT cat, STRING_AGG(id, ',' ORDER BY id) AS ids FROM notes GROUP BY cat HAVING COUNT(*) > 1 ORDER BY ids"), vec![vec![s("x"), s("a,b,g")]]);
+    assert!(err_of(&db, "SELECT STRING_AGG(DISTINCT id, ',') FROM notes").contains("DISTINCT"));
+    assert!(err_of(&db, "SELECT STRING_AGG(id, cat) FROM notes").contains("constant text"));
+    assert!(err_of(&db, "SELECT STRING_AGG(id) FROM notes").contains("STRING_AGG(x, ', '"));
+    assert!(err_of(&db, "SELECT STRING_AGG(id, ',' ORDER BY id), STRING_AGG(id, ',' ORDER BY n) FROM notes").contains("one way"));
+}
+
+/// A plan with the new functions names its feature, so that an older
+/// reader refuses it by name, and goes through JSON whole; EXPLAIN says
+/// STRING_AGG with its separator.
+#[test]
+fn everyday_functions_name_their_plan_feature() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = db(dir.path());
+    for q in [
+        "SELECT floor(x) FROM notes",
+        "SELECT id FROM notes WHERE substr(cat, 1, 1) = 'x'",
+        "SELECT STRING_AGG(id, ',' ORDER BY id) FROM notes",
+        "SELECT id FROM notes WHERE id IN (SELECT note FROM refs GROUP BY note HAVING STRING_AGG(CAST(ok AS TEXT), '') = '1')",
+    ] {
+        let plan = db.explain(q, &Params::new()).unwrap();
+        assert!(plan.features.iter().any(|f| f == ir::SQL_FUNCTIONS), "{q}: {:?}", plan.features);
+        assert_eq!(Plan::from_json(&plan.to_json().unwrap()).unwrap(), plan, "{q}");
+        let features: Vec<&str> = plan.features.iter().map(String::as_str).collect();
+        let older: Vec<&str> = ir::FEATURES.iter().copied().filter(|f| *f != ir::SQL_FUNCTIONS).collect();
+        let e = Plan::readable_by(plan.version as u64, &features, &older).err().expect("refused").to_string();
+        assert!(e.contains("\"sql_functions\""), "{e}");
+    }
+    // nullif and concat are CASE, || and coalesce, which every version reads.
+    let plan = db.explain("SELECT nullif(cat, 'x'), concat(cat, n) FROM notes", &Params::new()).unwrap();
+    assert!(!plan.features.iter().any(|f| f == ir::SQL_FUNCTIONS), "{:?}", plan.features);
+    let SqlResult::Rows(r) = db.sql("EXPLAIN SELECT STRING_AGG(id, ', ' ORDER BY id) FROM notes", &Params::new()).unwrap() else { panic!("rows") };
+    let text = r.rows.into_iter().map(|r| r[0].as_str().unwrap().to_string()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("STRING_AGG(id, ', ')"), "{text}");
 }

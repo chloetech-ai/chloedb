@@ -99,8 +99,8 @@ impl Outputs<'_> {
             Projection::Score | Projection::Feature(_) => return Expr::Score,
             Projection::Hops(_) => return Expr::Hops,
             Projection::SeqNo => return Expr::SeqNo,
-            Projection::Count => Agg { func: logical::AggFn::Count, arg: None },
-            Projection::Agg { func, of } => Agg { func: *func, arg: Some(col_expr(self.paths, self.times, *of)) },
+            Projection::Count => Agg::of(logical::AggFn::Count, None),
+            Projection::Agg { func, of } => Agg::of(*func, Some(col_expr(self.paths, self.times, *of))),
         };
         let i = self.aggs.iter().position(|a| *a == agg).unwrap_or_else(|| {
             self.aggs.push(agg);

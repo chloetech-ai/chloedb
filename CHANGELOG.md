@@ -62,6 +62,27 @@ changes collect under "Unreleased".
   table search forgives a typo in each word and offers a correction when
   nothing is found ([search guide](docs/guide/search.md#as-you-type-prefixes),
   [query-language.md](docs/chloedb/query-language.md#full-text-match)).
+- **Everyday SQL functions** (persona study round 2, SAM-7): `substr`
+  (`substring`, `SUBSTRING(s FROM i FOR n)`), `trim`, `ltrim`, `rtrim`
+  (`btrim`, `TRIM(LEADING ... FROM s)`), `replace`, `concat`, `nullif`,
+  `floor` and `ceil`, with PostgreSQL's answers; `date_diff('unit',
+  start, end)`, the unit's boundaries between two times, as DuckDB counts
+  them; and `STRING_AGG(x, ', ' [ORDER BY y])`. They run on either engine
+  and over shards; a plan that uses one declares the feature
+  `sql_functions`, which a server from before refuses by name
+  ([query-language.md](docs/chloedb/query-language.md#text-and-numbers-substr-trim-replace-concat-nullif-floor-and-ceil)).
+- **Retrieval tuning** (persona study round 2, PRIYA-201 to PRIYA-206,
+  PRIYA-208, #649). `features()`, the rank log and Explain's hits list a
+  `tmm(...)` or `zscore(...)` fusion's parts, as they did `rrf`'s. Explain
+  embeds the text in `similarity(emb, :q)`. A vector holding NaN, an
+  infinity or a JSON `null` says so and which element, and a write to an
+  embedded field whose model did not open says why it did not. The
+  LangChain and LlamaIndex hybrids take `fusion=` (`rrf` with its `k`,
+  `tmm` with weights, `minmax`, `zscore`; LlamaIndex's `alpha` is a tmm
+  weight). The command center's relevance lab imports and exports TREC
+  and BEIR judgments, reads a judgments table, tunes on half the queries
+  and reports on the other half, and tests significance
+  ([server.md](docs/chloedb/server.md), [frameworks.md](docs/chloedb/frameworks.md)).
 
 ### What changes by default
 
@@ -72,6 +93,8 @@ changes collect under "Unreleased".
 - **A correction's `edits` counts edits from the word as typed** to the
   word shown, rather than from its stem, and the word shown is one that
   stems to the term. The answer's fields are unchanged.
+- **A value its field refuses is error code `value_invalid`** over HTTP
+  (#649), not `schema_invalid`, which stays for a refused schema.
 
 ### ChloeCtx
 
