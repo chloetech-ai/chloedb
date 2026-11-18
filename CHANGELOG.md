@@ -54,6 +54,31 @@ changes collect under "Unreleased".
   and the pages that said release archives carry build provenance from
   0.3.9 say 0.3.8, as SECURITY.md does (the installers check it from
   0.3.9).
+- **What on-call sets on a coordinator survives its restart, and its
+  numbers are true** (persona study round 2, OLU-201, OLU-202, OLU-203,
+  OLU-3, OLU-206, OLU-204, OLU-211, OLU-9). A coordinator started without
+  `--alerts` and `--audit-log` lost its custom rules, routes, silences and
+  audit log when it restarted; it keeps them, with each alert's state and
+  the latest 2,000 audit entries, on every copy of its shards
+  (`<db>.coordinator.json`), and takes them back before it serves, the
+  newest of each part winning; `GET /v1/alerts` says where under `kept`.
+  `chloedb_docs` and `chloedb_segments` counted the database's first
+  table, often an empty placeholder; they count every table, as
+  `/v1/health`'s `rows`, with `chloedb_table_docs{table}`,
+  `chloedb_table_segments{table}` and a copy's
+  `chloedb_copy_info{shard, node, role}`. A coordinator's `/metrics` has
+  the cluster's state (`chloedb_cluster_copies_up`,
+  `chloedb_cluster_shard_majority`, `chloedb_cluster_copy_up{shard, copy,
+  url, role}` and others). Writes that fail on the server count in Home's
+  error ratio and the fleet's `error_ratio` check (`write_error_ratio`,
+  with a runbook), and Home keeps its pace while an alert fires.
+  `POST /v1/admin/verify` on a coordinator verifies every shard (it
+  answered 409), `GET /v1/logs` there says how to search the copies'
+  lines, `GET /v1/admin/checkpoints` lists the checkpoints in
+  `--backup-dir` (on a coordinator, every copy's and the sets complete on
+  every shard; Settings > Upkeep > Backups), and the
+  `cluster_token_required` refusal says how to apply a plan with the
+  cluster's token ([operate-cluster.md](docs/guide/operate-cluster.md)).
 
 ### Analytical SQL
 
@@ -91,6 +116,19 @@ theirs, with the same answers (a 4-core cloud container, `chloedb-sql-bench`).
 Through a coordinator, the shards still answer these plans as before:
 computing expressions in the scan is for a database's own plans (embedded,
 or one server), so shards of older versions need nothing new.
+
+- **Experiments: live runs** (`chloedb-experiments`, a demo). An
+  experiment you watch as it happens: simulated users search the site at a
+  rate you set and change while it runs, each search a logged query to
+  ChloeDB with its clicks written back, and each second the page shows
+  every metric per arm with its interval, its fixed-size and always-valid
+  p values side by side, the truth, the judged quality (nDCG) of what
+  each arm showed and each metric by cohort. AI agents, people of the population in their arms, use
+  the site's search for a need of their own (Claude through the Messages
+  API with a spend cap, or scripted with no model), and you can search the
+  site in the run yourself. When it ends it becomes an experiment with the
+  full report and an Agents tab
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#live-runs)).
 
 ### Query plans
 

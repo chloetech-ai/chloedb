@@ -114,7 +114,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Server and cluster</span>
       <h1>Runbooks</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/runbooks.md">docs/chloedb/runbooks.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.8, unreleased). The latest release is 0.3.7 (<a href="v0.3.7/index.html">its docs</a>); what is newer is marked "since 0.3.8".</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#queries-are-slow">Queries are slow</a></li><li><a href="#searches-fail">Searches fail</a></li><li><a href="#queries-are-refused">Queries are refused</a></li><li><a href="#a-copy-is-down">A copy is down</a></li><li><a href="#a-replica-is-behind">A replica is behind</a></li><li><a href="#the-disk-is-filling">The disk is filling</a></li><li><a href="#writes-fail-or-queue">Writes fail or queue</a></li><li><a href="#data-damaged-on-disk">Data damaged on disk</a></li><li><a href="#a-shards-primary-changed">A shard's primary changed</a></li><li><a href="#a-rollout-is-held">A rollout is held</a></li><li><a href="#restore-from-checkpoints">Restore from checkpoints</a></li><li><a href="#upgrades-outside-kubernetes">Upgrades outside Kubernetes</a></li></ol></details>
     <div class="doc-body">
@@ -186,15 +186,25 @@ servers outside Kubernetes, is for no alert.</p>
 <ol>
 <li>Read which copy, since when, and what else happened: <code>GET
    /v1/health/fleet</code> (tool <code>health</code>), then <code>GET /v1/events?kind=copy_down,primary_changed</code>
-   and the copy's own lines, <code>GET /v1/logs?q=&lt;copy name&gt;</code>.</li>
+   and the copy's own lines from the log stores, <code>POST /v1/logs/query
+   {"sql": "SELECT ts, level, message FROM logs WHERE node = '&lt;copy name&gt;' ORDER BY ts DESC LIMIT 200"}</code>
+   (on a coordinator it searches every copy's store; <code>GET /v1/logs</code> has
+   the coordinator's own lines only).</li>
 <li>A copy that restarts by itself (a pod killed for memory, a rollout):
    wait for it, <code>GET /v1/events?after=&lt;id&gt;&amp;wait_s=30</code> answers as soon as
    its next event comes. Silence the alert meanwhile (tier 1, two hours at
    most for an agent): <code>POST /v1/alerts/copy-down/silence {"minutes": 30}</code>
    (tool <code>silence_alert</code>).</li>
 <li>A copy that does not come back (tier 2): replace it. <code>POST
-   /v1/admin/plan</code> with the copy left out plans the repair (Cluster: Plan
-   the repair, in the command center); file the plan as a change request.</li>
+   /v1/admin/plan {"shards": [{"shard": &lt;i&gt;, "copies": [...]}]}</code>, the
+   gRPC URLs the shard keeps with the dead copy left out and its
+   replacement in, plans the repair (Cluster: Plan the repair, in the
+   command center); file the plan as a change request. A plan that adds a
+   server is applied with the cluster's token, which the coordinator
+   sends to it (403 <code>cluster_token_required</code> with the admin token or a
+   key): on machines of your own, a person runs <code>chloedb-server admin
+   --key "$CHLOEDB_CLUSTER_TOKEN" call POST /v1/admin/plan/apply @plan.json</code>
+   with the same body; on Kubernetes the operator adds copies itself.</li>
 <li>A shard with no majority takes no writes, and its copies cannot elect
    a primary. Its searches go on while a replica that is up serves reads
    (the shard's state is <code>no_writes</code>); when the copy left is its primary,
@@ -236,10 +246,11 @@ servers outside Kubernetes, is for no alert.</p>
    (tier 3: it loses old versions, and is a person's alone).</li>
 </ol>
 <h2 id="writes-fail-or-queue">Writes fail or queue<a class="anchor" href="#writes-fail-or-queue" aria-label="Link to this section">#</a></h2>
-<p>For: <code>failing</code>, <code>flush-failing</code>, <code>merge-failing</code>, <code>write-queue</code>, <code>write-p99</code></p>
+<p>For: <code>failing</code>, <code>flush-failing</code>, <code>merge-failing</code>, <code>write-queue</code>, <code>write-p99</code>, <code>write_error_ratio</code></p>
 <ol>
-<li>Read the server's lines: <code>GET /v1/logs?level=error</code> (a full disk, an
-   I/O error).</li>
+<li>Read the server's lines: <code>GET /v1/logs?level=error</code> on the server
+   itself (a full disk, an I/O error), or through a coordinator, every
+   copy's: <code>POST /v1/logs/query {"sql": "SELECT ts, node, message FROM logs WHERE level = 'error' ORDER BY ts DESC LIMIT 100"}</code>.</li>
 <li>A database that refuses writes (<code>failing</code>) on a primary: with
    <code>--failover-after-ms</code> it hands its shard over to a replica in sync by
    itself; without it, hand the primary over first (tier 3, <code>POST
@@ -253,7 +264,9 @@ servers outside Kubernetes, is for no alert.</p>
 <ol>
 <li>Read which copy and which segments: <code>GET /v1/health/fleet</code> and <code>GET
    /v1/events?kind=damaged</code>.</li>
-<li>Verify again (tier 1): <code>POST /v1/admin/verify</code>.</li>
+<li>Verify again (tier 1): <code>POST /v1/admin/verify</code>, which on a coordinator
+   has every shard's primary compare its replicas (one shard: <code>POST
+   /v1/admin/copies/verify {"url": "&lt;copy&gt;"}</code>).</li>
 <li>Replace the copy (tier 2): plan the repair and file it as a change
    request; never make the damaged copy the primary.</li>
 </ol>
@@ -261,7 +274,7 @@ servers outside Kubernetes, is for no alert.</p>
 <p>For: <code>primary-changed</code></p>
 <ol>
 <li>Read why: <code>GET /v1/events?kind=primary_changed,copy_down</code> and the old
-   primary's lines (<code>GET /v1/logs?q=&lt;copy name&gt;</code>).</li>
+   primary's lines (<code>POST /v1/logs/query {"sql": "SELECT ts, level, message FROM logs WHERE node = '&lt;copy name&gt;' ORDER BY ts DESC LIMIT 200"}</code>).</li>
 <li>Nothing to do when the old primary is back as a replica in sync; it
    resolves ten minutes after the last change. A handover asked by hand
    fires it too. Otherwise follow "A copy is down".</li>
@@ -292,7 +305,9 @@ operator keeps its pods running and has no restore step yet.</p>
    (<code>nightly.keys.json</code>) beside it, and answers the <code>slot_epoch</code> they are
    of. Copy the three files of each shard off the machine. A checkpoint
    of one copy is <code>POST /v1/admin/copies/checkpoint {"url": "...",
-   "name": "..."}</code>.</li>
+   "name": "..."}</code>. <code>GET /v1/admin/checkpoints</code> lists every copy's, each
+   shard's newest, and under <code>complete</code> the names on every shard under
+   one cluster map: the sets you can go back to.</li>
 <li>Read what you are going back to: each shard's checkpoint names its
    shard and epoch (<code>nightly.slots</code>), and <code>GET /v1/cluster</code> gives the
    epoch now (<code>slot_epoch</code>). Slots moved since the checkpoint when the

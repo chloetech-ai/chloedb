@@ -361,7 +361,7 @@ async fn run_serve(a: ServeArgs) {
             beir.push((d, c.to_ascii_lowercase()));
         }
     }
-    let r = chloedb_experiments::app::serve(server, listener, chloedb_experiments::app::Opts { token, beir }).await;
+    let r = chloedb_experiments::app::serve(server, listener, chloedb_experiments::app::Opts { token, beir, anthropic_key: std::env::var("ANTHROPIC_API_KEY").ok(), anthropic_base: std::env::var("ANTHROPIC_BASE_URL").ok() }).await;
     if let Some(l) = local {
         l.stop().await;
     }

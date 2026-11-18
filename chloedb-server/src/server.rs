@@ -777,6 +777,9 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     // The cluster's keys: a coordinator takes them from its shards before
     // it serves, and a coordinator or primary passes changes on.
     crate::keysync::start(&svc).await;
+    // OLU-201: its alert rules, routes, states and audit log, which its
+    // shards keep, likewise.
+    crate::kept::start(&svc).await;
     Ok(svc)
 }
 
@@ -1586,7 +1589,14 @@ pub fn spawn_watch(svc: &Arc<Service>) {
 
 /// Serves the HTTP API and UI, over TLS with `access.tls`.
 pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access) -> std::io::Result<()> {
-    serve_http_until(svc, listener, access, shutdown()).await
+    let last = svc.clone();
+    let stop = async move {
+        shutdown().await;
+        // OLU-201: a coordinator's shards keep what changed in its last
+        // second (a rule edited, its audit entry) before it stops.
+        crate::kept::last(&last).await;
+    };
+    serve_http_until(svc, listener, access, stop).await
 }
 
 /// [`serve_http`] until `stop` ends (rather than until SIGTERM or Ctrl-C

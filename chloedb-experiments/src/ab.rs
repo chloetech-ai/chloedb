@@ -45,15 +45,15 @@ use crate::users::{Population, Shape, User, ATTRIBUTES};
 /// searches with a satisfied click, searches with no click, clicks on the
 /// first row, seconds of dwell, milliseconds of the query, sessions ended.
 pub const SUMS: usize = 9;
-const N: usize = 0;
-const CLICKS: usize = 1;
-const SATISFIED: usize = 2;
-const SUCCESS: usize = 3;
-const ABANDON: usize = 4;
-const TOP: usize = 5;
-const DWELL: usize = 6;
-const LATENCY: usize = 7;
-const ENDS: usize = 8;
+pub const N: usize = 0;
+pub const CLICKS: usize = 1;
+pub const SATISFIED: usize = 2;
+pub const SUCCESS: usize = 3;
+pub const ABANDON: usize = 4;
+pub const TOP: usize = 5;
+pub const DWELL: usize = 6;
+pub const LATENCY: usize = 7;
+pub const ENDS: usize = 8;
 
 /// A metric: the ratio of two of a user's sums, over users.
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -69,9 +69,9 @@ pub struct Metric {
     pub guardrail: bool,
     pub margin: f64,
     #[serde(skip)]
-    num: usize,
+    pub num: usize,
     #[serde(skip)]
-    den: usize,
+    pub den: usize,
     /// Whether the click model gives its exact value.
     pub exact: bool,
     pub about: &'static str,
@@ -281,7 +281,7 @@ pub type Sums = [f64; SUMS];
 
 /// One impression's contribution to its user's sums; `go_on` whether the
 /// session went on after it.
-fn sums_of(imp: &Impression, latency: f64, go_on: bool) -> Sums {
+pub fn sums_of(imp: &Impression, latency: f64, go_on: bool) -> Sums {
     let clicks = imp.click.iter().filter(|&&c| c).count() as f64;
     let sat = imp.satisfied.iter().filter(|&&c| c).count() as f64;
     let mut s = [0.0; SUMS];
@@ -297,14 +297,14 @@ fn sums_of(imp: &Impression, latency: f64, go_on: bool) -> Sums {
     s
 }
 
-fn add(a: &mut Sums, b: &Sums) {
+pub fn add(a: &mut Sums, b: &Sums) {
     for k in 0..SUMS {
         a[k] += b[k];
     }
 }
 
 /// Whether the session goes on after impression `imp` of user `u`.
-fn goes_on(u: &User, imp: &Impression, request: &str) -> bool {
+pub fn goes_on(u: &User, imp: &Impression, request: &str) -> bool {
     let sat = imp.satisfied.iter().any(|&s| s);
     Rng::of(&format!("{request}/session")).uniform() < if sat { u.go_on.0 } else { u.go_on.1 }
 }
@@ -410,7 +410,7 @@ const MAX_EXPLORED: usize = 1_000_000;
 
 /// The exact sums of one search of user `u` under the lists `lists`
 /// (world `w`'s rows), over the site's queries as they are drawn.
-fn exact(w: &World, u: &User, lists: &[Vec<String>], qshares: &[f64]) -> Sums {
+pub fn exact(w: &World, u: &User, lists: &[Vec<String>], qshares: &[f64]) -> Sums {
     let mut s = [0.0; SUMS];
     s[N] = 1.0;
     let mut go_on = 0.0;
@@ -435,7 +435,7 @@ fn threads() -> usize {
 }
 
 /// Runs `f` on `0..n` split over the threads, in order.
-fn par<T: Send>(n: usize, f: impl Fn(std::ops::Range<usize>) -> T + Sync) -> Vec<T> {
+pub fn par<T: Send>(n: usize, f: impl Fn(std::ops::Range<usize>) -> T + Sync) -> Vec<T> {
     let t = threads();
     let per = n.div_ceil(t).max(1);
     std::thread::scope(|s| {
@@ -734,8 +734,8 @@ pub fn p_two(z: f64) -> f64 {
     (2.0 * (1.0 - norm_cdf(z.abs()))).clamp(0.0, 1.0)
 }
 
-const Z975: f64 = 1.959963984540054;
-const Z80: f64 = 0.8416212335729143;
+pub const Z975: f64 = 1.959963984540054;
+pub const Z80: f64 = 0.8416212335729143;
 
 /// Benjamini-Hochberg q values of `ps` (NaN stays NaN).
 pub fn bh(ps: &[f64]) -> Vec<f64> {
@@ -959,6 +959,14 @@ pub fn cells(d: &RunData, by: &[&str]) -> (Vec<(String, usize)>, Vec<usize>) {
 /// values, or a cross of two), with q values across the cells.
 pub fn cohort_table(d: &RunData, by: &[&str]) -> Value {
     let (cells, of) = cells(d, by);
+    // The users of each cell who searched (a live run's population is
+    // larger than the users it has seen).
+    let mut active = vec![0u64; cells.len()];
+    for (u, c) in of.iter().enumerate() {
+        if d.sums[u][N] > 0.0 {
+            active[*c] += 1;
+        }
+    }
     let mut out = serde_json::Map::new();
     for m in METRICS.iter() {
         let mut per_arm = Vec::new();
@@ -966,10 +974,10 @@ pub fn cohort_table(d: &RunData, by: &[&str]) -> Value {
             let mut rows: Vec<Value> = cells
                 .iter()
                 .enumerate()
-                .map(|(ci, (name, n))| {
+                .map(|(ci, (name, _))| {
                     let mut c = compare(d, &|u| of[u] == ci, a, m);
                     c["cell"] = json!(name);
-                    c["users"] = json!(n);
+                    c["users"] = json!(active[ci]);
                     c
                 })
                 .collect();

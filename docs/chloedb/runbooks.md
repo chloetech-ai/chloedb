@@ -73,15 +73,25 @@ For: `copy-down`, `copy-silent`, `under-replicated`, `shard-no-majority`, `copie
 
 1. Read which copy, since when, and what else happened: `GET
    /v1/health/fleet` (tool `health`), then `GET /v1/events?kind=copy_down,primary_changed`
-   and the copy's own lines, `GET /v1/logs?q=<copy name>`.
+   and the copy's own lines from the log stores, `POST /v1/logs/query
+   {"sql": "SELECT ts, level, message FROM logs WHERE node = '<copy name>' ORDER BY ts DESC LIMIT 200"}`
+   (on a coordinator it searches every copy's store; `GET /v1/logs` has
+   the coordinator's own lines only).
 2. A copy that restarts by itself (a pod killed for memory, a rollout):
    wait for it, `GET /v1/events?after=<id>&wait_s=30` answers as soon as
    its next event comes. Silence the alert meanwhile (tier 1, two hours at
    most for an agent): `POST /v1/alerts/copy-down/silence {"minutes": 30}`
    (tool `silence_alert`).
 3. A copy that does not come back (tier 2): replace it. `POST
-   /v1/admin/plan` with the copy left out plans the repair (Cluster: Plan
-   the repair, in the command center); file the plan as a change request.
+   /v1/admin/plan {"shards": [{"shard": <i>, "copies": [...]}]}`, the
+   gRPC URLs the shard keeps with the dead copy left out and its
+   replacement in, plans the repair (Cluster: Plan the repair, in the
+   command center); file the plan as a change request. A plan that adds a
+   server is applied with the cluster's token, which the coordinator
+   sends to it (403 `cluster_token_required` with the admin token or a
+   key): on machines of your own, a person runs `chloedb-server admin
+   --key "$CHLOEDB_CLUSTER_TOKEN" call POST /v1/admin/plan/apply @plan.json`
+   with the same body; on Kubernetes the operator adds copies itself.
 4. A shard with no majority takes no writes, and its copies cannot elect
    a primary. Its searches go on while a replica that is up serves reads
    (the shard's state is `no_writes`); when the copy left is its primary,
@@ -126,10 +136,11 @@ For: `disk-full`, `disk-critical`, `disk-filling`, `disk`
 
 ## Writes fail or queue
 
-For: `failing`, `flush-failing`, `merge-failing`, `write-queue`, `write-p99`
+For: `failing`, `flush-failing`, `merge-failing`, `write-queue`, `write-p99`, `write_error_ratio`
 
-1. Read the server's lines: `GET /v1/logs?level=error` (a full disk, an
-   I/O error).
+1. Read the server's lines: `GET /v1/logs?level=error` on the server
+   itself (a full disk, an I/O error), or through a coordinator, every
+   copy's: `POST /v1/logs/query {"sql": "SELECT ts, node, message FROM logs WHERE level = 'error' ORDER BY ts DESC LIMIT 100"}`.
 2. A database that refuses writes (`failing`) on a primary: with
    `--failover-after-ms` it hands its shard over to a replica in sync by
    itself; without it, hand the primary over first (tier 3, `POST
@@ -144,7 +155,9 @@ For: `damaged`
 
 1. Read which copy and which segments: `GET /v1/health/fleet` and `GET
    /v1/events?kind=damaged`.
-2. Verify again (tier 1): `POST /v1/admin/verify`.
+2. Verify again (tier 1): `POST /v1/admin/verify`, which on a coordinator
+   has every shard's primary compare its replicas (one shard: `POST
+   /v1/admin/copies/verify {"url": "<copy>"}`).
 3. Replace the copy (tier 2): plan the repair and file it as a change
    request; never make the damaged copy the primary.
 
@@ -153,7 +166,7 @@ For: `damaged`
 For: `primary-changed`
 
 1. Read why: `GET /v1/events?kind=primary_changed,copy_down` and the old
-   primary's lines (`GET /v1/logs?q=<copy name>`).
+   primary's lines (`POST /v1/logs/query {"sql": "SELECT ts, level, message FROM logs WHERE node = '<copy name>' ORDER BY ts DESC LIMIT 200"}`).
 2. Nothing to do when the old primary is back as a replica in sync; it
    resolves ten minutes after the last change. A handover asked by hand
    fires it too. Otherwise follow "A copy is down".
@@ -187,7 +200,9 @@ operator keeps its pods running and has no restore step yet.
    (`nightly.keys.json`) beside it, and answers the `slot_epoch` they are
    of. Copy the three files of each shard off the machine. A checkpoint
    of one copy is `POST /v1/admin/copies/checkpoint {"url": "...",
-   "name": "..."}`.
+   "name": "..."}`. `GET /v1/admin/checkpoints` lists every copy's, each
+   shard's newest, and under `complete` the names on every shard under
+   one cluster map: the sets you can go back to.
 2. Read what you are going back to: each shard's checkpoint names its
    shard and epoch (`nightly.slots`), and `GET /v1/cluster` gives the
    epoch now (`slot_epoch`). Slots moved since the checkpoint when the

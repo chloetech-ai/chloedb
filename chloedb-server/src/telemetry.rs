@@ -1587,6 +1587,9 @@ pub struct Sample {
     pub writes: u64,
     pub written_docs: u64,
     pub write_errors: u64,
+    /// Of those, the server's own failures (5xx: a shard without a
+    /// primary, a full disk), which the error ratio counts (OLU-203).
+    pub write_failures: u64,
     pub write_hist: Vec<u64>,
     pub slow: u64,
     /// The process's CPU time, in seconds.
@@ -1663,9 +1666,11 @@ pub fn load_of(points: &[Arc<Json>]) -> Option<(f64, f64, Option<f64>, Option<f6
 /// The rates between samples `a` and `b`, and `b`'s gauges. Counts of
 /// the interval: `queries` ended, `query_errors` (failures on the
 /// server's side: errors and the server's deadline), `client_errors` and
-/// `client_deadlines`. `error_ratio` (server failures over queries) and
-/// `availability` (one minus it) are left out when no query ended: no
-/// query is no data, not none failing. No quantile exceeds `max_ms`, the
+/// `client_deadlines`; `writes` ended and `write_failures`, those of them
+/// that failed on the server's side. `error_ratio` (server failures over
+/// queries) and `availability` (one minus it) are left out when no query
+/// ended, and `write_error_ratio` when no write did: none is no data, not
+/// none failing. No quantile exceeds `max_ms`, the
 /// slowest query of the interval.
 fn point(a: &Sample, b: &Sample) -> Json {
     let secs = match (a.at, b.at) {
@@ -1683,6 +1688,9 @@ fn point(a: &Sample, b: &Sample) -> Json {
         b.by_kind.iter().map(|(k, &n)| (k.to_string(), json!(rate(a.by_kind.get(k).copied().unwrap_or(0), n)))).filter(|(_, v)| v.as_f64().unwrap_or(0.0) > 0.0).collect();
     let ended = b.queries.saturating_sub(a.queries);
     let failed = b.query_errors.saturating_sub(a.query_errors);
+    // Writes ended (applied, or failed on the server's side) and failed.
+    let write_failed = b.write_failures.saturating_sub(a.write_failures);
+    let writes_ended = b.writes.saturating_sub(a.writes) + write_failed;
     let mut p = json!({
         "t": b.ts_ms,
         "secs": secs,
@@ -1702,6 +1710,7 @@ fn point(a: &Sample, b: &Sample) -> Json {
         "http_s": rate(a.http, b.http), "http_4xx_s": rate(a.http_4xx, b.http_4xx), "http_5xx_s": rate(a.http_5xx, b.http_5xx),
         "writes_s": rate(a.writes, b.writes), "rows_s": rate(a.written_docs, b.written_docs), "write_errors_s": rate(a.write_errors, b.write_errors),
         "write_p99_ms": ms(&wh, 0.99, None),
+        "writes": writes_ended, "write_failures": write_failed,
         "slow_s": rate(a.slow, b.slow),
         "cpu": ((b.cpu_s - a.cpu_s) / secs).max(0.0),
         "alloc_bytes_s": rate(a.alloc_bytes, b.alloc_bytes), "allocs_s": rate(a.allocs, b.allocs),
@@ -1712,6 +1721,10 @@ fn point(a: &Sample, b: &Sample) -> Json {
         let ratio = failed as f64 / ended as f64;
         p["error_ratio"] = json!(ratio);
         p["availability"] = json!(1.0 - ratio);
+    }
+    // OLU-203: writes' own, beside searches' (none without a write ended).
+    if writes_ended > 0 {
+        p["write_error_ratio"] = json!(write_failed as f64 / writes_ended as f64);
     }
     if let Some(m) = max_s {
         p["max_ms"] = json!(m * 1e3);
@@ -1811,6 +1824,18 @@ mod tests {
     /// CCW-14: root's reserved blocks are not counted as used: 40 GB used
     /// and 53 GB available on a 100 GB disk with 7 GB reserved is 43%
     /// used, as df says, not 47%.
+    /// OLU-203: a point counts the writes ended, those that failed on the
+    /// server's side, and their ratio; with no write, no ratio.
+    #[test]
+    fn a_point_counts_the_writes_that_failed() {
+        let a = Sample { ts_ms: 0, ..Sample::default() };
+        let b = Sample { ts_ms: 2000, writes: 8, write_errors: 3, write_failures: 2, ..Sample::default() };
+        let p = point(&a, &b);
+        assert_eq!((p["writes"].as_u64(), p["write_failures"].as_u64(), p["write_error_ratio"].as_f64()), (Some(10), Some(2), Some(0.2)), "{p}");
+        let p = point(&a, &Sample { ts_ms: 2000, ..Sample::default() });
+        assert_eq!((p["writes"].as_u64(), p.get("write_error_ratio")), (Some(0), None), "{p}");
+    }
+
     #[test]
     fn disk_used_as_df_counts_it() {
         let gb = 1u64 << 30;
