@@ -1408,6 +1408,12 @@ impl Daemon {
                 };
                 // A question how to build something plans nothing (ANA-308).
                 let (drafts, asked) = crate::distill::not_planned(d.drafts, prompt, !files.is_empty());
+                // The model never sees a private aside; a note that says one
+                // again all the same (from a note it knew, from a reply) is
+                // not kept (WEI-301).
+                let n_drafts = drafts.len();
+                let drafts: Vec<Draft> = drafts.into_iter().filter(|x| !crate::private::holds_aside(&x.text) && self.unsaid(sid, turn, &x.text) == x.text).collect();
+                let aside_dropped = n_drafts - drafts.len();
                 let promoted = crate::repeats::promote(drafts, &checked.again, sid, &shown, &before);
                 // Near-copies of what is noted (other than what they replace,
                 // or repeat) add nothing.
@@ -1495,7 +1501,7 @@ impl Daemon {
                 let repeated = crate::repeats::supersede_repeated(&self.store, &stored);
                 self.store.warm();
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "items": n, "kept": kept,
-                    "replaced": replaced, "done": done, "retired": retired, "stated": stated, "asked_not_planned": asked, "said_again": checked.again.len(), "said_again_dropped": checked.dropped.len(), "repeated": repeated, "cost_usd": d.cost_usd + checked.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
+                    "replaced": replaced, "done": done, "retired": retired, "stated": stated, "asked_not_planned": asked, "aside_dropped": aside_dropped, "said_again": checked.again.len(), "said_again_dropped": checked.dropped.len(), "repeated": repeated, "cost_usd": d.cost_usd + checked.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
             }
             Err(e) => {
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "error": e.to_string()}));

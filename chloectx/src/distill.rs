@@ -463,4 +463,20 @@ mod tests {
         let p = prompt_for("Ship it tomorrow.", "OK.", &[], &[], 1_710_493_200);
         assert!(p.contains("It took place on 2024-03-15"), "{p}");
     }
+
+    /// JONAH-303 and ANA-308: a rule for this turn is the task's note, and a
+    /// question how to build something plans nothing.
+    #[test]
+    fn a_turns_instruction_and_a_question_make_no_rule_or_plan() {
+        let request = "Ground rules: always use ruff for linting. Sketch the export command; don't write tests and don't commit yet.";
+        let d = parse("{\"kind\": \"rule\", \"text\": \"Don't write tests and don't commit yet.\", \"said_by\": \"requester\"}\n{\"kind\": \"rule\", \"text\": \"Use ruff for linting.\", \"said_by\": \"requester\"}");
+        let a = attribute(d.drafts, request, &Exchange::default());
+        assert_eq!(a.iter().map(|x| (x.kind, x.tag.as_str())).collect::<Vec<_>>(), [(Kind::Note, TASK_TAG), (Kind::Preference, "distilled")], "{a:?}");
+        let plan = parse("{\"kind\": \"requirement\", \"text\": \"Add rate limiting to the public API.\"}\n{\"kind\": \"fact\", \"text\": \"The gateway runs middleware before the routes.\"}").drafts;
+        let (kept, left) = not_planned(plan.clone(), "We may want rate limiting on the public API. How should I add it?", false);
+        assert_eq!((kept.len(), left), (1, 1));
+        assert_eq!(kept[0].kind, Kind::Fact);
+        assert_eq!(not_planned(plan.clone(), "Add rate limiting to the public API.", false).1, 0);
+        assert_eq!(not_planned(plan, "How should I add it?", true).1, 0, "a turn that changed files did work");
+    }
 }

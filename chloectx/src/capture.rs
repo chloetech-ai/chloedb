@@ -128,8 +128,10 @@ pub fn preference_sentences(prompt: &str) -> Vec<String> {
     });
     let mut out = Vec::new();
     for s in sentences(prompt) {
-        // "Please don't commit yet" says how to do this turn (JONAH-303).
-        if s.len() >= 12 && s.len() <= 400 && re.is_match(s) && !for_this_turn(s) {
+        // "Please don't commit yet" says how to do this turn (JONAH-303):
+        // what is left of the sentence without it must still read as a rule.
+        let rest: Vec<&str> = clauses(s).into_iter().filter(|c| !for_this_turn(c)).collect();
+        if s.len() >= 12 && s.len() <= 400 && re.is_match(&rest.join(", ")) {
             out.push(s.to_string());
         }
     }
@@ -1046,5 +1048,42 @@ mod tests {
         assert!(!task_instruction("Two things from ops: staging deploys happen only on Tuesdays and Thursdays.", "Staging deploys happen only on Tuesdays and Thursdays."));
         assert!(!task_instruction("Add a refunds table.", "Money is kept as integer cents."));
         assert_eq!(clauses("Fix it, but don't touch web/ and keep the diff small"), ["Fix it", "but don't touch web/", "and keep the diff small"]);
+    }
+
+    /// JONAH-303: how to do this turn is not a rule, said once or again.
+    #[test]
+    fn an_instruction_for_this_turn_is_not_a_rule() {
+        for t in ["Don't write tests and don't commit yet.", "No code changes, just answer.", "no code changes", "Just answer: why is it slow?", "Don't push for now.", "No tests this time."] {
+            assert!(for_this_turn(t), "{t}");
+        }
+        for t in ["Always run ruff before committing.", "Never commit generated files.", "Don't write tests that hit the network.", "Use tabs.", "Money is kept as integer cents."] {
+            assert!(!for_this_turn(t), "{t}");
+        }
+        assert!(preference_sentences("Sketch the export command. Please don't commit yet.").is_empty());
+        assert!(preference_sentences("No code changes, just answer: why is the export slow?").is_empty());
+        // A ground rule said with one is still one.
+        assert_eq!(preference_sentences("From now on, always run ruff before committing, but don't commit yet."), ["From now on, always run ruff before committing, but don't commit yet"]);
+        let r = "Ground rules for this repo: always use ruff for linting. Sketch the export command; don't write tests and don't commit yet.";
+        assert!(!standing_rule(r, "", "Don't write tests and don't commit yet."));
+    }
+
+    /// ANA-308: a question how to build something asks for advice.
+    #[test]
+    fn a_question_how_to_do_it_asks_for_no_work() {
+        for q in ["I want a toggle for the new PDF renderer. How should I add it?", "What's the best way to cache the rates?", "Should we split the billing module?", "We may want rate limiting one day. Any ideas?"] {
+            assert!(asks_how(q), "{q}");
+        }
+        for q in ["Add a toggle for the PDF renderer. How should I test it?", "How should I add it? Then go ahead and build it.", "Can you add rate limiting?", "Add rate limiting to the public API.", "How does the cache work?"] {
+            assert!(!asks_how(q), "{q}");
+        }
+    }
+
+    /// JONAH-304: a decision holds what was decided, not whether it is built.
+    #[test]
+    fn a_decision_loses_its_status() {
+        assert_eq!(without_status("The --json flag prints one object per line. Not implemented yet; planned for a later session."), "The --json flag prints one object per line.");
+        assert_eq!(without_status("Retries back off exponentially, not implemented yet."), "Retries back off exponentially.");
+        assert_eq!(without_status("Storage stays JSON because admins edit the files by hand."), "Storage stays JSON because admins edit the files by hand.");
+        assert_eq!(without_status("Not implemented yet."), "Not implemented yet.", "nothing would be left");
     }
 }
