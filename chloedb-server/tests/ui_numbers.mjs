@@ -422,5 +422,63 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.ok(core.checkpointNameProblem("x".repeat(201)));
 }
 
+// PRIYA-205: the relevance lab's judgments in and out, its gain and its statistics.
+{
+  const rel = await import(new URL("views/relevance.js", app));
+  // TREC's four columns and BEIR's three with a header; grades into 0..3.
+  const trec = rel.parseQrels("1 0 d1 2\n1 0 d2 0\n2 0 d3 4\n2 0 d4 -1\n");
+  assert.deepEqual(trec.qrels, { 1: { d1: 2, d2: 0 }, 2: { d3: 3, d4: 0 } });
+  assert.equal(trec.clamped, 2);
+  const beir = rel.parseQrels("query-id\tcorpus-id\tscore\nq7\tdocA\t1\nq7\tdocB\t2\n");
+  assert.deepEqual(beir.qrels, { q7: { docA: 1, docB: 2 } });
+  assert.equal(beir.lines, 2);
+  // Queries as TSV and as BEIR's JSON lines.
+  assert.deepEqual(rel.parseQueries("1\tquiet charger\n2\tcovid 19 masks\n"), { 1: "quiet charger", 2: "covid 19 masks" });
+  assert.deepEqual(rel.parseQueries('{"_id": "q7", "text": "Vitamin D and bones", "metadata": {}}\n'), { q7: "Vitamin D and bones" });
+  // Which file is which: by name, else by its lines.
+  assert.equal(rel.fileKind("test.tsv", "q7\tdocA\t1\nq7\tdocB\t2\n"), "qrels");
+  assert.equal(rel.fileKind("queries.jsonl", ""), "queries");
+  assert.equal(rel.fileKind("x.txt", '{"_id": "1", "text": "a"}'), "queries");
+  assert.equal(rel.fileKind("x.txt", "1\tquiet charger for a phone\n2\twhy does the linker fail\n"), "queries");
+  // Into the lab's grades by query text, lower-cased, with the qid kept.
+  const into = rel.gradesFromQrels({ q7: { docA: 1 }, q9: { docC: 2 } }, { q7: "Vitamin D and bones" });
+  assert.deepEqual(into.grades, { "vitamin d and bones": { docA: 1 }, q9: { docC: 2 } });
+  assert.deepEqual(into.qids, { "vitamin d and bones": "q7", q9: "q9" });
+  assert.equal(into.unnamed, 1);
+  // Out as TREC files: the qid it came with, else a new one; and back in again.
+  const out = rel.toTrec({ "vitamin d and bones": { docA: 1, "a b": 2 }, "quiet charger": { k2: 3, k1: 0 }, empty: {} }, { "vitamin d and bones": "q7" });
+  assert.equal(out.qrels, "q1 0 k1 0\nq1 0 k2 3\nq7 0 docA 1\n");
+  assert.equal(out.queries, "q1\tquiet charger\nq7\tvitamin d and bones\n");
+  assert.equal(out.skipped, 1);
+  const back = rel.gradesFromQrels(rel.parseQrels(out.qrels).qrels, rel.parseQueries(out.queries));
+  assert.deepEqual(back.grades, { "quiet charger": { k1: 0, k2: 3 }, "vitamin d and bones": { docA: 1 } });
+  // nDCG's gain: exponential by default, linear as trec_eval; the same on 0/1 grades.
+  const g = { a: 3, b: 1, c: 0 };
+  const exp = rel.measures(["b", "a"], g, 10).ndcg, lin = rel.measures(["b", "a"], g, 10, "linear").ndcg;
+  assert.ok(Math.abs(exp - (1 + 7 / Math.log2(3)) / (7 + 1 / Math.log2(3))) < 1e-12, String(exp));
+  assert.ok(Math.abs(lin - (1 + 3 / Math.log2(3)) / (3 + 1 / Math.log2(3))) < 1e-12, String(lin));
+  assert.equal(rel.measures(["b", "a"], { a: 1, b: 0 }, 10).ndcg, rel.measures(["b", "a"], { a: 1, b: 0 }, 10, "linear").ndcg);
+  // A held-out half: the same each time, half and half, nothing in both.
+  const qs = Array.from({ length: 21 }, (_, i) => `query ${i}`);
+  const h1 = rel.halves(qs), h2 = rel.halves([...qs].reverse());
+  assert.deepEqual(h1, h2);
+  assert.equal(h1.fit.length, 11); assert.equal(h1.held.length, 10);
+  assert.equal(new Set([...h1.fit, ...h1.held]).size, 21);
+  assert.deepEqual(rel.halves(["a", "b", "c"]), { fit: ["a", "b", "c"], held: [] });
+  // The paired randomization test: exact for a few queries, seeded for more.
+  const five = rel.pairedTest([0, 0, 0, 0, 0], [1, 1, 1, 1, 1]);
+  assert.equal(five.p, 2 / 32); assert.equal(five.better, 5); assert.equal(five.mean, 1);
+  assert.equal(rel.pairedTest([0.5, 0.5], [0.5, 0.5]).p, 1);
+  assert.equal(rel.pairedTest([0.2, null, 0.4], [0.3, 0.9, 0.4]).n, 2);
+  const a = Array.from({ length: 40 }, (_, i) => 0.5 + 0.01 * (i % 7)), b = a.map((x, i) => x + (i % 5 === 0 ? -0.01 : 0.03));
+  const big = rel.pairedTest(a, b);
+  assert.ok(big.p < 0.001, String(big.p));
+  assert.equal(rel.pairedTest(a, b).p, big.p);
+  const noise = rel.pairedTest(a, a.map((x, i) => x + (i % 2 ? 0.02 : -0.02)));
+  assert.ok(noise.p > 0.5, String(noise.p));
+  assert.equal(rel.fmtP(0.0001), "p < 0.001");
+  assert.equal(rel.fmtP(0.0421), "p = 0.042");
+}
+
 console.log("ok");
 process.exit(0);

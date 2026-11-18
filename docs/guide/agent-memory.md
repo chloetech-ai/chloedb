@@ -59,7 +59,7 @@ class Memory:
         at most two from any session."""
         return list(self.db.query("""
             SELECT id, session, role, text FROM turns
-            ORDER BY rrf(bm25(text, :q), similarity(emb, :v))
+            ORDER BY rrf(bm25(text, :q, syntax => 'plain'), similarity(emb, :v))
                      * decay(at, :now, 2592000) DESC  -- halves every 30 days
             MAX 2 PER session
             LIMIT :k
@@ -69,14 +69,14 @@ class Memory:
         """The facts closest to a message."""
         return list(self.db.query("""
             SELECT id, value FROM facts
-            ORDER BY rrf(bm25(value, :q), similarity(emb, :v)) DESC LIMIT :k
+            ORDER BY rrf(bm25(value, :q, syntax => 'plain'), similarity(emb, :v)) DESC LIMIT :k
         """, q=message, v={"embed": message}, k=k))
 
     def close(self):
         self.db.close()
 ```
 
-`recall` ranks turns by a fusion of BM25 and vector similarity, multiplies it by [`decay`](../chloedb/query-language.md#decayfield-origin-scale--closeness-to-a-value), which halves a turn's weight for every 30 days of age (2,592,000 seconds), and keeps at most two turns of a session with `MAX 2 PER session`, so one long session does not crowd out the others. Facts need no history: `upsert` replaces a key's row, so a fact is always its latest value.
+`recall` ranks turns by a fusion of BM25 and vector similarity (BM25 with `syntax => 'plain'`, which reads a message as words rather than as a search box's `-word` and `+word`), multiplies it by [`decay`](../chloedb/query-language.md#decayfield-origin-scale--closeness-to-a-value), which halves a turn's weight for every 30 days of age (2,592,000 seconds), and keeps at most two turns of a session with `MAX 2 PER session`, so one long session does not crowd out the others. Facts need no history: `upsert` replaces a key's row, so a fact is always its latest value.
 
 ## Remember, then recall
 

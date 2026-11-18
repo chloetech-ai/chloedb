@@ -2599,7 +2599,10 @@ impl Service {
     /// long, stopped at the request's deadline (`timeout_ms`, 0: the
     /// server's) or once the caller goes, within `budget`.
     pub async fn plan_for_explain(self: &Arc<Self>, sql: &str, params: &Params, timeout_ms: u64, budget: chloedb::query::budget::Budget) -> Result<Plan, ApiError> {
-        self.plan_read(sql, params, Instant::now() + self.timeout_of(timeout_ms), budget).await
+        // Bound as the query is, with the texts it gives where vectors go
+        // embedded (`similarity(emb, :q)` with :q text): what runs explains
+        // (persona study PRIYA-202).
+        self.bound_read(sql, params, self.timeout_of(timeout_ms), budget).await
     }
 
     /// Query `sql` written out with the rank profile it ranks by

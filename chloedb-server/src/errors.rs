@@ -63,6 +63,7 @@ pub const CODES: &[Code] = &[
     c("column_not_found", false, "describe the table (GET /v1/schema?table=..., or the describe_table tool) for its fields", "schemas"),
     c("query_invalid", false, "the statement is refused as the error says (a word that does not parse, or a table, column or value it does not bind): POST /v1/sql/check, or the check_sql tool, checks one without running it", "http-api"),
     c("schema_invalid", false, "the schema is refused as the error says (check_sql, or POST /v1/schema/check, checks one without making it)", "schemas"),
+    c("value_invalid", false, "a row's value does not fit its field, as the error says (which row, field and value): fix the value; the schema is fine as it is", "schemas"),
     c("idempotency_conflict", false, "this idempotency key was used for another request: send a new key", "writes-from-many-clients"),
     c("contained", true, "a contain rule limits or refuses these queries for a while (GET /v1/admin/contain); wait, or ask an operator", "who-sends-the-queries-and-containing-them"),
     c("overloaded", true, "the server is busy: send it again after Retry-After seconds", "limits"),
@@ -111,6 +112,9 @@ pub fn classify(status: u16, message: &str) -> &'static str {
         _ if has("no such table") || has("unknown table") => "table_not_found",
         _ if has("no such column") || has("unknown field") || has("no such field") => "column_not_found",
         400 if m.starts_with("query error") || has("parse error") => "query_invalid",
+        // A row's value that its field refuses, not the schema (persona
+        // study PRIYA-203).
+        400 if m.starts_with("schema error") && (has("bad value for") || has("of the vector is")) => "value_invalid",
         400 if m.starts_with("schema error") => "schema_invalid",
         400 => "bad_request",
         404 => "not_found",
@@ -209,6 +213,11 @@ mod tests {
         assert_eq!(classify(400, "query error: no such column: price"), "column_not_found");
         assert_eq!(classify(403, "POST /v1/sql needs a key with the admin scope; \"bot\" has read"), "scope_refused");
         assert_eq!(classify(429, "refused by contain rule c1"), "contained");
+        // A row's value is not the schema (PRIYA-203).
+        let nan = "schema error: row 1: schema error: bad value for v: element 1 of the vector is NaN, an infinity or null (JSON writes NaN and infinities as null): a vector's elements are finite numbers";
+        assert_eq!(classify(400, nan), "value_invalid");
+        assert_eq!(classify(400, "schema error: bad value for field e: element 1 of the vector is not a finite 32-bit float (from -3.4e38 to 3.4e38)"), "value_invalid");
+        assert_eq!(classify(400, "schema error: a field twice"), "schema_invalid");
     }
 
     /// UIA-2: a query past the window parses and binds; its hint says to
