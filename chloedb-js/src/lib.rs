@@ -74,11 +74,13 @@ fn to_json(v: &Value) -> Json {
     }
 }
 
-/// A query's answer as chloedb-server's /v1/query gives it: columns, rows
-/// (lists), keys, scores and stats.
+/// A query's answer as chloedb-server's /v1/query gives it: columns, their
+/// types (from their values, [`ResultSet::types`]), rows (lists), keys,
+/// scores and stats.
 fn result_json(rs: &ResultSet) -> Json {
     json!({
         "columns": rs.columns,
+        "types": rs.types(),
         "rows": rs.rows.iter().map(|r| r.iter().map(to_json).collect::<Vec<_>>()).collect::<Vec<_>>(),
         "keys": rs.keys.iter().map(to_json).collect::<Vec<_>>(),
         "scores": rs.scores.iter().map(|s| if s.is_finite() { json!(s) } else { Json::Null }).collect::<Vec<_>>(),
@@ -160,11 +162,26 @@ fn param(db: &Db, j: &Json, from: Option<&str>) -> Result<Value> {
 /// the table its `FROM` names first (when the database has it), else the
 /// first table.
 fn params(db: &Db, j: Option<&Json>, sql: &str) -> Result<Params> {
-    let from = match j {
-        Some(Json::Object(m)) if !m.is_empty() => chloedb::query::tables::read_by_sql(sql).into_iter().find(|t| db.storage().table(t).is_some()),
-        _ => None,
-    };
-    params_in(db, j, from.as_deref())
+    let Some(Json::Object(m)) = j.filter(|j| j.as_object().is_some_and(|m| !m.is_empty())) else { return params_in(db, j, None) };
+    let read = chloedb::query::tables::read_by_sql(sql);
+    let from = read.iter().find(|t| db.storage().table(t).is_some()).cloned();
+    // A `{"embed"}` or `{"vector_of"}` that names no field is the field the
+    // statement ranks it against (`similarity(bge, :v)`), of the table of
+    // the statement's that has it.
+    let used = chloedb::query::tables::param_fields(sql);
+    let mut m = m.clone();
+    for (k, v) in m.iter_mut() {
+        let (Json::Object(o), Some(f)) = (v, used.get(k.trim_start_matches([':', '$', '@']))) else { continue };
+        if (o.contains_key("embed") || o.contains_key("vector_of")) && !o.contains_key("field") {
+            o.insert("field".into(), Json::String(f.clone()));
+            if !o.contains_key("table") {
+                if let Some(t) = read.iter().find(|t| db.storage().table(t).is_some_and(|s| s.field(f).is_some())) {
+                    o.insert("table".into(), Json::String(t.clone()));
+                }
+            }
+        }
+    }
+    params_in(db, Some(&Json::Object(m)), from.as_deref())
 }
 
 /// The parameters, those that name no table reading `from` (else the first table).

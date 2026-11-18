@@ -1158,6 +1158,9 @@ impl<'a> Lower<'a, '_> {
                 _ if ta == tb => (a, b),
                 (DataType::Null, t) => (cast(a, t.clone()), b),
                 (t, DataType::Null) => (a, cast(b, t.clone())),
+                // INT and FLOAT make FLOAT, the wider type ([`crate::query::ops`]'s widen).
+                (DataType::Int64, DataType::Float64) => (cast(a, DataType::Float64), b),
+                (DataType::Float64, DataType::Int64) => (a, cast(b, DataType::Float64)),
                 _ => return no(format!("{} of {ta} and {tb}", op.name())),
             };
             exprs[0].push(a.alias(n));
