@@ -9,6 +9,49 @@ promises about the file format, the shard protocol and the old names.
 Every crate and package carries the release's version; between releases
 changes collect under "Unreleased".
 
+## Unreleased
+
+### ChloeCtx
+
+- **A question asked in passing costs ChloeCtx nothing, and a second
+  session that starts with it reads its prompt from the cache** (persona
+  study round 2, JONAH-202). Claude Code sends every hook's text after the
+  first prompt, in one block the prompt cache serves only when a session
+  starts with exactly what an earlier one sent. A question like "What is 17
+  times 3?" was given where the last session left off and 10 to 12
+  unrelated records (recall counted the earlier sessions' copies of the
+  same question as evidence), and its distillation changed the next
+  briefing. Records of a turn that asked the same question are no longer
+  evidence. A question that stands on its own (no "we", no file, code or
+  earlier work, no choice to weigh and no how-to) gets nothing when nothing
+  is recalled for it: where the last session left off waits for the next
+  prompt, and when it is answered in a few lines without a tool it is not
+  distilled and is kept as an aside, which a search finds and recall does
+  not offer by itself. Measured with Haiku, the second such session wrote 0
+  tokens to the cache and cost $0.00024, against $0.0017.
+
+- **The inspector forgets from a button, and keeps its internals behind
+  Advanced** (JONAH-206). Each knowledge card and record has Forget…,
+  which lists what would go (records, lines of context, log lines and
+  receipts) before Forget deletes it, and the Knowledge tab forgets by
+  words. The Live feed says what happened in plain words. An Advanced
+  switch, off by default, holds Table, Graph, Vectors, Query, Storage, ids
+  and the gate's evidence. Enter in Find opens the first suggestion, or
+  searches memory when no file or name matches.
+
+- **Upgrade advice says what `chloectx upgrade` will do** (JONAH-207,
+  ANA-206). doctor, `upgrade --check`, the session notice and the inspector
+  said a newer version "installs" for a build that `upgrade` refuses (a
+  detached HEAD, no upstream, commits of its own, or a build not on the
+  upstream's history). They now say why it would stop, `upgrade` stops
+  before pulling with the same words, and the inspector offers Update only
+  when it would work (a prebuilt binary shows the installer's command).
+
+- `chloectx backup` makes missing folders and writes the backup private
+  (0700 and 0600) as the store is (ANA-208), and `chloectx receipts
+  --session` takes the first characters of a session id, as listings show
+  them (ANA-209).
+
 ## 0.3.8
 
 Durable one-row writes about 2.6 times as fast, typo and short substring
