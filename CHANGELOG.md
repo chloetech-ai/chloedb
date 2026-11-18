@@ -11,6 +11,26 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **ChloeCtx keeps a private aside nowhere, and only the user's words
+  make rules** (persona study round 3, WEI-301, JONAH-301, LENA-310,
+  JONAH-303, JONAH-304, ANA-308, and WEI-304's restated aside). A part
+  of a prompt marked private ("off the record, please don't save this
+  anywhere: ...", "keep that name private") was stored word for word, became a rule every later session
+  was told and was synced to the team, while Claude said it was not saved.
+  It is cut before anything is stored, distilled or synced, with
+  `[private aside left out]` in its place; the session is told what was
+  left out, the sentences of the session's replies that repeat it ("I
+  didn't save your interview note") are cut, and a prompt
+  private as a whole keeps nothing of its turn. Rules a store took from
+  asides before are retired when the daemon starts, and sync sends old
+  records without them. A rule an agent keeps (with `said_by: assistant`,
+  or as the user's in words the user never wrote) is its suggestion,
+  briefed apart from the user's rules. How to do one turn ("don't commit
+  yet", "no code changes") is not a rule, however often it is said; a
+  question how to build something is not planned work; a remembered note
+  replaces the session's copy of it, and a decision does not keep "not
+  implemented yet". The command center's overview lists the user's rules,
+  not a prompt's raw sentences ([what is kept](docs/chloectx/index.md#where-it-keeps-what-it-stores)).
 - **Blends: one list from several queries, after each has ranked its own.**
   `CREATE BLEND name AS SOURCES (stories AS (SELECT ...), comments AS
   (SELECT ...))` with calibrated heads (`HEADS (relevance CALIBRATE tmm,

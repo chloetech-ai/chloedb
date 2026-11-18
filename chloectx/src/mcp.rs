@@ -17,7 +17,9 @@ memory_ask is the way to answer a question about earlier work (what was decided,
 memory_search is one quick hybrid search. \
 memory_timeline shows what happened around a record id. memory_sql answers structured questions (counts, by file, by kind, by time). \
 memory_remember stores a decision, preference, fact or open task worth keeping beyond this session, ideally one sentence that will make sense later. \
-memory_forget deletes for good what must not be kept: pass the fact's distinctive words as text, and every record that holds them goes, rather than the ids a search found.";
+memory_forget deletes for good what must not be kept: pass the fact's distinctive words as text, and every record that holds them goes, rather than the ids a search found. \
+What is kept: every prompt, reply and tool call of a session as it happens (secrets redacted), and the notes written from them. A part of a prompt the user marks private (\"off the record\", \"don't save this\", \"keep that private\") is left out, and the prompt's context says so when it is; anything else the user wants gone, memory_forget deletes. So never tell the user that something they wrote was not saved unless ChloeCtx said it left it out. \
+A preference is the user's rule only when the user stated it: one you keep with said_by: user must be in the user's words of this session, and one of your own (said_by: assistant) is kept as your suggestion, which later sessions see apart from the user's rules.";
 
 fn tools() -> Json {
     json!([
@@ -56,7 +58,7 @@ fn tools() -> Json {
         },
         {
             "name": "memory_remember",
-            "description": "Store a durable decision, preference, fact, open task or note for future sessions. Use a self-contained sentence (what, why, where). Say who stated it with said_by: user when the user said or decided it, assistant when it is your own finding or choice. Use supersedes with an older record id when this replaces it: that record is then marked superseded (an id that is not in memory is refused, and nothing is stored).",
+            "description": "Store a durable decision, preference, fact, open task or note for future sessions. Use a self-contained sentence (what, why, where). Say who stated it with said_by: user when the user said or decided it, assistant when it is your own finding or choice. A preference is a rule of the user's only when the user's messages in this session say it; otherwise it is kept as your suggestion, shown apart from the user's rules. Use supersedes with an older record id when this replaces it: that record is then marked superseded (an id that is not in memory is refused, and nothing is stored).",
             "inputSchema": {"type": "object", "properties": {
                 "kind": {"type": "string", "enum": ["decision", "preference", "fact", "todo", "note"]},
                 "text": {"type": "string", "minLength": 1},
