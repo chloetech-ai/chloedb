@@ -700,7 +700,9 @@ pub fn of_same_question(r: &Record, terms: &HashSet<String>) -> bool {
 
 /// Whether a prompt is a question that stands on its own: it does not
 /// refer to earlier work, to the project ("we", "here", a file or a name
-/// in code) or to where the work stands. When nothing is recalled for it,
+/// in code) or to where the work stands, and does not weigh a choice or
+/// ask how to do something ("How should payment retries back off?" is a
+/// decision in the making, whatever else it names). When nothing is recalled for it,
 /// ChloeCtx adds nothing to it (the session's tail waits for the next
 /// prompt), so a session that starts with the same question as the last
 /// one sends the same first request, which the prompt cache serves
@@ -709,7 +711,7 @@ pub fn stands_alone(prompt: &str) -> bool {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| {
         regex::Regex::new(
-            r"(?i)\b(we|we'(?:re|ve|ll|d)|our|ours|us|let's|here|this (?:project|repo|repository|code|codebase|branch|file|function|module|change|test|bug)|continue|next|left off|status|progress|resume|pick (?:it )?up|carry on|keep going|go on|so far|todo|tasks?|plan)\b|`|\w[_/]\w|::|\b[a-z]\w*\.[a-z]{1,4}\b",
+            r"(?i)\b(we|we'(?:re|ve|ll|d)|our|ours|us|let's|here|this (?:project|repo|repository|code|codebase|branch|file|function|module|change|test|bug)|continue|next|left off|status|progress|resume|pick (?:it )?up|carry on|keep going|go on|so far|todo|tasks?|plans?|should|shall|ought|better|prefer\w*|recommend\w*|best|approach\w*|design\w*|implement\w*|choose|pick|decide\w*|agree\w*|options?|alternatives?|how (?:do|can|would|could|might) (?:i|you|one)|how to|ways? to)\b|`|\w[_/]\w|::|\b[a-z]\w*\.[a-z]{1,4}\b",
         )
         .unwrap()
     });
@@ -1541,6 +1543,10 @@ mod tests {
             "Can you check `stats()` again?",
             "What should our release process look like?",
             "Is this function thread safe?",
+            "How should payment retries back off?",
+            "Which is better for a small CLI, SQLite or JSON files?",
+            "How do I parse an ISO 8601 date in Python?",
+            "What are the options for caching an HTTP response?",
         ] {
             assert!(!stands_alone(p), "{p}");
         }

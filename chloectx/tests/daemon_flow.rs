@@ -284,6 +284,16 @@ fn a_question_that_stands_alone_gets_nothing() {
     // A search that asks still finds the asides.
     let found = call(&d, json!({"op": "search", "query": "17 times 3", "limit": 5, "include_current": true}));
     assert!(found["text"].as_str().unwrap_or("").contains("17 times 3"), "{found}");
+
+    // Answered at length, such a question is a discussion: distilled as
+    // any turn, and not an aside.
+    hook(&d, "SessionStart", json!({"session_id": "s6", "source": "startup"}));
+    assert_eq!(hook(&d, "UserPromptSubmit", json!({"session_id": "s6", "prompt": "Is 2027 a leap year?"})), "");
+    hook(&d, "Stop", json!({"session_id": "s6", "last_assistant_message": "No. 2027 is not divisible by 4. ".repeat(20)}));
+    assert!(n_calls() >= 2, "distilled");
+    let asides = sql(&d, "SELECT kind FROM memory WHERE tag = 'aside' AND session = 's6' LIMIT 10");
+    let kinds: Vec<&str> = asides.iter().filter_map(|r| r[0].as_str()).collect();
+    assert!(!kinds.contains(&"answer") && !kinds.contains(&"episode"), "{kinds:?}");
 }
 
 /// An instruction the user gives for one task stays that session's; given

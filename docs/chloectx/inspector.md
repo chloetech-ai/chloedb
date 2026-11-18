@@ -74,7 +74,7 @@ The box at the top right completes the names of entities and the paths of files 
 
 ![Live: every record and daemon event as it happens](../assets/img/inspector-live.png)
 
-Every record the hooks and the distiller write, and every step ChloeCtx takes, as it happens, in words: the briefing a new session got and its size, what each prompt was given ("gave Claude 3 earlier records", or "gave Claude nothing" when nothing bears on it clearly enough), what was written down after the turn and what it cost, and a question that stood on its own, which is neither given anything nor written down. With **Advanced** on, each step also shows its raw fields: for a recall, the decision, the gate score and its evidence features (`max_cos`, `max_cov`, `bm_gap`, `cos_gap`, `agree`, `cue`).
+Every record the hooks and the distiller write, and every step ChloeCtx takes, as it happens, in words: the briefing a new session got and its size, what each prompt was given ("gave Claude 3 earlier records", or "gave Claude nothing" when nothing bears on it clearly enough), what was written down after the turn and what it cost, and a question that stood on its own, which is given nothing and, answered in a few lines, not written down. With **Advanced** on, each step also shows its raw fields: for a recall, the decision, the gate score and its evidence features (`max_cos`, `max_cov`, `bm_gap`, `cos_gap`, `agree`, `cue`).
 
 ### Knowledge
 

@@ -206,7 +206,8 @@ pub const TURN_DISTILLED: &str = "distilled_turn";
 pub const TURN_FAILED: &str = "distill_failed";
 /// The tag of the event that marks a turn never to be distilled: one that
 /// called `memory_forget`, whose notes would say again what it forgot, or
-/// a question that stood on its own ([`EpisodeAcc::only_a_question`]).
+/// a question that stood on its own, answered in a few lines without a
+/// tool ([`EpisodeAcc::only_a_question`]).
 pub const TURN_SKIPPED: &str = "distill_skipped";
 /// The final answers a session remembers by hash ([`Session::answered`]).
 const ANSWERS_KEPT: usize = 8;
@@ -1154,8 +1155,9 @@ impl Daemon {
                         }
                         let mut drafts: Vec<Draft> = capture::answer_drafts(&answer).into_iter().map(|d| d.ctx(ctx.clone())).collect();
                         drafts.extend(ep.card(turn, &answer));
-                        if ep.only_a_question() {
-                            for d in &mut drafts {
+                        let aside = ep.only_a_question(&answer);
+                        if aside {
+                            for d in drafts.iter_mut().filter(|d| d.tag == "-") {
                                 d.tag = crate::record::ASIDE.into();
                             }
                         }
@@ -1163,7 +1165,7 @@ impl Daemon {
                             me.log(&json!({"ts": now(), "error": e.to_string(), "event": "Stop"}));
                         }
                         me.store.warm();
-                        if ep.only_a_question() {
+                        if aside {
                             // Marked, so that a later daemon or `chloectx distill` leaves it too.
                             let mark = Draft::new(Kind::Event, format!("Turn {turn} was a question that stood on its own, answered without a tool: not distilled")).tag(TURN_SKIPPED);
                             if let Err(e) = me.store.append(&sid, turn, now(), vec![mark]) {

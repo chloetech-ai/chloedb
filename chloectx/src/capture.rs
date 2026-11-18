@@ -624,14 +624,19 @@ pub struct EpisodeAcc {
     pub alone: bool,
 }
 
+/// The longest answer of a question that stood on its own
+/// ([`EpisodeAcc::only_a_question`]).
+pub const ANSWER_OF_A_QUESTION: usize = 400;
+
 impl EpisodeAcc {
-    /// A question that stood on its own, answered without a tool: the
-    /// project took no part in it, the user's words in it state no rule or
-    /// decision, and it is not distilled (JONAH-202: each "What is 17
-    /// times 3?" cost a distillation, and one wrote "a trivial arithmetic
-    /// check ... contained no project decisions" into the briefing).
-    pub fn only_a_question(&self) -> bool {
-        self.alone && self.tools == 0
+    /// A question that stood on its own, answered in a few lines without a
+    /// tool: the project took no part in it, the user's words in it state
+    /// no rule or decision, and it is not distilled (JONAH-202: each "What
+    /// is 17 times 3?" cost a distillation, and one wrote "a trivial
+    /// arithmetic check ... contained no project decisions" into the
+    /// briefing). A longer answer is a discussion, distilled as any turn.
+    pub fn only_a_question(&self, answer: &str) -> bool {
+        self.alone && self.tools == 0 && answer.chars().count() <= ANSWER_OF_A_QUESTION
     }
 
     pub fn add_tool(&mut self, tool: &str, input: &Json, resp: &Json, project: &str) {
