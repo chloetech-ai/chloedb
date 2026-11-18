@@ -11,153 +11,6 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
-- **A rank log that evaluates rankings it never served.** A query's
-  `log` option takes `explore`, a logging policy: `epsilon`, `shuffle`,
-  `swap` or `softmax` (Plackett–Luce, by score or by rank) over the top
-  rows. The list is drawn by the request's id, so the same request draws
-  the same list. Each shown row's exact chance of being shown where it
-  was is answered (`propensities`) and logged with the chance of the list
-  down to it, the policy and the query's time (columns `propensity`,
-  `prefix_propensity`, `policy`, `took_ms`; an older log gains them with
-  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`). A coordinator draws the
-  same list as one database. The Python package passes it and answers
-  `propensities`, as the JavaScript package's embedded database does
-  ([query-language.md](docs/chloedb/query-language.md#exploring-a-log-that-evaluates-rankings-it-never-served)).
-- **chloedb-experiments** (a demo, phase 1 of the Experiments app). It
-  has simulated users in cohorts and five click models with trust bias,
-  over any table with queries and grades. Each impression is served as a
-  logged, exploring query, or drawn in the process bit for bit the same.
-  Eleven off-policy estimators (IPS, SNIPS, IIPS, RIPS, click models,
-  doubly robust, cascade doubly robust) come with intervals and warnings
-  when the log does not support a target. `check` replays each over many
-  logs against the exact truth
-  ([chloedb-experiments/README.md](chloedb-experiments/README.md)).
-- **The Experiments app** (`chloedb-experiments serve`, the command
-  center's app `experiments`, a demo). It runs A/B tests of a site's
-  rankings on simulated users: any table with queries and grades is a
-  site (BEIR's collections load as sites), each arm is a ranking
-  in SQL, and users are split by a hash of their id. Its report gives
-  every metric (success, clicks, satisfied clicks, abandonment, first-row
-  clicks, dwell, searches per session, query time) with delta-method intervals,
-  p and q values, CUPED against a pre-period, power and the smallest
-  effect it could see, always-valid p values beside fixed ones for
-  peeking, a sample ratio check, cohorts by age, gender, country, device
-  and tenure with a two-way heatmap, and what each arm would have
-  done valued off-policy from an exploring share's log. Every number is
-  shown beside the simulated users' exact truth. Runs are drawn in the
-  app (400,000 searches in about 5 seconds) or served as logged queries
-  to the server, and sites and experiments are rows of ChloeDB
-  ([chloedb-experiments/README.md](chloedb-experiments/README.md#the-app)).
-- **Search as you type and typos find the words the stemmer changes**
-  (persona study round 2, DEV-201, DEV-202, DEV-203, MAYA-201,
-  MAYA-202). A prefix also stands for the stems of the words it may be
-  the start of, so `headphone*`, `battery*`, `running*` and `runni*` find
-  their rows, as every letter typed before them did; `MATCH`, `bm25`'s
-  `word*` and highlights agree. A typo is counted on the word as typed,
-  not on its stem: `choclate` is one edit from *chocolate*, and
-  `fuzzy => 'auto'`, `word~` and "did you mean" forgive it. "Did you mean"
-  offers a real word (`wireles` gives *wireless*, not *wirees*).
-  OpenSearch's `match_bool_prefix` and `multi_match`'s `bool_prefix` take
-  `operator`, `minimum_should_match` and `fuzziness`. The command center's
-  table search forgives a typo in each word and offers a correction when
-  nothing is found ([search guide](docs/guide/search.md#as-you-type-prefixes),
-  [query-language.md](docs/chloedb/query-language.md#full-text-match)).
-
-### What changes by default
-
-- **A prefix finds more rows**: `word*` also finds the words it begins
-  whose stems do not start with it, and a whole word typed and then `*`
-  finds that word's rows. A ranking by `bm25(field, 'word*')` scores them
-  too.
-- **A correction's `edits` counts edits from the word as typed** to the
-  word shown, rather than from its stem, and the word shown is one that
-  stems to the term. The answer's fields are unchanged.
-
-### ChloeCtx
-
-- **A question asked in passing costs ChloeCtx nothing, and a second
-  session that starts with it reads its prompt from the cache** (persona
-  study round 2, JONAH-202). Claude Code sends every hook's text after the
-  first prompt, in one block the prompt cache serves only when a session
-  starts with exactly what an earlier one sent. A question like "What is 17
-  times 3?" was given where the last session left off and 10 to 12
-  unrelated records (recall counted the earlier sessions' copies of the
-  same question as evidence), and its distillation changed the next
-  briefing. Records of a turn that asked the same question are no longer
-  evidence. A question that stands on its own (no "we", no file, code or
-  earlier work, no choice to weigh and no how-to) gets nothing when nothing
-  is recalled for it: where the last session left off waits for the next
-  prompt, and when it is answered in a few lines without a tool it is not
-  distilled and is kept as an aside, which a search finds and recall does
-  not offer by itself. Measured with Haiku, the second such session wrote 0
-  tokens to the cache and cost $0.00024, against $0.0017.
-
-- **The inspector forgets from a button, and keeps its internals behind
-  Advanced** (JONAH-206). Each knowledge card and record has Forget…,
-  which lists what would go (records, lines of context, log lines and
-  receipts) before Forget deletes it, and the Knowledge tab forgets by
-  words. The Live feed says what happened in plain words. An Advanced
-  switch, off by default, holds Table, Graph, Vectors, Query, Storage, ids
-  and the gate's evidence. Enter in Find opens the first suggestion, or
-  searches memory when no file or name matches.
-
-- **Upgrade advice says what `chloectx upgrade` will do** (JONAH-207,
-  ANA-206). doctor, `upgrade --check`, the session notice and the inspector
-  said a newer version "installs" for a build that `upgrade` refuses (a
-  detached HEAD, no upstream, commits of its own, or a build not on the
-  upstream's history). They now say why it would stop, `upgrade` stops
-  before pulling with the same words, and the inspector offers Update only
-  when it would work (a prebuilt binary shows the installer's command).
-
-- `chloectx backup` makes missing folders and writes the backup private
-  (0700 and 0600) as the store is (ANA-208), and `chloectx receipts
-  --session` takes the first characters of a session id, as listings show
-  them (ANA-209).
-
-### Security
-
-- **Release archives carry build provenance and an SBOM** (LENA-201,
-  LENA-11, PLT-13, PLT-4): a `.sha256` served beside an archive said it
-  was not damaged, not who built it. From this release, GitHub attests
-  each archive (`chloedb-server`, `chloectx`, `chloedb-crawl`,
-  `chloedb-sheets`, `chloedb-netops`, per platform): build provenance,
-  signed with Sigstore by `server-release.yml` for the release's tag, and
-  a CycloneDX SBOM (`<program>-<platform>.cdx.json`: every crate in the
-  program, its version, licence and checksum), with the Sigstore bundles
-  beside the archive (`.sigstore.jsonl`), `THIRD-PARTY-NOTICES.md` in it
-  and a `SHA256SUMS` of the release. `gh attestation verify` checks them
-  ([SECURITY.md](SECURITY.md#checking-what-you-download)). The website's
-  installer, `install.sh` and ChloeCtx's plugin check the provenance
-  where `gh` is installed and do not install an archive that fails it,
-  though its `.sha256` matches; without `gh` they say so and install on
-  the SHA-256 (`CHLOEDB_VERIFY=require`, for the plugin
-  `CHLOECTX_VERIFY=require`, refuses instead; `=off` skips it). Releases
-  before this one have no provenance and install as before.
-- **Alert routes and hub connections reached any address, and followed
-  redirects** (LENA-7, CLU-5): a route's webhook could post an alert, with
-  the cluster's names in it, to the machine's loopback, the network inside
-  or the cloud's metadata address (169.254.169.254), and follow a redirect
-  anywhere; a hub connection could too. Both now take the connectors'
-  guard: a route reaches the public internet only, unless it says
-  `"allow_internal": true` (**Inside this network** in the command
-  center's Routes), and never a link-local address; a hub connection may
-  be inside the network but never link-local. Every address a name
-  resolves to is checked when it is sent, and neither follows a redirect
-  to another origin (a route's send then fails, saying where it was sent).
-  A route saved before, to a private address, is refused when the routes
-  are next saved (400, which says to set `allow_internal`) and fails its
-  sends until then, with the same words in its status; `--alert-webhook`
-  may still be inside the network.
-- **The Python wheel had no licence** (LENA-202): `chloedb`'s wheels now
-  carry `LICENSE` in their `dist-info/licenses`, and `chloedb-server`'s
-  the third-party notices beside it. SECURITY.md says how to check a wheel
-  from PyPI against its attestation (`pypi-attestations verify pypi`).
-- **ChloeCtx kept secrets under a name with a number or a qualifier after
-  its word for a secret** (CTX-35, LENA-10): `STAGING_PASS2=...`,
-  `DB_PASS=...`, `GITHUB_TOKEN_RO=...` and `API_KEY_2=...` were stored as
-  they were; they are now redacted like `DB_PASSWORD=...`. A password in
-  prose still is not.
-
 ### Analytical SQL
 
 What the persona study's data engineer found in its second round: groups,
@@ -201,11 +54,16 @@ Durable one-row writes about 2.6 times as fast, typo and short substring
 searches faster, Google sign-in for the command center, a cluster evened
 out by its keyed load rather than its count of slots, a sharded cluster
 restored from its checkpoints, coordinator writes that give up on a frozen
-primary, and what the persona study of 17 November found (SQL answering as
-PostgreSQL does, wrong answers that are now right or an error, ChloeCtx's
-forget and rules, the security edges; from its second round, highlight,
-did you mean and cursors in JavaScript, and ChloeCtx filing each note under
-the session that made it): `chloedb-server-v0.3.8`,
+primary, release archives with build provenance and an SBOM, a rank log that
+values rankings it never served (and the Experiments app, a demo, that
+tests rankings on simulated users), and what the persona study of 17
+November found (SQL answering as PostgreSQL does, wrong answers that are
+now right or an error, ChloeCtx's forget and rules, the security edges;
+from its second round, search as you type that finds the words the stemmer
+changes, hybrid fusions that are logged and explained, highlight, did you
+mean and cursors in JavaScript, ChloeCtx filing each note under the session
+that made it and costing nothing for a question asked in passing, and alert
+webhooks kept to the public internet): `chloedb-server-v0.3.8`,
 `chloedb-py-v0.3.8` and `chloedb-js-v0.3.8`, which is on npm too (the Java
 package is built from source; `chloedb-crawl`, `chloedb-sheets`, `chloectx`
 and `chloedb-netops` are attached prebuilt to the server's release, whose
@@ -246,6 +104,20 @@ Postgres upgrades its coordinators first: see
 - **A rule the user states to ChloeCtx is a standing rule** unless it is an
   instruction for the task at hand, and a note `memory_remember` or
   `chloectx remember` keeps is filed under the session that made it.
+- **A prefix finds more rows**: `word*` also finds the words it begins
+  whose stems do not start with it, and a whole word typed and then `*`
+  finds that word's rows. A ranking by `bm25(field, 'word*')` scores them
+  too.
+- **A correction's `edits` counts edits from the word as typed** to the
+  word shown, rather than from its stem, and the word shown is one that
+  stems to the term. The answer's fields are unchanged.
+- **A value its field refuses answers `value_invalid`** over HTTP (400),
+  not `schema_invalid`, which stays for a refused schema.
+- **An alert route reaches only the public internet** unless it says
+  `"allow_internal": true`, a hub connection may be inside the network,
+  and neither reaches a link-local address or follows a redirect to
+  another origin: a route saved before to a private address is refused
+  when the routes are next saved.
 
 ### Clusters
 
@@ -399,6 +271,7 @@ Postgres upgrades its coordinators first: see
     the wrong shape said "document has 2 values, table has 1 fields". They
     write the first table people made, and the error names the table and
     its fields; a JSON row's unknown field names its table too.
+
 ### ChloeCtx
 
 - **ChloeCtx's rules and counts say what happened.** A rule said once read
@@ -473,6 +346,45 @@ Postgres upgrades its coordinators first: see
   repeats. A stated decision is cut before the next request in the same
   prompt, and the briefing's rules open with a line saying to ask before
   breaking one.
+
+- **A question asked in passing costs ChloeCtx nothing, and a second
+  session that starts with it reads its prompt from the cache** (persona
+  study round 2, JONAH-202). Claude Code sends every hook's text after the
+  first prompt, in one block the prompt cache serves only when a session
+  starts with exactly what an earlier one sent. A question like "What is 17
+  times 3?" was given where the last session left off and 10 to 12
+  unrelated records (recall counted the earlier sessions' copies of the
+  same question as evidence), and its distillation changed the next
+  briefing. Records of a turn that asked the same question are no longer
+  evidence. A question that stands on its own (no "we", no file, code or
+  earlier work, no choice to weigh and no how-to) gets nothing when nothing
+  is recalled for it: where the last session left off waits for the next
+  prompt, and when it is answered in a few lines without a tool it is not
+  distilled and is kept as an aside, which a search finds and recall does
+  not offer by itself. Measured with Haiku, the second such session wrote 0
+  tokens to the cache and cost $0.00024, against $0.0017.
+
+- **The inspector forgets from a button, and keeps its internals behind
+  Advanced** (JONAH-206). Each knowledge card and record has Forget…,
+  which lists what would go (records, lines of context, log lines and
+  receipts) before Forget deletes it, and the Knowledge tab forgets by
+  words. The Live feed says what happened in plain words. An Advanced
+  switch, off by default, holds Table, Graph, Vectors, Query, Storage, ids
+  and the gate's evidence. Enter in Find opens the first suggestion, or
+  searches memory when no file or name matches.
+
+- **Upgrade advice says what `chloectx upgrade` will do** (JONAH-207,
+  ANA-206). doctor, `upgrade --check`, the session notice and the inspector
+  said a newer version "installs" for a build that `upgrade` refuses (a
+  detached HEAD, no upstream, commits of its own, or a build not on the
+  upstream's history). They now say why it would stop, `upgrade` stops
+  before pulling with the same words, and the inspector offers Update only
+  when it would work (a prebuilt binary shows the installer's command).
+
+- `chloectx backup` makes missing folders and writes the backup private
+  (0700 and 0600) as the store is (ANA-208), and `chloectx receipts
+  --session` takes the first characters of a session id, as listings show
+  them (ANA-209).
 
 ### JavaScript
 
@@ -586,13 +498,56 @@ Postgres upgrades its coordinators first: see
   `idempotencyKey`), and a write dropped before the writer took it no
   longer keeps its key claimed for an hour.
 
-### Typos
+### Typos and search as you type
 
+- **Search as you type and typos find the words the stemmer changes**
+  (persona study round 2, DEV-201, DEV-202, DEV-203, MAYA-201,
+  MAYA-202). A prefix also stands for the stems of the words it may be
+  the start of, so `headphone*`, `battery*`, `running*` and `runni*` find
+  their rows, as every letter typed before them did; `MATCH`, `bm25`'s
+  `word*` and highlights agree. A typo is counted on the word as typed,
+  not on its stem: `choclate` is one edit from *chocolate*, and
+  `fuzzy => 'auto'`, `word~` and "did you mean" forgive it. "Did you mean"
+  offers a real word (`wireles` gives *wireless*, not *wirees*).
+  OpenSearch's `match_bool_prefix` and `multi_match`'s `bool_prefix` take
+  `operator`, `minimum_should_match` and `fuzziness`. The command center's
+  table search forgives a typo in each word and offers a correction when
+  nothing is found ([search guide](docs/guide/search.md#as-you-type-prefixes),
+  [query-language.md](docs/chloedb/query-language.md#full-text-match)).
 - **A misspelled word is looked up in one walk of the terms.** Under a
   stemming analyzer it was looked up twice, for its stem and as typed; the
   two now share one walk, which finds the same terms with the same counts
   and order. Typo queries on SciFact, NFCorpus and FiQA run 1.22 to 1.46
   times as fast (a cloud container, one thread).
+
+### Hybrid search and the relevance lab
+
+- **A hybrid normalised by `tmm` or `zscore` is logged and explained**
+  (persona study round 2, PRIYA-201, PRIYA-202). `features()`, and so the
+  rank log and Explain's hits, refused `tmm(...)` and `zscore(...)` as "not
+  a column"; they now list their inputs, as `minmax` does. `POST
+  /v1/explain` embeds the text in `similarity(emb, :q)` as a query does,
+  where it refused it.
+- **A NaN says NaN, and a value its field refuses has its own code**
+  (PRIYA-203, PRIYA-208). A vector holding NaN, an infinity or JSON `null`
+  (which Python writes for both) names the element and why; over HTTP a
+  row's value its field refuses is `value_invalid`, not `schema_invalid`;
+  and a write that needs the vector of a model that did not open says why
+  it did not.
+- **LangChain's and LlamaIndex's hybrids take a fusion** (PRIYA-204):
+  `fusion=` takes `{"rrf": {"k": 10}}`, a weighted sum such as
+  `{"tmm": {"text": 0.1}}`, `"minmax"` or `"zscore"`, and a LlamaIndex
+  query's `alpha` is a tmm fusion of that weight
+  ([frameworks.md](docs/chloedb/frameworks.md)).
+- **The relevance lab reads judgments, tunes on half of the queries and
+  tests significance** (PRIYA-205). It imports TREC or BEIR qrels with
+  their queries, or a `relevance_judgments` table, and exports them;
+  "Tune B's weight" picks the setting on half of the queries and reports it
+  on the other half, with a paired randomization test, as the A/B
+  comparison has; nDCG's gain is exponential or linear.
+- **The RAG and agent memory guides pass a question as plain words**
+  (`syntax => 'plain'`, PRIYA-206), so `-fPIC` in a question no longer
+  drops the passage about `-fPIC`.
 
 ### The first hour
 
@@ -610,6 +565,8 @@ Postgres upgrades its coordinators first: see
   and what to do, with the fixes for Python and JavaScript.
 - **`chloedb-server doctor` warns about models this build cannot run**, and
   no longer takes a folder named `chloedb` for the Python package.
+- **A model's download gives up** when it has no connection in 30 s or
+  no byte in 60 s, where it could wait for ever.
 
 ### Security
 
@@ -639,6 +596,48 @@ Postgres upgrades its coordinators first: see
   `Host` is this machine. chloedb-server and the operator start it with a
   token (the operator with `--insecure` for a cluster without one, as
   before), so neither changes.
+- **Release archives carry build provenance and an SBOM** (LENA-201,
+  LENA-11, PLT-13, PLT-4): a `.sha256` served beside an archive said it
+  was not damaged, not who built it. From this release, GitHub attests
+  each archive (`chloedb-server`, `chloectx`, `chloedb-crawl`,
+  `chloedb-sheets`, `chloedb-netops`, per platform): build provenance,
+  signed with Sigstore by `server-release.yml` for the release's tag, and
+  a CycloneDX SBOM (`<program>-<platform>.cdx.json`: every crate in the
+  program, its version, licence and checksum), with the Sigstore bundles
+  beside the archive (`.sigstore.jsonl`), `THIRD-PARTY-NOTICES.md` in it
+  and a `SHA256SUMS` of the release. `gh attestation verify` checks them
+  ([SECURITY.md](SECURITY.md#checking-what-you-download)). From 0.3.9
+  the website's installer, `install.sh` and ChloeCtx's plugin check the
+  provenance where `gh` is installed and do not install an archive that
+  fails it, though its `.sha256` matches; without `gh` they say so and
+  install on the SHA-256 (`CHLOEDB_VERIFY=require`, for the plugin
+  `CHLOECTX_VERIFY=require`, refuses instead; `=off` skips it). They
+  install 0.3.8 on its SHA-256, as they do the releases before it, which
+  have no provenance.
+- **Alert routes and hub connections reached any address, and followed
+  redirects** (LENA-7, CLU-5): a route's webhook could post an alert, with
+  the cluster's names in it, to the machine's loopback, the network inside
+  or the cloud's metadata address (169.254.169.254), and follow a redirect
+  anywhere; a hub connection could too. Both now take the connectors'
+  guard: a route reaches the public internet only, unless it says
+  `"allow_internal": true` (**Inside this network** in the command
+  center's Routes), and never a link-local address; a hub connection may
+  be inside the network but never link-local. Every address a name
+  resolves to is checked when it is sent, and neither follows a redirect
+  to another origin (a route's send then fails, saying where it was sent).
+  A route saved before, to a private address, is refused when the routes
+  are next saved (400, which says to set `allow_internal`) and fails its
+  sends until then, with the same words in its status; `--alert-webhook`
+  may still be inside the network.
+- **The Python wheel had no licence** (LENA-202): `chloedb`'s wheels now
+  carry `LICENSE` in their `dist-info/licenses`, and `chloedb-server`'s
+  the third-party notices beside it. SECURITY.md says how to check a wheel
+  from PyPI against its attestation (`pypi-attestations verify pypi`).
+- **ChloeCtx kept secrets under a name with a number or a qualifier after
+  its word for a secret** (CTX-35, LENA-10): `STAGING_PASS2=...`,
+  `DB_PASS=...`, `GITHUB_TOKEN_RO=...` and `API_KEY_2=...` were stored as
+  they were; they are now redacted like `DB_PASSWORD=...`. A password in
+  prose still is not.
 
 ### Sign in with Google
 
@@ -685,6 +684,46 @@ to 71 ms after the page cache was dropped, with the same answers
   Loghub's SSH log and on Hacker News titles: a field that is a small part
   of its row (a title beside its link and counts) is listed from the index
   for more rows than before, and one that is most of its row for fewer.
+
+### The rank log and the Experiments app
+
+- **A rank log that evaluates rankings it never served.** A query's
+  `log` option takes `explore`, a logging policy: `epsilon`, `shuffle`,
+  `swap` or `softmax` (Plackett–Luce, by score or by rank) over the top
+  rows. The list is drawn by the request's id, so the same request draws
+  the same list. Each shown row's exact chance of being shown where it
+  was is answered (`propensities`) and logged with the chance of the list
+  down to it, the policy and the query's time (columns `propensity`,
+  `prefix_propensity`, `policy`, `took_ms`; an older log gains them with
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`). A coordinator draws the
+  same list as one database. The Python package passes it and answers
+  `propensities`, as the JavaScript package's embedded database does
+  ([query-language.md](docs/chloedb/query-language.md#exploring-a-log-that-evaluates-rankings-it-never-served)).
+- **chloedb-experiments** (a demo, phase 1 of the Experiments app). It
+  has simulated users in cohorts and five click models with trust bias,
+  over any table with queries and grades. Each impression is served as a
+  logged, exploring query, or drawn in the process bit for bit the same.
+  Eleven off-policy estimators (IPS, SNIPS, IIPS, RIPS, click models,
+  doubly robust, cascade doubly robust) come with intervals and warnings
+  when the log does not support a target. `check` replays each over many
+  logs against the exact truth
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md)).
+- **The Experiments app** (`chloedb-experiments serve`, the command
+  center's app `experiments`, a demo). It runs A/B tests of a site's
+  rankings on simulated users: any table with queries and grades is a
+  site (BEIR's collections load as sites), each arm is a ranking
+  in SQL, and users are split by a hash of their id. Its report gives
+  every metric (success, clicks, satisfied clicks, abandonment, first-row
+  clicks, dwell, searches per session, query time) with delta-method intervals,
+  p and q values, CUPED against a pre-period, power and the smallest
+  effect it could see, always-valid p values beside fixed ones for
+  peeking, a sample ratio check, cohorts by age, gender, country, device
+  and tenure with a two-way heatmap, and what each arm would have
+  done valued off-policy from an exploring share's log. Every number is
+  shown beside the simulated users' exact truth. Runs are drawn in the
+  app (400,000 searches in about 5 seconds) or served as logged queries
+  to the server, and sites and experiments are rows of ChloeDB
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#the-app)).
 
 ### Demos, benchmarks and the website
 

@@ -51,7 +51,7 @@ operator: the network, the disks and the files the servers write.
   `chloedb-crawl`, `chloedb-sheets` and `chloedb-netops`, one per
   platform) each come with a `.sha256` from the same release
   (`sha256sum -c chloedb-server-linux-x86_64.tar.gz.sha256`), and from
-  0.3.9 with GitHub's build provenance: a signed statement, logged in
+  0.3.8 with GitHub's build provenance: a signed statement, logged in
   Sigstore's public transparency log, that this repository's
   `server-release.yml` built the archive from the release's tag on
   GitHub's runners. A `.sha256` says the download was not damaged; the
@@ -62,7 +62,7 @@ operator: the network, the disks and the files the servers write.
   gh attestation verify chloedb-server-linux-x86_64.tar.gz \
     --repo chloetech-ai/chloedb \
     --signer-workflow chloetech-ai/chloedb/.github/workflows/server-release.yml \
-    --source-ref refs/tags/chloedb-server-v0.3.9
+    --source-ref refs/tags/chloedb-server-v0.3.8
   ```
 
   That asks GitHub for the attestation, and needs `gh auth login`. Each
@@ -71,10 +71,10 @@ operator: the network, the disks and the files the servers write.
   `--bundle chloedb-server-linux-x86_64.tar.gz.sigstore.jsonl` to check it
   from that file without signing in. The website's installer
   (`docs/install.sh`), the repository's `install.sh` and ChloeCtx's
-  plugin check the SHA-256 always, and the provenance too where `gh` is
-  installed: an archive whose provenance does not verify is not installed,
-  even when its `.sha256` matches. Without `gh` they say so and install on
-  the SHA-256; `CHLOEDB_VERIFY=require` (the plugin: `CHLOECTX_VERIFY`)
+  plugin check the SHA-256 always, and from 0.3.9 the provenance too
+  where `gh` is installed: an archive whose provenance does not verify is
+  not installed, even when its `.sha256` matches. Without `gh` they say so
+  and install on the SHA-256; `CHLOEDB_VERIFY=require` (the plugin: `CHLOECTX_VERIFY`)
   fails instead, and `=off` skips the check.
 - **What is in them.** Each archive has a CycloneDX SBOM beside it
   (`chloedb-server-linux-x86_64.cdx.json`: every crate compiled into the
@@ -98,13 +98,15 @@ operator: the network, the disks and the files the servers write.
   ```
 
   (the file `pip download` saved; `chloedb-server` the same way). From
-  0.3.9 every wheel carries the licence in its `dist-info/licenses`, and
+  0.3.8 every wheel carries the licence in its `dist-info/licenses`, and
   `chloedb-server`'s the third-party notices too.
 - **npm**: the packages carry the registry's signatures
   (`npm audit signatures`).
 
-Releases before 0.3.9 have no build provenance and no SBOM: their
-archives are checked by their `.sha256` alone.
+Releases before 0.3.8 have no build provenance and no SBOM: their
+archives are checked by their `.sha256` alone. The installers check
+0.3.8's archives by their `.sha256` too, and its provenance with
+`gh attestation verify` as above.
 
 ## What counts as a vulnerability
 

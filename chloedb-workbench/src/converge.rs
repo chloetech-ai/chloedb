@@ -1344,7 +1344,9 @@ fn run_cmd_lines(program: &str, args: &[String], cwd: &Path, stdin: Option<&str>
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let a: Vec<String> = args.iter().map(|x| x.to_string()).collect();
-    let (code, out, err) = run_cmd("git", &a, dir, None, &[], Duration::from_secs(120))?;
+    // No optional locks: a `git status` of an agent's worktree here never
+    // holds the index while the agent commits in it.
+    let (code, out, err) = run_cmd("git", &a, dir, None, &[("GIT_OPTIONAL_LOCKS", "0".to_string())], Duration::from_secs(120))?;
     if code == 0 {
         Ok(out.trim().to_string())
     } else {
