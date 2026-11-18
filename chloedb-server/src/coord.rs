@@ -4378,13 +4378,17 @@ impl Coordinator {
                 let said = tokio::time::timeout(Duration::from_secs(2), hello(&mut c)).await.ok()?.ok()?;
                 r.heard(&said);
                 r.hello_at.store(self.now_ms(), Ordering::Relaxed);
-                // It holds an older map than the one routed by, or none: a
-                // copy started again on an empty disk, whose primary sent
-                // it a copy of the rows but not the map (finding OLU-8), or
-                // one that missed a change. Given it here, since this round
-                // keeps its answer to Hello fresh and so [`Self::speak`]
-                // never asks it again.
-                if let Some(m) = routed.filter(|m| said.protocol >= 4 && said.epoch < m.epoch) {
+                // A copy in its shard's replication that holds an older map
+                // than the one routed by, or none: one started again on an
+                // empty disk, whose primary sent it a copy of the rows but
+                // not the map (finding OLU-8), or one that missed a change.
+                // Given it here, since this round keeps its answer to Hello
+                // fresh and so [`Self::speak`] never asks it again. A
+                // standalone server at a copy's address is left alone: a
+                // new server about to be added as a replica, which must
+                // hold no map (`POST /v1/admin/shards/<i>/replicas`).
+                let member = said.role != pb::Role::Standalone && !said.replaced;
+                if let Some(m) = routed.filter(|m| member && said.protocol >= 4 && said.epoch < m.epoch) {
                     self.give_older(r, &mut c, m, i, said.epoch).await;
                 }
                 Some((said.epoch, said.protocol, c))

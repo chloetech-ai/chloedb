@@ -28,10 +28,11 @@ changes collect under "Unreleased".
 - **A replica rebuilt on an empty disk never got the cluster map back**,
   and said it was fine: the coordinator re-sends the map only when a
   copy's hello is due, every minute, and its watcher kept the hello fresh
-  every two seconds. The coordinator now gives the map to any copy that
-  says an older one, or none, and `GET /v1/cluster` says each copy's map
-  epoch (`slot_epoch`) and position (`seq_no`); the command center
-  compares copies by position.
+  every two seconds. The coordinator now gives the map to any copy in its
+  shard's replication that says an older one, or none (a standalone server
+  about to be added as a replica is left without one), and `GET
+  /v1/cluster` says each copy's map epoch (`slot_epoch`) and position
+  (`seq_no`); the command center compares copies by position.
 - **The command center proposed checkpoint names its server refused**:
   **Write a checkpoint** on a copy offered the copy's address
   (`127.0.0.1:17744-...`), whose `:` a name cannot have. It now offers
