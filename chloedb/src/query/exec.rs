@@ -848,6 +848,11 @@ pub struct ExecStats {
     /// scores are those of a shorter walk.
     #[serde(default, skip_serializing_if = "is_false")]
     pub max_pushes_reached: bool,
+    /// A `ppr` walk ended with less than half of its mass in its scores:
+    /// its `eps` (or `max_pushes`) stopped it near its seeds, so rows
+    /// further away have no score (NADIA-302).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ppr_unsettled: bool,
 }
 
 fn is_false(v: &bool) -> bool {

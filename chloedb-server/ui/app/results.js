@@ -291,15 +291,28 @@ export function segments(lines) {
     })) : null);
 }
 
-/** An answer's figures: rows, time, rows that passed the filter, scored. */
-export function answerStats(j) {
+/**
+ * An answer's figures as [count, label, tip]: rows, time, the rows that
+ * match when `matched` is their count (a COUNT of the same WHERE), scored
+ * and reranked. The executor's `filter_docs` is not one of them: it counts
+ * the rows of the segments whose filter it materialised, which a LIMIT
+ * stops early, so it is not how many rows match (GRACE-301).
+ */
+export function answerFigures(j, { matched } = {}) {
   const st = j.stats || j;
+  const out = [];
+  if (j.written != null) out.push([fmt.n(j.written), "written"]);
+  else { const n = j.rows?.length ?? j.rows ?? 0; out.push([fmt.n(n), n === 1 ? "row" : "rows"]); }
+  if (matched != null) out.push([fmt.n(matched), matched === 1 ? "matches" : "match", "rows the WHERE keeps, counted with COUNT(*)"]);
+  out.push([fmt.ms(j.took_ms), "on the server"]);
+  if (st.scored) out.push([fmt.n(st.scored), "scored", "rows the ranking scored"]);
+  if (st.reranked) out.push([fmt.n(st.reranked), "reranked"]);
+  return out;
+}
+
+/** An answer's figures ([answerFigures]), and the shards a partial one misses. */
+export function answerStats(j, opts) {
   return h("div", { class: "row small", style: { gap: "14px" } },
-    j.written != null ? h("span", {}, h("b", {}, fmt.n(j.written)), " written") : h("span", {}, h("b", {}, fmt.plural(j.rows?.length ?? j.rows ?? 0, "row"))),
-    h("span", {}, h("b", {}, fmt.ms(j.took_ms)), " on the server"),
-    // A ranking with no WHERE (meaning, fused) reports 0 kept: not said.
-    st.filter_docs != null && !(st.filter_docs === 0 && (j.rows?.length ?? j.rows)) ? h("span", { title: "rows the WHERE clause kept, before ranking" }, h("b", {}, fmt.n(st.filter_docs)), " passed the filter") : null,
-    st.scored ? h("span", { title: "rows the ranking scored" }, h("b", {}, fmt.n(st.scored)), " scored") : null,
-    st.reranked ? h("span", {}, h("b", {}, fmt.n(st.reranked)), " reranked") : null,
+    answerFigures(j, opts).map(([n, label, tip]) => h("span", tip ? { title: tip } : {}, h("b", {}, n), " ", label)),
     j.partial ? h("span", { class: "pill warn" }, icon("warn"), `missing shards ${j.partial.missing_shards.join(", ")}`) : null);
 }

@@ -74,7 +74,7 @@ LIMIT 20;
 
 A walk runs on one database: a coordinator refuses `ppr` and the other graph queries ([graphs on a cluster](graphs.md#on-a-cluster)), while the counts above run anywhere.
 
-Personalized PageRank pushes a row only while its share of the walk is at least `eps` (1e-4 by default) times the sum of its edges' weights, so a single seed whose edges add up to more than 10,000 is never pushed and the walk returns nothing. Pass a smaller `eps`, as above, or keep the weights decayed or normalised.
+Personalized PageRank pushes a row only while its share of the walk is at least `eps` times its number of edges. Without `eps`, the walk starts at 1e-4 and lowers it until half of the walk has settled, so seeds whose neighbours have thousands of edges still reach rows past them ([how far `ppr` walks](query-language.md#how-far-ppr-walks)); a given `eps`, as above, walks exactly that far, and a walk that stopped near its seeds says so in its stats (`ppr_unsettled`).
 
 ## Kept for you: `CREATE RECOMMENDER`
 

@@ -195,6 +195,7 @@ fn shards_stats(shards: &[ResultSet]) -> ExecStats {
         stats.reranked += s.stats.reranked;
         stats.truncated |= s.stats.truncated;
         stats.max_pushes_reached |= s.stats.max_pushes_reached;
+        stats.ppr_unsettled |= s.stats.ppr_unsettled;
         stats.plan.extend(s.stats.plan.iter().map(|l| format!("shard {i}: {l}")));
         stats.nest(&s.stats, 0);
     }

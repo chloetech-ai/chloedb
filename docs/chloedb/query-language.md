@@ -1397,20 +1397,24 @@ ORDER BY rrf(bm25(body, :t), ppr(cites, (SELECT id FROM papers ORDER BY similari
 | `REACHABLE(f, seeds, …)` | rows *v* with `min_hops` ≤ *d*(seeds, *v*) ≤ `hops` | `hops 1`, `min_hops 1`, `dir 'out'` (or `'in'`, `'both'`), `label 'a,b'`, `through <predicate>`, `max_nodes 100000` |
 | `PATH(f, from, to, …)` | the rows of one shortest (unweighted) path | `max_hops 6`, `dir`, `label`, `through`, `max_nodes` |
 | `hops()` | a row's distance from the seeds, or its position on the path; `ORDER BY hops()` is nearest first | |
-| `ppr(f, seeds, …)` | personalized PageRank, usable wherever a score is, including `rrf` and weighted sums | `alpha 0.15`, `eps 1e-4` (a row is pushed while its residual is at least `eps` times its number of edges, so scaling every weight alike changes nothing), `dir 'both'`, `label`, `max_pushes` (a walk cut there says so: `max_pushes_reached` in the stats), `weighted 0` (`1`: the seed subquery's scores are the restart weights) |
+| `ppr(f, seeds, …)` | personalized PageRank, usable wherever a score is, including `rrf` and weighted sums | `alpha 0.15`, `eps` (a row is pushed while its residual is at least `eps` times its number of edges, so scaling every weight alike changes nothing; not given, the walk starts at `1e-4` and halves it while its scores hold less than half of the walk, for at most 100,000 pushes, [below](#how-far-ppr-walks)), `dir 'both'`, `label`, `max_pushes 1000000` (a walk cut there says so: `max_pushes_reached` in the stats), `weighted 0` (`1`: the seed subquery's scores are the restart weights) |
 | a `VECTOR` field as `f` | `REACHABLE` and `PATH` follow similarity edges: a row's neighbours are its `k` most similar rows | `k 10`, `min_sim` |
 
 Graph queries run on one database: a [coordinator](server.md#sharding-one-coordinator-many-shards) refuses them, since a row's edges point at rows other shards hold ([graphs on a cluster](graphs.md#on-a-cluster)).
 
 The [query console](server.md#the-query-console)'s Graph tab builds these queries (seeds from keys, a search or a condition; links or similarity; neighbourhood, path or PageRank) and draws the answer.
 
-`through` restricts the rows a traversal may pass through (seeds and end points are exempt); the rest of `WHERE` filters the rows it ends at. `max_nodes` bounds the rows a traversal meets besides its seeds (and a path's ends): a `REACHABLE` that would meet more, or a `PATH` that meets more before it finds a path, is an error saying so, never a part of the answer. `max_hops => 0` is a path of no hops (a seed that is also a target); `max_nodes` and `k` are 1 or more. `REACHABLE(f, seeds, hops => 0, min_hops => 0)` is the seed set itself, so `NOT` of it removes the seeds from a result. `hops()` refers to the first `REACHABLE` or `PATH` in `WHERE`. The [Graphs](graphs.md) page explains how edges are stored and what these queries cost.
+`through` restricts the rows a traversal may pass through (seeds and end points are exempt); the rest of `WHERE` filters the rows it ends at. **Changed:** a `PATH` with `through` could pass through a row that fails it, where the two halves of its search met, and so answer a path where none keeps to `through`; every middle row of a path now satisfies it. `max_nodes` bounds the rows a traversal meets besides its seeds (and a path's ends): a `REACHABLE` that would meet more, or a `PATH` that meets more before it finds a path, is an error saying so, never a part of the answer. `max_hops => 0` is a path of no hops (a seed that is also a target); `max_nodes` and `k` are 1 or more. `REACHABLE(f, seeds, hops => 0, min_hops => 0)` is the seed set itself, so `NOT` of it removes the seeds from a result. `hops()` refers to the first `REACHABLE` or `PATH` in `WHERE`. The [Graphs](graphs.md) page explains how edges are stored and what these queries cost.
 
 Edges are written as part of their row: a JSON array of target keys, each optionally with a label and a positive weight.
 
 ```text
 ["p2", ["cites", "p7"], ["extends", "p9", 0.5], {"to": "p11", "label": "refutes"}]
 ```
+
+### How far `ppr` walks
+
+A row's score is the share of the walk that has settled on it, and a row is pushed (its residual spread over its edges) while that residual is at least `eps` times its number of edges. From a seed whose neighbours have thousands of edges, `eps => 1e-4` pushes nothing past the seed: on the tests' user-item graph of 3,000 users with 30 items each, whose 100 items have 900 edges on average and at least 300, a user's items get 0.028 each, below 10⁻⁴ times their edges, so the walk ranks the user and no item. Without `eps`, the walk then halves it and pushes on from where it stopped, until its scores hold half of the walk (there, `eps` 3.1e-6, after 9,078 pushes), for at most 100,000 pushes; its plan line says where it went (`eps lowered to 3.1e-6, 72% settled`). With `eps`, it walks exactly as far as asked. A walk whose scores hold less than half of the walk, by its `eps` or its pushes, says so: `ppr_unsettled` in the stats, and in its plan line how much it settled and what to change. **Changed:** `eps` was 10⁻⁴ when not given, and such a walk returned only its seeds with no warning.
 
 ### Edge tables
 
