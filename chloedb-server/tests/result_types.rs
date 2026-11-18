@@ -130,7 +130,13 @@ async fn a_cluster_types_each_column_by_its_expression() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parameter_s_vector_is_the_field_it_is_used_with() {
     let dir = tempfile::tempdir().unwrap();
-    let url = http(empty(dir.path(), "v.chloedb")).await;
+    let db = Db::create_empty(&dir.path().join("v.chloedb"), DbOptions::default()).unwrap();
+    let schema = (*db.schema()).clone();
+    let agent = AgentConfig { api_key: None, model: chloedb_server::agent::DEFAULT_MODEL.into(), base_url: "http://unused".into() };
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent, 16, Duration::from_secs(20));
+    // emb's model, hash:16, opens here; bge has none.
+    svc.open_models(dir.path());
+    let url = http(Arc::new(svc)).await;
     sql(&url, "CREATE TABLE other (id INT PRIMARY KEY)").await;
     sql(&url, "CREATE TABLE docs (id KEYWORD PRIMARY KEY, title TEXT, emb VECTOR(16) OPTIONS(embed = 'title', model = 'hash:16'), bge VECTOR(4))").await;
     sql(&url, "INSERT INTO docs (id, title, bge) VALUES ('a', 'vitamin d and covid', '[1,0,0,0]'), ('b', 'masks', '[0,1,0,0]')").await;
