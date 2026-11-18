@@ -382,7 +382,7 @@ impl<'a> Executor<'a> {
         let edges = g.edges.as_deref().map(|t| self.edge_table(t)).transpose()?;
         let mut adj = self.adjacency(g, &from, edges)?;
         let mut nodes: NodeMap<(u32, f64)> = traverse::node_map();
-        let mut capped = false;
+        let (mut capped, mut unsettled) = (false, false);
         let (what, edges, extra) = match &g.kind {
             GraphKind::Reach { min_hops, max_hops } => {
                 let r = traverse::bfs(&mut adj, &seed_nodes, *max_hops, g.max_nodes)?;
@@ -417,8 +417,17 @@ impl<'a> Executor<'a> {
                     }
                 }
                 capped = r.capped;
+                unsettled = r.settled < traverse::SETTLED;
                 let cut = if r.capped { format!(" (stopped at max_pushes => {max_pushes}: scores of a shorter walk; raise max_pushes or eps)") } else { String::new() };
-                ("ppr", r.edges, format!(", {} pushes{cut}", r.pushes))
+                // eps 0: not given, lowered from 10⁻⁴ while the walk
+                // settled less than half of its mass.
+                let lowered = if *eps <= 0.0 && r.eps < traverse::EPS { format!(", eps lowered to {:.1e}", r.eps) } else { String::new() };
+                let short = if unsettled {
+                    format!(" (its scores hold {:.0}% of the walk, the rest stayed near the seeds: {})", 100.0 * r.settled, if *eps > 0.0 { "lower eps, or leave it out to let the walk lower it".to_string() } else { format!("give eps below {:.1e} for a longer walk", r.eps) })
+                } else {
+                    String::new()
+                };
+                ("ppr", r.edges, format!(", {} pushes{lowered}, {:.0}% settled{cut}{short}", r.pushes, 100.0 * r.settled))
             }
         };
         // PageRank is a score, never a filter: it needs no document sets.
@@ -434,6 +443,7 @@ impl<'a> Executor<'a> {
             per_seg.insert(s, Arc::new(DocSet::from_sorted(docs, n)));
         }
         self.stats.max_pushes_reached |= capped;
+        self.stats.ppr_unsettled |= unsettled;
         self.stats.plan.push(format!(
             "graph {id}: {what} over {}, {} seeds, {} rows, {edges} edges followed{extra}, {:.2} ms",
             g.edges.as_deref().unwrap_or(&self.schema.fields[g.field].name),
