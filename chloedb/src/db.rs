@@ -2913,6 +2913,61 @@ impl Db {
         Ok(rs)
     }
 
+    /// Starts a scroll of the SELECT `sql` on the database as it is now,
+    /// as chloedb-server's `page_size` starts one, for a program that pages
+    /// through an answer in its own process: the first page, of at most
+    /// `page` rows, the scroll, and the snapshot its later pages read
+    /// ([`Db::scroll_next`]), which the caller keeps until the last. A
+    /// query of one table scrolls as [`Db::scroll`] does; any other (a
+    /// compound query, a JSON field's paths, a search that expands or
+    /// understands its words, a recommendation, a pack, a call of a
+    /// language model) runs whole now, and the scroll holds its rows, at
+    /// most `hold`. [`ExecOptions::max_rows`] does not apply: `page` caps
+    /// each page.
+    pub fn scroll_sql(&self, sql: &str, params: &Params, opts: &ExecOptions, page: usize, hold: usize) -> Result<(ResultSet, Scroll, Snapshot)> {
+        let snap = self.snapshot();
+        let opts = ExecOptions { max_rows: None, ..opts.clone() };
+        crate::query::budget::guarded(sql, &opts, |opts| {
+            if let Some(plan) = self.scroll_plan(&snap, sql, params)? {
+                let view = snap.table(plan.table()).ok_or_else(|| Error::Query(format!("no such table: {}", plan.table())))?;
+                let select = plan.to_select(view.schema())?;
+                let (rs, s) = self.scroll(&view, &select, opts, page, hold)?;
+                return Ok((rs, s, view));
+            }
+            let rs = self.query_at_here(&snap, sql, params, opts)?;
+            if rs.rows.len() > hold {
+                return Err(Error::Query(format!("the query answers {} rows, and a scroll of it holds them all (it is not a query of one table): at most {hold}", rs.rows.len())));
+            }
+            let (first, s) = Scroll::of_rows(rs, page);
+            Ok((first, s, snap.clone()))
+        })
+    }
+
+    /// The plan of `sql` when [`Db::scroll`] can scroll it: a read of one
+    /// table that [`Db::query_at`] would run as its plan alone, with its
+    /// rank profiles checked and its ranking models open; `None` for any
+    /// other, which runs whole.
+    fn scroll_plan(&self, snap: &Snapshot, sql: &str, params: &Params) -> Result<Option<Plan>> {
+        use crate::query::{chunks, pack, paths, prf, recommend, understand};
+        if paths::Call::of_sql(sql)?.is_some() || chunks::may_call(sql) || pack::may_pack(sql) || recommend::may_recommend(sql) || understand::may_understand(sql) || prf::may_expand(sql) {
+            return Ok(None);
+        }
+        let q = qsql::parse_query_cached(sql)?;
+        let (q, embedded) = self.embed_texts(snap, sql, q, params)?;
+        let params = embedded.as_ref().unwrap_or(params);
+        let functions = self.functions_at(snap)?;
+        if crate::query::llm::may_call(sql, &functions) {
+            return Ok(None);
+        }
+        let mut plan = plan_of_parsed(snap, &q, params, &functions)?;
+        if plan.root.uses_operators() {
+            return Ok(None);
+        }
+        profile::check_plan(&plan, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).map(|p| p.hash())))?;
+        self.open_ranking_models(&mut plan, false)?;
+        Ok(Some(plan))
+    }
+
     /// [`Db::execute`] of a compound query's leaf (without the feature
     /// `datafusion`, its rows).
     #[cfg(not(feature = "datafusion"))]
