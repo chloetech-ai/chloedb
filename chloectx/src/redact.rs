@@ -10,17 +10,31 @@
 //!   (`AKIA`, `ASIA`), Google API keys (`AIza`) and OAuth tokens (`ya29.`),
 //!   Slack tokens (`xox?-`) and webhooks, Discord webhooks, Stripe (`sk_live_`,
 //!   `rk_live_`, `whsec_`), DigitalOcean (`dop_v1_`), Hugging Face (`hf_`),
-//!   SendGrid (`SG.`), ChloeDB API keys (`sk_<id>_<secret>`) and JWTs;
+//!   SendGrid (`SG.`), PyPI (`pypi-AgE`), HashiCorp Vault (`hvs.`, `hvb.`,
+//!   `hvr.`), age secret keys (`AGE-SECRET-KEY-1`), Shopify (`shpat_` and
+//!   kin), Square (`sq0atp-`, `sq0csp-`), Linear (`lin_api_`), Postman
+//!   (`PMAK-`), New Relic (`NRAK-` and kin), Grafana (`glsa_`, `glc_`),
+//!   Sentry (`sntrys_`, `sntryu_`), Mailgun (`key-` and 32 hex digits),
+//!   Doppler (`dp.st.` and kin), Databricks (`dapi`), Supabase (`sbp_`),
+//!   Tailscale (`tskey-`), Atlassian (`ATATT3`), Pulumi (`pul-`), Terraform
+//!   Cloud (`.atlasv1.`), ChloeDB API keys (`sk_<id>_<secret>`) and JWTs;
 //! - PEM private key blocks (also one cut off before its END line);
 //! - `Authorization:` headers and `Bearer` tokens, `curl -u user:pass`, and
 //!   the password of a URL (`scheme://user:pass@host`);
+//! - a command line's password and key flags (`--password=...`,
+//!   `--token ...`, `--api-key ...`), `mysql -p...` and `sshpass -p ...`;
+//! - the credentials of a Docker `config.json` or an `.npmrc` (`"auth"`,
+//!   `_auth`);
 //! - assignments whose name ends in a word for a secret (token, secret,
 //!   password, passwd, pass, passphrase, credential, a qualified key such as
 //!   `api_key` or `AWS_SECRET_ACCESS_KEY`), also with a number or a word such
 //!   as `prod`, `old` or `ro` after it (`STAGING_PASS2`, `GITHUB_TOKEN_RO`,
 //!   `API_KEY_2`): `NAME=value` in an environment
 //!   dump or a `.env` file, `name: value` in YAML, `"name": "value"` in
-//!   JSON, `name = "value"` in code. The name is kept.
+//!   JSON, `name = "value"` in code, also after a label (`note:
+//!   DB_PASSWORD=...`, a CI file's `run: PGPASSWORD=... psql`), and
+//!   `NAME value` with a long value (a Dockerfile's `ENV`). The name is
+//!   kept.
 //!
 //! It is best effort: a secret in no shape it knows (a password in prose, a
 //! random string under an unremarkable name) is stored as it is. It leaves
@@ -71,6 +85,25 @@ fn rules() -> &'static [Rule] {
             whole(r"\bdo[por]_v1_[a-f0-9]{64}\b", "digitalocean-token"),
             whole(r"\bhf_[A-Za-z0-9]{30,}\b", "huggingface-token"),
             whole(r"\bSG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}", "sendgrid-key"),
+            // LENA-302: shapes with a fixed, documented prefix.
+            whole(r"\bpypi-AgE[A-Za-z0-9_\-]{50,}", "pypi-token"),
+            whole(r"\bhv[sbr]\.[A-Za-z0-9_\-]{24,}", "vault-token"),
+            whole(r"\bAGE-SECRET-KEY-1[0-9A-Z]{50,}", "age-secret-key"),
+            whole(r"\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b", "shopify-token"),
+            whole(r"\bsq0(?:atp|csp)-[A-Za-z0-9_\-]{22,}", "square-token"),
+            whole(r"\blin_(?:api|oauth)_[A-Za-z0-9]{32,}", "linear-key"),
+            whole(r"\bPMAK-[A-Za-z0-9]{20,}-[A-Za-z0-9]{30,}", "postman-key"),
+            whole(r"\bNR(?:AK|AA|II|IQ)-[A-Za-z0-9_\-]{20,}", "newrelic-key"),
+            whole(r"\bglsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}\b|\bglc_[A-Za-z0-9+/_\-]{32,}={0,2}", "grafana-token"),
+            whole(r"\bsntry[su]_[A-Za-z0-9+/_\-]{30,}={0,2}", "sentry-token"),
+            whole(r"\bkey-[0-9a-f]{32}\b", "mailgun-key"),
+            whole(r"\bdp\.(?:st|pt|sa|ct|scim|audit)\.(?:[a-z0-9_\-]+\.)?[A-Za-z0-9]{40,}", "doppler-token"),
+            whole(r"\bdapi[0-9a-f]{32}(?:-[0-9]+)?\b", "databricks-token"),
+            whole(r"\bsbp_[0-9a-f]{40}\b", "supabase-token"),
+            whole(r"\btskey-(?:auth|api|client|webhook)-[A-Za-z0-9]{6,}-[A-Za-z0-9]{20,}", "tailscale-key"),
+            whole(r"\bATATT3[A-Za-z0-9_\-=]{60,}", "atlassian-token"),
+            whole(r"\bpul-[0-9a-f]{40}\b", "pulumi-token"),
+            whole(r"\b[A-Za-z0-9]{14}\.atlasv1\.[A-Za-z0-9_\-]{60,}", "terraform-token"),
             // chloedb-server's API keys: `sk_<16 hex>_<48 hex>`.
             whole(r"\bsk_[0-9a-f]{4,32}_[0-9a-f]{16,}\b", "chloedb-key"),
             whole(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}", "jwt"),
@@ -78,6 +111,12 @@ fn rules() -> &'static [Rule] {
             Rule::Custom(re(r"(?i)\b(bearer[ \t]+)([A-Za-z0-9._~+/=\-]{16,})"), bearer),
             Rule::Custom(re(r#"(^|\s)(-u|--user)([ \t]+|=)(["']?)([^\s:"'$]+):([^\s"'`]+)"#), curl_user),
             Rule::Custom(re(r#"\b([A-Za-z][A-Za-z0-9+.\-]*://)([^\s:/?#@"'<>\[\]]*):([^\s/?#@"'<>]+)@"#), url_password),
+            // `--password=...`, `--token ...` (LENA-302).
+            Rule::Custom(re(r#"(^|[\s"'`(])(--?[A-Za-z][A-Za-z0-9_\-]*)(=|[ \t]+)("[^"\n]*"|'[^'\n]*'|[^\s"'`;|&)\-][^\s"'`;|&)]*)"#), flag),
+            // `mysql -u root -psecret db`, `sshpass -p secret ssh host` (LENA-302).
+            Rule::Custom(re(r#"\b(mysql(?:dump|admin|import|sh|check|slap)?|mariadb(?:-dump|-admin|dump|admin)?|sshpass)\b([^\n|;&]*?[ \t])-p([ \t]*)("[^"\n]*"|'[^'\n]*'|[^\s"'`;|&]+)"#), short_password),
+            // `ENV DB_PASSWORD hunter2...`, `DD_API_KEY 0123...`: a long value after a space.
+            Rule::Custom(re(r"\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)([ \t]+)([A-Za-z0-9+/=_\-]{16,})"), spaced),
             Rule::Custom(
                 re(r#"(?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)(?P<q>(?:\\?["'])?)(?P<sep>[ \t]*(?:=>|:=|[:=])[ \t]*)(?P<val>\\"[^"\\\n]*\\"|"(?:[^"\\\n]|\\.)*"|'[^'\n]*'|[^\s"'`,;&\\]+)"#),
                 assignment,
@@ -90,7 +129,7 @@ fn rules() -> &'static [Rule] {
 /// is returned as it is without running the rules.
 fn worth_a_look() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"(?i)key|token|secret|pass|credential|auth|bearer|-u|--user|://|sk[-_]|gh[pousr]_|github_pat_|glpat-|npm_|AKIA|ASIA|AIza|ya29\.|xox|whsec_|_v1_|hf_|SG\.|eyJ").unwrap())
+    R.get_or_init(|| Regex::new(r"(?i)key|token|secret|pass|credential|auth|bearer|-u|--user|://|sk[-_]|gh[pousr]_|github_pat_|glpat-|npm_|AKIA|ASIA|AIza|ya29\.|xox|whsec_|_v1_|hf_|SG\.|eyJ|pypi-|hv[sbr]\.|shp|sq0|lin_|PMAK-|NR..-|glsa_|glc_|sntry|dp\.|dapi|sbp_|ATATT|pul-|atlasv1|mysql|mariadb").unwrap())
 }
 
 /// The marker that replaces a secret of `kind`.
@@ -138,7 +177,7 @@ pub fn redact_json(v: &mut Json) -> bool {
             let mut changed = false;
             for (k, x) in m.iter_mut() {
                 if let (Some(kind), Json::String(s)) = (secret_name(k), &*x) {
-                    if secret_value(s, true, is_env_name(k)) {
+                    if holds_secret(kind, s, true, is_env_name(k)) {
                         *x = Json::String(marker(kind));
                         changed = true;
                         continue;
@@ -219,15 +258,74 @@ fn url_password(c: &Captures) -> String {
 }
 
 /// `name = value` and its kin, where the name says the value is a secret.
+/// Where it does not, the value is looked at in turn: in `note:
+/// DB_PASSWORD=hunter2` the match is `note` and its value
+/// `DB_PASSWORD=hunter2`, which holds the assignment (ANA-301), and in
+/// JSON's `"cmd": "PGPASSWORD=... psql"` the string does.
 fn assignment(c: &Captures) -> String {
     let name = &c["name"];
-    let Some(kind) = secret_name(name) else { return c[0].to_string() };
     let (sep, val) = (&c["sep"], &c["val"]);
     let (open, inner, close) = unquote(val);
-    if !secret_value(inner, !open.is_empty(), is_env_name(name)) {
+    if let Some(kind) = secret_name(name) {
+        if holds_secret(kind, inner, !open.is_empty(), is_env_name(name)) {
+            return format!("{name}{}{sep}{open}{}{close}", &c["q"], marker(kind));
+        }
+    }
+    // The value is shorter than the match, so this ends.
+    format!("{name}{}{sep}{open}{}{close}", &c["q"], assignments(inner))
+}
+
+/// `text` with the assignments rule applied (the others have been, to the
+/// whole text it is part of).
+fn assignments(text: &str) -> String {
+    let Some(Rule::Custom(re, f)) = rules().last() else { unreachable!("the assignments rule is the last") };
+    re.replace_all(text, |c: &Captures| f(c)).into_owned()
+}
+
+/// `--password=value`, `--token value` and their kin on a command line
+/// (LENA-302): the flag's name (`--db-password`, `--api-key`, not
+/// `--password-file` or `--token-stdin`) says the value is a secret.
+fn flag(c: &Captures) -> String {
+    let (lead, name, sep, val) = (&c[1], &c[2], &c[3], &c[4]);
+    let keep = || c[0].to_string();
+    let Some(kind) = secret_name(name.trim_start_matches('-')).filter(|k| *k != "auth") else { return keep() };
+    let (open, inner, close) = unquote(val);
+    if is_marker(inner) || inner.starts_with('-') || !secret_value(inner, true, true) {
+        return keep();
+    }
+    // `--token value`: a word after a flag may be the next argument
+    // (`mysql --password mydb` asks for the password), so it is taken for
+    // the secret when it looks like one.
+    if sep != "=" && open.is_empty() && !(inner.len() >= 6 && (has_digit(inner) || inner.chars().any(|ch| ch.is_ascii_uppercase()) || inner.contains(['-', '_', '+', '/', '=', '!', '@', '#', '%', '^', '*', '~', '.']))) {
+        return keep();
+    }
+    format!("{lead}{name}{sep}{open}{}{close}", marker(kind))
+}
+
+/// `mysql -psecret` (the password joined to the flag, as MySQL's tools
+/// take it) and `sshpass -p secret`: `-p` means a port or a path to most
+/// other programs, so only after them.
+fn short_password(c: &Captures) -> String {
+    let (prog, between, space, val) = (&c[1], &c[2], &c[3], &c[4]);
+    let (open, inner, close) = unquote(val);
+    // `mysql -p` with a space after it asks for the password: what follows is the database.
+    let joined = space.is_empty() || prog == "sshpass";
+    if !joined || is_marker(inner) || inner.starts_with(['$', '-']) || inner.is_empty() {
         return c[0].to_string();
     }
-    format!("{name}{}{sep}{open}{}{close}", &c["q"], marker(kind))
+    format!("{prog}{between}-p{space}{open}{}{close}", marker("password"))
+}
+
+/// `NAME value` with no `=` or `:` between them (a Dockerfile's `ENV NAME
+/// value`, a dashboard copied as text): an environment variable's name for
+/// a secret, then a long value with letters and digits.
+fn spaced(c: &Captures) -> String {
+    let (name, space, val) = (&c[1], &c[2], &c[3]);
+    let Some(kind) = secret_name(name).filter(|k| *k != "auth") else { return c[0].to_string() };
+    if is_marker(val) || !has_digit(val) || !val.chars().any(|ch| ch.is_ascii_alphabetic()) || !secret_value(val, false, true) {
+        return c[0].to_string();
+    }
+    format!("{name}{space}{}", marker(kind))
 }
 
 /// The value of a quoted string, and its quotes.
@@ -289,6 +387,10 @@ fn secret_name(name: &str) -> Option<&'static str> {
         "key"
     } else if last == "key" && words.len() >= 2 && !NOT_SECRET_KEYS.contains(&words[words.len() - 2].as_str()) {
         "key"
+    } else if words.len() == 1 && last == "auth" {
+        // A Docker `config.json`'s `"auth"` and an `.npmrc`'s `_auth`: a
+        // user and password in base64 ([`auth_value`]).
+        "auth"
     } else {
         return None;
     };
@@ -340,6 +442,23 @@ fn is_env_name(name: &str) -> bool {
 
 fn has_digit(s: &str) -> bool {
     s.chars().any(|c| c.is_ascii_digit())
+}
+
+/// Whether `v`, assigned to a name that says its value is a secret of
+/// `kind`, holds one ([`secret_value`]; for `auth`, [`auth_value`]).
+fn holds_secret(kind: &str, v: &str, quoted: bool, env: bool) -> bool {
+    if kind == "auth" {
+        auth_value(v)
+    } else {
+        secret_value(v, quoted, env)
+    }
+}
+
+/// Whether `v`, the value of an `auth` (not of `auth: required` or
+/// `"auth": "oauth2"`), is credentials in base64.
+fn auth_value(v: &str) -> bool {
+    let v = v.trim();
+    v.len() >= 12 && !is_marker(v) && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')) && (has_digit(v) || v.ends_with('='))
 }
 
 /// Whether `v`, assigned to a name for a secret, holds one rather than
@@ -590,6 +709,142 @@ mod tests {
         let mut n = std::collections::BTreeMap::new();
         count_markers(&serde_json::to_string(&v).unwrap(), &mut n);
         assert_eq!(n.get("password"), Some(&2));
+    }
+
+    fn upper(n: usize) -> String {
+        "Q7Z3K9M2X5B8".chars().cycle().take(n).collect()
+    }
+    /// Letters only, as a random password often is: no digit to give it away.
+    fn letters(n: usize) -> String {
+        "RWnNtvAtsevGkbQxLp".chars().cycle().take(n).collect()
+    }
+
+    /// `text` caught as `kind` wherever it is typed (LENA-302): alone, in
+    /// a sentence, after a `word:` (ANA-301), in YAML, in JSON as text and
+    /// as a value.
+    fn caught_everywhere(text: &str, secret: &str, kind: &str) {
+        let json = serde_json::to_string(text).unwrap();
+        for t in [
+            text.to_string(),
+            format!("Please use {text} for the deploy, then rotate it."),
+            format!("here is my config: {text}"),
+            format!("q3 run: {text}"),
+            format!("steps:\n  - name: deploy\n    run: {text}\n    shell: bash"),
+            format!("{{\"value\": {json}, \"note\": \"from the dashboard\"}}"),
+            format!("{{\"tool_input\":{{\"command\":{json}}}}}"),
+        ] {
+            caught(&t, secret, kind);
+        }
+        let mut v = serde_json::json!({"output": text, "nested": [{"value": text}]});
+        assert!(redact_json(&mut v), "{kind}: redact_json kept {text:?}");
+        let out = v.to_string();
+        assert!(!out.contains(secret) && out.contains(&marker(kind)), "{kind}: {out}");
+    }
+
+    #[test]
+    fn every_shape_lena_and_ana_found_stored_as_typed() {
+        // LENA-302: tokens with a fixed, documented prefix.
+        let tokens = [
+            ("pypi-token", format!("pypi-AgEIcHlwaS5vcmc{}", alnum(60))),
+            ("vault-token", format!("hvs.{}", alnum(24))),
+            ("vault-token", format!("hvb.{}", alnum(90))),
+            ("age-secret-key", format!("AGE-SECRET-KEY-1{}", "QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L".chars().cycle().take(58).collect::<String>())),
+            ("shopify-token", format!("shpat_{}", hex(32))),
+            ("shopify-token", format!("shpss_{}", hex(32))),
+            ("square-token", format!("sq0atp-{}", alnum(22))),
+            ("square-token", format!("sq0csp-{}", alnum(43))),
+            ("linear-key", format!("lin_api_{}", alnum(40))),
+            ("postman-key", format!("PMAK-{}-{}", hex(24), hex(34))),
+            ("newrelic-key", format!("NRAK-{}", upper(27))),
+            ("grafana-token", format!("glsa_{}_{}", alnum(32), hex(8))),
+            ("grafana-token", format!("glc_{}==", alnum(60))),
+            ("sentry-token", format!("sntrys_{}", alnum(80))),
+            ("sentry-token", format!("sntryu_{}", hex(64))),
+            ("mailgun-key", format!("key-{}", hex(32))),
+            ("doppler-token", format!("dp.st.prd.{}", alnum(43))),
+            ("databricks-token", format!("dapi{}", hex(32))),
+            ("supabase-token", format!("sbp_{}", hex(40))),
+            ("tailscale-key", format!("tskey-auth-{}-{}", alnum(12), alnum(30))),
+            ("atlassian-token", format!("ATATT3x{}", alnum(180))),
+            ("pulumi-token", format!("pul-{}", hex(40))),
+            ("terraform-token", format!("{}.atlasv1.{}", alnum(14), alnum(67))),
+        ];
+        for (kind, t) in &tokens {
+            caught_everywhere(t, t, kind);
+        }
+
+        // A command line's password (LENA-302), random letters and all.
+        let (pw, hx) = (letters(14), hex(32));
+        for (cmd, secret, kind) in [
+            (format!("--password={pw}"), &pw, "password"),
+            (format!("mysqldump --user=root --password={pw} ledger > dump.sql"), &pw, "password"),
+            (format!("psql --password '{pw}' -h db"), &pw, "password"),
+            (format!("vault login --token={pw}"), &pw, "token"),
+            (format!("huggingface-cli login --token {pw}"), &pw, "token"),
+            (format!("tool --api-key {pw} --verbose"), &pw, "key"),
+            (format!("tool --verbose --client-secret {pw}"), &pw, "secret"),
+            (format!("mysql -u root -p{pw} ledger"), &pw, "password"),
+            (format!("mysql -h db.internal -uapp -p'{pw}' -e status"), &pw, "password"),
+            (format!("sshpass -p {pw} ssh deploy@host"), &pw, "password"),
+            // A dashboard's or a Dockerfile's `NAME value`.
+            (format!("ENV DB_PASSWORD {hx}"), &hx, "password"),
+            (format!("TWILIO_AUTH_TOKEN {hx}"), &hx, "token"),
+            (format!("DD_API_KEY {hx}"), &hx, "key"),
+        ] {
+            caught_everywhere(&cmd, secret, kind);
+        }
+
+        // ANA-301: `NAME=secret` after a `word:`; each was stored in clear.
+        for (text, secret) in [
+            ("q1 Note: DB_PASSWORD=hunter2", "hunter2"),
+            ("q2 environment: DB_PASSWORD=hunter2", "hunter2"),
+            ("q3 run: PGPASSWORD=hunter2 psql -h db", "hunter2"),
+            ("r3b-11 here is my config: DB_PASSWORD=Zq8mXv2LpR4t", "Zq8mXv2LpR4t"),
+            ("deploy env: STAGING_PASS2=Yk3nWq8z DB_PASSWORD=Zq8mXv2LpR4t", "Yk3nWq8z"),
+            ("Staging creds for the probe: DB_PASSWORD=hunter2-probe, url ok", "hunter2-probe"),
+            ("command: DB_PASSWORD=hunter2 ./migrate", "hunter2"),
+            ("kubectl create secret generic db --from-literal=password=S3cr3t-pw!", "S3cr3t-pw"),
+        ] {
+            caught(text, secret, "password");
+            caught_everywhere(text.split_once(": ").map_or(text, |(_, t)| t), secret, "password");
+        }
+        let r = caught("deploy env: STAGING_PASS2=Yk3nWq8z DB_PASSWORD=Zq8mXv2LpR4t", "Zq8mXv2LpR4t", "password");
+        assert_eq!(r, "deploy env: STAGING_PASS2=[REDACTED:password] DB_PASSWORD=[REDACTED:password]");
+        for t in ["r3b-12 prod: API_KEY=Hb5tLq9wXz2mNp7r", "prod:API_KEY=Hb5tLq9wXz2mNp7r"] {
+            caught(t, "Hb5tLq9wXz2mNp7r", "key");
+        }
+        caught(r#"{"cmd": "PGPASSWORD=hunter2 psql -h db"}"#, "hunter2", "password");
+
+        // A Docker config.json's `"auth"` and an `.npmrc`'s `_auth`: a user and password in base64.
+        let auth = format!("{}=", alnum(39));
+        let r = caught(&format!("{{\"auths\": {{\"ghcr.io\": {{\"auth\": \"{auth}\"}}}}}}"), &auth, "auth");
+        assert_eq!(r, "{\"auths\": {\"ghcr.io\": {\"auth\": \"[REDACTED:auth]\"}}}");
+        caught(&format!("cat ~/.docker/config.json\n{{\n  \"auths\": {{\n    \"https://index.docker.io/v1/\": {{\n      \"auth\": \"{auth}\"\n    }}\n  }}\n}}"), &auth, "auth");
+        caught(&format!("//registry.example.com/:_auth={auth}"), &auth, "auth");
+        let mut v = serde_json::json!({"auths": {"ghcr.io": {"auth": auth}}});
+        assert!(redact_json(&mut v));
+        assert_eq!(v["auths"]["ghcr.io"]["auth"], "[REDACTED:auth]");
+    }
+
+    #[test]
+    fn what_only_looks_like_the_new_shapes_is_kept() {
+        for t in [
+            // Flags that name a secret's place, not the secret.
+            "chloectx sync setup --url https://x --token-stdin --token-env CHLOEDB_KEY",
+            "docker login --password-stdin < pw.txt && gh auth login --with-token < token.txt",
+            "tool --token=$TOKEN --password=\"$DB_PASSWORD\" --api-key=${API_KEY} --secret=<your-secret>",
+            "mysql --password mydb; mysql -u root -p ledger; mysql -p -e 'select 1'; mysql -P 3306",
+            "cargo test --release --max-tokens 4096 --no-password",
+            "mkdir -p build && ssh -p 2222 host && docker run -p 8080:80 img && cp -pr a b",
+            // Words and ids.
+            "sq0idp-abcdefghijklmnopqrstuv is the application id, key-value store, hvs. prefix",
+            "auth: required, \"auth\": \"oauth2\", auth = github",
+            "the GITHUB_TOKEN permissions read-all and DB_PASSWORD changed yesterday",
+            "\"private_key_id\": \"0123456789abcdef0123456789abcdef01234567\"",
+            "pypi-AgE is the prefix and NRAK- the New Relic one",
+        ] {
+            kept(t);
+        }
     }
 
     #[test]

@@ -757,6 +757,314 @@ fn orders_by_several(q: &sql::Query, s: &sql::Select, schema: &Schema) -> bool {
     }
 }
 
+/// The most rows (OFFSET + LIMIT) [`top_with_ties`] cuts to.
+pub(crate) const TIES_MAX: usize = 10_000;
+
+/// A SELECT of one table ordered by several keys and cut by a LIMIT,
+/// whose first key is a numeric field of one value: `q` with a bound on
+/// that key added to its WHERE, which every row of the answer meets.
+///
+/// The executor orders by one numeric key with its top-k, reading the
+/// column's best blocks first by their zone maps ([`crate::query::exec`]),
+/// but several keys are sorted over every row the scan finds. Here the
+/// bound is the value the `n`-th row (`n` = OFFSET + LIMIT) has by the
+/// first key alone, which that top-k finds: no row past it by the first
+/// key can be among the first `n` by all keys, as `n` rows come before it.
+/// So
+///
+/// ```sql
+/// SELECT .. FROM t WHERE w ORDER BY x DESC, y LIMIT 10
+/// ```
+///
+/// scans only `w AND (x >= (SELECT MIN(__k) FROM (SELECT x AS __k FROM t
+/// WHERE w AND x IS NOT NULL ORDER BY x DESC LIMIT 10) AS __top) OR x IS
+/// NULL)`, and sorts those rows as it sorted them all. With fewer than
+/// `n` rows that have an `x`, the bound is the last of them, and with none
+/// it is NULL; rows without an `x` (which sort last) are always scanned.
+/// The rows kept come in the order they had, so the sort keeps the order
+/// of rows tied on every key. `None` for any other query: one that groups,
+/// aggregates, is DISTINCT, has window functions, a subquery in WHERE, a
+/// condition the indexes do not answer, a ranking among its keys, `NULLS
+/// FIRST` on its first key, no LIMIT, or more than [`TIES_MAX`] rows to
+/// cut; or whose text does not parse back.
+fn top_with_ties(q: &sql::Query, s: &sql::Select, schema: &Schema, params: &Params) -> Option<sql::Query> {
+    if q.with.is_some() || q.fetch.is_some() || s.from.len() != 1 || !s.from[0].joins.is_empty() || s.distinct.is_some() || s.having.is_some() || s.qualify.is_some() {
+        return None;
+    }
+    if !matches!(&s.group_by, sql::GroupByExpr::Expressions(es, _) if es.is_empty()) || has_aggregate(s) || windowed(q, s) || per_capped(q) || reads_paths(q, s) || filters_rows(s, schema) {
+        return None;
+    }
+    let TableFactor::Table { name, .. } = &s.from[0].relation else { return None };
+    if !is_table(name, schema) {
+        return None;
+    }
+    let mut sub = false;
+    if let Some(w) = &s.selection {
+        walk(w, &mut |x| sub |= matches!(x, Expr::Subquery(_) | Expr::InSubquery { .. } | Expr::Exists { .. }) || outer_field(x).is_some());
+    }
+    if sub {
+        return None;
+    }
+    let Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) = &q.order_by else { return None };
+    if es.len() < 2 || es.iter().any(|o| ranks(&o.expr) || is_score(&o.expr) || is_per_cap(&o.expr)) {
+        return None;
+    }
+    let first = &es[0];
+    if first.options.nulls_first == Some(true) {
+        return None;
+    }
+    let field = first_key_field(&first.expr, s, schema)?;
+    let f = &schema.fields[field];
+    if !matches!(f.ty, FieldType::Int | FieldType::Float) || f.multi || !f.indexed {
+        return None;
+    }
+    let (offset, limit) = limits(&q.limit_clause, params).ok()?;
+    let n = offset.checked_add(limit?)?;
+    if n == 0 || n > TIES_MAX {
+        return None;
+    }
+    let desc = first.options.asc == Some(false);
+    let x = sql::Ident::with_quote('"', f.name.as_str()).to_string();
+    let rel = s.from[0].relation.to_string();
+    let w = s.selection.as_ref().map_or(String::new(), |w| format!("({w}) AND "));
+    let (best, dir, cmp) = if desc { ("MIN", "DESC", ">=") } else { ("MAX", "ASC", "<=") };
+    let probe = format!("SELECT {best}(__k) FROM (SELECT {x} AS __k FROM {rel} WHERE {w}{x} IS NOT NULL ORDER BY {x} {dir} LIMIT {n}) AS __top");
+    let bound = super::sql::parse_query(&format!("SELECT {x} FROM {rel} WHERE {x} {cmp} ({probe}) OR {x} IS NULL")).ok()?;
+    let sql::SetExpr::Select(b) = *bound.body else { return None };
+    let bound = Expr::Nested(Box::new(b.selection?));
+    let mut cut = q.clone();
+    let sql::SetExpr::Select(cs) = cut.body.as_mut() else { return None };
+    cs.selection = Some(match cs.selection.take() {
+        Some(w) => Expr::BinaryOp { left: Box::new(Expr::Nested(Box::new(w))), op: BinaryOperator::And, right: Box::new(bound) },
+        None => bound,
+    });
+    Some(cut)
+}
+
+/// The field an ORDER BY key of `s` names: a column of the table (by its
+/// name, qualified or not), a column the SELECT renames (`x AS y`, `ORDER
+/// BY y`), or one it selects by its position (`ORDER BY 2`).
+fn first_key_field(e: &Expr, s: &sql::Select, schema: &Schema) -> Option<usize> {
+    let column = |e: &Expr| -> Option<usize> {
+        let name = match e {
+            Expr::Identifier(id) => &id.value,
+            Expr::CompoundIdentifier(ids) if ids.len() == 2 => &ids[1].value,
+            _ => return None,
+        };
+        schema.fields.iter().position(|f| f.name.eq_ignore_ascii_case(name))
+    };
+    if let Some(n) = super::sql::literal_usize(e) {
+        return match s.projection.get(n.checked_sub(1)?)? {
+            SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => column(e),
+            _ => None,
+        };
+    }
+    // A name the SELECT gives a column comes before the table's own.
+    if let Expr::Identifier(id) = e {
+        for item in &s.projection {
+            if let SelectItem::ExprWithAlias { expr, alias } = item {
+                if alias.value.eq_ignore_ascii_case(&id.value) {
+                    return column(expr);
+                }
+            }
+        }
+    }
+    column(e)
+}
+
+/// What a column is compared with by [`simple_cond`]: numbers, text, or
+/// TRUE and FALSE.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LitKind {
+    Number,
+    Text,
+    Bool,
+}
+
+/// What kind of literal `e` is: a number (`5`, `-2.5`), a quoted string,
+/// or TRUE or FALSE; `None` for anything else, NULL among them.
+fn lit_kind(e: &Expr) -> Option<LitKind> {
+    match e {
+        Expr::Value(v) => match &v.value {
+            sql::Value::Number(..) => Some(LitKind::Number),
+            sql::Value::SingleQuotedString(_) => Some(LitKind::Text),
+            sql::Value::Boolean(_) => Some(LitKind::Bool),
+            _ => None,
+        },
+        Expr::UnaryOp { op: UnaryOperator::Minus | UnaryOperator::Plus, expr } if matches!(expr.as_ref(), Expr::Value(v) if matches!(v.value, sql::Value::Number(..))) => Some(LitKind::Number),
+        Expr::Nested(x) => lit_kind(x),
+        _ => None,
+    }
+}
+
+/// The kind of literal a field compares with as a column's value does, the
+/// same in a scan's filter and over rows in memory: an INT or FLOAT with
+/// numbers, a KEYWORD with text, a BOOL with TRUE and FALSE, each of one
+/// value and with no logical type (a TIMESTAMP compares with text its own
+/// way). `None` for any other field.
+fn plain_kind(f: &crate::schema::Field) -> Option<LitKind> {
+    if f.multi || !f.indexed {
+        return None;
+    }
+    match (f.logical, &f.ty) {
+        (Some(crate::schema::Logical::Bool), _) => Some(LitKind::Bool),
+        (Some(_), _) => None,
+        (None, FieldType::Int | FieldType::Float) => Some(LitKind::Number),
+        (None, FieldType::Keyword) => Some(LitKind::Text),
+        _ => None,
+    }
+}
+
+/// Whether `e` tests columns against literals and nothing else: `c op v`
+/// (`=`, `<>`, `<`, `<=`, `>`, `>=`, either way round), `c [NOT] IN (v,
+/// ..)`, `c [NOT] BETWEEN v AND w` and `c IS [NOT] NULL`, joined by AND and
+/// OR, each `c` a column `col` gives the kind of and each `v` a literal of
+/// that kind ([`lit_kind`]). `Some(true)` when the test fails for a row
+/// whose columns are all NULL (it rejects NULLs: a comparison, IN,
+/// BETWEEN, IS NOT NULL, AND with one such side, OR of two), `Some(false)`
+/// when it may hold for one, `None` when `e` is something else.
+fn simple_cond(e: &Expr, col: &dyn Fn(&Expr) -> Option<LitKind>) -> Option<bool> {
+    let pair = |a: &Expr, b: &Expr| match (col(a), col(b)) {
+        (Some(k), None) => (lit_kind(b) == Some(k)).then_some(true),
+        (None, Some(k)) => (lit_kind(a) == Some(k)).then_some(true),
+        _ => None,
+    };
+    match e {
+        Expr::Nested(x) => simple_cond(x, col),
+        Expr::BinaryOp { left, op: BinaryOperator::And, right } => Some(simple_cond(left, col)? | simple_cond(right, col)?),
+        Expr::BinaryOp { left, op: BinaryOperator::Or, right } => Some(simple_cond(left, col)? & simple_cond(right, col)?),
+        Expr::BinaryOp { left, op: BinaryOperator::Eq | BinaryOperator::NotEq | BinaryOperator::Lt | BinaryOperator::LtEq | BinaryOperator::Gt | BinaryOperator::GtEq, right } => pair(left, right),
+        Expr::InList { expr, list, .. } => {
+            let k = col(expr)?;
+            (!list.is_empty() && list.iter().all(|v| lit_kind(v) == Some(k))).then_some(true)
+        }
+        Expr::Between { expr, low, high, .. } => {
+            let k = col(expr)?;
+            (lit_kind(low) == Some(k) && lit_kind(high) == Some(k)).then_some(true)
+        }
+        Expr::IsNull(x) => col(x).map(|_| false),
+        Expr::IsNotNull(x) => col(x).map(|_| true),
+        _ => None,
+    }
+}
+
+/// `e` with each column reference that `to` maps replaced by what it maps
+/// it to.
+fn substitute(e: &Expr, to: &dyn Fn(&Expr) -> Option<Expr>) -> Expr {
+    let mut e = e.clone();
+    walk_mut(&mut e, &mut |x| {
+        if matches!(x, Expr::Identifier(_) | Expr::CompoundIdentifier(_)) {
+            if let Some(y) = to(x) {
+                *x = y;
+            }
+        }
+    });
+    e
+}
+
+/// The query of a derived table `FROM (sub) AS alias`, with the
+/// conditions of `conds` that it can answer added to its WHERE: those
+/// naming only its columns ([`simple_cond`]), each a column `sub` selects
+/// as one of its table's fields, by name or renamed, and when `sub`
+/// groups, one it groups by. The conditions stay where they were too, so
+/// the rows of `sub` that pass are those the outer query kept; but its
+/// table's indexes find them, rather than every row being read and the
+/// conditions tested over them in memory. `sub` is one SELECT of one
+/// table of `catalog` (not a `WITH` result), with no LIMIT, OFFSET, window
+/// functions, QUALIFY or DISTINCT ON, nor aggregates without GROUP BY.
+/// `None` when no condition is added.
+fn pushed_into(sub: &sql::Query, alias: &str, conds: &[Expr], catalog: &[&Schema], ctes: &[String], bare: bool) -> Option<sql::Query> {
+    if sub.with.is_some() || sub.limit_clause.is_some() || sub.fetch.is_some() {
+        return None;
+    }
+    let sql::SetExpr::Select(s) = sub.body.as_ref() else { return None };
+    if s.from.len() != 1 || !s.from[0].joins.is_empty() || matches!(s.distinct, Some(sql::Distinct::On(_))) || s.qualify.is_some() || windowed(sub, s) || per_capped(sub) {
+        return None;
+    }
+    let TableFactor::Table { name, .. } = &s.from[0].relation else { return None };
+    let table = super::sql::table_name(name);
+    if ctes.iter().any(|c| c.eq_ignore_ascii_case(&table)) {
+        return None;
+    }
+    let schema = catalog.iter().find(|t| t.table.eq_ignore_ascii_case(&table))?;
+    let keys: Vec<&Expr> = match &s.group_by {
+        sql::GroupByExpr::Expressions(es, _) => es.iter().collect(),
+        _ => return None,
+    };
+    if keys.is_empty() && has_aggregate(s) {
+        return None;
+    }
+    let grouped = !keys.is_empty();
+    let field_of = |e: &Expr| -> Option<usize> {
+        let n = match e {
+            Expr::Identifier(id) => &id.value,
+            Expr::CompoundIdentifier(ids) if ids.len() == 2 => &ids[1].value,
+            _ => return None,
+        };
+        schema.fields.iter().position(|f| f.name.eq_ignore_ascii_case(n))
+    };
+    // The derived table's column `c`: the inner expression, a field of
+    // the table (grouped by, when it groups).
+    let inner = |c: &str| -> Option<(Expr, LitKind)> {
+        let mut found = None;
+        for item in &s.projection {
+            let (e, out) = match item {
+                SelectItem::UnnamedExpr(e @ Expr::Identifier(id)) => (e, &id.value),
+                SelectItem::UnnamedExpr(e @ Expr::CompoundIdentifier(ids)) if ids.len() == 2 => (e, &ids[1].value),
+                SelectItem::ExprWithAlias { expr, alias } => (expr, &alias.value),
+                _ => continue,
+            };
+            if out.eq_ignore_ascii_case(c) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(e);
+            }
+        }
+        let e = found?;
+        let f = field_of(e)?;
+        if grouped && !keys.iter().any(|k| field_of(k) == Some(f)) {
+            return None;
+        }
+        Some((e.clone(), plain_kind(&schema.fields[f])?))
+    };
+    // The derived table's column a reference names: qualified by its
+    // alias, or bare when it is all the FROM has.
+    let name_of = |x: &Expr| -> Option<String> {
+        match x {
+            Expr::CompoundIdentifier(ids) if ids.len() == 2 && ids[0].value.eq_ignore_ascii_case(alias) => Some(ids[1].value.clone()),
+            Expr::Identifier(id) if bare => Some(id.value.clone()),
+            _ => None,
+        }
+    };
+    let mut added = Vec::new();
+    for c in conds {
+        // Every column it names is one of the derived table's.
+        let mut others = false;
+        walk(c, &mut |x| others |= matches!(x, Expr::Identifier(_) | Expr::CompoundIdentifier(_)) && name_of(x).is_none());
+        if others {
+            continue;
+        }
+        let kind = |x: &Expr| name_of(x).and_then(|n| inner(&n)).map(|(_, k)| k);
+        if simple_cond(c, &kind).is_none() {
+            continue;
+        }
+        added.push(substitute(c, &|x| name_of(x).and_then(|n| inner(&n)).map(|(e, _)| e)));
+    }
+    if added.is_empty() {
+        return None;
+    }
+    let mut out = sub.clone();
+    let sql::SetExpr::Select(s) = out.body.as_mut() else { return None };
+    for c in added {
+        s.selection = Some(match s.selection.take() {
+            Some(w) => Expr::BinaryOp { left: Box::new(Expr::Nested(Box::new(w))), op: BinaryOperator::And, right: Box::new(Expr::Nested(Box::new(c))) },
+            None => c,
+        });
+    }
+    Some(out)
+}
+
 /// Whether a SELECT's columns or ORDER BY compute [`of_rows`] values.
 fn rows_of(q: &sql::Query, s: &sql::Select) -> bool {
     select_exprs(s).into_iter().any(of_rows) || q.order_by.as_ref().is_some_and(|ob| matches!(&ob.kind, sql::OrderByKind::Expressions(es) if es.iter().any(|e| of_rows(&e.expr))))
@@ -2027,6 +2335,14 @@ impl<'a> Planner<'a> {
 
     /// A SELECT over a table: a leaf, its subqueries planned within it.
     fn single(&self, q: &sql::Query, s: &sql::Select, schema: &Schema) -> Result<Planned> {
+        // ORDER BY several keys with a LIMIT: only the rows that can make
+        // the cut are scanned ([`top_with_ties`]).
+        if orders_by_several(q, s, schema) {
+            if let Some(cut) = top_with_ties(q, s, schema, self.params) {
+                let sql::SetExpr::Select(cs) = cut.body.as_ref() else { unreachable!("a SELECT") };
+                return self.join(&cut, cs);
+            }
+        }
         let mut q = q.clone();
         let mut s = s.clone();
         match &s.distinct {
@@ -2443,8 +2759,24 @@ impl<'a> Planner<'a> {
 
         // The tables.
         let twj = &s.from[0];
+        // A derived table that WHERE filters is planned with the
+        // conditions it can answer itself ([`pushed_into`]): of the first
+        // table, or one joined by an inner join, without a FULL JOIN.
+        let full = twj.joins.iter().any(|j| matches!(j.join_operator, sql::JoinOperator::FullOuter(_)));
+        let wheres: Vec<Expr> = if full { Vec::new() } else { s.selection.iter().flat_map(split_and).collect() };
+        let ctes: Vec<String> = self.ctes.borrow().iter().map(|c| c.name.clone()).collect();
+        let bare = twj.joins.is_empty();
+        let derived = |r: &TableFactor, inner: bool| -> Option<TableFactor> {
+            let TableFactor::Derived { lateral, subquery, alias: Some(a) } = r else { return None };
+            if !inner || wheres.is_empty() {
+                return None;
+            }
+            let q = pushed_into(subquery, &a.name.value, &wheres, self.catalog, &ctes, bare)?;
+            Some(TableFactor::Derived { lateral: *lateral, subquery: Box::new(q), alias: Some(a.clone()) })
+        };
         let mut srcs = Vec::new();
-        let (alias, kind) = self.source(&twj.relation)?;
+        let first = derived(&twj.relation, true);
+        let (alias, kind) = self.source(first.as_ref().unwrap_or(&twj.relation))?;
         srcs.push(Src { alias, kind, join: None });
         // The match condition of each ASOF JOIN, by its table's place.
         let mut matches: Vec<Option<Expr>> = vec![None];
@@ -2483,7 +2815,8 @@ impl<'a> Planner<'a> {
                     on.clone()
                 }
             };
-            let (alias, src) = self.source(&j.relation)?;
+            let pushed = derived(&j.relation, kind == ir::JoinKind::Inner);
+            let (alias, src) = self.source(pushed.as_ref().unwrap_or(&j.relation))?;
             srcs.push(Src { alias, kind: src, join: Some((kind, on)) });
         }
         let mut seen = HashSet::new();
@@ -2497,6 +2830,33 @@ impl<'a> Planner<'a> {
         let vectors: Vec<Vec<String>> =
             srcs.iter().map(|s| s.kind.schema().map_or_else(Vec::new, |t| t.fields.iter().filter(|f| matches!(f.ty, FieldType::Vector { .. })).map(|f| f.name.clone()).collect())).collect();
         let sides = Sides { aliases: &aliases, cols: &cols_of, vectors: &vectors };
+        // A LEFT JOIN whose rows without a match WHERE drops is an inner
+        // join: a condition of WHERE on its table alone that fails where
+        // that table's columns are NULL ([`simple_cond`]). It then filters
+        // the table's scan, and the join finds the same rows.
+        if !full {
+            let mut inner = Vec::new();
+            for c in s.selection.iter().flat_map(split_and) {
+                let Ok(at) = sides.of(&c) else { continue };
+                let [i] = at.as_slice() else { continue };
+                let (i, Some(t)) = (*i, srcs[*i].kind.schema()) else { continue };
+                if !srcs[i].join.as_ref().is_some_and(|(k, _)| *k == ir::JoinKind::Left) || matches!(srcs[i].kind, SrcKind::Rows(_)) {
+                    continue;
+                }
+                let kind = |x: &Expr| match sides.column(x) {
+                    Ok(Some((j, c))) if j == i => t.field(&c).and_then(plain_kind),
+                    _ => None,
+                };
+                if simple_cond(&c, &kind) == Some(true) {
+                    inner.push(i);
+                }
+            }
+            for i in inner {
+                if let Some((k, _)) = srcs[i].join.as_mut() {
+                    *k = ir::JoinKind::Inner;
+                }
+            }
+        }
         let in_memory = |i: usize| matches!(srcs[i].kind, SrcKind::Rows(_));
         let table = |i: usize| srcs[i].kind.schema();
 
@@ -2601,6 +2961,49 @@ impl<'a> Planner<'a> {
                         srcs[i].alias, links.table, links.table, keys.table
                     )));
                 }
+            }
+        }
+
+        // A condition of one side on a column an inner join equates with a
+        // column of another side holds of that column too (`a.k = b.k AND
+        // b.k = 5`: `a.k = 5`), so it filters both scans, each by its own
+        // index. Both columns are fields of one value ([`plain_kind`]),
+        // and both sides are of inner joins (or the first table).
+        if full_at.is_none() {
+            let inner_side = |i: usize| i == 0 || srcs[i].join.as_ref().is_some_and(|(k, _)| *k == ir::JoinKind::Inner);
+            let mut more: Vec<(usize, Expr)> = Vec::new();
+            for i in 1..srcs.len() {
+                if !inner_side(i) || in_memory(i) {
+                    continue;
+                }
+                for (le, rc) in &keys[i] {
+                    let Ok(Some((j, lc))) = sides.column(le) else { continue };
+                    if !inner_side(j) || in_memory(j) || !matches!(le, Expr::Identifier(_) | Expr::CompoundIdentifier(_)) {
+                        continue;
+                    }
+                    let (Some(ti), Some(tj)) = (table(i), table(j)) else { continue };
+                    let (Some(ki), Some(kj)) = (ti.field(rc).and_then(plain_kind), tj.field(&lc).and_then(plain_kind)) else { continue };
+                    if ki != kj {
+                        continue;
+                    }
+                    for ((from, fc), (to, tc)) in [((i, rc.as_str()), (j, lc.as_str())), ((j, lc.as_str()), (i, rc.as_str()))] {
+                        let on = |x: &Expr| matches!(sides.column(x), Ok(Some((a, c))) if a == from && c.eq_ignore_ascii_case(fc));
+                        for c in &pushed[from] {
+                            let mut only = true;
+                            walk(c, &mut |x| only &= !matches!(x, Expr::Identifier(_) | Expr::CompoundIdentifier(_)) || on(x));
+                            if !only || simple_cond(c, &|x| on(x).then_some(ki)).is_none() {
+                                continue;
+                            }
+                            let moved = substitute(c, &|x| on(x).then(|| qualified(&srcs[to].alias, tc)));
+                            if !pushed[to].contains(&moved) && !more.contains(&(to, moved.clone())) {
+                                more.push((to, moved));
+                            }
+                        }
+                    }
+                }
+            }
+            for (to, c) in more {
+                pushed[to].push(c);
             }
         }
 
