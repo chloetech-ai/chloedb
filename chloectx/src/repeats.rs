@@ -336,7 +336,10 @@ pub fn parse_check(text: &str, request: &str, said: &[(String, String)]) -> (Vec
             quote: m["quote"].as_str().unwrap_or("").trim().to_string(),
             rule: m["rule"].as_str().unwrap_or("").trim().to_string(),
         };
-        if a.ids.is_empty() || a.rule.is_empty() || !quoted_from(&a.quote, request) || asks_what_holds(&a.quote, request) {
+        // How to do this turn ("no code changes", "just answer") is said
+        // again with each turn that wants it, not because a rule failed
+        // (JONAH-303).
+        if a.ids.is_empty() || a.rule.is_empty() || !quoted_from(&a.quote, request) || asks_what_holds(&a.quote, request) || crate::capture::for_this_turn(&a.quote) {
             dropped.push(Again { ids, ..a });
         } else {
             kept.push(a);

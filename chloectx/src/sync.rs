@@ -608,7 +608,9 @@ fn push_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) 
     let mut sent = 0;
     loop {
         let rs = store.query_with(&format!("SELECT {COLUMNS} FROM memory WHERE seq > :s ORDER BY seq ASC LIMIT {BATCH}"), &Params::new().set("s", chloedb::Value::Int(st.pushed_seq)))?;
-        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).collect();
+        // A record written before private asides were cut out goes without
+        // them, or not at all ([`crate::private::for_push`], WEI-301).
+        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter_map(|r| crate::private::for_push(&r)).collect();
         let Some(top) = rs.rows.iter().filter_map(|r| r.get(5).and_then(|v| v.as_i64())).max() else { break };
         if !recs.is_empty() {
             let ops: Vec<Json> = recs.iter().map(|r| json!({"op": "upsert", "table": table, "doc": remote_doc(project, &me, r)})).collect();
@@ -635,6 +637,7 @@ fn push_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState) 
 /// records `chloectx redact` rewrote); how many.
 pub fn push_records(remote: &Remote, project: &str, recs: &[Record]) -> Result<usize> {
     let (table, me) = (table_for(project), origin(&remote.header_dir));
+    let recs: Vec<Record> = recs.iter().filter_map(crate::private::for_push).collect();
     for batch in recs.chunks(BATCH) {
         let ops: Vec<Json> = batch.iter().map(|r| json!({"op": "upsert", "table": table, "doc": remote_doc(project, &me, r)})).collect();
         let ids = batch.iter().map(|r| r.id.as_str()).collect::<Vec<_>>().join(",");

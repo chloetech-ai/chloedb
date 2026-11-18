@@ -253,12 +253,18 @@ impl App {
         // A copy synced before its note was replaced may not say so: the
         // note that replaced it does.
         let replaced: std::collections::HashSet<&str> = notes.iter().flat_map(|n| n["supersedes"].as_array().into_iter().flatten().filter_map(|v| v.as_str())).collect();
+        // The rules are the ones every context gets: once notes are
+        // distilled, a prompt's raw sentence picked as a rule (`cue`) only
+        // repeats them, and a rule an agent kept is its suggestion, listed
+        // with the notes (ANA-308, LENA-310).
+        let distilled = notes.iter().any(|n| n["tag"] == "distilled");
         for n in &notes {
             let tag = n["tag"].as_str().unwrap_or("");
-            if tag == "superseded" || tag == "done" || replaced.contains(n["id"].as_str().unwrap_or("")) {
+            if crate::record::closed_tag(tag) || tag == "done" || replaced.contains(n["id"].as_str().unwrap_or("")) || (distilled && tag == "cue" && n["kind"] == "rule") {
                 continue;
             }
             let k = n["kind"].as_str().unwrap_or("note").to_string();
+            let k = if k == "rule" && n["by"].as_str().is_some_and(|b| b != "user") { "note".to_string() } else { k };
             *live.entry(k.clone()).or_default() += 1;
             let l = lists.entry(k).or_default();
             if l.len() < 12 {
@@ -345,8 +351,11 @@ fn note(row: &[Value]) -> Json {
         "preference" => "rule".to_string(),
         k => k.to_string(),
     };
+    // Who stated it (the record's `By:` line): a rule an agent kept is its
+    // suggestion, not the user's (LENA-310).
+    let by = str_of(row.get(10)).lines().find_map(|l| l.strip_prefix("By: ").map(|b| crate::record::Source::parse(b).as_str())).unwrap_or_else(|| "user".to_string());
     json!({
         "id": str_of(row.first()), "kind": kind, "tag": str_of(row.get(3)), "text": str_of(row.get(9)), "ts": int_of(row.get(6)),
-        "session": str_of(row.get(1)), "seq": int_of(row.get(5)), "supersedes": linked("supersedes"), "superseded_by": linked("superseded_by"),
+        "session": str_of(row.get(1)), "seq": int_of(row.get(5)), "supersedes": linked("supersedes"), "superseded_by": linked("superseded_by"), "by": by,
     })
 }
