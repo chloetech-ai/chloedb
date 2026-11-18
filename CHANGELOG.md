@@ -11,6 +11,36 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **ChloeCtx: `chloectx sync setup` syncs the project it runs in, and no
+  other** (persona study round 3, LENA-301; audit CTX-34). The first key
+  set up on a machine was kept as the machine's too (`sync.token`), and
+  every other project's daemon then pushed its store with it: a project
+  never set up uploaded 55 records, one an unredacted PyPI token. Now a
+  project syncs once `setup` runs in its folder (listed in `sync.json`'s
+  `projects`, or with a key of its own); `--every-project` syncs every
+  project and keeps the key as the machine's, and `CHLOECTX_SYNC_URL` in
+  the environment syncs every project it runs. `setup`, `chloectx sync
+  status` (`syncs`, `projects`) and doctor say which projects sync, and
+  name the table a project that no longer syncs sent records to before;
+  `chloectx sync off` (`--every-project`) undoes a setup. A `sync.token`
+  an earlier setup kept is sent for no project, and a project set up
+  before without a key of its own (`--token-env`, or none) syncs again
+  once `setup` runs in its folder.
+- **ChloeCtx redacts 18 more kinds of token, a command line's passwords,
+  and an assignment after a label** (persona study round 3, ANA-301,
+  LENA-302; LENA-10 and CTX-35 before). `note: DB_PASSWORD=hunter2`,
+  `q3 run: PGPASSWORD=... psql` and `here is my config: DB_PASSWORD=...`
+  were stored as typed, since the rule read `note` as the name and the
+  assignment as its value; so was `{"cmd": "PGPASSWORD=... psql"}` as
+  text. Caught now as well: PyPI, Vault, age, Shopify, Square, Linear,
+  Postman, New Relic, Grafana, Sentry, Mailgun, Doppler, Databricks,
+  Supabase, Tailscale, Atlassian, Pulumi and Terraform Cloud tokens;
+  `--password=...`, `--token ...` and `--api-key ...`, `mysql -p...` and
+  `sshpass -p ...`; a Docker `config.json`'s `"auth"` and an `.npmrc`'s
+  `_auth`; and `NAME value` with a long value (a Dockerfile's `ENV`).
+  `chloectx redact` (`--all` for every store) rewrites what stores kept
+  before, and replaces the server's copies for the projects that sync
+  ([setup.md](docs/chloectx/setup.md#secrets-and-chloectx-redact)).
 - **Graph answers and match counts right** (persona study round 3,
   NADIA-305, NADIA-302, GRACE-301). `PATH(..., through => p)` could answer
   a path through a row that fails `p`, where the two halves of its search
