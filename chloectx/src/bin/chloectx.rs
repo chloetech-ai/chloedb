@@ -541,6 +541,14 @@ enum SyncCmd {
     },
     /// Push, then store the project's records the server holds and the store lacks.
     Pull,
+    /// Retire a rule (or a decision, fact, to-do or note) for the whole
+    /// project: here, on the sync server, and on every machine of the
+    /// project as it next pulls. Whoever may write the project's table may;
+    /// the server's audit log names the key.
+    Retire {
+        /// The record's id, as chloectx search or the briefing shows it.
+        id: String,
+    },
     /// The records pulled from other machines whose rules and decisions are
     /// kept out of the briefing and the prompt's context until accepted, by
     /// machine (named by the key it pushed with); with --origin or --all,
@@ -849,12 +857,16 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Cmd::Sync { what: SyncCmd::Retire { id } } => {
+            let r = send(&project, json!({"op": "sync", "what": "retire", "id": id}), 120);
+            println!("{}", r["text"].as_str().unwrap_or(""));
+        }
         Cmd::Sync { what } => {
             let (w, again) = match what {
                 SyncCmd::Status => ("status", false),
                 SyncCmd::Push { again } => ("push", again),
                 SyncCmd::Pull => ("pull", false),
-                SyncCmd::Setup { .. } | SyncCmd::Accept { .. } | SyncCmd::Off { .. } => unreachable!(),
+                SyncCmd::Setup { .. } | SyncCmd::Accept { .. } | SyncCmd::Retire { .. } | SyncCmd::Off { .. } => unreachable!(),
             };
             let r = send(&project, json!({"op": "sync", "what": w, "again": again}), 600);
             println!("{}", serde_json::to_string_pretty(&r).unwrap());

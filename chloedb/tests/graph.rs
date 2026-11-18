@@ -368,3 +368,172 @@ fn integer_keys_unstored_edges_and_errors() {
     assert!(txn.insert(vec![Value::Int(98), Value::Str("not json".into())]).is_err());
     assert!(Schema::new("h", vec![Field::new("a", FieldType::Int), Field::new("e", FieldType::Edges)], None).is_err());
 }
+
+/// `PATH` with `through` against a breadth-first search that passes only
+/// through the rows that satisfy it (NADIA-305): 2,000 rows of kind x or
+/// y, four random out-edges each, written in four batches. The answer was
+/// a path through a row of kind y whenever the two halves of the search
+/// met there, and sometimes a path where no allowed one exists.
+#[test]
+fn path_keeps_to_through_on_a_random_graph_written_in_batches() {
+    let schema = Schema::new("n", vec![Field::new("id", FieldType::Int), Field::new("kind", FieldType::Keyword), Field::new("e", FieldType::Edges)], Some("id")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("p.strata"), schema, DbOptions { sync: false, ..DbOptions::default() }).unwrap();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(305);
+    let n = 2000usize;
+    let kind: Vec<bool> = (0..n).map(|_| rng.gen_bool(0.5)).collect();
+    let out: Vec<Vec<usize>> = (0..n).map(|_| (0..4).map(|_| rng.gen_range(0..n)).collect()).collect();
+    for batch in 0..4 {
+        let mut txn = db.storage().begin().unwrap();
+        for i in (batch * n / 4)..((batch + 1) * n / 4) {
+            let es: Vec<Edge> = out[i].iter().map(|&t| Edge::to(Value::Int(t as i64))).collect();
+            txn.insert(vec![Value::Int(i as i64), Value::Str(if kind[i] { "x" } else { "y" }.into()), edges_value(&es)]).unwrap();
+        }
+        txn.commit().unwrap();
+        db.storage().flush().unwrap();
+    }
+    assert!(db.snapshot().segments().len() >= 4);
+    // The shortest path from s to t whose middle rows are all of kind x.
+    let bfs = |s: usize, t: usize, max: u32| -> Option<u32> {
+        let mut dist = vec![u32::MAX; n];
+        dist[s] = 0;
+        let mut q = VecDeque::from([s]);
+        while let Some(u) = q.pop_front() {
+            if u == t {
+                return Some(dist[u]);
+            }
+            if dist[u] == max || (u != s && !kind[u]) {
+                continue;
+            }
+            for &v in &out[u] {
+                if dist[v] == u32::MAX {
+                    dist[v] = dist[u] + 1;
+                    q.push_back(v);
+                }
+            }
+        }
+        None
+    };
+    let (mut found, mut none) = (0, 0);
+    for _ in 0..200 {
+        let (s, t) = (rng.gen_range(0..n), rng.gen_range(0..n));
+        let sql = format!("SELECT id, hops() FROM n WHERE PATH(e, {s}, {t}, max_hops => 6, through => kind = 'x') ORDER BY hops() LIMIT 100");
+        let rs = db.query(&sql, &Params::new()).unwrap();
+        let path: Vec<usize> = rs.rows.iter().map(|r| r[0].as_i64().unwrap() as usize).collect();
+        match bfs(s, t, 6) {
+            None => {
+                none += 1;
+                assert!(path.is_empty(), "{s} -> {t}: no path keeps to x within 6 hops, got {path:?}");
+            }
+            Some(d) => {
+                found += 1;
+                assert_eq!(path.len() as u32, d + 1, "{s} -> {t}: {path:?}");
+                assert_eq!((path[0], *path.last().unwrap()), (s, t));
+                for w in path.windows(2) {
+                    assert!(out[w[0]].contains(&w[1]), "{} -> {} is not an edge", w[0], w[1]);
+                }
+                for &m in &path[1..path.len() - 1] {
+                    assert!(kind[m], "{s} -> {t}: {m} is of kind y, in {path:?}");
+                }
+            }
+        }
+        // The same both ways round: against the edges, from t back to s.
+        let rs = db.query(&format!("SELECT id FROM n WHERE PATH(e, {t}, {s}, max_hops => 6, dir => 'in', through => kind = 'x') ORDER BY hops() LIMIT 100"), &Params::new()).unwrap();
+        let back: Vec<usize> = rs.rows.iter().map(|r| r[0].as_i64().unwrap() as usize).collect();
+        assert_eq!(back.len(), path.len(), "{t} <- {s}: {back:?} against {path:?}");
+        if back.len() > 2 {
+            assert!(back[1..back.len() - 1].iter().all(|&m| kind[m]), "{t} <- {s}: {back:?}");
+        }
+    }
+    // Both kinds of answer were checked.
+    assert!(found > 20 && none > 20, "{found} paths, {none} without");
+}
+
+/// `ppr` from a user over a user-item graph whose items each have about
+/// 900 edges (NADIA-302): at `eps` 10⁻⁴ a user's 30 items get a residual
+/// of 0.028 each, far below 10⁻⁴ times 900, so the walk pushed nothing
+/// past the seed and ranked no item. Without `eps` it lowers it until half
+/// of the walk is settled; with `eps` it walks as asked, and says that its
+/// scores stayed near the seed.
+#[test]
+fn ppr_from_a_user_reaches_items_with_many_edges() {
+    let schema = Schema::new("nodes", vec![Field::new("id", FieldType::Keyword), Field::new("kind", FieldType::Keyword), Field::new("e", FieldType::Edges)], Some("id")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("ui.strata"), schema, DbOptions { sync: false, ..DbOptions::default() }).unwrap();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(302);
+    let (users, items) = (3000usize, 100usize);
+    let mut likes: Vec<Vec<usize>> = Vec::new();
+    for _ in 0..users {
+        let mut l: Vec<usize> = Vec::new();
+        while l.len() < 30 {
+            // Items with a lower number are liked more often.
+            let i = (rng.gen_range(0.0f64..1.0).powi(2) * items as f64) as usize;
+            if !l.contains(&i) {
+                l.push(i);
+            }
+        }
+        likes.push(l);
+    }
+    let mut rows: Vec<Vec<Value>> = (0..items).map(|i| vec![Value::Str(format!("i{i}")), Value::Str("item".into()), Value::Null]).collect();
+    for (u, l) in likes.iter().enumerate() {
+        let es: Vec<Edge> = l.iter().map(|i| Edge::to(format!("i{i}").as_str())).collect();
+        rows.push(vec![Value::Str(format!("u{u}")), Value::Str("user".into()), edges_value(&es)]);
+    }
+    db.load(rows).unwrap();
+    // PageRank from u0 by power iteration, the graph read both ways.
+    let n = users + items;
+    let mut nb: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (u, l) in likes.iter().enumerate() {
+        for &i in l {
+            nb[items + u].push(i);
+            nb[i].push(items + u);
+        }
+    }
+    let least = (0..items).map(|i| nb[i].len()).min().unwrap();
+    assert!(least > 300, "the least liked item has {least} edges");
+    let alpha = 0.15;
+    let mut x = vec![0.0f64; n];
+    for _ in 0..200 {
+        let mut y = vec![0.0; n];
+        y[items] += alpha;
+        for u in 0..n {
+            for &v in &nb[u] {
+                y[v] += (1.0 - alpha) * x[u] / nb[u].len() as f64;
+            }
+        }
+        x = y;
+    }
+    let sql = |opt: &str| format!("SELECT id, score() FROM nodes WHERE kind = 'item' AND NOT REACHABLE(e, 'u0', hops => 1) ORDER BY ppr(e, 'u0'{opt}) DESC LIMIT 10");
+    // As asked: 10⁻⁴ settles the seed's own share and stops.
+    let rs = db.query(&sql(", eps => 1e-4"), &Params::new()).unwrap();
+    assert!(rs.rows.is_empty(), "{:?}", rs.rows);
+    assert!(rs.stats.ppr_unsettled, "{:?}", rs.stats.plan);
+    assert!(rs.stats.plan.iter().any(|l| l.contains("stayed near the seeds") && l.contains("lower eps")), "{:?}", rs.stats.plan);
+    assert_eq!(serde_json::to_value(&rs.stats).unwrap()["ppr_unsettled"].as_bool(), Some(true));
+    // Left to itself, the walk ranks the items u0 has not liked, each
+    // score at most its PageRank (a push never overshoots), and close.
+    let rs = db.query(&sql(""), &Params::new()).unwrap();
+    assert_eq!(rs.rows.len(), 10, "{:?}", rs.stats.plan);
+    assert!(!rs.stats.ppr_unsettled && !rs.stats.max_pushes_reached, "{:?}", rs.stats.plan);
+    let line = rs.stats.plan.iter().find(|l| l.contains("ppr over e")).unwrap();
+    assert!(line.contains("eps lowered to") && !line.contains("near the seeds"), "{line}");
+    let liked: BTreeSet<usize> = likes[0].iter().copied().collect();
+    let mut want: Vec<(f64, usize)> = (0..items).filter(|i| !liked.contains(i)).map(|i| (x[i], i)).collect();
+    want.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    let top: BTreeSet<String> = want.iter().take(10).map(|w| format!("i{}", w.1)).collect();
+    let mut overlap = 0;
+    for r in &rs.rows {
+        let id = r[0].as_str().unwrap();
+        let i: usize = id[1..].parse().unwrap();
+        let got = r[1].as_f64().unwrap();
+        assert!(!liked.contains(&i), "{id} was liked");
+        assert!(got <= x[i] + 1e-12 && got > 0.5 * x[i], "{id}: {got} against {}", x[i]);
+        overlap += top.contains(id) as usize;
+    }
+    assert!(overlap >= 7, "{overlap} of the 10 best: {:?}", rs.rows);
+    // A walk cut short by max_pushes says so both ways.
+    let rs = db.query(&sql(", max_pushes => 3"), &Params::new()).unwrap();
+    assert!(rs.stats.max_pushes_reached && rs.stats.ppr_unsettled, "{:?}", rs.stats.plan);
+    // eps must be above 0 when it is given.
+    assert!(db.query(&sql(", eps => 0"), &Params::new()).is_err());
+}

@@ -40,6 +40,24 @@ changes collect under "Unreleased".
   JavaScript and over HTTP, and for a field of no model the error says
   so. The error for text against such a field names the query's own
   parameter (`:v`), not `:q`.
+- **ChloeCtx: a team's forgets, deletions and retired rules reach every
+  machine, and a teammate's notes say whose they are** (persona study
+  round 3, WEI-304, WEI-303, WEI-306). A forget deleted the record's row
+  on the server, and every teammate who had pulled it kept it; an admin's
+  `DELETE` of a leaver's rows reached no store; and a rule could be
+  retired on one laptop only. Now a forget leaves a tombstone (a row of
+  kind `forgotten`) that each machine's next pull forgets, receipts and
+  segments too; another machine's rows deleted on the server are forgotten
+  on each machine that pulled them; a record retired or replaced on the
+  server, or whose context a forget cut, is so on each machine that has
+  it; and a push no longer sends back what it pulled (`--again` does).
+  `chloectx sync retire ID`, or Retire on a synced project's Memories in
+  the command center (`POST /v1/memory/retire`, with write on the
+  project's table), retires a note for the whole project and records who
+  did (`retired_by`). A teammate's note reads `from alice-laptop` in the
+  briefing and the prompt's context, and a rule said again counts only
+  this machine's sayings. setup.md says how to offboard someone
+  ([setup.md](docs/chloectx/setup.md#keep-the-memory-on-a-chloedb-server)).
 - **ChloeCtx: what an unaccepted machine sent stays out of every prompt,
   and `sync accept` names machines** (persona study round 3, WEI-302,
   WEI-308). A decision pulled from a machine no one had accepted reached
@@ -83,6 +101,24 @@ changes collect under "Unreleased".
   `chloectx redact` (`--all` for every store) rewrites what stores kept
   before, and replaces the server's copies for the projects that sync
   ([setup.md](docs/chloectx/setup.md#secrets-and-chloectx-redact)).
+- **Graph answers and match counts right** (persona study round 3,
+  NADIA-305, NADIA-302, GRACE-301). `PATH(..., through => p)` could answer
+  a path through a row that fails `p`, where the two halves of its search
+  met, and a path where no allowed one exists; every middle row of a path
+  now satisfies `through`. `ppr` without `eps` started at 10⁻⁴ and stayed
+  there, so from a seed whose neighbours have thousands of edges it ranked
+  only the seed, with no warning; it now halves `eps` while its scores
+  hold less than half of the walk, for at most 100,000 pushes, and its
+  plan line says where it went. A walk that ends with less than half,
+  with a given `eps` or out of pushes, says so: `ppr_unsettled` in the
+  stats ([how far `ppr` walks](docs/chloedb/query-language.md#how-far-ppr-walks)).
+  The command center's Graph explorer has a *PageRank eps* control and
+  shows that warning. The answer header of the Query builder, a table's
+  Search tab and the workbench showed "N passed the filter" from the
+  executor's `filter_docs`, which counts only the rows a `LIMIT` let it
+  look at (2,036 of 3,694); the builder counts the rows its filters keep
+  with a `COUNT(*)` ("3,694 match"), and the other headers show no such
+  number.
 - **Everyday SQL functions** (persona study round 2, SAM-7): `substr`
   (`substring`, `SUBSTRING(s FROM i FOR n)`), `trim`, `ltrim`, `rtrim`
   (`btrim`, `TRIM(LEADING ... FROM s)`), `replace`, `concat`, `nullif`,
@@ -201,6 +237,31 @@ or one server), so shards of older versions need nothing new.
   site in the run yourself. When it ends it becomes an experiment with the
   full report and an Agents tab
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#live-runs)).
+
+- **`hash()` in a ranking.** `hash(field, seed)` of the key or a stored
+  field is now a leaf of a ranking expression, the same number it is in
+  `WHERE` and `ORDER BY`: `ORDER BY bm25(body, :q) * 0 + hash(id, 7) DESC`
+  shows what a search finds in a seeded random order (an experiment's
+  shuffled arm, a logged query's), and a small share of it breaks ties.
+  It ranks as a rank-safe boost, every row the text matches; `rrf` does
+  not fuse it. A plan with it needs the feature `hash`, and a shard from
+  before this release refuses it in a ranking
+  ([query language](docs/chloedb/query-language.md#samples-splits-and-shuffles-hash)).
+
+- **Experiments: checks, interleaving and test arms** (`chloedb-experiments`,
+  a demo). Check this runs a finished experiment again 30 times on the same
+  users, each time split anew, and shows how often each metric's 95%
+  interval held the truth, the primary metric's intervals around the true
+  lift, and the calls the repeats made. Interleaving (`"mode":
+  "interleave"`) shows two rankings in one team-drafted list, with its
+  exact truth from every pattern of coins, and the A/B of the same pair
+  beside it with the users each would need. The builder makes test arms
+  from the control (shuffled, reversed, first row demoted, through an
+  arm's `then`), a live run stops once it is decided (`"until"`), its AI
+  agents are split evenly across arms with a line per arm on why they gave
+  up, each experiment takes a fresh seed, and a report's Queries tab shows
+  where the difference came from
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#checking-a-result)).
 
 ### Query plans
 

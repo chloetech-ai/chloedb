@@ -514,6 +514,256 @@ async fn negations(base: &str) {
     ok(base, "DELETE", "/items", None).await;
 }
 
+/// A ticket of the shared index, of tenant `i % 3`.
+fn ticket(i: usize) -> Json {
+    let words = ["vpn", "password", "invoice", "printer", "login"];
+    json!({"tenant_id": TENANTS[i % 3], "body": format!("{} {} issue", words[i % 5], words[(i / 5) % 5]), "n": i})
+}
+
+const TENANTS: [&str; 3] = ["acme", "globex", "initech"];
+const TICKETS: usize = 60;
+
+/// Filtered aliases, one per tenant, over one shared index (finding
+/// KENJI-301): every read through one sees its tenant's documents alone,
+/// a search, a count, an aggregation (`global` too), a get and `_mget`
+/// by id, `_msearch`, `_cat/count` and a delete by query; two of them, or
+/// one and the index, see what OpenSearch would. What `_alias` shows,
+/// filters ChloeDB cannot apply refused when the alias is made, and an
+/// index never deleted through an alias.
+async fn tenant_aliases(base: &str) {
+    ok(base, "PUT", "/tickets", Some(json!({"mappings": {"properties": {"tenant_id": {"type": "keyword"}, "body": {"type": "text"}, "n": {"type": "long"}}}}))).await;
+    let mut nd = String::new();
+    for i in 0..TICKETS {
+        nd.push_str(&format!("{}\n{}\n", json!({"index": {"_id": format!("t{i}")}}), ticket(i)));
+    }
+    assert_eq!(ok(base, "POST", "/tickets/_bulk?refresh=true", Some(Json::String(nd))).await["errors"], json!(false));
+    let of = |t: usize| (0..TICKETS).filter(|i| i % 3 == t).count() as u64;
+    let a = ok(base, "POST", "/_aliases", Some(json!({"actions": [
+        {"add": {"index": "tickets", "alias": "t-acme", "filter": {"term": {"tenant_id": "acme"}}}},
+        {"add": {"index": "tickets", "alias": "t-globex", "filter": {"term": {"tenant_id": "globex"}}}},
+        {"add": {"index": "tickets", "alias": "t-initech", "filter": {"term": {"tenant_id": "initech"}}, "routing": "3"}}]}))).await;
+    assert_eq!(a, json!({"acknowledged": true}));
+    let al = ok(base, "GET", "/_alias/t-acme", None).await;
+    assert_eq!(al, json!({"tickets": {"aliases": {"t-acme": {"filter": {"term": {"tenant_id": "acme"}}}}}}));
+    let al = ok(base, "GET", "/tickets/_alias", None).await;
+    assert_eq!(al["tickets"]["aliases"]["t-initech"], json!({"filter": {"term": {"tenant_id": "initech"}}, "index_routing": "3", "search_routing": "3"}));
+    assert_eq!(ok(base, "GET", "/tickets", None).await["tickets"]["aliases"]["t-globex"]["filter"], json!({"term": {"tenant_id": "globex"}}));
+
+    let tenants_of = |r: &Json| r["hits"]["hits"].as_array().unwrap().iter().map(|h| h["_source"]["tenant_id"].as_str().unwrap().to_string()).collect::<BTreeSet<_>>();
+    let set = |ts: &[&str]| ts.iter().map(|t| t.to_string()).collect::<BTreeSet<_>>();
+    // A count and a search.
+    assert_eq!(ok(base, "GET", "/t-acme/_count", None).await["count"], of(0));
+    assert_eq!(ok(base, "POST", "/t-acme/_count", Some(json!({"query": {"match": {"body": "vpn"}}}))).await["count"], (0..TICKETS).filter(|i| i % 3 == 0 && ticket(*i)["body"].as_str().unwrap().contains("vpn")).count() as u64);
+    let r = ok(base, "POST", "/t-acme/_search", Some(json!({"size": 100, "track_total_hits": true}))).await;
+    assert_eq!((r["hits"]["total"]["value"].as_u64(), tenants_of(&r)), (Some(of(0)), set(&["acme"])), "{r}");
+    let r = ok(base, "POST", "/t-globex/_search", Some(json!({"size": 100, "query": {"bool": {"must": {"match": {"body": "issue"}}, "filter": {"range": {"n": {"gte": 0}}}}}}))).await;
+    assert_eq!((r["hits"]["total"]["value"].as_u64(), tenants_of(&r)), (Some(of(1)), set(&["globex"])), "{r}");
+    let r = ok(base, "GET", "/t-acme/_search?q=body:vpn&size=100", None).await;
+    assert_eq!(tenants_of(&r), set(&["acme"]), "{r}");
+    // Aggregations, a global one too.
+    let r = ok(base, "POST", "/t-acme/_search", Some(json!({"size": 0, "aggs": {"t": {"terms": {"field": "tenant_id"}}, "all": {"global": {}, "aggs": {"t": {"terms": {"field": "tenant_id"}}}}}}))).await;
+    assert_eq!(r["aggregations"]["t"]["buckets"], json!([{"key": "acme", "doc_count": of(0)}]), "{r}");
+    assert_eq!(r["aggregations"]["all"]["doc_count"], json!(of(0)), "{r}");
+    assert_eq!(r["aggregations"]["all"]["t"]["buckets"], json!([{"key": "acme", "doc_count": of(0)}]), "{r}");
+    // By id: another tenant's document is not found through the alias.
+    let (s, d) = call(base, "GET", "/t-acme/_doc/t1", None, None).await;
+    assert_eq!((s, d["found"].clone()), (404, json!(false)), "{d}");
+    assert_eq!(ok(base, "GET", "/t-acme/_doc/t0", None).await["_source"], ticket(0));
+    assert_eq!(call(base, "GET", "/t-acme/_source/t1", None, None).await.0, 404);
+    assert_eq!(call(base, "HEAD", "/t-acme/_doc/t1", None, None).await.0, 404);
+    let r = ok(base, "POST", "/t-acme/_mget", Some(json!({"ids": ["t0", "t1", "t3"]}))).await;
+    let found: Vec<bool> = r["docs"].as_array().unwrap().iter().map(|d| d["found"].as_bool().unwrap()).collect();
+    assert_eq!(found, vec![true, false, true], "{r}");
+    let r = ok(base, "POST", "/_mget", Some(json!({"docs": [{"_index": "t-globex", "_id": "t0"}, {"_index": "tickets", "_id": "t0"}]}))).await;
+    assert_eq!((r["docs"][0]["found"].clone(), r["docs"][1]["found"].clone()), (json!(false), json!(true)), "{r}");
+    // _msearch, each line through its alias.
+    let nd = format!("{}\n{}\n{}\n{}\n", json!({"index": "t-acme"}), json!({"size": 100}), json!({"index": "t-globex"}), json!({"size": 0, "aggs": {"t": {"terms": {"field": "tenant_id"}}}}));
+    let r = ok(base, "POST", "/_msearch", Some(Json::String(nd))).await;
+    assert_eq!(tenants_of(&r["responses"][0]), set(&["acme"]), "{r}");
+    assert_eq!(r["responses"][1]["aggregations"]["t"]["buckets"], json!([{"key": "globex", "doc_count": of(1)}]), "{r}");
+    // Two aliases: either tenant's; an alias and the index: every one.
+    let r = ok(base, "POST", "/t-acme,t-globex/_search", Some(json!({"size": 100}))).await;
+    assert_eq!((r["hits"]["total"]["value"].as_u64(), tenants_of(&r)), (Some(of(0) + of(1)), set(&["acme", "globex"])), "{r}");
+    assert_eq!(ok(base, "GET", "/t-*/_count", None).await["count"], TICKETS as u64);
+    assert_eq!(ok(base, "GET", "/t-acme,tickets/_count", None).await["count"], TICKETS as u64);
+    let c = ok(base, "GET", "/_cat/count/t-globex?format=json", None).await;
+    assert_eq!(c[0]["count"], json!(of(1).to_string()), "{c}");
+    let c = ok(base, "GET", "/_cat/aliases?format=json", None).await;
+    let acme = c.as_array().unwrap().iter().find(|r| r["alias"] == "t-acme").unwrap();
+    assert_eq!((acme["index"].as_str(), acme["filter"].as_str()), (Some("tickets"), Some("*")), "{c}");
+    // Filters are checked when the alias is made.
+    let (s, e) = call(base, "POST", "/_aliases", Some(json!({"actions": [{"add": {"index": "tickets", "alias": "bad", "filter": {"nosuch": {}}}}]})), None).await;
+    assert_eq!((s, e["error"]["type"].as_str()), (400, Some("illegal_argument_exception")), "{e}");
+    let (s, e) = call(base, "POST", "/_aliases", Some(json!({"actions": [{"add": {"index": "tickets", "alias": "bad", "filtr": {"term": {"tenant_id": "acme"}}}}]})), None).await;
+    assert_eq!(s, 400, "{e}");
+    assert!(e["error"]["reason"].as_str().unwrap().contains("[add] unknown field [filtr]; did you mean [filter]?"), "{e}");
+    let (s, e) = call(base, "POST", "/_aliases", Some(json!({"actions": [{"add": {"index": "tickets", "alias": "tickets"}}]})), None).await;
+    assert_eq!((s, e["error"]["type"].as_str()), (400, Some("invalid_alias_name_exception")), "{e}");
+    assert_eq!(call(base, "GET", "/_alias/bad", None, None).await.0, 404);
+    // An index is not deleted through an alias.
+    let (s, e) = call(base, "DELETE", "/t-acme", None, None).await;
+    assert_eq!((s, e["error"]["type"].as_str()), (400, Some("illegal_argument_exception")), "{e}");
+    assert_eq!(ok(base, "GET", "/tickets/_count", None).await["count"], TICKETS as u64);
+    // A delete by query through an alias deletes its tenant's documents.
+    let r = ok(base, "POST", "/t-initech/_delete_by_query?refresh=true", Some(json!({"query": {"match_all": {}}}))).await;
+    assert_eq!(r["deleted"], json!(of(2)), "{r}");
+    assert_eq!(ok(base, "GET", "/tickets/_count", None).await["count"], of(0) + of(1));
+    // An index made with a filtered alias.
+    ok(base, "PUT", "/notes", Some(json!({"mappings": {"properties": {"owner": {"type": "keyword"}}}, "aliases": {"notes-mine": {"filter": {"term": {"owner": "me"}}}}}))).await;
+    ok(base, "POST", "/notes/_doc/1?refresh=true", Some(json!({"owner": "me", "text": "a"}))).await;
+    ok(base, "POST", "/notes/_doc/2?refresh=true", Some(json!({"owner": "you", "text": "b"}))).await;
+    assert_eq!(ok(base, "GET", "/notes-mine/_count", None).await["count"], 1);
+    // Deleting an index takes its aliases with it.
+    ok(base, "DELETE", "/notes", None).await;
+    assert_eq!(call(base, "GET", "/_alias/notes-mine", None, None).await.0, 404);
+    ok(base, "DELETE", "/tickets", None).await;
+    assert_eq!(call(base, "GET", "/t-acme/_count", None, None).await.0, 404);
+}
+
+/// Keys a search does not read are refused, naming the key, as
+/// OpenSearch refuses them, rather than left out (finding KENJI-302): at
+/// the top of the body, inside `bool`, inside `match`, and the parts of
+/// OpenSearch's search ChloeDB does not answer.
+async fn unknown_keys(base: &str) {
+    ok(base, "PUT", "/strict", Some(json!({"mappings": {"properties": {"tenant_id": {"type": "keyword"}, "body": {"type": "text"}}}}))).await;
+    let mut nd = String::new();
+    for i in 0..9 {
+        nd.push_str(&format!("{}\n{}\n", json!({"index": {"_id": format!("s{i}")}}), ticket(i)));
+    }
+    assert_eq!(ok(base, "POST", "/strict/_bulk?refresh=true", Some(Json::String(nd))).await["errors"], json!(false));
+    let refused = |body: Json, path: &'static str| async move {
+        let (s, e) = call(base, "POST", path, Some(body.clone()), None).await;
+        assert_eq!((s, e["error"]["type"].as_str()), (400, Some("parsing_exception")), "{body}: {e}");
+        e["error"]["reason"].as_str().unwrap().to_string()
+    };
+    let why = refused(json!({"size": 1, "qeury": {"match": {"body": "vpn"}}}), "/strict/_search").await;
+    assert!(why.contains("Unknown key for a START_OBJECT in [qeury]") && why.contains("did you mean [query]?"), "{why}");
+    let why = refused(json!({"query": {"bool": {"must": {"match": {"body": "vpn"}}, "filtr": {"term": {"tenant_id": "acme"}}}}}), "/strict/_search").await;
+    assert!(why.contains("[bool] query does not support [filtr]; did you mean [filter]?"), "{why}");
+    let why = refused(json!({"query": {"match": {"body": {"query": "vpn", "operater": "and"}}}}), "/strict/_search").await;
+    assert!(why.contains("[match] query does not support [operater]; did you mean [operator]?"), "{why}");
+    let why = refused(json!({"query": {"match": {"body": "vpn", "tenant_id": "acme"}}}), "/strict/_search").await;
+    assert!(why.contains("doesn't support multiple fields"), "{why}");
+    let why = refused(json!({"query": {"term": {"tenant_id": {"value": "acme", "boots": 2}}}}), "/strict/_search").await;
+    assert!(why.contains("[term] query does not support [boots]"), "{why}");
+    for (key, body) in [
+        ("rescore", json!({"query": {"match": {"body": "vpn"}}, "rescore": {"window_size": 10, "query": {"rescore_query": {"match_phrase": {"body": "vpn password"}}}}})),
+        ("suggest", json!({"suggest": {"s": {"text": "pasword", "term": {"field": "body"}}}})),
+        ("runtime_mappings", json!({"runtime_mappings": {"day": {"type": "keyword"}}, "aggs": {"d": {"terms": {"field": "day"}}}})),
+        ("pit", json!({"size": 1, "pit": {"id": "abc", "keep_alive": "1m"}})),
+        ("slice", json!({"slice": {"id": 0, "max": 2}})),
+    ] {
+        let why = refused(body, "/strict/_search").await;
+        assert!(why.contains("ChloeDB"), "{key}: {why}");
+    }
+    // Through _msearch, _count and a scroll as well.
+    let nd = format!("{}\n{}\n", json!({"index": "strict"}), json!({"qeury": {"match_all": {}}}));
+    let r = ok(base, "POST", "/_msearch", Some(Json::String(nd))).await;
+    assert_eq!((r["responses"][0]["status"].as_u64(), r["responses"][0]["error"]["type"].as_str()), (Some(400), Some("parsing_exception")), "{r}");
+    refused(json!({"qeury": {"match_all": {}}}), "/strict/_count").await;
+    refused(json!({"query": {"match_all": {}}, "max_docs": 1}), "/strict/_delete_by_query").await;
+    // What is spelt right answers as before, keys that change no hit too.
+    let r = ok(base, "POST", "/strict/_search", Some(json!({"query": {"bool": {"must": {"match": {"body": {"query": "vpn", "operator": "and"}}}, "filter": {"term": {"tenant_id": "acme"}}}}, "timeout": "1s", "explain": false}))).await;
+    assert!(r["hits"]["hits"].as_array().unwrap().iter().all(|h| h["_source"]["tenant_id"] == "acme"), "{r}");
+    ok(base, "DELETE", "/strict", None).await;
+}
+
+/// An alias moved from one index to another in one `_aliases` request,
+/// while four clients search it: each search finds the one document of
+/// the old index or of the new one, never no index or both (finding
+/// KENJI-303). Then an alias over two indexes writes to its write index.
+async fn alias_swaps(base: &str) {
+    for (ix, id) in [("swap_a", "a"), ("swap_b", "b")] {
+        ok(base, "PUT", &format!("/{ix}/_doc/{id}?refresh=true"), Some(json!({"from": ix}))).await;
+    }
+    ok(base, "POST", "/_aliases", Some(json!({"actions": [{"add": {"index": "swap_a", "alias": "live"}}]}))).await;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut searchers = Vec::new();
+    for _ in 0..4 {
+        let (base, stop) = (base.to_string(), stop.clone());
+        searchers.push(tokio::spawn(async move {
+            let mut n = 0;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let (s, r) = call(&base, "POST", "/live/_search", Some(json!({"query": {"match_all": {}}})), None).await;
+                assert_eq!((s, r["hits"]["total"]["value"].as_u64()), (200, Some(1)), "a search in the middle of a swap: {r}");
+                let ids: Vec<&str> = r["hits"]["hits"].as_array().unwrap().iter().map(|h| h["_id"].as_str().unwrap()).collect();
+                assert!(ids == ["a"] || ids == ["b"], "{r}");
+                n += 1;
+            }
+            n
+        }));
+    }
+    let mut at = ("swap_a", "swap_b");
+    for _ in 0..20 {
+        ok(base, "POST", "/_aliases", Some(json!({"actions": [{"remove": {"index": at.0, "alias": "live"}}, {"add": {"index": at.1, "alias": "live"}}]}))).await;
+        at = (at.1, at.0);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut searched = 0;
+    for s in searchers {
+        searched += s.await.unwrap();
+    }
+    assert!(searched >= 20, "{searched} searches");
+    assert_eq!(ok(base, "GET", "/_alias/live", None).await, json!({"swap_a": {"aliases": {"live": {}}}}));
+    // An alias over both, the write index named: writes go there.
+    ok(base, "POST", "/_aliases", Some(json!({"actions": [{"add": {"index": "swap_a", "alias": "both"}}, {"add": {"index": "swap_b", "alias": "both", "is_write_index": true}}]}))).await;
+    let (s, e) = call(base, "POST", "/_aliases", Some(json!({"actions": [{"add": {"index": "swap_a", "alias": "both", "is_write_index": true}}]})), None).await;
+    assert_eq!((s, e["error"]["type"].as_str()), (400, Some("illegal_state_exception")), "{e}");
+    let w = ok(base, "PUT", "/both/_doc/c?refresh=true", Some(json!({"from": "both"}))).await;
+    assert_eq!(w["_index"], "swap_b", "{w}");
+    assert_eq!(ok(base, "GET", "/both/_count", None).await["count"], 3);
+    ok(base, "POST", "/_aliases", Some(json!({"actions": [{"add": {"index": "swap_b", "alias": "both", "is_write_index": false}}]}))).await;
+    let (s, e) = call(base, "PUT", "/both/_doc/d", Some(json!({"from": "both"})), None).await;
+    assert_eq!((s, e["error"]["type"].as_str()), (400, Some("illegal_argument_exception")), "{e}");
+    for ix in ["swap_a", "swap_b"] {
+        ok(base, "DELETE", &format!("/{ix}"), None).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn filtered_aliases_keep_each_tenant_to_its_documents() {
+    let dir = tempfile::tempdir().unwrap();
+    tenant_aliases(&serve(Arc::new(local(dir.path())), Access::default()).await).await;
+    tenant_aliases(&serve(Arc::new(cluster(dir.path()).await), Access::default()).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn search_bodies_with_unknown_keys_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    unknown_keys(&serve(Arc::new(local(dir.path())), Access::default()).await).await;
+    unknown_keys(&serve(Arc::new(cluster(dir.path()).await), Access::default()).await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_alias_swap_is_seen_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    alias_swaps(&serve(Arc::new(local(dir.path())), Access::default()).await).await;
+    alias_swaps(&serve(Arc::new(cluster(dir.path()).await), Access::default()).await).await;
+}
+
+/// Aliases kept by an older version, in each index's row of
+/// `opensearch_indices`: they resolve as before, and the first change of
+/// an alias keeps them, in the one row that keeps every alias since.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn aliases_kept_by_an_older_version_carry_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(local(dir.path()));
+    let base = serve(svc.clone(), Access::default()).await;
+    ok(&base, "PUT", "/old", None).await;
+    ok(&base, "PUT", "/old/_doc/1?refresh=true", Some(json!({"k": "v"}))).await;
+    // The index's row as 0.3.8 wrote it with an alias.
+    let r = svc.query(chloedb_server::service::QueryReq { sql: "SELECT name, meta FROM opensearch_indices".into(), reads: true, ..Default::default() }).await.unwrap();
+    let meta = r.rs.rows.iter().find(|row| chloedb_server::json::to_json(&row[0]) == json!("old")).map(|row| chloedb_server::json::to_json(&row[1])).unwrap();
+    svc.write_request(vec![json!({"op": "upsert", "table": "opensearch_indices", "doc": {"name": "old", "aliases": ["before"], "meta": meta}})], None).await.unwrap();
+    assert_eq!(ok(&base, "GET", "/before/_count", None).await["count"], 1);
+    assert_eq!(ok(&base, "GET", "/_alias", None).await, json!({"old": {"aliases": {"before": {}}}}));
+    ok(&base, "POST", "/_aliases", Some(json!({"actions": [{"add": {"index": "old", "alias": "after"}}]}))).await;
+    assert_eq!(ok(&base, "GET", "/_alias", None).await, json!({"old": {"aliases": {"after": {}, "before": {}}}}));
+    assert_eq!(ok(&base, "GET", "/before/_count", None).await["count"], 1);
+    assert_eq!(ok(&base, "GET", "/after/_count", None).await["count"], 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn negations_keep_documents_without_the_field() {
     let dir = tempfile::tempdir().unwrap();

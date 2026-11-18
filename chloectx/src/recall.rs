@@ -1043,7 +1043,13 @@ pub fn fmt_knowledge_checked(items: &[(Record, f64, f64)], now: i64, mut check: 
         let t = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
         let fresh = check.as_deref_mut().map(|c| c.label_record(r)).unwrap_or_default();
         let w = r.said_by();
-        let whose = if w.is_empty() || t.to_lowercase().starts_with(&w.to_lowercase()) { String::new() } else { format!(", {w} said") };
+        // A teammate's note says whose it is (WEI-306): their machine's
+        // name, not "the user", who is someone else here.
+        let whose = match crate::sync::sent_by(r) {
+            Some(m) => format!(", from {m}"),
+            None if w.is_empty() || t.to_lowercase().starts_with(&w.to_lowercase()) => String::new(),
+            None => format!(", {w} said"),
+        };
         s += &format!("- [{}{whose}] {t} ({}, {}){fresh}\n", note_label(r), r.id, fmt_ago(r.ts, now));
     }
     s
@@ -1158,7 +1164,9 @@ pub fn briefing_parts(store: &Store, current_session: &str, max_chars: usize, no
             }
             let (text, cut) = clip_words(&r.text, n);
             let more = if cut { format!("; memory_timeline {} shows the rest", r.id) } else { String::new() };
-            let line = format!("- {} ({}, {}{more}){}\n", crate::envelope::defuse(&text), r.id, day_of(r.ts), label);
+            // A teammate's, by their machine's name (WEI-306).
+            let from = crate::sync::sent_by(&r).map(|m| format!(", from {m}")).unwrap_or_default();
+            let line = format!("- {} ({}, {}{from}{more}){}\n", crate::envelope::defuse(&text), r.id, day_of(r.ts), label);
             if lines.len() == keep || len + line.len() > budget {
                 unshown.push(r);
                 continue;
@@ -1668,7 +1676,11 @@ mod tests {
         let mut accepted = recs[0].clone();
         accepted.links.iter_mut().filter(|l| l.label == crate::sync::SYNCED_FROM).for_each(|l| l.label = crate::sync::ACCEPTED.into());
         store.insert(&[accepted]).unwrap();
-        let got: Vec<String> = knowledge(&store, q, &Filter::default(), &HashSet::new(), &p).unwrap().into_iter().map(|x| x.0.text).collect();
+        let items = knowledge(&store, q, &Filter::default(), &HashSet::new(), &p).unwrap();
+        let got: Vec<String> = items.iter().map(|x| x.0.text.clone()).collect();
         assert!(got.contains(&theirs.to_string()) && got.len() == 2, "{got:?}");
+        // WEI-306: and reads as the other machine's, not "the user's".
+        let block = fmt_knowledge(&items, 2_000);
+        assert!(block.contains("[decision, from m-44fb96669a15] Use Postgres") && block.contains("[fact] The job queue's"), "{block}");
     }
 }

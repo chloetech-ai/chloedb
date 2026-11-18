@@ -96,7 +96,7 @@ flowchart LR
 The traversals:
 
 - **Reachability:** breadth-first search, frontier by frontier; a search that would meet more than `max_nodes` rows besides its seeds is an error rather than an answer that depends on the order of the edges.
-- **Shortest paths:** bidirectional breadth-first search, always expanding the smaller frontier, forward along the edges or backward against them.
+- **Shortest paths:** bidirectional breadth-first search, always expanding the smaller frontier, forward along the edges or backward against them. With `through`, each side keeps the rows it meets that fail it as dead ends, and the halves meet only at a row that passes it or at an end, so every middle row of the path passes `through`.
 - **Personalized PageRank:** forward push (Andersen, Chung and Lang, 2006). The vector π solves
 
 $$
@@ -110,6 +110,8 @@ p(u) \mathrel{+}= \alpha\, r(u), \qquad r(v) \mathrel{+}= (1 - \alpha)\, r(u)\, 
 $$
 
 while some *r*(*u*) ≥ ε·deg(*u*). Each estimate is then within ε·deg(*u*) of π(*u*), and the work is bounded by 1/(αε) pushes whatever the graph's size. A row is queued only once its residual reaches ε, the least any threshold can be. Rows that merely received a little mass are never resolved, and resolving them had been most of the original cost.
+
+  The estimates add up to the share of the walk that has settled, Σ *p*; the rest is residuals no push spread. A fixed ε stops the walk at the seeds when their neighbours have many edges, since ε·deg(*u*) is then far above the residual a neighbour gets: from a user of the tests' user-item graph, whose 30 items have at least 300 edges each, ε = 10⁻⁴ settles the user's 15% and ranks no item. Without `eps` the walk starts at 10⁻⁴ and, while Σ *p* < ½, halves ε and pushes on from the residuals it has (an estimate only grows, so the walk at the lower ε continues the one at the higher), for at most 100,000 pushes; on that graph it stops at 3.1·10⁻⁶ with 72% settled, after 9,078 pushes. A walk that ends with Σ *p* < ½, at a given `eps` or out of pushes, reports `ppr_unsettled` in its stats.
 
 ## Speed
 

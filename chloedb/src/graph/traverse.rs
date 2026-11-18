@@ -171,11 +171,15 @@ pub fn shortest_path(adj: &mut dyn Adjacency, from: &[Node], to: &[Node], max_ho
                 }
                 mine.insert(v, u);
                 adj.hold(NODE_BYTES)?;
-                if other.contains_key(&v) {
+                // Each side keeps the rows it met that may not be passed
+                // through, as dead ends: the halves meet at one only if it
+                // is an end of the other side.
+                let passable = adj.passable(v);
+                if other.get(&v).is_some_and(|&p| p == u64::MAX || passable) {
                     meet = Some(v);
                     break 'outer;
                 }
-                if adj.passable(v) {
+                if passable {
                     next.push(v);
                 }
                 if mine.len() + other.len() > max_nodes {
@@ -217,15 +221,39 @@ pub fn shortest_path(adj: &mut dyn Adjacency, from: &[Node], to: &[Node], max_ho
 /// as their frequencies do). Mass reaching a node without edges stays in
 /// its estimate (the walk restarts from there). At most `max_pushes`
 /// pushes; [`Ppr::capped`] says the walk stopped there.
+///
+/// `eps` 0 (or less) adapts it: the walk starts at [`EPS`] and, while its
+/// estimates hold less than [`SETTLED`] of its mass, halves it and pushes
+/// on from where it stopped (the estimates only grow), within
+/// [`ADAPT_PUSHES`] pushes. From a seed whose neighbours have thousands of
+/// edges, `EPS` pushes nothing past the seed (NADIA-302): their residuals
+/// are far below `EPS` times their edges.
 pub struct Ppr {
     pub scores: NodeMap<f64>,
     pub pushes: u64,
     pub edges: u64,
     /// The walk stopped at `max_pushes` with nodes left to push.
     pub capped: bool,
+    /// The `eps` it ended at: the one asked for, or where it adapted to.
+    pub eps: f64,
+    /// The share of the walk's mass its estimates hold, from 0 to 1: the
+    /// rest is residuals no push spread.
+    pub settled: f64,
 }
 
+/// The `eps` an adapting walk starts at.
+pub const EPS: f64 = 1e-4;
+/// The share of its mass an adapting walk settles before it stops lowering
+/// `eps`; a walk that ends with less is said to be unsettled.
+pub const SETTLED: f64 = 0.5;
+/// The pushes an adapting walk makes at most once it lowers `eps`.
+pub const ADAPT_PUSHES: u64 = 100_000;
+/// The least `eps` an adapting walk lowers to.
+const EPS_FLOOR: f64 = 1e-10;
+
 pub fn ppr(adj: &mut dyn Adjacency, seeds: &[(Node, f64)], reverse: bool, alpha: f64, eps: f64, max_pushes: u64) -> Result<Ppr> {
+    let adapt = eps <= 0.0;
+    let mut eps = if adapt { EPS } else { eps };
     let total: f64 = seeds.iter().map(|s| s.1.max(0.0)).sum();
     let mut p: NodeMap<f64> = node_map();
     let mut r: NodeMap<f64> = node_map();
@@ -235,7 +263,7 @@ pub fn ppr(adj: &mut dyn Adjacency, seeds: &[(Node, f64)], reverse: bool, alpha:
     let mut queue: VecDeque<Node> = VecDeque::new();
     let mut queued: NodeMap<()> = node_map();
     if total <= 0.0 {
-        return Ok(Ppr { scores: p, pushes: 0, edges: 0, capped: false });
+        return Ok(Ppr { scores: p, pushes: 0, edges: 0, capped: false, eps, settled: 0.0 });
     }
     for &(s, w) in seeds {
         *r.entry(s).or_insert(0.0) += w.max(0.0) / total;
@@ -243,73 +271,95 @@ pub fn ppr(adj: &mut dyn Adjacency, seeds: &[(Node, f64)], reverse: bool, alpha:
             queue.push_back(s);
         }
     }
-    let (mut pushes, mut edges, mut capped) = (0u64, 0u64, false);
-    while let Some(u) = queue.pop_front() {
-        queued.remove(&u);
-        if pushes >= max_pushes {
-            capped = true;
+    let (mut pushes, mut edges, mut capped, mut settled) = (0u64, 0u64, false, 0.0f64);
+    let mut limit = max_pushes;
+    loop {
+        while let Some(u) = queue.pop_front() {
+            queued.remove(&u);
+            if pushes >= limit {
+                capped = limit == max_pushes;
+                queue.clear();
+                break;
+            }
+            let ru = r.get(&u).copied().unwrap_or(0.0);
+            // The threshold is eps · max(n, 1) ≥ eps: below eps a node cannot
+            // be pushed, whatever its edges, so its neighbours are not needed.
+            if ru < eps {
+                continue;
+            }
+            // A row is pushed once ru ≥ eps · max(n, 1). Most rows popped are
+            // not, so their neighbours are read only until more than ru / eps
+            // (each neighbour read resolves a key): a count past that
+            // already says no, whatever the rest adds. A row popped again with
+            // more residual reads again, at least twice as far, so that no row
+            // reads more than about three times its list; a row pushed reads
+            // them all.
+            for last in [false, true] {
+                let read = match nbrs.get(&u) {
+                    None => None,
+                    Some((l, _, full)) if !*full && !(ru < eps * (l.len() as f64).max(1.0)) => nbrs.remove(&u),
+                    Some(_) => break,
+                };
+                let enough = match (&read, last) {
+                    (_, true) => f64::INFINITY,
+                    (None, false) => ru / eps,
+                    (Some((l, _, _)), false) => (ru / eps).max(2.0 * l.len() as f64),
+                };
+                let first = read.is_none();
+                let mut list = read.map_or_else(|| Vec::with_capacity(16), |(l, _, _)| l);
+                let had = if first { 0 } else { list.capacity() };
+                list.clear();
+                let full = adj.neighbors_upto(u, reverse, enough, &mut list)?;
+                let grew = (list.capacity().saturating_sub(had) * std::mem::size_of::<(Node, f32)>()) as u64;
+                adj.hold(grew + if first { NODE_BYTES } else { 0 })?;
+                let deg = list.iter().map(|x| x.1 as f64).sum::<f64>();
+                nbrs.insert(u, (list, deg, full));
+            }
+            let (list, deg, _) = &nbrs[&u];
+            if ru < eps * (list.len() as f64).max(1.0) {
+                continue;
+            }
+            pushes += 1;
+            r.insert(u, 0.0);
+            if *deg == 0.0 {
+                *p.entry(u).or_insert(0.0) += ru;
+                settled += ru;
+                continue;
+            }
+            *p.entry(u).or_insert(0.0) += alpha * ru;
+            settled += alpha * ru;
+            let spread = (1.0 - alpha) * ru / deg;
+            edges += list.len() as u64;
+            let before = r.len();
+            for &(v, w) in list {
+                let rv = r.entry(v).or_insert(0.0);
+                *rv += spread * w as f64;
+                // Queue a node once its residual could pass the threshold; the
+                // exact test (with its degree) runs when it is popped.
+                if *rv >= eps && queued.insert(v, ()).is_none() {
+                    queue.push_back(v);
+                }
+            }
+            adj.hold(NODE_BYTES * (r.len() - before) as u64)?;
+        }
+        // Adapting: settled enough, out of pushes or at the floor, or on
+        // with half the eps from every row whose residual may pass it now.
+        if !adapt || capped || settled >= SETTLED || pushes >= limit.min(ADAPT_PUSHES) || eps / 2.0 < EPS_FLOOR {
             break;
         }
-        let ru = r.get(&u).copied().unwrap_or(0.0);
-        // The threshold is eps · max(n, 1) ≥ eps: below eps a node cannot
-        // be pushed, whatever its edges, so its neighbours are not needed.
-        if ru < eps {
-            continue;
-        }
-        // A row is pushed once ru ≥ eps · max(n, 1). Most rows popped are
-        // not, so their neighbours are read only until more than ru / eps
-        // (each neighbour read resolves a key): a count past that
-        // already says no, whatever the rest adds. A row popped again with
-        // more residual reads again, at least twice as far, so that no row
-        // reads more than about three times its list; a row pushed reads
-        // them all.
-        for last in [false, true] {
-            let read = match nbrs.get(&u) {
-                None => None,
-                Some((l, _, full)) if !*full && !(ru < eps * (l.len() as f64).max(1.0)) => nbrs.remove(&u),
-                Some(_) => break,
-            };
-            let enough = match (&read, last) {
-                (_, true) => f64::INFINITY,
-                (None, false) => ru / eps,
-                (Some((l, _, _)), false) => (ru / eps).max(2.0 * l.len() as f64),
-            };
-            let first = read.is_none();
-            let mut list = read.map_or_else(|| Vec::with_capacity(16), |(l, _, _)| l);
-            let had = if first { 0 } else { list.capacity() };
-            list.clear();
-            let full = adj.neighbors_upto(u, reverse, enough, &mut list)?;
-            let grew = (list.capacity().saturating_sub(had) * std::mem::size_of::<(Node, f32)>()) as u64;
-            adj.hold(grew + if first { NODE_BYTES } else { 0 })?;
-            let deg = list.iter().map(|x| x.1 as f64).sum::<f64>();
-            nbrs.insert(u, (list, deg, full));
-        }
-        let (list, deg, _) = &nbrs[&u];
-        if ru < eps * (list.len() as f64).max(1.0) {
-            continue;
-        }
-        pushes += 1;
-        r.insert(u, 0.0);
-        if *deg == 0.0 {
-            *p.entry(u).or_insert(0.0) += ru;
-            continue;
-        }
-        *p.entry(u).or_insert(0.0) += alpha * ru;
-        let spread = (1.0 - alpha) * ru / deg;
-        edges += list.len() as u64;
-        let before = r.len();
-        for &(v, w) in list {
-            let rv = r.entry(v).or_insert(0.0);
-            *rv += spread * w as f64;
-            // Queue a node once its residual could pass the threshold; the
-            // exact test (with its degree) runs when it is popped.
-            if *rv >= eps && queued.insert(v, ()).is_none() {
-                queue.push_back(v);
+        limit = max_pushes.min(ADAPT_PUSHES);
+        eps /= 2.0;
+        let mut next: Vec<Node> = r.iter().filter(|(_, &x)| x >= eps).map(|(&n, _)| n).collect();
+        // In the order of the rows, so that the walk does not depend on
+        // the map's.
+        next.sort_unstable();
+        for n in next {
+            if queued.insert(n, ()).is_none() {
+                queue.push_back(n);
             }
         }
-        adj.hold(NODE_BYTES * (r.len() - before) as u64)?;
     }
-    Ok(Ppr { scores: p, pushes, edges, capped })
+    Ok(Ppr { scores: p, pushes, edges, capped, eps, settled: settled.min(1.0) })
 }
 
 #[cfg(test)]
@@ -368,6 +418,15 @@ mod tests {
         let mut g = chain();
         g.1 = Some(5);
         assert_eq!(shortest_path(&mut g, &[0], &[4], 10, 100).unwrap().nodes, Some(vec![0, 1, 2, 3, 4]));
+        // 0 → 1 → 2 → 3 and 0 → 4 → 3, not through 4; 5 is a second start
+        // and 6 and 7 lead to 3 too, so that the backward half goes first
+        // and keeps 4 as a dead end: the forward half reaching it is no
+        // path (NADIA-305).
+        let mut g = G(vec![vec![4, 1], vec![2], vec![3], vec![], vec![3], vec![], vec![3], vec![3]], Some(4));
+        assert_eq!(shortest_path(&mut g, &[0, 5], &[3], 10, 100).unwrap().nodes, Some(vec![0, 1, 2, 3]));
+        assert_eq!(shortest_path(&mut g, &[0, 5], &[3], 2, 100).unwrap().nodes, None);
+        // An end is never passed through, so the halves meet there.
+        assert_eq!(shortest_path(&mut g, &[0], &[4], 10, 100).unwrap().nodes, Some(vec![0, 4]));
     }
 
     /// Power iteration on a small graph matches forward push.

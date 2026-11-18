@@ -509,7 +509,9 @@ impl<'a> Text<'a> {
             GraphKind::Reachable { min_hops, max_hops } => format!("REACHABLE({f}, {seeds}, hops => {max_hops}, min_hops => {min_hops}, dir => '{dir}', max_nodes => {}", g.max_nodes),
             GraphKind::Path { to, max_hops } => format!("PATH({f}, {seeds}, {}, max_hops => {max_hops}, dir => '{dir}', max_nodes => {}", self.seeds(to, names), g.max_nodes),
             GraphKind::Ppr { alpha, eps, max_pushes, weighted } => {
-                format!("ppr({f}, {seeds}, alpha => {alpha}, eps => {eps}, max_pushes => {max_pushes}, weighted => {}, dir => '{dir}'", *weighted as u8)
+                // eps 0 was not given: the walk lowers it as it needs.
+                let eps = if *eps > 0.0 { format!(", eps => {eps}") } else { String::new() };
+                format!("ppr({f}, {seeds}, alpha => {alpha}{eps}, max_pushes => {max_pushes}, weighted => {}, dir => '{dir}'", *weighted as u8)
             }
         };
         if !g.weights.is_empty() {

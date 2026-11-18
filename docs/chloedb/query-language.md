@@ -172,6 +172,8 @@ SELECT * FROM events WHERE hash(id, 7) % 10 < 8;    -- train
 SELECT * FROM events WHERE hash(id, 7) % 10 >= 8;   -- test
 -- the same thousand rows in the same random order
 SELECT * FROM events ORDER BY hash(id, 7) LIMIT 1000;
+-- the rows a search finds, in a random order of their own
+SELECT * FROM events ORDER BY bm25(body, :q) * 0 + hash(id, 7) DESC LIMIT 10;
 ```
 
 **`hash(x [, seed])`** is an `INT` from 0 to 2<sup>63</sup> - 1 that only `x` and `seed` (an `INT`, 0 without one) decide: the same on every machine, in every version of ChloeDB, and on a file and over shards, so a sample or a split made with it is the same rows wherever and whenever it runs. Another seed gives another sample. A `NULL` value or seed gives `NULL`, so a row whose `x` is `NULL` is in no part; hash a column every row holds, such as the key. `x` is one value: text, a number, a `BOOL` or a `TIMESTAMP` (a list is an error). To hash several columns, chain them through the seed: `hash(item, hash(user, 7))`.
@@ -188,7 +190,7 @@ def chloedb_hash(data: bytes, seed: int = 0) -> int:     # data: "u42".encode(),
     return (h ^ (h >> 31)) >> 1
 ```
 
-In `WHERE`, `hash` is a [condition the indexes cannot answer](#statement-shape): the other conditions narrow the rows by their indexes, and those rows are hashed one by one. `ORDER BY hash(id, 7)` sorts the rows by it, as `ORDER BY lower(name)` or a part of a time sorts them: the rows the table's query finds, in memory. A plan that uses it needs the plan feature `hash`, which shards of a version without the function refuse. A [frame](frames.md) samples and splits with it: `frame.sample(fraction=0.1, seed=7)`, `train, test = frame.split(0.8, seed=7)`.
+In `WHERE`, `hash` is a [condition the indexes cannot answer](#statement-shape): the other conditions narrow the rows by their indexes, and those rows are hashed one by one. `ORDER BY hash(id, 7)` sorts the rows by it, as `ORDER BY lower(name)` or a part of a time sorts them: the rows the table's query finds, in memory. In a [ranking expression](#ranking-expressions) with a score, `hash(field, seed)` of the key or a stored field is the same number, a value of each row the score finds: `bm25(body, :q) * 0 + hash(id, 7)` shows what a search finds in a seeded random order (an arm of an experiment that shuffles its results, or a sample of a search's rows), and a small share of it breaks ties at random. `rrf` does not fuse it. A plan that uses it needs the plan feature `hash`, which shards of a version without the function refuse, and a shard of a version from before it in rankings refuses it there. A [frame](frames.md) samples and splits with it: `frame.sample(fraction=0.1, seed=7)`, `train, test = frame.split(0.8, seed=7)`.
 
 ### JSON fields: keys no schema names
 
@@ -599,7 +601,7 @@ SELECT id FROM papers ORDER BY -rank(bm25(body, :t)) - rank(similarity(emb, :q))
 | part | meaning |
 |---|---|
 | `+ - * / %`, unary `-` | arithmetic on raw values |
-| `bm25`, `similarity`, `ppr`, `decay`, `rrf`, `ranked`, a numeric column, `hops()`, `seq_no()` | the leaves: a row's value of each |
+| `bm25`, `similarity`, `ppr`, `decay`, `rrf`, `ranked`, a numeric column, `hops()`, `seq_no()`, `hash(field, seed)` | the leaves: a row's value of each |
 | `ln(x)`, `log(x)` (base 10), `log(b, x)`, `exp(x)`, `sqrt(x)`, `pow(x, y)`, `abs(x)`, `round(x[, digits])`, `sigmoid(x)`, `clamp(x, lo, hi)` | numeric functions |
 | `least(…)`, `greatest(…)`, `coalesce(…)` | over their arguments that are not `NULL` |
 | `tmm(x[, lo => a][, hi => b])` | `x` from its least possible value to the best row's, put on [0, 1]: 0 where `x` is `NULL` ([above](#weighted-sums-tmm-minmax-and-zscore)) |
@@ -615,7 +617,7 @@ Candidates are the top `depth` (100) rows of each relevance leaf (`bm25`, `simil
 
 #### Rank-safe boosts
 
-An expression with one text score (`bm25`, or `similarity` on a `SPARSE` field) whose other parts are numeric columns, `decay`, `CASE` conditions, numbers and `seq_no()` finds its exact top rows: the rows that scoring every row the text matches would rank first, not only the best of the text's top 100. Set functions (`tmm()`, `minmax()`, `zscore()`, `rank()`), `rrf` and `exact => 1` take the candidates above instead.
+An expression with one text score (`bm25`, or `similarity` on a `SPARSE` field) whose other parts are numeric columns, `decay`, `CASE` conditions, numbers, `seq_no()` and `hash()` finds its exact top rows: the rows that scoring every row the text matches would rank first, not only the best of the text's top 100. Set functions (`tmm()`, `minmax()`, `zscore()`, `rank()`), `rrf` and `exact => 1` take the candidates above instead.
 
 ```sql
 -- the 10 best by BM25 boosted by importance, even a row 5,000th by BM25 alone
@@ -1395,20 +1397,24 @@ ORDER BY rrf(bm25(body, :t), ppr(cites, (SELECT id FROM papers ORDER BY similari
 | `REACHABLE(f, seeds, …)` | rows *v* with `min_hops` ≤ *d*(seeds, *v*) ≤ `hops` | `hops 1`, `min_hops 1`, `dir 'out'` (or `'in'`, `'both'`), `label 'a,b'`, `through <predicate>`, `max_nodes 100000` |
 | `PATH(f, from, to, …)` | the rows of one shortest (unweighted) path | `max_hops 6`, `dir`, `label`, `through`, `max_nodes` |
 | `hops()` | a row's distance from the seeds, or its position on the path; `ORDER BY hops()` is nearest first | |
-| `ppr(f, seeds, …)` | personalized PageRank, usable wherever a score is, including `rrf` and weighted sums | `alpha 0.15`, `eps 1e-4` (a row is pushed while its residual is at least `eps` times its number of edges, so scaling every weight alike changes nothing), `dir 'both'`, `label`, `max_pushes` (a walk cut there says so: `max_pushes_reached` in the stats), `weighted 0` (`1`: the seed subquery's scores are the restart weights) |
+| `ppr(f, seeds, …)` | personalized PageRank, usable wherever a score is, including `rrf` and weighted sums | `alpha 0.15`, `eps` (a row is pushed while its residual is at least `eps` times its number of edges, so scaling every weight alike changes nothing; not given, the walk starts at `1e-4` and halves it while its scores hold less than half of the walk, for at most 100,000 pushes, [below](#how-far-ppr-walks)), `dir 'both'`, `label`, `max_pushes 1000000` (a walk cut there says so: `max_pushes_reached` in the stats), `weighted 0` (`1`: the seed subquery's scores are the restart weights) |
 | a `VECTOR` field as `f` | `REACHABLE` and `PATH` follow similarity edges: a row's neighbours are its `k` most similar rows | `k 10`, `min_sim` |
 
 Graph queries run on one database: a [coordinator](server.md#sharding-one-coordinator-many-shards) refuses them, since a row's edges point at rows other shards hold ([graphs on a cluster](graphs.md#on-a-cluster)).
 
 The [query console](server.md#the-query-console)'s Graph tab builds these queries (seeds from keys, a search or a condition; links or similarity; neighbourhood, path or PageRank) and draws the answer.
 
-`through` restricts the rows a traversal may pass through (seeds and end points are exempt); the rest of `WHERE` filters the rows it ends at. `max_nodes` bounds the rows a traversal meets besides its seeds (and a path's ends): a `REACHABLE` that would meet more, or a `PATH` that meets more before it finds a path, is an error saying so, never a part of the answer. `max_hops => 0` is a path of no hops (a seed that is also a target); `max_nodes` and `k` are 1 or more. `REACHABLE(f, seeds, hops => 0, min_hops => 0)` is the seed set itself, so `NOT` of it removes the seeds from a result. `hops()` refers to the first `REACHABLE` or `PATH` in `WHERE`. The [Graphs](graphs.md) page explains how edges are stored and what these queries cost.
+`through` restricts the rows a traversal may pass through (seeds and end points are exempt); the rest of `WHERE` filters the rows it ends at. **Changed:** a `PATH` with `through` could pass through a row that fails it, where the two halves of its search met, and so answer a path where none keeps to `through`; every middle row of a path now satisfies it. `max_nodes` bounds the rows a traversal meets besides its seeds (and a path's ends): a `REACHABLE` that would meet more, or a `PATH` that meets more before it finds a path, is an error saying so, never a part of the answer. `max_hops => 0` is a path of no hops (a seed that is also a target); `max_nodes` and `k` are 1 or more. `REACHABLE(f, seeds, hops => 0, min_hops => 0)` is the seed set itself, so `NOT` of it removes the seeds from a result. `hops()` refers to the first `REACHABLE` or `PATH` in `WHERE`. The [Graphs](graphs.md) page explains how edges are stored and what these queries cost.
 
 Edges are written as part of their row: a JSON array of target keys, each optionally with a label and a positive weight.
 
 ```text
 ["p2", ["cites", "p7"], ["extends", "p9", 0.5], {"to": "p11", "label": "refutes"}]
 ```
+
+### How far `ppr` walks
+
+A row's score is the share of the walk that has settled on it, and a row is pushed (its residual spread over its edges) while that residual is at least `eps` times its number of edges. From a seed whose neighbours have thousands of edges, `eps => 1e-4` pushes nothing past the seed: on the tests' user-item graph of 3,000 users with 30 items each, whose 100 items have 900 edges on average and at least 300, a user's items get 0.028 each, below 10⁻⁴ times their edges, so the walk ranks the user and no item. Without `eps`, the walk then halves it and pushes on from where it stopped, until its scores hold half of the walk (there, `eps` 3.1e-6, after 9,078 pushes), for at most 100,000 pushes; its plan line says where it went (`eps lowered to 3.1e-6, 72% settled`). With `eps`, it walks exactly as far as asked. A walk whose scores hold less than half of the walk, by its `eps` or its pushes, says so: `ppr_unsettled` in the stats, and in its plan line how much it settled and what to change. **Changed:** `eps` was 10⁻⁴ when not given, and such a walk returned only its seeds with no warning.
 
 ### Edge tables
 
