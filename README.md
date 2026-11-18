@@ -133,6 +133,7 @@ The same methods work against a server: replace `chloedb.open(...)` with `chloed
 - **[chloedb-backbone](docs/chloedb/backbone.md)**: the internet's routing from public data: every BGP update a RIPE RIS collector hears, checked against RPKI as it arrives, alert rules written as SQL, and a map from the world down to one prefix, with RIPE Atlas, PeeringDB, CAIDA and IODA beside it.
 - **[chloedb-apps](docs/chloedb/apps.md)** (a prototype): describe an app in a sentence, and a model writes it, the engine checks it, and you change it by asking.
 - **[chloedb-swarm](chloedb-swarm/README.md)**: simulated users who try ChloeDB through its MCP tools or the command center, and a report of what got in their way.
+- **[chloedb-experiments](chloedb-experiments/README.md)** (phase 1 of the Experiments app): what a ranking would have earned, estimated from the log of another that explored, with simulated users in cohorts and five click models, each estimator checked against the exact truth.
 
 The crawler and sheets appear as apps in the command center.
 

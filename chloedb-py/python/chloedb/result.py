@@ -15,9 +15,9 @@ class Result:
     row i as a dict, and `len(result)` the number of rows.
     """
 
-    __slots__ = ("columns", "rows", "keys", "scores", "took_ms", "request", "teams", "_stats")
+    __slots__ = ("columns", "rows", "keys", "scores", "took_ms", "request", "teams", "propensities", "_stats")
 
-    def __init__(self, columns: list[str], rows: list[list[Any]], keys: list[Any] | None = None, scores: list[float] | None = None, stats: Any = None, took_ms: float | None = None, request: str | None = None, teams: list[str | None] | None = None):
+    def __init__(self, columns: list[str], rows: list[list[Any]], keys: list[Any] | None = None, scores: list[float] | None = None, stats: Any = None, took_ms: float | None = None, request: str | None = None, teams: list[str | None] | None = None, propensities: list[float] | None = None):
         self.columns = columns
         self.rows = rows
         self.keys = keys or []
@@ -27,11 +27,13 @@ class Result:
         self.request = request
         # An interleaved query's: per row, the ranking that placed it.
         self.teams = teams
+        # An exploring query's: per row, the chance it was shown where it is.
+        self.propensities = propensities
         self._stats = stats
 
     @classmethod
     def _of(cls, d: dict) -> "Result":
-        return cls(d["columns"], d["rows"], d.get("keys"), d.get("scores"), d.get("stats"), d.get("took_ms"), d.get("request"), d.get("teams"))
+        return cls(d["columns"], d["rows"], d.get("keys"), d.get("scores"), d.get("stats"), d.get("took_ms"), d.get("request"), d.get("teams"), d.get("propensities"))
 
     @property
     def stats(self) -> dict:

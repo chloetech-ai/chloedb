@@ -1118,7 +1118,9 @@ CREATE TABLE IF NOT EXISTS rank_log (
   row_key KEYWORD NOT NULL, position INT NOT NULL, shown BOOL NOT NULL,
   score FLOAT, features KEYWORD OPTIONS(indexed = false),
   variant KEYWORD, label FLOAT,
-  query KEYWORD OPTIONS(indexed = false)  -- on a request&#x27;s first row: {&quot;sql&quot;: ..., &quot;params&quot;: ...}
+  query KEYWORD OPTIONS(indexed = false),  -- on a request&#x27;s first row: {&quot;sql&quot;: ..., &quot;params&quot;: ...}
+  propensity FLOAT, prefix_propensity FLOAT,  -- the chance the row was shown where it was
+  policy KEYWORD OPTIONS(indexed = false), took_ms FLOAT  -- on a request&#x27;s first row
 ) OPTIONS(cluster_by = &#x27;context&#x27;);
 
 -- a label written later: a judge&#x27;s grade, an agent citing the row
@@ -1128,8 +1130,8 @@ UPDATE rank_log SET label = 3 WHERE request = :r AND row_key = :k;</pre>
 # {&quot;columns&quot;: [&quot;id&quot;, &quot;title&quot;], &quot;rows&quot;: [...], ..., &quot;request&quot;: &quot;9f0c...&quot;, &quot;logged&quot;: {&quot;rows&quot;: 50, &quot;seq_no&quot;: 812}}</pre>
 <ul>
 <li><strong>A logged query</strong> is one <code>SELECT</code> ranked by an <code>ORDER BY</code> (<a href="#rerank-phases">rerank phases</a> and <a href="#rank-profiles-a-ranking-kept-with-its-table">rank profiles</a> included) of a table with a primary key: <code>"log"</code> in the body of <code>POST /v1/query</code> or <code>/v1/sql</code> (<code>true</code>, or an object of options), <code>db.query_logged(sql, params, context=...)</code> in <a href="python.html#the-rank-log">Python</a>, <code>Db::query_logged</code> in Rust. It runs with <code>score()</code> and <a href="#features-the-values-a-ranking-read"><code>features()</code></a> added to its columns, answers with the columns it asked for and the request's id (<code>request</code>), and writes its rows to the log in one transaction once it has answered: a logged query costs a write.</li>
-<li><strong>Options</strong>: <code>context</code>, whom the request served (a user, a session, a query class), which the export reads events by; <code>request</code>, the request's id (a random one when left out; logging a request's id again overwrites its rows at the same positions); <code>variant</code>, the client's name for the ranking that served (an A/B arm); <code>candidates</code>, a number of rows from the query's <code>OFFSET</code> to log, more than its <code>LIMIT</code> returns, those past the <code>LIMIT</code> logged as not shown (unshown negatives); <code>ts</code>, when it was served (ISO 8601 text or microseconds; now when left out), for replaying past traffic; <code>table</code>, another log table; <code>interleave</code>, a second ranking to show in the same list (<a href="#interleaving-two-rankings">interleaving</a>).</li>
-<li><strong>A row</strong> holds its request, time and context, the key of the row served (<code>row_key</code>, as text), its <code>position</code> from 0 (the <code>OFFSET</code> included), whether it was <code>shown</code>, its <code>score()</code>, and <code>features</code>: a JSON object of each <code>features()</code> column, named by its SQL text, whose numbers read back to the bits the ranking computed. The request's first row also keeps its <code>query</code>: the SQL as the client sent it and its parameters as they were bound (a vector as <code>{"$vector": [...]}</code>, a time as <code>{"$ts": microseconds}</code>), which the <a href="#the-relevance-autopilot">relevance autopilot</a> replays. A table made by hand serves as a log if it has these columns, of these types (with <code>retain = '90 days'</code>, say); it may leave out <code>query</code>, and then keeps no query (a log made before the column was added: <code>ALTER TABLE rank_log ADD COLUMN query KEYWORD OPTIONS(indexed = false)</code>).</li>
+<li><strong>Options</strong>: <code>context</code>, whom the request served (a user, a session, a query class), which the export reads events by; <code>request</code>, the request's id (a random one when left out; logging a request's id again overwrites its rows at the same positions); <code>variant</code>, the client's name for the ranking that served (an A/B arm); <code>candidates</code>, a number of rows from the query's <code>OFFSET</code> to log, more than its <code>LIMIT</code> returns, those past the <code>LIMIT</code> logged as not shown (unshown negatives); <code>ts</code>, when it was served (ISO 8601 text or microseconds; now when left out), for replaying past traffic; <code>table</code>, another log table; <code>interleave</code>, a second ranking to show in the same list (<a href="#interleaving-two-rankings">interleaving</a>); <code>explore</code>, a policy that shows the top rows in a randomized order and logs each row's chance (<a href="#exploring-a-log-that-evaluates-rankings-it-never-served">exploring</a>).</li>
+<li><strong>A row</strong> holds its request, time and context, the key of the row served (<code>row_key</code>, as text), its <code>position</code> from 0 (the <code>OFFSET</code> included), whether it was <code>shown</code>, its <code>score()</code>, and <code>features</code>: a JSON object of each <code>features()</code> column, named by its SQL text, whose numbers read back to the bits the ranking computed. The request's first row also keeps its <code>query</code>: the SQL as the client sent it and its parameters as they were bound (a vector as <code>{"$vector": [...]}</code>, a time as <code>{"$ts": microseconds}</code>), which the <a href="#the-relevance-autopilot">relevance autopilot</a> replays. A table made by hand serves as a log if it has these columns, of these types (with <code>retain = '90 days'</code>, say); it may leave out <code>query</code>, and then keeps no query (a log made before the column was added: <code>ALTER TABLE rank_log ADD COLUMN query KEYWORD OPTIONS(indexed = false)</code>). Each row shown also keeps its <code>propensity</code>, the chance the <a href="#exploring-a-log-that-evaluates-rankings-it-never-served">logging policy</a> put it where it was shown (1 for a query that does not explore), and the request's first row its <code>policy</code> (as JSON, <code>{"policy": "none"}</code> when it does not explore) and <code>took_ms</code>, how long the query took before its rows were written. A log made before these columns logs as it did and refuses <code>explore</code>, naming the statement that adds them: <code>ALTER TABLE rank_log ADD COLUMN IF NOT EXISTS propensity FLOAT, ADD COLUMN IF NOT EXISTS prefix_propensity FLOAT, ADD COLUMN IF NOT EXISTS policy KEYWORD OPTIONS(indexed = false), ADD COLUMN IF NOT EXISTS took_ms FLOAT</code>.</li>
 <li><strong>Through a coordinator</strong> the query is the coordinator's, so the values are one database's (<a href="#features-the-values-a-ranking-read">features over shards</a>), and the rows go to the shards their keys place them on; the first logged query makes the table on every shard. A replica refuses a logged query, the log being a write; a primary ships the table it makes to its copies, as it ships the rows. A shard's query (<code>"shard": true</code>) is not logged.</li>
 <li><strong>Cost.</strong> Computing the values is nearly free, since the ranking computes them anyway; the write is the cost. On a 4-core cloud VM over HTTP, with 100,000 documents and one client, a query took 1.87 ms at the median plain, 1.85 ms with its values added and 4.33 ms logged (7.81 ms logging 100 candidates); writing the same ten rows alone through <code>/v1/write</code> took 1.97 ms. Without the disk's flush (<code>--no-sync</code>) the logged query took 3.50 ms: the sync is a third of the log's cost here, and the rest is the write itself. Four clients got 1,620 plain and 670 logged queries a second. A row took 152 bytes in the segments (an Intel Xeon @ 2.10GHz, 16.9 GB, Linux 6.18; <code>chloedb-server/results/rank_log/vm.json</code> and <code>vm-no-sync.json</code>, from <code>chloedb-rank-log-bench</code>). The export read 70,000 records a second, each with a history of 20 events and a label.</li>
 </ul>
@@ -1160,6 +1162,59 @@ curl -s localhost:7700/v1/rank_log/interleaving -H &#x27;content-type: applicati
 <li><strong>The list</strong> is team draft (Radlinski, Kurup and Joachims, CIKM 2008): both queries run, on one snapshot, and in each round the ranking with fewer rows in the list, or a coin's choice when they have as many, adds its best row not yet in it, up to the logged query's <code>LIMIT</code>. A row both rankings hold goes to the one that took it. The coin is seeded by the request's id, so the same request draws the same list. When one ranking runs out, the other's rows fill the list for neither team. <code>teams</code> in the answer names each row's ranking; show the rows, not the teams.</li>
 <li><strong>The second ranking</strong> is a <code>SELECT</code> of the same table answering the same columns, with the same parameters. Both need a <code>LIMIT</code> and no <code>OFFSET</code> (a draft is of a first page), and <code>candidates</code> and <code>variant</code> are left out: each row shown is logged with its own ranking's score and features and its team's name as its <code>variant</code> (<code>variants</code>, <code>["a", "b"]</code> unless named).</li>
 <li><strong>The credit</strong>: <code>POST /v1/rank_log/interleaving</code> takes the export's body and reads the log as the export does, labels included. A request is interleaved when its shown rows carry two variants, and it goes to the team whose rows its user acted on more (a label above 0), or is a tie; a request nobody acted on counts for neither. <code>delta</code> is Chapelle et al.'s Δ, (wins of the first + ties / 2) / requests acted on − 0.5, above 0 when the first ranking (by name) is preferred; <code>p</code> is the two-sided sign test of the wins, ties left out. <code>Db::interleaving_credit</code> gives the same in Rust, and the command center's Recsys eval draws it.</li>
+</ul>
+<h4 id="exploring-a-log-that-evaluates-rankings-it-never-served">Exploring: a log that evaluates rankings it never served<a class="anchor" href="#exploring-a-log-that-evaluates-rankings-it-never-served" aria-label="Link to this section">#</a></h4>
+<p>A log of what one ranking served says little about another: a row it never showed was never clicked, and a row it always put first was clicked partly for being first. Off-policy evaluation asks what another ranking would have earned from the clicks the log holds, by weighting each by how likely the serving policy was to show it there (inverse propensity scoring and the estimators built on it: Li et al., "Offline evaluation of ranking policies with click models", KDD 2018; Joachims et al., "Unbiased learning-to-rank with biased feedback", WSDM 2017). Those estimates are only as good as the chances logged, and a ranking that always serves the same list in the same order has a chance of 1 or 0 for every row, which weights nothing. With <code>explore</code>, a logged query shows its top rows in a randomized order drawn by a policy, and logs each row's chance exactly.</p>
+<pre data-lang="sh">curl -s localhost:7700/v1/query -H &#x27;content-type: application/json&#x27; -d &#x27;{&quot;sql&quot;: &quot;SELECT id, title FROM docs ORDER BY bm25(body, :t) DESC LIMIT 10&quot;, &quot;params&quot;: {&quot;t&quot;: &quot;mrna vaccine&quot;},
+  &quot;log&quot;: {&quot;context&quot;: &quot;u42&quot;, &quot;explore&quot;: {&quot;policy&quot;: &quot;softmax&quot;, &quot;tau&quot;: 0.5, &quot;top&quot;: 20}}}&#x27;
+# {&quot;columns&quot;: [&quot;id&quot;, &quot;title&quot;], &quot;rows&quot;: [...], &quot;request&quot;: &quot;9f0c...&quot;, &quot;propensities&quot;: [0.61, 0.28, 0.33, ...], &quot;logged&quot;: {&quot;rows&quot;: 20, ...}}</pre>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>policy</th>
+<th>options</th>
+<th>what it shows</th>
+<th>propensity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>none</code></td>
+<td></td>
+<td>the ranking as it is</td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>epsilon</code></td>
+<td><code>epsilon</code>, <code>top</code> (10)</td>
+<td>with chance ε the top <code>top</code> in a uniform random order, otherwise the ranking</td>
+<td>(1 − ε)·[the row's own place] + ε / <code>top</code></td>
+</tr>
+<tr>
+<td><code>shuffle</code></td>
+<td><code>top</code> (10)</td>
+<td>the top <code>top</code> in a uniform random order</td>
+<td>1 / <code>top</code></td>
+</tr>
+<tr>
+<td><code>swap</code></td>
+<td><code>top</code> (10)</td>
+<td>the first row swapped with a uniform place up to <code>top</code>, itself included</td>
+<td>exact, per place</td>
+</tr>
+<tr>
+<td><code>softmax</code></td>
+<td><code>tau</code>, <code>top</code> (20), <code>by</code> (<code>score</code>)</td>
+<td>the top <code>top</code> drawn one place at a time by Plackett–Luce, row i with weight exp(sᵢ / τ)</td>
+<td>exact: per place by a one-dimensional integral, the list's prefix in closed form</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>The draw</strong> takes the ranking's first <code>top</code> rows (the query's <code>LIMIT</code> is raised to <code>top</code> when it is smaller, and <code>candidates</code> adds rows past them), orders them by the policy and answers the query's <code>LIMIT</code> of them: those are shown, the rest are logged as not shown. A query explores its first page only: it needs a <code>LIMIT</code> and no <code>OFFSET</code>, and is not also interleaved. <code>softmax</code> reads each row's <code>score()</code> (<code>by: "score"</code>, so τ is in the score's units; a row without a score is refused) or its rank (<code>by: "rank"</code>, sᵢ = −ln(i + 1), a weight of (i + 1)^(−1/τ) whatever the scores' scale). <code>swap</code> is Joachims et al.'s intervention, which measures position bias at little cost to users; <code>softmax</code> is the stochastic policy that evaluating any other ranking needs, since every row of its top has a chance at every place.</li>
+<li><strong>The chances</strong>: <code>propensities</code> in the answer are the shown rows', in order, and each row's <code>propensity</code> in the log is the chance the policy put that row at that place. A row's <code>prefix_propensity</code> is the chance of the list down to it: of that row at that place and every row above it where it was, which a cascade estimator weights by. <code>softmax</code>'s per-place chance is the integral of its Gumbel form, ∫₀¹ P(k of the other rows' Gumbels beat this row's | v) dv, computed by tanh-sinh quadrature to within 1e-6 (1e-9 for weights less than a million times apart) and kept for the last 16 lists a thread drew; the other policies' are closed forms. The request's first row keeps the policy with its options (<code>policy</code>).</li>
+<li><strong>The same request draws the same list</strong>: the draw is seeded by the request's id, as interleaving's coin is, so replaying a logged request checks itself, and a client that names its requests by user and query shows one user the same list until the ranking's rows change. Through a coordinator the draw is the coordinator's, over the merged ranking: three shards draw what one database draws.</li>
+<li><strong>Cost</strong>: the rows past the <code>LIMIT</code> and up to <code>top</code> are logged too, as <code>candidates</code> are, so a wider <code>top</code> is a bigger write; the draw itself reads only the scores the ranking computed.</li>
 </ul>
 <h4 id="the-relevance-autopilot">The relevance autopilot<a class="anchor" href="#the-relevance-autopilot" aria-label="Link to this section">#</a></h4>
 <p>The autopilot reads the queries the rank log kept, proposes new numbers for the <a href="#rank-profiles-a-ranking-kept-with-its-table">rank profile</a> they rank by, and shows the measured before and after on the database's own data before anything changes.</p>

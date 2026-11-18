@@ -655,6 +655,24 @@ def test_two_rankings_interleaved(db):
     assert db.query(a, q="dragon").teams is None
 
 
+def test_an_exploring_query_logs_its_propensities(db):
+    sql = "SELECT id, title FROM books ORDER BY bm25(title, :q) DESC LIMIT 4"
+    top = db.query("SELECT id FROM books ORDER BY bm25(title, :q) DESC LIMIT 8", q="dragon").keys
+    r = db.query_logged(sql, {"q": "dragon"}, context="u1", request="x1", explore={"policy": "shuffle", "top": 8})
+    assert len(r.keys) == 4 and set(r.keys) <= set(top) and r.propensities == [1 / 8] * 4
+    # The same request draws the same list.
+    assert db.query_logged(sql, {"q": "dragon"}, request="x1", explore={"policy": "shuffle", "top": 8}).keys == r.keys
+    records = sorted((x for x in db.export_rank_log() if x["request"] == "x1"), key=lambda x: x["position"])
+    assert [x["row_key"] for x in records][:4] == r.keys and len(records) == 8
+    assert [x.get("propensity") for x in records] == [1 / 8] * 4 + [None] * 4
+    assert records[0]["policy"] == {"policy": "shuffle", "top": 8}
+    s = db.query_logged(sql, {"q": "dragon"}, request="x2", explore={"policy": "softmax", "tau": 1.0, "top": 6, "by": "rank"})
+    assert len(s.propensities) == 4 and all(0 < p <= 1 for p in s.propensities)
+    assert db.query_logged(sql, {"q": "dragon"}, request="x3").propensities is None
+    with pytest.raises(chloedb.ChloeDBError, match="no policy"):
+        db.query_logged(sql, {"q": "dragon"}, explore={"policy": "greedy"})
+
+
 def test_columns_added_dropped_and_renamed(tmp_path):
     schema = {"table": "items", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "title", "type": "text"}, {"name": "n", "type": "int"}]}
     path = tmp_path / "items.strata"
