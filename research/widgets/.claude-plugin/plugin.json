@@ -1,0 +1,12 @@
+{
+  "name": "widgets",
+  "version": "0.1.0",
+  "description": "Widgets in the conversation: stock, flight and shopping apps that open when a request needs one, drawn as cards under the tool call and kept live in a pane",
+  "types": "./types/index.d.ts",
+  "mcpServers": {
+    "widgets": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/index.mjs"]
+    }
+  }
+}

@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shop</title>
+<!-- kit:css -->
+<style>
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 10px; }
+  .card { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .pic { aspect-ratio: 4 / 3; border-radius: 8px; background: var(--bg-2); display: grid; place-items: center; overflow: hidden; color: var(--ink-3); font-size: 22px; }
+  .pic img { width: 100%; height: 100%; object-fit: contain; }
+  .name { font-weight: 600; font-size: 13px; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.5em; }
+  .price { font-weight: 600; }
+  .was { text-decoration: line-through; color: var(--ink-3); font-size: 12px; margin-left: 4px; font-weight: 400; }
+  .stars { color: #d99a1e; font-size: 12px; letter-spacing: 1px; }
+  .card .btn { margin-top: auto; }
+  .cart { margin-top: 12px; border-radius: var(--radius); background: var(--bg-2); padding: 10px 12px; }
+  .line { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 2px 0; }
+  .badge { min-width: 20px; height: 20px; border-radius: 10px; background: var(--ink); color: var(--bg); font-size: 11px; font-weight: 700; display: inline-grid; place-items: center; padding: 0 6px; }
+</style>
+</head>
+<body>
+<div id="root" class="empty">Searching…</div>
+<!-- kit:sdk -->
+<!-- kit:js -->
+<script type="module">
+const { connect, call, ask, money, number, esc } = globalThis.Kit
+const root = document.getElementById('root')
+let app = null, data = null, cart = []
+
+const stars = r => '★★★★★'.slice(0, Math.round(r)) + '☆☆☆☆☆'.slice(0, 5 - Math.round(r))
+
+function cartBox() {
+  if (!cart.length) return ''
+  const total = cart.reduce((s, l) => s + l.price * l.qty, 0)
+  return `<div class="cart">
+    <div class="row between"><span class="title">Cart <span class="badge">${cart.reduce((n, l) => n + l.qty, 0)}</span></span><span class="price num">${money(total)}</span></div>
+    ${cart.map(l => `<div class="line"><span>${l.qty} × ${esc(l.title)}</span><span class="num">${money(l.price * l.qty)}</span></div>`).join('')}
+    <div class="row between" style="margin-top:8px"><span class="faint">Demo store: nothing is ordered or charged.</span><button class="btn primary" id="checkout">Check out</button></div>
+  </div>`
+}
+
+function draw(next) {
+  data = next
+  cart = next.cart ?? cart
+  root.className = ''
+  if (data.mode === 'cart') {
+    root.innerHTML = `<div class="title">Your cart</div>${data.note ? `<div class="faint">${esc(data.note)}</div>` : ''}${cartBox() || '<div class="empty">The cart is empty.</div>'}`
+    wire()
+    return
+  }
+  const sorts = [['relevance', 'Best match'], ['price', 'Price'], ['rating', 'Rating']]
+  root.innerHTML = `
+    <div class="row between wrap">
+      <div><div class="title">${esc(data.query)}${data.maxPrice ? ` under ${money(data.maxPrice).replace(/\.00$/, '')}` : ''}</div>
+        <div class="faint">${data.total} result${data.total === 1 ? '' : 's'} · ${esc(data.source)}</div></div>
+      <div class="tabs" role="group" aria-label="Sort">${sorts.map(([s, l]) => `<button class="tab" data-sort="${s}" aria-pressed="${s === data.sort}">${l}</button>`).join('')}</div>
+    </div>
+    ${data.items.length ? `<div class="grid">${data.items.map(i => `
+      <div class="card">
+        <div class="pic">${i.thumbnail ? `<img src="${esc(i.thumbnail)}" alt="" loading="lazy">` : '🛍'}</div>
+        <div class="name" title="${esc(i.title)}">${esc(i.title)}</div>
+        <div class="faint">${esc(i.brand ?? i.category)}</div>
+        <div class="price num">${money(i.price)}${i.discountPct >= 5 ? `<span class="was">${money(i.price / (1 - i.discountPct / 100))}</span>` : ''}</div>
+        <div><span class="stars" aria-hidden="true">${stars(i.rating)}</span> <span class="faint num">${i.rating}</span></div>
+        <button class="btn" data-add="${i.id}" ${i.stock === 0 ? 'disabled' : ''}>${i.stock === 0 ? 'Out of stock' : 'Add to cart'}</button>
+      </div>`).join('')}</div>` : '<div class="empty">Nothing matches. Try fewer words or a higher price.</div>'}
+    ${cartBox()}`
+  root.querySelectorAll('[data-sort]').forEach(b => b.onclick = async () => draw(await call(app, 'shop_search', { query: data.query, sort: b.dataset.sort, ...(data.maxPrice ? { maxPrice: data.maxPrice } : {}) })))
+  root.querySelectorAll('[data-add]').forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = 'Adding…'
+    const next = await call(app, 'cart_add', { id: Number(b.dataset.add) })
+    cart = next.cart
+    b.textContent = 'Added ✓'
+    root.querySelector('.cart')?.remove()
+    root.insertAdjacentHTML('beforeend', cartBox())
+    wire()
+    // The model learns what is in the cart without a message in the chat.
+    app.updateModelContext?.({ content: [{ type: 'text', text: `Cart now: ${cart.map(l => `${l.qty} × ${l.title}`).join(', ')}` }] }).catch(() => {})
+  })
+  wire()
+}
+
+function wire() {
+  const checkout = root.querySelector('#checkout')
+  if (checkout) checkout.onclick = () => ask(app, `Check out my cart: ${cart.map(l => `${l.qty} × ${l.title}`).join(', ')}.`)
+}
+
+draw.input = args => { root.textContent = `Searching for ${args.query ?? 'products'}…` }
+draw.error = text => { root.className = 'empty'; root.textContent = text }
+app = await connect('Shop', draw)
+</script>
+</body>
+</html>

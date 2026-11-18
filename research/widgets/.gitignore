@@ -1,0 +1,3 @@
+server/node_modules/
+# Written by Claude Code when it loads the plugin (tsconfig.json extends it).
+.claude-plugin/types/

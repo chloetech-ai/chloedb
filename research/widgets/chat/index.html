@@ -1,0 +1,404 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instant apps</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #faf9f5; --panel: #ffffff; --panel-2: #f3f1ea; --ink: #1f1e1d; --ink-2: #67655f; --ink-3: #9a978f;
+    --line: #e5e2d9; --bubble: #efece3; --accent: #c4623f; --accent-ink: #ffffff;
+    --info: #2f6fde; --info-bg: #e6eefc; --action: #1a8a4a; --action-bg: #e3f4ea; --discover: #b0569c; --discover-bg: #f7e6f3;
+    --shadow: 0 1px 2px rgba(30, 28, 20, .06), 0 4px 18px rgba(30, 28, 20, .05);
+  }
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+    --bg: #1f1f1d; --panel: #262624; --panel-2: #2e2e2b; --ink: #f2f1ee; --ink-2: #b4b2ac; --ink-3: #85837d;
+    --line: #3b3a37; --bubble: #33322f; --accent: #d97757;
+    --info: #6d9ff0; --info-bg: #23314a; --action: #4cc27a; --action-bg: #1e3a29; --discover: #e08ccd; --discover-bg: #3d2537;
+    --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  button, input, textarea { font: inherit; color: inherit; }
+  .shell { display: grid; grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: minmax(0, 1fr); height: 100vh; height: 100dvh; }
+  .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .top { display: flex; align-items: baseline; gap: 10px; padding: 14px 22px; }
+  .top b { font-size: 15px; }
+  .faint { color: var(--ink-3); font-size: 12px; }
+  .log { flex: 1; overflow-y: auto; padding: 8px 22px 24px; }
+  .col { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  .user { align-self: flex-end; max-width: 80%; background: var(--bubble); border-radius: 18px; padding: 9px 15px; white-space: pre-wrap; }
+  .turn { display: flex; flex-direction: column; gap: 10px; }
+  .status { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; }
+  .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(1turn); } }
+  .reply { white-space: pre-wrap; }
+  .error { color: #c8372d; font-size: 14px; }
+
+  .tile { width: 28px; height: 28px; border-radius: 8px; display: inline-grid; place-items: center; flex: none; }
+  .tile svg { width: 16px; height: 16px; }
+  .k-info { background: var(--info-bg); color: var(--info); }
+  .k-action { background: var(--action-bg); color: var(--action); }
+  .k-discover { background: var(--discover-bg); color: var(--discover); }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
+  .card.fresh { animation: rise .35s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  .head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .head .name { font-weight: 600; }
+  .head .kind { color: var(--ink-3); font-size: 12px; }
+  .badge { margin-left: auto; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+  .badge.made { background: #fdf0e8; color: var(--accent); }
+  .badge.recalled { background: var(--action-bg); color: var(--action); }
+  :root[data-theme='dark'] .badge.made { background: #43291f; }
+  .why { padding: 6px 14px 0; font-size: 12px; color: var(--ink-2); }
+  .frame iframe { display: block; width: 100%; height: 160px; border: 0; background: transparent; }
+  .foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 14px; border-top: 1px solid var(--line); background: var(--panel-2); font-size: 13px; }
+  .foot .note { color: var(--ink-2); }
+  .foot .ver { margin-left: auto; color: var(--ink-3); font-size: 12px; }
+  .btn { border: 1px solid var(--line); background: var(--panel); border-radius: 9px; padding: 5px 11px; cursor: pointer; font-size: 13px; }
+  .btn:hover { background: var(--bg); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .btn.link { border: 0; background: none; padding: 5px 4px; color: var(--ink-2); text-decoration: underline; text-underline-offset: 2px; }
+  .btn:disabled { opacity: .55; cursor: default; }
+  .changer[hidden] { display: none; }
+  .changer { display: flex; gap: 8px; padding: 0 14px 12px; background: var(--panel-2); }
+  .changer input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--panel); border-radius: 9px; padding: 6px 10px; font-size: 13px; }
+  .saved-ok { color: var(--action); font-weight: 600; }
+
+  .making { padding: 16px 14px 18px; display: flex; flex-direction: column; gap: 9px; }
+  .bar { height: 10px; border-radius: 6px; background: linear-gradient(90deg, var(--panel-2), var(--line), var(--panel-2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+
+  .composer { padding: 10px 22px 18px; }
+  .composer form { max-width: 760px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 8px 8px 8px 16px; box-shadow: var(--shadow); }
+  .composer textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; padding: 6px 0; height: 28px; max-height: 140px; }
+  .send { width: 34px; height: 34px; border-radius: 10px; border: 0; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: 17px; }
+  .send:disabled { opacity: .45; }
+
+  .hello { margin: 9vh auto 0; max-width: 620px; text-align: center; }
+  .hello h1 { font-size: 26px; font-weight: 600; margin: 0 0 6px; letter-spacing: -.01em; }
+  .hello p { color: var(--ink-2); margin: 0 0 22px; }
+  .ideas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: left; }
+  .idea-col h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+  .idea { display: block; width: 100%; text-align: left; margin-bottom: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 11px; cursor: pointer; font-size: 13px; }
+  .idea:hover { border-color: var(--ink-3); }
+
+  .rail { border-left: 1px solid var(--line); background: var(--panel-2); overflow-y: auto; min-height: 0; padding: 16px 14px; }
+  .rail-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+  .rail-head b { font-size: 15px; }
+  .rail-tip { margin: 0 0 14px; font-size: 12px; color: var(--ink-2); }
+  .group h4 { margin: 14px 0 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+  .app { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 1px solid transparent; background: transparent; border-radius: 12px; padding: 7px 8px; cursor: pointer; }
+  .app:hover { background: var(--panel); border-color: var(--line); }
+  .app.new { background: var(--panel); border-color: var(--accent); animation: glow 2.4s ease-out; }
+  @keyframes glow { from { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 35%, transparent); } }
+  .app .text { min-width: 0; flex: 1; }
+  .app b { display: block; font-size: 13px; font-weight: 600; }
+  .app small { display: block; font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .app .uses { font-size: 11px; color: var(--ink-3); }
+  .group .none { font-size: 12px; color: var(--ink-3); padding: 2px 8px; }
+  .rail-foot { margin-top: 18px; font-size: 11px; color: var(--ink-3); }
+
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+    .rail { border-left: 0; border-top: 1px solid var(--line); max-height: 34vh; }
+    .ideas { grid-template-columns: 1fr; }
+    .log, .composer, .top { padding-left: 16px; padding-right: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <main class="chat">
+    <div class="top"><b>Instant apps</b><span class="faint">a prototype: answers come with apps, and the apps you keep come back</span></div>
+    <div class="log" id="log"><div class="col" id="col"></div></div>
+    <div class="composer">
+      <form id="ask"><textarea id="text" rows="1" placeholder="Ask anything"></textarea><button class="send" id="send" aria-label="Send">↑</button></form>
+    </div>
+  </main>
+  <aside class="rail" id="rail" aria-label="Your apps">
+    <div class="rail-head"><b>Your apps</b><span class="faint" id="count"></span></div>
+    <p class="rail-tip">Open one any time. A saved app opens by itself when you ask for something like what it did before.</p>
+    <div id="groups"></div>
+    <div class="rail-foot">Kept in ChloeDB, found by words and meaning.</div>
+  </aside>
+</div>
+<script type="module">
+import { AppBridge, PostMessageTransport } from '/bridge.js'
+
+const q = new URLSearchParams(location.search)
+const theme = q.get('theme') ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+document.documentElement.dataset.theme = theme
+
+const KINDS = {
+  info: { label: 'Look things up', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12l4-4 3 3 5-6"/></svg>' },
+  action: { label: 'Get things done', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.5"/></svg>' },
+  discover: { label: 'Discover', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M8 1.8l1.6 4.6 4.6 1.6-4.6 1.6L8 14.2 6.4 9.6 1.8 8l4.6-1.6z"/></svg>' },
+}
+const IDEAS = {
+  info: ['How is Apple doing this month?', 'Compare noise cancelling headphones'],
+  action: ['Book a table for 4 on Friday at 8 in North Beach', 'I need a new phone case'],
+  discover: ['Dinner ideas, something Thai', 'Desserts I could bake this weekend'],
+}
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)
+const tile = kind => `<span class="tile k-${kind}">${KINDS[kind]?.icon ?? ''}</span>`
+const col = document.getElementById('col')
+const log = document.getElementById('log')
+const text = document.getElementById('text')
+const send = document.getElementById('send')
+const history = []
+let lastApp = null
+let busy = false
+window.events = []
+
+function el(cls, html, parent = col) {
+  const node = document.createElement('div')
+  node.className = cls
+  node.innerHTML = html
+  parent.append(node)
+  return node
+}
+const scroll = () => requestAnimationFrame(() => log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' }))
+
+// ---- the rail ----
+let known = new Set()
+async function rail(highlight) {
+  const { apps } = await (await fetch('/api/apps')).json()
+  document.getElementById('count').textContent = `${apps.length} kept`
+  const groups = document.getElementById('groups')
+  groups.innerHTML = Object.entries(KINDS)
+    .map(([kind, { label }]) => {
+      const mine = apps.filter(a => a.kind === kind)
+      return `<div class="group"><h4>${label}</h4>${
+        mine.length
+          ? mine.map(a => `<button class="app${a.id === highlight ? ' new' : ''}" data-id="${esc(a.id)}">${tile(a.kind)}<span class="text"><b>${esc(a.name)}</b><small>${esc(a.about)}</small></span><span class="uses">${a.uses}×</span></button>`).join('')
+          : '<div class="none">Nothing yet</div>'
+      }</div>`
+    })
+    .join('')
+  groups.querySelectorAll('.app').forEach(b => (b.onclick = () => openFromRail(b.dataset.id, b.querySelector('b').textContent)))
+  known = new Set(apps.map(a => a.id))
+}
+
+function hello() {
+  el('hello', `<h1>What do you need?</h1><p>Ask for anything. When an answer is better as an app, one opens here.<br>Keep the ones you like: they show up again when you need them.</p>
+    <div class="ideas">${Object.entries(IDEAS).map(([kind, list]) => `<div class="idea-col"><h4>${tile(kind)} ${KINDS[kind].label}</h4>${list.map(i => `<button class="idea">${esc(i)}</button>`).join('')}</div>`).join('')}</div>`)
+  col.querySelectorAll('.idea').forEach(b => (b.onclick = () => ask(b.textContent)))
+}
+
+// ---- reading a stream of events ----
+async function events(response, on) {
+  const reader = response.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    let i
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i)
+      buf = buf.slice(i + 1)
+      if (line.trim()) {
+        const event = JSON.parse(line)
+        window.events.push(event)
+        await on(event)
+      }
+    }
+  }
+}
+
+// ---- an app in the conversation ----
+async function draw(frame, payload) {
+  frame.innerHTML = ''
+  const iframe = document.createElement('iframe')
+  iframe.setAttribute('sandbox', 'allow-scripts')
+  iframe.title = payload.app.name
+  frame.append(iframe)
+  const bridge = new AppBridge(
+    null,
+    { name: 'instant-apps', version: '0.1.0' },
+    { serverTools: {}, openLinks: {}, message: { text: {} }, updateModelContext: { text: {} } },
+    { hostContext: { theme, displayMode: 'inline', availableDisplayModes: ['inline'], platform: 'web', locale: 'en-US' } },
+  )
+  bridge.oncalltool = async params => {
+    const result = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: payload.app.id, ...params }) })).json()
+    if (!result.isError && params.name === payload.app.tool) lastApp = { id: payload.app.id, args: params.arguments }
+    return result
+  }
+  // The app's height; the conversation follows a growing app when it was at its end.
+  bridge.onsizechange = ({ height }) => {
+    if (!height) return
+    const following = log.scrollHeight - log.scrollTop - log.clientHeight < 120
+    iframe.style.height = `${Math.min(900, Math.ceil(height))}px`
+    if (following) scroll()
+  }
+  bridge.onmessage = async params => {
+    ask(params.content.map(c => c.text).join(' '))
+    return {}
+  }
+  bridge.onupdatemodelcontext = async () => ({})
+  bridge.onopenlink = async ({ url }) => { window.open(url, '_blank', 'noopener'); return {} }
+  bridge.oninitialized = async () => {
+    await bridge.sendToolInput({ arguments: payload.args ?? {} })
+    await bridge.sendToolResult(payload.result)
+  }
+  await bridge.connect(new PostMessageTransport(iframe.contentWindow, iframe.contentWindow))
+  iframe.srcdoc = payload.html
+}
+
+function card(parent, payload) {
+  const { app, how } = payload
+  const node = el('card fresh', '', parent)
+  const badge = how === 'made' ? '<span class="badge made">New app</span>' : how === 'recalled' ? '<span class="badge recalled">From your apps</span>' : ''
+  node.innerHTML = `
+    <div class="head">${tile(app.kind)}<div><div class="name">${esc(app.name)}</div><div class="kind">${KINDS[app.kind]?.label ?? ''}</div></div>${badge}</div>
+    ${payload.why && how !== 'opened' ? `<div class="why">${how === 'made' ? 'Made for this' : 'Opened by itself'}: ${esc(payload.why)}</div>` : ''}
+    <div class="frame"></div>
+    <div class="foot"></div>
+    <form class="changer" hidden><input placeholder="What should change? For example: put the best rated first" /><button class="btn">Change</button></form>`
+  draw(node.querySelector('.frame'), payload)
+  foot(node, payload)
+  lastApp = { id: app.id, args: payload.args }
+  return node
+}
+
+function foot(node, payload) {
+  const { app } = payload
+  const f = node.querySelector('.foot')
+  const ver = `<span class="ver">version ${app.version}</span>`
+  f.innerHTML = app.saved
+    ? `<span class="saved-ok">✓ In your apps</span><span class="note">It opens by itself next time.</span><button class="btn change">Change it</button>${app.version > 1 ? '<button class="btn link undo">Undo the last change</button>' : ''}${ver}`
+    : `<button class="btn primary save">Save to my apps</button><button class="btn change">Change it</button><span class="note">Not saved yet.</span>${app.version > 1 ? '<button class="btn link undo">Undo the last change</button>' : ''}${ver}`
+  const changer = node.querySelector('.changer')
+  f.querySelector('.save')?.addEventListener('click', async () => {
+    const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/save`, { method: 'POST', body: '{}' })).json()
+    payload.app = out.app
+    foot(node, payload)
+    await rail(app.id)
+  })
+  f.querySelector('.change').addEventListener('click', () => {
+    changer.hidden = !changer.hidden
+    if (!changer.hidden) changer.querySelector('input').focus()
+  })
+  f.querySelector('.undo')?.addEventListener('click', async () => {
+    const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/undo`, { method: 'POST', body: '{}' })).json()
+    payload.app = out.app
+    payload.html = out.html
+    draw(node.querySelector('.frame'), payload)
+    foot(node, payload)
+  })
+  changer.onsubmit = async e => {
+    e.preventDefault()
+    const input = changer.querySelector('input')
+    const what = input.value.trim()
+    if (!what) return
+    changer.hidden = true
+    f.innerHTML = `<span class="status"><span class="spin"></span>Changing it: ${esc(what)}</span>`
+    const res = await fetch(`/api/apps/${encodeURIComponent(app.id)}/change`, { method: 'POST', body: JSON.stringify({ text: what }) })
+    await events(res, async ev => {
+      if (ev.type === 'app') {
+        Object.assign(payload, ev)
+        await draw(node.querySelector('.frame'), payload)
+        foot(node, payload)
+        input.value = ''
+      }
+      if (ev.type === 'error') f.innerHTML = `<span class="error">${esc(ev.text)}</span>`
+    })
+  }
+}
+
+// ---- a turn ----
+async function ask(question) {
+  if (busy || !question.trim()) return
+  busy = true
+  send.disabled = true
+  col.querySelector('.hello')?.remove()
+  el('user', esc(question))
+  const turn = el('turn', '')
+  const status = el('status', '<span class="spin"></span><span>Thinking</span>', turn)
+  let making = null
+  let started = 0
+  let timer = null
+  let reply = ''
+  scroll()
+  try {
+    const res = await fetch('/api/turn', { method: 'POST', body: JSON.stringify({ text: question, history: history.slice(-6), lastApp }) })
+    await events(res, async ev => {
+      if (ev.type === 'status') status.lastChild.textContent = ev.text
+      if (ev.type === 'making') {
+        status.remove()
+        started = Date.now()
+        making = el('card fresh', `<div class="head">${tile(ev.kind)}<div><div class="name">${esc(ev.name)}</div><div class="kind">${KINDS[ev.kind]?.label ?? ''}</div></div><span class="badge made">New app</span></div>
+          <div class="why">Making a new one: ${esc(ev.why)}</div>
+          <div class="making"><div class="status"><span class="spin"></span><span class="t">Making it</span></div><div class="bar" style="width:92%"></div><div class="bar" style="width:70%"></div><div class="bar" style="width:84%"></div></div>`, turn)
+        timer = setInterval(() => { making.querySelector('.t').textContent = `Making it · ${Math.round((Date.now() - started) / 1000)}s` }, 1000)
+        scroll()
+      }
+      if (ev.type === 'app') {
+        clearInterval(timer)
+        status.remove()
+        making?.remove()
+        card(turn, ev)
+        scroll()
+      }
+      if (ev.type === 'reply') {
+        reply = ev.text
+        el('reply', esc(ev.text), turn)
+        scroll()
+      }
+      if (ev.type === 'error') {
+        clearInterval(timer)
+        status.remove()
+        making?.remove()
+        el('error', `Something went wrong: ${esc(ev.text)}`, turn)
+      }
+    })
+  } finally {
+    clearInterval(timer)
+    status.remove()
+    history.push({ role: 'user', text: question }, { role: 'assistant', text: reply })
+    busy = false
+    send.disabled = false
+    await rail()
+  }
+}
+
+async function openFromRail(id, name) {
+  if (busy) return
+  col.querySelector('.hello')?.remove()
+  const turn = el('turn', '')
+  const status = el('status', `<span class="spin"></span><span>Opening ${esc(name)}</span>`, turn)
+  const res = await fetch(`/api/apps/${encodeURIComponent(id)}/open`, { method: 'POST', body: '{}' })
+  await events(res, async ev => {
+    if (ev.type === 'app') {
+      status.remove()
+      card(turn, ev)
+      scroll()
+    }
+  })
+  status.remove()
+}
+
+document.getElementById('ask').onsubmit = e => {
+  e.preventDefault()
+  const value = text.value
+  text.value = ''
+  ask(value)
+}
+text.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    document.getElementById('ask').requestSubmit()
+  }
+})
+window.ask = ask
+hello()
+rail()
+</script>
+</body>
+</html>
