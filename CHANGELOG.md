@@ -13,13 +13,14 @@ changes collect under "Unreleased".
 
 - **ChloeCtx keeps a private aside nowhere, and only the user's words
   make rules** (persona study round 3, WEI-301, JONAH-301, LENA-310,
-  JONAH-303, JONAH-304, ANA-308). A part of a prompt marked private ("off
+  JONAH-303, JONAH-304, ANA-308, and WEI-304's restated aside). A part of a prompt marked private ("off
   the record, please don't save this anywhere: ...", "keep that name
   private") was stored word for word, became a rule every later session
   was told and was synced to the team, while Claude said it was not saved.
   It is cut before anything is stored, distilled or synced, with
   `[private aside left out]` in its place; the session is told what was
-  left out, the reply's sentences that repeat it are cut, and a prompt
+  left out, the sentences of the session's replies that repeat it ("I
+  didn't save your interview note") are cut, and a prompt
   private as a whole keeps nothing of its turn. Rules a store took from
   asides before are retired when the daemon starts, and sync sends old
   records without them. A rule an agent keeps (with `said_by: assistant`,
