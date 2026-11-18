@@ -170,18 +170,18 @@ fn a_private_aside_is_not_pushed() {
     let project = "acme/ledger";
     let prompt = "Off the record, please don't save this anywhere: I'm interviewing at another company next week. Anyway, add a .env.example with placeholders for the staging settings.";
     let ctx = format!("Turn 1 request: {prompt}");
-    let rec = |id: &str, kind: Kind, tag: &str, text: &str, seq: i64| Record { tag: tag.into(), ctx: ctx.clone(), ..note(id, kind, text, seq) };
+    let rec = |kind: Kind, tag: &str, text: &str, seq: i64| Record { tag: tag.into(), ctx: ctx.clone(), ..note("w", kind, text, seq) };
     let a = store(dir.path(), "a.strata");
     load(&a, &[
-        rec("w-1", Kind::Prompt, "-", prompt, 1),
-        rec("w-2", Kind::Preference, "cue", &format!("User preference: {}", &prompt[..96]), 2),
-        rec("w-3", Kind::Decision, "distilled", "Staging settings are documented in .env.example with placeholders.", 3),
+        rec(Kind::Prompt, "-", prompt, 1),
+        rec(Kind::Preference, "cue", &format!("User preference: {}", &prompt[..96]), 2),
+        rec(Kind::Decision, "distilled", "Staging settings are documented in .env.example with placeholders.", 3),
     ]);
     let mut sa = SyncState::default();
     assert_eq!(sync::push(&remote, &a, project, &mut sa).unwrap(), 2, "the rule is not sent");
     let c = store(dir.path(), "c.strata");
     assert_eq!(sync::pull(&remote, &c, project, &mut SyncState::default(), dir.path()).unwrap(), 2);
-    let got = c.get(&["w-1".to_string(), "w-2".to_string(), "w-3".to_string()]).unwrap();
+    let got = c.get(&["w-00001".to_string(), "w-00002".to_string(), "w-00003".to_string()]).unwrap();
     assert_eq!(got.len(), 2, "{got:?}");
     for r in &got {
         assert!(!r.text.contains("interviewing") && !r.ctx.contains("interviewing"), "{r:?}");
