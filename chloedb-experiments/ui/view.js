@@ -144,6 +144,16 @@ const CSS = `
 @media (max-width: 1100px) { .ex-g3 { grid-template-columns: 1fr; } }
 .ex-score tr.on td { background: var(--accent-soft); }
 .ex-score tr.click { cursor: pointer; }
+.ex-decided { border-left: 4px solid var(--good); }
+.ex-strips { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 14px 22px; align-items: start; }
+.ex-kit { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ex-strip-calls { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--text-2); margin: 4px 0 8px; }
+.ex-why { display: grid; gap: 6px; }
+.ex-why > div { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 8px; font-size: 12.5px; line-height: 1.45; color: var(--text-2); }
+.ex-why .d { width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; }
+.ex-need-bars { display: grid; gap: 8px; }
+.ex-need-bars > div { display: grid; grid-template-columns: 170px minmax(0, 1fr) 110px; gap: 10px; align-items: center; font-size: 12.5px; }
+.ex-need-bars .b { height: 14px; border-radius: 4px; }
 .ex-sql { font-family: var(--mono); font-size: 12px; background: var(--code); border-radius: 6px; padding: 6px 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
 `;
 
@@ -421,11 +431,12 @@ async function builder(ctx, root, go, meta, from) {
   const loading = (await ctx.api("/v1/sites")).loading || {};
   let spec = JSON.parse(JSON.stringify(meta.defaults));
   for (const [k, v] of Object.entries(meta.live?.defaults || {})) if (spec[k] === undefined) spec[k] = v;
+  delete spec.seed;
   const liveStart = from === "live";
   if (liveStart) { from = null; spec.mode = "live"; }
   if (from) {
     const r = await ctx.api(`/v1/experiments/${encodeURIComponent(from)}`);
-    if (r.spec) spec = { ...spec, ...r.spec, name: (r.spec.name || "") + " (again)", seed: (r.spec.seed || 0) + 1 };
+    if (r.spec) { spec = { ...spec, ...r.spec, name: (r.spec.name || "") + " (again)" }; delete spec.seed; }
   }
   if (!spec.site && sites.length) spec.site = (sites.find((s) => s.name === "nfcorpus") || sites[0]).name;
   const siteOf = () => sites.find((s) => s.name === spec.site);
@@ -456,6 +467,25 @@ async function builder(ctx, root, go, meta, from) {
   // The arms.
   const armsBox = h("div", { style: { display: "grid", gap: "10px" } });
   const split = h("div", { class: "ex-split" });
+  const kitRow = h("div", { class: "ex-kit" });
+  const KIT = [
+    ["Shuffled", "The control's matches in an order that has nothing to do with relevance: the fraction of its score times a prime.", (c) => ({ rank: `((${c.rank}) * 7919) % 1` })],
+    ["Reversed", "The control's matches, the least relevant first.", (c) => ({ rank: `0 - (${c.rank})` })],
+    ["First row demoted", "The control's list with its first row moved to the end: a small loss of a known size, to see whether the experiment can find one.", (c) => ({ rank: c.rank, then: "demote_first" })],
+  ];
+  function drawKit() {
+    const last = spec.arms.length - 1;
+    kitRow.replaceChildren(h("span", { class: "small dim" }, `Make arm ${String.fromCharCode(65 + last)} from the control:`), ...KIT.map(([name, about, make]) => h("button", { class: "btn sm", title: about, onclick: () => {
+      const c = spec.arms[0];
+      if (!c?.rank?.trim()) { core.toast("Give the control a ranking first.", "warn"); return; }
+      let nm = name;
+      for (let n = 2; spec.arms.some((a, i) => i !== last && a.name === nm); n++) nm = `${name} ${n}`;
+      spec.arms[last] = { name: nm, share: spec.arms[last]?.share || 1, ...make(c) };
+      if (spec.arms.length === 2) { spec.name = `${nm} against ${c.name}`; nameIn.value = spec.name; }
+      drawArms();
+      preview();
+    } }, name)));
+  }
   const addBtn = h("button", { class: "btn sm", onclick: () => { const r = siteOf()?.rankings || []; const used = new Set(spec.arms.map((a) => a.rank)); const next = r.find((x) => !used.has(x[1])) || r[0] || ["Arm", ""]; spec.arms.push({ name: next[0], rank: next[1], share: 1 }); drawArms(); preview(); } }, core.icon("plus"), "Add an arm");
   function drawSplit() {
     const total = spec.arms.reduce((a, x) => a + (+x.share || 0), 0) || 1;
@@ -474,17 +504,21 @@ async function builder(ctx, root, go, meta, from) {
       text.value = a.rank;
       const share = h("input", { type: "range", min: 1, max: 9, step: 1, value: a.share || 1, oninput: () => { a.share = +share.value; shareV.textContent = `share ${a.share}`; drawSplit(); } });
       const shareV = h("span", { class: "small dim" }, `share ${a.share || 1}`);
-      const del = i >= 2 ? h("button", { class: "btn ghost sm", title: "Remove this arm", onclick: () => { spec.arms.splice(i, 1); drawArms(); preview(); } }, core.icon("x")) : null;
+      const then = h("select", { class: "select sm", title: "What the site does to ChloeDB's rows before showing them", onchange: () => { if (then.value) a.then = then.value; else delete a.then; preview(); } },
+        h("option", { value: "" }, "Shown as ranked"), h("option", { value: "demote_first", selected: a.then === "demote_first" }, "First row moved to the end"));
+      const del = i >= 2 || (i === 1 && spec.arms.length > 2) ? h("button", { class: "btn ghost sm", title: "Remove this arm", onclick: () => { spec.arms.splice(i, 1); drawArms(); preview(); } }, core.icon("x")) : null;
       return h("div", { class: "ex-arm", style: { "--arm": ARM_COLORS[i] } },
         h("div", { class: "ex-arm-top" }, h("span", { class: "small", style: { color: ARM_COLORS[i], fontWeight: 700, width: "64px" } }, i === 0 ? "Control" : `Arm ${String.fromCharCode(65 + i)}`), name, pick, del),
         h("div", { class: "small dim" }, "ORDER BY, of :t, the search's text"), text,
-        h("div", { class: "row nw" }, shareV, share));
+        h("div", { class: "row nw" }, spec.mode === "interleave" ? null : [shareV, share], h("span", { style: { marginLeft: "auto" } }, then)));
     }));
-    addBtn.disabled = spec.arms.length >= meta.limits.arms;
+    addBtn.disabled = spec.arms.length >= meta.limits.arms || spec.mode === "interleave";
+    addBtn.title = spec.mode === "interleave" ? "An interleaving compares two arms" : "";
+    drawKit();
     drawSplit();
   }
   drawArms();
-  left.append(core.card({ title: "Arms", sub: "the first is the control; each user stays in one", tools: addBtn, body: h("div", { style: { display: "grid", gap: "10px" } }, armsBox, h("div", { class: "small dim" }, "How the users split"), split) }));
+  left.append(core.card({ title: "Arms", sub: "the first is the control; each user stays in one", tools: addBtn, body: h("div", { style: { display: "grid", gap: "10px" } }, armsBox, kitRow, h("div", { class: "small dim" }, "How the users split"), split) }));
 
   // Users and traffic.
   const knobs = h("div", { class: "ex-knobs" });
@@ -514,13 +548,18 @@ async function builder(ctx, root, go, meta, from) {
       estimate.textContent = `About ${core.fmt.si(n)} searches in ${spec.minutes} min, every one a logged query to ChloeDB, counted each second.${agents}`;
       return;
     }
+    if (spec.mode === "interleave") {
+      const secs = (2 * spec.impressions) / 1.5e6 + (spec.users * 10) / 4e5 + 3;
+      estimate.textContent = `About ${secs < 90 ? Math.max(3, Math.round(secs)) + " s" : Math.round(secs / 60) + " min"} to run: the interleaving, and the A/B of the same pair on the same users to compare.`;
+      return;
+    }
     const pre = spec.impressions * spec.pre;
     const secs = spec.mode === "served" ? spec.impressions / 1200 + pre / 2e6 : (spec.impressions + pre) / 1.5e6 + spec.users * spec.arms.length / 4e5 + 2;
     estimate.textContent = `About ${secs < 90 ? Math.max(3, Math.round(secs)) + " s" : Math.round(secs / 60) + " min"} to run${spec.mode === "served" ? ", every search a logged query to ChloeDB" : ""}.`;
   };
   const searchesMax = () => (spec.mode === "served" ? meta.limits.served : meta.limits.fast);
   const run = h("button", { class: "btn primary" });
-  const runLabel = () => run.replaceChildren(core.icon(spec.mode === "live" ? "bolt" : "play"), spec.mode === "live" ? "Start the live run" : "Run the experiment");
+  const runLabel = () => run.replaceChildren(core.icon(spec.mode === "live" ? "bolt" : "play"), spec.mode === "live" ? "Start the live run" : spec.mode === "interleave" ? "Run the interleaving" : "Run the experiment");
   function drawKnobs() {
     const live = spec.mode === "live";
     const maxUsers = live ? L.limits.users || 100000 : meta.limits.users;
@@ -536,12 +575,15 @@ async function builder(ctx, root, go, meta, from) {
     const modelHint = h("div", { class: "hint" }, meta.models.find((m) => m.name === spec.model)?.about || "");
     const policy = h("select", { class: "select sm", style: { width: "100%" }, onchange: () => { spec.explore = meta.policies[+policy.value].explore; } }, meta.policies.map((p, i) => h("option", { value: i, selected: JSON.stringify(p.explore) === JSON.stringify(spec.explore) }, p.name)));
     const primary = h("select", { class: "select sm", style: { width: "100%" }, onchange: () => { spec.primary = primary.value; } }, meta.metrics.filter((m) => !m.guardrail).map((m) => h("option", { value: m.key, selected: m.key === spec.primary }, m.title)));
-    const mode = core.seg([["fast", "Fast", "drawn here, from each arm's rows ranked once per query"], ["served", "Served", "every search a logged query to ChloeDB, and its clicks written back"], ["live", "Live", "watch it as it runs: simulated users at a rate you set, AI agents on the site, every metric each second"]], spec.mode, (v) => {
+    const mode = core.seg([["fast", "Fast", "drawn here, from each arm's rows ranked once per query"], ["served", "Served", "every search a logged query to ChloeDB, and its clicks written back"], ["live", "Live", "watch it as it runs: simulated users at a rate you set, AI agents on the site, every metric each second"], ["interleave", "Interleave", "both arms' rows in one list, drafted by turns, and every click credited to the arm whose row it was: far fewer searches tell two rankings apart; the A/B of the same pair runs beside it"]], spec.mode, (v) => {
       spec.mode = v;
+      if (v === "interleave") { spec.arms = spec.arms.slice(0, 2); spec.explore_share = 0; }
+      drawArms();
+      preview();
       if (v !== "live" && spec.impressions > searchesMax()) spec.impressions = searchesMax();
       drawKnobs();
     });
-    const seed = h("input", { class: "input sm", type: "number", value: spec.seed, style: { width: "100px" }, oninput: () => { spec.seed = Math.max(0, Math.floor(+seed.value || 0)); } });
+    const seed = h("input", { class: "input sm", type: "number", min: 0, placeholder: "fresh", value: spec.seed ?? "", style: { width: "110px" }, oninput: () => { const x = seed.value.trim(); if (x === "") delete spec.seed; else spec.seed = Math.max(0, Math.floor(+x || 0)); } });
     const common = [
       knob("Users", live ? "Each is in one arm for the whole run, and comes back as often as they are active." : "Each is in one arm for the whole experiment.", uIn, uOut),
       knob("Click model", null, h("div", {}, model, modelHint)),
@@ -570,10 +612,13 @@ async function builder(ctx, root, go, meta, from) {
       const [gIn, gOut] = slider("agents", 0, L.limits.agents || 6, 1, (v) => (v ? `${v} agents` : "none"), () => { est(); brainBox.style.display = spec.agents ? "" : "none"; });
       own = [
         knob("Searches a second", "Simulated users arriving; you can change it while it runs.", rIn, rOut),
-        knob("For", "It ends then, or when you stop it, and becomes an experiment with the full report.", mIn, mOut),
+        knob("For", "At the most; it ends then, or when you stop it, and becomes an experiment with the full report.", mIn, mOut),
+        knob("Stop", "An always-valid p value may be read every second, so a run may stop the moment it is decided without calling more false wins.", core.seg([["decided", "When decided", "once every arm's primary metric is called by its always-valid p value and every guardrail is read; at the latest when the time is up"], ["time", "When time is up", "the whole time, however early it is decided"]], spec.until || "decided", (x) => { spec.until = x; })),
         knob("AI agents", "People of the population, each in the arm the split gives them, using the site's search for a need of its own: they type, read, open and decide.", gIn, gOut),
         brainBox,
       ];
+    } else if (spec.mode === "interleave") {
+      own = [knob("Searches", "Each shows both arms' rows in one list; the A/B of the same pair gets the same users and as many searches.", sIn, sOut)];
     } else {
       own = [
         knob("Searches", "Spread over the users by how active each is.", sIn, sOut),
@@ -583,7 +628,7 @@ async function builder(ctx, root, go, meta, from) {
       ];
     }
     if (live) spec.explore_share = 0;
-    knobs.replaceChildren(knob("Mode", null, mode), ...own, ...common, knob("Seed", "The same seed, the same users and the same searches.", seed));
+    knobs.replaceChildren(knob("Mode", null, mode), ...own, ...common, knob("Seed", "Empty: new users and searches each run. A number: the same ones again, to repeat a run exactly.", seed));
     drawSplit();
     est();
     runLabel();
@@ -612,7 +657,7 @@ async function builder(ctx, root, go, meta, from) {
     const ranks = spec.arms.map((a) => a.rank).filter((r) => r.trim());
     if (!ranks.length) return;
     try {
-      const j = await ctx.api("/v1/preview", { method: "POST", body: { site: spec.site, ranks: spec.arms.map((a) => a.rank), limit: spec.limit, queries: 3 } });
+      const j = await ctx.api("/v1/preview", { method: "POST", body: { site: spec.site, ranks: spec.arms.map((a) => a.rank), thens: spec.arms.map((a) => a.then || ""), limit: spec.limit, queries: 3 } });
       if (n !== asked) return;
       pv.replaceChildren(...j.queries.map((q) => h("div", {},
         h("div", { class: "row between", style: { marginBottom: "6px" } }, h("b", { style: { fontSize: "13px" } }, q.text), h("span", { class: "small dim" }, `${(q.share * 100).toFixed(1)}% of searches · ${q.judged} judged`)),
@@ -674,12 +719,15 @@ async function report(ctx, root, go, meta, id, tab, onStop) {
   if (r.status === "failed") { body.replaceChildren(h("div", { class: "error" }, `This experiment failed: ${r.error}`)); return; }
   const rep = r.report;
   if (!rep) { body.replaceChildren(core.empty("box", "No report", "")); return; }
-  const tabs = [["scorecard", "Scorecard"], ["metric", "One metric"], ["cohorts", "Cohorts"], rep.live ? ["agents", "Agents"] : ["whatif", "What-if"], ["setup", "Setup"]];
+  if (rep.kind === "interleave") { body.replaceChildren(interleaveReport(ctx, rep, r)); return; }
+  const tabs = [["scorecard", "Scorecard"], ["metric", "One metric"], rep.by_query ? ["queries", "Queries"] : null, ["cohorts", "Cohorts"], rep.live ? ["agents", "Agents"] : ["whatif", "What-if"], ["setup", "Setup"]].filter(Boolean);
   const bar = h("nav", { class: "ex-tabs" }, tabs.map(([k, t]) => h("a", { href: ctx.href("e", id, k), "aria-current": k === tab.split(":")[0] ? "page" : null }, t)));
   const page = h("div");
-  body.replaceChildren(verdicts(ctx, rep), kpis(ctx, rep), bar, page);
+  const decided = rep.live?.decided ? h("div", { class: "ex-verdict ex-decided", style: { marginBottom: "14px" } }, h("b", {}, "Stopped once decided"), h("div", { class: "line" }, rep.live.decided.text)) : null;
+  body.replaceChildren(...[decided, verdicts(ctx, rep), kpis(ctx, rep), bar, page].filter(Boolean));
   const [t, arg] = tab.split(":");
-  if (t === "scorecard") page.append(scorecard(ctx, rep, id));
+  if (t === "scorecard") page.append(checkCard(ctx, r, id, onStop), scorecard(ctx, rep, id));
+  else if (t === "queries" && rep.by_query) page.append(queriesPage(ctx, rep));
   else if (t === "metric") page.append(metricPage(ctx, rep, id, arg || rep.spec?.primary || "success"));
   else if (t === "cohorts") page.append(cohorts(ctx, rep, id, r.cuttable));
   else if (t === "whatif") page.append(whatif(ctx, rep));
@@ -996,6 +1044,220 @@ function setup(ctx, rep, r) {
     core.card({ title: "How it is computed", body: h("div", {},
       h("p", { class: "ex-note" }, "Users are split by a hash of who they are, so each stays in one arm. Each metric is a ratio over users (its total over their searches), and its standard error comes from the delta method over users, so one user's many searches are not taken for independent ones. CUPED adjusts each user's value by their pre-period's, with one coefficient for both arms. p values are two-sided z tests; q values are Benjamini-Hochberg over the metrics, and over the cells of a cohort. Power is for the true effect at this size; the MDE is the effect seen with 80% power. The always-valid p value is the mSPRT's with a normal mixture of a twentieth of the control's value."),
       h("p", { class: "ex-note" }, "The truth is exact: each user's expected search under each arm from the click model, weighted as the searches are drawn. ChloeDB ranks every query under every arm; in a served run every search is a logged query and its clicks are written back as events."))}));
+}
+
+// ------------------------------------------------------------ check this
+
+/** One line per arm on why its agents gave up. */
+function whyBlock(core, why) {
+  const { h } = core;
+  return h("div", { class: "ex-why" }, (why.arms || []).map((a) => h("div", {}, h("span", { class: "d", style: { background: ARM_COLORS[a.arm] } }),
+    h("div", {}, h("b", { style: { color: ARM_COLORS[a.arm] } }, a.name), a.summed_up ? ` · ${a.gave_up} of ${a.tasks} tasks given up. ` : " · ", a.text || ""))));
+}
+
+const durText = (secs) => (secs < 90 ? `${Math.max(5, Math.round(secs))} s` : `${Math.round(secs / 60)} min`);
+
+/** "Check this": the experiment run again with fresh seeds, and how often each interval held the truth. */
+function checkCard(ctx, r0, id, onStop) {
+  const { core } = ctx;
+  const { h } = core;
+  let r = r0;
+  const box = h("div", { style: { marginBottom: "14px" } });
+  let stop = null;
+  const poll = () => {
+    if (stop) return;
+    stop = core.every(1000, async () => {
+      try { r = await ctx.api(`/v1/experiments/${encodeURIComponent(id)}`); } catch { return; }
+      draw();
+      if (!r.checking && stop) { stop(); stop = null; }
+    }, true, { always: true });
+    onStop(() => { if (stop) stop(); });
+  };
+  const start = async (btn) => {
+    btn.disabled = true;
+    try { await ctx.api(`/v1/experiments/${encodeURIComponent(id)}/check`, { method: "POST", body: {} }); r = { ...r, checking: { share: 0, stage: "starting" } }; draw(); poll(); }
+    catch (e) { core.toast(e.message, "error", 7000); btn.disabled = false; }
+  };
+  function draw() {
+    const rep = r.report || {};
+    const chk = rep.check;
+    const sp = rep.spec || {};
+    if (r.checking) {
+      const p = r.checking;
+      box.replaceChildren(core.card({ title: "Checking this result", sub: "the same users and arms, each run split anew with new searches", body: h("div", {}, h("div", { class: "ex-bar", style: { height: "8px" } }, h("div", { style: { width: Math.round((p.share || 0) * 100) + "%" } })), h("div", { class: "small dim", style: { marginTop: "6px" } }, p.stage || "")) }));
+      return;
+    }
+    // A repeat is the run again, drawn here: as long as a fast run took.
+    const per = sp.mode === "fast" && rep.seconds ? rep.seconds : (Math.min(sp.impressions || 0, 2e6) * (1 + (sp.pre || 0))) / 1.5e6 + ((sp.users || 0) * (sp.arms?.length || 2)) / 4e5 + 2;
+    const btn = h("button", { class: "btn sm" + (chk ? "" : " primary") }, core.icon("play"), chk ? "Check again" : "Check this");
+    btn.onclick = () => start(btn);
+    if (!chk) {
+      box.replaceChildren(core.card({ title: "Is this a result to trust?", tools: btn, body: h("p", { class: "ex-note", style: { margin: 0 } },
+        `A 95% interval misses the truth one run in twenty by design, so one run can't say whether a miss is bad luck or a bad interval. Check this runs it 30 more times on the same users, each time split anew with new searches drawn here (about ${durText(30 * per)}), and shows how often each metric's interval held the truth and how often the call came out the same.`, sp.mode === "live" ? " A live run is checked on its simulated users; the agents are not replayed." : "") }));
+      return;
+    }
+    if (chk.error) {
+      box.replaceChildren(core.card({ title: "The check failed", tools: btn, body: h("div", { class: "error" }, chk.error) }));
+      return;
+    }
+    const arms = rep.arms || [];
+    const strips = (chk.primary?.arms || []).map((a, i) => {
+      const calls = (a.calls || []).map((c) => { const [cls, text] = CALLS[c.call] || ["flat", c.call]; return h("span", { class: "ex-call " + cls }, `${text} ${c.n}×`); });
+      return h("div", {}, h("div", { class: "row between" }, h("b", { style: { color: ARM_COLORS[i + 1] } }, `${a.arm} against ${arms[0]?.name || "the control"}`), h("span", { class: "small dim" }, `the truth: ${a.truth_call || "–"}`)),
+        h("div", { class: "ex-strip-calls" }, "Called", calls),
+        strip(core, a, ARM_COLORS[i + 1]));
+    });
+    const rows = [];
+    const cuped = (chk.metrics || []).some((m) => m.arms.some((a) => a.cuped_covered != null));
+    for (const m of chk.metrics || []) {
+      m.arms.forEach((a, i) => {
+        const bias = a.mean_z != null && Math.abs(a.mean_z) > 0.5 ? ` · measured ${a.mean_z > 0 ? "high" : "low"} by ${Math.abs(a.mean_z).toFixed(1)} se on average` : "";
+        rows.push(h("tr", {},
+          i === 0 ? h("td", { rowspan: m.arms.length, class: "mname" }, m.title, m.primary ? h("span", { class: "pill", style: { marginLeft: "6px", fontSize: "10.5px" } }, "primary") : null, m.guardrail ? h("span", { class: "pill warn", style: { marginLeft: "6px", fontSize: "10.5px" } }, "guardrail") : null) : null,
+          (chk.metrics[0]?.arms.length || 0) > 1 ? h("td", { style: { color: ARM_COLORS[i + 1], fontWeight: 600 } }, a.arm) : null,
+          h("td", { class: "num ex-num" }, `${a.covered} of ${a.of}`),
+          h("td", {}, h("div", { class: "ex-bar", style: { width: "120px", height: "8px" } }, h("div", { style: { width: Math.round((a.covered / (a.of || 1)) * 100) + "%", background: a.ok ? "var(--good)" : "var(--crit)" } }))),
+          h("td", { class: "num ex-num dim" }, a.expected.toFixed(1)),
+          h("td", { class: a.ok ? "ex-good" : "ex-bad", title: `the chance of ${a.covered} or fewer of ${a.of} if the interval were right: ${pText(a.p_low)}` }, a.ok ? "as often as it should" : "too rarely", bias ? h("span", { class: "small dim" }, bias) : null),
+          cuped ? h("td", { class: "num ex-num" }, a.cuped_covered == null ? "–" : `${a.cuped_covered} of ${a.cuped_of}`) : null));
+      });
+    }
+    const tbl = h("table", { class: "t compact ex-score" }, h("thead", {}, h("tr", {}, h("th", {}, "Metric"), (chk.metrics?.[0]?.arms.length || 0) > 1 ? h("th", {}, "Arm") : null, h("th", { class: "num" }, "Held the truth"), h("th", {}), h("th", { class: "num", title: "95% of the runs, on average" }, "Expected"), h("th", {}, "Verdict"), cuped ? h("th", { class: "num", title: "the CUPED interval (the run had a pre-period)" }, "CUPED") : null)), h("tbody", {}, rows));
+    box.replaceChildren(core.card({ title: "Checked: is this a result to trust?", sub: `${chk.repeats} runs of ${core.fmt.si(chk.searches)} searches and ${core.fmt.si(chk.users)} users, each split anew · ${core.fmt.ago(chk.checked)}`, tools: btn,
+      body: h("div", { style: { display: "grid", gap: "12px", gridTemplateColumns: "minmax(0, 1fr)" } },
+        h("p", { class: "ex-note", style: { margin: 0 } }, chk.text),
+        h("div", { class: "small", style: { fontWeight: 600 } }, `${(rep.metrics || []).find((m) => m.key === sp.primary)?.title || sp.primary}: each run's lift and its 95% interval, one row a run`),
+        h("div", { class: "ex-strips" }, strips),
+        legend(h, [[ARM_COLORS[1], "an interval that held the truth"], ["var(--crit)", "one that missed it"], ["var(--text)", "the truth"]]),
+        h("div", { class: "small", style: { fontWeight: 600, marginTop: "4px" } }, "Every metric: how often its interval held the truth"),
+        h("div", { class: "tbl-wrap" }, tbl)) }));
+  }
+  draw();
+  if (r.checking) poll();
+  return box;
+}
+
+/** Each repeat's interval of the lift, one row each, on the truth. */
+function strip(core, a, color) {
+  const { s } = core;
+  const runs = (a.runs || []).filter((x) => Number.isFinite(x[1]) && Number.isFinite(x[2]) && Math.abs(x[1]) < 5 && Math.abs(x[2]) < 5);
+  const vals = runs.flatMap((x) => [x[1], x[2]]).concat(Number.isFinite(a.true_lift) ? [a.true_lift] : []);
+  let min = Math.min(...vals), max = Math.max(...vals);
+  const pad = (max - min) * 0.08 || 0.01;
+  min -= pad; max += pad;
+  const W = 640, rowH = 6, top = 4, H = top + runs.length * rowH + 20;
+  const x = (v) => 8 + ((v - min) / (max - min || 1)) * (W - 16);
+  const g = s("svg", { class: "ex-chart", viewBox: `0 0 ${W} ${H}`, style: { width: "100%", maxWidth: W + "px" } });
+  if (min <= 0 && max >= 0) g.append(s("line", { x1: x(0), x2: x(0), y1: 0, y2: H - 16, class: "ax", "stroke-dasharray": "2 2" }));
+  runs.forEach((r, i) => {
+    const y = top + i * rowH + rowH / 2;
+    const miss = r[3] === false;
+    const c = miss ? "var(--crit)" : color;
+    g.append(s("line", { x1: x(r[1]), x2: x(r[2]), y1: y, y2: y, style: { stroke: c, strokeWidth: 2.4, strokeLinecap: "round", opacity: miss ? 1 : 0.7 } }, s("title", {}, `run ${i + 1}: ${pctS(r[0])}, ${pctS(r[1])} to ${pctS(r[2])}${miss ? ": missed the truth" : ""}`)));
+    g.append(s("circle", { cx: x(r[0]), cy: y, r: 1.8, style: { fill: c } }));
+  });
+  if (a.true_lift != null && Number.isFinite(a.true_lift)) {
+    const t = x(a.true_lift);
+    g.append(s("line", { x1: t, x2: t, y1: 0, y2: H - 16, style: { stroke: "var(--text)", strokeWidth: 1.5 } }));
+    g.append(s("text", { x: t, y: H - 3, "text-anchor": t > W * 0.8 ? "end" : t < W * 0.2 ? "start" : "middle" }, `truth ${pctS(a.true_lift, 2)}`));
+  }
+  g.append(s("text", { x: 8, y: H - 3 }, pctS(min)), s("text", { x: W - 8, y: H - 3, "text-anchor": "end" }, pctS(max)));
+  return g;
+}
+
+// ------------------------------------------------------------ queries
+
+/** The Queries tab: which queries an arm lost (or won) the most on, by the truth, and by how many rows are relevant. */
+function queriesPage(ctx, rep) {
+  const { core } = ctx;
+  const { h } = core;
+  const bq = rep.by_query;
+  const pts = (v) => (v == null || !Number.isFinite(v) ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v * 100).toFixed(2) + " pts");
+  const rate = (v) => (v == null || !Number.isFinite(v) ? "–" : (v * 100).toFixed(1) + "%");
+  const control = rep.arms[0]?.name || "control";
+  return h("div", { style: { display: "grid", gap: "14px", gridTemplateColumns: "minmax(0, 1fr)" } }, (bq.arms || []).map((a, i) => {
+    const color = ARM_COLORS[i + 1];
+    const maxAdd = Math.max(...a.bands.map((b) => Math.abs(b.adds || 0)), ...a.losses.map((x) => Math.abs(x.adds)), ...a.gains.map((x) => Math.abs(x.adds)), 1e-9);
+    const addBar = (v) => h("div", { style: { display: "flex", justifyContent: v < 0 ? "flex-end" : "flex-start", width: "120px" } }, h("div", { style: { height: "8px", borderRadius: "3px", width: Math.max(1, (Math.abs(v) / maxAdd) * 100) + "%", background: v < 0 ? "var(--crit)" : "var(--good)" } }));
+    const bandRows = a.bands.map((b) => h("tr", {},
+      h("td", { class: "mname" }, b.label === "1" ? "1 relevant row" : `${b.label} relevant rows`, h("small", {}, `${b.queries} queries · ${(b.share * 100).toFixed(1)}% of searches`)),
+      h("td", { class: "num ex-num" }, rate(b.control.truth), h("div", { class: "small dim" }, `measured ${rate(b.control.success)}`)),
+      h("td", { class: "num ex-num" }, rate(b.arm.truth), h("div", { class: "small dim" }, `measured ${rate(b.arm.success)}`)),
+      h("td", { class: "num ex-num " + (b.true_lift < 0 ? "ex-bad" : b.true_lift > 0 ? "ex-good" : "") }, pctS(b.true_lift), h("div", { class: "small dim" }, `measured ${pctS(b.lift)}`)),
+      h("td", { class: "num ex-num" }, pts(b.adds)), h("td", {}, addBar(b.adds))));
+    const qRows = (list) => list.map((x) => h("tr", {},
+      h("td", { class: "mname", style: { maxWidth: "340px" } }, x.text, h("small", {}, `${x.relevant} relevant · ${(x.share * 100).toFixed(2)}% of searches · ${core.fmt.n(x.control.searches + x.arm.searches)} searched`)),
+      h("td", { class: "num ex-num" }, rate(x.control.truth), h("div", { class: "small dim" }, `nDCG ${fixed(x.control.ndcg, 2)}`)),
+      h("td", { class: "num ex-num" }, rate(x.arm.truth), h("div", { class: "small dim" }, `nDCG ${fixed(x.arm.ndcg, 2)}`)),
+      h("td", { class: "num ex-num " + (x.true_lift < 0 ? "ex-bad" : x.true_lift > 0 ? "ex-good" : "") }, pctS(x.true_lift), h("div", { class: "small dim" }, `measured ${rate(x.control.success)} → ${rate(x.arm.success)}`)),
+      h("td", { class: "num ex-num" }, pts(x.adds)), h("td", {}, addBar(x.adds))));
+    const head = (first) => h("thead", {}, h("tr", {}, h("th", {}, first), h("th", { class: "num" }, `${control}, success`), h("th", { class: "num" }, `${a.arm}, success`), h("th", { class: "num" }, "True lift"), h("th", { class: "num", title: "what the query adds to the whole difference in success: its share of searches times its true difference" }, "Adds to the difference"), h("th", {})));
+    return core.card({ title: h("span", {}, h("span", { style: { color } }, a.arm), ` against ${control}: where success moved`), sub: `by the truth, each query weighed by its share of searches; all ${bq.queries} queries add up to ${pts(a.total)}`,
+      body: h("div", { style: { display: "grid", gap: "14px", gridTemplateColumns: "minmax(0, 1fr)" } },
+        a.finding ? h("p", { class: "ex-note", style: { margin: 0 } }, h("b", {}, a.finding)) : null,
+        h("div", { class: "small", style: { fontWeight: 600 } }, "By how many rows are relevant"),
+        h("div", { class: "tbl-wrap" }, h("table", { class: "t ex-score" }, head("Queries with"), h("tbody", {}, bandRows))),
+        h("div", { class: "small", style: { fontWeight: 600 } }, a.losses.length ? `The ${a.losses.length} queries it lost the most on` : "No query lost"),
+        a.losses.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t ex-score" }, head("Query"), h("tbody", {}, qRows(a.losses)))) : null,
+        a.gains.length ? h("div", { class: "small", style: { fontWeight: 600 } }, `The ${a.gains.length} it gained the most on`) : null,
+        a.gains.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t ex-score" }, head("Query"), h("tbody", {}, qRows(a.gains)))) : null) });
+  }));
+}
+
+// ------------------------------------------------------------ interleaving
+
+function interleaveReport(ctx, rep, r) {
+  const { core } = ctx;
+  const { h } = core;
+  const il = rep.interleave, c = il.clicks, sat = il.satisfied, sv = rep.saving || {};
+  const [A, B] = rep.arms;
+  const v = rep.verdicts[0];
+  const t = c.p < 0.05 ? (c.delta > 0 ? "good" : "bad") : "flat";
+  const [lo, hi] = domain([c.lo, c.hi, c.true_delta]);
+  const verdict = h("div", { class: "ex-verdict", style: { borderTop: `3px solid ${ARM_COLORS[1]}` } },
+    h("div", { class: "row between" }, h("b", {}, `${B.name} against ${A.name}, in one list`), callChip(h, v)),
+    h("div", { class: "row", style: { alignItems: "baseline", gap: "10px" } }, h("span", { class: "big " + toneClass(t) }, signed(c.delta, 3)), h("span", { class: "small dim" }, `clicks per search to ${B.name}'s rows minus ${A.name}'s, 95% interval ${signed(c.lo, 3)} to ${signed(c.hi, 3)}, p ${pText(c.p)}, always valid ${pText(c.p_always_valid)}`)),
+    forest(core, { lo: c.lo, hi: c.hi, mid: c.delta, truth: c.true_delta, min: lo, max: hi, color: toneColor(t), width: 320, height: 26 }),
+    h("div", { class: "line" }, h("b", {}, `The truth: ${signed(c.true_delta, 4)}`), ` (${il.truth_call}). `, c.covers ? "The interval holds it." : "The interval misses it.", ` Power for it ${power(c.power)}.`),
+    h("div", { class: "line" }, `${B.name} won ${(il.wins.b * 100).toFixed(1)}% of the searches (more clicks on its rows), ${A.name} ${(il.wins.a * 100).toFixed(1)}%, and ${(il.wins.ties * 100).toFixed(1)}% were even, most with no click at all.`));
+  // Users needed: interleaving against the A/B.
+  const abC = (rep.ab?.metrics || []).find((m) => m.key === "clicks") || {};
+  const what = (k) => ({ success: "success rate", satisfied: "satisfied clicks", clicks: "clicks" })[k] || k || "";
+  const need = [[`Interleaving, ${what(sv.interleave_metric)}`, sv.interleave_users, ARM_COLORS[1]], [`A/B, ${what(sv.ab_metric)}`, sv.ab_users, ARM_COLORS[0]]];
+  const maxNeed = Math.max(...need.map((x) => x[1] || 0), 1);
+  const needBox = h("div", { class: "ex-need-bars" }, need.map(([k, n, col]) => h("div", {}, h("span", { style: { fontWeight: 600 } }, k), h("div", { class: "b", style: { width: Math.max(0.5, ((n || 0) / maxNeed) * 100) + "%", background: col } }), h("span", { class: "ex-num" }, n == null ? "–" : `${core.fmt.si(n)} users`))));
+  const abRows = (rep.ab?.metrics || []).map((m) => {
+    const tt = m.p < 0.05 ? ((m.lift > 0) === (m.higher !== false) ? "good" : "bad") : "flat";
+    return h("tr", {}, h("td", { class: "mname" }, m.title || m.key), h("td", { class: "num ex-num " + toneClass(tt) }, pctS(m.lift), h("div", { class: "small dim" }, `${pctS(m.lift_lo)} to ${pctS(m.lift_hi)}`)), h("td", { class: "num ex-num" }, pText(m.p)), h("td", { class: "num ex-num" }, power(m.power)), h("td", { class: "num ex-num" }, m.users_needed == null ? "–" : core.fmt.si(m.users_needed)), h("td", { class: "num ex-num" }, pctS(m.true_lift, 2), h("div", { class: "small " + (m.covers === false ? "ex-bad" : "dim") }, m.covers === false ? "outside the interval" : "inside the interval")));
+  });
+  const ilRow = (title, x) => h("tr", {}, h("td", { class: "mname" }, title), h("td", { class: "num ex-num " + toneClass(x.p < 0.05 ? (x.delta > 0 ? "good" : "bad") : "flat") }, signed(x.delta, 4), h("div", { class: "small dim" }, `${signed(x.lo, 4)} to ${signed(x.hi, 4)}`)), h("td", { class: "num ex-num" }, pText(x.p)), h("td", { class: "num ex-num" }, power(x.power)), h("td", { class: "num ex-num" }, x.users_needed == null ? "–" : core.fmt.si(x.users_needed)), h("td", { class: "num ex-num" }, signed(x.true_delta, 4), h("div", { class: "small " + (x.covers ? "dim" : "ex-bad") }, x.covers ? "inside the interval" : "outside it")));
+  const compare = h("table", { class: "t ex-score" },
+    h("thead", {}, h("tr", {}, h("th", {}, "Test"), h("th", { class: "num" }, "Measured, 95%"), h("th", { class: "num" }, "p"), h("th", { class: "num" }, "Power"), h("th", { class: "num", title: "users for 80% power on the true effect" }, "Users needed"), h("th", { class: "num" }, "Truth"))),
+    h("tbody", {}, ilRow("Interleaving: clicks to B − A", c), ilRow("Interleaving: satisfied clicks to B − A", sat), abRows));
+  // Over the searches.
+  const ser = il.series || [];
+  const series = [{ color: ARM_COLORS[1], band: ser.filter((x) => Number.isFinite(x[2]) && Number.isFinite(x[3])).map((x) => [x[0], x[2], x[3]]), points: ser.map((x) => [x[0], x[1]]) }];
+  const pser = [{ color: ARM_COLORS[1], points: ser.filter((x) => Number.isFinite(x[4])).map((x) => [x[0], Math.max(x[4], 1e-12)]), width: 1.2, dash: "3 3" }, { color: ARM_COLORS[1], points: ser.filter((x) => Number.isFinite(x[5])).map((x) => [x[0], Math.max(x[5], 1e-12)]), width: 2.6 }];
+  const minP = Math.min(...pser.flatMap((sr) => sr.points.map((p) => p[1])), 0.01);
+  const kv = (k, val) => h("tr", {}, h("th", { style: { textAlign: "left", width: "220px" } }, k), h("td", {}, val));
+  const sp = rep.spec || {};
+  return h("div", { style: { display: "grid", gap: "14px", gridTemplateColumns: "minmax(0, 1fr)" } },
+    h("p", { class: "ex-note", style: { margin: 0 } }, h("b", {}, rep.text)),
+    h("div", { class: "ex-verdicts", style: { margin: 0 } }, verdict,
+      h("div", { class: "ex-verdict" }, h("b", {}, "Users needed for 80% power"), needBox,
+        h("div", { class: "line" }, sv.times ? `Each at its most sensitive: on these two rankings interleaving needs ${sv.times >= 1.5 ? sv.times.toFixed(sv.times >= 10 ? 0 : 1) + " times fewer users than" : sv.times >= 1 / 1.5 ? "about as many users as" : (1 / sv.times).toFixed(1) + " times more users than"} the A/B, for the true effect each measures.` : "", sv.agrees === false ? " The two point different ways here: what users click when both lists are shown is not what one arm alone gets." : ""),
+        h("div", { class: "line" }, `The A/B beside it: the same ${core.fmt.n(rep.users)} users, each in one arm, and ${core.fmt.si(rep.searches)} searches. Its call on ${sp.primary || "success"}: `, rep.ab?.verdict ? callChip(h, rep.ab.verdict) : "–"))),
+    core.card({ title: "Interleaving against the A/B", sub: "the same users and searches; ◇ the truth of each", body: h("div", { class: "tbl-wrap" }, compare), flush: true }),
+    core.card({ title: "As the searches came", sub: "the preference with its 95% interval, and its p values", body: h("div", { class: "ex-g2" },
+      h("div", {}, lineChart(core, { series, hlines: [{ y: 0, color: "var(--axis)", dash: "none" }, { y: c.true_delta, color: ARM_COLORS[1], label: "truth" }], yFmt: (x) => (Math.abs(x) < 1e-9 ? "0" : signed(x, 3)), xLabel: "searches", height: 220 }), legend(h, [[ARM_COLORS[1], "clicks to B − A per search, with its 95% interval"]])),
+      h("div", {}, lineChart(core, { series: pser, yLog: true, yMax: 0, yMin: Math.max(-12, Math.floor(Math.log10(minP))), hlines: [{ y: 0.05, color: "var(--crit)", label: "0.05" }], yFmt: (x) => (x >= 0.01 ? String(x) : x.toExponential(0)), xLabel: "searches", height: 220 }), legend(h, [["var(--text-2)", "a peek's p value", true], ["var(--text-2)", "always-valid p value"]]))) }),
+    core.card({ title: "How it works", body: h("div", {},
+      h("p", { class: "ex-note" }, `Each search shows one list drafted from both rankings by turns (team draft): a coin says who picks first, then each takes its best row not yet shown, until ${sp.limit || 5} rows are shown. A click is credited to the arm whose row it was. Every search compares the two rankings on the same user and the same query, so who the users are and what they ask cancel out; that is why it needs so few. On average a query here has ${fixed(il.drafts, 1)} different drafts.`),
+      h("p", { class: "ex-note" }, `The truth is exact: for every user and query, every coin sequence of the draft, each list through the click model. Clicks to ${A.name}'s rows per search: measured ${fixed(il.per_search.a, 3)}, truly ${fixed(il.per_search.true_a, 3)}; to ${B.name}'s: measured ${fixed(il.per_search.b, 3)}, truly ${fixed(il.per_search.true_b, 3)}. The interval is the delta method over users, as an A/B's is; the always-valid p value is the mSPRT's.`),
+      h("p", { class: "ex-note", style: { margin: 0 } }, "Interleaving tells which of two rankings users prefer, not by how much a metric of the whole site moves: decide with it which arm to A/B test, and read the A/B for the size.")) }),
+    core.card({ title: "Setup", body: h("div", { style: { display: "grid", gap: "10px" } },
+      rep.arms.map((a, i) => h("div", { class: "ex-arm", style: { "--arm": ARM_COLORS[i] } }, h("div", { class: "ex-arm-top" }, h("b", {}, a.name), a.then ? h("span", { class: "ex-chip" }, "then: first row moved to the end") : null), h("div", { class: "ex-sql" }, `SELECT id FROM ${rep.site.table} ORDER BY ${a.rank} DESC LIMIT ${sp.limit}`))),
+      h("table", { class: "t compact" }, h("tbody", {}, kv("Site", `${rep.site.name} (${rep.site.queries} queries ranked under both arms)`), kv("Users", `${core.fmt.n(rep.users)} (${core.fmt.n(rep.users_seen)} searched)`), kv("Searches", core.fmt.n(rep.searches)), kv("Click model", (sp.model || "").toUpperCase()), kv("Rows shown", String(sp.limit)), kv("Seed", String(sp.seed)), kv("Ran in", rep.seconds < 90 ? rep.seconds.toFixed(1) + " s" : core.fmt.dur(rep.seconds))))) }));
 }
 
 // ------------------------------------------------------------ live
@@ -1318,10 +1580,12 @@ async function livePage(ctx, root, go, meta, id, onStop) {
     if (!dragging && document.activeElement !== rateIn) setRateIn(v.rate || 0);
     const share = Math.min(1, (v.elapsed || 0) / (v.limit_s || 1));
     bar.style.width = Math.round(share * 100) + "%";
-    clockTxt.textContent = `${clockText(v.elapsed)} of ${clockText(v.limit_s)}`;
+    const byDecision = v.until === "decided";
+    clockTxt.textContent = `${clockText(v.elapsed)} of ${byDecision ? "at most " : ""}${clockText(v.limit_s)}${byDecision && st === "live" ? " · stops once decided" : ""}`;
+    const dec = v.decided ? h("div", { class: "line" }, h("b", {}, "Decided. "), v.decided.text) : null;
     if (st === "starting") banner.replaceChildren(h("p", { class: "ex-note" }, `Starting: ${v.stage || ""}…`));
-    else if (st === "ending") banner.replaceChildren(h("p", { class: "ex-note" }, `Ending: ${v.stage || "writing the report"}…`));
-    else if (st === "done") banner.replaceChildren(h("div", { class: "ex-verdict", style: { marginBottom: "14px" } }, h("div", { class: "row between" }, h("b", {}, "The run is over: it is an experiment now."), h("a", { class: "btn primary", href: ctx.href("e", id) }, "Open the report")), h("div", { class: "line" }, "The report has every metric of every user with its distribution, the cohorts, the series over time and the truth.")));
+    else if (st === "ending") banner.replaceChildren(...[v.decided ? h("div", { class: "ex-verdict ex-decided", style: { marginBottom: "10px" } }, dec) : null, h("p", { class: "ex-note" }, `Ending: ${v.stage || "writing the report"}…`)].filter(Boolean));
+    else if (st === "done") banner.replaceChildren(h("div", { class: "ex-verdict" + (v.decided ? " ex-decided" : ""), style: { marginBottom: "14px" } }, h("div", { class: "row between" }, h("b", {}, "The run is over: it is an experiment now."), h("a", { class: "btn primary", href: ctx.href("e", id) }, "Open the report")), dec, h("div", { class: "line" }, "The report has every metric of every user with its distribution, the cohorts, the queries that moved, the series over time and the truth.")));
     else if (st === "failed") banner.replaceChildren(h("div", { class: "error", style: { marginBottom: "14px" } }, `This live run failed: ${v.error}`));
     else banner.replaceChildren();
     drawKpis();
@@ -1331,7 +1595,7 @@ async function livePage(ctx, root, go, meta, id, onStop) {
     drawTable();
     drawCohorts(st !== "live");
     agentsBox.replaceChildren(...(v.agents || []).map((a) => agentCard(core, a, arms)));
-    agentScore.replaceChildren(v.spec?.agents || (v.visitor_tally || []).some((t) => t.searches) ? agentTable(core, v.agent_tally || [], v.visitor_tally, arms) : h("span"));
+    agentScore.replaceChildren(v.spec?.agents || (v.visitor_tally || []).some((t) => t.searches) ? agentTable(core, v.agent_tally || [], v.visitor_tally, arms) : h("span"), ...(v.why ? [h("div", { class: "small", style: { fontWeight: 600, margin: "6px 0 4px" } }, "Why they gave up"), whyBlock(core, v.why)] : []));
     drawFeed(fresh);
   }
   drawAll();
@@ -1362,6 +1626,7 @@ function agentsReport(ctx, rep) {
   const arms = rep.arms || [];
   return h("div", { style: { display: "grid", gap: "14px", gridTemplateColumns: "minmax(0, 1fr)" } },
     core.card({ title: "What the AI agents did, per arm", sub: l.brain === "scripted" ? "scripted agents: no model" : `played by ${l.brain}; $${(l.cost || 0).toFixed(3)} of $${l.budget} spent`, body: agentTable(core, l.agent_tally || [], l.visitor_tally, arms) }),
+    l.why ? core.card({ title: "Why the agents gave up, per arm", sub: l.why.by === "counts" ? "counted from their tasks" : `summed up by ${l.why.by} from every task given up`, body: whyBlock(core, l.why) }) : null,
     (l.agents || []).length ? core.card({ title: "The agents at the end", body: h("div", { class: "ex-agents" }, l.agents.map((a) => agentCard(core, a, arms))) }) : null,
     core.card({ title: "How it ran", body: h("p", { class: "ex-note" }, `${core.fmt.si(rep.searches)} simulated searches over ${clockText(l.elapsed)} (asked at ${l.rate} a second at the end), every one a logged query to ChloeDB whose clicks were written back as events. The agents' searches are scored apart: they are a handful, there to be read, and the judges' grades say whether what they opened was relevant.`) }));
 }

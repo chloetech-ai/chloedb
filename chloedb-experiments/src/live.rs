@@ -54,6 +54,11 @@ const IN_FLIGHT: usize = 48;
 const POINTS: usize = 1200;
 /// Feed entries kept.
 const FEED: usize = 400;
+/// Searches before a run may be called decided ([`Live::decided`]).
+pub const MIN_DECIDE: u64 = 1000;
+/// What the agents keep of their budget for the one call that sums up
+/// why they gave up, at the end ([`Live::sum_up`]).
+const SUM_UP_RESERVE: f64 = 0.05;
 /// The Messages API's version this app speaks.
 const API_VERSION: &str = "2026-10-21";
 
@@ -103,6 +108,12 @@ pub struct LiveSpec {
     /// The most the agents may spend, in dollars.
     #[serde(default = "budget")]
     pub budget: f64,
+    /// When it ends: `decided`, once every arm's primary metric is called
+    /// by its always-valid p value and every guardrail is read
+    /// ([`Live::decided`]), or at the latest when its minutes are up;
+    /// `time`, when they are up.
+    #[serde(default = "until")]
+    pub until: String,
 }
 
 fn dbn() -> String {
@@ -121,7 +132,10 @@ fn limit() -> usize {
     5
 }
 fn seed() -> u64 {
-    7
+    ab::fresh_seed()
+}
+fn until() -> String {
+    "decided".into()
 }
 fn taste() -> f64 {
     0.35
@@ -157,6 +171,7 @@ impl LiveSpec {
             explore: Value::Null,
             limit: self.limit,
             seed: self.seed,
+            salt: 0,
             taste: self.taste,
             appetite: self.appetite,
             mode: "live".into(),
@@ -189,6 +204,9 @@ impl LiveSpec {
         }
         if !(self.budget.is_finite() && self.budget >= 0.0 && self.budget <= MAX_BUDGET) {
             return Err(format!("the agents' budget: from $0 to ${MAX_BUDGET}"));
+        }
+        if self.until != "decided" && self.until != "time" {
+            return Err("until is decided (stop once the call is made and the guardrails are read) or time".into());
         }
         if self.rate == 0.0 && self.agents == 0 {
             return Err("a live run needs simulated users (a rate above 0) or AI agents".into());
@@ -291,6 +309,8 @@ struct Prepared {
     /// Per arm, per query: nDCG of the rows the arm shows.
     ndcg: Vec<Vec<f64>>,
     queries: Alias,
+    /// Per query, each arm's exact values (its counts are the state's).
+    by_query: ab::ByQuery,
 }
 
 struct State {
@@ -324,6 +344,15 @@ struct State {
     snapshot: Value,
     recent: VecDeque<(f64, u64)>,
     ended: Option<f64>,
+    /// When the run was decided and stopped ([`Live::decided`]).
+    decided: Option<Value>,
+    /// Per query and arm (`q * arms + a`): searches, successes, clicks,
+    /// abandoned searches.
+    by_query: Vec<[f64; 4]>,
+    /// The agents' tasks that ended without what they needed: arm, need, note.
+    gave_up: Vec<(usize, String, String)>,
+    /// Per arm, one line on why the agents gave up, once the run ends.
+    why: Option<Value>,
 }
 
 pub struct Live {
@@ -345,6 +374,25 @@ pub struct Live {
     prep: OnceLock<Prepared>,
     state: Mutex<State>,
     pending: Mutex<Vec<Value>>,
+}
+
+/// `n` with thousands separated by commas.
+fn fmt_n(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Seconds as m:ss.
+fn clock(s: f64) -> String {
+    let s = s.max(0.0).round() as u64;
+    format!("{}:{:02}", s / 60, s % 60)
 }
 
 fn now_us() -> i64 {
@@ -455,6 +503,10 @@ impl Live {
                 visits: HashMap::new(),
                 visit_order: VecDeque::new(),
                 cost: 0.0,
+                decided: None,
+                by_query: Vec::new(),
+                gave_up: Vec::new(),
+                why: None,
                 snapshot: Value::Null,
                 recent: VecDeque::new(),
                 ended: None,
@@ -524,7 +576,7 @@ impl Live {
         let model = Model::parse(&spec.model)?;
         let shape = Shape { taste: spec.taste, appetite: spec.appetite, ..Shape::default() };
         let pop = || Population::new(spec.users, spec.seed, shape);
-        let worlds: Vec<Arc<World>> = ranks.arms.iter().zip(&spec.arms).map(|(r, a)| Arc::new(World::new(site.clone(), pop(), model, Policy::None, spec.limit, a.rank.clone(), r.clone()))).collect();
+        let worlds: Vec<Arc<World>> = ranks.arms.iter().zip(&spec.arms).map(|(r, a)| Arc::new(World::new(site.clone(), pop(), model, Policy::None, spec.limit, a.rank.clone(), r.clone()).then(&a.then))).collect();
         let users = worlds[0].users.users.clone();
         let share = worlds[0].users.shares();
         let assigned: Vec<Option<usize>> = users.iter().map(|u| ab::assign(&spec, u.id)).collect();
@@ -557,13 +609,16 @@ impl Live {
         truth_arm.push((0..k).map(|a| Some(ndcg_of[a].iter().zip(&qshares).map(|(v, s)| v * s).sum())).collect());
         let queries = Alias::new(&site.queries.iter().map(|q| q.weight).collect::<Vec<_>>());
         let nu = users.len();
+        let (s2, w3, u3, sh3, l3) = (site.clone(), worlds.clone(), users.clone(), share.clone(), lists.clone());
+        let by_query = tokio::task::spawn_blocking(move || ab::ByQuery::new(&s2, &w3, &u3, &sh3, &l3)).await.map_err(|e| e.to_string())?;
         {
             let mut st = self.st();
             st.sums = vec![[0.0; SUMS]; nu];
             st.quality = vec![[0.0; SUMS]; nu];
+            st.by_query = vec![[0.0; 4]; by_query.measured.len()];
         }
         self.server.sql(&format!("CREATE TABLE IF NOT EXISTS {} (id KEYWORD PRIMARY KEY, usr KEYWORD NOT NULL, item KEYWORD, action KEYWORD, ts INT, dwell_ms FLOAT)", self.events), json!({})).await?;
-        let _ = self.prep.set(Prepared { site, worlds, users, assigned, share, truth, truth_arm, ndcg: ndcg_of, queries });
+        let _ = self.prep.set(Prepared { site, worlds, users, assigned, share, truth, truth_arm, ndcg: ndcg_of, queries, by_query });
         Ok(())
     }
 
@@ -604,6 +659,13 @@ impl Live {
             if elapsed >= limit || self.stopped() {
                 break;
             }
+            if self.spec.until == "decided" {
+                if let Some(d) = self.decided(elapsed) {
+                    self.feed(json!({"kind": "note", "text": d["text"]}));
+                    self.st().decided = Some(d);
+                    break;
+                }
+            }
         }
         self.stop();
         {
@@ -626,6 +688,11 @@ impl Live {
                 a.abort();
                 eprintln!("chloedb-experiments: {}: an agent did not stop in time", self.id);
             }
+        }
+        if self.spec.agents > 0 {
+            self.st().stage = "summing up why the agents gave up".into();
+            let why = self.sum_up().await;
+            self.st().why = Some(why);
         }
         self.flush().await;
         let elapsed = self.started.elapsed().as_secs_f64();
@@ -703,6 +770,8 @@ impl Live {
                     let mut st = self.st();
                     let us = imp.user as usize;
                     ab::add(&mut st.sums[us], &s);
+                    let k = p.worlds.len();
+                    ab::add_query(&mut st.by_query, k, &imp, a);
                     st.quality[us][0] += 1.0;
                     st.quality[us][1] += q;
                     st.latencies[a].push(imp.took_ms);
@@ -895,6 +964,9 @@ impl Live {
         v["cost"] = num(st.cost);
         v["budget"] = num(self.spec.budget);
         v["brain"] = json!(self.brain.name());
+        v["until"] = json!(self.spec.until);
+        v["decided"] = st.decided.clone().unwrap_or(Value::Null);
+        v["why"] = st.why.clone().unwrap_or(Value::Null);
         v
     }
 
@@ -920,6 +992,7 @@ impl Live {
             whatif: None,
             seconds: st.ended.unwrap_or_else(|| self.started.elapsed().as_secs_f64()),
             site: json!({"name": p.site.name, "table": p.site.table, "queries": p.site.queries.len()}),
+            by_query: Some(ab::ByQuery { measured: st.by_query.clone(), ..p.by_query.clone() }),
         })
     }
 
@@ -927,7 +1000,7 @@ impl Live {
     /// the cost.
     pub fn live_part(&self) -> Value {
         let v = self.view(Some(u64::MAX), u64::MAX);
-        json!({"agents": v["agents"], "agent_tally": v["agent_tally"], "visitor_tally": v["visitor_tally"], "cost": v["cost"], "budget": v["budget"], "brain": v["brain"], "rate": v["rate"], "minutes": self.spec.minutes, "elapsed": v["elapsed"], "errors": v["errors"]})
+        json!({"agents": v["agents"], "agent_tally": v["agent_tally"], "visitor_tally": v["visitor_tally"], "cost": v["cost"], "budget": v["budget"], "brain": v["brain"], "rate": v["rate"], "minutes": self.spec.minutes, "elapsed": v["elapsed"], "errors": v["errors"], "until": v["until"], "decided": v["decided"], "why": v["why"]})
     }
 
     // ------------------------------------------------------------ the search page
@@ -939,7 +1012,8 @@ impl Live {
         let sql = format!("SELECT id FROM {} ORDER BY {} DESC LIMIT {}", p.site.table, self.spec.arms[a].rank, self.spec.limit);
         let l = json!({"request": request, "context": context, "ts": now_us(), "table": self.log, "variant": format!("arm{a}")});
         let ans = self.server.query(&sql, json!({"t": words}), Some(l)).await?;
-        let keys: Vec<String> = ans["rows"].as_array().into_iter().flatten().map(|r| key_text(&r[0])).collect();
+        let mut keys: Vec<String> = ans["rows"].as_array().into_iter().flatten().map(|r| key_text(&r[0])).collect();
+        ab::then_apply(&self.spec.arms[a].then, &mut keys);
         let texts = self.texts(&keys).await?;
         Ok(keys
             .into_iter()
@@ -1057,7 +1131,115 @@ impl Live {
     }
 
     fn spent(&self) -> bool {
-        self.st().cost >= self.spec.budget
+        let reserve = if matches!(self.brain, Brain::Claude { .. }) { SUM_UP_RESERVE.min(self.spec.budget * 0.1) } else { 0.0 };
+        self.st().cost >= self.spec.budget - reserve
+    }
+
+    /// Whether the run is decided, at `elapsed` seconds: after
+    /// [`MIN_DECIDE`] searches, every arm's primary metric called by its
+    /// always-valid p value (below 0.05), and every guardrail read, either
+    /// moved by its own always-valid p value or held within its margin by
+    /// its 95% interval. The snapshot is the last second's count.
+    fn decided(&self, elapsed: f64) -> Option<Value> {
+        let st = self.st();
+        if st.searches < MIN_DECIDE {
+            return None;
+        }
+        let metrics = st.snapshot["metrics"].as_array()?;
+        let primary = metrics.iter().find(|m| m["key"] == json!(self.spec.primary))?;
+        let mut read = Vec::new();
+        for a in 1..self.spec.arms.len() {
+            if primary["comparisons"][a - 1]["p_always_valid"].as_f64().unwrap_or(1.0) >= 0.05 {
+                return None;
+            }
+            for m in metrics.iter().filter(|m| m["guardrail"] == json!(true)) {
+                let c = &m["comparisons"][a - 1];
+                let moved = c["p_always_valid"].as_f64().unwrap_or(1.0) < 0.05;
+                let margin = m["margin"].as_f64().unwrap_or(0.0);
+                let (lo, hi) = (c["lift_lo"].as_f64().unwrap_or(f64::NAN), c["lift_hi"].as_f64().unwrap_or(f64::NAN));
+                let held = if m["higher"].as_bool().unwrap_or(true) { lo > -margin } else { hi < margin };
+                if !moved && !held {
+                    return None;
+                }
+                read.push(json!({"arm": a, "metric": m["key"], "moved": moved, "held": held && !moved}));
+            }
+        }
+        let calls: Vec<String> = st.snapshot["verdicts"].as_array().into_iter().flatten().map(|v| format!("{}: {}", v["arm"].as_str().unwrap_or(""), v["call"].as_str().unwrap_or(""))).collect();
+        let text = format!("Decided at {} searches, after {}: {}. The guardrails are read, so the run stops here.", fmt_n(st.searches), clock(elapsed), calls.join("; "));
+        Some(json!({"searches": st.searches, "elapsed": num(elapsed), "verdicts": st.snapshot["verdicts"], "guardrails": read, "text": text}))
+    }
+
+    /// One line per arm on why its agents gave up, once the run ends: from
+    /// Claude in one call over their notes, when Claude plays them and some
+    /// gave up, and from the counts otherwise (or when that call fails).
+    async fn sum_up(&self) -> Value {
+        let (gave, tallies) = {
+            let st = self.st();
+            (st.gave_up.clone(), st.agent_tally.clone())
+        };
+        let k = self.spec.arms.len();
+        let mut per: Vec<Vec<(String, String)>> = vec![Vec::new(); k];
+        for (a, need, note) in gave {
+            per[a].push((need, note));
+        }
+        let mut arms: Vec<Value> = (0..k)
+            .map(|a| {
+                let (t, n) = (tallies[a].tasks, per[a].len());
+                let text = if t == 0 {
+                    "No agent finished a task here.".to_string()
+                } else if n == 0 {
+                    format!("Every one of its {t} task{} ended with what the agent needed.", if t == 1 { "" } else { "s" })
+                } else {
+                    let notes: Vec<String> = per[a].iter().take(3).map(|(_, note)| format!("\"{}\"", note.trim_end_matches('.'))).collect();
+                    format!("{n} of {t} tasks ended without what the agent needed. They said: {}.", notes.join("; "))
+                };
+                json!({"arm": a, "name": self.spec.arms[a].name, "tasks": t, "gave_up": n, "text": text})
+            })
+            .collect();
+        let mut by = "counts".to_string();
+        if let Brain::Claude { key, model, base } = &self.brain {
+            if per.iter().any(|p| !p.is_empty()) {
+                let mut prompt = String::from("AI agents, each playing a person, used a search site to find something they needed. The site showed each of them one of several rankings (arms). Below, per arm, are the tasks they gave up on: what they looked for, and their own note.\n\nFor each arm with notes, write one plain sentence on why its agents gave up, as a pattern across the notes rather than a list of them. Answer with one line per arm: its number, a colon, and the sentence. Nothing else.\n");
+                for (a, p) in per.iter().enumerate() {
+                    if p.is_empty() {
+                        continue;
+                    }
+                    prompt.push_str(&format!("\nArm {a} ({}), {} of {} tasks given up:\n", self.spec.arms[a].name, p.len(), tallies[a].tasks));
+                    for (need, note) in p.iter().take(20) {
+                        prompt.push_str(&format!("- looked for \"{}\": {}\n", need.chars().take(120).collect::<String>(), note.chars().take(240).collect::<String>()));
+                    }
+                }
+                let (_, _, pin, pout, fallbacks) = AGENT_MODELS.iter().copied().find(|m| m.0 == model.as_str()).unwrap_or(AGENT_MODELS[0]);
+                let mut body = json!({"model": model, "max_tokens": 600, "output_config": {"effort": "low"}, "messages": [{"role": "user", "content": prompt}]});
+                if fallbacks {
+                    body["fallbacks"] = json!("default");
+                }
+                match call(&self.http, base, key, fallbacks, &body).await {
+                    Ok(r) => {
+                        let u = &r["usage"];
+                        let f = |k: &str| u[k].as_f64().unwrap_or(0.0);
+                        let cost = (f("input_tokens") * pin + f("output_tokens") * pout) / 1e6;
+                        self.st().cost += cost;
+                        let text: String = r["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n");
+                        let mut any = false;
+                        for line in text.lines() {
+                            let Some((n, sentence)) = line.trim().trim_start_matches("Arm ").split_once(':') else { continue };
+                            let Ok(a) = n.trim().parse::<usize>() else { continue };
+                            if a < k && !per[a].is_empty() && !sentence.trim().is_empty() {
+                                arms[a]["text"] = json!(sentence.trim().chars().take(400).collect::<String>());
+                                arms[a]["summed_up"] = json!(true);
+                                any = true;
+                            }
+                        }
+                        if any {
+                            by = model.clone();
+                        }
+                    }
+                    Err(e) => eprintln!("chloedb-experiments: {}: summing up the agents: {e}", self.id),
+                }
+            }
+        }
+        json!({"by": by, "arms": arms})
     }
 
     /// Agent `n`: a person of the population doing one task after another
@@ -1069,9 +1251,12 @@ impl Live {
         }
         let mut rng = Rng::of(&format!("{}/agent/{n}", self.id));
         let taken: Vec<u32> = self.st().agents.iter().map(|a| a.user).collect();
+        // The agents take the arms in turn, so each has as many: a person
+        // of the population whom the split puts in arm n mod k.
+        let want = n % p.worlds.len();
         let mut user = p.worlds[0].users.draw(&mut rng).id;
-        for _ in 0..20 {
-            if !taken.contains(&user) {
+        for _ in 0..2000 {
+            if !taken.contains(&user) && p.assigned[user as usize] == Some(want) {
                 break;
             }
             user = p.worlds[0].users.draw(&mut rng).id;
@@ -1257,6 +1442,10 @@ impl Live {
         t.first_ndcg += tally.first_ndcg;
         t.steps += tally.steps;
         t.cost += tally.cost;
+        if tally.found == 0 {
+            let note = outcome["note"].as_str().unwrap_or("").to_string();
+            st.gave_up.push((arm, need.clone(), note));
+        }
         if let Some(a) = st.agents.iter_mut().find(|a| a.n == n) {
             a.tasks += 1;
             if tally.found > 0 {

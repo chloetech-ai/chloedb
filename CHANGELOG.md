@@ -105,6 +105,21 @@ or one server), so shards of older versions need nothing new.
   full report and an Agents tab
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#live-runs)).
 
+- **Experiments: checks, interleaving and test arms** (`chloedb-experiments`,
+  a demo). Check this runs a finished experiment again 30 times on the same
+  users, each time split anew, and shows how often each metric's 95%
+  interval held the truth, the primary metric's intervals around the true
+  lift, and the calls the repeats made. Interleaving (`"mode":
+  "interleave"`) shows two rankings in one team-drafted list, with its
+  exact truth from every pattern of coins, and the A/B of the same pair
+  beside it with the users each would need. The builder makes test arms
+  from the control (shuffled, reversed, first row demoted, through an
+  arm's `then`), a live run stops once it is decided (`"until"`), its AI
+  agents are split evenly across arms with a line per arm on why they gave
+  up, each experiment takes a fresh seed, and a report's Queries tab shows
+  where the difference came from
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#checking-a-result)).
+
 ## 0.3.8
 
 Durable one-row writes about 2.6 times as fast, typo and short substring

@@ -61,6 +61,7 @@ query's share of the traffic) and their judged rows (`query`, `doc`,
 | `GET /v1/experiments`, `POST /v1/experiments` | the experiments; a spec starts one in the background |
 | `GET /v1/experiments/<id>`, `DELETE /v1/experiments/<id>` | one experiment, its progress and its report |
 | `POST /v1/experiments/<id>/cut` | every metric by two attributes at once, for the last three runs |
+| `POST /v1/experiments/<id>/check` | Check this: run it again `repeats` times (30 by default) on the same users and sum up how often each interval held the truth |
 | `GET /v1/live`, `POST /v1/live` | live runs; a spec starts one (one at a time) |
 | `GET /v1/live/<id>?after=&since=` | a live run now: every metric per arm, the points after `after`, the feed after `since`, the agents |
 | `POST /v1/live/<id>/stop`, `POST /v1/live/<id>/rate` | stop it (it becomes an experiment), or change its searches a second |
@@ -84,8 +85,14 @@ its fixed-size p value beside the always-valid one (only the second may be
 read at every second), the truth from the click model, and the judged
 quality (nDCG) of what each arm showed, and every few seconds the picked
 metric by cohort (one attribute, or a cross of two). The call is made on
-the always-valid p value. When the time is up, or you stop it, the run becomes
-an experiment with the full report and an Agents tab.
+the always-valid p value. By default (`"until": "decided"`) the run stops
+once it is decided: after 1,000 searches, when every arm's primary metric
+has an always-valid p value below 0.05 and every guardrail is read (moved
+by its own always-valid p value, or held within its margin by its
+interval); since the always-valid p value may be read at every second,
+stopping there keeps its error rate. `"until": "time"` runs to the end of
+its minutes. When it stops, or you stop it, the run becomes an experiment
+with the full report and an Agents tab.
 
 AI agents are people of the population, each in the arm the split gives
 it, sent to the site's search with a need of their own (a query of the
@@ -96,11 +103,80 @@ endpoint): the model is picked in the builder, each call at low effort with
 server-side fallbacks on a refusal for the models that have them, and the
 agents stop when the run's budget (at most $20) is spent, the cost worked
 out from the tokens each call reports. Without a key, scripted agents do
-the same with no model. Their finds are scored apart from the simulated
-users': whether they found it, whether the judges grade what they found
-relevant, searches and opens a task, and each task's first page nDCG. You
-can search the site in the run yourself, from the page, as one more
-visitor.
+the same with no model. The agents take the arms in turn, so each arm has
+as many (a person whom the split puts in that arm). Their finds are scored
+apart from the simulated users': whether they found it, whether the judges
+grade what they found relevant, searches and opens a task, and each task's
+first page nDCG. When the run ends, one line per arm says why its agents
+gave up: Claude reads their notes in one call when it played them, and
+the counts and notes say it otherwise. You can search the site in the run
+yourself, from the page, as one more visitor.
+
+### Checking a result
+
+One run's 95% interval misses the truth one time in twenty by design, so
+one run cannot say whether its intervals are right. Check this (on a
+report's Scorecard, or `POST /v1/experiments/<id>/check`) runs the
+experiment again 30 times, drawn in the process: the same arms, the same
+users and their tastes (so the same truth), each time split anew (the
+spec's `salt`) and with new searches. It shows how often each metric's
+interval held the truth for each arm, against the 28.5 in 30 expected,
+and flags a metric that held it less often than a binomial allows (p
+below 0.01); the strip of the primary metric's 30 intervals around the
+true lift; and the calls the 30 runs made against the truth's. A run of
+more than 2 million searches is checked at that size. Each experiment
+takes a fresh seed when the spec gives none, so two runs of one spec are
+two populations; give `seed` to run the same one again.
+
+On nfcorpus, three arms (the body's BM25, the same ranking shuffled, and
+the same ranking with its first row moved to the end), 20,000 users and
+100,000 searches, a check of 30 repeats took six minutes in a cloud
+container: success rate's interval held the truth in 25 of 30 for
+Shuffled and 27 of 30 for First row demoted, and the other metrics in 24
+to 29 of 30; the shuffled arm was called worse in all 30, the demoted one
+(a true −5.4%) in 28.
+
+### Test arms
+
+To see whether an experiment finds what it should, the builder makes arm
+B from the control: Shuffled (the control's ranking under
+`((R) * 7919) % 1`, a fixed random order of what it matches), Reversed
+(`0 - (R)`, least relevant first) or First row demoted. An arm's `then`
+reorders what its ranking returns before it is shown: `demote_first`
+moves the first row to the end (an arm with an exploring share keeps
+the control as ranked).
+
+### Interleaving
+
+`"mode": "interleave"` compares two arms in one list: each search shows
+the team draft of the two rankings (each picks its best row not yet
+shown, the order of the picks by a coin at each tie), and a click counts
+for the arm whose row it was. Every user sees both, so the difference is
+measured within each search rather than between two groups, and fewer
+users find it. The truth is exact: for each query every pattern of coins
+is enumerated with the click model's expected clicks per row, so the
+report gives the true share of clicks each arm wins beside the measured
+one, with intervals by the delta method over users and the always-valid
+p value. It runs the A/B of the same pair on the same users beside it and
+says how many users each needed for its difference (the users seen times
+the square of the smallest detectable difference over the true one), on
+the metric each needs fewest for. In one run each on nfcorpus with
+50,000 searches (about 15,000 users seen), the body's ranking against
+itself with its first row demoted needed 550 users interleaved against
+4,724 for the A/B (on success rate), about 9 times fewer, and shuffled
+34 against 68. Title first against the body (100,000 searches) needed
+about as many either way (7,348 against 7,095), since its gain is in
+satisfied searches more than in which rows get the clicks.
+
+### The queries that moved
+
+A report's Queries tab splits each arm's true difference in success
+rate from the control by query (`report.by_query`): the queries grouped
+by how many relevant rows they have, each group's share of the
+difference (the groups add up to the whole) and a sentence on where the
+arm moved most, and the queries that lost and gained most, each with
+its share of the traffic, its measured and true success rate and the
+judged quality (nDCG) of what each arm showed for it.
 
 ## The simulator
 
