@@ -11,6 +11,22 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Blends: one list from several queries, after each has ranked its own.**
+  `CREATE BLEND name AS SOURCES (stories AS (SELECT ...), comments AS
+  (SELECT ...))` with calibrated heads (`HEADS (relevance CALIBRATE tmm,
+  quality CALIBRATE minmax MISSING zero)`), a utility of them (`UTILITY 1 *
+  relevance + 0.2 * quality`, `BOOST`), and the slate's rules: `SLOT n`,
+  `QUOTA (... BETWEEN 20% AND 40% IN TOP 10)`, `SPACING`, `MAX n PER`,
+  `DIVERSIFY λ ON emb` and `DEDUPE t ON emb`. `SELECT ... FROM
+  blend('name[@version]', q => :q)` answers each slot's row with its source,
+  utility and why (`blend_decision`); the receipts add the rows passed over,
+  each quota's count and what each rule costs the slate. A blend is a
+  stored function, so it is versioned, replicated and written on every
+  shard of a coordinator, which runs each source over the cluster and
+  answers as one database. On chloedb-server, `/v1/blends` lists, versions,
+  writes and drops them and `/v1/blends/preview` runs a draft, and the
+  command center's Labs → Blending edits one with a live preview
+  ([query-language.md](docs/chloedb/query-language.md#blends-create-blend-and-blend)).
 - **ChloeCtx: a team's forgets, deletions and retired rules reach every
   machine, and a teammate's notes say whose they are** (persona study
   round 3, WEI-304, WEI-303, WEI-306). A forget deleted the record's row
@@ -72,6 +88,24 @@ changes collect under "Unreleased".
   `chloectx redact` (`--all` for every store) rewrites what stores kept
   before, and replaces the server's copies for the projects that sync
   ([setup.md](docs/chloectx/setup.md#secrets-and-chloectx-redact)).
+- **Graph answers and match counts right** (persona study round 3,
+  NADIA-305, NADIA-302, GRACE-301). `PATH(..., through => p)` could answer
+  a path through a row that fails `p`, where the two halves of its search
+  met, and a path where no allowed one exists; every middle row of a path
+  now satisfies `through`. `ppr` without `eps` started at 10⁻⁴ and stayed
+  there, so from a seed whose neighbours have thousands of edges it ranked
+  only the seed, with no warning; it now halves `eps` while its scores
+  hold less than half of the walk, for at most 100,000 pushes, and its
+  plan line says where it went. A walk that ends with less than half,
+  with a given `eps` or out of pushes, says so: `ppr_unsettled` in the
+  stats ([how far `ppr` walks](docs/chloedb/query-language.md#how-far-ppr-walks)).
+  The command center's Graph explorer has a *PageRank eps* control and
+  shows that warning. The answer header of the Query builder, a table's
+  Search tab and the workbench showed "N passed the filter" from the
+  executor's `filter_docs`, which counts only the rows a `LIMIT` let it
+  look at (2,036 of 3,694); the builder counts the rows its filters keep
+  with a `COUNT(*)` ("3,694 match"), and the other headers show no such
+  number.
 - **Everyday SQL functions** (persona study round 2, SAM-7): `substr`
   (`substring`, `SUBSTRING(s FROM i FOR n)`), `trim`, `ltrim`, `rtrim`
   (`btrim`, `TRIM(LEADING ... FROM s)`), `replace`, `concat`, `nullif`,

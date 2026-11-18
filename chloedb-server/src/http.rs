@@ -292,6 +292,9 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/schema", get(schema))
         .route("/v1/tables", get(tables))
         .route("/v1/functions", get(functions))
+        .route("/v1/blends", get(blends))
+        .route("/v1/blends/preview", post(blend_preview))
+        .route("/v1/blends/:name", get(blend_versions).merge(put(blend_put)).merge(axum::routing::delete(blend_delete)))
         .route("/v1/tables/:table/paths", get(json_paths))
         .route("/v1/index", get(index))
         .route("/v1/index/reads/reset", post(reset_reads))
@@ -1320,6 +1323,8 @@ pub(crate) fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // grades, and applying a proposal replaces a rank profile.
         "/v1/relevance/autopilot" | "/v1/relevance/proposals/:id/apply" | "/v1/relevance/proposals/:id/dismiss" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
+        // A blend is a stored function: writing one is an admin's.
+        "/v1/blends/:name" if method == Method::PUT || method == Method::DELETE => Scope::Admin,
         // Mining reads a table's words and compares them pairwise, and
         // proposes a change to ranking: an admin's, as the list it feeds.
         "/v1/synonyms/mine" => Scope::Admin,
@@ -1711,6 +1716,121 @@ async fn functions(State(app): State<App>) -> Res {
         out.push(json!({"name": name, "current": set.current(name).map(|f| f.version), "versions": versions}));
     }
     Ok(AxJson(json!({"functions": out})))
+}
+
+/// A blend's version as JSON ([`chloedb::query::blend`]).
+fn blend_json(d: &chloedb::query::blend::Def, f: &chloedb::query::function::Function) -> Json {
+    json!({
+        "name": d.name, "version": f.version, "note": d.note, "k": d.k,
+        "sources": d.sources.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+        "created": f.created.map(chloedb::timestamp::format), "created_by": f.created_by,
+        "def": d, "sql": d.sql(true),
+    })
+}
+
+/// `GET /v1/blends`: every blend, its current version.
+async fn blends(State(app): State<App>) -> Res {
+    app.svc.learn_functions().await;
+    let set = app.svc.functions();
+    let out: Vec<Json> = chloedb::query::blend::defs(&set)
+        .iter()
+        .map(|(d, f)| {
+            let mut j = blend_json(d, f);
+            j["versions"] = json!(set.all().filter(|g| g.def.name == f.def.name).count());
+            j
+        })
+        .collect();
+    Ok(AxJson(json!({"blends": out})))
+}
+
+/// `GET /v1/blends/:name`: every version of a blend, oldest first.
+async fn blend_versions(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>) -> Res {
+    app.svc.learn_functions().await;
+    let set = app.svc.functions();
+    let name = name.to_ascii_lowercase();
+    let vs = chloedb::query::blend::versions(&set, &name);
+    if vs.is_empty() {
+        return Err(ApiError { code: None, status: 404, message: format!("no blend named {name}") });
+    }
+    let current = set.current(&name).filter(|f| !f.dropped).map(|f| f.version);
+    let versions: Vec<Json> = vs
+        .iter()
+        .map(|(d, f)| match d {
+            Some(d) => blend_json(d, f),
+            None => json!({"name": name, "version": f.version, "dropped": true, "created": f.created.map(chloedb::timestamp::format), "created_by": f.created_by}),
+        })
+        .collect();
+    Ok(AxJson(json!({"name": name, "current": current, "versions": versions})))
+}
+
+/// `PUT /v1/blends/:name {"def": {...}, "note"?}`: the blend's next
+/// version, as `CREATE OR REPLACE BLEND` writes it.
+async fn blend_put(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(name): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    let w = who(w);
+    let mut def: chloedb::query::blend::Def = serde_json::from_value(b.get("def").cloned().ok_or_else(|| ApiError::bad("the body needs the blend's definition, \"def\""))?).map_err(|e| ApiError::bad(format!("the blend's definition: {e}")))?;
+    def.name = name.to_ascii_lowercase();
+    if let Some(n) = b.get("note").and_then(Json::as_str) {
+        def.note = Some(n.to_string()).filter(|n| !n.trim().is_empty());
+    }
+    def.check()?;
+    let sql = def.sql(true);
+    audit_ui_write(&sql, None, None);
+    let t0 = Instant::now();
+    let r = app.svc.sql(&w, &sql, &chloedb::query::Params::new(), crate::service::After::Any, body_u64(&b, "timeout_ms")?).await?;
+    let version = match &r {
+        SqlAnswer::Rows(a) => a.rs.rows.first().and_then(|r| r.get(1)).and_then(|v| v.as_i64()).unwrap_or(0),
+        SqlAnswer::Written { .. } => 0,
+    };
+    Ok(AxJson(json!({"name": def.name, "version": version, "sql": sql, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
+}
+
+/// `DELETE /v1/blends/:name`: `DROP BLEND`, a tombstone version (older
+/// versions stay readable as `name@n`).
+async fn blend_delete(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(name): axum::extract::Path<String>) -> Res {
+    let w = who(w);
+    let sql = format!("DROP BLEND {}", chloedb::query::sql::ident(&name.to_ascii_lowercase()));
+    audit_ui_write(&sql, None, None);
+    app.svc.sql(&w, &sql, &chloedb::query::Params::new(), crate::service::After::Any, 0).await?;
+    Ok(AxJson(json!({"dropped": name.to_ascii_lowercase()})))
+}
+
+/// `POST /v1/blends/preview {"name"?, "version"?, "def"?, "params"?, "k"?,
+/// "costs"?}`: a blend's run with its receipts, of a stored version or of
+/// a draft (`def`, not stored): each row's slot and why, its heads' parts,
+/// the rows passed over, each quota's count and each rule's cost.
+async fn blend_preview(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    let w = who(w);
+    let t0 = Instant::now();
+    let (def, version) = match b.get("def").filter(|d| !d.is_null()) {
+        Some(d) => {
+            let mut def: chloedb::query::blend::Def = serde_json::from_value(d.clone()).map_err(|e| ApiError::bad(format!("the blend's definition: {e}")))?;
+            if def.name.is_empty() {
+                def.name = "draft".into();
+            }
+            def.check()?;
+            (def, 0)
+        }
+        None => {
+            let name = body_str(&b, "name")?.to_ascii_lowercase();
+            let v = b.get("version").and_then(Json::as_i64);
+            app.svc.blend_def(&name, v).await?
+        }
+    };
+    for s in &def.sources {
+        reads_ok(&app, &w, &s.sql).await?;
+    }
+    let params = app.svc.params_for(b.get("params"), def.sources.first().map(|s| s.sql.as_str()), &w).await?;
+    let k = match body_u64(&b, "k")? {
+        0 => def.k,
+        n => (n as usize).min(chloedb::query::blend::MAX_K),
+    };
+    let costs = !matches!(b.get("costs"), Some(Json::Bool(false)));
+    let req = crate::service::QueryReq { timeout_ms: body_u64(&b, "timeout_ms")?, who: Some(w.clone()), ..Default::default() };
+    let blended = app.svc.run_blend(&req, &def, version, &params, k, chloedb::query::blend::Want { costs }).await?;
+    let mut j = blended.receipts();
+    j["sql"] = json!(def.sql(true));
+    j["took_ms"] = json!(t0.elapsed().as_secs_f64() * 1e3);
+    Ok(AxJson(j))
 }
 
 /// `GET /v1/index?table=&sample=&seed=&terms=&top=`: the index
