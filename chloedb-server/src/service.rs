@@ -3852,6 +3852,9 @@ impl Service {
         };
         rank_log::check(&schema)?;
         rank_log::fits(&log, &schema)?;
+        if let Some((call, cols)) = chloedb::query::blend::table_call_sql(&req.sql, &req.params)? {
+            return self.blend_logged(req, log, &schema, call, cols).await;
+        }
         let p = rank_log::prepare(&req.sql, &req.params, &log)?;
         let started = std::time::Instant::now();
         let take = |a: &mut Answer| std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
@@ -3885,6 +3888,43 @@ impl Service {
             false => self.write_ops(ops, None).await?,
         };
         Ok((a, served, w))
+    }
+
+    /// `SELECT ... FROM blend(...)` run and logged ([`Service::query_logged`]):
+    /// the fill explores when `log` does, drawn from the request's stream
+    /// ([`chloedb::query::blend::seed`]), and every row of every source is
+    /// logged, the page's first with each slot's chance
+    /// ([`chloedb::query::blend::Blended::log_entries`]).
+    async fn blend_logged(self: &Arc<Self>, req: QueryReq, log: Log, schema: &chloedb::schema::Schema, call: chloedb::query::blend::Call, cols: Vec<(String, String)>) -> Result<(Answer, rank_log::Served, Written), ApiError> {
+        use chloedb::query::blend;
+        rank_log::fits_blend(&log)?;
+        if req.scroll.is_some() {
+            return Err(ApiError::bad("a blend is not scrolled: LIMIT k places k rows"));
+        }
+        let explore = match &log.explore {
+            Some(p) => blend::Explore::of_policy(p)?,
+            None => None,
+        };
+        let request = match &log.request {
+            Some(r) if r.is_empty() => return Err(ApiError::bad("a log's request id is not empty")),
+            Some(r) => r.clone(),
+            None => format!("{:032x}", rand::random::<u128>()),
+        };
+        let t0 = Instant::now();
+        let (def, version) = self.blend_def(&call.name, call.version).await?;
+        let want = blend::Want { costs: false, explore: explore.map(|e| (e, blend::seed(&request))) };
+        let b = self.run_blend(&req, &def, version, &call.params, call.limit.unwrap_or(def.k), want).await?;
+        let rs = b.result(&cols)?;
+        let mut entries = b.log_entries(&def, &request, log.ts.unwrap_or_else(chloedb::timestamp::now), &log);
+        let took_ms = t0.elapsed().as_secs_f64() * 1e3;
+        rank_log::keep_rows(&mut entries, &rank_log::query_json(&req.sql, &req.params), schema, took_ms);
+        let ops: Vec<Json> = entries.iter().map(|e| json!({"op": "upsert", "table": log.table, "doc": e.to_json()})).collect();
+        let w = match ops.is_empty() {
+            true => Written::default(),
+            false => self.write_ops(ops, None).await?,
+        };
+        let a = Answer { rs: rs.clone(), took_ms, kind: "blend", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None };
+        Ok((a, rank_log::Served { rs, request, entries, teams: Vec::new() }, w))
     }
 
     /// Runs a plan ([`chloedb::query::ir`]): a read answers as

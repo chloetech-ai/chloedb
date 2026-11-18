@@ -22,6 +22,7 @@ mod arrow_answers;
 mod arrow_leaves;
 mod autoscale;
 mod blend;
+mod blend_eval;
 mod budgets;
 mod cc;
 mod aws;

@@ -4,11 +4,17 @@
 // nothing stored), shows each row's slot and why, the rows passed over, the
 // quotas' counts and what each rule costs, and saves the draft as the next
 // version. Pins are dragged onto slots, quotas are two handles on a track.
+// "Value on the log" sets the draft against the serving version over the
+// exploring pages the blend logged (POST /v1/blends/:name/evaluate: cascade
+// doubly robust over each slot's chance, SNIPS beside it), and tunes its
+// weights and shares toward what people clicked (/tune).
 
-import { h, icon, clear, api, toast, modal, confirm, seg, fmt, empty, card, failure, gate, can, copy, sqlBlock, debounce, clamp, menu, drawer } from "../core.js";
+import { h, s as svg, icon, clear, api, toast, modal, confirm, seg, fmt, empty, card, failure, gate, can, copy, sqlBlock, debounce, clamp, menu, drawer, store } from "../core.js";
 import { SERIES } from "../charts.js";
+import { tables } from "../catalog.js";
+import { isLog, guessEvents } from "./recsys.js";
 
-export default { id: "blend", title: "Blending", icon: "sliders", group: "Labs", range: false, keywords: "blend blending blender utility layer after ranking mix sources federated search results page slate heads relevance engagement recency calibrate tmm quota quotas share top k pin slot spacing diversity diversify mmr dedupe near duplicates cap per author receipts rule cost versions", render, onParams };
+export default { id: "blend", title: "Blending", icon: "sliders", group: "Labs", range: false, keywords: "blend blending blender utility layer after ranking mix sources federated search results page slate heads relevance engagement recency calibrate tmm quota quotas share top k pin slot spacing diversity diversify mmr dedupe near duplicates cap per author receipts rule cost versions train tune off-policy evaluation counterfactual doubly robust snips propensity explore clicks", render, onParams };
 
 let reshow = null;
 function onParams(r) { reshow?.(r); }
@@ -177,12 +183,13 @@ function editor(page, head, body, name, asked) {
   more.onclick = () => menu(more, [
     { label: "The SQL of this draft", icon: "sql", onclick: () => sqlDrawer() },
     { label: "Versions", icon: "clock", onclick: () => versionsDrawer() },
+    { label: "Value on the log", icon: "recsys", onclick: () => trainDrawer() },
     "-",
     ...(saved && can("admin") ? [{ label: "Drop this blend…", icon: "trash", danger: true, onclick: () => drop() }] : []),
   ]);
   const titleEl = h("h1", { class: "mono" }, name);
   clear(head, h("div", {}, h("div", { class: "small" }, h("a", { href: "#/blend" }, "← Blending")), h("div", { class: "row nw", style: { gap: "10px" } }, titleEl, dirtyPill), status),
-    h("div", { class: "tools" }, discardBtn, h("button", { class: "btn", onclick: () => versionsDrawer() }, icon("clock"), "Versions"), saveBtn, more));
+    h("div", { class: "tools" }, discardBtn, h("button", { class: "btn", onclick: () => versionsDrawer() }, icon("clock"), "Versions"), h("button", { class: "btn", title: "Set this draft against the serving version over the pages the blend logged, and tune it toward what people clicked", onclick: () => trainDrawer() }, icon("recsys"), "Value on the log"), saveBtn, more));
   const ed = h("div", { class: "bl-ed" }, settings, preview);
   // A slider let go, or moved by its keys: the draft runs again.
   ed.addEventListener("bl-change", () => changed());
@@ -535,7 +542,209 @@ function editor(page, head, body, name, asked) {
     };
   }
 
-  async function drop() {
+  // ---------------------------------------------------------- valued on the log
+  async function trainDrawer() {
+    let ts = [];
+    try { ts = await tables(true); } catch (e) { toast(e.message, "bad"); return; }
+    const logs = ts.filter(isLog);
+    const was = store.get("blend.train", null);
+    const st = was && logs.some((t) => t.table === was.log) ? was : { log: logs[0]?.table || "rank_log", events: guessEvents(ts, logs[0]?.table || "rank_log"), window: "1 hour", discount: false };
+    const keep = () => store.set("blend.train", st);
+    const ctl = h("div", { class: "bt-ctl" });
+    const out = h("div", { class: "bt-out" });
+    const tuneOut = h("div", { class: "bt-tune" });
+    const d = drawer({ title: `Value ${name} on the log`, sub: "what people clicked on its exploring pages, reweighted by each slot's chance", body: [ctl, out, tuneOut], wide: true });
+    let my = 0, pick = 0, est = null;
+    const tableOf = (n) => ts.find((t) => t.table === n);
+    const exportBody = () => {
+      const e = st.events;
+      const x = { table: st.log, window: st.window };
+      if (e?.table && e.user && e.item && e.time) x.events = { table: e.table, user: e.user, item: e.item, time: e.time, ...(e.action ? { action: e.action } : {}) };
+      return x;
+    };
+    const ready = () => !!exportBody().events;
+    const dirty = () => !saved || !same(draft, saved);
+    const targets = () => [...(saved ? [`${name}@${savedVersion}`] : []), ...(dirty() ? [{ def: { ...clone(draft), name }, label: "this draft" }] : [])];
+    drawCtl();
+    if (!logs.length) { howTo(out, "No rank log yet", `A query of blend('${name}') run with "log" writes each page it served, every row of every source, and each slot's chance when it explores.`); return; }
+    evaluate();
+
+    function drawCtl() {
+      const ev = st.events || {};
+      const et = tableOf(ev.table);
+      const fsel = (key, types, none) => h("select", { class: "select sm mono", "aria-label": `The events' ${key}`, onchange: (e) => { st.events = { ...ev, [key]: e.target.value }; keep(); drawCtl(); evaluate(); } },
+        none ? h("option", { value: "" }, "(none)") : null,
+        (et?.short?.fields || []).filter((f) => types.includes(f.type) && !f.multi).map((f) => h("option", { value: f.name, selected: f.name === ev[key] }, f.name)));
+      clear(ctl,
+        h("div", { class: "bt-row" },
+          h("label", { class: "bt-lbl" }, "log", h("select", { class: "select sm", "aria-label": "The log", onchange: (e) => { st.log = e.target.value; keep(); evaluate(); } }, (logs.length ? logs : [{ table: st.log }]).map((t) => h("option", { value: t.table, selected: t.table === st.log }, t.table)))),
+          h("label", { class: "bt-lbl" }, "clicks in", h("select", { class: "select sm", "aria-label": "The events", onchange: (e) => { const t = tableOf(e.target.value); st.events = t ? guessEvents([t], st.log) || { table: t.table, user: "", item: "", time: "", action: "" } : null; keep(); drawCtl(); evaluate(); } },
+            h("option", { value: "" }, "(choose the events)"), ts.filter((t) => !isLog(t)).map((t) => h("option", { value: t.table, selected: t.table === ev.table }, t.table)))),
+          et ? h("span", { class: "bt-map", title: "Which columns of the events are the user (the log's context), the item (a row's key) and the time" }, h("span", { class: "muted" }, "user"), fsel("user", ["keyword", "int"]), h("span", { class: "muted" }, "item"), fsel("item", ["keyword", "int"]), h("span", { class: "muted" }, "time"), fsel("time", ["timestamp", "int"]), h("span", { class: "muted" }, "action"), fsel("action", ["keyword"], true)) : null),
+        h("div", { class: "bt-row" },
+          h("label", { class: "bt-lbl" }, "a click counts within", seg([["5 minutes", "5 min"], ["30 minutes", "30 min"], ["1 hour", "1 h"], ["1 day", "1 day"]], st.window, (v) => { st.window = v; keep(); evaluate(); })),
+          h("label", { class: "bt-lbl" }, "a page is worth", seg([[false, "its clicks"], [true, "its clicks, discounted by slot"]], st.discount, (v) => { st.discount = v; keep(); evaluate(); })),
+          h("span", { class: "grow" }),
+          h("button", { class: "btn sm", onclick: () => evaluate() }, icon("refresh"), "Value again"),
+          h("button", { class: "btn sm primary", disabled: !saved, title: saved ? "Blends near this draft, tried on half the searches and proven on the other half" : "Save the blend and log it first", onclick: () => tune() }, icon("sparkle"), "Tune toward clicks")));
+    }
+
+    async function evaluate() {
+      const me = ++my;
+      clear(tuneOut);
+      if (!saved) { clear(out, card({ body: empty("recsys", "Save the blend first", `Its pages are logged as blend('${name}'): save a version, serve it with "log", and come back.`) })); return; }
+      if (!ready()) { clear(out, card({ body: empty("recsys", "Which table holds the clicks?", "Pick the events and which of their columns are the user, the item and the time. A row's label is a click by the page's user on it within the window.") })); return; }
+      out.classList.add("busy");
+      try {
+        const j = await api(`/v1/blends/${encodeURIComponent(name)}/evaluate`, { method: "POST", body: { export: exportBody(), targets: targets(), discount: st.discount } });
+        if (me !== my) return;
+        est = j;
+        drawOut();
+      } catch (e) { if (me === my) clear(out, card({ body: failure(e, "Valuing on the log") })); }
+      finally { if (me === my) out.classList.remove("busy"); }
+    }
+
+    function drawOut() {
+      const g = est.gathered;
+      if (!g.requests) {
+        const why = g.not_exploring ? `${fmt.n(g.not_exploring)} of its searches were logged without exploring: a page that always shows the best rows says nothing of the others.` : `${st.log} has no page of blend('${name}')${g.other ? ` (${fmt.n(g.other)} pages of other queries)` : ""}.`;
+        howTo(out, "No exploring pages of this blend yet", why);
+        return;
+      }
+      const E = est.estimates;
+      const reads = est.model?.reads || [];
+      pick = Math.min(pick, E.length - 1);
+      clear(out,
+        h("div", { class: "small muted" }, `${fmt.n(g.requests)} exploring searches${g.not_exploring ? `, ${fmt.n(g.not_exploring)} more logged without exploring` : ""}. The click model behind cascade doubly robust reads the slot and ${reads.length ? reads.join(", ") : "no numbers"}, fitted on one half of the searches to value the other.`),
+        h("div", { class: "bt-verdicts" }, E.map((e) => verdict(e))),
+        card({ title: "What a search would earn", sub: `${st.discount ? "clicks discounted by slot" : "clicks"} per search, each with its 95% interval`, body: forest(E) }),
+        card({ title: "Slot by slot", sub: "the value each slot adds, and the searches behind it", tools: E.length > 1 ? seg(E.map((e, i) => [i, e.label]), pick, (v) => { pick = v; drawOut(); }) : null, body: slots(E[pick]) }));
+    }
+
+    function verdict(e) {
+      const cls = { better: "ok", worse: "bad", same: "", "not proven": "warn" }[e.verdict] ?? "";
+      const lift = e.lift?.value;
+      return h("div", { class: "bt-verdict" },
+        h("div", { class: "row nw", style: { gap: "8px" } }, h("b", { class: "mono" }, e.label), h("span", { class: "pill " + cls }, e.verdict), h("span", { class: "grow" }), h("span", { class: "mono" }, `${num(e.cdr.value)} ± ${num(1.96 * e.cdr.se)}`)),
+        lift != null ? h("div", { class: "small" }, `${lift >= 0 ? "+" : "−"}${num(Math.abs(lift))} ± ${num(1.96 * e.lift.se)} against ${e.against}`) : null,
+        h("div", { class: "small muted" }, e.why),
+        h("div", { class: "bt-facts small dim" },
+          fact("support", `${fmt.n(e.support)} effective searches at slot 1`, e.trusted ? "" : "warn"),
+          fact("coverage", fmt.pct(e.coverage), e.coverage < 0.95 ? "warn" : ""),
+          e.switched > 0.005 ? fact("model only", `${fmt.pct(e.switched)} of pages from a slot down`, "") : null,
+          fact("SNIPS checks", `the top ${e.check_depth} slot${e.check_depth === 1 ? "" : "s"}`, e.check_depth ? "" : "warn")));
+    }
+
+    // Each blend's value with its interval, the logged blend's beside it;
+    // and over the top slots SNIPS sees well, the two estimators side by side.
+    function forest(E) {
+      const rows = [{ label: "as logged", parts: [["logged", E[0].logged, "lg"]] }, ...E.map((e) => ({ label: e.label, parts: [["cascade doubly robust", e.cdr, "cdr"]] }))];
+      const check = E.map((e) => ({ label: e.label, parts: [["cascade doubly robust", e.cdr_top, "cdr"], ["SNIPS", e.snips, "sn"]], depth: e.check_depth }));
+      return [plot(rows, "the whole page"), h("div", { class: "small muted", style: { marginTop: "6px" } }, "The check: over the top slots each has the searches for, SNIPS (no model, ○) should agree with cascade doubly robust (●). Far apart, the click model is off."), plot(check, null)];
+    }
+
+    function plot(rows, caption) {
+      const W = 640, L = 150, R = 16, rh = 26, H = rows.length * rh + 28;
+      const all = rows.flatMap((r) => r.parts.flatMap(([, iv]) => [iv.value - 1.96 * iv.se, iv.value + 1.96 * iv.se])).filter(Number.isFinite);
+      let lo = Math.min(...all), hi = Math.max(...all);
+      if (!(hi > lo)) { lo -= 0.5; hi += 0.5; }
+      const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+      const x = (v) => L + ((v - lo) / (hi - lo)) * (W - L - R);
+      const g = svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "bt-plot", role: "img", "aria-label": caption ? `Values of ${caption}` : "SNIPS beside cascade doubly robust" });
+      const step = niceTick(hi - lo);
+      for (let t = Math.ceil(lo / step) * step; t <= hi; t += step) {
+        g.append(svg("line", { x1: x(t), x2: x(t), y1: 4, y2: H - 22, class: "bt-grid" }), svg("text", { x: x(t), y: H - 8, class: "bt-tick", "text-anchor": "middle" }, num(t)));
+      }
+      rows.forEach((r, i) => {
+        const y = 4 + i * rh + rh / 2;
+        g.append(svg("text", { x: L - 10, y: y + 4, class: "bt-name", "text-anchor": "end" }, r.label + (r.depth != null ? ` · top ${r.depth}` : "")));
+        r.parts.forEach(([what, iv, cls], k) => {
+          if (!Number.isFinite(iv.value)) return;
+          const yy = y + (r.parts.length > 1 ? (k - 0.5) * 9 : 0);
+          const a = x(iv.value - 1.96 * iv.se), b = x(iv.value + 1.96 * iv.se);
+          const tip = `${what}: ${num(iv.value)} (${num(iv.value - 1.96 * iv.se)} to ${num(iv.value + 1.96 * iv.se)})`;
+          g.append(svg("g", { class: "bt-iv " + cls }, svg("title", {}, tip), svg("line", { x1: a, x2: b, y1: yy, y2: yy }), svg("line", { x1: a, x2: a, y1: yy - 4, y2: yy + 4 }), svg("line", { x1: b, x2: b, y1: yy - 4, y2: yy + 4 }),
+            cls === "lg" ? svg("path", { d: `M${x(iv.value)} ${yy - 5}l5 5-5 5-5-5z` }) : svg("circle", { cx: x(iv.value), cy: yy, r: 4.5 })));
+        });
+      });
+      return g;
+    }
+
+    // Per slot: the value it adds (cascade doubly robust ●, SNIPS ○, the
+    // logged blend ◆), and under it the searches behind it, shaded where
+    // the logging blend could not have drawn the target's page.
+    function slots(e) {
+      const S = e.slots || [];
+      if (!S.length) return empty("recsys", "No slots valued");
+      const W = 640, L = 40, R = 12, top = 150, strip = 46, H = top + strip + 26;
+      const vals = S.flatMap((x) => [x.cdr, x.snips, x.logged]).filter(Number.isFinite);
+      const hi = Math.max(1e-9, ...vals) * 1.12, lo = Math.min(0, ...vals);
+      const cw = (W - L - R) / S.length;
+      const cx = (i) => L + cw * (i + 0.5);
+      const y = (v) => 8 + (1 - (v - lo) / (hi - lo)) * (top - 16);
+      const g = svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "bt-plot", role: "img", "aria-label": `Slot by slot values of ${e.label}` });
+      const step = niceTick(hi - lo);
+      for (let t = Math.ceil(lo / step) * step; t <= hi; t += step) g.append(svg("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), class: "bt-grid" }), svg("text", { x: L - 6, y: y(t) + 4, class: "bt-tick", "text-anchor": "end" }, num(t)));
+      const line = (key, cls) => svg("path", { class: "bt-line " + cls, d: S.map((x, i) => (Number.isFinite(x[key]) ? `${i ? "L" : "M"}${cx(i)} ${y(x[key])}` : "")).join("") });
+      g.append(line("logged", "lg"), line("cdr", "cdr"));
+      S.forEach((x, i) => {
+        const tip = `slot ${x.slot}: cascade doubly robust ${num(x.cdr)}, SNIPS ${num(x.snips)}, model ${num(x.model)}, logged ${num(x.logged)}; ${fmt.n(x.ess)} effective searches; ${fmt.pct(x.coverage)} of the pages the logging blend could draw`;
+        const col = svg("g", {}, svg("title", {}, tip));
+        if (Number.isFinite(x.logged)) col.append(svg("path", { class: "bt-pt lg", d: `M${cx(i)} ${y(x.logged) - 5}l5 5-5 5-5-5z` }));
+        if (Number.isFinite(x.snips) && i < e.check_depth) col.append(svg("circle", { class: "bt-pt sn", cx: cx(i), cy: y(x.snips), r: 4.5 }));
+        if (Number.isFinite(x.cdr)) col.append(svg("circle", { class: "bt-pt cdr", cx: cx(i), cy: y(x.cdr), r: 4.5 }));
+        const share = Math.max(0, Math.min(1, x.ess / Math.max(1, e.requests)));
+        const bh = Math.max(1.5, share * (strip - 10));
+        col.append(svg("rect", { class: "bt-ess" + (x.coverage < 0.95 ? " thin" : ""), x: cx(i) - cw * 0.32, width: cw * 0.64, y: top + strip - bh, height: bh, rx: 2 }));
+        col.append(svg("text", { x: cx(i), y: H - 8, class: "bt-tick", "text-anchor": "middle" }, String(x.slot)));
+        g.append(col);
+      });
+      g.append(svg("text", { x: L - 6, y: top + strip - 2, class: "bt-tick", "text-anchor": "end" }, "ess"));
+      return [g, h("div", { class: "bt-legend small muted" }, h("span", {}, h("i", { class: "dot cdr" }), "cascade doubly robust"), h("span", {}, h("i", { class: "dot sn" }), "SNIPS (where it has the searches)"), h("span", {}, h("i", { class: "dia lg" }), "as logged"), h("span", {}, h("i", { class: "bar" }), "effective searches (paler: pages the log could not draw)"))];
+    }
+
+    async function tune() {
+      const me = ++my;
+      clear(tuneOut, card({ body: h("div", { class: "small muted" }, "Trying blends near this draft on half the searches…") }));
+      try {
+        const j = await api(`/v1/blends/${encodeURIComponent(name)}/tune`, { method: "POST", body: { export: exportBody(), start: { def: { ...clone(draft), name }, label: dirty() ? "this draft" : `${name}@${savedVersion}` }, rounds: 24, discount: st.discount } });
+        if (me !== my) return;
+        drawTune(j);
+      } catch (e) { if (me === my) clear(tuneOut, card({ body: failure(e, "Tuning") })); }
+    }
+
+    function drawTune(j) {
+      if (!j.tried?.length) { clear(tuneOut); howTo(tuneOut, "Nothing to tune on yet", "The log has no exploring pages of this blend."); return; }
+      const start = j.tried[0].train.cdr.value;
+      const sorted = j.tried.map((t, i) => ({ ...t, i })).sort((a, b) => b.train.cdr.value - a.train.cdr.value);
+      const best = j.best, b = best?.estimate;
+      const span = Math.max(1e-9, ...sorted.map((t) => Math.abs(t.train.cdr.value - start)));
+      const row = (t) => {
+        const dv = t.train.cdr.value - start;
+        return h("div", { class: "bt-try" + (t.i === 0 ? " start" : "") + (t === sorted[0] && t.i !== 0 ? " best" : "") },
+          h("span", { class: "small" }, t.i === 0 ? "the start" : t.change),
+          h("span", { class: "bt-delta" }, h("i", { class: dv >= 0 ? "up" : "down", style: { width: `${(Math.abs(dv) / span) * 50}%`, [dv >= 0 ? "left" : "right"]: "50%" } })),
+          h("span", { class: "mono small" }, `${dv >= 0 ? "+" : "−"}${num(Math.abs(dv))}`));
+      };
+      clear(tuneOut, card({
+        title: "Tuned toward clicks",
+        sub: `${j.tried.length - 1} blends near the start, each valued on one half of the ${fmt.n(j.gathered.requests)} searches`,
+        body: [
+          b ? h("div", { class: "bt-verdict" },
+            h("div", { class: "row nw", style: { gap: "8px" } }, h("b", {}, "The best, on the other half"), h("span", { class: "pill " + ({ better: "ok", worse: "bad", "not proven": "warn" }[b.verdict] || "") }, b.verdict), h("span", { class: "grow" }), h("span", { class: "mono" }, `${num(b.cdr.value)} ± ${num(1.96 * b.cdr.se)}`)),
+            h("div", { class: "small" }, `${b.lift.value >= 0 ? "+" : "−"}${num(Math.abs(b.lift.value))} ± ${num(1.96 * b.lift.se)} against the start there (${num(j.start?.cdr?.value)})`),
+            h("div", { class: "small muted" }, best.def.note ? best.def.note.replace(/^tuned: /, "It changes: ") : "It is the start: nothing near it did better."),
+            h("div", { class: "row", style: { gap: "8px" } },
+              h("button", { class: "btn sm primary", disabled: !best.def.note, onclick: () => { draft = { ...clone(best.def), name }; delete draft.note; d.close(); changed(); toast("The tuned blend is in the editor: look at its pages, then save it to serve it", "ok", 6000); } }, icon("edit"), "Open it in the editor"),
+              h("button", { class: "btn sm ghost", onclick: () => copy(best.sql, "The SQL") }, icon("copy"), "SQL"))) : null,
+          h("div", { class: "small muted" }, "Each blend tried, against the start, on the half that chose"),
+          h("div", { class: "bt-tries" }, sorted.slice(0, 12).map(row)),
+        ],
+      }));
+    }
+  }
+
+  async function drop() {  async function drop() {
     const ok = await confirm({ title: `Drop ${name}?`, body: `Queries of blend('${name}') fail from now on. Its versions stay readable as ${name}@n, and saving it again makes the next version.`, ok: "Drop", danger: true, typed: name });
     if (!ok) return;
     try { await api(`/v1/blends/${encodeURIComponent(name)}`, { method: "DELETE" }); toast(`Dropped ${name}`, "ok"); location.hash = "#/blend"; } catch (e) { toast(e.message, "bad", 8000); }
@@ -545,6 +754,25 @@ function editor(page, head, body, name, asked) {
 }
 
 // ------------------------------------------------------------ small parts
+const num = (x) => (x == null || !Number.isFinite(x) ? "–" : Math.abs(x) >= 100 ? x.toFixed(0) : Math.abs(x) >= 10 ? x.toFixed(1) : x.toFixed(3));
+function niceTick(span) {
+  const raw = span / 5, p = Math.pow(10, Math.floor(Math.log10(raw)));
+  return [1, 2, 5, 10].map((m) => m * p).find((m) => m >= raw) || p * 10;
+}
+function fact(k, v, cls) { return h("span", { class: "bt-fact " + (cls || "") }, h("span", { class: "muted" }, k), " ", v); }
+
+/** How to log a blend's exploring pages, with why there are none yet. */
+function howTo(into, title, why) {
+  const name = location.hash.match(/#\/blend\/([^?]+)/)?.[1] || "name";
+  clear(into, card({ body: [
+    empty("recsys", title, why),
+    h("div", { class: "bt-howto" },
+      h("div", { class: "small muted" }, "Serve it with \"log\" and \"explore\": each slot then draws among the rows that fit it by their utility (top 5 here, tau a share of their range), and the log keeps every row of every source and each slot's chance"),
+      sqlBlock(`POST /v1/query\n{"sql": "SELECT slot, source, id, title FROM blend('${decodeURIComponent(name)}', q => :q)",\n "params": {"q": "rust"},\n "log": {"context": "u42", "explore": {"policy": "softmax", "tau": 0.3, "top": 5}}}`),
+      h("div", { class: "small muted" }, "Keep what people did in a table of events (user, item, time), the user as the log's context. Then this panel values any blend of the same sources on those pages, and tunes one toward the clicks.")),
+  ] }));
+}
+
 function askText(title, label) {
   return new Promise((resolve) => {
     let done = false;

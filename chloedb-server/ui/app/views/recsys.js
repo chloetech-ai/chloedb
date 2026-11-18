@@ -27,7 +27,7 @@ const LABEL_FILL = ["var(--surface-3)", "var(--seq-3)", "var(--seq-5)", "var(--s
 const labelFill = (l) => LABEL_FILL[Math.max(0, Math.min(3, Math.round(l || 0)))];
 
 /** The events table and its columns, guessed from the names a log's export reads. */
-function guessEvents(ts, log) {
+export function guessEvents(ts, log) {
   for (const t of ts) {
     if (t.table === log || isLog(t)) continue;
     const fs = t.short?.fields || [];
