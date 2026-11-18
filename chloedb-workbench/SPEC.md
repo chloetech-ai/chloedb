@@ -2723,8 +2723,7 @@ plus what Workbench tells it about each session (`src/ctxwire.rs`).
    - The briefing tells agents to keep decisions with `memory_remember`,
      not in memory files of their own.
    - `remember` answers with the store's path ("Stored decision as … in
-     ChloeCtx (…/memory.strata), where Workbench and every later session
-     see it").
+     ChloeCtx (…/memory.strata), where every later session sees it").
 
 For Ship's capsule (part C): `chloectx pack` keeps only the records of the
 sessions in `--sessions a,b` or `CHLOECTX_PACK_SESSIONS`, and the entities

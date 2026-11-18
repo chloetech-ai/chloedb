@@ -1,0 +1,15 @@
+{
+  "//": "The declarations type-checked as an app's code checks them, without Node's types (TypeScript 7 includes none that `types` does not name) and with skipLibCheck off: test/types.test.mjs runs tsc on it.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": false,
+    "types": [],
+    "noEmit": true
+  },
+  "files": ["example.ts"]
+}
