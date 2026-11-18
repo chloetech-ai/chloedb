@@ -85,8 +85,8 @@ pub(crate) const STATS: [&str; 9] = ["stddev", "stddev_samp", "stddev_pop", "var
 pub(crate) const PERCENTILES: [&str; 4] = ["median", "percentile_cont", "percentile_disc", "approx_percentile"];
 /// Functions whose value a ranking computes (a score, a graph's, a model's,
 /// a set function's, a row's sequence number), not the row evaluator.
-const RANKING: [&str; 18] = [
-    "bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops", "score", "seq_no", "ranked", "features", "minmax", "rank", "gbdt", "cross_encoder", "rank_profile", "match",
+const RANKING: [&str; 20] = [
+    "bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops", "score", "seq_no", "ranked", "features", "minmax", "tmm", "zscore", "rank", "gbdt", "cross_encoder", "rank_profile", "match",
 ];
 
 fn fname(f: &sql::Function) -> String {

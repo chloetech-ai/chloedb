@@ -201,12 +201,12 @@ db.close()</pre>
 <pre data-lang="text" data-title="Output" class="output">6 passages from 3 files</pre>
 <p><code>upsert</code> replaces a passage with the same key, so running it again after editing a file updates its passages. (A section that disappears from a file stays until you delete it: <code>db.delete(keys)</code>, or <code>DELETE FROM passages WHERE doc = 'returns.md'</code> before writing the file's passages again.)</p>
 <h2 id="retrieve">Retrieve<a class="anchor" href="#retrieve" aria-label="Link to this section">#</a></h2>
-<p>One query does the retrieval. <code>rrf</code> fuses a BM25 ranking over the text with a vector ranking, which finds passages that use the question's words and passages that mean the same thing in others; <code>MAX 2 PER doc</code> keeps at most two passages of a file:</p>
+<p>One query does the retrieval. <code>rrf</code> fuses a BM25 ranking over the text with a vector ranking, which finds passages that use the question's words and passages that mean the same thing in others; <code>MAX 2 PER doc</code> keeps at most two passages of a file. <code>syntax =&gt; 'plain'</code> reads the question as words: by default <code>bm25</code> reads a search box's operators, where <code>-word</code> leaves out the passages with that word and <code>+word</code> keeps only those, so a question such as "why does the linker fail without -fPIC" would drop the very passage about <code>-fPIC</code> (<a href="sql.html#bm25field-text">the SQL reference</a>):</p>
 <pre data-lang="python" data-title="retrieve.py">import chloedb
 
 QUERY = &quot;&quot;&quot;
 SELECT id, doc, heading, body FROM passages
-ORDER BY rrf(bm25(text, :q), similarity(emb, :v)) DESC
+ORDER BY rrf(bm25(text, :q, syntax =&gt; &#x27;plain&#x27;), similarity(emb, :v)) DESC
 MAX 2 PER doc
 LIMIT :k
 &quot;&quot;&quot;

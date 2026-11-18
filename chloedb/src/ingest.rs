@@ -84,7 +84,17 @@ pub fn field_value(field: &Field, key: bool, j: &Json) -> Result<Value> {
         return Ok(Value::List(items.iter().map(one).collect::<Result<_>>()?));
     }
     Ok(match (&field.ty, j) {
-        (FieldType::Vector { .. }, Json::Array(xs)) => Value::Vector(xs.iter().map(|x| x.as_f64().map(|v| v as f32).ok_or_else(bad)).collect::<Result<Vec<_>>>()?.into()),
+        (FieldType::Vector { .. }, Json::Array(xs)) => {
+            // A NaN or an infinity reaches here as null: JSON has no number
+            // for them, and Python's NaN becomes null on its way (persona
+            // study PRIYA-203).
+            if let Some(i) = xs.iter().position(|x| x.is_null()) {
+                if xs.iter().all(|x| x.is_null() || x.is_number()) {
+                    return Err(Error::Schema(format!("bad value for {}: element {} of the vector is NaN, an infinity or null (JSON writes NaN and infinities as null): a vector's elements are finite numbers", field.name, i + 1)));
+                }
+            }
+            Value::Vector(xs.iter().map(|x| x.as_f64().map(|v| v as f32).ok_or_else(bad)).collect::<Result<Vec<_>>>()?.into())
+        }
         (FieldType::Int, Json::Number(n)) => Value::Int(whole_number(field, n)?),
         (FieldType::Int, Json::Bool(b)) => Value::Int(*b as i64),
         (FieldType::Float, Json::Number(n)) => Value::Float(n.as_f64().ok_or_else(bad)?),

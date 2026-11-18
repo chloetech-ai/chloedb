@@ -151,6 +151,13 @@ fn a_vector_past_f32s_range_says_so() {
     let doc = vec![Value::Str("a".into()), Value::Vector(vec![1e39_f64 as f32, 0.0, 0.0].into())];
     let e = chloedb::value::validate(&schema, &doc).unwrap_err().to_string();
     assert!(e.contains("element 1 of the vector is not a finite 32-bit float"), "{e}");
+    // A NaN says NaN (persona study PRIYA-203), as a row's and as JSON's,
+    // where NaN arrives as null.
+    let doc = vec![Value::Str("a".into()), Value::Vector(vec![0.0, f32::NAN, 0.0].into())];
+    let e = chloedb::value::validate(&schema, &doc).unwrap_err().to_string();
+    assert!(e.contains("element 2 of the vector is NaN"), "{e}");
+    let e = ingest::document(&schema, &serde_json::json!({"id": "a", "e": [null, 0, 0]})).unwrap_err().to_string();
+    assert!(e.contains("element 1 of the vector is NaN, an infinity or null") && !e.contains("[null"), "{e}");
 }
 
 #[test]
