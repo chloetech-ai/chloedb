@@ -4740,6 +4740,7 @@ impl Service {
                 let only = slots.as_ref().map(|s| moving::mask_outside(s));
                 let key = key.map(|k| (k, statement_hash(sql, params, slots.as_deref())));
                 let mut tries = 0;
+                let until = t0 + self.timeout_of(timeout_ms);
                 loop {
                     let (text, p, only) = (sql.to_string(), params.clone(), only.clone());
                     let refused = Arc::new(Mutex::new(None));
@@ -4758,8 +4759,17 @@ impl Service {
                         (Some(e), Err(_)) => break Err(e),
                         // An ALTER TABLE committed between binding the
                         // statement and writing it, which wrote nothing:
-                        // it is bound again, to the table as it is now.
-                        (None, Err(e)) if tries < chloedb::db::ALTERED_TRIES && chloedb::db::altered_while_running(&e.message) => tries += 1,
+                        // it is bound again, to the table as it is now,
+                        // until the statement's deadline: a stream of
+                        // ALTER TABLEs, which take the storage lock without
+                        // queueing, may win several times in a row.
+                        (None, Err(e)) if tries < chloedb::db::ALTERED_TRIES && Instant::now() < until && chloedb::db::altered_while_running(&e.message) => {
+                            match chloedb::db::altered_backoff(tries) {
+                                d if d.is_zero() => tokio::task::yield_now().await,
+                                d => tokio::time::sleep(d).await,
+                            }
+                            tries += 1;
+                        }
                         (_, r) => break r,
                     }
                 }

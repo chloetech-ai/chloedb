@@ -11,6 +11,16 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A write racing ALTER TABLE is bound again until its deadline**: an
+  INSERT, UPDATE or DELETE whose table an `ALTER TABLE` changed while it
+  ran was bound again ten times at most, and a stream of `ALTER TABLE`s
+  (which take the storage lock without queueing) could win all ten. The
+  server now binds it again, waiting a few milliseconds more each time,
+  until the statement's deadline (an embedded `Db::sql` up to 1000
+  times). A write still raced then is refused with its own code,
+  `table_altered`, which is `retryable: true` (it was `query_invalid`,
+  not retryable); nothing was written, so sending it again is safe.
+
 - **Everyday SQL functions** (persona study round 2, SAM-7): `substr`
   (`substring`, `SUBSTRING(s FROM i FOR n)`), `trim`, `ltrim`, `rtrim`
   (`btrim`, `TRIM(LEADING ... FROM s)`), `replace`, `concat`, `nullif`,
