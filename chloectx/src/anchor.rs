@@ -303,11 +303,13 @@ pub struct Checker {
     /// By branch: the commit time of its merge base with this worktree's
     /// HEAD (None: no such branch, or git could not say).
     bases: HashMap<String, Option<i64>>,
+    /// By branch: whether it has commits this worktree's HEAD lacks.
+    ahead: HashMap<String, bool>,
 }
 
 impl Checker {
     pub fn new(project: &Path) -> Checker {
-        Checker { project: project.to_path_buf(), branch: None, files: HashMap::new(), sessions: HashMap::new(), bases: HashMap::new() }
+        Checker { project: project.to_path_buf(), branch: None, files: HashMap::new(), sessions: HashMap::new(), bases: HashMap::new(), ahead: HashMap::new() }
     }
 
     /// Knows the branch each session's records came from.
@@ -342,18 +344,49 @@ impl Checker {
         t
     }
 
+    /// Whether `branch` has commits that HEAD lacks.
+    fn ahead(&mut self, branch: &str) -> bool {
+        if let Some(a) = self.ahead.get(branch) {
+            return *a;
+        }
+        let out = std::process::Command::new("git").arg("-C").arg(&self.project).args(["rev-list", "--count", &format!("HEAD..refs/heads/{branch}")]).stderr(std::process::Stdio::null()).output().ok();
+        let a = out.filter(|o| o.status.success()).and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok()).is_some_and(|n| n > 0);
+        if self.ahead.len() < 64 {
+            self.ahead.insert(branch.to_string(), a);
+        }
+        a
+    }
+
     /// The branch a record came from when its work is not in this
     /// worktree: another branch, and the record was written after the last
     /// commit that branch and this worktree share (so what it saw was not
     /// committed, or not merged here). `None` when it is from this branch,
     /// from history the two share, or nobody knows.
+    ///
+    /// A note is about the code only through its files: one that names none
+    /// (a decision or fact said in conversation) is another branch's work
+    /// only when that branch has commits not merged here, and a rule the
+    /// user gave holds on every branch (ANA-2: rules said in a worktree,
+    /// nothing committed, read "from branch X, not merged here" in the main
+    /// checkout, and the agent hedged).
     pub fn elsewhere(&mut self, r: &crate::record::Record) -> Option<String> {
+        use crate::record::{Kind, Source};
+        if r.kind == Kind::Preference && matches!(r.source(), None | Some(Source::User)) {
+            return None;
+        }
         let b = self.branch_of(r);
         if b.is_empty() || b == "(detached)" || b == self.branch() {
             return None;
         }
         let t = self.base_time(&b)?;
-        (t + crate::clock_offset() < r.ts).then_some(b)
+        if t + crate::clock_offset() >= r.ts {
+            return None;
+        }
+        let anchored = Anchor::parse(&r.ctx).is_some_and(|a| !a.files.is_empty());
+        if r.kind.is_knowledge() && !anchored && !self.ahead(&b) {
+            return None;
+        }
+        Some(b)
     }
 
     /// The label shown after a record: how its code stands now, and, when
@@ -549,12 +582,30 @@ mod tests {
         assert_eq!(ck.label_record(&same), "");
         // From before the fork: shared history.
         assert_eq!(ck.elsewhere(&rec("old", 900, "")), None);
-        // paybutton commits and is merged here: its earlier records are here.
+        // ANA-2: a rule the user gave, and a decision said in conversation
+        // (no files), while paybutton has committed nothing: they are not
+        // that branch's work.
+        let note = |kind: crate::record::Kind, by: Option<crate::record::Source>| {
+            let mut d = crate::record::Draft::new(kind, "Format invoice numbers as INV-YYYY-NNNNN");
+            if let Some(b) = &by {
+                d = d.by(b);
+            }
+            crate::record::Record::from_draft(d, "pay", 1, 1, T0 + 2_000)
+        };
+        let rule = note(crate::record::Kind::Preference, Some(crate::record::Source::User));
+        let decision = note(crate::record::Kind::Decision, None);
+        assert_eq!((ck.elsewhere(&rule), ck.elsewhere(&decision)), (None, None));
+        assert!(!ck.label_record(&decision).contains("not merged"));
+        // paybutton commits: a fileless decision may be about that work now.
         git(&["checkout", "-q", "wb/paybutton"], 3_000);
         std::fs::write(p.join("pay.js"), "pay()\n").unwrap();
         git(&["add", "."], 3_000);
         git(&["commit", "-q", "-m", "pay"], 3_000);
         git(&["checkout", "-q", "wb/cents"], 3_000);
+        let mut ck = Checker::new(p).with_sessions(ck.sessions.clone());
+        assert_eq!(ck.elsewhere(&decision).as_deref(), Some("wb/paybutton"));
+        assert_eq!(ck.elsewhere(&rule), None, "the user's rule holds on every branch");
+        // ... and is merged here: its earlier records are here.
         git(&["merge", "-q", "--no-edit", "wb/paybutton"], 3_100);
         let mut ck = Checker::new(p).with_sessions(ck.sessions.clone());
         assert_eq!(ck.elsewhere(&pay), None);

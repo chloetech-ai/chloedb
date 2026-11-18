@@ -164,10 +164,11 @@ fn casts_and_values_of_no_table() {
         Value::Bool(true)
     ]]);
     assert!(matches!(rows(&db, "SELECT now()")[0][0], Value::Timestamp(_)), "now() is a time");
-    // CAST over rows: INT rounds, FLOAT and TEXT keep the value.
+    // CAST over rows: INT rounds half to even, as Postgres rounds a
+    // float8; FLOAT and TEXT keep the value.
     let got = rows(&db, "SELECT id, CAST(price AS INT), CAST(year AS FLOAT), CAST(year AS TEXT), price::INT FROM products ORDER BY id LIMIT 8");
     for (r, p) in got.iter().zip(&ps) {
-        assert_eq!(r[1], Value::Int(p.price.round() as i64), "{}", p.id);
+        assert_eq!(r[1], Value::Int(p.price.round_ties_even() as i64), "{}", p.id);
         assert_eq!(r[2], Value::Float(p.year as f64));
         assert_eq!(r[3], Value::Str(p.year.to_string()));
         assert_eq!(r[4], r[1]);

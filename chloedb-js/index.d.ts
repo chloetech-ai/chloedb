@@ -64,7 +64,8 @@ export declare class Database extends Searchable {
 
   schema(table?: string): Promise<Schema>;
   tables(): Promise<Schema[]>;
-  /** Live rows, in every table. */
+  /** The live rows of the default table: the first, or in a database made
+   * with no tables the first one created after it. */
   count(): Promise<number>;
   addColumn(name: string, type: string, options?: { table?: string; [option: string]: unknown }): Promise<void>;
   dropColumn(name: string, options?: { table?: string }): Promise<void>;

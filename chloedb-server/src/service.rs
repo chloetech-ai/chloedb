@@ -123,6 +123,13 @@ tokio::task_local! {
 }
 
 tokio::task_local! {
+    /// The Postgres follower whose writes the request is
+    /// ([`POSTGRES_FOLLOWER_HEADER`]), which alone writes the tables it
+    /// follows ([`Service::may_write_followed`]).
+    pub static PG_FOLLOWER: Option<Arc<str>>;
+}
+
+tokio::task_local! {
     /// Whether the request is the cluster's own (its token: a coordinator's
     /// call to its shards, a follow process's write, or the server's own
     /// work), which may write the server's own marks
@@ -180,6 +187,23 @@ pub fn own() -> bool {
 /// the cluster it follows ([`FOLLOW`]); a coordinator passes it on to its
 /// shards.
 pub const FOLLOW_HEADER: &str = "x-strata-follow";
+
+/// The header by which `chloedb-server follow-postgres` names itself
+/// (its `--name`) on every request it makes; a coordinator passes it on
+/// to its shards. A table it follows takes writes from it alone
+/// ([`Service::may_write_followed`]). It guards against a write by
+/// mistake, not a client set on one: a client may send it too.
+pub const POSTGRES_FOLLOWER_HEADER: &str = "x-chloedb-postgres-follower";
+
+/// The Postgres follower the request being served is from
+/// ([`PG_FOLLOWER`]).
+pub fn postgres_follower() -> Option<Arc<str>> {
+    PG_FOLLOWER.try_with(Clone::clone).ok().flatten()
+}
+
+/// How long the tables Postgres followers follow are kept before they are
+/// read again ([`Service::may_write_followed`]).
+const FOLLOWED_EVERY: Duration = Duration::from_secs(2);
 
 /// The cluster the request being served writes the changes of
 /// ([`FOLLOW`]).
@@ -746,6 +770,10 @@ pub struct Service {
     writer_state: Arc<WriterState>,
     /// Idempotency keys of the writes it applied ([`crate::idem`]).
     idempotency: Arc<idem::Keys>,
+    /// The tables Postgres followers follow, by name in lower case: the
+    /// follower's name, as read at that moment
+    /// ([`Service::may_write_followed`]).
+    followed: std::sync::Mutex<Option<(Instant, Arc<HashMap<String, String>>)>>,
     /// The synonym list `synonyms => 1` searches use, and its file.
     synonyms: RwLock<Option<Arc<Synonyms>>>,
     /// A coordinator's gazetteers for query understanding
@@ -933,6 +961,7 @@ impl Service {
             writes,
             writer_state,
             idempotency,
+            followed: std::sync::Mutex::new(None),
             synonyms: RwLock::new(None),
             gazetteers: std::sync::Mutex::new(HashMap::new()),
             synonyms_file: None,
@@ -4513,9 +4542,10 @@ impl Service {
             }
         }
         let need = command_scope(&command);
-        // An UPDATE or DELETE with a LIMIT, which a coordinator runs by
-        // picking its rows first ([`Self::limited_write`]).
-        let limited = matches!(&command, Command::Write { write: chloedb::query::Write::Update { select, .. } | chloedb::query::Write::Delete { select }, .. } if select.limit.is_some());
+        // An UPDATE or DELETE with a LIMIT, or whose WHERE reads other rows
+        // (a subquery), which a coordinator runs by picking its rows first
+        // ([`Self::limited_write`]).
+        let limited = matches!(&command, Command::Write { write, .. } if write.picks_first());
         who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table, rank profile or function" }))?;
         if who.limited() {
             crate::scoped::check_statement(who, sql, &command, &self.table_names(), &self.functions())?;
@@ -4524,6 +4554,11 @@ impl Service {
         for t in changed_tables(&command) {
             crate::connectors::may_change(t, "a statement")?;
             crate::autopilot::may_change(who.root || who.limited() || who.scope >= Scope::Admin, t, "a statement")?;
+        }
+        // A table a Postgres follower follows takes its writes alone (its
+        // columns may still be added to, as an embedded vector's).
+        if let Command::Write { table, .. } = &command {
+            self.may_write_followed([table.as_str()]).await?;
         }
         // A dictionary's derived field on a coordinator: each shard would
         // tag its rows from its own slice of the dictionary's table, not
@@ -4787,6 +4822,10 @@ impl Service {
     /// IN (...)`), so that it changes at most n rows. It is two steps, not
     /// one: a row changed in between so that it no longer matches is left
     /// alone (the WHERE still holds it), and fewer than n rows may change.
+    /// An UPDATE or DELETE whose WHERE has a subquery runs so too, with or
+    /// without a LIMIT, of at most [`MAX_GET_KEYS`] rows: over those keys
+    /// alone (`WHERE key IN (...)`), since each shard would answer the
+    /// subquery from its own share of the rows.
     async fn limited_write(self: &Arc<Self>, sql: &str, params: &Params, key: Option<String>) -> Result<Written, ApiError> {
         use sqlparser::ast as a;
         let Backend::Cluster(c) = &self.backend else { return Err(ApiError::internal("limited_write is a coordinator's")) };
@@ -4805,11 +4844,24 @@ impl Service {
         let schema = self.table(&name.to_string()).await?;
         let pk = schema.primary_key.ok_or_else(|| ApiError::bad(format!("{} has no primary key: UPDATE and DELETE ... LIMIT through a coordinator pick their rows by key", schema.table)))?;
         let pk_name = schema.fields[pk].name.clone();
-        let n = limit.as_ref().map(|l| l.to_string()).unwrap_or_default();
-        let cap: usize = n.trim().parse().map_err(|_| ApiError::bad(format!("LIMIT {n}: through a coordinator, an UPDATE or DELETE takes a LIMIT that is a number")))?;
-        if cap > MAX_GET_KEYS {
-            return Err(ApiError::bad(format!("LIMIT {cap}: through a coordinator, an UPDATE or DELETE takes a LIMIT of at most {MAX_GET_KEYS}")));
-        }
+        // A WHERE with a subquery (SAM-2): each shard would answer it from
+        // its own share of the rows the subquery reads, so the coordinator
+        // picks the keys from all of them, and the shards change the rows
+        // of those keys alone, without the WHERE.
+        let reads_others = selection.as_ref().is_some_and(chloedb::query::sql::has_subquery) || order_by.iter().any(|o| chloedb::query::sql::has_subquery(&o.expr));
+        let cap: usize = match limit.as_ref() {
+            Some(l) => {
+                let n = l.to_string();
+                let cap = n.trim().parse().map_err(|_| ApiError::bad(format!("LIMIT {n}: through a coordinator, an UPDATE or DELETE takes a LIMIT that is a number")))?;
+                if cap > MAX_GET_KEYS {
+                    return Err(ApiError::bad(format!("LIMIT {cap}: through a coordinator, an UPDATE or DELETE takes a LIMIT of at most {MAX_GET_KEYS}")));
+                }
+                cap
+            }
+            // One more than it takes, to tell when there are more.
+            None => MAX_GET_KEYS + 1,
+        };
+        let unlimited = limit.is_none();
         let mut pick = format!("SELECT {} FROM {relation}", ident(&pk_name));
         if let Some(w) = selection.as_ref() {
             pick.push_str(&format!(" WHERE {w}"));
@@ -4823,6 +4875,11 @@ impl Service {
         if keys.is_empty() {
             return Ok(Written { receipt: None, ..Default::default() });
         }
+        if unlimited && keys.len() > MAX_GET_KEYS {
+            return Err(ApiError::bad(format!(
+                "nothing was written: through a coordinator, an UPDATE or DELETE whose WHERE has a subquery picks the keys of its rows first, at most {MAX_GET_KEYS} of them, and this one matches more: narrow its WHERE, or run it in parts (a range of {pk_name} at a time)"
+            )));
+        }
         let mut params = params.clone();
         let mut list = Vec::with_capacity(keys.len());
         for (j, k) in keys.into_iter().enumerate() {
@@ -4832,8 +4889,8 @@ impl Service {
         }
         let within = a::Expr::InList { expr: Box::new(a::Expr::Identifier(a::Ident::new(pk_name))), list, negated: false };
         *selection = Some(match selection.take() {
-            Some(w) => a::Expr::BinaryOp { left: Box::new(a::Expr::Nested(Box::new(w))), op: a::BinaryOperator::And, right: Box::new(within) },
-            None => within,
+            Some(w) if !reads_others => a::Expr::BinaryOp { left: Box::new(a::Expr::Nested(Box::new(w))), op: a::BinaryOperator::And, right: Box::new(within) },
+            _ => within,
         });
         *limit = None;
         c.sql(&stmt.to_string(), &params, key).await
@@ -5034,6 +5091,23 @@ impl Service {
         crate::connectors::may_write_ops(&ops, || self.default_table().ok().map(|t| t.table.clone()))?;
         // The autopilot's proposals and judgments are an admin's.
         crate::autopilot::may_write_ops(&ops, || self.default_table().ok().map(|t| t.table.clone()))?;
+        // A table a Postgres follower follows is its alone.
+        {
+            let default = || self.default_table().ok().map(|t| t.table.clone());
+            let mut tables: Vec<String> = Vec::new();
+            for op in ops.iter().filter(|op| !is_mark(op)) {
+                let t = match op["table"].as_str() {
+                    Some(t) => Some(t.to_string()),
+                    None => default(),
+                };
+                if let Some(t) = t {
+                    if !tables.iter().any(|h| h.eq_ignore_ascii_case(&t)) {
+                        tables.push(t);
+                    }
+                }
+            }
+            self.may_write_followed(tables.iter().map(String::as_str)).await?;
+        }
         let n = match &self.backend {
             Backend::Local(db) => {
                 // Before any work: a replica, a database behind on its
@@ -5192,6 +5266,62 @@ impl Service {
             }
             Backend::Cluster(c) => c.sources().await,
         }
+    }
+
+    /// Refuses (409) a write to any of `tables` that a Postgres follower
+    /// follows (`chloedb-server follow-postgres`), unless the request is
+    /// that follower's own ([`POSTGRES_FOLLOWER_HEADER`]): the follower
+    /// would undo it when Postgres next changes the row, and until then
+    /// the table would answer what Postgres does not (finding SAM-4). The
+    /// tables followed are read from the followers' marks in `_sources`
+    /// ([`crate::postgres::followed_tables`]) at most every
+    /// [`FOLLOWED_EVERY`]: a table starts being guarded within that time of
+    /// its copy, and stops once it leaves the publication or the slot is
+    /// dropped (`--drop-slot`).
+    pub async fn may_write_followed<'a>(&self, tables: impl IntoIterator<Item = &'a str>) -> Result<(), ApiError> {
+        let tables: Vec<&str> = tables.into_iter().collect();
+        if tables.is_empty() {
+            return Ok(());
+        }
+        let (cached, fresh) = match &*self.followed.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some((at, f)) => (Some(f.clone()), at.elapsed() < FOLLOWED_EVERY),
+            None => (None, false),
+        };
+        let followed = match (cached, fresh) {
+            (Some(f), true) => f,
+            (was, _) => {
+                // Unread (a shard down, say), the tables read last stand,
+                // for as long again: a write to another table is not held
+                // up by it, or refused.
+                let f = match self.sources().await {
+                    Ok(all) => Arc::new(crate::postgres::followed_tables(&all.into_iter().map(|s| (s.name, s.offset)).collect::<Vec<_>>())),
+                    Err(e) => {
+                        tracing::warn!("reading the tables Postgres followers follow: {}", e.message);
+                        was.unwrap_or_default()
+                    }
+                };
+                *self.followed.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), f.clone()));
+                f
+            }
+        };
+        if followed.is_empty() {
+            return Ok(());
+        }
+        let me = postgres_follower();
+        for t in tables {
+            let Some(by) = followed.get(&t.to_ascii_lowercase()) else { continue };
+            if me.as_deref() == Some(by.as_str()) {
+                continue;
+            }
+            return Err(ApiError {
+                code: Some("followed_table"),
+                status: 409,
+                message: format!(
+                    "nothing was written: table {t} follows Postgres (chloedb-server follow-postgres --name {by}), which alone writes it. A write here would answer what Postgres does not, until Postgres changes the row again and the follower undoes it. Write the change in Postgres; to write here, take the table out of the publication, or stop following (follow-postgres --name {by} --drop-slot)"
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// Each stream source's offset for the slots moving from this shard,
@@ -5739,10 +5869,15 @@ impl Service {
         match &self.backend {
             Backend::Local(db) => {
                 let s = db.snapshot();
-                let mut h = json!({"status": "ok", "role": "shard", "docs": s.n_live_docs(), "segments": s.segments().len(), "txn": s.txn()});
-                // cluster2: the rows of every table (`docs` counts the first
-                // only), which a move or a new copy sends: plans and moves
-                // count these.
+                // `docs` and `segments` are the default table's, which a
+                // request naming no table reads (a client's count()): on a
+                // database made with no tables, not its placeholder's, which
+                // has none.
+                let default = self.default_table().ok().and_then(|t| s.table(&t.table)).unwrap_or_else(|| s.clone());
+                let mut h = json!({"status": "ok", "role": "shard", "docs": default.n_live_docs(), "segments": default.segments().len(), "txn": s.txn()});
+                // cluster2: the rows of every table (`docs` counts the
+                // default one only), which a move or a new copy sends: plans
+                // and moves count these.
                 let tables: serde_json::Map<String, Json> = s.schemas().filter(|t| t.table != SOURCES && t.table != FUNCTIONS).filter_map(|t| s.table(&t.table).map(|v| (t.table.clone(), json!(v.n_live_docs())))).collect();
                 h["rows"] = json!(tables.values().filter_map(Json::as_u64).sum::<u64>());
                 h["tables"] = Json::Object(tables);

@@ -160,7 +160,7 @@ GRANT SELECT ON products, reviews TO chloedb;</pre>
 </tr>
 <tr>
 <td><code>--drop-slot</code></td>
-<td>drop the slot and exit</td>
+<td>drop the slot, release the tables it followed (they take other writes again) and exit</td>
 </tr>
 </tbody>
 </table></div>
@@ -170,9 +170,9 @@ GRANT SELECT ON products, reviews TO chloedb;</pre>
 <ul>
 <li><strong>Inserts and updates</strong> are upserts of the whole row by key; an update that changes the key deletes the old row. A large value an update leaves unchanged, which Postgres does not send (TOAST), is kept: taken from the old row with <code>REPLICA IDENTITY FULL</code>, or else read from ChloeDB's row.</li>
 <li><strong>Deletes</strong> are by key. <strong><code>TRUNCATE</code></strong> deletes every row of the table.</li>
-<li><strong>Columns added</strong> in Postgres are added to the ChloeDB table (<code>ALTER TABLE ... ADD COLUMN</code>), and a column renamed while the follower runs is renamed. A column dropped in Postgres stays in ChloeDB, <code>NULL</code> in rows written since. A changed type keeps the ChloeDB column's, and the values are read as it reads them.</li>
+<li><strong>Columns added</strong> in Postgres are added to the ChloeDB table (<code>ALTER TABLE ... ADD COLUMN</code>), and a column renamed while the follower runs is renamed. The rows from before the column read what they read in Postgres: a constant default (<code>ADD COLUMN vip boolean DEFAULT false</code>), which Postgres keeps beside the table rather than writing into its rows, so the stream never sends it, becomes the ChloeDB column's <code>DEFAULT</code>; a default Postgres writes into each row (a volatile one, as <code>random()</code> or <code>gen_random_uuid()</code>, or a type ChloeDB's <code>DEFAULT</code> cannot hold, as <code>jsonb</code>) has the table copied again, as of then, with the changes since applied over it. A column dropped in Postgres stays in ChloeDB, <code>NULL</code> (or its default) in rows written since. A changed type keeps the ChloeDB column's, and the values are read as it reads them.</li>
 <li><strong>Tables joining the publication</strong> (<code>ALTER PUBLICATION ... ADD TABLE</code>, or a table created under <code>FOR ALL TABLES</code>) are copied when the follower sees them, within 30 seconds, then followed. A table leaving it is no longer followed; its ChloeDB rows stay. A table renamed in Postgres goes on into the ChloeDB table of its old name.</li>
-<li>ChloeDB's tables the follower writes take no other writes: a transaction applied again after a restart writes what it wrote before.</li>
+<li>ChloeDB's tables the follower writes take no other writes: an <code>INSERT</code>, <code>UPDATE</code> or <code>DELETE</code> of one, or a <code>POST /v1/write</code>, is refused (409, <code>followed_table</code>), since a row written in ChloeDB would answer what Postgres does not until Postgres changed it and the follower wrote over it, and a transaction applied again after a restart must write what it wrote before. Write the change in Postgres. The follower names itself on its requests (<code>x-chloedb-postgres-follower</code>), and a server reads which tables are followed from the follower's marks within seconds of a copy. Columns may still be added in ChloeDB (an embedded vector, say). A table that leaves the publication, or whose follower's slot is dropped (<code>--drop-slot</code>), takes writes again.</li>
 </ul>
 <p>Transactions are applied whole, each in one write (several at once while Postgres sends faster than they are written), but one of more than 1,000 changes, more than 16 MB of values, or with a <code>TRUNCATE</code>, is written in steps: a reader can see part of it, as it can see part of any write across a cluster's shards.</p>
 <h3 id="how-postgres-columns-become-fields">How Postgres columns become fields<a class="anchor" href="#how-postgres-columns-become-fields" aria-label="Link to this section">#</a></h3>
