@@ -76,7 +76,7 @@ SINCE = {"pypi chloedb-server": "0.3.7", "extra server": "0.3.7"}
 # them (server-release.yml's attest job; ATTESTED_FROM in docs/install.sh,
 # install.sh and the plugin's launcher, which refuse an archive of a
 # release from it without its bundle where gh is installed).
-ATTESTED_FROM = "0.3.9"
+ATTESTED_FROM = "0.3.8"
 TIMEOUT = 30
 
 

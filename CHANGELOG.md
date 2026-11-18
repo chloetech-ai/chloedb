@@ -130,6 +130,32 @@ or one server), so shards of older versions need nothing new.
   full report and an Agents tab
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#live-runs)).
 
+### Security
+
+- **The installers check 0.3.8's build provenance** (persona study round
+  3, LENA-303): 0.3.8 is the first release whose archives have it, but the
+  website's installer, `install.sh` and ChloeCtx's plugin checked it only
+  from 0.3.9, so they installed 0.3.8 on its SHA-256 alone, saying it was
+  older than provenance, and `CHLOEDB_VERIFY=require`
+  (`CHLOECTX_VERIFY=require`) refused it as having none. Where `gh` is
+  installed they now check 0.3.8's archives against their bundles, refuse
+  one that does not verify, and `require` installs it. The website's
+  installer and the plugin's launcher run from main, so they do from
+  this change on; `install.sh`, in a checkout, from the next release's.
+- **npm's packages carry provenance, and the JavaScript release names what
+  npm serves** (persona study round 3, LENA-305, the npm part of LENA-11):
+  `js-release.yml` published without npm's provenance on the path every
+  release took (`from_run`), so `chloedb` and `@chloedb/<platform>` 0.3.5
+  to 0.3.8 have the registry's signatures alone. Every publish now carries
+  it (`npm publish --provenance`; `npm audit signatures` checks it), and a
+  run with `from_run` runs on the release's tag, publishing what the tag's
+  own run built: one on main or a branch publishes nothing. The release's
+  `SHA256SUMS` listed a tarball per platform that npm does not serve (the
+  JavaScript and the addon together) and left out `chloedb` itself; the
+  release now also carries the packages npm serves, under the names
+  `npm pack` gives them, and `SHA256SUMS` lists them
+  ([SECURITY.md](SECURITY.md#checking-what-you-download)).
+
 ## 0.3.8
 
 Durable one-row writes about 2.6 times as fast, typo and short substring
