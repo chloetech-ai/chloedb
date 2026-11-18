@@ -415,10 +415,23 @@ jobs:
           CHLOECTX_VERIFY_SOURCE_REF: ${{ github.ref }}
         run: |
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' chloedb-server/Cargo.toml | head -1)
-          rel="$RUNNER_TEMP/releases/chloedb-server-v$v"
+          # The release these archives are offered as: their own version,
+          # or, in a dry run of a version before the first attested
+          # release, that release, since the installers check provenance
+          # (and CHLOEDB_VERIFY=require accepts a release) only from it on.
+          # The installers do not compare a binary's version with the
+          # release's; install.sh takes its release from chloectx's
+          # Cargo.toml, which this job builds nothing from.
+          first=$(sed -n 's/^ATTESTED_FROM=//p' docs/install.sh)
+          t=$(printf '%s\n%s\n' "$v" "$first" | sort -V | tail -n 1)
+          if [ "$t" != "$v" ]; then
+            echo "A dry run of $v, which is older than the first attested release: its archives are offered as release $t"
+            sed -i "0,/^version = \".*\"/s//version = \"$t\"/" chloectx/Cargo.toml
+          fi
+          rel="$RUNNER_TEMP/releases/chloedb-server-v$t"
           mkdir -p "$rel"
           cp dist/* "$rel/"
-          export CHLOEDB_RELEASES_URL="file://$RUNNER_TEMP/releases" CHLOEDB_VERSION="$v"
+          export CHLOEDB_RELEASES_URL="file://$RUNNER_TEMP/releases" CHLOEDB_VERSION="$t"
           CHLOEDB_VERIFY=require CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin" sh docs/install.sh --with ctx | tee out.txt
           grep -q "build provenance checked" out.txt
           "$RUNNER_TEMP/bin/chloedb-server" --version | grep -F "$v"
@@ -426,7 +439,7 @@ jobs:
           grep -q "build provenance checked" out.txt
           # The plugin's launcher (its setup stops at the model, which is not
           # fetched here: CHLOECTX_MODELS is no folder).
-          CHLOECTX_VERIFY=require CHLOECTX_VERSION="$v" CHLOECTX_RELEASES_URL="file://$RUNNER_TEMP/releases" CHLOECTX_PREFIX="$RUNNER_TEMP/plugin" \
+          CHLOECTX_VERIFY=require CHLOECTX_VERSION="$t" CHLOECTX_RELEASES_URL="file://$RUNNER_TEMP/releases" CHLOECTX_PREFIX="$RUNNER_TEMP/plugin" \
             CHLOECTX_BUILD=0 CHLOECTX_MODELS=/dev/null/models CLAUDE_PLUGIN_DATA="$RUNNER_TEMP/plugin-data" PATH="/usr/bin:/bin" \
             sh chloectx/plugin/scripts/chloectx-launch __setup > out.txt 2>&1 || true
           cat out.txt
