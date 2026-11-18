@@ -12,7 +12,11 @@
 //! | `atlas/<msm>.json` | RIPE Atlas's API | the latest round of a measurement |
 //! | `ioda/events.json` | IODA (Georgia Tech) | outages of the last days |
 //!
-//! Every file is replaced only once its download is whole.
+//! Every file is replaced only once its download is whole. A file
+//! fetched less than `fresh` ago is kept as it is (the feed's restarts do
+//! not ask PeeringDB again, which answers an address without an account a
+//! few times a minute, then 429), and a source that fails keeps its last
+//! file: the feed reads what it had rather than stopping.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -89,6 +93,41 @@ pub struct Opts {
     pub only: Vec<String>,
     /// Atlas measurements whose latest round to fetch.
     pub atlas: Vec<u64>,
+    /// Keep a file fetched less than this long ago (zero: fetch every one).
+    pub fresh: Duration,
+}
+
+/// How long ago `path` was written, if it is there.
+fn age(path: &Path) -> Option<Duration> {
+    std::fs::metadata(path).ok()?.modified().ok()?.elapsed().ok().or(Some(Duration::ZERO))
+}
+
+fn hours(d: Duration) -> String {
+    format!("{:.1} h", d.as_secs_f64() / 3600.0)
+}
+
+/// Whether `path` is new enough to keep without asking its source again.
+fn fresh(path: &Path, fresh: Duration, what: &str) -> bool {
+    match age(path) {
+        Some(a) if !fresh.is_zero() && a < fresh => {
+            eprintln!("{what}: kept, fetched {} ago", hours(a));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// A download's outcome, where a failure keeps the file of the last one
+/// when there is one.
+fn kept(r: Result<u64>, path: &Path, what: &str) -> Result<u64> {
+    match (r, age(path)) {
+        (Ok(n), _) => Ok(n),
+        (Err(e), Some(a)) => {
+            eprintln!("{what}: {e:#}; keeping the file fetched {} ago", hours(a));
+            Ok(0)
+        }
+        (Err(e), None) => Err(e),
+    }
 }
 
 pub fn run(o: Opts) -> Result<()> {
@@ -96,8 +135,18 @@ pub fn run(o: Opts) -> Result<()> {
     let want = |s: &str| o.only.is_empty() || o.only.iter().any(|x| x == s);
     let d = &o.dir;
     let say = |what: &str, n: u64| eprintln!("{what}: {:.1} MB", n as f64 / 1e6);
+    let fetch = |what: &str, url: &str, path: &Path| -> Result<()> {
+        if fresh(path, o.fresh, what) {
+            return Ok(());
+        }
+        let n = kept(get(&c, url, path), path, what)?;
+        if n > 0 {
+            say(what, n);
+        }
+        Ok(())
+    };
     if want("rpki") {
-        say("rpki/vrps.json", get(&c, "https://console.rpki-client.org/vrps.json", &d.join("rpki/vrps.json"))?);
+        fetch("rpki/vrps.json", "https://console.rpki-client.org/vrps.json", &d.join("rpki/vrps.json"))?;
     }
     if want("caida") {
         let now = chrono::Utc::now().date_naive();
@@ -105,13 +154,16 @@ pub fn run(o: Opts) -> Result<()> {
             ("v4", "routeviews-prefix2as", "routeviews-rv2-", "caida/pfx2as-v4.gz"),
             ("v6", "routeviews6-prefix2as", "routeviews-rv6-", "caida/pfx2as-v6.gz"),
         ] {
+            if fresh(&d.join(out), o.fresh, out) {
+                continue;
+            }
             let mut done = false;
             for back in 0..2 {
                 let m = now - chrono::Months::new(back);
                 let base = format!("https://publicdata.caida.org/datasets/routing/{dataset}/{}/", m.format("%Y/%m"));
                 let Ok(html) = text(&c, &base) else { continue };
                 if let Some(name) = listed(&html, stem, ".pfx2as.gz").pop() {
-                    say(&format!("{out} ({fam}, {name})"), get(&c, &format!("{base}{name}"), &d.join(out))?);
+                    fetch(&format!("{out} ({fam}, {name})"), &format!("{base}{name}"), &d.join(out))?;
                     done = true;
                     break;
                 }
@@ -120,29 +172,47 @@ pub fn run(o: Opts) -> Result<()> {
                 eprintln!("{out}: no file found at CAIDA");
             }
         }
-        let base = "https://publicdata.caida.org/datasets/as-relationships/serial-2/";
-        let html = text(&c, base)?;
-        let Some(name) = listed(&html, "20", ".as-rel2.txt.bz2").pop() else { bail!("no as-rel2 file at {base}") };
-        say(&format!("caida/as-rel2.txt.bz2 ({name})"), get(&c, &format!("{base}{name}"), &d.join("caida/as-rel2.txt.bz2"))?);
+        let rel = d.join("caida/as-rel2.txt.bz2");
+        if !fresh(&rel, o.fresh, "caida/as-rel2.txt.bz2") {
+            let base = "https://publicdata.caida.org/datasets/as-relationships/serial-2/";
+            let name = text(&c, base).and_then(|html| listed(&html, "20", ".as-rel2.txt.bz2").pop().with_context(|| format!("no as-rel2 file at {base}")));
+            match name {
+                Ok(name) => fetch(&format!("caida/as-rel2.txt.bz2 ({name})"), &format!("{base}{name}"), &rel)?,
+                Err(e) => {
+                    kept(Err(e), &rel, "caida/as-rel2.txt.bz2")?;
+                }
+            }
+        }
     }
     if want("ripe") {
-        say("ripe/asn.txt", get(&c, "https://ftp.ripe.net/ripe/asnames/asn.txt", &d.join("ripe/asn.txt"))?);
+        fetch("ripe/asn.txt", "https://ftp.ripe.net/ripe/asnames/asn.txt", &d.join("ripe/asn.txt"))?;
     }
     if want("pdb") {
         // PeeringDB lets an address without an account make a few calls a
         // minute: one object type each, a few seconds apart.
-        for (i, o) in ["net", "ix", "fac", "netixlan", "netfac", "ixfac", "org"].iter().enumerate() {
-            if i > 0 {
+        let mut asked = false;
+        for t in ["net", "ix", "fac", "netixlan", "netfac", "ixfac", "org"] {
+            let (what, path) = (format!("pdb/{t}.json"), d.join(format!("pdb/{t}.json")));
+            if fresh(&path, o.fresh, &what) {
+                continue;
+            }
+            if asked {
                 std::thread::sleep(Duration::from_secs(4));
             }
-            let path = d.join(format!("pdb/{o}.json"));
-            say(&format!("pdb/{o}.json"), get(&c, &format!("https://www.peeringdb.com/api/{o}?depth=0"), &path).with_context(|| format!("PeeringDB {o}"))?);
+            asked = true;
+            let n = kept(get(&c, &format!("https://www.peeringdb.com/api/{t}?depth=0"), &path).with_context(|| format!("PeeringDB {t}")), &path, &what)?;
+            if n > 0 {
+                say(&what, n);
+            }
         }
     }
     if want("atlas") {
         // The probes' archive of yesterday (today's may not be written yet).
-        let mut got = false;
+        let mut got = fresh(&d.join("atlas/probes.json"), o.fresh, "atlas/probes.json");
         for back in 1..4 {
+            if got {
+                break;
+            }
             let day = chrono::Utc::now().date_naive() - chrono::Days::new(back);
             let url = format!("https://ftp.ripe.net/ripe/atlas/probes/archive/{}/{}.json.bz2", day.format("%Y/%m"), day.format("%Y%m%d"));
             let tmp = d.join("atlas/probes.json.bz2");
@@ -162,14 +232,14 @@ pub fn run(o: Opts) -> Result<()> {
         }
         for m in &o.atlas {
             let url = format!("https://atlas.ripe.net/api/v2/measurements/{m}/latest/?format=json");
-            say(&format!("atlas/{m}.json"), get(&c, &url, &d.join(format!("atlas/{m}.json")))?);
+            fetch(&format!("atlas/{m}.json"), &url, &d.join(format!("atlas/{m}.json")))?;
         }
     }
     if want("ioda") {
         let until = chrono::Utc::now().timestamp();
         let from = until - 7 * 86400;
         let url = format!("https://api.ioda.inetintel.cc.gatech.edu/v2/outages/events?from={from}&until={until}&limit=10000&format=ioda");
-        say("ioda/events.json", get(&c, &url, &d.join("ioda/events.json"))?);
+        fetch("ioda/events.json", &url, &d.join("ioda/events.json"))?;
     }
     Ok(())
 }

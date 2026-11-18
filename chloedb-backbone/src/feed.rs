@@ -193,7 +193,7 @@ pub async fn run(db: Strata, r: Arc<Reference>, o: Opts) -> Result<()> {
 /// The latest Atlas rounds and the last two days of IODA, written by key.
 pub async fn poll_sources(db: &Strata, r: &Reference, dir: &std::path::Path, msms: &[u64]) -> Result<()> {
     let (dir2, msms2) = (dir.to_path_buf(), msms.to_vec());
-    tokio::task::spawn_blocking(move || crate::fetch::run(crate::fetch::Opts { dir: dir2, only: vec!["ioda".into()], atlas: msms2 })).await??;
+    tokio::task::spawn_blocking(move || crate::fetch::run(crate::fetch::Opts { dir: dir2, only: vec!["ioda".into()], atlas: msms2, fresh: Duration::ZERO })).await??;
     let msms3 = msms.to_vec();
     let dir3 = dir.to_path_buf();
     tokio::task::spawn_blocking(move || -> Result<()> {

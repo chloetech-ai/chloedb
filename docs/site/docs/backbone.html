@@ -178,7 +178,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </tbody>
 </table></div>
 <h2 id="the-rules">The rules<a class="anchor" href="#the-rules" aria-label="Link to this section">#</a></h2>
-<p>Each rule is one statement over the tables, run every minute; its rows are the alerts, kept open while it finds them, and alerts that share an owner, an announcer, a carrier or a country are grouped into incidents.</p>
+<p>Each rule is one statement over the tables, run every minute (<code>flapping</code>, which counts an hour of every prefix's updates, every five); its rows are the alerts, kept open while it finds them, and alerts that share an owner, an announcer, a carrier or a country are grouped into incidents.</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
@@ -226,7 +226,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 chloedb-backbone load --dir DATA           # the tables, and their records
 chloedb-backbone feed --dir DATA --from 6h --live   # RIS&#x27;s archive from six hours back, then RIS Live
 chloedb-backbone serve --public            # the page and its API at 127.0.0.1:7890</pre>
-<p><code>feed --resume</code> starts the archive after the newest update kept, so a restart fills its gap, and <code>--hours 24</code> stops it after a day so a supervisor starts it again after a new <code>fetch</code> and <code>load</code>. RIS Live sends every collector's messages whatever filter it is asked for, so the feed keeps those of <code>--collectors</code> itself. On Kubernetes, <code>chloedb-backbone/deploy/k8s.yaml</code> runs the server, the feed and the app on a node of their own, and <code>deploy/backup.yaml</code> checkpoints the database each night and copies it to a volume.</p>
+<p><code>feed --resume</code> starts the archive after the newest update kept, so a restart fills its gap, and <code>--hours 24</code> stops it after a day so a supervisor starts it again after a new <code>fetch</code> and <code>load</code>. <code>fetch</code> keeps a file fetched less than <code>--fresh-hours</code> ago (20 by default; 0 fetches every one) and keeps the last file of a source that fails, such as PeeringDB's 429 to an address that asked too often, and <code>load</code> loads only the latest Atlas rounds and outages when the other files are those it loaded last: so a restart within the day neither asks the sources again nor writes two million rows again. <code>serve</code> works out the pages everyone sees first (Now, the map, the strip) in the background every 15 seconds, after the rules, and answers them from memory. RIS Live sends every collector's messages whatever filter it is asked for, so the feed keeps those of <code>--collectors</code> itself. On Kubernetes, <code>chloedb-backbone/deploy/k8s.yaml</code> runs the server, the feed and the app on a node of their own, and <code>deploy/backup.yaml</code> checkpoints the database each night and copies it to a volume.</p>
 <h2 id="sizes">Sizes<a class="anchor" href="#sizes" aria-label="Link to this section">#</a></h2>
 <p>Measured with one collector, rrc00 (about 90 peers), on 16 and 17 November 2026: about 5.5 million updates an hour, about 100 bytes an update stored, so about 13 GB a day; the updates are kept three days. The pages answered in 0.1 to 0.6 seconds on a 4-core machine. The feed holds RPKI's 1.04 million ROAs and yesterday's 1.44 million origins as prefix maps, about 4 GB with the allocator's share.</p>
     </div>
