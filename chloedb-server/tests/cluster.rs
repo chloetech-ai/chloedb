@@ -946,3 +946,161 @@ async fn a_copy_outrun_moments_after_a_hedge_asked_it_is_not_put_in_its_cool_off
         assert!(hedges >= 1.0, "{}: hedged: {hedges}", route.name());
     }
 }
+
+/// A coordinator counts what it routes to each slot: a key read and
+/// written over and over makes its slot, and its shard, hot; reads spread
+/// over every key are even; a BM25 query is counted as sent to every
+/// shard; and with `--slot-heat-keys` the key itself is named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coordinator_says_which_slots_are_hot() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let (_s0, u0) = serve(create(d, "s0.strata", |i| shard_of(&key(i), 2) == 0), d, "s0.strata").await;
+    let (_s1, u1) = serve(create(d, "s1.strata", |i| shard_of(&key(i), 2) == 1), d, "s1.strata").await;
+    let urls = vec![u0.clone(), u1.clone()];
+
+    // One key, read and written again and again, through a coordinator
+    // that samples keys.
+    let opts = chloedb_server::coord::CoordOptions { slot_heat_keys: true, ..Default::default() };
+    let hot = Arc::new(Coordinator::connect_with(urls.clone(), opts).await.unwrap());
+    let svc = Arc::new(Service::new(Backend::Cluster(hot.clone()), hot.schema.clone(), agent(), 16, Duration::from_secs(10)));
+    let k = key(5);
+    let id = k.as_str().unwrap().to_string();
+    for r in 0..200 {
+        let a = svc.query(QueryReq { sql: format!("SELECT id FROM products WHERE id = '{id}'"), ..Default::default() }).await.unwrap();
+        assert_eq!(a.rs.rows.len(), 1);
+        if r % 2 == 0 {
+            sql(&svc, &format!("INSERT OR REPLACE INTO products (id, title, description, price) VALUES ('{id}', 'Hot kettle', 'Round {r}', {r})")).await.unwrap();
+        }
+    }
+    // A ranking asks every shard: fan-out, not a slot.
+    for _ in 0..5 {
+        svc.query(QueryReq { sql: "SELECT id FROM products ORDER BY bm25(body, 'kettle') DESC LIMIT 5".into(), ..Default::default() }).await.unwrap();
+    }
+    let j = hot.slot_heat(false, None);
+    assert_eq!(j["by_slot"], true, "{j}");
+    assert_eq!(j["totals"]["reads"], 200, "{j}");
+    assert_eq!(j["totals"]["writes"], 100, "{j}");
+    assert_eq!(j["totals"]["fanout"], 5, "{j}");
+    let slot = slots::slot(&k);
+    let owner = hot.map().unwrap().owner(slot);
+    for w in ["1m", "5m", "15m"] {
+        let win = &j["windows"][w];
+        assert_eq!(win["verdict"], "hot slot", "{w}: {win}");
+        assert_eq!(win["top"][0]["slot"], slot, "{w}: {win}");
+        assert_eq!(win["top"][0]["shard"], owner, "{w}: {win}");
+        assert_eq!(win["shards"][owner]["share"], 1.0, "{w}: {win}");
+        assert_eq!(win["shards"][owner]["top_slot_share"], 1.0, "{w}: {win}");
+        assert!(win["fanout_per_s"].as_f64().unwrap() > 0.0, "{w}: {win}");
+    }
+    assert_eq!(j["slots"], serde_json::Value::Null, "every slot only when asked");
+    assert_eq!(hot.slot_heat(true, None)["slots"], serde_json::json!([[slot, owner, 200, 100]]));
+    // The same over the last minute, which a map of the slots shows.
+    let w = hot.slot_heat(false, Some("1m"));
+    assert_eq!(w["slots"], serde_json::json!([[slot, owner, 200, 100]]), "{w}");
+    assert_eq!(w["slots_window"], "1m");
+    // The key sampled, with its slot and shard.
+    let keys = hot.slot_heat_keys().expect("--slot-heat-keys samples keys");
+    assert_eq!(keys["keys"][0]["key"], format!("\"{id}\""), "{keys}");
+    assert_eq!(keys["keys"][0]["table"], "products", "{keys}");
+    assert_eq!(keys["keys"][0]["slot"], slot, "{keys}");
+    assert_eq!(keys["keys"][0]["shard"], owner, "{keys}");
+    // In /v1/cluster (as the service answers it), the 5 minutes' figures
+    // per shard and the verdict.
+    let cluster = svc.cluster().await;
+    assert_eq!(cluster["slot_heat"]["verdict"], "hot slot", "{}", cluster["slot_heat"]);
+    assert_eq!(cluster["shards"][owner]["heat"]["share"], 1.0, "{}", cluster["shards"]);
+    // In /metrics, per shard and window; no family per slot.
+    let families = hot.metrics();
+    let family = |name: &str| families.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no {name}"));
+    let reads = family("chloedb_shard_keyed_ops_per_second").values.iter().find(|(l, _)| *l == format!("shard=\"{owner}\",kind=\"read\",window=\"1m\"")).map(|(_, v)| *v);
+    assert!(reads.unwrap_or(0.0) > 0.0, "{reads:?}");
+    assert!(family("chloedb_slot_ops_total").values.contains(&("kind=\"write\"".to_string(), 100.0)));
+    assert!(family("chloedb_slot_heat_skew").values[0].1 >= 2.0 - 1e-9);
+    assert!(families.iter().all(|f| f.values.len() < 100), "a family with a series per slot");
+
+    // Every key read alike, through another coordinator: even, and no keys
+    // sampled without the option.
+    let (even, svc) = coordinator(&urls).await;
+    let all: Vec<String> = (0..N).map(|i| format!("'{}'", key(i).as_str().unwrap())).collect();
+    for _ in 0..3 {
+        let a = svc.query(QueryReq { sql: format!("SELECT id FROM products WHERE id IN ({}) LIMIT 1000", all.join(", ")), ..Default::default() }).await.unwrap();
+        assert_eq!(a.rs.rows.len(), N);
+    }
+    let j = even.slot_heat(false, None);
+    assert_eq!(j["totals"]["reads"], 3 * N as u64, "{j}");
+    assert_eq!(j["totals"]["fanout"], 0, "{j}");
+    let win = &j["windows"]["1m"];
+    assert_eq!(win["verdict"], "even", "{win}");
+    assert!(win["skew"].as_f64().unwrap() < 1.3, "{win}");
+    assert!(even.slot_heat_keys().is_none());
+}
+
+/// A rebalance by load moves the slots that carry the load, not an even
+/// share of the slots: keys read on one of two shards with even slots make
+/// it hot over many of its slots, the plan moves some of those to the other
+/// shard, and afterwards the shards take about the same load. A plan on
+/// counts of a few seconds is refused unless forced, and a dry run moves
+/// nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebalance_by_load_moves_the_busy_slots() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let (_s0, u0) = serve(create(d, "s0.strata", |_| true), d, "s0.strata").await;
+    let (a, svc) = coordinator(&[u0.clone()]).await;
+    let (_s1, u1) = serve(create(d, "s1.strata", |_| false), d, "s1.strata").await;
+    a.add_shard(vec![u1.clone()], Acks::All).await.unwrap();
+    // Evening out the slots, asked as a dry run: its moves, checked against
+    // the disks (which in-process servers do not report), and nothing moved.
+    let dry = a.rebalance_checked(4096, Some(&*a.snapshot().await), true).unwrap();
+    assert!(dry["job"].is_null(), "{dry}");
+    assert_eq!((dry["plan"]["by"].as_str(), dry["plan"]["slots_moved"].as_u64()), (Some("slots"), Some(2048)), "{dry}");
+    assert!(dry["plan"]["preflight"].as_array().is_some_and(|p| p.iter().all(|c| c["ok"] == true)), "{dry}");
+    assert_eq!(a.map().unwrap().count(1), 0, "a dry run moves nothing");
+    a.rebalance(4096).unwrap();
+    assert_eq!(job_done(&a).await["job"]["state"], "done");
+    let map = a.map().unwrap();
+    assert_eq!((map.count(0), map.count(1)), (2048, 2048));
+
+    // Every key of shard 0 read ten times, none of shard 1's.
+    let ids: Vec<String> = (0..N).map(|i| key(i).as_str().unwrap().to_string()).filter(|k| map.owner(slots::slot(&Value::from(k.as_str()))) == 0).collect();
+    assert!(ids.len() > 100, "{}", ids.len());
+    let list: Vec<String> = ids.iter().map(|k| format!("'{k}'")).collect();
+    for _ in 0..10 {
+        let r = svc.query(QueryReq { sql: format!("SELECT id FROM products WHERE id IN ({}) LIMIT 1000", list.join(", ")), ..Default::default() }).await.unwrap();
+        assert_eq!(r.rs.rows.len(), ids.len());
+    }
+    assert_eq!(a.slot_heat(false, None)["windows"]["1m"]["verdict"], "hot range");
+
+    // A dry run plans, from shard 0 to shard 1, and moves nothing.
+    let counted = serde_json::json!([{"coordinator": "this", "ok": true}]);
+    let dry = a.rebalance_by_load(4096, "1m", &[], counted.clone(), true, false, Some(&*a.snapshot().await)).unwrap();
+    let plan = &dry["plan"];
+    assert!(dry["job"].is_null(), "{dry}");
+    assert_eq!(plan["before"]["skew"], 2.0, "{plan}");
+    assert!(plan["after"]["skew"].as_f64().unwrap() < 1.1 + 1e-9, "{plan}");
+    assert!(plan["moves"].as_array().unwrap().iter().all(|m| m["from"] == 0 && m["to"] == 1), "{plan}");
+    assert!(plan["warning"].as_str().is_some_and(|w| w.contains("started recently")), "{plan}");
+    assert!(plan["unsplit"].is_null(), "no slot is too busy to move: {plan}");
+    // The disks' room is checked, and the copy sent rows is named.
+    assert!(plan["preflight"].as_array().is_some_and(|p| !p.is_empty() && p.iter().all(|c| c["ok"] == true)), "{plan}");
+    assert!(plan["disks"].as_array().is_some_and(|d| d.iter().all(|x| x["shard"] == 1)), "{plan}");
+    assert_eq!(a.map().unwrap().count(0), 2048, "a dry run moves nothing");
+    // A few seconds of counts: refused unless forced.
+    let e = a.rebalance_by_load(4096, "1m", &[], counted.clone(), false, false, Some(&*a.snapshot().await)).unwrap_err();
+    assert_eq!(e.status, 409, "{}", e.message);
+
+    let j = a.rebalance_by_load(4096, "1m", &[], counted, false, true, Some(&*a.snapshot().await)).unwrap();
+    let moved = j["plan"]["slots_moved"].as_u64().unwrap();
+    assert!(moved > 0 && moved < 2048, "only slots with load move: {moved}");
+    let done = job_done(&a).await;
+    assert_eq!(done["job"]["state"], "done", "{done}");
+    assert_eq!(done["job"]["kind"], "rebalance by load", "{done}");
+    let after = a.map().unwrap();
+    assert_eq!((after.count(0), after.count(1)), (2048 - moved as usize, 2048 + moved as usize));
+    // The counts follow their slots: the same load, now even.
+    let w = a.slot_heat(false, None);
+    assert_eq!(w["windows"]["1m"]["verdict"], "even", "{}", w["windows"]["1m"]);
+    let (products, _) = rows(&svc).await;
+    assert_eq!(products.len(), N, "every row, once, after the moves");
+}

@@ -112,6 +112,8 @@ use crate::cores::slots as core;
 use crate::slots::{self, hash_shard_of, Move, SlotMap};
 use crate::{json as js, plan_pb, ApiError};
 
+pub mod balance;
+pub mod heat;
 mod moves;
 pub mod plan;
 mod replica_stats;
@@ -179,6 +181,10 @@ pub struct CoordOptions {
     /// the coordinator's survey. On by default; off only to measure what
     /// it adds.
     pub route_load: bool,
+    /// Sample the keys routed into a list of those counted most
+    /// (`--slot-heat-keys`; [`heat`]), which `GET /v1/admin/slots/keys`
+    /// shows. Off by default: it holds key values.
+    pub slot_heat_keys: bool,
 }
 
 /// How a coordinator chooses the replica of a shard it asks first for a
@@ -235,6 +241,7 @@ impl Default for CoordOptions {
             hedge_adaptive: false,
             prefer_caught_up: true,
             route_load: true,
+            slot_heat_keys: false,
         }
     }
 }
@@ -1162,6 +1169,8 @@ pub struct Coordinator {
     /// no fetch found.
     fetches: AtomicU64,
     fetch_lost: AtomicU64,
+    /// What it routed to each slot ([`heat`]).
+    heat: heat::SlotHeat,
     /// The BM25 statistics kept of the shards' copies ([`StatsCache`]).
     stats: StatsCache,
     /// The slot moves this coordinator runs ([`moves`]).
@@ -1751,6 +1760,7 @@ impl Coordinator {
             }
         }
         let stats_cache_terms = opts.stats_cache_terms;
+        let slot_heat_keys = opts.slot_heat_keys;
         let functions = common_functions(&replica_functions(&topo).await.0);
         Ok(Coordinator {
             topo: RwLock::new(Arc::new(topo)),
@@ -1772,6 +1782,7 @@ impl Coordinator {
             hedge_budget: HedgeBudget::new(),
             fetches: AtomicU64::new(0),
             fetch_lost: AtomicU64::new(0),
+            heat: heat::SlotHeat::new(slot_heat_keys),
             stats: StatsCache::new(stats_cache_terms),
             moves: moves::Moves::default(),
             plans: plan::Runs::default(),
@@ -1881,7 +1892,7 @@ impl Coordinator {
         let per_replica = |f: &dyn Fn(&ReplicaStats) -> Option<f64>| -> Vec<(String, f64)> {
             t.replicas.iter().enumerate().flat_map(|(i, rs)| rs.iter().filter_map(move |r| f(&r.stats).map(|v| (format!("shard=\"{i}\",replica=\"{}\"", r.url), v)))).collect()
         };
-        vec![
+        let mut families = vec![
             Family { name: "chloedb_replica_inflight", ty: "gauge", help: "Calls from this coordinator to a replica not answered yet.", values: per_replica(&|s| Some(s.inflight() as f64)) },
             Family {
                 name: "chloedb_replica_overhead_ms",
@@ -1906,6 +1917,30 @@ impl Coordinator {
                 values: [("hit", &self.stats.hits), ("miss", &self.stats.misses), ("stale", &self.stats.stale)].iter().map(|(o, n)| (format!("outcome=\"{o}\""), n.load(Ordering::Relaxed) as f64)).collect(),
             },
             Family::one("chloedb_stats_cache_terms", "gauge", "Terms whose BM25 statistics the coordinator keeps, over every shard copy (--stats-cache-terms each).", self.stats.terms() as f64),
+        ];
+        families.extend(self.heat_metrics(t));
+        families
+    }
+
+    /// The families of [`heat`]: per shard, rates rather than counters,
+    /// since a shard's count falls when slots move from it; no family per
+    /// slot, which would be 4,096 series. Empty while writes go by the
+    /// hash before slots.
+    fn heat_metrics(&self, t: &Topology) -> Vec<Family> {
+        let Some(m) = &t.slots else { return Vec::new() };
+        let now = self.now_ms();
+        let (per_shard, fanout, skew) = self.heat.gauges(now, &|s| m.owner(s), t.replicas.len());
+        let (reads, writes, fanout_total) = self.heat.totals();
+        vec![
+            Family { name: "chloedb_shard_keyed_ops_per_second", ty: "gauge", help: "Reads and writes this coordinator routed to a shard by key, a second, over the last 1, 5 or 15 minutes, by the slots the shard holds now (GET /v1/cluster/slots has them by slot).", values: per_shard },
+            Family { name: "chloedb_fanout_queries_per_second", ty: "gauge", help: "Requests this coordinator sent to every shard (a ranking, a filter not on the placing field, UPDATE and DELETE), a second, over the last 1, 5 or 15 minutes.", values: fanout },
+            Family {
+                name: "chloedb_slot_ops_total",
+                ty: "counter",
+                help: "Reads and writes this coordinator routed by key, over every slot, and requests it sent to every shard (fanout).",
+                values: vec![("kind=\"read\"".into(), reads.iter().sum::<u64>() as f64), ("kind=\"write\"".into(), writes.iter().sum::<u64>() as f64), ("kind=\"fanout\"".into(), fanout_total as f64)],
+            },
+            Family::one("chloedb_slot_heat_skew", "gauge", "The busiest shard's keyed operations over the last 5 minutes, as a multiple of the shards' mean (1: even; 0: none counted).", skew),
         ]
     }
 
@@ -1930,6 +1965,82 @@ impl Coordinator {
             Some(m) => m.shard_of(key),
             None => hash_shard_of(key, t.replicas.len()),
         }
+    }
+
+    /// Counts a read or write routed by `key` ([`heat`]), once a request,
+    /// at its entry rather than where it is routed, which a refusal by a
+    /// newer map repeats. Nothing while writes go by the hash before slots.
+    fn heat_key(&self, t: &Topology, table: &str, key: &chloedb::value::Value, write: bool) {
+        if t.slots.is_some() {
+            self.heat.count(self.now_ms(), slots::slot(key), write, || (table.to_string(), js_key(key)));
+        }
+    }
+
+    /// Counts a request sent to every shard ([`heat`]).
+    fn heat_fan_out(&self, t: &Topology) {
+        if t.slots.is_some() {
+            self.heat.fan_out(self.now_ms());
+        }
+    }
+
+    /// Counts each operation of a write at the slot of the value placing
+    /// its row (its key, or its table's shard_by field). An operation of a
+    /// table the coordinator does not know yet is not counted.
+    fn heat_ops(&self, ops: &[Json]) {
+        let t = self.topo();
+        if t.slots.is_none() {
+            return;
+        }
+        let catalog = self.catalog();
+        for op in ops.iter().filter(|op| !is_mark(op)) {
+            if let Some((s, p)) = op_schema(&catalog, op).ok().and_then(|s| Some((s, op_place(s, op).ok()?))) {
+                self.heat_key(&t, &s.table, &p, true);
+            }
+        }
+    }
+
+    /// Counts a query: a read at each value its filter pins its table's
+    /// placing field to (as [`Self::pinned_shards`] routes it, however
+    /// many shards those are on), or one fan-out when it pins none, pins
+    /// more than [`MAX_ROUTED`], or ranks by BM25, which asks every shard.
+    fn heat_query(&self, schema: &Schema, select: &Select) {
+        let t = self.topo();
+        if t.slots.is_none() {
+            return;
+        }
+        let pinned = schema
+            .shard_by_field()
+            .or(schema.primary_key)
+            .and_then(|f| pinned_values(&select.filter, f))
+            .filter(|v| v.len() <= MAX_ROUTED && !chloedb::cluster::scores_bm25(select));
+        match pinned {
+            Some(values) => values.iter().for_each(|v| self.heat_key(&t, &schema.table, v, false)),
+            None => self.heat_fan_out(&t),
+        }
+    }
+
+    /// `GET /v1/cluster/slots`: what this coordinator routed to each slot,
+    /// over the last 1, 5 and 15 minutes, by the shards holding them now
+    /// ([`heat::SlotHeat::report`]); `all` adds every slot counted since
+    /// the start, `window` (`1m`, `5m` or `15m`) every slot counted in it.
+    pub fn slot_heat(&self, all: bool, window: Option<&str>) -> Json {
+        let t = self.topo();
+        let Some(m) = &t.slots else {
+            return json!({"by_slot": false, "why": "a shard is from before slots (protocol 4): writes go by the old hash, which has no slots to count"});
+        };
+        let window = window.and_then(|w| heat::WINDOWS.iter().position(|(name, _)| *name == w));
+        let mut j = self.heat.report(self.now_ms(), &|s| m.owner(s), t.replicas.len(), all, window);
+        j["by_slot"] = json!(true);
+        j["slot_epoch"] = json!(m.epoch);
+        j
+    }
+
+    /// `GET /v1/admin/slots/keys`: the keys sampled as counted most, or
+    /// `None` without `--slot-heat-keys`.
+    pub fn slot_heat_keys(&self) -> Option<Json> {
+        let t = self.topo();
+        let m = t.slots.as_ref()?;
+        self.heat.hot_keys(self.now_ms(), &|s| m.owner(s))
     }
 
     /// The protocol to speak with replica `r` of shard `i`, `max` at most:
@@ -2324,6 +2435,13 @@ impl Coordinator {
     /// found or not ([`crate::reads`]): for a table placed by shard_by,
     /// the shard that found it (else the first asked).
     pub async fn get(&self, schema: &Schema, keys: &[chloedb::value::Value], after: &After, deadline: Instant) -> Result<(Vec<Option<(Vec<chloedb::value::Value>, u64)>>, Vec<crate::reads::Served>), ApiError> {
+        // A table placed by a column is asked on every shard: its keys do
+        // not say where their rows are.
+        let t = self.topo();
+        match schema.shard_by {
+            Some(_) => self.heat_fan_out(&t),
+            None => keys.iter().for_each(|k| self.heat_key(&t, &schema.table, k, false)),
+        }
         self.routed(|| self.get_once(schema, keys, after, deadline)).await
     }
 
@@ -2439,6 +2557,7 @@ impl Coordinator {
         if !select.graphs.is_empty() {
             return Err(ApiError::bad(GRAPHS_ON_SHARDS));
         }
+        self.heat_query(schema, select);
         self.routed(|| self.query_once(req, schema, select, deadline)).await
     }
 
@@ -3349,7 +3468,10 @@ impl Coordinator {
                     .collect();
                 let key = self.keyed(&ops, key);
                 match conflict {
-                    Conflict::Update(_) => self.upsert_statement(schema, &ops, sql, params, key).await,
+                    Conflict::Update(_) => {
+                        self.heat_ops(&ops);
+                        self.upsert_statement(schema, &ops, sql, params, key).await
+                    }
                     _ => self.write_ops(ops, key).await,
                 }
             }
@@ -3359,7 +3481,10 @@ impl Coordinator {
             w @ (Write::Update { .. } | Write::Delete { .. }) if w.picks_first() => {
                 Err(ApiError::bad("UPDATE and DELETE with a LIMIT, or with a subquery in WHERE, through a coordinator pick their rows first: send the statement to /v1/sql"))
             }
-            _ => self.statement(sql, params, Some(key.unwrap_or_else(auto_key))).await,
+            _ => {
+                self.heat_fan_out(&self.topo());
+                self.statement(sql, params, Some(key.unwrap_or_else(auto_key))).await
+            }
         }
     }
 
@@ -3713,6 +3838,7 @@ impl Coordinator {
     /// flipped) go again by the new map, under keys of their own
     /// (`key/shard.round`).
     pub async fn write_ops(&self, mut ops: Vec<Json>, key: Option<String>) -> Result<Written, ApiError> {
+        self.heat_ops(&ops);
         let marks: Vec<Json> = ops.iter().filter(|op| is_mark(op)).cloned().collect();
         // An update or delete by key that names where its row is: refused
         // when that shard has no such row, rather than answered as no row
@@ -4319,7 +4445,26 @@ impl Coordinator {
     /// shard says what it can do: serve reads, take writes, and why not
     /// ([`shard_state`]). Through [`Self::snapshot`].
     pub async fn cluster(&self) -> Json {
-        (*self.snapshot().await).clone()
+        let mut j = (*self.snapshot().await).clone();
+        self.add_heat(&mut j);
+        j
+    }
+
+    /// Adds the slot heat of now to `j`, a survey of the cluster
+    /// ([`Self::snapshot`]): on each shard its keyed operations a second
+    /// over 5 minutes and its share (`heat`), and the verdict
+    /// (`slot_heat`); `GET /v1/cluster/slots` has the rest. Not in the
+    /// survey itself, which its observers compare with the one before.
+    pub fn add_heat(&self, j: &mut Json) {
+        let t = self.topo();
+        let Some(m) = &t.slots else { return };
+        let (per, summary) = self.heat.brief(self.now_ms(), &|s| m.owner(s), t.replicas.len());
+        for s in j["shards"].as_array_mut().into_iter().flatten() {
+            if let Some(h) = s["shard"].as_u64().and_then(|i| per.get(i as usize)) {
+                s["heat"] = h.clone();
+            }
+        }
+        j["slot_heat"] = summary;
     }
 
     async fn survey_cluster(&self) -> Json {

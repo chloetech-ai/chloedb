@@ -6206,6 +6206,7 @@ impl Service {
             Backend::Local(_) => json!({"role": self.role().as_str_name().to_lowercase(), "node": self.detail().await, "at_ms": telemetry::now_ms()}),
             Backend::Cluster(c) => {
                 let mut j = (*c.snapshot().await).clone();
+                c.add_heat(&mut j);
                 j["coordinator"] = json!({"load": self.series.last().map(|p| (*p).clone()), "health": {"retries": j["retries"], "hedges": j["hedges"]}, "version": self.place.version(), "name": self.place.name, "node": self.place.node});
                 j
             }

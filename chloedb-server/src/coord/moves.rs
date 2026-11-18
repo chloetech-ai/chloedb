@@ -224,8 +224,100 @@ impl Coordinator {
     /// Evens out the slots over the shards, `chunk` slots per move at most
     /// ([`plan_even`]), in the background: after adding a shard.
     pub fn rebalance(self: &Arc<Self>, chunk: usize) -> Result<Json, ApiError> {
+        self.rebalance_checked(chunk, None, false)
+    }
+
+    /// [`Self::rebalance`], its moves checked against the disks of the
+    /// copies they send rows to, from the cluster's snapshot `snap` (as a
+    /// plan's are: `disks`, `preflight` in `plan`), a failed check refusing
+    /// them (409); `dry_run` answers the plan and starts nothing.
+    pub fn rebalance_checked(self: &Arc<Self>, chunk: usize, snap: Option<&Json>, dry_run: bool) -> Result<Json, ApiError> {
         let map = self.map().ok_or_else(|| ApiError::bad("a coordinator routing by the hash before slots cannot move slots"))?;
-        self.start_job("rebalance", plan_even(&map, None, chunk))
+        let moves = plan_even(&map, None, chunk);
+        let mut plan = json!({
+            "by": "slots",
+            "moves": super::balance::moves_json(&moves),
+            "slots_moved": moves.iter().map(|(s, ..)| s.len()).sum::<usize>(),
+            "why": moves.is_empty().then_some("the slots are even already"),
+        });
+        let mut fail = None;
+        if let Some(s) = snap {
+            let (disks, preflight) = super::plan::move_disk_checks(s, &moves);
+            fail = preflight.iter().find(|p| p["ok"] == false).and_then(|p| p["text"].as_str()).map(String::from);
+            plan["disks"] = json!(disks);
+            plan["preflight"] = json!(preflight);
+        }
+        if dry_run {
+            return Ok(json!({"plan": plan, "job": null}));
+        }
+        if let Some(why) = fail.filter(|_| !moves.is_empty()) {
+            return Err(ApiError { code: None, status: 409, message: format!("the moves would not fit: {why}") });
+        }
+        let mut out = self.start_job("rebalance", moves)?;
+        out["plan"] = plan;
+        Ok(out)
+    }
+
+    /// Evens out the shards' keyed load rather than their counts of slots
+    /// ([`super::balance::plan_by_load`]), from what this coordinator
+    /// routed to each slot over `window` (`1m`, `5m` or `15m`) and what the
+    /// other coordinators did (`others`: each slot's operations a second,
+    /// already over the same window). `counted` says whose counts are in it.
+    /// `dry_run` plans and starts nothing; `force` moves on counts that
+    /// cover less than most of the window. `snap`, the cluster's snapshot,
+    /// says what a slot of each shard holds and how much room each shard's
+    /// disks have: no shard is given slots past [`super::plan::MOVE_DISK_LIMIT`]
+    /// of its fullest copy's disk, and the plan's disk checks are answered
+    /// (`disks`, `preflight`), a failed one refusing the moves.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rebalance_by_load(self: &Arc<Self>, chunk: usize, window: &str, others: &[Vec<f64>], counted: Json, dry_run: bool, force: bool, snap: Option<&Json>) -> Result<Json, ApiError> {
+        let map = self.map().ok_or_else(|| ApiError::bad("a coordinator routing by the hash before slots counts no load by slot: rebalance by slots"))?;
+        let len = super::heat::WINDOWS.iter().find(|(name, _)| *name == window).map(|(_, len)| *len)
+            .ok_or_else(|| ApiError::bad(format!("window {window:?}: one of 1m, 5m or 15m")))?;
+        let (mut load, secs) = self.heat.slot_load(self.now_ms(), len);
+        for o in others {
+            for (l, x) in load.iter_mut().zip(o) {
+                *l += x;
+            }
+        }
+        // Rows move on what the counts say: not on a few seconds of them
+        // (a coordinator just started), unless only asked for the plan.
+        let need = (len as f64 / 1e3).min(300.0) * 0.8;
+        let short = secs < need;
+        let keyed: f64 = load.iter().sum();
+        let (per_slot, room) = snap.map(super::plan::slot_costs).unwrap_or_default();
+        let plan = super::balance::plan_by_load_within(&map, &load, chunk, &per_slot, &room);
+        let mut j = plan.to_json();
+        let (disks, preflight) = match snap {
+            Some(s) => super::plan::move_disk_checks(s, &plan.moves),
+            None => (Vec::new(), vec![json!({"ok": true, "level": "warn", "text": "the cluster's snapshot was not at hand: the disks' room is not checked"})]),
+        };
+        let disk_fail = preflight.iter().find(|p| p["ok"] == false).and_then(|p| p["text"].as_str()).map(String::from);
+        j["disks"] = json!(disks);
+        j["preflight"] = json!(preflight);
+        j["by"] = json!("load");
+        j["window"] = json!(window);
+        j["secs"] = json!((secs * 10.0).round() / 10.0);
+        j["keyed_per_s"] = json!((keyed * 1000.0).round() / 1000.0);
+        j["coordinators"] = counted;
+        if short {
+            j["warning"] = json!(format!("the counts cover {secs:.0} s of the {window} window: this coordinator started recently"));
+        }
+        if dry_run {
+            return Ok(json!({"plan": j, "job": null}));
+        }
+        if short && !force {
+            return Err(ApiError { code: None, status: 409, message: format!("the counts cover only {secs:.0} s of the {window} window (this coordinator started recently): wait until they cover {need:.0} s, rebalance by slots, or force it") });
+        }
+        if let Some(why) = disk_fail.filter(|_| !plan.moves.is_empty()) {
+            return Err(ApiError { code: None, status: 409, message: format!("the moves would not fit: {why}") });
+        }
+        if keyed < super::heat::QUIET_PER_S {
+            return Err(ApiError { code: None, status: 409, message: format!("fewer than {} keyed operation a second over the {window} window: too little load to weigh; rebalance by slots", super::heat::QUIET_PER_S) });
+        }
+        let mut out = self.start_job("rebalance by load", plan.moves)?;
+        out["plan"] = j;
+        Ok(out)
     }
 
     /// Moves every slot of shard `i` to the others, evenly, in the

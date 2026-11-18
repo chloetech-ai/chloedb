@@ -11,6 +11,65 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Evening out the slots checks the disks first.** `POST
+  /v1/admin/rebalance` checked nothing of the room of the copies it sends
+  rows to; it now runs a plan's disk checks on its moves (`disks`,
+  `preflight` in its answer's `plan`), and a failed check (the rows would
+  not fit, or would take a disk to 98%) refuses it (409), as does the
+  plan's `rebalance` step. `dry_run` answers the plan and moves nothing,
+  and the Cluster page's **Even out the slots…** shows it, with each
+  receiving copy's disk now and after, before it moves anything.
+- **The Cluster page evens out the keyed load.** **Even out by load…**,
+  offered on a hot range (in Key slots and What needs attention) and in
+  Capacity, asks the coordinator for a rebalance by load's plan as a dry
+  run and shows it: each shard's keyed load now and after, the slots each
+  gives or takes, the disks of the copies sent rows now and after, a slot
+  too busy to move, and whose counts are in it.
+  **Move them** runs it as a plan's step, which every coordinator's
+  Cluster page follows; on counts that cover too little of the window, or
+  a disk without room, the page shows the plan and does not run it.
+- **Rebalance by load.** `POST /v1/admin/rebalance {"by": "load"}` evens
+  out the shards' keyed load rather than their counts of slots: it weighs
+  each slot by the reads and writes routed to it over the last 15 minutes
+  (`window`), as every coordinator counted them, and moves the busy slots
+  from the busiest shard to the quietest until it takes under 1.1× the
+  mean. It plans nothing under 1.3×, never moves a slot busier than the
+  gap (a hot slot, which it names), and gives no shard more than 1.5× an
+  even share of the slots, nor slots that would take its fullest copy's
+  disk past 85%; the plan's disk checks are answered (`disks`,
+  `preflight`), and a failed one refuses the moves. `dry_run` answers the plan (each shard's load
+  and the skew before and after, and the moves) and moves nothing; counts
+  of a coordinator that started recently are refused unless `force`d. A
+  plan's step `{"kind": "rebalance", "by": "load"}` runs it. A rebalance
+  by slots, the default, is unchanged.
+- **The Cluster page shows the load on each key slot.** Under the map,
+  **Key slots** draws the 4,096 slots as a 64 × 64 grid, each coloured by
+  the reads and writes the coordinator routed to it over 1, 5 or 15
+  minutes, with a line between shards, the coordinator's verdict (`hot
+  range`: move some of the shard's slots; `hot slot`: one key or `shard_by`
+  value, which moving slots does not split) and the slots most counted;
+  hovering a slot names its shard and rates, and clicking it opens the
+  shard. The map's new **Load** lens colours each shard by its keyed load
+  against the mean of the shards, and **What needs attention** names a
+  shard the verdict calls hot. `GET /v1/cluster/slots?window=1m` (or `5m`,
+  `15m`) answers every slot counted in that window, which the map reads;
+  `?all=1` still answers the counts since the coordinator started.
+- **A coordinator says which key slots are hot.** It counts each read and
+  write it routes by key in its slot, over 1, 5 and 15 minutes, and each
+  request it sends to every shard once (fan-out). `GET /v1/cluster/slots`
+  answers per shard its keyed reads and writes a second, its share and its
+  busiest slot, the 20 slots most counted, the skew (the busiest shard's
+  load against the mean) and a verdict: `even`, `quiet`, `hot range` (move
+  some of the shard's slots) or `hot slot` (one key or `shard_by` value,
+  which moving slots does not split); `?all=1` adds every slot counted
+  since the coordinator started. `/v1/cluster` carries the 5 minutes'
+  figures on each shard (`heat`) and the verdict (`slot_heat`), and
+  `/metrics` the gauges `chloedb_shard_keyed_ops_per_second{shard,kind,window}`
+  and `chloedb_slot_heat_skew` and the counter `chloedb_slot_ops_total{kind}`,
+  with no series per slot. `--slot-heat-keys` also samples the 64 keys
+  counted most, with their table, which only an admin reads, at
+  `GET /v1/admin/slots/keys`; it is off by default, since it holds key
+  values.
 - **A sharded cluster could not be restored from its checkpoints.** A
   checkpoint held only the database: not the shard's part of the cluster
   map nor the API keys, so a copy served from one came up without its

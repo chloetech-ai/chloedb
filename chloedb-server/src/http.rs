@@ -92,6 +92,8 @@
 //! | `POST /v1/logs/query` | `{sql, params?, timeout_ms?, scope?}` (SQL over tables `logs` and `queries`) | rows of the server's log store ([`crate::logstore`]); on a coordinator, of every server's merged, the other coordinators' stores too, with `nodes`: each server's rows, time and error (`"scope": "local"`: its own store alone; with `"partial": true`, in the form another coordinator merges) |
 //! | `GET /v1/logs/store` | | `{store, schemas, nodes?}`: the log store (its path, rows, bytes, retention, what it wrote, dropped and deleted; null without one), its tables, and on a coordinator every server's |
 //! | `GET /v1/system`, `/v1/cluster?brief=1`, `/v1/routes` | | the process and its limits; the cluster's copies (`brief=1`: without each copy's `detail`); requests by route and queries by kind |
+//! | `GET /v1/cluster/slots?all=1` | | on a coordinator, what it routed to each slot ([`crate::coord::heat`]): per shard and over the last 1, 5 and 15 minutes, keyed reads and writes a second and requests sent to every shard, the slots most counted, and whether a shard is hot over a range of its slots or because of one (`all=1`: every slot counted since it started; `window=1m`, `5m` or `15m`: every slot counted in that window) |
+//! | `GET /v1/admin/slots/keys` | | on a coordinator started with `--slot-heat-keys`, the keys sampled as routed most, with their slot and shard |
 //! | `GET /v1/coordinators?window=1` | | `{coordinators: [{url, name, this, last_seen_ms, version}], gone, live_ms}`: this cluster's coordinators, from what the shards heard ([`crate::peers`]); `window=1` adds this one's last minute and 5 minutes of searches |
 //! | `GET /v1/whoami` | | `{name, key, scope, root, cluster, caller}`: who the request's credential is ([`crate::keys`]) |
 //! | `GET /v1/events?from=&to=&kind=&limit=`, `POST /v1/events/notes` | `{text, ts_ms?, where?}` | what happened, the newest first: copies down and back, new primaries, changes, notes ([`crate::events`]) |
@@ -419,6 +421,8 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/logs/store", get(log_store))
         .route("/v1/system", get(system))
         .route("/v1/cluster", get(cluster))
+        .route("/v1/cluster/slots", get(cluster_slots))
+        .route("/v1/admin/slots/keys", get(admin_slot_keys))
         // Apps: their list, and requests forwarded to them (crate::apps).
         .route("/v1/apps", get(apps_list))
         // An app may take files (a spreadsheet's import): rows' size, as /v1/import.
@@ -1100,7 +1104,9 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // Coordinators telling each other their alerts: a sync between
     // servers, which the coordinator it came from audited as its change.
     let sync = route == "/v1/alerts/peer";
-    let read = method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan || sync;
+    // A change asked only for its plan (a rebalance's dry run): a read.
+    let dry = res.extensions().get::<DryRun>().is_some();
+    let read = method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan || sync || dry;
     // A request that made its own event of what it did (an alert
     // acknowledged, a log level set, a Contain rule): its audit entry is
     // not a `change` event too, so that the Timeline says it once.
@@ -1231,6 +1237,11 @@ struct ClientError(Arc<str>);
 /// What the audit log says a request did, set on its answer.
 #[derive(Clone)]
 struct Audited(String);
+
+/// A change route asked only for its plan, which changes nothing: not
+/// audited, as a GET is not.
+#[derive(Clone)]
+struct DryRun;
 
 /// The answer `j`, with what the audit log says of it.
 /// The statement budget a request's body asks for (`"budget": {"nodes":
@@ -4126,17 +4137,68 @@ fn chunk(b: &Option<AxJson<Json>>) -> Result<usize, ApiError> {
     }
 }
 
-/// `POST /v1/admin/rebalance {"chunk"?}`: evens out the slots over the
-/// shards, in the background (`GET /v1/admin/moves` follows it).
+/// `POST /v1/admin/rebalance {"chunk"?, "by"?, "window"?, "dry_run"?, "force"?}`:
+/// evens out the slots over the shards, in the background (`GET
+/// /v1/admin/moves` follows it), once the disks of the copies sent rows
+/// are checked; `dry_run` answers the plan and moves nothing. `"by": "load"` evens out the keyed load
+/// the coordinators counted over `window` (default `15m`) instead
+/// ([`crate::coord::balance`]); `dry_run` answers its plan and moves
+/// nothing.
 async fn rebalance(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {
-    let j = match app.svc.coordinator()?.rebalance(chunk(&body)?) {
+    match body.as_ref().and_then(|b| b.get("by")).and_then(Json::as_str) {
+        None | Some("slots") => {}
+        Some("load") => return rebalance_by_load(app, w, body).await,
+        Some(other) => return Err(ApiError::bad(format!("by {other:?}: slots (the default) or load"))),
+    }
+    let c = app.svc.coordinator()?;
+    let dry_run = body.as_ref().and_then(|b| b.get("dry_run")).and_then(Json::as_bool).unwrap_or(false);
+    let snap = c.snapshot().await;
+    let j = match c.rebalance_checked(chunk(&body)?, Some(&snap), dry_run) {
+        Ok(j) if dry_run => {
+            let mut r = AxJson(j).into_response();
+            r.extensions_mut().insert(DryRun);
+            return Ok(r);
+        }
         Ok(j) => j,
+        Err(e) if dry_run => return Err(e),
         Err(e) => return Ok(tried("even the slots out over the shards".into())(e)),
     };
     let title = format!("Slots even out over the shards: {} moves", j["job"]["of"]);
     let j = moves_started(&app, w, j, title, None);
     let detail = format!("rebalancing: {} moves", j["job"]["of"]);
     // cluster2: its event is the moves' (NEW-scenarios-15).
+    Ok(evented(audited(j, detail)))
+}
+
+/// `POST /v1/admin/rebalance {"by": "load"}`: the load of each slot is this
+/// coordinator's count and every other coordinator's over the same window
+/// (`GET /v1/cluster/slots?window=`), since each counts only what it routes.
+async fn rebalance_by_load(app: App, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {
+    let b = body.as_ref().map(|b| b.0.clone()).unwrap_or(Json::Null);
+    let window = b.get("window").and_then(Json::as_str).unwrap_or("15m").to_string();
+    if !crate::coord::heat::WINDOWS.iter().any(|(name, _)| *name == window) {
+        return Err(ApiError::bad(format!("window {window:?}: one of 1m, 5m or 15m")));
+    }
+    let dry_run = b.get("dry_run").and_then(Json::as_bool).unwrap_or(false);
+    let force = b.get("force").and_then(Json::as_bool).unwrap_or(false);
+    let c = app.svc.coordinator()?;
+    let (others, counted) = crate::coord::balance::others_load(&app.svc, &window).await;
+    let snap = c.snapshot().await;
+    let j = match c.rebalance_by_load(chunk(&body)?, &window, &others, counted, dry_run, force, Some(&snap)) {
+        Ok(j) => j,
+        Err(e) if dry_run => return Err(e),
+        Err(e) => return Ok(tried("even the keyed load out over the shards".into())(e)),
+    };
+    if dry_run {
+        let mut r = AxJson(j).into_response();
+        r.extensions_mut().insert(DryRun);
+        return Ok(r);
+    }
+    let plan = j["plan"].clone();
+    let title = format!("Keyed load evens out over the shards: {} moves, skew {} to {}", j["job"]["of"], plan["before"]["skew"], plan["after"]["skew"]);
+    let mut j = moves_started(&app, w, j, title, None);
+    j["plan"] = plan;
+    let detail = format!("rebalancing by load: {} moves", j["job"]["of"]);
     Ok(evented(audited(j, detail)))
 }
 
@@ -5634,6 +5696,29 @@ async fn cluster(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
         j["plan"] = crate::coord::plan::view(&app.svc)["run"].clone();
     }
     AxJson(j)
+}
+
+/// `GET /v1/cluster/slots?all=1`: what this coordinator routed to each
+/// slot ([`crate::coord::heat`]).
+async fn cluster_slots(State(app): State<App>, Query(q): Params) -> Res {
+    let all = q.get("all").is_some_and(|v| v == "1" || v == "true");
+    let window = q.get("window").map(String::as_str);
+    if let Some(w) = window {
+        if !crate::coord::heat::WINDOWS.iter().any(|(name, _)| *name == w) {
+            return Err(ApiError { code: None, status: 400, message: format!("window {w:?}: one of 1m, 5m or 15m") });
+        }
+    }
+    Ok(AxJson(app.svc.coordinator()?.slot_heat(all, window)))
+}
+
+/// `GET /v1/admin/slots/keys`: the keys sampled as routed most, which
+/// only a coordinator started with `--slot-heat-keys` keeps; an admin's,
+/// since it shows key values.
+async fn admin_slot_keys(State(app): State<App>) -> Res {
+    match app.svc.coordinator()?.slot_heat_keys() {
+        Some(j) => Ok(AxJson(j)),
+        None => Err(ApiError { code: None, status: 404, message: "this coordinator samples no keys: start it with --slot-heat-keys (or its writes go by the hash before slots, which has none)".into() }),
+    }
 }
 
 /// `GET /v1/kube`: the `StrataCluster` that runs this coordinator on
@@ -7521,6 +7606,15 @@ mod tests {
         for r in ["/v1/correct", "/v1/highlight", "/v1/understand", "/v1/classify", "/v1/derive/preview"] {
             assert_eq!(route_scope(&post, r), Scope::Read, "{r}");
         }
+    }
+
+    /// The slot heat is a reader's, as `/v1/cluster` is; the keys sampled
+    /// an admin's, since they are key values.
+    #[test]
+    fn hot_keys_take_an_admin_key() {
+        let get = axum::http::Method::GET;
+        assert_eq!(route_scope(&get, "/v1/cluster/slots"), Scope::Read);
+        assert_eq!(route_scope(&get, "/v1/admin/slots/keys"), Scope::Admin);
     }
 
     /// A read by key's answer, written directly, is the JSON the tree

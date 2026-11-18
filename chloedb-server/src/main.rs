@@ -203,6 +203,12 @@ struct Args {
     /// such query asks every shard first).
     #[arg(long, default_value_t = chloedb_server::coord::STATS_CACHE_TERMS)]
     stats_cache_terms: usize,
+    /// With --shards: also sample the keys the coordinator routes, one in
+    /// 16, into a list of the 64 routed most, which GET
+    /// /v1/admin/slots/keys shows an admin, to find the key that makes a
+    /// slot hot. Off by default: the list holds key values.
+    #[arg(long)]
+    slot_heat_keys: bool,
     /// With --shards: send a write to every server of a shard whose servers
     /// do not replicate (none started with --replicas or --replica), each
     /// taking it on its own. Without it such a shard serves reads only: its
@@ -1258,7 +1264,7 @@ const HELP_TOPICS: &[(&str, &[&str])] = &[
     ]),
     ("Cluster: a coordinator and its shards", &[
         "shards", "hedge_ms", "shard_timeout_ms", "route", "hedge_adaptive", "prefer_caught_up",
-        "partial", "stats_cache_terms", "write_every_copy", "kube_cluster", "coordinator_listen",
+        "partial", "stats_cache_terms", "slot_heat_keys", "write_every_copy", "kube_cluster", "coordinator_listen",
         "local_shard", "cluster_token", "shard_ca", "slot_map", "peer_url", "cluster_name",
         "node_name", "environment", "public_url", "image_repository"
     ]),
@@ -1663,6 +1669,7 @@ async fn run() {
             partial: a.partial,
             route: chloedb_server::coord::Route::parse(&a.route).unwrap_or_else(|| fail(&format!("--route is round-robin or least-cost, not {:?}", a.route))),
             stats_cache_terms: a.stats_cache_terms,
+            slot_heat_keys: a.slot_heat_keys,
             write_every_copy: a.write_every_copy,
             hedge_adaptive: a.hedge_adaptive,
             prefer_caught_up: a.prefer_caught_up,

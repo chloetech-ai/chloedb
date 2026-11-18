@@ -94,6 +94,9 @@ impl Coordinator {
         if !select.graphs.is_empty() {
             return Err(ApiError::bad(super::GRAPHS_ON_SHARDS));
         }
+        // Counted once, as the query it is ([`super::heat`]); its later
+        // pages read the version it started on, and are not.
+        self.heat_query(schema, select);
         self.routed(|| self.scroll_once(req, schema, select, page, keep_alive, deadline)).await
     }
 
