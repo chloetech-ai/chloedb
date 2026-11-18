@@ -17,7 +17,9 @@ out by its keyed load rather than its count of slots, a sharded cluster
 restored from its checkpoints, coordinator writes that give up on a frozen
 primary, and what the persona study of 17 November found (SQL answering as
 PostgreSQL does, wrong answers that are now right or an error, ChloeCtx's
-forget and rules, the security edges): `chloedb-server-v0.3.8`,
+forget and rules, the security edges; from its second round, highlight,
+did you mean and cursors in JavaScript, and ChloeCtx filing each note under
+the session that made it): `chloedb-server-v0.3.8`,
 `chloedb-py-v0.3.8` and `chloedb-js-v0.3.8`, which is on npm too (the Java
 package is built from source; `chloedb-crawl`, `chloedb-sheets`, `chloectx`
 and `chloedb-netops` are attached prebuilt to the server's release, whose
@@ -48,6 +50,16 @@ Postgres upgrades its coordinators first: see
   **`chloectx app` does not start without a token** on any address.
 - **A table that `follow-postgres` follows refuses other writes** (409), and
   **`POST /v1/admin/rebalance` refuses moves a disk could not take** (409).
+- **An embedded JavaScript `Database` answers at most 10,000 rows a
+  query**, as a server does, counted to the end of its `OFFSET`
+  (`LIMIT 10 OFFSET 10000` is refused by both): read further with a cursor,
+  or move the window with `maxResultWindow` (`0` lifts it). Python's
+  embedded `Database` is unchanged. `open(":memory:", { schema })` is a new
+  database each time rather than a file named `:memory:`, and
+  `open(":memory:")` without a schema is refused.
+- **A rule the user states to ChloeCtx is a standing rule** unless it is an
+  instruction for the task at hand, and a note `memory_remember` or
+  `chloectx remember` keeps is filed under the session that made it.
 
 ### Clusters
 
@@ -251,6 +263,50 @@ Postgres upgrades its coordinators first: see
   `memory_forget` stores no reply and is not distilled, so no note says
   again what was forgotten, and for five minutes after a forget nothing
   that holds the words is stored.
+
+- **ChloeCtx files each note under the session that made it** (persona
+  study ANA-201, ANA-210, JONAH-205). Two sessions in worktrees of one
+  repository share a daemon, and `memory_remember` and `chloectx remember`
+  filed a note under whichever session's hook came last, so each session's
+  notes went under the other's and a note from the command line under an
+  ended one. Each hook now sends its Claude Code process id, the MCP server
+  and the command line send who is calling, and the daemon files the note
+  under that session (after `/clear`, the new session takes the id over); a
+  note from a terminal is `manual:<seq>`, and an older client that says
+  nothing keeps the active session. The memory tools no longer hide the
+  notes the session itself kept, and `memory_remember` takes
+  `said_by: user|assistant`.
+- **A project's conventions stay rules** (ANA-202, ANA-203, ANA-204,
+  JONAH-201, JONAH-203, JONAH-204). A rule the user states is a standing
+  preference unless the model scoped it to the task or its clause says what
+  not to touch or only to do now ("for now", "in this PR"); rules from ops,
+  the client or legal, and a list after "from the kickoff:", are standing.
+  A question that asks what holds is no longer counted as a rule said again,
+  unless it complains. The distiller can retire the notes of work a turn
+  scrapped or reverted, which then leave the briefing, recall and the
+  repeats. A stated decision is cut before the next request in the same
+  prompt, and the briefing's rules open with a line saying to ask before
+  breaking one.
+
+### JavaScript
+
+- **Highlight, did you mean and cursors are methods** of both `Client` and
+  the embedded `Database`, with the same answers from both (persona study
+  DEV-3, DEV-205): `highlight(query, texts, { field, size, pre, post,
+  html })`, `correct(text, { field })` (`field` can be left out when the
+  table has one indexed text field), and `query(sql, params, { pageSize,
+  keepAliveMs })` with `next`, `closeCursor` and `scroll()`, an async
+  iterator that closes its cursor when the loop is left early. In the
+  process these are real cursors over one snapshot (a new engine call,
+  `Db::scroll_sql`). `execute()` answers the number of rows a write wrote,
+  and refuses a `SELECT`.
+- **Typed answers** (DEV-207, DEV-7, DEV-8): `query<T>`, `sql<T>`,
+  `next<T>`, `scroll<T>`, `get<T>` and `getMany<T>`; `Result<T>` takes an
+  `interface`, a schema field's type is a union (so `"keywrd"` is a type
+  error), and the declarations compile with `types: []` and
+  `skipLibCheck: false`.
+- **`query_invalid`'s hint names `POST /v1/sql/check`**, not only the MCP
+  tools, and an `OFFSET` past the window is told about `page_size` (DEV-206).
 
 ### Command center and apps
 
