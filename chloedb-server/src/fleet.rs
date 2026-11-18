@@ -1552,7 +1552,7 @@ mod tests {
     fn every_coordinators_searches_count() {
         let c = json!({"shards": [{"shard": 0, "state": "ok", "replicas": [copy("s0-0", true)]}]});
         let p = pts(0, 20, |_| 0);
-        let theirs = Window { queries: 1000.0, failures: 50.0, hist: vec![0, 0, 0, 0, 0, 1000], secs: 20.0, cpu_s: 2.0, ratios: Vec::new() };
+        let theirs = Window { queries: 1000.0, failures: 50.0, hist: vec![0, 0, 0, 0, 0, 1000], secs: 20.0, cpu_s: 2.0, ratios: Vec::new(), ..Window::default() };
         let mut i = inputs(&c, &p);
         i.peers = vec![
             PeerWindow { url: "http://b".into(), name: "coord-b".into(), window: theirs.clone(), recent: theirs, error: None, ..Default::default() },
