@@ -127,10 +127,30 @@ HAVING COUNT(DISTINCT probe) >= 5 AND MEDIAN(rtt) > 100 ORDER BY med DESC LIMIT 
     },
 ];
 
+/// Writes the rules' statements, keeping each one's last run: `load` runs
+/// this every few minutes from the feed, and a rule run every five minutes
+/// would otherwise read as never run for most of them.
 pub async fn install(db: &Strata) -> Result<()> {
+    let last: FxHashMap<String, Row> = db
+        .query("SELECT id, last_run, last_ms, last_rows FROM bb_rules LIMIT 100", Value::Null)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.s("id"), r))
+        .collect();
     let rows: Vec<Value> = RULES
         .iter()
-        .map(|r| json!({"id": r.id, "title": r.title, "kind": r.kind, "severity": r.severity, "every_s": r.every_s, "sql": r.sql, "about": r.about, "enabled": true}))
+        .map(|r| {
+            let mut row = json!({"id": r.id, "title": r.title, "kind": r.kind, "severity": r.severity, "every_s": r.every_s, "sql": r.sql, "about": r.about, "enabled": true});
+            if let Some(was) = last.get(r.id).filter(|was| !was.s("last_run").is_empty()) {
+                for k in ["last_run", "last_ms", "last_rows"] {
+                    if let Some(v) = was.get(k).filter(|v| !v.is_null()) {
+                        row[k] = v.clone();
+                    }
+                }
+            }
+            row
+        })
         .collect();
     db.upsert("bb_rules", rows).await.map_err(|e| anyhow::anyhow!("bb_rules: {e}"))?;
     Ok(())
