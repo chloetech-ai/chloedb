@@ -455,7 +455,7 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
     }
     let value_of = |key: &[Part], accs: &[Acc], p: &Projection| -> Value {
         match p {
-            Projection::Field(_) | Projection::Path(_) | Projection::Time(_) => q.group_by.iter().position(|g| g.projection() == *p).map_or(Value::Null, |i| key[i].value()),
+            Projection::Field(_) | Projection::Path(_) | Projection::Time(_) | Projection::Expr(_) => q.group_by.iter().position(|g| g.projection() == *p).map_or(Value::Null, |i| key[i].value()),
             _ => needed.iter().position(|n| n == p).map_or(Value::Null, |i| accs[i].value()),
         }
     };
@@ -488,7 +488,7 @@ fn ordered(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<Vec<
     groups.map.values_mut().for_each(|accs| accs.iter_mut().for_each(Acc::settle));
     let value_of = |key: &[Part], accs: &[Acc], p: &Projection| -> Value {
         match p {
-            Projection::Field(_) | Projection::Path(_) | Projection::Time(_) => q.group_by.iter().position(|g| g.projection() == *p).map_or(Value::Null, |i| key[i].value()),
+            Projection::Field(_) | Projection::Path(_) | Projection::Time(_) | Projection::Expr(_) => q.group_by.iter().position(|g| g.projection() == *p).map_or(Value::Null, |i| key[i].value()),
             _ => needed.iter().position(|n| n == p).map_or(Value::Null, |i| accs[i].value()),
         }
     };

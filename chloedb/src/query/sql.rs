@@ -484,6 +484,9 @@ fn plain_table<'t>(t: &'t sql::TableFactor, what: &str) -> Result<&'t sql::Objec
 }
 
 /// Binds an INSERT into `schema`'s table.
+/// Why `INSERT ... SELECT` is refused, and what to write (SAM-208).
+const INSERT_SELECT: &str = "INSERT ... SELECT is not supported (but from chunks_of): run the SELECT, then write the rows it returns with INSERT ... VALUES, or through Db::upsert or POST /v1/write";
+
 fn insert(ins: &sql::Insert, schema: &Schema, params: &Params) -> Result<Write> {
     let sql::Insert {
         or,
@@ -582,8 +585,9 @@ fn insert(ins: &sql::Insert, schema: &Schema, params: &Params) -> Result<Write> 
     let values = match source.as_deref() {
         Some(q) if no_clauses(q).is_none() => match q.body.as_ref() {
             sql::SetExpr::Values(v) => v,
-            _ => return Err(err("INSERT needs VALUES")),
+            _ => return Err(err(INSERT_SELECT)),
         },
+        Some(q) if !matches!(q.body.as_ref(), sql::SetExpr::Values(_)) => return Err(err(INSERT_SELECT)),
         Some(q) => return Err(err(format!("INSERT ... VALUES takes no {}", no_clauses(q).unwrap_or_default()))),
         None => return Err(err("INSERT needs VALUES")),
     };
@@ -708,7 +712,7 @@ pub(crate) fn keyed_rows(schema: &Schema, keys: Vec<Value>) -> Result<Select> {
     let projection = every_field(schema);
     let types = projection_types(schema, &projection);
     let filter = if keys.is_empty() { Pred::False } else { Pred::In { field: pk, values: keys } };
-    Ok(Select { projection, filter, order: None, group_by: Vec::new(), paths: Vec::new(), times: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None })
+    Ok(Select { projection, filter, order: None, group_by: Vec::new(), paths: Vec::new(), times: Vec::new(), exprs: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None })
 }
 
 /// The fields `SELECT *` answers, by position: the stored ones but
@@ -723,7 +727,7 @@ pub fn star_fields(schema: &Schema) -> impl Iterator<Item = usize> + '_ {
 pub(crate) fn fields_select(schema: &Schema, fields: &[usize]) -> Select {
     let projection: Vec<(String, Projection)> = fields.iter().map(|&i| (schema.fields[i].name.clone(), Projection::Field(i))).collect();
     let types = projection_types(schema, &projection);
-    Select { projection, filter: Pred::False, order: None, group_by: Vec::new(), paths: Vec::new(), times: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None }
+    Select { projection, filter: Pred::False, order: None, group_by: Vec::new(), paths: Vec::new(), times: Vec::new(), exprs: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None }
 }
 
 fn every_field(schema: &Schema) -> Vec<(String, Projection)> {
@@ -1344,7 +1348,7 @@ impl<'a> Binder<'a> {
         let graphs = self.graphs.take();
         let types = projection_types(self.schema, &projection);
         let group_by = group_by.into_iter().map(Col::Field).collect();
-        Ok(Select { projection, filter, order, group_by, paths: Vec::new(), times: Vec::new(), having, tiebreak, phases: Vec::new(), limit, offset, graphs, types, guard, per: None })
+        Ok(Select { projection, filter, order, group_by, paths: Vec::new(), times: Vec::new(), exprs: Vec::new(), having, tiebreak, phases: Vec::new(), limit, offset, graphs, types, guard, per: None })
     }
 
     /// The graph predicate `hops()` refers to: the first REACHABLE or PATH.
@@ -1560,7 +1564,10 @@ impl<'a> Binder<'a> {
                 Some((_, Projection::Field(f))) => *f,
                 _ => return Err(err(format!("ORDER BY ..., {n}: not a column"))),
             },
-            None => self.field_of(e)?,
+            None => match output_column(e, proj) {
+                Some(Projection::Field(f)) => *f,
+                _ => self.field_of(e)?,
+            },
         };
         if group.first() == Some(&field) {
             Ok(Tiebreak::GroupValue { desc })
@@ -1573,6 +1580,9 @@ impl<'a> Binder<'a> {
 
     /// A GROUP BY item: a field, or the position of a selected field.
     fn group_field(&self, e: &Expr, items: &[sql::SelectItem]) -> Result<usize> {
+        if matches!(e, Expr::Rollup(_) | Expr::Cube(_) | Expr::GroupingSets(_)) {
+            return Err(err(super::compound::grouping_sets(e)));
+        }
         let f = match literal_usize(e) {
             Some(n) => match items.get(n.wrapping_sub(1)) {
                 Some(sql::SelectItem::UnnamedExpr(e)) | Some(sql::SelectItem::ExprWithAlias { expr: e, .. }) => self.field_of(e)?,
@@ -1835,7 +1845,11 @@ impl<'a> Binder<'a> {
     }
 
     fn group_order(&self, e: &Expr, desc: bool, proj: &[(String, Projection)], group: &[usize]) -> Result<OrderBy> {
-        Ok(match self.group_value(e, proj, group)? {
+        let what = match output_column(e, proj) {
+            Some(p) => p.clone(),
+            None => self.group_value(e, proj, group)?,
+        };
+        Ok(match what {
             Projection::Count => OrderBy::Count { desc },
             Projection::Field(f) if group.first() == Some(&f) => OrderBy::GroupValue { desc },
             what => OrderBy::Agg { what, desc },
@@ -1920,7 +1934,7 @@ impl<'a> Binder<'a> {
                 Projection::Feature(s) => Ok(OrderBy::Score { score: s.clone(), desc, nulls_first: false }),
                 Projection::Path(p) => Ok(OrderBy::Path { path: *p, desc, nulls_first: false }),
                 Projection::Count | Projection::Agg { .. } => Err(err("ORDER BY an aggregate needs GROUP BY")),
-                Projection::Time(_) => Err(err("ORDER BY a part of a time orders groups by it")),
+                Projection::Time(_) | Projection::Expr(_) => Err(err("ORDER BY a part of a time orders groups by it")),
             };
         }
         // `ORDER BY hops()` is nearest first; ranking is always best first.
@@ -3645,6 +3659,16 @@ fn check_opts(func: &str, opts: &Opts, sets: &[&[(&str, OptKind)]]) -> Result<()
         return Err(err(format!("{func}'s {k} is {what}, not {}", hint::sql_value(v))));
     }
     Ok(())
+}
+
+/// The selected column an ORDER BY key names by its output name (`SELECT
+/// zone AS pt, COUNT(*) AS n ... GROUP BY zone ORDER BY pt`), which SQL
+/// reads before an input column's name, as Postgres, DuckDB and SQLite do
+/// (SAM-201: a grouped or DISTINCT query refused `ORDER BY pt` as "no such
+/// column" while an aggregate's alias worked).
+fn output_column<'p>(e: &Expr, proj: &'p [(String, Projection)]) -> Option<&'p Projection> {
+    let Expr::Identifier(id) = e else { return None };
+    proj.iter().find(|(n, _)| n.eq_ignore_ascii_case(&id.value)).map(|(_, p)| p)
 }
 
 /// An ORDER BY key that names a selected column by its alias (`SELECT id,
