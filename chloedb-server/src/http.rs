@@ -1805,7 +1805,7 @@ async fn blend_preview(State(app): State<App>, w: Option<axum::Extension<Princip
     };
     let costs = !matches!(b.get("costs"), Some(Json::Bool(false)));
     let req = crate::service::QueryReq { timeout_ms: body_u64(&b, "timeout_ms")?, who: Some(w.clone()), ..Default::default() };
-    let blended = app.svc.run_blend(&req, &def, version, &params, k, chloedb::query::blend::Want { costs }).await?;
+    let blended = app.svc.run_blend(&req, &def, version, &params, k, chloedb::query::blend::Want { costs, ..Default::default() }).await?;
     let mut j = blended.receipts();
     j["sql"] = json!(def.sql(true));
     j["took_ms"] = json!(t0.elapsed().as_secs_f64() * 1e3);

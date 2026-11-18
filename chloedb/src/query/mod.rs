@@ -21,6 +21,7 @@
 
 pub mod agg;
 pub mod blend;
+pub mod blend_eval;
 pub mod budget;
 #[cfg(feature = "datafusion")]
 pub mod arrow;

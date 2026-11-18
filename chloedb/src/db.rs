@@ -1757,6 +1757,9 @@ impl Db {
         let schema = self.table(&log.table)?;
         rank_log::check(&schema)?;
         rank_log::fits(log, &schema)?;
+        if let Some((call, cols)) = crate::query::blend::table_call_sql(sql, params)? {
+            return self.blend_logged(sql, params, log, &schema, call, &cols);
+        }
         let p = rank_log::prepare(sql, params, log)?;
         let started = std::time::Instant::now();
         let mut served = match &log.interleave {
