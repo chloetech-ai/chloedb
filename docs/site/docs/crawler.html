@@ -125,7 +125,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl
 ~/.local/bin/chloedb-crawl serve --local ./crawl-cluster</pre>
 <p>Or build both from a checkout (any platform with Rust; the only way before release 0.3.2):</p>
-<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release)
+<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release --bin chloedb-server)
 cd chloedb-crawl &amp;&amp; cargo build --release
 target/release/chloedb-crawl serve --local ./crawl-cluster --server-bin ../chloedb-server/target/release/chloedb-server</pre>
 <p>Open <code>http://127.0.0.1:7700</code> and go to <strong>Apps → Crawler</strong>. Type the site's address under <strong>New crawl</strong> and press <strong>Crawl</strong>, or <strong>Preview</strong> first to see the table it would make; <strong>Options</strong> holds the rest of the settings below. Each crawl gets its own page, where you watch it fill the table and grow the cluster, and pause or stop it.</p>
@@ -415,7 +415,7 @@ target/release/chloedb-crawl preview https://books.toscrape.com/ --pages 10</pre
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

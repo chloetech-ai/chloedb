@@ -39,14 +39,14 @@ pip install chloedb-server                               # or into a virtualenv,
 
 The wheels are tagged for what the binary needs: `manylinux_2_34` (glibc 2.34 or later: RHEL 9, Ubuntu 22.04, Debian 12 and newer) on Linux x86_64 and aarch64, `macosx_11_0` on macOS, so pip takes one only where it runs; there is none for Windows or Alpine, and no source distribution. The program lands in the environment's `bin`; `python -m chloedb_server ARGS` runs it where that is not on the `PATH`, and [`chloedb.serve()`](python.md#a-server-started-from-python) starts one from Python and returns a client of it (`pip install "chloedb[server]"` installs the client and the server of the same release). The server-release workflow makes the wheels from the archives above, installs and runs each on its platform, and publishes them on the tag.
 
-From source (Rust stable and a C compiler; the first build takes several minutes):
+From source (Rust stable and a C compiler; the first build takes several minutes). `--bin chloedb-server` builds the server alone: without it, cargo also builds the ten tools and benchmarks in the crate's `src/bin/` (the simulator, `chloedb-server-bench` and others), each about as big as the server:
 
 ```sh
-cd chloedb-server && cargo build --release
+cd chloedb-server && cargo build --release --bin chloedb-server
 target/release/chloedb-server --demo 20000 --db products.chloedb
 ```
 
-`cargo build --release --no-default-features` builds a server without DataFusion, Parquet and `s3://` paths, from 321 crates rather than 412: joins, groups and sorts then run on ChloeDB's own operators (`CHLOEDB_ENGINE`, below), and `import` and `export` take no Parquet files or `s3://` paths.
+`cargo build --release --bin chloedb-server --no-default-features` builds a server without DataFusion, Parquet and `s3://` paths, from 321 crates rather than 412: joins, groups and sorts then run on ChloeDB's own operators (`CHLOEDB_ENGINE`, below), and `import` and `export` take no Parquet files or `s3://` paths.
 
 Or from the image every merge to main publishes (`linux/amd64` and `linux/arm64`). Beyond the container's own loopback the server needs a token, which the command center then asks for:
 
@@ -1694,7 +1694,7 @@ It answers 503 for `down` and `failing`. `/livez` and `/readyz` answer 503 only 
 
 | metric | labels | what |
 |---|---|---|
-| `chloedb_build_info` | `version`, `simd` | always 1: the server's version and the SIMD kernels it runs |
+| `chloedb_build_info` | `version`, `commit`, `simd` | always 1: the server's version, the commit it was built from (empty for a build outside a git checkout) and the SIMD kernels it runs |
 | `process_start_time_seconds`, `process_cpu_seconds_total` | | when the process started, and the CPU time it used |
 | `process_resident_memory_bytes`, `process_open_fds` | | memory in RAM (mapped database pages included) and open file descriptors (Linux) |
 | `chloedb_http_requests_total`, `chloedb_http_request_duration_seconds` | `route`, `status` | HTTP requests by route pattern (`other` for none) and status, and their duration by route |

@@ -143,7 +143,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>Like <a href="crawler.html">the crawler</a> and <a href="netops.html">network operations</a>, it is a program of its own, in Rust, that talks to chloedb-server over HTTP only, and the command center shows it as an app (<strong>Apps → Hacker News</strong>).</p>
 <h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
 <p>Build both programs, then prepare the archive and start the app with a server of its own:</p>
-<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release)
+<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release --bin chloedb-server)
 cd chloedb-hn &amp;&amp; cargo build --release
 target/release/chloedb-hn prepare --parquet ./hn-parquet --out ./hn-rows --download
 target/release/chloedb-hn complete --rows ./hn-rows
@@ -338,7 +338,7 @@ chloedb-server ... --app hn=http://hn-host:7850     # with CHLOEDB_APP_TOKEN=$HN
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
