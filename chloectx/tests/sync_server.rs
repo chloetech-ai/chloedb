@@ -198,14 +198,14 @@ fn a_project_key_reads_its_project_only_and_what_another_machine_sent_waits_to_b
     assert_eq!(sync::pending_origin(&rule), Some(sync::origin(&home_a).as_str()));
     let (brief, _) = chloectx::recall::briefing(&b, "s-now", 8000, 1_800_000_000).unwrap();
     assert!(!brief.contains("bootstrap.sh") && brief.contains("deploys on Tuesdays"), "{brief}");
-    let pending = sync::accept(&home_b, &b, &[]).unwrap();
-    assert_eq!(pending.iter().map(|(o, n, _)| (o.clone(), *n)).collect::<Vec<_>>(), vec![(sync::origin(&home_a), 2)]);
-    sync::accept(&home_b, &b, &[sync::origin(&home_a)]).unwrap();
+    let (pending, _) = sync::accept(&home_b, &b, "acme/web", &[], false).unwrap();
+    assert_eq!(pending.iter().map(|p| (p.origin.clone(), p.records)).collect::<Vec<_>>(), vec![(sync::origin(&home_a), 2)]);
+    sync::accept(&home_b, &b, "acme/web", &[sync::origin(&home_a)], false).unwrap();
     let (brief, _) = chloectx::recall::briefing(&b, "s-now", 8000, 1_800_000_000).unwrap();
     assert!(brief.contains("bootstrap.sh"), "{brief}");
-    assert!(sync::accept(&home_b, &b, &[]).unwrap().is_empty());
-    // A machine accepted once: its later records come in accepted.
-    assert!(sync::load_config(&home_b).trusted.contains(&sync::origin(&home_a)));
+    assert!(sync::accept(&home_b, &b, "acme/web", &[], false).unwrap().0.is_empty());
+    // A machine accepted once: its later records of the project come in accepted.
+    assert!(sync::load_config(&home_b).trusts("acme/web", &sync::origin(&home_a)));
 
     // A key limited to acme/web's table reads and writes it, and no other
     // project: neither payroll's table nor the shared one.
@@ -367,4 +367,92 @@ fn a_delete_the_server_did_not_answer_is_sent_again() {
     let f = sync::load_forgotten(&da);
     assert!(f.unsent.is_empty() && f.ids.contains("a-00002"), "{f:?}");
     assert_eq!(sync::send_forgets(&remote, project, &da).unwrap(), 0);
+}
+
+#[test]
+fn accept_names_each_machine_by_its_key_and_all_reaches_only_the_machines_listed_now() {
+    // WEI-308: `sync accept` listed `m-44fb96669a15: 73 records`, and
+    // `accept --all` wrote `trusted: ["*"]`: every machine to come, for
+    // every project of the laptop.
+    let Some(bin) = server_bin() else {
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    std::env::remove_var("CHLOECTX_SYNC_ORIGIN");
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, url) = serve(&bin, dir.path(), Some(ADMIN));
+    let (ledger, payroll) = ("acme/ledger", "acme/payroll");
+    let machine = |name: &str, key: &str| {
+        let home = dir.path().join(name);
+        sync::setup(&home, &dir.path().to_string_lossy(), &url, Some(key), "", &[], true).unwrap();
+        (sync::remote(&home).unwrap(), home)
+    };
+    // The key "Make a sync key" makes for alice's laptop.
+    let table = sync::table_for(ledger);
+    let name = format!("chloectx-sync-alice-laptop-{}", &table[table.len() - 8..]);
+    let admin = admin_remote(&dir.path().join("home-admin"), &url);
+    admin.create_table(ledger).unwrap();
+    let (code, k) = post(&url, ADMIN, "/v1/admin/keys", serde_json::json!({"name": name, "scope": "write", "tables": {table.clone(): "write"}}));
+    assert_eq!(code, 200, "{k}");
+    let (ra, home_a) = machine("home-alice", k["secret"].as_str().unwrap());
+    assert_eq!(ra.key_name().as_deref(), Some(name.as_str()));
+    assert_eq!(sync::machine_name(&name), "alice-laptop");
+    // carol syncs with the server's own token, which names no one.
+    let (rc, home_c) = machine("home-carol", ADMIN);
+    assert_eq!(rc.key_name(), None);
+    let (rb, home_b) = machine("home-bob", ADMIN);
+
+    let a = store(dir.path(), "a.strata");
+    load(&a, &[note("a", Kind::Decision, "Use Postgres SKIP LOCKED for the job queue, not Redis", 1)]);
+    sync::push(&ra, &a, ledger, &mut SyncState::default()).unwrap();
+    let c = store(dir.path(), "c.strata");
+    load(&c, &[note("c", Kind::Preference, "User preference: money is integer cents", 1)]);
+    sync::push(&rc, &c, ledger, &mut SyncState::default()).unwrap();
+
+    // bob lists them: alice's by her key's name, carol's by its id.
+    let b = store(dir.path(), "b.strata");
+    assert_eq!(sync::pull(&rb, &b, ledger, &mut SyncState::default(), dir.path()).unwrap(), 2);
+    let (waiting, _) = sync::accept(&home_b, &b, ledger, &[], false).unwrap();
+    let (oa, oc) = (sync::origin(&home_a), sync::origin(&home_c));
+    let labels: Vec<String> = waiting.iter().map(|p| p.label()).collect();
+    assert!(labels.contains(&format!("alice-laptop ({oa})")) && labels.contains(&oc), "{labels:?}");
+    assert_eq!(waiting.iter().find(|p| p.origin == oa).unwrap().key.as_deref(), Some(name.as_str()));
+    // The server's row names the key too, for an admin's SQL.
+    let (code, j) = post(&url, ADMIN, "/v1/query", serde_json::json!({"sql": format!("SELECT links_json FROM {table} WHERE origin = :o LIMIT 5"), "params": {"o": oa}}));
+    assert_eq!(code, 200, "{j}");
+    assert!(j["rows"][0][0].as_str().unwrap().contains(&name), "{j}");
+
+    // By the machine's name; a name that matches no machine says so.
+    let (_, unknown) = sync::accept(&home_b, &b, ledger, &["alice-laptop".into(), "dave-laptop".into()], false).unwrap();
+    assert_eq!(unknown, vec!["dave-laptop".to_string()]);
+    let held = |id: &str| sync::held_back(&b.get(&[id.to_string()]).unwrap().pop().unwrap());
+    assert!(!held("a-00001") && held("c-00001"));
+
+    // --all: the machines listed now, in this project, written by name.
+    let (left, _) = sync::accept(&home_b, &b, ledger, &[], true).unwrap();
+    assert_eq!(left.iter().map(|p| p.origin.clone()).collect::<Vec<_>>(), vec![oc.clone()]);
+    assert!(!held("c-00001"));
+    let cfg = sync::load_config(&home_b);
+    assert!(cfg.trusted.is_empty() && cfg.accepted.get(ledger).is_some_and(|o| o.contains(&oa) && o.contains(&oc)), "{cfg:?}");
+
+    // A machine that pushes later waits, as does an accepted machine's
+    // record of another project.
+    let (rd, _) = machine("home-dan", ADMIN);
+    let d = store(dir.path(), "d.strata");
+    load(&d, &[note("d", Kind::Preference, "User preference: add Redis for the job queue", 1)]);
+    sync::push(&rd, &d, ledger, &mut SyncState::default()).unwrap();
+    let ap = store(dir.path(), "ap.strata");
+    load(&ap, &[note("ap", Kind::Preference, "User preference: payroll runs on the 25th", 1)]);
+    sync::push(&rc, &ap, payroll, &mut SyncState::default()).unwrap();
+    assert_eq!(sync::pull(&rb, &b, ledger, &mut SyncState::default(), dir.path()).unwrap(), 1);
+    assert!(held("d-00001"), "a machine that pushed after --all");
+    let bp = store(dir.path(), "bp.strata");
+    assert_eq!(sync::pull(&rb, &bp, payroll, &mut SyncState::default(), dir.path()).unwrap(), 1);
+    assert!(sync::held_back(&bp.get(&["ap-00001".to_string()]).unwrap().pop().unwrap()), "carol was accepted in acme/ledger only");
+
+    // `*`, as --all wrote it before, accepts no machine any more.
+    let cfg = sync::SyncConfig { trusted: vec!["*".into()], ..Default::default() };
+    assert!(cfg.trusted_everyone() && !cfg.trusts(ledger, "m-anyone"));
+    let cfg = sync::SyncConfig { trusted: vec![oa.clone()], ..Default::default() };
+    assert!(cfg.trusts(payroll, &oa), "a machine accepted before 0.3.9 stays accepted");
 }

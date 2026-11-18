@@ -532,13 +532,18 @@ enum SyncCmd {
     /// Push, then store the project's records the server holds and the store lacks.
     Pull,
     /// The records pulled from other machines whose rules and decisions are
-    /// kept out of the briefing until accepted, by machine; with --origin
-    /// (repeatable) or --all, accept those machines' records, now and on
-    /// later pulls.
+    /// kept out of the briefing and the prompt's context until accepted, by
+    /// machine (named by the key it pushed with); with --origin or --all,
+    /// accept those machines' records in this project, now and on later
+    /// pulls.
     Accept {
+        /// A machine as listed: its name (`ana-laptop`), its key's name, or
+        /// its id (`m-44fb96669a15`). Repeatable.
         #[arg(long = "origin")]
         origins: Vec<String>,
-        #[arg(long)]
+        /// Every machine listed now, in this project only; a machine that
+        /// pushes later waits to be accepted too.
+        #[arg(long, conflicts_with = "origins")]
         all: bool,
     },
 }
@@ -811,12 +816,12 @@ fn main() {
                 send(&project, json!({"op": "shutdown"}), 10);
             }
         }
-        Cmd::Sync { what: SyncCmd::Accept { mut origins, all } } => {
-            if all {
-                origins = vec!["*".into()];
-            }
-            let r = send(&project, json!({"op": "sync", "what": "accept", "origins": origins}), 600);
+        Cmd::Sync { what: SyncCmd::Accept { origins, all } } => {
+            let r = send(&project, json!({"op": "sync", "what": "accept", "origins": origins, "all": all}), 600);
             println!("{}", r["text"].as_str().unwrap_or(""));
+            if r["unknown"].as_array().is_some_and(|u| !u.is_empty()) {
+                std::process::exit(1);
+            }
         }
         Cmd::Sync { what } => {
             let (w, again) = match what {
