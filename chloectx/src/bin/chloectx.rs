@@ -502,11 +502,12 @@ enum SyncCmd {
         /// be limited to one project's table), never on the command line.
         #[arg(long, conflicts_with = "token_env")]
         token_stdin: bool,
-        /// Keep the key from stdin as the machine's too (sync.token), for
-        /// every project without a key of its own: an admin's key, or one
-        /// that may write several projects' tables. Without it, only the
-        /// first key set up on the machine becomes the machine's.
-        #[arg(long, requires = "token_stdin")]
+        /// Sync every project on this machine, not only this one, and keep
+        /// the key from stdin as the machine's too (sync.token), which a
+        /// project without a key of its own sends: an admin's key, or one
+        /// that may write several projects' tables. Without it, only this
+        /// project syncs (and those set up before in their own folders).
+        #[arg(long)]
         every_project: bool,
         /// Read the key from this environment variable whenever the daemon
         /// syncs (one a cloud environment sets, say); no file holds it.
@@ -520,7 +521,16 @@ enum SyncCmd {
         #[arg(long)]
         no_create: bool,
     },
-    /// What was sent and received, and what the server holds for this project.
+    /// Stop syncing this project, and remove its key; with
+    /// --every-project, stop syncing every project (those set up in their
+    /// own folders go on) and remove the machine's key. The server keeps
+    /// what it was sent.
+    Off {
+        #[arg(long)]
+        every_project: bool,
+    },
+    /// What was sent and received, and what the server holds for this
+    /// project; whether it syncs, and which projects of the machine do.
     Status,
     /// Send what the store recorded since the last push.
     Push {
@@ -810,11 +820,27 @@ fn main() {
                     println!("sync set up with {}; this project syncs as {key}, with {}; the server does not answer yet ({e}){}: the daemon tries again when it starts", remote.url, remote.key_from, chloectx::sync::key_hint(&key, &e));
                 }
             }
+            // Which other projects send their stores (LENA-301: every one did).
+            println!("{}", chloectx::sync::scope_line(&home));
             // A running daemon syncs once it starts again (on the next hook or tool).
             let dir = paths::store_dir(&project);
             if std::os::unix::net::UnixStream::connect(paths::StorePaths::new(&dir).socket).is_ok() {
                 send(&project, json!({"op": "shutdown"}), 10);
             }
+        }
+        Cmd::Sync { what: SyncCmd::Off { every_project } } => {
+            let home = paths::home();
+            let did = chloectx::sync::off(&home, &project.to_string_lossy(), every_project).unwrap_or_else(|e| {
+                eprintln!("chloectx sync: {e}");
+                std::process::exit(1);
+            });
+            if did.is_empty() {
+                println!("nothing to stop: {}", chloectx::sync::scope_line(&home));
+            }
+            for line in did {
+                println!("{line}");
+            }
+            println!("the server keeps what it was sent; {}", chloectx::sync::scope_line(&home));
         }
         Cmd::Sync { what: SyncCmd::Accept { origins, all } } => {
             let r = send(&project, json!({"op": "sync", "what": "accept", "origins": origins, "all": all}), 600);
@@ -828,7 +854,7 @@ fn main() {
                 SyncCmd::Status => ("status", false),
                 SyncCmd::Push { again } => ("push", again),
                 SyncCmd::Pull => ("pull", false),
-                SyncCmd::Setup { .. } | SyncCmd::Accept { .. } => unreachable!(),
+                SyncCmd::Setup { .. } | SyncCmd::Accept { .. } | SyncCmd::Off { .. } => unreachable!(),
             };
             let r = send(&project, json!({"op": "sync", "what": w, "again": again}), 600);
             println!("{}", serde_json::to_string_pretty(&r).unwrap());
