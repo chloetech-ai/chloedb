@@ -13,7 +13,8 @@
 //!
 //! * `Aggregate` of fields and paths over `Project` of fields over a
 //!   `Search` becomes `Aggregate` over the `Search`, under a `Project` of
-//!   its outputs; with the `Filter`, `Sort`, `Limit` and `Project` above it,
+//!   its outputs (of fields alone too, when each holds one value: the
+//!   aggregates under `ROUND(SUM(x), 2)` or a HAVING); with the `Filter`, `Sort`, `Limit` and `Project` above it,
 //!   when the executor takes those too;
 //! * `Project` over `[Limit]` over `Sort` by a path (then possibly the
 //!   primary key) over `Project` of fields over a `Search` becomes the
@@ -22,6 +23,16 @@
 //!   the leaf giving the path as a column after the rows' fields (which a
 //!   coordinator merges the rows of shards by).
 //!
+//! In a plan this process runs itself ([`paths`] with `exprs`, from
+//! [`crate::query::compound::fuse_columns`]), an `Aggregate` whose keys or
+//! aggregates are expressions of single-valued numeric fields
+//! (`SUM(a * b)`, `AVG(EXTRACT(epoch FROM end) - EXTRACT(epoch FROM
+//! start))`, `COUNT(CASE WHEN c THEN 1 END)`, which `COUNT(*) FILTER
+//! (WHERE c)` is, `GROUP BY CASE WHEN x < 1 THEN 'a' ELSE 'b' END`) moves
+//! into its leaf too, and the executor computes them from the columns
+//! ([`computable`]). A coordinator's leaves go to shards that may be of an
+//! older version, which would not raise them, so its plans keep them above.
+//!
 //! A node is moved into a leaf only when the leaf raises to the executor's
 //! SELECT ([`super::Plan::to_select`]); a query whose plan has none of
 //! these shapes plans as before. Joins are left as they are: a leaf on the
@@ -29,22 +40,155 @@
 //! or ranks its rows does not allow.
 
 use super::{raise, Agg, Column, Expr, Func, Node, Search, SortKey};
-use crate::schema::{FieldType, Schema};
+use crate::query::logical::AggFn;
+use crate::schema::{FieldType, Logical, Schema};
 use crate::value::Value;
 
 /// Moves the operators over leaves that read paths into the leaves
-/// ([module docs](self)), in `n` and below it.
-pub(crate) fn paths(n: &mut Node, catalog: &[&Schema]) {
+/// ([module docs](self)), in `n` and below it; with `exprs`, only the
+/// aggregates of expressions, in a plan already fused without them.
+pub(crate) fn paths(n: &mut Node, catalog: &[&Schema], exprs: bool) {
     if matches!(n, Node::Join { .. } | Node::KeyOrder { .. }) {
         return;
     }
     for c in n.inputs_mut() {
-        paths(c, catalog);
+        paths(c, catalog, exprs);
     }
-    let fused = aggregate(n, catalog).or_else(|| groups(n, catalog)).or_else(|| ordered(n, catalog));
+    let fused = match exprs {
+        false => aggregate(n, catalog).or_else(|| groups(n, catalog)).or_else(|| ordered(n, catalog)),
+        true => computed(n, catalog).or_else(|| groups(n, catalog)),
+    };
     if let Some(f) = fused {
         *n = f;
     }
+}
+
+/// Whether the executor computes `e` from the columns of `schema`'s
+/// table, row by row as the row evaluator does ([`super::eval`]): an
+/// expression of indexed single-valued INT and FLOAT fields (BOOL and
+/// TIMESTAMP ones too) and values, by arithmetic, comparisons, conditions,
+/// `CASE`, and scalar functions of numbers, text and times. Not a field
+/// alone, which is a column as it is.
+pub(super) fn computable(e: &Expr, schema: &Schema) -> bool {
+    fn of(e: &Expr, schema: &Schema) -> bool {
+        let all = |xs: &[Expr]| xs.iter().all(|x| of(x, schema));
+        match e {
+            Expr::Field(f) => schema.fields.get(*f as usize).is_some_and(|fld| fld.indexed && !fld.multi && matches!(fld.ty, FieldType::Int | FieldType::Float)),
+            Expr::Lit(v) => !matches!(v, Value::List(_) | Value::Vector(_)),
+            Expr::Not(x) | Expr::IsNull(x) | Expr::Neg(x) => of(x, schema),
+            Expr::And(xs) | Expr::Or(xs) | Expr::Concat(xs) => all(xs),
+            Expr::Cmp { left, right, .. } | Expr::Arith { left, right, .. } => of(left, schema) && of(right, schema),
+            Expr::Between { expr, lo, hi } => of(expr, schema) && lo.as_deref().is_none_or(|x| of(x, schema)) && hi.as_deref().is_none_or(|x| of(x, schema)),
+            Expr::In { expr, list } => of(expr, schema) && all(list),
+            Expr::Case { operand, whens, otherwise } => {
+                operand.as_deref().is_none_or(|x| of(x, schema)) && whens.iter().all(|w| of(&w.when, schema) && of(&w.then, schema)) && otherwise.as_deref().is_none_or(|x| of(x, schema))
+            }
+            Expr::Call { func, args } => {
+                matches!(
+                    func,
+                    Func::Lower
+                        | Func::Upper
+                        | Func::Length
+                        | Func::Abs
+                        | Func::Round
+                        | Func::Coalesce
+                        | Func::Ln
+                        | Func::Log
+                        | Func::Exp
+                        | Func::Sqrt
+                        | Func::Pow
+                        | Func::Least
+                        | Func::Greatest
+                        | Func::Sigmoid
+                        | Func::Clamp
+                        | Func::DateTrunc
+                        | Func::DatePart
+                        | Func::Strftime
+                        | Func::DateBin
+                        | Func::Hash
+                ) && all(args)
+            }
+            _ => false,
+        }
+    }
+    !matches!(e, Expr::Field(_)) && of(e, schema)
+}
+
+/// Whether `e` may give a TIMESTAMP: a group's value keeps a time as its
+/// integer, which the answer's types give back only for a column's.
+pub(super) fn may_be_time(e: &Expr, schema: &Schema) -> bool {
+    let any = |xs: &[Expr]| xs.iter().any(|x| may_be_time(x, schema));
+    match e {
+        Expr::Field(f) => schema.fields.get(*f as usize).is_some_and(|fld| fld.logical == Some(Logical::Timestamp)),
+        Expr::Lit(v) => matches!(v, Value::Timestamp(_)),
+        Expr::Arith { left, right, .. } => may_be_time(left, schema) || may_be_time(right, schema),
+        Expr::Case { whens, otherwise, .. } => whens.iter().any(|w| may_be_time(&w.then, schema)) || otherwise.as_deref().is_some_and(|x| may_be_time(x, schema)),
+        Expr::Call { func: Func::DateTrunc | Func::DateBin, .. } => true,
+        Expr::Call { func: Func::Coalesce | Func::Least | Func::Greatest | Func::Clamp, args } => any(args),
+        _ => false,
+    }
+}
+
+/// `e`, an expression of the rows of a `Project` of `cols`, as one of the
+/// rows of the Search below, when each column it reads is a field.
+fn of_fields(e: &Expr, cols: &[Column]) -> Option<Expr> {
+    let mut x = e.clone();
+    x.visit_mut(&mut |y| {
+        if let Expr::Output(i) = y {
+            match cols.get(*i as usize).map(|c| &c.expr) {
+                Some(f @ Expr::Field(_)) => *y = f.clone(),
+                _ => return Err(crate::error::Error::Query(String::new())),
+            }
+        }
+        Ok(())
+    })
+    .ok()?;
+    Some(x)
+}
+
+/// `Aggregate` over `Project` of fields over a `Search`, whose keys or
+/// aggregates are expressions the executor computes ([`computable`]), as
+/// an `Aggregate` over the Search under a `Project` of its outputs: a
+/// leaf. Its aggregates are `COUNT`, `SUM`, `AVG`, `MIN` and `MAX`, which
+/// the columns' groups add as the rows' do; at most four keys, none of
+/// them a time.
+fn computed(n: &Node, catalog: &[&Schema]) -> Option<Node> {
+    let Node::Aggregate { input, keys, aggs } = n else { return None };
+    let Node::Project { input: below, columns: cols } = &**input else { return None };
+    let Node::Search(s) = &**below else { return None };
+    if !s.order.is_empty() || !s.phases.is_empty() || s.per.is_some() || keys.len() > 4 {
+        return None;
+    }
+    if !aggs.iter().all(|a| matches!(a.func, AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max)) {
+        return None;
+    }
+    let schema = table(catalog, s)?;
+    let mut any = false;
+    let mut read = |e: &Expr, key: bool| -> Option<Expr> {
+        if let Some((x, _)) = column(e, cols, schema) {
+            return groupable(schema, &x).then_some(x);
+        }
+        let x = of_fields(e, cols)?;
+        any = true;
+        (computable(&x, schema) && !(key && may_be_time(&x, schema))).then_some(x)
+    };
+    let keys2 = keys.iter().map(|k| read(k, true)).collect::<Option<Vec<_>>>()?;
+    let aggs2 = aggs
+        .iter()
+        .map(|a| {
+            let arg = match &a.arg {
+                None => None,
+                Some(e) => Some(read(e, false)?),
+            };
+            Some(Agg::of(a.func, arg))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if !any {
+        return None;
+    }
+    let agg = Node::Aggregate { input: Box::new(Node::Search(s.clone())), keys: keys2, aggs: aggs2 };
+    let leaf = Node::Project { input: Box::new(agg), columns: outputs(keys.len() + aggs.len()) };
+    raises(&leaf, schema).then_some(leaf)
 }
 
 /// The table `s` searches.
@@ -147,9 +291,13 @@ fn aggregate(n: &Node, catalog: &[&Schema]) -> Option<Node> {
     }
     let schema = table(catalog, s)?;
     let mut any_path = false;
+    let mut any_multi = false;
     let mut read = |e: &Expr| {
         let (x, read) = column(e, cols, schema)?;
         any_path |= read != Read::Field;
+        if let Expr::Field(f) = x {
+            any_multi |= schema.fields.get(f as usize).is_none_or(|fld| fld.multi);
+        }
         groupable(schema, &x).then_some(x)
     };
     let keys2 = keys.iter().map(&mut read).collect::<Option<Vec<_>>>()?;
@@ -167,7 +315,13 @@ fn aggregate(n: &Node, catalog: &[&Schema]) -> Option<Node> {
             Some(Agg::of(a.func, arg))
         })
         .collect::<Option<Vec<_>>>()?;
-    if !any_path {
+    // Fields alone are taken when each holds one value, so that the
+    // aggregates under `ROUND(SUM(x), 2)`, a HAVING or a window run from the
+    // columns; groups over a multi-valued field stay with the operators,
+    // and percentiles and distinct counts with DataFusion, which sorts and
+    // hashes their values faster.
+    let simple = aggs.iter().all(|a| matches!(a.func, AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max));
+    if !any_path && (any_multi || !simple) {
         return None;
     }
     let agg = Node::Aggregate { input: Box::new(Node::Search(s.clone())), keys: keys2, aggs: aggs2 };

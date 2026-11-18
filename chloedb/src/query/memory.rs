@@ -207,10 +207,24 @@ impl Charge {
 
     /// Counts room for one more item in `v`: when it is full, its next
     /// capacity, which it reserves.
+    #[inline]
     pub fn room<T>(&self, v: &mut Vec<T>) -> Result<()> {
         if self.0.is_some() && v.len() == v.capacity() {
             let more = v.capacity().max(64);
             self.add((more * std::mem::size_of::<T>()) as u64)?;
+            v.reserve_exact(more);
+        }
+        Ok(())
+    }
+
+    /// Room in `v` for `more` values past its length at once, counted as
+    /// [`Charge::room`] counts what it grows by.
+    pub fn reserve<T>(&self, v: &mut Vec<T>, more: usize) -> Result<()> {
+        let need = v.len().saturating_add(more);
+        if need > v.capacity() {
+            if self.0.is_some() {
+                self.add(((need - v.capacity()) * std::mem::size_of::<T>()) as u64)?;
+            }
             v.reserve_exact(more);
         }
         Ok(())

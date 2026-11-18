@@ -378,15 +378,17 @@ pub enum PartValue {
 pub fn part(micros: i64, part: Part) -> PartValue {
     let days = micros.div_euclid(MICROS_PER_DAY);
     let rest = micros.rem_euclid(MICROS_PER_DAY);
-    let (y, m, d) = civil_from_days(days);
+    // The date only for the parts of it: an hour or the epoch of a few
+    // hundred thousand rows needs none.
+    let civil = || civil_from_days(days);
     PartValue::Int(match part {
-        Part::Year => y,
+        Part::Year => civil().0,
         Part::IsoYear => iso_week(days).0,
-        Part::Quarter => (m - 1) / 3 + 1,
-        Part::Month => m,
+        Part::Quarter => (civil().1 - 1) / 3 + 1,
+        Part::Month => civil().1,
         Part::Week => iso_week(days).1,
-        Part::Day => d,
-        Part::Doy => days - days_from_civil(y, 1, 1) + 1,
+        Part::Day => civil().2,
+        Part::Doy => days - days_from_civil(civil().0, 1, 1) + 1,
         Part::Dow => (weekday(days) + 1) % 7,
         Part::IsoDow => weekday(days) + 1,
         Part::Hour => rest / 3_600_000_000,

@@ -14,10 +14,12 @@ name: Perf
 #   collections (plain and fuzzy), each collection's load, and the server's
 #   latency per query kind over HTTP on SciFact with its Cohere vectors
 #   (chloedb-server-bench: vector, hybrid, filters, by key, through a
-#   coordinator over 2 shards). A failed night opens an issue
-#   (nightly-report.yml).
-# - A pull request labelled `perf`: the pull request against its base, BM25
-#   and loads only. Not a required check.
+#   coordinator over 2 shards), and analytical SQL (chloedb-sql-bench: the
+#   persona study's battery of groups, aggregates, joins, windows and
+#   functions of times on 224,000 made-up taxi trips). A failed night opens
+#   an issue (nightly-report.yml).
+# - A pull request labelled `perf`: the pull request against its base, BM25,
+#   loads and the SQL battery. Not a required check.
 # - By hand: any two refs (`gh workflow run perf.yml -f base=<ref> -f head=<ref>`).
 #
 # Both builds use the release profile (as the benchmarks in results/ do)
@@ -114,13 +116,27 @@ jobs:
         run: |
           # Each commit is built in its own worktree, into the main
           # checkout's target directories, so the cache's dependencies serve
-          # both; the binaries are copied out before the next build.
+          # both; the binaries are copied out before the next build. Both
+          # build ChloeDB with DataFusion, as the server and the packages do.
+          # The SQL timer is this checkout's, copied into both commits, so
+          # that the two time the same statements on their own ChloeDB; a
+          # commit it does not build on is timed without it.
+          timer="$GITHUB_WORKSPACE/chloedb/src/bin/chloedb-sql-bench"
           for side in base head; do
             sha=$BASE; [ "$side" = head ] && sha=$HEAD_SHA
             git worktree add --detach "$RUNNER_TEMP/src-$side" "$sha"
             mkdir -p "$RUNNER_TEMP/bin-$side"
-            (cd "$RUNNER_TEMP/src-$side/chloedb" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/chloedb/target" cargo build --locked --release --bin chloedb-bm25-eval)
+            (cd "$RUNNER_TEMP/src-$side/chloedb" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/chloedb/target" cargo build --locked --release --features datafusion --bin chloedb-bm25-eval)
             cp chloedb/target/release/chloedb-bm25-eval "$RUNNER_TEMP/bin-$side/"
+            if [ -d "$timer" ]; then
+              rm -rf "$RUNNER_TEMP/src-$side/chloedb/src/bin/chloedb-sql-bench"
+              cp -r "$timer" "$RUNNER_TEMP/src-$side/chloedb/src/bin/"
+              if (cd "$RUNNER_TEMP/src-$side/chloedb" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/chloedb/target" cargo build --locked --release --features datafusion --bin chloedb-sql-bench); then
+                cp chloedb/target/release/chloedb-sql-bench "$RUNNER_TEMP/bin-$side/"
+              else
+                echo "::warning::the SQL timer does not build on $side ($sha); the gate leaves SQL out"
+              fi
+            fi
             if [ "$SERVER" = true ]; then
               (cd "$RUNNER_TEMP/src-$side/chloedb-server" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/chloedb-server/target" cargo build --locked --release --bin chloedb-server-bench)
               cp chloedb-server/target/release/chloedb-server-bench "$RUNNER_TEMP/bin-$side/"
@@ -156,7 +172,7 @@ jobs:
           vectors=()
           [ "$SERVER" = true ] && vectors=(--vectors "$HOME/beir-vectors")
           python3 -I scripts/perf-gate.py --base "$RUNNER_TEMP/bin-base" --head "$RUNNER_TEMP/bin-head" \
-            --beir "$HOME/beir" "${vectors[@]}" --rounds 3 --threshold 0.10 \
+            --beir "$HOME/beir" "${vectors[@]}" --sql --rounds 3 --threshold 0.10 \
             --base-label "${BASE:0:8}" --head-label "${HEAD_SHA:0:8}" \
             --out "$RUNNER_TEMP/perf-gate" --summary "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
