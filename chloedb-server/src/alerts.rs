@@ -25,7 +25,7 @@
 //! for 7 days, and in the server's events; firing and resolved ones are
 //! posted to the routes ([`Route`]) that take their severity, unless the
 //! alert is silenced. Rules and routes are kept in `--alerts FILE` (JSON),
-//! or in memory.
+//! or in memory; a coordinator's also on its shards ([`crate::kept`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -906,6 +906,10 @@ struct Kept {
     rules_ms: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     rules_by: String,
+    /// When the routes were last changed ([`crate::kept`]: on the shards,
+    /// as between coordinators, the newest change wins).
+    #[serde(default)]
+    routes_ms: u64,
 }
 
 /// One copy's state of an each_copy rule, as the coordinator last heard.
@@ -937,6 +941,26 @@ struct ClusterView {
     /// Each shard's primary as last seen, and when primaries changed.
     primaries: HashMap<usize, String>,
     changes: VecDeque<(u64, Json)>,
+    /// The latest check, shard by shard, for `/metrics` (OLU-3), and when.
+    shards: Vec<ShardSeen>,
+    checked_ms: u64,
+    /// Primary changes seen since this coordinator started, by shard.
+    changed: HashMap<usize, u64>,
+}
+
+/// One shard as a coordinator's latest check of its cluster saw it.
+#[derive(Clone, Debug, Default)]
+struct ShardSeen {
+    shard: usize,
+    copies: usize,
+    up: usize,
+    in_sync: usize,
+    majority: bool,
+    primary: bool,
+    term: u64,
+    /// Each copy: its name (`--node-name`, else short), URL, role, and
+    /// whether it answers.
+    each: Vec<(String, String, String, bool)>,
 }
 
 /// How often a coordinator checks its cluster ([`tick`]).
@@ -977,6 +1001,17 @@ pub struct Alerts {
     /// When the rules were last edited, and by whom ([`Kept::rules_ms`]).
     rules_ms: AtomicU64,
     rules_by: Mutex<String>,
+    /// When the routes were last changed ([`Kept::routes_ms`]).
+    routes_ms: AtomicU64,
+    /// `--alert-webhook`: the route "default" it makes, which routes taken
+    /// from the shards keep ([`Self::take_kept`]).
+    webhook_url: Option<String>,
+    /// Where else the rules, routes and states are kept: on the cluster's
+    /// shards ([`crate::kept`]), as it last went.
+    held: Mutex<Option<Json>>,
+    /// Woken when the states change, so that the shards keep them soon
+    /// ([`crate::kept`]).
+    pub(crate) changed: Arc<tokio::sync::Notify>,
     /// `<rules file>.state.json` ([`Saved`]).
     state_file: Option<PathBuf>,
     /// The coordinators of this cluster, this one included, as last heard
@@ -1004,7 +1039,7 @@ pub struct Alerts {
     slo: Mutex<Option<(f64, f64)>>,
     /// Until when a restarted coordinator sends no FIRING message
     /// ([`STARTUP_MS`]); 0 for a server that starts afresh.
-    starting_until: u64,
+    starting_until: AtomicU64,
     /// The rules with `sql`: each one's last value, by its metric, and
     /// how its last run went ([`refresh_sql`]).
     sql_values: Mutex<std::collections::BTreeMap<String, f64>>,
@@ -1083,7 +1118,8 @@ impl Alerts {
             },
             None => Kept { rules: defaults(), ..Kept::default() },
         };
-        if let Some(url) = webhook.filter(|u| !u.is_empty()) {
+        let webhook_url = webhook.filter(|u| !u.is_empty());
+        if let Some(url) = webhook_url.clone() {
             kept.routes.retain(|r| r.name != "default");
             // Whoever starts the server chose it: it may be inside the network.
             kept.routes.insert(0, Route { name: "default".into(), url, severities: Vec::new(), kind: String::new(), key: String::new(), repeat_min: 0, allow_internal: Some(true) });
@@ -1141,6 +1177,10 @@ impl Alerts {
             turns: Mutex::new(HashMap::new()),
             rules_ms: AtomicU64::new(kept.rules_ms),
             rules_by: Mutex::new(kept.rules_by),
+            routes_ms: AtomicU64::new(kept.routes_ms),
+            webhook_url,
+            held: Mutex::new(None),
+            changed: Arc::new(tokio::sync::Notify::new()),
             state_file,
             peers: Mutex::new(Vec::new()),
             outbox: Mutex::new(Vec::new()),
@@ -1152,7 +1192,7 @@ impl Alerts {
             repeated: Mutex::new(HashMap::new()),
             peer_states: Mutex::new(HashMap::new()),
             slo: Mutex::new(None),
-            starting_until: if restarted { now + STARTUP_MS } else { 0 },
+            starting_until: AtomicU64::new(if restarted { now + STARTUP_MS } else { 0 }),
             sql_values: Mutex::new(Default::default()),
             sql_runs: Mutex::new(HashMap::new()),
             sql_checked: AtomicU64::new(0),
@@ -1265,7 +1305,7 @@ impl Alerts {
     fn save(&self, rules: &[Rule], routes: &[Route]) -> Result<(), ApiError> {
         let Some(p) = &self.file else { return Ok(()) };
         let tmp = p.with_extension("tmp");
-        let kept = Kept { rules: rules.to_vec(), routes: routes.to_vec(), rules_ms: self.rules_ms.load(Ordering::Relaxed), rules_by: lock(&self.rules_by).clone() };
+        let kept = Kept { rules: rules.to_vec(), routes: routes.to_vec(), rules_ms: self.rules_ms.load(Ordering::Relaxed), rules_by: lock(&self.rules_by).clone(), routes_ms: self.routes_ms.load(Ordering::Relaxed) };
         let body = serde_json::to_vec_pretty(&kept).map_err(ApiError::internal)?;
         std::fs::write(&tmp, body).and_then(|_| std::fs::rename(&tmp, p)).map_err(|e| ApiError::internal(format!("write {}: {e}", p.display())))
     }
@@ -1273,17 +1313,9 @@ impl Alerts {
     /// Writes the state file ([`Saved`]); a failure is logged, not
     /// answered: the alerts go on in memory.
     fn save_state(&self) {
+        self.changed.notify_one();
         let Some(p) = &self.state_file else { return };
-        let saved = {
-            let states = lock(&self.states);
-            let c = lock(&self.cluster);
-            Saved {
-                saved_ms: now_ms(),
-                states: states.iter().map(|(k, v)| (k.clone(), v.saved())).collect(),
-                primaries: c.primaries.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
-                changes: c.changes.iter().cloned().collect(),
-            }
-        };
+        let saved = self.saved();
         let tmp = p.with_extension("tmp");
         let res = serde_json::to_vec(&saved).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&tmp, b).and_then(|_| std::fs::rename(&tmp, p)).map_err(|e| e.to_string()));
         if let Err(e) = res {
@@ -1297,6 +1329,126 @@ impl Alerts {
     /// When the rules were last edited (ms; 0: never), and by whom.
     pub fn rules_version(&self) -> (u64, String) {
         (self.rules_ms.load(Ordering::Relaxed), lock(&self.rules_by).clone())
+    }
+
+    /// What the state file keeps ([`Saved`]), as of now.
+    fn saved(&self) -> Saved {
+        let states = lock(&self.states);
+        let c = lock(&self.cluster);
+        Saved {
+            saved_ms: now_ms(),
+            states: states.iter().map(|(k, v)| (k.clone(), v.saved())).collect(),
+            primaries: c.primaries.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+            changes: c.changes.iter().cloned().collect(),
+        }
+    }
+
+    /// What the shards keep of this coordinator's alerts ([`crate::kept`]):
+    /// its rules, its routes and the state file's states, each with the
+    /// time it was last changed; `stamp` changes with what a restart must
+    /// not lose (an alert that fires or not, its acknowledgement, silence,
+    /// notes and page), not with each check's values.
+    pub fn kept_parts(&self) -> (Json, u64) {
+        let (rules_ms, rules_by) = self.rules_version();
+        let saved = self.saved();
+        let stamp = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut ids: Vec<&String> = saved.states.keys().collect();
+            ids.sort();
+            for id in ids {
+                let st = &saved.states[id];
+                (id, &st.state, st.since_ms, st.cleared_ms).hash(&mut h);
+                for v in [json!(st.ack), json!(st.silenced), json!(st.notes), json!(st.paged)] {
+                    v.to_string().hash(&mut h);
+                }
+            }
+            let mut primaries: Vec<(&String, &String)> = saved.primaries.iter().collect();
+            primaries.sort();
+            primaries.hash(&mut h);
+            saved.changes.len().hash(&mut h);
+            h.finish()
+        };
+        let parts = json!({
+            "rules": {"ms": rules_ms, "by": rules_by, "data": self.rules()},
+            "routes": {"ms": self.routes_ms(), "data": self.routes()},
+            "states": {"ms": saved.saved_ms, "data": saved},
+        });
+        (parts, stamp)
+    }
+
+    /// Takes what the shards keep ([`Self::kept_parts`]'s shape) where it
+    /// is newer than this server's own: the rules and routes by when they
+    /// were changed (the routes keep `--alert-webhook`'s "default"), and,
+    /// on `starting` (before this coordinator judged anything), the
+    /// states, as a state file is read; later, the acknowledgements,
+    /// silences, notes and pages of the alerts as they are here, as
+    /// another coordinator's are merged. Answers what it took.
+    pub fn take_kept(&self, parts: &Json, starting: bool) -> Result<Vec<&'static str>, ApiError> {
+        let mut took = Vec::new();
+        let rules_ms = parts["rules"]["ms"].as_u64().unwrap_or(0);
+        if rules_ms > self.rules_ms.load(Ordering::Relaxed) {
+            if let Some(r) = parts["rules"].get("data").filter(|r| r.is_array()) {
+                let rules: Vec<Rule> = serde_json::from_value(r.clone()).map_err(|e| ApiError::bad(format!("bad rules: {e}")))?;
+                let rules: Vec<Rule> = rules.into_iter().filter(|r| !r.builtin || self.is_coordinator()).collect();
+                let by = parts["rules"]["by"].as_str().unwrap_or("a coordinator").to_string();
+                self.set_rules_at(rules, &by, rules_ms)?;
+                took.push("rules");
+            }
+        }
+        let routes_ms = parts["routes"]["ms"].as_u64().unwrap_or(0);
+        if routes_ms > self.routes_ms() {
+            if let Some(r) = parts["routes"].get("data").filter(|r| r.is_array()) {
+                let mut routes: Vec<Route> = serde_json::from_value(r.clone()).map_err(|e| ApiError::bad(format!("bad routes: {e}")))?;
+                if let Some(url) = &self.webhook_url {
+                    routes.retain(|r| r.name != "default");
+                    routes.insert(0, Route { name: "default".into(), url: url.clone(), severities: Vec::new(), kind: String::new(), key: String::new(), repeat_min: 0, allow_internal: Some(true) });
+                }
+                self.set_routes_at(routes, routes_ms)?;
+                took.push("routes");
+            }
+        }
+        let Some(data) = parts["states"].get("data").filter(|d| d.is_object()) else { return Ok(took) };
+        let saved: Saved = serde_json::from_value(data.clone()).map_err(|e| ApiError::bad(format!("bad states: {e}")))?;
+        let t = now_ms();
+        if starting {
+            // As a state file is read ([`Self::new`]), unless that file is newer.
+            let file_ms = self.state_file.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice::<Saved>(&b).ok()).map_or(0, |s| s.saved_ms);
+            if saved.saved_ms > file_ms {
+                *lock(&self.states) = saved.states.into_iter().map(|(k, v)| (k, St::restored(v, t))).collect();
+                let mut c = lock(&self.cluster);
+                c.primaries = saved.primaries.into_iter().filter_map(|(k, v)| k.parse().ok().map(|k| (k, v))).collect();
+                c.changes = saved.changes.into_iter().filter(|(ct, _)| ct + PRIMARY_CHANGED_MS > t).collect();
+                drop(c);
+                self.starting_until.fetch_max(t + STARTUP_MS, Ordering::Relaxed);
+                self.save_state();
+                took.push("states");
+            }
+        } else {
+            let each: serde_json::Map<String, Json> = saved.states.iter().map(|(id, st)| (id.clone(), json!({"ack": st.ack, "silenced": st.silenced, "notes": st.notes, "paged": st.paged}))).collect();
+            if !self.merge(&json!({"states": each}), "")?.is_empty() {
+                took.push("states");
+            }
+        }
+        Ok(took)
+    }
+
+    /// Records how keeping on the shards last went ([`crate::kept`]).
+    pub fn set_held(&self, j: Json) {
+        *lock(&self.held) = Some(j);
+    }
+
+    /// Where the rules, routes and states are kept: `file` (`--alerts`),
+    /// `shards` (how keeping them there last went), and `memory_only`
+    /// when neither keeps them.
+    pub fn kept_json(&self) -> Json {
+        let held = lock(&self.held).clone();
+        let on_shards = held.as_ref().is_some_and(|h| h["holding"].as_u64().unwrap_or(0) > 0);
+        json!({
+            "file": self.file.as_ref().map(|p| p.display().to_string()),
+            "shards": held,
+            "memory_only": self.file.is_none() && !on_shards,
+        })
     }
 
     /// Replaces the rules (and their file), keeping the states of the
@@ -1403,6 +1555,19 @@ impl Alerts {
     /// Replaces the routes; a route given without a URL keeps the URL
     /// its name had.
     pub fn set_routes(&self, routes: Vec<Route>) -> Result<Vec<Route>, ApiError> {
+        // Later than the change before, even within one millisecond.
+        self.set_routes_at(routes, now_ms().max(self.routes_ms.load(Ordering::Relaxed) + 1))
+    }
+
+    /// When the routes were last changed (ms; 0: never since they were
+    /// made from the flags).
+    pub fn routes_ms(&self) -> u64 {
+        self.routes_ms.load(Ordering::Relaxed)
+    }
+
+    /// [`Self::set_routes`] as changed at `at_ms` (another coordinator's
+    /// change, or the shards', keeps its time).
+    pub fn set_routes_at(&self, routes: Vec<Route>, at_ms: u64) -> Result<Vec<Route>, ApiError> {
         let before = self.routes();
         let mut names = HashSet::new();
         let mut next = Vec::new();
@@ -1455,7 +1620,11 @@ impl Alerts {
             }
             next.push(r);
         }
-        self.save(&self.rules(), &next)?;
+        let was = self.routes_ms.swap(at_ms, Ordering::Relaxed);
+        if let Err(e) = self.save(&self.rules(), &next) {
+            self.routes_ms.store(was, Ordering::Relaxed);
+            return Err(e);
+        }
         *lock(&self.routes) = next.clone();
         lock(&self.deliveries).retain(|n, _| next.iter().any(|r| &r.name == n));
         Ok(before)
@@ -1627,6 +1796,7 @@ impl Alerts {
         let mut places: HashMap<&'static str, Vec<Json>> = HashMap::new();
         let shards = snap["shards"].as_array().cloned().unwrap_or_default();
         let mut c = lock(&self.cluster);
+        let mut seen = Vec::new();
         for s in &shards {
             let i = s["shard"].as_u64().unwrap_or(0) as usize;
             let replicas = s["replicas"].as_array().cloned().unwrap_or_default();
@@ -1666,13 +1836,28 @@ impl Alerts {
             // The primary: the field, else the copy that answers as one
             // and takes writes.
             let primary = s["primary"].as_str().map(String::from).or_else(|| up.iter().find(|r| r["role"] == "primary" && r["takes_writes"] != false).and_then(|r| r["url"].as_str()).map(String::from));
+            let has_primary = primary.is_some();
             if let Some(p) = primary {
                 let was = c.primaries.insert(i, p.clone());
                 if let Some(w) = was.filter(|w| *w != p) {
                     c.changes.push_back((t, json!({"shard": i, "name": shard_name, "short": shard_name, "state": "firing", "from": w, "to": p, "at_ms": t})));
+                    *c.changed.entry(i).or_default() += 1;
                 }
             }
+            let each = replicas
+                .iter()
+                .map(|r| {
+                    let url = r["url"].as_str().unwrap_or_default().to_string();
+                    let name = r["name"].as_str().or(r["short"].as_str()).map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
+                    let role = r["role"].as_str().filter(|_| answers(r)).unwrap_or("down").to_string();
+                    (name, url, role, answers(r))
+                })
+                .collect();
+            let term = replicas.iter().filter(|r| answers(r)).filter_map(|r| r["term"].as_u64()).max().unwrap_or(0);
+            seen.push(ShardSeen { shard: i, copies: n, up: up.len(), in_sync, majority, primary: has_primary, term, each });
         }
+        c.shards = seen;
+        c.checked_ms = t;
         while c.changes.front().is_some_and(|(ct, _)| ct + PRIMARY_CHANGED_MS < t) {
             c.changes.pop_front();
         }
@@ -2146,6 +2331,8 @@ impl Alerts {
             // Of those, the ones that fire on another coordinator only.
             "firing_elsewhere": out.iter().filter(|s| s["state"] == "firing" && s.get("here").is_some()).count(),
             "routes": self.routes_json(), "file": self.file.as_ref().map(|p| p.display().to_string()), "webhook": self.webhook(),
+            // OLU-201: where the rules, routes and states are kept.
+            "kept": self.kept_json(), "routes_ms": self.routes_ms(),
             "state_file": self.state_file.as_ref().map(|p| p.display().to_string()),
             "coordinator": self.is_coordinator(), "cluster": {"name": id.name, "public_url": id.public_url},
             "rules_ms": rules_ms, "rules_by": rules_by,
@@ -2414,7 +2601,7 @@ impl Alerts {
                 }
                 if st.paged.is_none() {
                     // Restarted: the others may have sent it meanwhile.
-                    if t < self.starting_until && self.is_coordinator() {
+                    if t < self.starting_until.load(Ordering::Relaxed) && self.is_coordinator() {
                         continue;
                     }
                     let waited = t.saturating_sub(st.since_ms);
@@ -2539,7 +2726,17 @@ impl Alerts {
         }
         if let Some(routes) = j.get("routes").filter(|r| r.is_array()) {
             let routes: Vec<Route> = serde_json::from_value(routes.clone()).map_err(|e| ApiError::bad(format!("bad routes: {e}")))?;
-            self.set_routes(routes)?;
+            // With their time, the newest change wins; an older coordinator
+            // tells none, and is taken as it always was.
+            match j["routes_ms"].as_u64() {
+                Some(at) if at <= self.routes_ms() => {}
+                Some(at) => {
+                    self.set_routes_at(routes, at)?;
+                }
+                None => {
+                    self.set_routes(routes)?;
+                }
+            }
         }
         let t = now_ms();
         // A whole answer (not a change told at once): each alert's state
@@ -2620,6 +2817,34 @@ impl Alerts {
         }
         self.keep(&events);
         Ok(events)
+    }
+
+    /// A coordinator's view of its cluster as of its latest check (every
+    /// 5 s), for `/metrics` (OLU-3): what its built-in alerts judge, so that
+    /// Prometheus's rules can page on the same. Empty before a check.
+    pub fn cluster_metrics(&self) -> Vec<crate::metrics::Family> {
+        use crate::metrics::{esc, Family};
+        let c = lock(&self.cluster);
+        if c.shards.is_empty() {
+            return Vec::new();
+        }
+        let shard = |s: &ShardSeen| format!("shard=\"{}\"", s.shard);
+        let per = |f: &dyn Fn(&ShardSeen) -> f64| -> Vec<(String, f64)> { c.shards.iter().map(|s| (shard(s), f(s))).collect() };
+        let b = |x: bool| if x { 1.0 } else { 0.0 };
+        let copy_up = c.shards.iter().flat_map(|s| s.each.iter().map(move |(name, url, role, up)| (format!("shard=\"{}\",copy=\"{}\",url=\"{}\",role=\"{}\"", s.shard, esc(name), esc(url), esc(role)), b(*up)))).collect();
+        let now = now_ms();
+        vec![
+            Family { name: "chloedb_cluster_copies", ty: "gauge", help: "Copies a shard has, as this coordinator lists them.", values: per(&|s| s.copies as f64) },
+            Family { name: "chloedb_cluster_copies_up", ty: "gauge", help: "Copies of a shard that answer this coordinator.", values: per(&|s| s.up as f64) },
+            Family { name: "chloedb_cluster_copies_down", ty: "gauge", help: "Copies of a shard that do not answer this coordinator (the built-in alert copy-down).", values: per(&|s| (s.copies - s.up.min(s.copies)) as f64) },
+            Family { name: "chloedb_cluster_copies_in_sync", ty: "gauge", help: "Copies of a shard that answer, serve reads and are in sync with its primary (the built-in alert under-replicated: fewer than its copies).", values: per(&|s| s.in_sync as f64) },
+            Family { name: "chloedb_cluster_shard_majority", ty: "gauge", help: "1 while a majority of a shard's copies answer, so that it elects a primary and takes writes (the built-in alert shard-no-majority).", values: per(&|s| b(s.majority)) },
+            Family { name: "chloedb_cluster_shard_primary", ty: "gauge", help: "1 while a shard has a primary that takes writes.", values: per(&|s| b(s.primary)) },
+            Family { name: "chloedb_cluster_shard_term", ty: "gauge", help: "The newest term a shard's copies answer with: it grows at each election.", values: per(&|s| s.term as f64) },
+            Family { name: "chloedb_cluster_primary_changes_total", ty: "counter", help: "Changes of a shard's primary this coordinator saw since it started (failovers and handovers; the built-in alert primary-changed).", values: per(&|s| c.changed.get(&s.shard).copied().unwrap_or(0) as f64) },
+            Family { name: "chloedb_cluster_copy_up", ty: "gauge", help: "1 while a copy answers this coordinator, by shard, copy (its --node-name), url and role (primary, replica, or down).", values: copy_up },
+            Family::one("chloedb_cluster_checked_seconds", "gauge", "Seconds since this coordinator last checked its cluster (every 5 s): the cluster's series are as of then.", now.saturating_sub(c.checked_ms) as f64 / 1e3),
+        ]
     }
 
     /// Alerts firing, by severity, for `/metrics`.
@@ -3497,7 +3722,8 @@ pub async fn push_rules(svc: &Arc<crate::service::Service>, only: Option<Vec<Str
 /// What a copy does when its coordinator asks (`Profile`, kind `alerts`):
 /// `{"op": "rules", "rules", "rules_ms", "by"}` takes its each_copy rules;
 /// `{"op": "backtest", ...}` replays a rule over its own points
-/// ([`backtest`]).
+/// ([`backtest`]); `{"op": "keep", ...}` keeps the coordinator's rules,
+/// routes, states and audit entries ([`crate::kept::take`]).
 pub async fn copy_call(svc: &Arc<crate::service::Service>, b: &Json) -> Result<Json, ApiError> {
     match b["op"].as_str() {
         Some("rules") => {
@@ -3512,7 +3738,9 @@ pub async fn copy_call(svc: &Arc<crate::service::Service>, b: &Json) -> Result<J
             Ok(j)
         }
         Some("backtest") => backtest(svc, b).await,
-        other => Err(ApiError::bad(format!("no alerts call {other:?}: rules or backtest"))),
+        // OLU-201: what this copy keeps of its coordinators' alerts and audit log.
+        Some("keep") => crate::kept::take(svc, b),
+        other => Err(ApiError::bad(format!("no alerts call {other:?}: rules, backtest or keep"))),
     }
 }
 

@@ -47,6 +47,8 @@ function figures(ps) {
     queries: q, server: errs, timeouts: tos, client: total(ps, (p) => p.client_errors_s), deadlines: total(ps, (p) => p.client_deadlines_s), refused: total(ps, (p) => p.rejected_s),
     slow: mean(ps, (p) => p.slow_s), refusedS: mean(ps, (p) => p.rejected_s), splits: ps.some((p) => p.client_errors_s != null),
     cpu: mean(ps, (p) => p.cpu),
+    // OLU-203: writes ended and those that failed on the server.
+    writes: ps.reduce((a, p) => a + (p.writes || 0), 0), writeFails: ps.reduce((a, p) => a + (p.write_failures || 0), 0),
   };
 }
 
@@ -270,7 +272,7 @@ function render(page, r) {
     clear(kpis,
       kpi("Queries", f.qps != null ? [fmt.si(f.qps), h("small", {}, "/s")] : "–", prev?.qps ? `${pct(f.qps, prev.qps)} vs ${base === "before" ? "before" : BASES.find(([k]) => k === base)[1]}` : coords.length > 1 ? `${fmt.si(coords.reduce((a, c) => a + (c.qps || 0), 0))}/s on ${coords.length} coordinators now` : "mean over the range"),
       kpi("p99 latency", f.p99 != null ? unit(fmt.ms(f.p99)) : "–", [was(prev?.p99, fmt.ms), f.p99Now != null && Math.abs(f.p99Now - f.p99) > 0.2 * f.p99 ? `last 5 min ${fmt.ms(f.p99Now)}` : null].filter(Boolean).join(" · ") || "mean over the range", (prev?.p99 && f.p99Now > 2 * prev.p99 && f.p99Now > 20) ? "bad" : null, "The mean of each interval's p99 over the range; the last 5 minutes' median beside it when it differs"),
-      kpi("Failed on the server", sr != null ? [fmt.si(sr * 100, 2), h("small", {}, "%")] : "–", psr != null ? `was ${fmt.si(psr * 100, 2)}%` : apart.length ? "apart: " + apart.join(", ") : f.splits ? "server errors and timeouts" : "this server does not split client errors", sr > 0.01 ? "bad" : null, "Server errors and server timeouts over the queries that ended. Client errors (400) and the clients' own deadlines are counted apart."),
+      kpi("Failed on the server", sr != null ? [fmt.si(sr * 100, 2), h("small", {}, "%")] : "–", f.writeFails ? `writes: ${fmt.si(f.writeFails / Math.max(1, f.writes) * 100, 2)}% failed (${fmt.n(f.writeFails)} of ${fmt.n(f.writes)})` : psr != null ? `was ${fmt.si(psr * 100, 2)}%` : apart.length ? "apart: " + apart.join(", ") : f.splits ? "server errors and timeouts" : "this server does not split client errors", sr > 0.01 || (f.writeFails && f.writeFails / Math.max(1, f.writes) > 0.01) ? "bad" : null, "Server errors and server timeouts over the queries that ended, and below, the writes that failed on the server (5xx) over the writes that ended. Client errors (400) and the clients' own deadlines are counted apart."),
       kpi(slowMs ? `Slow (over ${fmt.ms(slowMs)})` : "Slow", slowMs && f.slow != null ? [fmt.si(f.slow), h("small", {}, "/s")] : "–", slowMs ? was(prev?.slow, (v) => fmt.si(v) + "/s") : "not counted: --slow-ms is not set"),
       kpi("Refused (429)", f.refusedS != null ? [fmt.si(f.refusedS), h("small", {}, "/s")] : "–", was(prev?.refusedS, (v) => fmt.si(v) + "/s") || (f.refusedS ? (canContainNow() ? "no slot or memory, or a contain rule" : "no slot or memory free") : "none")),
       isCoord() && busiest

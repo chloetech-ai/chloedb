@@ -438,6 +438,7 @@ impl Metrics {
         s.writes = m.writes;
         s.written_docs = m.written_docs;
         s.write_errors = m.write_errors.values().sum();
+        s.write_failures = m.write_errors.iter().filter(|(status, _)| **status >= 500).map(|(_, n)| n).sum();
         s.write_hist = m.write_seconds.counts();
         s.slow = m.slow.values().sum();
     }
