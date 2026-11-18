@@ -4739,19 +4739,32 @@ impl Database {
         Ok(())
     }
 
-    /// The table named `name` (the first table for `None`). Callers hold
-    /// the writer lock, so it stays where it is until they release it.
+    /// The table named `name` (the default table for `None`,
+    /// [`Self::default_ref`]). Callers hold the writer lock, so it stays
+    /// where it is until they release it.
     fn table_ref(&self, name: Option<&str>) -> Result<TableRef> {
-        let Some(n) = name else { return Ok(self.first_table()) };
+        let Some(n) = name else { return Ok(self.default_ref()) };
         let st = lock(&self.state);
         let pos = st.tables.iter().position(|t| t.schema.table.eq_ignore_ascii_case(n)).ok_or_else(|| Error::Schema(format!("no table {n}")))?;
         let t = &st.tables[pos];
         Ok(TableRef { id: t.id, pos, schema: t.schema.clone() })
     }
 
-    /// The first table: id 0, always first since it cannot be dropped.
-    fn first_table(&self) -> TableRef {
-        TableRef { id: 0, pos: 0, schema: self.schema() }
+    /// The table a write that names no table goes to: the first table (id
+    /// 0, always first since it cannot be dropped), or in a database made
+    /// with no tables the first one created after its placeholder
+    /// ([`crate::schema::PLACEHOLDER_TABLE`], as [`crate::db::Db::default_table`]
+    /// says), and the placeholder while there is none.
+    fn default_ref(&self) -> TableRef {
+        self.follow();
+        let st = lock(&self.state);
+        let pos = if st.tables[0].schema.is_placeholder() {
+            st.tables.iter().position(|t| !is_system(t.id) && !t.schema.is_placeholder()).unwrap_or(0)
+        } else {
+            0
+        };
+        let t = &st.tables[pos];
+        TableRef { id: t.id, pos, schema: t.schema.clone() }
     }
 
     /// Gives semantic-ID field `field` of the table named `table` its
@@ -5050,8 +5063,9 @@ impl Database {
 
 /// The single write transaction. Operations are buffered and logged at
 /// commit; dropping the transaction rolls it back. Its methods write the
-/// first table; [`WriteTxn::table`] writes another, in the same
-/// transaction.
+/// first table, or in a database made with no tables the first one created
+/// after its placeholder ([`crate::schema::PLACEHOLDER_TABLE`]);
+/// [`WriteTxn::table`] writes another, in the same transaction.
 pub struct WriteTxn<'a> {
     db: &'a Database,
     wal: MutexGuard<'a, Wal>,
@@ -5231,13 +5245,13 @@ impl<'a> WriteTxn<'a> {
 
     /// Inserts a document; its primary key must not be live.
     pub fn insert(&mut self, doc: Document) -> Result<()> {
-        let t = self.db.first_table();
+        let t = self.db.default_ref();
         self.insert_in(&t, doc)
     }
 
     /// Inserts a document, replacing the live one with the same key.
     pub fn upsert(&mut self, doc: Document) -> Result<()> {
-        let t = self.db.first_table();
+        let t = self.db.default_ref();
         self.upsert_in(&t, doc)
     }
 
@@ -5246,13 +5260,13 @@ impl<'a> WriteTxn<'a> {
     /// that writers whose updates arrive out of order keep the newest.
     /// Returns whether it was written.
     pub fn upsert_if_newer(&mut self, doc: Document, version: &str) -> Result<bool> {
-        let t = self.db.first_table();
+        let t = self.db.default_ref();
         self.upsert_if_newer_in(&t, doc, version)
     }
 
     /// Deletes the live document with this primary key; false if none.
     pub fn delete(&mut self, key: &Value) -> Result<bool> {
-        let t = self.db.first_table();
+        let t = self.db.default_ref();
         self.delete_in(&t, key)
     }
 
@@ -5263,7 +5277,7 @@ impl<'a> WriteTxn<'a> {
     /// conditional on a row's number checks it here, under the writer lock,
     /// so that no other write comes in between.
     pub fn seq_of(&self, key: &Value) -> Result<Option<u64>> {
-        let t = self.db.first_table();
+        let t = self.db.default_ref();
         self.seq_of_in(&t, key)
     }
 
@@ -5289,7 +5303,7 @@ impl<'a> WriteTxn<'a> {
     /// UPDATE or an upsert makes those again). False if no document has
     /// the key.
     pub fn set(&mut self, key: &Value, field: &str, value: Value) -> Result<bool> {
-        let t = self.db.first_table();
+        let t = self.db.default_ref();
         self.set_in(&t, key, field, value)
     }
 
@@ -5300,7 +5314,7 @@ impl<'a> WriteTxn<'a> {
     /// overflows; a FLOAT sum must be finite. False if no document has the
     /// key.
     pub fn add(&mut self, key: &Value, field: &str, delta: &Value) -> Result<bool> {
-        let t = self.db.first_table();
+        let t = self.db.default_ref();
         self.add_in(&t, key, field, delta)
     }
 
@@ -5309,7 +5323,7 @@ impl<'a> WriteTxn<'a> {
     /// counting as 0): a counter, or an edge's weight, that starts with its
     /// first event.
     pub fn add_or_insert(&mut self, doc: Document, field: &str, delta: &Value) -> Result<()> {
-        let t = self.db.first_table();
+        let t = self.db.default_ref();
         self.add_or_insert_in(&t, doc, field, delta)
     }
 

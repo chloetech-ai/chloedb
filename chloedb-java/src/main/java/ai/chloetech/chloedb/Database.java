@@ -331,7 +331,8 @@ public final class Database implements AutoCloseable {
         return lastImport;
     }
 
-    /** The first table's live rows. */
+    /** The default table's live rows: the first table's, or in a database
+     * made with no tables the first one created after it. */
     public long count() {
         return (Long) call("count");
     }
