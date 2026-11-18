@@ -116,7 +116,7 @@ mod tests {
         for rule in crate::alerts::defaults().into_iter().chain(crate::alerts::builtins()) {
             assert!(for_id(&rule.id).is_some(), "no runbook for alert {}", rule.id);
         }
-        for id in ["alerts", "coordinators_gone", "copies", "damaged", "disk", "error_ratio", "error_ratio_recovered", "lag", "p99", "p99_recovered", "shards", "shard-0-down"] {
+        for id in ["alerts", "coordinators_gone", "copies", "damaged", "disk", "error_ratio", "error_ratio_recovered", "lag", "p99", "p99_recovered", "shards", "shard-0-down", "write_error_ratio"] {
             if id == "alerts" {
                 continue;
             }

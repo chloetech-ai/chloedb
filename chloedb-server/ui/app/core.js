@@ -969,12 +969,23 @@ export function dropzone({ label, sub, accept, multiple = true, onFiles }) {
  * the full rate again. A hidden tab polls nothing.
  */
 export const IDLE_MS = 30e3, IDLE_SLOW = 5;
-let lastInput = Date.now(), dozing = false;
+let lastInput = Date.now(), dozing = false, urgent = false;
 const wakers = new Set();
-/** True once nobody touched the page for IDLE_MS. */
+/** True once nobody touched the page for IDLE_MS, unless something is wrong (setUrgent). */
 export function isIdle() {
+  if (urgent) return false;
   if (!dozing && Date.now() - lastInput > IDLE_MS) { dozing = true; bus.emit("idle", true); }
   return dozing;
+}
+/**
+ * OLU-9: while an alert fires or the fleet is not well, nobody at the page is
+ * the wall screen on call watches: the polls keep their full rate.
+ */
+export function setUrgent(yes) {
+  yes = !!yes;
+  if (yes === urgent) return;
+  urgent = yes;
+  if (yes && dozing) { dozing = false; bus.emit("idle", false); for (const f of [...wakers]) f(); }
 }
 function wake(shown) {
   lastInput = Date.now();

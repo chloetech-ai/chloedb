@@ -328,13 +328,24 @@ function render(page, r0) {
     const p99Tone = p9 ? (p9.status === "warning" && p99Recent && p99v <= sloP99() ? "" : tone(p9.status)) : p99v > sloP99() ? "bad" : "";
     out.push({ key: "p99", label: "p99 latency", icon: "clock", val: msParts(p99v), tone: p99Tone, spark: ps.map((p) => p.p99_ms), color: SERIES[6], sub: `${now}SLO ${fmt.ms(sloP99())} · ${p99Recent ? lastMin(p9.recent.window_s) : p9?.window_s ? "over " + fmt.dur(p9.window_s).replace(/m 0s$/, " min") : ""}`, why: p99v != null ? `p99 ${fmt.ms(p99v)} is over the SLO (${fmt.ms(sloP99())})` : null, link: link("performance") });
     const erRecent = er?.recent && er.recent.value !== undefined && (er.recent.queries ?? 1) > 0;
-    const erv = erRecent ? er.recent.value : er?.value ?? null;
-    const failing = erv != null && qpsFleet ? erv * qpsFleet : null;
+    const srv = erRecent ? er.recent.value : er?.value ?? null;
+    // OLU-203: writes that fail on the server count too: the tile shows the
+    // worse of searches and writes, and says which (a shard without a
+    // primary fails every write while every search answers).
+    const wr = er?.writes;
+    const wrRecent = wr?.recent && wr.recent.value != null;
+    const wrv = wrRecent ? wr.recent.value : wr?.value ?? null;
+    const byWrites = wrv != null && (srv == null || wrv > srv);
+    const erv = byWrites ? wrv : srv;
+    const failing = srv != null && qpsFleet ? srv * qpsFleet : null;
     // A failure that ended: the card says now's value, and when it recovered.
-    const recovered = er?.recovered;
+    const recovered = byWrites ? null : er?.recovered;
     const erTone = er ? (recovered && !(erv > sloErr()) ? "" : tone(er.status)) : "";
-    const erSub = recovered && !(erv > sloErr()) ? `recovered at ${when(recovered.to_ms, { sec: false })} after ${durOf(recovered.to_ms - recovered.from_ms + 2000)}, ${pctTxt(recovered.worst)} at worst` : `SLO ${pctTxt(sloErr())} · ${erRecent ? lastMin(er.recent.window_s) : "over 5 min"}${failing != null && failing >= 0.1 ? ` · ${fmt.si(failing)} q/s failing` : erv == null ? " · no query ended" : ""}`;
-    out.push({ key: "err", label: "Error ratio", icon: "warn", val: erv == null ? ["–"] : [pctTxt(erv).replace("%", ""), h("small", {}, "%")], tone: erTone, spark: ps.map((p) => p.error_ratio ?? null), color: SERIES[7], sub: now + erSub, why: erv != null ? `${pctTxt(erv)} of queries failed over the ${erRecent ? "last minute" : "last 5 min"} (SLO ${pctTxt(sloErr())})` : null, link: link("queries", { tab: "statements", outcome: "error" }) });
+    const both = wrv != null && srv != null ? ` · searches ${pctTxt(srv)}, writes ${pctTxt(wrv)}` : wrv != null ? ` · writes ${pctTxt(wrv)}, no search ended` : "";
+    const erSub = recovered && !(erv > sloErr()) ? `recovered at ${when(recovered.to_ms, { sec: false })} after ${durOf(recovered.to_ms - recovered.from_ms + 2000)}, ${pctTxt(recovered.worst)} at worst` : `SLO ${pctTxt(sloErr())} · ${(byWrites ? wrRecent : erRecent) ? lastMin((byWrites ? wr : er).recent.window_s) : "over 5 min"}${both || (failing != null && failing >= 0.1 ? ` · ${fmt.si(failing)} q/s failing` : erv == null ? " · no query or write ended" : "")}`;
+    const erWhy = erv == null ? null : byWrites ? `${pctTxt(wrv)} of writes failed on the server over the ${wrRecent ? "last minute" : "last 5 min"} (SLO ${pctTxt(sloErr())})` : `${pctTxt(srv)} of queries failed over the ${erRecent ? "last minute" : "last 5 min"} (SLO ${pctTxt(sloErr())})`;
+    const worse = (p) => p.error_ratio == null && p.write_error_ratio == null ? null : Math.max(p.error_ratio ?? 0, p.write_error_ratio ?? 0);
+    out.push({ key: "err", label: "Error ratio", icon: "warn", val: erv == null ? ["–"] : [pctTxt(erv).replace("%", ""), h("small", {}, "%")], tone: erTone, spark: ps.map(worse), color: SERIES[7], sub: now + erSub, why: erWhy, link: byWrites ? link("logs", { level: "error" }) : link("queries", { tab: "statements", outcome: "error" }) });
     const downNames = (cp?.where || m.shards.flatMap((s) => s.copies.filter((x) => !x.up).map((x) => x.name)));
     const tot = cp?.total ?? m.total, upN = cp ? cp.total - cp.down : m.up;
     out.push({ key: "copies", label: "Copies answering", icon: "db", val: tot ? [String(upN), h("small", {}, "/" + tot)] : ["–"], tone: cp ? tone(cp.status) : upN < tot ? "warn" : "", sub: downNames.length ? `${downNames.slice(0, 3).join(", ")}${downNames.length > 3 ? ` +${downNames.length - 3}` : ""} down` : tot ? "every copy answers" : "no copies listed", why: downNames.length ? `${fmt.plural(downNames.length, "copy", "copies")} do not answer` : null, link: link("cluster") });
@@ -683,10 +694,10 @@ function render(page, r0) {
   const readyTitle = h("h3", {}, "Ready for production");
   const readySub = h("span", { class: "sub" });
   page.append(h("section", { class: "card home-ready" }, h("div", { class: "hd" }, readyTitle, readySub), h("div", { class: "bd" }, readyBody)));
-  let auditFile, auditKnown = false;
+  let auditFile, auditShards, auditKnown = false;
   async function loadAudit() {
     if (!can("admin", "GET /v1/admin/audit")) { auditKnown = false; drawReady(); return; }
-    try { const j = await api("/v1/admin/audit?limit=1", { timeout: 4000 }); auditFile = j.file || null; auditKnown = true; } catch { auditKnown = false; }
+    try { const j = await api("/v1/admin/audit?limit=1", { timeout: 4000 }); auditFile = j.file || null; auditShards = j.shards || null; auditKnown = true; } catch { auditKnown = false; }
     drawReady();
   }
   function drawReady() {
@@ -704,7 +715,15 @@ function render(page, r0) {
       { ok: w ? !w.auth?.open : null, title: w?.auth?.open ? "Open: anyone who reaches it can read and change everything" : "Closed: every call needs a key", fix: `${managed() ? `Set spec.tokenSecret in the StrataCluster ${specName()}` : "Start it with --token"}, then give each person, app and agent its own key, limited to its tables.`, href: "#/access?tab=keys" },
       { ok: routes > 0, title: routes ? `Alerts go somewhere: ${fmt.plural(routes, "route")}` : "Alerts go nowhere: no route (Slack, PagerDuty, a webhook)", fix: "Add a route in Alerts, so that a firing alert reaches a person.", href: "#/alerts?routes=1" },
       { ok: rules.length ? told === rules.length : null, title: rules.length ? `${told} of ${rules.length} alert rules say who owns them and what to do` : "No alert rules", fix: "Give each rule an owner and a runbook URL: the person paged knows it is theirs and where to start.", href: "#/alerts" },
-      { ok: auditKnown ? !!auditFile : null, title: !auditKnown ? "Audit log: needs an admin key to tell" : auditFile ? `Audit log kept on disk (${auditFile})` : "Audit log kept in memory only: a restart loses who changed what", fix: managed() ? `Give each coordinator a volume: spec.coordinatorStorage in the StrataCluster ${specName()} keeps its audit log, events and alerts on it.` : "Start the server with --audit-log FILE.", href: "#/access" },
+      // OLU-201: a coordinator's rules, routes and alert states are kept on its shards.
+      (() => {
+        const k = a?.kept;
+        if (!k) return { ok: null, title: "Alert rules and routes: where they are kept is not known here", fix: "", href: "#/alerts" };
+        const held = k.shards?.holding || 0;
+        const title = k.file ? `Alert rules and routes kept in ${k.file}${held ? ` and on ${fmt.plural(held, "copy", "copies")} of the cluster` : ""}` : held ? `Alert rules, routes and alert states kept on ${fmt.plural(held, "copy", "copies")} of the cluster` : "Alert rules and routes kept in memory only: a restart loses them";
+        return { ok: !k.memory_only, title, fix: k.shards?.failed?.length ? `${fmt.plural(k.shards.failed.length, "copy", "copies")} did not keep them: ${k.shards.failed[0].error}` : "Start the server with --alerts FILE.", href: "#/alerts" };
+      })(),
+      { ok: auditKnown ? !!auditFile || !!auditShards : null, title: !auditKnown ? "Audit log: needs an admin key to tell" : auditFile ? `Audit log kept on disk (${auditFile})` : auditShards ? `Audit log: the latest ${fmt.n(auditShards.keep)} entries kept on the shards; --audit-log FILE keeps every one` : "Audit log kept in memory only: a restart loses who changed what", fix: managed() ? `Give each coordinator a volume: spec.coordinatorStorage in the StrataCluster ${specName()} keeps its audit log, events and alerts on it.` : "Start the server with --audit-log FILE.", href: "#/access" },
       single ? { ok: null, title: "One server: its disk holds the only copy of the data", fix: "Run a cluster with two or more copies a shard (or back the file up) before the data matters.", href: "#/cluster" }
         : { ok: shards.length ? shards.every((sh) => (sh.replicas || []).length >= 2) : null, title: shards.every((sh) => (sh.replicas || []).length >= 2) ? "Every shard has two copies or more" : (() => { const n = shards.filter((sh) => (sh.replicas || []).length < 2).length; return `${fmt.plural(n, "shard")} ${n === 1 ? "has" : "have"} one copy`; })(), fix: "Add a replica to each shard: a lost disk then loses nothing.", href: "#/cluster" },
     ];
