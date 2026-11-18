@@ -103,6 +103,9 @@ pub struct Who {
     pub environment: Option<String>,
     /// The server asks this key for a reason with every change.
     pub reason_required: bool,
+    /// A key limited to tables: its grants in words ("logs_* write,
+    /// ctx_incidents read").
+    pub limited: Option<String>,
 }
 
 impl Who {
@@ -116,7 +119,15 @@ impl Who {
             cluster: j["cluster"]["name"].as_str().filter(|s| !s.is_empty()).map(String::from),
             environment: j["cluster"]["environment"].as_str().filter(|s| !s.is_empty()).map(String::from),
             reason_required: j["may"]["reason_required"] == true,
+            limited: j["tables"].as_object().map(|t| t.iter().map(|(k, v)| format!("{k} {}", v.as_str().unwrap_or("?"))).collect::<Vec<_>>().join(", ")),
         }
+    }
+
+    /// Whether it reads the server's own log (`GET /v1/logs`): an admin
+    /// of the server, or a key for operations, never a key limited to
+    /// tables (MARCO-313).
+    pub fn reads_server_log(&self) -> bool {
+        self.root || (self.limited.is_none() && matches!(self.scope.as_str(), "admin" | "ops" | "propose"))
     }
 
     /// Whether the key's scope is `scope` or above it (read, write, admin).
@@ -142,6 +153,9 @@ pub struct Data {
     pub logs: Json,
     pub tables: Json,
     pub events: Json,
+    /// `GET /v1/tables`: the tables the key reads, for the Logs screen of a
+    /// key that does not read the server's own log.
+    pub log_tables: Json,
 }
 
 /// What the poller reads besides the header's: the screen on show.
@@ -224,8 +238,9 @@ pub fn lock(s: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
     s.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The routes a round reads: the header's and Home's always, and the screen's.
-pub fn reads(want: &Want) -> Vec<(&'static str, String)> {
+/// The routes a round reads: the header's and Home's always, and the
+/// screen's, as key `who` may read them.
+pub fn reads(want: &Want, who: &Who) -> Vec<(&'static str, String)> {
     let mut r = vec![("cluster", "/v1/cluster".to_string()), ("fleet", "/v1/health/fleet".to_string())];
     match want.screen {
         Screen::Home | Screen::Cluster | Screen::Sql => {}
@@ -234,6 +249,9 @@ pub fn reads(want: &Want) -> Vec<(&'static str, String)> {
             r.push(("stats", "/v1/queries/stats?limit=100".into()));
             r.push(("live", "/v1/queries".into()));
         }
+        // The server's own log is an admin's: another key's Logs are the
+        // log tables it reads.
+        Screen::Logs if !who.reads_server_log() => r.push(("log_tables", "/v1/tables".into())),
         Screen::Logs => {
             let mut p = "/v1/logs?limit=500".to_string();
             if let Some(l) = &want.log_level {
@@ -252,12 +270,12 @@ pub fn reads(want: &Want) -> Vec<(&'static str, String)> {
 
 /// One round of reads: what the screen on show needs, into `shared`.
 pub async fn read_round(api: &Api, shared: &Mutex<Shared>) {
-    let (base, gen, want) = {
+    let (base, gen, want, who) = {
         let s = lock(shared);
-        (s.base.clone(), s.gen, s.want.clone())
+        (s.base.clone(), s.gen, s.want.clone(), s.who.clone())
     };
     let api = api.at(&base);
-    let paths = reads(&want);
+    let paths = reads(&want, &who);
     let got = futures::future::join_all(paths.iter().map(|(_, p)| api.get(p))).await;
     let mut s = lock(shared);
     if s.gen == gen {
@@ -294,6 +312,7 @@ fn slot<'a>(d: &'a mut Data, k: &str) -> &'a mut Json {
         "live" => &mut d.live,
         "logs" => &mut d.logs,
         "tables" => &mut d.tables,
+        "log_tables" => &mut d.log_tables,
         _ => &mut d.events,
     }
 }
@@ -436,9 +455,18 @@ mod tests {
     #[test]
     fn each_screen_reads_its_own_routes() {
         let w = |screen| Want { screen, ..Want::default() };
-        assert_eq!(reads(&w(Screen::Home)).len(), 2);
-        assert!(reads(&w(Screen::Queries)).iter().any(|(k, p)| *k == "live" && p == "/v1/queries"));
+        let admin = Who::of(&json!({"root": true, "scope": "admin"}));
+        assert_eq!(reads(&w(Screen::Home), &admin).len(), 2);
+        assert!(reads(&w(Screen::Queries), &admin).iter().any(|(k, p)| *k == "live" && p == "/v1/queries"));
         let logs = Want { screen: Screen::Logs, log_level: Some("warn".into()), log_q: "shard 0".into() };
-        assert_eq!(reads(&logs)[2].1, "/v1/logs?limit=500&level=warn&q=shard%200");
+        assert_eq!(reads(&logs, &admin)[2].1, "/v1/logs?limit=500&level=warn&q=shard%200");
+        // MARCO-313: a key limited to tables does not read the server's own
+        // log, but the log tables it reads.
+        let oncall = Who::of(&json!({"key": {"name": "netops"}, "scope": "write", "tables": {"logs_*": "write", "ctx_incidents": "read"}}));
+        assert_eq!(oncall.limited.as_deref(), Some("logs_* write, ctx_incidents read"));
+        assert!(!oncall.reads_server_log() && admin.reads_server_log());
+        assert_eq!(reads(&logs, &oncall)[2], ("log_tables", "/v1/tables".to_string()));
+        let writer = Who::of(&json!({"key": {"name": "w"}, "scope": "write"}));
+        assert!(!writer.reads_server_log() && Who::of(&json!({"key": {"name": "bot"}, "scope": "ops"})).reads_server_log());
     }
 }

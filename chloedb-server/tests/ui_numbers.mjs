@@ -154,6 +154,24 @@ core.provide({ whoami: { name: "w", scope: "write", may: { data: "write", server
 assert.ok(core.can("write", ACK) && !core.can("admin", NOTE) && core.can("write"));
 assert.equal(core.needs("admin", NOTE), "needs an admin or an ops key");
 assert.equal(core.roleOf(), null);
+// MARCO-301: a key limited to tables calls the server's routes whoami lists
+// for it (the oncall preset's: the alert's actions), and the page offers
+// no other, with a tooltip that says why; a server from before the list
+// is read by the key's scope, as before.
+const RULES = "PUT /v1/alerts/rules";
+const oncall = { name: "netops", scope: "write", tables: { "logs_*": "write", ctx_incidents: "read" }, preset: "oncall", may: { data: "write", server_views: false, routes: ["GET /v1/alerts", "GET /v1/alerts/:rule", "POST /v1/alerts/:rule/ack", "POST /v1/alerts/:rule/silence", "DELETE /v1/alerts/:rule/silence", "POST /v1/alerts/:rule/notes"] } };
+core.provide({ whoami: oncall });
+assert.ok(core.can("write", ACK) && core.can("write", "POST /v1/alerts/:rule/notes"));
+assert.ok(!core.can("admin", RULES) && !core.can("admin", NOTE) && !core.can("admin"));
+assert.equal(core.needs("admin", RULES), "needs an admin key of the server (this key is limited to tables)");
+core.provide({ whoami: { ...oncall, name: "shipper", tables: { "logs_*": "write" }, preset: undefined, may: { data: "write", routes: ["GET /v1/alerts"] } } });
+assert.ok(!core.can("write", ACK));
+assert.equal(core.needs("write", ACK), "needs a key given POST /v1/alerts/:rule/ack (this key is limited to tables: logs_* write)");
+core.provide({ whoami: { name: "viewer", scope: "read", tables: { "logs_*": "read" }, may: { data: "read", routes: ["GET /v1/alerts", "GET /v1/alerts/:rule"] } } });
+assert.ok(!core.can("write", ACK));
+assert.equal(core.needs("write", ACK), "needs a write key given POST /v1/alerts/:rule/ack (this key is limited to tables: logs_* read)");
+core.provide({ whoami: { name: "old", scope: "write", tables: { "logs_*": "write" }, may: { data: "write" } } });
+assert.ok(core.can("write", ACK), "a server that lists no routes: by the key's scope, as before");
 core.provide({ whoami: null });
 core.provideRoutes(null);
 

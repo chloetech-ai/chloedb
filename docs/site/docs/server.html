@@ -1780,7 +1780,7 @@ aws s3 cp /backups/shop-2026-10-29/CURRENT s3://bucket/shop/CURRENT</pre>
 </tr>
 <tr>
 <td><code>/v1/whoami</code>, <code>GET /v1/alerts</code></td>
-<td>nothing of a table; <code>/v1/whoami</code> shows the key's grants (<code>tables</code>, <code>"limited": true</code>; its <code>scope</code> is its tables', never the server's)</td>
+<td>nothing of a table; <code>/v1/whoami</code> shows the key's grants (<code>tables</code>, <code>"limited": true</code>; its <code>scope</code> is its tables', never the server's) and the server's routes it may call (<code>may.routes</code>, each <code>"METHOD /route"</code> at its scope), which the command center offers and no other</td>
 </tr>
 <tr>
 <td><code>GET /v1/tables</code>, <code>GET /v1/schema</code></td>
@@ -1837,7 +1837,7 @@ aws s3 cp /backups/shop-2026-10-29/CURRENT s3://bucket/shop/CURRENT</pre>
 </tbody>
 </table></div>
 <p>It is refused the fleet's health, events, metrics and charts (<code>/v1/health/fleet</code>, <code>/v1/events</code>, <code>/metrics</code>, <code>/v1/timeseries</code>), <code>/v1/stats</code>, the queries' views and logs, and Tables and storage. A query's steps name a shard (<code>shard 0 query</code>) without the address of the copy that answered, for any key that is not the server's admin. The command center says what such a key cannot see on each page, and stops asking a route that refused it.</p>
-<p>Beyond its tables' routes, a key limited to tables may be given <code>"routes": ["fleet"]</code> (<code>GET</code> of the fleet's health, events, metrics and charts) and <code>"apps": ["sheets"]</code> (apps it may read through, if it reads every table): <code>POST /v1/admin/keys {"name": "ops", "tables": {"logs_*": "write"}, "routes": ["fleet"]}</code>. They never widen what the key may do to a table. <strong>Presets</strong> make the keys of common jobs: <code>POST /v1/admin/keys {"name": "netops", "preset": "oncall", "prefix": "netops_*"}</code>, kept as the grants and allowance they expand to (a server that knows no presets reads such a key as one given them by hand, and one from before <code>routes</code> and <code>apps</code> reads it without them: it may do less there, never more). The key list and <code>/v1/whoami</code> show the preset's name (<code>"preset"</code>), and the command center's header shows it with the grants.</p>
+<p>Beyond its tables' routes, a key limited to tables may be given <code>"routes": ["fleet"]</code> (<code>GET</code> of the fleet's health, events, metrics and charts), <code>"routes": ["alerts"]</code> (an alert's page, <code>GET /v1/alerts/&lt;rule&gt;</code>, the runbooks, <code>GET /v1/runbooks</code>, and acknowledging, silencing and noting an alert, which need a key that writes, as they do for any key; not the rules, the routes or a backtest, which stay an admin's) and <code>"apps": ["sheets"]</code> (apps it may read through, if it reads every table): <code>POST /v1/admin/keys {"name": "ops", "tables": {"logs_*": "write"}, "routes": ["fleet"]}</code>. They never widen what the key may do to a table. <strong>Presets</strong> make the keys of common jobs: <code>POST /v1/admin/keys {"name": "netops", "preset": "oncall", "prefix": "netops_*"}</code>, kept as the grants and allowance they expand to (a server that knows no presets reads such a key as one given them by hand, and one from before <code>routes</code> and <code>apps</code> reads it without them: it may do less there, never more). The key list and <code>/v1/whoami</code> show the preset's name (<code>"preset"</code>), and the command center's header shows it with the grants.</p>
 <div class="doc-table"><table>
 <thead>
 <tr>
@@ -1855,7 +1855,7 @@ aws s3 cp /backups/shop-2026-10-29/CURRENT s3://bucket/shop/CURRENT</pre>
 <tr>
 <td><code>oncall</code></td>
 <td><code>team_*</code> write (rows, OTLP logs), <code>ctx_team_*</code> write (its ChloeCtx spaces' notes), <code>ctx_incidents</code> read</td>
-<td><code>fleet</code>: the fleet's health, events, metrics and charts</td>
+<td><code>fleet</code>: the fleet's health, events, metrics and charts; <code>alerts</code>: an alert's page and the runbooks, and acknowledging, silencing and noting alerts (an <code>oncall</code> key made before <code>alerts</code> existed keeps <code>fleet</code> alone: make it again)</td>
 </tr>
 <tr>
 <td><code>ml-app</code></td>
@@ -3381,7 +3381,7 @@ chloedb-server cc https://hub.local:7700/c/prod   # a cluster in a hub&#x27;s bo
 <tr>
 <td><code>5</code>, <code>g l</code></td>
 <td>Logs</td>
-<td>the newest lines, followed as they come; <code>f</code> sets the level and <code>/</code> the text they hold</td>
+<td>the server's own newest lines, followed as they come; <code>f</code> sets the level and <code>/</code> the text they hold. They are an admin's (or an <code>ops</code> or <code>propose</code> key's): for another key, the screen says so and lists the log tables the key reads (those with a <code>TIMESTAMP</code>), and <code>Enter</code> shows one's newest lines in SQL</td>
 </tr>
 <tr>
 <td><code>6</code>, <code>g o</code></td>
