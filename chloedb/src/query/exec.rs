@@ -3337,8 +3337,12 @@ impl<'a> Executor<'a> {
     }
 
     fn synonyms(&self) -> Result<&Synonyms> {
+        // The table's own list is the remedy in the process as on a server
+        // (DEV-205 of the persona study of 17 November 2026): the server's
+        // flag and route alone left an embedded database with none.
         self.opts.synonyms.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
-            err("synonyms => 1, but no synonym list is loaded (chloedb-server --synonyms FILE, or PUT /v1/synonyms)")
+            let t = crate::query::sql::ident(&self.schema.table);
+            err(format!("synonyms => 1, but no synonym list is loaded: CREATE SYNONYMS ON {t} AS 'sofa, couch' gives {t} a list of its own (a chloedb-server also takes --synonyms FILE, or PUT /v1/synonyms)"))
         })
     }
 

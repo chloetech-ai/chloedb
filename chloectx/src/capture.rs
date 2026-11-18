@@ -198,6 +198,55 @@ fn standing_re() -> &'static Regex {
     })
 }
 
+/// Someone with a say over the project, whose rule is the project's: "from
+/// ops", "the client wants", "the regulator", "agreed with the client",
+/// "from the kickoff", "from the review" (ANA-202: "Two things from ops:
+/// deployments to staging happen only on Tuesdays and Thursdays").
+fn authority_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:from (?:ops|operations|the ops team|legal|compliance|security|finance|the (?:client|customer|team|regulator|auditors?|lead|cto|architects?)|our (?:client|customer|team|lead)|the kickoff|(?:the|a|our) (?:code |design |security )?review)|(?:the|our) (?:client|customer|regulator|auditors?) (?:wants?|requires?|insists?|asked|says|said|audits?|decided)|(?:agreed|decided|settled) with the (?:client|customer|team)|(?:required|mandated|set) by (?:the )?(?:client|customer|regulator|ops|legal|compliance|team)|per (?:the )?(?:client|customer|regulator|ops|legal|compliance))\b").unwrap()
+    })
+}
+
+/// An instruction that tells the agent what not to touch or what only to
+/// do now: "Don't touch money.py", "Only change the tests", "Leave the API
+/// alone", "Skip the docs".
+fn restrictive_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)^\W*(?:(?:please|and|but|also|so|then|now|first)\s+)*(?:don[’']?t|do not|dont|only|just|leave|skip|avoid|stop|ignore|no need to|without|hold off|wait|for now)\b").unwrap())
+}
+
+/// Whether a rule came from an instruction of `request` for the task at
+/// hand: a clause it shares words with tells the agent what not to touch or
+/// only to do ("Don't touch money.py or cart.py, paybutton works there"),
+/// or a sentence it shares words with keeps it to the task ("for this PR",
+/// "for now"). A statement of how the project works ("Fee calculations
+/// use ROUND_HALF_UP") is not one, nor a rule the request does not hold.
+pub fn task_instruction(request: &str, rule: &str) -> bool {
+    let terms = |t: &str| -> BTreeSet<String> { chloedb::text::analyze(t).into_iter().collect() };
+    let rule_terms = terms(rule);
+    let shared = |t: &str| terms(t).intersection(&rule_terms).count();
+    sentences(request).into_iter().any(|s| (task_scope_re().is_match(s) && shared(s) >= 2) || clauses(s).into_iter().any(|c| restrictive_re().is_match(c) && shared(c) >= 1))
+}
+
+/// The clauses of a sentence: split at commas, semicolons and colons, and
+/// before "and", "but" and "then".
+fn clauses(s: &str) -> Vec<&str> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"(?i)[,;:]\s*|\s+(?:and|but|then)\s+").unwrap());
+    let mut out = Vec::new();
+    let mut start = 0;
+    for m in re.find_iter(s) {
+        out.push(s[start..m.start()].trim());
+        // "and", "but", "then" open the next clause.
+        start = if m.as_str().trim().chars().all(|c| matches!(c, ',' | ';' | ':')) { m.end() } else { m.start() };
+    }
+    out.push(s[start..].trim());
+    out.retain(|c| !c.is_empty());
+    out
+}
+
 /// Words that announce a list of rules: "ground rules", "a few rules",
 /// "house rules", "rules:", "conventions:", "the following guidelines".
 fn rules_lead_re() -> &'static Regex {
@@ -229,10 +278,14 @@ pub fn standing_rule(request: &str, prev_answer: &str, rule: &str) -> bool {
     // "Conventions:"): every sentence from there on is one (JONAH-4:
     // "Commit messages in the imperative mood", the last of a list of ground
     // rules, was kept for that task only and never reached a session).
+    // So are the rules after a lead that says they are the project's or
+    // come from someone with a say over it ("Some context for this
+    // project, from the kickoff with the client: ...", "From ops: ...").
     let mut listed = false;
     for s in sentences(request) {
-        listed = listed || (rules_lead_re().is_match(s) && !task_scope_re().is_match(s));
-        if !listed && !re.is_match(s) {
+        let lead = s.split_once(':').is_some_and(|(head, _)| re.is_match(head) || authority_re().is_match(head));
+        listed = listed || ((rules_lead_re().is_match(s) || lead) && !task_scope_re().is_match(s));
+        if !listed && !re.is_match(s) && !authority_re().is_match(s) {
             continue;
         }
         let st = terms(s);
@@ -263,12 +316,15 @@ pub fn is_memory_file(path: &str) -> bool {
 pub fn decision_sentences(prompt: &str) -> Vec<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"(?i)^\W*(?:my decision|decision|our decision|the decision is|i(?:'ve| have)? decided|we(?:'ve| have)? decided|i decide|ruling)\b").unwrap());
-    // Sentences split at line ends, so a decision's "X: y. Because z." keeps its line.
+    // Sentences split at line ends, so a decision's "X: y. Because z." keeps
+    // its line, up to a sentence that is not its reason: the rest of the
+    // prompt is not the decision (ANA-204: "Decision: cursors, never page
+    // numbers. Then run these as separate Bash calls: ..." was kept whole).
     let mut out = Vec::new();
     for line in prompt.lines() {
         let l = line.trim();
         if re.is_match(l) && l.len() >= 16 {
-            out.push(clip(l, 600));
+            out.push(clip(&with_reasons(l), 600));
         }
     }
     if out.is_empty() {
@@ -279,6 +335,26 @@ pub fn decision_sentences(prompt: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// A line up to the first sentence after its first that tells the agent to
+/// do something ("Then run these as separate Bash calls", "Now add the
+/// tests"): what says more of the decision or why ("Because ...", "The
+/// ledger export applies banker's rounding itself") stays.
+fn with_reasons(line: &str) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let task = RE.get_or_init(|| {
+        Regex::new(r"(?i)^\W*(?:(?:then|next|now|also|after that|afterwards|first|finally|and|please|ok|okay)\b\W*)*(?:then|next|run|write|create|add|fix|make|use|show|tell|report|reply|answer|commit|push|open|check|list|explain|implement|build|update|change|delete|remove|rename|install|test|try|do|don[’']?t|start|stop|go|give|print|echo|call|read|look|find|search|summari[sz]e)\b").unwrap()
+    });
+    for (i, c) in line.char_indices() {
+        let after = &line[i + c.len_utf8()..];
+        if matches!(c, '!' | '?') || (c == '.' && after.chars().next().is_none_or(char::is_whitespace)) {
+            if task.is_match(after.trim_start()) {
+                return line[..i + c.len_utf8()].trim().to_string();
+            }
+        }
+    }
+    line.trim().to_string()
 }
 
 /// Whether a prompt refers back to earlier work.
@@ -783,6 +859,12 @@ mod tests {
         assert_eq!(dec.len(), 1, "{d:?}");
         assert!(dec[0].text.starts_with("The user decided: My decision: customers win") && dec[0].text.contains("ledger export"), "{}", dec[0].text);
         assert!(prompt_drafts_by("Decision: ship it.", &Source::Agent("lead".into())).iter().all(|x| x.kind == Kind::Prompt));
+        // ANA-204: the rest of the prompt is not the decision.
+        let d = prompt_drafts("Decision: list endpoints paginate with opaque cursor tokens, never page numbers. Then run these as separate Bash calls: echo beta-1, echo beta-2. Report outputs briefly.");
+        let dec: Vec<&Draft> = d.iter().filter(|x| x.kind == Kind::Decision).collect();
+        assert_eq!(dec[0].text, "The user decided: Decision: list endpoints paginate with opaque cursor tokens, never page numbers.", "{d:?}");
+        let d = prompt_drafts("Decision: fees round half up. Because the regulator audits them that way. Now add fee() to money.py.");
+        assert!(d.iter().any(|x| x.text == "The user decided: Decision: fees round half up. Because the regulator audits them that way."), "{d:?}");
         let input = serde_json::json!({"file_path": "/tmp/claude/memory/team/silo/money-rounding-half-up.md", "content": "---\nname: rounding\ntype: decision\n---\nMaya decided customers win: to_cents rounds half up.\n"});
         let t = tool_drafts("Write", &input, &serde_json::json!({}), "/repo");
         let n: Vec<&Draft> = t.iter().filter(|x| x.tag == MEMORY_FILE_TAG).collect();
@@ -815,5 +897,27 @@ mod tests {
         assert!(!standing_rule("Some rules for this task: don't touch cart.py, keep the diff small.", "", "cart.py must not be touched."));
         // Words before the list are not part of it.
         assert!(!standing_rule("Rename the cart module to basket. Rules: no emojis in output.", "", "The cart module is renamed to basket."));
+        // ANA-202: rules after a lead that says they are the project's, or
+        // from someone with a say over it.
+        let kickoff = "Some context for this project, from the kickoff with the client: every timestamp column is UTC epoch ms named _at_ms. Fee calculations use ROUND_HALF_UP. Two things from ops: deployments to staging happen only on Tuesdays and Thursdays, and a retried idempotency key gets error code LDG-0007.";
+        assert!(standing_rule(kickoff, "", "Fee calculations use ROUND_HALF_UP rounding."));
+        assert!(standing_rule(kickoff, "", "Deployments to staging happen only on Tuesdays and Thursdays."));
+        assert!(standing_rule("The client wants every amount stored as integer millicents.", "", "Amounts are stored as integer millicents, as the client wants."));
+        assert!(!standing_rule("Add a refunds table. Make it fast.", "", "The refunds table must be fast."));
+    }
+
+    #[test]
+    fn instructions_for_the_task_at_hand() {
+        let maya = "Fix the cent bug in to_cents. Don't touch money.py or cart.py beyond that, and don't touch web/. Commit on your branch when done.";
+        assert!(task_instruction(maya, "money.py and cart.py must not be touched in the cent bug fix."));
+        assert!(task_instruction(maya, "web/ must not be touched."));
+        assert!(task_instruction("Fix the totals. Only change totals.py and its tests.", "Only totals.py and its tests may change."));
+        assert!(task_instruction("Use the old API for now, it is fine.", "The old API is used."));
+        assert!(task_instruction("Fix the bug, but leave the parser alone.", "The parser must not be changed."));
+        // A statement of how the project works is not one.
+        assert!(!task_instruction("Fee calculations use ROUND_HALF_UP, because the regulator audits them.", "Fee calculations use ROUND_HALF_UP."));
+        assert!(!task_instruction("Two things from ops: staging deploys happen only on Tuesdays and Thursdays.", "Staging deploys happen only on Tuesdays and Thursdays."));
+        assert!(!task_instruction("Add a refunds table.", "Money is kept as integer cents."));
+        assert_eq!(clauses("Fix it, but don't touch web/ and keep the diff small"), ["Fix it", "but don't touch web/", "and keep the diff small"]);
     }
 }

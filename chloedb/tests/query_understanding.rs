@@ -426,6 +426,9 @@ fn a_tables_synonym_list_widens_its_searches() {
     };
     let e = db.query("SELECT COUNT(*) FROM papers WHERE MATCH(body, 'rodents', synonyms => 1)", &none).unwrap_err().to_string();
     assert!(e.contains("no synonym list"), "{e}");
+    // The remedy in this process, not only the server's flag and route
+    // (DEV-205 of the persona study of 17 November 2026).
+    assert!(e.contains("CREATE SYNONYMS ON papers AS"), "{e}");
     db.sql("CREATE SYNONYMS ON papers AS 'rodents => mice\nshots, vaccines'", &none).unwrap();
     let opts = chloedb::query::exec::ExecOptions::default();
     assert_eq!(count(&db, &opts, "rodents"), 1);

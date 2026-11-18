@@ -219,6 +219,41 @@ fn a_page_that_fails_is_read_again() {
     same("after a timeout", 500, &got, &want);
 }
 
+/// A scroll started from SQL (`Db::scroll_sql`, the embedded engine's
+/// cursors in chloedb-js): a query of one table pages as `Db::scroll`
+/// does, past the window that caps an answer; a join runs whole and holds
+/// its rows; both read the snapshot they started on.
+#[test]
+fn sql_scrolls_page_past_the_window_from_one_snapshot() {
+    let none = Params::new();
+    let window = ExecOptions { max_rows: Some(100), ..ExecOptions::default() };
+    for (sql, held) in [
+        ("SELECT id, year FROM docs WHERE category <> 'c00'", false),
+        ("SELECT id, rating FROM docs ORDER BY rating DESC, id LIMIT 900 OFFSET 150", true),
+        ("SELECT a.id, b.year FROM docs a JOIN docs b ON a.id = b.id WHERE a.year < 2000", true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, _) = open(dir.path());
+        let want = db.query_with(sql, &none, &ExecOptions::default()).unwrap();
+        assert!(want.rows.len() > 100, "{sql}: {} rows", want.rows.len());
+        assert!(db.query_with(sql, &none, &window).is_err(), "{sql}: past the window at once");
+        let (first, mut s, snap) = db.scroll_sql(sql, &none, &window, 64, 100_000).unwrap_or_else(|e| panic!("{sql}: {e}"));
+        assert_eq!(s.held() > 0, held, "{sql}");
+        let mut got = vec![first];
+        // Rows deleted between pages: the scroll reads the version it began on.
+        db.sql("DELETE FROM docs WHERE year < 1990", &none).unwrap();
+        while !s.done() {
+            got.push(db.scroll_next(&snap, &mut s, &window, 64).unwrap());
+        }
+        same(sql, 64, &got, &want);
+    }
+    // A join holds its rows, at most what its start allows.
+    let dir = tempfile::tempdir().unwrap();
+    let (db, _) = open(dir.path());
+    let e = db.scroll_sql("SELECT a.id FROM docs a JOIN docs b ON a.id = b.id", &none, &window, 10, 50).err().expect("held past what it may hold").to_string();
+    assert!(e.contains("at most 50"), "{e}");
+}
+
 /// The rows of `open`'s database split over three shards by row, each
 /// with segments of its own and the same rows deleted.
 fn shards(dir: &std::path::Path, docs: &[chloedb::Document]) -> Vec<Db> {
