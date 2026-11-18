@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "chloedb-crawl"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "axum",
  "chrono",
@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "chloedb-hn"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "arrow-array",
  "arrow-schema",
