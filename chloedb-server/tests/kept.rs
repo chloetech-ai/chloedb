@@ -240,7 +240,7 @@ async fn a_coordinator_without_files_keeps_its_rules_routes_and_audit_on_its_sha
     rules.push(json!({"id": "lead-test", "name": "Lead test", "metric": "write_p99_ms", "op": ">", "threshold": 800, "severity": "warning"}));
     let (s, j) = c.call("PUT", "/v1/alerts/rules", Some(json!({"rules": rules}))).await;
     assert_eq!(s, 200, "{j}");
-    let (s, j) = c.call("PUT", "/v1/alerts/routes", Some(json!({"routes": [{"name": "oncall-webhook", "url": "http://127.0.0.1:9/hook", "severities": ["critical"]}]}))).await;
+    let (s, j) = c.call("PUT", "/v1/alerts/routes", Some(json!({"routes": [{"name": "oncall-webhook", "url": "http://127.0.0.1:9/hook", "severities": ["critical"], "allow_internal": true}]}))).await;
     assert_eq!(s, 200, "{j}");
     let (s, j) = c.call("POST", "/v1/alerts/lead-test/silence", Some(json!({"minutes": 30, "reason": "drill"}))).await;
     assert_eq!(s, 200, "{j}");

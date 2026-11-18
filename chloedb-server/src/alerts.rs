@@ -1402,7 +1402,7 @@ impl Alerts {
                 let mut routes: Vec<Route> = serde_json::from_value(r.clone()).map_err(|e| ApiError::bad(format!("bad routes: {e}")))?;
                 if let Some(url) = &self.webhook_url {
                     routes.retain(|r| r.name != "default");
-                    routes.insert(0, Route { name: "default".into(), url: url.clone(), severities: Vec::new(), kind: String::new(), key: String::new(), repeat_min: 0 });
+                    routes.insert(0, Route { name: "default".into(), url: url.clone(), severities: Vec::new(), kind: String::new(), key: String::new(), repeat_min: 0, allow_internal: Some(true) });
                 }
                 self.set_routes_at(routes, routes_ms)?;
                 took.push("routes");
