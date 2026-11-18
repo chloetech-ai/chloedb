@@ -114,7 +114,7 @@ export function profileView(p, { compact = false } = {}) {
     f.shards ? kpi("Shards", fmt.n(f.shards), "calls in the profile")
       : f.alloc != null ? kpi("Allocated", fmt.bytes(f.alloc), `${fmt.plural(f.allocs, "allocation")} · ${fmt.plural(steps.length, "step")}`, "Bytes the query's threads allocated while it ran (not what they kept: frees are not taken off)")
       : kpi("Steps", fmt.n(steps.length), p.steps_dropped ? `${fmt.n(p.steps_dropped)} not kept` : null),
-    kpi("Rows", fmt.n(Array.isArray(p.rows) ? p.rows.length : p.rows), [p.filter_docs != null ? `${fmt.si(p.filter_docs)} filtered` : null, p.scored ? `${fmt.si(p.scored)} scored` : null].filter(Boolean).join(" · ") || null));
+    kpi("Rows", fmt.n(Array.isArray(p.rows) ? p.rows.length : p.rows), [p.filter_docs != null ? `${fmt.si(p.filter_docs)} in materialised filters` : null, p.scored ? `${fmt.si(p.scored)} scored` : null].filter(Boolean).join(" · ") || null));
   const parts = [figures];
   parts.push(card({ title: "Flame chart", sub: "every step on one time scale · click a step to zoom, hover for its figures", body: flameChart(roots, p.trace || []), tools: legend(steps) }));
   parts.push(card({ title: "Operators", sub: "an EXPLAIN ANALYZE: total time, self time (not inside a child), CPU and rows", body: opTree(roots, { bars: !compact }), flush: true }));

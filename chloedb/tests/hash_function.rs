@@ -4,8 +4,9 @@
 //! Python version of the function (FNV-1a of the seed's and the value's
 //! bytes, SplitMix64's finalizer), and must never change, or the splits
 //! people made with it would. A split by it holds every row once; a
-//! column's hash is its value's; the plan says it hashes; and DataFusion
-//! computes the same values as the operators.
+//! column's hash is its value's; the plan says it hashes; within a
+//! ranking it orders the rows a search finds as it orders them alone; and
+//! DataFusion computes the same values as the operators.
 
 use chloedb::db::{Db, SqlResult};
 use chloedb::query::ir::{Plan, FEATURES, HASH};
@@ -149,7 +150,7 @@ fn hash_takes_one_value_and_an_int_seed() {
         ("SELECT hash() FROM users", "one or two arguments: a value and an INT seed"),
         ("SELECT hash(id, 1, 2) FROM users", "one or two arguments: a value and an INT seed"),
         ("SELECT id FROM users ORDER BY random()", "for a seeded shuffle, ORDER BY hash(id, 7)"),
-        ("SELECT id FROM users ORDER BY rrf(n, hash(id, 7)) DESC", "hash() is a value of each row"),
+        ("SELECT id FROM users ORDER BY rrf(n, hash(id, 7)) DESC", "rrf fuses the rankings of scores and columns"),
         ("SELECT hsah(id) FROM users", "hash"),
     ] {
         let e = db.sql(q, &Params::new()).err().unwrap_or_else(|| panic!("{q} ran")).to_string();
@@ -173,6 +174,73 @@ fn the_plan_says_it_hashes() {
     let e = Plan::readable_by(1, &[HASH], &before).unwrap_err().to_string();
     assert!(e.contains("hash"), "{e}");
     assert!(Plan::readable_by(1, &[HASH], &FEATURES).is_ok());
+}
+
+/// `docs`: a text key, a body that every third row has the word "apple"
+/// in, and an INT, over flushed segments, the memtable and a value written
+/// in place.
+fn docs(dir: &std::path::Path) -> Db {
+    let seed = Schema::new("seed", vec![Field::new("id", FieldType::Keyword)], Some("id")).unwrap();
+    let opts = DbOptions { sync: false, segment_max_docs: 200, ..DbOptions::default() };
+    let db = Db::create(&dir.join("d.strata"), seed, opts).unwrap();
+    sql(&db, "CREATE TABLE docs (id KEYWORD PRIMARY KEY, body TEXT, n INT)");
+    for chunk in (0..900).collect::<Vec<_>>().chunks(300) {
+        let values: Vec<String> = chunk
+            .iter()
+            .map(|&i| format!("('doc-{i:04}', '{} pear plum {}', {})", if i % 3 == 0 { "apple" } else { "fig" }, "kiwi ".repeat(i % 7), i as i64 - 450))
+            .collect();
+        sql(&db, &format!("INSERT INTO docs (id, body, n) VALUES {}", values.join(", ")));
+        db.storage().flush().unwrap();
+    }
+    sql(&db, "INSERT INTO docs (id, body, n) VALUES ('doc-new', 'apple once', 7)");
+    sql(&db, "UPDATE docs SET n = 1000 WHERE id = 'doc-0003'");
+    db
+}
+
+#[test]
+fn a_ranking_orders_the_rows_a_search_finds_by_their_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = docs(dir.path());
+    let keys = |rows: Vec<Vec<Value>>| rows.into_iter().map(|r| r[0].clone()).collect::<Vec<Value>>();
+    // The rows bm25 finds, in the order hash(id, 7) gives them alone.
+    let want = keys(sql(&db, "SELECT id FROM docs WHERE MATCH(body, 'apple') ORDER BY hash(id, 7) DESC LIMIT 20"));
+    assert_eq!(want.len(), 20);
+    let got = keys(sql(&db, "SELECT id FROM docs ORDER BY bm25(body, 'apple') * 0 + hash(id, 7) DESC LIMIT 20"));
+    assert_eq!(got, want);
+    // Its score is the hash, as a number.
+    let scored = sql(&db, "SELECT id, score(), hash(id, 7) FROM docs ORDER BY bm25(body, 'apple') * 0 + hash(id, 7) DESC LIMIT 5");
+    for r in &scored {
+        assert_eq!(r[1].as_f64().unwrap(), r[2].as_i64().unwrap() as f64, "{r:?}");
+    }
+    // Another seed, another order of the same rows; a column's hash is
+    // its value's, the one written in place too.
+    let other = keys(sql(&db, "SELECT id FROM docs ORDER BY bm25(body, 'apple') * 0 + hash(id, 8) DESC LIMIT 20"));
+    assert_ne!(other, want);
+    let by_n = keys(sql(&db, "SELECT id FROM docs ORDER BY bm25(body, 'apple') * 0 + hash(n, 3) DESC LIMIT 20"));
+    assert_eq!(by_n, keys(sql(&db, "SELECT id FROM docs WHERE MATCH(body, 'apple') ORDER BY hash(n, 3) DESC LIMIT 20")));
+    let n3 = sql(&db, "SELECT score() FROM docs WHERE id = 'doc-0003' ORDER BY bm25(body, 'apple') * 0 + hash(n, 3) DESC LIMIT 1");
+    assert_eq!(n3[0][0].as_f64().unwrap(), sql(&db, "SELECT hash(1000, 3) FROM docs LIMIT 1")[0][0].as_i64().unwrap() as f64);
+    // With the relevance: bm25 first, the hash breaking its ties.
+    let ties = sql(&db, "SELECT id, score() FROM docs ORDER BY bm25(body, 'apple') + hash(id, 7) / 9223372036854775807.0 * 0.000001 DESC LIMIT 50");
+    assert_eq!(ties.len(), 50);
+    // A plan of it: the plan says it hashes, reads back as itself and
+    // runs to the same rows.
+    let q = "SELECT id FROM docs ORDER BY bm25(body, 'apple') * 0 + hash(id, 7) DESC LIMIT 20";
+    let plan = db.explain(q, &Params::new()).unwrap();
+    assert!(plan.features.iter().any(|f| f == HASH), "{:?}", plan.features);
+    let back = Plan::from_json(&plan.to_json().unwrap()).unwrap();
+    assert_eq!(back, plan);
+    let SqlResult::Rows(r) = db.run(&back).unwrap() else { panic!("rows") };
+    assert_eq!(keys(r.rows), want);
+    // In a ranking it hashes a field of the row, with an INT seed.
+    for (q, msg) in [
+        ("SELECT id FROM docs ORDER BY bm25(body, 'apple') * 0 + hash(lower(id), 7) DESC", "hash in a ranking takes a field of the row"),
+        ("SELECT id FROM docs ORDER BY bm25(body, 'apple') * 0 + hash(id, 'x') DESC", "hash's seed is an INT"),
+        ("SELECT id FROM docs ORDER BY bm25(body, 'apple') * 0 + hash(id, 1, 2) DESC", "hash(field, seed) takes a field and an INT seed"),
+    ] {
+        let e = db.sql(q, &Params::new()).err().unwrap_or_else(|| panic!("{q} ran")).to_string();
+        assert!(e.contains(msg), "{q}: {e}");
+    }
 }
 
 #[cfg(feature = "datafusion")]
