@@ -83,14 +83,19 @@ pub fn parse(sql_text: &str) -> Result<Vec<Statement>> {
     let mut stmts = Parser::new(&dialect).with_tokens_with_locations(tokens).parse_statements().map_err(|e| Error::Query(syntax_error(&e.to_string(), sql_text)))?;
     for s in &mut stmts {
         match s {
-            Statement::Query(q) | Statement::Insert(sqlparser::ast::Insert { source: Some(q), .. }) => {
-                super::compound::filters_as_case(q)?;
-                super::rewrite::query(q);
-            }
+            Statement::Query(q) | Statement::Insert(sqlparser::ast::Insert { source: Some(q), .. }) => as_parsed(q)?,
             _ => {}
         }
     }
     Ok(stmts)
+}
+
+/// A query made of parts of another statement (an UPDATE's WHERE), as
+/// [`parse`] would have given it as a statement of its own.
+pub(crate) fn as_parsed(q: &mut sqlparser::ast::Query) -> Result<()> {
+    super::compound::filters_as_case(q)?;
+    super::rewrite::query(q);
+    Ok(())
 }
 
 /// Parses `text` as one SQL expression (a condition given apart from its

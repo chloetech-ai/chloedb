@@ -55,8 +55,24 @@
 //! publication is pending, as far as the server's WAL reaches. A slot that
 //! no follower reads keeps WAL without end: `--drop-slot` drops it.
 //!
-//! Strata's tables the follower writes must take no other writes: a row
-//! written again on a replay must give what it gave.
+//! Strata's tables the follower writes take no other writes: a row
+//! written again on a replay must give what it gave, and a row written
+//! here would answer what Postgres does not. A server refuses (409) a
+//! write to a table a follower follows, by its marks ([`followed_tables`]),
+//! unless the follower sends it (it names itself in
+//! [`crate::service::POSTGRES_FOLLOWER_HEADER`]); a table that leaves the
+//! publication, or whose follower's slot is dropped (`--drop-slot`),
+//! takes writes again.
+//!
+//! A column Postgres adds is added here with the value Postgres gives the
+//! rows it had (its `DEFAULT`, which Postgres keeps as the column's
+//! missing value rather than writing the rows, and which the stream
+//! therefore never sends): as the column's `DEFAULT` here, which rows
+//! written before read. A column whose earlier rows Postgres wrote (a
+//! volatile default, as `now()`, rewrites the table) has the table copied
+//! again, as of then, and the stream's changes since applied over it.
+
+use std::collections::HashMap;
 
 pub mod follow;
 pub mod pgoutput;
@@ -64,3 +80,59 @@ pub mod types;
 pub mod wire;
 
 pub use follow::{default_slot, drop_slot, run, Options, BATCH, COMPOSITE_KEY};
+
+/// The tables Postgres followers follow, by name in lower case: the
+/// follower's `--name`. Of `sources` (every stream source's name and
+/// offset, `/v1/sources`), each follower's marks of its current copy
+/// (`postgres/<name>/copy`) whose table mark (`postgres/<name>/<copy>/t/<oid>/<table>`)
+/// is odd: followed, not left.
+pub fn followed_tables(sources: &[(String, i64)]) -> HashMap<String, String> {
+    let copies: HashMap<&str, i64> = sources
+        .iter()
+        .filter_map(|(n, o)| Some((n.strip_prefix("postgres/")?.strip_suffix("/copy")?, *o)))
+        .filter(|(n, _)| !n.contains('/'))
+        .collect();
+    // The latest mark of each table: (oid, table) -> (offset, follower).
+    let mut latest: HashMap<(String, String), (i64, &str)> = HashMap::new();
+    for (n, offset) in sources {
+        let Some(rest) = n.strip_prefix("postgres/") else { continue };
+        let mut parts = rest.splitn(5, '/');
+        let (Some(name), Some(copy), Some("t"), Some(oid), Some(table)) = (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()) else { continue };
+        if copies.get(name).map(|c| c.to_string()).as_deref() != Some(copy) || oid.parse::<u32>().is_err() {
+            continue;
+        }
+        let e = latest.entry((format!("{name}/{oid}"), table.to_ascii_lowercase())).or_insert((i64::MIN, name));
+        if *offset > e.0 {
+            *e = (*offset, name);
+        }
+    }
+    latest.into_iter().filter(|(_, (o, _))| o % 2 == 1).map(|((_, table), (_, name))| (table, name.to_string())).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::followed_tables;
+
+    #[test]
+    fn followed_tables_are_those_of_the_current_copy_not_left() {
+        let s = |n: &str, o: i64| (n.to_string(), o);
+        let sources = vec![
+            s("postgres/shop/copy", 200),
+            s("postgres/shop/200", 55),
+            s("postgres/shop/200/copied", 50),
+            s("postgres/shop/200/t/16384/Customers", 3001),
+            s("postgres/shop/200/t/16390/orders", 3001),
+            s("postgres/shop/200/t/16390/orders", 4000),
+            s("postgres/shop/100/t/16400/old_copy", 1001),
+            s("postgres/crm/copy", 7),
+            s("postgres/crm/7/t/1/leads", 9),
+            s("orders-topic", 12),
+        ];
+        let f = followed_tables(&sources);
+        assert_eq!(f.get("customers").map(String::as_str), Some("shop"));
+        assert_eq!(f.get("leads").map(String::as_str), Some("crm"));
+        assert!(!f.contains_key("orders"), "it left the publication: an even mark later than the odd one");
+        assert!(!f.contains_key("old_copy"), "a mark of a copy before the current one");
+        assert_eq!(f.len(), 2, "{f:?}");
+    }
+}

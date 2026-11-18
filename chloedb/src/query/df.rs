@@ -2138,16 +2138,24 @@ impl<'a> Lower<'a, '_> {
                     t => return no(format!("negation of {t}")),
                 }
             }
+            // `||`, NULL if a side is NULL as the evaluator's is (SAM-5):
+            // DataFusion's operator, not its concat(), which skips NULLs.
             Expr::Concat(xs) => {
                 let mut args = Vec::new();
                 for x in xs {
                     let x = self.expr(x, cols, schema)?;
                     match ty(&x)? {
-                        t if is_text(&t) || t == DataType::Null => args.push(x),
+                        t if is_text(&t) => args.push(x),
+                        DataType::Null => args.push(cast(x, DataType::Utf8)),
                         t => return no(format!("|| of {t}")),
                     }
                 }
-                datafusion::functions::string::expr_fn::concat(args)
+                let mut args = args.into_iter();
+                let Some(first) = args.next() else { return no("|| of nothing") };
+                let one = args.len() == 0;
+                let joined = args.fold(first, |a, b| binary_expr(a, Operator::StringConcat, b));
+                // One operand: a text, as concat() of it would be.
+                if one { cast(joined, DataType::Utf8) } else { joined }
             }
             Expr::Like { expr, pattern, case_insensitive } => {
                 let (x, p) = (self.expr(expr, cols, schema)?, self.expr(pattern, cols, schema)?);

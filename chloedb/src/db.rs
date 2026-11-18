@@ -1372,7 +1372,7 @@ impl Db {
         if self.models_of(&schema)[f].is_none() {
             return Err(Error::Schema(format!("{table}.{field} has no model open here to fill in its vectors")));
         }
-        let write = Write::Update { select: qsql::keyed_rows(&schema, keys)?, sets: vec![(f, Assign::Value(Value::Null))] };
+        let write = Write::Update { select: qsql::keyed_rows(&schema, keys)?, sets: vec![(f, Assign::Value(Value::Null))], pick: None };
         self.prepare_as(schema, write, Some(f))
     }
 
@@ -2057,6 +2057,12 @@ impl Db {
                     true => vec![vec![Value::Str(plan.to_json_text()?)]],
                     false => {
                         let mut lines = plan.explain(&tables);
+                        // An UPDATE or DELETE whose rows a query picks.
+                        if let Ok(Command::Write { write, .. }) = qsql::bind_statement(&statement, &tables, params) {
+                            if let Some(p) = write.pick() {
+                                lines.insert(1.min(lines.len()), format!("  picks its rows by key under the writer lock, as the write runs, with {}", p.sql()));
+                            }
+                        }
                         // The plan is the query's with the calls written out.
                         if let sqlparser::ast::Statement::Query(q) = &*statement {
                             if let Some((_, used)) = function::expand(q, &*self.functions()?)? {
@@ -2126,7 +2132,7 @@ impl Db {
             }
             Command::Write { table, write } => {
                 let schema = catalog.iter().find(|t| t.table == table).expect("bound to a table of the catalog");
-                let write = Plan::of_write(schema, &write).to_write(schema)?;
+                let write = self.planned_write(schema, write)?;
                 let mut r = self.write_queued(writes::Job::Sql(self.prepare(schema.clone(), write)?));
                 // An ALTER TABLE committed between binding the statement and
                 // writing it: it is bound again, to the table as it is now.
@@ -2285,7 +2291,16 @@ impl Db {
         match qsql::bind_statement(stmt, &tables, params)? {
             Command::Write { table, write } => {
                 let schema = catalog.iter().find(|t| t.table == table).expect("bound to a table of the catalog");
-                Ok(Plan::of_write(schema, &write))
+                let mut plan = Plan::of_write(schema, &write);
+                // A pick's rows: its query's plan, run as the write runs.
+                if let Some(p) = write.pick() {
+                    let picked = self.explain_statement(&sqlparser::ast::Statement::Query(p.query.clone()), &p.params)?;
+                    if let crate::query::ir::Node::Update { input, .. } | crate::query::ir::Node::Delete { input, .. } = &mut plan.root {
+                        *input = Box::new(picked.root);
+                    }
+                    plan = Plan::new(plan.root);
+                }
+                Ok(plan)
             }
             _ => Err(Error::Query("EXPLAIN shows the plan of a SELECT, INSERT, UPDATE or DELETE".into())),
         }
@@ -2315,8 +2330,56 @@ impl Db {
         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
         let Command::Write { table, write } = bind_command(sql, &tables, params)? else { return Ok(None) };
         let schema = catalog.iter().find(|t| t.table == table).expect("bound to a table of the catalog");
-        let write = Plan::of_write(schema, &write).to_write(schema)?;
+        let write = self.planned_write(schema, write)?;
         Ok(Some(self.prepare(schema.clone(), write)?))
+    }
+
+    /// A bound write as its plan runs it ([`Plan::of_write`], then
+    /// [`Plan::to_write`]), with its pick, which is planned now, so that a
+    /// WHERE no SELECT takes is refused before the write waits for the
+    /// writer, in the SELECT's words.
+    fn planned_write(&self, schema: &Schema, write: Write) -> Result<Write> {
+        let pick = write.pick().cloned();
+        if let Some(p) = &pick {
+            self.explain_statement(&sqlparser::ast::Statement::Query(p.query.clone()), &p.params)?;
+        }
+        let mut write = Plan::of_write(schema, &write).to_write(schema)?;
+        if let Write::Update { pick: kept, .. } | Write::Delete { pick: kept, .. } = &mut write {
+            *kept = pick;
+        }
+        Ok(write)
+    }
+
+    /// The rows a [`qsql::Pick`] picks on `snap`, as a query of the rows of
+    /// their keys: its SELECT of the keys, run as any query runs, every row
+    /// it answers kept (no `max_rows`).
+    fn picked(&self, snap: &Snapshot, schema: &Schema, pick: &qsql::Pick) -> Result<Select> {
+        let text = pick.sql();
+        let profiles = text.to_ascii_lowercase().contains("rank_profile");
+        let parsed = Arc::new(qsql::Parsed { query: (*pick.query).clone(), profiles });
+        let opts = ExecOptions { max_rows: None, ..self.exec.clone() };
+        let rows = self.query_parsed_at(snap, &text, parsed, &pick.params, &opts)?.rows;
+        // The key as its column stores it.
+        let keys = rows
+            .into_iter()
+            .filter_map(|r| r.into_iter().next())
+            .map(|k| match k {
+                Value::Bool(b) => Value::Int(b as i64),
+                Value::Timestamp(t) => Value::Int(t),
+                k => k,
+            })
+            .collect();
+        qsql::keyed_rows(schema, keys)
+    }
+
+    /// The rows an UPDATE or DELETE reads on `snap` (a database's
+    /// snapshot): its `select`, or those its pick finds.
+    fn write_rows(&self, snap: &Snapshot, schema: &Schema, select: &Select, pick: &Option<qsql::Pick>) -> Result<Vec<Vec<Value>>> {
+        let table = snap.table(&schema.table).ok_or_else(|| Error::Query(format!("no such table: {}", schema.table)))?;
+        match pick {
+            None => Ok(self.execute(&table, select, &self.exec)?.rows),
+            Some(p) => Ok(self.execute(&table, &self.picked(snap, schema, p)?, &self.exec)?.rows),
+        }
     }
 
     fn prepare(&self, schema: Arc<Schema>, write: Write) -> Result<PreparedWrite> {
@@ -2357,7 +2420,8 @@ impl Db {
             return Ok((Known::new(), Derived::new()));
         }
         let docs = || -> Result<Vec<Document>> {
-            let Some(snap) = self.snapshot().table(&schema.table) else { return Ok(Vec::new()) };
+            let whole = self.snapshot();
+            let Some(snap) = whole.table(&schema.table) else { return Ok(Vec::new()) };
             let pk = || schema.primary_key.ok_or_else(|| Error::Query(format!("{} has no primary key", schema.table)));
             Ok(match write {
                 Write::Insert { docs, conflict: Conflict::Fail | Conflict::Replace } => docs.clone(),
@@ -2373,8 +2437,8 @@ impl Db {
                 // Numbers set in place embed nothing, nor do fields no
                 // model makes, or reads from.
                 Write::Update { sets, .. } if in_place(schema, sets) || !sets_need_models(schema, &models, &derivers, sets) => Vec::new(),
-                Write::Update { select, sets } => {
-                    let rows = lacking(schema, backfill, self.execute(&snap, select, &self.exec)?.rows);
+                Write::Update { select, sets, pick } => {
+                    let rows = lacking(schema, backfill, self.write_rows(&whole, schema, select, pick)?);
                     plan_sets(schema, &models, &derivers, rows.into_iter().map(|r| (r, Vec::new())).collect(), sets)?.rewrites
                 }
                 Write::Delete { .. } => Vec::new(),
@@ -2453,13 +2517,13 @@ impl Db {
             Some(g) => (g.0)()?,
             None => None,
         };
-        let mut snap = self.snapshot();
+        let mut whole = self.snapshot();
         if !matches!(p.write, Write::Insert { .. }) {
             for m in guarded.iter().chain(&p.mask) {
-                snap = snap.masked(m)?;
+                whole = whole.masked(m)?;
             }
         }
-        let snap = snap.table(&schema.table).expect("the writer lock keeps the table");
+        let snap = whole.table(&schema.table).expect("the writer lock keeps the table");
         let pk = || schema.primary_key.ok_or_else(|| Error::Query(format!("{} has no primary key", schema.table)));
         let mut n = 0u64;
         match p.write.clone() {
@@ -2504,14 +2568,16 @@ impl Db {
                     }
                 }
             }
-            Write::Delete { select } => {
+            // A pick runs here, under the writer lock, on the rows as the
+            // write finds them.
+            Write::Delete { select, pick } => {
                 let pk = pk()?;
-                for row in self.execute(&snap, &select, &self.exec)?.rows {
+                for row in self.write_rows(&whole, schema, &select, &pick)? {
                     n += tt.delete(&row[pk])? as u64;
                 }
             }
-            Write::Update { select, sets } => {
-                let rows = lacking(schema, p.backfill, self.execute(&snap, &select, &self.exec)?.rows);
+            Write::Update { select, sets, pick } => {
+                let rows = lacking(schema, p.backfill, self.write_rows(&whole, schema, &select, &pick)?);
                 n += set_rows(&mut tt, schema, (&models, &derivers), rows.into_iter().map(|r| (r, Vec::new())).collect(), &sets, (&p.known, &p.derived), &files)?;
             }
         }
