@@ -15,11 +15,33 @@ Pick one. Each gives you a `chloedb-server` program, prebuilt (a download of abo
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh
 ```
 
-**pipx or uv** <!-- since 0.3.7 -->: the same server, from [PyPI](https://pypi.org/project/chloedb-server/), on the same Macs and on Linux with glibc 2.34 or later. `pipx install` and `uv tool install` put `chloedb-server` on your `PATH`; `uvx chloedb-server` runs it without installing it.
+If it stops with these lines, it could not ask GitHub's API (`api.github.com`) which release is the newest: a proxy or firewall blocks that address, or your network's address has used up GitHub's 60 requests an hour for clients without an account (an office, a school, a CI runner):
+
+```text
+curl: (22) The requested URL returned error: 403
+chloedb install: could not find a chloedb-server release on https://github.com/chloetech-ai/chloedb/releases (set CHLOEDB_VERSION to pick one)
+```
+
+Name the version instead, and the script downloads it without asking. The variable goes after the pipe, where `sh` reads it (in front of `curl`, the script never sees it):
+
+```sh
+# install
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.7 sh
+```
+
+**pipx, uv or pip** <!-- since 0.3.7 -->: the same server, from [PyPI](https://pypi.org/project/chloedb-server/), which asks GitHub nothing, on the same Macs and on Linux with glibc 2.34 or later. `pipx install` and `uv tool install` put `chloedb-server` on your `PATH`; `uvx chloedb-server` runs it without installing it.
 
 ```sh
 # install
 pipx install chloedb-server      # or: uv tool install chloedb-server
+```
+
+In a virtualenv, pip puts it in the virtualenv's `bin`, on your `PATH` while the virtualenv is active; `"chloedb[server]"` installs the Python package beside it, for the last section of this page:
+
+```sh
+# install
+python3 -m venv .venv && . .venv/bin/activate
+pip install chloedb-server       # or: pip install "chloedb[server]"
 ```
 
 **Homebrew** is not available yet: there is no tap to install from. Use the install script above, which works on the same Macs and Linux machines.
@@ -40,6 +62,8 @@ Check that it runs:
 ```sh
 chloedb-server --version
 ```
+
+If it does not, or a later step stops with an error, [Troubleshooting](chloedb/troubleshooting.md) has the usual messages and what to do; `chloedb-server doctor` checks this machine for their causes.
 
 ## 2. Start it
 
@@ -170,11 +194,19 @@ db.upsert([
     {"id": "b3", "title": "Dragons of the northern rivers", "year": 2011},
 ])
 print(db.query("SELECT id, title FROM books WHERE MATCH(title, 'dragon') AND year > 2000").rows)
+# a typo, forgiven: each word may be an edit or two away, by its length
+print(db.query("SELECT id, title FROM books WHERE MATCH(title, :q, fuzzy => 'auto') "
+               "ORDER BY bm25(title, :q) DESC", q="dragn").rows)
 db.close()
 EOF
 ```
 
-The same methods talk to a server: `chloedb.connect("http://127.0.0.1:7700")` in place of `chloedb.open(...)`.
+```text output
+[['b3', 'Dragons of the northern rivers']]
+[['b1', 'The river and the dragon'], ['b3', 'Dragons of the northern rivers']]
+```
+
+`chloedb.open` creates the database the first time and opens it after; one process at a time may open it to write. The same methods talk to a server: `chloedb.connect("http://127.0.0.1:7700")` in place of `chloedb.open(...)`. [Python](chloedb/python.md) goes on from here, and [Build a search page](guide/search-page.md) makes a search box with typos, highlights and filters from these pieces.
 
 ## ChloeDB in Docker
 

@@ -241,12 +241,11 @@ pub fn run(project: &Path) -> i32 {
         r.fail(
             "hooks",
             format!(
-                "none in {} or {}/.claude, and the {} plugin is not enabled; install the plugin (`/plugin install {}@{} --marketplace chloetech-ai/chloedb` in Claude Code), or run `chloectx install --user` (every session) or `chloectx install` here",
+                "none in {} or {}/.claude, and the {} plugin is not enabled; install the plugin (`/plugin install {} --marketplace chloetech-ai/chloedb` in Claude Code), or run `chloectx install --user` (every session) or `chloectx install` here",
                 user_settings.display(),
                 project.display(),
                 crate::plugin::NAME,
-                crate::plugin::NAME,
-                crate::plugin::MARKETPLACE
+                crate::plugin::NAME
             ),
         );
     } else if proj && (user || plugin_ok) {
@@ -333,7 +332,7 @@ pub fn run(project: &Path) -> i32 {
     } else {
         match &distill {
             Some((m, from)) => r.ok("distillation", format!("model {m} (from the {from}), after each turn")),
-            None => r.warn("distillation", "uses the Claude Code CLI's default model; a small one is enough (`chloectx install --user --distill-model haiku`)"),
+            None => r.warn("distillation", "uses the Claude Code CLI's default model; a small one is enough (`chloectx install --distill-model haiku`, with --user or --project DIR as installed)"),
         }
     }
     // The distiller and query understanding run `claude -p`, which needs

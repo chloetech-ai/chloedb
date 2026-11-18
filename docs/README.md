@@ -14,7 +14,20 @@ New here? Start with the [quickstart](quickstart.md), a first search in five min
 | Use ChloeDB inside a Python program | [Python](chloedb/python.md), and [DataFrames](chloedb/frames.md) for Polars-style frames |
 | Use it from Node, Bun or Deno | [JavaScript](chloedb/javascript.md) |
 | Use it from Java, or through JDBC | [Java](chloedb/java.md) |
+| Use it from a Rust program | [Rust](chloedb/rust.md) |
+| Understand an error message | [Troubleshooting](chloedb/troubleshooting.md) |
 | Give Claude Code long-term memory | [Install ChloeCtx](chloectx/setup.md) |
+
+## ChloeCtx: memory for Claude Code
+
+- [Install it](chloectx/setup.md), with an agent or by hand, and troubleshooting.
+- [How it works](chloectx/index.md): what it stores, when it brings history back, and how it searches.
+- [The inspector](chloectx/inspector.md): browse what it stored, per project and per session. [Try it in your browser](https://chloetech-ai.github.io/chloedb/demo/inspector.html) on a recorded session.
+- [Results](chloectx/results.md), and [Why ChloeCtx](https://chloetech-ai.github.io/chloedb/why/), a two-page summary with a cost calculator.
+- [Blame and receipts](chloectx/receipts.md): which session wrote a line, and what memory had shown it.
+- [Capsules](chloectx/capsules.md): a slice of the memory handed to another agent as one file.
+- [ChloeCtx beside a cluster](chloectx/app.md): memory spaces for any agent, and past incidents next to each alert.
+- [The ChloeCtx showcase](engram-showcase.md): a week-long benchmark, in short.
 
 ## Write queries
 
@@ -57,14 +70,6 @@ New here? Start with the [quickstart](quickstart.md), a first search in five min
 - [chloedb-crawl](chloedb/crawler.md): a crawler that turns a site into a table and grows the cluster; [what the crawler does on your site](chloedb/crawler-bot.md).
 - [chloedb-apps](chloedb/apps.md) (a prototype): apps built from a description and changed by asking.
 - [ChloeCtx beside a cluster](chloectx/app.md): memory spaces for any agent, and past incidents next to each alert.
-
-## ChloeCtx: memory for Claude Code
-
-- [Install it](chloectx/setup.md), with an agent or by hand, and troubleshooting.
-- [How it works](chloectx/index.md): what it stores, when it brings history back, and how it searches.
-- [The inspector](chloectx/inspector.md): browse what it stored, per project and per session. [Try it in your browser](https://chloetech-ai.github.io/chloedb/demo/inspector.html) on a recorded session.
-- [Results](chloectx/results.md), and [Why ChloeCtx](https://chloetech-ai.github.io/chloedb/why/), a two-page summary with a cost calculator.
-- [The ChloeCtx showcase](engram-showcase.md): a week-long benchmark, in short.
 
 ## How it works inside
 
