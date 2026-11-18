@@ -170,7 +170,7 @@ async fn rows_by_key_from_a_server_and_a_coordinator() {
     for (i, sql) in [
         "SELECT id, score() FROM kv WHERE (id = '{k}'{or}) ORDER BY bm25(note, 'row') DESC LIMIT 3",
         "SELECT id, score() FROM kv WHERE (id = '{k}'{or}) ORDER BY bm25(note, 'row') DESC LIMIT 3",
-        "SELECT id, n, score() FROM kv WHERE (id IN ('{k}', '{k}'){or}) AND MATCH(note, 'row 6') ORDER BY score() DESC",
+        "SELECT id, n, score() FROM kv WHERE (id IN ('{k}', '{k}'){or}) AND MATCH(note, 'row 6') ORDER BY bm25(note, 'row 6') DESC",
     ]
     .into_iter()
     .enumerate()
