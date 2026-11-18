@@ -72,11 +72,14 @@ GROUP BY prefix, origin, owner HAVING COUNT(DISTINCT peer) >= 20 ORDER BY peers 
         kind: "flap",
         severity: "warn",
         // It counts an hour of every prefix's updates, the dearest of the
-        // rules (seconds, and ChloeDB's memory): every five minutes.
+        // rules: every five minutes. Its peers are counted afterwards for
+        // the prefixes it finds (`peers_of`): a distinct count for each of
+        // 300,000 prefixes took 8 to 10 s and 7 GB, without it 2 s and 1 GB
+        // (6 million updates, 18 November 2026).
         every_s: 300,
         about: "Every change of a route is sent across the internet; a prefix that changes this often costs every router that hears it, and its network's users see a link that comes and goes.",
         sql: "SELECT prefix, MAX(origin) AS origin, MAX(owner) AS owner, COUNT(*) AS updates, COUNT(*) FILTER (WHERE kind = 'W') AS withdrawn,
-  COUNT(DISTINCT peer) AS peers, MIN(ts) AS first, MAX(ts) AS last
+  MIN(ts) AS first, MAX(ts) AS last
 FROM bb_updates WHERE ts >= :since_hour GROUP BY prefix HAVING COUNT(*) >= 10000 * :collectors ORDER BY updates DESC LIMIT 20",
     },
     Rule {
@@ -141,6 +144,28 @@ pub fn parse_ts(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp_micros())
 }
 
+/// How many peers sent each of `rows`' prefixes since `since`: one small
+/// query over the prefixes a rule found, rather than a distinct count for
+/// every prefix of the hour.
+async fn peers_of(db: &Strata, trace: &Trace, rows: &mut [Row], since: &str) {
+    let prefixes: Vec<String> = rows.iter().map(|r| r.s("prefix")).filter(|p| !p.is_empty()).collect();
+    if prefixes.is_empty() {
+        return;
+    }
+    let sql = "SELECT prefix, COUNT(DISTINCT peer) AS peers FROM bb_updates WHERE prefix IN (:p) AND ts >= :since GROUP BY prefix LIMIT 100";
+    let got = match db.traced_within(trace, "flapping: its prefixes' peers", sql, json!({"p": prefixes, "since": since}), Some(60_000)).await {
+        Ok(got) => got,
+        Err(e) => {
+            tracing::warn!(error = %e, "flapping: peers");
+            return;
+        }
+    };
+    let by: FxHashMap<String, i64> = got.iter().map(|x| (x.s("prefix"), x.i("peers"))).collect();
+    for r in rows.iter_mut() {
+        r.insert("peers".into(), json!(by.get(&r.s("prefix")).copied().unwrap_or(0)));
+    }
+}
+
 /// The newest update's time, the newest ping's, and how many collectors
 /// are being read.
 ///
@@ -201,13 +226,16 @@ pub async fn run_once(db: &Strata, names: &Names) -> Result<Value> {
             }
         }
         let t0 = std::time::Instant::now();
-        let rows = match db.traced_within(&trace, r.id, r.sql, Value::Object(params), Some(60_000)).await {
+        let mut rows = match db.traced_within(&trace, r.id, r.sql, Value::Object(params), Some(60_000)).await {
             Ok(rows) => rows,
             Err(e) => {
                 tracing::warn!(rule = r.id, error = %e, "rule");
                 continue;
             }
         };
+        if r.id == "flapping" {
+            peers_of(db, &trace, &mut rows, &since_hour).await;
+        }
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         let _ = db
             .write(vec![
