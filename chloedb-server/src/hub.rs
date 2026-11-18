@@ -347,6 +347,15 @@ impl rustls::client::danger::ServerCertVerifier for Pinned {
     }
 }
 
+/// The client builder of every call to a connection: never to a link-local
+/// address (cloud metadata), and a redirect followed within the
+/// connection's origin only, since its calls carry the cluster's key
+/// (CLU-5, LENA-7; [`crate::connectors::reach`]). A cluster inside this
+/// network is fine: that is where most are.
+fn guarded() -> reqwest::ClientBuilder {
+    crate::connectors::reach::Reach::hub().guard(crate::http_client().connect_timeout(CONNECT_TIMEOUT))
+}
+
 /// A client that takes only the certificate `pin` (any, without one), and
 /// where it notes the certificate it was shown.
 fn pinned_client(pin: Option<String>, timeout: Option<Duration>) -> Result<(reqwest::Client, Arc<Mutex<Option<String>>>), String> {
@@ -358,7 +367,7 @@ fn pinned_client(pin: Option<String>, timeout: Option<Duration>) -> Result<(reqw
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(Pinned { pin, seen: seen.clone(), provider }))
         .with_no_client_auth();
-    let mut b = crate::http_client().use_preconfigured_tls(tls).connect_timeout(CONNECT_TIMEOUT);
+    let mut b = guarded().use_preconfigured_tls(tls);
     if let Some(t) = timeout {
         b = b.timeout(t);
     }
@@ -719,7 +728,7 @@ impl Hub {
         }
         let cl = match &c.pin {
             Some(p) => pinned_client(Some(p.clone()), None).map_err(ApiError::internal)?.0,
-            None => crate::http_client().connect_timeout(CONNECT_TIMEOUT).build().map_err(|e| ApiError::internal(e.to_string()))?,
+            None => guarded().build().map_err(|e| ApiError::internal(e.to_string()))?,
         };
         self.clients.lock().unwrap_or_else(|e| e.into_inner()).insert(c.name.clone(), cl.clone());
         Ok(cl)
@@ -745,6 +754,8 @@ impl Hub {
             if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
                 return Err(ApiError::bad(format!("{u}: a connection's address is an http:// or https:// URL")));
             }
+            // Never cloud metadata (CLU-5): a connection's calls carry a key.
+            crate::connectors::reach::Reach::hub().check(&u).map_err(ApiError::bad)?;
             if parsed.scheme() == "http" && !loopback(&parsed) && !a.allow_plain {
                 return Err(ApiError { code: None, status: 409, message: format!("{u} is plain HTTP beyond this machine: the key and the rows would cross the network readable. Give the cluster HTTPS, or allow plain HTTP for this connection") });
             }
@@ -755,7 +766,7 @@ impl Hub {
         // self-signed one is pinned, once the person agrees to it.
         let mut pin = None;
         if first.starts_with("https://") {
-            let plain = crate::http_client().timeout(CHECK_TIMEOUT).build().map_err(|e| ApiError::internal(e.to_string()))?;
+            let plain = guarded().timeout(CHECK_TIMEOUT).build().map_err(|e| ApiError::internal(e.to_string()))?;
             let signed = plain.get(format!("{first}/livez")).send().await;
             if signed.is_err() {
                 let (probe, seen) = pinned_client(None, Some(CHECK_TIMEOUT)).map_err(ApiError::internal)?;
@@ -822,7 +833,7 @@ impl Hub {
         let key = key.unwrap_or_default();
         let cl = match &c.pin {
             Some(p) => pinned_client(Some(p.clone()), Some(CHECK_TIMEOUT)).map_err(ApiError::internal)?.0,
-            None => crate::http_client().timeout(CHECK_TIMEOUT).build().map_err(|e| ApiError::internal(e.to_string()))?,
+            None => guarded().timeout(CHECK_TIMEOUT).build().map_err(|e| ApiError::internal(e.to_string()))?,
         };
         let mut last = String::new();
         for u in &c.urls {

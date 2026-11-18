@@ -1316,7 +1316,7 @@ fn forbidden(text_l: &str) -> Vec<Vec<String>> {
 }
 
 fn default_branch(main: &Path) -> String {
-    let out = std::process::Command::new("git").arg("-C").arg(main).args(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]).env("GIT_TERMINAL_PROMPT", "0").output();
+    let out = std::process::Command::new("git").arg("-C").arg(main).args(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output();
     if let Ok(o) = out {
         let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
         if o.status.success() && !s.is_empty() {

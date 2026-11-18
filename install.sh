@@ -34,6 +34,13 @@
 # can be ahead of); otherwise, or when the download fails and Rust is
 # here, it builds. CHLOEDB_RELEASES_URL replaces the releases' address
 # (laid out as <url>/chloedb-server-v<version>/chloectx-<platform>.tar.gz).
+# Where GitHub's CLI is installed (gh, a version with `gh attestation verify
+# --source-ref`), the download is also checked against its build provenance
+# (releases from 0.3.9): GitHub's attestation, in the Sigstore bundle beside
+# the archive, that this repository's server-release.yml built it from the
+# release's tag. One that does not verify is not installed (and is built
+# instead, when it can be). CHLOEDB_VERIFY=require fails without gh,
+# CHLOEDB_VERIFY=off skips the check; CHLOEDB_GH names the gh to use.
 set -eu
 
 PREFIX="$HOME/.local"
@@ -144,8 +151,61 @@ sha256() {
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
+# The first release whose archives have build provenance beside them.
+ATTESTED_FROM=0.3.9
+VERIFY="${CHLOEDB_VERIFY:-auto}"
+case "$VERIFY" in auto|require|off) ;; *) die "CHLOEDB_VERIFY is auto, require or off, not $VERIFY" ;; esac
+
+# Whether version $1 is $2 or later (numbers.numbers.numbers).
+at_least() {
+  a=$1 b=$2
+  for _ in 1 2 3; do
+    x=${a%%.*} y=${b%%.*}
+    x=${x%%[!0-9]*} y=${y%%[!0-9]*}
+    [ "${x:-0}" -gt "${y:-0}" ] && return 0
+    [ "${x:-0}" -lt "${y:-0}" ] && return 1
+    case "$a" in *.*) a=${a#*.} ;; *) a=0 ;; esac
+    case "$b" in *.*) b=${b#*.} ;; *) b=0 ;; esac
+  done
+  return 0
+}
+
+# Checks the archive $1, downloaded from $2, against the release's build
+# provenance (the Sigstore bundle $2.sigstore.jsonl: GitHub's attestation
+# that server-release.yml built it from $TAG on a GitHub-hosted runner).
+# Fails, saying why, when it does not verify; without gh, or for a release
+# from before $ATTESTED_FROM, says so and passes.
+provenance() {
+  [ "$VERIFY" = off ] && return 0
+  gh=${CHLOEDB_GH:-gh}
+  if ! command -v "$gh" >/dev/null 2>&1 || ! "$gh" attestation verify --help 2>/dev/null | grep -q -- '--source-ref'; then
+    [ "$VERIFY" = require ] && { say "CHLOEDB_VERIFY=require, and there is no gh here that verifies attestations (gh attestation verify --source-ref; https://cli.github.com)"; return 1; }
+    at_least "$VERSION" "$ATTESTED_FROM" && say "  build provenance not checked: no gh here (a recent gh, from https://cli.github.com, checks it)"
+    return 0
+  fi
+  if ! at_least "$VERSION" "$ATTESTED_FROM"; then
+    [ "$VERIFY" = require ] && { say "release $VERSION has no build provenance (releases have it from $ATTESTED_FROM)"; return 1; }
+    say "  release $VERSION is older than build provenance ($ATTESTED_FROM): checked by its SHA-256 alone"
+    return 0
+  fi
+  if ! curl -fsSL --retry 3 -o "$1.sigstore.jsonl" "$2.sigstore.jsonl" 2>/dev/null; then
+    say "could not download $2.sigstore.jsonl, the archive's build provenance: not installing it (CHLOEDB_VERIFY=off installs on the SHA-256 alone)"
+    return 1
+  fi
+  ref=${CHLOEDB_VERIFY_SOURCE_REF:-refs/tags/$TAG}
+  if out=$("$gh" attestation verify "$1" --bundle "$1.sigstore.jsonl" --repo chloetech-ai/chloedb \
+    --signer-workflow chloetech-ai/chloedb/.github/workflows/server-release.yml --source-ref "$ref" --deny-self-hosted-runners 2>&1); then
+    say "  build provenance checked: built by chloetech-ai/chloedb's server-release.yml from $ref"
+  else
+    printf '%s\n' "$out" | tail -n 8 >&2
+    say "gh could not verify the build provenance of $2 (above): not installing it (CHLOEDB_VERIFY=off installs on the SHA-256 alone)"
+    return 1
+  fi
+}
+
 # Downloads release $VERSION's chloectx for this machine, checks it against
-# the release's SHA-256 and installs it; says why and fails when it cannot.
+# the release's SHA-256 (and, with gh, its build provenance) and installs
+# it; says why and fails when it cannot.
 prebuilt() {
   plat=$(platform) || { say "$plat"; return 1; }
   name="chloectx-$plat"
@@ -160,6 +220,7 @@ prebuilt() {
   if [ -z "$want" ] || [ "$want" != "$got" ]; then
     say "the download's SHA-256 is $got, and the release says $want: not installing it"; rm -rf "$tmp"; return 1
   fi
+  provenance "$tmp/$name.tar.gz" "$url" || { rm -rf "$tmp"; return 1; }
   if ! tar -xzf "$tmp/$name.tar.gz" -C "$tmp" || [ ! -f "$tmp/$name/chloectx" ]; then
     say "the archive has no $name/chloectx"; rm -rf "$tmp"; return 1
   fi

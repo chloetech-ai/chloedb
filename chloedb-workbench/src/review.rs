@@ -222,7 +222,7 @@ pub(crate) fn worktree_commit(dir: &Path) -> Option<String> {
     let head = git::rev_parse(dir, "HEAD")?;
     let idx = std::env::temp_dir().join(format!("wb-index-{}-{}-{}", std::process::id(), crate::db::now_ms(), dir.file_name().and_then(|n| n.to_str()).unwrap_or("wt")));
     let run = |args: &[&str]| {
-        Command::new("git").arg("-C").arg(dir).args(args).env("GIT_INDEX_FILE", &idx).env("GIT_TERMINAL_PROMPT", "0").output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        Command::new("git").arg("-C").arg(dir).args(args).env("GIT_INDEX_FILE", &idx).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
     let out = (|| {
         run(&["read-tree", &head])?;
@@ -1192,7 +1192,7 @@ fn git_id(dir: &Path) -> Vec<String> {
 }
 
 fn run_git(dir: &Path, pre: &[String], args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(pre).args(args).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| format!("cannot run git: {e}"))?;
+    let out = Command::new("git").arg("-C").arg(dir).args(pre).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output().map_err(|e| format!("cannot run git: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {

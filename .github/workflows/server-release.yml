@@ -27,6 +27,26 @@ name: chloedb-server release
 # release-publish.yml commits it to a tap once one is configured. The
 # one-line installer, docs/install.sh, downloads these archives too.
 #
+# Provenance and bills of materials (LENA-201 and LENA-11 of the persona
+# study: a .sha256 beside an archive says it was not damaged, not who built
+# it). Each build writes, for each program, a CycloneDX SBOM beside its
+# archive (<program>-<platform>.cdx.json: every crate compiled into it, with
+# its licence and checksum) and THIRD-PARTY-NOTICES.md into the archive
+# (packaging/sbom/sbom.py). Then the attest job, which builds nothing, has
+# GitHub attest each archive and SBOM: build provenance (SLSA v1, signed with
+# Sigstore by this workflow's identity, logged in Sigstore's public
+# transparency log) and the SBOM of each archive, and puts the Sigstore
+# bundles beside the archive (<archive>.sigstore.jsonl), so that
+#   gh attestation verify chloedb-server-linux-x86_64.tar.gz --repo chloetech-ai/chloedb \
+#     --signer-workflow chloetech-ai/chloedb/.github/workflows/server-release.yml \
+#     --source-ref refs/tags/chloedb-server-v<version>
+# checks one, online or (with --bundle) off; the job checks them so, and the
+# installers do where gh is installed (docs/install.sh, install.sh and the
+# plugin's launcher: a replaced archive with a matching .sha256 is refused).
+# A run by hand on a branch attests the same way (its source ref is the
+# branch's, which no installer takes); a pull request's run attests nothing.
+# The release has a SHA256SUMS of all its files too.
+#
 # The image (image.yml) is the other way to run it without building:
 # docker run ghcr.io/chloetech-ai/chloedb-server (or strata-server, its
 # old name, for a release).
@@ -55,6 +75,8 @@ on:
       - scripts/test-install.sh
       - packaging/homebrew/**
       - packaging/server-wheels/**
+      - packaging/sbom/**
+      - chloectx/plugin/scripts/chloectx-launch
 
 permissions:
   contents: read
@@ -145,12 +167,20 @@ jobs:
           echo "$rows"
           kill "$pid"
           echo "$rows" | grep -q '"a"' || { cat server.log; exit 1; }
+      # Its bill of materials beside each archive and its third-party
+      # notices in it (packaging/sbom/sbom.py, which checks itself first).
       - name: Package
         shell: bash
         run: |
+          python3 packaging/sbom/sbom.py --self-test
+          sbom() {
+            python3 packaging/sbom/sbom.py --crate "$1" --name "$2" --platform "${{ matrix.platform }}" --binary "dist/$2-${{ matrix.platform }}/$2" \
+              --cdx "dist/$2-${{ matrix.platform }}.cdx.json" --notices "dist/$2-${{ matrix.platform }}/THIRD-PARTY-NOTICES.md"
+          }
           name="chloedb-server-${{ matrix.platform }}"
           mkdir -p "dist/$name"
           cp chloedb-server/target/release/chloedb-server "dist/$name/"
+          sbom chloedb-server chloedb-server
           # ChloeDB was called Strata: the server answers to its old name too.
           ln -s chloedb-server "dist/$name/strata-server"
           "dist/$name/strata-server" --version
@@ -163,6 +193,7 @@ jobs:
             name="$bin-${{ matrix.platform }}"
             mkdir -p "dist/$name"
             cp "$crate/target/release/$bin" "dist/$name/"
+            sbom "$crate" "$bin"
             # ChloeCtx was called engram: that name runs it too, for a release.
             if [ "$bin" = chloectx ]; then ln -s chloectx "dist/$name/engram"; fi
             cp LICENSE* "dist/$name/" 2>/dev/null || true
@@ -176,6 +207,10 @@ jobs:
       # archive is refused.
       - name: The installer installs it
         shell: bash
+        env:
+          # The archives are attested after this job (the attest job checks
+          # the installers against those attestations).
+          CHLOEDB_VERIFY: "off"
         run: |
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' chloedb-server/Cargo.toml | head -1)
           rel="$RUNNER_TEMP/releases/chloedb-server-v$v"
@@ -252,6 +287,180 @@ jobs:
             dist/chloedb-sheets-*.tar.gz*
             dist/chloectx-*.tar.gz*
             dist/chloedb-netops-*.tar.gz*
+            dist/*.cdx.json
+          if-no-files-found: error
+
+  # GitHub's attestations of each platform's archives (the header says
+  # what): build provenance of the archives and their SBOMs, and each
+  # archive's SBOM, made from the build's artifacts by a job that builds
+  # nothing and alone may sign; then checked, as people and the installers
+  # check them. Not for a pull request.
+  attest:
+    name: attest ${{ matrix.platform }}
+    needs: build
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux-x86_64, linux-aarch64, macos-arm64, macos-x86_64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      P: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: chloedb-server-${{ matrix.platform }}
+          path: dist
+      - name: What is attested
+        run: |
+          ls -la dist
+          test "$(ls dist/*-"$P".tar.gz | wc -l)" -eq 5
+          test "$(ls dist/*-"$P".cdx.json | wc -l)" -eq 5
+          for a in dist/*-"$P".tar.gz; do (cd dist && sha256sum -c "$(basename "$a").sha256"); done
+      - name: Build provenance of the archives and their SBOMs
+        id: provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*-${{ matrix.platform }}.tar.gz
+            dist/*-${{ matrix.platform }}.cdx.json
+      - name: SBOM of chloedb-server
+        id: sbom-server
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/chloedb-server-${{ matrix.platform }}.tar.gz
+          sbom-path: dist/chloedb-server-${{ matrix.platform }}.cdx.json
+      - name: SBOM of chloectx
+        id: sbom-ctx
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/chloectx-${{ matrix.platform }}.tar.gz
+          sbom-path: dist/chloectx-${{ matrix.platform }}.cdx.json
+      - name: SBOM of chloedb-crawl
+        id: sbom-crawl
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/chloedb-crawl-${{ matrix.platform }}.tar.gz
+          sbom-path: dist/chloedb-crawl-${{ matrix.platform }}.cdx.json
+      - name: SBOM of chloedb-sheets
+        id: sbom-sheets
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/chloedb-sheets-${{ matrix.platform }}.tar.gz
+          sbom-path: dist/chloedb-sheets-${{ matrix.platform }}.cdx.json
+      - name: SBOM of chloedb-netops
+        id: sbom-netops
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/chloedb-netops-${{ matrix.platform }}.tar.gz
+          sbom-path: dist/chloedb-netops-${{ matrix.platform }}.cdx.json
+      # Beside each archive, its bundles, one per line: the provenance (which
+      # covers its SBOM file too) and its SBOM's attestation.
+      - name: The bundles beside the archives
+        env:
+          PROVENANCE: ${{ steps.provenance.outputs.bundle-path }}
+          SBOM_SERVER: ${{ steps.sbom-server.outputs.bundle-path }}
+          SBOM_CTX: ${{ steps.sbom-ctx.outputs.bundle-path }}
+          SBOM_CRAWL: ${{ steps.sbom-crawl.outputs.bundle-path }}
+          SBOM_SHEETS: ${{ steps.sbom-sheets.outputs.bundle-path }}
+          SBOM_NETOPS: ${{ steps.sbom-netops.outputs.bundle-path }}
+        run: |
+          bundles() { jq -c . "$PROVENANCE" "$2" > "dist/$1-$P.tar.gz.sigstore.jsonl"; }
+          bundles chloedb-server "$SBOM_SERVER"
+          bundles chloectx "$SBOM_CTX"
+          bundles chloedb-crawl "$SBOM_CRAWL"
+          bundles chloedb-sheets "$SBOM_SHEETS"
+          bundles chloedb-netops "$SBOM_NETOPS"
+          wc -l dist/*.sigstore.jsonl
+      # As SECURITY.md tells people to check them: each archive's
+      # provenance and SBOM from the bundles on disk (no sign-in), the same
+      # from GitHub's API, and each SBOM file's provenance.
+      - name: The attestations verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh --version
+          who=(--repo "$REPO" --signer-workflow "$REPO/.github/workflows/server-release.yml" --source-ref "$GITHUB_REF" --deny-self-hosted-runners)
+          for a in dist/*-"$P".tar.gz; do
+            GH_TOKEN= gh attestation verify "$a" --bundle "$a.sigstore.jsonl" "${who[@]}"
+            GH_TOKEN= gh attestation verify "$a" --bundle "$a.sigstore.jsonl" "${who[@]}" --predicate-type https://cyclonedx.org/bom \
+              --format json --jq '.[0].verificationResult.statement.predicate.metadata.component | "\(.name) \(.version): SBOM attested"'
+            gh attestation verify "$a" "${who[@]}" > /dev/null
+            gh attestation verify "${a%.tar.gz}.cdx.json" --bundle "$a.sigstore.jsonl" "${who[@]}" > /dev/null
+          done
+          # Another workflow's or another ref's is not taken.
+          a=dist/chloedb-server-$P.tar.gz
+          if GH_TOKEN= gh attestation verify "$a" --bundle "$a.sigstore.jsonl" --repo "$REPO" --source-ref refs/tags/not-this-one > /dev/null 2>&1; then
+            echo "::error::an attestation verified for a ref it does not name"; exit 1
+          fi
+          if GH_TOKEN= gh attestation verify "$a" --bundle "$a.sigstore.jsonl" --repo "$REPO" --signer-workflow "$REPO/.github/workflows/ci.yml" > /dev/null 2>&1; then
+            echo "::error::an attestation verified for a workflow that did not make it"; exit 1
+          fi
+      # The installers check provenance where gh is installed: these
+      # archives install; one replaced together with its .sha256 does not.
+      - name: The installers take the attested archives and refuse a replaced one
+        if: matrix.platform == 'linux-x86_64'
+        env:
+          GH_TOKEN: ""
+          CHLOEDB_VERIFY_SOURCE_REF: ${{ github.ref }}
+          CHLOECTX_VERIFY_SOURCE_REF: ${{ github.ref }}
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' chloedb-server/Cargo.toml | head -1)
+          # The release these archives are offered as: their own version,
+          # or, in a dry run of a version before the first attested
+          # release, that release, since the installers check provenance
+          # (and CHLOEDB_VERIFY=require accepts a release) only from it on.
+          # The installers do not compare a binary's version with the
+          # release's; install.sh takes its release from chloectx's
+          # Cargo.toml, which this job builds nothing from.
+          first=$(sed -n 's/^ATTESTED_FROM=//p' docs/install.sh)
+          t=$(printf '%s\n%s\n' "$v" "$first" | sort -V | tail -n 1)
+          if [ "$t" != "$v" ]; then
+            echo "A dry run of $v, which is older than the first attested release: its archives are offered as release $t"
+            sed -i "0,/^version = \".*\"/s//version = \"$t\"/" chloectx/Cargo.toml
+          fi
+          rel="$RUNNER_TEMP/releases/chloedb-server-v$t"
+          mkdir -p "$rel"
+          cp dist/* "$rel/"
+          export CHLOEDB_RELEASES_URL="file://$RUNNER_TEMP/releases" CHLOEDB_VERSION="$t"
+          CHLOEDB_VERIFY=require CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin" sh docs/install.sh --with ctx | tee out.txt
+          grep -q "build provenance checked" out.txt
+          "$RUNNER_TEMP/bin/chloedb-server" --version | grep -F "$v"
+          CHLOEDB_VERIFY=require sh install.sh --prebuilt --no-wire --no-model --prefix "$RUNNER_TEMP/ctx" | tee out.txt
+          grep -q "build provenance checked" out.txt
+          # The plugin's launcher (its setup stops at the model, which is not
+          # fetched here: CHLOECTX_MODELS is no folder).
+          CHLOECTX_VERIFY=require CHLOECTX_VERSION="$t" CHLOECTX_RELEASES_URL="file://$RUNNER_TEMP/releases" CHLOECTX_PREFIX="$RUNNER_TEMP/plugin" \
+            CHLOECTX_BUILD=0 CHLOECTX_MODELS=/dev/null/models CLAUDE_PLUGIN_DATA="$RUNNER_TEMP/plugin-data" PATH="/usr/bin:/bin" \
+            sh chloectx/plugin/scripts/chloectx-launch __setup > out.txt 2>&1 || true
+          cat out.txt
+          grep -q "build provenance checked" out.txt
+          "$RUNNER_TEMP/plugin/bin/chloectx" --version | grep -F "$v"
+          # The archive replaced with one built elsewhere, and its .sha256 with it.
+          mkdir -p evil/chloedb-server-linux-x86_64
+          printf '#!/bin/sh\necho "chloedb-server %s"\n' "$v" > evil/chloedb-server-linux-x86_64/chloedb-server
+          chmod 755 evil/chloedb-server-linux-x86_64/chloedb-server
+          tar -C evil -czf "$rel/chloedb-server-linux-x86_64.tar.gz" chloedb-server-linux-x86_64
+          (cd "$rel" && sha256sum chloedb-server-linux-x86_64.tar.gz > chloedb-server-linux-x86_64.tar.gz.sha256)
+          if CHLOEDB_INSTALL_DIR="$RUNNER_TEMP/bin2" sh docs/install.sh > out.txt 2>&1; then
+            cat out.txt; echo "::error::installed an archive whose provenance does not verify"; exit 1
+          fi
+          cat out.txt
+          grep -q "gh could not verify the build provenance" out.txt
+          test ! -e "$RUNNER_TEMP/bin2/chloedb-server"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: attestations-${{ matrix.platform }}
+          path: dist/*.sigstore.jsonl
           if-no-files-found: error
 
   # To PyPI as chloedb-server (the header says what it needs): the wheels
@@ -259,7 +468,7 @@ jobs:
   # since an upload cannot be taken back.
   pypi:
     name: PyPI
-    needs: [build, homebrew]
+    needs: [build, homebrew, attest]
     if: startsWith(github.ref, 'refs/tags/') && vars.CHLOEDB_PUBLISH_PYPI == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -319,7 +528,7 @@ jobs:
 
   release:
     name: GitHub release
-    needs: [build, homebrew]
+    needs: [build, homebrew, attest]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -331,6 +540,17 @@ jobs:
           pattern: chloedb-server-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: attestations-*
+          path: dist
+          merge-multiple: true
+      - name: Every archive has its SBOM and its bundles
+        run: |
+          for a in dist/*.tar.gz; do
+            test -f "$a.sha256" && test -f "$a.sigstore.jsonl" && test -f "${a%.tar.gz}.cdx.json" || { echo "::error::$a lacks its .sha256, .sigstore.jsonl or .cdx.json"; exit 1; }
+          done
+          (cd dist && sha256sum *.tar.gz *.cdx.json *.sigstore.jsonl > SHA256SUMS && cat SHA256SUMS)
       - name: Attach the archives to the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -341,7 +561,7 @@ jobs:
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
             # A draft: release-publish.yml publishes it when the rest of the
             # version is there too.
-            gh release create "$TAG" --repo "$REPO" --draft --latest=false --title "chloedb-server ${TAG##*-v}" --notes "Prebuilt ChloeDB server (formerly Strata), no Rust needed. Download the archive for your machine, unpack it and run \`./chloedb-server --db my.chloedb\` (\`./strata-server\`, its old name, is the same program; a new database starts with no tables; add \`--demo 20000\` for the demo catalogue), then open http://127.0.0.1:7700. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later). Each archive has a .sha256 beside it. The chloedb-crawl, chloedb-sheets, chloectx and chloedb-netops archives hold the crawler, the spreadsheet app, ChloeCtx and the network operations app, built from the same commit; \`curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl,sheets,ctx\` installs the first three with the server (\`--with netops\` the fourth)."
+            gh release create "$TAG" --repo "$REPO" --draft --latest=false --title "chloedb-server ${TAG##*-v}" --notes "Prebuilt ChloeDB server (formerly Strata), no Rust needed. Download the archive for your machine, unpack it and run \`./chloedb-server --db my.chloedb\` (\`./strata-server\`, its old name, is the same program; a new database starts with no tables; add \`--demo 20000\` for the demo catalogue), then open http://127.0.0.1:7700. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later). Each archive has beside it its .sha256, its CycloneDX SBOM (.cdx.json) and its Sigstore bundles (.sigstore.jsonl: GitHub's build provenance and the SBOM's attestation), and SHA256SUMS lists every file; \`gh attestation verify <archive> --repo chloetech-ai/chloedb --signer-workflow chloetech-ai/chloedb/.github/workflows/server-release.yml --source-ref refs/tags/$TAG\` checks that this workflow built it from this tag (add \`--bundle <archive>.sigstore.jsonl\` to check it offline), and the installers check it where gh is installed; SECURITY.md says more. Each archive holds THIRD-PARTY-NOTICES.md. The chloedb-crawl, chloedb-sheets, chloectx and chloedb-netops archives hold the crawler, the spreadsheet app, ChloeCtx and the network operations app, built from the same commit; \`curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with crawl,sheets,ctx\` installs the first three with the server (\`--with netops\` the fourth)."
           fi
           gh release upload "$TAG" dist/* --repo "$REPO" --clobber
       # The Homebrew formula of this release, from the archives' checksums,

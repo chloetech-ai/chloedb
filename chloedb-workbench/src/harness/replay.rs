@@ -584,7 +584,7 @@ fn stop_daemons(home: &Path) {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let o = std::process::Command::new("git").arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| e.to_string())?;
+    let o = std::process::Command::new("git").arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output().map_err(|e| e.to_string())?;
     if o.status.success() {
         Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
     } else {
@@ -596,7 +596,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 fn sandbox(c: &Case, dir: &Path) -> Result<(), String> {
     let commit = c.commit.as_deref().ok_or("the case has no commit to start from")?;
     std::fs::create_dir_all(dir.parent().unwrap_or(dir)).map_err(|e| e.to_string())?;
-    let o = std::process::Command::new("git").args(["clone", "--shared", "--no-checkout", "-q"]).arg(&c.repo).arg(dir).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| e.to_string())?;
+    let o = std::process::Command::new("git").args(["clone", "--shared", "--no-checkout", "-q"]).arg(&c.repo).arg(dir).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output().map_err(|e| e.to_string())?;
     if !o.status.success() {
         return Err(format!("git clone: {}", one_line(String::from_utf8_lossy(&o.stderr).trim(), 300)));
     }
