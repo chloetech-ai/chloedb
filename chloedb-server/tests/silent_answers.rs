@@ -5,7 +5,12 @@
 //! `/v1/health`'s `docs` (it counted the placeholder, so 0), an upsert that
 //! leaves fields out (it says nothing of the values it drops), and
 //! weighted `rrf` and prefix terms in `bm25`, which shards rank for the
-//! coordinator.
+//! coordinator. And what round 2 of the study (18 November 2026) found SQL
+//! answering otherwise than PostgreSQL and DuckDB: `ORDER BY` an alias
+//! after `GROUP BY` or `DISTINCT` (SAM-201), `json_extract` of a `'$.'`
+//! path (SAM-202), float sums that changed once a plan ran on DataFusion
+//! (SAM-203), `NULLS FIRST` over groups (SAM-204) and refusals that did
+//! not say what to write (SAM-208).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -142,6 +147,102 @@ async fn answers_what_it_was_asked(url: &str) {
     // ...and ORDER BY its alias.
     let r = ids(url, "SELECT id, bm25(name, 'sof*') AS score FROM p ORDER BY score DESC").await;
     assert_eq!(sorted(r), ["a", "b", "d"]);
+}
+
+/// `sql`'s rows, or its error.
+async fn rows(url: &str, sql: &str) -> Result<Vec<Json>, String> {
+    let (s, j) = call(url, "/v1/query", Some(json!({"sql": sql}))).await;
+    match s {
+        200 => Ok(j["rows"].as_array().unwrap_or_else(|| panic!("{sql}: {j}")).clone()),
+        _ => Err(j["error"].as_str().unwrap_or_default().to_string()),
+    }
+}
+
+async fn sql_answers_as_postgres(url: &str) {
+    for ddl in ["CREATE TABLE trips (id INT PRIMARY KEY, payment_type INT, zone KEYWORD)", "CREATE TABLE pay (id INT PRIMARY KEY, cid INT, amount FLOAT)", "CREATE TABLE cust (id INT PRIMARY KEY, name KEYWORD, attrs JSON)"] {
+        let (s, j) = call(url, "/v1/sql", Some(json!({"sql": ddl}))).await;
+        assert_eq!(s, 200, "{ddl}: {j}");
+    }
+    for _ in 0..50 {
+        if call(url, "/v1/tables", None).await.1["tables"].as_array().is_some_and(|t| t.len() == 3) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // payment_type 1, 2 and 3 on 8 rows each, NULL on 6.
+    let ops: Vec<Json> = (0..30)
+        .map(|i| {
+            let pt = if i < 6 { Json::Null } else { json!((i - 6) / 8 + 1) };
+            let zone = ["Bronx", "Queens", "Brooklyn"][i % 3];
+            json!({"op": "upsert", "table": "trips", "doc": {"id": i, "payment_type": pt, "zone": zone}})
+        })
+        .collect();
+    let (s, j) = write(url, json!({"ops": ops})).await;
+    assert_eq!(s, 200, "{j}");
+
+    // SAM-201: an output column's alias in ORDER BY, grouped and DISTINCT.
+    let by_pt = json!([[1, 8], [2, 8], [3, 8], [null, 6]]);
+    for sql in [
+        "SELECT payment_type AS pt, COUNT(*) AS n FROM trips GROUP BY pt ORDER BY pt",
+        "SELECT payment_type AS pt, COUNT(*) AS n FROM trips GROUP BY payment_type ORDER BY pt",
+    ] {
+        assert_eq!(Json::Array(rows(url, sql).await.unwrap()), by_pt, "{sql}");
+    }
+    let r = rows(url, "SELECT payment_type AS pt, COUNT(*) AS n FROM trips GROUP BY pt ORDER BY n, pt").await.unwrap();
+    assert_eq!(Json::Array(r), json!([[null, 6], [1, 8], [2, 8], [3, 8]]));
+    let r = rows(url, "SELECT DISTINCT zone AS z FROM trips ORDER BY z DESC").await.unwrap();
+    assert_eq!(Json::Array(r), json!([["Queens"], ["Brooklyn"], ["Bronx"]]));
+
+    // SAM-204: NULLS FIRST over groups.
+    let r = rows(url, "SELECT payment_type, COUNT(*) AS n FROM trips GROUP BY payment_type ORDER BY payment_type DESC NULLS FIRST").await.unwrap();
+    assert_eq!(Json::Array(r), json!([[null, 6], [3, 8], [2, 8], [1, 8]]));
+
+    // SAM-202: '$.' paths in SELECT, of a JSON field and of a text.
+    let (s, j) = write(url, json!({"ops": [{"op": "upsert", "table": "cust", "doc": {"id": 1, "name": "A", "attrs": {"dims": {"w": 40.5}}}}, {"op": "upsert", "table": "cust", "doc": {"id": 2, "name": "B", "attrs": {"color": "black"}}}, {"op": "upsert", "table": "cust", "doc": {"id": 3, "name": "pad"}}]})).await;
+    assert_eq!(s, 200, "{j}");
+    let r = rows(url, "SELECT id, json_extract(attrs, 'dims.w') AS a, json_extract(attrs, '$.dims.w') AS b FROM cust WHERE id <= 2 ORDER BY id").await.unwrap();
+    assert_eq!(Json::Array(r), json!([[1, 40.5, 40.5], [2, null, null]]));
+    let r = rows(url, r#"SELECT json_extract('{"a": {"b": 3}}', '$.a.b') AS v"#).await.unwrap();
+    assert_eq!(Json::Array(r), json!([[3]]));
+
+    // SAM-203: two customers' equal float totals tie whatever the size of
+    // the table, past the 4,096 rows at which a plan runs on DataFusion.
+    let a = [1.98, 15.86, 8.91, 1.98, 7.96, 5.94, 0.99];
+    let b = [1.98, 13.86, 8.91, 1.98, 3.96, 11.94, 0.99];
+    let mut ops: Vec<Json> = a.iter().map(|x| (1, x)).chain(b.iter().map(|x| (2, x))).enumerate().map(|(i, (cid, x))| json!({"op": "upsert", "table": "pay", "doc": {"id": i, "cid": cid, "amount": x}})).collect();
+    ops.extend((0..4400).map(|i| json!({"op": "upsert", "table": "pay", "doc": {"id": 1000 + i, "cid": 3, "amount": 1.0}})));
+    let (s, j) = write(url, json!({"ops": ops})).await;
+    assert_eq!(s, 200, "{j}");
+    let r = rows(url, "SELECT c.name, SUM(p.amount) AS s, RANK() OVER (ORDER BY SUM(p.amount) DESC) AS r FROM pay p JOIN cust c ON p.cid = c.id WHERE c.name != 'pad' GROUP BY c.name ORDER BY c.name").await.unwrap();
+    assert_eq!(Json::Array(r), json!([["A", 43.62, 1], ["B", 43.62, 1]]));
+
+    // SAM-208: refusals that say what to write.
+    let e = rows(url, "SELECT zone, payment_type, COUNT(*) FROM trips GROUP BY ROLLUP (zone, payment_type)").await.unwrap_err();
+    assert!(e.contains("ROLLUP is not supported") && e.contains("UNION ALL"), "{e}");
+    let e = rows(url, "SELECT t.id FROM trips t JOIN pay USING (id)").await.unwrap_err();
+    assert!(e.contains("JOIN pay ON t.id = pay.id"), "{e}");
+    let (s, j) = call(url, "/v1/sql", Some(json!({"sql": "INSERT INTO cust (id, name) SELECT id + 10, name FROM cust"}))).await;
+    assert!(s >= 400 && j["error"].as_str().unwrap().contains("INSERT ... SELECT is not supported"), "{s} {j}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_answers_sql_as_postgres() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = http(empty(dir.path(), "one.strata")).await;
+    sql_answers_as_postgres(&url).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cluster_answers_sql_as_postgres() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut shards = Vec::new();
+    for i in 0..2 {
+        shards.push(grpc(empty(dir.path(), &format!("s{i}.strata"))).await);
+    }
+    let c = Coordinator::connect(shards).await.unwrap();
+    let schema = c.schema.clone();
+    let url = http(service(Backend::Cluster(Arc::new(c)), schema)).await;
+    sql_answers_as_postgres(&url).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -11,6 +11,23 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **SQL answers the same on either engine, and as PostgreSQL does in four
+  more places** (persona study round 2, SAM-201 to SAM-204, SAM-208).
+  `ORDER BY` an output column's alias after `GROUP BY` or `DISTINCT`
+  (`SELECT payment_type AS pt ... GROUP BY pt ORDER BY pt`) was "no such
+  column"; it orders, and an output name wins over an input column of the
+  same name. `json_extract(doc, '$.a.b')` was `NULL` outside `WHERE`; a
+  `'$.'` path reads everywhere, and `'$'` is the whole value. `NULLS FIRST`
+  was refused after `GROUP BY` or `DISTINCT`; it orders groups. A `SUM` or
+  `AVG` of `FLOAT`s on DataFusion (a plan over more than 4,096 rows) added
+  in order, so totals that tied on a small table (43.62 and
+  43.620000000000005) split as it grew and a `RANK` over them changed; it
+  adds exactly, the same bits as ChloeDB's operators. The refusals of
+  `ROLLUP`, `CUBE`, `GROUPING SETS`, `substr`, `JOIN ... USING`, `NATURAL
+  JOIN`, a join on no equality, `INSERT ... SELECT`, `CREATE TABLE ... AS
+  SELECT`, temporary tables and a time minus a time say what to write
+  instead, with the query's own tables.
+
 ### Analytical SQL
 
 What the persona study's data engineer found in its second round: groups,

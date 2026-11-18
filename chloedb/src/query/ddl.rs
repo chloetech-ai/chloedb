@@ -122,7 +122,21 @@ pub(crate) fn create_table(ct: &sql::CreateTable, tables: &[&Schema]) -> Result<
         }
     }
     if plain != sql::Statement::CreateTable(ct.clone()) {
-        return Err(err(format!("this form of CREATE TABLE is not supported; the form is {CREATE_FORM}")));
+        // The forms other databases have, refused by name (SAM-208), then
+        // the form there is.
+        let name = &ct.name;
+        let what = if ct.query.is_some() {
+            format!("CREATE TABLE ... AS SELECT is not supported: make the table with its columns (CREATE TABLE {name} (column TYPE, ...)), then write the rows the SELECT returns with INSERT ... VALUES; a stored function (CREATE FUNCTION {name}() RETURNS TABLE AS SELECT ...) is read like a view of the SELECT")
+        } else if ct.temporary || ct.global.is_some() {
+            "temporary tables (CREATE TEMP TABLE) are not supported: WITH name AS (SELECT ...) holds rows for one statement, or make a table and DROP TABLE it when done".to_string()
+        } else if ct.or_replace {
+            format!("CREATE OR REPLACE TABLE is not supported: DROP TABLE IF EXISTS {name}, then CREATE TABLE")
+        } else if ct.like.is_some() || ct.clone.is_some() {
+            "CREATE TABLE ... LIKE and CLONE are not supported: name the columns".to_string()
+        } else {
+            "this form of CREATE TABLE is not supported".to_string()
+        };
+        return Err(err(format!("{what}; the form is {CREATE_FORM}")));
     }
     let name = single_name(&ct.name)?;
     if ct.columns.is_empty() {
