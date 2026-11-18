@@ -172,6 +172,8 @@ SELECT * FROM events WHERE hash(id, 7) % 10 < 8;    -- train
 SELECT * FROM events WHERE hash(id, 7) % 10 >= 8;   -- test
 -- the same thousand rows in the same random order
 SELECT * FROM events ORDER BY hash(id, 7) LIMIT 1000;
+-- the rows a search finds, in a random order of their own
+SELECT * FROM events ORDER BY bm25(body, :q) * 0 + hash(id, 7) DESC LIMIT 10;
 ```
 
 **`hash(x [, seed])`** is an `INT` from 0 to 2<sup>63</sup> - 1 that only `x` and `seed` (an `INT`, 0 without one) decide: the same on every machine, in every version of ChloeDB, and on a file and over shards, so a sample or a split made with it is the same rows wherever and whenever it runs. Another seed gives another sample. A `NULL` value or seed gives `NULL`, so a row whose `x` is `NULL` is in no part; hash a column every row holds, such as the key. `x` is one value: text, a number, a `BOOL` or a `TIMESTAMP` (a list is an error). To hash several columns, chain them through the seed: `hash(item, hash(user, 7))`.
@@ -188,7 +190,7 @@ def chloedb_hash(data: bytes, seed: int = 0) -> int:     # data: "u42".encode(),
     return (h ^ (h >> 31)) >> 1
 ```
 
-In `WHERE`, `hash` is a [condition the indexes cannot answer](#statement-shape): the other conditions narrow the rows by their indexes, and those rows are hashed one by one. `ORDER BY hash(id, 7)` sorts the rows by it, as `ORDER BY lower(name)` or a part of a time sorts them: the rows the table's query finds, in memory. A plan that uses it needs the plan feature `hash`, which shards of a version without the function refuse. A [frame](frames.md) samples and splits with it: `frame.sample(fraction=0.1, seed=7)`, `train, test = frame.split(0.8, seed=7)`.
+In `WHERE`, `hash` is a [condition the indexes cannot answer](#statement-shape): the other conditions narrow the rows by their indexes, and those rows are hashed one by one. `ORDER BY hash(id, 7)` sorts the rows by it, as `ORDER BY lower(name)` or a part of a time sorts them: the rows the table's query finds, in memory. In a [ranking expression](#ranking-expressions) with a score, `hash(field, seed)` of the key or a stored field is the same number, a value of each row the score finds: `bm25(body, :q) * 0 + hash(id, 7)` shows what a search finds in a seeded random order (an arm of an experiment that shuffles its results, or a sample of a search's rows), and a small share of it breaks ties at random. `rrf` does not fuse it. A plan that uses it needs the plan feature `hash`, which shards of a version without the function refuse, and a shard of a version from before it in rankings refuses it there. A [frame](frames.md) samples and splits with it: `frame.sample(fraction=0.1, seed=7)`, `train, test = frame.split(0.8, seed=7)`.
 
 ### JSON fields: keys no schema names
 
@@ -599,7 +601,7 @@ SELECT id FROM papers ORDER BY -rank(bm25(body, :t)) - rank(similarity(emb, :q))
 | part | meaning |
 |---|---|
 | `+ - * / %`, unary `-` | arithmetic on raw values |
-| `bm25`, `similarity`, `ppr`, `decay`, `rrf`, `ranked`, a numeric column, `hops()`, `seq_no()` | the leaves: a row's value of each |
+| `bm25`, `similarity`, `ppr`, `decay`, `rrf`, `ranked`, a numeric column, `hops()`, `seq_no()`, `hash(field, seed)` | the leaves: a row's value of each |
 | `ln(x)`, `log(x)` (base 10), `log(b, x)`, `exp(x)`, `sqrt(x)`, `pow(x, y)`, `abs(x)`, `round(x[, digits])`, `sigmoid(x)`, `clamp(x, lo, hi)` | numeric functions |
 | `least(…)`, `greatest(…)`, `coalesce(…)` | over their arguments that are not `NULL` |
 | `tmm(x[, lo => a][, hi => b])` | `x` from its least possible value to the best row's, put on [0, 1]: 0 where `x` is `NULL` ([above](#weighted-sums-tmm-minmax-and-zscore)) |
@@ -615,7 +617,7 @@ Candidates are the top `depth` (100) rows of each relevance leaf (`bm25`, `simil
 
 #### Rank-safe boosts
 
-An expression with one text score (`bm25`, or `similarity` on a `SPARSE` field) whose other parts are numeric columns, `decay`, `CASE` conditions, numbers and `seq_no()` finds its exact top rows: the rows that scoring every row the text matches would rank first, not only the best of the text's top 100. Set functions (`tmm()`, `minmax()`, `zscore()`, `rank()`), `rrf` and `exact => 1` take the candidates above instead.
+An expression with one text score (`bm25`, or `similarity` on a `SPARSE` field) whose other parts are numeric columns, `decay`, `CASE` conditions, numbers, `seq_no()` and `hash()` finds its exact top rows: the rows that scoring every row the text matches would rank first, not only the best of the text's top 100. Set functions (`tmm()`, `minmax()`, `zscore()`, `rank()`), `rrf` and `exact => 1` take the candidates above instead.
 
 ```sql
 -- the 10 best by BM25 boosted by importance, even a row 5,000th by BM25 alone

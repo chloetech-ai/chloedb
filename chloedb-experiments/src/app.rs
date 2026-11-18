@@ -57,6 +57,8 @@ pub struct App {
     sites: tokio::sync::Mutex<HashMap<String, Arc<Site>>>,
     loading: Mutex<HashMap<String, String>>,
     progress: Mutex<HashMap<String, Arc<Progress>>>,
+    /// Checks under way ([`crate::repeat`]), by experiment.
+    checks: Mutex<HashMap<String, Arc<Progress>>>,
     kept: Mutex<VecDeque<(String, Arc<RunData>)>>,
     turn: tokio::sync::Semaphore,
     /// The live runs in memory, newest first: the one running, and a few that ended.
@@ -85,7 +87,7 @@ fn upstream(m: String) -> ApiError {
 
 type Answer = Result<Json<Value>, ApiError>;
 
-fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
@@ -164,6 +166,7 @@ pub async fn serve(server: Server, listener: tokio::net::TcpListener, o: Opts) -
         sites: tokio::sync::Mutex::new(HashMap::new()),
         loading: Mutex::new(HashMap::new()),
         progress: Mutex::new(HashMap::new()),
+        checks: Mutex::new(HashMap::new()),
         kept: Mutex::new(VecDeque::new()),
         turn: tokio::sync::Semaphore::new(1),
         lives: Mutex::new(VecDeque::new()),
@@ -252,6 +255,7 @@ pub fn router(app: Shared) -> Router {
         .route("/v1/experiments", get(experiments).post(create))
         .route("/v1/experiments/:id", get(experiment).delete(remove))
         .route("/v1/experiments/:id/cut", post(cut))
+        .route("/v1/experiments/:id/check", post(check_run))
         .route("/v1/live", get(lives).post(create_live))
         .route("/v1/live/:id", get(one_live))
         .route("/v1/live/:id/stop", post(stop_live))
@@ -404,6 +408,7 @@ async fn preview(State(app): State<Shared>, Json(b): Json<Value>) -> Answer {
     if ranks.is_empty() || ranks.len() > ab::MAX_ARMS || ranks.iter().any(|r| r.contains(';') || r.trim().is_empty()) {
         return Err(bad(format!("preview takes 1 to {} rankings, each an ORDER BY expression", ab::MAX_ARMS)));
     }
+    let thens: Vec<&str> = (0..ranks.len()).map(|i| b["thens"][i].as_str().unwrap_or("")).collect();
     let limit = b["limit"].as_u64().unwrap_or(5).clamp(1, 10) as usize;
     let n = b["queries"].as_u64().unwrap_or(4).clamp(1, 12) as usize;
     let s = app.site(name).await?;
@@ -418,10 +423,11 @@ async fn preview(State(app): State<Shared>, Json(b): Json<Value>) -> Answer {
     let mut all_keys = Vec::new();
     for &q in &picked {
         let mut per = Vec::new();
-        for r in &ranks {
+        for (r, then) in ranks.iter().zip(&thens) {
             let sql = format!("SELECT id FROM {} ORDER BY {r} DESC LIMIT {limit}", s.table);
             let a = app.server.query(&sql, json!({"t": s.queries[q].text}), None).await.map_err(|e| bad(format!("ranking {r}: {e}")))?;
-            let keys: Vec<String> = a["rows"].as_array().into_iter().flatten().map(|x| crate::sim::key_text(&x[0])).collect();
+            let mut keys: Vec<String> = a["rows"].as_array().into_iter().flatten().map(|x| crate::sim::key_text(&x[0])).collect();
+            ab::then_apply(then, &mut keys);
             all_keys.extend(keys.iter().cloned());
             per.push((keys, a["took_ms"].as_f64()));
         }
@@ -471,6 +477,9 @@ async fn experiment(State(app): State<Shared>, Path(id): Path<String>) -> Answer
     if let Some(p) = app.progress.lock().unwrap_or_else(|e| e.into_inner()).get(&id) {
         r["progress"] = progress_of(p);
     }
+    if let Some(p) = app.checks.lock().unwrap_or_else(|e| e.into_inner()).get(&id) {
+        r["checking"] = progress_of(p);
+    }
     r["cuttable"] = json!(app.kept_run(&id).is_some());
     r["live"] = json!(app.live(&id).is_some());
     Ok(Json(r))
@@ -507,7 +516,61 @@ async fn cut(State(app): State<Shared>, Path(id): Path<String>, Json(b): Json<Va
     Ok(Json(v))
 }
 
-async fn create(State(app): State<Shared>, Json(spec): Json<Spec>) -> Answer {
+/// Runs a finished experiment again `repeats` times with fresh seeds, in
+/// the background, and keeps how often its intervals held the truth in
+/// its report (`report.check`).
+async fn check_run(State(app): State<Shared>, Path(id): Path<String>, body: Option<Json<Value>>) -> Answer {
+    let b = body.map(|Json(b)| b).unwrap_or(Value::Null);
+    let repeats = b["repeats"].as_u64().unwrap_or(crate::repeat::REPEATS as u64).clamp(5, crate::repeat::MAX_REPEATS as u64) as usize;
+    let r = app.row(&id).await?;
+    if r["status"] != "done" {
+        return Err(ApiError(StatusCode::CONFLICT, "check an experiment once it is done".into()));
+    }
+    let spec: Spec = serde_json::from_value(r["report"]["spec"].clone()).map_err(|e| bad(format!("this experiment's spec: {e}")))?;
+    if spec.mode == "interleave" {
+        return Err(bad("an interleaving's report has its A/B beside it already: check A/B tests and live runs"));
+    }
+    let site = app.site(&spec.site).await?;
+    let progress = Arc::new(Progress::default());
+    progress.stage("waiting for the run before it");
+    {
+        let mut c = app.checks.lock().unwrap_or_else(|e| e.into_inner());
+        if c.contains_key(&id) {
+            return Err(ApiError(StatusCode::CONFLICT, "this experiment is being checked".into()));
+        }
+        c.insert(id.clone(), progress.clone());
+    }
+    let searches = crate::repeat::repeat_spec(&spec).impressions;
+    {
+        let (app, id) = (app.clone(), id.clone());
+        tokio::spawn(async move {
+            let _turn = app.turn.acquire().await;
+            let result = crate::repeat::check(&app.server, &spec, &id, (*site).clone(), repeats, progress).await;
+            let check = result.unwrap_or_else(|e| json!({"error": e}));
+            // The row may have moved since: read it again, and keep everything but the check.
+            match app.row(&id).await {
+                Ok(mut r) => {
+                    r["report"]["check"] = check;
+                    let text = |v: &Value| if v.is_null() { Value::Null } else { json!(v.to_string()) };
+                    let row = json!({"name": r["name"], "site": r["site"], "created": r["created"], "status": r["status"], "spec": text(&r["spec"]), "summary": text(&r["summary"]), "report": text(&r["report"]), "error": r["error"], "seconds": r["seconds"]});
+                    if let Err(e) = app.save(&id, row).await {
+                        eprintln!("chloedb-experiments: saving the check of {id}: {e}");
+                    }
+                }
+                Err(e) => eprintln!("chloedb-experiments: the check of {id}: {}", e.1),
+            }
+            app.checks.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        });
+    }
+    Ok(Json(json!({"id": id, "repeats": repeats, "searches": searches})))
+}
+
+async fn create(State(app): State<Shared>, Json(mut spec): Json<Spec>) -> Answer {
+    if spec.mode == "interleave" {
+        // Every user sees both arms: none explores, and no pre-period is needed.
+        spec.explore_share = 0.0;
+        spec.pre = 0.0;
+    }
     spec.check().map_err(bad)?;
     let site = app.site(&spec.site).await?;
     let id = format!("e{}{:04x}", now_ms(), crate::policy::Rng::of(&format!("{}{}", spec.name, now_ms())).next_u64() & 0xffff);
@@ -550,6 +613,18 @@ async fn create(State(app): State<Shared>, Json(spec): Json<Spec>) -> Answer {
 
 async fn run_one(app: &Shared, spec: &Spec, id: &str, mut site: Site, progress: Arc<Progress>) -> Result<(Value, Value, f64), String> {
     let t0 = std::time::Instant::now();
+    if spec.mode == "interleave" {
+        let mut report = crate::interleave::run(&app.server, spec, id, site, progress).await?;
+        let seconds = t0.elapsed().as_secs_f64();
+        report["seconds"] = json!(seconds);
+        report["spec"] = json!(spec);
+        let summary = json!({
+            "verdicts": report["verdicts"], "users": report["users"], "searches": report["searches"], "kind": "interleave",
+            "primary": "preference", "arms": spec.arms.iter().map(|a| &a.name).collect::<Vec<_>>(), "mode": "interleave", "model": spec.model,
+            "times": report["saving"]["times"],
+        });
+        return Ok((summary, report, seconds));
+    }
     progress.stage("ranking every query under each arm");
     let policy: Policy = spec.policy()?;
     let ranks = ab::rank(&app.server, &mut site, spec, &policy).await?;
