@@ -105,7 +105,7 @@ fn node(n: &Node) -> pb::Node {
         Node::Aggregate { input, keys, aggs } => N::Aggregate(Box::new(pb::Aggregate {
             input: boxed(input),
             keys: keys.iter().map(ex).collect(),
-            aggs: aggs.iter().map(|a| pb::Agg { func: agg_fn(a.func) as i32, arg: a.arg.as_ref().map(ex), fraction: a.func.fraction().unwrap_or(0.0) }).collect(),
+            aggs: aggs.iter().map(|a| pb::Agg { func: agg_fn(a.func) as i32, arg: a.arg.as_ref().map(ex), fraction: a.func.fraction().unwrap_or(0.0), sep: a.sep.clone().unwrap_or_default() }).collect(),
         })),
         Node::Filter { input, cond } => N::Filter(Box::new(pb::Filter { input: boxed(input), cond: bex(cond) })),
         Node::Sort { input, keys } => N::Sort(Box::new(pb::Sort { input: boxed(input), keys: keys.iter().map(sort_key).collect() })),
@@ -221,7 +221,10 @@ fn from_window_fn(f: pb::WindowFn) -> Result<WindowFn, ApiError> {
         Kind::FirstValue => WindowFunc::FirstValue(arg(f.arg)?),
         Kind::LastValue => WindowFunc::LastValue(arg(f.arg)?),
         Kind::NthValue => WindowFunc::NthValue { arg: arg(f.arg)?, n: f.n },
-        Kind::Aggregate => WindowFunc::Agg(Agg { func: from_agg_fn(f.agg, None)?, arg: f.arg.map(|e| from_ex(Some(e))).transpose()? }),
+        Kind::Aggregate => match from_agg_fn(f.agg, None)? {
+            AggFn::StringAgg => return Err(bad("STRING_AGG is not a window function")),
+            func => WindowFunc::Agg(Agg::of(func, f.arg.map(|e| from_ex(Some(e))).transpose()?)),
+        },
     };
     let frame = f
         .frame
@@ -260,6 +263,7 @@ fn from_agg_fn(n: i32, fraction: Option<f64>) -> Result<AggFn, ApiError> {
         pb::AggFn::PercentileCont => AggFn::PercentileCont(fraction()?),
         pb::AggFn::PercentileDisc => AggFn::PercentileDisc(fraction()?),
         pb::AggFn::ApproxPercentile => AggFn::ApproxPercentile(fraction()?),
+        pb::AggFn::StringAgg => AggFn::StringAgg,
     })
 }
 
@@ -274,6 +278,7 @@ fn agg_fn(f: AggFn) -> pb::AggFn {
         AggFn::PercentileCont(_) => pb::AggFn::PercentileCont,
         AggFn::PercentileDisc(_) => pb::AggFn::PercentileDisc,
         AggFn::ApproxPercentile(_) => pb::AggFn::ApproxPercentile,
+        AggFn::StringAgg => pb::AggFn::StringAgg,
     }
 }
 
@@ -377,6 +382,14 @@ fn expr(e: &Expr) -> E {
                 Func::Strftime => pb::Func::Strftime,
                 Func::Hash => pb::Func::Hash,
                 Func::DateBin => pb::Func::DateBin,
+                Func::Floor => pb::Func::Floor,
+                Func::Ceil => pb::Func::Ceil,
+                Func::Substr => pb::Func::Substr,
+                Func::Trim => pb::Func::Trim,
+                Func::Ltrim => pb::Func::Ltrim,
+                Func::Rtrim => pb::Func::Rtrim,
+                Func::Replace => pb::Func::Replace,
+                Func::DateDiff => pb::Func::DateDiff,
             } as i32,
             args: args.iter().map(ex).collect(),
         }),
@@ -546,7 +559,10 @@ fn from_node_in(n: pb::Node) -> Result<Node, ApiError> {
             let aggs = a
                 .aggs
                 .into_iter()
-                .map(|g| Ok(Agg { func: from_agg_fn(g.func, Some(g.fraction))?, arg: g.arg.map(|e| from_ex(Some(e))).transpose()? }))
+                .map(|g| {
+                    let func = from_agg_fn(g.func, Some(g.fraction))?;
+                    Ok(Agg { func, arg: g.arg.map(|e| from_ex(Some(e))).transpose()?, sep: (func == AggFn::StringAgg).then_some(g.sep) })
+                })
                 .collect::<Result<_, ApiError>>()?;
             Node::Aggregate { input: from_bnode(a.input)?, keys: from_exprs(a.keys)?, aggs }
         }
@@ -741,6 +757,14 @@ fn from_expr(e: E) -> Result<Expr, ApiError> {
                 pb::Func::Strftime => Func::Strftime,
                 pb::Func::Hash => Func::Hash,
                 pb::Func::DateBin => Func::DateBin,
+                pb::Func::Floor => Func::Floor,
+                pb::Func::Ceil => Func::Ceil,
+                pb::Func::Substr => Func::Substr,
+                pb::Func::Trim => Func::Trim,
+                pb::Func::Ltrim => Func::Ltrim,
+                pb::Func::Rtrim => Func::Rtrim,
+                pb::Func::Replace => Func::Replace,
+                pb::Func::DateDiff => Func::DateDiff,
             };
             Expr::Call { func, args: from_exprs(c.args)? }
         }

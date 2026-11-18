@@ -11,6 +11,15 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Everyday SQL functions** (persona study round 2, SAM-7): `substr`
+  (`substring`, `SUBSTRING(s FROM i FOR n)`), `trim`, `ltrim`, `rtrim`
+  (`btrim`, `TRIM(LEADING ... FROM s)`), `replace`, `concat`, `nullif`,
+  `floor` and `ceil`, with PostgreSQL's answers; `date_diff('unit',
+  start, end)`, the unit's boundaries between two times, as DuckDB counts
+  them; and `STRING_AGG(x, ', ' [ORDER BY y])`. They run on either engine
+  and over shards; a plan that uses one declares the feature
+  `sql_functions`, which a server from before refuses by name
+  ([query-language.md](docs/chloedb/query-language.md#text-and-numbers-substr-trim-replace-concat-nullif-floor-and-ceil)).
 - **SQL answers the same on either engine, and as PostgreSQL does in four
   more places** (persona study round 2, SAM-201 to SAM-204, SAM-208).
   `ORDER BY` an output column's alias after `GROUP BY` or `DISTINCT`
@@ -23,7 +32,7 @@ changes collect under "Unreleased".
   in order, so totals that tied on a small table (43.62 and
   43.620000000000005) split as it grew and a `RANK` over them changed; it
   adds exactly, the same bits as ChloeDB's operators. The refusals of
-  `ROLLUP`, `CUBE`, `GROUPING SETS`, `substr`, `JOIN ... USING`, `NATURAL
+  `ROLLUP`, `CUBE`, `GROUPING SETS`, `JOIN ... USING`, `NATURAL
   JOIN`, a join on no equality, `INSERT ... SELECT`, `CREATE TABLE ... AS
   SELECT`, temporary tables and a time minus a time say what to write
   instead, with the query's own tables.

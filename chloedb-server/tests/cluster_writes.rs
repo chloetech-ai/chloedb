@@ -248,6 +248,26 @@ async fn update_and_delete_take_the_where_a_select_takes() {
     assert_eq!(a["runs"], false, "{a}");
 }
 
+/// Finding SAM-7 through a coordinator: the everyday functions and
+/// STRING_AGG over the rows of both shards, in the order asked for, as one
+/// server answers them.
+#[tokio::test]
+async fn everyday_functions_over_shards() {
+    let (_dir, api) = api().await;
+    let ops: Vec<Json> = (0..12).map(|i| json!({"op": "upsert", "table": "prods", "doc": {"id": format!("f{i:02}"), "sku": format!("S{}", i % 5), "title": format!("  item {i} "), "stock": i}})).collect();
+    let (s, a) = api.post("/v1/write", json!({"ops": ops})).await;
+    assert_eq!(s, 200, "{a}");
+    let (s, a) = api.post("/v1/query", json!({"sql": "SELECT STRING_AGG(id, ',' ORDER BY stock DESC) FROM prods WHERE stock < 6"})).await;
+    assert_eq!((s, &a["rows"][0][0]), (200, &json!("f05,f04,f03,f02,f01,f00")), "{a}");
+    let (s, a) = api.post("/v1/query", json!({"sql": "SELECT sku, STRING_AGG(trim(title), ' | ' ORDER BY id) AS t FROM prods GROUP BY sku ORDER BY sku LIMIT 2"})).await;
+    assert_eq!((s, &a["rows"]), (200, &json!([["S0", "item 0 | item 5 | item 10"], ["S1", "item 1 | item 6 | item 11"]])), "{a}");
+    let q = "SELECT id, substr(trim(title), 6), replace(sku, 'S', 's'), concat(sku, NULL, '-', stock), nullif(stock, 3), floor(stock / 4.0), ceil(stock / 4.0), date_diff('day', '2026-11-01', '2026-11-18') FROM prods WHERE stock IN (3, 9) ORDER BY id";
+    let (s, a) = api.post("/v1/query", json!({"sql": q})).await;
+    assert_eq!((s, &a["rows"]), (200, &json!([["f03", "3", "s3", "S3-3", null, 0, 1, 17], ["f09", "9", "s4", "S4-9", 9, 2, 3, 17]])), "{a}");
+    let (s, a) = api.post("/v1/query", json!({"sql": "SELECT COUNT(*) FROM prods WHERE ltrim(title) LIKE 'item 1%'"})).await;
+    assert_eq!((s, &a["rows"][0][0]), (200, &json!(3)), "{a}");
+}
+
 #[tokio::test]
 async fn a_cluster_exports_a_table_s_rows() {
     let (_dir, api) = api().await;
