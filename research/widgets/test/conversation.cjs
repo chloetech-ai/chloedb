@@ -6,11 +6,15 @@
 const { chromium } = require('playwright')
 const URL = process.env.URL || 'http://127.0.0.1:8800/'
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a)
+// Seconds into the video, for cutting it: a mark is logged as "mark NAME SECONDS".
+let t0 = 0
+const mark = name => log('mark', name, ((Date.now() - t0) / 1000).toFixed(1))
 
 ;(async () => {
   const b = await chromium.launch()
   const ctx = await b.newContext({ viewport: { width: 1280, height: 820 }, deviceScaleFactor: 1, recordVideo: { dir: 'video', size: { width: 1280, height: 820 } } })
   const p = await ctx.newPage()
+  t0 = Date.now()
   p.on('pageerror', e => log('pageerror', e.message))
   p.on('console', m => { if (m.type() === 'error') log('console', m.text().slice(0, 200)) })
   await p.goto(URL + '?theme=light')
@@ -23,13 +27,22 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a)
     await p.screenshot({ path: `c${n}-${name}.png` })
   }
 
-  async function say(text, name) {
+  async function say(text, name, making = false) {
     const done = await count('done')
     log('say', text)
     await p.locator('#text').click()
     await p.locator('#text').pressSequentially(text, { delay: 14 })
     await p.waitForTimeout(300)
     await p.keyboard.press('Enter')
+    // A new app takes a minute: the marks say when it started and came, and a picture shows it being made.
+    if (making) {
+      await p.waitForFunction(() => window.events.some(e => e.type === 'making'), null, { timeout: 120000, polling: 200 })
+      mark('making')
+      await p.waitForTimeout(4000)
+      await shot('making')
+      await p.waitForFunction(() => window.events.some(e => e.type === 'app' && e.how === 'made'), null, { timeout: 300000, polling: 200 })
+      mark('made')
+    }
     await p.waitForFunction(d => window.events.filter(e => e.type === 'done').length > d, done, { timeout: 300000 })
     await p.waitForTimeout(2500)
     const evs = await p.evaluate(() => window.events.slice(-4).map(e => ({ ...e, html: undefined, result: undefined, candidates: undefined, app: e.app?.name })))
@@ -68,6 +81,18 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a)
   await say('Which of those is the quickest to make?', 'quickest')
   await say('And a small gift for my mom under $50? Something for her kitchen', 'gift')
   await act(/Add to cart/, 'added', null, 2)
+  // No saved app compares products, so this one is made on the fly, then saved to the rail.
+  await say('Hmm, can you put the Boxed Blender and the Hand Blender side by side so I can pick?', 'compare', true)
+  const save = p.locator('.widget:not(.folded)').last().locator('.wbtn.save')
+  if (await save.count()) {
+    await p.waitForTimeout(1500)
+    log('click Save')
+    await save.click()
+    await p.waitForTimeout(2500)
+    await shot('saved')
+  }
+  await say('Which one would you get her?', 'pick')
+  mark('end')
   await p.waitForTimeout(1500)
   // The whole conversation in one picture: the page grows to fit it.
   await p.addStyleTag({ content: '.shell{height:auto!important;grid-template-rows:auto!important}.log{overflow:visible!important}.rail{align-self:start;position:sticky;top:0}' })

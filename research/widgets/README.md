@@ -60,9 +60,13 @@ other informed:
 
 `test/conversation.cjs` plays such a conversation in Chromium against a
 running chat and records it (a video, a picture after each turn and one of the
-whole conversation, in the folder it is run from): a table found, moved to
-7:30 and booked, dinner ideas, a question answered from the widget, and a gift
-added to a cart. With the apps saved, it takes about 75 seconds.
+whole conversation, in the folder it is run from, and the seconds into the
+video where an app was being made, to cut it): a table found, moved to 7:30
+and booked, dinner ideas, a question answered from the widget, a gift added
+to a cart, then two products put side by side, which no saved app does, so a
+Product comparison is made on the fly, saved to the rail and asked about. With
+the other apps saved, it takes about two minutes, half a minute of it making
+the new app.
 
 Every app, made or written by hand, is an MCP App: a view filled by a tool of
 the MCP server in `server/`. The same server works in any host that draws MCP
