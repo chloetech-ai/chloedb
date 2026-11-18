@@ -7589,7 +7589,9 @@ fn converge_a_persona_plays_with_its_own_memory_only_when_asked() {
     assert_eq!(v["run"]["use_memory"], false, "{v}");
     let last = envs().lines().last().unwrap().to_string();
     let run_id = v["run"]["id"].as_str().unwrap();
-    let sandbox = s.data.join("converge").join("runs").join(run_id).join("chloectx");
+    // The server names its data dir as it resolves it (on macOS the
+    // temporary folder's /var is /private/var).
+    let sandbox = s.data.canonicalize().unwrap().join("converge").join("runs").join(run_id).join("chloectx");
     assert!(last.contains(&format!("home={} disable= source=", sandbox.display())), "{last}");
     assert!(!sandbox.exists(), "thrown away with the run");
 

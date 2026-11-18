@@ -84,7 +84,7 @@ pub(crate) fn decided_counts(d: &Json) -> Json {
 
 /// `git <args>` in `dir`: its output, or why it failed.
 pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| format!("cannot run git: {e}"))?;
+    let out = Command::new("git").arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output().map_err(|e| format!("cannot run git: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -260,7 +260,7 @@ impl Landing {
 /// Whether two commits merge without a conflict (`git merge-tree
 /// --write-tree`), and the files that conflict.
 pub(crate) fn merges_clean(dir: &Path, a: &str, b: &str) -> Option<(bool, Vec<String>)> {
-    let out = Command::new("git").arg("-C").arg(dir).args(["merge-tree", "--write-tree", "--name-only", "--no-messages", a, b]).env("GIT_TERMINAL_PROMPT", "0").output().ok()?;
+    let out = Command::new("git").arg("-C").arg(dir).args(["merge-tree", "--write-tree", "--name-only", "--no-messages", a, b]).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output().ok()?;
     match out.status.code() {
         Some(0) => Some((true, Vec::new())),
         Some(1) => {

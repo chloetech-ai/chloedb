@@ -25,6 +25,17 @@
 //! The ranges are those of the crawler's guard (`chloedb-crawl/src/reach.rs`,
 //! audit 1's G-B3); the server does not depend on the crawler, so they are
 //! written out here too.
+//!
+//! The server's other requests to addresses an API caller names go through
+//! the same guard ([`Reach::alert_routes`], [`Reach::hub`]; CLU-5 of the
+//! 15 November audit, LENA-7 of the persona study): an alert route's
+//! webhook, PagerDuty or Opsgenie reaches the public internet unless the
+//! route says `"allow_internal": true` (the `--alert-webhook` of the
+//! command line does: whoever starts the server chose it), and the hub's
+//! connections, which are clusters inside the network as often as not,
+//! reach private addresses but never link-local ones. Neither follows a
+//! redirect to another origin: a webhook's path is its secret, and a
+//! connection's requests carry its cluster's key.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -34,9 +45,18 @@ use reqwest::Url;
 /// The most redirects a connector's request follows (within its origin).
 pub const MAX_REDIRECTS: usize = 5;
 
-/// The words a refusal starts with, so that a resolver's refusal is told
-/// apart from other failures to connect.
+/// The words a connector's refusal starts with, so that a resolver's
+/// refusal is told apart from other failures to connect.
 pub const REFUSED: &str = "not an address a connector may reach";
+
+/// Whose requests a reach guards, for its messages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Who {
+    #[default]
+    Connector,
+    AlertRoute,
+    HubConnection,
+}
 
 /// What a connector's requests may reach.
 #[derive(Clone, Debug, Default)]
@@ -47,20 +67,44 @@ pub struct Reach {
     /// Hosts reachable whatever their addresses: the proxies', with their
     /// ports.
     pub hosts: Vec<(String, Option<u16>)>,
+    /// Whose requests these are (the messages name them).
+    pub who: Who,
 }
 
 impl Reach {
     /// The reach of a connector that does (or does not) allow internal
     /// addresses, with the proxies' hosts.
     pub fn new(internal: bool) -> Reach {
-        Reach { internal, hosts: Vec::new() }.with_proxies()
+        Reach { internal, hosts: Vec::new(), who: Who::Connector }.with_proxies()
+    }
+
+    /// The reach of an alert route's posts: the public internet, or this
+    /// network too when the route allows it (`"allow_internal": true`, or
+    /// the command line's `--alert-webhook`); never link-local addresses.
+    pub fn alert_routes(internal: bool) -> Reach {
+        Reach { who: Who::AlertRoute, ..Reach::new(internal) }
+    }
+
+    /// The reach of the hub's connections: clusters, inside this network or
+    /// not, but never at a link-local address (cloud metadata).
+    pub fn hub() -> Reach {
+        Reach { who: Who::HubConnection, ..Reach::new(true) }
     }
 
     /// A reach for connections that go to their address directly, through
     /// no HTTP proxy (a Kafka broker's): the proxies' hosts are not let
     /// through.
     pub(crate) fn direct(internal: bool) -> Reach {
-        Reach { internal, hosts: Vec::new() }
+        Reach { internal, hosts: Vec::new(), who: Who::Connector }
+    }
+
+    /// "not an address <whose requests> may reach".
+    fn refused(&self) -> &'static str {
+        match self.who {
+            Who::Connector => REFUSED,
+            Who::AlertRoute => "not an address an alert route may reach",
+            Who::HubConnection => "not an address a hub connection may reach",
+        }
     }
 
     /// The proxies' hosts (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, either case).
@@ -88,7 +132,11 @@ impl Reach {
         if link_local(ip) {
             "link-local addresses (cloud metadata) are never reached"
         } else {
-            "set \"allow_internal\": true in the connector's config to reach a system inside this network"
+            match self.who {
+                Who::Connector => "set \"allow_internal\": true in the connector's config to reach a system inside this network",
+                Who::AlertRoute => "set \"allow_internal\": true on the route to post to a system inside this network",
+                Who::HubConnection => "a hub connection reaches this network's addresses but link-local ones",
+            }
         }
     }
 
@@ -97,7 +145,11 @@ impl Reach {
     pub fn check(&self, url: &str) -> Result<(), String> {
         let u = Url::parse(url).map_err(|e| format!("{}: not a URL ({e})", strip(url)))?;
         if u.scheme() != "http" && u.scheme() != "https" {
-            return Err(format!("{}: a connector asks http and https addresses only", u.scheme()));
+            return Err(format!("{}: {} asks http and https addresses only", u.scheme(), match self.who {
+                Who::Connector => "a connector",
+                Who::AlertRoute => "an alert route",
+                Who::HubConnection => "a hub connection",
+            }));
         }
         let host = u.host_str().ok_or_else(|| format!("{}: no host", strip(url)))?;
         if self.listed(host, u.port_or_known_default()) {
@@ -105,12 +157,12 @@ impl Reach {
         }
         let bare = host.trim_matches(['[', ']']);
         match bare.parse::<IpAddr>() {
-            Ok(ip) if self.refuses(ip) => Err(format!("{ip} is {REFUSED}: {}", self.hint(ip))),
+            Ok(ip) if self.refuses(ip) => Err(format!("{ip} is {}: {}", self.refused(), self.hint(ip))),
             Ok(_) => Ok(()),
             Err(_) => {
                 let d = bare.trim_end_matches('.').to_ascii_lowercase();
                 if !self.internal && (d == "localhost" || d.ends_with(".localhost")) {
-                    return Err(format!("{d} is {REFUSED}: {}", self.hint(IpAddr::V4(Ipv4Addr::LOCALHOST))));
+                    return Err(format!("{d} is {}: {}", self.refused(), self.hint(IpAddr::V4(Ipv4Addr::LOCALHOST))));
                 }
                 Ok(())
             }
@@ -125,7 +177,7 @@ impl Reach {
         let ok: Vec<SocketAddr> = addrs.iter().copied().filter(|a| !self.refuses(a.ip())).collect();
         if ok.is_empty() && !addrs.is_empty() {
             let ip = addrs[0].ip();
-            return Err(format!("{name} resolves to {ip}, {REFUSED}: {}", self.hint(ip)));
+            return Err(format!("{name} resolves to {ip}, {}: {}", self.refused(), self.hint(ip)));
         }
         Ok(ok)
     }
@@ -134,6 +186,16 @@ impl Reach {
     /// the other addresses, and it follows redirects within the origin it
     /// was asked only.
     pub fn client(self) -> reqwest::Client {
+        self.guard(crate::http_client().connect_timeout(std::time::Duration::from_secs(10)).user_agent(concat!("chloedb-connectors/", env!("CARGO_PKG_VERSION"))))
+            .build()
+            .unwrap_or_default()
+    }
+
+    /// `b`, reaching only what this reach allows: a resolver that refuses
+    /// the other addresses, and redirects followed within the origin asked
+    /// only (one to another origin is answered as it came, a 3xx, and the
+    /// caller says where it led).
+    pub fn guard(self, b: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
         let me = Arc::new(self);
         let for_redirects = me.clone();
         let policy = reqwest::redirect::Policy::custom(move |a| {
@@ -150,13 +212,7 @@ impl Reach {
                 Err(e) => a.error(e),
             }
         });
-        crate::http_client()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .user_agent(concat!("chloedb-connectors/", env!("CARGO_PKG_VERSION")))
-            .redirect(policy)
-            .dns_resolver(Arc::new(Resolver(me)))
-            .build()
-            .unwrap_or_default()
+        b.redirect(policy).dns_resolver(Arc::new(Resolver(me)))
     }
 }
 
@@ -293,7 +349,7 @@ mod tests {
         assert!(public.check("ftp://example.com/").is_err());
 
         // Inside the network when it says so, but never metadata.
-        let inside = Reach { internal: true, hosts: Vec::new() };
+        let inside = Reach { internal: true, hosts: Vec::new(), who: Who::Connector };
         for u in ["http://127.0.0.1:9090/", "http://prometheus:9090/", "http://10.0.0.5/", "http://localhost/"] {
             assert!(inside.check(u).is_ok(), "{u}");
         }
@@ -304,6 +360,23 @@ mod tests {
         assert!(inside.addresses("metadata.google.internal", vec!["169.254.169.254:0".parse().unwrap()]).is_err());
         assert!(public.addresses("intranet.example", vec!["10.0.0.5:0".parse().unwrap()]).is_err());
         assert_eq!(public.addresses("mixed.example", vec!["10.0.0.5:0".parse().unwrap(), "93.184.215.14:0".parse().unwrap()]).unwrap(), vec!["93.184.215.14:0".parse().unwrap()]);
+    }
+
+    #[test]
+    fn alert_routes_and_the_hub_say_whose_reach_it_is() {
+        let routes = Reach { hosts: Vec::new(), ..Reach::alert_routes(false) };
+        let e = routes.check("http://127.0.0.1:9/hook").unwrap_err();
+        assert!(e.contains("not an address an alert route may reach") && e.contains("\"allow_internal\": true on the route"), "{e}");
+        assert!(routes.check("http://localhost/hook").is_err());
+        assert!(routes.check("https://hooks.slack.com/services/T0/B0/x").is_ok());
+        let inside = Reach { hosts: Vec::new(), ..Reach::alert_routes(true) };
+        assert!(inside.check("http://10.0.0.5:9093/hook").is_ok());
+        assert!(inside.check("http://169.254.169.254/latest/meta-data/").unwrap_err().contains("never"));
+        let hub = Reach { hosts: Vec::new(), ..Reach::hub() };
+        assert!(hub.check("http://hn4.strata.svc:7700").is_ok() && hub.check("http://10.1.2.3:7700").is_ok() && hub.check("http://127.0.0.1:7700").is_ok());
+        let e = hub.check("http://169.254.169.254/").unwrap_err();
+        assert!(e.contains("not an address a hub connection may reach"), "{e}");
+        assert!(hub.addresses("metadata.google.internal", vec!["169.254.169.254:0".parse().unwrap()]).is_err());
     }
 
     #[test]

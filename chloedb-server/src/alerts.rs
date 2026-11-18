@@ -35,8 +35,25 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 
+use crate::connectors::reach::Reach;
 use crate::telemetry::now_ms;
 use crate::ApiError;
+
+/// An error with its causes, as one line: a resolver's refusal is a cause
+/// of reqwest's "error sending request".
+fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut s = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        let t = c.to_string();
+        if !s.contains(&t) {
+            s.push_str(": ");
+            s.push_str(&t);
+        }
+        cur = c.source();
+    }
+    s
+}
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -829,11 +846,27 @@ pub struct Route {
     /// sent again, until it is (0: never).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub repeat_min: u64,
+    /// Whether the route may post to this network (a private address, this
+    /// machine), as a connector's `allow_internal` lets it reach one: its
+    /// URL is refused otherwise (CLU-5, LENA-7), and a link-local one
+    /// always. The command line's `--alert-webhook` may. Left out when a
+    /// route is saved with its URL kept, it is kept too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_internal: Option<bool>,
 }
 
 impl Route {
     fn takes(&self, severity: &str) -> bool {
         self.severities.is_empty() || self.severities.iter().any(|s| s == severity)
+    }
+
+    fn internal(&self) -> bool {
+        self.allow_internal == Some(true)
+    }
+
+    /// What its posts may reach ([`crate::connectors::reach`]).
+    fn reach(&self) -> Reach {
+        Reach::alert_routes(self.internal())
     }
 
     /// The URL with its path left out: a webhook's path is its secret.
@@ -923,7 +956,11 @@ pub struct Alerts {
     routes: Mutex<Vec<Route>>,
     deliveries: Mutex<HashMap<String, Delivery>>,
     file: Option<PathBuf>,
+    /// The clients routes post through: to the public internet, and to
+    /// this network too, for the routes that allow it. Neither reaches a
+    /// link-local address or follows a redirect to another origin.
     http: reqwest::Client,
+    http_internal: reqwest::Client,
     coordinator: AtomicBool,
     /// The cores `key_busy_ratio` counts per (the machine's, unless set).
     cores: AtomicUsize,
@@ -1048,7 +1085,8 @@ impl Alerts {
         };
         if let Some(url) = webhook.filter(|u| !u.is_empty()) {
             kept.routes.retain(|r| r.name != "default");
-            kept.routes.insert(0, Route { name: "default".into(), url, severities: Vec::new(), kind: String::new(), key: String::new(), repeat_min: 0 });
+            // Whoever starts the server chose it: it may be inside the network.
+            kept.routes.insert(0, Route { name: "default".into(), url, severities: Vec::new(), kind: String::new(), key: String::new(), repeat_min: 0, allow_internal: Some(true) });
         }
         // The states it had: a restart neither forgets nor sends again.
         let state_file = file.as_ref().map(|p| state_path(p));
@@ -1068,7 +1106,18 @@ impl Alerts {
         let mut view = ClusterView::default();
         view.primaries = saved.primaries.into_iter().filter_map(|(k, v)| k.parse().ok().map(|k| (k, v))).collect();
         view.changes = saved.changes.into_iter().filter(|(t, _)| t + PRIMARY_CHANGED_MS > now).collect();
-        let http = crate::http_client().timeout(std::time::Duration::from_secs(3)).build().map_err(|e| e.to_string())?;
+        for r in &kept.routes {
+            if let Err(e) = r.reach().check(&r.url) {
+                tracing::warn!(route = %r.name, error = %e, "an alert route's URL is not one it may post to: its messages will fail until the route is changed");
+            }
+        }
+        let client = |internal| {
+            Reach::alert_routes(internal)
+                .guard(crate::http_client().timeout(std::time::Duration::from_secs(3)).user_agent(concat!("chloedb-alerts/", env!("CARGO_PKG_VERSION"))))
+                .build()
+                .map_err(|e| e.to_string())
+        };
+        let (http, http_internal) = (client(false)?, client(true)?);
         // The service's (`--cluster-name`, `--public-url`), which the
         // server sets as it starts ([`Alerts::set_identity`]); this
         // machine's name until then.
@@ -1081,6 +1130,7 @@ impl Alerts {
             deliveries: Mutex::new(HashMap::new()),
             file,
             http,
+            http_internal,
             coordinator: AtomicBool::new(false),
             cores: AtomicUsize::new(std::thread::available_parallelism().map_or(1, |n| n.get())),
             copies: Mutex::new(HashMap::new()),
@@ -1372,7 +1422,11 @@ impl Alerts {
             let had = before.iter().find(|b| b.name == r.name);
             if r.url.is_empty() {
                 r.url = match (had, r.kind.as_str()) {
-                    (Some(b), _) if b.kind == r.kind => b.url.clone(),
+                    (Some(b), _) if b.kind == r.kind => {
+                        // The URL kept, and whether it may be inside the network.
+                        r.allow_internal = r.allow_internal.or(b.allow_internal);
+                        b.url.clone()
+                    }
                     (_, "pagerduty") => PAGERDUTY_URL.into(),
                     (_, "opsgenie") => OPSGENIE_URL.into(),
                     _ => return Err(ApiError::bad(format!("route {} needs a url", r.name))),
@@ -1390,6 +1444,12 @@ impl Alerts {
             if !(r.url.starts_with("https://") || r.url.starts_with("http://")) {
                 return Err(ApiError::bad(format!("route {}: the url is http(s)", r.name)));
             }
+            if r.allow_internal == Some(false) {
+                r.allow_internal = None;
+            }
+            // The public internet only, unless the route says otherwise;
+            // never a link-local address (CLU-5, LENA-7).
+            r.reach().check(&r.url).map_err(|e| ApiError::bad(format!("route {}: {e}", r.name)))?;
             if let Some(s) = r.severities.iter().find(|s| !matches!(s.as_str(), "critical" | "warning" | "info")) {
                 return Err(ApiError::bad(format!("route {}: severities are critical, warning and info, not {s:?}", r.name)));
             }
@@ -2143,7 +2203,7 @@ impl Alerts {
         self.routes()
             .iter()
             .map(|r| {
-                let mut j = json!({"name": r.name, "url": r.shown_url(), "severities": r.severities, "kind": if r.kind.is_empty() { "webhook" } else { r.kind.as_str() }, "repeat_min": r.repeat_min, "has_key": !r.key.is_empty()});
+                let mut j = json!({"name": r.name, "url": r.shown_url(), "severities": r.severities, "kind": if r.kind.is_empty() { "webhook" } else { r.kind.as_str() }, "repeat_min": r.repeat_min, "has_key": !r.key.is_empty(), "allow_internal": r.internal()});
                 let s = d.get(&r.name).cloned().unwrap_or_default();
                 for (k, v) in json!(s).as_object().into_iter().flatten() {
                     j[k] = v.clone();
@@ -2705,26 +2765,48 @@ impl Alerts {
     /// [`POST_BUDGET`], each with the same `Idempotency-Key`; counts how it
     /// went.
     async fn post(&self, r: &Route, url: &str, body: &Json, key: &str) -> Result<(), String> {
+        // Where it may post (CLU-5, LENA-7): checked here too, for a route
+        // kept from before the check and for a URL a proxy resolves.
+        let http = if r.internal() { &self.http_internal } else { &self.http };
         let tries = async {
             let mut last = String::new();
             for attempt in 0..3 {
                 if attempt > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(500 * (1 << attempt))).await;
                 }
-                let mut req = self.http.post(url).header("idempotency-key", key).json(body);
+                let mut req = http.post(url).header("idempotency-key", key).json(body);
                 if r.kind == "opsgenie" {
                     req = req.header("authorization", format!("GenieKey {}", r.key));
                 }
-                match req.send().await.and_then(|r| r.error_for_status()) {
-                    Ok(_) => return Ok(()),
-                    Err(e) => last = e.without_url().to_string(),
+                match req.send().await {
+                    // A redirect to another origin is answered as it came
+                    // (a 3xx): the message is not delivered, and trying
+                    // again would not deliver it either.
+                    Ok(a) if a.status().is_redirection() => {
+                        let to = a.headers().get("location").and_then(|v| v.to_str().ok()).and_then(|l| a.url().join(l).ok()).map(|u| u.origin().ascii_serialization()).unwrap_or_else(|| "nowhere".into());
+                        return Err(format!("answered {}, a redirect to {to}, which is not followed: a route posts to its own origin only, so that what it sends stays there (set its url to where the hook is)", a.status()));
+                    }
+                    Ok(a) => match a.error_for_status() {
+                        Ok(_) => return Ok(()),
+                        Err(e) => last = error_chain(&e.without_url()),
+                    },
+                    Err(e) => {
+                        last = error_chain(&e.without_url());
+                        // Refused by the reach: trying again would be too.
+                        if last.contains("may reach") {
+                            return Err(last);
+                        }
+                    }
                 }
             }
             Err(last)
         };
-        let res = match tokio::time::timeout(POST_BUDGET, tries).await {
-            Ok(res) => res,
-            Err(_) => Err(format!("no answer in {} s", POST_BUDGET.as_secs())),
+        let res = match r.reach().check(url) {
+            Err(e) => Err(e),
+            Ok(()) => match tokio::time::timeout(POST_BUDGET, tries).await {
+                Ok(res) => res,
+                Err(_) => Err(format!("no answer in {} s", POST_BUDGET.as_secs())),
+            },
         };
         if let Err(e) = &res {
             tracing::warn!(route = %r.name, error = %e, "could not post an alert to its route");
@@ -4545,7 +4627,7 @@ mod tests {
         let t = now_ms();
         let a = Alerts::new(None, None).unwrap();
         a.set_rules(vec![Rule { severity: "critical".into(), ..slow("max", 2, 0) }], "t").unwrap();
-        let rt = |name: &str, repeat_min: u64| Route { name: name.into(), url: "http://127.0.0.1:9/hook".into(), repeat_min, ..Route::default() };
+        let rt = |name: &str, repeat_min: u64| Route { name: name.into(), url: "http://127.0.0.1:9/hook".into(), repeat_min, allow_internal: Some(true), ..Route::default() };
         a.set_routes(vec![rt("oncall", 1), rt("chat", 0)]).unwrap();
         a.check(&points(&[(t - 2_000, 500.0), (t, 500.0)]), t);
         assert_eq!(a.due(t).len(), 1, "paged once");

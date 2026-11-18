@@ -12,8 +12,14 @@
 #   - downloads the prebuilt chloectx of the release that matches the plugin's
 #     version (the archive chloectx-<platform>.tar.gz of the release
 #     chloedb-server-v<version>, or of the newest release when that one has
-#     none), checks its SHA-256 against the release's and installs it into
-#     ~/.local/bin;
+#     none), checks its SHA-256 against the release's and, where GitHub's
+#     CLI is installed (gh, a version with `gh attestation verify
+#     --source-ref`), its build provenance (releases from 0.3.9: the
+#     Sigstore bundle beside the archive, GitHub's attestation that this
+#     repository's server-release.yml built it from the release's tag), and
+#     installs it into ~/.local/bin; one that does not verify is not
+#     installed (CHLOECTX_VERIFY=off skips the check, =require fails
+#     without gh; CHLOECTX_GH names the gh);
 #   - only where there is no prebuilt one (or the download failed), builds it
 #     from a checkout with cargo: $CHLOECTX_SOURCE, or the clone of the
 #     marketplace this plugin came from (CHLOECTX_BUILD=0: never);
@@ -174,8 +180,65 @@ latest_version() {
   fetch "$API_URL" | sed -n 's/.*"tag_name": *"chloedb-server-v\([0-9][0-9.]*\)".*/\1/p' | head -n 1
 }
 
+# The first release whose archives have build provenance beside them.
+ATTESTED_FROM=0.3.9
+
+# Whether version $1 is $2 or later (numbers.numbers.numbers).
+at_least() {
+  a=$1 b=$2
+  for _ in 1 2 3; do
+    x=${a%%.*} y=${b%%.*}
+    x=${x%%[!0-9]*} y=${y%%[!0-9]*}
+    [ "${x:-0}" -gt "${y:-0}" ] && return 0
+    [ "${x:-0}" -lt "${y:-0}" ] && return 1
+    case "$a" in *.*) a=${a#*.} ;; *) a=0 ;; esac
+    case "$b" in *.*) b=${b#*.} ;; *) b=0 ;; esac
+  done
+  return 0
+}
+
+# Checks the archive $1 of release $3, downloaded from $2, against its build
+# provenance (the Sigstore bundle $2.sigstore.jsonl): GitHub's attestation
+# that $REPO's server-release.yml built it from the tag chloedb-server-v$3
+# on a GitHub-hosted runner. Fails, saying why, when it does not verify;
+# without gh, or for a release from before $ATTESTED_FROM, says so and
+# passes.
+provenance() {
+  verify=${CHLOECTX_VERIFY:-${CHLOEDB_VERIFY:-auto}}
+  case "$verify" in
+    off) return 0 ;;
+    auto | require) ;;
+    *) say "CHLOECTX_VERIFY is auto, require or off, not $verify"; return 1 ;;
+  esac
+  gh=${CHLOECTX_GH:-gh}
+  if ! command -v "$gh" > /dev/null 2>&1 || ! "$gh" attestation verify --help 2> /dev/null | grep -q -- '--source-ref'; then
+    if [ "$verify" = require ]; then say "CHLOECTX_VERIFY=require, and there is no gh here that verifies attestations (gh attestation verify --source-ref)"; return 1; fi
+    at_least "$3" "$ATTESTED_FROM" && say "build provenance not checked: no gh here (a recent gh, from https://cli.github.com, checks it)"
+    return 0
+  fi
+  if ! at_least "$3" "$ATTESTED_FROM"; then
+    if [ "$verify" = require ]; then say "release $3 has no build provenance (releases have it from $ATTESTED_FROM)"; return 1; fi
+    say "release $3 is older than build provenance ($ATTESTED_FROM): checked by its SHA-256 alone"
+    return 0
+  fi
+  if ! fetch "$2.sigstore.jsonl" "$1.sigstore.jsonl" 2> /dev/null; then
+    say "could not download $2.sigstore.jsonl, the archive's build provenance: not installing it (CHLOECTX_VERIFY=off installs on the SHA-256 alone)"
+    return 1
+  fi
+  ref=${CHLOECTX_VERIFY_SOURCE_REF:-refs/tags/chloedb-server-v$3}
+  if out=$("$gh" attestation verify "$1" --bundle "$1.sigstore.jsonl" --repo "$REPO" \
+    --signer-workflow "$REPO/.github/workflows/server-release.yml" --source-ref "$ref" --deny-self-hosted-runners 2>&1); then
+    say "build provenance checked: built by $REPO's server-release.yml from $ref"
+  else
+    printf '%s\n' "$out" | tail -n 8 >&2
+    say "gh could not verify the build provenance of $2 (above): not installing it (CHLOECTX_VERIFY=off installs on the SHA-256 alone)"
+    return 1
+  fi
+}
+
 # Downloads release $1's chloectx for platform $2 into $prefix/bin, after
-# checking its SHA-256. Fails, with the reason on stderr, when it cannot.
+# checking its SHA-256 and, with gh, its build provenance. Fails, with the
+# reason on stderr, when it cannot.
 download() {
   ver=$1 plat=$2
   name="chloectx-$plat"
@@ -188,6 +251,10 @@ download() {
   sum_got=$(sha256 "$tmp/$name.tar.gz") || { say "needs sha256sum or shasum to check the download"; rm -rf "$tmp"; return 1; }
   if [ -z "$sum_want" ] || [ "$sum_want" != "$sum_got" ]; then
     say "the download's SHA-256 is $sum_got, and the release says $sum_want: not installing it"
+    rm -rf "$tmp"
+    return 1
+  fi
+  if ! provenance "$tmp/$name.tar.gz" "$url" "$ver"; then
     rm -rf "$tmp"
     return 1
   fi
