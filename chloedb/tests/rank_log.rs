@@ -322,3 +322,93 @@ fn logging_refuses_what_it_cannot_log() {
     let rs = db.query("SELECT id FROM rank_log WHERE request = :r", &Params::new().set("r", Value::Str(a.request))).unwrap();
     assert_eq!(rs.rows.len(), 5);
 }
+
+/// An exploring query shows its top rows in the order its policy draws,
+/// seeded by the request, and logs each row's propensity and prefix
+/// chance, the policy on the first row and the query's time; the export
+/// gives them back; a log made before the columns refuses exploration and
+/// names the statement that adds them.
+#[test]
+fn exploring_queries_log_their_propensities() {
+    use chloedb::explore::{Policy, Rng};
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("db"), data::beir_schema(DIM, VectorIndexKind::Flat), opts()).unwrap();
+    db.load(data::synthetic(300, DIM, 3)).unwrap();
+    let p = Params::new().set("t", Value::Str("kalo mine".into()));
+    let sql = "SELECT id FROM docs ORDER BY bm25(body, :t) DESC LIMIT 5";
+    let ranked: Vec<String> = rows_of(&db, "SELECT id FROM docs ORDER BY bm25(body, :t) DESC LIMIT 20", &p).keys.iter().map(|k| match k {
+        Value::Str(s) => s.clone(),
+        Value::Int(x) => x.to_string(),
+        v => panic!("{v:?}"),
+    }).collect();
+    let scores: Vec<Option<f64>> = rows_of(&db, "SELECT id, score() FROM docs ORDER BY bm25(body, :t) DESC LIMIT 20", &p).rows.iter().map(|r| match r[1] {
+        Value::Float(x) => Some(x),
+        _ => None,
+    }).collect();
+    for policy in [Policy::Softmax { tau: 1.0, top: 20, by: chloedb::explore::By::Score }, Policy::Shuffle { top: 8 }, Policy::Swap { top: 10 }, Policy::Epsilon { epsilon: 0.5, top: 6 }] {
+        for r in 0..20 {
+            let request = format!("{policy:?}-{r}");
+            let log = Log { request: Some(request.clone()), context: Some(format!("u{}", r % 3)), explore: Some(policy.clone()), ..Log::default() };
+            let a = db.query_logged(sql, &p, &log).unwrap();
+            // The list is the policy's draw for this request.
+            let d = policy.draw(&scores[..policy.top().min(20).max(5)], &mut Rng::of(&request)).unwrap();
+            let want: Vec<String> = d.order[..5].iter().map(|&i| ranked[i].clone()).collect();
+            let got: Vec<String> = a.rs.keys.iter().map(|k| match k {
+                Value::Str(s) => s.clone(),
+                Value::Int(x) => x.to_string(),
+                v => panic!("{v:?}"),
+            }).collect();
+            assert_eq!(got, want, "{policy:?} request {r}");
+            assert_eq!(a.propensities, d.propensity[..5].to_vec());
+            let rs = db.query("SELECT position, shown, propensity, prefix_propensity, policy, took_ms FROM rank_log WHERE request = :r ORDER BY position", &Params::new().set("r", Value::Str(request.clone()))).unwrap();
+            assert_eq!(rs.rows.len(), policy.top().max(5), "{policy:?} logs the rows it drew from");
+            for row in &rs.rows {
+                let Value::Int(k) = row[0] else { panic!() };
+                let k = k as usize;
+                let shown = matches!(row[1], Value::Bool(true));
+                assert_eq!(shown, k < 5);
+                match shown {
+                    true => {
+                        assert_eq!(row[2], Value::Float(d.propensity[k]));
+                        assert_eq!(row[3], Value::Float(d.prefix[k]));
+                    }
+                    false => assert_eq!((&row[2], &row[3]), (&Value::Null, &Value::Null)),
+                }
+                match k {
+                    0 => {
+                        let Value::Str(j) = &row[4] else { panic!("the first row keeps the policy") };
+                        assert_eq!(Policy::from_json(&serde_json::from_str(j).unwrap()).unwrap(), policy);
+                        assert!(matches!(row[5], Value::Float(t) if t >= 0.0));
+                    }
+                    _ => assert_eq!((&row[4], &row[5]), (&Value::Null, &Value::Null)),
+                }
+            }
+        }
+    }
+    // A query that does not explore logs propensity 1 for its shown rows.
+    let a = db.query_logged(sql, &p, &Log { request: Some("plain".into()), ..Log::default() }).unwrap();
+    assert!(a.propensities.is_empty());
+    let rs = db.query("SELECT propensity, policy FROM rank_log WHERE request = 'plain' ORDER BY position", &Params::new()).unwrap();
+    assert!(rs.rows.iter().all(|r| r[0] == Value::Float(1.0)));
+    assert_eq!(rs.rows[0][1], Value::Str(r#"{"policy":"none"}"#.into()));
+    // The export gives them back.
+    let records = export(&db, &Export::from_json(&json!({})).unwrap());
+    let first = records.iter().find(|r| r["id"] == json!("plain#0")).unwrap();
+    assert_eq!((first["propensity"].as_f64(), &first["policy"]), (Some(1.0), &json!({"policy": "none"})));
+    assert!(records.iter().filter(|r| r["shown"] == json!(true)).all(|r| r["propensity"].as_f64().is_some_and(|p| p > 0.0 && p <= 1.0)));
+    // Exploration refuses an OFFSET, and interleaving with it.
+    let e = db.query_logged("SELECT id FROM docs ORDER BY bm25(body, :t) DESC LIMIT 5 OFFSET 5", &p, &Log { explore: Some(Policy::Shuffle { top: 5 }), ..Log::default() }).unwrap_err().to_string();
+    assert!(e.contains("OFFSET"), "{e}");
+    assert!(Log::from_json(&json!({"explore": {"policy": "swap"}, "interleave": {"sql": sql}})).is_err());
+    // A log made before the columns: plain logging works, exploration is
+    // refused with the statement, and works once it ran.
+    db.sql("CREATE TABLE old_log (id KEYWORD PRIMARY KEY, request KEYWORD NOT NULL, ts TIMESTAMP NOT NULL, context KEYWORD, row_key KEYWORD NOT NULL, position INT NOT NULL, shown BOOL NOT NULL, score FLOAT, features KEYWORD OPTIONS(indexed = false), variant KEYWORD, label FLOAT)", &Params::new()).unwrap();
+    let old = Log { table: "old_log".into(), ..Log::default() };
+    db.query_logged(sql, &p, &old).unwrap();
+    let exploring = Log { explore: Some(Policy::Swap { top: 5 }), ..old.clone() };
+    let e = db.query_logged(sql, &p, &exploring).unwrap_err().to_string();
+    assert!(e.contains(&chloedb::rank_log::propensity_sql("old_log")), "{e}");
+    db.sql(&chloedb::rank_log::propensity_sql("old_log"), &Params::new()).unwrap();
+    let a = db.query_logged(sql, &p, &exploring).unwrap();
+    assert_eq!(a.propensities.len(), 5);
+}

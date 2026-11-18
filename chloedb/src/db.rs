@@ -1749,7 +1749,9 @@ impl Db {
         }
         let schema = self.table(&log.table)?;
         rank_log::check(&schema)?;
+        rank_log::fits(log, &schema)?;
         let p = rank_log::prepare(sql, params, log)?;
+        let started = std::time::Instant::now();
         let mut served = match &log.interleave {
             None => rank_log::serve(self.query(&p.sql, params)?, &p, log)?,
             Some(il) => {
@@ -1760,7 +1762,7 @@ impl Db {
                 rank_log::interleave(a, b, &p, il)?
             }
         };
-        rank_log::keep_query(&mut served, &p, &schema);
+        rank_log::keep(&mut served, &p, log, &schema, started.elapsed().as_secs_f64() * 1000.0)?;
         let now = crate::timestamp::now();
         let mut t = self.storage.begin()?;
         {
@@ -1770,7 +1772,8 @@ impl Db {
             }
         }
         let seq_no = t.commit_seq()?;
-        Ok(Logged { rs: served.rs, request: served.request, seq_no, teams: served.teams })
+        let propensities = rank_log::shown_propensities(&served, log);
+        Ok(Logged { rs: served.rs, request: served.request, seq_no, teams: served.teams, propensities })
     }
 
     /// Runs the relevance autopilot ([`crate::autopilot`]) on one snapshot:

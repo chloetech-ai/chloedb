@@ -8,7 +8,7 @@ The crate is not on crates.io yet. The `chloedb` there is a placeholder that onl
 
 ```toml
 [dependencies]
-chloedb = { git = "https://github.com/chloetech-ai/chloedb", tag = "chloedb-server-v0.3.7" }
+chloedb = { git = "https://github.com/chloetech-ai/chloedb", tag = "chloedb-server-v0.3.8" }
 ```
 
 Cargo finds the crate in the repository's `chloedb/` folder. Building it needs Rust (stable) and a C compiler (`xcode-select --install` on macOS, `build-essential` on Debian and Ubuntu), because the tokenizer's regex library is C. The first build compiles ChloeDB and its dependencies, which takes several minutes. The default features are `embed` (embedding models run in the process) and `hosted` (embedding models behind an HTTP API); `sqlite`, `parquet`, `s3`, `bert` and `onnx` add SQLite and Parquet import and export, `s3://` URLs, and more model kinds (`chloedb/Cargo.toml` describes each one). `cargo doc -p chloedb --open` shows the API of the version you depend on.

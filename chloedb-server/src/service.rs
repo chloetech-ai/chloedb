@@ -3739,7 +3739,9 @@ impl Service {
             }
         };
         rank_log::check(&schema)?;
+        rank_log::fits(&log, &schema)?;
         let p = rank_log::prepare(&req.sql, &req.params, &log)?;
+        let started = std::time::Instant::now();
         let take = |a: &mut Answer| std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
         let (mut a, mut served) = match &log.interleave {
             None => {
@@ -3763,7 +3765,7 @@ impl Service {
                 (a, rank_log::interleave(sa, sb, &p, il)?)
             }
         };
-        rank_log::keep_query(&mut served, &p, &schema);
+        rank_log::keep(&mut served, &p, &log, &schema, started.elapsed().as_secs_f64() * 1000.0)?;
         a.rs = std::mem::replace(&mut served.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
         let ops: Vec<Json> = served.entries.iter().map(|e| json!({"op": "upsert", "table": log.table, "doc": e.to_json()})).collect();
         let w = match ops.is_empty() {
