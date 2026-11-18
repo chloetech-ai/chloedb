@@ -274,9 +274,43 @@ export class Client extends Searchable {
   }
 
   /** Runs a SELECT; `timeoutMs` bounds it on the server; with `minSeqNo`
-   * or `minSeqNos` the copy that answers holds those writes. */
-  async query(sql, params, { timeoutMs, minSeqNo, minSeqNos } = {}) {
-    return new Result(await this._call("POST", "/v1/query", given({ sql, params, timeout_ms: timeoutMs, ...this._after(minSeqNo, minSeqNos) })));
+   * or `minSeqNos` the copy that answers holds those writes.
+   *
+   * With `pageSize`, the server's scroll: the first page of at most that
+   * many rows (and at most the server's --max-result-window), past the
+   * window, and while rows are left the result's `cursor`, for
+   * `next(cursor)`; every page reads the version the first read. The
+   * server keeps it for `keepAliveMs` after each page (its lease, 60 s by
+   * default; an hour at most), and only this client's key reads it. */
+  async query(sql, params, { timeoutMs, minSeqNo, minSeqNos, pageSize, keepAliveMs } = {}) {
+    if (pageSize == null && keepAliveMs != null) throw new TypeError("keepAliveMs is a cursor's: it goes with pageSize");
+    if (pageSize != null && !(Number.isInteger(pageSize) && pageSize >= 1)) throw new RangeError("pageSize is a whole number, at least 1");
+    return new Result(await this._call("POST", "/v1/query", given({ sql, params, timeout_ms: timeoutMs, page_size: pageSize, keep_alive_ms: keepAliveMs, ...this._after(minSeqNo, minSeqNos) })));
+  }
+
+  /** The next page of a cursor (`query` with `pageSize`): a `Result` whose
+   * `cursor` is the same while rows are left, and null after the last
+   * page. `keepAliveMs` changes how long the server keeps it after this
+   * page; `timeoutMs` bounds the page. */
+  async next(cursor, { keepAliveMs, timeoutMs } = {}) {
+    if (typeof cursor !== "string") throw new TypeError("next(cursor): the cursor of a page, a string");
+    return new Result(await this._call("POST", "/v1/query", given({ cursor, keep_alive_ms: keepAliveMs, timeout_ms: timeoutMs })));
+  }
+
+  /** Ends a cursor before its last page, letting go of the version it
+   * reads on the server; whether it was open (and this key's). */
+  async closeCursor(cursor) {
+    return Boolean((await this._call("DELETE", `/v1/query/cursors/${encodeURIComponent(cursor)}`)).closed);
+  }
+
+  /** @internal POST /v1/highlight */
+  async _highlight(body) {
+    return (await this._call("POST", "/v1/highlight", body)).texts;
+  }
+
+  /** @internal POST /v1/correct */
+  async _correct(body) {
+    return this._call("POST", "/v1/correct", body);
   }
 
   /** Runs any statement: a SELECT's `Result`, or the number of rows an
