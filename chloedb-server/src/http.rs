@@ -164,8 +164,9 @@ impl IntoResponse for ApiError {
             r.extensions_mut().insert(c);
         }
         // Refused for the server's load, or while it holds its writes: when
-        // to try again.
-        if self.status == 429 || self.status == 503 {
+        // to try again. Not a write in doubt, which goes again only with
+        // its idempotency key.
+        if (self.status == 429 || self.status == 503) && self.code != Some(crate::errors::WRITE_IN_DOUBT) {
             r.headers_mut().insert(header::RETRY_AFTER, header::HeaderValue::from(crate::service::RETRY_AFTER.as_secs()));
         }
         if let Some(f) = failure {
@@ -2308,7 +2309,7 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, head
         }
         Err(e) => {
             if writes {
-                audit_ui_write(statement, None, partial.as_ref().map(|p| &p["shards"]));
+                audit_ui_write(statement, None, partial.as_ref().and_then(|p| p.get("shards")));
             }
             Ok(write_failed(e, partial))
         }
@@ -2334,14 +2335,22 @@ fn body_key(b: &Json, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
 /// partway through a coordinator, what each shard did (`shards`: `{shard,
 /// short, rows}` for those that took it, `{shard, short, error}` for the
 /// others) and the idempotency key to send it again with
-/// (`idempotency_key`; [`crate::coord::with_partial`]).
+/// (`idempotency_key`; [`crate::coord::with_partial`]), the key too when
+/// the write is in doubt ([`crate::errors::WRITE_IN_DOUBT`]).
 fn write_failed(e: ApiError, partial: Option<Json>) -> Response {
     let Some(partial) = partial else { return e.into_response() };
+    let shards = partial.get("shards").filter(|s| !s.is_null());
+    let doubt = crate::errors::code_of(&e) == crate::errors::WRITE_IN_DOUBT;
+    if shards.is_none() && !doubt {
+        return e.into_response();
+    }
     // The error's shape (`error_code`, `retryable`, `hint`), with what was
     // written: whether to send it again matters most here.
     let mut body = crate::errors::answer(&e);
-    body["partial"] = json!(true);
-    body["shards"] = partial["shards"].clone();
+    if let Some(s) = shards {
+        body["partial"] = json!(true);
+        body["shards"] = s.clone();
+    }
     if let Some(k) = partial.get("idempotency_key") {
         body["idempotency_key"] = k.clone();
     }
@@ -2574,7 +2583,7 @@ async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, he
             Ok(AxJson(j).into_response())
         }
         Err(e) => {
-            note(None, partial.as_ref().map(|p| &p["shards"]));
+            note(None, partial.as_ref().and_then(|p| p.get("shards")));
             Ok(write_failed(e, partial))
         }
     }
@@ -2857,7 +2866,7 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
             Ok(AxJson(j).into_response())
         }
         Err(e) => {
-            note(None, partial.as_ref().map(|p| &p["shards"]));
+            note(None, partial.as_ref().and_then(|p| p.get("shards")));
             Ok(write_failed(e, partial))
         }
     }

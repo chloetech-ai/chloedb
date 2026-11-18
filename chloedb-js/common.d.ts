@@ -41,6 +41,12 @@ export declare class ChloeDBError extends Error {
   answer?: unknown;
   /** The error's stable code (see `errorCode`). */
   code: ErrorCode;
+  /** Whether a write may or may not have been applied (`error_code`
+   * "write_in_doubt"): send it again with `idempotencyKey`. */
+  readonly inDoubt: boolean;
+  /** The idempotency key to send a write in doubt, or one that failed
+   * partway, again with. */
+  readonly idempotencyKey?: string;
 }
 
 /** A bad schema, query, value or request (400, 413, 422). Code "bad_request". */

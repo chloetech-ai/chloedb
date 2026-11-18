@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 
-import { BadRequestError, ChloeDBError, ConflictError, NotFoundError, Session, connect, errorCode } from "../client.js";
+import { BadRequestError, ChloeDBError, ConflictError, NotFoundError, Session, UnavailableError, connect, errorCode } from "../client.js";
+import { makeError } from "../common.js";
 import { freePort, launch, serve, serverBinary, tempDir } from "./helpers.mjs";
 
 const TABLE = "CREATE TABLE t (id KEYWORD PRIMARY KEY, n INT, title TEXT)";
@@ -126,4 +127,11 @@ test("errorCode", () => {
   assert.equal(errorCode("x", 500), "internal");
   assert.equal(errorCode("x"), "error");
   assert.equal(new ChloeDBError("query error: no").code, "bad_request");
+  // A write in doubt keeps its status's class, and says so with the key.
+  const doubt = makeError("the write may or may not be applied (HTTP 503)", { status: 503, answer: { error_code: "write_in_doubt", idempotency_key: "auto-1" } });
+  assert.ok(doubt instanceof UnavailableError && doubt.inDoubt && doubt.idempotencyKey === "auto-1");
+  const kept = makeError("may or may not be kept (HTTP 409)", { status: 409, answer: { error_code: "write_in_doubt", idempotency_key: "k" } });
+  assert.ok(kept instanceof ConflictError && kept.code === "conflict" && kept.inDoubt);
+  const plain = makeError("no copy (HTTP 503)", { status: 503, answer: { error_code: "unavailable" } });
+  assert.ok(!plain.inDoubt && plain.idempotencyKey === undefined);
 });

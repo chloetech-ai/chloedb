@@ -221,9 +221,12 @@ impl Workload {
                     }
                     let msg = j["error"].as_str().map(str::to_string).unwrap_or_else(|| text.chars().take(300).collect());
                     // Whether the write may have applied: a 503 and a 429
-                    // say nothing was written; another server error may
-                    // come after the write applied somewhere.
-                    let doubt = (st.as_u16() >= 500 && st.as_u16() != 503) || (st.as_u16() == 409 && msg.contains("before it was acknowledged"));
+                    // say nothing was written, except a write in doubt
+                    // (`write_in_doubt`: its primary stopped answering);
+                    // another server error may come after the write
+                    // applied somewhere.
+                    let in_doubt = j["error_code"].as_str() == Some("write_in_doubt");
+                    let doubt = in_doubt || (st.as_u16() >= 500 && st.as_u16() != 503) || (st.as_u16() == 409 && msg.contains("before it was acknowledged"));
                     let class = if st.as_u16() == 409 && msg.contains("before it was acknowledged") { "409 in doubt".to_string() } else { st.as_u16().to_string() };
                     return Err(Fail::Http(class, msg, doubt));
                 }

@@ -3,7 +3,8 @@
 //! replica, which holds every write the old primary acknowledged; the old
 //! primary started again is a replica of the new one, and a primary is
 //! handed over by hand through the coordinator; a primary that cannot
-//! write hands itself over.
+//! write hands itself over; a write held by a frozen primary goes to the
+//! copy that took its place.
 
 #![cfg(unix)]
 
@@ -505,4 +506,212 @@ async fn copies_removed_while_down_do_not_depose_the_primary_when_they_return() 
     svc.write_ops(set(2, 102), None).await.unwrap();
     let got = sold(&svc).await;
     assert_eq!((got["p0000000"], got["p0000001"], got["p0000002"]), (100, 101, 102), "the writes A took alone are kept");
+}
+
+/// `sold` of product `i` on server `n` itself, read on it over HTTP.
+async fn sold_on(n: &Node, i: usize) -> Option<i64> {
+    let http = chloedb_server::http_client().timeout(Duration::from_secs(5)).build().unwrap();
+    let r = http.post(format!("http://127.0.0.1:{}/v1/query", n.http)).json(&json!({"sql": format!("SELECT sold FROM products WHERE id = 'p{i:07}'")})).send().await.ok()?;
+    let j: Json = r.json().await.ok()?;
+    j["rows"][0][0].as_i64()
+}
+
+/// An `add` of 1 to `sold` of product `i`: applied twice, it shows.
+fn add_one(i: usize) -> Vec<Json> {
+    vec![json!({"op": "add", "key": format!("p{i:07}"), "field": "sold", "value": 1})]
+}
+
+/// Audit CLU-1 and persona study OLU-1 on real processes: a write the
+/// coordinator handed to a primary that then froze (SIGSTOP: a VM paused,
+/// a long stall) was held for as long as it was frozen
+/// (45 s measured), although its copies elected another within the
+/// failover delay. Now the coordinator gives up on it once a copy takes
+/// its place, and sends the write there with its idempotency key: it is
+/// answered within seconds of the election, and applied once, as every
+/// write acknowledged before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_held_by_a_frozen_primary_goes_to_the_copy_that_took_its_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let mut a = Node::new(d, "a", N);
+    let mut b = Node::new(d, "b", 0);
+    let mut c = Node::new(d, "c", 0);
+    for n in [&mut a, &mut b, &mut c] {
+        n.start().await;
+    }
+    let (coord, svc) = coordinator(a.url()).await;
+    coord.add_replica(0, &b.url(), false, false).await.unwrap();
+    coord.add_replica(0, &c.url(), false, false).await.unwrap();
+    until("both replicas are in sync and vote", &[&a, &b, &c], || async {
+        let r = a.replication().await;
+        r["replicas"].as_array().is_some_and(|v| v.len() == 2 && v.iter().all(|f| f["in_sync"] == true && f["member"] == true))
+    })
+    .await;
+    let term = role(&a).await.1;
+    for i in 0..20 {
+        svc.write_ops(set(i, 1000 + i as i64), None).await.unwrap();
+    }
+    let before = sold(&svc).await["p0000030"];
+
+    // A freezes; the write already goes to it.
+    a.signal("STOP");
+    let t0 = Instant::now();
+    // As `/v1/write` sends it: with a key, the coordinator's own.
+    let w = tokio::time::timeout(Duration::from_secs(20), svc.write_request(add_one(30), None)).await;
+    let took = t0.elapsed();
+    let w = w.unwrap_or_else(|_| panic!("the write was held 20 s by the frozen primary\n{}\n{}", b.logs(), c.logs()));
+    w.unwrap_or_else(|e| panic!("the write failed after {took:?}: {}\n{}\n{}", e.message, b.logs(), c.logs()));
+    assert!(took < Duration::from_secs(8), "the write was answered {took:?} after the primary froze; its copies elect another after {AFTER_MS} ms");
+    let (rb, rc) = (role(&b).await, role(&c).await);
+    let new = match (rb.0.as_str(), rc.0.as_str()) {
+        ("primary", _) => &b,
+        (_, "primary") => &c,
+        _ => panic!("B or C was elected, not {rb:?} and {rc:?}"),
+    };
+    assert!(role(new).await.1 > term, "elected in a newer term than {term}");
+    // Later writes go to the new primary at once.
+    for i in 20..30 {
+        let t0 = Instant::now();
+        svc.write_ops(set(i, 1000 + i as i64), None).await.unwrap();
+        assert!(t0.elapsed() < Duration::from_secs(2), "write {i} took {:?}", t0.elapsed());
+    }
+
+    // A runs again, and is a replica once started again; the write was
+    // applied once, and every acknowledged write is kept, on every copy.
+    a.signal("CONT");
+    tokio::time::sleep(Duration::from_millis(AFTER_MS * 2)).await;
+    a.kill();
+    a.start().await;
+    until("the old primary follows the new one and holds its writes", &[&a, &b, &c], || async {
+        let last = new.replication().await["seq_no"].clone();
+        role(&a).await.0 == "replica" && a.replication().await["seq_no"] == last && b.replication().await["seq_no"] == c.replication().await["seq_no"]
+    })
+    .await;
+    let got = sold(&svc).await;
+    assert_eq!(got["p0000030"], before + 1, "the write held by the frozen primary is applied once");
+    for i in 0..30 {
+        assert_eq!(got[&format!("p{i:07}")], 1000 + i as i64, "acknowledged write {i}");
+    }
+    for n in [&a, &b, &c] {
+        assert_eq!(sold_on(n, 30).await, Some(before + 1), "on {}", n.url());
+    }
+}
+
+/// A write whose primary answers nothing while no copy takes its place (a
+/// shard of one copy here, frozen) is answered 503 after [`SILENT_WAIT`],
+/// in doubt and with the idempotency key to send it again with, rather
+/// than held until the primary runs again; sent again with that key once
+/// it does, it is applied once (audit CLU-1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_to_a_silent_primary_no_copy_replaces_is_answered_in_doubt() {
+    use chloedb_server::coord::SILENT_WAIT;
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = Node::new(dir.path(), "a", N);
+    a.start().await;
+    let (_coord, svc) = coordinator(a.url()).await;
+    svc.write_ops(set(1, 1001), None).await.unwrap();
+    let before = sold(&svc).await["p0000030"];
+
+    a.signal("STOP");
+    let t0 = Instant::now();
+    let w = tokio::time::timeout(SILENT_WAIT + Duration::from_secs(10), svc.write_ops(add_one(30), Some("frozen-1".into()))).await;
+    let took = t0.elapsed();
+    let e = w.unwrap_or_else(|_| panic!("the write was held {took:?} by the frozen server")).expect_err("a frozen server answers nothing");
+    assert!(took >= SILENT_WAIT && took < SILENT_WAIT + Duration::from_secs(4), "answered after {took:?}");
+    assert_eq!((e.status, e.code), (503, Some(chloedb_server::errors::WRITE_IN_DOUBT)), "{}", e.message);
+    assert!(e.message.contains("may or may not be applied") && e.message.contains("idempotency_key \"frozen-1\""), "{}", e.message);
+    // Its answer says so to a program: not retryable as it was, with the
+    // key, and no Retry-After.
+    let j = chloedb_server::errors::answer(&e);
+    assert_eq!((j["error_code"].as_str(), j["retryable"].as_bool()), (Some("write_in_doubt"), Some(false)), "{j}");
+
+    // Sent again with the key once the server runs again: applied once,
+    // whether or not the server applied the first when it woke.
+    a.signal("CONT");
+    let t0 = Instant::now();
+    loop {
+        match svc.write_ops(add_one(30), Some("frozen-1".into())).await {
+            Ok(_) => break,
+            // The first may still be running.
+            Err(e) => {
+                assert!(t0.elapsed() < Duration::from_secs(20), "sent again: {}", e.message);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    assert_eq!(sold(&svc).await["p0000030"], before + 1, "applied once");
+    assert_eq!(sold_on(&a, 30).await, Some(before + 1));
+}
+
+/// The case the resend rests on (review of PR #638): the primary applied a
+/// write and shipped it to one copy, then froze before it was answered
+/// (`--write-acks all`, the third copy frozen first, so the primary waits
+/// for it). A copy that holds the write is elected (the third reads it
+/// from its socket once it runs again, or votes for the second alone), and
+/// the coordinator sends the write there with its key: it is answered from
+/// the key's row while the old primary is still frozen, and applied once. The old primary then runs again, without a restart,
+/// steps down and follows the new one: the write is applied once on every
+/// copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_the_frozen_primary_shipped_is_answered_from_its_key_by_the_copy_elected() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let mut a = Node::new(d, "a", N);
+    let mut b = Node::new(d, "b", 0);
+    let mut c = Node::new(d, "c", 0);
+    for n in [&mut a, &mut b, &mut c] {
+        n.start().await;
+    }
+    let (coord, svc) = coordinator(a.url()).await;
+    coord.add_replica(0, &b.url(), false, false).await.unwrap();
+    coord.add_replica(0, &c.url(), false, false).await.unwrap();
+    until("both replicas are in sync and vote", &[&a, &b, &c], || async {
+        let r = a.replication().await;
+        r["replicas"].as_array().is_some_and(|v| v.len() == 2 && v.iter().all(|f| f["in_sync"] == true && f["member"] == true))
+    })
+    .await;
+    let term = role(&a).await.1;
+    svc.write_ops(set(1, 1001), None).await.unwrap();
+    let before = sold(&svc).await["p0000030"];
+    until("B holds every write", &[&a, &b, &c], || async { a.replication().await["seq_no"] == b.replication().await["seq_no"] }).await;
+    let shipped = b.replication().await["seq_no"].as_u64().unwrap();
+
+    // C freezes: A applies the write, ships it, and waits for C.
+    c.signal("STOP");
+    let w = tokio::spawn({
+        let svc = svc.clone();
+        async move { svc.write_request(add_one(30), None).await }
+    });
+    until("B holds the write", &[&a, &b], || async { b.replication().await["seq_no"].as_u64().is_some_and(|s| s > shipped) }).await;
+    assert!(!w.is_finished(), "answered before C acknowledged it, so A was never frozen holding it");
+    // A freezes before it answers; C runs again, and votes for B.
+    a.signal("STOP");
+    c.signal("CONT");
+    let t0 = Instant::now();
+    let got = tokio::time::timeout(Duration::from_secs(20), w).await;
+    let got = got.unwrap_or_else(|_| panic!("the write was held 20 s by the frozen primary\n{}\n{}", b.logs(), c.logs())).unwrap();
+    got.unwrap_or_else(|e| panic!("the write failed after {:?}: {}\n{}\n{}", t0.elapsed(), e.message, b.logs(), c.logs()));
+    let (rb, rc) = (role(&b).await, role(&c).await);
+    let (new, other) = match (rb.0.as_str(), rc.0.as_str()) {
+        ("primary", _) if rb.1 > term => (&b, &c),
+        (_, "primary") if rc.1 > term => (&c, &b),
+        _ => panic!("B or C is elected in a newer term than {term}: B {rb:?}, C {rc:?}"),
+    };
+    // A is still frozen: the new primary answered, from the key's row,
+    // without applying the write again.
+    assert_eq!(sold_on(new, 30).await, Some(before + 1), "on the new primary");
+    until("the other copy follows the new primary", &[&b, &c], || async { role(other).await.0 == "replica" && other.replication().await["seq_no"] == new.replication().await["seq_no"] }).await;
+
+    // A runs again, not started again: it steps down and follows the new
+    // primary.
+    a.signal("CONT");
+    until("the old primary steps down and follows the new one", &[&a, &b, &c], || async {
+        role(&a).await.0 == "replica" && a.replication().await["seq_no"] == new.replication().await["seq_no"]
+    })
+    .await;
+    for n in [&a, &b, &c] {
+        assert_eq!(sold_on(n, 30).await, Some(before + 1), "applied once, on {}", n.url());
+    }
+    svc.write_ops(set(2, 1002), None).await.unwrap();
+    assert_eq!(sold(&svc).await["p0000002"], 1002, "writes go on at the new primary");
 }
