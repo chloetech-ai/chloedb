@@ -262,3 +262,23 @@ pub fn ris_file(c: &reqwest::blocking::Client, dir: &Path, collector: &str, t: i
     get(c, &url, &path)?;
     Ok(Some(path))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_source_keeps_its_last_file_and_a_fresh_one_is_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let there = d.path().join("pdb/net.json");
+        std::fs::create_dir_all(there.parent().unwrap()).unwrap();
+        std::fs::write(&there, "{}").unwrap();
+        let gone = d.path().join("pdb/ix.json");
+        assert_eq!(kept(Err(anyhow::anyhow!("HTTP 429")), &there, "pdb/net.json").unwrap(), 0);
+        assert!(kept(Err(anyhow::anyhow!("HTTP 429")), &gone, "pdb/ix.json").is_err());
+        assert_eq!(kept(Ok(7), &gone, "pdb/ix.json").unwrap(), 7);
+        assert!(fresh(&there, Duration::from_secs(3600), "pdb/net.json"));
+        assert!(!fresh(&there, Duration::ZERO, "pdb/net.json"), "zero fetches every file");
+        assert!(!fresh(&gone, Duration::from_secs(3600), "pdb/ix.json"));
+    }
+}
