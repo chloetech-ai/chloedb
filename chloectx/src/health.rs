@@ -91,7 +91,7 @@ pub fn session_notice(dir: &Path, home: &Path) -> Notice {
             "ChloeCtx notice: {what} ({err}), so no new decisions, rules or planned work are being written down. Tell the user once, early in your reply: {fix}."
         ));
     }
-    if let Some(v) = crate::version::cached(home, i64::MAX).filter(|v| v.behind > 0) {
+    if let Some(v) = crate::version::cached(home, i64::MAX).filter(|v| v.behind > 0 && !v.diverged) {
         if crate::version::notify_due(home) {
             n.user.push(format!("ChloeCtx: a newer version is in the checkout this one was built from: {}.", v.line()));
         }

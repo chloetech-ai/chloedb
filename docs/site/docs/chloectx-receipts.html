@@ -278,7 +278,7 @@ process started the daemon. With receipts off, <code>memory_forget</code> and
 <h2 id="commands">Commands<a class="anchor" href="#commands" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">chloectx blame src/retry.rs:88       # or a whole file: chloectx blame src/retry.rs
 chloectx blame src/retry.rs:88 --json --no-replay
-chloectx receipts [--session S] [--limit N]
+chloectx receipts [--session S] [--limit N]   # S: a session id, or its first characters as listings show them
 chloectx receipts off [--purge] | on
 chloectx receipt rc-19a6… [--text] [--no-replay] [--json]
 chloectx snapshot keep before-release | list | drop before-release</pre>
