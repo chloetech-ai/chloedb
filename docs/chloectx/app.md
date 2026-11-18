@@ -17,7 +17,7 @@ Its first page lists every memory it can read, as *spaces* to pick from, and a s
 A chloedb-server with `chloectx` installed beside it (in the same directory, as an install puts them) starts it by itself, with a token and a key of its own ([apps the server starts](../chloedb/server.md#apps-the-server-starts)); its key may make and write `ctx_*` tables and read `chloectx_mem_*` and `chloectx_memory`, so the on-call hand-off of Seen before, which needs an admin key, is refused there. Started by hand:
 
 ```bash
-cd chloectx && cargo build --release
+cd chloectx && cargo build --release --bin chloectx
 ./target/release/chloectx fetch-model                # the embedding model, 129 MB, once
 ./target/release/chloectx app --server http://127.0.0.1:7700 --port 7760 --token "$APP_TOKEN"
 # and the coordinator shows it:

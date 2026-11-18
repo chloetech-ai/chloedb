@@ -21,7 +21,7 @@ Like [the crawler](crawler.md) and [Hacker News](hn.md), it is a program of its 
 Build the server with CLAP and the app, download the sounds, make the rows, and start the app with a server of its own:
 
 ```bash
-(cd chloedb-server && cargo build --release --features audio)
+(cd chloedb-server && cargo build --release --bin chloedb-server --features audio)
 cd chloedb-sound && cargo build --release
 python3 -I tools/fetch.py fsd50k ~/sounds/fsd50k --clips 2500
 python3 -I tools/fetch.py fma ~/sounds/fma --shards 9

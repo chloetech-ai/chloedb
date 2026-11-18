@@ -44,7 +44,7 @@ Everything it does is a query to ChloeDB, and each page shows the queries it ran
 Build both programs, prepare the rows (a few GB of downloads), then start chloedb-arxiv with servers of its own:
 
 ```bash
-(cd chloedb-server && cargo build --release)
+(cd chloedb-server && cargo build --release --bin chloedb-server)
 cd chloedb-arxiv && cargo build --release
 target/release/chloedb-arxiv prepare --snapshot ~/arxiv/snapshot --cites ~/arxiv/crossref/all.parquet --out ~/arxiv/rows
 python3 tools/topics.py --rows ~/arxiv/rows --name

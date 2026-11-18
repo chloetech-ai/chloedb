@@ -8,7 +8,7 @@
 // longer or older windows read `/v1/timeseries?from=&to=` (per-minute points
 // from the server's `load` table). While paused nothing redraws.
 
-import { api, bus, every, store, provide, provideRoutes, roleOf, connection, fmt, span, can, isIdle, IDLE_SLOW } from "./core.js";
+import { api, bus, every, store, provide, provideRoutes, roleOf, connection, fmt, span, can, isIdle, IDLE_SLOW, setUrgent } from "./core.js";
 
 /** The ranges the picker offers: [key, minutes]. */
 export const RANGES = [["15m", 15], ["1h", 60], ["6h", 360], ["24h", 1440], ["7d", 10080]];
@@ -258,6 +258,14 @@ function setOnline(on, error) {
   state.online = on; state.error = on ? null : error || connection().message;
   bus.emit("online");
 }
+
+/** OLU-9: an alert that fires, or a fleet that is not well, keeps the polls at their full rate though nobody touches the page. */
+function checkUrgent() {
+  const f = state.fleet;
+  setUrgent(firingAlerts().some((x) => !x.silenced) || f?.status === "critical");
+}
+bus.on("alerts", checkUrgent);
+bus.on("fleet", checkUrgent);
 
 async function pollAlerts() {
   if (polls.alerts === "slow" && Date.now() - alertsAt < 15000 && state.alerts) { good("alerts"); return; }

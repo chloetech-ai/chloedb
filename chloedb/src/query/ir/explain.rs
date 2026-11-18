@@ -275,6 +275,7 @@ impl<'a> Text<'a> {
             AggFn::PercentileCont(p) => format!("PERCENTILE_CONT({}) WITHIN GROUP (ORDER BY {arg})", p.get()),
             AggFn::PercentileDisc(p) => format!("PERCENTILE_DISC({}) WITHIN GROUP (ORDER BY {arg})", p.get()),
             AggFn::ApproxPercentile(p) => format!("APPROX_PERCENTILE({arg}, {})", p.get()),
+            AggFn::StringAgg => format!("STRING_AGG({arg}, '{}')", a.sep.as_deref().unwrap_or_default().replace('\'', "''")),
         }
     }
 

@@ -114,7 +114,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Apps</span>
       <h1>chloedb-hn: Hacker News on ChloeDB</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/hn.md">docs/chloedb/hn.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.8, unreleased). The latest release is 0.3.7 (<a href="v0.3.7/index.html">its docs</a>); what is newer is marked "since 0.3.8".</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#the-questions-it-reads">The questions it reads</a></li><li><a href="#read-the-linked-pages">Read the linked pages</a></li><li><a href="#tables">Tables</a></li><li><a href="#the-api">The API</a></li><li><a href="#measured-against-hnalgoliacom">Measured against hn.algolia.com</a></li></ol></details>
     <div class="doc-body">
@@ -143,7 +143,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>Like <a href="crawler.html">the crawler</a> and <a href="netops.html">network operations</a>, it is a program of its own, in Rust, that talks to chloedb-server over HTTP only, and the command center shows it as an app (<strong>Apps → Hacker News</strong>).</p>
 <h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
 <p>Build both programs, then prepare the archive and start the app with a server of its own:</p>
-<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release)
+<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release --bin chloedb-server)
 cd chloedb-hn &amp;&amp; cargo build --release
 target/release/chloedb-hn prepare --parquet ./hn-parquet --out ./hn-rows --download
 target/release/chloedb-hn complete --rows ./hn-rows
@@ -338,7 +338,7 @@ chloedb-server ... --app hn=http://hn-host:7850     # with CHLOEDB_APP_TOKEN=$HN
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

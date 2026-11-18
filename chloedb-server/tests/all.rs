@@ -52,6 +52,7 @@ mod hosted_models;
 mod hub;
 mod index_inspector;
 mod json_cluster;
+mod kept;
 mod key_value;
 mod limits;
 mod llm_calls;

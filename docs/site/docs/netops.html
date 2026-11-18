@@ -114,7 +114,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Apps</span>
       <h1>chloedb-netops: network operations on ChloeDB</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/netops.md">docs/chloedb/netops.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.8, unreleased). The latest release is 0.3.7 (<a href="v0.3.7/index.html">its docs</a>); what is newer is marked "since 0.3.8".</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#the-pages">The pages</a></li><li><a href="#the-map">The map</a></li><li><a href="#where-is-it-broken">Where is it broken</a></li><li><a href="#an-incidents-board">An incident's board</a></li><li><a href="#the-agents">The agents</a></li><li><a href="#the-six-faults">The six faults</a></li><li><a href="#your-own-network">Your own network</a></li><li><a href="#a-network-that-reports-itself">A network that reports itself</a></li><li><a href="#the-tables">The tables</a></li><li><a href="#what-it-is-not">What it is not</a></li><li><a href="#test-it">Test it</a></li></ol></details>
     <div class="doc-body">
@@ -139,7 +139,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p><img loading="lazy" decoding="async" alt="My shift: the handover written from the tables, what waits most urgent first, the changes and carrier windows coming up, and notes for the next shift" src="../../assets/img/netops-shift.png" /></p>
 <h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
 <p>Build both programs, then start chloedb-netops with a server of its own (releases after 0.3.2 carry it prebuilt too: the installer's <code>--with netops</code> puts it beside the server, which it then finds without <code>--server-bin</code>):</p>
-<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release)
+<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release --bin chloedb-server)
 cd chloedb-netops &amp;&amp; cargo build --release
 target/release/chloedb-netops serve --local ./netops-data --server-bin ../chloedb-server/target/release/chloedb-server</pre>
 <p>Open <code>http://127.0.0.1:7700</code> and go to <strong>Apps → Network operations</strong>. The first start makes the tables and writes six hours of history (<code>--history-hours</code>), which takes some seconds; the page shows its progress. From then on the simulator writes a minute of telemetry every minute, evaluates the alert rules, and injects a fault every 45 minutes (<code>--fault-every</code>; <code>0</code>: only when you press <strong>Inject a fault</strong>).</p>
@@ -788,7 +788,7 @@ WHERE ts &gt;= &#x27;2026-11-13T03:00:00Z&#x27; GROUP BY link ORDER BY worst DES
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

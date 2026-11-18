@@ -13,7 +13,7 @@ You need `chloedb-server`, `chloedb-sheets` and `chloectx` on your `PATH`. <!-- 
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with sheets,ctx
 ```
 
-Release 0.3.0 and earlier have no prebuilt Sheets or ChloeCtx. With those, or to build from source, build each in its directory of a checkout of the repository (`cargo build --release`; Rust and a C compiler, several minutes) and add their `target/release` directories to `PATH`.
+Release 0.3.0 and earlier have no prebuilt Sheets or ChloeCtx. With those, or to build from source, build each in its directory of a checkout of the repository with `cargo build --release --bin` and its name (`chloedb-server`, `chloedb-sheets`, `chloectx`; Rust and a C compiler, several minutes) and add their `target/release` directories to `PATH`.
 
 ## How an app attaches
 

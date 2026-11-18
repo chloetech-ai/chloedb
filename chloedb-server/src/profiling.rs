@@ -92,6 +92,8 @@ impl Kind {
             Kind::Memory | Kind::Threads | Kind::Index | Kind::LogFilter | Kind::Alerts | Kind::Settings => 0.0,
             // The replicas' digests, waited for `timeout_ms` (60 s).
             Kind::Verify => b.get("timeout_ms").and_then(|v| v.as_f64()).filter(|t| t.is_finite() && *t > 0.0).map_or(60.0, |t| t / 1e3).min(600.0),
+            // A list of the checkpoints reads a directory.
+            Kind::Checkpoint if b["list"] == true => 0.0,
             // A checkpoint copies the database: up to 10 minutes.
             Kind::Checkpoint => 540.0,
             // Every byte of the database, unpaced: up to half an hour.
@@ -205,6 +207,8 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
             }
             Ok(Answer::Json(settings_json(svc)))
         }
+        // OLU-211: `{"list": true}` lists the checkpoints instead.
+        Kind::Checkpoint if b["list"] == true => Ok(Answer::Json(svc.checkpoints()?)),
         Kind::Checkpoint => {
             let layout = match b["layout"].as_str().unwrap_or("file") {
                 "file" => chloedb::storage::Layout::SingleFile,

@@ -114,7 +114,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Clients</span>
       <h1>ChloeDB from Rust</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/rust.md">docs/chloedb/rust.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.8, unreleased). The latest release is 0.3.7 (<a href="v0.3.7/index.html">its docs</a>); what is newer is marked "since 0.3.8".</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#add-it">Add it</a></li><li><a href="#open-or-create-a-database">Open or create a database</a></li><li><a href="#write">Write</a></li><li><a href="#search-and-query">Search and query</a></li><li><a href="#errors">Errors</a></li><li><a href="#where-the-examples-come-from">Where the examples come from</a></li></ol></details>
     <div class="doc-body">
@@ -217,7 +217,7 @@ let n = db.query(&quot;SELECT count(*) FROM notes WHERE MATCH(body, &#x27;cents&
 </tr>
 <tr>
 <td><code>Error::Busy</code></td>
-<td>another process, or another open in this one, has the database open for writing (<code>the database is open elsewhere: ...</code>, which goes on to say which <span class="since unreleased">since 0.3.8 (unreleased)</span>), or another write held it for longer than <code>DbOptions::write_wait</code> (5 seconds)</td>
+<td>another process, or another open in this one, has the database open for writing (<code>the database is open elsewhere: ...</code>, which goes on to say which <span class="since">since 0.3.8</span>), or another write held it for longer than <code>DbOptions::write_wait</code> (5 seconds)</td>
 </tr>
 <tr>
 <td><code>Error::Timeout</code>, <code>Error::Memory</code></td>
@@ -256,7 +256,7 @@ let n = db.query(&quot;SELECT count(*) FROM notes WHERE MATCH(body, &#x27;cents&
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

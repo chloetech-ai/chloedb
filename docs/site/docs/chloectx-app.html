@@ -114,7 +114,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">ChloeCtx</span>
       <h1>ChloeCtx as an app of a ChloeDB cluster</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/app.md">docs/chloectx/app.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.8, unreleased). The latest release is 0.3.7 (<a href="v0.3.7/index.html">its docs</a>); what is newer is marked "since 0.3.8".</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#start-it">Start it</a></li><li><a href="#where-the-memory-is">Where the memory is</a></li><li><a href="#the-api">The API</a></li><li><a href="#spaces-and-what-each-shows">Spaces and what each shows</a></li><li><a href="#a-demo-to-show-it">A demo to show it</a></li><li><a href="#seen-before">Seen before</a></li><li><a href="#create-an-app-from-a-space">Create an app from a space</a></li><li><a href="#tests">Tests</a></li></ol></details>
     <div class="doc-body">
@@ -130,7 +130,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p><em>The demo's team space, asked "Who approves a refund of 1,200 EUR?". The answer leads with the current decision (over 1000 EUR or 900 GBP, a second approver from finance) and what it replaced, then what else bears on it; the scores, what was left out and the context as the agent gets it are below. 14.4 ms, no model call.</em></p>
 <h2 id="start-it">Start it<a class="anchor" href="#start-it" aria-label="Link to this section">#</a></h2>
 <p>A chloedb-server with <code>chloectx</code> installed beside it (in the same directory, as an install puts them) starts it by itself, with a token and a key of its own (<a href="server.html#apps-the-server-starts">apps the server starts</a>); its key may make and write <code>ctx_*</code> tables and read <code>chloectx_mem_*</code> and <code>chloectx_memory</code>, so the on-call hand-off of Seen before, which needs an admin key, is refused there. Started by hand:</p>
-<pre data-lang="sh">cd chloectx &amp;&amp; cargo build --release
+<pre data-lang="sh">cd chloectx &amp;&amp; cargo build --release --bin chloectx
 ./target/release/chloectx fetch-model                # the embedding model, 129 MB, once
 ./target/release/chloectx app --server http://127.0.0.1:7700 --port 7760 --token &quot;$APP_TOKEN&quot;
 # and the coordinator shows it:
@@ -423,7 +423,7 @@ cd ../chloectx &amp;&amp; CHLOECTX_NEED_SERVER=1 cargo test --profile ci --test 
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

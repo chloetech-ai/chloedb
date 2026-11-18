@@ -132,4 +132,4 @@ ChloeCtx's stores hold transcripts of your Claude Code sessions, which may conta
 - Mutual TLS between the servers or with clients.
 - Limit the rate of requests per key or per client address.
 - Keep a separate log of reads and of clients' writes of rows.
-- Sign release archives with a key of its own: from 0.3.9 each carries GitHub's build provenance and an SBOM, signed with Sigstore by the workflow that built it, beside its `.sha256`, and PyPI's packages carry attestations ([SECURITY.md](../../SECURITY.md#checking-what-you-download) says how to check them).
+- Sign release archives with a key of its own: from 0.3.8 each carries GitHub's build provenance and an SBOM, signed with Sigstore by the workflow that built it, beside its `.sha256`, and PyPI's packages carry attestations ([SECURITY.md](../../SECURITY.md#checking-what-you-download) says how to check them).

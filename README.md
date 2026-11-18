@@ -60,11 +60,11 @@ docker run --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-sec
 
 Or, from release 0.3.7, take it from PyPI, the same prebuilt server in a wheel per platform: `pipx install chloedb-server` (or `uv tool install chloedb-server`) puts it on your `PATH`, and `uvx chloedb-server --demo 20000 --db products.chloedb` runs it without installing it.
 
-Or build it from source (Rust stable and a C compiler; the first build takes several minutes):
+Or build it from source (Rust stable and a C compiler; the first build takes several minutes). `--bin chloedb-server` builds the server alone: without it, cargo also builds the ten tools and benchmarks in the crate's `src/bin/`, each about as big as the server:
 
 ```sh
 git clone https://github.com/chloetech-ai/chloedb && cd chloedb/chloedb-server
-cargo build --release
+cargo build --release --bin chloedb-server
 target/release/chloedb-server --demo 20000 --db products.chloedb
 ```
 

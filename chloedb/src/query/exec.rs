@@ -3,6 +3,7 @@
 //! merges the per-segment results.
 
 mod agg_columns;
+mod agg_exprs;
 mod graph;
 mod filter_cache;
 mod scroll;
@@ -2840,6 +2841,9 @@ impl<'a> Executor<'a> {
                 (Pred::Like { field, pattern, ci, negated: false }, Some(w)) if !self.sets.contains_key(&s.ord) && !self.cache_holds(s, p) => self.first_like(s, *field, pattern, *ci, w - out.len())?,
                 _ => self.filter_set(s, p)?,
             };
+            // Room for the segment's rows at once, not one push at a time.
+            let more = want.map_or(set.len(), |w| set.len().min(w.saturating_sub(out.len())));
+            self.charge.reserve(&mut out, more)?;
             for d in set.iter() {
                 tick.tick()?;
                 if want.is_some_and(|w| out.len() >= w) {
@@ -3728,7 +3732,7 @@ impl<'a> Executor<'a> {
         let field = match c {
             Col::Field(f) => f,
             Col::Path(_) => return true,
-            Col::Time(_) => return false,
+            Col::Time(_) | Col::Expr(_) => return false,
         };
         let f = &self.schema.fields[field];
         f.ty == FieldType::Keyword || (f.ty == FieldType::Int && f.multi)
@@ -3746,6 +3750,17 @@ impl<'a> Executor<'a> {
                 TimeOf::Bin { width, origin: 0 } => format!("date_bin('{}', {})", crate::timestamp::stride_text(*width), self.field_name(tc.field)),
                 TimeOf::Bin { width, origin } => format!("date_bin('{}', {}, '{}')", crate::timestamp::stride_text(*width), self.field_name(tc.field), crate::timestamp::format(*origin)),
             }),
+            Col::Expr(e) => {
+                let mut fields = Vec::new();
+                q.exprs[e].visit(&mut |x| {
+                    if let crate::query::ir::Expr::Field(f) = x {
+                        if !fields.contains(f) {
+                            fields.push(*f);
+                        }
+                    }
+                });
+                format!("an expression of {}", fields.iter().map(|&f| self.field_name(f as usize)).collect::<Vec<_>>().join(", "))
+            }
         }
     }
 
@@ -3803,6 +3818,28 @@ impl<'a> Executor<'a> {
     fn col_values(&self, s: &Seg<'a>, q: &Select, c: Col, d: DocId, multi: &HashMap<usize, HashMap<DocId, Vec<u32>>>, paths: &HashMap<usize, crate::json::PathValues>, key: bool, out: &mut Vec<Value>) -> Result<()> {
         let p = match c {
             Col::Field(f) => return self.agg_values(s, f, d, multi, out),
+            // Its value of the row's fields, as the row evaluator computes
+            // it (each field single-valued, as queries give it); none for
+            // NULL.
+            Col::Expr(e) => {
+                out.clear();
+                let v = crate::query::ir::eval::eval(&q.exprs[e], &|r| match r {
+                    crate::query::ir::eval::Ref::Field(f) => {
+                        let mut one = Vec::new();
+                        self.agg_values(s, f as usize, d, multi, &mut one)?;
+                        let v = one.pop().unwrap_or(Value::Null);
+                        Ok(match self.schema.fields[f as usize].logical {
+                            Some(l) => l.output(v),
+                            None => v,
+                        })
+                    }
+                    _ => Err(err("an expression of the columns reads the row's fields")),
+                })?;
+                if !matches!(v, Value::Null) {
+                    out.push(v);
+                }
+                return Ok(());
+            }
             Col::Path(p) => p,
             // The function of the field's time; none without one.
             Col::Time(t) => {
@@ -3865,8 +3902,9 @@ impl<'a> Executor<'a> {
                         paths.insert(p, pv);
                         continue;
                     }
-                    // A TIMESTAMP field of one value.
-                    Col::Time(_) => continue,
+                    // A TIMESTAMP field of one value, or an expression of
+                    // fields of one.
+                    Col::Time(_) | Col::Expr(_) => continue,
                 };
                 if self.schema.fields[f].multi {
                     let kw = self.keyword(s, f)?;
@@ -4998,6 +5036,7 @@ impl<'a> Executor<'a> {
                 crate::json::extract(j.and_then(|j| fetched.get(j)).unwrap_or(&Value::Null), &pc.path, pc.kind)?
             }
             Projection::Time(_) => return Err(err("a part of a time is a column of groups (GROUP BY date_trunc('day', at)); of rows, the row evaluator computes it")),
+            Projection::Expr(_) => return Err(err("an expression of the columns is a column of groups; of rows, the row evaluator computes it")),
         }))
     }
 
@@ -5026,12 +5065,224 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
+    /// [`Executor::project_arrow`] a column at a time, when each column is
+    /// the primary key, a single-valued INT or FLOAT field read from its
+    /// column (a TIMESTAMP or BOOL too), or a single-valued KEYWORD read
+    /// from its column, and no segment of `hits` has values of them written
+    /// in place: an INT or FLOAT column is decoded a block of
+    /// [`forward::BLOCK`] rows at a time, as the column aggregates read it,
+    /// rather than a value at a time through [`Executor::cell`] (Sam's
+    /// aggregates of 224,056 rows spent 15-45 ms here, 70 ns a row and
+    /// column). The arrays are [`Executor::project_arrow`]'s, value for
+    /// value and of the same types: a column of NULLs alone is a
+    /// `NullArray`, and a column whose segments read it as INT in one and
+    /// FLOAT in another gives `None` here as it does there. `None` too for
+    /// any other projection, which goes a row at a time.
+    #[cfg(feature = "datafusion")]
+    fn project_arrow_columns(&self, q: &Select, hits: &[Hit]) -> Result<Option<(Vec<datafusion::arrow::array::ArrayRef>, datafusion::arrow::array::ArrayRef)>> {
+        use crate::query::arrow::Builder;
+        use crate::schema::Logical;
+        use datafusion::arrow::array::{ArrayRef, BooleanArray, Float64Array, Int64Array, NullArray, TimestampMicrosecondArray};
+        use datafusion::arrow::buffer::{Buffer, NullBuffer, ScalarBuffer};
+
+        /// Where a column's values come from, and what it builds.
+        enum Src {
+            /// An INT or FLOAT field's column: its values (FLOAT ones as
+            /// their bits) and whether each row has one.
+            Num { field: usize, float: bool, logical: Option<Logical>, values: Vec<i64>, valid: Vec<bool>, any: bool, all: bool },
+            /// A KEYWORD field's column, or the primary key.
+            Built { field: Option<usize>, b: Builder },
+        }
+        /// The block of a numeric column decoded last.
+        struct Block {
+            b: usize,
+            keys: [i64; forward::BLOCK],
+            mask: [u64; 2],
+        }
+        let n = hits.len();
+        let pk = self.schema.primary_key;
+        let mut srcs = Vec::with_capacity(q.projection.len());
+        for (c, (_, proj)) in q.projection.iter().enumerate() {
+            let Projection::Field(i) = *proj else { return Ok(None) };
+            let logical = q.types.get(c).copied().flatten();
+            srcs.push(match () {
+                _ if Some(i) == pk && logical.is_none() => Src::Built { field: None, b: Builder::new() },
+                _ if Some(i) == pk => return Ok(None),
+                _ if self.numeric_column(i) => Src::Num { field: i, float: matches!(self.schema.fields[i].ty, FieldType::Float), logical, values: Vec::with_capacity(n), valid: Vec::with_capacity(n), any: false, all: true },
+                _ if self.keyword_column(i) && logical.is_none() => Src::Built { field: Some(i), b: Builder::new() },
+                _ => return Ok(None),
+            });
+        }
+        // The keys' array: the key column's when the projection has one,
+        // else built beside the columns.
+        let key_col = srcs.iter().position(|s| matches!(s, Src::Built { field: None, .. }));
+        // A table without a primary key gives each row a NULL key.
+        let keyless = pk.is_none();
+        // INT keys go straight into their array; any other key into a
+        // builder, the INT ones before it with it.
+        let mut int_keys: Option<Vec<i64>> = Some(Vec::with_capacity(if key_col.is_none() { n } else { 0 }));
+        let mut keys = Builder::new();
+        let cell = std::mem::size_of::<Value>() as u64;
+        let mut bytes = 0u64;
+        let mut blocks: Vec<Block> = (0..srcs.len()).map(|_| Block { b: usize::MAX, keys: [0; forward::BLOCK], mask: [0; 2] }).collect();
+        let mut r = 0usize;
+        // A run of hits in one segment at a time, each column's reader
+        // opened once for it.
+        while r < hits.len() {
+            let seg = hits[r].seg;
+            let end = r + hits[r..].iter().position(|h| h.seg != seg).unwrap_or(hits.len() - r);
+            let s = self.seg_by_ord(seg);
+            let seg_keys = self.snap.pk(seg);
+            let mut cols: Vec<Option<&NumericColumn>> = vec![None; srcs.len()];
+            let mut kws: Vec<Option<&KeywordColumn>> = vec![None; srcs.len()];
+            for (c, src) in srcs.iter().enumerate() {
+                match src {
+                    Src::Num { field, float, .. } => {
+                        if self.updates(&s, *field).is_some() {
+                            return Ok(None);
+                        }
+                        let col = s.r.numeric(*field)?.map(|n| n.col());
+                        // A column read as INT in one segment and FLOAT in
+                        // another is of mixed values, for the rows.
+                        if col.is_some_and(|col| (col.kind() == forward::NumericKind::Int) == *float) {
+                            return Ok(None);
+                        }
+                        cols[c] = col;
+                    }
+                    Src::Built { field: Some(field), .. } => {
+                        if self.updates(&s, *field).is_some() {
+                            return Ok(None);
+                        }
+                        kws[c] = s.r.keyword(*field)?;
+                    }
+                    Src::Built { field: None, .. } => {}
+                }
+                blocks[c].b = usize::MAX;
+            }
+            for h in &hits[r..end] {
+                bytes += 24;
+                for (c, src) in srcs.iter_mut().enumerate() {
+                    match src {
+                        Src::Num { values, valid, any, all, .. } => {
+                            bytes += cell;
+                            let Some(col) = cols[c] else {
+                                values.push(0);
+                                valid.push(false);
+                                *all = false;
+                                continue;
+                            };
+                            let bl = &mut blocks[c];
+                            let (b, j) = (h.doc as usize / forward::BLOCK, h.doc as usize % forward::BLOCK);
+                            if bl.b != b {
+                                bl.mask = col.block_keys_of(b, &mut bl.keys);
+                                bl.b = b;
+                            }
+                            let present = (bl.mask[j / 64] >> (j % 64)) & 1 == 1;
+                            let k = bl.keys[j];
+                            values.push(match col.kind() {
+                                forward::NumericKind::Int => k,
+                                kind => kind.decode(k).to_bits() as i64,
+                            });
+                            valid.push(present);
+                            *any |= present;
+                            *all &= present;
+                        }
+                        Src::Built { field: Some(_), b } => {
+                            let pushed = match kws[c].and_then(|k| k.value_of_doc(h.doc)) {
+                                Some(x) => {
+                                    bytes += cell + x.len() as u64;
+                                    b.push_str(x, n)
+                                }
+                                None => {
+                                    bytes += cell;
+                                    b.push(Value::Null, n)
+                                }
+                            };
+                            if pushed.is_err() {
+                                return Ok(None);
+                            }
+                        }
+                        Src::Built { field: None, b } => {
+                            let v = self.key(h);
+                            bytes += crate::query::memory::value_bytes(&v);
+                            if b.push(v, n).is_err() {
+                                return Ok(None);
+                            }
+                        }
+                    }
+                }
+                if key_col.is_none() && !keyless {
+                    match (int_keys.as_mut(), seg_keys.map(|k| k.key_ref(h.doc))) {
+                        (Some(ints), Some(KeyRef::Int(k))) => ints.push(k),
+                        (_, key) => {
+                            for k in int_keys.take().into_iter().flatten() {
+                                if keys.push(Value::Int(k), n).is_err() {
+                                    return Ok(None);
+                                }
+                            }
+                            let pushed = match key {
+                                Some(KeyRef::Str(b)) => match std::str::from_utf8(b) {
+                                    Ok(x) => keys.push_str(x, n),
+                                    Err(_) => keys.push(Value::Str(String::from_utf8_lossy(b).into_owned()), n),
+                                },
+                                Some(KeyRef::Int(k)) => keys.push(Value::Int(k), n),
+                                None => keys.push(Value::Null, n),
+                            };
+                            if pushed.is_err() {
+                                return Ok(None);
+                            }
+                        }
+                    }
+                }
+                if bytes >= 1 << 16 {
+                    self.charge.add(std::mem::take(&mut bytes))?;
+                }
+            }
+            r = end;
+        }
+        self.charge.add(bytes)?;
+        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(srcs.len());
+        for src in srcs {
+            arrays.push(match src {
+                Src::Num { any: false, .. } => Arc::new(NullArray::new(n)),
+                Src::Num { float, logical, values, valid, all, .. } => {
+                    let nulls = (!all).then(|| NullBuffer::from(valid));
+                    match (float, logical) {
+                        // The FLOAT values' bits, as they are.
+                        (true, _) => Arc::new(Float64Array::new(ScalarBuffer::new(Buffer::from_vec(values), 0, n), nulls)),
+                        (false, Some(Logical::Timestamp)) => Arc::new(TimestampMicrosecondArray::new(values.into(), nulls)),
+                        (false, Some(Logical::Bool)) => Arc::new(BooleanArray::new(values.iter().map(|&x| x != 0).collect(), nulls)),
+                        (false, None) => Arc::new(Int64Array::new(values.into(), nulls)),
+                    }
+                }
+                Src::Built { b, .. } => match b.finish(n) {
+                    Ok(a) => a,
+                    Err(_) => return Ok(None),
+                },
+            });
+        }
+        let keys = match (key_col, int_keys) {
+            (Some(c), _) => arrays[c].clone(),
+            (None, _) if keyless => Arc::new(NullArray::new(n)),
+            (None, Some(ints)) if !ints.is_empty() => Arc::new(Int64Array::from(ints)),
+            (None, _) if n == 0 => Arc::new(NullArray::new(0)),
+            (None, _) => match keys.finish(n) {
+                Ok(k) => k,
+                Err(_) => return Ok(None),
+            },
+        };
+        Ok(Some((arrays, keys)))
+    }
+
     /// [`Executor::project`] into Arrow arrays, typed as the answer types
     /// them ([`Select::typed`]), with the keys' array: `None` when a
     /// column holds values of more than one type, which only rows can.
     #[cfg(feature = "datafusion")]
     fn project_arrow(&self, q: &Select, hits: &[Hit]) -> Result<Option<(Vec<datafusion::arrow::array::ArrayRef>, datafusion::arrow::array::ArrayRef)>> {
         use crate::query::arrow::Builder;
+        if let Some(out) = self.project_arrow_columns(q, hits)? {
+            return Ok(Some(out));
+        }
         let n = hits.len();
         let mut p = self.projecting(q, hits)?;
         let mut cols: Vec<Builder> = q.projection.iter().map(|_| Builder::new()).collect();

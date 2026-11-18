@@ -95,22 +95,38 @@ struct Raise<'a> {
     paths: Vec<PathCol>,
     /// The parts of times read as columns so far (`Select::times`).
     times: Vec<TimeCol>,
+    /// The expressions computed as columns so far (`Select::exprs`).
+    exprs: Vec<Expr>,
 }
 
 impl<'a> Raise<'a> {
     fn new(schema: &'a Schema) -> Self {
-        Raise { schema, graphs: Vec::new(), paths: Vec::new(), times: Vec::new() }
+        Raise { schema, graphs: Vec::new(), paths: Vec::new(), times: Vec::new(), exprs: Vec::new() }
     }
 
     /// The column `e` reads: a field, or a path of an indexed JSON field
     /// (`json_extract(field, path [, type])`, [`Select::paths`]).
     fn col_of(&mut self, e: &Expr) -> Result<Col> {
-        if let Some(tc) = self.time_of(e)? {
+        let time = self.time_of(e);
+        if let Ok(Some(tc)) = time {
             return Ok(Col::Time(match self.times.iter().position(|t| *t == tc) {
                 Some(i) => i,
                 None => {
                     self.times.push(tc);
                     self.times.len() - 1
+                }
+            }));
+        }
+        // An expression of the row's fields, computed from the columns
+        // (a plan this process runs, `fuse::computed`).
+        if !super::fuse::computable(e, self.schema) {
+            time?;
+        } else {
+            return Ok(Col::Expr(match self.exprs.iter().position(|x| x == e) {
+                Some(i) => i,
+                None => {
+                    self.exprs.push(e.clone());
+                    self.exprs.len() - 1
                 }
             }));
         }
@@ -323,7 +339,7 @@ impl<'a> Raise<'a> {
                     Some(k) if k.expr == Expr::Hops => Some(OrderBy::Score { score: Score::Hops { graph: self.hops_graph()?, far_first: k.desc }, desc: true, nulls_first: false }),
                     Some(k) if matches!(k.expr, Expr::Call { func: Func::JsonExtract, .. }) => match self.col_of(&k.expr)? {
                         Col::Path(path) => Some(OrderBy::Path { path, desc: k.desc, nulls_first: k.nulls_first }),
-                        Col::Field(_) | Col::Time(_) => unreachable!("json_extract reads a path"),
+                        Col::Field(_) | Col::Time(_) | Col::Expr(_) => unreachable!("json_extract reads a path"),
                     },
                     Some(k) => Some(OrderBy::Score { score: self.score(&k.expr)?, desc: k.desc, nulls_first: k.nulls_first }),
                 };
@@ -343,6 +359,10 @@ impl<'a> Raise<'a> {
                     return Err(err("a Search under an Aggregate is not ordered"));
                 }
                 let group_by: Vec<Col> = keys.iter().map(|k| self.col_of(k)).collect::<Result<_>>()?;
+                // A group keeps a time as its integer.
+                if group_by.iter().any(|c| matches!(c, Col::Expr(i) if super::fuse::may_be_time(&self.exprs[*i], self.schema))) {
+                    return Err(err("a Search groups by an expression that is not a time; group by a time's part (date_trunc, date_bin)"));
+                }
                 let mut of = Vec::with_capacity(aggs.len());
                 for a in aggs.iter() {
                     of.push(match (&a.func, &a.arg) {
@@ -386,7 +406,7 @@ impl<'a> Raise<'a> {
             }
         }
         let per = per.filter(|_| group_by.is_empty() && phases.is_empty() && matches!(order, Some(OrderBy::Score { .. })));
-        Ok(Select { projection, filter, order, group_by, having, tiebreak, phases, limit, offset, graphs: self.graphs, paths: self.paths, times: self.times, types, guard, per })
+        Ok(Select { projection, filter, order, group_by, having, tiebreak, phases, limit, offset, graphs: self.graphs, paths: self.paths, times: self.times, exprs: self.exprs, types, guard, per })
     }
 
     /// The graph `hops()` refers to: the first REACHABLE or PATH.
@@ -1033,8 +1053,9 @@ fn output(e: &Expr, keys: &[Col], aggs: &[Agg], of: &[Option<Col>]) -> Result<Pr
     }
     let j = i - keys.len();
     match (aggs.get(j), of.get(j)) {
-        (Some(Agg { func: AggFn::Count, arg: None }), _) => Ok(Projection::Count),
-        (Some(Agg { func, arg: Some(_) }), Some(Some(c))) => Ok(Projection::Agg { func: *func, of: *c }),
+        (Some(Agg { func: AggFn::StringAgg, .. }), _) => Err(err("STRING_AGG is computed over rows, not by a table's scan")),
+        (Some(Agg { func: AggFn::Count, arg: None, .. }), _) => Ok(Projection::Count),
+        (Some(Agg { func, arg: Some(_), .. }), Some(Some(c))) => Ok(Projection::Agg { func: *func, of: *c }),
         _ => Err(err(format!("the Aggregate has no output {i}"))),
     }
 }

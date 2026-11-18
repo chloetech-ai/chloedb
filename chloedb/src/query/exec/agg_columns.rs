@@ -15,13 +15,16 @@
 //! FROM at)`), and whose
 //! aggregates are `COUNT(*)`, or `COUNT`, `SUM`,
 //! `AVG`, `MIN`, `MAX` and percentiles of single-valued INT or FLOAT
-//! fields; anything
+//! fields; groups and `COUNT`, `SUM`, `AVG`, `MIN` and `MAX` of
+//! expressions of such fields ([`Select::exprs`]) are computed a block at a
+//! time ([`super::agg_exprs`]). Anything
 //! else (paths, multi-valued fields, `COUNT(DISTINCT)`, aggregates of
 //! keyword fields) goes row by row ([`Executor::aggregate`]).
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
+use super::agg_exprs::Exprs;
 use super::{Executor, Local, Seg};
 use crate::error::Result;
 use crate::forward::{KeywordColumn, NumericColumn, NumericKind, BLOCK};
@@ -34,11 +37,15 @@ use crate::value::Value;
 
 /// The fields a query's groups and aggregates read: each group's field
 /// (and the part of its times, [`Select::times`], it groups by), and each
-/// needed aggregate's (None for `COUNT(*)`).
+/// needed aggregate's (None for `COUNT(*)`); or the expression a group or
+/// an aggregate is of, an output of `exprs`.
 pub(super) struct Plan {
     groups: Vec<usize>,
     times: Vec<Option<usize>>,
     aggs: Vec<Option<usize>>,
+    key_exprs: Vec<Option<usize>>,
+    agg_exprs: Vec<Option<usize>>,
+    exprs: Exprs,
 }
 
 /// Whether the columns answer `q`'s groups and `needed` aggregates.
@@ -49,16 +56,25 @@ pub(super) fn plan(schema: &crate::schema::Schema, q: &Select, needed: &[Project
     };
     let mut groups = Vec::with_capacity(q.group_by.len());
     let mut times = Vec::with_capacity(q.group_by.len());
+    let mut exprs = Exprs::default();
+    let mut key_exprs = Vec::with_capacity(q.group_by.len());
     for c in &q.group_by {
         match *c {
             Col::Field(f) if single(f, &[FieldType::Keyword, FieldType::Int, FieldType::Float]) => {
                 groups.push(f);
                 times.push(None);
+                key_exprs.push(None);
             }
             // A part of a time is a number; text (`strftime`) goes row by row.
             Col::Time(t) if q.times.get(t).is_some_and(|tc| matches!(tc.of, TimeOf::Trunc(_) | TimeOf::Part(_) | TimeOf::Bin { .. }) && single(tc.field, &[FieldType::Int])) => {
                 groups.push(q.times[t].field);
                 times.push(Some(t));
+                key_exprs.push(None);
+            }
+            Col::Expr(e) => {
+                key_exprs.push(Some(exprs.add(q.exprs.get(e)?, schema)?));
+                groups.push(usize::MAX);
+                times.push(None);
             }
             _ => return None,
         }
@@ -68,16 +84,38 @@ pub(super) fn plan(schema: &crate::schema::Schema, q: &Select, needed: &[Project
         return None;
     }
     let mut aggs = Vec::with_capacity(needed.len());
+    let mut agg_exprs = Vec::with_capacity(needed.len());
     for p in needed {
         match p {
-            Projection::Count => aggs.push(None),
+            Projection::Count => {
+                aggs.push(None);
+                agg_exprs.push(None);
+            }
             Projection::Agg { func: AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) | AggFn::ApproxPercentile(_), of: Col::Field(f) } if single(*f, &[FieldType::Int, FieldType::Float]) => {
-                aggs.push(Some(*f))
+                aggs.push(Some(*f));
+                agg_exprs.push(None);
+            }
+            Projection::Agg { func: AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max, of: Col::Expr(e) } => {
+                aggs.push(None);
+                agg_exprs.push(Some(exprs.add(q.exprs.get(*e)?, schema)?));
+            }
+            // A part of a TIMESTAMP's times (`SUM(EXTRACT(epoch FROM t))`):
+            // `date_part` of it, which gives the same numbers.
+            Projection::Agg { func: AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max, of: Col::Time(t) } => {
+                let tc = q.times.get(*t)?;
+                let TimeOf::Part(part) = tc.of else { return None };
+                if schema.fields[tc.field].logical != Some(crate::schema::Logical::Timestamp) {
+                    return None;
+                }
+                use crate::query::ir::{Expr, Func};
+                let e = Expr::Call { func: Func::DatePart, args: vec![Expr::Lit(Value::Str(part.name().to_string())), Expr::Field(tc.field as u32)] };
+                aggs.push(None);
+                agg_exprs.push(Some(exprs.add(&e, schema)?));
             }
             _ => return None,
         }
     }
-    Some(Plan { groups, times, aggs })
+    Some(Plan { groups, times, aggs, key_exprs, agg_exprs, exprs })
 }
 
 /// A group field's values in one segment: a numeric field's, or the part
@@ -85,6 +123,18 @@ pub(super) fn plan(schema: &crate::schema::Schema, q: &Select, needed: &[Project
 enum Key<'s> {
     Codes(&'s KeywordColumn),
     Num(&'s NumericColumn, Option<&'s Updates>, Option<&'s TimeCol>),
+    /// An output of [`Plan::exprs`].
+    Expr(usize),
+}
+
+/// What a needed aggregate reads in a segment.
+enum In<'s> {
+    /// The rows (`COUNT(*)`).
+    Rows,
+    /// A field's column, and the values written in place of it.
+    Field(usize, &'s NumericColumn, Option<&'s Updates>),
+    /// An output of [`Plan::exprs`].
+    Expr(usize),
 }
 
 /// A group's value of a numeric field's value `v`: the part of the time
@@ -159,7 +209,7 @@ fn each_block(set: &DocSet, mut f: impl FnMut(usize, [u64; 2]) -> bool) {
 /// [`Part`] may differ here (they meet again at [`Part`]), and values that
 /// make different parts never agree here.
 #[inline]
-fn bits(v: &Value) -> (u8, u64) {
+pub(super) fn bits(v: &Value) -> (u8, u64) {
     match v {
         Value::Null => (0, 0),
         Value::Int(x) | Value::Timestamp(x) => (1, *x as u64),
@@ -244,13 +294,47 @@ enum Sink {
     /// this index in the needed aggregates) is of: it adds nothing, and
     /// answers from that sketch.
     SketchOf(usize),
-    /// `MIN`, `MAX`, percentiles, and any aggregate of a field with values
-    /// written in place of another type than its own: the row-by-row
-    /// aggregate's accumulators.
+    /// `MIN` or `MAX` of an INT field's integers (BOOL and TIMESTAMP ones
+    /// too, which the rows give as their integers here).
+    MinMaxInt { max: bool, best: Vec<Option<i64>> },
+    /// `MIN` or `MAX` of a FLOAT field's or expression's doubles, in the
+    /// order [`agg::cmp`] gives them (`total_cmp`, under which equal
+    /// doubles are the same bits, so which of them is kept does not
+    /// matter).
+    MinMaxFloat { max: bool, best: Vec<Option<f64>> },
+    /// Percentiles, `MIN` and `MAX` of other expressions, and any aggregate
+    /// of a field with values written in place of another type than its
+    /// own: the row-by-row aggregate's accumulators.
     Accs(Vec<Acc>),
 }
 
+/// Keeps `x` in `best` if it is the least (`max`: greatest) so far.
+#[inline]
+fn keep_int(best: &mut Option<i64>, x: i64, max: bool) {
+    if best.is_none_or(|b| if max { x > b } else { x < b }) {
+        *best = Some(x);
+    }
+}
+
+#[inline]
+fn keep_float(best: &mut Option<f64>, x: f64, max: bool) {
+    let want = if max { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less };
+    if best.is_none_or(|b| x.total_cmp(&b) == want) {
+        *best = Some(x);
+    }
+}
+
 impl Sink {
+    /// Of an expression's values, `float` when they are all FLOAT or NULL.
+    fn of_expr(p: &Projection, float: bool) -> Sink {
+        match p {
+            Projection::Agg { func: AggFn::Count, .. } => Sink::Count(Vec::new()),
+            Projection::Agg { func: f @ (AggFn::Sum | AggFn::Avg), .. } if float => Sink::Float { avg: *f == AggFn::Avg, sum: Vec::new(), near: Vec::new(), pending: 0, n: Vec::new() },
+            Projection::Agg { func: f @ (AggFn::Min | AggFn::Max), .. } if float => Sink::MinMaxFloat { max: *f == AggFn::Max, best: Vec::new() },
+            _ => Sink::Accs(Vec::new()),
+        }
+    }
+
     fn new(p: &Projection, field: Option<usize>, schema: &crate::schema::Schema, typed: bool) -> Sink {
         let float = field.is_some_and(|f| schema.fields[f].ty == FieldType::Float);
         match p {
@@ -259,6 +343,8 @@ impl Sink {
             Projection::Agg { func: f @ (AggFn::Sum | AggFn::Avg), .. } if typed && float => Sink::Float { avg: *f == AggFn::Avg, sum: Vec::new(), near: Vec::new(), pending: 0, n: Vec::new() },
             Projection::Agg { func: f @ (AggFn::Sum | AggFn::Avg), .. } if typed => Sink::Int { avg: *f == AggFn::Avg, isum: Vec::new(), n: Vec::new() },
             Projection::Agg { func: AggFn::ApproxPercentile(p), .. } if typed => Sink::Sketch(p.get(), Vec::new()),
+            Projection::Agg { func: f @ (AggFn::Min | AggFn::Max), .. } if typed && float => Sink::MinMaxFloat { max: *f == AggFn::Max, best: Vec::new() },
+            Projection::Agg { func: f @ (AggFn::Min | AggFn::Max), .. } if typed && field.is_some() => Sink::MinMaxInt { max: *f == AggFn::Max, best: Vec::new() },
             _ => Sink::Accs(Vec::new()),
         }
     }
@@ -277,6 +363,8 @@ impl Sink {
             }
             Sink::Sketch(p, s) => s.push(Sketch::new(*p)),
             Sink::SketchOf(_) => {}
+            Sink::MinMaxInt { best, .. } => best.push(None),
+            Sink::MinMaxFloat { best, .. } => best.push(None),
             Sink::Accs(a) => a.push(Acc::new(p)),
         }
     }
@@ -305,6 +393,16 @@ impl Sink {
             }
             (Sink::Sketch(p, s), Sink::Sketch(_, t)) => s[g].absorb(std::mem::replace(&mut t[h], Sketch::new(*p))),
             (Sink::SketchOf(_), Sink::SketchOf(_)) => {}
+            (Sink::MinMaxInt { max, best }, Sink::MinMaxInt { best: b2, .. }) => {
+                if let Some(x) = b2[h] {
+                    keep_int(&mut best[g], x, *max);
+                }
+            }
+            (Sink::MinMaxFloat { max, best }, Sink::MinMaxFloat { best: b2, .. }) => {
+                if let Some(x) = b2[h] {
+                    keep_float(&mut best[g], x, *max);
+                }
+            }
             (Sink::Accs(a), Sink::Accs(b)) => a[g].absorb(std::mem::replace(&mut b[h], Acc::Count(0))),
             _ => unreachable!("segments' sinks differ"),
         }
@@ -322,6 +420,10 @@ impl Sink {
             Sink::Sketch(p, s) => Acc::Sketch(Box::new(std::mem::replace(&mut s[g], Sketch::new(*p)))),
             // Filled in from the sketch it shares (`aggregate_columns`).
             Sink::SketchOf(_) => Acc::Count(0),
+            Sink::MinMaxInt { max: false, best } => Acc::Min(best[g].map(Value::Int)),
+            Sink::MinMaxInt { max: true, best } => Acc::Max(best[g].map(Value::Int)),
+            Sink::MinMaxFloat { max: false, best } => Acc::Min(best[g].map(Value::Float)),
+            Sink::MinMaxFloat { max: true, best } => Acc::Max(best[g].map(Value::Float)),
             Sink::Accs(a) => std::mem::replace(&mut a[g], Acc::Count(0)),
         }
     }
@@ -359,8 +461,9 @@ impl<'a> Executor<'a> {
                 .iter()
                 .zip(&plan.aggs)
                 .enumerate()
-                .map(|(k, (p, &f))| match (typed, sketch_of(k)) {
-                    (true, Some(of)) => Sink::SketchOf(of),
+                .map(|(k, (p, &f))| match (plan.agg_exprs[k], typed, sketch_of(k)) {
+                    (Some(o), _, _) => Sink::of_expr(p, plan.exprs.float(o)),
+                    (None, true, Some(of)) => Sink::SketchOf(of),
                     _ => Sink::new(p, f, schema, typed),
                 })
                 .collect(),
@@ -419,24 +522,48 @@ impl<'a> Executor<'a> {
     fn aggregate_segment(&self, s: &Seg<'a>, q: &Select, needed: &[Projection], plan: &Plan, all: &mut All, l: &mut Local) -> Result<()> {
         let mut tick = self.ticker();
         let set = self.filter_set_l(s, &q.filter, l)?;
-        l.plan.push(format!("seg {}: aggregate {} rows into groups of {} from the columns", s.ord, set.len(), q.group_by.len()));
+        match plan.exprs.counts() {
+            (0, 0) => l.plan.push(format!("seg {}: aggregate {} rows into groups of {} from the columns", s.ord, set.len(), q.group_by.len())),
+            (typed, rows) => l.plan.push(format!(
+                "seg {}: aggregate {} rows into groups of {} from the columns, {typed} expressions computed a block at a time and {rows} row by row",
+                s.ord,
+                set.len(),
+                q.group_by.len()
+            )),
+        }
         let keys: Vec<Key> = plan
             .groups
             .iter()
             .zip(&plan.times)
-            .map(|(&f, t)| match self.schema.fields[f].ty {
-                FieldType::Keyword => self.keyword(s, f).map(Key::Codes),
-                _ => self.numeric(s, f).map(|n| Key::Num(n.col(), self.updates(s, f), t.map(|t| &q.times[t]))),
+            .zip(&plan.key_exprs)
+            .map(|((&f, t), e)| match e {
+                Some(o) => Ok(Key::Expr(*o)),
+                None => match self.schema.fields[f].ty {
+                    FieldType::Keyword => self.keyword(s, f).map(Key::Codes),
+                    _ => self.numeric(s, f).map(|n| Key::Num(n.col(), self.updates(s, f), t.map(|t| &q.times[t]))),
+                },
             })
             .collect::<Result<_>>()?;
-        let aggs: Vec<Option<(usize, &NumericColumn, Option<&Updates>)>> = plan
+        let aggs: Vec<In> = plan
             .aggs
             .iter()
-            .map(|a| match *a {
-                None => Ok(None),
-                Some(f) => self.numeric(s, f).map(|n| Some((f, n.col(), self.updates(s, f)))),
+            .zip(&plan.agg_exprs)
+            .map(|(a, e)| match (*a, *e) {
+                (_, Some(o)) => Ok(In::Expr(o)),
+                (None, None) => Ok(In::Rows),
+                (Some(f), None) => self.numeric(s, f).map(|n| In::Field(f, n.col(), self.updates(s, f))),
             })
             .collect::<Result<_>>()?;
+        // The expressions' fields, and the values written in place of each
+        // (by docID).
+        let inputs: Vec<(&NumericColumn, Vec<(DocId, &Value)>)> = plan
+            .exprs
+            .fields()
+            .map(|f| self.numeric(s, f).map(|n| (n.col(), self.updates(s, f).map_or_else(Vec::new, |u| u.field(f).collect()))))
+            .collect::<Result<_>>()?;
+        let mut input_at = vec![0usize; inputs.len()];
+        let mut scratch = (!plan.exprs.is_empty()).then(|| plan.exprs.scratch());
+        let mut texts: FxMap<String, u32> = FxMap::default();
         // The values written in place of each aggregate's field that its
         // typed sink adds itself, by docID: the column's value of those rows
         // is not read. (A row-by-row sink reads each row's through `value`.)
@@ -444,7 +571,7 @@ impl<'a> Executor<'a> {
             .iter()
             .zip(&all.sinks)
             .map(|(a, sink)| match (a, sink) {
-                (Some((f, _, Some(u))), Sink::Count(_) | Sink::Int { .. } | Sink::Float { .. } | Sink::Sketch(..)) => u.field(*f).collect(),
+                (In::Field(f, _, Some(u)), Sink::Count(_) | Sink::Int { .. } | Sink::Float { .. } | Sink::Sketch(..) | Sink::MinMaxInt { .. } | Sink::MinMaxFloat { .. }) => u.field(*f).collect(),
                 _ => Vec::new(),
             })
             .collect();
@@ -503,10 +630,11 @@ impl<'a> Executor<'a> {
                 masks[i] = match k {
                     Key::Codes(kw) => kw.block_codes_of(b, &mut block[i]),
                     Key::Num(col, _, _) => col.block_keys_of(b, &mut block[i]),
+                    Key::Expr(_) => [0, 0],
                 };
             }
             for (i, a) in aggs.iter().enumerate() {
-                if let Some((_, col, _)) = a {
+                if let In::Field(_, col, _) = a {
                     masks[keys.len() + i] = col.block_keys_of(b, &mut block[keys.len() + i]);
                 }
             }
@@ -535,6 +663,25 @@ impl<'a> Executor<'a> {
                     x &= x - 1;
                 }
             }
+            // The expressions' values of the block.
+            if let Some(sc) = scratch.as_mut() {
+                let lo = (b * BLOCK) as DocId;
+                for (i, (col, list)) in inputs.iter().enumerate() {
+                    while input_at[i] < list.len() && list[input_at[i]].0 < lo {
+                        input_at[i] += 1;
+                    }
+                    let start = input_at[i];
+                    while input_at[i] < list.len() && list[input_at[i]].0 < lo + BLOCK as DocId {
+                        input_at[i] += 1;
+                    }
+                    plan.exprs.read(sc, i, self.schema, col, b, &list[start..input_at[i]]);
+                }
+                if let Err(e) = plan.exprs.eval(sc, picked) {
+                    err = Some(e);
+                    return false;
+                }
+            }
+            let sc = scratch.as_ref();
             let has = |i: usize, j: usize| masks[i][j / 64] >> (j % 64) & 1 == 1;
             // Each row's group.
             for t in 0..k {
@@ -549,7 +696,7 @@ impl<'a> Executor<'a> {
                             (true, Some(_), Some((w, o, first))) => ((block[0][j] as i128 - o as i128).div_euclid(w as i128) - first) as usize,
                         };
                         match by_code[c] {
-                            u32::MAX => match self.group_of(all, needed, &keys, d, plan) {
+                            u32::MAX => match self.group_of(all, needed, &keys, d, plan, sc, j) {
                                 Ok(g) => {
                                     by_code[c] = g;
                                     g
@@ -568,11 +715,12 @@ impl<'a> Executor<'a> {
                             key[i] = match kc {
                                 Key::Codes(_) => if has(i, j) { (5, block[i][j] as u64) } else { (0, 0) },
                                 Key::Num(col, u, t) => bits(&timed(*t, value(col, *u, plan.groups[i], d, has(i, j).then_some(block[i][j])))),
+                                Key::Expr(o) => plan.exprs.bits(sc.expect("expressions' values"), *o, j, &mut texts),
                             };
                         }
                         match by_bits.get(&key) {
                             Some(&g) => g,
-                            None => match self.group_of(all, needed, &keys, d, plan) {
+                            None => match self.group_of(all, needed, &keys, d, plan, sc, j) {
                                 Ok(g) => {
                                     by_bits.insert(key, g);
                                     g
@@ -587,6 +735,10 @@ impl<'a> Executor<'a> {
                 };
                 gs[t] = g;
             }
+            // The group of every picked row of the block, when they share
+            // one: its sums then add in registers and are written once.
+            let one = (k > 0 && gs[1..k].iter().all(|&g| g == gs[0])).then_some(gs[0] as usize);
+            let count = |m: [u64; 2]| ((m[0] & picked[0]).count_ones() + (m[1] & picked[1]).count_ones()) as i64;
             // Each aggregate over the block's rows.
             for (a_i, (sink, a)) in all.sinks.iter_mut().zip(&aggs).enumerate() {
                 let i = keys.len() + a_i;
@@ -597,15 +749,138 @@ impl<'a> Executor<'a> {
                     (picked[j / 64] >> (j % 64) & 1 == 1).then(|| (gs[slot[j] as usize] as usize, v))
                 });
                 match (sink, a) {
-                    (Sink::Count(c), None) => rows.for_each(|(_, g)| c[g] += 1),
-                    (Sink::Count(c), Some(_)) => {
-                        rows.for_each(|(j, g)| c[g] += has(i, j) as i64);
+                    (Sink::Count(c), In::Rows) => match one {
+                        Some(g) => c[g] += k as i64,
+                        None => rows.for_each(|(_, g)| c[g] += 1),
+                    },
+                    (Sink::Count(c), In::Expr(o)) => {
+                        let valid = plan.exprs.valid(sc.expect("expressions' values"), *o);
+                        match one {
+                            Some(g) => c[g] += count(valid),
+                            None => rows.for_each(|(j, g)| c[g] += (valid[j / 64] >> (j % 64) & 1) as i64),
+                        }
+                    }
+                    (Sink::Float { sum, near, pending, n, .. }, In::Expr(o)) => {
+                        let sc = sc.expect("expressions' values");
+                        let valid = plan.exprs.valid(sc, *o);
+                        let mut add = |g: usize, x: f64| {
+                            match agg::near_units(x) {
+                                Some(u) => near[g] += u,
+                                None => sum[g].add(x),
+                            }
+                            n[g] += 1;
+                        };
+                        match plan.exprs.floats(sc, *o) {
+                            Some(vals) if one.is_some() => {
+                                let js = rows.map(|(j, _)| j).filter(|&j| valid[j / 64] >> (j % 64) & 1 == 1);
+                                add_floats_to(one.expect("one group"), js.map(|j| vals[j]), sum, near, n);
+                            }
+                            Some(vals) => rows.filter(|&(j, _)| valid[j / 64] >> (j % 64) & 1 == 1).for_each(|(j, g)| add(g, vals[j])),
+                            // From the row evaluator, which makes FLOATs of
+                            // these too.
+                            None => {
+                                for (j, g) in rows {
+                                    match plan.exprs.value(sc, *o, j) {
+                                        Value::Float(x) => add(g, x),
+                                        Value::Null => {}
+                                        v => {
+                                            err = Some(crate::error::Error::Query(format!("an expression of FLOATs gave {v:?}")));
+                                            return false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        *pending += k as u32;
+                        if *pending > agg::NEAR_EVERY - BLOCK as u32 {
+                            for (s, v) in sum.iter_mut().zip(near.iter_mut()) {
+                                s.add_near(std::mem::take(v));
+                            }
+                            *pending = 0;
+                        }
+                    }
+                    (Sink::MinMaxFloat { max, best }, In::Expr(o)) => {
+                        let sc = sc.expect("expressions' values");
+                        let valid = plan.exprs.valid(sc, *o);
+                        match plan.exprs.floats(sc, *o) {
+                            Some(vals) => rows.filter(|&(j, _)| valid[j / 64] >> (j % 64) & 1 == 1).for_each(|(j, g)| keep_float(&mut best[g], vals[j], *max)),
+                            None => {
+                                for (j, g) in rows {
+                                    match plan.exprs.value(sc, *o, j) {
+                                        Value::Float(x) => keep_float(&mut best[g], x, *max),
+                                        Value::Null => {}
+                                        v => {
+                                            err = Some(crate::error::Error::Query(format!("an expression of FLOATs gave {v:?}")));
+                                            return false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (Sink::MinMaxInt { max, best }, In::Field(..)) => {
+                        for (j, g) in rows.filter(|&(j, _)| has(i, j)) {
+                            keep_int(&mut best[g], block[i][j], *max);
+                        }
+                        for (g, v) in written {
+                            if let Value::Int(x) = v {
+                                keep_int(&mut best[g], *x, *max);
+                            }
+                        }
+                    }
+                    (Sink::MinMaxFloat { max, best }, In::Field(_, col, _)) => {
+                        let (vals, rows) = (&block[i], rows.filter(|&(j, _)| has(i, j)));
+                        match col.kind() {
+                            NumericKind::Decimal(s) => rows.for_each(|(j, g)| keep_float(&mut best[g], NumericKind::Decimal(s).decode(vals[j]), *max)),
+                            NumericKind::FloatBits => rows.for_each(|(j, g)| keep_float(&mut best[g], NumericKind::FloatBits.decode(vals[j]), *max)),
+                            NumericKind::Int => rows.for_each(|(j, g)| keep_float(&mut best[g], vals[j] as f64, *max)),
+                        }
+                        for (g, v) in written {
+                            if let Value::Float(x) = v {
+                                keep_float(&mut best[g], *x, *max);
+                            }
+                        }
+                    }
+                    (Sink::Accs(accs), In::Expr(o)) => {
+                        let sc = sc.expect("expressions' values");
+                        match (plan.exprs.ints(sc, *o), one) {
+                            // INTs of one group: summed in registers.
+                            (Some(vals), Some(g)) => {
+                                let valid = plan.exprs.valid(sc, *o);
+                                add_ints(&mut accs[g], rows.map(|(j, _)| j).filter(|&j| valid[j / 64] >> (j % 64) & 1 == 1).map(|j| vals[j]));
+                            }
+                            _ => {
+                                for (j, g) in rows {
+                                    accs[g].add(&plan.exprs.value(sc, *o, j));
+                                }
+                            }
+                        }
+                    }
+                    (_, In::Expr(_)) => {}
+                    (Sink::Count(c), In::Field(..)) => {
+                        match one {
+                            Some(g) => c[g] += count(masks[i]),
+                            None => rows.for_each(|(j, g)| c[g] += has(i, j) as i64),
+                        }
                         written.for_each(|(g, v)| c[g] += !matches!(v, Value::Null) as i64);
                     }
-                    (Sink::Int { isum, n, .. }, Some(_)) => {
-                        for (j, g) in rows.filter(|&(j, _)| has(i, j)) {
-                            isum[g] += block[i][j] as i128;
-                            n[g] += 1;
+                    (Sink::Int { isum, n, .. }, In::Field(..)) => {
+                        match one {
+                            Some(g) => {
+                                let (mut s, mut m) = (0i128, 0i64);
+                                for j in rows.map(|(j, _)| j).filter(|&j| has(i, j)) {
+                                    s += block[i][j] as i128;
+                                    m += 1;
+                                }
+                                isum[g] += s;
+                                n[g] += m;
+                            }
+                            None => {
+                                for (j, g) in rows.filter(|&(j, _)| has(i, j)) {
+                                    isum[g] += block[i][j] as i128;
+                                    n[g] += 1;
+                                }
+                            }
                         }
                         for (g, v) in written {
                             if let Value::Int(x) = v {
@@ -614,12 +889,12 @@ impl<'a> Executor<'a> {
                             }
                         }
                     }
-                    (Sink::Float { sum, near, pending, n, .. }, Some((_, col, _))) => {
+                    (Sink::Float { sum, near, pending, n, .. }, In::Field(_, col, _)) => {
                         let (vals, rows) = (&block[i], rows.filter(|&(j, _)| has(i, j)));
                         match col.kind() {
-                            NumericKind::Decimal(s) => add_floats(|k| NumericKind::Decimal(s).decode(k), vals, rows, sum, near, n),
-                            NumericKind::FloatBits => add_floats(|k| NumericKind::FloatBits.decode(k), vals, rows, sum, near, n),
-                            NumericKind::Int => add_floats(|k| k as f64, vals, rows, sum, near, n),
+                            NumericKind::Decimal(s) => add_floats(|k| NumericKind::Decimal(s).decode(k), vals, rows, one, sum, near, n),
+                            NumericKind::FloatBits => add_floats(|k| NumericKind::FloatBits.decode(k), vals, rows, one, sum, near, n),
+                            NumericKind::Int => add_floats(|k| k as f64, vals, rows, one, sum, near, n),
                         }
                         for (g, v) in written {
                             if let Value::Float(x) = v {
@@ -639,7 +914,7 @@ impl<'a> Executor<'a> {
                             *pending = 0;
                         }
                     }
-                    (Sink::Sketch(_, sk), Some((_, col, _))) => {
+                    (Sink::Sketch(_, sk), In::Field(_, col, _)) => {
                         let (vals, rows) = (&block[i], rows.filter(|&(j, _)| has(i, j)));
                         let mut more = match col.kind() {
                             NumericKind::Decimal(s) => add_sketches(|k| NumericKind::Decimal(s).decode(k), vals, rows, sk),
@@ -656,7 +931,7 @@ impl<'a> Executor<'a> {
                             }
                         }
                     }
-                    (Sink::Accs(accs), Some((f, col, u))) => {
+                    (Sink::Accs(accs), In::Field(f, col, u)) => {
                         // A percentile holds its values.
                         let mut more = 0;
                         for (j, g) in rows {
@@ -669,8 +944,8 @@ impl<'a> Executor<'a> {
                             }
                         }
                     }
-                    (Sink::Accs(accs), None) => rows.for_each(|(_, g)| accs[g].add_row()),
-                    (Sink::Int { .. } | Sink::Float { .. } | Sink::Sketch(..), None) => {}
+                    (Sink::Accs(accs), In::Rows) => rows.for_each(|(_, g)| accs[g].add_row()),
+                    (Sink::Int { .. } | Sink::Float { .. } | Sink::Sketch(..) | Sink::MinMaxInt { .. } | Sink::MinMaxFloat { .. }, In::Rows) => {}
                     (Sink::SketchOf(_), _) => {}
                 }
             }
@@ -683,15 +958,18 @@ impl<'a> Executor<'a> {
     }
 
     /// The group of document `d` (its first row in this segment with these
-    /// group values): its index in `all`, a new group's if the query has
-    /// room for one more.
-    fn group_of(&self, all: &mut All, needed: &[Projection], keys: &[Key], d: DocId, plan: &Plan) -> Result<u32> {
+    /// group values, row `j` of its block, whose expressions' values are in
+    /// `sc`): its index in `all`, a new group's if the query has room for
+    /// one more.
+    #[allow(clippy::too_many_arguments)]
+    fn group_of(&self, all: &mut All, needed: &[Projection], keys: &[Key], d: DocId, plan: &Plan, sc: Option<&super::agg_exprs::Scratch>, j: usize) -> Result<u32> {
         let key: Vec<Part> = keys
             .iter()
             .zip(&plan.groups)
             .map(|(k, &f)| match k {
                 Key::Codes(kw) => kw.value_of_doc(d).map_or(Part::Null, |v| Part::Str(v.to_string())),
                 Key::Num(col, u, t) => Part::group(&timed(*t, value(col, *u, f, d, col.sort_key(d)))),
+                Key::Expr(o) => Part::group(&sc.map_or(Value::Null, |sc| plan.exprs.value(sc, *o, j))),
             })
             .collect();
         if let Some(&g) = all.index.get(&key) {
@@ -716,8 +994,12 @@ impl<'a> Executor<'a> {
 /// [`agg::near_units`]'s range as integers, the rest to the exact sums. A
 /// function of its own, once for each kind of column, so that the slices are
 /// known apart and stay in registers and the decoding is not a match per row.
+/// `one` is the group of every row, when they share one.
 #[inline(never)]
-fn add_floats(decode: impl Fn(i64) -> f64, vals: &[i64; BLOCK], rows: impl Iterator<Item = (usize, usize)>, sum: &mut [ExactSum], near: &mut [i128], n: &mut [i64]) {
+fn add_floats(decode: impl Fn(i64) -> f64, vals: &[i64; BLOCK], rows: impl Iterator<Item = (usize, usize)>, one: Option<usize>, sum: &mut [ExactSum], near: &mut [i128], n: &mut [i64]) {
+    if let Some(g) = one {
+        return add_floats_to(g, rows.map(|(j, _)| decode(vals[j])), sum, near, n);
+    }
     for (j, g) in rows {
         let x = decode(vals[j]);
         match agg::near_units(x) {
@@ -726,6 +1008,52 @@ fn add_floats(decode: impl Fn(i64) -> f64, vals: &[i64; BLOCK], rows: impl Itera
         }
         n[g] += 1;
     }
+}
+
+/// Adds INT values to an accumulator as [`Acc::add`] adds each: a sum's
+/// and an average's in registers, written once.
+fn add_ints(acc: &mut Acc, xs: impl Iterator<Item = i64>) {
+    match acc {
+        Acc::Sum { isum, any, .. } => {
+            let (mut s, mut m) = (0i128, 0i64);
+            for x in xs {
+                s += x as i128;
+                m += 1;
+            }
+            *isum += s;
+            *any |= m > 0;
+        }
+        Acc::Avg { isum, n, .. } => {
+            let (mut s, mut m) = (0i128, 0i64);
+            for x in xs {
+                s += x as i128;
+                m += 1;
+            }
+            *isum += s;
+            *n += m;
+        }
+        acc => {
+            for x in xs {
+                acc.add(&Value::Int(x));
+            }
+        }
+    }
+}
+
+/// Adds doubles of one group `g` to its sum: the integers in registers,
+/// written once.
+#[inline(always)]
+fn add_floats_to(g: usize, xs: impl Iterator<Item = f64>, sum: &mut [ExactSum], near: &mut [i128], n: &mut [i64]) {
+    let (mut units, mut count) = (0i128, 0i64);
+    for x in xs {
+        match agg::near_units(x) {
+            Some(u) => units += u,
+            None => sum[g].add(x),
+        }
+        count += 1;
+    }
+    near[g] += units;
+    n[g] += count;
 }
 
 /// Whether aggregate `j` of `needed` is the first `approx_percentile` of its

@@ -2,11 +2,12 @@
 """The speed gate: two builds of ChloeDB timed against each other on one machine.
 
     scripts/perf-gate.py --base BASE_BIN_DIR --head HEAD_BIN_DIR --beir DIR \
-        [--rounds 3] [--threshold 0.10] [--out DIR] [--summary FILE]
+        [--sql] [--rounds 3] [--threshold 0.10] [--out DIR] [--summary FILE]
 
 Each bin dir holds `chloedb-bm25-eval` (and, when `--vectors` is given,
-`chloedb-server-bench`). The BEIR collections are the relevance gate's
-(`chloedb/tests/fixtures/beir/fetch.sh DIR`).
+`chloedb-server-bench`; with `--sql`, `chloedb-sql-bench`). The BEIR
+collections are the relevance gate's (`chloedb/tests/fixtures/beir/fetch.sh
+DIR`).
 
 A shared CI runner's speed moves from one run to the next by more than most
 regressions, so the gate never compares a time with a number written down on
@@ -24,6 +25,14 @@ analysis, statistics, top-k):
 - BM25 `fuzzy => 'auto'` on SciFact and NFCorpus (on ArguAna each of its long
   queries takes 0.7 s, as in the relevance gate);
 - each collection's load: rows written and merged, seconds.
+
+With `--sql`, when both bin dirs hold `chloedb-sql-bench`, it also times
+analytical SQL: the persona study's battery (groups, aggregates under
+ROUND and FILTER, joins to a small table, windows, functions of times) on
+224,000 rows shaped like NYC's green taxi trips, which the timer makes up
+from a seed, so nothing is downloaded. Each statement of at least
+SQL_FLOOR_MS on the base is a measure (shorter ones move by more than the
+threshold from run to run), and so is the load of the rows.
 
 With `--vectors DIR` (collections prepared by
 `chloedb/scripts/prepare_beir.py`, with their Cohere vectors) it also runs
@@ -84,6 +93,25 @@ def bm25_round(bindir, beir, out, tag, reps, log, tmp):
     return times, ndcg
 
 
+SQL = "chloedb-sql-bench"
+# Statements faster than this on the base are left out of the verdict.
+SQL_FLOOR_MS = 2.0
+
+
+def sql_round(bindir, out, tag, log):
+    """chloedb-sql-bench's battery: {statement: median ms}, and the load's seconds."""
+    o = os.path.join(out, f"sql-{tag}.json")
+    run([os.path.join(bindir, SQL), "--reps", "5", "--out", o], log)
+    with open(o) as f:
+        d = json.load(f)
+    times = {"sql load 224k trips (s)": d["load_s"]}
+    for q, r in d["queries"].items():
+        if "error" in r:
+            sys.exit(f"perf-gate: {SQL} {q} failed ({tag}): {r['error']}")
+        times[f"sql {q} (ms)"] = r["ms"]
+    return times
+
+
 def server_round(bindir, vectors, out, tag, log, work):
     """chloedb-server-bench on SciFact: {kind p50 at 1 client: ms}."""
     exe = os.path.join(bindir, "chloedb-server-bench")
@@ -114,6 +142,7 @@ def main():
     ap.add_argument("--head", required=True)
     ap.add_argument("--beir", required=True)
     ap.add_argument("--vectors")
+    ap.add_argument("--sql", action="store_true")
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--threshold", type=float, default=0.10)
@@ -128,6 +157,10 @@ def main():
     open(log, "w").close()
     tmp = tempfile.mkdtemp(prefix="perf-gate-")
     builds = {"base": a.base, "head": a.head}
+    sql = a.sql and all(os.access(os.path.join(d, SQL), os.X_OK) for d in builds.values())
+    notes = []
+    if a.sql and not sql:
+        notes.append(f"No SQL timings: {SQL} is not in both builds (a base from before it).")
     rounds = {"base": [], "head": []}
     ndcg = {"base": {}, "head": {}}
     for r in range(a.rounds):
@@ -135,6 +168,8 @@ def main():
         for side in order:
             print(f"round {r + 1}/{a.rounds}: {side}", flush=True)
             times, n = bm25_round(builds[side], a.beir, a.out, f"{side}{r}", a.reps, log, tmp)
+            if sql:
+                times.update(sql_round(builds[side], a.out, f"{side}{r}", log))
             if a.vectors:
                 times.update(server_round(builds[side], a.vectors, a.out, f"{side}{r}", log, tmp))
             rounds[side].append(times)
@@ -146,6 +181,8 @@ def main():
         b = [x[m] for x in rounds["base"] if m in x]
         h = [x[m] for x in rounds["head"] if m in x]
         bm, hm = statistics.median(b), statistics.median(h)
+        if m.startswith("sql ") and m.endswith("(ms)") and bm < SQL_FLOOR_MS:
+            continue
         ratio = hm / bm if bm > 0 else 1.0
         apart_slower = min(h) > max(b)
         apart_faster = max(h) < min(b)
@@ -160,14 +197,14 @@ def main():
                      "ndcg10_base": ndcg["base"].get(m), "ndcg10_head": ndcg["head"].get(m)})
 
     result = {"base": a.base_label, "head": a.head_label, "rounds": a.rounds, "reps": a.reps,
-              "threshold": a.threshold, "machine": machine(), "measures": rows, "regressed": regressed}
+              "threshold": a.threshold, "machine": machine(), "measures": rows, "regressed": regressed, "notes": notes}
     with open(os.path.join(a.out, "perf-gate.json"), "w") as f:
         json.dump(result, f, indent=1)
 
     md = [f"### Speed gate: {a.head_label} against {a.base_label}", "",
           f"{a.rounds} rounds each, in turns, on {result['machine']}. A measure fails when the head's "
           f"median is more than {a.threshold:.0%} above the base's and every head round is slower than "
-          "every base round.", "",
+          "every base round.", "", *[n + "\n" for n in notes],
           "| measure | base | head | change | nDCG@10 base / head | |", "|---|---:|---:|---:|---|---|"]
     for row in rows:
         nd = ""

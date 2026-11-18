@@ -11,6 +11,15 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Everyday SQL functions** (persona study round 2, SAM-7): `substr`
+  (`substring`, `SUBSTRING(s FROM i FOR n)`), `trim`, `ltrim`, `rtrim`
+  (`btrim`, `TRIM(LEADING ... FROM s)`), `replace`, `concat`, `nullif`,
+  `floor` and `ceil`, with PostgreSQL's answers; `date_diff('unit',
+  start, end)`, the unit's boundaries between two times, as DuckDB counts
+  them; and `STRING_AGG(x, ', ' [ORDER BY y])`. They run on either engine
+  and over shards; a plan that uses one declares the feature
+  `sql_functions`, which a server from before refuses by name
+  ([query-language.md](docs/chloedb/query-language.md#text-and-numbers-substr-trim-replace-concat-nullif-floor-and-ceil)).
 - **SQL answers the same on either engine, and as PostgreSQL does in four
   more places** (persona study round 2, SAM-201 to SAM-204, SAM-208).
   `ORDER BY` an output column's alias after `GROUP BY` or `DISTINCT`
@@ -23,10 +32,103 @@ changes collect under "Unreleased".
   in order, so totals that tied on a small table (43.62 and
   43.620000000000005) split as it grew and a `RANK` over them changed; it
   adds exactly, the same bits as ChloeDB's operators. The refusals of
-  `ROLLUP`, `CUBE`, `GROUPING SETS`, `substr`, `JOIN ... USING`, `NATURAL
+  `ROLLUP`, `CUBE`, `GROUPING SETS`, `JOIN ... USING`, `NATURAL
   JOIN`, a join on no equality, `INSERT ... SELECT`, `CREATE TABLE ... AS
   SELECT`, temporary tables and a time minus a time say what to write
   instead, with the query's own tables.
+- **A server says which commit it was built from** (OLU-207): two builds
+  of one version (a hotfix, a branch) said the same `0.3.8` everywhere.
+  `chloedb-server --version` prints `0.3.9 (built from 1a2b3c4d5e)`,
+  `/v1/system` and each copy's `version` in `/v1/cluster` carry `commit`,
+  `chloedb_build_info` has a `commit` label, and Rollouts counts two builds
+  of one version apart. A build outside a git checkout records none.
+- **Docs** (persona study round 2, ANA-207, MAYA-209, JONAH-11, JONAH-209,
+  SAM-217): building from source names the program
+  (`cargo build --release --bin chloedb-server`), so cargo no longer builds
+  the crate's ten tools and benchmarks beside it; the docs' search box
+  lists the sections that hold some of the words after those that hold
+  them all, so "similar recipes" finds "more like this"; the home page
+  has a ChloeCtx section; the plugin's tools are turned off with
+  `--disallowedTools mcp__plugin_chloectx_chloectx`; main's docs no longer
+  say they describe the last release once something has merged after it;
+  and the pages that said release archives carry build provenance from
+  0.3.9 say 0.3.8, as SECURITY.md does (the installers check it from
+  0.3.9).
+- **What on-call sets on a coordinator survives its restart, and its
+  numbers are true** (persona study round 2, OLU-201, OLU-202, OLU-203,
+  OLU-3, OLU-206, OLU-204, OLU-211, OLU-9). A coordinator started without
+  `--alerts` and `--audit-log` lost its custom rules, routes, silences and
+  audit log when it restarted; it keeps them, with each alert's state and
+  the latest 2,000 audit entries, on every copy of its shards
+  (`<db>.coordinator.json`), and takes them back before it serves, the
+  newest of each part winning; `GET /v1/alerts` says where under `kept`.
+  `chloedb_docs` and `chloedb_segments` counted the database's first
+  table, often an empty placeholder; they count every table, as
+  `/v1/health`'s `rows`, with `chloedb_table_docs{table}`,
+  `chloedb_table_segments{table}` and a copy's
+  `chloedb_copy_info{shard, node, role}`. A coordinator's `/metrics` has
+  the cluster's state (`chloedb_cluster_copies_up`,
+  `chloedb_cluster_shard_majority`, `chloedb_cluster_copy_up{shard, copy,
+  url, role}` and others). Writes that fail on the server count in Home's
+  error ratio and the fleet's `error_ratio` check (`write_error_ratio`,
+  with a runbook), and Home keeps its pace while an alert fires.
+  `POST /v1/admin/verify` on a coordinator verifies every shard (it
+  answered 409), `GET /v1/logs` there says how to search the copies'
+  lines, `GET /v1/admin/checkpoints` lists the checkpoints in
+  `--backup-dir` (on a coordinator, every copy's and the sets complete on
+  every shard; Settings > Upkeep > Backups), and the
+  `cluster_token_required` refusal says how to apply a plan with the
+  cluster's token ([operate-cluster.md](docs/guide/operate-cluster.md)).
+
+### Analytical SQL
+
+What the persona study's data engineer found in its second round: groups,
+joins and time functions over whole tables took 25 to 250 ms where DuckDB
+took 1.5 to 7. On their 224,000 taxi trips and Chinook, the 16 statements
+that took 10 ms or more run 6.1 times as fast on their geometric mean (T5,
+time parts by hour, 258 ms to 4.9), and all 72 take 0.57 of the time on
+theirs, with the same answers (a 4-core cloud container, `chloedb-sql-bench`).
+
+- **Aggregates of expressions are computed from the columns.** `SUM(a * b)`,
+  `AVG(CASE WHEN ... END)`, `SUM(CASE WHEN ... THEN 1 ELSE 0 END)`, and
+  groups by `EXTRACT(hour FROM t)`, `date_part`, arithmetic, comparisons
+  and `CASE` over numbers, times and booleans are evaluated 128 rows at a
+  time, typed, beside the segment's columns, rather than row by row through
+  DataFusion. An `INT` that would overflow sends its block to the row
+  evaluator, so errors and answers are the rows' own. A plan says how many
+  expressions it computed a block at a time and how many row by row.
+- **Plain aggregates fold into the scan**: `COUNT`, `SUM`, `AVG`, `MIN` and
+  `MAX` of single-valued fields, also under `ROUND` or `HAVING`. Percentiles
+  stay on DataFusion, which is faster at them.
+- **Columns go into Arrow a block at a time** for the plans DataFusion
+  still runs, and `date_part`, `date_trunc`, `date_bin`, `strftime` and
+  text compared with a `TIMESTAMP` lower to DataFusion rather than sending
+  the whole plan to the operators. `EXTRACT(epoch ...)` and the other time
+  parts that are not dates skip the calendar.
+- **A small right side of a join is read whole** (at most 1,024 rows, when
+  the left side is bigger).
+- **Sam's queries are in the speed gate**: `chloedb-sql-bench` runs them on
+  trips made up from a seed or on a database and a file of statements
+  (`--check` compares the answers with the plan computed row by row,
+  `--plan` times each step), and `scripts/perf-gate.py --sql` times them in
+  `perf.yml`.
+
+Through a coordinator, the shards still answer these plans as before:
+computing expressions in the scan is for a database's own plans (embedded,
+or one server), so shards of older versions need nothing new.
+
+- **Experiments: live runs** (`chloedb-experiments`, a demo). An
+  experiment you watch as it happens: simulated users search the site at a
+  rate you set and change while it runs, each search a logged query to
+  ChloeDB with its clicks written back, and each second the page shows
+  every metric per arm with its interval, its fixed-size and always-valid
+  p values side by side, the truth, the judged quality (nDCG) of what
+  each arm showed and each metric by cohort. AI agents, people of the population in their arms, use
+  the site's search for a need of their own (Claude through the Messages
+  API with a spend cap, or scripted with no model), and you can search the
+  site in the run yourself. When it ends it becomes an experiment with the
+  full report and an Agents tab
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#live-runs)).
 
 - **A replica counts its applied batches, and the test of a copy stops
   flaking.** `chloedb_replica_apply_batches_total` and

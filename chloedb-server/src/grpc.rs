@@ -876,22 +876,29 @@ impl pb::strata_server::Strata for Grpc {
         self.serve("Profile", req, |svc, _, r| async move {
             let body: serde_json::Value = if r.body_json.is_empty() { serde_json::Value::Null } else { serde_json::from_slice(&r.body_json).map_err(|e| ApiError::bad(format!("bad profile body: {e}")))? };
             let asked = crate::profiling::Asked { kind: crate::profiling::Kind::of(&r.kind)?, body, folded: r.folded, in_use: r.in_use };
-            // Audited as an admin's request over HTTP is.
-            keys::note(match asked.kind {
-                crate::profiling::Kind::LogFilter => format!("log filter {} from a coordinator, by {}", asked.body["filter"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
-                crate::profiling::Kind::Verify => format!("verify the replicas from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
-                crate::profiling::Kind::Checkpoint => format!("checkpoint {} from a coordinator, by {}", asked.body["name"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
-                crate::profiling::Kind::Scrub => format!("scrub from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
-                crate::profiling::Kind::Alerts => format!("alerts {} from a coordinator, by {}", asked.body["op"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
-                crate::profiling::Kind::Settings => match (asked.body.get("slow_ms"), asked.body.get("cpu_all")) {
-                    (None, None) => "profiling settings, read by a coordinator".to_string(),
-                    (slow, cpu) => format!("profiling settings from a coordinator, by {}: {}", asked.body["by"].as_str().unwrap_or("?"), [slow.map(|v| format!("slow_ms {v}")), cpu.map(|v| format!("cpu_all {v}"))].into_iter().flatten().collect::<Vec<_>>().join(", ")),
-                },
-                k => match asked.body["by"].as_str() {
-                    Some(by) => format!("a {} profile from a coordinator, by {by}", k.name()),
-                    None => format!("a {} profile", k.name()),
-                },
-            });
+            // Audited as an admin's request over HTTP is; but not the
+            // coordinator's keeping of its alerts and audit log here every
+            // few seconds ([`crate::kept`]), which, like the keys' merges, is
+            // the cluster's own bookkeeping, nor a list of the checkpoints,
+            // which changes nothing.
+            let keeping = (asked.kind == crate::profiling::Kind::Alerts && asked.body["op"] == "keep") || (asked.kind == crate::profiling::Kind::Checkpoint && asked.body["list"] == true);
+            if !keeping {
+                keys::note(match asked.kind {
+                    crate::profiling::Kind::LogFilter => format!("log filter {} from a coordinator, by {}", asked.body["filter"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
+                    crate::profiling::Kind::Verify => format!("verify the replicas from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
+                    crate::profiling::Kind::Checkpoint => format!("checkpoint {} from a coordinator, by {}", asked.body["name"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
+                    crate::profiling::Kind::Scrub => format!("scrub from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
+                    crate::profiling::Kind::Alerts => format!("alerts {} from a coordinator, by {}", asked.body["op"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
+                    crate::profiling::Kind::Settings => match (asked.body.get("slow_ms"), asked.body.get("cpu_all")) {
+                        (None, None) => "profiling settings, read by a coordinator".to_string(),
+                        (slow, cpu) => format!("profiling settings from a coordinator, by {}: {}", asked.body["by"].as_str().unwrap_or("?"), [slow.map(|v| format!("slow_ms {v}")), cpu.map(|v| format!("cpu_all {v}"))].into_iter().flatten().collect::<Vec<_>>().join(", ")),
+                    },
+                    k => match asked.body["by"].as_str() {
+                        Some(by) => format!("a {} profile from a coordinator, by {by}", k.name()),
+                        None => format!("a {} profile", k.name()),
+                    },
+                });
+            }
             Ok(pb::ProfileResponse { body: crate::profiling::take(&svc, asked).await?.bytes() })
         })
         .await
