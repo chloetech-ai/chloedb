@@ -170,9 +170,13 @@ fn param(db: &Db, j: &Json, from: Option<&str>) -> chloedb::Result<Value> {
             let s = table_of(db, o.get("table").and_then(|t| t.as_str()).or(from))?;
             let field = match o.get("field").and_then(|f| f.as_str()) {
                 Some(f) => f.to_string(),
-                None => s.fields.iter().find(|f| db.embedder_in(&s.table, &f.name).is_some()).map(|f| f.name.clone()).ok_or_else(|| bad("no embedded field has its model open".into()))?,
+                None => s.fields.iter().find(|f| db.embedder_in(&s.table, &f.name).is_some()).map(|f| f.name.clone()).ok_or_else(|| bad(no_model_open(db, &s)))?,
             };
-            let e = db.embedder_in(&s.table, &field).ok_or_else(|| bad(format!("{field} has no embedding model open (see Database.open's models)")))?;
+            let e = db.embedder_in(&s.table, &field).ok_or_else(|| bad(match s.field(&field) {
+                Some(f) if f.embed.is_some() => format!("{field} has no embedding model open{} (see Database.open's models)", db.model_open_failure(&s.table, &field).map(|w| format!(": {}", w.trim_start_matches("schema error: "))).unwrap_or_default()),
+                Some(_) => format!("{}.{field} has no model: its vectors are the rows' own, so pass the query's vector (a list of numbers) rather than {{\"embed\": ...}}", s.table),
+                None => format!("{} has no field {field}", s.table),
+            }))?;
             match &o["embed"] {
                 // A multi-vector field's: the list of the tokens' vectors.
                 Json::String(t) => db.embed_query_in(&s.table, &field, t)?,
@@ -519,6 +523,29 @@ fn alter_of(j: &serde_json::Value) -> PyResult<chloedb::schema::Alter> {
         },
         _ => Err(bad()),
     }
+}
+
+/// Why `{"embed": ...}` has no field to embed with in table `s`: it has
+/// no embedded field, or their models are not open here (and why not).
+fn no_model_open(db: &Db, s: &Schema) -> String {
+    let embedded: Vec<_> = s.fields.iter().filter(|f| f.embed.is_some()).collect();
+    if embedded.is_empty() {
+        return format!(
+            "{} has no embedded field (a VECTOR with a model, OPTIONS(embed = ..., model = ...)) to embed {{\"embed\": ...}} with: pass the query's vector as a list of numbers",
+            s.table
+        );
+    }
+    let each: Vec<String> = embedded
+        .iter()
+        .map(|f| {
+            let model = f.embed.as_ref().map(|e| e.model.as_str()).unwrap_or_default();
+            match db.model_open_failure(&s.table, &f.name) {
+                Some(w) => format!("{} (model {model}: {})", f.name, w.trim_start_matches("schema error: ")),
+                None => format!("{} (model {model})", f.name),
+            }
+        })
+        .collect();
+    format!("no embedded field of {} has its model open: {}; open the models with chloedb.open(..., models=DIR) (chloedb-server fetch-model NAME downloads one there)", s.table, each.join(", "))
 }
 
 fn table_of(db: &Db, table: Option<&str>) -> chloedb::Result<Arc<Schema>> {

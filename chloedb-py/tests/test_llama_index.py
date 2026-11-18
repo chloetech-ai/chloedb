@@ -94,6 +94,30 @@ def test_text_and_hybrid_queries(store):
         store.query(q("x", mode=VectorStoreQueryMode.SVM))
 
 
+def test_a_hybrid_query_takes_its_fusion(store):
+    """PRIYA-204: a hybrid query fuses as the store, the retriever's
+    vector_store_kwargs or the query's alpha say."""
+    for fusion in [{"rrf": {"k": 10}}, {"tmm": {"text": 0.1}}, "minmax", "zscore"]:
+        r = store.query(q("missing letter", 2, mode=VectorStoreQueryMode.HYBRID), fusion=fusion)
+        assert r.ids[0] == "n3", fusion
+    r = store.query(q("missing letter", 2, mode=VectorStoreQueryMode.HYBRID), fusion={"tmm": {"text": 0.1}})
+    assert 0 < r.similarities[0] <= 1.0 + 1e-9
+    # alpha, the vectors' weight: 0 is the words alone.
+    words = store.query(VectorStoreQuery(query_str="burns", similarity_top_k=1, mode=VectorStoreQueryMode.TEXT_SEARCH))
+    q0 = q("burns", 1, mode=VectorStoreQueryMode.HYBRID)
+    q0.alpha = 0.0
+    assert store.query(q0).ids == words.ids
+    tuned = ChloeDBVectorStore(store.client, table=store.table, fusion={"rrf": {"k": 10}})
+    assert tuned.fusion == {"rrf": {"k": 10}}
+    assert tuned.query(q("missing letter", 2, mode=VectorStoreQueryMode.HYBRID)).ids[0] == "n3"
+    with pytest.raises(ValueError):
+        ChloeDBVectorStore(store.client, table=store.table, fusion="bogus")
+    bad = q("burns", 1, mode=VectorStoreQueryMode.HYBRID)
+    bad.alpha = 2.0
+    with pytest.raises(ValueError, match="alpha"):
+        store.query(bad)
+
+
 def test_deletes(store):
     store.delete("doc-a")
     assert [n.node_id for n in store.get_nodes(["n1", "n2", "n3"])] == ["n3"]

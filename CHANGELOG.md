@@ -48,6 +48,30 @@ changes collect under "Unreleased".
   app (400,000 searches in about 5 seconds) or served as logged queries
   to the server, and sites and experiments are rows of ChloeDB
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#the-app)).
+- **Search as you type and typos find the words the stemmer changes**
+  (persona study round 2, DEV-201, DEV-202, DEV-203, MAYA-201,
+  MAYA-202). A prefix also stands for the stems of the words it may be
+  the start of, so `headphone*`, `battery*`, `running*` and `runni*` find
+  their rows, as every letter typed before them did; `MATCH`, `bm25`'s
+  `word*` and highlights agree. A typo is counted on the word as typed,
+  not on its stem: `choclate` is one edit from *chocolate*, and
+  `fuzzy => 'auto'`, `word~` and "did you mean" forgive it. "Did you mean"
+  offers a real word (`wireles` gives *wireless*, not *wirees*).
+  OpenSearch's `match_bool_prefix` and `multi_match`'s `bool_prefix` take
+  `operator`, `minimum_should_match` and `fuzziness`. The command center's
+  table search forgives a typo in each word and offers a correction when
+  nothing is found ([search guide](docs/guide/search.md#as-you-type-prefixes),
+  [query-language.md](docs/chloedb/query-language.md#full-text-match)).
+
+### What changes by default
+
+- **A prefix finds more rows**: `word*` also finds the words it begins
+  whose stems do not start with it, and a whole word typed and then `*`
+  finds that word's rows. A ranking by `bm25(field, 'word*')` scores them
+  too.
+- **A correction's `edits` counts edits from the word as typed** to the
+  word shown, rather than from its stem, and the word shown is one that
+  stems to the term. The answer's fields are unchanged.
 
 ### ChloeCtx
 
@@ -89,6 +113,50 @@ changes collect under "Unreleased".
   (0700 and 0600) as the store is (ANA-208), and `chloectx receipts
   --session` takes the first characters of a session id, as listings show
   them (ANA-209).
+
+### Security
+
+- **Release archives carry build provenance and an SBOM** (LENA-201,
+  LENA-11, PLT-13, PLT-4): a `.sha256` served beside an archive said it
+  was not damaged, not who built it. From this release, GitHub attests
+  each archive (`chloedb-server`, `chloectx`, `chloedb-crawl`,
+  `chloedb-sheets`, `chloedb-netops`, per platform): build provenance,
+  signed with Sigstore by `server-release.yml` for the release's tag, and
+  a CycloneDX SBOM (`<program>-<platform>.cdx.json`: every crate in the
+  program, its version, licence and checksum), with the Sigstore bundles
+  beside the archive (`.sigstore.jsonl`), `THIRD-PARTY-NOTICES.md` in it
+  and a `SHA256SUMS` of the release. `gh attestation verify` checks them
+  ([SECURITY.md](SECURITY.md#checking-what-you-download)). The website's
+  installer, `install.sh` and ChloeCtx's plugin check the provenance
+  where `gh` is installed and do not install an archive that fails it,
+  though its `.sha256` matches; without `gh` they say so and install on
+  the SHA-256 (`CHLOEDB_VERIFY=require`, for the plugin
+  `CHLOECTX_VERIFY=require`, refuses instead; `=off` skips it). Releases
+  before this one have no provenance and install as before.
+- **Alert routes and hub connections reached any address, and followed
+  redirects** (LENA-7, CLU-5): a route's webhook could post an alert, with
+  the cluster's names in it, to the machine's loopback, the network inside
+  or the cloud's metadata address (169.254.169.254), and follow a redirect
+  anywhere; a hub connection could too. Both now take the connectors'
+  guard: a route reaches the public internet only, unless it says
+  `"allow_internal": true` (**Inside this network** in the command
+  center's Routes), and never a link-local address; a hub connection may
+  be inside the network but never link-local. Every address a name
+  resolves to is checked when it is sent, and neither follows a redirect
+  to another origin (a route's send then fails, saying where it was sent).
+  A route saved before, to a private address, is refused when the routes
+  are next saved (400, which says to set `allow_internal`) and fails its
+  sends until then, with the same words in its status; `--alert-webhook`
+  may still be inside the network.
+- **The Python wheel had no licence** (LENA-202): `chloedb`'s wheels now
+  carry `LICENSE` in their `dist-info/licenses`, and `chloedb-server`'s
+  the third-party notices beside it. SECURITY.md says how to check a wheel
+  from PyPI against its attestation (`pypi-attestations verify pypi`).
+- **ChloeCtx kept secrets under a name with a number or a qualifier after
+  its word for a secret** (CTX-35, LENA-10): `STAGING_PASS2=...`,
+  `DB_PASS=...`, `GITHUB_TOKEN_RO=...` and `API_KEY_2=...` were stored as
+  they were; they are now redacted like `DB_PASSWORD=...`. A password in
+  prose still is not.
 
 ### Analytical SQL
 

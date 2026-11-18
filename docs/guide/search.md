@@ -170,11 +170,25 @@ b01 | The River and the Dragon
 b10 | The Dragon Accords
 ```
 
-`db.search(text)` ranks with `bm25` too, so it finds nothing for a word half typed unless the word ends in `*`. A prefix is lowercased but not stemmed, and matches the stemmed words that start with it. To complete whole values instead (the searches people ran before, names kept as `KEYWORD`), `PREFIX(field, :typed)` reads a keyword field's sorted values, with typos if asked ([prefixes and autocomplete](../chloedb/query-language.md#prefixes-and-autocomplete)).
+A prefix is lowercased, and finds the words that start with it and the words it may be the start of whose stems do not. The index keeps stems (*mystery* as *mysteri*, *running* as *run*), so a prefix also looks up the stem of what was typed as a word, and in English the stems of what was typed completed by a common ending (`runni*` finds *running*). Every letter of a word typed keeps its rows:
+
+```sql db=books.chloedb
+SELECT id, title FROM books WHERE MATCH(description, 'mystery*')
+```
+
+```text output
+id  | title
+----+--------------
+b02 | Winter Garden
+```
+
+**Changed:** a prefix matched only the stems that start with it before, so against a server or package of 0.3.8 or earlier a word typed in full and then `*` (`mystery*`, `battery*`, `headphone*`) finds nothing, though each letter before it found the rows.
+
+`db.search(text)` ranks with `bm25` too, so it finds nothing for a word half typed unless the word ends in `*`. To complete whole values instead (the searches people ran before, names kept as `KEYWORD`), `PREFIX(field, :typed)` reads a keyword field's sorted values, with typos if asked ([prefixes and autocomplete](../chloedb/query-language.md#prefixes-and-autocomplete)).
 
 ## Typos
 
-`fuzzy => 'auto'` lets a word be an edit or two away, more for longer words; ranked, it corrects a typo rather than widening every word:
+`fuzzy => 'auto'` lets a word be an edit or two away, more for longer words, counted on the word as typed rather than on its stem: *choclate* is one edit from *chocolate*, though its stem, *choclat*, is three from *chocol*. Ranked, it corrects a typo rather than widening every word:
 
 ```sql db=books.chloedb
 SELECT id, title FROM books ORDER BY bm25(description, 'lighthuose keeper', fuzzy => 'auto') DESC LIMIT 1
@@ -186,7 +200,7 @@ id  | title
 b04 | The Last Lighthouse
 ```
 
-`db.search(text)` searches the words as written, and so does the search box on a table's page in the command center: a search that should forgive typos asks for it in its SQL, or writes `~` after a word (`dragn~`), which `bm25` reads as `fuzzy => 'auto'` for that word. With a `MATCH`, a row must have every word, each as typed or within its edits, and a `bm25` of the same text on the same field takes the `MATCH`'s `fuzzy`:
+`db.search(text)` searches the words as written. The search box on a table's page in the command center forgives a typo in each word, and when nothing is found offers the correction ("did you mean") if there is one. A search that should forgive typos asks for it in its SQL, or writes `~` after a word (`dragn~`), which `bm25` reads as `fuzzy => 'auto'` for that word. With a `MATCH`, a row must have every word, each as typed or within its edits, and a `bm25` of the same text on the same field takes the `MATCH`'s `fuzzy`:
 
 ```python
 import chloedb

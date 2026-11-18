@@ -104,3 +104,34 @@ fn a_write_without_the_fields_model_fails_unless_asked_to_embed_later() {
     assert!(db.embed_backfill("docs", "emb", 16).unwrap() >= 1);
     assert!(!db.missing_vectors("docs", "emb").unwrap().contains(&Value::Str("a".into())));
 }
+
+/// A write to a field whose model did not open says why it did not, not
+/// to open it, which was done (persona study PRIYA-208: a BERT model in a
+/// build without BERT, opened with `models=`).
+#[test]
+fn a_write_whose_model_did_not_open_says_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let models = dir.path().join("models");
+    std::fs::create_dir_all(&models).unwrap();
+    let s = Schema::new(
+        "docs",
+        vec![
+            Field::new("id", FieldType::Keyword),
+            Field::new("title", FieldType::Text { positions: false }),
+            Field::new("emb", FieldType::Vector { dim: 384, index: VectorIndexKind::Flat }).not_stored().embedded("bge-small-en-v1.5", &["title"]),
+        ],
+        Some("id"),
+    )
+    .unwrap();
+    let db = Db::create(&dir.path().join("b.strata"), s, DbOptions::default()).unwrap();
+    let failed = db.open_embedders(&models);
+    let (field, why) = failed.iter().find(|(f, _)| f == "emb").expect("the model does not open from an empty folder");
+    let why = why.to_string();
+    let e = db.sql("INSERT INTO docs (id, title) VALUES ('a', 'a protein')", &Params::new()).unwrap_err().to_string();
+    let reason = why.strip_prefix("schema error: ").unwrap_or(&why);
+    assert!(e.contains(reason) && e.contains("did not open here") && !e.contains("Open the model"), "{field}: {e}");
+    // A database whose models were never opened still says to open them.
+    let db2 = Db::create(&dir.path().join("c.strata"), schema("hash:8"), DbOptions::default()).unwrap();
+    let e = db2.sql("INSERT INTO docs (id, title) VALUES ('a', 'red mug')", &Params::new()).unwrap_err().to_string();
+    assert!(e.contains("Open the model"), "{e}");
+}

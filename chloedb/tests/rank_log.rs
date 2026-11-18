@@ -45,6 +45,12 @@ fn queries() -> Vec<(&'static str, &'static str, Option<usize>)> {
             "WITH a AS (SELECT * FROM docs ORDER BY bm25(body, :t) DESC LIMIT 40) SELECT id FROM a ORDER BY bm25(body, :t) * (1 + 0.3 * coalesce(rating, 0)) + 0.1 * coalesce(year, 0) DESC LIMIT 5",
             None,
         ),
+        // The fusion the docs recommend (persona study PRIYA-201).
+        (
+            "SELECT id FROM docs ORDER BY 0.1 * tmm(bm25(body, :t)) + 0.9 * tmm(similarity(emb, :q)) DESC LIMIT 5",
+            "SELECT id FROM docs ORDER BY 0.1 * tmm(bm25(body, :t)) + 0.9 * tmm(similarity(emb, :q)) DESC LIMIT 5",
+            None,
+        ),
         (
             "SELECT id, year FROM docs WHERE year >= 2000 ORDER BY similarity(emb, :q) + 0.01 * coalesce(rating, 0) DESC LIMIT 4",
             "SELECT id, year FROM docs WHERE year >= 2000 ORDER BY similarity(emb, :q) + 0.01 * coalesce(rating, 0) DESC LIMIT 12",
