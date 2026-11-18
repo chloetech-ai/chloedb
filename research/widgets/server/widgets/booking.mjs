@@ -126,6 +126,7 @@ export const tableBook = {
   name: 'table_book',
   title: 'Book a table',
   view: null,
+  acts: true,
   domains: [],
   description: 'Books a table from table_search: the restaurant id, the time and the party. Demo: nothing is booked.',
   input: {

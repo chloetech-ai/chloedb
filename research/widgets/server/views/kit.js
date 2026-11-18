@@ -43,6 +43,12 @@ function ask(app, text) {
   return app.sendMessage({ role: 'user', content: [{ type: 'text', text }] })
 }
 
+// Tells the conversation what the person now sees or picked in the view
+// ("Selected: Pasta Fresca at 7:30"), so a later question can refer to it.
+function tell(app, text) {
+  return app.updateModelContext({ content: [{ type: 'text', text }] }).catch(() => {})
+}
+
 const money = (value, currency = 'USD') =>
   new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: value >= 1000 ? 0 : 2 }).format(value)
 const number = (value, digits = 0) => new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(value)
@@ -52,4 +58,4 @@ const ago = ms => {
 }
 const esc = text => String(text ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)
 
-globalThis.Kit = { connect, call, ask, money, number, ago, esc }
+globalThis.Kit = { connect, call, ask, tell, money, number, ago, esc }

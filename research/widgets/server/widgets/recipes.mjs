@@ -100,7 +100,7 @@ export const recipesBrowse = {
   summary(d) {
     const what = [d.query, d.cuisine, d.kind, d.ingredient].filter(Boolean).join(', ') || 'a few at random'
     if (!d.recipes.length) return `No recipes for ${what} (${d.source}).`
-    return `${d.recipes.length} recipes for ${what}: ${d.recipes.slice(0, 5).map(r => `${r.title} (id ${r.id})`).join('; ')}. Source: ${d.source}.`
+    return `${d.recipes.length} recipes for ${what}: ${d.recipes.slice(0, 6).map(r => `${r.title} (${r.minutes ? `${r.minutes} min, ` : ''}id ${r.id})`).join('; ')}. Source: ${d.source}.`
   },
 }
 

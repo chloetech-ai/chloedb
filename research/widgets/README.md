@@ -36,6 +36,34 @@ Apps serve three kinds of need, and the rail groups them so:
    (`ia_versions`), undo goes back, and each request an app serves is added
    to what it is recalled by, so recall gets better with use.
 
+## Widgets in an ongoing conversation
+
+An app is a widget inside the assistant's reply, not a page of its own: a
+line says where it came from ("Opened from your apps", "Made a new app",
+"Updated"), the widget has a bar with its name, Save, Change and Undo, and
+the written answer follows it. The conversation and the widgets keep each
+other informed:
+
+- **The assistant sees what the widgets show.** Each turn sends, for the
+  newest widgets, what each shows (its first call's summary), what was done
+  in it ("Booked Maison Claire for 4 at 19:30") and what the app told the
+  model itself (`Kit.tell(app, text)`, the SDK's `updateModelContext`). So
+  "which of those is the quickest?" is answered in text from the dishes the
+  widget shows, without opening anything.
+- **A follow-up updates the widget.** "7:30 would work better" after a booking
+  app opens the same app again with the new inputs, marked Updated, and the
+  older widget of that app folds to its bar ("updated below").
+- **An action in a widget gets a reply.** A tool marked `acts: true` (booking
+  a table, adding to the cart) is done by the person, so after it the
+  assistant writes a sentence or two in the chat (`POST /api/note`): what
+  happened in their terms, and one next step.
+
+`test/conversation.cjs` plays such a conversation in Chromium against a
+running chat and records it (a video, a picture after each turn and one of the
+whole conversation, in the folder it is run from): a table found, moved to
+7:30 and booked, dinner ideas, a question answered from the widget, and a gift
+added to a cart. With the apps saved, it takes about 75 seconds.
+
 Every app, made or written by hand, is an MCP App: a view filled by a tool of
 the MCP server in `server/`. The same server works in any host that draws MCP
 Apps (Claude on the web and Claude Desktop, VS Code), and in Claude Code
@@ -91,6 +119,7 @@ Made apps live in the chat for now; serving them from the MCP server too
 cd research/widgets/server && npm test      # the MCP server, and the chat's flow with a scripted model on a real chloedb-server
 claude plugin test research/widgets          # the Claude Code mod on every surface
 node test/host/host.mjs                      # a small MCP Apps host to look at the hand-written views
+(mkdir -p rec && cd rec && node ../test/conversation.cjs)   # record a conversation against the running chat (real models)
 ```
 
 ## What it is not yet

@@ -52,8 +52,10 @@ export class Apps {
       db = started.client
       child = started.child
     }
-    const have = new Set((await db.tables()).map(t => t.name ?? t))
-    let meaning = have.has('ia_apps') ? undefined : null
+    // The listing names each table under `table`.
+    const listed = await db.tables()
+    const have = new Set(listed.map(t => t.table ?? t.name ?? t))
+    let meaning = have.has('ia_apps') ? JSON.stringify(listed.find(t => (t.table ?? t.name) === 'ia_apps')).includes('"meaning"') : null
     if (!have.has('ia_apps')) {
       try {
         await db.sql(APPS.replace('MEANING', `, meaning VECTOR OPTIONS(embed = 'name, about, examples', model = '${MODEL}')`))
@@ -67,10 +69,6 @@ export class Apps {
       }
       await db.sql(VERSIONS)
       await db.sql(TURNS)
-    }
-    if (meaning === undefined) {
-      const schema = await db.req('GET', '/v1/tables/ia_apps').catch(() => null)
-      meaning = JSON.stringify(schema ?? {}).includes('"meaning"')
     }
     const apps = new Apps(db, { meaning })
     apps.child = child

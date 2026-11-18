@@ -65,6 +65,9 @@ export function claude({
     async reply(input) {
       return (await run({ system: REPLY, prompt: replyPrompt(input), model: fast, timeoutMs: 90_000 })).trim()
     },
+    async note(input) {
+      return (await run({ system: NOTE, prompt: notePrompt(input), model: fast, timeoutMs: 90_000 })).trim()
+    },
   }
 }
 
@@ -83,7 +86,9 @@ const ROUTE = `You run a chat in which answers can come with small apps: interac
 For each request you decide one of three things:
 - "use": a saved app (or the app shown just before) does the job the request asks for, even with other inputs (another stock, another city, another dish). Give its id in "use" and, in "tool" and "args", the tool call that fills it for this request. Prefer a saved app whenever it does the same job: that is the point of saving it. Sharing a tool is not enough: comparing products side by side is another job than a shop's list, and a recipe to cook tonight another than browsing ideas.
 - "make": no saved app fits, and the request is better served by an app than by text: live data, things to compare, something to book or buy, things to browse. Describe the new app in "make" and give its first tool call in "tool" and "args".
-- "chat": the request needs no app (an explanation, an opinion, small talk, something no tool has data for). Write the answer in "reply", in at most three sentences.
+- "chat": the request needs no app (an explanation, an opinion, small talk, a question about what an app in the conversation already shows, something no tool has data for). Write the answer in "reply", in at most three sentences.
+
+A follow-up that changes what the app shown just before should show (another time, fewer people, not spicy, a cheaper one) is "use" of that app with the new arguments: it is filled again in the conversation.
 
 For "make": name it in 2 or 3 words that fit later requests of the same kind ("Stock chart", "Product comparison", "Table booking", "Dinner ideas"; never one stock, product or city). "about" is one sentence on what it does, also general. "look" says what it shows and which controls it has, in 2 to 4 sentences that fit the tools' data. "tools" lists every tool it may call: its first one and those its buttons need (booking needs the search and the booking tool; a shop needs the cart tools; recipes the recipe tool).
 
@@ -119,7 +124,14 @@ function toolList(tools) {
     .join('\n')
 }
 
-function routePrompt({ request, history, candidates, last, tools }) {
+function screenText(screen = []) {
+  if (!screen.length) return 'No app is in the conversation yet.'
+  return screen
+    .map(w => `- "${w.name}" shows: ${w.shows || '(nothing yet)'}${w.did.length ? ` Done in it: ${w.did.join(' ')}` : ''}${w.told ? ` It says the person now sees: ${w.told}` : ''}`)
+    .join('\n')
+}
+
+function routePrompt({ request, history, candidates, last, screen, tools }) {
   const saved = candidates.length
     ? candidates.map(a => `- id ${a.id}: "${a.name}" (${a.kind}), ${a.about} Its first tool: ${a.tool}. Asked for before with: ${a.examples || 'nothing yet'}.`).join('\n')
     : '(none yet)'
@@ -131,6 +143,9 @@ The conversation so far:
 ${said}
 
 ${shown}
+
+The apps in the conversation, newest first, and what they show now (use this to answer questions about them, such as "which one is quickest?" or "is the first one any good?", in "chat" mode):
+${screenText(screen)}
 
 The person's saved apps, best matches first (ranked by words and meaning):
 ${saved}
@@ -153,6 +168,7 @@ The page already has a kit, globalThis.Kit:
 - Kit.connect(name, draw) connects to the chat and returns a promise of the connection, app. draw(data) gets the data of the app's tool each time there is some: when it opens, and when the chat fills it again for a later request. Set draw.input = args => ... to show what is being loaded, and draw.error = message => ... for a tool that failed. Call connect once, at the end of the script.
 - await Kit.call(app, toolName, args) calls one of the app's tools and returns its data, the same shape as draw's: for buttons that fetch more or act (Book, Add to cart, Show the recipe, another range). Show that it is working while it runs, and the error in place if it throws.
 - Kit.ask(app, text) puts a message in the chat as the person's, for a follow-up ("Why did it move?", "What goes with this?").
+- Kit.tell(app, text) tells the conversation, in one sentence, what the person now sees or picked ("Selected: Huawei Matebook X Pro, $1,399"), so a later question can refer to it. Call it when they pick, select or filter something, not on every draw.
 - Kit.money(n, currency = 'USD'), Kit.number(n, digits), Kit.ago(ms), and Kit.esc(text), which escapes text for innerHTML: escape every text that comes from data.
 
 The kit's CSS follows the chat's light or dark theme: variables --bg (the page), --bg-2 (a raised surface), --ink, --ink-2 (secondary text), --ink-3 (faint), --line (borders), --accent, --up and --down (green and red, with --up-bg and --down-bg), --radius, --font, --mono; classes .row (a flex row), .between, .wrap, .muted, .faint, .num, .title, .big (a big number), .chip (with .up and .down), .tabs with .tab buttons (aria-pressed="true" for the chosen one), .btn and .btn.primary, .live (a pulsing dot), .foot (a footer line), .empty (a centered message). body has the font and 14px 16px of padding already.
@@ -199,6 +215,13 @@ Change it as the person asks, keeping everything else as it is, and answer with 
 }
 
 const REPLY = `You answer in a chat. An app with the details is shown above your answer, so answer the request in one or two short sentences, at most 45 words: the answer itself, not every number or option, and nothing about the app or its buttons (the person can see them). If the data is made up for a demo, say so in a few words. The data you get is what the app's first call returned; when the request asks about several things (three stocks, two cities), the app loads the others itself, so answer from what you have and never say that the rest is missing.`
+
+const NOTE = `You are the assistant in a chat in which answers come with small apps. The person just did something in one of the apps (booked, added to a cart). Write what you say about it in the chat: one or two short sentences, at most 35 words, in plain words. The person did it themselves, so do not say you did it: confirm what happened in their terms ("Your table at ... is booked", "The whisk is in your cart"; if it is a demo and nothing real happened, say so in a few words), then offer one useful next step you could help with. No markdown, no lists.`
+
+function notePrompt({ app, summary, history }) {
+  const said = history.length ? history.map(h => `${h.role}: ${h.text}`).join('\n') : '(nothing yet)'
+  return `The conversation so far:\n${said}\n\nIn the app "${app.name}" (${app.about}), the person just did this. The app's answer: ${summary}`
+}
 
 function replyPrompt({ request, summary }) {
   return `The request: ${request}\n\nThe data the app shows, in short: ${summary}`

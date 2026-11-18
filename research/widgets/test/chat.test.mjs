@@ -12,6 +12,7 @@ import { after, before, test } from 'node:test'
 
 process.env.WIDGETS_SIMULATE = '1'
 const { start } = await import('../chat/server.mjs')
+const { Apps } = await import('../chat/store.mjs')
 const { findServerBinary } = await import('../../../chloedb-apps/engine/strata.mjs')
 
 const bin = process.env.CHLOEDB_SERVER_BIN || findServerBinary(new URL('../../../', import.meta.url).pathname)
@@ -96,6 +97,9 @@ test('the flow: make, act, change, undo, save, and recall', { skip }, async () =
   // Its view books through its own tools, and only those.
   const booked = await post('/api/call', { app: app.app.id, name: 'table_book', arguments: { restaurant: '1', time: '20:15', party: 4 } })
   assert.equal(booked.structuredContent.confirmed, true)
+  assert.equal(booked.acted, true, 'a booking acts, so the chat says so')
+  const noted = await post('/api/note', { app: app.app.id, summary: booked.content[0].text })
+  assert.match(noted.text, /Booked/)
   const refused = await post('/api/call', { app: app.app.id, name: 'stock_quote', arguments: { symbol: 'NVDA' } })
   assert.equal(refused.isError, true)
 
@@ -121,6 +125,11 @@ test('the flow: make, act, change, undo, save, and recall', { skip }, async () =
   assert.equal(recalled.app.id, app.app.id)
   assert.equal(model.calls.make, 1)
 
+  // A follow-up about the app just shown fills it again: an update.
+  const followed = await events('/api/turn', { text: 'a table at 7:30 instead', lastApp: { id: app.app.id, args: {} }, screen: [{ name: 'Table booking', shows: 'Trattoria Lucca free at 19:30', did: ['Booked'] }] })
+  assert.equal(followed.find(e => e.type === 'app').how, 'updated')
+  assert.match(model.calls.route.at(-1).screen[0].shows, /Trattoria Lucca/, 'the model reads what the widgets show')
+
   // From the rail, with what it showed last.
   const opened = await events(`/api/apps/${app.app.id}/open`, {})
   assert.equal(opened.find(e => e.type === 'app').how, 'opened')
@@ -135,4 +144,24 @@ test('a saved app is recalled by meaning, with no word in common', { skip }, asy
   assert.ok(chat.apps.meaning, 'the embedding model is there (chloedb-server fetch-model potion-retrieval-32M-int8)')
   assert.equal((await chat.apps.recall('microsoft shares this week'))[0].id, 'stock-chart')
   assert.equal((await chat.apps.recall('where is my plane'))[0].id, 'flight-tracker')
+})
+
+test('a store opened again keeps its apps, and recall by meaning', { skip }, async () => {
+  const again = mkdtempSync(path.join(os.tmpdir(), 'instant-apps-reopen-'))
+  try {
+    const first = await Apps.open({ dir: again })
+    const app = await first.put({ name: 'Table booking', about: 'Find a restaurant with a free table and book it.', kind: 'action', tool: 'table_search', tools: ['table_search', 'table_book'], source: 'view:stock', args: {}, examples: 'book a table', saved: true }, 'made')
+    first.close()
+    await new Promise(resolve => setTimeout(resolve, 500))
+    const second = await Apps.open({ dir: again })
+    try {
+      assert.ok((await second.saved()).some(a => a.id === app.id), 'the saved app is still there')
+      assert.equal(second.meaning, first.meaning, 'it still recalls by meaning')
+      assert.equal((await second.recall('reserve dinner for two'))[0].id, app.id)
+    } finally {
+      second.close()
+    }
+  } finally {
+    rmSync(again, { recursive: true, force: true })
+  }
 })

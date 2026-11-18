@@ -123,6 +123,7 @@ export const cartAdd = {
   name: 'cart_add',
   title: 'Add to cart',
   view: 'shop',
+  acts: true,
   description: 'Adds a product from the shopping widget to the cart and shows the cart. Use the product id the widget or shop_search gave.',
   input: {
     id: z.number().int().positive().describe('Product id from shop_search'),

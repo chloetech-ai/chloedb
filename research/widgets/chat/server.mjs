@@ -83,7 +83,18 @@ export async function start({ port = 8800, data, model = claude(), apps, log = c
     }
   }
 
-  async function turn({ text, history = [], lastApp }, send) {
+  // What the apps in the conversation show now, as the page tells it: what
+  // each was last filled with, what was done in it, and what it said it
+  // shows. The model reads it to answer about them ("which is quickest?").
+  const onScreen = screen =>
+    (Array.isArray(screen) ? screen : []).slice(0, 4).map(w => ({
+      name: String(w.name ?? '').slice(0, 60),
+      shows: String(w.shows ?? '').slice(0, 900),
+      did: (Array.isArray(w.did) ? w.did : []).slice(-3).map(d => String(d).slice(0, 300)),
+      told: String(w.told ?? '').slice(0, 300),
+    }))
+
+  async function turn({ text, history = [], lastApp, screen }, send) {
     send({ type: 'status', text: 'Looking through your apps' })
     const candidates = await apps.recall(text, 8)
     send({ type: 'recall', candidates: candidates.map(c => ({ id: c.id, name: c.name, score: c.score })) })
@@ -93,6 +104,7 @@ export async function start({ port = 8800, data, model = claude(), apps, log = c
       history: history.slice(-6),
       candidates,
       last: last && { ...last, args: lastApp.args ?? last.args },
+      screen: onScreen(screen),
       tools: described(TOOLS),
     })
     send({ type: 'route', mode: plan.mode, kind: plan.kind, why: plan.why })
@@ -105,7 +117,8 @@ export async function start({ port = 8800, data, model = claude(), apps, log = c
     if (app) {
       send({ type: 'status', text: `Opening ${app.name}` })
       const { result, data } = await run(app.tools.includes(plan.tool) ? plan.tool : app.tool, args)
-      const how = app.saved ? 'recalled' : 'again'
+      // The app just shown, filled again for a follow-up, is an update.
+      const how = lastApp?.id === app.id ? 'updated' : app.saved ? 'recalled' : 'again'
       send({ type: 'app', app: view(app), html: htmlOf(app), args, result, how, why: plan.why })
       shown.set(app.id, { args, result, data, tool: plan.tool })
       await apps.used(app.id, text, args, how)
@@ -212,7 +225,17 @@ export async function start({ port = 8800, data, model = claude(), apps, log = c
         // A call of its first tool (another range, another search) is what
         // it shows now; an action's answer (a booking) is not.
         if (!result.isError && name === app.tool) shown.set(app.id, { args, result, data, tool: name })
-        return json(res, result)
+        // A tool that acts (a booking, the cart): the page has the chat say so.
+        const acted = !result.isError && TOOLS.find(t => t.name === name)?.acts === true
+        return json(res, acted ? { ...result, acted: true } : result)
+      }
+      // What the chat says after something was done in an app.
+      if (req.method === 'POST' && url.pathname === '/api/note') {
+        const { app: appId, summary, history = [] } = await body(req)
+        const app = await apps.get(appId)
+        if (!app) return json(res, { error: 'no such app' }, 404)
+        const said = model.note ? await model.note({ app: view(app), summary: String(summary ?? ''), history: history.slice(-6) }).catch(() => '') : ''
+        return json(res, { text: said || String(summary ?? '') })
       }
       if (req.method === 'POST' && parts[0] === 'api' && parts[1] === 'apps' && parts[2]) {
         const appId = decodeURIComponent(parts[2])

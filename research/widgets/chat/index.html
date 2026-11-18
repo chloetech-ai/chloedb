@@ -30,44 +30,55 @@
   .log { flex: 1; overflow-y: auto; padding: 8px 22px 24px; }
   .col { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
   .user { align-self: flex-end; max-width: 80%; background: var(--bubble); border-radius: 18px; padding: 9px 15px; white-space: pre-wrap; }
-  .turn { display: flex; flex-direction: column; gap: 10px; }
-  .status { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; }
-  .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+  /* The assistant's message: its mark, then what it says and the widgets it shows. */
+  .bot { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 12px; align-items: start; }
+  .av { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; margin-top: 1px; }
+  .av svg { width: 14px; height: 14px; }
+  .body { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+  .status { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; min-height: 26px; }
+  .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; flex: none; }
   @keyframes spin { to { transform: rotate(1turn); } }
   .reply { white-space: pre-wrap; }
   .error { color: #c8372d; font-size: 14px; }
+  .toolline { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); min-height: 26px; }
+  .toolline b { font-weight: 600; color: var(--ink); }
 
   .tile { width: 28px; height: 28px; border-radius: 8px; display: inline-grid; place-items: center; flex: none; }
   .tile svg { width: 16px; height: 16px; }
+  .tile.mini { width: 20px; height: 20px; border-radius: 6px; }
+  .tile.mini svg { width: 12px; height: 12px; }
   .k-info { background: var(--info-bg); color: var(--info); }
   .k-action { background: var(--action-bg); color: var(--action); }
   .k-discover { background: var(--discover-bg); color: var(--discover); }
 
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
-  .card.fresh { animation: rise .35s ease-out; }
+  /* A widget: the app, framed lightly, with a slim bar that names it and keeps it. */
+  .widget { max-width: 680px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+  .widget.fresh { animation: rise .35s ease-out; }
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
-  .head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
-  .head .name { font-weight: 600; }
-  .head .kind { color: var(--ink-3); font-size: 12px; }
-  .badge { margin-left: auto; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
-  .badge.made { background: #fdf0e8; color: var(--accent); }
-  .badge.recalled { background: var(--action-bg); color: var(--action); }
-  :root[data-theme='dark'] .badge.made { background: #43291f; }
-  .why { padding: 6px 14px 0; font-size: 12px; color: var(--ink-2); }
+  .wbar { display: flex; align-items: center; gap: 7px; padding: 5px 6px 5px 8px; border-bottom: 1px solid var(--line); font-size: 12.5px; min-height: 34px; }
+  .wname { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: none; border: 0; padding: 0; cursor: default; }
+  .chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+  .chip.made { background: #fdf0e8; color: var(--accent); }
+  :root[data-theme='dark'] .chip.made { background: #43291f; }
+  .chip.recalled, .chip.saved { background: var(--action-bg); color: var(--action); }
+  .chip.updated { background: var(--info-bg); color: var(--info); }
+  .spacer { flex: 1; }
+  .wbtn { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; color: var(--ink-2); border-radius: 7px; padding: 4px 7px; cursor: pointer; font-size: 12.5px; white-space: nowrap; }
+  .wbtn svg { width: 13px; height: 13px; }
+  .wbtn:hover { background: var(--panel-2); color: var(--ink); }
+  .wbtn.save { color: var(--accent); font-weight: 600; }
+  .wbtn:disabled { opacity: .5; cursor: default; }
+  .fold-note { display: none; color: var(--ink-3); }
+  .widget.folded { box-shadow: none; }
+  .widget.folded .wbar { border-bottom: 0; }
+  .widget.folded .wname { cursor: pointer; }
+  .widget.folded .frame, .widget.folded .changer, .widget.folded .wbtn { display: none; }
+  .widget.folded .fold-note { display: inline; }
   .frame iframe { display: block; width: 100%; height: 160px; border: 0; background: transparent; }
-  .foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 14px; border-top: 1px solid var(--line); background: var(--panel-2); font-size: 13px; }
-  .foot .note { color: var(--ink-2); }
-  .foot .ver { margin-left: auto; color: var(--ink-3); font-size: 12px; }
-  .btn { border: 1px solid var(--line); background: var(--panel); border-radius: 9px; padding: 5px 11px; cursor: pointer; font-size: 13px; }
-  .btn:hover { background: var(--bg); }
-  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
-  .btn.link { border: 0; background: none; padding: 5px 4px; color: var(--ink-2); text-decoration: underline; text-underline-offset: 2px; }
-  .btn:disabled { opacity: .55; cursor: default; }
   .changer[hidden] { display: none; }
-  .changer { display: flex; gap: 8px; padding: 0 14px 12px; background: var(--panel-2); }
-  .changer input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--panel); border-radius: 9px; padding: 6px 10px; font-size: 13px; }
-  .saved-ok { color: var(--action); font-weight: 600; }
-
+  .changer { display: flex; gap: 6px; padding: 7px 8px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+  .changer input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 5px 9px; font-size: 13px; }
+  .btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
   .making { padding: 16px 14px 18px; display: flex; flex-direction: column; gap: 9px; }
   .bar { height: 10px; border-radius: 6px; background: linear-gradient(90deg, var(--panel-2), var(--line), var(--panel-2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
   @keyframes shimmer { to { background-position: -200% 0; } }
@@ -212,12 +223,37 @@ async function events(response, on) {
   }
 }
 
-// ---- an app in the conversation ----
-async function draw(frame, payload) {
+// ---- the assistant's messages ----
+const MARK = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5l1.5 4.4 4.6.1-3.7 2.8 1.4 4.4L8 10.5l-3.8 2.7 1.4-4.4L1.9 6l4.6-.1z"/></svg>'
+const ICON = {
+  save: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M4 2.5h8v11L8 10.5l-4 3z"/></svg>',
+  change: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M10.5 2.5l3 3-8 8H2.5v-3z"/></svg>',
+  undo: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4L2 7l3 3"/><path d="M2.5 7H10a3.5 3.5 0 010 7H7"/></svg>',
+}
+const miniTile = kind => `<span class="tile mini k-${kind}">${KINDS[kind]?.icon ?? ''}</span>`
+
+// A message of the assistant; its body takes text, tool lines and widgets.
+function bot() {
+  const node = el('bot', `<div class="av">${MARK}</div><div class="body"></div>`)
+  return node.querySelector('.body')
+}
+
+// ---- the widgets in the conversation ----
+// Each one: the app it draws, what it was last filled with, and what was done
+// in it, which the model reads to answer about it.
+const widgets = []
+window.widgets = widgets
+
+function screen() {
+  return widgets.slice().reverse().filter(w => !w.folded).slice(0, 4).map(w => ({ name: w.app.name, shows: w.shows, did: w.did, told: w.told }))
+}
+
+async function draw(w) {
+  const frame = w.node.querySelector('.frame')
   frame.innerHTML = ''
   const iframe = document.createElement('iframe')
   iframe.setAttribute('sandbox', 'allow-scripts')
-  iframe.title = payload.app.name
+  iframe.title = w.app.name
   frame.append(iframe)
   const bridge = new AppBridge(
     null,
@@ -226,71 +262,100 @@ async function draw(frame, payload) {
     { hostContext: { theme, displayMode: 'inline', availableDisplayModes: ['inline'], platform: 'web', locale: 'en-US' } },
   )
   bridge.oncalltool = async params => {
-    const result = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: payload.app.id, ...params }) })).json()
-    if (!result.isError && params.name === payload.app.tool) lastApp = { id: payload.app.id, args: params.arguments }
+    const { acted, ...result } = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: w.app.id, ...params }) })).json()
+    const said = result.content?.find(c => c.type === 'text')?.text ?? ''
+    if (!result.isError && params.name === w.app.tool) {
+      lastApp = { id: w.app.id, args: params.arguments }
+      w.shows = said
+    }
+    if (acted) {
+      w.did.push(said)
+      note(w, said)
+    }
     return result
   }
   // The app's height; the conversation follows a growing app when it was at its end.
   bridge.onsizechange = ({ height }) => {
-    if (!height) return
+    if (!height || w.folded) return
     const following = log.scrollHeight - log.scrollTop - log.clientHeight < 120
-    iframe.style.height = `${Math.min(900, Math.ceil(height))}px`
+    // A widget stays a widget: past this height the app scrolls inside it.
+    iframe.style.height = `${Math.min(680, Math.ceil(height))}px`
     if (following) scroll()
   }
   bridge.onmessage = async params => {
     ask(params.content.map(c => c.text).join(' '))
     return {}
   }
-  bridge.onupdatemodelcontext = async () => ({})
+  bridge.onupdatemodelcontext = async params => {
+    w.told = (params.content ?? []).filter(c => c.type === 'text').map(c => c.text).join(' ')
+    return {}
+  }
   bridge.onopenlink = async ({ url }) => { window.open(url, '_blank', 'noopener'); return {} }
   bridge.oninitialized = async () => {
-    await bridge.sendToolInput({ arguments: payload.args ?? {} })
-    await bridge.sendToolResult(payload.result)
+    await bridge.sendToolInput({ arguments: w.payload.args ?? {} })
+    await bridge.sendToolResult(w.payload.result)
   }
   await bridge.connect(new PostMessageTransport(iframe.contentWindow, iframe.contentWindow))
-  iframe.srcdoc = payload.html
+  iframe.srcdoc = w.payload.html
 }
 
-function card(parent, payload) {
+const LINE = {
+  made: why => `Made a new app${why ? ` · ${why}` : ''}`,
+  recalled: why => `Opened from your apps${why ? ` · ${why}` : ''}`,
+  updated: why => `Updated${why ? ` · ${why}` : ''}`,
+  again: why => `Opened again${why ? ` · ${why}` : ''}`,
+  opened: () => 'Opened from your apps',
+}
+const CHIP = { made: ['made', 'New app'], recalled: ['recalled', 'From your apps'], updated: ['updated', 'Updated'] }
+
+function widget(body, payload) {
   const { app, how } = payload
-  const node = el('card fresh', '', parent)
-  const badge = how === 'made' ? '<span class="badge made">New app</span>' : how === 'recalled' ? '<span class="badge recalled">From your apps</span>' : ''
-  node.innerHTML = `
-    <div class="head">${tile(app.kind)}<div><div class="name">${esc(app.name)}</div><div class="kind">${KINDS[app.kind]?.label ?? ''}</div></div>${badge}</div>
-    ${payload.why && how !== 'opened' ? `<div class="why">${how === 'made' ? 'Made for this' : 'Opened by itself'}: ${esc(payload.why)}</div>` : ''}
-    <div class="frame"></div>
-    <div class="foot"></div>
-    <form class="changer" hidden><input placeholder="What should change? For example: put the best rated first" /><button class="btn">Change</button></form>`
-  draw(node.querySelector('.frame'), payload)
-  foot(node, payload)
+  el('toolline', `${miniTile(app.kind)}<span>${esc((LINE[how] ?? LINE.opened)(payload.why))}</span>`, body)
+  const node = el('widget fresh', `
+    <div class="wbar">${miniTile(app.kind)}<button class="wname" type="button">${esc(app.name)}</button><span class="slot"></span><span class="fold-note">· updated below</span><span class="spacer"></span><span class="acts"></span></div>
+    <form class="changer" hidden><input placeholder="What should change? For example: put the best rated first" /><button class="btn">Change</button></form>
+    <div class="frame"></div>`, body)
+  // An earlier widget of this app folds to its bar: the new one is its state now.
+  for (const old of widgets) if (old.app.id === app.id && !old.folded) fold(old, true)
+  const w = { node, app, payload, how, shows: payload.result?.content?.find(c => c.type === 'text')?.text ?? '', did: [], told: '', folded: false }
+  widgets.push(w)
+  node.querySelector('.wname').onclick = () => w.folded && fold(w, false)
+  draw(w)
+  bar(w)
   lastApp = { id: app.id, args: payload.args }
-  return node
+  return w
 }
 
-function foot(node, payload) {
-  const { app } = payload
-  const f = node.querySelector('.foot')
-  const ver = `<span class="ver">version ${app.version}</span>`
-  f.innerHTML = app.saved
-    ? `<span class="saved-ok">✓ In your apps</span><span class="note">It opens by itself next time.</span><button class="btn change">Change it</button>${app.version > 1 ? '<button class="btn link undo">Undo the last change</button>' : ''}${ver}`
-    : `<button class="btn primary save">Save to my apps</button><button class="btn change">Change it</button><span class="note">Not saved yet.</span>${app.version > 1 ? '<button class="btn link undo">Undo the last change</button>' : ''}${ver}`
-  const changer = node.querySelector('.changer')
-  f.querySelector('.save')?.addEventListener('click', async () => {
+function fold(w, folded) {
+  w.folded = folded
+  w.node.classList.toggle('folded', folded)
+}
+
+// The widget's bar: how it came, and Save, Change and Undo.
+function bar(w) {
+  const { app } = w
+  const [cls, label] = w.how === 'saved' ? ['saved', 'Saved'] : CHIP[w.how] ?? (app.saved ? ['saved', 'Saved'] : [])
+  w.node.querySelector('.slot').innerHTML = label ? `<span class="chip ${cls}">${label}</span>` : ''
+  const acts = w.node.querySelector('.acts')
+  acts.innerHTML = `${app.saved ? '' : `<button class="wbtn save" type="button" title="Keep it in your apps: it opens by itself next time">${ICON.save}Save</button>`}<button class="wbtn change" type="button" title="Change how it looks or works, by asking">${ICON.change}Change</button>${app.version > 1 ? `<button class="wbtn undo" type="button" title="Back to version ${app.version - 1}">${ICON.undo}v${app.version}</button>` : ''}`
+  const changer = w.node.querySelector('.changer')
+  acts.querySelector('.save')?.addEventListener('click', async () => {
     const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/save`, { method: 'POST', body: '{}' })).json()
-    payload.app = out.app
-    foot(node, payload)
+    w.app = out.app
+    w.how = 'saved'
+    bar(w)
     await rail(app.id)
   })
-  f.querySelector('.change').addEventListener('click', () => {
+  acts.querySelector('.change').addEventListener('click', () => {
     changer.hidden = !changer.hidden
     if (!changer.hidden) changer.querySelector('input').focus()
   })
-  f.querySelector('.undo')?.addEventListener('click', async () => {
+  acts.querySelector('.undo')?.addEventListener('click', async () => {
     const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/undo`, { method: 'POST', body: '{}' })).json()
-    payload.app = out.app
-    payload.html = out.html
-    draw(node.querySelector('.frame'), payload)
-    foot(node, payload)
+    w.app = out.app
+    w.payload.html = out.html
+    draw(w)
+    bar(w)
   })
   changer.onsubmit = async e => {
     e.preventDefault()
@@ -298,18 +363,39 @@ function foot(node, payload) {
     const what = input.value.trim()
     if (!what) return
     changer.hidden = true
-    f.innerHTML = `<span class="status"><span class="spin"></span>Changing it: ${esc(what)}</span>`
+    acts.innerHTML = `<span class="status"><span class="spin"></span>Changing it</span>`
     const res = await fetch(`/api/apps/${encodeURIComponent(app.id)}/change`, { method: 'POST', body: JSON.stringify({ text: what }) })
     await events(res, async ev => {
       if (ev.type === 'app') {
-        Object.assign(payload, ev)
-        await draw(node.querySelector('.frame'), payload)
-        foot(node, payload)
+        w.app = ev.app
+        w.payload = { ...w.payload, html: ev.html }
+        await draw(w)
+        bar(w)
         input.value = ''
       }
-      if (ev.type === 'error') f.innerHTML = `<span class="error">${esc(ev.text)}</span>`
+      if (ev.type === 'error') acts.innerHTML = `<span class="error">${esc(ev.text)}</span>`
     })
   }
+}
+
+// What the assistant says after something was done in a widget.
+async function note(w, said) {
+  const body = bot()
+  el('toolline', `${miniTile(w.app.kind)}<span>In <b>${esc(w.app.name)}</b></span>`, body)
+  const status = el('status', '<span class="spin"></span><span>…</span>', body)
+  scroll()
+  history.push({ role: 'app', text: `${w.app.name}: ${said}` })
+  try {
+    const { text } = await (await fetch('/api/note', { method: 'POST', body: JSON.stringify({ app: w.app.id, summary: said, history: history.slice(-6) }) })).json()
+    status.remove()
+    el('reply', esc(text), body)
+    history.push({ role: 'assistant', text })
+    window.events.push({ type: 'note', app: w.app.id, text })
+  } catch (error) {
+    status.remove()
+    el('error', esc(error.message), body)
+  }
+  scroll()
 }
 
 // ---- a turn ----
@@ -319,43 +405,46 @@ async function ask(question) {
   send.disabled = true
   col.querySelector('.hello')?.remove()
   el('user', esc(question))
-  const turn = el('turn', '')
-  const status = el('status', '<span class="spin"></span><span>Thinking</span>', turn)
+  const body = bot()
+  const status = el('status', '<span class="spin"></span><span>Thinking</span>', body)
   let making = null
   let started = 0
   let timer = null
   let reply = ''
   scroll()
   try {
-    const res = await fetch('/api/turn', { method: 'POST', body: JSON.stringify({ text: question, history: history.slice(-6), lastApp }) })
+    const res = await fetch('/api/turn', { method: 'POST', body: JSON.stringify({ text: question, history: history.slice(-6), lastApp, screen: screen() }) })
     await events(res, async ev => {
       if (ev.type === 'status') status.lastChild.textContent = ev.text
       if (ev.type === 'making') {
         status.remove()
         started = Date.now()
-        making = el('card fresh', `<div class="head">${tile(ev.kind)}<div><div class="name">${esc(ev.name)}</div><div class="kind">${KINDS[ev.kind]?.label ?? ''}</div></div><span class="badge made">New app</span></div>
-          <div class="why">Making a new one: ${esc(ev.why)}</div>
-          <div class="making"><div class="status"><span class="spin"></span><span class="t">Making it</span></div><div class="bar" style="width:92%"></div><div class="bar" style="width:70%"></div><div class="bar" style="width:84%"></div></div>`, turn)
+        making = el('widget fresh', `<div class="wbar">${miniTile(ev.kind)}<span class="wname">${esc(ev.name)}</span><span class="chip made">New app</span><span class="spacer"></span><span class="status"><span class="spin"></span><span class="t">Making it</span></span></div>
+          <div class="making"><div class="bar" style="width:92%"></div><div class="bar" style="width:70%"></div><div class="bar" style="width:84%"></div></div>`, body)
+        body.insertBefore(el('toolline', `${miniTile(ev.kind)}<span>${esc(LINE.made(ev.why))}</span>`, body), making)
         timer = setInterval(() => { making.querySelector('.t').textContent = `Making it · ${Math.round((Date.now() - started) / 1000)}s` }, 1000)
         scroll()
       }
       if (ev.type === 'app') {
         clearInterval(timer)
         status.remove()
-        making?.remove()
-        card(turn, ev)
+        if (making) {
+          making.previousElementSibling?.remove()
+          making.remove()
+        }
+        widget(body, ev)
         scroll()
       }
       if (ev.type === 'reply') {
         reply = ev.text
-        el('reply', esc(ev.text), turn)
+        el('reply', esc(ev.text), body)
         scroll()
       }
       if (ev.type === 'error') {
         clearInterval(timer)
         status.remove()
         making?.remove()
-        el('error', `Something went wrong: ${esc(ev.text)}`, turn)
+        el('error', `Something went wrong: ${esc(ev.text)}`, body)
       }
     })
   } finally {
@@ -371,13 +460,13 @@ async function ask(question) {
 async function openFromRail(id, name) {
   if (busy) return
   col.querySelector('.hello')?.remove()
-  const turn = el('turn', '')
-  const status = el('status', `<span class="spin"></span><span>Opening ${esc(name)}</span>`, turn)
+  const body = bot()
+  const status = el('status', `<span class="spin"></span><span>Opening ${esc(name)}</span>`, body)
   const res = await fetch(`/api/apps/${encodeURIComponent(id)}/open`, { method: 'POST', body: '{}' })
   await events(res, async ev => {
     if (ev.type === 'app') {
       status.remove()
-      card(turn, ev)
+      widget(body, ev)
       scroll()
     }
   })
