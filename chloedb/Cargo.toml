@@ -76,7 +76,7 @@ symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm
 # DataFusion as the engine of a plan's operators (`datafusion`,
 # `chloedb::query::df`): joins, groups, sorts and DISTINCT above the search
 # leaves, on Arrow batches. Without its SQL front end, Parquet and
-# compression: Strata keeps its own parser and planner.
+# compression: ChloeDB keeps its own parser and planner.
 datafusion = { version = "=55.2.0", default-features = false, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 # Parquet files in and out (`parquet`, `chloedb::parquet`), on the Arrow
@@ -104,7 +104,7 @@ vision = ["bert", "dep:image"]
 audio = ["bert", "dep:symphonia"]
 # `bert` with matrix products in Apple's Accelerate framework (macOS only).
 accelerate = ["bert", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
-# Importing SQLite databases into Strata and exporting Strata to SQLite
+# Importing SQLite databases into ChloeDB and exporting ChloeDB to SQLite
 # (`chloedb::sqlite`).
 sqlite = ["dep:rusqlite"]
 # SQLite and Tantivy baselines and the `chloedb-baselines` experiment binary.
@@ -114,7 +114,7 @@ fault-injection = []
 # DataFusion runs plans' operators with `ExecOptions::engine` (or
 # CHLOEDB_ENGINE=datafusion): `chloedb::query::df`.
 datafusion = ["dep:datafusion", "dep:tokio"]
-# Importing Parquet files into Strata tables and exporting tables to
+# Importing Parquet files into ChloeDB tables and exporting tables to
 # Parquet (`chloedb::parquet`), and rows as Arrow batches and back
 # (`chloedb::arrow_rows`).
 parquet = ["datafusion", "dep:parquet"]
@@ -166,7 +166,7 @@ opt-level = 2
 
 # CI's tests (cargo test --profile ci): release's optimisation without its
 # link-time optimisation and single codegen unit, which made linking the
-# hundred test binaries, each with all of Strata in it, most of CI's time.
+# hundred test binaries, each with all of ChloeDB in it, most of CI's time.
 [profile.ci]
 inherits = "release"
 codegen-units = 16

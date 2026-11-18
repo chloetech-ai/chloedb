@@ -19,7 +19,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
 </head>
 <body class="docs">
 <!-- Google Tag Manager (noscript) -->
@@ -40,6 +40,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
@@ -48,8 +54,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
       <a href="next-items.html">Next items</a>
@@ -64,18 +72,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
       <a href="java.html">Java and JDBC</a>
       <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
       <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html" aria-current="page">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -86,15 +105,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
-      <a href="chloectx.html">ChloeCtx</a>
-      <a href="chloectx-setup.html">Install ChloeCtx</a>
-      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
-      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
-      <a href="chloectx-capsules.html">Context capsules</a>
-      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
       <span class="eyebrow">Server and cluster</span>
@@ -106,6 +120,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <div class="doc-body">
 
 <p><code>chloedb-server follow-postgres</code> keeps ChloeDB in step with a Postgres database by logical replication: it copies the tables of a publication, then applies every insert, update, delete, <code>TRUNCATE</code> and new column a moment after Postgres commits it, so ChloeDB serves search over the rows Postgres holds without a nightly job or a Debezium and Kafka pipeline in between. It speaks Postgres's own protocol (<code>pgoutput</code>, the plugin Postgres ships, from version 10), and keeps what it applied in ChloeDB's <code>_sources</code>, in the same transactions as the rows, so a follower stopped and started again goes on from there and applies each change once.</p>
+<p>This is ChloeDB reading from Postgres, not ChloeDB speaking to Postgres clients: ChloeDB serves no Postgres protocol of its own, so <code>psql</code>, DBeaver, Metabase and dbt's Postgres adapter cannot connect to it. <a href="sql.html#running-sql">Running SQL</a> lists the ways in.</p>
 <h2 id="set-up-postgres">Set up Postgres<a class="anchor" href="#set-up-postgres" aria-label="Link to this section">#</a></h2>
 <p>Postgres writes what logical replication needs once <code>wal_level</code> is <code>logical</code> (a restart takes it):</p>
 <pre data-lang="sql">ALTER SYSTEM SET wal_level = logical;   -- then restart Postgres
@@ -175,6 +190,7 @@ GRANT SELECT ON products, reviews TO chloedb;</pre>
 <li>ChloeDB's tables the follower writes take no other writes: an <code>INSERT</code>, <code>UPDATE</code> or <code>DELETE</code> of one, or a <code>POST /v1/write</code>, is refused (409, <code>followed_table</code>), since a row written in ChloeDB would answer what Postgres does not until Postgres changed it and the follower wrote over it, and a transaction applied again after a restart must write what it wrote before. Write the change in Postgres. The follower names itself on its requests (<code>x-chloedb-postgres-follower</code>), and a server reads which tables are followed from the follower's marks within seconds of a copy. Columns may still be added in ChloeDB (an embedded vector, say). A table that leaves the publication, or whose follower's slot is dropped (<code>--drop-slot</code>), takes writes again.</li>
 </ul>
 <p>Transactions are applied whole, each in one write (several at once while Postgres sends faster than they are written), but one of more than 1,000 changes, more than 16 MB of values, or with a <code>TRUNCATE</code>, is written in steps: a reader can see part of it, as it can see part of any write across a cluster's shards.</p>
+<p><strong>Changed:</strong> a follower of 0.3.7 or earlier adds a new column with its type only, so the rows from before read <code>NULL</code> in it until Postgres next changes each of them (add the column in ChloeDB first, with the same default, or copy again with <code>--copy</code>), and its server takes other writes to the followed tables, whose rows then differ from Postgres's, with no warning, until Postgres changes them.</p>
 <h3 id="how-postgres-columns-become-fields">How Postgres columns become fields<a class="anchor" href="#how-postgres-columns-become-fields" aria-label="Link to this section">#</a></h3>
 <div class="doc-table"><table>
 <thead>
@@ -235,11 +251,12 @@ GRANT SELECT ON products, reviews TO chloedb;</pre>
 </tbody>
 </table></div>
 <h3 id="choosing-chloedb-types">Choosing ChloeDB types<a class="anchor" href="#choosing-chloedb-types" aria-label="Link to this section">#</a></h3>
-<p>To choose the types, analyzers, an embedded vector or fields of ChloeDB's own, make the table in ChloeDB before the first run, with the Postgres key as its key and the columns of the names Postgres has:</p>
+<p>A <code>text</code> or <code>varchar</code> column becomes <code>TEXT</code>, which is searched by its words. It groups (<code>GROUP BY country</code>, <code>SELECT DISTINCT country</code>) and compares with <code>=</code> by its stored text, read row by row, where a <code>KEYWORD</code>'s index answers both (<a href="sql.html#differences-from-postgresql">differences from PostgreSQL</a>). A column of names, codes or statuses that you group and filter by its whole value (<code>brand</code> below) belongs in a <code>KEYWORD</code>. To choose the types, analyzers, an embedded vector or fields of ChloeDB's own, make the table in ChloeDB before the first run, with the Postgres key as its key and the columns of the names Postgres has:</p>
 <pre data-lang="sql">CREATE TABLE products (
   id INT PRIMARY KEY,
   title TEXT,
   sku KEYWORD,
+  brand KEYWORD,
   description TEXT OPTIONS(analyzer = &#x27;english&#x27;),
   price FLOAT,
   emb VECTOR OPTIONS(embed = &#x27;title, description&#x27;, model = &#x27;potion-retrieval-32M&#x27;)
@@ -269,6 +286,7 @@ GRANT SELECT ON products, reviews TO chloedb;</pre>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
