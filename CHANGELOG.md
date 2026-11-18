@@ -9,6 +9,16 @@ promises about the file format, the shard protocol and the old names.
 Every crate and package carries the release's version; between releases
 changes collect under "Unreleased".
 
+## Unreleased
+
+A replica exposes how many batches of its primary it applied and the seconds
+they took (`chloedb_replica_apply_batches_total`,
+`chloedb_replica_apply_seconds_total`). The test of a replica the primary's
+log no longer reaches no longer fails about a quarter of its runs on a
+two-CPU machine: its log was 2,000 bytes under an unthrottled writer, so the
+primary sent copy after copy; it now has a log that holds seconds of a
+throttled writer.
+
 ## 0.3.8
 
 Durable one-row writes about 2.6 times as fast, typo and short substring
