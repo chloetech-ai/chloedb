@@ -946,7 +946,7 @@ pub fn knowledge(store: &Store, query: &str, filter: &Filter, skip: &HashSet<Str
 pub fn related(store: &Store, text: &str, n: usize) -> Result<Vec<Record>> {
     let store = &store.pinned();
     let f = Filter { kinds: KNOWLEDGE.to_vec(), ..Default::default() };
-    let live = |r: &Record| r.tag != "superseded" && r.tag != "done" && r.tag != "cue" && (r.kind != Kind::Todo || r.tag == "planned") && !crate::envelope::is_envelope_record(r);
+    let live = |r: &Record| !crate::record::closed_tag(&r.tag) && r.tag != "done" && r.tag != "cue" && (r.kind != Kind::Todo || r.tag == "planned") && !crate::envelope::is_envelope_record(r);
     let (bm, dv) = both(
         || if chloedb::text::analyze_query(text).is_empty() { Ok(Vec::new()) } else { store.bm25_top(text, n * 2, &f) },
         || store.vector_top(&store.embedder.embed_query(text)?, n * 2, &f),
@@ -1082,7 +1082,7 @@ pub fn briefing_parts(store: &Store, current_session: &str, max_chars: usize, no
         let head = format!("\n{title}\n");
         let mut len = s.len() + head.len();
         for r in recs {
-            if r.tag == "superseded" || r.tag == "done" || (distilled && r.tag == "cue") || crate::envelope::is_envelope_record(&r) || crate::sync::held_back(&r) || !seen.insert(norm(&r.text)) {
+            if crate::record::closed_tag(&r.tag) || r.tag == "done" || (distilled && r.tag == "cue") || crate::envelope::is_envelope_record(&r) || crate::sync::held_back(&r) || !seen.insert(norm(&r.text)) {
                 continue;
             }
             let (fresh, label) = match check.as_deref_mut() {

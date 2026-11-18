@@ -56,10 +56,11 @@ fn tools() -> Json {
         },
         {
             "name": "memory_remember",
-            "description": "Store a durable decision, preference, fact, open task or note for future sessions. Use a self-contained sentence (what, why, where). Use supersedes with an older record id when this replaces it: that record is then marked superseded (an id that is not in memory is refused, and nothing is stored).",
+            "description": "Store a durable decision, preference, fact, open task or note for future sessions. Use a self-contained sentence (what, why, where). Say who stated it with said_by: user when the user said or decided it, assistant when it is your own finding or choice. Use supersedes with an older record id when this replaces it: that record is then marked superseded (an id that is not in memory is refused, and nothing is stored).",
             "inputSchema": {"type": "object", "properties": {
                 "kind": {"type": "string", "enum": ["decision", "preference", "fact", "todo", "note"]},
                 "text": {"type": "string", "minLength": 1},
+                "said_by": {"type": "string", "enum": ["user", "assistant"], "description": "Who stated it: user (the user said or decided it), or assistant (your own finding or choice). Without it, a note the user's last message says is the user's."},
                 "files": {"type": "array", "items": {"type": "string"}},
                 "supersedes": {"type": "string", "minLength": 1}
             }, "required": ["kind", "text"]}

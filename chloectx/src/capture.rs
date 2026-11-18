@@ -316,12 +316,15 @@ pub fn is_memory_file(path: &str) -> bool {
 pub fn decision_sentences(prompt: &str) -> Vec<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"(?i)^\W*(?:my decision|decision|our decision|the decision is|i(?:'ve| have)? decided|we(?:'ve| have)? decided|i decide|ruling)\b").unwrap());
-    // Sentences split at line ends, so a decision's "X: y. Because z." keeps its line.
+    // Sentences split at line ends, so a decision's "X: y. Because z." keeps
+    // its line, up to a sentence that is not its reason: the rest of the
+    // prompt is not the decision (ANA-204: "Decision: cursors, never page
+    // numbers. Then run these as separate Bash calls: ..." was kept whole).
     let mut out = Vec::new();
     for line in prompt.lines() {
         let l = line.trim();
         if re.is_match(l) && l.len() >= 16 {
-            out.push(clip(l, 600));
+            out.push(clip(&with_reasons(l), 600));
         }
     }
     if out.is_empty() {
@@ -332,6 +335,26 @@ pub fn decision_sentences(prompt: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// A line up to the first sentence after its first that tells the agent to
+/// do something ("Then run these as separate Bash calls", "Now add the
+/// tests"): what says more of the decision or why ("Because ...", "The
+/// ledger export applies banker's rounding itself") stays.
+fn with_reasons(line: &str) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let task = RE.get_or_init(|| {
+        Regex::new(r"(?i)^\W*(?:(?:then|next|now|also|after that|afterwards|first|finally|and|please|ok|okay)\b\W*)*(?:then|next|run|write|create|add|fix|make|use|show|tell|report|reply|answer|commit|push|open|check|list|explain|implement|build|update|change|delete|remove|rename|install|test|try|do|don[’']?t|start|stop|go|give|print|echo|call|read|look|find|search|summari[sz]e)\b").unwrap()
+    });
+    for (i, c) in line.char_indices() {
+        let after = &line[i + c.len_utf8()..];
+        if matches!(c, '!' | '?') || (c == '.' && after.chars().next().is_none_or(char::is_whitespace)) {
+            if task.is_match(after.trim_start()) {
+                return line[..i + c.len_utf8()].trim().to_string();
+            }
+        }
+    }
+    line.trim().to_string()
 }
 
 /// Whether a prompt refers back to earlier work.
@@ -836,6 +859,12 @@ mod tests {
         assert_eq!(dec.len(), 1, "{d:?}");
         assert!(dec[0].text.starts_with("The user decided: My decision: customers win") && dec[0].text.contains("ledger export"), "{}", dec[0].text);
         assert!(prompt_drafts_by("Decision: ship it.", &Source::Agent("lead".into())).iter().all(|x| x.kind == Kind::Prompt));
+        // ANA-204: the rest of the prompt is not the decision.
+        let d = prompt_drafts("Decision: list endpoints paginate with opaque cursor tokens, never page numbers. Then run these as separate Bash calls: echo beta-1, echo beta-2. Report outputs briefly.");
+        let dec: Vec<&Draft> = d.iter().filter(|x| x.kind == Kind::Decision).collect();
+        assert_eq!(dec[0].text, "The user decided: Decision: list endpoints paginate with opaque cursor tokens, never page numbers.", "{d:?}");
+        let d = prompt_drafts("Decision: fees round half up. Because the regulator audits them that way. Now add fee() to money.py.");
+        assert!(d.iter().any(|x| x.text == "The user decided: Decision: fees round half up. Because the regulator audits them that way."), "{d:?}");
         let input = serde_json::json!({"file_path": "/tmp/claude/memory/team/silo/money-rounding-half-up.md", "content": "---\nname: rounding\ntype: decision\n---\nMaya decided customers win: to_cents rounds half up.\n"});
         let t = tool_drafts("Write", &input, &serde_json::json!({}), "/repo");
         let n: Vec<&Draft> = t.iter().filter(|x| x.tag == MEMORY_FILE_TAG).collect();

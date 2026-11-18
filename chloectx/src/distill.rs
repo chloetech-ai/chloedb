@@ -94,12 +94,16 @@ Also list, for each item, 2 to 4 situations in which a later session must recall
 
 The already-noted items above are the notes most related to this exchange (not all notes). When this exchange changes, reverses or extends one of them, write the new version with "replaces": the new sentence must stand on its own (repeat what still holds) and may say what changed (e.g. "30 days, changed from 14").
 
+When this exchange scraps, reverts or drops work, a plan or a decision ("scrap it", "git restore", "we won't do that after all", "drop the feature"), the noted items about it no longer hold: its design, its decisions, its requirements and the facts about how it behaves. List each of them with "retired", and write one item that says what was dropped and why.
+
 Leave out:
 - a request to forget something, to delete it from memory or not to keep it (a private plan, a secret), and what it was about: write nothing about it, not even that it is private;
 - anything already noted above, unless this exchange changes it;
 - status that will soon be stale (test counts and results, what was committed or pushed and to which branch);
 - the assistant's own habits and conventions, even when it says it always follows them ("as usual I'll ...": commit message style, formatting, tool usage), and its suggestions the user did not take up;
 - questions the assistant asked and assumptions it made that the user has not answered or confirmed: they are not requirements, and never write one up as something that must be settled before the work can start;
+- what the user's question asks about or assumes, and the details of an example asked for in the reply only (no file written): "write a function for a 2.5% fee, code in the reply only" does not make 2.5% the project's fee, "SQL for a refunds table with a created column" plans no refunds table, and asking for a branch name for a ticket starts no work on it. They are the project's only when the user says so or the work is written into its files;
+- the assistant's answer to a question from what is noted already (above, or in the briefing it was given): the note it came from is kept already, and that the assistant could not also find it in the code is no fact about the project;
 - details of the code that reading it shows (signatures, what a function does).
 
 With each item say who stated it in this exchange: "said_by": "requester" when the request stated it, "assistant" when the assistant found, concluded or assumed it. What the assistant concluded is its claim, not an established fact: keep its wording cautious ("the assistant found ...", "it assumed ...") when it guessed.
@@ -108,15 +112,19 @@ Output one JSON object per line and nothing else:
 {"kind": "decision" | "rule" | "requirement" | "fact", "text": "<sentence>", "entities": ["<entity>", ...], "when": ["<situation>", ...], "said_by": "requester" | "assistant", "scope": "standing" | "task"}
 {"kind": "decision" | "rule" | "requirement" | "fact", "text": "<new sentence>", "entities": ["<entity>", ...], "when": ["<situation>", ...], "said_by": "requester" | "assistant", "replaces": "<id of the noted item it updates>"}
 {"kind": "done", "id": "<id of a noted requirement that this exchange completed>"}
+{"kind": "retired", "id": "<id of a noted item that no longer holds because this exchange scrapped, reverted or dropped what it is about>"}
 If there is nothing worth keeping, output nothing."#;
 
-/// What one exchange yields: new knowledge, noted items it replaces, and
-/// planned work it completed.
+/// What one exchange yields: new knowledge, noted items it replaces,
+/// planned work it completed, and noted items about work it scrapped.
 #[derive(Debug, Default)]
 pub struct Distilled {
     pub drafts: Vec<Draft>,
     pub replaced: Vec<String>,
     pub done: Vec<String>,
+    /// Noted items that no longer hold: what they are about was scrapped,
+    /// reverted or dropped (JONAH-201).
+    pub retired: Vec<String>,
     pub cost_usd: f64,
     pub usage: llm::Usage,
 }
@@ -210,6 +218,10 @@ pub fn parse(text: &str) -> Distilled {
         let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
         if kind == "done" {
             out.done.extend(id_of(&v, "id"));
+            continue;
+        }
+        if kind == "retired" {
+            out.retired.extend(id_of(&v, "id"));
             continue;
         }
         let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
@@ -331,7 +343,8 @@ mod tests {
     fn parses_items_and_ignores_the_rest() {
         let text = "Here you go:\n{\"kind\": \"decision\", \"text\": \"Storage stays JSON because admins edit the files by hand.\", \"entities\": [\"storage\", \"JSON files\"], \"when\": [\"making saving faster\"]}\n\
                     {\"kind\": \"requirement\", \"text\": \"The CSV export uses semicolons and DD.MM.YYYY dates.\", \"replaces\": \"abc:3\"},\n\
-                    {\"kind\": \"done\", \"id\": \"[abc:12]\"}\n{\"kind\": \"mood\", \"text\": \"The user seems happy today.\"}\nnot json";
+                    {\"kind\": \"done\", \"id\": \"[abc:12]\"}\n{\"kind\": \"mood\", \"text\": \"The user seems happy today.\"}\nnot json\n\
+                    {\"kind\": \"retired\", \"id\": \"abc:7\"}";
         let d = parse(text);
         assert_eq!(d.drafts.len(), 2);
         assert_eq!(d.drafts[0].kind, Kind::Decision);
@@ -342,6 +355,7 @@ mod tests {
         assert_eq!(d.drafts[1].tag, "planned");
         assert_eq!(d.replaced, vec!["abc:3".to_string()]);
         assert_eq!(d.done, vec!["abc:12".to_string()]);
+        assert_eq!(d.retired, vec!["abc:7".to_string()]);
     }
 
     #[test]

@@ -1311,6 +1311,7 @@ impl Daemon {
                 let is_known = |id: &String| known.iter().any(|r| &r.id == id);
                 let replaced: Vec<String> = d.replaced.into_iter().filter(|id| is_known(id)).collect();
                 let done: Vec<String> = d.done.into_iter().filter(|id| known.iter().any(|r| &r.id == id && r.kind == Kind::Todo)).collect();
+                let retired: Vec<String> = d.retired.into_iter().filter(|id| is_known(id) && !replaced.contains(id) && !done.contains(id)).collect();
                 // An instruction for this task that the user gave in
                 // another session too is a rule of every session now.
                 // One that says what a rule says is that rule anew.
@@ -1378,10 +1379,34 @@ impl Daemon {
                 for id in &done {
                     let _ = self.store.retag(id, "done");
                 }
+                // Notes about what this turn scrapped (JONAH-201): replaced
+                // by its note that says so (the one that shares most of
+                // their words), else retired; either way out of the briefing.
+                let retired: Vec<String> = retired
+                    .into_iter()
+                    .filter(|id| {
+                        let Some(old) = known.iter().find(|r| &r.id == id) else { return false };
+                        let o = terms(&old.text);
+                        let by = stored
+                            .iter()
+                            .filter(|r| r.kind.is_knowledge() && r.kind != Kind::Todo && r.tag != crate::record::TASK_TAG)
+                            .map(|r| (terms(&r.text).intersection(&o).count(), r))
+                            .filter(|(n, _)| *n >= 2)
+                            .max_by_key(|(n, r)| (*n, -r.seq))
+                            .map(|(_, r)| r.id.clone());
+                        match by {
+                            Some(new) => self.store.supersede(id, &new).unwrap_or(false),
+                            None => self.store.retag(id, crate::record::RETIRED).unwrap_or(false),
+                        }
+                    })
+                    .collect();
+                // The decision the prompt stated, kept at once in the user's
+                // words, is replaced by the turn's note that says it (ANA-204).
+                let stated = self.supersede_stated(sid, turn, &stored);
                 let repeated = crate::repeats::supersede_repeated(&self.store, &stored);
                 self.store.warm();
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "items": n, "kept": kept,
-                    "replaced": replaced, "done": done, "said_again": checked.again.len(), "said_again_dropped": checked.dropped.len(), "repeated": repeated, "cost_usd": d.cost_usd + checked.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
+                    "replaced": replaced, "done": done, "retired": retired, "stated": stated, "said_again": checked.again.len(), "said_again_dropped": checked.dropped.len(), "repeated": repeated, "cost_usd": d.cost_usd + checked.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
             }
             Err(e) => {
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "error": e.to_string()}));
@@ -1600,6 +1625,35 @@ impl Daemon {
 
     /// The sequence number of a turn's first record (its prompt, stored
     /// with the picks from its words).
+    /// Supersedes the decisions a turn's prompt stated ([`capture::decision_sentences`],
+    /// tagged `stated`) by the turn's distilled decision or rule that holds
+    /// most of their words, when it holds at least half: two copies of one
+    /// decision are one. Returns the ids superseded.
+    fn supersede_stated(&self, sid: &str, turn: i64, stored: &[Record]) -> Vec<String> {
+        let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
+        let Ok(rs) = self.store.query_with(
+            &format!("SELECT {} FROM memory WHERE session = :session AND turn = {turn} AND kind = 'decision' AND tag = 'stated' LIMIT 20", crate::record::COLUMNS),
+            &Params::new().set("session", Value::Str(sid.to_string())),
+        ) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for old in rs.rows.iter().filter_map(|r| crate::store::row_record(r)) {
+            let o = terms(old.text.trim_start_matches("The user decided:"));
+            let best = stored
+                .iter()
+                .filter(|r| matches!(r.kind, Kind::Decision | Kind::Preference) && r.tag != crate::record::TASK_TAG)
+                .map(|r| (terms(&r.text).intersection(&o).count(), r))
+                .max_by_key(|(n, r)| (*n, -r.seq));
+            if let Some((n, new)) = best {
+                if !o.is_empty() && n * 2 >= o.len() && self.store.supersede(&old.id, &new.id).unwrap_or(false) {
+                    out.push(old.id.clone());
+                }
+            }
+        }
+        out
+    }
+
     fn first_seq_of(&self, sid: &str, turn: i64) -> Option<i64> {
         self.store
             .query_with(
@@ -2461,11 +2515,24 @@ impl Daemon {
         // Who asks to keep it: `by` (the CLI says `user`: a person ran it,
         // or Workbench for one); else the memory tool, which the session's
         // agent calls.
+        // The agent says who stated it (`said_by`); when it does not, a
+        // note that the turn's prompt says in most of its words is the
+        // prompt author's (JONAH-205: the user's decision, kept by the
+        // agent, read "the assistant said").
         let by = match req.get("by").and_then(|v| v.as_str()).filter(|b| !b.is_empty()) {
             Some(b) => crate::record::Source::parse(b),
             None => {
-                let agent = self.state.lock().unwrap().sessions.get(&sid).map(|s| s.agent.clone()).unwrap_or_default();
-                crate::record::Source::Assistant(agent)
+                let st = self.state.lock().unwrap();
+                let s = st.sessions.get(&sid);
+                let agent = s.map(|s| s.agent.clone()).unwrap_or_default();
+                let author = s.map(|s| crate::record::Source::parse(&s.source)).unwrap_or(crate::record::Source::User);
+                let prompted = s.and_then(|s| s.last_prompts.back()).is_some_and(|p| says_most_of(p, &text));
+                match req.get("said_by").and_then(|v| v.as_str()) {
+                    Some("user") => author,
+                    Some("assistant") => crate::record::Source::Assistant(agent),
+                    _ if prompted => author,
+                    _ => crate::record::Source::Assistant(agent),
+                }
             }
         };
         let a = anchor::make(Path::new(&self.tree_of(req)), &text, &files, &[]);
@@ -2486,7 +2553,7 @@ impl Daemon {
         }
         let place = self.paths.dir.join("memory.strata");
         Ok(json!({"id": recs[0].id, "supersedes": replaced, "store": place, "by": by.as_str(),
-            "text": format!("Stored {} as {}{} in ChloeCtx ({}), where Workbench and every later session see it.", kind.as_str(), recs[0].id,
+            "text": format!("Stored {} as {}{} in ChloeCtx ({}), where every later session sees it.", kind.as_str(), recs[0].id,
                 replaced.as_ref().map(|o| format!(", replacing {o}")).unwrap_or_default(), place.display())}))
     }
 
@@ -3169,6 +3236,15 @@ fn snippet_at(text: &str, at: usize, width: usize) -> String {
 /// its words (a replacement keeps what still holds, [`crate::distill`]).
 /// A note about something else that names `old` replaces nothing: half a
 /// ruling is not superseded by the other half.
+/// Whether `prompt` says most of `note`: at least half of the note's words
+/// (stemmed, stop words out), and two or more.
+fn says_most_of(prompt: &str, note: &str) -> bool {
+    let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
+    let n = terms(note);
+    let shared = terms(prompt).intersection(&n).count();
+    shared >= 2 && shared * 2 >= n.len()
+}
+
 pub fn successor_of(old: &Record, stored: &[Record]) -> Option<String> {
     let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
     let o = terms(&old.text);

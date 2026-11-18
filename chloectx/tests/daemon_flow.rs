@@ -213,6 +213,20 @@ fn notes_are_filed_under_the_session_that_made_them() {
     // hooks never reached this daemon: its session all the same.
     assert!(remember("Rate limits are per key.", mcp("d", 0)).starts_with("d:"));
 
+    // JONAH-205: who stated it. The user's prompt said it: the user's.
+    hook_from(&d, "UserPromptSubmit", json!({"session_id": "a", "prompt": "Keep the todos in ~/.local/share/tado/todos.db, with ISO 8601 dates."}), pid(4101));
+    let by = |text: &str, extra: Json| {
+        let mut req = json!({"op": "remember", "kind": "decision", "text": text, "caller": mcp("a", 4101)});
+        for (k, v) in extra.as_object().unwrap() {
+            req[k] = v.clone();
+        }
+        call(&d, req)["by"].as_str().unwrap().to_string()
+    };
+    assert_eq!(by("tado's database is ~/.local/share/tado/todos.db and its dates are ISO 8601.", json!({})), "user");
+    assert_eq!(by("The todo list is sorted by due date.", json!({})), "assistant");
+    assert_eq!(by("The todo list is sorted by due date.", json!({"said_by": "user"})), "user");
+    assert_eq!(by("Todos are kept in ~/.local/share/tado/todos.db.", json!({"said_by": "assistant"})), "assistant");
+
     // ANA-210: session a's memory tools see the notes it made, though they
     // are in its window; not the prompts its window holds.
     let s = call(&d, json!({"op": "search", "query": "opaque cursor tokens", "limit": 8, "caller": mcp("a", 0)}));
@@ -288,6 +302,61 @@ fn distilled_knowledge_reaches_later_sessions() {
     assert!(tag["text"].as_str().unwrap().contains("done"), "{tag}");
     let ctx = hook(&d, "UserPromptSubmit", json!({"session_id": "s3", "prompt": "Is the CSV export of the ledger planned?"}));
     assert!(!ctx.contains("[planned]"), "{ctx}");
+}
+
+/// JONAH-201: when work is scrapped, the notes written about it (its design,
+/// its decisions, how it behaves) leave the briefing: the model names them
+/// retired, and the turn's note that says it was scrapped replaces them.
+#[test]
+fn notes_about_scrapped_work_leave_the_briefing() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let script = dir.path().join("fake-model.sh");
+    std::fs::write(&script, format!("#!/bin/sh\ncat > /dev/null\ncat '{}'\n", out.display())).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let cfg = json!({"embedder": "hash:64", "sync": false, "briefing_chars": 4000, "distill": {"command": script, "model": "m"}});
+    std::fs::write(dir.path().join("config.json"), cfg.to_string()).unwrap();
+    let d = Arc::new(Daemon::open(dir.path(), "/proj").unwrap());
+    let model_says = |lines: &[Json]| {
+        let result: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        std::fs::write(&out, json!({"is_error": false, "total_cost_usd": 0.001, "result": result.join("\n")}).to_string()).unwrap();
+    };
+    let turn = |sid: &str, prompt: &str, answer: &str| {
+        hook(&d, "SessionStart", json!({"session_id": sid, "source": "startup"}));
+        hook(&d, "UserPromptSubmit", json!({"session_id": sid, "prompt": prompt}));
+        hook(&d, "Stop", json!({"session_id": sid, "last_assistant_message": answer}));
+    };
+    model_says(&[json!({"kind": "decision", "text": "tado stores todos in ~/.local/share/tado/todos.db with ISO 8601 due dates."})]);
+    turn("s1", "Keep the todos in ~/.local/share/tado/todos.db, dates in ISO 8601.", "Done.");
+    model_says(&[
+        json!({"kind": "decision", "text": "Recurring todos: tado add takes --every with the values daily, weekly or monthly."}),
+        json!({"kind": "decision", "text": "Recurring todos are stored in todos.json as objects {text, every, due}."}),
+        json!({"kind": "fact", "text": "The list subcommand shows a recurring todo with its next due date."}),
+    ]);
+    turn("s2", "Add recurring todos with --every daily|weekly|monthly.", "Added --every; todos.json stores {text, every, due}.");
+    let ids = |q: &str| -> Vec<String> { sql(&d, q).iter().map(|r| r[0].as_str().unwrap().to_string()).collect() };
+    let recurring = ids("SELECT id FROM memory WHERE session = 's2' AND kind IN ('decision', 'fact') LIMIT 10");
+    assert_eq!(recurring.len(), 3, "{recurring:?}");
+    let brief = hook(&d, "SessionStart", json!({"session_id": "s3", "source": "startup"}));
+    assert!(brief.contains("--every") && brief.contains("{text, every, due}"), "{brief}");
+
+    // Scrapped: the model names the three retired and says why.
+    let mut lines: Vec<Json> = recurring.iter().map(|id| json!({"kind": "retired", "id": id})).collect();
+    lines.push(json!({"kind": "decision", "text": "Recurring todos were scrapped and the code restored with git restore: tado v1 stays small, with no --every and no due dates."}));
+    model_says(&lines);
+    turn("s3", "Scrap the recurring todos completely: git restore . -- v1 stays small.", "Restored the working tree; no recurring todos.");
+    let brief = hook(&d, "SessionStart", json!({"session_id": "s4", "source": "startup"}));
+    assert!(brief.contains("Recurring todos were scrapped"), "{brief}");
+    assert!(!brief.contains("takes --every") && !brief.contains("{text, every, due}") && !brief.contains("next due date"), "{brief}");
+    assert!(brief.contains("todos.db"), "the decision it does not touch stays: {brief}");
+    // Replaced by the note that says so, where they share its words; else retired.
+    let tags = sql(&d, &format!("SELECT id, tag FROM memory WHERE id IN ('{}') LIMIT 5", recurring.join("', '")));
+    assert!(tags.iter().all(|r| r[1] == "superseded" || r[1] == "retired"), "{tags:?}");
+    assert!(tags.iter().any(|r| r[1] == "superseded"), "{tags:?}");
+    // An id the model was not shown is left alone.
+    model_says(&[json!({"kind": "retired", "id": "nope:1"})]);
+    turn("s4", "Scrap nothing.", "OK.");
+    assert!(hook(&d, "SessionStart", json!({"session_id": "s5", "source": "startup"})).contains("todos.db"));
 }
 
 /// An instruction the user gives for one task stays that session's; given
