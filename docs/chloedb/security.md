@@ -28,7 +28,7 @@ A server with no token, no cluster token and no API key is **open**: every reque
 Once the server is closed, every route needs `Authorization: Bearer <token or key>`, except these, which answer anyone:
 
 - the command center's files (`/`, `/classic`, `/ui/*`), which hold no data: the page asks for a key before it reads anything;
-- the probes `/livez`, `/readyz` and `/v1/health`, for load balancers and orchestrators. A coordinator answers `/v1/health` without a credential with `{status}` alone.
+- the probes `/livez`, `/readyz` and `/v1/health`, for load balancers and orchestrators. Every server, alone, a shard or a coordinator, answers `/v1/health` with `{status}` alone to a request without a credential it takes (none, or a wrong one).
 
 Every gRPC call needs a credential, and the OpenSearch listener takes the same token and keys, as a Bearer token or as the password of Basic authentication.
 
@@ -59,11 +59,11 @@ Make keys in the command center (**Access and audit**) or with `POST /v1/admin/k
 
 What a request does is checked as well as its route: a SQL statement by its kind (a `CREATE TABLE` or a `DROP` needs `admin`, whichever route sends it), a write plan needs `write`.
 
-**Keys limited to tables.** `POST /v1/admin/keys {"name": "crawler", "tables": {"crawl_*": "admin", "docs": "read"}}` makes a key whose grants each name a table, a prefix and `*`, or `*`, with a scope. Such a key never has the server's own admin (keys, shards, functions, settings, the logs and the audit log), it may call only the routes that check the tables they touch, and gRPC and MCP refuse it. A statement is read with ChloeDB's own parser and checked against every table it names; what its names cannot show (`llm()`, a table function that is not a stored one, a name in parts) is refused. Presets (`analyst`, `oncall`, `ml-app`, `app-owner`) make the keys of common jobs.
+**Keys limited to tables.** `POST /v1/admin/keys {"name": "crawler", "tables": {"crawl_*": "admin", "docs": "read"}}` makes a key whose grants each name a table, a prefix and `*`, or `*`, with a scope. Such a key never has the server's own admin (keys, shards, functions, settings, the logs and the audit log), it may call only the routes that check the tables they touch, and gRPC and MCP refuse it. A statement is read with ChloeDB's own parser and checked against every table it names; what its names cannot show (`llm()`, a table function that is not a stored one, a name in parts) is refused. Such a key sees its own tables alone in `/v1/health` and `/v1/cluster` (their rows, and no shard's or copy's `docs`), and an error for a table that does not exist names only the tables it sees (`no such table: a_ghost; the tables the key "tenant-a" sees are a_notes`). Presets (`analyst`, `oncall`, `ml-app`, `app-owner`) make the keys of common jobs.
 
 **Keys a key makes.** A key with the admin scope on some tables may make keys within its own grants (`POST /v1/keys/own`), which expire when it does and stop working when it is revoked. An app engine gives each of its apps a key this way.
 
-**Agents.** Give an agent a key of role `propose` (it reads the server's views and files change requests) or `ops` (that, and the bounded actions: a contain rule, a query cancelled, an alert silenced, each with a reason), rather than an admin key. Whatever its key, an agent's request that loses data or costs money (tier 3: a `DROP TABLE`, a `DELETE` of every row, a promotion, a key revoked) is refused with `change_request_required`: it files a change request, which a person approves with their own key, and an agent's approval is refused. The audit log names an agent's requests `actor: "agent"` ([agents and administration](server.md#agents-and-administration)).
+**Agents.** Give an agent a key of role `propose` (it reads the server's views and files change requests) or `ops` (that, and the bounded actions: a contain rule, a query cancelled, an alert silenced, each with a reason), rather than an admin key. Whatever its key, an agent's request that loses data or costs money (tier 3: a `DROP TABLE`, a `DELETE` of every row, a promotion, a key revoked) is refused with `change_request_required`: it files a change request, which a person approves with their own key, and an agent's approval is refused. A key an agent makes is an agent's too: it acts for the person its maker acts for, expires no later than its maker and stays within its maker's statement budget; asking for `"agent": false` or for another person is refused with `change_request_required`, and an agent rotates only agents' keys. The audit log names an agent's requests `actor: "agent"` ([agents and administration](server.md#agents-and-administration)).
 
 **Model calls.** Each key may make `--model-calls-per-key-day` calls (10,000) a day to a hosted model with the server's own credentials; the token, the cluster token and an open server are not counted.
 
@@ -91,7 +91,7 @@ An app is a program of its own (the crawler, Sheets, ChloeCtx, network operation
 - **An app's view runs in the command center's page**, with the signed-in person's key, as the server's own pages do: name only apps you trust on a server's command line.
 - **An app that checks its callers** runs a caller's statements as the caller: it sends its own token with `x-chloedb-as-tables` set to the caller's grants, and the server narrows the token to them, never wider than the token itself.
 - **Apps the server starts.** With `--start-apps auto`, the default, a server of its own or a coordinator starts the crawler, Sheets and ChloeCtx when their programs are installed beside its own, as an install puts them. Each listens on a loopback port the server holds, takes requests only with a token the server makes at each start, and calls the server back with a key limited to its own tables (named `app:<name>`), kept in memory and never in the keys file. Its environment is the server's with every credential taken out. A replica, a shard, a pod the Kubernetes operator runs and a server over TLS start none ([apps the server starts](server.md#apps-the-server-starts)). An app started this way makes its tables in the database (ChloeCtx's `ctx_*`), and ChloeCtx downloads its embedding model; `--start-apps off` starts none.
-- **ChloeCtx as an app, by hand.** `chloectx app` refuses an address beyond loopback without `--token` unless `--insecure` says otherwise. Give it a token wherever you run it ([ChloeCtx as an app](../chloectx/app.md)).
+- **ChloeCtx as an app, by hand.** `chloectx app` refuses to start without `--token` on any address, loopback too, unless `--insecure` says otherwise; on loopback without a token it answers only requests whose `Host` is this machine (`127.0.0.1`, `localhost`, `[::1]`). Give it a token wherever you run it ([ChloeCtx as an app](../chloectx/app.md)).
 
 ## Requests the server makes
 
@@ -106,7 +106,7 @@ ChloeDB does not encrypt its files: use the encryption of the disk or the volume
 
 The database, its `-wal`, the log store (`DB.logs`), the audit log file (`--audit-log`) and checkpoints are made with the server's umask, so under the common 022 anyone on the machine may read them. The keys file, connector secrets, the cloud view's credentials and the hub's keys are mode 0600 whatever the umask. Start the server with `umask 077` (systemd: `UMask=0077`) and every file it makes is its user's alone, or keep its folder mode 0700.
 
-A checkpoint (`--backup-dir`) holds every row of the database: keep it as you keep the database. It does not hold the keys file.
+A checkpoint (`--backup-dir`) holds every row of the database: keep it as you keep the database. Beside it are the keys file as it was (`NAME.keys.json`, mode 0600: the keys' names, scopes and the SHA-256 of their secrets, never a secret) and the shard's cluster map (`NAME.slots`), which [`chloedb-server restore`](server.md#restoring-a-checkpoint) puts back.
 
 ## Logs
 

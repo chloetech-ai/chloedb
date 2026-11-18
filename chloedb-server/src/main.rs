@@ -740,6 +740,30 @@ enum Command {
         #[command(subcommand)]
         what: TenantsCommand,
     },
+    /// Put a checkpoint (`POST /v1/admin/checkpoint`) in place of a
+    /// server's database, with the cluster map and API keys kept beside
+    /// it: the checkpoint is copied and checked first, then the database,
+    /// its -wal, -readers, its part in replication (DB.replication) and its
+    /// map (DB.slots) move into DB.before-restore-<time>/, the copy takes
+    /// its place, the map goes beside it, and the keys are merged into the
+    /// server's keys file (a key revoked there stays revoked). The server
+    /// must be stopped; start it again with the flags it had.
+    Restore {
+        /// The checkpoint: <backup-dir>/<name> (a file, or a directory).
+        #[arg(long)]
+        from: PathBuf,
+        /// The server's database (its --db), which need not exist.
+        #[arg(long)]
+        db: PathBuf,
+        /// The server's keys file, when it is started with --keys
+        /// (default: DB.keys.json beside --db).
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Restore a shard's checkpoint onto a copy whose kept cluster map
+        /// says it is a copy of another shard.
+        #[arg(long)]
+        force: bool,
+    },
     /// Copy a database written by a version of ChloeDB from before field
     /// ids, which no longer opens, into this version's format in its place;
     /// the old one is kept as <db>.before-field-ids. The server must not
@@ -1308,6 +1332,18 @@ async fn run() {
                     Ok(ids) => ids.iter().for_each(|id| out!("{id}")),
                     Err(e) => fail(&e.to_string()),
                 },
+            }
+            return;
+        }
+        Some(Command::Restore { from, db, keys, force }) => {
+            let r = chloedb_server::restore::Restore { from: from.clone(), db: db.clone(), keys: keys.clone(), force: *force };
+            match chloedb_server::restore::restore(&r) {
+                Ok(done) => {
+                    for line in done.lines(&r) {
+                        out!("{line}");
+                    }
+                }
+                Err(e) => fail(&format!("restore {}: {e}", db.display())),
             }
             return;
         }

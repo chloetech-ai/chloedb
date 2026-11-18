@@ -845,6 +845,13 @@ pub async fn promote(url: &str, replicas: &[String], write_acks: &str, force: bo
 /// `owner/name` of an embedding model or a cross-encoder) into `dir`;
 /// returns its directory.
 pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, String> {
+    fetch_model_with(name, dir, &|_, _| {}).await
+}
+
+/// [`fetch_model`], telling `progress` as it goes: the bytes downloaded so
+/// far, and the sizes of the files begun so far (the model's own file is
+/// most of it), as a command center shows a download.
+pub async fn fetch_model_with(name: &str, dir: &std::path::Path, progress: &(dyn Fn(u64, u64) + Send + Sync)) -> Result<PathBuf, String> {
     use chloedb::query::cross_encoder;
     let derives = chloedb::derive::KNOWN_MODELS.iter().any(|m| m.0.eq_ignore_ascii_case(name));
     let known = || chloedb::embed::KNOWN_MODELS.iter().chain(chloedb::derive::KNOWN_MODELS).chain(cross_encoder::KNOWN_MODELS);
@@ -878,6 +885,7 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
     // repository from its main branch, as it is.
     let pin = chloedb::model_pins::pin(&repo);
     let revision = pin.map_or("main", |p| p.revision);
+    let (mut done, mut size) = (0u64, 0u64);
     for (from, file) in files {
         // A file already here that is the one pinned is kept, so a second
         // fetch (the guides' "once") downloads nothing.
@@ -888,8 +896,15 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
             }
         }
         let url = format!("https://huggingface.co/{repo}/resolve/{revision}/{from}");
-        let r = client.get(&url).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("{url}: {e}"))?;
-        let bytes = r.bytes().await.map_err(|e| format!("{url}: {e}"))?;
+        let mut r = client.get(&url).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("{url}: {e}"))?;
+        size += r.content_length().unwrap_or(0);
+        progress(done, size);
+        let mut bytes = Vec::with_capacity(r.content_length().unwrap_or(0).min(1 << 31) as usize);
+        while let Some(chunk) = r.chunk().await.map_err(|e| format!("{url}: {e}"))? {
+            bytes.extend_from_slice(&chunk);
+            done += chunk.len() as u64;
+            progress(done, size.max(done));
+        }
         if let Some(p) = pin {
             let want = p.sha256(from).ok_or_else(|| format!("{url}: no checksum is pinned for this file of {repo}"))?;
             let got = chloedb::model_pins::sha256_hex(&bytes);

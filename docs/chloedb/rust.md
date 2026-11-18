@@ -127,7 +127,7 @@ Every call returns `chloedb::Result<T>`, whose error is `chloedb::Error` (it imp
 | `Error::Io` | the file system failed, or the path does not exist (`Db::open`) |
 | `Error::Schema` | a document or schema does not fit the table; a key the table holds already starts with `duplicate primary key` |
 | `Error::Query` | a statement failed to parse, bind or plan |
-| `Error::Busy` | another process has the database open for writing (`the database is open elsewhere`), or another write held it for longer than `DbOptions::write_wait` (5 seconds) |
+| `Error::Busy` | another process, or another open in this one, has the database open for writing (`the database is open elsewhere: ...`, which goes on to say which <!-- since 0.3.8 -->), or another write held it for longer than `DbOptions::write_wait` (5 seconds) |
 | `Error::Timeout`, `Error::Memory` | a query ran past its deadline or its memory budget |
 | `Error::Corrupt` | the file failed a check |
 | `Error::Unavailable` | a hosted embedding model did not answer |

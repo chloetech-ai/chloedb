@@ -444,6 +444,16 @@ pub struct ModelJob {
     pub error: Option<String>,
     pub started_ms: u64,
     pub finished_ms: Option<u64>,
+    /// A fetch's bytes downloaded so far, and the sizes of the files it
+    /// began ([`crate::server::fetch_model_with`]).
+    pub bytes: u64,
+    pub size: u64,
+}
+
+impl ModelJob {
+    fn start(action: &'static str, from: Option<String>) -> ModelJob {
+        ModelJob { action, from, state: "running", error: None, started_ms: crate::telemetry::now_ms(), finished_ms: None, bytes: 0, size: 0 }
+    }
 }
 
 /// An embedded VECTOR field ([`chloedb::Embed`]) and its model, which
@@ -1744,7 +1754,24 @@ impl Service {
                 continue;
             }
             tracing::info!(table = %m.table, field = %m.field, model = name, "fetching the model of an embedded field");
-            match crate::server::fetch_model(name, &dir).await {
+            // A job as one asked for over HTTP is, so that the command
+            // center shows the download (MAYA-2 of the persona study of 17
+            // November 2026: "Add meaning" said the model did not open
+            // while it downloaded, and kept saying so once it had).
+            let running = {
+                let mut jobs = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner());
+                let running = jobs.get(&name.to_lowercase()).is_some_and(|j| j.state == "running");
+                if !running {
+                    jobs.insert(name.to_lowercase(), ModelJob::start("fetch", None));
+                }
+                running
+            };
+            if running {
+                continue;
+            }
+            let r = crate::server::fetch_model_with(name, &dir, &|bytes, size| self.model_job_progress(name, bytes, size)).await;
+            self.model_job_ended(name, r.as_ref().err().cloned());
+            match r {
                 Ok(_) => fetched = true,
                 Err(e) => tracing::warn!(model = name, error = %e, "could not fetch the model of an embedded field: fetch it with chloedb-server fetch-model, or start with --no-fetch-models"),
             }
@@ -1754,9 +1781,39 @@ impl Service {
         }
     }
 
-    /// The fetches and conversions of models asked for over HTTP.
+    /// The fetches and conversions of models: asked for over HTTP, and the
+    /// server's own for the fields that name them.
     pub fn model_jobs(&self) -> HashMap<String, ModelJob> {
         self.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn model_job_progress(&self, model: &str, bytes: u64, size: u64) {
+        if let Some(j) = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&model.to_lowercase()) {
+            (j.bytes, j.size) = (bytes, size);
+        }
+    }
+
+    fn model_job_ended(&self, model: &str, error: Option<String>) {
+        if let Some(j) = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&model.to_lowercase()) {
+            j.state = if error.is_none() { "done" } else { "failed" };
+            j.error = error;
+            j.finished_ms = Some(crate::telemetry::now_ms());
+        }
+    }
+
+    /// How the model of an embedded field that names `model` is being
+    /// fetched: its job ([`Self::model_jobs`]), or `queued` while this
+    /// server is about to fetch it (a field just added, before
+    /// [`Self::keep_models`] gets to it); `None` for a model it does not
+    /// fetch, or has.
+    pub fn model_fetch(&self, model: &str) -> Option<serde_json::Value> {
+        if let Some(j) = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).get(&model.to_lowercase()) {
+            return serde_json::to_value(j).ok();
+        }
+        let dir = self.models_dir.as_ref()?;
+        let name = chloedb::embed::to_fetch(model, dir).filter(|_| self.fetch_models)?;
+        let tried = self.fetch_tried.lock().unwrap_or_else(|e| e.into_inner()).contains(name);
+        (!tried).then(|| serde_json::json!({"action": "fetch", "state": "queued", "bytes": 0, "size": 0}))
     }
 
     /// Starts fetching model `name` of [`chloedb::embed::KNOWN_MODELS`]
@@ -1810,14 +1867,14 @@ impl Service {
             if jobs.get(&target.to_lowercase()).is_some_and(|j| j.state == "running") {
                 return Err(ApiError { code: None, status: 409, message: format!("model {target} is being made already") });
             }
-            let job = ModelJob { action: if from.is_some() { "convert" } else { "fetch" }, from: from.as_ref().map(|f| f.0.clone()), state: "running", error: None, started_ms: crate::telemetry::now_ms(), finished_ms: None };
+            let job = ModelJob::start(if from.is_some() { "convert" } else { "fetch" }, from.as_ref().map(|f| f.0.clone()));
             jobs.insert(target.to_lowercase(), job);
         }
         let svc = self.clone();
         let t = target.clone();
         tokio::spawn(async move {
             let done = match from {
-                None => crate::server::fetch_model(&t, &dir).await.map(|_| ()),
+                None => crate::server::fetch_model_with(&t, &dir, &|bytes, size| svc.model_job_progress(&t, bytes, size)).await.map(|_| ()),
                 Some((src, elem)) => {
                     let (a, b) = (dir.join(&src), dir.join(&t));
                     tokio::task::spawn_blocking(move || chloedb::embed::quantize_static(&a, &b, &elem).map(|_| ()).map_err(|e| e.to_string())).await.unwrap_or_else(|e| Err(e.to_string()))
@@ -1827,11 +1884,7 @@ impl Service {
                 Ok(()) => tracing::info!(model = %t, "made a model asked for over HTTP"),
                 Err(e) => tracing::warn!(model = %t, error = %e, "could not make a model asked for over HTTP"),
             }
-            if let Some(j) = svc.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&t.to_lowercase()) {
-                j.state = if done.is_ok() { "done" } else { "failed" };
-                j.error = done.as_ref().err().cloned();
-                j.finished_ms = Some(crate::telemetry::now_ms());
-            }
+            svc.model_job_ended(&t, done.as_ref().err().cloned());
             if done.is_ok() {
                 svc.reopen_models();
             }
@@ -2163,14 +2216,63 @@ impl Service {
 
     /// Writes a checkpoint of the database ([`chloedb::storage::Database::checkpoint`])
     /// named `name` in the backup directory, hard-linking the segments an
-    /// earlier checkpoint there (`link_from`) already holds.
-    pub async fn checkpoint(&self, name: &str, layout: Layout, link_from: Option<&str>) -> Result<CheckpointStats, ApiError> {
+    /// earlier checkpoint there (`link_from`) already holds, and beside it
+    /// what a server restored from it needs besides its rows, under the
+    /// names a server serving it with `--db` reads: the cluster map it
+    /// holds (`<name>.slots`) and its API keys (`<name>.keys.json`, readable
+    /// by its owner only), so that `chloedb-server restore` puts the three
+    /// in place of a copy's ([`crate::restore`]). The answer is the
+    /// checkpoint's [`CheckpointStats`], its `name`, the `files` it wrote,
+    /// and `slots` (its shard, the map's epoch and shards) and `keys` (how
+    /// many) when it has them. A checkpoint written while the map changed
+    /// (a move's flip) is not kept: its rows and map could disagree.
+    pub async fn checkpoint(&self, name: &str, layout: Layout, link_from: Option<&str>) -> Result<Json, ApiError> {
         let dir = self.backup_dir.as_ref().ok_or_else(|| ApiError::bad("checkpoints need the server started with --backup-dir"))?;
         let db = self.admin_db()?;
-        let dest = dir.join(checkpoint_name(name)?);
+        let name = checkpoint_name(name)?;
+        let dest = dir.join(name);
         let link_from = link_from.map(|n| checkpoint_name(n).map(|n| dir.join(n))).transpose()?;
         let opts = CheckpointOptions { layout, link_from };
-        tokio::task::spawn_blocking(move || db.storage().checkpoint(&dest, &opts)).await.map_err(ApiError::internal)?.map_err(Into::into)
+        let map = self.slots();
+        let since = self.slots_since.load(Ordering::Relaxed);
+        let to = dest.clone();
+        let stats: CheckpointStats = tokio::task::spawn_blocking(move || db.storage().checkpoint(&to, &opts)).await.map_err(ApiError::internal)??;
+        let held = |m: &Option<(SlotMap, usize)>| m.as_ref().map(|(m, s)| (m.epoch, *s));
+        let now = self.slots();
+        if held(&map) != held(&now) {
+            remove_checkpoint(&dest);
+            return Err(conflict(format!(
+                "the cluster map changed from epoch {} to {} while checkpoint {name} was written (slots moved), so it was not kept: write it again",
+                map.as_ref().map_or(0, |(m, _)| m.epoch),
+                now.as_ref().map_or(0, |(m, _)| m.epoch)
+            )));
+        }
+        let mut j = serde_json::to_value(&stats).map_err(ApiError::internal)?;
+        let mut files = vec![name.to_string()];
+        let kept = (|| -> Result<(), ApiError> {
+            if let Some((m, shard)) = &map {
+                let path = slots::file_of(&dest);
+                save_slots(&path, m, *shard, since).map_err(|e| ApiError::internal(format!("keep the slot map beside the checkpoint, in {}: {e}", path.display())))?;
+                files.push(format!("{name}.slots"));
+                j["slots"] = json!({"shard": shard, "epoch": m.epoch, "shards": m.shards()});
+            }
+            let keys = self.keys.set();
+            if !keys.keys.is_empty() || !keys.revoked.is_empty() {
+                let path = Keys::file_of(&dest);
+                let _ = std::fs::remove_file(&path);
+                Keys::open(path.clone()).map_err(ApiError::internal)?.merge(&keys)?;
+                files.push(format!("{name}.keys.json"));
+                j["keys"] = json!(keys.keys.len());
+            }
+            Ok(())
+        })();
+        if let Err(e) = kept {
+            remove_checkpoint(&dest);
+            return Err(e);
+        }
+        j["name"] = json!(name);
+        j["files"] = json!(files);
+        Ok(j)
     }
 
     /// Checks every byte of the database against its checksums
@@ -7216,9 +7318,20 @@ impl Queued {
     }
 }
 
+/// Removes the checkpoint at `dest` and what [`Service::checkpoint`] wrote
+/// beside it, which a server must not take for a whole checkpoint.
+fn remove_checkpoint(dest: &Path) {
+    let _ = match dest.is_dir() {
+        true => std::fs::remove_dir_all(dest),
+        false => std::fs::remove_file(dest),
+    };
+    let _ = std::fs::remove_file(slots::file_of(dest));
+    let _ = std::fs::remove_file(Keys::file_of(dest));
+}
+
 /// A checkpoint's name in the backup directory: letters, digits, '.', '_'
 /// and '-', not starting with '.', so that it stays in the directory.
-fn checkpoint_name(name: &str) -> Result<&str, ApiError> {
+pub(crate) fn checkpoint_name(name: &str) -> Result<&str, ApiError> {
     let ok = !name.is_empty() && name.len() <= 200 && !name.starts_with('.') && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
     ok.then_some(name).ok_or_else(|| ApiError::bad(format!("bad checkpoint name {name:?}: use letters, digits, '.', '_' and '-', not starting with '.'")))
 }
@@ -7875,6 +7988,37 @@ mod tests {
         changed.borrow_and_update();
         svc.reopen_models();
         assert!(!changed.has_changed().unwrap());
+    }
+
+    // MAYA-2 (the persona study of 17 November 2026): while the server
+    // downloaded the model of a field just added, the command center saw
+    // only the field's error ("fetch it first") and said the model did not
+    // open. The field says how its model is fetched: queued, running with
+    // its bytes, failed with why.
+    #[tokio::test]
+    async fn a_field_whose_model_the_server_fetches_says_how_the_fetch_goes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create_empty(&dir.path().join("t.strata"), chloedb::storage::DbOptions::default()).unwrap());
+        let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+        let mut svc = Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent, 16, Duration::from_secs(10));
+        svc.open_models(&dir.path().join("models"));
+        assert_eq!(svc.model_fetch("potion-base-8M"), None, "a server that does not fetch models");
+        svc.fetch_models = true;
+        let svc = Arc::new(svc);
+        let ddl = "CREATE TABLE listings (id KEYWORD PRIMARY KEY, title TEXT, emb VECTOR OPTIONS(embed = 'title', model = 'potion-base-8M'))";
+        svc.sql(&Principal::open(), ddl, &Params::new(), After::Any, 0).await.unwrap();
+        assert!(svc.models()[0].model.is_err());
+        assert_eq!(svc.model_fetch("potion-base-8M").unwrap()["state"], "queued");
+        assert_eq!(svc.model_fetch("hash:8"), None, "not a model to fetch");
+        // The download, as `fetch_known_models` records it.
+        svc.model_jobs.lock().unwrap().insert("potion-base-8m".into(), ModelJob::start("fetch", None));
+        svc.model_job_progress("potion-base-8M", 3_000_000, 30_000_000);
+        let f = svc.model_fetch("POTION-BASE-8M").unwrap();
+        assert_eq!((f["state"].as_str(), f["bytes"].as_u64(), f["size"].as_u64()), (Some("running"), Some(3_000_000), Some(30_000_000)), "{f}");
+        svc.model_job_ended("potion-base-8M", Some("https://huggingface.co/...: 503".into()));
+        let f = svc.model_fetch("potion-base-8M").unwrap();
+        assert_eq!(f["state"], "failed");
+        assert!(f["error"].as_str().unwrap().contains("503"), "{f}");
     }
 
     // Past saturation every query waited for a slot until its deadline, so

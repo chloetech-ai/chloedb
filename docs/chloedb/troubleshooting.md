@@ -18,14 +18,25 @@ Without `--offline` it also asks GitHub which release is the latest, and says so
 
 ## Installing
 
-### The install script stops: `could not find a chloedb-server release`
+### The install script stops: `could not tell which chloedb-server release is the newest`
+
+```text
+chloedb install: could not tell which chloedb-server release is the newest:
+  https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
+  https://github.com/chloetech-ai/chloedb/releases/latest: The requested URL returned error: 403
+  https://chloetech-ai.github.io/chloedb/site/versions.json: The requested URL returned error: 403
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.7 was the newest when this script was written):
+  curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=<version> sh
+```
+
+Without `CHLOEDB_VERSION`, the script asks which release is the newest, in turn: GitHub's API (`api.github.com`), then the address `github.com/chloetech-ai/chloedb/releases/latest` leads to, then this website's `versions.json`, and it says which one answered. It stops as above when none did, with each address and what it said: a proxy or firewall that blocks those addresses, or no network. A proxy that blocks only `api.github.com`, or an address that has used up GitHub's 60 requests an hour for clients without an account (a shared office or school network, a CI runner), no longer stops it. Copies of the script from before 18 November 2026, when it learned the other two, stop at the API instead, with these lines:
 
 ```text
 curl: (22) The requested URL returned error: 403
 chloedb install: could not find a chloedb-server release on https://github.com/chloetech-ai/chloedb/releases (set CHLOEDB_VERSION to pick one)
 ```
 
-Without `CHLOEDB_VERSION`, the script asks GitHub's API (`api.github.com`) which release is the newest. That request failed: a proxy or firewall blocks `api.github.com`, or your address has used up GitHub's 60 requests an hour for clients without an account (a shared office or school network, a CI runner). The archives come from `github.com` itself, which usually still works, so name the version. The variable goes after the pipe, where `sh` reads it; in front of `curl` it reaches only `curl`, and the script fails the same way:
+In either case, name the version, and the script downloads it without asking. The archives come from `github.com`'s downloads, which often still work where the other addresses are refused. The variable goes after the pipe, where `sh` reads it; in front of `curl` it reaches only `curl`, and the script fails the same way. The last line the script prints is the command to run, with your `--with` and `CHLOEDB_INSTALL_DIR` kept:
 
 ```sh
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.7 sh
@@ -64,13 +75,14 @@ pip installed the placeholder that held the name on PyPI, which it falls back to
 ### `busy: the database is open elsewhere`
 
 ```text
-chloedb._native.BusyError: busy: the database is open elsewhere
-ERROR chloedb_server: open recipes.chloedb: busy: the database is open elsewhere
+chloedb._native.BusyError: busy: the database is open elsewhere: process 3541 (python app.py), the parent of this process, has it open for writing. ...
+ERROR chloedb_server: open recipes.chloedb: busy: the database is open elsewhere: process 2210 (python load.py) has it open for writing, and one process writes a database at a time. ...
 ```
 
-One process at a time can open a database to write it, and the file is open to write already: in another process (a script still running, a chloedb-server serving it, the second process of Flask's debug reloader, another web worker), or in this process, by an earlier `open` of the same path that was not closed (a module imported twice, a notebook cell run again, a hot reload in Next.js). The message is the same in every case.
+One process at a time can open a database to write it, and the file is open to write already: in another process (a script still running, a chloedb-server serving it, the second process of Flask's debug reloader, another web worker), or in this process, by an earlier `open` of the same path that was not closed (a module imported twice, a notebook cell run again, a hot reload in Next.js). <!-- since 0.3.8 --> The message goes on to say which, from the process id the writer keeps beside the file (`this process has it open for writing already`, `process N, the parent of this process` for a reloader, or `process N has it open`, with its command on Linux), and what to do; Python and JavaScript add the fix in their own words. Before 0.3.8 it stopped at `the database is open elsewhere`.
 
-- In one process, open the database once and share it; close it before opening it again.
+- In one process, open the database once and share it; close it before opening it again. In JavaScript, keep it on `globalThis` (`globalThis.db ??= await open(path)`) so that a hot reload finds it.
+- Under a reloader (Flask's debug mode, Django's runserver, `uvicorn --reload`), open it when a request first needs it rather than at import, or run without the reloader.
 - To read it from other processes while one writes, open it read-only there: `chloedb.open(path, read_only=True)` in Python, `Database.open(path, { readOnly: true })` in JavaScript.
 - To write from several processes, serve the file with `chloedb-server --db path` and use the server's clients (`chloedb.connect(url)`), as [Build a search page](../guide/search-page.md) does.
 - `chloedb-server --db path` stops with the second line above while a script has the file open: stop the script first, or let it use the server too.
@@ -111,7 +123,7 @@ chloedb._native.BadRequestError: query error: no embedded field has its model op
 parameter :v: no table has a field this server can embed text for; pass a vector
 ```
 
-Fetch it once: `chloedb-server fetch-model potion-retrieval-32M` (about 130 MB). The models folder is `$CHLOEDB_MODELS` when that is set, else `~/.local/share/chloedb/models` (`~/.local/share/strata/models` on a machine that has that folder from before the rename); a server takes `--models DIR`, Python `chloedb.open(..., models=DIR)` and JavaScript the `models` option. Open the database again after fetching it; a running server opens a model fetched through it (its **Models** page, or `POST /v1/admin/models/fetch`). A server fetches a model it knows by itself when a table names it (unless it runs with `--no-fetch-models`, for a machine that cannot reach huggingface.co), and fills in the vectors of the rows written meanwhile; the error shows until the download ends, and `GET /v1/schema` then says `"loaded": true`.
+Fetch it once: `chloedb-server fetch-model potion-retrieval-32M` (about 130 MB). The models folder is `$CHLOEDB_MODELS` when that is set, else `~/.local/share/chloedb/models` (`~/.local/share/strata/models` on a machine that has that folder from before the rename); a server takes `--models DIR`, Python `chloedb.open(..., models=DIR)` and JavaScript the `models` option. Open the database again after fetching it; a running server opens a model fetched through it (its **Models** page, or `POST /v1/admin/models/fetch`). A server fetches a model it knows by itself when a table names it (unless it runs with `--no-fetch-models`, for a machine that cannot reach huggingface.co), and fills in the vectors of the rows written meanwhile; the error shows until the download ends, and `GET /v1/schema` then says `"loaded": true`. <!-- since 0.3.8 --> Meanwhile each embedded field in `GET /v1/schema` and `GET /v1/tables` says how its model's download goes, as `fetch` (`queued`, `running` with `bytes` of `size`, `done`, or `failed` with its `error`), and the command center's **Add meaning** shows it (`Downloading the model potion-retrieval-32M: 40.9 MB of 125 MB…`) and offers the Meaning search once it ends.
 
 ### A BERT model such as bge-small does not run
 
@@ -119,7 +131,7 @@ Fetch it once: `chloedb-server fetch-model potion-retrieval-32M` (about 130 MB).
 ERROR chloedb_server: schema error: model bge-small-en-v1.5 is a BERT model: build with the `bert` feature
 ```
 
-The prebuilt programs (the install script's archives, the PyPI wheels, the npm package and the Docker image) are built without the `bert` feature, so the BERT models ChloeDB knows do not run in them: `bge-small-en-v1.5`, `snowflake-arctic-embed-m-v1.5`, the ColBERT model `answerai-colbert-small-v1`, and the cross-encoders `ms-marco-MiniLM-L-6-v2` and `bge-reranker-base`. `chloedb-server fetch-model bge-small-en-v1.5` downloads the model (about 133 MB) and then stops with the message above, and a table that names one lists it in Python's `db.embed_errors`, which refuses the writes that need it, while a server stores those rows without their vectors. Models of images, sound and ONNX exports need the `vision`, `audio` and `onnx` features, also left out of the prebuilt programs. What to do instead:
+The prebuilt programs (the install script's archives, the PyPI wheels, the npm package and the Docker image) are built without the `bert` feature, so the BERT models ChloeDB knows do not run in them: `bge-small-en-v1.5`, `snowflake-arctic-embed-m-v1.5`, the ColBERT model `answerai-colbert-small-v1`, and the cross-encoders `ms-marco-MiniLM-L-6-v2` and `bge-reranker-base`. `chloedb-server fetch-model bge-small-en-v1.5` downloads the model (about 133 MB) and then stops with the message above, and a table that names one lists it in Python's `db.embed_errors`, which refuses the writes that need it, while a server stores those rows without their vectors. Models of images, sound and ONNX exports need the `vision`, `audio` and `onnx` features, also left out of the prebuilt programs. <!-- since 0.3.8 --> `chloedb-server doctor` warns about each model in the models folder that its build cannot run, and names the feature. What to do instead:
 
 - **A model that runs in every build**: `potion-retrieval-32M` (Model2Vec, 512 dimensions, the one the guides use) or the smaller `potion-base-8M`, and their int8 copies ([embedded vector fields](server.md#embedded-vector-fields)).
 - **A hosted model**: `openai/text-embedding-3-small`, `cohere/embed-v4.0`, `voyage/voyage-3.5`, or `ollama/nomic-embed-text` from an Ollama on your own machine, with no key ([hosted models](server.md#hosted-models)). The prebuilt programs call them.

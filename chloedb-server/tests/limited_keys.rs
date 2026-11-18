@@ -150,6 +150,57 @@ async fn show_tables_names_the_tables_a_key_reads() {
     assert!(j["error"].as_str().unwrap().contains("/v1/sql"), "{j}");
 }
 
+/// LENA-1: a server with a token names no table to a caller without a
+/// credential (its health says whether it is up, as a coordinator's does),
+/// and a key limited to tables sees its own tables alone in its health,
+/// in `/v1/cluster` and in an error for a table there is none of: no
+/// other table's name, nor its rows. The token sees them all.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_credential_and_a_limited_key_see_no_other_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let (base, _svc) = start(dir.path(), Vec::new()).await;
+    for t in ["payroll", "a_notes", "b_notes"] {
+        ok(&base, &format!("CREATE TABLE {t} (id KEYWORD PRIMARY KEY, body TEXT)")).await;
+    }
+    ok(&base, "INSERT INTO payroll (id, body) VALUES ('p1', 'x'), ('p2', 'y')").await;
+    ok(&base, "INSERT INTO a_notes (id, body) VALUES ('n1', 'x'), ('n2', 'y')").await;
+    ok(&base, "INSERT INTO b_notes (id, body) VALUES ('m1', 'x')").await;
+    let others = ["payroll", "b_notes", "products"];
+    let names_none = |what: &str, j: &Json| {
+        for t in others {
+            assert!(!j.to_string().contains(t), "{what} names {t}: {j}");
+        }
+    };
+    // Signed out, or with a wrong token: up or not, and nothing else.
+    for auth in [None, Some("not-the-token")] {
+        let (s, h) = call(&base, "GET", "/v1/health", auth, None).await;
+        assert_eq!((s, &h), (200, &json!({"status": "ok"})), "{auth:?}");
+    }
+    let tenant = key(&base, json!({"name": "tenant-a", "tables": {"a_*": "admin"}})).await;
+    let t = Some(tenant.as_str());
+    let (s, h) = call(&base, "GET", "/v1/health", t, None).await;
+    assert_eq!((s, &h["tables"], &h["rows"], &h["docs"], &h["status"]), (200, &json!({"a_notes": 2}), &json!(2), &json!(2), &json!("ok")), "{h}");
+    names_none("health", &h);
+    let (s, c) = call(&base, "GET", "/v1/cluster", t, None).await;
+    assert_eq!((s, &c["node"]["health"]["tables"]), (200, &json!({"a_notes": 2})), "{c}");
+    names_none("/v1/cluster", &c);
+    // A table of its prefix there is none of: no listing of the others.
+    for sql in ["INSERT INTO a_ghost (id) VALUES ('1')", "UPDATE a_ghost SET body = 'x' WHERE id = '1'", "DELETE FROM a_ghost WHERE id = '1'", "INSERT INTO a_note (id) VALUES ('1')"] {
+        let (s, e) = call(&base, "POST", "/v1/sql", t, Some(json!({"sql": sql}))).await;
+        assert_eq!(s, 400, "{sql}: {e}");
+        let m = e["error"].as_str().unwrap();
+        assert!(m.contains("no such table: a_") && m.contains("a_notes"), "{sql}: {m}");
+        names_none(sql, &e);
+    }
+    let (_, e) = call(&base, "POST", "/v1/sql", t, Some(json!({"sql": "INSERT INTO a_note (id) VALUES ('1')"}))).await;
+    assert!(e["error"].as_str().unwrap().contains("(did you mean a_notes?)"), "{e}");
+    // The token's holder sees every table, and the whole listing.
+    let (_, h) = call(&base, "GET", "/v1/health", ROOT, None).await;
+    assert_eq!((&h["tables"]["payroll"], &h["tables"]["b_notes"]), (&json!(2), &json!(1)), "{h}");
+    let (_, e) = call(&base, "POST", "/v1/sql", ROOT, Some(json!({"sql": "INSERT INTO a_ghost (id) VALUES ('1')"}))).await;
+    assert!(e["error"].as_str().unwrap().contains("payroll"), "{e}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_limited_key_uses_its_own_tables_routes() {
     let dir = tempfile::tempdir().unwrap();

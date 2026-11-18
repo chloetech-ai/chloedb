@@ -37,6 +37,7 @@ use std::ops::ControlFlow;
 use axum::http::Method;
 use chloedb::query::function::FunctionSet;
 use chloedb::query::sql::Command;
+use serde_json::Value as Json;
 use sqlparser::ast::{self as sql, Visit, Visitor};
 
 use crate::keys::{Principal, Scope};
@@ -98,6 +99,110 @@ pub fn push_route_ok(method: &Method, route: &str) -> bool {
         "/v1/health" | "/v1/whoami" => get,
         _ => false,
     }
+}
+
+/// Whether `who` sees table `table` by its name: one it may read (a
+/// write or admin grant reads too), and none for a connector's push key,
+/// which reads nothing.
+fn sees(who: &Principal, table: &str) -> bool {
+    !who.push_only() && who.table_scope(table).is_some_and(|s| s >= Scope::Read)
+}
+
+/// What a key limited to tables sees of a server's health (`GET
+/// /v1/health`, and a copy's in `/v1/cluster`): the tables it sees
+/// ([`sees`]) and their rows, and no count of another (LENA-1). `rows` and
+/// `docs` (which counts the first table) become its tables' rows, and a
+/// shard's or copy's `docs`, which count a table it may not see, go.
+/// Anyone else sees it whole.
+pub fn narrow_health(who: &Principal, h: &mut Json) {
+    if !who.limited() {
+        return;
+    }
+    narrow_counts(who, h);
+    for s in h.get_mut("shards").and_then(Json::as_array_mut).into_iter().flatten() {
+        if let Some(s) = s.as_object_mut() {
+            s.remove("docs");
+        }
+        for r in s.get_mut("replicas").and_then(Json::as_array_mut).into_iter().flatten() {
+            if let Some(r) = r.as_object_mut() {
+                r.remove("docs");
+            }
+        }
+    }
+}
+
+/// [`narrow_health`] of one health object: its `tables`, and `rows` and
+/// `docs` beside them.
+fn narrow_counts(who: &Principal, h: &mut Json) {
+    let Some(o) = h.as_object_mut() else { return };
+    let rows = match o.get_mut("tables").and_then(Json::as_object_mut) {
+        Some(t) => {
+            t.retain(|name, _| sees(who, name));
+            Some(t.values().filter_map(Json::as_u64).sum::<u64>())
+        }
+        None => None,
+    };
+    for k in ["rows", "docs"] {
+        match rows {
+            Some(n) if o.contains_key(k) => {
+                o.insert(k.into(), serde_json::json!(n));
+            }
+            Some(_) => {}
+            None => {
+                o.remove(k);
+            }
+        }
+    }
+}
+
+/// What a key limited to tables sees of `GET /v1/cluster`: each server's
+/// health as [`narrow_health`] shows it, and no copy's count of rows.
+pub fn narrow_cluster(who: &Principal, j: &mut Json) {
+    if !who.limited() {
+        return;
+    }
+    if let Some(h) = j.get_mut("node").and_then(|n| n.get_mut("health")) {
+        narrow_health(who, h);
+    }
+    for s in j.get_mut("shards").and_then(Json::as_array_mut).into_iter().flatten() {
+        if let Some(o) = s.as_object_mut() {
+            o.remove("docs");
+        }
+        for r in s.get_mut("replicas").and_then(Json::as_array_mut).into_iter().flatten() {
+            if let Some(o) = r.as_object_mut() {
+                o.remove("docs");
+            }
+            if let Some(h) = r.get_mut("detail").and_then(|d| d.get_mut("health")) {
+                narrow_health(who, h);
+            }
+        }
+    }
+}
+
+/// An error a key limited to tables reads, as it may read it (LENA-1): a
+/// table there is none of ("no such table: x (did you mean y?); the
+/// database's tables are a, b", [`chloedb::query::hint::no_table`]) is
+/// said again with the names among `tables` it sees alone, so that an
+/// error does not name, or confirm, a table it may not see. Anything
+/// else is as it was.
+pub fn narrow_error(who: &Principal, message: &str, tables: &[String]) -> String {
+    const NO: &str = "no such table: ";
+    // The engine's hints after the name, and what it says of system
+    // tables' names, which names none.
+    const HINTS: [&str; 3] = [" (did you mean ", "; the database's tables are ", "; the database has no tables yet"];
+    const SYSTEM: &str = "; ChloeDB has no system tables";
+    let Some(at) = message.find(NO).map(|i| i + NO.len()).filter(|_| who.limited()) else { return message.to_string() };
+    let (before, rest) = message.split_at(at);
+    let Some(end) = HINTS.iter().filter_map(|h| rest.find(h)).min() else { return message.to_string() };
+    let name = &rest[..end];
+    let system = rest.find(SYSTEM).map_or("", |i| &rest[i..]);
+    let seen: Vec<&str> = tables.iter().map(String::as_str).filter(|t| sees(who, t) && !chloedb::query::hint::internal_table(t)).collect();
+    let near = chloedb::query::hint::did_you_mean(name, seen.iter().copied());
+    let listing = match seen.is_empty() {
+        true => format!("; the key {:?} sees no table yet", who.name),
+        false => format!("; the tables the key {:?} sees are {}", who.name, chloedb::query::hint::listing(&seen, 30)),
+    };
+    format!("{before}{name}{near}{listing}{system}")
 }
 
 /// Refuses (403) statement `text`, bound as `command`, if `who` (a key

@@ -84,8 +84,12 @@ function indexText(t) {
 /** A field's vectors: whether its model is open here, and its backfill. */
 function vectorsState(e, fetches) {
   if (!e) return h("span", { class: "muted small" }, "–");
-  // A model the server knows and lacks: it is fetching it.
-  if (e.error && fetches && /fetch it first|not fetched/.test(e.error)) return h("span", { title: e.error }, pill("pending", "fetching the model"));
+  // A model the server knows and lacks: it is fetching it (`fetch`, from
+  // servers that say; before them, told by the error's words).
+  const f = e.fetch;
+  if (e.error && f?.state === "failed") return h("span", { class: "row nw", title: f.error }, pill("bad", "fetch failed"));
+  if (e.error && f?.state === "running" && f.bytes) return h("span", { class: "row nw", title: e.error }, pill("pending", "fetching the model"), h("span", { class: "small dim num" }, `${fmt.bytes(f.bytes)}${f.size > f.bytes ? ` of ${fmt.bytes(f.size)}` : ""}`));
+  if (e.error && (f || (fetches && /fetch it first|not fetched/.test(e.error)))) return h("span", { title: e.error }, pill("pending", "fetching the model"));
   if (e.error) return h("span", { class: "row nw", title: e.error }, pill("bad", "model not open"));
   const b = e.backfill;
   if (b?.state === "running") return h("span", { class: "row nw" }, pill("pending", "filling in"), h("span", { class: "small dim num" }, `${fmt.n(b.embedded)} of ${fmt.n(b.missing)}`));

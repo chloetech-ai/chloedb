@@ -1162,7 +1162,43 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
             tracing::info!(route = %route, status, error = %e.0, key = key.as_deref().unwrap_or("unknown"), held_back = held, "client error");
         }
     }
-    res
+    // A key limited to tables reads no other table's name in an error
+    // (LENA-1); the audit log keeps the whole message.
+    match &who {
+        Some(w) if w.limited() && (400..500).contains(&status) && res.extensions().get::<ClientError>().is_some_and(|e| e.0.contains("no such table: ")) => narrow_answer(&app, w, res).await,
+        _ => res,
+    }
+}
+
+/// Answer `res` (an error) with each of its messages as key `who` may
+/// read it ([`crate::scoped::narrow_error`]).
+async fn narrow_answer(app: &App, who: &Principal, res: Response) -> Response {
+    let (mut parts, body) = res.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, crate::service::SMALL_BODY).await else {
+        return (parts.status, AxJson(json!({"error": "no such table"}))).into_response();
+    };
+    let tables = app.svc.table_names();
+    let narrow = |s: &str| crate::scoped::narrow_error(who, s, &tables);
+    let body = match serde_json::from_slice::<Json>(&bytes) {
+        Ok(mut j) => {
+            fn walk(j: &mut Json, f: &dyn Fn(&str) -> String) {
+                match j {
+                    Json::String(s) => *s = f(s),
+                    Json::Array(a) => a.iter_mut().for_each(|x| walk(x, f)),
+                    Json::Object(o) => o.values_mut().for_each(|x| walk(x, f)),
+                    _ => {}
+                }
+            }
+            walk(&mut j, &narrow);
+            serde_json::to_vec(&j).unwrap_or_default()
+        }
+        Err(_) => narrow(&String::from_utf8_lossy(&bytes)).into_bytes(),
+    };
+    if let Some(e) = parts.extensions.get::<ClientError>().map(|e| narrow(&e.0)) {
+        parts.extensions.insert(ClientError(e.into()));
+    }
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, axum::body::Body::from(body))
 }
 
 /// Whether a request is an agent's change of the server that does not
@@ -1514,18 +1550,43 @@ fn after(b: &Json) -> Result<After, ApiError> {
 }
 
 async fn health(State(app): State<App>, headers: axum::http::HeaderMap) -> Response {
-    let h = app.svc.health().await;
+    let mut h = app.svc.health().await;
     let code = if matches!(h["status"].as_str(), Some("down" | "failing")) { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK };
-    // A coordinator's health names its copies' internal addresses, roles
-    // and counts (LIV-19): a request without a credential it takes reads
-    // whether it is up, and no more. The route still takes no credential.
-    if app.svc.coordinator().is_ok() {
-        let token = header_str(&headers, header::AUTHORIZATION).or_else(|| header_str(&headers, header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH)));
-        if app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), token).is_none() {
-            return (code, AxJson(json!({"status": h["status"]}))).into_response();
-        }
+    // A server's health names its tables and their rows, and a
+    // coordinator's its copies' internal addresses, roles and counts
+    // (LIV-19, LENA-1): a request without a credential it takes reads
+    // whether it is up, and no more, from every kind of server. The route
+    // still takes no credential. A key limited to tables sees its own
+    // tables alone.
+    match credential_of(&app, &headers) {
+        None => return (code, AxJson(json!({"status": h["status"]}))).into_response(),
+        Some(w) => crate::scoped::narrow_health(&w, &mut h),
     }
     (code, AxJson(h)).into_response()
+}
+
+/// Who a request's credential makes its caller, read as [`auth`] reads it
+/// (`Authorization`, the hub's proxy header, or a signed-in person's
+/// cookie, narrowed by an app's `x-chloedb-tables`), for a route that
+/// takes requests without one: `None` when it has none this server takes.
+/// On a server with no credential to check, anyone.
+fn credential_of(app: &App, headers: &HeaderMap) -> Option<Principal> {
+    let bearer = header_str(headers, header::AUTHORIZATION).or_else(|| header_str(headers, header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH)));
+    let from_cookie = match (bearer, &app.svc.signin) {
+        (None, Some(_)) => crate::signin::cookie(headers, crate::signin::SESSION_COOKIE).map(|v| format!("Bearer {v}")),
+        _ => None,
+    };
+    let mut w = app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), bearer.or(from_cookie.as_deref()))?;
+    match w.key.as_deref().and_then(|id| app.svc.keys.session(id)) {
+        // A session while the allow list still names its person.
+        Some((email, _)) => w.scope = w.scope.min(app.svc.signin.as_ref().and_then(|g| g.scope_of(&email))?),
+        None if from_cookie.is_some() => return None,
+        None => {}
+    }
+    match header_str(headers, header::HeaderName::from_static(keys::AS_TABLES)) {
+        Some(g) => w.narrowed(g).ok(),
+        None => Some(w),
+    }
 }
 
 /// Liveness and readiness: 503 when the server cannot write until it is
@@ -1682,6 +1743,9 @@ fn table_json(svc: &crate::service::Service, s: &chloedb::schema::Schema) -> Jso
         "embeddings": svc.models().iter().filter(|m| m.table.eq_ignore_ascii_case(&s.table)).map(|m| json!({
             "field": m.field, "from": m.spec.from, "model": m.spec.model,
             "loaded": m.model.is_ok(), "error": m.model.as_ref().err(),
+            // A model this server fetches for it: queued, running (with
+            // the bytes so far), done or failed.
+            "fetch": m.model.as_ref().err().and_then(|_| svc.model_fetch(&m.spec.model)),
             // A model behind an API: the requests it sent.
             "usage": m.model.as_ref().ok().and_then(|e| e.usage()).map(|u| json!({"requests": u.requests, "retries": u.retries, "failures": u.failures, "texts": u.texts, "tokens": u.tokens})),
             // Rows stored without a vector, filled in once the model opened.
@@ -3848,15 +3912,79 @@ async fn snapshot(State(app): State<App>) -> Res {
 }
 
 /// `{"name": ..., "layout": "file" | "dir", "link_from": ...}`: writes a
-/// checkpoint into the server's `--backup-dir`.
-async fn admin_checkpoint(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+/// checkpoint into the server's `--backup-dir`, with the cluster map and
+/// keys beside it ([`Service::checkpoint`]); on a coordinator, one of
+/// every shard ([`cluster_checkpoint`]).
+async fn admin_checkpoint(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let layout = match b.get("layout").and_then(|v| v.as_str()).unwrap_or("file") {
         "file" => Layout::SingleFile,
         "dir" | "directory" => Layout::Directory,
         other => return Err(ApiError::bad(format!("layout is \"file\" or \"dir\", not {other:?}"))),
     };
+    if let Ok(c) = app.svc.coordinator() {
+        return cluster_checkpoint(c, w, &b).await;
+    }
     let stats = app.svc.checkpoint(body_str(&b, "name")?, layout, b.get("link_from").and_then(|v| v.as_str())).await?;
-    Ok(AxJson(json!({"checkpoint": stats})))
+    Ok(AxJson(json!({"checkpoint": stats})).into_response())
+}
+
+/// `POST /v1/admin/checkpoint {"name", "layout"?, "link_from"?}` on a
+/// coordinator: the copy taking each shard's writes (its primary, or its
+/// one copy) writes checkpoint `name` into its own `--backup-dir`, every
+/// shard at once, as `POST /v1/admin/copies/checkpoint` has one copy do.
+/// Answers `{name, slot_epoch, shards: [{shard, url, short, backup_dir,
+/// checkpoint}]}` when every shard wrote it under the same cluster map;
+/// otherwise an error naming each shard that did not, and those that did
+/// (their checkpoints stay: write the next under another name).
+async fn cluster_checkpoint(c: &crate::coord::Coordinator, w: Option<axum::Extension<Principal>>, b: &Json) -> Result<Response, ApiError> {
+    let name = crate::service::checkpoint_name(body_str(b, "name")?)?.to_string();
+    let snap = c.snapshot_within(Duration::ZERO).await;
+    let mut asks = Vec::new();
+    let mut failed: Vec<(u64, ApiError)> = Vec::new();
+    for s in snap["shards"].as_array().into_iter().flatten() {
+        let i = s["shard"].as_u64().unwrap_or(0);
+        let up: Vec<&Json> = s["replicas"].as_array().into_iter().flatten().filter(|r| r["status"] != "down").collect();
+        // A shard of copies without roles (one copy, most often) is
+        // checkpointed on its first copy that answers.
+        let url = s["primary"].as_str().map(String::from).or_else(|| up.iter().all(|r| r["role"] == "standalone").then(|| up.first().and_then(|r| r["url"].as_str()).map(String::from)).flatten());
+        match url {
+            Some(u) => {
+                let short = up.iter().find(|r| r["url"] == u.as_str()).map_or(Json::Null, |r| r["short"].clone());
+                let dir = up.iter().find(|r| r["url"] == u.as_str()).map_or(Json::Null, |r| r["backup_dir"].clone());
+                asks.push((i, u, short, dir));
+            }
+            None => failed.push((i, ApiError { code: None, status: 503, message: format!("shard {i} has no primary up: {}", s["why"].as_str().unwrap_or("its copies do not answer")) })),
+        }
+    }
+    let by = keys::audit_name(&who(w));
+    keys::note_change(keys::Change { object: Some("every shard".into()), after: Some(json!({"checkpoint": name, "layout": b["layout"]})), ..Default::default() });
+    let body = json!({"name": name, "layout": b["layout"].as_str().unwrap_or("file"), "link_from": b["link_from"], "by": by});
+    let answers = futures::future::join_all(asks.into_iter().map(|(i, url, short, dir)| {
+        let body = body.clone();
+        async move { (i, url.clone(), short, dir, ask_copy(c, &url, crate::profiling::Kind::Checkpoint, body).await) }
+    }))
+    .await;
+    let mut shards = Vec::new();
+    for (i, url, short, dir, a) in answers {
+        match a {
+            Ok(j) => shards.push(json!({"shard": i, "url": url, "short": short, "backup_dir": dir, "checkpoint": j["checkpoint"]})),
+            Err(e) => failed.push((i, e)),
+        }
+    }
+    shards.sort_by_key(|s| s["shard"].as_u64());
+    failed.sort_by_key(|(i, _)| *i);
+    let written = |shards: &[Json]| shards.iter().map(|s| format!("shard {} ({})", s["shard"], s["short"].as_str().unwrap_or("?"))).collect::<Vec<_>>().join(", ");
+    if let Some((_, first)) = failed.first() {
+        let why: Vec<String> = failed.iter().map(|(i, e)| format!("shard {i}: {}", e.message)).collect();
+        let kept = if shards.is_empty() { String::new() } else { format!("; written on {}, which keep it", written(&shards)) };
+        return Err(ApiError { code: None, status: first.status, message: format!("checkpoint {name} was not written on every shard ({}){kept}", why.join("; ")) });
+    }
+    let epochs: std::collections::BTreeSet<u64> = shards.iter().map(|s| s["checkpoint"]["slots"]["epoch"].as_u64().unwrap_or(0)).collect();
+    if epochs.len() > 1 {
+        return Err(ApiError { code: None, status: 409, message: format!("checkpoint {name} was written on every shard, but under cluster maps of epochs {epochs:?} (slots moved meanwhile): a restore needs one map, so write them again under another name") });
+    }
+    let j = json!({"name": name, "slot_epoch": epochs.first(), "shards": shards});
+    Ok(audited(j, format!("checkpoint {name} of every shard: {}", written(&shards))))
 }
 
 /// `{"rate_mib_s"?}`: reads every segment against its checksum now
@@ -5488,8 +5616,10 @@ async fn app_forward(
     app.svc.apps.forward(&name, &who(w), method, &rest, uri.query(), &headers, body).await
 }
 
-async fn cluster(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
+async fn cluster(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Params) -> AxJson<Json> {
     let mut j = app.svc.cluster().await;
+    // A key limited to tables: its tables' counts alone (LENA-1).
+    crate::scoped::narrow_cluster(&who(w), &mut j);
     // fleet: `brief=1` leaves out each copy's detail, for a view that
     // shows only which copies answer (and the shell's badges).
     if q.get("brief").is_some_and(|v| v == "1" || v == "true") {
@@ -6921,8 +7051,14 @@ async fn rotate_key(State(app): State<App>, w: Option<axum::Extension<Principal>
         None | Some(Json::Null) => 60.0,
         Some(v) => v.as_f64().filter(|m| (0.0..=10_080.0).contains(m)).ok_or_else(|| ApiError::bad("grace_minutes is a number of minutes from 0 to 10080 (a week)"))?,
     };
+    // An agent rotates agents' keys alone: the new secret of a person's
+    // key would be a key outside its fence (LENA-2).
+    let w = who(w);
+    if crate::ops::is_agent(&w, keys::caller().as_ref()) && app.svc.keys.is_agents(&id) == Some(false) {
+        return Err(ApiError::coded(403, "change_request_required", format!("key {id} is not an agent's: {:?}, an agent's, rotates agents' keys alone; a person rotates it, or approves a change request (POST /v1/admin/changes)", w.name)));
+    }
     let (key, secret, old) = app.svc.keys.rotate(&id, (grace * 60_000.0) as u64, app.guarded())?;
-    let by = keys::audit_name(&who(w));
+    let by = keys::audit_name(&w);
     tracing::info!(key = %key.id, old = %old.id, name = %key.name, by = %by, "API key rotated");
     keys::note_change(keys::Change { object: Some(format!("key {}", key.name)), before: Some(json!({"id": old.id})), after: Some(json!({"id": key.id, "old_expires_ms": old.expires_ms})), ..Default::default() });
     let detail = format!("rotated key {} ({} in place of {}, which expires in {grace} min)", key.name, key.id, old.id);
@@ -6943,7 +7079,7 @@ async fn lower_key_budget(State(app): State<App>, w: Option<axum::Extension<Prin
 
 /// `{"name": ..., "scope": "feed" | "read" | "write" | "admin",
 /// "expires_days": n}`: a new key; its secret is in this answer only.
-async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+async fn create_key(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     // A misspelt field would otherwise be left out without a word, and a
     // key without its limits reads every table: refuse what is not a
     // field of a key.
@@ -6986,7 +7122,7 @@ async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<R
         Some(_) => Scope::Read,
         None => Scope::parse(asked).ok_or_else(|| ApiError::bad("scope is feed, read, write, admin, ops or propose"))?,
     };
-    let expires = match (b.get("expires_days"), b.get("expires_minutes")) {
+    let mut expires = match (b.get("expires_days"), b.get("expires_minutes")) {
         (Some(d), Some(m)) if !d.is_null() && !m.is_null() => return Err(ApiError::bad("say expires_days or expires_minutes, not both")),
         (Some(v), _) if !v.is_null() => Some(telemetry::now_ms() + v.as_f64().filter(|d| *d > 0.0).ok_or_else(|| ApiError::bad("expires_days is a number of days above 0"))?.mul_add(86_400_000.0, 0.0) as u64),
         // An agent's key for one task: from 5 minutes.
@@ -7003,7 +7139,12 @@ async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<R
     let text = |k: &str| b.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(|v| v.chars().take(200).collect::<String>());
     // What one statement it sends may cost ([`chloedb::query::budget`]).
     let budget = b.get("budget").map(chloedb::query::budget::Budget::from_json).transpose()?.filter(|b| !b.is_none());
-    let more = keys::AgentKey { role, agent, on_behalf_of: text("on_behalf_of"), allow: Some(allow), budget };
+    let mut more = keys::AgentKey { role, agent, on_behalf_of: text("on_behalf_of"), allow: Some(allow), budget };
+    // An agent's key makes agents' keys, no wider than its own (LENA-2).
+    let by = who(w);
+    if crate::ops::is_agent(&by, keys::caller().as_ref()) {
+        app.svc.keys.fence_agents_key(&by, b.get("agent").and_then(Json::as_bool), &mut more, &mut expires)?;
+    }
     let (key, secret) = app.svc.keys.create_full(name, scope, tables, expires, text("owner"), text("note"), more, app.guarded(), in_cluster)?;
     let scope = key.scope_name();
     let limits = key.tables.as_deref().map(keys::grants_json);

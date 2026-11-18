@@ -95,7 +95,8 @@ published as `strata-db` and imports as `strata` only.
 
 - `BusyError: busy: the database is open elsewhere`: the file is open to
   write already, in another process (Flask's debug reloader, a second
-  worker, a chloedb-server) or by an earlier `open` in this one. Share one
+  worker, a chloedb-server) or by an earlier `open` in this one, and the
+  message goes on to say which, and what to do. Share one
   `db` in a process, open it with `read_only=True` in the others, or serve
   it with `chloedb-server` and `chloedb.connect` to it.
 - `urllib.error.URLError: <urlopen error [Errno 111] Connection refused>`:

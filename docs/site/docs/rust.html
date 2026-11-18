@@ -217,7 +217,7 @@ let n = db.query(&quot;SELECT count(*) FROM notes WHERE MATCH(body, &#x27;cents&
 </tr>
 <tr>
 <td><code>Error::Busy</code></td>
-<td>another process has the database open for writing (<code>the database is open elsewhere</code>), or another write held it for longer than <code>DbOptions::write_wait</code> (5 seconds)</td>
+<td>another process, or another open in this one, has the database open for writing (<code>the database is open elsewhere: ...</code>, which goes on to say which <span class="since unreleased">since 0.3.8 (unreleased)</span>), or another write held it for longer than <code>DbOptions::write_wait</code> (5 seconds)</td>
 </tr>
 <tr>
 <td><code>Error::Timeout</code>, <code>Error::Memory</code></td>

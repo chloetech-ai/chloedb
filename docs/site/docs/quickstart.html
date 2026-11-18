@@ -125,10 +125,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>Pick one. Each gives you a <code>chloedb-server</code> program, prebuilt (a download of about 50 MB), in under a minute.</p>
 <p><strong>The install script</strong> puts it in <code>~/.local/bin</code> (it says what to add to your <code>PATH</code> if that folder is not on it yet). It checks the download against the release's SHA-256 and changes nothing else. <a href="../../install.sh">Read it</a> first if you like.</p>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh</pre>
-<p>If it stops with these lines, it could not ask GitHub's API (<code>api.github.com</code>) which release is the newest: a proxy or firewall blocks that address, or your network's address has used up GitHub's 60 requests an hour for clients without an account (an office, a school, a CI runner):</p>
-<pre data-lang="text" data-title="Output">curl: (22) The requested URL returned error: 403
-chloedb install: could not find a chloedb-server release on https://github.com/chloetech-ai/chloedb/releases (set CHLOEDB_VERSION to pick one)</pre>
-<p>Name the version instead, and the script downloads it without asking. The variable goes after the pipe, where <code>sh</code> reads it (in front of <code>curl</code>, the script never sees it):</p>
+<p>It asks GitHub's API (<code>api.github.com</code>) which release is the newest, and when a proxy or firewall blocks that address, or your network's address has used up GitHub's 60 requests an hour for clients without an account (an office, a school, a CI runner), it asks <code>github.com</code> and then this website instead, and says which one answered. If it stops with these lines, none answered:</p>
+<pre data-lang="text" data-title="Output">chloedb install: could not tell which chloedb-server release is the newest:
+  https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
+  ...
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v&lt;version&gt;; 0.3.7 was the newest when this script was written):
+  curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=&lt;version&gt; sh</pre>
+<p>A copy of the script from before 18 November 2026 asked GitHub's API alone, and stopped with <code>could not find a chloedb-server release on https://github.com/chloetech-ai/chloedb/releases (set CHLOEDB_VERSION to pick one)</code>. Either way, name the version, and the script downloads it without asking. The variable goes after the pipe, where <code>sh</code> reads it (in front of <code>curl</code>, the script never sees it):</p>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.7 sh</pre>
 <p><strong>pipx, uv or pip</strong> <span class="since">since 0.3.7</span>: the same server, from <a href="https://pypi.org/project/chloedb-server/">PyPI</a>, which asks GitHub nothing, on the same Macs and on Linux with glibc 2.34 or later. <code>pipx install</code> and <code>uv tool install</code> put <code>chloedb-server</code> on your <code>PATH</code>; <code>uvx chloedb-server</code> runs it without installing it.</p>
 <pre data-lang="sh">pipx install chloedb-server      # or: uv tool install chloedb-server</pre>

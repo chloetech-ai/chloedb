@@ -735,6 +735,52 @@ def test_sync_false_loses_nothing_when_the_program_crashes(tmp_path):
         assert db.sql("SELECT COUNT(*) FROM t").scalar() == 2
 
 
+def test_a_refused_writer_is_told_who_has_it_and_what_to_do(tmp_path):
+    # MAYA-3 and DEV-11 of the persona study of 17 November 2026: Flask's
+    # debug reloader, and a second open in one process, were told only
+    # "busy: the database is open elsewhere".
+    import subprocess
+    import sys
+
+    path = tmp_path / "app.chloedb"
+    with chloedb.open(path, schema=BOOKS):
+        # A second open in this process (a module run again).
+        with pytest.raises(chloedb.BusyError, match="this process has it open for writing already") as e:
+            chloedb.open(path)
+        assert e.value.code == "busy"
+        assert "functools.cache" in str(e.value) and "read_only=True" in str(e.value), e.value
+        # Flask's reloader: the first process keeps the database it opened
+        # when it imported the app, and runs the app again in a child.
+        child = subprocess.run(
+            [sys.executable, "-c", "import sys, chloedb\ntry:\n    chloedb.open(sys.argv[1])\nexcept chloedb.BusyError as e:\n    print(e)\n", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        said = child.stdout + child.stderr
+        assert f"process {os.getpid()}" in said and "the parent of this process" in said, said
+        assert "use_reloader=False" in said and "chloedb.connect" in said, said
+    # Another program has it open: named by its pid.
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys, chloedb\ndb = chloedb.open(sys.argv[1])\nprint('open', flush=True)\nsys.stdin.read()\n", str(path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "open"
+        with pytest.raises(chloedb.BusyError) as e:
+            chloedb.open(path)
+        said = str(e.value)
+        assert f"process {holder.pid}" in said and "read_only=True" in said and "chloedb-server --db" in said, said
+        # It reads beside that writer, as the message says.
+        with chloedb.open(path, read_only=True) as r:
+            assert len(r) == 0
+    finally:
+        holder.stdin.close()
+        holder.wait(timeout=30)
+
+
 def test_read_only_follows_another_process(tmp_path):
     path = tmp_path / "shared.strata"
     with chloedb.open(path, schema=BOOKS) as w:
