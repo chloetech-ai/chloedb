@@ -390,6 +390,8 @@ Every error ChloeDB raises is a `chloedb.ChloeDBError` (`except chloedb.ChloeDBE
 | `timeout` | `DeadlineError` | a deadline passed: a query's `timeout_ms`, a coordinator's wait for a shard (504), the engine's own |
 | `unavailable` | `UnavailableError` | no copy can serve it now (503): a replica behind, a primary replaced, a hosted model down |
 
+A write through a coordinator that may or may not be applied (its shard's primary stopped answering, or was replaced while the write was being acknowledged) keeps its status's class, `UnavailableError` (503) or `ConflictError` (409), and says so: `.in_doubt` is true and `.idempotency_key` is the key to send it again with, which applies it once (the coordinator's own when the write had none; the server's [Failover](server.md#failover)). Do not send it again as it was: without the key it could be applied twice.
+
 `chloedb.__version__` is the package's version <!-- since 0.3.2 -->, and the package ships `py.typed`, so type checkers read its annotations.
 
 Other codes have no subclass: `memory` (a query past its memory budget, [limits](#limits-memory-deadlines-interrupting)), `corrupt`, `io`, `internal` (another 5xx) and `error`. `chloedb.error_code(message, status, answer)` gives the code of any message. A server that cannot be reached still raises `urllib.error.URLError`, and a client's own timeout `TimeoutError`, as before.

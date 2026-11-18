@@ -366,6 +366,7 @@ db.timeoutMs, db.memory;          // the limits now (null: none)</pre>
 </tr>
 </tbody>
 </table></div>
+<p>A write through a coordinator that may or may not be applied (its shard's primary stopped answering, or was replaced while the write was being acknowledged) keeps its status's class, <code>UnavailableError</code> (503) or <code>ConflictError</code> (409), and says so: <code>err.inDoubt</code> is true and <code>err.idempotencyKey</code> is the key to send it again with (<code>{ idempotencyKey }</code>), which applies it once; without the key it could be applied twice (<a href="server.html#failover">Failover</a>).</p>
 <p>Other codes are <code>memory</code> (a query past its memory budget), <code>corrupt</code>, <code>io</code>, <code>internal</code> and <code>error</code> (which is also what <code>open</code> of a file that does not exist, without a schema, rejects with: "x.chloedb does not exist: pass a schema to create it"); <code>errorCode(message, status, answer)</code> gives the code of any message.</p>
 <h2 id="a-server-from-javascript">A server from JavaScript<a class="anchor" href="#a-server-from-javascript" aria-label="Link to this section">#</a></h2>
 <pre data-lang="js" data-title="JavaScript">import { connect } from &quot;chloedb/client&quot;;   // or from &quot;chloedb&quot;

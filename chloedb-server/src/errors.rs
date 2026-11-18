@@ -28,6 +28,13 @@ use crate::ApiError;
 /// Where the server's reference lives on the website.
 const DOCS: &str = "https://chloetech-ai.github.io/chloedb/site/docs/server.html";
 
+/// A write through a coordinator whose shard's primary was given up on,
+/// or was replaced while it was being acknowledged: it may or may not be
+/// applied, and the answer names the idempotency key (`idempotency_key`)
+/// that sends it again safely ([`crate::coord`]). Not retryable: the same
+/// request sent again without that key may apply it twice.
+pub const WRITE_IN_DOUBT: &str = "write_in_doubt";
+
 /// One code: its name, whether the same request may succeed later, what
 /// to do, and the anchor of the server reference that explains it.
 pub struct Code {
@@ -62,6 +69,7 @@ pub const CODES: &[Code] = &[
     c("deadline_exceeded", true, "the request ran past its deadline: send it with a larger timeout_ms, or make it cheaper", "deadlines-admission-and-metrics"),
     c("cancelled", false, "someone cancelled the query (DELETE /v1/queries/<id>)", "what-the-server-is-doing-now"),
     c("unavailable", true, "a copy, a shard or a hosted model did not answer: send it again after Retry-After seconds", "failover"),
+    c(WRITE_IN_DOUBT, false, "the write may or may not be applied: send the same request again with the idempotency_key the answer names, which applies it once, or read it back first", "failover"),
     c("not_found", false, "nothing has that name or id", "http-api"),
     c("conflict", false, "refused in the state the server is in now, as the error says", "http-api"),
     c("too_large", false, "the request is larger than the server takes: send less at once", "limits"),
