@@ -160,6 +160,37 @@ or one server), so shards of older versions need nothing new.
   full report and an Agents tab
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#live-runs)).
 
+### Query plans
+
+Rules that read only the rows that can be in an answer, from what ChloeDB
+knows of its tables; no answer changes.
+
+- **`ORDER BY` several keys with a `LIMIT` reads only the ties of the
+  first.** `ORDER BY fare DESC, distance DESC LIMIT 10` sorted every row.
+  The scan now finds the first key's n-th value with its top-k (n is
+  `OFFSET` plus `LIMIT`) and reads only the rows that tie with it or beat
+  it, and those whose key is `NULL`. The first key has to be an indexed
+  `INT` or `FLOAT` field of one value. On a 4-core cloud VM (Xeon @
+  2.10GHz), the top 10 of 224,056 taxi trips by two keys went from 40 ms to
+  1 ms.
+- **A small, filtered side of a join is read first.** When a join's right
+  side is a filtered table of at most 1,024 rows, and the scan on the left
+  that holds the key counts 32 times as many, the right side is read whole
+  and restricts that scan to its keys. `trips JOIN zones ... WHERE
+  z.borough = 'Staten Island'` reads 8 zones and the 13 trips they hold,
+  not all 224,056 trips (40 ms to 0.8 ms on that VM). The operators and
+  DataFusion choose alike.
+- **Filters reach the tables they hold for.** A `WHERE` on a derived
+  table's plain column filters its table's scan, a condition on one inner
+  join key filters the other key's table too, and a `WHERE` on a `LEFT
+  JOIN`'s right table that drops `NULL`s plans the join inner. The queries
+  of that kind in the persona study's battery took 2.4 to 6.6 times less
+  time.
+- **A coordinator's BM25 ranking that pins the key** (or `shard_by`) asks
+  only the shards of those keys, as other reads by key do. Its statistics
+  still come from every shard, so the scores are a fan-out's. No protocol
+  change: servers of 0.3.8 mix with it in either order.
+
 ## 0.3.8
 
 Durable one-row writes about 2.6 times as fast, typo and short substring
