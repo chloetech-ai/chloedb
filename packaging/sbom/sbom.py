@@ -140,7 +140,7 @@ def checksums(lock_text):
 
 
 def metadata(crate_dir, target):
-    cmd = ["cargo", "metadata", "--format-version", "1", "--locked"]
+    cmd = ["cargo", "metadata", "--format-version", "1", "--locked", "--color", "never"]
     if target:
         cmd += ["--filter-platform", target]
     r = subprocess.run(cmd, cwd=crate_dir, capture_output=True, text=True)
@@ -162,7 +162,9 @@ def tree(crate_dir, target, edges):
     build): the graph cargo's resolver builds for the release, features
     and all, which `cargo metadata` does not give (it unifies the features
     the dev-dependencies ask for too)."""
-    cmd = ["cargo", "tree", "--locked", "-e", edges, "--target", target, "--prefix", "depth", "-f", "{p}"]
+    # --color never: the release workflow sets CARGO_TERM_COLOR=always, which
+    # colours cargo tree's "(*)" marks.
+    cmd = ["cargo", "tree", "--locked", "--color", "never", "-e", edges, "--target", target, "--prefix", "depth", "-f", "{p}"]
     r = subprocess.run(cmd, cwd=crate_dir, capture_output=True, text=True)
     if r.returncode != 0:
         raise Refused(f"cargo tree in {crate_dir} failed:\n{r.stderr}")
