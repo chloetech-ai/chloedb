@@ -328,7 +328,7 @@ On each machine, the new binary is the release's archive, checked against its `.
 
 ```sh
 # install
-v=0.3.7 p=linux-x86_64
+v=0.3.8 p=linux-x86_64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz.sha256
 sha256sum -c chloedb-server-$p.tar.gz.sha256 && tar xzf chloedb-server-$p.tar.gz

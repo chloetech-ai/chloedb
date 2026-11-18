@@ -727,7 +727,12 @@ def test_sync_false_loses_nothing_when_the_program_crashes(tmp_path):
         db.insert({"id": "r50", "n": 50})
     with chloedb.Database.open(path) as db:
         assert len(db) == 50
-    # connect takes it too, for a database its first create_table makes.
+
+
+def test_connect_takes_sync_false_for_the_database_create_table_makes(tmp_path):
+    # create_table with rows takes them as a frame, which needs pyarrow (the
+    # `frame` extra); the release's wheel test installs only pytest and numpy.
+    pytest.importorskip("pyarrow")
     with chloedb.connect(tmp_path / "later.strata", sync=False) as db:
         db.create_table("t", [{"id": "a", "n": 1}], key="id")
         db.insert({"id": "b", "n": 2}, table="t")
