@@ -196,6 +196,9 @@ fn pct(r: f64) -> String {
 pub struct Window {
     pub queries: f64,
     pub failures: f64,
+    /// Writes ended, and those that failed on the server's side (OLU-203).
+    pub writes: f64,
+    pub write_failures: f64,
     pub hist: Vec<u64>,
     pub secs: f64,
     pub cpu_s: f64,
@@ -215,6 +218,8 @@ impl Window {
             let f = p["query_errors"].as_f64().unwrap_or_else(|| p["errors_s"].as_f64().unwrap_or(0.0) * secs);
             w.queries += n;
             w.failures += f;
+            w.writes += p["writes"].as_f64().unwrap_or(0.0);
+            w.write_failures += p["write_failures"].as_f64().unwrap_or(0.0);
             w.secs += secs;
             w.cpu_s += p["cpu"].as_f64().unwrap_or(0.0) * secs;
             if let Some(h) = p["latency_hist"].as_array() {
@@ -236,12 +241,12 @@ impl Window {
 
     /// What another coordinator is sent of it (`GET /v1/coordinators?window=1`).
     pub fn json(&self) -> Json {
-        json!({"queries": self.queries, "failures": self.failures, "hist": self.hist, "secs": self.secs, "cpu_s": self.cpu_s})
+        json!({"queries": self.queries, "failures": self.failures, "writes": self.writes, "write_failures": self.write_failures, "hist": self.hist, "secs": self.secs, "cpu_s": self.cpu_s})
     }
 
     pub fn from_json(j: &Json) -> Window {
         let f = |k: &str| j[k].as_f64().unwrap_or(0.0);
-        Window { queries: f("queries"), failures: f("failures"), hist: j["hist"].as_array().map(|h| h.iter().map(|c| c.as_u64().unwrap_or(0)).collect()).unwrap_or_default(), secs: f("secs"), cpu_s: f("cpu_s"), ratios: Vec::new() }
+        Window { queries: f("queries"), failures: f("failures"), writes: f("writes"), write_failures: f("write_failures"), hist: j["hist"].as_array().map(|h| h.iter().map(|c| c.as_u64().unwrap_or(0)).collect()).unwrap_or_default(), secs: f("secs"), cpu_s: f("cpu_s"), ratios: Vec::new() }
     }
 
     /// `other`'s searches added to these (another coordinator's, over the
@@ -250,6 +255,8 @@ impl Window {
     pub fn add(&mut self, other: &Window) {
         self.queries += other.queries;
         self.failures += other.failures;
+        self.writes += other.writes;
+        self.write_failures += other.write_failures;
         self.cpu_s += other.cpu_s;
         self.secs = self.secs.max(other.secs);
         self.hist.resize(self.hist.len().max(other.hist.len()), 0);
@@ -260,6 +267,12 @@ impl Window {
 
     pub fn error_ratio(&self) -> Option<f64> {
         (self.queries > 0.0).then(|| self.failures / self.queries)
+    }
+
+    /// The share of writes that failed on the server's side (`None`
+    /// without a write).
+    pub fn write_error_ratio(&self) -> Option<f64> {
+        (self.writes > 0.0).then(|| self.write_failures / self.writes)
     }
 
     /// The latest run of points whose failure ratio is over `over`: its
@@ -655,7 +668,43 @@ impl Fleet {
         if let (true, Some((from, to, worst))) = (recovered, run) {
             er["recovered"] = json!({"from_ms": from, "to_ms": to, "worst": worst});
         }
+        // OLU-203: writes that failed on the server's side, beside searches:
+        // a shard without a primary fails writes while every search answers.
+        let (wr, wr_recent) = (w.write_error_ratio(), r.write_error_ratio());
+        let writes_failing = match wr_recent {
+            Some(x) => x > slo && r.write_failures >= RECENT_FAILURES,
+            None => wr.is_some_and(|y| y > slo) && w.write_failures >= RECENT_FAILURES,
+        };
+        let wr_status = if writes_failing {
+            "critical"
+        } else if wr.is_some_and(|y| y > slo / 2.0) && w.write_failures >= RECENT_FAILURES {
+            "warning"
+        } else {
+            "ok"
+        };
+        er["writes"] = json!({"status": wr_status, "value": wr, "window_s": WINDOW_S, "writes": w.writes.round(), "failures": w.write_failures.round(),
+            "recent": {"value": wr_recent, "window_s": RECENT_S, "writes": r.writes.round(), "failures": r.write_failures.round()}});
+        let rank = |s: &str| match s {
+            "critical" => 2,
+            "warning" => 1,
+            _ => 0,
+        };
+        if rank(wr_status) > rank(er_status) {
+            er["status"] = json!(wr_status);
+            er["searches_status"] = json!(er_status);
+        }
         checks.push(er);
+        // Said on its own only when no shard's state says it already.
+        if let (true, Some(x)) = (writes_failing && downs + no_reads + no_writes == 0, wr_recent.or(wr)) {
+            let over = if wr_recent.is_some() { "the last minute" } else { "the last 5 min" };
+            problems.push(Problem {
+                rank: 3,
+                critical: true,
+                headline: format!("Writes are failing: more than the SLO's {} fail on the server", pct(slo)),
+                j: json!({"id": "write_error_ratio", "severity": "critical", "title": format!("{} of writes failed over {over} (SLO {})", pct(x), pct(slo)), "where": ["writes"], "since_ms": null,
+                    "impact": format!("{} of writes fail", pct(x)), "next": {"text": "See the server's errors", "view": "logs", "params": {"level": "error"}}}),
+            });
+        }
         if let (true, Some(x)) = (failing_now, shown) {
             let critical = er_status == "critical";
             let over = if recent.is_some() { "the last minute" } else { "the last 5 min" };
@@ -1322,6 +1371,26 @@ mod tests {
         assert_eq!(shards["value"], json!({"down": 0, "no_reads": 1, "no_writes": 0, "degraded": 0, "cut_off": 0, "total": 2}));
         let copies = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "copies").unwrap().clone();
         assert_eq!((copies["down"].as_u64(), copies["total"].as_u64()), (Some(1), Some(4)));
+    }
+
+    /// OLU-203 (and OLU-4): the error ratio counts the writes that failed
+    /// on the server beside the searches. Home said 0% while half the
+    /// writes failed and every search answered.
+    #[test]
+    fn writes_that_fail_on_the_server_count_in_the_error_ratio() {
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [copy("s0-0", true), copy("s0-1", true)]}]});
+        let points: Vec<Arc<Json>> = (0..30).map(|k| Arc::new(json!({"t": k * 300, "secs": 2.0, "queries": 100, "query_errors": 0, "writes": 10, "write_failures": 5}))).collect();
+        let j = Fleet::default().judge(inputs(&c, &points));
+        let er = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "error_ratio").unwrap().clone();
+        assert_eq!((er["status"].as_str(), er["searches_status"].as_str(), er["value"].as_f64()), (Some("critical"), Some("ok"), Some(0.0)), "{er}");
+        assert_eq!((er["writes"]["status"].as_str(), er["writes"]["writes"].as_f64(), er["writes"]["failures"].as_f64(), er["writes"]["value"].as_f64()), (Some("critical"), Some(300.0), Some(150.0), Some(0.5)), "{er}");
+        let p = j["problems"].as_array().unwrap().iter().find(|p| p["id"] == "write_error_ratio").unwrap_or_else(|| panic!("a problem of failing writes: {j}"));
+        assert_eq!(p["title"], "50% of writes failed over the last minute (SLO 1%)", "{p}");
+        // Writes that all succeed leave it ok.
+        let points: Vec<Arc<Json>> = (0..30).map(|k| Arc::new(json!({"t": k * 300, "secs": 2.0, "queries": 100, "query_errors": 0, "writes": 10, "write_failures": 0}))).collect();
+        let j = Fleet::default().judge(inputs(&c, &points));
+        let er = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "error_ratio").unwrap().clone();
+        assert_eq!((er["status"].as_str(), er["writes"]["status"].as_str()), (Some("ok"), Some("ok")), "{er}");
     }
 
     /// A copy whose scrub found segments failing their checksums is a

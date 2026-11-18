@@ -80,6 +80,7 @@
 //! | `GET /v1/index/reads?table=` | | this server's read counts of a table (a coordinator's own, which the others merge into `/v1/index`'s `reads_from`) |
 //! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, on a coordinator its bytes on every copy, its skew, writes and reads a minute, growth over a day and a week, and copies behind, with the totals of all tables; kept 30 s ([`crate::inspect::tables`]) |
 //! | `POST /v1/admin/scrub`, `POST /v1/admin/copies/scrub` | `{rate_mib_s?}`, `{url}` | reads every segment of the database (of a copy, on a coordinator) against its checksum while writes go on, and answers `{scrub: {txn, segments, bytes, damaged, seconds}}`; 409 while one runs ([`crate::service::scrub`]) |
+//! | `GET /v1/admin/checkpoints` | | the checkpoints in this server's `--backup-dir`, the newest first; on a coordinator every copy's, each shard's newest and the complete sets |
 //! | `POST /v1/admin/copies/verify`, `POST /v1/admin/copies/checkpoint` | `{url, timeout_ms?}`, `{url, name, layout?, link_from?}` | on a coordinator, of a copy (its URL or short name): its shard's primary compares the replicas' rows with its own (`{replicas: [{url, in_sync, compared, differing_slots, first_differing_slot, seq_no, error}]}`), or the copy writes a checkpoint into its own `--backup-dir` (`{checkpoint}`) |
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
 //! | `POST /v1/admin/plan/apply` | `{steps: [...], estimate_s?}`, or a plan's body | applies a plan on the coordinator, its steps in order, in the background; kept in a file so that a restart says where it stopped ([`crate::coord::plan::apply`]) |
@@ -337,6 +338,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/rank_log/interleaving", post(interleaving))
         .route("/v1/snapshot", post(snapshot))
         .route("/v1/admin/checkpoint", post(admin_checkpoint))
+        .route("/v1/admin/checkpoints", get(admin_checkpoints))
         .route("/v1/admin/slices", get(admin_slices_list).post(admin_slices))
         .route("/v1/admin/slices/:table", get(admin_slice).delete(admin_slice_delete))
         .route("/v1/slices/:table/manifest.json", get(slice_manifest))
@@ -3998,6 +4000,78 @@ async fn cluster_checkpoint(c: &crate::coord::Coordinator, w: Option<axum::Exten
     Ok(audited(j, format!("checkpoint {name} of every shard: {}", written(&shards))))
 }
 
+/// `GET /v1/admin/checkpoints` (OLU-211): the checkpoints this server
+/// keeps in its `--backup-dir` ([`crate::service::list_checkpoints`]); on
+/// a coordinator every copy's, asked at once: `{copies: [{shard, url,
+/// short, backup_dir, checkpoints, bytes, error?}], newest: [{shard, name,
+/// short, url, modified_ms, bytes, slot_epoch}], complete: [{name,
+/// slot_epoch, modified_ms, copies}]}`, where `newest` is each shard's
+/// newest checkpoint and `complete` the names written on every shard under
+/// one cluster map, the sets a restore can go back to, the newest first.
+async fn admin_checkpoints(State(app): State<App>) -> Res {
+    let Ok(c) = app.svc.coordinator() else {
+        return Ok(AxJson(app.svc.checkpoints()?));
+    };
+    let snap = c.snapshot().await;
+    let shards = snap["shards"].as_array().map_or(0, Vec::len);
+    let mut asks = Vec::new();
+    for s in snap["shards"].as_array().into_iter().flatten() {
+        for r in s["replicas"].as_array().into_iter().flatten() {
+            asks.push((s["shard"].as_u64().unwrap_or(0), r["url"].as_str().unwrap_or_default().to_string(), r["short"].clone(), r["status"] == "down"));
+        }
+    }
+    let copies = futures::future::join_all(asks.into_iter().map(|(shard, url, short, down)| async move {
+        let mut j = json!({"shard": shard, "url": url, "short": short, "checkpoints": []});
+        if down {
+            j["error"] = json!("this copy is down");
+            return j;
+        }
+        match ask_copy(c, &url, crate::profiling::Kind::Checkpoint, json!({"list": true})).await {
+            Ok(a) => {
+                for k in ["backup_dir", "checkpoints", "bytes", "note"] {
+                    if let Some(v) = a.get(k) {
+                        j[k] = v.clone();
+                    }
+                }
+            }
+            // A copy of a version before the list takes it for a
+            // checkpoint without a name.
+            Err(e) if e.message.contains("needs \"name\"") => j["error"] = json!("this copy runs an older version, which cannot list its checkpoints: upgrade it"),
+            Err(e) => j["error"] = json!(e.message),
+        }
+        j
+    }))
+    .await;
+    let mut newest: std::collections::BTreeMap<u64, Json> = std::collections::BTreeMap::new();
+    // Each name: the shards it was written on, under which epochs, by
+    // which copies, and its newest time.
+    let mut sets: std::collections::BTreeMap<String, (std::collections::BTreeSet<u64>, std::collections::BTreeSet<u64>, Vec<Json>, u64)> = std::collections::BTreeMap::new();
+    for a in &copies {
+        for cp in a["checkpoints"].as_array().into_iter().flatten() {
+            let shard = cp["shard"].as_u64().or_else(|| a["shard"].as_u64()).unwrap_or(0);
+            let at = cp["modified_ms"].as_u64().unwrap_or(0);
+            if newest.get(&shard).is_none_or(|n| n["modified_ms"].as_u64().unwrap_or(0) < at) {
+                newest.insert(shard, json!({"shard": shard, "name": cp["name"], "short": a["short"], "url": a["url"], "modified_ms": at, "bytes": cp["bytes"], "slot_epoch": cp["slot_epoch"]}));
+            }
+            let name = cp["name"].as_str().unwrap_or_default().to_string();
+            let e = sets.entry(name).or_default();
+            e.0.insert(shard);
+            if let Some(ep) = cp["slot_epoch"].as_u64() {
+                e.1.insert(ep);
+            }
+            e.2.push(json!({"shard": shard, "short": a["short"], "url": a["url"]}));
+            e.3 = e.3.max(at);
+        }
+    }
+    let mut complete: Vec<Json> = sets
+        .into_iter()
+        .filter(|(_, (on, epochs, _, _))| shards > 0 && on.len() >= shards && epochs.len() <= 1)
+        .map(|(name, (_, epochs, copies, at))| json!({"name": name, "slot_epoch": epochs.first(), "modified_ms": at, "copies": copies}))
+        .collect();
+    complete.sort_by(|a, b| b["modified_ms"].as_u64().cmp(&a["modified_ms"].as_u64()));
+    Ok(AxJson(json!({"copies": copies, "newest": newest.into_values().collect::<Vec<_>>(), "complete": complete, "shards": shards})))
+}
+
 /// `{"rate_mib_s"?}`: reads every segment against its checksum now
 /// ([`Service::scrub`]); unpaced unless asked.
 async fn admin_scrub(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Res {
@@ -4014,10 +4088,55 @@ async fn admin_vacuum(State(app): State<App>) -> Res {
     Ok(AxJson(json!({"bytes_freed": app.svc.vacuum().await?})))
 }
 
-async fn admin_verify(State(app): State<App>, body: Option<AxJson<Json>>) -> Res {
+async fn admin_verify(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {
     let timeout_ms = body.as_ref().and_then(|b| b.get("timeout_ms")).and_then(|v| v.as_u64()).unwrap_or(0);
+    if let Ok(c) = app.svc.coordinator() {
+        return verify_every_shard(c, &who(w), timeout_ms).await;
+    }
     let timeout = if timeout_ms > 0 { Duration::from_millis(timeout_ms) } else { VERIFY_WAIT };
-    Ok(AxJson(app.svc.verify_fresh(timeout).await?))
+    Ok(AxJson(app.svc.verify_fresh(timeout).await?).into_response())
+}
+
+/// `POST /v1/admin/verify` on a coordinator (OLU-206): the primary of
+/// every shard compares its replicas' rows with its own, at once, as
+/// `POST /v1/admin/copies/verify` does for one shard. Answers `{shards:
+/// [{shard, primary, replicas, error?}], replicas: [{shard, url, in_sync,
+/// compared, differing_slots, ...}], differing}`; a shard with no primary
+/// up has an `error`, and the call still answers 200.
+async fn verify_every_shard(c: &crate::coord::Coordinator, who: &Principal, timeout_ms: u64) -> Result<Response, ApiError> {
+    let snap = c.snapshot().await;
+    let by = keys::audit_name(who);
+    keys::note_change(keys::Change { object: Some("every shard".to_string()), after: Some(json!({"verify": true})), ..Default::default() });
+    let mut body = json!({"by": by});
+    if timeout_ms > 0 {
+        body["timeout_ms"] = json!(timeout_ms);
+    }
+    let shards: Vec<(u64, Option<String>)> = snap["shards"].as_array().into_iter().flatten().map(|s| (s["shard"].as_u64().unwrap_or(0), s["primary"].as_str().map(String::from))).collect();
+    let answers = futures::future::join_all(shards.iter().map(|(shard, primary)| {
+        let body = body.clone();
+        async move {
+            match primary {
+                None => json!({"shard": shard, "primary": null, "replicas": [], "error": format!("shard {shard} has no primary up to compare its copies")}),
+                Some(p) => match ask_copy(c, p, crate::profiling::Kind::Verify, body).await {
+                    Ok(j) => json!({"shard": shard, "primary": p, "replicas": j["replicas"]}),
+                    Err(e) => json!({"shard": shard, "primary": p, "replicas": [], "error": e.message}),
+                },
+            }
+        }
+    }))
+    .await;
+    let mut replicas = Vec::new();
+    for a in &answers {
+        for r in a["replicas"].as_array().into_iter().flatten() {
+            let mut r = r.clone();
+            r["shard"] = a["shard"].clone();
+            replicas.push(r);
+        }
+    }
+    let differing = replicas.iter().filter(|r| r["in_sync"] == false || r["differing_slots"].as_u64().is_some_and(|n| n > 0)).count();
+    let failed = answers.iter().filter(|a| a.get("error").is_some()).count();
+    let detail = format!("verified every shard's copies against its primary: {} shards, {differing} copies differ{}", answers.len(), if failed > 0 { format!(", {failed} shards not compared") } else { String::new() });
+    Ok(audited(json!({"shards": answers, "replicas": replicas, "differing": differing}), detail))
 }
 
 /// Makes this replica the primary of a new term: `{"replicas": [gRPC
@@ -5420,7 +5539,13 @@ async fn logs(State(app): State<App>, Query(q): Params) -> Res {
     let ring = obs::ring();
     let lines = ring.lines(after, q.get("level").map(String::as_str), q.get("request").map(String::as_str), q.get("q").map(String::as_str).filter(|t| !t.is_empty()), limit);
     let level = app.svc.log_filter_json();
-    Ok(AxJson(json!({"lines": lines, "last": ring.last(), "filter": obs::log_filter(), "filter_expires_ms": level["expires_ms"], "filter_set_by": level["set_by"]})))
+    let mut j = json!({"lines": lines, "last": ring.last(), "filter": obs::log_filter(), "filter_expires_ms": level["expires_ms"], "filter_set_by": level["set_by"]});
+    if app.svc.coordinator().is_ok() {
+        // OLU-206: these are the coordinator's own lines, which is not what
+        // someone looking for a copy's expects.
+        j["note"] = json!("These are this coordinator's own lines. Every copy's are in its log store: POST /v1/logs/query {\"sql\": \"SELECT ts, level, message FROM logs WHERE node = '<copy name>' ORDER BY ts DESC LIMIT 200\"} searches them all (the command center's Logs page).");
+    }
+    Ok(AxJson(j))
 }
 
 /// `GET /v1/logs/filter?node=`: the log filter, until when and by whom it
@@ -7375,7 +7500,20 @@ async fn audit_log(State(app): State<App>, Query(q): Params, headers: HeaderMap)
             Err(e) => error = Some(format!("the log store did not answer: {}", e.message)),
         }
     }
-    let mut j = json!({"entries": entries, "file": app.svc.audit.path().map(|p| p.display().to_string()), "source": source, "memory_from_ms": held});
+    // OLU-201: the shards keep the latest entries of every coordinator;
+    // past what memory holds, those of before this coordinator started.
+    if entries.len() < limit && from < held {
+        let have: std::collections::HashSet<String> = entries.iter().map(crate::kept::entry_key).collect();
+        let more: Vec<Json> = app.svc.kept.restored_audit().into_iter().filter(|e| e["ts_ms"].as_u64().unwrap_or(0) < held && fits(e) && !have.contains(&crate::kept::entry_key(e))).take(limit - entries.len()).collect();
+        if !more.is_empty() {
+            entries.extend(more);
+            entries.sort_by(|a, b| b["ts_ms"].as_u64().cmp(&a["ts_ms"].as_u64()));
+            source.push("shards");
+        }
+    }
+    let kept_on_shards = matches!(app.svc.backend, crate::service::Backend::Cluster(_));
+    let mut j = json!({"entries": entries, "file": app.svc.audit.path().map(|p| p.display().to_string()), "source": source, "memory_from_ms": held,
+        "shards": kept_on_shards.then(|| json!({"keep": crate::kept::AUDIT_KEPT}))});
     if let Some(e) = error {
         j["error"] = json!(e);
     }
@@ -7385,18 +7523,26 @@ async fn audit_log(State(app): State<App>, Query(q): Params, headers: HeaderMap)
         ask.sort();
         let answers = crate::peers::get_all(&app.svc, &format!("/v1/admin/audit?{}", ask.join("&"))).await;
         let mut all: Vec<Json> = std::mem::take(j["entries"].as_array_mut().expect("entries"));
+        // An entry the shards kept names the coordinator that made it.
         for e in &mut all {
-            e["coordinator"] = json!(me.name);
+            if !e["coordinator"].is_string() {
+                e["coordinator"] = json!(me.name);
+            }
         }
         for (p, a) in &answers {
             for e in a.as_ref().ok().and_then(|a| a["entries"].as_array()).into_iter().flatten() {
                 let mut e = e.clone();
-                e["coordinator"] = json!(p.name);
+                if !e["coordinator"].is_string() {
+                    e["coordinator"] = json!(p.name);
+                }
                 all.push(e);
             }
         }
-        // The newest first, over every coordinator.
+        // The newest first, over every coordinator, each once (two that
+        // started again both answer what the shards kept).
         all.sort_by(|a, b| b["ts_ms"].as_u64().cmp(&a["ts_ms"].as_u64()));
+        let mut seen = std::collections::HashSet::new();
+        all.retain(|e| seen.insert(crate::kept::entry_key(e)));
         all.truncate(limit);
         j["entries"] = Json::Array(all);
         j["coordinators"] = crate::peers::reach(&app.svc, &answers);
@@ -7458,6 +7604,12 @@ async fn put_alert_rules(State(app): State<App>, p: Option<axum::Extension<Princ
     let mut j = app.svc.alerts.json();
     if app.svc.alerts.is_coordinator() {
         j["pushed"] = crate::alerts::push_rules(&app.svc, None, &who).await;
+        // OLU-201: on the shards before the answer, so a restart keeps them.
+        let kept = crate::kept::push_now(&app.svc).await;
+        if !kept.is_null() {
+            j["kept"] = app.svc.alerts.kept_json();
+            j["kept"]["pushed"] = kept;
+        }
     }
     Ok(audited(j, format!("{n} alert rules: {what}")))
 }
@@ -7554,11 +7706,17 @@ async fn put_alert_routes(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     let before = app.svc.alerts.routes_json();
     app.svc.alerts.set_routes(routes)?;
     // alerts2: every coordinator sends through the same routes.
-    app.svc.alerts.tell_peers(json!({"routes": app.svc.alerts.routes()}));
+    app.svc.alerts.tell_peers(json!({"routes": app.svc.alerts.routes(), "routes_ms": app.svc.alerts.routes_ms()}));
+    // OLU-201: on the shards before the answer, so a restart keeps them.
+    let kept = crate::kept::push_now(&app.svc).await;
     let after = app.svc.alerts.routes_json();
     let names: Vec<&str> = after.iter().filter_map(|r| r["name"].as_str()).collect();
     keys::note_change(keys::Change { object: Some("alert routes".into()), before: Some(json!(before)), after: Some(json!(after)), ..Default::default() });
-    Ok(audited(json!({"routes": app.svc.alerts.routes_json()}), format!("alert routes: {}", if names.is_empty() { "none".to_string() } else { names.join(", ") })))
+    let mut j = json!({"routes": app.svc.alerts.routes_json(), "kept": app.svc.alerts.kept_json()});
+    if !kept.is_null() {
+        j["kept"]["pushed"] = kept;
+    }
+    Ok(audited(j, format!("alert routes: {}", if names.is_empty() { "none".to_string() } else { names.join(", ") })))
 }
 
 /// Posts a test message to a route, and says how it went.

@@ -470,11 +470,42 @@ function render(page, r) {
 
   // ============================================================ upkeep of the shards (coordinator)
   const fleetUpkeep = (() => {
-    let run = null, audit = null, auditErr = null;
+    let run = null, audit = null, auditErr = null, backups = null, backupsErr = null, backupsAt = 0;
     const unsupported = () => store.get("cluster.unsupported", {}) || {};
     async function loadAudit() {
       try { audit = (await api("/v1/admin/audit?limit=1000")).entries || []; auditErr = null; } catch (e) { audit = []; auditErr = e; }
       if (tab === "upkeep") draw();
+    }
+    /** OLU-211: the checkpoints each copy keeps in its --backup-dir. */
+    async function loadBackups() {
+      backupsAt = Date.now();
+      try { backups = await api("/v1/admin/checkpoints", { timeout: 30000 }); backupsErr = null; } catch (e) { backupsErr = e; }
+      if (tab === "upkeep") draw();
+    }
+    function backupsCard() {
+      const tools = h("button", { class: "btn sm ghost", title: "Ask every copy again", onclick: () => { backups = null; draw(); loadBackups(); } }, icon("refresh"), "Refresh");
+      if (backupsErr) {
+        const e = backupsErr;
+        const text = e.status === 404 || e.status === 405 ? "This coordinator cannot list its copies' checkpoints: a newer server can (GET /v1/admin/checkpoints)."
+          : e instanceof ApiError && e.status === 403 ? "Listing the checkpoints needs an admin key." : `Not listed: ${errText(e)}`;
+        return card({ title: "Backups", sub: "the checkpoints in each copy's --backup-dir", tools, body: h("div", { class: "small dim" }, text) });
+      }
+      if (!backups) return card({ title: "Backups", sub: "the checkpoints in each copy's --backup-dir", tools, body: h("div", { class: "small dim" }, "Asking each copy for its checkpoints…") });
+      const copies = backups.copies || [], newest = backups.newest || [], complete = backups.complete || [];
+      const failed = copies.filter((c) => c.error), noDir = copies.filter((c) => !c.error && c.backup_dir == null);
+      const set = complete[0];
+      const say = set ? `The newest checkpoint on every shard under one cluster map is ${set.name}, ${fmt.ago(set.modified_ms)}${set.slot_epoch != null ? ` (map epoch ${set.slot_epoch})` : ""}: what a restore goes back to.`
+        : newest.length ? "No checkpoint name is on every shard under one cluster map, which a restore needs: write one of every shard." : "No copy keeps a checkpoint yet.";
+      return card({ title: "Backups", sub: "the checkpoints in each copy's --backup-dir", tools,
+        body: h("div", { class: "stack", style: { gap: "8px" } },
+          h("div", { class: "small " + (set ? "" : newest.length ? "cc-warn" : "dim") }, say),
+          newest.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" },
+            h("thead", {}, h("tr", {}, ["shard", "newest", "on", "written", "size"].map((k) => h("th", {}, k)))),
+            h("tbody", {}, newest.map((n) => h("tr", {}, h("td", { class: "num" }, String(n.shard)), h("td", { class: "mono" }, n.name), h("td", {}, copyName(n.url) || n.short || ""), h("td", {}, fmt.ago(n.modified_ms)), h("td", { class: "num" }, fmt.bytes(n.bytes || 0))))))) : null,
+          complete.length > 1 ? h("div", { class: "small dim" }, `Also on every shard: ${complete.slice(1, 6).map((c) => `${c.name} (${fmt.ago(c.modified_ms)})`).join(", ")}${complete.length > 6 ? `, and ${fmt.n(complete.length - 6)} more` : ""}.`) : null,
+          failed.length ? h("div", { class: "small cc-warn" }, `Not listed on ${plural(failed.length, "copy", "copies")}: ${failed.slice(0, 3).map((c) => `${copyName(c.url) || c.short} (${c.error})`).join("; ")}.`) : null,
+          noDir.length ? h("div", { class: "small dim" }, `${plural(noDir.length, "copy", "copies")} without --backup-dir, which keep no checkpoints.`) : null,
+          h("div", { class: "small muted" }, `Asked ${fmt.ago(backupsAt)}. Copy each shard's checkpoint and the .slots and .keys.json files beside it off the machine; chloedb-server restore puts them back.`)) });
     }
     function compareCard() {
       const C = comparisons(state.cluster);
@@ -577,7 +608,7 @@ function render(page, r) {
           const j = await api("/v1/admin/checkpoint", { body: { name }, timeout: 600000 });
           const rows = (j.shards || []).reduce((n, s) => n + (s.checkpoint?.live_docs || 0), 0);
           toast(`Checkpoint ${name} written on ${plural((j.shards || []).length, "shard")}: ${fmt.n(rows)} rows, under cluster map epoch ${j.slot_epoch ?? "–"}`, "ok", 8000);
-          loadAudit();
+          loadAudit(); loadBackups();
         } catch (e) { toast(`No checkpoint of every shard: ${errText(e)}`, "bad", 10000); }
       };
     }
@@ -599,7 +630,8 @@ function render(page, r) {
     return {
       draw() {
         if (audit == null) { audit = []; loadAudit(); }
-        clear(body, h("div", { class: "cc-up" }, h("div", { class: "cc-up-c" }, compareCard(), copyOpsCard()), h("div", { class: "cc-up-c" }, diskCard(), statsCard())));
+        if (!backupsAt || (!backups && !backupsErr && Date.now() - backupsAt > 60e3)) loadBackups();
+        clear(body, h("div", { class: "cc-up" }, h("div", { class: "cc-up-c" }, compareCard(), copyOpsCard()), h("div", { class: "cc-up-c" }, backupsCard(), diskCard(), statsCard())));
       },
     };
   })();

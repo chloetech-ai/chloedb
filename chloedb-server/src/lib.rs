@@ -66,6 +66,7 @@ pub mod http;
 pub mod idem;
 pub mod inspect;
 pub mod json;
+pub mod kept;
 pub mod judge;
 pub mod keys;
 pub mod keysync;

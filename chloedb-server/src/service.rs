@@ -636,6 +636,9 @@ pub struct Service {
     pub keys: Arc<Keys>,
     pub audit: Audit,
     pub alerts: Alerts,
+    /// On a coordinator, what its shards keep of its alerts and audit log
+    /// ([`crate::kept`]).
+    pub kept: crate::kept::Keeper,
     /// Contain rules, applied at admission ([`crate::contain`]): alerts agent.
     pub contain: crate::contain::Contain,
     /// The on-call agent's proposals, waiting for an admin ([`crate::oncall`]).
@@ -918,6 +921,7 @@ impl Service {
             keys: Arc::new(Keys::memory()),
             audit: Audit::new(None).expect("an audit log in memory"),
             alerts: Alerts::new(None, None).expect("the default alert rules"),
+            kept: Default::default(),
             contain: Default::default(),
             oncall: Default::default(),
             connectors: Default::default(),
@@ -2273,6 +2277,15 @@ impl Service {
         j["name"] = json!(name);
         j["files"] = json!(files);
         Ok(j)
+    }
+
+    /// The checkpoints this server keeps in its `--backup-dir`
+    /// ([`list_checkpoints`]); none without one.
+    pub fn checkpoints(&self) -> Result<Json, ApiError> {
+        match &self.backup_dir {
+            Some(dir) => list_checkpoints(dir),
+            None => Ok(json!({"backup_dir": null, "checkpoints": [], "bytes": 0, "note": "this server has no --backup-dir, so it writes no checkpoints"})),
+        }
     }
 
     /// Checks every byte of the database against its checksums
@@ -5982,7 +5995,7 @@ impl Service {
                 // cluster2: the rows of every table (`docs` counts the
                 // default one only), which a move or a new copy sends: plans
                 // and moves count these.
-                let tables: serde_json::Map<String, Json> = s.schemas().filter(|t| t.table != SOURCES && t.table != FUNCTIONS).filter_map(|t| s.table(&t.table).map(|v| (t.table.clone(), json!(v.n_live_docs())))).collect();
+                let tables: serde_json::Map<String, Json> = table_counts(&s).into_iter().map(|(t, n, _)| (t, json!(n))).collect();
                 h["rows"] = json!(tables.values().filter_map(Json::as_u64).sum::<u64>());
                 h["tables"] = Json::Object(tables);
                 if let Some((m, shard)) = self.slots() {
@@ -6098,9 +6111,11 @@ impl Service {
             let f = db.storage().file_stats();
             let m = db.storage().merge_status();
             let deleted: u64 = f.segments.iter().map(|s| s.n_deleted as u64).sum::<u64>() + f.pending_deletes as u64;
+            // OLU-202: over every table, as `/metrics` and `/v1/health`'s `rows`.
+            let tables = table_counts(&snap);
             for (k, v) in [
-                ("docs", snap.n_live_docs() as f64),
-                ("segments", snap.segments().len() as f64),
+                ("docs", tables.iter().map(|t| t.1).sum::<u64>() as f64),
+                ("segments", tables.iter().map(|t| t.2).sum::<usize>() as f64),
                 ("deleted_docs", deleted as f64),
                 ("memtable_docs", f.memtable_docs as f64),
                 ("file_bytes", f.file_bytes as f64),
@@ -6231,6 +6246,8 @@ impl Service {
             self.events.add(crate::events::of_change(&e));
         }
         self.audit.add(e);
+        // OLU-201: a coordinator's shards keep it, a second from now.
+        self.kept.wake();
     }
 
     /// What this server can do for its shard now: serve reads and take
@@ -6502,11 +6519,19 @@ impl Service {
                 let w = &self.writer_state;
                 let deleted: u64 = f.segments.iter().map(|s| s.n_deleted as u64).sum::<u64>() + f.pending_deletes as u64;
                 let pool = chloedb::query::pool::Pool::global();
+                // OLU-202: the database's rows and segments, over every table
+                // (`/v1/health`'s `rows` and `tables`), not the first table's,
+                // which on a database made with no tables is its empty
+                // placeholder; and each table's, by `table`.
+                let tables = table_counts(&s);
+                let label = |t: &str| format!("table=\"{}\"", metrics::esc(t));
                 more.extend([
                     one("chloedb_query_pool_threads", "gauge", "Threads in the pool queries borrow from to search segments in parallel.", pool.threads() as f64),
                     one("chloedb_query_pool_queued", "gauge", "Threads queries asked the pool for that none was free to give yet.", pool.queued() as f64),
-                    one("chloedb_docs", "gauge", "Rows in the database.", s.n_live_docs() as f64),
-                    one("chloedb_segments", "gauge", "Segments on disk.", s.segments().len() as f64),
+                    one("chloedb_docs", "gauge", "Rows in the database, over every table (/v1/health's rows).", tables.iter().map(|t| t.1).sum::<u64>() as f64),
+                    one("chloedb_segments", "gauge", "Segments of every table, the memtable's in-memory ones included.", tables.iter().map(|t| t.2).sum::<usize>() as f64),
+                    Family { name: "chloedb_table_docs", ty: "gauge", help: "Rows in a table (/v1/health's tables).", values: tables.iter().map(|t| (label(&t.0), t.1 as f64)).collect() },
+                    Family { name: "chloedb_table_segments", ty: "gauge", help: "Segments of a table, the memtable's in-memory ones included.", values: tables.iter().map(|t| (label(&t.0), t.2 as f64)).collect() },
                     one("chloedb_deleted_docs", "gauge", "Deleted rows that merges have not dropped yet.", deleted as f64),
                     one("chloedb_memtable_docs", "gauge", "Rows written but not yet flushed to a segment.", f.memtable_docs as f64),
                     one("chloedb_file_bytes", "gauge", "Bytes the database takes on disk, without its write-ahead log.", f.file_bytes as f64),
@@ -6547,13 +6572,35 @@ impl Service {
                     Replication::Replica(f) => more.extend(f.metrics()),
                 }
             }
-            Backend::Cluster(c) => more.extend(c.metrics()),
+            Backend::Cluster(c) => {
+                more.extend(c.metrics());
+                // OLU-3: the cluster as this coordinator's alerts see it.
+                more.extend(self.alerts.cluster_metrics());
+            }
+        }
+        // OLU-3: which shard a copy is, and its name, for a query to join
+        // its series on (`* on(instance) group_left(shard, node)`).
+        if let Some((_, shard)) = self.slots() {
+            let name = self.place.name.clone().unwrap_or_default();
+            more.push(Family {
+                name: "chloedb_copy_info",
+                ty: "gauge",
+                help: "1, labelled with the shard this server holds, its --node-name and its role.",
+                values: vec![(format!("shard=\"{shard}\",node=\"{}\",role=\"{}\"", metrics::esc(&name), self.role().as_str_name().to_lowercase()), 1.0)],
+            });
         }
         if let Some(a) = &self.answers {
             more.extend(a.metrics());
         }
         self.metrics.render(&more)
     }
+}
+
+/// Each table's rows and segments at `s` (the memtable's in-memory
+/// segments counted), but the server's own stream offsets and stored
+/// functions: what `/v1/health`'s `tables` and `/metrics` count.
+pub fn table_counts(s: &chloedb::storage::Snapshot) -> Vec<(String, u64, usize)> {
+    s.schemas().filter(|t| t.table != SOURCES && t.table != FUNCTIONS).filter_map(|t| s.table(&t.table).map(|v| (t.table.clone(), v.n_live_docs(), v.segments().len()))).collect()
 }
 
 pub enum SqlAnswer {
@@ -7321,6 +7368,41 @@ impl Queued {
 
 /// Removes the checkpoint at `dest` and what [`Service::checkpoint`] wrote
 /// beside it, which a server must not take for a whole checkpoint.
+/// The checkpoints in a backup directory (OLU-211), the newest first:
+/// `{backup_dir, checkpoints: [{name, layout, bytes, modified_ms, shard?,
+/// slot_epoch?, keys}], bytes}`. A checkpoint is each entry that is not
+/// the cluster map (`<name>.slots`) or the keys (`<name>.keys.json`)
+/// written beside one; its shard and epoch are read from its map.
+pub fn list_checkpoints(dir: &Path) -> Result<Json, ApiError> {
+    fn size(p: &Path) -> u64 {
+        match std::fs::symlink_metadata(p) {
+            Ok(m) if m.is_dir() => std::fs::read_dir(p).into_iter().flatten().flatten().map(|e| size(&e.path())).sum(),
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        }
+    }
+    let ms = |m: &std::fs::Metadata| m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
+    let read = std::fs::read_dir(dir).map_err(|e| ApiError::internal(format!("read the backup directory {}: {e}", dir.display())))?;
+    let mut out = Vec::new();
+    for e in read.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || name.ends_with(".slots") || name.ends_with(".keys.json") || name.ends_with(".tmp") || checkpoint_name(&name).is_err() {
+            continue;
+        }
+        let Ok(meta) = e.metadata() else { continue };
+        let path = e.path();
+        let mut c = json!({"name": name, "layout": if meta.is_dir() { "dir" } else { "file" }, "bytes": size(&path), "modified_ms": ms(&meta), "keys": Keys::file_of(&path).exists()});
+        if let Some(j) = std::fs::read(slots::file_of(&path)).ok().and_then(|b| serde_json::from_slice::<Json>(&b).ok()) {
+            c["shard"] = j["shard"].clone();
+            c["slot_epoch"] = j["map"]["epoch"].clone();
+        }
+        out.push(c);
+    }
+    out.sort_by(|a, b| b["modified_ms"].as_u64().cmp(&a["modified_ms"].as_u64()).then_with(|| a["name"].as_str().cmp(&b["name"].as_str())));
+    let bytes: u64 = out.iter().filter_map(|c| c["bytes"].as_u64()).sum();
+    Ok(json!({"backup_dir": dir.display().to_string(), "checkpoints": out, "bytes": bytes}))
+}
+
 fn remove_checkpoint(dest: &Path) {
     let _ = match dest.is_dir() {
         true => std::fs::remove_dir_all(dest),

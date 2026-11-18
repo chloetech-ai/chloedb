@@ -208,7 +208,7 @@ function model(j) {
   }
   const events = (j.events || []).map(normEvent).filter((e) => e.rule);
   const routes = Array.isArray(j.routes) ? j.routes : j.webhook ? [{ name: "default", legacy: true }] : [];
-  return { rules, st, events, routes, fleet, file: j.file, pager: j.pager || null, stateFile: j.state_file || null, rulesBy: j.rules_by || null, rulesMs: j.rules_ms || null };
+  return { rules, st, events, routes, fleet, file: j.file, pager: j.pager || null, stateFile: j.state_file || null, rulesBy: j.rules_by || null, rulesMs: j.rules_ms || null, kept: j.kept || null };
 }
 /** With several coordinators, the one that sends the messages (NEW-alerts-logs-2): {sends, me, n} or null. */
 function pagerOf(m) {
@@ -311,6 +311,18 @@ function onParams(r) {
 /** A new rule's start from the link: a query to watch (T5: an alert over any table). */
 const newOpts = (r) => r.params.get("sql") ? { sql: r.params.get("sql"), name: r.params.get("name") || "", threshold: Number(r.params.get("threshold") || 0) } : {};
 
+/** OLU-201: where the rules, routes and alerts' states are kept, so a restart keeps them (or says it would not). */
+function keptLine(k) {
+  if (!k) return null;
+  const held = k.shards?.holding || 0, copies = k.shards?.copies || 0;
+  const where = [k.file ? `in ${k.file}` : null, held ? `on ${held === copies ? "every copy" : `${held} of ${fmt.plural(copies, "copy", "copies")}`} of the cluster` : null].filter(Boolean);
+  const failed = k.shards?.failed || [];
+  return h("span", { class: "small " + (k.memory_only ? "al-bad" : "dim"), style: { display: "block", marginTop: "2px" }, title: failed.length ? failed.map((f) => `${copyName(f.copy)}: ${f.error}`).join("\n") : "" },
+    k.memory_only ? " Kept in memory only: a restart of this server loses these rules and routes. Start it with --alerts FILE."
+      : !where.length ? ` Rules, routes, acknowledgements and silences are kept on every copy of the cluster once one takes them: none has yet${failed.length ? ` (${fmt.plural(failed.length, "copy", "copies")} refused)` : ""}, so a restart now would lose them.`
+      : ` Rules, routes, acknowledgements and silences are kept ${where.join(" and ")}: a restart keeps them.${failed.length ? ` ${fmt.plural(failed.length, "copy", "copies")} did not keep them.` : ""}`);
+}
+
 function listView(page, r) {
   const sub = h("p");
   const routesBtn = h("button", { class: "btn", onclick: () => routesDrawer() }, icon("route"), "Routes");
@@ -363,7 +375,7 @@ function listView(page, r) {
     const coord = coordinator();
     clear(sub, m.fleet
       ? "Rules live on the coordinator, every change audited; rules of scope each copy run on every copy and the coordinator gathers them. What fires is grouped by rule, with where it fires."
-      : `This server checks its rules on its own points every 2 seconds${coord ? ": a coordinator cannot see its copies' disks, flushes or replication, so those rules have no data here" : ""}.`);
+      : `This server checks its rules on its own points every 2 seconds${coord ? ": a coordinator cannot see its copies' disks, flushes or replication, so those rules have no data here" : ""}.`, keptLine(m.kept));
     drawSummary(); drawFiring(); drawRules(); drawHistory();
   }
 
