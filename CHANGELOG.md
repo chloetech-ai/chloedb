@@ -92,6 +92,19 @@ Through a coordinator, the shards still answer these plans as before:
 computing expressions in the scan is for a database's own plans (embedded,
 or one server), so shards of older versions need nothing new.
 
+- **Experiments: live runs** (`chloedb-experiments`, a demo). An
+  experiment you watch as it happens: simulated users search the site at a
+  rate you set and change while it runs, each search a logged query to
+  ChloeDB with its clicks written back, and each second the page shows
+  every metric per arm with its interval, its fixed-size and always-valid
+  p values side by side, the truth, the judged quality (nDCG) of what
+  each arm showed and each metric by cohort. AI agents, people of the population in their arms, use
+  the site's search for a need of their own (Claude through the Messages
+  API with a spend cap, or scripted with no model), and you can search the
+  site in the run yourself. When it ends it becomes an experiment with the
+  full report and an Agents tab
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#live-runs)).
+
 ## 0.3.8
 
 Durable one-row writes about 2.6 times as fast, typo and short substring
