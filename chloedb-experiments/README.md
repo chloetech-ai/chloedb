@@ -203,6 +203,12 @@ the log, or that differ in it. All three counts should be 0.
 `--server URL` (or `CHLOEDB_URL`, with `CHLOEDB_KEY`) uses a running server
 or a coordinator instead of `--local`.
 
+[results/scale.md](results/scale.md) has runs of 1 million served
+impressions and 100 million fast ones, with what they took on a 4-thread
+machine: 1,466 served impressions a second with 8 in flight, with 0
+differences from the fast mode or in the log, and 2 million a second in the
+fast mode.
+
 ## Tests
 
 ```bash
