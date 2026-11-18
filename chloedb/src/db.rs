@@ -2813,6 +2813,7 @@ impl Db {
                     group_by: Vec::new(),
                     paths: Vec::new(),
                     times: Vec::new(),
+                    exprs: Vec::new(),
                     having: None,
                     tiebreak: None,
                     phases: Vec::new(),
@@ -3913,15 +3914,22 @@ impl crate::query::embed_sql::Embeds for Db {
     }
 }
 
+/// This database runs the plan itself, so the aggregates of expressions
+/// of its leaves' fields are computed from the columns
+/// ([`compound::fuse_columns`]).
 fn plan_of(snap: &Snapshot, q: &sqlparser::ast::Query, params: &Params, functions: &FunctionSet) -> Result<Plan> {
     let catalog: Vec<&Schema> = snap.schemas().collect();
-    compound::plan_read_query(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)
+    let mut plan = compound::plan_read_query(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)?;
+    compound::fuse_columns(&mut plan, &catalog);
+    Ok(plan)
 }
 
 /// [`plan_of`] of a query [`qsql::parse_query_cached`] parsed.
 fn plan_of_parsed(snap: &Snapshot, q: &qsql::Parsed, params: &Params, functions: &FunctionSet) -> Result<Plan> {
     let catalog: Vec<&Schema> = snap.schemas().collect();
-    compound::plan_read_parsed(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)
+    let mut plan = compound::plan_read_parsed(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)?;
+    compound::fuse_columns(&mut plan, &catalog);
+    Ok(plan)
 }
 
 

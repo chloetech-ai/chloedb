@@ -1328,9 +1328,20 @@ fn plan_query_fused(q: &sql::Query, catalog: &[&Schema], params: &Params, fuse: 
     let p = Planner { catalog, params, ctes: RefCell::new(Vec::new()), outer: RefCell::new(None) };
     let mut node = p.query(&q)?.node;
     if fuse {
-        ir::fuse_paths(&mut node, catalog);
+        ir::fuse_paths(&mut node, catalog, false);
     }
     Ok(ir::Plan::new(node))
+}
+
+/// Moves the aggregates of expressions of a leaf's fields (`SUM(a * b)`,
+/// `COUNT(*) FILTER (WHERE c)`, `GROUP BY CASE .. END`, `STDDEV(x)`'s
+/// sums) into the leaf, whose executor computes them from the columns
+/// rather than the rows being read out for operators above it: for a plan
+/// that this process runs on its own database (an embedded one, a server
+/// of one database). A coordinator sends its leaves to shards, which may be
+/// of a version from before these leaves, so its plans keep them above.
+pub fn fuse_columns(plan: &mut ir::Plan, catalog: &[&Schema]) {
+    ir::fuse_paths(&mut plan.root, catalog, true);
 }
 
 /// The plan of a compound SELECT ([`plan_read`]) that reads the paths of

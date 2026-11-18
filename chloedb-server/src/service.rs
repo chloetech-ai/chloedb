@@ -4147,6 +4147,10 @@ impl Service {
                     // A statement that nests deep runs on a thread with the stack for it.
                     let r = chloedb::query::parse::deep_stack(deep, || {
                         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+                        // This server runs the leaves itself, so their
+                        // aggregates of expressions move into them.
+                        let mut plan = (*plan).clone();
+                        chloedb::query::compound::fuse_columns(&mut plan, &tables);
                         ops::run_on_engine(
                             &plan,
                             &tables,

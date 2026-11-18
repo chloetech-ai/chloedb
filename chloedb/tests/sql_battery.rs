@@ -151,3 +151,76 @@ fn every_kind_of_column_reads_into_arrow_as_rows_give_it() {
     db.storage().merge(&MergePolicy { merge_factor: 2, floor_docs: 100_000, ..MergePolicy::default() }).unwrap();
     check(&db, "merged", KINDS);
 }
+
+/// Aggregates and groups of expressions, which the executor computes from
+/// the columns a block at a time: integers that overflow into FLOATs,
+/// division by zero, three-valued conditions, texts of a CASE as groups,
+/// times against text, functions of numbers, and expressions it leaves to
+/// the row evaluator (`round`, `hash`, `date_trunc`, a CASE whose branches
+/// differ in type).
+const EXPRS: &[(&str, &str)] = &[
+    ("products that overflow", "SELECT k, SUM(i * 1000000000000), SUM(i * i), MIN(i * 3), MAX(-i), COUNT(i + 1), AVG(i - s) FROM ex GROUP BY k"),
+    ("FILTER and CASE", "SELECT k, COUNT(*) FILTER (WHERE b), COUNT(*) FILTER (WHERE f > 2.5 AND NOT b), SUM(CASE WHEN f IS NULL THEN 1 ELSE 0 END), AVG(CASE WHEN b THEN f END), MAX(CASE WHEN s > 1 THEN t END) FROM ex GROUP BY k"),
+    ("texts of a CASE as groups", "SELECT CASE WHEN f < 1 THEN 'low' WHEN f < 3 THEN 'mid' WHEN f IS NULL THEN NULL ELSE 'high' END AS band, COUNT(*), SUM(i) FROM ex GROUP BY band"),
+    ("a CASE of a value as groups", "SELECT CASE coalesce(s, 0) WHEN 1 THEN 'one' WHEN 2 THEN 'two' WHEN 3 THEN 'one' ELSE 'other' END AS c, COUNT(*), SUM(f) FROM ex GROUP BY c ORDER BY c"),
+    ("numbers and truths as groups", "SELECT i % 7 AS m, f > 2 AS big, COUNT(*), SUM(f * 2) FROM ex GROUP BY m, big"),
+    ("a text and a number as groups", "SELECT CASE WHEN b THEN 'y' ELSE 'n' END AS yb, s * 2 AS d, k, COUNT(*), MIN(f) FROM ex GROUP BY yb, d, k"),
+    ("FLOATs as groups", "SELECT f * 10 AS x, COUNT(*) FROM ex GROUP BY x"),
+    ("division and remainder by zero", "SELECT SUM(i / s), SUM(i % s), AVG(f / (s - 1)), MAX(f % s), COUNT(s / 0) FROM ex"),
+    ("times against text", "SELECT COUNT(*) FILTER (WHERE t < '2024-02-01'), COUNT(*) FILTER (WHERE t BETWEEN '2024-01-10' AND '2024-02-10'), SUM(EXTRACT(epoch FROM t)), MIN(EXTRACT(second FROM t)), MAX(EXTRACT(hour FROM t) * 60 + EXTRACT(minute FROM t)) FROM ex"),
+    ("IN and BETWEEN", "SELECT k, COUNT(*) FILTER (WHERE s IN (1, 2)), COUNT(*) FILTER (WHERE i BETWEEN 0 AND 50), COUNT(*) FILTER (WHERE s NOT IN (0, NULL)), COUNT(*) FILTER (WHERE f NOT BETWEEN 1 AND 2) FROM ex GROUP BY k"),
+    ("functions of numbers", "SELECT k, SUM(abs(i)), ROUND(SUM(sqrt(f)), 6), ROUND(SUM(ln(f)), 6), SUM(greatest(i, s)), SUM(least(f, 2)), SUM(pow(s, 2)), MAX(coalesce(f, s, 0.5)) FROM ex GROUP BY k"),
+    ("STDDEV, VAR_POP and CORR", "SELECT k, ROUND(STDDEV(f), 6), ROUND(VAR_POP(s), 6), ROUND(CORR(f, s), 6) FROM ex GROUP BY k"),
+    ("expressions the rows compute", "SELECT k, SUM(round(f, 1)), MAX(hash(s, 0)), COUNT(*) FILTER (WHERE date_trunc('month', t) = '2024-02-01'), SUM(CASE WHEN b THEN s ELSE f END), MAX(CASE WHEN b THEN 1 ELSE 0.5 END) FROM ex GROUP BY k"),
+    ("NOT, OR and UNKNOWN", "SELECT COUNT(*) FILTER (WHERE NOT (b OR f > 2)), COUNT(*) FILTER (WHERE b IS NULL OR i IS NULL), COUNT(*) FILTER (WHERE (s > 1) = b), COUNT(*) FILTER (WHERE b <> (f < 1)) FROM ex"),
+    ("NULL in arithmetic and signs", "SELECT SUM(s + NULL), COUNT(f * NULL), SUM(-f), SUM(-s), MIN(-(f - 1)), MAX(abs(f - 2)) FROM ex"),
+    ("a WHERE beside them", "SELECT k, SUM(s * 3), COUNT(*) FILTER (WHERE b) FROM ex WHERE f > 1 GROUP BY k ORDER BY k"),
+];
+
+#[test]
+fn expressions_in_aggregates_answer_as_rows_do() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("ex.chloedb"), taxi::zones_schema(), opts()).unwrap();
+    sql(&db, "CREATE TABLE ex (id KEYWORD PRIMARY KEY, k KEYWORD, b BOOL, i INT, s INT, f FLOAT, t TIMESTAMP)");
+    let mut rng = taxi::Rng::new(11);
+    let jan = 1_704_067_200_000_000i64;
+    let rows: Vec<Vec<Value>> = (0..8_000)
+        .map(|n| {
+            // Some integers near the largest, whose products overflow.
+            let i = match rng.below(10) {
+                0 => i64::MAX - rng.below(1000) as i64,
+                1 => i64::MIN + rng.below(1000) as i64,
+                2 => 4_000_000_000 + rng.below(1000) as i64,
+                _ => rng.below(100) as i64 - 20,
+            };
+            let row = [
+                Value::Str(["auction", "fixed", "offer", "lot"][rng.below(4) as usize].into()),
+                Value::Bool(rng.below(2) == 0),
+                Value::Int(i),
+                Value::Int(rng.below(4) as i64),
+                Value::Float((rng.unit() * 5.0 * 100.0).round() / 100.0),
+                Value::Timestamp(jan + rng.below(60 * 86_400) as i64 * 1_000_000 + rng.below(1_000_000) as i64),
+            ];
+            let row = row.into_iter().map(|v| if rng.below(10) == 0 { Value::Null } else { v });
+            std::iter::once(Value::Str(format!("e{n:05}"))).chain(row).collect()
+        })
+        .collect();
+    db.load_into("ex", rows).unwrap();
+    db.storage().flush().unwrap();
+    // Every one of them is computed by the executor from the columns, a
+    // block at a time but for the expressions the row evaluator computes
+    // (and `coalesce(f, s, 0.5)`, whose type varies by row).
+    for (id, q) in EXPRS {
+        let rs = db.query(q, &Params::new()).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let line = rs.stats.plan.iter().find(|l| l.contains("expressions computed a block at a time")).unwrap_or_else(|| panic!("{id}: {:?}", rs.stats.plan));
+        let rows = matches!(*id, "expressions the rows compute" | "functions of numbers");
+        assert_eq!(!line.ends_with(" and 0 row by row"), rows, "{id}: {line}");
+    }
+    check(&db, "segments", EXPRS);
+    sql(&db, "DELETE FROM ex WHERE s = 3 AND f < 1");
+    sql(&db, "UPDATE ex SET i = 9223372036854775807, f = NULL WHERE s = 2 AND b");
+    sql(&db, "UPDATE ex SET b = NULL, s = 0, t = '2024-02-01T00:00:00Z' WHERE i BETWEEN 5 AND 9");
+    check(&db, "deletes and updates", EXPRS);
+    db.storage().merge(&MergePolicy { merge_factor: 2, floor_docs: 100_000, ..MergePolicy::default() }).unwrap();
+    check(&db, "merged", EXPRS);
+}

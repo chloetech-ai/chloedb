@@ -16,14 +16,16 @@
 //! runs (default 7) after two warm-ups, on as many threads as the machine
 //! has cores (or `--threads`). `--out` writes the same as JSON, with the load's seconds,
 //! for the speed gate (`scripts/perf-gate.py --sql`). `--check` also runs
-//! each statement on the operators alone and fails when an answer differs
-//! from the default engine's (floats within 1e-9, rows in any order
-//! without an ORDER BY). `--plan` prints each one's plan and the steps it
+//! each statement's plan that computes every expression row by row
+//! ([`plan_read_by_rows`]) on the operators alone, and fails when an answer
+//! differs from the default engine's (floats within 1e-9, rows in any
+//! order without an ORDER BY). `--plan` prints each one's plan and the steps it
 //! took, with their times.
 
 use std::time::Instant;
 
-use chloedb::db::Db;
+use chloedb::db::{Db, SqlResult};
+use chloedb::query::compound::plan_read_by_rows;
 use chloedb::query::exec::{Engine, ExecOptions, ResultSet};
 use chloedb::query::Params;
 use chloedb::storage::DbOptions;
@@ -181,12 +183,15 @@ fn main() {
             }
         }
         if a.check {
-            match db.query_with(sql, &p, &ops) {
-                Ok(want) => {
+            let catalog = db.catalog();
+            let tables: Vec<&chloedb::schema::Schema> = catalog.iter().map(|t| &**t).collect();
+            match plan_read_by_rows(sql, &tables, &p).and_then(|plan| db.run_with(&plan, &ops)) {
+                Ok(SqlResult::Rows(want)) => {
                     if let Some(why) = differs(sql, &want, &rs) {
                         wrong.push(format!("{id}: {why}"));
                     }
                 }
+                Ok(SqlResult::Written(_)) => wrong.push(format!("{id}: a read wrote")),
                 Err(e) => wrong.push(format!("{id}: the operators fail: {e}")),
             }
         }

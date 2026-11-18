@@ -3,6 +3,7 @@
 //! merges the per-segment results.
 
 mod agg_columns;
+mod agg_exprs;
 mod graph;
 mod filter_cache;
 mod scroll;
@@ -3643,7 +3644,7 @@ impl<'a> Executor<'a> {
         let field = match c {
             Col::Field(f) => f,
             Col::Path(_) => return true,
-            Col::Time(_) => return false,
+            Col::Time(_) | Col::Expr(_) => return false,
         };
         let f = &self.schema.fields[field];
         f.ty == FieldType::Keyword || (f.ty == FieldType::Int && f.multi)
@@ -3661,6 +3662,17 @@ impl<'a> Executor<'a> {
                 TimeOf::Bin { width, origin: 0 } => format!("date_bin('{}', {})", crate::timestamp::stride_text(*width), self.field_name(tc.field)),
                 TimeOf::Bin { width, origin } => format!("date_bin('{}', {}, '{}')", crate::timestamp::stride_text(*width), self.field_name(tc.field), crate::timestamp::format(*origin)),
             }),
+            Col::Expr(e) => {
+                let mut fields = Vec::new();
+                q.exprs[e].visit(&mut |x| {
+                    if let crate::query::ir::Expr::Field(f) = x {
+                        if !fields.contains(f) {
+                            fields.push(*f);
+                        }
+                    }
+                });
+                format!("an expression of {}", fields.iter().map(|&f| self.field_name(f as usize)).collect::<Vec<_>>().join(", "))
+            }
         }
     }
 
@@ -3718,6 +3730,28 @@ impl<'a> Executor<'a> {
     fn col_values(&self, s: &Seg<'a>, q: &Select, c: Col, d: DocId, multi: &HashMap<usize, HashMap<DocId, Vec<u32>>>, paths: &HashMap<usize, crate::json::PathValues>, key: bool, out: &mut Vec<Value>) -> Result<()> {
         let p = match c {
             Col::Field(f) => return self.agg_values(s, f, d, multi, out),
+            // Its value of the row's fields, as the row evaluator computes
+            // it (each field single-valued, as queries give it); none for
+            // NULL.
+            Col::Expr(e) => {
+                out.clear();
+                let v = crate::query::ir::eval::eval(&q.exprs[e], &|r| match r {
+                    crate::query::ir::eval::Ref::Field(f) => {
+                        let mut one = Vec::new();
+                        self.agg_values(s, f as usize, d, multi, &mut one)?;
+                        let v = one.pop().unwrap_or(Value::Null);
+                        Ok(match self.schema.fields[f as usize].logical {
+                            Some(l) => l.output(v),
+                            None => v,
+                        })
+                    }
+                    _ => Err(err("an expression of the columns reads the row's fields")),
+                })?;
+                if !matches!(v, Value::Null) {
+                    out.push(v);
+                }
+                return Ok(());
+            }
             Col::Path(p) => p,
             // The function of the field's time; none without one.
             Col::Time(t) => {
@@ -3780,8 +3814,9 @@ impl<'a> Executor<'a> {
                         paths.insert(p, pv);
                         continue;
                     }
-                    // A TIMESTAMP field of one value.
-                    Col::Time(_) => continue,
+                    // A TIMESTAMP field of one value, or an expression of
+                    // fields of one.
+                    Col::Time(_) | Col::Expr(_) => continue,
                 };
                 if self.schema.fields[f].multi {
                     let kw = self.keyword(s, f)?;
@@ -4913,6 +4948,7 @@ impl<'a> Executor<'a> {
                 crate::json::extract(j.and_then(|j| fetched.get(j)).unwrap_or(&Value::Null), &pc.path, pc.kind)?
             }
             Projection::Time(_) => return Err(err("a part of a time is a column of groups (GROUP BY date_trunc('day', at)); of rows, the row evaluator computes it")),
+            Projection::Expr(_) => return Err(err("an expression of the columns is a column of groups; of rows, the row evaluator computes it")),
         }))
     }
 
