@@ -592,6 +592,7 @@ client.get(&quot;u2&quot;, min_seq_no=w.seq_no, min_seq_nos=w.seq_nos)</pre>
 </tr>
 </tbody>
 </table></div>
+<p>A write through a coordinator that may or may not be applied (its shard's primary stopped answering, or was replaced while the write was being acknowledged) keeps its status's class, <code>UnavailableError</code> (503) or <code>ConflictError</code> (409), and says so: <code>.in_doubt</code> is true and <code>.idempotency_key</code> is the key to send it again with, which applies it once (the coordinator's own when the write had none; the server's <a href="server.html#failover">Failover</a>). Do not send it again as it was: without the key it could be applied twice.</p>
 <p><code>chloedb.__version__</code> is the package's version <span class="since">since 0.3.2</span>, and the package ships <code>py.typed</code>, so type checkers read its annotations.</p>
 <p>Other codes have no subclass: <code>memory</code> (a query past its memory budget, <a href="#limits-memory-deadlines-interrupting">limits</a>), <code>corrupt</code>, <code>io</code>, <code>internal</code> (another 5xx) and <code>error</code>. <code>chloedb.error_code(message, status, answer)</code> gives the code of any message. A server that cannot be reached still raises <code>urllib.error.URLError</code>, and a client's own timeout <code>TimeoutError</code>, as before.</p>
 <h3 id="database-and-client-what-differs">Database and Client: what differs<a class="anchor" href="#database-and-client-what-differs" aria-label="Link to this section">#</a></h3>

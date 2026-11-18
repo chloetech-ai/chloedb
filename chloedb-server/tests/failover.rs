@@ -646,10 +646,10 @@ async fn a_write_to_a_silent_primary_no_copy_replaces_is_answered_in_doubt() {
 /// The case the resend rests on (review of PR #638): the primary applied a
 /// write and shipped it to one copy, then froze before it was answered
 /// (`--write-acks all`, the third copy frozen first, so the primary waits
-/// for it). The copy that holds the write is elected, the third voting for
-/// it alone, and the coordinator sends the write there with its key: it is
-/// answered from the key's row while the old primary is still frozen, and
-/// applied once. The old primary then runs again, without a restart,
+/// for it). A copy that holds the write is elected (the third reads it
+/// from its socket once it runs again, or votes for the second alone), and
+/// the coordinator sends the write there with its key: it is answered from
+/// the key's row while the old primary is still frozen, and applied once. The old primary then runs again, without a restart,
 /// steps down and follows the new one: the write is applied once on every
 /// copy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -692,17 +692,21 @@ async fn a_write_the_frozen_primary_shipped_is_answered_from_its_key_by_the_copy
     let got = got.unwrap_or_else(|_| panic!("the write was held 20 s by the frozen primary\n{}\n{}", b.logs(), c.logs())).unwrap();
     got.unwrap_or_else(|e| panic!("the write failed after {:?}: {}\n{}\n{}", t0.elapsed(), e.message, b.logs(), c.logs()));
     let (rb, rc) = (role(&b).await, role(&c).await);
-    assert!(rb.0 == "primary" && rb.1 > term, "B, the copy that holds the write, is elected: B {rb:?}, C {rc:?}");
-    // A is still frozen: B answered, from the key's row, without applying
-    // the write again.
-    assert_eq!(sold_on(&b, 30).await, Some(before + 1), "on B");
-    until("C follows B", &[&b, &c], || async { role(&c).await.0 == "replica" && c.replication().await["seq_no"] == b.replication().await["seq_no"] }).await;
-    assert_eq!(sold_on(&c, 30).await, Some(before + 1), "on C");
+    let (new, other) = match (rb.0.as_str(), rc.0.as_str()) {
+        ("primary", _) if rb.1 > term => (&b, &c),
+        (_, "primary") if rc.1 > term => (&c, &b),
+        _ => panic!("B or C is elected in a newer term than {term}: B {rb:?}, C {rc:?}"),
+    };
+    // A is still frozen: the new primary answered, from the key's row,
+    // without applying the write again.
+    assert_eq!(sold_on(new, 30).await, Some(before + 1), "on the new primary");
+    until("the other copy follows the new primary", &[&b, &c], || async { role(other).await.0 == "replica" && other.replication().await["seq_no"] == new.replication().await["seq_no"] }).await;
 
-    // A runs again, not started again: it steps down and follows B.
+    // A runs again, not started again: it steps down and follows the new
+    // primary.
     a.signal("CONT");
     until("the old primary steps down and follows the new one", &[&a, &b, &c], || async {
-        role(&a).await.0 == "replica" && a.replication().await["seq_no"] == b.replication().await["seq_no"]
+        role(&a).await.0 == "replica" && a.replication().await["seq_no"] == new.replication().await["seq_no"]
     })
     .await;
     for n in [&a, &b, &c] {

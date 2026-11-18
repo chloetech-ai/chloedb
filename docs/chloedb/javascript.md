@@ -146,6 +146,8 @@ Errors reject with a `ChloeDBError`, whose message is the database's (`StrataErr
 | `timeout` | `DeadlineError` | a deadline passed: `timeoutMs`, a coordinator's wait for a shard (504) |
 | `unavailable` | `UnavailableError` | no copy can serve it now (503) |
 
+A write through a coordinator that may or may not be applied (its shard's primary stopped answering, or was replaced while the write was being acknowledged) keeps its status's class, `UnavailableError` (503) or `ConflictError` (409), and says so: `err.inDoubt` is true and `err.idempotencyKey` is the key to send it again with (`{ idempotencyKey }`), which applies it once; without the key it could be applied twice ([Failover](server.md#failover)).
+
 Other codes are `memory` (a query past its memory budget), `corrupt`, `io`, `internal` and `error` (which is also what `open` of a file that does not exist, without a schema, rejects with: "x.chloedb does not exist: pass a schema to create it"); `errorCode(message, status, answer)` gives the code of any message.
 
 ## A server from JavaScript

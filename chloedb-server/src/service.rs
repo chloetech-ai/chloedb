@@ -8041,7 +8041,7 @@ mod tests {
         (db, Arc::new(svc))
     }
 
-    async fn sold_of(svc: &Service, i: usize) -> i64 {
+    async fn sold_of(svc: &Arc<Service>, i: usize) -> i64 {
         svc.query(QueryReq { sql: format!("SELECT sold FROM products WHERE id = 'p{i:07}'"), ..Default::default() }).await.unwrap().rs.rows[0][0].as_i64().unwrap()
     }
 
