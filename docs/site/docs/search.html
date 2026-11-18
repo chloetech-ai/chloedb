@@ -19,7 +19,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
 </head>
 <body class="docs">
 <!-- Google Tag Manager (noscript) -->
@@ -40,6 +40,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
@@ -48,8 +54,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
       <span class="h">Search and SQL</span>
       <a href="search.html" aria-current="page">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
       <a href="next-items.html">Next items</a>
@@ -64,18 +72,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
       <a href="java.html">Java and JDBC</a>
       <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
       <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -86,15 +105,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
-      <a href="chloectx.html">ChloeCtx</a>
-      <a href="chloectx-setup.html">Install ChloeCtx</a>
-      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
-      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
-      <a href="chloectx-capsules.html">Context capsules</a>
-      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
       <span class="eyebrow">Search and SQL</span>
@@ -102,11 +116,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
       <p class="doc-version">These docs describe release 0.3.7.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-catalogue">The catalogue</a></li><li><a href="#words-match-and-bm25">Words: MATCH and bm25</a></li><li><a href="#typos">Typos</a></li><li><a href="#filters-and-facets">Filters and facets</a></li><li><a href="#meaning-vectors">Meaning: vectors</a></li><li><a href="#both-hybrid-ranking">Both: hybrid ranking</a></li><li><a href="#spread-results-out-max-k-per">Spread results out: MAX k PER</a></li><li><a href="#what-the-planner-did">What the planner did</a></li><li><a href="#next">Next</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-catalogue">The catalogue</a></li><li><a href="#words-match-and-bm25">Words: MATCH and bm25</a></li><li><a href="#typos">Typos</a></li><li><a href="#filters-and-facets">Filters and facets</a></li><li><a href="#meaning-vectors">Meaning: vectors</a></li><li><a href="#similar-rows-more-like-this">Similar rows: more like this</a></li><li><a href="#both-hybrid-ranking">Both: hybrid ranking</a></li><li><a href="#spread-results-out-max-k-per">Spread results out: MAX k PER</a></li><li><a href="#what-the-planner-did">What the planner did</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
 
 <p>This page builds a small catalogue of books and searches it every way ChloeDB can: words, phrases and typos, filters and facets, meaning, a blend of the two, and results spread across authors. Each query is SQL, and every block runs, in order, against the code it documents. The <a href="sql.html">SQL reference</a> has every function and option; this page shows which to reach for.</p>
-<p>You need Python with the <code>chloedb</code> package and <code>chloedb-server</code> on your <code>PATH</code> (<a href="quickstart.html">quickstart</a>).</p>
+<p>You need Python with the <code>chloedb</code> package and <code>chloedb-server</code> on your <code>PATH</code> (<a href="quickstart.html">quickstart</a>). The server program fetches the embedding model once; everything else runs in your Python process, with no server.</p>
+<p><strong>Running this page's SQL yourself.</strong> Each SQL block below is one statement, with the rows it returns under it. Pass it to the database as a string: in Python, <code>db.query(sql)</code>, with a value for each <code>:name</code> placeholder as a keyword argument (<code>db.query(sql, q="dragon")</code>); in JavaScript, <code>await db.query(sql, {q: "dragon"})</code> (<a href="javascript.html#querying">JavaScript</a>); over HTTP, <code>POST /v1/sql</code> with <code>{"sql": "...", "params": {"q": "dragon"}}</code> to a chloedb-server that serves the file (<code>chloedb-server --db books.chloedb</code>, <a href="server.html#http-api">HTTP API</a>). The command center's SQL workbench runs them as they are. The first search below shows the Python form.</p>
 <h2 id="the-catalogue">The catalogue<a class="anchor" href="#the-catalogue" aria-label="Link to this section">#</a></h2>
 <p>Twelve books, one JSON object a line:</p>
 <pre data-lang="json" data-title="books.jsonl">{&quot;id&quot;: &quot;b01&quot;, &quot;title&quot;: &quot;The River and the Dragon&quot;, &quot;author&quot;: &quot;Ana Ruiz&quot;, &quot;genres&quot;: [&quot;fantasy&quot;], &quot;year&quot;: 1999, &quot;rating&quot;: 4.1, &quot;description&quot;: &quot;A girl follows a river north to find the dragon that drowned her village.&quot;}
@@ -147,7 +162,7 @@ print(len(db), &quot;books&quot;)
 db.close()</pre>
 <pre data-lang="sh">python3 load.py</pre>
 <pre data-lang="text" data-title="Output" class="output">12 books</pre>
-<p>The same table in SQL, for a server or the <code>chloedb</code> shell, is <code>CREATE TABLE books (id KEYWORD PRIMARY KEY, title TEXT, description TEXT, author KEYWORD, genres KEYWORD[], year INT, rating FLOAT, emb VECTOR OPTIONS(embed = 'title, description', model = 'potion-retrieval-32M'))</code>.</p>
+<p>The same table in SQL, as <code>db.sql(...)</code> and a server's <code>POST /v1/sql</code> take it, is <code>CREATE TABLE books (id KEYWORD PRIMARY KEY, title TEXT, description TEXT, author KEYWORD, genres KEYWORD[], year INT, rating FLOAT, emb VECTOR OPTIONS(embed = 'title, description', model = 'potion-retrieval-32M'))</code>.</p>
 <h2 id="words-match-and-bm25">Words: <code>MATCH</code> and <code>bm25</code><a class="anchor" href="#words-match-and-bm25" aria-label="Link to this section">#</a></h2>
 <p><code>MATCH</code> says whether a row has the words; <code>bm25</code> scores how well, and <code>score()</code> is the score a row was ranked by. Both take the field to search:</p>
 <pre data-lang="sql">SELECT id, title, score() FROM books
@@ -158,6 +173,18 @@ ORDER BY bm25(description, &#x27;village&#x27;) DESC LIMIT 5</pre>
 b01 | The River and the Dragon | 1.322
 b09 | Bread and Salt           | 1.322
 b02 | Winter Garden            | 1.213</pre>
+<p>The same statement from Python, with the search's words as a parameter:</p>
+<pre data-lang="python">import chloedb
+
+db = chloedb.open(&quot;books.chloedb&quot;, read_only=True)
+r = db.query(&quot;&quot;&quot;SELECT id, title, score() FROM books
+                WHERE MATCH(description, :q)
+                ORDER BY bm25(description, :q) DESC LIMIT 5&quot;&quot;&quot;, q=&quot;village&quot;)
+for row in r:
+    print(row[&quot;id&quot;], row[&quot;title&quot;], round(row[&quot;score()&quot;], 3))</pre>
+<pre data-lang="text" data-title="Output" class="output">b01 The River and the Dragon 1.322
+b09 Bread and Salt 1.322
+b02 Winter Garden 1.213</pre>
 <p>Words are stemmed, so <code>dragon</code> finds <em>dragons</em>. <code>MATCH</code> reads a small query language: words side by side must all be there, <code>OR</code> and <code>-</code> (not) combine them, quotes ask for a phrase, <code>*</code> for a prefix:</p>
 <pre data-lang="sql">SELECT id, title FROM books WHERE MATCH(description, &#x27;(dragon OR robot) -sea&#x27;) ORDER BY id</pre>
 <pre data-lang="text" data-title="Output" class="output">id  | title
@@ -172,12 +199,45 @@ b11 | Quiet Machines</pre>
 b03 | Dragons of the Salt Coast
 b05 | Machine Hearts
 b11 | Quiet Machines</pre>
+<h3 id="as-you-type-prefixes">As you type: prefixes<a class="anchor" href="#as-you-type-prefixes" aria-label="Link to this section">#</a></h3>
+<p><code>bm25</code> reads a prefix as <code>MATCH</code> does: <code>drag*</code> ranks by the words of the field that begin <em>drag</em> (<a href="sql.html#weights-required-and-excluded-words">weights, required and excluded words</a>). So a search box can send what has been typed so far, its last word with a <code>*</code> while it is being typed, to both:</p>
+<pre data-lang="sql">SELECT id, title FROM books WHERE MATCH(title, &#x27;drag*&#x27;) ORDER BY bm25(title, &#x27;drag*&#x27;) DESC</pre>
+<pre data-lang="text" data-title="Output" class="output">id  | title
+----+--------------------------
+b01 | The River and the Dragon
+b10 | The Dragon Accords
+b03 | Dragons of the Salt Coast</pre>
+<pre data-lang="sql">SELECT id, title FROM books WHERE MATCH(title, &#x27;salt drag*&#x27;) ORDER BY bm25(title, &#x27;salt drag*&#x27;) DESC</pre>
+<pre data-lang="text" data-title="Output" class="output">id  | title
+----+--------------------------
+b03 | Dragons of the Salt Coast</pre>
+<p><strong>Changed:</strong> <code>bm25</code> read <code>drag*</code> as the word <em>drag</em> before, which no book has, and a ranking by <code>bm25</code> returns only the rows it scores, so the first query found nothing until the last word was whole. Against a server or package of 0.3.7 or earlier, rank by the words already typed in full, or by a column while there are none:</p>
+<pre data-lang="sql">SELECT id, title FROM books WHERE MATCH(title, &#x27;drag*&#x27;) ORDER BY rating DESC</pre>
+<pre data-lang="text" data-title="Output" class="output">id  | title
+----+--------------------------
+b03 | Dragons of the Salt Coast
+b01 | The River and the Dragon
+b10 | The Dragon Accords</pre>
+<p><code>db.search(text)</code> ranks with <code>bm25</code> too, so it finds nothing for a word half typed unless the word ends in <code>*</code>. A prefix is lowercased but not stemmed, and matches the stemmed words that start with it. To complete whole values instead (the searches people ran before, names kept as <code>KEYWORD</code>), <code>PREFIX(field, :typed)</code> reads a keyword field's sorted values, with typos if asked (<a href="sql.html#prefixes-and-autocomplete">prefixes and autocomplete</a>).</p>
 <h2 id="typos">Typos<a class="anchor" href="#typos" aria-label="Link to this section">#</a></h2>
 <p><code>fuzzy =&gt; 'auto'</code> lets a word be an edit or two away, more for longer words; ranked, it corrects a typo rather than widening every word:</p>
 <pre data-lang="sql">SELECT id, title FROM books ORDER BY bm25(description, &#x27;lighthuose keeper&#x27;, fuzzy =&gt; &#x27;auto&#x27;) DESC LIMIT 1</pre>
 <pre data-lang="text" data-title="Output" class="output">id  | title
 ----+--------------------
 b04 | The Last Lighthouse</pre>
+<p><code>db.search(text)</code> searches the words as written, and so does the search box on a table's page in the command center: a search that should forgive typos asks for it in its SQL, or writes <code>~</code> after a word (<code>dragn~</code>), which <code>bm25</code> reads as <code>fuzzy =&gt; 'auto'</code> for that word. With a <code>MATCH</code>, a row must have every word, each as typed or within its edits, and a <code>bm25</code> of the same text on the same field takes the <code>MATCH</code>'s <code>fuzzy</code>:</p>
+<pre data-lang="python">import chloedb
+
+db = chloedb.open(&quot;books.chloedb&quot;, read_only=True)
+r = db.query(&quot;&quot;&quot;SELECT id, title FROM books
+                WHERE MATCH(description, :q, fuzzy =&gt; &#x27;auto&#x27;)
+                ORDER BY bm25(description, :q) DESC LIMIT 3&quot;&quot;&quot;, q=&quot;dragn villge&quot;)
+for row in r:
+    print(row[&quot;id&quot;], row[&quot;title&quot;])
+print(len(db.search(&quot;dragn villge&quot;, mode=&quot;text&quot;)), &quot;rows from db.search, by the words as written&quot;)</pre>
+<pre data-lang="text" data-title="Output" class="output">b01 The River and the Dragon
+0 rows from db.search, by the words as written</pre>
+<p><a href="search-page.html">Build a search page</a> puts this behind a search box, with the matched words highlighted and "did you mean" for a misspelt word.</p>
 <h2 id="filters-and-facets">Filters and facets<a class="anchor" href="#filters-and-facets" aria-label="Link to this section">#</a></h2>
 <p>Text, keyword, number and list conditions mix freely in <code>WHERE</code>, and the planner picks the order. A multi-valued keyword such as <code>genres</code> matches a row when any of its values does:</p>
 <pre data-lang="sql">SELECT id, title, year FROM books
@@ -209,6 +269,19 @@ for row in r:
 <pre data-lang="text" data-title="Output" class="output">b05 Machine Hearts
 b11 Quiet Machines
 b06 Stars Over Lagos</pre>
+<h2 id="similar-rows-more-like-this">Similar rows: more like this<a class="anchor" href="#similar-rows-more-like-this" aria-label="Link to this section">#</a></h2>
+<p><code>{"vector_of": key}</code> is the vector a row already has, so ranking by <code>similarity</code> to it lists the rows nearest it in meaning: "more like this" under a product, "readers also liked" under a book. <code>id &lt;&gt; :id</code> leaves the row itself out, and any other condition goes in the same <code>WHERE</code>:</p>
+<pre data-lang="python">import chloedb
+
+db = chloedb.open(&quot;books.chloedb&quot;, read_only=True)
+r = db.query(&quot;SELECT id, title FROM books WHERE id &lt;&gt; :id ORDER BY similarity(emb, :v) DESC LIMIT 3&quot;,
+             id=&quot;b01&quot;, v={&quot;vector_of&quot;: &quot;b01&quot;})
+for row in r:
+    print(row[&quot;id&quot;], row[&quot;title&quot;])</pre>
+<pre data-lang="text" data-title="Output" class="output">b10 The Dragon Accords
+b03 Dragons of the Salt Coast
+b07 The Cartographer&#x27;s Daughter</pre>
+<p>The vector is read from the table the statement names (<code>{"vector_of": "b01", "table": "books"}</code> names one). The parameter is the same from JavaScript (<code>{vector_of: "b01"}</code>), in the <code>params</code> of a server's <code>POST /v1/sql</code>, and through a client of a server (<code>chloedb.connect</code>).</p>
 <h2 id="both-hybrid-ranking">Both: hybrid ranking<a class="anchor" href="#both-hybrid-ranking" aria-label="Link to this section">#</a></h2>
 <p>Words find exact names and rare terms; vectors find paraphrases. <code>rrf</code> fuses the two rankings by reciprocal rank, and needs no tuning:</p>
 <pre data-lang="python">import chloedb
@@ -244,7 +317,7 @@ b03 | Ana Ruiz    | Dragons of the Salt Coast
 b06 | Jonas Abara | Stars Over Lagos
 b08 | Tomas Berg  | Murder at the Observatory</pre>
 <h2 id="what-the-planner-did">What the planner did<a class="anchor" href="#what-the-planner-did" aria-label="Link to this section">#</a></h2>
-<p>Each answer says how it was found. In Python, <code>stats["plan"]</code> holds a line for each segment the query read: which conditions came from an index, which were tested row by row, and how the rows were ranked. <a href="sql.html#reading-a-plan">Reading a plan</a> explains the lines; the <code>chloedb</code> shell prints them with <code>--plan</code>, and a server's <code>POST /v1/explain</code> takes the same <code>SELECT</code>.</p>
+<p>Each answer says how it was found. In Python, <code>stats["plan"]</code> holds a line for each segment the query read: which conditions came from an index, which were tested row by row, and how the rows were ranked. <a href="sql.html#reading-a-plan">Reading a plan</a> explains the lines, and a server's <code>POST /v1/explain</code> takes the same <code>SELECT</code> and answers its plan as a tree too.</p>
 <pre data-lang="python">import chloedb
 
 db = chloedb.open(&quot;books.chloedb&quot;, read_only=True)
@@ -257,6 +330,7 @@ for line in r.stats[&quot;plan&quot;]:
 seg 0: bm25 MaxScore, filter Probe</pre>
 <h2 id="next">Next<a class="anchor" href="#next" aria-label="Link to this section">#</a></h2>
 <ul>
+<li><a href="search-page.html">Build a search page</a>: this page's queries behind a search box in a Python web app, with highlights, did you mean and more like this.</li>
 <li><a href="rag.html">Retrieval for RAG</a>: the hybrid query above, feeding passages to a model.</li>
 <li><a href="sql.html">The SQL reference</a>: joins, window functions, graphs, rank profiles, rerankers.</li>
 <li><a href="python.html">Python</a>: queries built in Python rather than SQL text, Arrow results, writes.</li>
@@ -264,7 +338,7 @@ seg 0: bm25 MaxScore, filter Probe</pre>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/guide/search.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="build-an-app.html">← Build an app on the HTTP API</a><a href="sql.html">SQL reference →</a></span>
+      <span class="pager"><a href="troubleshooting.html">← Troubleshooting</a><a href="search-page.html">Build a search page →</a></span>
     </footer>
   </article>
 </div></main>
@@ -276,6 +350,7 @@ seg 0: bm25 MaxScore, filter Probe</pre>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

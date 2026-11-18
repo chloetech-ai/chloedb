@@ -19,7 +19,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
 </head>
 <body class="docs">
 <!-- Google Tag Manager (noscript) -->
@@ -40,6 +40,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
@@ -48,8 +54,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
       <a href="next-items.html">Next items</a>
@@ -64,18 +72,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
       <a href="java.html">Java and JDBC</a>
       <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
       <a href="runbooks.html" aria-current="page">Runbooks</a>
+      <a href="security.html">Security model</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -86,15 +105,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
-      <a href="chloectx.html">ChloeCtx</a>
-      <a href="chloectx-setup.html">Install ChloeCtx</a>
-      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
-      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
-      <a href="chloectx-capsules.html">Context capsules</a>
-      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
       <span class="eyebrow">Server and cluster</span>
@@ -102,7 +116,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/runbooks.md">docs/chloedb/runbooks.md</a>.</p>
       <p class="doc-version">These docs describe release 0.3.7.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#queries-are-slow">Queries are slow</a></li><li><a href="#searches-fail">Searches fail</a></li><li><a href="#queries-are-refused">Queries are refused</a></li><li><a href="#a-copy-is-down">A copy is down</a></li><li><a href="#a-replica-is-behind">A replica is behind</a></li><li><a href="#the-disk-is-filling">The disk is filling</a></li><li><a href="#writes-fail-or-queue">Writes fail or queue</a></li><li><a href="#data-damaged-on-disk">Data damaged on disk</a></li><li><a href="#a-shards-primary-changed">A shard's primary changed</a></li><li><a href="#a-rollout-is-held">A rollout is held</a></li><li><a href="#restore-from-checkpoints">Restore from checkpoints</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#queries-are-slow">Queries are slow</a></li><li><a href="#searches-fail">Searches fail</a></li><li><a href="#queries-are-refused">Queries are refused</a></li><li><a href="#a-copy-is-down">A copy is down</a></li><li><a href="#a-replica-is-behind">A replica is behind</a></li><li><a href="#the-disk-is-filling">The disk is filling</a></li><li><a href="#writes-fail-or-queue">Writes fail or queue</a></li><li><a href="#data-damaged-on-disk">Data damaged on disk</a></li><li><a href="#a-shards-primary-changed">A shard's primary changed</a></li><li><a href="#a-rollout-is-held">A rollout is held</a></li><li><a href="#restore-from-checkpoints">Restore from checkpoints</a></li><li><a href="#upgrades-outside-kubernetes">Upgrades outside Kubernetes</a></li></ol></details>
     <div class="doc-body">
 
 <p>What to do when an alert fires or the fleet view names a problem, written
@@ -115,7 +129,8 @@ tiers are explained in <a href="server.html#agents-and-administration">chloedb-s
 <p>The server compiles this page in: <code>GET /v1/catalog</code> lists the routes the
 steps name, the MCP tool <code>runbook</code> finds a runbook by an alert's or a
 problem's id (<code>runbook {"for": "copy-down"}</code>), and each fleet problem's
-<code>next.runbook</code> names the one to read.</p>
+<code>next.runbook</code> names the one to read. The last section, on upgrading
+servers outside Kubernetes, is for no alert.</p>
 <h2 id="queries-are-slow">Queries are slow<a class="anchor" href="#queries-are-slow" aria-label="Link to this section">#</a></h2>
 <p>For: <code>p99</code>, <code>p99-jump</code>, <code>p99_recovered</code></p>
 <ol>
@@ -180,17 +195,26 @@ problem's id (<code>runbook {"for": "copy-down"}</code>), and each fleet problem
 <li>A copy that does not come back (tier 2): replace it. <code>POST
    /v1/admin/plan</code> with the copy left out plans the repair (Cluster: Plan
    the repair, in the command center); file the plan as a change request.</li>
-<li>A shard with no majority: every search of it fails. Bring a copy back,
-   or remove the dead one (tier 2 for a replica, <code>DELETE
+<li>A shard with no majority takes no writes, and its copies cannot elect
+   a primary. Its searches go on while a replica that is up serves reads
+   (the shard's state is <code>no_writes</code>); when the copy left is its primary,
+   it serves no reads either (<code>no_reads</code>), since with failover a primary
+   serves reads only while a majority of its copies answer. Bring a copy
+   back, or remove the dead one (tier 2 for a replica, <code>DELETE
    /v1/admin/shards/&lt;i&gt;/replicas</code>; promoting by force is tier 3 and a
    person's alone).</li>
 </ol>
 <h2 id="a-replica-is-behind">A replica is behind<a class="anchor" href="#a-replica-is-behind" aria-label="Link to this section">#</a></h2>
 <p>For: <code>replica-behind</code>, <code>out-of-sync</code>, <code>replica-reads</code>, <code>lag</code>, <code>follow-behind</code></p>
 <ol>
-<li>Read how far behind and why: <code>GET /v1/cluster</code> (each copy's position
-   and lag) and <code>GET /v1/load</code> (the primary's write rate, the replica's
-   disk and CPU). <code>GET /v1/admin/follow</code> for a follower cluster.</li>
+<li>Read how far behind and why: the primary's <code>GET /v1/health</code>
+   (<code>replication.replicas</code>: each replica's <code>seq_no</code>, how many
+   transactions it is <code>behind</code>, and whether it is <code>in_sync</code>; on
+   <code>/metrics</code>, <code>chloedb_replica_behind</code>), and <code>GET /v1/load</code> (the
+   primary's write rate, the replica's disk and CPU). <code>GET /v1/cluster</code>
+   says each copy's role and whether it serves reads; its <code>txn</code> counts the
+   transactions of each process since it started, so it does not compare
+   two copies. <code>GET /v1/admin/follow</code> for a follower cluster.</li>
 <li>A replica catching up after a restart: wait, with <code>GET
    /v1/events?after=&lt;id&gt;&amp;wait_s=30</code>, and silence the alert for the while
    (tier 1).</li>
@@ -216,9 +240,10 @@ problem's id (<code>runbook {"for": "copy-down"}</code>), and each fleet problem
 <ol>
 <li>Read the server's lines: <code>GET /v1/logs?level=error</code> (a full disk, an
    I/O error).</li>
-<li>A database that refuses writes (<code>failing</code>) on a primary: hand the
-   primary over to a replica in sync first (tier 3, <code>POST
-   /v1/admin/shards/&lt;i&gt;/promote</code>, a person's), then fix the cause and
+<li>A database that refuses writes (<code>failing</code>) on a primary: with
+   <code>--failover-after-ms</code> it hands its shard over to a replica in sync by
+   itself; without it, hand the primary over first (tier 3, <code>POST
+   /v1/admin/shards/&lt;i&gt;/promote</code>, a person's). Then fix the cause and
    restart the server.</li>
 <li>Slow writes with <code>--write-acks all</code>: a replica or its link is slow;
    follow "A replica is behind".</li>
@@ -238,8 +263,8 @@ problem's id (<code>runbook {"for": "copy-down"}</code>), and each fleet problem
 <li>Read why: <code>GET /v1/events?kind=primary_changed,copy_down</code> and the old
    primary's lines (<code>GET /v1/logs?q=&lt;copy name&gt;</code>).</li>
 <li>Nothing to do when the old primary is back as a replica in sync; it
-   resolves ten minutes after the last change. Otherwise follow "A copy
-   is down".</li>
+   resolves ten minutes after the last change. A handover asked by hand
+   fires it too. Otherwise follow "A copy is down".</li>
 </ol>
 <h2 id="a-rollout-is-held">A rollout is held<a class="anchor" href="#a-rollout-is-held" aria-label="Link to this section">#</a></h2>
 <p>For: <code>rollout</code>, <code>held</code></p>
@@ -293,10 +318,31 @@ operator keeps its pods running and has no restore step yet.</p>
    shards' rows add up to the checkpoint's (<code>SELECT count(*)</code> through the
    coordinator). The files moved aside can go once it does.</li>
 </ol>
+<h2 id="upgrades-outside-kubernetes">Upgrades outside Kubernetes<a class="anchor" href="#upgrades-outside-kubernetes" aria-label="Link to this section">#</a></h2>
+<p>On Kubernetes the operator rolls a new version through the cluster
+(<a href="server.html#upgrades">upgrades</a>). On machines of your own, upgrade one
+server at a time, waiting after each until the cluster is well again:</p>
+<ol>
+<li>In each shard, its replicas, one at a time: stop it with SIGTERM,
+   start it on the new binary without <code>--replicas</code> or <code>--replica</code> (it
+   takes up the part its <code>&lt;db&gt;.replication</code> keeps), and wait until its
+   own <code>GET /v1/health</code> says <code>replication.serves_reads</code> and <code>GET
+   /v1/cluster</code> says every shard <code>ok</code>. A replica must not be older than
+   its primary.</li>
+<li>Then hand the shard over to an upgraded replica (tier 3, a person's:
+   <code>POST /v1/admin/shards/&lt;i&gt;/promote {"url": "&lt;its gRPC URL&gt;"}</code>), and
+   upgrade the old primary, now a replica, as the others.</li>
+<li>The coordinators last, one at a time, each with <code>--drain-ms</code> behind
+   a load balancer.</li>
+</ol>
+<p><a href="operate-cluster.html#upgrade-one-server-at-a-time">Operate a cluster</a>
+runs this on one machine, and <a href="compatibility.html#a-cluster-of-mixed-versions">versions and
+compatibility</a> says what a
+cluster of mixed versions serves.</p>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/runbooks.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="server.html">← chloedb-server</a><a href="sqlite.html">SQLite in and out →</a></span>
+      <span class="pager"><a href="cluster-limits.html">← Cluster limits</a><a href="security.html">Security model →</a></span>
     </footer>
   </article>
 </div></main>
@@ -308,6 +354,7 @@ operator keeps its pods running and has no restore step yet.</p>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

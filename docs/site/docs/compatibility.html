@@ -19,7 +19,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
 </head>
 <body class="docs">
 <!-- Google Tag Manager (noscript) -->
@@ -40,6 +40,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
@@ -48,8 +54,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="quickstart.html">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
       <a href="next-items.html">Next items</a>
@@ -64,18 +72,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
       <a href="java.html">Java and JDBC</a>
       <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
       <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html" aria-current="page">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -86,15 +105,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
-      <a href="chloectx.html">ChloeCtx</a>
-      <a href="chloectx-setup.html">Install ChloeCtx</a>
-      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
-      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
-      <a href="chloectx-capsules.html">Context capsules</a>
-      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
       <span class="eyebrow">Server and cluster</span>
@@ -108,7 +122,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on <code>main</code>
-(November 2026, every crate and package at version 0.3.7). The
+(November 2026, every crate and package at version 0.3.7 but the early
+Workbench, <code>chloedb-workbench</code>, at 0.1.0). The
 <a href="https://github.com/chloetech-ai/chloedb/blob/main/CHANGELOG.md">changelog</a> says what changed.</p>
 <p>ChloeDB is pre-1.0: the statements below are the current behaviour, which
 the code enforces, not a support commitment with a time limit.</p>
@@ -211,7 +226,8 @@ server of their own commit.</p>
 <p><strong>Not promised.</strong> A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.7), and keeps it between releases: name a
+version of the last release (0.3.7; <code>chloedb-workbench</code> its own, 0.1.0),
+and keeps it between releases: name a
 build from a commit after a release by its commit.</p>
 <h2 id="a-cluster-of-mixed-versions">A cluster of mixed versions<a class="anchor" href="#a-cluster-of-mixed-versions" aria-label="Link to this section">#</a></h2>
 <p>Servers of a cluster (coordinators, shards, replicas, followers) talk over
@@ -401,8 +417,8 @@ the command center marks their pages.</p>
 <tbody>
 <tr>
 <td><code>cloud</code></td>
-<td><code>/v1/admin/cloud/*</code>, <code>/v1/admin/aws/*</code>, <code>/v1/admin/digitalocean/*</code></td>
-<td><a href="server.html#in-the-cloud">clusters made on AWS or DigitalOcean</a> from the command center</td>
+<td><code>/v1/admin/cloud/*</code>, <code>/v1/admin/aws/*</code>, <code>/v1/admin/digitalocean/*</code>, <code>/v1/admin/gcp/*</code></td>
+<td><a href="server.html#in-the-cloud">clusters made on AWS, DigitalOcean or Google Cloud</a> from the command center</td>
 </tr>
 <tr>
 <td><code>hub</code></td>
@@ -424,8 +440,9 @@ the command center marks their pages.</p>
 <p>The list is <code>EXPERIMENTAL</code> in <code>chloedb-server/src/catalog.rs</code>. A feature
 leaves it when its shape is settled; the changelog says so.</p>
 <h2 id="demos">Demos<a class="anchor" href="#demos" aria-label="Link to this section">#</a></h2>
-<p>These apps show what ChloeDB can do and are not part of its releases or
-their promises:</p>
+<p>These apps show what ChloeDB can do and are not part of ChloeDB's
+promises (<code>chloedb-netops</code> is attached prebuilt to the server's release, as
+the crawler and Sheets are, but carries no promise of its own):</p>
 <ul>
 <li><code>chloedb-netops</code>, network operations on a simulated carrier network;</li>
 <li><code>chloedb-hn</code>, Hacker News searched, asked in sentences and completed as typed;</li>
@@ -451,7 +468,9 @@ one does not wait for the engine's tests. An app whose manifest says
   (<a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md">SECURITY.md</a>).</li>
 <li>That a release tag is never rebuilt: the release workflows replace the
   assets of an existing tag (<code>--clobber</code>). Check a download against the
-  release's <code>SHA256SUMS</code> (Python, JavaScript) or <code>.sha256</code> (server).</li>
+  release's <code>SHA256SUMS</code> (Python, JavaScript) or <code>.sha256</code> (server), or
+  PyPI's attestations (<a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md#checking-what-you-download">checking what you download</a>).</li>
+<li>Signed release archives, or an SBOM.</li>
 <li>Stability of anything not described above: the Rust crate's API, the
   command center's routes, the operator's resource beyond its documented
   fields.</li>
@@ -459,7 +478,7 @@ one does not wait for the engine's tests. An app whose manifest says
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/compatibility.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="opensearch.html">← OpenSearch API</a><a href="apps.html">Apps on a cluster →</a></span>
+      <span class="pager"><a href="opensearch.html">← OpenSearch API</a><a href="chloectx.html">ChloeCtx →</a></span>
     </footer>
   </article>
 </div></main>
@@ -471,6 +490,7 @@ one does not wait for the engine's tests. An app whose manifest says
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

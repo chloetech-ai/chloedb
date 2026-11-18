@@ -81,3 +81,29 @@ p.since { display: table; margin: -6px 0 12px; }
   .doc-nav a[aria-current="page"] { border-color: var(--accent); }
   .doc-toc ol { columns: 1; }
 }
+
+/* The search box above the sidebar (assets/docs-search.js, over the
+ * search-index.js build_docs.py writes). */
+.doc-side { position: sticky; top: 84px; align-self: start; display: grid; gap: 14px; min-width: 0; }
+.doc-side .doc-menu { position: static; }
+.doc-side .doc-nav { max-height: calc(100vh - 156px); }
+.doc-search { position: relative; margin: 0; }
+.doc-search input { width: 100%; box-sizing: border-box; font: inherit; font-size: 0.9rem; padding: 8px 34px 8px 12px; border: 1px solid var(--rule-2); border-radius: 8px; background: var(--panel); color: var(--ink); }
+.doc-search input::placeholder { color: var(--ink-3); }
+.doc-search input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+.doc-search kbd { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font: 500 0.72rem/1 var(--mono); color: var(--ink-3); border: 1px solid var(--rule-2); border-radius: 4px; padding: 3px 6px; pointer-events: none; }
+.doc-search input:focus ~ kbd, .doc-search input:not(:placeholder-shown) ~ kbd { display: none; }
+.doc-search-results { position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; width: min(560px, calc(100vw - 32px)); max-height: min(70vh, 560px); overflow-y: auto; background: var(--panel); border: 1px solid var(--rule-2); border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18); padding: 6px; }
+.doc-search-results[hidden] { display: none; }
+.doc-search-hit { display: grid; gap: 2px; padding: 8px 10px; border-radius: 7px; text-decoration: none; color: var(--ink); }
+.doc-search-hit:hover, .doc-search-hit[aria-selected="true"] { background: var(--accent-wash); }
+.doc-search-hit b { font-weight: 600; font-size: 0.92rem; }
+.doc-search-hit .where { font: 500 0.68rem/1.3 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+.doc-search-hit .snip { font-size: 0.84rem; line-height: 1.45; color: var(--ink-2); }
+.doc-search-hit mark { background: transparent; color: var(--accent); font-weight: 600; }
+.doc-search-none { margin: 0; padding: 10px 12px; font-size: 0.88rem; color: var(--ink-2); }
+@media (max-width: 900px) {
+  .doc-side { position: static; gap: 10px; }
+  .doc-side .doc-nav { max-height: none; }
+  .doc-search-results { width: 100%; }
+}

@@ -2,7 +2,7 @@
 
 An agent that works over many sessions needs to remember: what was said, what was decided, and facts that change. This recipe keeps an agent's memory in one ChloeDB file: every turn as a row, facts under keys that new values replace, and a recall query that finds what matters to a new message by words and meaning, favours what is recent, and spreads its picks across sessions.
 
-[ChloeCtx](../chloectx/index.md) is this idea built out for Claude Code, with hooks that record every session and a daemon that decides when to bring history back. Use this recipe for your own agent.
+If the agent is Claude Code, you do not need to build this: [ChloeCtx](../chloectx/index.md) is this idea built out for it, with hooks that record every session and a daemon that decides when to bring history back. [Install ChloeCtx](../chloectx/setup.md) as a Claude Code plugin, or from a checkout, and every new session has it. Use this recipe for an agent of your own.
 
 You need Python with the `chloedb` package and `chloedb-server` on your `PATH` ([quickstart](../quickstart.md)), and the embedding model the tables below name. Fetch it once (about 130 MB, into `~/.local/share/chloedb/models`, or `$CHLOEDB_MODELS`; a machine that already has it, from the [RAG recipe](rag.md) say, checks it and downloads nothing):
 
