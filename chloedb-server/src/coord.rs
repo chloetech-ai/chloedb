@@ -910,13 +910,15 @@ struct Survey {
     tables: Vec<pb::SchemaResponse>,
     /// Each server's URL and the map it holds.
     maps: Vec<(String, SlotMap)>,
+    /// The servers that answered.
+    answered: std::collections::HashSet<String>,
 }
 
 /// Asks every server of `t` its tables, protocol and role (which each
 /// replica keeps), and from protocol 9 the cluster map it holds. Every
 /// shard needs a server answering within 5 s.
 async fn survey(t: &Topology) -> Result<Survey, ApiError> {
-    let mut found = Survey { schemas: Vec::new(), tables: Vec::new(), maps: Vec::new() };
+    let mut found = Survey { schemas: Vec::new(), tables: Vec::new(), maps: Vec::new(), answered: Default::default() };
     for (i, rs) in t.replicas.iter().enumerate() {
         let answers = join_all(rs.iter().map(|r| {
             let mut c = r.client.clone();
@@ -939,6 +941,7 @@ async fn survey(t: &Topology) -> Result<Survey, ApiError> {
                     found.schemas.push(s.schema_json.clone());
                     found.tables.push(s);
                     r.heard(&said);
+                    found.answered.insert(r.url.clone());
                     found.maps.extend(map.map(|m| (r.url.clone(), m)));
                 }
                 Ok(Err(e)) => errors.push(format!("{}: {}", r.url, e.message())),
@@ -1646,6 +1649,17 @@ struct Wrote {
     receipt: Option<crate::service::Receipt>,
 }
 
+/// The servers of `listed` (`--shards`) that `held`, the newest cluster
+/// map the servers hold, leaves out: those that answered the survey
+/// (`answered`), which are new to the cluster, or left it and hold a map
+/// that says so; and those that did not, which say nothing (a copy
+/// removed or replaced while it was down, OLU-302), so that they neither
+/// lay the cluster out anew nor keep the coordinator from serving the map.
+fn left_out<'a>(listed: &'a [Vec<String>], held: &SlotMap, answered: &std::collections::HashSet<String>) -> (Vec<&'a String>, Vec<&'a String>) {
+    let known: std::collections::HashSet<&String> = held.replicas().iter().flatten().collect();
+    listed.iter().flatten().filter(|u| !known.contains(u)).partition(|u| answered.contains(*u))
+}
+
 impl Coordinator {
     /// Connects to `shards` (gRPC URLs such as `http://10.0.0.5:7001`,
     /// replicas of one shard joined by `|`) and checks that they serve the
@@ -1669,18 +1683,19 @@ impl Coordinator {
         let mut topo = Topology::new(groups, None, None, &opts)?;
         let mut found = survey(&topo).await?;
         // The cluster map the servers hold, unless a newer one is given,
-        // names the cluster's servers now: when every server listed is one
-        // of them, the list is where to find it (a coordinator started
-        // again on the servers it was first given serves those added
-        // since). A list that names servers new to clusters lays the
+        // names the cluster's servers now: when every server listed that
+        // answers is one of them, the list is where to find it (a
+        // coordinator started again on the servers it was first given
+        // serves those added since, and not those removed since: a copy
+        // replaced while it was down does not answer, OLU-302). A list
+        // that names servers new to clusters, which answer, lays the
         // cluster out anew, under the next epoch; one that names a server
         // of another map (it left this cluster, or serves another) is
         // refused, so that an old list does not undo the admin calls.
         let given = opts.slots.as_ref().map_or(0, |m| m.epoch);
         if let Some(held) = found.maps.iter().map(|(_, m)| m).filter(|m| m.epoch >= given && !m.replicas().is_empty()).max_by_key(|m| m.epoch).cloned() {
-            let known: std::collections::HashSet<&String> = held.replicas().iter().flatten().collect();
             let listed = topo.groups();
-            let strangers: Vec<&String> = listed.iter().flatten().filter(|u| !known.contains(u)).collect();
+            let (strangers, silent) = left_out(&listed, &held, &found.answered);
             let member = |u: &String| found.maps.iter().find(|(v, m)| v == u && m.replicas().iter().flatten().any(|w| w == u)).map(|(_, m)| m.epoch);
             if let Some((u, e)) = strangers.iter().find_map(|u| member(u).map(|e| (u, e))) {
                 return Err(ApiError::bad(format!(
@@ -1691,12 +1706,19 @@ impl Coordinator {
                 )));
             }
             if strangers.is_empty() && held.replicas() != listed.as_slice() {
+                if !silent.is_empty() {
+                    tracing::warn!(
+                        epoch = held.epoch,
+                        left_out = %silent.iter().map(|u| u.as_str()).collect::<Vec<_>>().join(", "),
+                        "--shards lists servers that do not answer and that the cluster map leaves out (removed or replaced since): serving the map's servers without them; list the cluster as it is now to stop this warning"
+                    );
+                }
                 tracing::info!(epoch = held.epoch, shards = held.shards(), "the servers listed hold the cluster map: serving all of its servers");
                 topo = Topology::new(held.replicas().to_vec(), None, Some(&topo), &opts)?;
                 found = survey(&topo).await?;
             }
         }
-        let Survey { schemas, tables, maps } = found;
+        let Survey { schemas, tables, maps, .. } = found;
         let parsed: Vec<Schema> = schemas.iter().map(|s| serde_json::from_str(s)).collect::<Result<_, _>>().map_err(ApiError::internal)?;
         if parsed.iter().any(|s| !s.same_columns(&parsed[0])) {
             return Err(ApiError::bad("the shards serve different schemas"));
@@ -5302,6 +5324,28 @@ async fn configure_with(c: &mut Client, url: &str, r: pb::ConfigureRequest) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// OLU-302: a copy replaced while it was down stays in the list a
+    /// coordinator was first started on. It answers nothing, so it is left
+    /// out with the map's word, not taken for a new server that lays the
+    /// cluster out anew (which kept the dead copy and hid the new one).
+    #[test]
+    fn a_listed_server_that_does_not_answer_and_the_map_leaves_out_says_nothing() {
+        let u = |p: u16| format!("http://127.0.0.1:{p}");
+        let held = SlotMap::even(2, 1).at_epoch(3).with_replicas(vec![vec![u(1), u(2), u(3)], vec![u(4), u(5), u(7)]]).unwrap();
+        let listed = vec![vec![u(1), u(2), u(3)], vec![u(4), u(5), u(6)]];
+        let answered: std::collections::HashSet<String> = [1, 2, 3, 4, 5].map(u).into_iter().collect();
+        let (new, silent) = left_out(&listed, &held, &answered);
+        assert!(new.is_empty(), "{new:?}");
+        assert_eq!(silent, vec![&u(6)]);
+        // A server new to the cluster that answers still lays it out anew.
+        let answered: std::collections::HashSet<String> = [1, 2, 3, 4, 5, 6].map(u).into_iter().collect();
+        let (new, silent) = left_out(&listed, &held, &answered);
+        assert_eq!((new, silent.len()), (vec![&u(6)], 0));
+        // Every server listed in the map: nothing left out.
+        let (new, silent) = left_out(&held.replicas().to_vec(), &held, &answered);
+        assert!(new.is_empty() && silent.is_empty());
+    }
 
     #[test]
     fn a_copy_is_named_by_its_address_and_keeps_its_name_when_another_leaves() {
