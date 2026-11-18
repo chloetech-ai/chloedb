@@ -242,9 +242,12 @@ async fn a_dead_primary_loses_its_role() {
     }
 
     a.kill();
-    until("another copy is the primary", &[&b, &c], || async {
+    // The copy elected serves reads once a majority of the shard's copies
+    // has answered it as primary, a moment after its election (the shard
+    // is `no_reads` until then, longer on a slow runner): wait for both.
+    until("another copy is the primary and serves reads", &[&b, &c], || async {
         let s = fresh(&coord).await["shards"][0].clone();
-        s["primary"].is_string() && s["primary"] != json!(a.url())
+        s["primary"].is_string() && s["primary"] != json!(a.url()) && s["state"] == "degraded"
     })
     .await;
     let s = fresh(&coord).await["shards"][0].clone();

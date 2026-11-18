@@ -942,13 +942,15 @@ pub enum Having {
 }
 
 /// A column a SELECT groups by or aggregates: a field, a path of a JSON
-/// field ([`Select::paths`]), or a part of a TIMESTAMP field's times
-/// ([`Select::times`]).
+/// field ([`Select::paths`]), a part of a TIMESTAMP field's times
+/// ([`Select::times`]), or an expression of the row's fields
+/// ([`Select::exprs`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Col {
     Field(usize),
     Path(usize),
     Time(usize),
+    Expr(usize),
 }
 
 impl Col {
@@ -958,6 +960,7 @@ impl Col {
             Col::Field(f) => Projection::Field(f),
             Col::Path(p) => Projection::Path(p),
             Col::Time(t) => Projection::Time(t),
+            Col::Expr(e) => Projection::Expr(e),
         }
     }
 
@@ -965,7 +968,7 @@ impl Col {
     pub fn field(self) -> Option<usize> {
         match self {
             Col::Field(f) => Some(f),
-            Col::Path(_) | Col::Time(_) => None,
+            Col::Path(_) | Col::Time(_) | Col::Expr(_) => None,
         }
     }
 }
@@ -1034,6 +1037,9 @@ pub enum Projection {
     /// A part of a TIMESTAMP field's time ([`Select::times`]), as a group's
     /// value.
     Time(usize),
+    /// An expression of the row's fields ([`Select::exprs`]), as a group's
+    /// value.
+    Expr(usize),
     /// The ORDER BY score (`score()`), or the fused score for hybrids.
     Score,
     /// `COUNT(*)`: of the whole result, or per group.
@@ -1140,6 +1146,15 @@ pub struct Select {
     /// The parts of TIMESTAMP fields' times the query groups by, which
     /// [`Col::Time`] and [`Projection::Time`] index.
     pub times: Vec<TimeCol>,
+    /// The expressions the query groups by or aggregates (`SUM(a * b)`,
+    /// `COUNT(CASE WHEN c THEN 1 END)`, `GROUP BY CASE .. END`), which
+    /// [`Col::Expr`] and [`Projection::Expr`] index: of single-valued
+    /// INT and FLOAT fields (BOOL and TIMESTAMP ones too), each
+    /// [`crate::query::ir::Expr::Field`] the field's value as queries give
+    /// it, computed as the row evaluator computes it
+    /// ([`crate::query::ir::eval`]). Only a plan this process runs makes
+    /// them ([`crate::query::compound::fuse_columns`]).
+    pub exprs: Vec<crate::query::ir::Expr>,
     /// Which groups to keep.
     pub having: Option<Having>,
     /// Secondary order for rows that tie on the primary one.

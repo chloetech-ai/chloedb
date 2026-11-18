@@ -61,13 +61,16 @@ struct Outputs<'p> {
     paths: &'p [PathCol],
     /// The Select's parts of times ([`Select::times`]).
     times: &'p [TimeCol],
+    /// The Select's expressions ([`Select::exprs`]).
+    exprs: &'p [Expr],
 }
 
-/// Column `c`'s value of a row: a field, `json_extract` of a path, or the
-/// function of a time.
-fn col_expr(paths: &[PathCol], times: &[TimeCol], c: Col) -> Expr {
+/// Column `c`'s value of a row: a field, `json_extract` of a path, the
+/// function of a time, or an expression of the row's fields.
+fn col_expr(paths: &[PathCol], times: &[TimeCol], exprs: &[Expr], c: Col) -> Expr {
     match c {
         Col::Field(f) => Expr::Field(f as u32),
+        Col::Expr(e) => exprs[e].clone(),
         Col::Path(p) => json_extract(paths[p].field, &paths[p].path, paths[p].kind),
         Col::Time(t) => {
             let field = Expr::Field(times[t].field as u32);
@@ -92,15 +95,16 @@ impl Outputs<'_> {
     fn of(&mut self, p: &Projection) -> Expr {
         let agg = match p {
             Projection::Field(f) => return self.keys.iter().position(|k| *k == Col::Field(*f)).map_or(Expr::Field(*f as u32), |i| Expr::Output(i as u32)),
-            Projection::Path(x) => return self.keys.iter().position(|k| *k == Col::Path(*x)).map_or_else(|| col_expr(self.paths, self.times, Col::Path(*x)), |i| Expr::Output(i as u32)),
-            Projection::Time(x) => return self.keys.iter().position(|k| *k == Col::Time(*x)).map_or_else(|| col_expr(self.paths, self.times, Col::Time(*x)), |i| Expr::Output(i as u32)),
+            Projection::Path(x) => return self.keys.iter().position(|k| *k == Col::Path(*x)).map_or_else(|| col_expr(self.paths, self.times, self.exprs, Col::Path(*x)), |i| Expr::Output(i as u32)),
+            Projection::Time(x) => return self.keys.iter().position(|k| *k == Col::Time(*x)).map_or_else(|| col_expr(self.paths, self.times, self.exprs, Col::Time(*x)), |i| Expr::Output(i as u32)),
+            Projection::Expr(x) => return self.keys.iter().position(|k| *k == Col::Expr(*x)).map_or_else(|| col_expr(self.paths, self.times, self.exprs, Col::Expr(*x)), |i| Expr::Output(i as u32)),
             // A ranking expression scores rows, not groups: binding and
             // the executor refuse it here.
             Projection::Score | Projection::Feature(_) => return Expr::Score,
             Projection::Hops(_) => return Expr::Hops,
             Projection::SeqNo => return Expr::SeqNo,
             Projection::Count => Agg { func: logical::AggFn::Count, arg: None },
-            Projection::Agg { func, of } => Agg { func: *func, arg: Some(col_expr(self.paths, self.times, *of)) },
+            Projection::Agg { func, of } => Agg { func: *func, arg: Some(col_expr(self.paths, self.times, self.exprs, *of)) },
         };
         let i = self.aggs.iter().position(|a| *a == agg).unwrap_or_else(|| {
             self.aggs.push(agg);
@@ -149,7 +153,7 @@ impl Lower<'_> {
         let guard = s.guard.as_ref().map(|g| Box::new(self.guard(g)));
         let pk = || Expr::Field(self.schema.primary_key.unwrap_or(0) as u32);
         let node = if aggregated(s) {
-            let mut out = Outputs { keys: s.group_by.clone(), aggs: Vec::new(), paths: &s.paths, times: &s.times };
+            let mut out = Outputs { keys: s.group_by.clone(), aggs: Vec::new(), paths: &s.paths, times: &s.times, exprs: &s.exprs };
             let columns: Vec<Column> = s.projection.iter().map(|(name, p)| Column { name: name.clone(), expr: out.of(p) }).collect();
             let having = s.having.as_ref().map(|h| self.having(h, &mut out));
             let mut keys = Vec::new();
@@ -168,7 +172,7 @@ impl Lower<'_> {
                 Some(Tiebreak::Key { desc }) => keys.push(key(pk(), desc)),
             }
             let search = Node::Search(Search { table, filter, order: Vec::new(), phases: Vec::new(), profile: None, guard, per: None });
-            let mut node = Node::Aggregate { input: Box::new(search), keys: out.keys.iter().map(|&c| col_expr(&s.paths, &s.times, c)).collect(), aggs: out.aggs };
+            let mut node = Node::Aggregate { input: Box::new(search), keys: out.keys.iter().map(|&c| col_expr(&s.paths, &s.times, &s.exprs, c)).collect(), aggs: out.aggs };
             if let Some(cond) = having {
                 node = Node::Filter { input: Box::new(node), cond };
             }
@@ -182,7 +186,7 @@ impl Lower<'_> {
                 // Hops rank nearest first, as -hops, unless farthest first.
                 Some(OrderBy::Score { score: Score::Hops { far_first, .. }, .. }) => order.push(SortKey { expr: Expr::Hops, desc: *far_first, nulls_first: false }),
                 Some(OrderBy::Score { score, desc, nulls_first }) => order.push(SortKey { expr: self.score(score), desc: *desc, nulls_first: *nulls_first }),
-                Some(OrderBy::Path { path, desc, nulls_first }) => order.push(SortKey { expr: col_expr(&s.paths, &s.times, Col::Path(*path)), desc: *desc, nulls_first: *nulls_first }),
+                Some(OrderBy::Path { path, desc, nulls_first }) => order.push(SortKey { expr: col_expr(&s.paths, &s.times, &s.exprs, Col::Path(*path)), desc: *desc, nulls_first: *nulls_first }),
                 _ => {}
             }
             if let Some(Tiebreak::Key { desc }) = s.tiebreak {
@@ -195,8 +199,9 @@ impl Lower<'_> {
                     name: name.clone(),
                     expr: match p {
                         Projection::Field(f) => Expr::Field(*f as u32),
-                        Projection::Path(p) => col_expr(&s.paths, &s.times, Col::Path(*p)),
-                        Projection::Time(t) => col_expr(&s.paths, &s.times, Col::Time(*t)),
+                        Projection::Path(p) => col_expr(&s.paths, &s.times, &s.exprs, Col::Path(*p)),
+                        Projection::Time(t) => col_expr(&s.paths, &s.times, &s.exprs, Col::Time(*t)),
+                        Projection::Expr(e) => col_expr(&s.paths, &s.times, &s.exprs, Col::Expr(*e)),
                         Projection::Hops(_) => Expr::Hops,
                         Projection::SeqNo => Expr::SeqNo,
                         Projection::Feature(s) => self.score(s),

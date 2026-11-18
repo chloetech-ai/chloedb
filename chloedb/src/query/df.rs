@@ -1591,6 +1591,21 @@ impl<'a> Lower<'a, '_> {
             return no("a FULL JOIN");
         }
         let mut l = self.node(left, "scan")?;
+        // Past RESTRICT_ALWAYS rows read on the left, a right side of at most
+        // RESTRICT_ALWAYS rows (a table of zones, of genres) is read whole:
+        // restricting it to the left's values would cut little, and holding
+        // the left side for them costs a sort of all its rows (two joins of
+        // 224,056 trips to 265 zones spent 42 of their 80 ms there, persona
+        // study round 2). A small left side keeps the restricted read, the
+        // one the operators make when they take a small plan over.
+        let right_rows = match right.is_leaf() && plain(right) && self.leaf_rows > RESTRICT_ALWAYS {
+            true => self.count(right)?,
+            false => None,
+        };
+        if right_rows.is_some_and(|rows| rows <= RESTRICT_ALWAYS as u64) {
+            let r = self.leaf(right, "join", Vec::new())?;
+            return self.joined(l, r, kind, keys, on);
+        }
         let r = if right.is_leaf() {
             // As the operators do: the right side read only for the join
             // values the left holds.
@@ -1601,7 +1616,7 @@ impl<'a> Lower<'a, '_> {
             // rows they would cut: the right side is read whole and hashed.
             let whole = left_rows > RESTRICT_ALWAYS
                 && plain(right)
-                && match self.count(right)? {
+                && match right_rows.map_or_else(|| self.count(right), |rows| Ok(Some(rows)))? {
                     // More than RESTRICT_ALWAYS values, and more than a
                     // RESTRICT_RATIO-th of the rows.
                     Some(rows) if (left_rows as u64).saturating_mul(RESTRICT_RATIO) > rows => {
@@ -2091,6 +2106,8 @@ impl<'a> Lower<'a, '_> {
             }
             Expr::Cmp { op, left, right } => {
                 let (a, b) = (self.expr(left, cols, schema)?, self.expr(right, cols, schema)?);
+                let (ta, tb) = (ty(&a)?, ty(&b)?);
+                let (a, b) = (time_text(&tb, left, a), time_text(&ta, right, b));
                 comparable(&ty(&a)?, &ty(&b)?)?;
                 let op = match op {
                     CmpOp::Eq => Operator::Eq,
@@ -2108,7 +2125,7 @@ impl<'a> Lower<'a, '_> {
                 let mut out: Option<DExpr> = None;
                 for (bound, op) in [(lo, Operator::GtEq), (hi, Operator::LtEq)] {
                     if let Some(b) = bound {
-                        let b = self.expr(b, cols, schema)?;
+                        let b = time_text(&tx, b, self.expr(b, cols, schema)?);
                         comparable(&tx, &ty(&b)?)?;
                         let c = binary_expr(x.clone(), op, b);
                         out = Some(match out {
@@ -2127,7 +2144,7 @@ impl<'a> Lower<'a, '_> {
                 }
                 let mut items = Vec::with_capacity(list.len());
                 for i in list {
-                    let i = self.expr(i, cols, schema)?;
+                    let i = time_text(&tx, i, self.expr(i, cols, schema)?);
                     comparable(&tx, &ty(&i)?)?;
                     items.push(i);
                 }
@@ -2296,8 +2313,68 @@ impl<'a> Lower<'a, '_> {
             Func::Hash if ts.iter().all(|t| !matches!(t, DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(..))) => {
                 ScalarUDF::new_from_impl(StrataCall::new(func, DataType::Int64)).call(xs)
             }
+            Func::DatePart | Func::DateTrunc | Func::DateBin | Func::Strftime => match time_fn(func, args, ts) {
+                Some((op, ret, at)) => ScalarUDF::new_from_impl(TimeFn::new(op, ret)).call(vec![xs[at].clone()]),
+                None => return no(format!("{}({ts:?}) above a leaf", func.name())),
+            },
             f => return no(format!("{}({ts:?}) above a leaf", f.name())),
         })
+    }
+}
+
+/// `date_part`, `date_trunc`, `date_bin` or `strftime` of a TIMESTAMP
+/// column with what they read written out (the part, unit, width, origin
+/// or format), as a [`TimeFn`]: what it computes, its type, and which of
+/// `args` is the time. `None` for any other shape (a time given as text,
+/// a part named by a column), which the operators compute.
+fn time_fn(func: Func, args: &[Expr], ts: &[DataType]) -> Option<(TimeOp, DataType, usize)> {
+    use crate::timestamp as t;
+    let text = |i: usize| match args.get(i) {
+        Some(Expr::Lit(Value::Str(s))) => Some(s.as_str()),
+        _ => None,
+    };
+    let time = |i: usize| matches!(ts.get(i), Some(DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Microsecond, None)));
+    let at = DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Microsecond, None);
+    if !time(1) {
+        return None;
+    }
+    Some(match func {
+        Func::DatePart if args.len() == 2 => {
+            let part = t::Part::parse(text(0)?)?;
+            let ret = match part {
+                t::Part::Second | t::Part::Epoch => DataType::Float64,
+                _ => DataType::Int64,
+            };
+            (TimeOp::Part(part), ret, 1)
+        }
+        Func::DateTrunc if args.len() == 2 => (TimeOp::Trunc(t::Unit::parse(text(0)?)?), at, 1),
+        Func::Strftime if args.len() == 2 => (TimeOp::Format(text(0)?.to_string()), DataType::Utf8, 1),
+        Func::DateBin if args.len() == 2 || args.len() == 3 => {
+            let width = crate::query::ir::eval::stride(text(0)?).ok()?;
+            let origin = match args.get(2) {
+                None => 0,
+                Some(Expr::Lit(Value::Timestamp(o))) => *o,
+                Some(Expr::Lit(Value::Str(o))) => t::parse(o)?,
+                Some(_) => return None,
+            };
+            (TimeOp::Bin { width, origin }, at, 1)
+        }
+        _ => return None,
+    })
+}
+
+/// `b`, text written out that names a time, as the TIMESTAMP the operators
+/// compare a time with ([`crate::query::ir::eval::compare`]: `at <
+/// '2024-01-01'`), when the other side `ta` is a TIMESTAMP; else `b` as it
+/// is (text that names no time does not compare with a time there, and
+/// [`comparable`] says so here).
+fn time_text(ta: &DataType, b_ir: &Expr, b: DExpr) -> DExpr {
+    match (ta, b_ir) {
+        (DataType::Timestamp(..), Expr::Lit(Value::Str(s))) => match crate::timestamp::parse(s) {
+            Some(t) => lit(ScalarValue::TimestampMicrosecond(Some(t), None)),
+            None => b,
+        },
+        _ => b,
     }
 }
 
@@ -2738,6 +2815,101 @@ impl ScalarUDFImpl for StrataCond {
             }
         }
         Ok(ColumnarValue::Array(Arc::new(b.finish())))
+    }
+}
+
+/// What a [`TimeFn`] computes of each time ([`crate::timestamp`]).
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum TimeOp {
+    Part(crate::timestamp::Part),
+    Trunc(crate::timestamp::Unit),
+    Bin { width: i64, origin: i64 },
+    Format(String),
+}
+
+/// `date_part` (EXTRACT), `date_trunc`, `date_bin` or `strftime` of a
+/// TIMESTAMP column ([`time_fn`]), a time at a time with
+/// [`crate::timestamp`]'s functions, the evaluator's, so the values agree
+/// to the bit; a time outside what they compute (a `date_trunc` past the
+/// last TIMESTAMP) fails, and the operators give their error for it.
+#[derive(Debug, PartialEq, Eq)]
+struct TimeFn {
+    name: String,
+    op: TimeOp,
+    ret: DataType,
+    signature: Signature,
+}
+
+impl TimeFn {
+    fn new(op: TimeOp, ret: DataType) -> TimeFn {
+        let name = match &op {
+            TimeOp::Part(_) => "strata_date_part",
+            TimeOp::Trunc(_) => "strata_date_trunc",
+            TimeOp::Bin { .. } => "strata_date_bin",
+            TimeOp::Format(_) => "strata_strftime",
+        };
+        let at = DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Microsecond, None);
+        TimeFn { name: name.to_string(), op, ret, signature: Signature::exact(vec![at], Volatility::Immutable) }
+    }
+}
+
+impl std::hash::Hash for TimeFn {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.name.hash(h);
+        self.op.hash(h);
+    }
+}
+
+impl ScalarUDFImpl for TimeFn {
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(self.ret.clone())
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> datafusion::error::Result<ColumnarValue> {
+        use crate::timestamp as t;
+        use datafusion::arrow::array::{StringBuilder, TimestampMicrosecondArray};
+        use datafusion::arrow::datatypes::TimestampMicrosecondType;
+        let a = args.args[0].clone().into_array(args.number_rows)?;
+        let times = a.as_primitive::<TimestampMicrosecondType>();
+        let outside = |what: &str, m: i64| DataFusionError::Execution(format!("chloedb: {what} of {}: outside the times a TIMESTAMP holds", t::format(m)));
+        let out: ArrayRef = match &self.op {
+            TimeOp::Part(p) if self.ret == DataType::Float64 => Arc::new(times.unary::<_, datafusion::arrow::datatypes::Float64Type>(|m| match t::part(m, *p) {
+                t::PartValue::Float(x) => x,
+                t::PartValue::Int(x) => x as f64,
+            })),
+            TimeOp::Part(p) => Arc::new(times.unary::<_, Int64Type>(|m| match t::part(m, *p) {
+                t::PartValue::Int(x) => x,
+                t::PartValue::Float(x) => x as i64,
+            })),
+            TimeOp::Trunc(u) => {
+                let v = times.try_unary::<_, TimestampMicrosecondType, DataFusionError>(|m| t::trunc(m, *u).ok_or_else(|| outside("date_trunc", m)))?;
+                Arc::new(TimestampMicrosecondArray::from(v))
+            }
+            TimeOp::Bin { width, origin } => {
+                let v = times.try_unary::<_, TimestampMicrosecondType, DataFusionError>(|m| t::bin(m, *width, *origin).ok_or_else(|| outside("date_bin", m)))?;
+                Arc::new(TimestampMicrosecondArray::from(v))
+            }
+            TimeOp::Format(f) => {
+                let mut b = StringBuilder::with_capacity(times.len(), times.len() * f.len());
+                for m in times.iter() {
+                    match m {
+                        Some(m) => b.append_value(t::strftime(f, m).map_err(|e| DataFusionError::Execution(format!("chloedb: strftime: {e}")))?),
+                        None => b.append_null(),
+                    }
+                }
+                Arc::new(b.finish())
+            }
+        };
+        Ok(ColumnarValue::Array(out))
     }
 }
 
