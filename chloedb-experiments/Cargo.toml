@@ -1,0 +1,29 @@
+[package]
+name = "chloedb-experiments"
+version = "0.3.8"
+edition = "2021"
+license = "Apache-2.0"
+description = "Experiments on ChloeDB: simulated users and click models, logging policies with exact propensities, off-policy estimates checked against the truth"
+
+# A client of chloedb-server over HTTP, as chloedb-sheets and chloedb-crawl
+# are: no ChloeDB crate in its build. The logging policies are ChloeDB's
+# (chloedb/src/explore.rs), ported here so that the fast mode draws the
+# lists the server draws, bit for bit; tests/served.rs checks that against
+# a real server.
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "fs", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+clap = { version = "4", features = ["derive", "env"] }
+libc = "0.2"
+axum = "0.7"
+
+[dev-dependencies]
+tempfile = "3"
+
+# CI's tests (cargo test --profile ci), as in the other crates.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16

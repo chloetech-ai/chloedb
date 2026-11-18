@@ -304,6 +304,73 @@ fn distilled_knowledge_reaches_later_sessions() {
     assert!(!ctx.contains("[planned]"), "{ctx}");
 }
 
+/// JONAH-202: a question that stands on its own, for which nothing is
+/// recalled, gets nothing from ChloeCtx: no recall, no session tail (it
+/// waits for the next prompt), no search and no distillation. Two sessions
+/// that start with it then send the same first request (the same briefing,
+/// nothing after the prompt), which the prompt cache serves, and its
+/// records are asides that later prompts are not given.
+#[test]
+fn a_question_that_stands_alone_gets_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let calls = dir.path().join("calls");
+    let script = dir.path().join("fake-model.sh");
+    std::fs::write(&script, format!("#!/bin/sh\ncat > /dev/null\necho x >> '{}'\ncat '{}'\n", calls.display(), out.display())).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let cfg = json!({"embedder": "hash:64", "sync": false, "distill": {"command": script, "model": "m"}});
+    std::fs::write(dir.path().join("config.json"), cfg.to_string()).unwrap();
+    let rule = json!({"kind": "decision", "text": "Dates in tado are stored as ISO 8601 strings."});
+    std::fs::write(&out, json!({"is_error": false, "total_cost_usd": 0.001, "result": rule.to_string()}).to_string()).unwrap();
+    let d = Arc::new(Daemon::open(dir.path(), "/proj").unwrap());
+    let n_calls = || std::fs::read_to_string(&calls).map(|s| s.lines().count()).unwrap_or(0);
+
+    hook(&d, "SessionStart", json!({"session_id": "s1", "source": "startup"}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s1", "prompt": "We're building tado, a todo CLI. Rule: dates are stored as ISO 8601 strings. Create tado.py with add(text)."}));
+    hook(&d, "PostToolUse", json!({"session_id": "s1", "tool_name": "Write", "tool_input": {"file_path": "/proj/tado.py", "content": "def add(text): ..."}, "tool_response": {"type": "create"}}));
+    hook(&d, "Stop", json!({"session_id": "s1", "last_assistant_message": "Created tado.py with add(text); dates are ISO 8601 strings."}));
+    assert_eq!(n_calls(), 1, "the work is distilled");
+
+    let q = "What is 17 times 3? Reply with just the number.";
+    let mut briefings = Vec::new();
+    for sid in ["s2", "s3", "s4"] {
+        briefings.push(hook(&d, "SessionStart", json!({"session_id": sid, "source": "startup"})));
+        let ctx = hook(&d, "UserPromptSubmit", json!({"session_id": sid, "prompt": q}));
+        assert_eq!(ctx, "", "{sid}: nothing goes with the question");
+        hook(&d, "Stop", json!({"session_id": sid, "last_assistant_message": "51"}));
+    }
+    assert!(briefings[0].contains("ISO 8601"), "{}", briefings[0]);
+    assert!(briefings.iter().all(|b| b == &briefings[0]), "the briefing is the same each time: {briefings:#?}");
+    assert_eq!(n_calls(), 1, "a question that stood alone is not distilled");
+    let marks = sql(&d, "SELECT session FROM memory WHERE kind = 'event' AND tag = 'distill_skipped' LIMIT 10");
+    assert_eq!(marks.len(), 3, "{marks:?}");
+    let asides = sql(&d, "SELECT kind FROM memory WHERE tag = 'aside' AND session = 's2' LIMIT 10");
+    let kinds: Vec<&str> = asides.iter().filter_map(|r| r[0].as_str()).collect();
+    assert!(kinds.contains(&"prompt") && kinds.contains(&"answer") && kinds.contains(&"episode"), "{kinds:?}");
+
+    // Another such question is not given the earlier ones either.
+    hook(&d, "SessionStart", json!({"session_id": "s5", "source": "startup"}));
+    assert_eq!(hook(&d, "UserPromptSubmit", json!({"session_id": "s5", "prompt": "What is 5 plus 9? Reply with just the number."})), "");
+    // The work that follows gets the tail the question left waiting, and
+    // where the last session left off is s1's work, not a question.
+    let ctx = hook(&d, "UserPromptSubmit", json!({"session_id": "s5", "prompt": "Add a stats() function to tado.py."}));
+    assert!(ctx.contains("Where the most recent earlier session left off") && ctx.contains("tado"), "{ctx}");
+    assert!(!ctx.contains("17 times 3"), "{ctx}");
+    // A search that asks still finds the asides.
+    let found = call(&d, json!({"op": "search", "query": "17 times 3", "limit": 5, "include_current": true}));
+    assert!(found["text"].as_str().unwrap_or("").contains("17 times 3"), "{found}");
+
+    // Answered at length, such a question is a discussion: distilled as
+    // any turn, and not an aside.
+    hook(&d, "SessionStart", json!({"session_id": "s6", "source": "startup"}));
+    assert_eq!(hook(&d, "UserPromptSubmit", json!({"session_id": "s6", "prompt": "Is 2027 a leap year?"})), "");
+    hook(&d, "Stop", json!({"session_id": "s6", "last_assistant_message": "No. 2027 is not divisible by 4. ".repeat(20)}));
+    assert!(n_calls() >= 2, "distilled");
+    let asides = sql(&d, "SELECT kind FROM memory WHERE tag = 'aside' AND session = 's6' LIMIT 10");
+    let kinds: Vec<&str> = asides.iter().filter_map(|r| r[0].as_str()).collect();
+    assert!(!kinds.contains(&"answer") && !kinds.contains(&"episode"), "{kinds:?}");
+}
+
 /// JONAH-201: when work is scrapped, the notes written about it (its design,
 /// its decisions, how it behaves) leave the briefing: the model names them
 /// retired, and the turn's note that says it was scrapped replaces them.
@@ -563,12 +630,18 @@ fn a_backup_opens_with_the_same_records() {
     assert!(r.get("error").is_none(), "{r}");
     let before = call(&d, json!({"op": "stats"}));
 
-    let dest = dir.path().join("backup");
+    // Into a folder that does not exist yet (ANA-208), as private as the
+    // store: the folder 0700, the files 0600.
+    let dest = dir.path().join("backups/first");
     let r = call(&d, json!({"op": "backup", "dest": dest}));
     assert!(r.get("error").is_none(), "{r}");
     assert_eq!(r["records"], before["records"], "{r}");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&dest), 0o700);
     for f in ["memory.strata", "config.json", "state.json", "events.log"] {
         assert!(dest.join(f).exists(), "{f}");
+        assert_eq!(mode(&dest.join(f)), 0o600, "{f}");
     }
     let log = std::fs::read_to_string(dest.join("events.log")).unwrap();
     assert!(log.ends_with('\n'));

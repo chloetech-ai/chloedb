@@ -21,9 +21,11 @@ Once ChloeCtx is [installed](setup.md), `chloectx ui` serves this page from the 
 - the briefing injected at session start and, for every prompt, the recall decision, its gate score and the records it injected (each one a link);
 - the notes the distiller kept after each turn, with what they superseded or closed, and the turn's episode card.
 
-A session that is still running grows as it goes, and the panels on the right work as described below, against the chosen store. Nothing is written to the stores: reads go through each project's daemon with the same read-only operations the demo allows, so the inspector can stay open while sessions write. It has no control to delete a record: copy the record's id from it and run `chloectx forget ID` in the project's folder ([forget something](setup.md#forget-something-chloectx-forget)). The server listens on 127.0.0.1 and wants the random token in the URL it prints (kept in a cookie after the first load); on a remote machine, forward the port with `ssh -L 8765:127.0.0.1:8765`. The address keeps the view (`?store=…&session=…&tab=knowledge`).
+A session that is still running grows as it goes, and the panels on the right work as described below, against the chosen store. The page reads through each project's daemon with the same read-only operations the demo allows, so the inspector can stay open while sessions write. The one thing it changes is what you tell it to forget: every knowledge card and every record has a **Forget…** button, and the Knowledge tab forgets everything that says some words. It first lists what would go (the records deleted, those that only lose a line of context, and the session state, log lines and receipts that hold it), and only **Forget** deletes, as `chloectx forget` does ([forget something](setup.md#forget-something-chloectx-forget)). The server listens on 127.0.0.1 and wants the random token in the URL it prints (kept in a cookie after the first load); on a remote machine, forward the port with `ssh -L 8765:127.0.0.1:8765`. The address keeps the view (`?store=…&session=…&tab=knowledge`).
 
-The header shows the version the server runs and the commit it was built from, and whether the checkout it came from has a newer one: when the page opens it fetches the checkout's upstream branch (at most every ten minutes; **check** fetches again) and counts the commits since the build that change ChloeCtx or ChloeDB, as `chloectx upgrade --check` does. When there are some, **Update** runs `chloectx upgrade` (pull, build, install, `doctor`) and shows its output as it goes, kept in `upgrade.log` beside the stores. The build takes several minutes. The page that started it keeps running the old binary: restart `chloectx ui` to use the new one. ChloeCtx's daemons restart new on the next hook, and new Claude Code sessions use it on their own. A pull that cannot fast-forward (local commits, a detached checkout) fails as it does on the command line, and nothing is installed.
+The page speaks plainly by default: the Live feed says what ChloeCtx did ("gave Claude 3 earlier records", "gave Claude nothing", "wrote down 2 notes"), and the record drawer shows the text, where it came from and what is closest in meaning. **Advanced**, at the top right, shows the store's internals as well: the Table, Graph, Vectors, Query and Storage tabs, record ids, the embedder and the store's file, the recall gate's score and evidence, and each record's vector. The page remembers the choice in your browser (`?advanced=1` turns it on from the address).
+
+The header shows the version the server runs and the commit it was built from, and whether the checkout it came from has a newer one: when the page opens it fetches the checkout's upstream branch (at most every ten minutes; **check** fetches again) and counts the commits since the build that change ChloeCtx or ChloeDB, as `chloectx upgrade --check` does. It says what `chloectx upgrade` would do, as `doctor` does: a prebuilt binary shows **prebuilt** and how to upgrade it (the installer again), a checkout `upgrade` would stop on (a detached HEAD, a branch with no upstream or with commits its upstream lacks) says why instead of offering **Update**, and a build that is not on its upstream at all (a local or rebased commit) says that rather than counting. When `chloectx upgrade` would pull and install, **Update** runs `chloectx upgrade` (pull, build, install, `doctor`) and shows its output as it goes, kept in `upgrade.log` beside the stores. The build takes several minutes. The page that started it keeps running the old binary: restart `chloectx ui` to use the new one. ChloeCtx's daemons restart new on the next hook, and new Claude Code sessions use it on their own. A pull that cannot fast-forward fails as it does on the command line, and nothing is installed.
 
 ![chloectx ui with the live feed: every record and daemon event of the store as it happens](../assets/img/inspector-ui-live.png)
 
@@ -64,27 +66,27 @@ By the end, the three turns had become 42 records in three segments: prompts, to
 
 ## The panels
 
-### Finding an entity or a file
+### Finding an entity, a file or words
 
-The box at the top right completes the names of entities and the paths of files as you type (`count` finds `count sheet`, `src/` the files under `src`), most linked first: an entity row counts the records that link to it. It is a prefix query on the `id` column, `PREFIX(id, 'e:count')` for names and `PREFIX(id, 'f:src/')` for paths, ordered by that count. When the exact prefix leaves room in the list of ten, names one typo away (two from six letters) follow, marked as typos, so `cuont` still finds `count sheet`. Picking one opens it with the records that link to it. The graph's seed box completes the same way.
+The box at the top right completes the names of entities and the paths of files as you type (`count` finds `count sheet`, `src/` the files under `src`), most linked first: an entity row counts the records that link to it. It is a prefix query on the `id` column, `PREFIX(id, 'e:count')` for names and `PREFIX(id, 'f:src/')` for paths, ordered by that count. When the exact prefix leaves room in the list of ten, names one typo away (two from six letters) follow, marked as typos, so `cuont` still finds `count sheet`. Picking one opens it with the records that link to it, and Enter opens the first. Words that name no entity or file are searched for, as Claude's `memory_search` would, and the drawer lists what memory holds about them, best first, with a button to forget everything that says them. The graph's seed box completes the same way.
 
 ### Live
 
 ![Live: every record and daemon event as it happens](../assets/img/inspector-live.png)
 
-Every record the hooks and the distiller write, and every daemon decision as it happens: `SESSIONSTART` with the briefing size, `RECALL` with the gate score and its evidence features (`max_cos`, `max_cov`, `bm_gap`, `cos_gap`, `agree`, `cue`), and `DISTILL` with the items kept and the cost.
+Every record the hooks and the distiller write, and every step ChloeCtx takes, as it happens, in words: the briefing a new session got and its size, what each prompt was given ("gave Claude 3 earlier records", or "gave Claude nothing" when nothing bears on it clearly enough), what was written down after the turn and what it cost, and a question that stood on its own, which is given nothing and, answered in a few lines, not written down. With **Advanced** on, each step also shows its raw fields: for a recall, the decision, the gate score and its evidence features (`max_cos`, `max_cov`, `bm_gap`, `cos_gap`, `agree`, `cue`).
 
 ### Knowledge
 
 ![Knowledge: decisions, rules and planned work written down by the distiller](../assets/img/inspector-knowledge.png)
 
-The durable knowledge: decisions, preferences (rules), facts and planned work. Each item says where it came from (`distilled` by the model, or `cue` when a sentence like "Always use ISO 8601 dates" was picked up directly from the prompt), and links to the turn and entities it is about. Superseded and completed items can be shown too.
+The durable knowledge: decisions, preferences (rules), facts and planned work. Each item says where it came from (`distilled` by the model, or `cue` when a sentence like "Always use ISO 8601 dates" was picked up directly from the prompt), and links to the turn and entities it is about. Superseded and completed items can be shown too. **Forget…** on a card lists what would go and forgets it once you confirm; the box above the cards does the same for every record that says some words.
 
 ### Table
 
 ![Table: the memory table, filterable by kind, session and full text](../assets/img/inspector-table.png)
 
-The `memory` table itself, paged, filterable by kind, session and a `MATCH` expression.
+With **Advanced** on, as are Graph, Vectors, Query and Storage. The `memory` table itself, paged, filterable by kind, session and a `MATCH` expression; it scrolls sideways rather than squeeze the text.
 
 ### Graph
 

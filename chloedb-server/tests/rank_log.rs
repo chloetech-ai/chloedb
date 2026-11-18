@@ -308,3 +308,119 @@ async fn two_rankings_interleaved_and_credited() {
         assert_eq!(status, 400, "{sql}: {e}");
     }
 }
+
+/// Exploration over HTTP and through a coordinator: the list shown is the
+/// policy's draw for the request over the ranking's top rows, the answer
+/// carries the shown rows' propensities, and the log keeps them, with the
+/// policy and the time the query took on the request's first row. Three
+/// shards draw what one database draws.
+#[tokio::test(flavor = "multi_thread")]
+async fn exploring_queries_over_http_and_three_shards() {
+    use chloedb::explore::{Policy, Rng};
+    let dir = tempfile::tempdir().unwrap();
+    let (whole, _) = local(dir.path(), "whole.strata");
+    let mut urls = Vec::new();
+    for s in 0..3 {
+        urls.push(grpc(local(dir.path(), &format!("s{s}.strata")).0).await);
+    }
+    let c = Coordinator::connect(urls).await.unwrap();
+    let schema = c.schema.clone();
+    let coord = Arc::new(Service::new(Backend::Cluster(Arc::new(c)), schema, agent(), 16, Duration::from_secs(20)));
+    load(&whole).await;
+    load(&coord).await;
+    let (hw, hc) = (http(whole.clone()).await, http(coord.clone()).await);
+    let client = chloedb_server::http_client().build().unwrap();
+    let post = |base: &str, body: Json| {
+        let (c, url) = (client.clone(), format!("{base}/v1/query"));
+        async move {
+            let r = c.post(url).json(&body).send().await.unwrap();
+            let status = r.status().as_u16();
+            (status, r.json::<Json>().await.unwrap())
+        }
+    };
+    let rank = "bm25(title, :t) + 0.1 * coalesce(price, 0)";
+    let sql = format!("SELECT id, price FROM items ORDER BY {rank} DESC LIMIT 5");
+    let policies = [
+        json!({"policy": "softmax", "tau": 0.5, "top": 12}),
+        json!({"policy": "softmax", "tau": 1.0, "top": 8, "by": "rank"}),
+        json!({"policy": "shuffle", "top": 8}),
+        json!({"policy": "swap"}),
+        json!({"policy": "epsilon", "epsilon": 0.3, "top": 6}),
+    ];
+    for (n, pj) in policies.iter().enumerate() {
+        let policy = Policy::from_json(pj).unwrap();
+        let top = policy.top().max(5);
+        for k in 0..6 {
+            let t = format!("{} {}", WORDS[k % 12], WORDS[(k * 5 + 3) % 12]);
+            // The ranking's own top rows, and their scores.
+            let (status, plain) = post(&hw, json!({"sql": format!("SELECT id, score() FROM items ORDER BY {rank} DESC LIMIT {top}"), "params": {"t": t}})).await;
+            assert_eq!(status, 200, "{plain}");
+            let ranked = plain["keys"].as_array().unwrap().clone();
+            let scores: Vec<Option<f64>> = plain["rows"].as_array().unwrap().iter().map(|r| r[1].as_f64()).collect();
+            assert_eq!(scores.len(), top);
+            let request = format!("x{n}-{k}");
+            let log = json!({"request": request, "context": format!("u{k}"), "explore": pj});
+            let mut answers = Vec::new();
+            for base in [&hw, &hc] {
+                let (status, a) = post(base, json!({"sql": sql, "params": {"t": t}, "log": log})).await;
+                assert_eq!(status, 200, "{a}");
+                assert_eq!(a["logged"]["rows"].as_u64(), Some(top as u64), "{a}");
+                answers.push((a["keys"].clone(), a["propensities"].clone()));
+            }
+            assert_eq!(answers[0], answers[1], "{pj}: three shards draw what one database draws");
+            let d = policy.draw(&scores, &mut Rng::of(&request)).unwrap();
+            let want: Vec<Json> = d.order[..5].iter().map(|&i| ranked[i].clone()).collect();
+            assert_eq!(answers[0].0, json!(want), "{pj} request {request}");
+            assert_eq!(answers[0].1, json!(d.propensity[..5]), "{pj} request {request}");
+            // The log, on one database and spread over the shards.
+            for svc in [&whole, &coord] {
+                let p = Params::new().set("r", chloedb::Value::Str(request.clone()));
+                let a = svc.query(QueryReq { sql: "SELECT position, shown, propensity, prefix_propensity, policy, took_ms FROM rank_log WHERE request = :r LIMIT 1000".into(), params: p, ..Default::default() }).await.unwrap();
+                let mut rows: Vec<Json> = js::result(&a.rs, 0.0)["rows"].as_array().unwrap().clone();
+                rows.sort_by_key(|r| r[0].as_i64().unwrap());
+                assert_eq!(rows.len(), top, "{pj}: the rows it drew from");
+                for (i, r) in rows.iter().enumerate() {
+                    assert_eq!(r[0].as_u64(), Some(i as u64));
+                    assert_eq!(r[1], json!(i < 5));
+                    let (want_p, want_prefix) = if i < 5 { (json!(d.propensity[i]), json!(d.prefix[i])) } else { (Json::Null, Json::Null) };
+                    assert_eq!((&r[2], &r[3]), (&want_p, &want_prefix), "{pj} row {i}");
+                    if i == 0 {
+                        let kept: Json = serde_json::from_str(r[4].as_str().expect("the first row keeps the policy")).unwrap();
+                        assert_eq!(Policy::from_json(&kept).unwrap(), policy);
+                        assert!(r[5].as_f64().is_some_and(|t| t >= 0.0), "{r}");
+                    } else {
+                        assert_eq!((&r[4], &r[5]), (&Json::Null, &Json::Null), "{pj} row {i}");
+                    }
+                }
+            }
+        }
+    }
+    // A query that does not explore: no propensities in the answer, 1 in the log.
+    for base in [&hw, &hc] {
+        let (status, a) = post(base, json!({"sql": sql, "params": {"t": "red mug"}, "log": {"request": "plain"}})).await;
+        assert_eq!(status, 200, "{a}");
+        assert!(a.get("propensities").is_none(), "{a}");
+    }
+    for svc in [&whole, &coord] {
+        let a = svc.query(QueryReq { sql: "SELECT propensity, policy, position FROM rank_log WHERE request = 'plain' AND shown LIMIT 100".into(), ..Default::default() }).await.unwrap();
+        let rows = js::result(&a.rs, 0.0)["rows"].as_array().unwrap().clone();
+        assert_eq!(rows.len(), 5);
+        assert!(rows.iter().all(|r| r[0] == json!(1.0)), "{rows:?}");
+        let first = rows.iter().find(|r| r[2] == json!(0)).unwrap();
+        assert_eq!(first[1], json!(r#"{"policy":"none"}"#));
+    }
+    // Refused: no LIMIT, an OFFSET, an unknown policy or option, and
+    // exploring an interleaved query.
+    for (sql, log) in [
+        (format!("SELECT id FROM items ORDER BY {rank} DESC"), json!({"explore": {"policy": "swap"}})),
+        (format!("SELECT id FROM items ORDER BY {rank} DESC LIMIT 5 OFFSET 5"), json!({"explore": {"policy": "swap"}})),
+        (sql.clone(), json!({"explore": {"policy": "greedy"}})),
+        (sql.clone(), json!({"explore": {"policy": "softmax", "temperature": 2}})),
+        (sql.clone(), json!({"explore": {"policy": "swap"}, "interleave": {"sql": sql}})),
+    ] {
+        for base in [&hw, &hc] {
+            let (status, e) = post(base, json!({"sql": sql, "params": {"t": "red mug"}, "log": log})).await;
+            assert_eq!(status, 400, "{sql} {log}: {e}");
+        }
+    }
+}

@@ -2414,6 +2414,25 @@ async fn embedded_fields_over_http() {
     // Only an embedded field with a model embeds text.
     let (status, r) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT id FROM products ORDER BY similarity(emb, :q) DESC LIMIT 1", "params": {"q": {"embed": "x", "field": "title"}}})).await;
     assert_eq!(status, 400, "{r}");
+    // A NaN in a vector (JSON writes it as null) is a row's value the field
+    // refuses, and says so, not the schema (PRIYA-203).
+    let mut v = vec![json!(0.5); 64];
+    v[2] = Json::Null;
+    let (status, r) = post(&c, &format!("{base}/v1/write"), json!({"ops": [{"op": "insert", "doc": {"id": "nan1", "title": "x", "emb": v}}]})).await;
+    assert_eq!((status, r["error_code"].as_str()), (400, Some("value_invalid")), "{r}");
+    assert!(r["error"].as_str().unwrap().contains("element 3 of the vector is NaN, an infinity or null"), "{r}");
+    // Explain binds a query as it runs: a text where a vector goes, as a
+    // parameter or a literal, is embedded by the field's model (PRIYA-202).
+    for (sql, params) in [
+        ("SELECT id FROM products ORDER BY rrf(bm25(body, :q), similarity(emb, :q)) DESC LIMIT 3", json!({"q": "giraffe lamp"})),
+        ("SELECT id FROM products ORDER BY similarity(emb, 'giraffe lamp') DESC LIMIT 3", json!({})),
+    ] {
+        let (status, r) = post(&c, &format!("{base}/v1/explain"), json!({"sql": sql, "params": params, "hits": 3})).await;
+        assert_eq!(status, 200, "{sql}: {r}");
+        let (status, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": sql, "params": params})).await;
+        assert_eq!(status, 200, "{sql}: {q}");
+        assert_eq!((&r["hits"][0]["id"], &q["rows"][0][0]), (&json!("zz1"), &json!("zz1")), "{sql}: {r} {q}");
+    }
 
     // /v1/embed gives the vector an {"embed": ...} parameter stands for, for
     // a plan or a client that sends vectors: the same rows come back.

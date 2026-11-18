@@ -372,6 +372,16 @@ pub fn third_party_tool(tool: &str) -> bool {
 /// the records [`Record::third_party`] names.
 pub const FIRST_PARTY: &str = r"NOT (kind IN ('tool_result', 'error') AND (tag IN ('WebFetch', 'WebSearch') OR tag LIKE 'mcp\_\_%' ESCAPE '\'))";
 
+/// The tag of a question that stood on its own ([`crate::recall::stands_alone`])
+/// and of its answer and episode card, when it was answered without a tool:
+/// kept, and found by a search that asks, but never recalled into a prompt
+/// by itself nor shown as where a session left off (JONAH-202: "What is 5
+/// plus 9?" was given three earlier "What is 17 times 3?").
+pub const ASIDE: &str = "aside";
+
+/// The condition, with [`FIRST_PARTY`], that leaves out the [`ASIDE`]s.
+pub const NOT_ASIDE: &str = "tag != 'aside'";
+
 impl Record {
     /// The tool whose third-party text this record quotes (audit CTX-32):
     /// the result, or the error, of a tool that reads from outside the

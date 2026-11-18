@@ -11,6 +11,109 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A rank log that evaluates rankings it never served.** A query's
+  `log` option takes `explore`, a logging policy: `epsilon`, `shuffle`,
+  `swap` or `softmax` (Plackett–Luce, by score or by rank) over the top
+  rows. The list is drawn by the request's id, so the same request draws
+  the same list. Each shown row's exact chance of being shown where it
+  was is answered (`propensities`) and logged with the chance of the list
+  down to it, the policy and the query's time (columns `propensity`,
+  `prefix_propensity`, `policy`, `took_ms`; an older log gains them with
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`). A coordinator draws the
+  same list as one database. The Python package passes it and answers
+  `propensities`, as the JavaScript package's embedded database does
+  ([query-language.md](docs/chloedb/query-language.md#exploring-a-log-that-evaluates-rankings-it-never-served)).
+- **chloedb-experiments** (a demo, phase 1 of the Experiments app). It
+  has simulated users in cohorts and five click models with trust bias,
+  over any table with queries and grades. Each impression is served as a
+  logged, exploring query, or drawn in the process bit for bit the same.
+  Eleven off-policy estimators (IPS, SNIPS, IIPS, RIPS, click models,
+  doubly robust, cascade doubly robust) come with intervals and warnings
+  when the log does not support a target. `check` replays each over many
+  logs against the exact truth
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md)).
+- **The Experiments app** (`chloedb-experiments serve`, the command
+  center's app `experiments`, a demo). It runs A/B tests of a site's
+  rankings on simulated users: any table with queries and grades is a
+  site (BEIR's collections load as sites), each arm is a ranking
+  in SQL, and users are split by a hash of their id. Its report gives
+  every metric (success, clicks, satisfied clicks, abandonment, first-row
+  clicks, dwell, searches per session, query time) with delta-method intervals,
+  p and q values, CUPED against a pre-period, power and the smallest
+  effect it could see, always-valid p values beside fixed ones for
+  peeking, a sample ratio check, cohorts by age, gender, country, device
+  and tenure with a two-way heatmap, and what each arm would have
+  done valued off-policy from an exploring share's log. Every number is
+  shown beside the simulated users' exact truth. Runs are drawn in the
+  app (400,000 searches in about 5 seconds) or served as logged queries
+  to the server, and sites and experiments are rows of ChloeDB
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#the-app)).
+- **Search as you type and typos find the words the stemmer changes**
+  (persona study round 2, DEV-201, DEV-202, DEV-203, MAYA-201,
+  MAYA-202). A prefix also stands for the stems of the words it may be
+  the start of, so `headphone*`, `battery*`, `running*` and `runni*` find
+  their rows, as every letter typed before them did; `MATCH`, `bm25`'s
+  `word*` and highlights agree. A typo is counted on the word as typed,
+  not on its stem: `choclate` is one edit from *chocolate*, and
+  `fuzzy => 'auto'`, `word~` and "did you mean" forgive it. "Did you mean"
+  offers a real word (`wireles` gives *wireless*, not *wirees*).
+  OpenSearch's `match_bool_prefix` and `multi_match`'s `bool_prefix` take
+  `operator`, `minimum_should_match` and `fuzziness`. The command center's
+  table search forgives a typo in each word and offers a correction when
+  nothing is found ([search guide](docs/guide/search.md#as-you-type-prefixes),
+  [query-language.md](docs/chloedb/query-language.md#full-text-match)).
+
+### What changes by default
+
+- **A prefix finds more rows**: `word*` also finds the words it begins
+  whose stems do not start with it, and a whole word typed and then `*`
+  finds that word's rows. A ranking by `bm25(field, 'word*')` scores them
+  too.
+- **A correction's `edits` counts edits from the word as typed** to the
+  word shown, rather than from its stem, and the word shown is one that
+  stems to the term. The answer's fields are unchanged.
+
+### ChloeCtx
+
+- **A question asked in passing costs ChloeCtx nothing, and a second
+  session that starts with it reads its prompt from the cache** (persona
+  study round 2, JONAH-202). Claude Code sends every hook's text after the
+  first prompt, in one block the prompt cache serves only when a session
+  starts with exactly what an earlier one sent. A question like "What is 17
+  times 3?" was given where the last session left off and 10 to 12
+  unrelated records (recall counted the earlier sessions' copies of the
+  same question as evidence), and its distillation changed the next
+  briefing. Records of a turn that asked the same question are no longer
+  evidence. A question that stands on its own (no "we", no file, code or
+  earlier work, no choice to weigh and no how-to) gets nothing when nothing
+  is recalled for it: where the last session left off waits for the next
+  prompt, and when it is answered in a few lines without a tool it is not
+  distilled and is kept as an aside, which a search finds and recall does
+  not offer by itself. Measured with Haiku, the second such session wrote 0
+  tokens to the cache and cost $0.00024, against $0.0017.
+
+- **The inspector forgets from a button, and keeps its internals behind
+  Advanced** (JONAH-206). Each knowledge card and record has Forget…,
+  which lists what would go (records, lines of context, log lines and
+  receipts) before Forget deletes it, and the Knowledge tab forgets by
+  words. The Live feed says what happened in plain words. An Advanced
+  switch, off by default, holds Table, Graph, Vectors, Query, Storage, ids
+  and the gate's evidence. Enter in Find opens the first suggestion, or
+  searches memory when no file or name matches.
+
+- **Upgrade advice says what `chloectx upgrade` will do** (JONAH-207,
+  ANA-206). doctor, `upgrade --check`, the session notice and the inspector
+  said a newer version "installs" for a build that `upgrade` refuses (a
+  detached HEAD, no upstream, commits of its own, or a build not on the
+  upstream's history). They now say why it would stop, `upgrade` stops
+  before pulling with the same words, and the inspector offers Update only
+  when it would work (a prebuilt binary shows the installer's command).
+
+- `chloectx backup` makes missing folders and writes the backup private
+  (0700 and 0600) as the store is (ANA-208), and `chloectx receipts
+  --session` takes the first characters of a session id, as listings show
+  them (ANA-209).
+
 ### Security
 
 - **Release archives carry build provenance and an SBOM** (LENA-201,
