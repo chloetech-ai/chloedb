@@ -1017,8 +1017,8 @@ function agentCard(core, a, arms) {
   const { h } = core;
   const p = a.persona || {};
   const busy = ["thinking", "searching", "reading"].includes(a.status);
-  const last = (a.steps || []).slice().reverse().find((x) => x.why || x.kind === "done" || x.kind === "say");
-  const trail = (a.steps || []).map((x) => x.kind === "search" ? "searched" : x.kind === "open" ? `opened ${x.rank}` : x.kind === "done" ? (x.found ? "found it" : "gave up") : "wrote");
+  const last = (a.steps || []).slice().reverse().find((x) => x.why || x.kind === "done" || x.kind === "cut" || x.kind === "say");
+  const trail = (a.steps || []).map((x) => x.kind === "search" ? "searched" : x.kind === "open" ? `opened ${x.rank}` : x.kind === "done" ? (x.found ? "found it" : "gave up") : x.kind === "cut" ? "cut short" : "wrote");
   const lt = a.last;
   return h("div", { class: "ex-agent", style: { "--arm": ARM_COLORS[a.arm] } },
     h("div", { class: "row between" },

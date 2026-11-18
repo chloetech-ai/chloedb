@@ -1135,13 +1135,18 @@ impl Live {
         let mut outcome = json!({"found": false, "note": "ran out of actions"});
         let mut tally = Tally { tasks: 1, ..Tally::default() };
         let mut ended = false;
+        // A task the run's end or the budget cuts short is not scored: it
+        // would count as a need the site failed.
+        let mut cut = false;
         for step in 0..AGENT_STEPS {
             if self.stopped() {
                 outcome = json!({"found": false, "note": "the run ended"});
+                cut = true;
                 break;
             }
             if self.spent() {
                 outcome = json!({"found": false, "note": "the budget is spent"});
+                cut = true;
                 break;
             }
             self.agent_set(n, |a| a.status = "thinking".into());
@@ -1229,11 +1234,20 @@ impl Live {
             }
         }
         if !ended {
-            let note = outcome["note"].clone();
-            self.agent_set(n, |a| a.steps.push(json!({"kind": "done", "found": false, "text": note})));
+            let note = if cut { json!(format!("cut short: {}", outcome["note"].as_str().unwrap_or(""))) } else { outcome["note"].clone() };
+            self.agent_set(n, |a| a.steps.push(json!({"kind": if cut { "cut" } else { "done" }, "found": false, "text": note})));
         }
         let mut st = self.st();
         let t = &mut st.agent_tally[arm];
+        if cut {
+            // What it cost still counts.
+            t.cost += tally.cost;
+            t.steps += tally.steps;
+            if let Some(a) = st.agents.iter_mut().find(|a| a.n == n) {
+                a.status = "between tasks".into();
+            }
+            return Ok(());
+        }
         t.tasks += tally.tasks;
         t.found += tally.found;
         t.found_relevant += tally.found_relevant;
