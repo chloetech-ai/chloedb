@@ -103,6 +103,21 @@ def _set_code(self: Any, code: str) -> None:
 ChloeDBError.code = property(_get_code, _set_code, doc="The error's stable code (see chloedb.error_code).")  # type: ignore[attr-defined]
 
 
+def _answer_field(self: Any, name: str) -> Any:
+    a = getattr(self, "answer", None)
+    return a.get(name) if isinstance(a, dict) else None
+
+
+# A write through a coordinator that may or may not be applied (the
+# server's error_code "write_in_doubt": its shard's primary stopped
+# answering, or was replaced while the write was being acknowledged). Its
+# class stays the one of its status (UnavailableError for 503,
+# ConflictError for 409); send it again with `idempotency_key`, which
+# applies it once, or read it back.
+ChloeDBError.in_doubt = property(lambda self: _answer_field(self, "error_code") == "write_in_doubt", doc="Whether a write may or may not have been applied: send it again with idempotency_key.")  # type: ignore[attr-defined]
+ChloeDBError.idempotency_key = property(lambda self: _answer_field(self, "idempotency_key"), doc="The idempotency key to send a write in doubt, or one that failed partway, again with (None when the answer names none).")  # type: ignore[attr-defined]
+
+
 class BadRequestError(ChloeDBError):
     """A bad schema, query, value or request (HTTP 400, 413, 422): sending
     it again fails again."""
@@ -119,7 +134,8 @@ class NotFoundError(ChloeDBError):
 class ConflictError(ChloeDBError):
     """Refused by the state it met (409): a conditional write's `if_seq_no`
     that no longer holds, an idempotency key still running, a read past the
-    server's last write."""
+    server's last write, or a write in doubt (`in_doubt`) because a new
+    primary took its shard while it was being acknowledged."""
 
 
 class DuplicateKeyError(ConflictError, BadRequestError):
@@ -157,7 +173,9 @@ class DeadlineError(ChloeDBError):
 
 class UnavailableError(ChloeDBError):
     """No copy can serve it now (503): a replica behind, a primary
-    replaced, a hosted model down."""
+    replaced, a hosted model down. A write whose shard's primary stopped
+    answering is in doubt (`in_doubt`): send it again with
+    `idempotency_key`, not as it was."""
 
 
 ERRORS: dict[str, type] = {

@@ -16,6 +16,23 @@ export class ChloeDBError extends Error {
     /** The error's stable code (see `errorCode`). */
     this.code = code ?? errorCode(String(message ?? ""), status, answer);
   }
+
+  /** Whether a write through a coordinator may or may not have been
+   * applied (the server's `error_code` "write_in_doubt": its shard's
+   * primary stopped answering, or was replaced while the write was being
+   * acknowledged). Its class stays its status's (`UnavailableError` for
+   * 503, `ConflictError` for 409): send it again with `idempotencyKey`,
+   * which applies it once, or read it back. */
+  get inDoubt() {
+    return Boolean(this.answer && typeof this.answer === "object" && this.answer.error_code === "write_in_doubt");
+  }
+
+  /** The idempotency key to send a write in doubt, or one that failed
+   * partway, again with (undefined when the answer names none). */
+  get idempotencyKey() {
+    const k = this.answer && typeof this.answer === "object" ? this.answer.idempotency_key : undefined;
+    return typeof k === "string" ? k : undefined;
+  }
 }
 
 /** `ChloeDBError` by its name when ChloeDB was called Strata: the same

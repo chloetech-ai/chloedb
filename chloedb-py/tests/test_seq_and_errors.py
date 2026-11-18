@@ -234,6 +234,13 @@ def test_error_code_rules():
     assert code("x", 409, {"partial": True}) == "partial_write"
     assert code("x", 500, {"code": "custom"}) == "custom"
     assert code("x") == "error"
+    # A write in doubt keeps its status's class, and says so with the key.
+    doubt = chloedb._native.make_error("the write may or may not be applied (HTTP 503)", status=503, answer={"error_code": "write_in_doubt", "idempotency_key": "auto-1"})
+    assert isinstance(doubt, chloedb.UnavailableError) and doubt.in_doubt and doubt.idempotency_key == "auto-1"
+    doubt = chloedb._native.make_error("may or may not be kept (HTTP 409)", status=409, answer={"error_code": "write_in_doubt", "idempotency_key": "k"})
+    assert isinstance(doubt, chloedb.ConflictError) and doubt.code == "conflict" and doubt.in_doubt
+    plain = chloedb._native.make_error("no copy (HTTP 503)", status=503, answer={"error_code": "unavailable"})
+    assert not plain.in_doubt and plain.idempotency_key is None
     e = chloedb.ChloeDBError("busy: held")
     assert e.code == "busy"
     e.code = "other"

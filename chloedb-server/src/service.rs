@@ -8028,6 +8028,129 @@ mod tests {
         assert_eq!(again.rows, 1, "answered as the first was");
         assert_eq!(sold().await, before + 1, "not applied twice");
     }
+
+    /// The demo products (10) on a server that embeds their titles, and
+    /// what it reads of product `i`'s `sold`.
+    fn products(dir: &std::path::Path) -> (Arc<Db>, Arc<Service>) {
+        let db = Arc::new(Db::create(&dir.join("t.strata"), crate::demo::schema(10), chloedb::storage::DbOptions::default()).unwrap());
+        db.set_embedder("emb", Arc::new(chloedb::embed::HashEmbedder { dim: crate::demo::DIM })).unwrap();
+        db.load((0..10).map(|i| crate::demo::product(i, 7))).unwrap();
+        let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+        let mut svc = Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent, 16, Duration::from_secs(30));
+        svc.open_models(&dir.join("models"));
+        (db, Arc::new(svc))
+    }
+
+    async fn sold_of(svc: &Service, i: usize) -> i64 {
+        svc.query(QueryReq { sql: format!("SELECT sold FROM products WHERE id = 'p{i:07}'"), ..Default::default() }).await.unwrap().rs.rows[0][0].as_i64().unwrap()
+    }
+
+    fn add_to(i: usize) -> Vec<Json> {
+        vec![json!({"op": "add", "key": format!("p{i:07}"), "field": "sold", "value": 1})]
+    }
+
+    /// Holds the database's writer lock (an empty transaction that waits)
+    /// until the sender it answers is dropped or sent to.
+    fn hold_writer(db: &Arc<Db>) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let (held, is_held) = std::sync::mpsc::channel::<()>();
+        let db = db.clone();
+        let t = std::thread::spawn(move || {
+            let _ = db.write_prepared_group_then(&[], |_, _| {
+                held.send(()).unwrap();
+                let _ = wait.recv();
+                Err(chloedb::Error::Query("held for a test".into()))
+            });
+        });
+        is_held.recv().unwrap();
+        (release, t)
+    }
+
+    /// A keyed write dropped once the writer took it, or while it waits in
+    /// the writer's queue, lets its key go ([`Claim`]), so the same write
+    /// sent again with its key is taken as new: the writer applies the key
+    /// once by its row, whether the two run in two groups (the first
+    /// committed first, the second answered from its row) or in one (the
+    /// second put aside until the first ran: [`once_per_key`]). Review of
+    /// PR #638: [`Claim`] forgets a key on every dropped request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_dropped_write_and_its_retry_with_the_key_apply_once_in_any_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, svc) = products(dir.path());
+        let before = (sold_of(&svc, 3).await, sold_of(&svc, 4).await, sold_of(&svc, 5).await);
+
+        // Two groups: W is taken by the writer, which waits for the lock;
+        // W is dropped; W' is new to memory, queued, and runs after W.
+        let (release, holder) = hold_writer(&db);
+        let w = tokio::time::timeout(Duration::from_millis(500), svc.write_ops(add_to(3), Some("two-groups".into()))).await;
+        assert!(w.is_err(), "the write waits for the writer");
+        let again = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.write_ops(add_to(3), Some("two-groups".into())).await }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(release);
+        holder.join().unwrap();
+        let a = again.await.unwrap().unwrap_or_else(|e| panic!("sent again with its key: {}", e.message));
+        assert_eq!(a.rows, 1);
+        assert_eq!(sold_of(&svc, 3).await, before.0 + 1, "applied once");
+
+        // One group: X holds the writer, so W and W' wait in its queue
+        // together; W is dropped there, and the writer takes both at once.
+        let (release, holder) = hold_writer(&db);
+        let x = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.write_ops(add_to(4), None).await }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let w = tokio::time::timeout(Duration::from_millis(300), svc.write_ops(add_to(5), Some("one-group".into()))).await;
+        assert!(w.is_err(), "the write waits behind X");
+        let again = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.write_ops(add_to(5), Some("one-group".into())).await }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(release);
+        holder.join().unwrap();
+        x.await.unwrap().unwrap();
+        let a = again.await.unwrap().unwrap_or_else(|e| panic!("sent again with its key: {}", e.message));
+        assert_eq!(a.rows, 1);
+        assert_eq!(sold_of(&svc, 4).await, before.1 + 1);
+        assert_eq!(sold_of(&svc, 5).await, before.2 + 1, "applied once");
+        // And a third time: answered as before, applied no more.
+        svc.write_ops(add_to(5), Some("one-group".into())).await.unwrap();
+        assert_eq!(sold_of(&svc, 5).await, before.2 + 1);
+    }
+
+    /// A write that its shard's primary, alive, holds for longer than
+    /// [`crate::coord::SILENT_WAIT`] (here every core it embeds on taken)
+    /// is waited for, not answered in doubt: the primary answers the
+    /// coordinator's `Hello` meanwhile (review of PR #638: the shard's own
+    /// slowness must not look like silence).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_write_a_live_primary_holds_past_the_silent_wait_is_waited_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_db, shard) = products(dir.path());
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(crate::server::serve_grpc(shard.clone(), l, crate::auth::Access::default()));
+        let c = Arc::new(crate::coord::Coordinator::connect(vec![url]).await.unwrap());
+        let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+        let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent, 16, Duration::from_secs(60)));
+        let before = sold_of(&shard, 6).await;
+
+        let cores = shard.embedding.clone().acquire_many_owned(shard.cores as u32).await.unwrap();
+        let w = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.write_request(add_to(6), None).await }
+        });
+        tokio::time::sleep(crate::coord::SILENT_WAIT + Duration::from_secs(2)).await;
+        assert!(!w.is_finished(), "answered while the primary still held it: {:?}", w.await.unwrap().map(|_| ()).map_err(|e| e.message));
+        drop(cores);
+        let a = tokio::time::timeout(Duration::from_secs(20), w).await.expect("answered once the primary went on").unwrap();
+        a.unwrap_or_else(|e| panic!("the write failed: {}", e.message));
+        assert_eq!(sold_of(&shard, 6).await, before + 1);
+    }
 }
 
 /// The table a `{"vector_of"}` or `{"embed"}` parameter (`form`)

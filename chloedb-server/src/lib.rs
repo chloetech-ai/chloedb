@@ -252,7 +252,10 @@ impl From<ApiError> for tonic::Status {
             _ => Code::Internal,
         };
         // Whether a refused write was applied, as a code (protocol 19).
-        let outcome = crate::cores::shard::Primary::write_outcome(&e);
+        let outcome = match e.code == Some(crate::errors::WRITE_IN_DOUBT) {
+            true => Some(crate::cores::shard::IN_DOUBT),
+            false => crate::cores::shard::Primary::write_outcome(&e),
+        };
         let error_code = e.code;
         let mut s = tonic::Status::new(code, e.message);
         if let Some(v) = error_code.and_then(|c| c.parse().ok()) {

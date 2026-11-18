@@ -506,10 +506,12 @@ const PRIMARY_ASK_EVERY: Duration = Duration::from_millis(50);
 /// before the coordinator asks the shard's copies, every
 /// [`WRITE_ASK_EVERY`], whether another took the primary's place, and the
 /// primary whether it answers at all ([`Coordinator::write_watched`]): a
-/// primary frozen mid-write (a stopped process, a VM paused, a stuck
-/// kernel) held the write for as long as it was frozen, although its
-/// copies elected another within the failover delay (audit CLU-1, persona
-/// study OLU-1: 45 s). A write answered within it costs nothing more.
+/// primary frozen mid-write (a stopped process, a VM paused) held the
+/// write for as long as it was frozen, although its copies elected
+/// another within the failover delay (audit CLU-1, persona study OLU-1:
+/// 45 s). A write answered within it costs nothing more. A primary that
+/// still answers, as one whose writer waits on a dying disk does, is
+/// waited for as before.
 const WRITE_ASK_AFTER: Duration = Duration::from_millis(500);
 const WRITE_ASK_EVERY: Duration = Duration::from_millis(250);
 
@@ -518,7 +520,11 @@ const WRITE_ASK_EVERY: Duration = Duration::from_millis(250);
 /// without failover, a network that drops the coordinator's packets
 /// alone) before it answers 503, the write in doubt
 /// ([`Coordinator::write_watched`]). A primary's own copies elect another
-/// after `--failover-after-ms` of silence, of a few seconds.
+/// after `--failover-after-ms` of silence, of a few seconds: it is meant
+/// to be longer than that, its random part and an election, so that a
+/// write whose shard fails over is sent on to the new primary rather than
+/// answered in doubt. Any answer of the primary counts, to the write or
+/// to another call ([`Replica::answered_at`]).
 pub const SILENT_WAIT: Duration = Duration::from_secs(10);
 
 /// How long a coordinator waits for a copy's answer to `Hello` when it
@@ -527,6 +533,13 @@ pub const SILENT_WAIT: Duration = Duration::from_secs(10);
 /// the cluster map ([`Coordinator::sync`]): a frozen copy never answers,
 /// and held every write that asked it.
 const HELLO_WAIT: Duration = Duration::from_secs(2);
+
+/// How long a primary another copy replaced must have been silent before
+/// a write without an idempotency key, which cannot be sent on, is given
+/// up on in doubt ([`Coordinator::write_watched`]): a replaced primary
+/// that still answers (one handing over) answers the write itself, as
+/// applied, not applied or in doubt.
+const REPLACED_QUIET: Duration = Duration::from_secs(1);
 
 /// How long a coordinator sends a shard's part of a write again while the
 /// shard refuses it for its load (429: behind on flushing its writes to
@@ -608,8 +621,42 @@ fn ttl_words() -> String {
     }
 }
 
-/// What a client is told of a write [`in_doubt`].
-pub const IN_DOUBT: &str = "the write may or may not be kept: a new primary took the shard's writes while it was being acknowledged; read it back, or send it again if applying it twice does no harm";
+/// What a client is told of a write [`in_doubt`], before what to do
+/// ([`send_again`]).
+pub const IN_DOUBT: &str = "the write may or may not be kept: a new primary took the shard's writes while it was being acknowledged";
+
+/// The idempotency key a client sends a write in doubt again with: shard
+/// `i`'s key (`key/i`, or `key/i.round`, as [`Coordinator::write_ops`] and
+/// [`Coordinator::statement`] make it) without its shard. None for a part
+/// without a key (a statement that changes a schema, a move's rows).
+fn client_key(shard_key: &str) -> Option<&str> {
+    match shard_key.rsplit_once('/') {
+        Some((k, _)) if !k.is_empty() => Some(k),
+        _ => None,
+    }
+}
+
+/// What a client is told to do with a write in doubt (code
+/// [`crate::errors::WRITE_IN_DOUBT`]) whose shard's key is `shard_key`,
+/// the key being kept for the answer's `idempotency_key`
+/// ([`with_partial`]). Sent again with that key, the write is applied
+/// once: the key's row is written in the write's transaction and ships
+/// with it ([`crate::idem`]), so a primary that holds the write answers
+/// as before, and one that does not applies it, while the copy that
+/// applied it without a majority drops it once it follows the new one.
+fn send_again(shard_key: &str) -> String {
+    let Some(k) = client_key(shard_key) else {
+        return "read it back before sending it again".to_string();
+    };
+    let _ = PARTIAL.try_with(|p| {
+        let mut p = p.borrow_mut();
+        let a = p.get_or_insert_with(|| json!({}));
+        if a.get("idempotency_key").is_none() {
+            a["idempotency_key"] = json!(k);
+        }
+    });
+    format!("send the same request again with idempotency_key \"{k}\" (within {}), which applies it once", ttl_words())
+}
 
 /// How many times a request goes to the shards while the cluster map
 /// changes under it ([`Coordinator::route_again`]).
@@ -1147,7 +1194,8 @@ const WRITABLE_AGE: Duration = Duration::from_secs(15);
 
 tokio::task_local! {
     /// What a write did on each shard when it failed on some after others
-    /// took it ([`with_partial`]).
+    /// took it, or the key to send a write in doubt again with
+    /// ([`with_partial`]).
     static PARTIAL: std::cell::RefCell<Option<Json>>;
 }
 
@@ -1167,7 +1215,9 @@ pub fn admit_refused(what: &str) -> ApiError {
 /// on each shard when it failed partway: `{shards, idempotency_key?}`,
 /// `shards` being `[{shard, short, rows}]` for the shards that took it and
 /// `[{shard, short, error}]` for the others, and `idempotency_key` the key
-/// to send it again with. None when it did not fail partway.
+/// to send it again with. A write in doubt ([`crate::errors::WRITE_IN_DOUBT`])
+/// that no shard took answers `{idempotency_key}` alone. None when it did
+/// neither.
 pub async fn with_partial<F: Future>(f: F) -> (F::Output, Option<Json>) {
     PARTIAL
         .scope(std::cell::RefCell::new(None), async move {
@@ -2937,13 +2987,13 @@ impl Coordinator {
         join_all(asks).await;
     }
 
-    /// Asks copy `r` of shard `i` its part (`Hello`), for up to
-    /// [`HELLO_WAIT`], keeping what it says of its role and when it
-    /// answered ([`Self::write_watched`]).
-    async fn ask_role(&self, t: &Topology, i: usize, r: usize) {
+    /// Asks copy `r` of shard `i` its part (`Hello`), for up to `wait`,
+    /// keeping what it says of its role and when it answered
+    /// ([`Self::write_watched`]).
+    async fn ask_role(&self, t: &Topology, i: usize, r: usize, wait: Duration) {
         let rep = &t.replicas[i][r];
         let mut c = rep.client.clone();
-        if let Ok(Ok(said)) = tokio::time::timeout(HELLO_WAIT, hello(&mut c)).await {
+        if let Ok(Ok(said)) = tokio::time::timeout(wait, hello(&mut c)).await {
             rep.heard_role(&said);
             rep.answered_at.store(self.now_ms().max(1), Ordering::Relaxed);
             // It holds a newer cluster map: the watcher takes it up.
@@ -2961,43 +3011,57 @@ impl Coordinator {
         self.newest_primary(t, i).filter(|&m| m != k && t.replicas[i][m].term.load(Ordering::Relaxed) > term)
     }
 
-    /// [`Self::write_to`] primary `k` of shard `i`, given up on (the call
-    /// dropped, which cancels it) once another copy took its place
-    /// ([`Self::took_place_of`]), or once `k` answered neither the write
-    /// nor a `Hello` for [`SILENT_WAIT`] and no copy did. From
-    /// [`WRITE_ASK_AFTER`] the shard's copies are asked their part every
-    /// [`WRITE_ASK_EVERY`] ([`Self::ask_role`]). A frozen primary could
-    /// hold a write for as long as it was frozen (audit CLU-1).
+    /// [`Self::write_to`] primary `k` of shard `i`, given up on once
+    /// another copy took its place ([`Self::took_place_of`]) (a write
+    /// without a key once `k` was also silent for [`REPLACED_QUIET`]), or
+    /// once `k` answered nothing, neither the write nor any other call,
+    /// for [`SILENT_WAIT`] and no copy did. From [`WRITE_ASK_AFTER`] the
+    /// shard's copies are asked their part every [`WRITE_ASK_EVERY`]
+    /// ([`Self::ask_role`]). A frozen primary could hold a write for as
+    /// long as it was frozen (audit CLU-1).
     ///
-    /// The write given up on may be applied or not: the primary may have
-    /// applied it and shipped it to a majority before it froze, in which
-    /// case the copy that took its place holds it, with its idempotency
-    /// key, in the same transaction ([`crate::idem`]), or it may apply it
-    /// when it runs again, which no majority acknowledges once its copies
-    /// voted for a newer term, and which the copy it becomes drops
-    /// ([`crate::replication`]). So the write goes again with its key
-    /// ([`Self::write`]) or is answered in doubt ([`Self::unanswered`]).
+    /// Giving up drops the call, which ends the RPC, not the write: one the
+    /// primary's writer already took is applied whatever becomes of the
+    /// call, now or when the primary runs again. So the write given up on
+    /// may be applied or not, and safety rests on replication, not on the
+    /// call being dropped: the primary may have applied it and shipped it
+    /// to a majority before it froze, in which case the copy that took its
+    /// place holds it, with its idempotency key, in the same transaction
+    /// ([`crate::idem`]), or it may apply it when it runs again, which no
+    /// majority acknowledges once its copies voted for a newer term, and
+    /// which the copy it becomes drops ([`crate::replication`]). So the
+    /// write goes again with its key ([`Self::write`]) or is answered in
+    /// doubt ([`Self::unanswered`]).
     async fn write_watched(&self, t: &Topology, i: usize, k: usize, r: pb::WriteRequest, need: u32) -> Result<Result<Wrote, (usize, tonic::Status)>, Unanswered> {
         let rep = &t.replicas[i][k];
         let term = rep.term.load(Ordering::Relaxed);
+        let keyed = !r.idempotency_key.is_empty();
         let (sent, sent_ms) = (Instant::now(), self.now_ms());
         let write = self.write_to(t, i, vec![k], r, need);
         tokio::pin!(write);
         let watch = async {
             tokio::time::sleep(WRITE_ASK_AFTER).await;
             // Each copy is asked on its own, so that one frozen, whose
-            // `Hello` waits for [`HELLO_WAIT`], delays none of the others'.
+            // `Hello` is never answered, delays none of the others'. A
+            // `Hello` waits as long as the write would ([`SILENT_WAIT`]):
+            // one answered late (a primary short of CPU, or whose calls
+            // wait for a stream behind its slow writes) still says it is
+            // there. `claim_ask` keeps the asks of every write waiting on
+            // the shard to one a copy each round.
             let mut pending = vec![false; t.replicas[i].len()];
             let mut asks = FuturesUnordered::new();
             let mut every = tokio::time::interval(WRITE_ASK_EVERY);
             every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
-                if let Some(m) = self.took_place_of(t, i, k, term) {
-                    return Unanswered { k, by: Some(m), waited: sent.elapsed() };
-                }
                 // Silent since it was sent, or since it last answered.
                 let heard = rep.answered_at.load(Ordering::Relaxed).max(sent_ms);
-                if self.now_ms().saturating_sub(heard) >= SILENT_WAIT.as_millis() as u64 {
+                let silent = self.now_ms().saturating_sub(heard);
+                if let Some(m) = self.took_place_of(t, i, k, term) {
+                    if keyed || silent >= REPLACED_QUIET.as_millis() as u64 {
+                        return Unanswered { k, by: Some(m), waited: sent.elapsed() };
+                    }
+                }
+                if silent >= SILENT_WAIT.as_millis() as u64 {
                     return Unanswered { k, by: None, waited: sent.elapsed() };
                 }
                 tokio::select! {
@@ -3007,7 +3071,7 @@ impl Coordinator {
                             if !pending[r] && copy.claim_ask(now, WRITE_ASK_EVERY) {
                                 pending[r] = true;
                                 asks.push(async move {
-                                    self.ask_role(t, i, r).await;
+                                    self.ask_role(t, i, r, SILENT_WAIT).await;
                                     r
                                 });
                             }
@@ -3025,10 +3089,9 @@ impl Coordinator {
     }
 
     /// What a client is told of a write given up on ([`Self::write_watched`])
-    /// and not sent again: 503, the write in doubt, and the idempotency
-    /// key to send it again with, `key` being the shard's (`key/shard`, as
-    /// [`Self::write_ops`] and [`Self::statement`] make it; none for a
-    /// statement that changes a schema, or a move's rows).
+    /// and not sent again: 503, code [`crate::errors::WRITE_IN_DOUBT`], and
+    /// the idempotency key to send it again with ([`send_again`]), `key`
+    /// being the shard's.
     fn unanswered(&self, t: &Topology, i: usize, u: &Unanswered, key: &str) -> ApiError {
         let who = t.short(i, u.k);
         let why = match u.by {
@@ -3040,11 +3103,7 @@ impl Coordinator {
             ),
             None => format!("{who} (shard {i}) answered neither the write nor the coordinator's calls for {:.1} s, and no copy took its place as the shard's primary", u.waited.as_secs_f64()),
         };
-        let again = match key.rsplit_once('/') {
-            Some((k, _)) if !k.is_empty() => format!("send the same request again with idempotency_key \"{k}\" (within {}), which applies it once", ttl_words()),
-            _ => "read it back before sending it again".to_string(),
-        };
-        ApiError { code: None, status: 503, message: format!("{why}: the write may or may not be applied; {again}") }
+        ApiError::coded(503, crate::errors::WRITE_IN_DOUBT, format!("{why}: the write may or may not be applied; {}", send_again(key)))
     }
 
     /// Of the replicas of shard `i`, the primary of the newest term that no
@@ -3143,7 +3202,8 @@ impl Coordinator {
                     Err((_, s)) if in_doubt(&s) => {
                         // The next write goes to the new primary.
                         self.ask_all(t, i).await;
-                        return Err(ApiError { code: None, status: 409, message: format!("{} (shard {i}): {}; {IN_DOUBT}", t.short(i, k), s.message()) });
+                        let again = send_again(&r.idempotency_key);
+                        return Err(ApiError::coded(409, crate::errors::WRITE_IN_DOUBT, format!("{} (shard {i}): {}; {IN_DOUBT}: {again}", t.short(i, k), s.message())));
                     }
                     Err((_, s)) if matches!(s.code(), Code::FailedPrecondition | Code::Unavailable) && !passed_over => match self.moved(t, i, k, s.code()).await {
                         Some(m) => (k, passed_over) = (m, true),
@@ -3185,6 +3245,11 @@ impl Coordinator {
                 let a = c.write(r).await;
                 if a.as_ref().is_err_and(try_elsewhere) {
                     rep.protocol.store(0, Ordering::Relaxed);
+                }
+                // It answered: the writes still waiting on it are not
+                // waiting on a silent copy ([`Self::write_watched`]).
+                if a.as_ref().map_or_else(|s| !try_elsewhere(s), |_| true) {
+                    rep.answered_at.store(self.now_ms().max(1), Ordering::Relaxed);
                 }
                 a.map_err(|s| (k, s))
             }
