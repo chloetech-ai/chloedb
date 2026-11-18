@@ -180,7 +180,7 @@ fn computed(n: &Node, catalog: &[&Schema]) -> Option<Node> {
                 None => None,
                 Some(e) => Some(read(e, false)?),
             };
-            Some(Agg { func: a.func, arg })
+            Some(Agg::of(a.func, arg))
         })
         .collect::<Option<Vec<_>>>()?;
     if !any {
@@ -304,11 +304,15 @@ fn aggregate(n: &Node, catalog: &[&Schema]) -> Option<Node> {
     let aggs2 = aggs
         .iter()
         .map(|a| {
+            // STRING_AGG is the operators' alone.
+            if a.sep.is_some() {
+                return None;
+            }
             let arg = match &a.arg {
                 None => None,
                 Some(e) => Some(read(e)?),
             };
-            Some(Agg { func: a.func, arg })
+            Some(Agg::of(a.func, arg))
         })
         .collect::<Option<Vec<_>>>()?;
     // Fields alone are taken when each holds one value, so that the
