@@ -353,10 +353,27 @@ fn notes_about_scrapped_work_leave_the_briefing() {
     let tags = sql(&d, &format!("SELECT id, tag FROM memory WHERE id IN ('{}') LIMIT 5", recurring.join("', '")));
     assert!(tags.iter().all(|r| r[1] == "superseded" || r[1] == "retired"), "{tags:?}");
     assert!(tags.iter().any(|r| r[1] == "superseded"), "{tags:?}");
+    // ANA-204: the decision a prompt states, kept at once in its words, is
+    // one note with the turn's distilled decision; the rest of the prompt
+    // is not part of it.
+    // A near-copy is not kept beside it.
+    model_says(&[json!({"kind": "decision", "text": "List endpoints paginate with opaque cursor tokens, never page numbers."})]);
+    turn("s5", "Decision: list endpoints paginate with opaque cursor tokens, never page numbers. Then run echo beta-1 and echo beta-2.", "Done.");
+    let decisions = sql(&d, "SELECT text, tag FROM memory WHERE session = 's5' AND kind = 'decision' LIMIT 5");
+    assert_eq!(decisions, [json!(["The user decided: Decision: list endpoints paginate with opaque cursor tokens, never page numbers.", "stated"])], "{decisions:?}");
+    // One that says more replaces it.
+    model_says(&[json!({"kind": "decision", "text": "Search results paginate with opaque cursor tokens rather than offsets, because offsets skip rows when items are inserted between pages."})]);
+    turn("s6", "Decision: search results paginate with opaque cursor tokens, not offsets. Then run echo beta-3.", "Done.");
+    let decisions = sql(&d, "SELECT text, tag FROM memory WHERE session = 's6' AND kind = 'decision' LIMIT 5");
+    assert_eq!(decisions.len(), 2, "{decisions:?}");
+    assert!(decisions.iter().any(|r| r[0] == "The user decided: Decision: search results paginate with opaque cursor tokens, not offsets." && r[1] == "superseded"), "{decisions:?}");
+    let brief = hook(&d, "SessionStart", json!({"session_id": "s7", "source": "startup"}));
+    assert_eq!(brief.matches("Search results paginate").count() + brief.matches("search results paginate").count(), 1, "{brief}");
+    assert!(!brief.contains("echo beta"), "{brief}");
     // An id the model was not shown is left alone.
     model_says(&[json!({"kind": "retired", "id": "nope:1"})]);
-    turn("s4", "Scrap nothing.", "OK.");
-    assert!(hook(&d, "SessionStart", json!({"session_id": "s5", "source": "startup"})).contains("todos.db"));
+    turn("s8", "Scrap nothing.", "OK.");
+    assert!(hook(&d, "SessionStart", json!({"session_id": "s9", "source": "startup"})).contains("todos.db"));
 }
 
 /// An instruction the user gives for one task stays that session's; given

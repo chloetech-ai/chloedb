@@ -940,6 +940,9 @@ pub fn knowledge(store: &Store, query: &str, filter: &Filter, skip: &HashSet<Str
     Ok(out)
 }
 
+/// The heading of the briefing's rules, and what a session does with them.
+pub const RULES_HEAD: &str = "Rules and conventions:\n(The user's rules: follow them. When a request would break one, ask the user first; do not take the request as lifting the rule.)";
+
 /// The live notes most related to `text` (by vector and BM25, no
 /// thresholds), best first: what the distiller is shown, so that it can
 /// update an old note instead of only the newest ones.
@@ -1115,8 +1118,10 @@ pub fn briefing_parts(store: &Store, current_session: &str, max_chars: usize, no
             ids.extend(id);
         }
     };
-    // The user's rules first: what a session must not do or forget.
-    section("Rules and conventions:", store.latest(&[Kind::Preference], 80, &none)?, BRIEF_NOTE, 40, max_chars, &mut s, &mut ids, &mut stale, &mut unshown);
+    // The user's rules first: what a session must not do or forget, and
+    // not a default a request lifts (JONAH-203: "I took your request as
+    // lifting that").
+    section(RULES_HEAD, store.latest(&[Kind::Preference], 80, &none)?, BRIEF_NOTE, 40, max_chars, &mut s, &mut ids, &mut stale, &mut unshown);
     section("Decisions:", store.latest(&[Kind::Decision], 80, &none)?, BRIEF_NOTE, 12, max_chars, &mut s, &mut ids, &mut stale, &mut unshown);
     let planned: Vec<Record> = store.latest(&[Kind::Todo], 60, &none)?.into_iter().filter(|r| r.tag == "planned").collect();
     section("Planned work, with the requirements agreed for it:", planned, BRIEF_NOTE, 10, max_chars, &mut s, &mut ids, &mut stale, &mut unshown);
@@ -1232,6 +1237,7 @@ mod tests {
         let b = briefing_parts(&store, "s2", 6000, 2_000, None).unwrap();
         assert!(b.text.contains("no recurring todos in v1, so do not suggest them."), "{}", b.text);
         assert!(b.text.find("Rules and conventions:").unwrap() < b.text.find("Decisions:").unwrap(), "{}", b.text);
+        assert!(b.text.contains("When a request would break one, ask the user first"), "JONAH-203: {}", b.text);
         // A note longer than the briefing's cut ends at a word, says where
         // the rest is, and is not counted shown: a prompt gets it whole.
         assert!(b.text.contains(&format!("; memory_timeline {} shows the rest", recs[1].id)), "{}", b.text);
