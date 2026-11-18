@@ -127,10 +127,21 @@ pub struct NotOpen {
     pub field: String,
     pub model: String,
     pub dim: usize,
+    /// Why the model did not open, when opening it was tried
+    /// ([`crate::db::Db::open_embedders`]): then that is what to fix, not
+    /// to open it (persona study PRIYA-208).
+    pub why: Option<String>,
 }
 
 impl NotOpen {
     fn refuse(&self) -> Error {
+        if let Some(why) = &self.why {
+            let why = why.strip_prefix("schema error: ").unwrap_or(why);
+            return Error::Schema(format!(
+                "{}.{} is embedded by model {}, which did not open here: {why}. The row would be written without its vector, which similarity() never finds: give the vector in the write, use a model this build runs (potion-retrieval-32M runs in every build), or, to write rows without vectors on purpose and fill them in later with embed_backfill where the model opens, call Db::set_embed_later(true) (db.set_embed_later(True) in Python)",
+                self.table, self.field, self.model
+            ));
+        }
         Error::Schema(format!(
             "{}.{} is embedded by model {}, which is not open: the row would be written without its vector, which similarity() never finds. Open the model (Db::open_embedders with its models directory; chloedb.open(..., models=DIR) in Python; chloedb-server fetches it), give the vector in the write, or, to write rows without vectors on purpose and fill them in later with embed_backfill, call Db::set_embed_later(true) (db.set_embed_later(True) in Python)",
             self.table, self.field, self.model

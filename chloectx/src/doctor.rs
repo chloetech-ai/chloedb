@@ -196,7 +196,7 @@ pub fn run(project: &Path) -> i32 {
     // The fetch is bounded: a remote that never answers costs 3 s, and a
     // fetch that failed is said to have failed (CTX-4).
     if let Some(v) = crate::version::check(&home, Some(crate::version::DOCTOR_FETCH_TIMEOUT)) {
-        if v.behind > 0 || v.fetch_error.is_some() {
+        if v.behind > 0 || v.diverged || v.fetch_error.is_some() {
             r.warn("version", v.line());
         } else {
             r.ok("version", v.line());

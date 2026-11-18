@@ -184,6 +184,25 @@ impl TextFieldReader {
             .collect()
     }
 
+    /// [`Self::fuzzy_terms_of`] of `term` or of the word as typed `raw`,
+    /// and the terms within `edits` edits of a prefix of `raw` of `lo`
+    /// letters or more, marked `false` (the others `true`): the stems
+    /// words near `raw` may have ([`super::fuzzy::walk_stems`]), for the
+    /// caller to check against the field's stemmer.
+    pub fn fuzzy_terms_stems(&self, term: &str, raw: &str, edits: u8, lo: usize) -> Vec<(String, TermInfo, u8, bool)> {
+        let Some(table) = self.term_table() else {
+            return self.dict.fuzzy_stems(term, raw, edits, lo);
+        };
+        table
+            .fuzzy_stems(term, raw, edits, lo)
+            .into_iter()
+            .filter_map(|(ord, d, whole)| {
+                let info = self.dict.info_at(ord as usize)?;
+                Some((String::from_utf8_lossy(table.term(ord as usize)).into_owned(), info, d, whole))
+            })
+            .collect()
+    }
+
     /// The table of the field's terms for typo walks, built the first time
     /// it is asked for; `None` when the terms do not fit one.
     pub fn term_table(&self) -> Option<&TermTable> {
@@ -208,6 +227,18 @@ impl TextFieldReader {
             }
         }
         found.into_iter().map(|(t, (df, d))| (t, df, d)).collect()
+    }
+
+    /// [`Self::fuzzy_terms_stems`] over several segments, each term once
+    /// with its documents summed.
+    pub fn fuzzy_across_stems(fields: &[&TextFieldReader], term: &str, raw: &str, edits: u8, lo: usize) -> Vec<(String, u64, u8, bool)> {
+        let mut found: std::collections::BTreeMap<String, (u64, u8, bool)> = Default::default();
+        for f in fields {
+            for (t, info, d, whole) in f.fuzzy_terms_stems(term, raw, edits, lo) {
+                found.entry(t).or_insert((0, d, whole)).0 += info.df as u64;
+            }
+        }
+        found.into_iter().map(|(t, (df, d, whole))| (t, df, d, whole)).collect()
     }
 
     fn fuzzy_infos(&self, term: &str, edits: u8) -> Vec<TermInfo> {
