@@ -1050,6 +1050,13 @@ async fn a_rebalance_by_load_moves_the_busy_slots() {
     let (a, svc) = coordinator(&[u0.clone()]).await;
     let (_s1, u1) = serve(create(d, "s1.strata", |_| false), d, "s1.strata").await;
     a.add_shard(vec![u1.clone()], Acks::All).await.unwrap();
+    // Evening out the slots, asked as a dry run: its moves, checked against
+    // the disks (which in-process servers do not report), and nothing moved.
+    let dry = a.rebalance_checked(4096, Some(&*a.snapshot().await), true).unwrap();
+    assert!(dry["job"].is_null(), "{dry}");
+    assert_eq!((dry["plan"]["by"].as_str(), dry["plan"]["slots_moved"].as_u64()), (Some("slots"), Some(2048)), "{dry}");
+    assert!(dry["plan"]["preflight"].as_array().is_some_and(|p| p.iter().all(|c| c["ok"] == true)), "{dry}");
+    assert_eq!(a.map().unwrap().count(1), 0, "a dry run moves nothing");
     a.rebalance(4096).unwrap();
     assert_eq!(job_done(&a).await["job"]["state"], "done");
     let map = a.map().unwrap();

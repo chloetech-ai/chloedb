@@ -215,6 +215,15 @@ pub fn peer_load(j: &Json, window: &str) -> Result<Vec<f64>, String> {
     Ok(v)
 }
 
+/// Moves of slots as the API shows them: `[{from, to, count, slots}]`,
+/// the slots as `[start, end)` runs.
+pub fn moves_json(moves: &[(Vec<usize>, usize, usize)]) -> Vec<Json> {
+    moves.iter().map(|(slots, from, to)| json!({
+        "from": from, "to": to, "count": slots.len(),
+        "slots": runs(slots.iter().copied()).into_iter().map(|(a, b)| json!([a, b])).collect::<Vec<_>>(),
+    })).collect()
+}
+
 impl LoadPlan {
     /// The plan as the API shows it.
     pub fn to_json(&self) -> Json {
@@ -222,10 +231,7 @@ impl LoadPlan {
         json!({
             "before": {"load_per_s": self.before.iter().map(|&x| r3(x)).collect::<Vec<_>>(), "skew": r3(skew(&self.before))},
             "after": {"load_per_s": self.after.iter().map(|&x| r3(x)).collect::<Vec<_>>(), "skew": r3(skew(&self.after))},
-            "moves": self.moves.iter().map(|(slots, from, to)| json!({
-                "from": from, "to": to, "count": slots.len(),
-                "slots": runs(slots.iter().copied()).into_iter().map(|(a, b)| json!([a, b])).collect::<Vec<_>>(),
-            })).collect::<Vec<_>>(),
+            "moves": moves_json(&self.moves),
             "slots_moved": self.moves.iter().map(|(s, ..)| s.len()).sum::<usize>(),
             "unsplit": self.unsplit.map(|(slot, shard, l)| json!({"slot": slot, "shard": shard, "load_per_s": r3(l)})),
             "disk_full": self.disk_full,
