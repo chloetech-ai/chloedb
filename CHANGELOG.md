@@ -28,6 +28,43 @@ changes collect under "Unreleased".
   SELECT`, temporary tables and a time minus a time say what to write
   instead, with the query's own tables.
 
+### Analytical SQL
+
+What the persona study's data engineer found in its second round: groups,
+joins and time functions over whole tables took 25 to 250 ms where DuckDB
+took 1.5 to 7. On their 224,000 taxi trips and Chinook, the 16 statements
+that took 10 ms or more run 6.1 times as fast on their geometric mean (T5,
+time parts by hour, 258 ms to 4.9), and all 72 take 0.57 of the time on
+theirs, with the same answers (a 4-core cloud container, `chloedb-sql-bench`).
+
+- **Aggregates of expressions are computed from the columns.** `SUM(a * b)`,
+  `AVG(CASE WHEN ... END)`, `SUM(CASE WHEN ... THEN 1 ELSE 0 END)`, and
+  groups by `EXTRACT(hour FROM t)`, `date_part`, arithmetic, comparisons
+  and `CASE` over numbers, times and booleans are evaluated 128 rows at a
+  time, typed, beside the segment's columns, rather than row by row through
+  DataFusion. An `INT` that would overflow sends its block to the row
+  evaluator, so errors and answers are the rows' own. A plan says how many
+  expressions it computed a block at a time and how many row by row.
+- **Plain aggregates fold into the scan**: `COUNT`, `SUM`, `AVG`, `MIN` and
+  `MAX` of single-valued fields, also under `ROUND` or `HAVING`. Percentiles
+  stay on DataFusion, which is faster at them.
+- **Columns go into Arrow a block at a time** for the plans DataFusion
+  still runs, and `date_part`, `date_trunc`, `date_bin`, `strftime` and
+  text compared with a `TIMESTAMP` lower to DataFusion rather than sending
+  the whole plan to the operators. `EXTRACT(epoch ...)` and the other time
+  parts that are not dates skip the calendar.
+- **A small right side of a join is read whole** (at most 1,024 rows, when
+  the left side is bigger).
+- **Sam's queries are in the speed gate**: `chloedb-sql-bench` runs them on
+  trips made up from a seed or on a database and a file of statements
+  (`--check` compares the answers with the plan computed row by row,
+  `--plan` times each step), and `scripts/perf-gate.py --sql` times them in
+  `perf.yml`.
+
+Through a coordinator, the shards still answer these plans as before:
+computing expressions in the scan is for a database's own plans (embedded,
+or one server), so shards of older versions need nothing new.
+
 ## 0.3.8
 
 Durable one-row writes about 2.6 times as fast, typo and short substring
