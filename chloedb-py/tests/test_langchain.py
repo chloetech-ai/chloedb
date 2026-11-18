@@ -117,6 +117,45 @@ def test_searches_by_words_and_both(store):
     assert ids(retriever.invoke("city")) == ["d5"]
 
 
+def test_a_hybrid_search_takes_its_fusion(store):
+    """PRIYA-204: the fusion of a hybrid search is the caller's, on the
+    store, a search or a retriever's search_kwargs."""
+    for fusion in [None, "rrf", {"rrf": {"k": 10}}, {"rrf": {"k": 10, "depth": 50, "weights": {"text": 0.5}}}, "tmm", {"tmm": {"text": 0.1}}, {"minmax": {"vector": 0.7}}, {"zscore": {"text": 0.3, "vector": 0.7}}]:
+        found = store.similarity_search_with_score("dragon city", k=2, mode="hybrid", fusion=fusion)
+        assert ids([d for d, _ in found])[0] == "d5", fusion
+    # tmm's weighted sum of scores from 0 to 1: the best is at most the sum of the weights.
+    (_, best), *_ = store.similarity_search_with_score("dragon city", k=2, mode="hybrid", fusion={"tmm": {"text": 0.1}})
+    assert 0 < best <= 1.0 + 1e-9
+    (_, rrf10), *_ = store.similarity_search_with_score("dragon city", k=2, mode="hybrid", fusion={"rrf": {"k": 10}})
+    (_, rrf60), *_ = store.similarity_search_with_score("dragon city", k=2, mode="hybrid")
+    assert rrf10 > rrf60
+    tuned = ChloeDBVectorStore(store.store, embedding=Words(), mode="hybrid", fusion={"tmm": {"text": 0.1}})
+    assert tuned.similarity_search("missing letter", k=1)[0].id == "d2"
+    rel = tuned.similarity_search_with_relevance_scores("missing letter", k=1)
+    assert 0 < rel[0][1] <= 1
+    retriever = store.as_retriever(search_kwargs={"k": 1, "mode": "hybrid", "fusion": {"tmm": {"text": 0.9}}})
+    assert ids(retriever.invoke("burns")) == ["d5"]
+    for bad in ["bogus", {"tmm": {"txt": 0.1}}, {"rrf": {"k": 0}}, {"tmm": {"text": -1}}, {"rrf": {}, "tmm": {}}]:
+        with pytest.raises(ValueError):
+            store.similarity_search("dragon", k=1, mode="hybrid", fusion=bad)
+    with pytest.raises(ValueError):
+        ChloeDBVectorStore(store.store, embedding=Words(), fusion="bogus")
+    zs = ChloeDBVectorStore(store.store, embedding=Words(), mode="hybrid", fusion="zscore")
+    with pytest.raises(NotImplementedError, match="zscore"):
+        zs.similarity_search_with_relevance_scores("dragon", k=1)
+
+
+def test_the_fused_ranking_is_the_sql_asked_for():
+    from chloedb._vectors import fused
+
+    assert fused(None, "v", "t") == ("rrf(v, t)", 2 / 61)
+    assert fused({"rrf": {"k": 10}}, "v", "t") == ("rrf(v, t, k => 10)", 2 / 11)
+    assert fused({"rrf": {"weights": {"text": 0.5}}}, "v", "t")[0] == "rrf(v, t, weights => [1, 0.5])"
+    assert fused({"tmm": {"text": 0.1}}, "v", "t") == ("0.9 * tmm(v) + 0.1 * tmm(t)", 1.0)
+    assert fused({"minmax": {"text": 1}}, "v", "t")[0] == "1 * minmax(t)"
+    assert fused("zscore", "v", "t")[0] == "0.5 * zscore(v) + 0.5 * zscore(t)"
+
+
 def test_deletes_by_filter(store):
     store.delete(filter={"genre": "fantasy"})
     assert ids(store.get_by_ids(IDS)) == ["d2", "d3", "d4"]

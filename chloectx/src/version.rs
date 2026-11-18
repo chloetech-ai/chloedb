@@ -85,11 +85,27 @@ pub struct Standing {
     pub fetch_error: Option<String>,
     /// When ChloeCtx last fetched the upstream branch, if known.
     pub fetched_at: Option<i64>,
+    /// The build is not on the upstream branch (a local, rebased or
+    /// unrelated commit), so `behind` does not say how far behind it is
+    /// (ANA-206: 25 "updates" for a checkout that shared no history with
+    /// origin/main).
+    pub diverged: bool,
+    /// Why `chloectx upgrade` would stop before installing anything, and
+    /// what to do about it: it pulls the checkout's branch with
+    /// `--ff-only`, which a detached HEAD, a branch that follows nothing or
+    /// one with commits of its own refuse (JONAH-207).
+    pub blocked: Option<String>,
 }
 
 impl Standing {
     pub fn json(&self) -> Json {
-        json!({"build": self.build, "upstream": self.upstream, "behind": self.behind})
+        json!({"build": self.build, "upstream": self.upstream, "behind": self.behind, "diverged": self.diverged, "blocked": self.blocked, "can_upgrade": self.can_upgrade()})
+    }
+
+    /// Whether `chloectx upgrade` would pull and install newer commits:
+    /// what the inspector's Update button and doctor's advice need.
+    pub fn can_upgrade(&self) -> bool {
+        self.behind > 0 && !self.diverged && self.blocked.is_none()
     }
 
     fn of(v: &Json) -> Option<Standing> {
@@ -100,18 +116,25 @@ impl Standing {
             fetched: false,
             fetch_error: None,
             fetched_at: v["fetched_at"].as_i64(),
+            diverged: v["diverged"].as_bool().unwrap_or(false),
+            blocked: v["blocked"].as_str().map(String::from),
         })
     }
 
     /// One line for a person: where this build stands. When the fetch
     /// failed it says so, and that the count is as of the last fetch
-    /// (CTX-4: it said "up to date" offline).
+    /// (CTX-4: it said "up to date" offline). It promises an upgrade only
+    /// when `chloectx upgrade` would make it, and says why not otherwise.
     pub fn line(&self) -> String {
         let short = &self.build[..self.build.len().min(10)];
-        let standing = match self.behind {
-            0 => format!("built from {short}, up to date with {}", self.upstream),
-            1 => format!("built from {short}; 1 commit on {} changes ChloeCtx since", self.upstream),
-            n => format!("built from {short}; {n} commits on {} change ChloeCtx since", self.upstream),
+        let standing = if self.diverged {
+            format!("built from {short}, which is not on {} (a local, rebased or unrelated commit), so it cannot be said how far behind it is", self.upstream)
+        } else {
+            match self.behind {
+                0 => format!("built from {short}, up to date with {}", self.upstream),
+                1 => format!("built from {short}; 1 commit on {} changes ChloeCtx since", self.upstream),
+                n => format!("built from {short}; {n} commits on {} change ChloeCtx since", self.upstream),
+            }
         };
         match &self.fetch_error {
             Some(e) => {
@@ -121,8 +144,12 @@ impl Standing {
                 };
                 format!("could not fetch {} ({e}), so not checked: {standing} {last}", self.upstream)
             }
-            None if self.behind > 0 => format!("{standing}; `chloectx upgrade` installs {}", if self.behind == 1 { "it" } else { "them" }),
-            None => standing,
+            None if self.behind == 0 && !self.diverged => standing,
+            None => match &self.blocked {
+                Some(why) => format!("{standing}; `chloectx upgrade` would stop: {why}"),
+                None if self.diverged => format!("{standing}; `chloectx upgrade` would build {} as it is now, without this build's own commits", self.upstream),
+                None => format!("{standing}; `chloectx upgrade` installs {}", if self.behind == 1 { "it" } else { "them" }),
+            },
         }
     }
 }
@@ -197,7 +224,33 @@ pub fn standing(src: &Path, build: &str, fetch: Option<Duration>) -> Option<Stan
     let mut args = vec!["rev-list", "--count", range.as_str(), "--"];
     args.extend(PATHS);
     let behind = git(src, &args, Duration::from_secs(10))?.parse().ok()?;
-    Some(Standing { build: build.to_string(), upstream: up, behind, fetched, fetch_error, fetched_at: None })
+    let diverged = git(src, &["merge-base", "--is-ancestor", build, &up], Duration::from_secs(10)).is_none();
+    let blocked = blocker(src);
+    Some(Standing { build: build.to_string(), upstream: up, behind, fetched, fetch_error, fetched_at: None, diverged, blocked })
+}
+
+/// Why `chloectx upgrade` would stop in the checkout `src` before building
+/// (its pull is `git pull --ff-only` on the checked-out branch), with what
+/// to do instead; `None` when it would pull.
+pub fn blocker(src: &Path) -> Option<String> {
+    let t = Duration::from_secs(5);
+    let at = src.display();
+    let Some(branch) = git(src, &["symbolic-ref", "-q", "--short", "HEAD"], t) else {
+        return Some(format!(
+            "{at} is not on a branch (a detached HEAD); check out the branch to follow there (`git -C {at} switch main`), or run `chloectx upgrade --no-pull` to build it as it is"
+        ));
+    };
+    let Some(up) = git(src, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], t).filter(|u| !u.is_empty()) else {
+        return Some(format!(
+            "branch {branch} in {at} follows no upstream branch, so there is nothing to pull; set one (`git -C {at} branch --set-upstream-to=origin/main`), or run `chloectx upgrade --no-pull` to build it as it is"
+        ));
+    };
+    if git(src, &["merge-base", "--is-ancestor", "HEAD", &up], t).is_none() {
+        return Some(format!(
+            "branch {branch} in {at} has commits that {up} does not, so `git pull --ff-only` cannot bring it up to date; merge or rebase it there, or run `chloectx upgrade --no-pull` to build it as it is"
+        ));
+    }
+    None
 }
 
 fn cache_path(home: &Path) -> PathBuf {
@@ -272,8 +325,16 @@ pub fn summary(home: &Path, check: bool, force: bool) -> Json {
         cached(home, CHECK_EVERY).or_else(|| self::check(home, None))
     };
     let v = read_cache(home);
+    let source = source_dir();
+    // What to do to upgrade, in the words the command line uses (JONAH-207:
+    // the page said "./install.sh" for a prebuilt binary).
+    let advice = match (&s, &source) {
+        (_, None) => format!("This binary was not built from a checkout on this machine (a prebuilt release, or its checkout is gone). To upgrade it, run the installer again: {RELEASE_INSTALL}"),
+        (None, Some(src)) => format!("This build does not know the commit it was built from, so it cannot be compared; `chloectx upgrade` builds the checkout in {} as it is now.", src.display()),
+        (Some(s), Some(_)) => s.line(),
+    };
     json!({
-        "version": env!("CARGO_PKG_VERSION"), "build": BUILD_COMMIT, "source": source_dir(),
+        "version": env!("CARGO_PKG_VERSION"), "build": BUILD_COMMIT, "source": source, "advice": advice,
         "standing": s.as_ref().map(Standing::json), "line": s.as_ref().map(Standing::line),
         "fetch_error": s.as_ref().and_then(|s| s.fetch_error.clone()),
         "checked_at": v["checked_at"], "fetched_at": v["fetched_at"],
@@ -349,8 +410,9 @@ pub fn upgrade(project: &Path, o: &UpgradeOptions) -> i32 {
     }
     let run = |cmd: &mut Command| -> bool { cmd.stdin(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) };
     if !o.no_pull {
-        if git(&src, &["symbolic-ref", "-q", "HEAD"], Duration::from_secs(5)).is_none() {
-            eprintln!("chloectx upgrade: {} is not on a branch (a detached HEAD); check out main there, or pass --no-pull to build it as it is", src.display());
+        // What `upgrade --check`, doctor and the inspector said would stop it.
+        if let Some(why) = blocker(&src) {
+            eprintln!("chloectx upgrade: stopped before pulling: {why}");
             return 1;
         }
         println!("==> git pull --ff-only in {}", src.display());
@@ -482,6 +544,58 @@ mod tests {
         let s = standing(&co, &built, Some(FETCH_TIMEOUT)).unwrap();
         assert_eq!(s.behind, 2, "the docs commit does not count");
         assert!(s.line().contains("2 commits on origin/main") && s.line().contains("chloectx upgrade"), "{}", s.line());
+    }
+
+    /// JONAH-207 and ANA-206: the advice promises an upgrade only when
+    /// `chloectx upgrade` would make one. A detached checkout, a branch with
+    /// commits of its own and a build that is not on the upstream branch
+    /// (unrelated history) each say why not, and what to do.
+    #[test]
+    fn upgrade_advice_agrees_with_upgrade() {
+        if git(Path::new("."), &["--version"], Duration::from_secs(5)).is_none() {
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let up = t.path().join("up");
+        std::fs::create_dir(&up).unwrap();
+        sh(&up, &["init", "-q", "-b", "main"]);
+        let built = commit(&up, "chloectx/Cargo.toml");
+        sh(t.path(), &["clone", "-q", up.to_str().unwrap(), "co"]);
+        let co = t.path().join("co");
+        commit(&up, "chloectx/src/a.rs");
+        let s = standing(&co, &built, Some(FETCH_TIMEOUT)).unwrap();
+        assert!(s.can_upgrade() && s.blocked.is_none() && !s.diverged, "{s:?}");
+        assert!(s.line().ends_with("`chloectx upgrade` installs it"), "{}", s.line());
+
+        // Detached: upgrade stops at once, and the check says so.
+        sh(&co, &["checkout", "-q", "--detach"]);
+        let s = standing(&co, &built, None).unwrap();
+        assert_eq!(s.behind, 1);
+        assert!(!s.can_upgrade(), "{s:?}");
+        let l = s.line();
+        assert!(l.contains("would stop") && l.contains("detached HEAD") && l.contains("--no-pull") && !l.contains("installs"), "{l}");
+        assert!(s.json()["can_upgrade"] == json!(false) && s.json()["blocked"].is_string(), "{}", s.json());
+
+        // A branch with a commit of its own: no fast-forward.
+        sh(&co, &["checkout", "-q", "main"]);
+        commit(&co, "chloectx/src/mine.rs");
+        let s = standing(&co, &built, None).unwrap();
+        assert!(s.blocked.as_deref().is_some_and(|b| b.contains("cannot bring it up to date")), "{s:?}");
+        assert!(!s.line().contains("installs"), "{}", s.line());
+
+        // A build the upstream does not contain (ANA-206: a clone whose
+        // history shares nothing with origin/main): not "N updates".
+        sh(&co, &["reset", "-q", "--hard", "origin/main"]);
+        sh(&co, &["checkout", "-q", "--orphan", "other"]);
+        let orphan = commit(&co, "chloectx/Cargo.toml");
+        sh(&co, &["checkout", "-q", "main"]);
+        let s = standing(&co, &orphan, None).unwrap();
+        assert!(s.diverged && !s.can_upgrade() && s.blocked.is_none(), "{s:?}");
+        let l = s.line();
+        assert!(l.contains("is not on origin/main") && !l.contains("change ChloeCtx since") && !l.contains("installs"), "{l}");
+        // The cached standing keeps both.
+        let back = Standing::of(&s.json()).unwrap();
+        assert!(back.diverged && back.blocked.is_none());
     }
 
     /// CTX-4: a fetch that fails, or a remote that never answers, is said

@@ -148,6 +148,10 @@ fn features_name_the_inputs_of_the_ranking() {
         // A set function ranks rows against each other: its inputs only.
         ("SELECT id, features() FROM docs ORDER BY rrf(bm25(body, :t), similarity(emb, :q)) DESC LIMIT 5", vec!["id", "bm25(body, :t)", "similarity(emb, :q)"]),
         ("SELECT id, features() FROM docs ORDER BY 0.3 * minmax(bm25(body, :t)) + 0.7 * minmax(similarity(emb, :q)) DESC LIMIT 5", vec!["id", "bm25(body, :t)", "similarity(emb, :q)"]),
+        // tmm and zscore as minmax (persona study PRIYA-201).
+        ("SELECT id, features() FROM docs ORDER BY 0.1 * tmm(bm25(body, :t)) + 0.9 * tmm(similarity(emb, :q)) DESC LIMIT 5", vec!["id", "bm25(body, :t)", "similarity(emb, :q)"]),
+        ("SELECT id, features() FROM docs ORDER BY zscore(bm25(body, :t)) + zscore(similarity(emb, :q)) DESC LIMIT 5", vec!["id", "bm25(body, :t)", "similarity(emb, :q)"]),
+        ("SELECT id, features() FROM docs ORDER BY tmm(bm25(body, :t), lo => 0) + 0.5 * tmm(rating, lo => 0) DESC LIMIT 5", vec!["id", "bm25(body, :t)", "rating"]),
         ("SELECT id, features() FROM docs ORDER BY similarity(emb, :q) - rank(rating) DESC LIMIT 5", vec!["id", "similarity(emb, :q)", "rating"]),
         // A CASE: its branches' leaves, then the whole.
         (
@@ -200,6 +204,8 @@ fn features_are_the_values_ranked_by() {
         ("similarity(emb, :q) + 0.5 * decay(year, 2010, 5)", &|f| Some(f("similarity(emb, :q)")? + 0.5 * f("decay(year, 2010, 5)")?)),
         ("rrf(bm25(body, :t), similarity(emb, :q))", &|_| None),
         ("0.3 * minmax(bm25(body, :t)) + 0.7 * minmax(similarity(emb, :q))", &|_| None),
+        ("0.1 * tmm(bm25(body, :t)) + 0.9 * tmm(similarity(emb, :q))", &|_| None),
+        ("zscore(bm25(body, :t)) + zscore(similarity(emb, :q))", &|_| None),
     ] {
         for filter in ["", "WHERE year >= 2005"] {
             let sql = format!("SELECT id, score(), features() FROM docs {filter} ORDER BY {order} DESC LIMIT 300");
@@ -264,6 +270,8 @@ fn features_over_shards_are_one_databases() {
         "SELECT id, features(), bm25(body, :u) AS other FROM docs WHERE year >= 2005 ORDER BY bm25(body, :t) * (1 + 0.2 * coalesce(rating, 0)) DESC LIMIT 15 OFFSET 5",
         "SELECT id, score(), features() FROM docs ORDER BY rrf(bm25(body, :t), similarity(emb, :q)) DESC LIMIT 25",
         "SELECT id, features() FROM docs ORDER BY 0.3 * minmax(bm25(body, :t)) + 0.7 * minmax(similarity(emb, :q)) DESC LIMIT 10",
+        "SELECT id, score(), features() FROM docs ORDER BY 0.1 * tmm(bm25(body, :t)) + 0.9 * tmm(similarity(emb, :q)) DESC LIMIT 10",
+        "SELECT id, score(), features() FROM docs ORDER BY zscore(bm25(body, :t)) + 0.5 * zscore(similarity(emb, :q)) DESC LIMIT 10",
         "SELECT id, bm25(body, :t) AS b, ln(1 + bm25(body, :u)) - 0.1 * rating AS x, year / 1000 FROM docs ORDER BY rating DESC LIMIT 30",
         "SELECT id, title, features() FROM docs ORDER BY similarity(emb, :q) + 0.5 * decay(year, 2010, 5) DESC LIMIT 40",
         "WITH top AS (SELECT * FROM docs ORDER BY bm25(body, :t) DESC LIMIT 100) SELECT id, score(), features() FROM top ORDER BY ln(1 + bm25(body, :u)) - 0.1 * rating DESC LIMIT 20",

@@ -114,7 +114,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Cookbook</span>
       <h1>Memory for an agent</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
-      <p class="doc-version">These docs describe release 0.3.7.</p>
+      <p class="doc-version">These docs follow main (0.3.8, unreleased). The latest release is 0.3.7 (<a href="v0.3.7/index.html">its docs</a>); what is newer is marked "since 0.3.8".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-store">The store</a></li><li><a href="#remember-then-recall">Remember, then recall</a></li><li><a href="#make-it-better">Make it better</a></li></ol></details>
     <div class="doc-body">
@@ -169,7 +169,7 @@ class Memory:
         at most two from any session.&quot;&quot;&quot;
         return list(self.db.query(&quot;&quot;&quot;
             SELECT id, session, role, text FROM turns
-            ORDER BY rrf(bm25(text, :q), similarity(emb, :v))
+            ORDER BY rrf(bm25(text, :q, syntax =&gt; &#x27;plain&#x27;), similarity(emb, :v))
                      * decay(at, :now, 2592000) DESC  -- halves every 30 days
             MAX 2 PER session
             LIMIT :k
@@ -179,12 +179,12 @@ class Memory:
         &quot;&quot;&quot;The facts closest to a message.&quot;&quot;&quot;
         return list(self.db.query(&quot;&quot;&quot;
             SELECT id, value FROM facts
-            ORDER BY rrf(bm25(value, :q), similarity(emb, :v)) DESC LIMIT :k
+            ORDER BY rrf(bm25(value, :q, syntax =&gt; &#x27;plain&#x27;), similarity(emb, :v)) DESC LIMIT :k
         &quot;&quot;&quot;, q=message, v={&quot;embed&quot;: message}, k=k))
 
     def close(self):
         self.db.close()</pre>
-<p><code>recall</code> ranks turns by a fusion of BM25 and vector similarity, multiplies it by <a href="sql.html#decayfield-origin-scale--closeness-to-a-value"><code>decay</code></a>, which halves a turn's weight for every 30 days of age (2,592,000 seconds), and keeps at most two turns of a session with <code>MAX 2 PER session</code>, so one long session does not crowd out the others. Facts need no history: <code>upsert</code> replaces a key's row, so a fact is always its latest value.</p>
+<p><code>recall</code> ranks turns by a fusion of BM25 and vector similarity (BM25 with <code>syntax =&gt; 'plain'</code>, which reads a message as words rather than as a search box's <code>-word</code> and <code>+word</code>), multiplies it by <a href="sql.html#decayfield-origin-scale--closeness-to-a-value"><code>decay</code></a>, which halves a turn's weight for every 30 days of age (2,592,000 seconds), and keeps at most two turns of a session with <code>MAX 2 PER session</code>, so one long session does not crowd out the others. Facts need no history: <code>upsert</code> replaces a key's row, so a fact is always its latest value.</p>
 <h2 id="remember-then-recall">Remember, then recall<a class="anchor" href="#remember-then-recall" aria-label="Link to this section">#</a></h2>
 <p>Two past sessions, a few weeks apart, and a fact that changed between them:</p>
 <pre data-lang="python" data-title="sessions.py">import datetime as dt

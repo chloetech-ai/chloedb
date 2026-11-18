@@ -85,7 +85,7 @@ More in [the server guide](docs/chloedb/server.md).
 | Python | `pip install chloedb` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md), [LangChain, LangGraph and LlamaIndex](docs/guide/frameworks.md) |
 | JavaScript (Node, Bun, Deno) | `npm install chloedb` | [JavaScript](docs/chloedb/javascript.md) |
 | Java and JDBC | `cd chloedb-java && mvn install` (builds from source) | [Java](docs/chloedb/java.md) |
-| Rust | `chloedb = { git = "https://github.com/chloetech-ai/chloedb", tag = "chloedb-server-v0.3.7" }` in `Cargo.toml` (not on crates.io yet) | [Rust](docs/chloedb/rust.md), [Design](docs/chloedb/index.md) |
+| Rust | `chloedb = { git = "https://github.com/chloetech-ai/chloedb", tag = "chloedb-server-v0.3.8" }` in `Cargo.toml` (not on crates.io yet) | [Rust](docs/chloedb/rust.md), [Design](docs/chloedb/index.md) |
 
 ```python
 import chloedb
@@ -133,6 +133,7 @@ The same methods work against a server: replace `chloedb.open(...)` with `chloed
 - **[chloedb-backbone](docs/chloedb/backbone.md)**: the internet's routing from public data: every BGP update a RIPE RIS collector hears, checked against RPKI as it arrives, alert rules written as SQL, and a map from the world down to one prefix, with RIPE Atlas, PeeringDB, CAIDA and IODA beside it.
 - **[chloedb-apps](docs/chloedb/apps.md)** (a prototype): describe an app in a sentence, and a model writes it, the engine checks it, and you change it by asking.
 - **[chloedb-swarm](chloedb-swarm/README.md)**: simulated users who try ChloeDB through its MCP tools or the command center, and a report of what got in their way.
+- **[chloedb-experiments](chloedb-experiments/README.md)** (phase 1 of the Experiments app): what a ranking would have earned, estimated from the log of another that explored, with simulated users in cohorts and five click models, each estimator checked against the exact truth.
 
 The crawler and sheets appear as apps in the command center.
 
@@ -200,7 +201,7 @@ Read more: [install guide](docs/chloectx/setup.md) · [how it works](docs/chloec
 
 ## Status
 
-ChloeDB is young, at version 0.3.7, and much of it was measured on one machine (an Apple M2 MacBook Air; the comparisons with other engines ran on DigitalOcean). The file format and the shard protocol have [compatibility rules](docs/compatibility.md), but APIs can still change between releases. One process writes a database at a time, while other processes can read it. Each results page lists its own limitations.
+ChloeDB is young, at version 0.3.8, and much of it was measured on one machine (an Apple M2 MacBook Air; the comparisons with other engines ran on DigitalOcean). The file format and the shard protocol have [compatibility rules](docs/compatibility.md), but APIs can still change between releases. One process writes a database at a time, while other processes can read it. Each results page lists its own limitations.
 
 ChloeDB was called Strata, and ChloeCtx was called Engram, until November 2026. The old names (`strata-server`, `STRATA_*` settings, `import strata`, `engram`) still work for a release; [old names](docs/compatibility.md#old-names) lists them.
 

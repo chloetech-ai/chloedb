@@ -35,7 +35,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 a { color: var(--accent); cursor: pointer; text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
 header .meta { color: var(--muted); font-size: 12.5px; display: flex; gap: 14px; flex-wrap: wrap; min-width: 0; }
 header .meta b { color: var(--text); font-weight: 600; }
@@ -128,12 +128,15 @@ table.grid { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 table.grid th { text-align: left; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--line); padding: 5px 8px; position: sticky; top: 0; background: var(--bg); white-space: nowrap; }
 table.grid td { border-bottom: 1px solid var(--line); padding: 5px 8px; vertical-align: top; max-width: 520px; }
 table.grid tr.click:hover td { background: var(--panel2); cursor: pointer; }
+/* Ids and short columns on one line; the text keeps room to be read (JONAH-206: it was squeezed to a few characters a line). */
+table.grid td.c-id, table.grid td.c-session, table.grid td.c-kind, table.grid td.c-tag, table.grid td.c-turn, table.grid td.c-seq, table.grid td.c-ts { white-space: nowrap; }
+table.grid td.c-text .clip, table.grid td.c-ctx .clip { min-width: 32ch; }
 td .clip { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; word-break: break-word; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 
-.feed .item { display: grid; grid-template-columns: 54px 1fr; gap: 10px; padding: 7px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.feed .item { display: grid; grid-template-columns: 76px 1fr; gap: 10px; padding: 7px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .feed .item:hover { background: var(--panel2); }
-.feed .seq { font-family: var(--mono); font-size: 11.5px; color: var(--faint); text-align: right; padding-top: 2px; }
+.feed .seq { font-family: var(--mono); font-size: 11.5px; color: var(--faint); text-align: right; padding-top: 2px; white-space: nowrap; }
 .feed .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
 .feed .txt { white-space: pre-wrap; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 2px; }
 .feed .ev { background: var(--panel); }
@@ -147,6 +150,26 @@ td .clip { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vert
 .card .h { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
 .card .t { white-space: pre-wrap; word-break: break-word; }
 .card .m { font-size: 11.5px; color: var(--faint); margin-top: 6px; }
+.card .h .sp { flex: 1; }
+button.forget { font-size: 11.5px; padding: 1px 8px; color: var(--bad); }
+button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+
+/* Advanced: the store's internals (Table, Graph, Vectors, Query, Storage, record ids, the embedder,
+   the store's file, the recall gate's evidence, vectors) show only with the switch on. */
+body:not(.adv) .advonly { display: none !important; }
+.advsw { display: flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.feed .why { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+#fg { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 40; display: flex; align-items: center; justify-content: center; padding: 16px; }
+#fg[hidden] { display: none; }
+#fg .dlg { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; width: min(640px, 100%); max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+#fg .hd { padding: 12px 14px; border-bottom: 1px solid var(--line); font-weight: 600; word-break: break-word; }
+#fg .bd { padding: 10px 14px; overflow: auto; flex: 1; font-size: 13px; }
+#fg .bd p { margin: 6px 0; }
+#fg .ft { padding: 10px 14px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+#fg .ft .hint { flex: 1; }
+#fg ul { margin: 6px 0; padding-left: 18px; }
+#fg li { margin: 4px 0; word-break: break-word; }
 
 .bars .seg { margin: 8px 0 14px; }
 .bars .bar { display: flex; height: 16px; border-radius: 4px; overflow: hidden; background: var(--panel2); }
@@ -213,6 +236,14 @@ main { flex: 1; min-height: 0; height: auto; grid-template-rows: minmax(0, 1fr);
   main { grid-template-columns: 1fr; grid-template-rows: 55% 45%; }
   #chat { border-right: none; border-bottom: 1px solid var(--line); }
 }
+/* A phone: the header's parts take a line each rather than overlapping (JONAH-206). */
+@media (max-width: 640px) {
+  header { padding: 8px 12px; gap: 6px 12px; }
+  header .meta { flex: 1 1 100%; gap: 2px 10px; }
+  .ver { white-space: normal; flex-wrap: wrap; }
+  .find { margin-left: 0; flex: 1 1 100%; min-width: 0; }
+  .find input { width: 100%; }
+}
 </style>
 </head>
 <body>
@@ -220,8 +251,16 @@ main { flex: 1; min-height: 0; height: auto; grid-template-rows: minmax(0, 1fr);
   <h1>ChloeCtx Inspector</h1>
   <div class="meta" id="meta"></div>
   <div class="ver" id="ver" hidden></div>
-  <div class="find"><input id="find" class="mono" placeholder="Find an entity or file" autocomplete="off" spellcheck="false" title="Completes the names of entities and the paths of files that records link to, most linked first"></div>
+  <div class="find"><input id="find" class="mono" placeholder="Find a file, a name or words" autocomplete="off" spellcheck="false" title="Completes the paths of files and the names that records mention, most mentioned first; Enter opens the first, or searches memory for the words"></div>
+  <label class="advsw" title="Show the store's internals: the Table, Graph, Vectors, Query and Storage tabs, record ids, the embedder, the recall gate's evidence and each record's vector"><input type="checkbox" id="adv"> Advanced</label>
 </header>
+<div id="fg" hidden>
+  <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="fg-title">
+    <div class="hd" id="fg-title">Forget</div>
+    <div class="bd" id="fg-body"></div>
+    <div class="ft"><span class="hint" id="fg-note"></span><button id="fg-cancel">Cancel</button><button class="danger" id="fg-go">Forget</button></div>
+  </div>
+</div>
 <div class="verlog" id="verlog" hidden>
   <div class="head"><span id="verlog-title">Update</span><button id="verlog-close">Close</button></div>
   <pre id="verlog-text"></pre>
@@ -246,18 +285,18 @@ main { flex: 1; min-height: 0; height: auto; grid-template-rows: minmax(0, 1fr);
     <nav id="tabs">
       <button data-tab="live" class="on">Live<span class="count" id="c-live"></span></button>
       <button data-tab="knowledge">Knowledge<span class="count" id="c-know"></span></button>
-      <button data-tab="table">Table</button>
-      <button data-tab="graph">Graph</button>
-      <button data-tab="vectors">Vectors</button>
-      <button data-tab="query">Query</button>
-      <button data-tab="storage">Storage</button>
+      <button data-tab="table" class="advonly">Table</button>
+      <button data-tab="graph" class="advonly">Graph</button>
+      <button data-tab="vectors" class="advonly">Vectors</button>
+      <button data-tab="query" class="advonly">Query</button>
+      <button data-tab="storage" class="advonly">Storage</button>
     </nav>
 
     <div class="pane on" id="p-live">
       <div class="toolbar">
         <label><input type="checkbox" id="live-tools"> tool calls and results</label>
-        <label><input type="checkbox" id="live-events" checked> daemon events</label>
-        <span class="hint">Every record the hooks and the distiller write, and every recall decision, as it happens.</span>
+        <label><input type="checkbox" id="live-events" checked> what ChloeCtx did</label>
+        <span class="hint">What ChloeCtx keeps as it happens: what was asked, what Claude did, what was written down, and what it gave Claude with each prompt. Click one to read it whole or forget it.</span>
       </div>
       <div class="feed" id="feed"></div>
     </div>
@@ -266,7 +305,11 @@ main { flex: 1; min-height: 0; height: auto; grid-template-rows: minmax(0, 1fr);
       <div class="toolbar">
         <button id="know-refresh">Refresh</button>
         <label><input type="checkbox" id="know-old"> superseded and done</label>
-        <span class="hint">What the distiller and the hooks wrote down as durable knowledge: decisions, rules, facts and planned work.</span>
+        <span class="hint">What ChloeCtx wrote down to keep: decisions, rules, facts and planned work. Later sessions are given these.</span>
+      </div>
+      <div class="toolbar">
+        <input id="know-forget" placeholder="Forget everything that says…" style="flex:1; min-width:180px" spellcheck="false">
+        <button id="know-forget-go" class="forget" title="Shows every record that holds these words first; nothing is deleted until you confirm">Forget…</button>
       </div>
       <div id="know"></div>
     </div>
@@ -338,7 +381,7 @@ main { flex: 1; min-height: 0; height: auto; grid-template-rows: minmax(0, 1fr);
 </main>
 
 <aside id="drawer">
-  <div class="top"><span class="id" id="d-id"></span><button id="d-close">Close</button></div>
+  <div class="top"><span class="id" id="d-id"></span><button class="forget" id="d-forget" hidden title="Shows what would go first">Forget…</button><button id="d-close">Close</button></div>
   <div class="content" id="d-body"></div>
 </aside>
 
@@ -443,9 +486,9 @@ async function browseInfo(i) {
   $("#meta").innerHTML = `
     <span><span class="dot" id="busydot"></span><b id="m-records">${st.records ?? "?"}</b> records</span>
     <span><b>${st.sessions ?? "?"}</b> sessions</span>
-    <span>embedder <b>${esc(st.embedder || "?")}</b></span>
-    <span class="mono" title="project directory">${esc(cur.project || "project unknown")}</span>
-    <span class="mono" title="ChloeDB file">${esc(i.store)}</span>` + (st.error ? `<span class="err">${esc(st.error)}</span>` : "");
+    <span class="mono" title="${esc(cur.project || "")}">${esc(cur.project ? storeName(cur) : "project unknown")}</span>
+    <span class="advonly">embedder <b>${esc(st.embedder || "?")}</b></span>
+    <span class="mono advonly" title="ChloeDB file">${esc(i.store)}</span>` + (st.error ? `<span class="err">${esc(st.error)}</span>` : "");
   // The live feed starts at the store's latest records rather than its first.
   S.seq = Math.max(0, (st.last_seq || 0) - 150);
   S.log = Math.max(0, (i.events_bytes || 0) - 20000);
@@ -453,6 +496,7 @@ async function browseInfo(i) {
   const want = URLP.get("session");
   selectSession(want && S.sessions.some(s => s.id === want) ? want : null);
   const tab = $(`#tabs button[data-tab="${URLP.get("tab")}"]`);
+  if (tab && tab.classList.contains("advonly")) setAdvanced(true, false);
   if (tab) tab.click();
 }
 
@@ -789,37 +833,67 @@ function setBusy(b) {
 }
 
 // ------------------------------------------------------------------ live feed
+// Each record and each of ChloeCtx's steps in words; the ids, the recall
+// gate's numbers and the raw fields are there with Advanced on.
+const SAID = {prompt: "asked", answer: "Claude answered", tool_call: "Claude ran", tool_result: "result", error: "error", episode: "turn summary",
+  summary: "summary", decision: "decision", preference: "rule", fact: "fact", todo: "planned work", note: "note", entity: "name or file", event: "ChloeCtx"};
+const said = k => SAID[k] || k;
+const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 function recordItem(r, fresh) {
   const d = document.createElement("div");
   d.className = "item" + (fresh ? " flash" : "");
   const links = parseLinks(r.links);
-  d.innerHTML = `<div class="seq">#${r.seq}</div><div>
-    <div class="head">${kindBadge(r.kind)}${r.tag && r.tag !== "-" ? `<span class="tag">${esc(r.tag)}</span>` : ""}
-      <span class="mono">${esc(r.id)}</span><span>${r.session === "-" ? "" : "session " + esc(short(r.session)) + " · turn " + r.turn}</span>
-      ${links.length ? `<span>→ ${links.map(l => esc(l.label) + " " + esc(l.to)).join(", ")}</span>` : ""}</div>
+  d.innerHTML = `<div class="seq" title="when it was written">${fmtTs(r.ts)}<div class="advonly">#${r.seq}</div></div><div>
+    <div class="head"><span class="kind" style="color:${kc(r.kind)}" title="${esc(r.kind)}">${esc(said(r.kind))}</span>${r.tag && r.tag !== "-" ? `<span class="tag">${esc(r.tag)}</span>` : ""}
+      <span class="mono advonly">${esc(r.id)}</span><span>${r.session === "-" ? "" : "session " + esc(short(r.session)) + " · turn " + r.turn}</span>
+      ${links.length ? `<span class="advonly">→ ${links.map(l => esc(l.label) + " " + esc(l.to)).join(", ")}</span>` : ""}</div>
     <div class="txt">${esc(r.text)}</div></div>`;
   d.onclick = () => openRecord(r.id);
   d.dataset.kind = r.kind;
+  d.dataset.id = r.id;
   return d;
+}
+
+// What one of ChloeCtx's steps did, in a line (and a second one, `why`).
+function plainEvent(e) {
+  const n = (e.injected || []).length;
+  switch (e.event) {
+    case "recall":
+      return e.decision === "Skip" || !n
+        ? {title: "gave Claude nothing", text: "Nothing it keeps bears on this prompt clearly enough, so Claude got the prompt alone."}
+        : {title: `gave Claude ${plural(n, "earlier record")}`, text: `${plural(e.chars || 0, "character")} from earlier work went with the prompt${e.decision === "Brief" ? " (a short brief: the match was weak)" : ""}. Click to read the first.`};
+    case "distill":
+      return e.error ? {title: "could not write down this turn", text: e.error}
+        : {title: e.kept ? `wrote down ${plural(e.kept, "note")}` : "found nothing to write down", text: `Turn ${e.turn}, read by the model in ${(e.ms / 1000).toFixed(1)} s for $${(e.cost_usd || 0).toFixed(4)}` +
+          (e.replaced?.length ? `; replaced ${plural(e.replaced.length, "older note")}` : "") + (e.done?.length ? `; marked ${plural(e.done.length, "planned task")} done` : "") + "."};
+    case "distill_skipped": return {title: "did not write down this turn", text: e.why ? `It was ${e.why}.` : "Nothing in it to keep."};
+    case "tail_held": return {title: "kept the session's notes for later", text: "This prompt stood on its own, so where the last session left off goes with the next one instead."};
+    case "SessionStart": return {title: e.source === "compact" ? "briefed Claude again after a compaction" : "briefed a new session", text: `${plural(e.chars || 0, "character")}: the rules, decisions and planned work it keeps, the same each session.`};
+    case "deep_late": return {title: "finished a search late", text: "Its result goes with the next prompt."};
+    case "next_files": return {title: "named files that usually change next", text: e.file ? `After ${e.file}.` : ""};
+    case "fix_shown": return {title: "showed an earlier fix", text: "The same error was fixed before."};
+    case "forget": return {title: "forgot records", text: `${plural(e.deleted || 0, "record")} deleted${e.cut ? `, ${e.cut} cut` : ""}.`};
+    case "said_again": return {title: "could not check for a repeated instruction", text: e.error || ""};
+    case "worktree": return {title: "noted where the session works", text: e.branch ? `On branch ${e.branch}.` : ""};
+  }
+  return {title: e.event.replace(/_/g, " "), text: ""};
 }
 
 function eventItem(e) {
   const d = document.createElement("div");
   d.className = "item ev flash";
   d.dataset.kind = "event";
-  let title = e.event, text = "";
+  const p = plainEvent(e);
+  let raw;
   if (e.event === "recall") {
-    title = `recall · ${e.decision}`;
-    text = `gate ${(+e.gate || 0).toFixed(3)} · ${e.candidates} candidates · ${(e.injected || []).length} injected · ${e.chars} chars · ${(+e.ms).toFixed(1)} ms\n` +
+    raw = `${e.decision} · gate ${(+e.gate || 0).toFixed(3)} · ${e.candidates} candidates · ${(e.injected || []).length} injected · ${e.chars} chars · ${(+e.ms).toFixed(1)} ms\n` +
       `evidence ${JSON.stringify(e.evidence)}` + ((e.injected || []).length ? `\ninjected ${(e.injected || []).join(", ")}` : "");
-  } else if (e.event === "distill") {
-    title = "distill";
-    text = e.error ? `error: ${e.error}` : `turn ${e.turn}: ${e.items} items, ${e.kept} kept · ${(e.ms / 1000).toFixed(1)} s · $${(e.cost_usd || 0).toFixed(4)}` +
-      (e.replaced?.length ? `\nsuperseded ${e.replaced.join(", ")}` : "") + (e.done?.length ? `\ndone ${e.done.join(", ")}` : "");
   } else {
-    text = Object.entries(e).filter(([k]) => !["ts", "event"].includes(k)).map(([k, v]) => `${k} ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ");
+    raw = Object.entries(e).filter(([k]) => !["ts", "event"].includes(k)).map(([k, v]) => `${k} ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ");
   }
-  d.innerHTML = `<div class="seq">${fmtTs(e.ts)}</div><div><div class="head"><span class="kind" style="color:var(--k-preference)">${esc(title)}</span><span>daemon event</span></div><div class="txt">${esc(text)}</div></div>`;
+  d.innerHTML = `<div class="seq">${fmtTs(e.ts)}</div><div><div class="head"><span class="kind" style="color:var(--k-preference)">ChloeCtx</span><span><b>${esc(p.title)}</b></span>
+    ${e.session ? `<span>session ${esc(short(e.session))}</span>` : ""}<span class="advonly mono">${esc(e.event)}</span></div>
+    ${p.text ? `<div class="why">${esc(p.text)}</div>` : ""}<div class="txt advonly">${esc(raw)}</div></div>`;
   if (e.injected?.length) d.onclick = () => openRecord(e.injected[0]);
   return d;
 }
@@ -942,15 +1016,23 @@ function renderVersion() {
   else if (u && u.installed_new) status = `<span class="chip ok" title="${esc(u.installed || "")}">updated</span><button class="linkish" id="ver-log">restart chloectx ui to use it</button>`;
   else if (u && u.exit === 0) status = `<span class="chip ok">up to date</span><button class="linkish" id="ver-log">output</button>`;
   else if (u && u.exit != null) status = `<span class="chip bad">update failed</span><button class="linkish" id="ver-log">output</button><button id="ver-update">Retry</button>`;
-  else if (!s) status = `<span class="chip" title="This build does not know the checkout it came from, so it cannot compare. Reinstall from a checkout with ./install.sh.">version check unavailable</span>`;
-  else if (s.behind === 0) status = `<span class="chip ok" title="${esc(v.line || "")}">up to date</span><button class="linkish" id="ver-check" title="Fetch ${esc(s.upstream)} and compare again">check</button>`;
-  else status = `<span class="chip warn" title="${esc(v.line || "")}">${s.behind} update${s.behind === 1 ? "" : "s"}</span><button class="primary" id="ver-update" title="Runs chloectx upgrade: pulls ${esc(s.upstream)}, builds and installs (several minutes)">Update</button>`;
+  // Without a checkout (a prebuilt release), with a checkout `chloectx
+  // upgrade` would refuse (detached, ahead or apart from its upstream),
+  // or behind: the chip says what upgrading takes, and Update shows only
+  // when `chloectx upgrade` would pull and install (JONAH-207, ANA-206).
+  else if (!v.source) status = `<span class="chip" title="${esc(v.advice || "")}">prebuilt</span><button class="linkish" id="ver-how">how to upgrade</button>`;
+  else if (!s) status = `<span class="chip" title="${esc(v.advice || "")}">version check unavailable</span><button class="linkish" id="ver-how">why</button>`;
+  else if (s.diverged) status = `<span class="chip warn" title="${esc(v.advice || "")}">not on ${esc(s.upstream)}</span><button class="linkish" id="ver-how">what to do</button>`;
+  else if (s.behind === 0) status = `<span class="chip ok" title="${esc(v.advice || v.line || "")}">up to date</span><button class="linkish" id="ver-check" title="Fetch ${esc(s.upstream)} and compare again">check</button>`;
+  else if (s.can_upgrade === false) status = `<span class="chip warn" title="${esc(v.advice || "")}">${s.behind} update${s.behind === 1 ? "" : "s"}</span><button class="linkish" id="ver-how">why not Update</button>`;
+  else status = `<span class="chip warn" title="${esc(v.advice || v.line || "")}">${s.behind} update${s.behind === 1 ? "" : "s"}</span><button class="primary" id="ver-update" title="Runs chloectx upgrade: pulls ${esc(s.upstream)}, builds and installs (several minutes)">Update</button>`;
   el.innerHTML = `<span title="${esc(title)}">ChloeCtx <b>${esc(v.version)}</b>${build ? ` · <span class="mono">${esc(build)}</span>` : ""}</span>${status}`;
   el.hidden = false;
   const on = (id, f) => { const b = $("#" + id); if (b) b.onclick = f; };
   on("ver-check", async () => { $("#ver-check").textContent = "checking…"; await loadVersion("force"); });
   on("ver-update", startUpdate);
   on("ver-log", showUpdateLog);
+  on("ver-how", () => { $("#verlog-title").textContent = "Upgrading ChloeCtx"; $("#verlog-text").textContent = v.advice || v.line || ""; $("#verlog").hidden = false; });
   if (!$("#verlog").hidden) showUpdateLog();
 }
 
@@ -991,11 +1073,12 @@ async function loadKnowledge() {
       const from = parseLinks(x.links).filter(l => l.label === "from").map(l => l.to)[0];
       const about = parseLinks(x.links).filter(l => l.label === "about" || l.label === "touches").map(l => l.to);
       return `<div class="card ${x.tag === "superseded" || x.tag === "done" ? "off" : ""}" data-id="${esc(x.id)}">
-        <div class="h"><span class="tag">${esc(x.tag)}</span><span class="mono hint">${esc(x.id)}</span></div>
+        <div class="h"><span class="tag">${esc(x.tag)}</span><span class="mono hint advonly">${esc(x.id)}</span><span class="sp"></span><button class="forget" data-forget="${esc(x.id)}" title="Shows what would go first">Forget…</button></div>
         <div class="t">${esc(x.text)}</div>
         <div class="m">session ${esc(short(x.session))} · turn ${x.turn}${from ? ` · from ${esc(from)}` : ""}${about.length ? ` · about ${about.map(esc).join(", ")}` : ""}</div></div>`;
     }).join("") + `</div>`).join("");
   $$("#know .card").forEach(c => c.onclick = () => openRecord(c.dataset.id));
+  $$("#know [data-forget]").forEach(b => b.onclick = e => { e.stopPropagation(); forgetDialog({ids: [b.dataset.forget]}); });
 }
 
 // ------------------------------------------------------------------ table
@@ -1035,7 +1118,7 @@ function cell(col, v) {
 function resultTable(r, clickable) {
   const idCol = r.columns.indexOf("id");
   const html = `<table class="grid"><thead><tr>${r.columns.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>` +
-    r.rows.map(row => `<tr ${clickable && idCol >= 0 ? `class="click" data-id="${esc(row[idCol])}"` : ""}>${row.map((v, i) => `<td>${cell(r.columns[i], v)}</td>`).join("")}</tr>`).join("") + `</tbody></table>`;
+    r.rows.map(row => `<tr ${clickable && idCol >= 0 ? `class="click" data-id="${esc(row[idCol])}"` : ""}>${row.map((v, i) => `<td class="c-${esc(String(r.columns[i]).replace(/[^a-z_]/gi, ""))}">${cell(r.columns[i], v)}</td>`).join("")}</tr>`).join("") + `</tbody></table>`;
   setTimeout(() => $$("[data-open]").forEach(c => c.onclick = e => { e.stopPropagation(); openRecord(c.dataset.open); }));
   return html;
 }
@@ -1044,6 +1127,7 @@ function resultTable(r, clickable) {
 async function openRecord(id) {
   $("#drawer").classList.add("open");
   $("#d-id").textContent = id;
+  $("#d-forget").hidden = true;
   const body = $("#d-body");
   body.innerHTML = `<p class="hint">Loading…</p>`;
   try {
@@ -1051,21 +1135,23 @@ async function openRecord(id) {
     if (!r.rows.length) { body.innerHTML = `<p class="hint">No record ${esc(id)} (it may have been deleted).</p>`; return; }
     const x = rowsAsObjects(r)[0];
     const out = parseLinks(x.links);
+    $("#d-forget").hidden = false;
+    $("#d-forget").onclick = () => forgetDialog({ids: [x.id]}, () => $("#drawer").classList.remove("open"));
     body.innerHTML = `
       <dl class="kv">
-        <dt>kind</dt><dd>${kindBadge(x.kind)} ${x.tag !== "-" ? `<span class="tag">${esc(x.tag)}</span>` : ""}</dd>
+        <dt>kind</dt><dd><span class="kind" style="color:${kc(x.kind)}">${esc(said(x.kind))}</span> <span class="hint advonly">${esc(x.kind)}</span> ${x.tag !== "-" ? `<span class="tag">${esc(x.tag)}</span>` : ""}</dd>
         <dt>session</dt><dd class="mono">${esc(x.session)}</dd>
-        <dt>turn · seq</dt><dd>${x.turn} · ${x.seq}</dd>
+        <dt>turn</dt><dd>${x.turn}<span class="advonly"> · seq ${x.seq}</span></dd>
         <dt>time</dt><dd>${new Date(x.ts * 1000).toLocaleString()}</dd>
-        <dt>${x.kind === "entity" ? "linked from" : "importance"}</dt><dd>${x.kind === "entity" ? `${x.importance} records` : x.importance}</dd>
+        <dt class="advonly">${x.kind === "entity" ? "linked from" : "importance"}</dt><dd class="advonly">${x.kind === "entity" ? `${x.importance} records` : x.importance}</dd>
         ${x.files ? `<dt>files</dt><dd class="mono">${esc(x.files)}</dd>` : ""}
       </dl>
       <h3>text</h3><div class="box">${esc(x.text)}</div>
-      ${x.ctx ? `<h3>ctx <span class="hint" style="text-transform:none;letter-spacing:0">(searched by BM25, not embedded)</span></h3><div class="box">${esc(x.ctx)}</div>` : ""}
-      <h3>links out · ${out.length}</h3><div class="links">${out.map(l => `<span class="chip" data-open="${esc(l.to)}">${esc(l.label)} → ${esc(l.to)}</span>`).join("") || `<span class="hint">none</span>`}</div>
-      <h3>links in</h3><div class="links" id="d-in"><span class="hint">…</span></div>
-      <h3>vector · ${x.emb ? x.emb.dim : 0} dimensions</h3>${x.emb ? vecStrip(x.emb.values, true) : `<span class="hint">none</span>`}
-      <h3>nearest by cosine similarity</h3><div id="d-nn"><span class="hint">…</span></div>
+      ${x.ctx ? `<h3>context <span class="hint" style="text-transform:none;letter-spacing:0">(the turn it came from; found by words, not by meaning)</span></h3><div class="box">${esc(x.ctx)}</div>` : ""}
+      <h3>links to · ${out.length}</h3><div class="links">${out.map(l => `<span class="chip" data-open="${esc(l.to)}">${esc(l.label)} → ${esc(l.to)}</span>`).join("") || `<span class="hint">none</span>`}</div>
+      <h3>linked from</h3><div class="links" id="d-in"><span class="hint">…</span></div>
+      <div class="advonly"><h3>vector · ${x.emb ? x.emb.dim : 0} dimensions</h3>${x.emb ? vecStrip(x.emb.values, true) : `<span class="hint">none</span>`}</div>
+      <h3>closest in meaning</h3><div id="d-nn"><span class="hint">…</span></div>
       ${x.session !== "-" ? `<h3>timeline</h3><pre class="box" id="d-tl" style="max-height:340px">…</pre>` : ""}`;
     wireOpen(body);
     sql(`SELECT id, kind, text, hops() FROM memory WHERE REACHABLE(links, ${q1(id)}, hops => 1, dir => 'in') ORDER BY seq DESC LIMIT 60`).then(rin => {
@@ -1073,7 +1159,7 @@ async function openRecord(id) {
       wireOpen($("#d-in"));
     }).catch(e => $("#d-in").innerHTML = `<span class="err">${esc(e.message)}</span>`);
     if (x.emb) sql(`SELECT id, kind, text, score() FROM memory WHERE id != ${q1(id)} AND kind != 'entity' ORDER BY similarity(emb, :v) DESC LIMIT 8`, {params: {v: x.emb.values}}).then(nn => {
-      $("#d-nn").innerHTML = `<table class="grid"><tbody>${nn.rows.map(([i, k, t, s]) => `<tr class="click" data-open="${esc(i)}"><td class="num">${s.toFixed(3)}</td><td>${kindBadge(k)}</td><td><div class="clip">${esc(t)}</div></td></tr>`).join("")}</tbody></table>`;
+      $("#d-nn").innerHTML = `<table class="grid"><tbody>${nn.rows.map(([i, k, t, s]) => `<tr class="click" data-open="${esc(i)}"><td class="num advonly">${s.toFixed(3)}</td><td class="c-kind"><span class="kind" style="color:${kc(k)}">${esc(said(k))}</span></td><td><div class="clip">${esc(t)}</div></td></tr>`).join("")}</tbody></table>`;
       wireOpen($("#d-nn"));
     }).catch(e => $("#d-nn").innerHTML = `<span class="err">${esc(e.message)}</span>`);
     if (x.session !== "-") rpc({op: "timeline", id, before: 3, after: 3}).then(t => $("#d-tl").textContent = t.text || t.error);
@@ -1101,8 +1187,10 @@ async function complete(text, limit = 10) {
   return exact.concat(near).slice(0, limit);
 }
 
-// Completes `input` as it is typed; `pick(id)` takes the chosen id.
-function completer(input, pick) {
+// Completes `input` as it is typed; `pick(id)` takes the chosen id. Enter
+// takes the one selected, or else the first (JONAH-206: Enter did nothing
+// until an arrow key selected one); with none, `miss(text)` has the words.
+function completer(input, pick, miss) {
   const box = document.createElement("div");
   box.className = "sugg";
   input.parentElement.style.position = "relative";
@@ -1124,7 +1212,19 @@ function completer(input, pick) {
       } catch (e) { if (n === asked) { items = []; show(); } }
     }, 60);
   });
-  input.addEventListener("keydown", e => {
+  input.addEventListener("keydown", async e => {
+    if (e.key === "Enter" && sel < 0 && input.value.trim()) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      clearTimeout(timer);
+      const n = ++asked;
+      let got = items;
+      if (!got.length) { try { got = await complete(input.value); } catch { got = []; } }
+      if (n !== asked) return;
+      if (got.length) { items = got; choose(0); }
+      else if (miss) { items = []; show(); miss(input.value.trim()); }
+      return;
+    }
     if (!items.length) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
@@ -1137,6 +1237,108 @@ function completer(input, pick) {
     } else if (e.key === "Escape") { items = []; show(); }
   }, true);  // before the input's own Enter handler
   input.addEventListener("blur", () => setTimeout(() => { items = []; show(); }, 100));
+}
+
+// Find's words that name no file or entity: what memory holds about them,
+// as a search by Claude would find it, in the drawer.
+async function findWords(text) {
+  $("#drawer").classList.add("open");
+  $("#d-id").textContent = `“${text}”`;
+  $("#d-forget").hidden = true;
+  const body = $("#d-body");
+  body.innerHTML = `<p class="hint">Searching memory…</p>`;
+  try {
+    const r = await rpc({op: "search", query: text, limit: 20, include_current: true});
+    if (r.error) throw new Error(r.error);
+    const ids = r.ids || [];
+    if (!ids.length) { body.innerHTML = `<p class="hint">Nothing in this store matches “${esc(text)}”.</p>`; return; }
+    const rows = rowsAsObjects(await sql(`SELECT id, kind, tag, session, turn, ts, text FROM memory WHERE id IN (${ids.map(q1).join(", ")}) LIMIT ${ids.length}`));
+    const by = new Map(rows.map(x => [x.id, x]));
+    body.innerHTML = `<p class="hint">What a search of memory finds for these words, best first. Click one to read it whole or forget it.</p><div class="slist">` +
+      ids.filter(i => by.has(i)).map(i => { const x = by.get(i); return `<div class="card" data-open="${esc(x.id)}"><div class="h"><span class="kind" style="color:${kc(x.kind)}">${esc(said(x.kind))}</span>${x.tag && x.tag !== "-" ? `<span class="tag">${esc(x.tag)}</span>` : ""}<span class="hint">${esc(fmtDate(x.ts))}${x.session !== "-" ? " · session " + esc(short(x.session)) : ""}</span></div><div class="t">${esc(x.text)}</div></div>`; }).join("") + `</div>` +
+      `<p><button class="forget" id="d-forget-words">Forget everything that says “${esc(text)}”…</button></p>`;
+    wireOpen(body);
+    $("#d-forget-words").onclick = () => forgetDialog({text});
+  } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+// ------------------------------------------------------------------ forget
+// As `chloectx forget`: the page asks first what would go (a dry run) and
+// lists it; only Forget deletes. By id, the record; by words, every record
+// whose text holds them, and the context lines of those that only mention
+// them, with the session state, logs and receipts that hold them.
+const FG = {what: null, done: null};
+async function forgetPost(body) {
+  const r = await fetch(api("/api/forget"), {method: "POST", headers: {"Content-Type": "application/json", "X-ChloeCtx-UI": "1"}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error || `refused (${r.status})`);
+  return j;
+}
+async function forgetDialog(what, done) {
+  FG.what = what; FG.done = done || null;
+  $("#fg-title").textContent = what.text ? `Forget everything that says “${what.text}”?` : what.ids.length === 1 ? "Forget this record?" : `Forget ${what.ids.length} records?`;
+  $("#fg-body").innerHTML = `<p class="hint">Looking for what would go…</p>`;
+  $("#fg-note").textContent = "";
+  $("#fg-go").hidden = false;
+  $("#fg-go").disabled = true;
+  $("#fg-go").textContent = "Forget";
+  $("#fg-cancel").textContent = "Cancel";
+  $("#fg").hidden = false;
+  try {
+    const f = await forgetPost({...what, dry_run: true});
+    const m = f.matches || [], c = f.context || [], side = f.side || {};
+    const li = x => `<li><span class="kind" style="color:${kc(x.kind)}">${esc(said(x.kind))}</span> ${esc(x.snippet || x.line)} <span class="hint">· ${esc(fmtDate(x.ts))}${x.session && x.session !== "-" ? " · session " + esc(short(x.session)) : ""}</span></li>`;
+    let html = "";
+    if (m.length) html += `<p>${f.total === 1 ? "This record is deleted" : `These ${f.total} records are deleted`}, here and in the receipts that name ${f.total === 1 ? "it" : "them"}:</p><ul>${m.map(li).join("")}</ul>` +
+      (f.total > m.length ? `<p class="hint">and ${f.total - m.length} more</p>` : "");
+    if (c.length) html += `<p>${c.length === 1 ? "This record keeps its" : `These ${f.context_total} records keep their`} own text and ${c.length === 1 ? "loses" : "lose"} the lines of context that say it:</p><ul>${c.map(li).join("")}</ul>`;
+    const bits = [side.sessions && plural(side.sessions, "session's state", "sessions' state"), side.log_lines && plural(side.log_lines, "log line"),
+      side.receipts && plural(side.receipts, "receipt"), side.named_snapshots && plural(side.named_snapshots, "kept snapshot")].filter(Boolean);
+    if (bits.length) html += `<p>It also leaves ${bits.join(", ")}.</p>`;
+    if (!html) html = `<p>${what.text ? `Nothing in this store says “${esc(what.text)}”.` : "No such record: it may be gone already."}</p>`;
+    $("#fg-body").innerHTML = html;
+    $("#fg-go").disabled = !(m.length || c.length || bits.length);
+    if (!$("#fg-go").disabled) $("#fg-note").textContent = "This cannot be undone.";
+  } catch (e) { $("#fg-body").innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+async function forgetNow() {
+  const what = FG.what;
+  if (!what) return;
+  $("#fg-go").disabled = true;
+  $("#fg-go").textContent = "Forgetting…";
+  $("#fg-note").textContent = "";
+  try {
+    const r = await forgetPost(what);
+    $("#fg-body").innerHTML = `<p>${esc(r.text || "Done.")}</p>`;
+    const gone = new Set(r.deleted || []);
+    for (const id of gone) S.records.delete(id);
+    $$("#feed .item").filter(el => gone.has(el.dataset.id)).forEach(el => el.replaceWith());
+    $("#fg-go").hidden = true;
+    $("#fg-cancel").textContent = "Close";
+    if (FG.done) FG.done(r);
+    FG.what = null;
+    loadKnowledge().catch(() => {});
+  } catch (e) {
+    $("#fg-body").insertAdjacentHTML("beforeend", `<div class="err">${esc(e.message)}</div>`);
+    $("#fg-go").textContent = "Forget";
+    $("#fg-go").disabled = false;
+  }
+}
+
+// ------------------------------------------------------------------ advanced
+// Off by default in `chloectx ui` (on in the demo, which shows the
+// internals): the person's choice is kept in this browser.
+function setAdvanced(on, keep) {
+  document.body.classList.toggle("adv", on);
+  $("#adv").checked = on;
+  if (keep) { try { localStorage.setItem("chloectx.advanced", on ? "1" : "0"); } catch {} }
+  const cur = $("#tabs button.on");
+  if (!on && cur && cur.classList.contains("advonly")) $('#tabs button[data-tab="live"]').click();
+}
+function advancedAtStart() {
+  if (URLP.has("advanced")) return URLP.get("advanced") !== "0";
+  try { const v = localStorage.getItem("chloectx.advanced"); if (v !== null) return v === "1"; } catch {}
+  return !document.body.classList.contains("browse");
 }
 
 // ------------------------------------------------------------------ graph
@@ -1521,7 +1723,7 @@ wirePanZoom($("#graphsvg"), G, () => drawGraph());
 $("#g-reach").onclick = reach;
 $("#g-seed").onkeydown = e => { if (e.key === "Enter") reach(); };
 completer($("#g-seed"), id => { $("#g-seed").value = id; reach(); });
-completer($("#find"), id => { $("#find").value = ""; openRecord(id); });
+completer($("#find"), id => { $("#find").value = ""; openRecord(id); }, findWords);
 $("#v-load").onclick = loadVectors;
 $("#v-go").onclick = vecSearch;
 $("#v-q").onkeydown = e => { if (e.key === "Enter") vecSearch(); };
@@ -1532,7 +1734,18 @@ $("#q-run").onclick = runQuery;
 $("#q-addp").onclick = () => paramRow();
 $("#sql").onkeydown = e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) runQuery(); };
 $("#d-close").onclick = () => $("#drawer").classList.remove("open");
-document.addEventListener("keydown", e => { if (e.key === "Escape") $("#drawer").classList.remove("open"); });
+$("#fg-cancel").onclick = () => { $("#fg").hidden = true; FG.what = null; };
+$("#fg-go").onclick = forgetNow;
+$("#fg").onclick = e => { if (e.target === $("#fg")) $("#fg-cancel").click(); };
+$("#know-forget-go").onclick = () => { const t = $("#know-forget").value.trim(); if (t) forgetDialog({text: t}); };
+$("#know-forget").onkeydown = e => { if (e.key === "Enter") $("#know-forget-go").click(); };
+$("#adv").onchange = e => setAdvanced(e.target.checked, true);
+setAdvanced(advancedAtStart(), false);
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (!$("#fg").hidden) return $("#fg-cancel").click();
+  $("#drawer").classList.remove("open");
+});
 setExample(0);
 if (document.body.classList.contains("browse")) $("#log").innerHTML = `<p class="hint">Opening the store (its daemon may need a moment to start)…</p>`;
 else emptyChat();

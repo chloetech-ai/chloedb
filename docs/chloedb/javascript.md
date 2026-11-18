@@ -26,7 +26,7 @@ If importing `chloedb` throws an error that calls it a placeholder, npm installe
 Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) also has a tarball per platform with the addon built in, for a machine that cannot reach npm's registry. Install the tarball for your platform, or its URL:
 
 ```sh
-npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.7/chloedb-0.3.7-darwin-arm64.tgz
+npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.8/chloedb-0.3.8-darwin-arm64.tgz
 ```
 
 The workflow [`js-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml) builds both on a `chloedb-js-v<version>` tag, the way napi-rs packages are laid out (`chloedb` names each platform's package as an optional dependency, of which npm installs the one of your machine), and installs each into an empty app and runs it there before attaching the tarballs to the release and publishing the packages to npm (the workflow's header says what publishing needs). `node scripts/pack.mjs <platform>` packs a tarball by hand, and `--npm <platform>` and `--npm-main` the packages npm gets.
@@ -247,7 +247,7 @@ export function hitsSql(whole: string) {
 export const BRANDS_SQL = `SELECT brand, COUNT(*) AS n FROM products WHERE ${WHERE} GROUP BY brand ORDER BY n DESC LIMIT 10`;
 ```
 
-Typed `lether so`, the hits are filtered by `MATCH(name, 'lether so*', fuzzy => 'auto')` and ranked by `bm25(name, 'lether', fuzzy => 'auto')`; typed `so`, they are filtered by `MATCH(name, 'so*', fuzzy => 'auto')` and ranked by rating.
+Typed `lether so`, the hits are filtered by `MATCH(name, 'lether so*', fuzzy => 'auto')` and ranked by `bm25(name, 'lether', fuzzy => 'auto')`; typed `so`, they are filtered by `MATCH(name, 'so*', fuzzy => 'auto')` and ranked by rating. Each letter of the last word keeps its rows, also once it is a whole word the analyzer stems: a prefix stands for the stems of the words it may be the start of too, so `headphone*`, `battery*` and `runni*` find *headphones*, *batteries* and *running*, which the index keeps as `headphon`, `batteri` and `run` ([full text](query-language.md#full-text-match)). **Changed:** against a server or package of 0.3.8 or earlier they find nothing, though `headphon*` and `batter*` do, so the hits come and go as a word is typed; and a typo whose stem the analyzer cuts differently (`choclate`, stemmed `choclat`, against `chocol`) is not forgiven.
 
 ### A route over HTTP
 

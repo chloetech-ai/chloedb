@@ -1666,7 +1666,7 @@ impl<'a> Binder<'a> {
     /// global phase, is not one.
     fn feature_items(&self, orders: &[&Expr]) -> Result<Vec<Expr>> {
         // Functions of other scores, and the rows they read.
-        let inner = |f: &sql::Function| matches!(fname(f).as_str(), "rrf" | "minmax" | "rank" | "gbdt") || Func::numeric(&fname(f)).is_some();
+        let inner = |f: &sql::Function| matches!(fname(f).as_str(), "rrf" | "minmax" | "tmm" | "zscore" | "rank" | "gbdt") || Func::numeric(&fname(f)).is_some();
         let leaf = |e: &Expr| !matches!(e, Expr::Nested(_) | Expr::UnaryOp { .. } | Expr::BinaryOp { .. } | Expr::Case { .. } | Expr::Value(_)) && !matches!(e, Expr::Function(f) if inner(f));
         fn leaves(b: &Binder, e: &Expr, leaf: &dyn Fn(&Expr) -> bool, out: &mut Vec<Expr>) -> Result<()> {
             match e {
@@ -3454,10 +3454,17 @@ impl<'a> Binder<'a> {
             Value::List(xs) if !xs.is_empty() && xs.iter().all(|x| matches!(x, Value::Int(_) | Value::Float(_))) => {
                 xs.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect::<Vec<_>>().into()
             }
+            // NaN and infinities reach here as NULL: JSON has no number
+            // for them, and Python's NaN becomes null on its way (persona
+            // study PRIYA-203).
+            Value::List(xs) if xs.iter().any(|x| matches!(x, Value::Null)) && xs.iter().all(|x| matches!(x, Value::Null | Value::Int(_) | Value::Float(_))) => {
+                let i = xs.iter().position(|x| matches!(x, Value::Null)).unwrap_or(0);
+                return Err(err(format!("element {} of the vector is NaN, an infinity or NULL (JSON writes NaN and infinities as null): a vector's elements are finite numbers", i + 1)));
+            }
             v => return Err(err(format!("expected a vector (a JSON array of numbers, or a vector parameter), not {} {}", hint::kind_of(&v), hint::sql_value(&v)))),
         };
-        if v.iter().any(|x| !x.is_finite()) {
-            return Err(err("a vector's components must be finite numbers"));
+        if let Some(i) = v.iter().position(|x| !x.is_finite()) {
+            return Err(err(format!("element {} of the vector is {}: a vector's elements are finite numbers", i + 1, if v[i].is_nan() { "NaN" } else { "infinite (beyond a 32-bit float's range, about 3.4e38)" })));
         }
         Ok(v)
     }

@@ -10,11 +10,13 @@ and the release snapshots, the website's own pages and docs/install.sh) and
 checks, over the network, each of:
 
 - a release download URL (github.com/<repo>/releases/download/<tag>/<asset>,
-  with the shell variables a block sets, `v=0.3.7 p=macos-arm64`, put in)
+  with the shell variables a block sets, `v=0.3.8 p=macos-arm64`, put in)
   and a release's `expanded_assets` page: the release has that asset;
 - the installer, docs/install.sh: the latest release (docs/site/versions.json)
   has the server's archive and its .sha256 for every platform, and those of
-  every program a page installs with `--with`;
+  every program a page installs with `--with`; from ATTESTED_FROM, each
+  archive's Sigstore bundles (.sigstore.jsonl, which the installers check
+  where gh is installed) and SBOM (<program>-<platform>.cdx.json) too;
 - an image, ghcr.io/<owner>/<name>[:tag] (no tag is :latest): the tag exists;
 - `brew install <owner>/<tap>/<formula>`: the tap's repository has the formula;
 - `pip install chloedb[extras]`: PyPI's newest chloedb is the latest release
@@ -70,6 +72,11 @@ UA = "chloedb-doc-url-check"
 # release is that one or later (release-publish.yml's run of the release
 # itself checks it, with --version).
 SINCE = {"pypi chloedb-server": "0.3.7", "extra server": "0.3.7"}
+# The first release whose archives have build provenance and an SBOM beside
+# them (server-release.yml's attest job; ATTESTED_FROM in docs/install.sh,
+# install.sh and the plugin's launcher, which refuse an archive of a
+# release from it without its bundle where gh is installed).
+ATTESTED_FROM = "0.3.9"
 TIMEOUT = 30
 
 
@@ -315,8 +322,10 @@ def check(found, net, latest=None):
             where = sorted({x for (kind, *rest), ws in found.items() if kind == "with" for x in ws
                             if prog == "chloedb-server" or INSTALL_WITH.get(rest[0]) == prog
                             or (rest[0] == "all" and prog in WITH_ALL)})
-            missing = [f"{prog}-{p}.tar.gz{s}" for p in PLATFORMS for s in ("", ".sha256")
-                       if f"{prog}-{p}.tar.gz{s}" not in assets]
+            names = [f"{prog}-{p}.tar.gz{s}" for p in PLATFORMS for s in ("", ".sha256")]
+            if _ver(latest) >= _ver(ATTESTED_FROM):
+                names += [f"{prog}-{p}{s}" for p in PLATFORMS for s in (".tar.gz.sigstore.jsonl", ".cdx.json")]
+            missing = [n for n in names if n not in assets]
             yield not missing, (f"install.sh installs {prog} {latest} on every platform"
                                 + (f": {server_tag} has no {', '.join(missing)}" if missing else "")), where
 

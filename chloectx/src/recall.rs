@@ -418,7 +418,9 @@ pub fn search_with(store: &Store, query: &str, tail: Option<&Tail>, filter: &Fil
     dv.retain(|(r, _)| useful(r));
     td.retain(|(r, _)| useful(r));
     tv.retain(|(r, _)| useful(r));
-    let (hits, ev) = fuse_with(store, query, &terms, bm, dv, [td, tv], tail, p);
+    // The rest of a turn that asked it too may be shown, but does not open
+    // the gate.
+    let (hits, ev) = fuse_with(store, query, &terms, bm, dv, [td, tv], tail, &|r: &Record| of_same_question(r, &qterms), p);
     if !p.graph.enabled || hits.is_empty() {
         return Ok((hits, ev));
     }
@@ -434,22 +436,25 @@ pub fn search_with(store: &Store, query: &str, tail: Option<&Tail>, filter: &Fil
 /// Fuses BM25 and vector candidate lists (exposed for benchmarks that run
 /// the two searches themselves).
 pub fn fuse(store: &Store, query: &str, terms: &[String], bm: Vec<(Record, f64)>, dv: Vec<(Record, f64)>, p: &RankParams) -> (Vec<Hit>, Evidence) {
-    fuse_with(store, query, terms, bm, dv, [Vec::new(), Vec::new()], None, p)
+    fuse_with(store, query, terms, bm, dv, [Vec::new(), Vec::new()], None, &|_: &Record| false, p)
 }
 
 /// [`fuse`] with the session tail's two lists (BM25 over its digest and
 /// `maxsim` over its vectors) and its files. A record's tail score is the
 /// better of its two normalised scores. The evidence is the prompt's own:
 /// read from the order without the tail, so the tail reorders what the gate
-/// lets through but does not open or close it.
+/// lets through but does not open or close it; and from the records that
+/// `no_evidence` does not single out (a turn that asked the same question).
 #[allow(clippy::too_many_arguments)]
-fn fuse_with(store: &Store, query: &str, terms: &[String], bm: Vec<(Record, f64)>, dv: Vec<(Record, f64)>, tails: [Vec<(Record, f64)>; 2], tail: Option<&Tail>, p: &RankParams) -> (Vec<Hit>, Evidence) {
-    let top_ids = |l: &[(Record, f64)]| l.iter().take(10).map(|(r, _)| r.id.clone()).collect::<HashSet<_>>();
-    let (bm_top, dv_top) = (top_ids(&bm), top_ids(&dv));
-    let max_cos = dv.iter().map(|x| x.1).fold(0.0, f64::max);
-    let nth = |l: &[(Record, f64)], i: usize| l.get(i.min(l.len().saturating_sub(1))).map_or(0.0, |x| x.1);
-    let cos_gap = if dv.is_empty() { 0.0 } else { nth(&dv, 0) - nth(&dv, 9) };
-    let bm_gap = if bm.is_empty() || nth(&bm, 0) <= 0.0 { 0.0 } else { 1.0 - nth(&bm, 9) / nth(&bm, 0) };
+fn fuse_with(store: &Store, query: &str, terms: &[String], bm: Vec<(Record, f64)>, dv: Vec<(Record, f64)>, tails: [Vec<(Record, f64)>; 2], tail: Option<&Tail>, no_evidence: &dyn Fn(&Record) -> bool, p: &RankParams) -> (Vec<Hit>, Evidence) {
+    let counts = |l: &[(Record, f64)]| l.iter().filter(|(r, _)| !no_evidence(r)).map(|(r, s)| (r.id.clone(), *s)).collect::<Vec<_>>();
+    let (bm_ev, dv_ev) = (counts(&bm), counts(&dv));
+    let top_ids = |l: &[(String, f64)]| l.iter().take(10).map(|(id, _)| id.clone()).collect::<HashSet<_>>();
+    let (bm_top, dv_top) = (top_ids(&bm_ev), top_ids(&dv_ev));
+    let max_cos = dv_ev.iter().map(|x| x.1).fold(0.0, f64::max);
+    let nth = |l: &[(String, f64)], i: usize| l.get(i.min(l.len().saturating_sub(1))).map_or(0.0, |x| x.1);
+    let cos_gap = if dv_ev.is_empty() { 0.0 } else { nth(&dv_ev, 0) - nth(&dv_ev, 9) };
+    let bm_gap = if bm_ev.is_empty() || nth(&bm_ev, 0) <= 0.0 { 0.0 } else { 1.0 - nth(&bm_ev, 9) / nth(&bm_ev, 0) };
     let range = |l: &[(Record, f64)]| {
         let lo = l.iter().map(|x| x.1).fold(f64::INFINITY, f64::min);
         let hi = l.iter().map(|x| x.1).fold(f64::NEG_INFINITY, f64::max);
@@ -502,13 +507,13 @@ fn fuse_with(store: &Store, query: &str, terms: &[String], bm: Vec<(Record, f64)
         .collect();
     hits.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.record.seq.cmp(&a.0.record.seq)));
     let mut ev = Evidence { max_cos, cue: past_reference(query), cos_gap, bm_gap, ..Default::default() };
-    if let Some((top, _)) = hits.first() {
+    if let Some((top, _)) = hits.iter().find(|(h, _)| !no_evidence(&h.record)) {
         ev.agree = bm_top.contains(&top.record.id) && dv_top.contains(&top.record.id);
     }
     if !terms.is_empty() {
         let idf = store.idf(terms).unwrap_or_else(|_| vec![1.0; terms.len()]);
         let total: f64 = idf.iter().sum();
-        for (h, _) in hits.iter().take(5) {
+        for (h, _) in hits.iter().filter(|(h, _)| !no_evidence(&h.record)).take(5) {
             let have = analyzed(&format!("{}\n{}", h.record.text, h.record.ctx));
             let got: f64 = terms.iter().zip(&idf).filter(|(t, _)| have.contains(*t)).map(|(_, w)| w).sum();
             ev.max_cov = ev.max_cov.max(if total > 0.0 { got / total } else { 0.0 });
@@ -656,15 +661,62 @@ impl PackParams {
 /// Whether a stored prompt is essentially the query asked again: it matches
 /// best and says nothing new, so it only takes up the budget.
 fn same_question(r: &Record, terms: &HashSet<String>) -> bool {
-    // Only stored questions: a statement that repeats the question's words
-    // ("my dog is called Max") is the answer, not a repeat.
-    if r.kind != Kind::Prompt || terms.is_empty() || !r.text.contains('?') {
+    r.kind == Kind::Prompt && asks_the_same(&r.text, terms)
+}
+
+/// Whether `text` asks the question whose analyzed terms are `terms`.
+fn asks_the_same(text: &str, terms: &HashSet<String>) -> bool {
+    // Only questions: a statement that repeats the question's words ("my
+    // dog is called Max") is the answer, not a repeat.
+    if terms.is_empty() || !text.contains('?') {
         return false;
     }
-    let other: HashSet<String> = chloedb::text::analyze_query(&r.text).into_iter().collect();
+    let other: HashSet<String> = chloedb::text::analyze_query(text).into_iter().collect();
     let inter = terms.intersection(&other).count() as f64;
     let union = terms.union(&other).count() as f64;
     union > 0.0 && inter / union >= 0.7
+}
+
+/// The request of the turn a record came from, as the record carries it: a
+/// prompt's own text, the `Turn N request: ...` line of a record's context
+/// ([`crate::capture`]), or an episode card's `User asked: ...`.
+fn turn_request(r: &Record) -> Option<&str> {
+    match r.kind {
+        Kind::Prompt => Some(&r.text),
+        Kind::Episode => r.text.split_once("User asked: ").map(|(_, rest)| rest.lines().next().unwrap_or("")),
+        _ => r.ctx.lines().find_map(|l| l.strip_prefix("Turn ").and_then(|l| l.split_once(" request: ")).map(|(_, q)| q)),
+    }
+}
+
+/// Whether a record comes from a turn that asked the query's question too:
+/// its prompt, its answer and its episode card all carry the question, so
+/// they match a question asked again by repeating it, whatever they hold.
+/// They do not count as evidence that earlier work bears on it (JONAH-202:
+/// "What is 17 times 3?" asked again opened the gate at 9.0 on the answers
+/// "51" of the earlier sessions and filled the budget with unrelated work).
+pub fn of_same_question(r: &Record, terms: &HashSet<String>) -> bool {
+    turn_request(r).is_some_and(|q| asks_the_same(q, terms))
+}
+
+/// Whether a prompt is a question that stands on its own: it does not
+/// refer to earlier work, to the project ("we", "here", a file or a name
+/// in code) or to where the work stands, and does not weigh a choice or
+/// ask how to do something ("How should payment retries back off?" is a
+/// decision in the making, whatever else it names). When nothing is recalled for it,
+/// ChloeCtx adds nothing to it (the session's tail waits for the next
+/// prompt), so a session that starts with the same question as the last
+/// one sends the same first request, which the prompt cache serves
+/// (JONAH-202).
+pub fn stands_alone(prompt: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)\b(we|we'(?:re|ve|ll|d)|our|ours|us|let's|here|this (?:project|repo|repository|code|codebase|branch|file|function|module|change|test|bug)|continue|next|left off|status|progress|resume|pick (?:it )?up|carry on|keep going|go on|so far|todo|tasks?|plans?|should|shall|ought|better|prefer\w*|recommend\w*|best|approach\w*|design\w*|implement\w*|choose|pick|decide\w*|agree\w*|options?|alternatives?|how (?:do|can|would|could|might) (?:i|you|one)|how to|ways? to)\b|`|\w[_/]\w|::|\b[a-z]\w*\.[a-z]{1,4}\b",
+        )
+        .unwrap()
+    });
+    let p = prompt.trim();
+    p.contains('?') && p.split_whitespace().count() <= 60 && !crate::capture::past_reference(p) && !re.is_match(p)
 }
 
 /// The prompts, answers and episodes among `hits` of turns whose notes a
@@ -1065,6 +1117,8 @@ pub fn briefing_parts(store: &Store, current_session: &str, max_chars: usize, no
     }
     let none = Filter::default();
     let prev = Filter { exclude_window: Some((current_session.to_string(), 0)), ..Default::default() };
+    // Where a session left off is its work, not a question asked aside.
+    let prev_work = Filter { first_party: true, ..prev.clone() };
     let mut s = String::from(
         "ChloeCtx memory for this project. Requirements, decisions and conventions agreed in earlier conversations are often not in the code: \
           before a design decision, and whenever a task refers to earlier work, search memory (memory_ask answers a question about earlier work from notes, replies and messages at once; \
@@ -1183,7 +1237,7 @@ pub fn briefing_parts(store: &Store, current_session: &str, max_chars: usize, no
     let budget = tail.len() + BRIEF_TAIL;
     let checkpoint: Vec<Record> = store.latest(&[Kind::Todo], 10, &none)?.into_iter().filter(|r| r.tag != "planned" && r.tag != "done").take(1).collect();
     section("Open tasks at the last checkpoint:", checkpoint, 500, 1, budget, &mut tail, &mut tail_ids, &mut no_stale, &mut no_unshown);
-    section("Where the most recent earlier session left off:", store.latest(&[Kind::Episode], 3, &prev)?, 300, 3, budget, &mut tail, &mut tail_ids, &mut no_stale, &mut no_unshown);
+    section("Where the most recent earlier session left off:", store.latest(&[Kind::Episode], 3, &prev_work)?, 300, 3, budget, &mut tail, &mut tail_ids, &mut no_stale, &mut no_unshown);
     let tail = tail.trim_start_matches('\n').to_string();
     Ok(Briefing { text: s, ids, tail, tail_ids })
 }
@@ -1438,6 +1492,70 @@ mod tests {
         let out = retrieve(&store, &Inputs::recall("What is the public API rate limit per key?", "now", &Filter::default(), &HashSet::new(), false, &RankParams::default(), &PackParams::default(), &strong, &off)).unwrap();
         assert_eq!(out.decision, Some(Decision::Inject));
         assert!(out.items.iter().any(|(r, _)| r.session == "s1" && r.kind == Kind::Prompt), "{:?}", out.items);
+    }
+
+    /// JONAH-202: a question asked again in later sessions matches the
+    /// earlier copies, their answers ("51", whose context is the question)
+    /// and their episode cards. They stay candidates, but they are no
+    /// evidence that earlier work bears on it, so the gate reads what the
+    /// rest of the store says.
+    #[test]
+    fn a_question_asked_again_is_not_evidence() {
+        use crate::record::Draft;
+        let dir = tempfile::tempdir().unwrap();
+        let store = rate_limit_store(dir.path());
+        let q = "What is 17 times 3? Reply with just the number.";
+        let (_, before) = search(&store, q, &Filter::default(), &RankParams::default()).unwrap();
+        for (i, sid) in ["r1", "r2", "r3"].iter().enumerate() {
+            let d = vec![
+                Draft::new(Kind::Prompt, q),
+                Draft::new(Kind::Answer, "51").ctx(format!("Turn 1 request: {q}")),
+                Draft::new(Kind::Episode, format!("Turn 1. User asked: {q}\nOutcome: 51")),
+            ];
+            store.append(sid, 1, 400 + i as i64, d).unwrap();
+        }
+        let (hits, after) = search(&store, q, &Filter::default(), &RankParams::default()).unwrap();
+        assert!(hits.iter().any(|h| h.record.kind == Kind::Answer && h.record.text == "51"), "the earlier answers are still candidates");
+        assert!(!hits.iter().any(|h| h.record.kind == Kind::Prompt && h.record.text == q), "the copies of the question are not");
+        assert!(after.max_cov <= before.max_cov + 0.05, "coverage {} -> {}", before.max_cov, after.max_cov);
+        assert!(after.max_cos <= before.max_cos + 0.05, "cosine {} -> {}", before.max_cos, after.max_cos);
+        let g = Gate::default();
+        assert!(g.score(&after) <= g.score(&before) + 0.3, "gate {} -> {}", g.score(&before), g.score(&after));
+        assert_eq!(g.decide(&after), Decision::Skip, "{after:?}");
+        // What marks a record as of such a turn.
+        let terms: HashSet<String> = chloedb::text::analyze_query(q).into_iter().collect();
+        let tool = Record::from_draft(Draft::new(Kind::ToolCall, "$ python3 -c 'print(17*3)'").ctx(format!("By: user\nTurn 2 request: {q}")), "s", 2, 1, 0);
+        assert!(of_same_question(&tool, &terms), "{tool:?}");
+        let other = Record::from_draft(Draft::new(Kind::Answer, "14").ctx("Turn 1 request: What is 5 plus 9?"), "s", 1, 2, 0);
+        assert!(!of_same_question(&other, &terms));
+    }
+
+    /// The questions ChloeCtx adds nothing to when nothing was recalled for
+    /// them, and the prompts it still gives the session's tail.
+    #[test]
+    fn questions_that_stand_alone() {
+        for p in ["What is 17 times 3? Reply with just the number.", "What is 5 plus 9?", "How many days are there in a leap year?", "Is 1001 a prime number?"] {
+            assert!(stands_alone(p), "{p}");
+        }
+        for p in [
+            "continue",
+            "Fix the failing test.",
+            "What did we decide about the cache?",
+            "What's next?",
+            "Where did we leave off?",
+            "How do I run the tests here?",
+            "What does parse_args do?",
+            "Why does tado.py fail on an empty database?",
+            "Can you check `stats()` again?",
+            "What should our release process look like?",
+            "Is this function thread safe?",
+            "How should payment retries back off?",
+            "Which is better for a small CLI, SQLite or JSON files?",
+            "How do I parse an ISO 8601 date in Python?",
+            "What are the options for caching an HTTP response?",
+        ] {
+            assert!(!stands_alone(p), "{p}");
+        }
     }
 
     #[test]

@@ -29,6 +29,17 @@
 //! et al., "Large-scale validation and analysis of interleaved search
 //! evaluation", TOIS 2012), since each request sets the two side by side
 //! for the same user and query.
+//!
+//! A logged query may also explore ([`Log::explore`]): show its top rows
+//! in an order a logging policy draws ([`crate::explore`]), seeded by the
+//! request's id, and log for each row the chance it was put where it was
+//! (`propensity`) and the chance of the rows down to it in their order
+//! (`prefix_propensity`), with the policy on the request's first row.
+//! Those are what an off-policy estimate of a ranking that never served
+//! divides by. A log table without the columns ([`keeps_propensity`])
+//! refuses exploration and says which `ALTER TABLE` adds them
+//! ([`propensity_sql`]). Each request's first row also keeps how long the
+//! query took (`took_ms`), where the table has the column.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -37,6 +48,7 @@ use serde_json::{json, Map, Value as Json};
 use sqlparser::ast as sql;
 
 use crate::error::{Error, Result};
+use crate::explore::{Policy, Rng};
 use crate::query::exec::ResultSet;
 use crate::query::Params;
 use crate::schema::{FieldType, Logical, Retain, Schema};
@@ -70,8 +82,30 @@ pub fn create_sql(table: &str) -> Result<String> {
     Ok(format!(
         "CREATE TABLE IF NOT EXISTS {table} (id KEYWORD PRIMARY KEY, request KEYWORD NOT NULL, ts TIMESTAMP NOT NULL, context KEYWORD, \
          row_key KEYWORD NOT NULL, position INT NOT NULL, shown BOOL NOT NULL, score FLOAT, features KEYWORD OPTIONS(indexed = false), \
-         variant KEYWORD, label FLOAT, query KEYWORD OPTIONS(indexed = false)) OPTIONS(cluster_by = 'context')"
+         variant KEYWORD, label FLOAT, query KEYWORD OPTIONS(indexed = false), propensity FLOAT, prefix_propensity FLOAT, \
+         policy KEYWORD OPTIONS(indexed = false), took_ms FLOAT) OPTIONS(cluster_by = 'context')"
     ))
+}
+
+/// The statement that adds the exploration columns ([`keeps_propensity`])
+/// and `took_ms` to log table `table` made before they were added.
+pub fn propensity_sql(table: &str) -> String {
+    format!(
+        "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS propensity FLOAT, ADD COLUMN IF NOT EXISTS prefix_propensity FLOAT, \
+         ADD COLUMN IF NOT EXISTS policy KEYWORD OPTIONS(indexed = false), ADD COLUMN IF NOT EXISTS took_ms FLOAT"
+    )
+}
+
+/// Whether log table `schema` keeps exploration's numbers: `propensity`
+/// and `prefix_propensity` (FLOAT) and `policy` (KEYWORD), stored.
+pub fn keeps_propensity(schema: &Schema) -> bool {
+    let float = |n: &str| schema.field(n).is_some_and(|f| f.ty == FieldType::Float && !f.multi && f.stored);
+    float("propensity") && float("prefix_propensity") && schema.field("policy").is_some_and(|f| f.ty == FieldType::Keyword && !f.multi && f.stored)
+}
+
+/// Whether log table `schema` keeps each request's time (`took_ms`, FLOAT).
+pub fn keeps_took(schema: &Schema) -> bool {
+    schema.field("took_ms").is_some_and(|f| f.ty == FieldType::Float && !f.multi && f.stored)
 }
 
 /// The types of a log table's columns.
@@ -143,11 +177,14 @@ pub struct Log {
     pub ts: Option<i64>,
     /// A second ranking to interleave with the query's.
     pub interleave: Option<Interleave>,
+    /// A logging policy that draws the order the top rows are shown in
+    /// ([`crate::explore`]), each row logged with its propensity.
+    pub explore: Option<Policy>,
 }
 
 impl Default for Log {
     fn default() -> Self {
-        Log { table: TABLE.into(), request: None, context: None, variant: None, candidates: None, ts: None, interleave: None }
+        Log { table: TABLE.into(), request: None, context: None, variant: None, candidates: None, ts: None, interleave: None, explore: None }
     }
 }
 
@@ -165,14 +202,15 @@ pub struct Interleave {
 impl Log {
     /// A log from JSON (chloedb-server's `"log"`): `true`, or an object of
     /// `table`, `request`, `context`, `variant`, `candidates`, `ts` (ISO
-    /// 8601 text, or microseconds) and `interleave` (an object of `sql` and
-    /// `variants`, two names, `["a", "b"]` when left out).
+    /// 8601 text, or microseconds), `interleave` (an object of `sql` and
+    /// `variants`, two names, `["a", "b"]` when left out) and `explore` (a
+    /// policy, [`Policy::from_json`]).
     pub fn from_json(j: &Json) -> Result<Log> {
         let mut log = Log::default();
         let m = match j {
             Json::Bool(true) => return Ok(log),
             Json::Object(m) => m,
-            _ => return Err(bad("log is true or an object of table, request, context, variant, candidates, ts and interleave")),
+            _ => return Err(bad("log is true or an object of table, request, context, variant, candidates, ts, interleave and explore")),
         };
         let text = |k: &str| -> Result<Option<String>> {
             match m.get(k) {
@@ -183,8 +221,8 @@ impl Log {
             }
         };
         for k in m.keys() {
-            if !["table", "request", "context", "variant", "candidates", "ts", "interleave"].contains(&k.as_str()) {
-                return Err(bad(format!("log has no option {k:?}: table, request, context, variant, candidates, ts, interleave")));
+            if !["table", "request", "context", "variant", "candidates", "ts", "interleave", "explore"].contains(&k.as_str()) {
+                return Err(bad(format!("log has no option {k:?}: table, request, context, variant, candidates, ts, interleave, explore")));
             }
         }
         if let Some(t) = text("table")? {
@@ -219,6 +257,13 @@ impl Log {
             }
             Some(v) => return Err(bad(format!("log interleave is an object of sql and variants, not {v}"))),
         };
+        log.explore = match m.get("explore") {
+            None | Some(Json::Null) => None,
+            Some(e) => Some(Policy::from_json(e)?),
+        };
+        if log.explore.is_some() && log.interleave.is_some() {
+            return Err(bad("a logged query explores or interleaves, not both: interleaving draws its own list"));
+        }
         if let Some(i) = &log.interleave {
             if i.variants[0].is_empty() || i.variants[1].is_empty() || i.variants[0] == i.variants[1] {
                 return Err(bad("an interleaved query's two rankings have two different names"));
@@ -281,6 +326,36 @@ pub fn keep_query(served: &mut Served, p: &Prepared, schema: &Schema) {
     }
 }
 
+/// Refuses `log` on log table `schema` when it explores and the table has
+/// no columns for the propensities ([`keeps_propensity`]), naming the
+/// statement that adds them; checked before the query runs.
+pub fn fits(log: &Log, schema: &Schema) -> Result<()> {
+    if log.explore.is_some() && !keeps_propensity(schema) {
+        return Err(bad(format!("{} has no columns for exploration's propensities (it was made before them): add them with {}", schema.table, propensity_sql(&schema.table))));
+    }
+    Ok(())
+}
+
+/// Fits the rows `served` logs to log table `schema` before they are
+/// written: `p`'s query on the first row where the table keeps it
+/// ([`keep_query`]), the propensities and the policy where it keeps them
+/// ([`keeps_propensity`]), and the query's time, `took_ms`, on the first
+/// row where it keeps that ([`keeps_took`]).
+pub fn keep(served: &mut Served, p: &Prepared, log: &Log, schema: &Schema, took_ms: f64) -> Result<()> {
+    fits(log, schema)?;
+    keep_query(served, p, schema);
+    let (prop, took) = (keeps_propensity(schema), keeps_took(schema));
+    for (i, e) in served.entries.iter_mut().enumerate() {
+        if !prop {
+            e.propensity = None;
+            e.prefix_propensity = None;
+            e.policy = None;
+        }
+        e.took_ms = (took && i == 0).then_some(took_ms);
+    }
+    Ok(())
+}
+
 /// `sql_text` as a logged query runs it: one SELECT ranked by an ORDER BY
 /// (rerank phases included), with its ranking's values added to its
 /// columns ([`crate::query::sql::with_features`]). Each ranking of an
@@ -292,7 +367,16 @@ pub fn prepare(sql_text: &str, params: &Params, log: &Log) -> Result<Prepared> {
     if log.interleave.is_some() && (limit.is_none() || offset > 0) {
         return Err(bad("each ranking of an interleaved query has a LIMIT, the rows it shows, and no OFFSET"));
     }
-    if let Some(c) = log.candidates {
+    if log.explore.is_some() && (limit.is_none() || offset > 0) {
+        return Err(bad("an exploring query has a LIMIT, the rows it shows, and no OFFSET: it draws the order of a first page"));
+    }
+    // The rows to fetch: the candidates logged, and the rows exploration
+    // draws from, when more than the LIMIT.
+    let fetch = match (log.candidates, log.explore.as_ref().map(Policy::top)) {
+        (None, None) | (None, Some(0)) => None,
+        (c, t) => Some(c.unwrap_or(0).max(t.unwrap_or(0))),
+    };
+    if let Some(c) = fetch {
         let l = limit.ok_or_else(|| bad("candidates are rows past a LIMIT: the query needs one"))?;
         if c > l {
             let offset = match q.limit_clause.take() {
@@ -325,6 +409,15 @@ pub struct Entry {
     /// The request's query ([`query_json`]), on its first row only, where
     /// the log table keeps it ([`keep_query`]).
     pub query: Option<String>,
+    /// The chance the row is at its position, where the table keeps it
+    /// ([`keeps_propensity`]): 1 for a query that does not explore.
+    pub propensity: Option<f64>,
+    /// The chance of the rows shown down to this one, in their order.
+    pub prefix_propensity: Option<f64>,
+    /// On the request's first row, the logging policy as JSON.
+    pub policy: Option<String>,
+    /// On the request's first row, how long the query took.
+    pub took_ms: Option<f64>,
 }
 
 impl Entry {
@@ -337,6 +430,18 @@ impl Entry {
         });
         if let Some(q) = &self.query {
             j["query"] = json!(q);
+        }
+        if let Some(p) = self.propensity {
+            j["propensity"] = json!(p);
+        }
+        if let Some(p) = self.prefix_propensity {
+            j["prefix_propensity"] = json!(p);
+        }
+        if let Some(p) = &self.policy {
+            j["policy"] = json!(p);
+        }
+        if let Some(t) = self.took_ms {
+            j["took_ms"] = json!(t);
         }
         j
     }
@@ -366,6 +471,17 @@ pub struct Logged {
     pub seq_no: Option<u64>,
     /// An interleaved query's teams ([`Served::teams`]); empty otherwise.
     pub teams: Vec<Option<String>>,
+    /// An exploring query's: per row answered, its propensity; empty
+    /// otherwise.
+    pub propensities: Vec<f64>,
+}
+
+/// The propensities of the rows `served` shows, when `log` explores.
+pub fn shown_propensities(served: &Served, log: &Log) -> Vec<f64> {
+    match log.explore {
+        None => Vec::new(),
+        Some(_) => served.entries.iter().filter(|e| e.shown).filter_map(|e| e.propensity).collect(),
+    }
 }
 
 /// Splits the answer of a [`prepare`]d query into the answer the query
@@ -410,7 +526,43 @@ pub fn serve(mut rs: ResultSet, p: &Prepared, log: &Log) -> Result<Served> {
             features: Json::Object(features).to_string(),
             variant: log.variant.clone(),
             query: None,
+            propensity: (i < shown).then_some(1.0),
+            prefix_propensity: (i < shown).then_some(1.0),
+            policy: None,
+            took_ms: None,
         });
+    }
+    let policy = log.explore.clone().unwrap_or(Policy::None);
+    if let Some(e) = entries.first_mut() {
+        e.policy = Some(policy.to_json().to_string());
+    }
+    if log.explore.is_some() {
+        let scores: Vec<Option<f64>> = entries.iter().map(|e| e.score).collect();
+        let d = policy.draw(&scores, &mut Rng::of(&request))?;
+        let policy_json = entries.first().and_then(|e| e.policy.clone());
+        let old = std::mem::take(&mut entries);
+        let (rows, keys, rscores) = (std::mem::take(&mut rs.rows), std::mem::take(&mut rs.keys), std::mem::take(&mut rs.scores));
+        let mut rows: Vec<Option<_>> = rows.into_iter().map(Some).collect();
+        let mut keys: Vec<Option<Value>> = keys.into_iter().map(Some).collect();
+        let mut rscores: Vec<Option<_>> = rscores.into_iter().map(Some).collect();
+        let mut old: Vec<Option<Entry>> = old.into_iter().map(Some).collect();
+        for (k, &i) in d.order.iter().enumerate() {
+            let mut e = old[i].take().expect("a draw is a permutation");
+            e.position = k;
+            e.id = format!("{request}#{k}");
+            e.shown = k < shown;
+            e.propensity = e.shown.then_some(d.propensity[k]);
+            e.prefix_propensity = e.shown.then_some(d.prefix[k]);
+            e.policy = (k == 0).then(|| policy_json.clone()).flatten();
+            entries.push(e);
+            rs.rows.push(rows[i].take().expect("a draw is a permutation"));
+            if let Some(x) = keys.get_mut(i).and_then(Option::take) {
+                rs.keys.push(x);
+            }
+            if let Some(x) = rscores.get_mut(i).and_then(Option::take) {
+                rs.scores.push(x);
+            }
+        }
     }
     let n = rs.rows.len().min(shown);
     rs.rows.truncate(n);
@@ -474,14 +626,8 @@ pub fn team_draft(a: &[String], b: &[String], k: usize, coin: &mut dyn FnMut() -
 /// A coin from a request's id (FNV-1a, then splitmix64): the same draft
 /// for the same request, a fair one across requests.
 fn coin_of(request: &str) -> impl FnMut() -> bool {
-    let mut x = request.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
-    move || {
-        x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = x;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        (z ^ (z >> 31)) & 1 == 1
-    }
+    let mut rng = Rng::of(request);
+    move || rng.next_u64() & 1 == 1
 }
 
 /// What an interleaved query serves: the rows of the two rankings `a` and
@@ -517,6 +663,10 @@ pub fn interleave(a: Served, b: Served, p: &Prepared, il: &Interleave) -> Result
         e.position = position;
         e.shown = true;
         e.variant = team.clone();
+        // Team draft's coin is not a ranking policy's draw: no propensity.
+        e.propensity = None;
+        e.prefix_propensity = None;
+        e.policy = (position == 0).then(|| json!({"policy": "interleave", "variants": il.variants}).to_string());
         entries.push(e);
         teams.push(team);
     }
@@ -738,6 +888,11 @@ struct Impression {
     features: Json,
     variant: Option<String>,
     label: Option<f64>,
+    /// Where the log keeps them: the row's propensity, its prefix's, and
+    /// on a request's first row its policy.
+    propensity: Option<f64>,
+    prefix_propensity: Option<f64>,
+    policy: Option<Json>,
 }
 
 /// An event of a context.
@@ -786,7 +941,11 @@ pub fn export(run: &mut dyn FnMut(&str, &Params) -> Result<ResultSet>, tables: &
         range.push_str(" AND ts < :until");
         params = params.set("until", Value::Timestamp(u));
     }
-    let columns = "id, request, ts, context, row_key, position, shown, score, features, variant, label";
+    let explored = keeps_propensity(log);
+    let columns = match explored {
+        true => "id, request, ts, context, row_key, position, shown, score, features, variant, label, propensity, prefix_propensity, policy",
+        false => "id, request, ts, context, row_key, position, shown, score, features, variant, label",
+    };
     let where_range = range.strip_prefix(" AND ").map(|r| format!(" WHERE {r}")).unwrap_or_default();
     let groups = run(&format!("SELECT context, COUNT(*) FROM {t}{where_range} GROUP BY context"), &params)?;
     let mut contexts: Vec<String> = groups.rows.iter().filter_map(|r| match &r[0] {
@@ -904,6 +1063,12 @@ fn impressions(rs: &ResultSet) -> Result<Vec<Impression>> {
                 features,
                 variant: s(9),
                 label: num(10),
+                propensity: r.get(11).and_then(|_| num(11)),
+                prefix_propensity: r.get(12).and_then(|_| num(12)),
+                policy: match r.get(13) {
+                    Some(Value::Str(p)) => serde_json::from_str(p).ok(),
+                    _ => None,
+                },
             })
         })
         .collect()
@@ -924,6 +1089,15 @@ fn record(i: &Impression, evs: &[Event], x: &Export) -> Json {
     m.insert("score".into(), json!(i.score));
     m.insert("variant".into(), json!(i.variant));
     m.insert("features".into(), i.features.clone());
+    if let Some(p) = i.propensity {
+        m.insert("propensity".into(), json!(p));
+    }
+    if let Some(p) = i.prefix_propensity {
+        m.insert("prefix_propensity".into(), json!(p));
+    }
+    if let Some(p) = &i.policy {
+        m.insert("policy".into(), p.clone());
+    }
     // The events before the row's time, and those up to the window after.
     let before = evs.partition_point(|e| e.time < i.ts);
     let label = match (i.label, x.window) {

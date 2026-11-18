@@ -921,18 +921,7 @@ fn match_one(cx: &mut Ctx, field: &str, text: &Json, opts: &Json, mk: MatchKind)
     let fuzzy = opts.get("fuzziness").is_some_and(|f| !f.is_null() && f != "0" && f != 0);
     let tilde = |w: &str| if fuzzy { format!("{w}~") } else { w.to_string() };
     let q = match mk {
-        MatchKind::Words => {
-            let op_and = opts.get("operator").and_then(Json::as_str).is_some_and(|o| o.eq_ignore_ascii_case("and"));
-            let items: Vec<String> = ws.iter().map(|w| tilde(w)).collect();
-            if op_and {
-                items.join(" ")
-            } else if let Some(m) = opts.get("minimum_should_match") {
-                let n = min_should(m, items.len())?.max(1);
-                if n >= items.len() { items.join(" ") } else if n == 1 { items.join(" OR ") } else { format!("({})@{n}", items.join(" ")) }
-            } else {
-                items.join(" OR ")
-            }
-        }
+        MatchKind::Words => joined(ws.iter().map(|w| tilde(w)).collect(), opts)?,
         MatchKind::Phrase => {
             if all.len() == 1 { ws[0].clone() } else { format!("\"{}\"", all.join(" ")) }
         }
@@ -945,11 +934,15 @@ fn match_one(cx: &mut Ctx, field: &str, text: &Json, opts: &Json, mk: MatchKind)
                 _ => format!("\"{} {last}*\"", head.join(" ")),
             }
         }
+        // Each word a term, the last a prefix, joined as `match` joins its
+        // words: `operator` and `minimum_should_match` count the prefix as
+        // one of them, and `fuzziness` reaches the words but not the
+        // prefix, as in OpenSearch.
         MatchKind::BoolPrefix => {
             let last = all.last().cloned().unwrap_or_default();
-            let mut items: Vec<String> = kept(&all[..all.len() - 1], a);
+            let mut items: Vec<String> = kept(&all[..all.len() - 1], a).iter().map(|w| tilde(w)).collect();
             items.push(format!("{last}*"));
-            items.join(" OR ")
+            joined(items, opts)?
         }
     };
     // A prefix's own word is not a term: the words before it score, and a
@@ -960,6 +953,27 @@ fn match_one(cx: &mut Ctx, field: &str, text: &Json, opts: &Json, mk: MatchKind)
     };
     let score = if scored.is_empty() { Score::Const(b) } else { Score::Expr(cx.bm25(&c, &scored, fuzzy)).scale(b) };
     Ok(Compiled { pred: Some(format!("MATCH({}, {})", ident(&c), lit(&q))), score })
+}
+
+/// The items of a `match` or `match_bool_prefix` as one `MATCH` query:
+/// all of them with `operator: "and"`, as many as `minimum_should_match`
+/// asks for, else any of them.
+fn joined(items: Vec<String>, opts: &Json) -> Result<String, OsError> {
+    let op_and = opts.get("operator").and_then(Json::as_str).is_some_and(|o| o.eq_ignore_ascii_case("and"));
+    Ok(if op_and {
+        items.join(" ")
+    } else if let Some(m) = opts.get("minimum_should_match") {
+        let n = min_should(m, items.len())?.max(1);
+        if n >= items.len() {
+            items.join(" ")
+        } else if n == 1 {
+            items.join(" OR ")
+        } else {
+            format!("({})@{n}", items.join(" "))
+        }
+    } else {
+        items.join(" OR ")
+    })
 }
 
 fn compile_match(body: &Json, cx: &mut Ctx, mk: MatchKind) -> Result<Compiled, OsError> {
@@ -1644,6 +1658,26 @@ mod tests {
         let (p, s) = sql(json!({"multi_match": {"query": "mug", "fields": ["title^2", "body"]}}));
         assert_eq!(p.unwrap(), r#"(MATCH("title", 'mug')) OR (MATCH("body", 'mug'))"#);
         assert!(matches!(s, Score::Expr(e) if e.starts_with("greatest(2.0 * (bm25(")));
+    }
+
+    /// DEV-202: `match_bool_prefix` and `multi_match` of type `bool_prefix`
+    /// join their words as `match` does: every one with `operator: "and"`,
+    /// `minimum_should_match` of them, else any; `fuzziness` reaches the
+    /// words, not the prefix.
+    #[test]
+    fn bool_prefix_takes_operator_and_minimum_should_match() {
+        let (p, _) = sql(json!({"match_bool_prefix": {"title": "wireless head"}}));
+        assert_eq!(p.unwrap(), r#"MATCH("title", 'wireless OR head*')"#);
+        let (p, _) = sql(json!({"match_bool_prefix": {"title": {"query": "wireless head", "operator": "and"}}}));
+        assert_eq!(p.unwrap(), r#"MATCH("title", 'wireless head*')"#);
+        let (p, _) = sql(json!({"match_bool_prefix": {"title": {"query": "red wireless head", "minimum_should_match": 2}}}));
+        assert_eq!(p.unwrap(), r#"MATCH("title", '(red wireless head*)@2')"#);
+        let (p, _) = sql(json!({"match_bool_prefix": {"title": {"query": "red wireless head", "minimum_should_match": "100%"}}}));
+        assert_eq!(p.unwrap(), r#"MATCH("title", 'red wireless head*')"#);
+        let (p, _) = sql(json!({"match_bool_prefix": {"title": {"query": "wirless head", "operator": "and", "fuzziness": "AUTO"}}}));
+        assert_eq!(p.unwrap(), r#"MATCH("title", 'wirless~ head*')"#);
+        let (p, _) = sql(json!({"multi_match": {"query": "wireless head", "type": "bool_prefix", "operator": "and", "fields": ["title", "body"]}}));
+        assert_eq!(p.unwrap(), r#"(MATCH("title", 'wireless head*')) OR (MATCH("body", 'wireless head*'))"#);
     }
 
     #[test]

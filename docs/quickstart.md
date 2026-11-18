@@ -8,7 +8,7 @@ You need macOS 11 or later (Apple silicon or Intel), or Linux on x86-64 or aarch
 
 Pick one. Each gives you a `chloedb-server` program, prebuilt (a download of about 50 MB), in under a minute.
 
-**The install script** puts it in `~/.local/bin` (it says what to add to your `PATH` if that folder is not on it yet). It checks the download against the release's SHA-256 and changes nothing else. [Read it](install.sh) first if you like.
+**The install script** puts it in `~/.local/bin` (it says what to add to your `PATH` if that folder is not on it yet). It checks the download against the release's SHA-256 and, where [GitHub's CLI](https://cli.github.com) (`gh`) is installed, its build provenance (releases from 0.3.9: that this repository's release workflow built it), and changes nothing else. [Read it](install.sh) first if you like.
 
 ```sh
 # install
@@ -21,7 +21,7 @@ It asks GitHub's API (`api.github.com`) which release is the newest, and when a 
 chloedb install: could not tell which chloedb-server release is the newest:
   https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
   ...
-Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.7 was the newest when this script was written):
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.8 was the newest when this script was written):
   curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=<version> sh
 ```
 
@@ -29,7 +29,7 @@ A copy of the script from before 18 November 2026 asked GitHub's API alone, and 
 
 ```sh
 # install
-curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.7 sh
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.8 sh
 ```
 
 **pipx, uv or pip** <!-- since 0.3.7 -->: the same server, from [PyPI](https://pypi.org/project/chloedb-server/), which asks GitHub nothing, on the same Macs and on Linux with glibc 2.34 or later. `pipx install` and `uv tool install` put `chloedb-server` on your `PATH`; `uvx chloedb-server` runs it without installing it.
@@ -55,10 +55,12 @@ pip install chloedb-server       # or: pip install "chloedb[server]"
 
 ```sh
 # install
-v=0.3.7 p=macos-arm64
+v=0.3.8 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz && mkdir -p ~/.local/bin && mv chloedb-server-$p/chloedb-server ~/.local/bin/
 ```
+
+From 0.3.9 each archive also has GitHub's build provenance and an SBOM of what is compiled into it: [checking what you download](../SECURITY.md#checking-what-you-download) shows the `gh attestation verify` command that checks them.
 
 Check that it runs:
 
@@ -218,7 +220,7 @@ The image `ghcr.io/chloetech-ai/chloedb-server` (Linux, x86-64 and arm64) keeps 
 ```sh
 # install
 docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
-  ghcr.io/chloetech-ai/chloedb-server:0.3.7
+  ghcr.io/chloetech-ai/chloedb-server:0.3.8
 ```
 
 Then every request sends the token, and the console asks for it once:

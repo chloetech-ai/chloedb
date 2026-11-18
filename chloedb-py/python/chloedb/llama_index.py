@@ -14,6 +14,14 @@ vectors. A query ranks by vector (the default mode), by words
         documents, storage_context=StorageContext.from_defaults(vector_store=store))
     index.as_query_engine(vector_store_query_mode="hybrid").query("...")
 
+A hybrid query fuses by reciprocal rank (k 60, equal weights) unless the
+store's `fusion=` or the retriever's says otherwise
+(`vector_store_kwargs={"fusion": {"rrf": {"k": 10}}}`): `{"rrf": {"k": 10}}`,
+or a weighted sum of scores on one scale, `{"tmm": {"text": 0.1}}`,
+`"minmax"` or `"zscore"`. A query's `alpha` (LlamaIndex's weight of the
+vectors, 1 for vectors alone) is a tmm fusion of that weight, when no
+fusion is given.
+
 Nodes carry the vectors LlamaIndex's embedding model made. With
 `model="potion-retrieval-32M"` the table's own model embeds the nodes
 that come without one, and every query's text: pass
@@ -46,7 +54,7 @@ except ImportError as e:  # pragma: no cover - the extra is not installed
     raise ImportError('chloedb.llama_index needs llama-index-core: pip install "chloedb[llama-index]"') from e
 
 from ._adapters import Params, conditions, open_store, path
-from ._vectors import VectorTable
+from ._vectors import VectorTable, fusion_of
 
 __all__ = ["ChloeDBVectorStore", "ChloeDBEmbedding"]
 
@@ -120,6 +128,10 @@ class ChloeDBVectorStore(BasePydanticVectorStore):
             write (else it is made then, by the first vector's length).
         distance: "cosine" (the default: vectors are made unit length) or
             "dot" (as the model writes them).
+        fusion: how a hybrid query fuses its rankings: None (reciprocal
+            rank, k 60), {"rrf": {"k": 10}}, {"tmm": {"text": 0.1}} (a
+            weighted sum of theoretical min-max scores, words 0.1),
+            "minmax" or "zscore".
         models: where a database in this process finds its models.
         token: a server's token (or $CHLOEDB_TOKEN).
     """
@@ -128,12 +140,14 @@ class ChloeDBVectorStore(BasePydanticVectorStore):
     flat_metadata: bool = False
     is_embedding_query: bool = True
     table: str = "llama_index"
+    fusion: Any = None
 
     _store: Any = PrivateAttr()
     _vt: VectorTable = PrivateAttr()
 
-    def __init__(self, db: Any = "llama_index.chloedb", *, table: str = "llama_index", model: Optional[str] = None, dim: Optional[int] = None, distance: str = "cosine", models: Optional[str | os.PathLike] = None, token: Optional[str] = None, **kwargs: Any):
-        super().__init__(table=table, **kwargs)
+    def __init__(self, db: Any = "llama_index.chloedb", *, table: str = "llama_index", model: Optional[str] = None, dim: Optional[int] = None, distance: str = "cosine", fusion: Any = None, models: Optional[str | os.PathLike] = None, token: Optional[str] = None, **kwargs: Any):
+        fusion_of(fusion)
+        super().__init__(table=table, fusion=fusion, **kwargs)
         self._store = open_store(db, models=models, token=token)
         extra = [{"name": "ref_doc_id", "type": "keyword"}, {"name": "node", "type": "text", "indexed": False}]
         self._vt = VectorTable(self._store, table, dim=dim, model=model, distance=distance, extra=extra)
@@ -256,7 +270,15 @@ class ChloeDBVectorStore(BasePydanticVectorStore):
             k = query.hybrid_top_k
         elif how == "text" and query.sparse_top_k:
             k = query.sparse_top_k
-        found = self._vt.search(k, mode=how, vector=vector, text=query.query_str, cond=cond, params=p.values)
+        fusion = kwargs.get("fusion")
+        if fusion is None:
+            fusion = self.fusion
+        if fusion is None and how == "hybrid" and query.alpha is not None:
+            alpha = float(query.alpha)
+            if not 0.0 <= alpha <= 1.0:
+                raise ValueError(f"alpha, the vectors' weight, is from 0 to 1, not {query.alpha!r}")
+            fusion = {"tmm": {"vector": alpha, "text": 1.0 - alpha}}
+        found = self._vt.search(k, mode=how, vector=vector, text=query.query_str, cond=cond, params=p.values, fusion=fusion)
         return VectorStoreQueryResult(
             nodes=[self._node(r) for r, _ in found],
             similarities=[s for _, s in found],
