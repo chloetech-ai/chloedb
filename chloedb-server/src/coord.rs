@@ -2023,8 +2023,9 @@ impl Coordinator {
 
     /// Counts a query: a read at each value its filter pins its table's
     /// placing field to (as [`Self::pinned_shards`] routes it, however
-    /// many shards those are on), or one fan-out when it pins none, pins
-    /// more than [`MAX_ROUTED`], or ranks by BM25, which asks every shard.
+    /// many shards those are on, a ranking by BM25 too: its statistics
+    /// are every shard's, but only those shards run it), or one fan-out
+    /// when it pins none, or pins more than [`MAX_ROUTED`].
     fn heat_query(&self, schema: &Schema, select: &Select) {
         let t = self.topo();
         if t.slots.is_none() {
@@ -2034,7 +2035,7 @@ impl Coordinator {
             .shard_by_field()
             .or(schema.primary_key)
             .and_then(|f| pinned_values(&select.filter, f))
-            .filter(|v| v.len() <= MAX_ROUTED && !chloedb::cluster::scores_bm25(select));
+            .filter(|v| v.len() <= MAX_ROUTED);
         match pinned {
             Some(values) => values.iter().for_each(|v| self.heat_key(&t, &schema.table, v, false)),
             None => self.heat_fan_out(&t),
@@ -2690,8 +2691,10 @@ impl Coordinator {
         let ranked_text = chloedb::cluster::scores_bm25(select);
         // A query that pins its table's key (or shard_by field) to values
         // asks only the shards those are on, as a write by key does: a
-        // read by key asks one. BM25 scores need every shard's statistics.
-        let asked = if ranked_text || n == 1 { None } else { self.pinned_shards(t, schema, select) };
+        // read by key asks one. BM25 scores need every shard's statistics,
+        // which the statistics are still of (summed below, kept or from a
+        // round), so that a score is the one every shard asked gives.
+        let asked = if n == 1 { None } else { self.pinned_shards(t, schema, select) };
         let ask = |i: usize| asked.as_ref().is_none_or(|a| a.contains(&i));
         // A cross-encoder scores here, over the text of its phase's rows,
         // which the fetch round reads.
@@ -2764,6 +2767,10 @@ impl Coordinator {
             None => None,
         };
         let stats_json = stats.map(|s| serde_json::to_vec(&s).unwrap_or_default()).unwrap_or_default();
+        // The statistics round's leases of the shards not asked end now.
+        if let Some(a) = &asked {
+            self.release(t, (0..n).filter(|i| !a.contains(i)).filter_map(|i| leased[i].take().map(|(r, lease)| (i, r, lease))));
+        }
         let leased = &leased;
         let hold = ids.is_some();
         let sent = &Sent::default();

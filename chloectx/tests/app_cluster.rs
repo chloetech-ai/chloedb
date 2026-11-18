@@ -369,6 +369,30 @@ fn app_in_a_cluster() {
     assert_eq!(http.call("POST", &format!("{app_url}/v1/spaces"), Some(&json!({"name": "other"})), &[("authorization", &auth), ("x-chloedb-tables", "ctx_*=admin")]).0, 403);
     let (_, mine) = http.call("GET", &format!("{app_url}/v1/spaces"), None, &[("authorization", &auth), ("x-chloedb-tables", "ctx_billing=read")]);
     assert_eq!(mine["spaces"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect::<Vec<_>>(), ["billing"], "{mine}");
+    // WEI-306: a synced project's rule retired here, for every machine of
+    // the project, by a key that writes its table; one that reads it may
+    // not. A forgotten record's tombstone is not a record.
+    let project = "acme/ledger";
+    let table = chloectx::sync::table_for(project);
+    assert_eq!(http.call("POST", &format!("{coord}/v1/sql"), Some(&json!({"sql": chloectx::sync::create_for(project)})), &[]).0, 200);
+    let row = |rid: &str, kind: &str, text: &str, seq: i64| json!({"op": "upsert", "table": table, "doc": {"id": format!("{project}:{rid}"), "project": project, "rid": rid, "session": "s-alice", "kind": kind, "tag": "", "turn": 1, "seq": seq, "ts": 1_700_000_000_000i64 + seq, "importance": 1.0, "files": "", "content": text, "context": "", "links_json": "[{\"label\":\"pushed_by\",\"to\":\"chloectx-sync-alice-laptop-0a1b2c3d\"}]", "origin": "m-alice"}});
+    let (s, j) = http.call("POST", &format!("{coord}/v1/write"), Some(&json!({"ops": [row("a:1", "preference", "User preference: always run make lint before a push", 1), row("a:2", "prompt", "why does lint fail?", 2), row("a:3", "forgotten", "", 3)]})), &[]);
+    assert_eq!(s, 200, "{j}");
+    let (s, mem) = http.call("GET", &format!("{app_url}/v1/memory"), None, &[("authorization", &auth)]);
+    let listed = mem["projects"].as_array().unwrap().iter().find(|p| p["project"] == project).cloned().unwrap_or_default();
+    assert_eq!((s, listed["records"].as_i64()), (200, Some(2)), "{mem}");
+    let retire = |grant: &str, id: &str| http.call("POST", &format!("{app_url}/v1/memory/retire"), Some(&json!({"project": project, "id": id})), &[("authorization", &auth), ("x-chloedb-tables", grant), ("x-chloedb-principal", "chloectx-sync-bob-laptop-0a1b2c3d")]);
+    assert_eq!(retire(&format!("{table}=read"), "a:1").0, 403);
+    let (s, j) = retire(&format!("{table}=write"), "a:2");
+    assert_eq!(s, 400, "a prompt is no rule: {j}");
+    let (s, n) = retire(&format!("{table}=write"), "a:1");
+    assert_eq!((s, n["tag"].as_str(), n["retired_by"].as_str()), (200, Some("retired"), Some("chloectx-sync-bob-laptop-0a1b2c3d")), "{n}");
+    let (_, rows) = http.call("POST", &format!("{coord}/v1/query"), Some(&json!({"sql": format!("SELECT tag, origin, links_json FROM {table} WHERE rid = 'a:1'")})), &[]);
+    assert_eq!((rows["rows"][0][0].as_str(), rows["rows"][0][1].as_str()), (Some("retired"), Some("m-alice")), "{rows}");
+    assert!(rows["rows"][0][2].as_str().unwrap().contains("retired_by"), "{rows}");
+    assert!(texts(&app.get(&format!("/v1/memory/notes?project={project}"))).is_empty(), "a retired rule is not current");
+    assert_eq!(texts(&app.get(&format!("/v1/memory/notes?project={project}&all=1"))).len(), 1);
+
     // Retire the fact the agent kept, for the counts below.
     let id = kept["result"]["content"][0]["text"].as_str().unwrap().trim_start_matches("Kept as ").trim_end_matches('.').to_string();
     assert_eq!(http.call("DELETE", &format!("{app_url}/v1/spaces/billing/notes/{id}"), None, &[("authorization", &auth)]).0, 200);

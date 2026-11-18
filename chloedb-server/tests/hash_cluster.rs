@@ -1,7 +1,7 @@
 //! `hash(x [, seed])` through a coordinator: plans that hash (plan feature
 //! "hash", proto `FUNC_HASH`) reach the shards, and a seeded sample, split
 //! or shuffle over two shards holds the same rows, in the same order, as
-//! over one database of the same rows.
+//! over one database of the same rows, within a ranking too.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ fn agent() -> AgentConfig {
     AgentConfig { api_key: None, model: chloedb_server::agent::DEFAULT_MODEL.into(), base_url: "http://unused".into() }
 }
 
-const TABLE: &str = "CREATE TABLE events (id KEYWORD PRIMARY KEY, who KEYWORD, n INT, at TIMESTAMP)";
+const TABLE: &str = "CREATE TABLE events (id KEYWORD PRIMARY KEY, who KEYWORD, n INT, at TIMESTAMP, body TEXT)";
 
 fn create(dir: &Path, name: &str) -> Arc<Db> {
     let opts = DbOptions { segment_max_docs: 60, ..DbOptions::default() };
@@ -71,10 +71,11 @@ async fn a_split_over_shards_is_the_one_databases() {
             .iter()
             .map(|i| {
                 let n = if i % 11 == 0 { "NULL".to_string() } else { (i % 97).to_string() };
-                format!("('e{i:04}', 'u{}', {n}, '{}')", i % 45, chloedb::timestamp::format(1_785_542_400_000_000 + *i as i64 * 3_600_000_000))
+                let body = if i % 3 == 0 { "apple pie" } else { "pear tart" };
+                format!("('e{i:04}', 'u{}', {n}, '{}', '{body}')", i % 45, chloedb::timestamp::format(1_785_542_400_000_000 + *i as i64 * 3_600_000_000))
             })
             .collect();
-        let insert = format!("INSERT INTO events (id, who, n, at) VALUES {}", values.join(", "));
+        let insert = format!("INSERT INTO events (id, who, n, at, body) VALUES {}", values.join(", "));
         run(&svc, &insert).await;
         local(&one, &insert);
     }
@@ -96,7 +97,14 @@ async fn a_split_over_shards_is_the_one_databases() {
         assert_eq!(sorted(select(&svc, q).await), want, "{q}");
     }
     // Orders: a seeded shuffle is the same rows in the same order.
-    for q in ["SELECT id FROM events ORDER BY hash(id, 5) LIMIT 25", "SELECT id, n FROM events WHERE n > 50 ORDER BY hash(who, 9), id LIMIT 40"] {
+    for q in [
+        "SELECT id FROM events ORDER BY hash(id, 5) LIMIT 25",
+        "SELECT id, n FROM events WHERE n > 50 ORDER BY hash(who, 9), id LIMIT 40",
+        // Within a ranking: the rows a search finds, shuffled by their key.
+        "SELECT id FROM events ORDER BY bm25(body, 'apple') * 0 + hash(id, 7) DESC LIMIT 25",
+        // n repeats, so rows tie: the values, not which of the tied rows.
+        "SELECT n, score() FROM events WHERE n > 20 ORDER BY bm25(body, 'apple') * 0 + hash(n, 2) DESC LIMIT 30",
+    ] {
         let want = local(&one, q);
         assert!(want.len() >= 25, "{q}");
         assert_eq!(select(&svc, q).await, want, "{q}");

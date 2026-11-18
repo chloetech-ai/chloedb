@@ -101,10 +101,30 @@ pub struct Arm {
     /// Its share of the users in the experiment (relative).
     #[serde(default = "one")]
     pub share: f64,
+    /// What the arm does to its rows after ranking ([`THENS`]): empty, or
+    /// `demote_first`, the first row moved to the end, a small loss of a
+    /// known size to test that an experiment can see one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub then: String,
 }
 
 fn one() -> f64 {
     1.0
+}
+
+fn is_zero(x: &u64) -> bool {
+    *x == 0
+}
+
+/// The steps an arm may take after ranking.
+pub const THENS: &[&str] = &["demote_first"];
+
+/// `then` applied to an arm's rows, in place.
+pub fn then_apply<T>(then: &str, rows: &mut Vec<T>) {
+    if then == "demote_first" && rows.len() > 1 {
+        let first = rows.remove(0);
+        rows.push(first);
+    }
 }
 
 /// What an experiment runs.
@@ -128,8 +148,13 @@ pub struct Spec {
     pub explore: Value,
     #[serde(default = "limit")]
     pub limit: usize,
+    /// The users, their tastes and their split.
     #[serde(default = "seed")]
     pub seed: u64,
+    /// When not 0, the split is drawn anew for the same users (a repeat
+    /// of [`crate::repeat`]).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub salt: u64,
     #[serde(default = "taste")]
     pub taste: f64,
     /// How much users differ in how readily they click (the log sd of a
@@ -167,7 +192,17 @@ fn limit() -> usize {
     5
 }
 fn seed() -> u64 {
-    7
+    fresh_seed()
+}
+
+/// A seed of its own for a run that names none: its users, their split
+/// and every draw differ from the last run's, so running it again is a
+/// check of its own. Below 10^9, which a page's numbers keep exactly.
+pub fn fresh_seed() -> u64 {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    Rng::of(&format!("seed/{t}/{n}/{}", std::process::id())).next_u64() % 1_000_000_000
 }
 fn taste() -> f64 {
     0.35
@@ -207,6 +242,9 @@ impl Spec {
             if !names.insert(a.name.as_str()) {
                 return Err(format!("two arms are called {}", a.name));
             }
+            if !a.then.is_empty() && !THENS.contains(&a.then.as_str()) {
+                return Err(format!("arm {}: then is one of {}", a.name, THENS.join(", ")));
+            }
             if !(a.share.is_finite() && a.share > 0.0) {
                 return Err(format!("arm {}'s share must be above 0", a.name));
             }
@@ -219,14 +257,20 @@ impl Spec {
             return Err(format!("users: from 100 to {MAX_USERS}"));
         }
         let max = if self.mode == "served" { MAX_SERVED } else { MAX_FAST };
-        if self.mode != "fast" && self.mode != "served" {
-            return Err("mode is fast or served".into());
+        if !["fast", "served", "interleave"].contains(&self.mode.as_str()) {
+            return Err("mode is fast, served or interleave".into());
+        }
+        if self.mode == "interleave" && (self.arms.len() != 2 || self.explore_share > 0.0) {
+            return Err("an interleaving has two arms and no exploring share".into());
         }
         if self.impressions < 1000 || self.impressions > max {
             return Err(format!("searches: from 1,000 to {max} in a {} run", self.mode));
         }
         if !(0.0..=0.5).contains(&self.explore_share) {
             return Err("the exploring share is from 0 to 0.5".into());
+        }
+        if self.explore_share > 0.0 && !self.arms[0].then.is_empty() {
+            return Err("an exploring share explores the control's ranking as the server gives it: the control takes no then step".into());
         }
         if self.explore_share > 0.0 {
             Policy::from_json(&self.explore)?;
@@ -260,7 +304,7 @@ impl Spec {
 
 /// Which arm a user is in: `None`, the exploring share.
 pub fn assign(spec: &Spec, user: u32) -> Option<usize> {
-    let u = Rng::of(&format!("{}/assign/{user}", spec.seed)).uniform();
+    let u = if spec.salt == 0 { Rng::of(&format!("{}/assign/{user}", spec.seed)) } else { Rng::of(&format!("{}/{}/assign/{user}", spec.seed, spec.salt)) }.uniform();
     if u < spec.explore_share {
         return None;
     }
@@ -310,6 +354,7 @@ pub fn goes_on(u: &User, imp: &Impression, request: &str) -> bool {
 }
 
 /// A ranked site: per arm, each query's rows and the server's time.
+#[derive(Clone)]
 pub struct Ranks {
     pub arms: Vec<Vec<Ranked>>,
     pub took: Vec<Vec<f64>>,
@@ -337,7 +382,10 @@ pub async fn rank(server: &Server, site: &mut Site, spec: &Spec, policy: &Policy
         for j in 0..k {
             let a = (qi + j) % k;
             let ans = server.query(&sqls[a], json!({"t": q.text}), None).await.map_err(|e| format!("arm {}: {e}", spec.arms[a].name))?;
-            got[a] = Some((ranked(&ans), ans["took_ms"].as_f64().unwrap_or(0.0)));
+            let mut r = ranked(&ans);
+            then_apply(&spec.arms[a].then, &mut r.keys);
+            then_apply(&spec.arms[a].then, &mut r.scores);
+            got[a] = Some((r, ans["took_ms"].as_f64().unwrap_or(0.0)));
         }
         for (a, g) in got.into_iter().enumerate() {
             let (r, t) = g.expect("each arm ranked");
@@ -388,6 +436,8 @@ pub struct RunData {
     pub whatif: Option<Value>,
     pub seconds: f64,
     pub site: Value,
+    /// Per query, each arm measured and exactly ([`queries_report`]).
+    pub by_query: Option<ByQuery>,
 }
 
 /// How far a run has got: searches done of the total.
@@ -476,7 +526,7 @@ pub async fn run(server: &Server, spec: &Spec, run_id: &str, site: Site, ranks: 
     let policy = spec.policy()?;
     let shape = Shape { taste: spec.taste, appetite: spec.appetite, ..Shape::default() };
     let pop = || Population::new(spec.users, spec.seed, shape);
-    let arms: Vec<Arc<World>> = ranks.arms.iter().zip(&spec.arms).map(|(r, a)| Arc::new(World::new(site.clone(), pop(), model, Policy::None, spec.limit, a.rank.clone(), r.clone()))).collect();
+    let arms: Vec<Arc<World>> = ranks.arms.iter().zip(&spec.arms).map(|(r, a)| Arc::new(World::new(site.clone(), pop(), model, Policy::None, spec.limit, a.rank.clone(), r.clone()).then(&a.then))).collect();
     let explorer = (policy != Policy::None).then(|| Arc::new(World::new(site.clone(), pop(), model, policy.clone(), spec.limit, spec.arms[0].rank.clone(), ranks.explore.clone())));
     let users = arms[0].users.users.clone();
     let nu = users.len();
@@ -494,6 +544,7 @@ pub async fn run(server: &Server, spec: &Spec, run_id: &str, site: Site, ranks: 
         let (arms, lists, users, qs) = (&arms, &lists, &users, &qshares);
         par(nu, |r| r.map(|i| (0..k).map(|a| exact(&arms[a], &users[i], &lists[a], qs)).collect::<Vec<Sums>>()).collect::<Vec<_>>()).into_iter().flatten().collect()
     };
+    let mut by_query = ByQuery::new(&site, &arms, &users, &share, &lists);
 
     // The pre-period: every user under the control, a run of its own.
     progress.stage("the pre-period under the control");
@@ -534,6 +585,7 @@ pub async fn run(server: &Server, spec: &Spec, run_id: &str, site: Site, ranks: 
                     Some(a) => {
                         let u = &users[imp.user as usize];
                         add(&mut sums[imp.user as usize], &sums_of(&imp, l, goes_on(u, &imp, &format!("{run_id}-{}", imp.i))));
+                        by_query.add(&imp, a);
                         latencies[a].push(l);
                     }
                     None if explored.len() < MAX_EXPLORED => explored.push(imp),
@@ -543,8 +595,10 @@ pub async fn run(server: &Server, spec: &Spec, run_id: &str, site: Site, ranks: 
         } else {
             let (arms, explorer, assigned, took, users) = (&arms, &explorer, &assigned, &ranks.took, &users);
             let room = MAX_EXPLORED.saturating_sub(explored.len());
+            let nq = by_query.text.len();
             let parts = par((end - start) as usize, |r| {
                 let mut s = vec![[0.0; SUMS]; nu];
+                let mut bq = vec![[0.0; 4]; nq * k];
                 let mut ex = Vec::new();
                 for j in r {
                     let i = start + j as u64;
@@ -554,6 +608,7 @@ pub async fn run(server: &Server, spec: &Spec, run_id: &str, site: Site, ranks: 
                             let imp = arms[a].fast(run_id, i);
                             let u = &users[imp.user as usize];
                             add(&mut s[imp.user as usize], &sums_of(&imp, took[a][imp.query as usize], goes_on(u, &imp, &c.request)));
+                            add_query(&mut bq, k, &imp, a);
                         }
                         None => {
                             if let Some(x) = explorer {
@@ -564,11 +619,16 @@ pub async fn run(server: &Server, spec: &Spec, run_id: &str, site: Site, ranks: 
                         }
                     }
                 }
-                (s, ex)
+                (s, bq, ex)
             });
-            for (s, ex) in parts {
+            for (s, bq, ex) in parts {
                 for (o, x) in sums.iter_mut().zip(&s) {
                     add(o, x);
+                }
+                for (o, x) in by_query.measured.iter_mut().zip(&bq) {
+                    for (y, z) in o.iter_mut().zip(x) {
+                        *y += z;
+                    }
                 }
                 let room = MAX_EXPLORED.saturating_sub(explored.len());
                 explored.extend(ex.into_iter().take(room));
@@ -611,7 +671,7 @@ pub async fn run(server: &Server, spec: &Spec, run_id: &str, site: Site, ranks: 
         _ => None,
     };
     let site_info = json!({"name": site.name, "table": site.table, "queries": site.queries.len()});
-    Ok(RunData { spec: spec.clone(), users, arm: assigned, sums, pre, truth, share, checkpoints, latencies, whatif, seconds: t0.elapsed().as_secs_f64(), site: site_info })
+    Ok(RunData { spec: spec.clone(), users, arm: assigned, sums, pre, truth, share, checkpoints, latencies, whatif, seconds: t0.elapsed().as_secs_f64(), site: site_info, by_query: Some(by_query) })
 }
 
 /// Clicks and satisfied clicks per search an arm measured.
@@ -995,6 +1055,174 @@ pub fn cohort_table(d: &RunData, by: &[&str]) -> Value {
 /// The report of a run: every metric, every comparison, the cohorts by
 /// each attribute, the latencies and what the exploring share's log
 /// estimates.
+/// Per query of a run, how each arm did: measured over the searches that
+/// asked it, and exactly over the population, which says where the
+/// difference between the arms comes from.
+#[derive(Clone, Debug, Default)]
+pub struct ByQuery {
+    pub arms: usize,
+    /// Per query and arm (`q * arms + a`): searches, successes, clicks,
+    /// abandoned searches.
+    pub measured: Vec<[f64; 4]>,
+    /// Per query and arm: the exact success and clicks of one search.
+    pub truth: Vec<[f64; 2]>,
+    /// Per query and arm: nDCG of the rows the arm shows.
+    pub ndcg: Vec<f64>,
+    pub text: Vec<String>,
+    /// Per query: the rows the judges grade relevant.
+    pub relevant: Vec<usize>,
+    /// Per query: its share of the searches.
+    pub share: Vec<f64>,
+}
+
+impl ByQuery {
+    /// The site's queries under `lists` (per arm, per query, the keys
+    /// shown), with their exact values over `users` (each searching by its
+    /// `share`), and nothing measured yet.
+    pub fn new(site: &Site, worlds: &[Arc<World>], users: &[User], share: &[f64], lists: &[Vec<Vec<String>>]) -> ByQuery {
+        let k = worlds.len();
+        let nq = site.queries.len();
+        let limit = worlds.first().map_or(10, |w| w.limit);
+        let parts = par(users.len(), |r| {
+            let mut acc = vec![[0.0f64; 2]; nq * k];
+            for u in r {
+                for (a, w) in worlds.iter().enumerate() {
+                    for (q, list) in lists[a].iter().enumerate() {
+                        let slots: Vec<Slot> = list.iter().take(w.limit).map(|key| w.slot(&users[u], q, key)).collect();
+                        let e = w.model.expected(&slots, &users[u].behaviour);
+                        let x = &mut acc[q * k + a];
+                        x[0] += share[u] * e.any_satisfied;
+                        x[1] += share[u] * e.click.iter().sum::<f64>();
+                    }
+                }
+            }
+            acc
+        });
+        let mut truth = vec![[0.0f64; 2]; nq * k];
+        for p in parts {
+            for (t, x) in truth.iter_mut().zip(p) {
+                t[0] += x[0];
+                t[1] += x[1];
+            }
+        }
+        let total: f64 = share.iter().sum::<f64>().max(1e-12);
+        for t in &mut truth {
+            t[0] /= total;
+            t[1] /= total;
+        }
+        let ndcg = (0..nq).flat_map(|q| (0..k).map(move |a| (q, a))).map(|(q, a)| crate::live::ndcg(&site.grades[q], site.max_grade, &lists[a][q], limit)).collect();
+        let shares = site.shares();
+        ByQuery {
+            arms: k,
+            measured: vec![[0.0; 4]; nq * k],
+            truth,
+            ndcg,
+            text: site.queries.iter().map(|q| q.text.clone()).collect(),
+            relevant: site.grades.iter().map(|g| g.values().filter(|&&x| x > 0).count()).collect(),
+            share: shares,
+        }
+    }
+
+    /// Search `imp`, of arm `a`, counted.
+    pub fn add(&mut self, imp: &Impression, a: usize) {
+        add_query(&mut self.measured, self.arms, imp, a);
+    }
+}
+
+/// Search `imp` of arm `a` counted in `m` (per query and arm, of `k` arms).
+pub fn add_query(m: &mut [[f64; 4]], k: usize, imp: &Impression, a: usize) {
+    let clicks = imp.click.iter().filter(|&&c| c).count() as f64;
+    let x = &mut m[imp.query as usize * k + a];
+    x[0] += 1.0;
+    x[1] += imp.satisfied.iter().any(|&s| s) as u8 as f64;
+    x[2] += clicks;
+    x[3] += (clicks == 0.0) as u8 as f64;
+}
+
+/// The bands of a query's relevant rows the per-query table groups by.
+const RELEVANT_BANDS: [(usize, usize, &str); 5] = [(0, 1, "1"), (2, 3, "2 or 3"), (4, 10, "4 to 10"), (11, 30, "11 to 30"), (31, usize::MAX, "31 or more")];
+
+/// Which queries each arm won and lost most on, by the exact difference
+/// times the query's share (what it adds to the whole difference), and the
+/// queries grouped by how many rows are relevant to them: where an arm's
+/// difference comes from.
+pub fn queries_report(d: &RunData) -> Value {
+    let Some(b) = &d.by_query else { return Value::Null };
+    let k = b.arms;
+    let nq = b.text.len();
+    let lift = |t0: f64, t1: f64| if t0 > 0.0 { json!(t1 / t0 - 1.0) } else { Value::Null };
+    let rate = |x: &[f64; 4]| if x[0] > 0.0 { json!(x[1] / x[0]) } else { Value::Null };
+    let mut arms = Vec::new();
+    for a in 1..k {
+        // Each query: what its exact difference adds to the whole one.
+        let mut order: Vec<usize> = (0..nq).collect();
+        let adds = |q: usize| b.share[q] * (b.truth[q * k + a][0] - b.truth[q * k][0]);
+        order.sort_by(|&x, &y| adds(x).total_cmp(&adds(y)));
+        let row = |q: usize| {
+            json!({
+                "q": q, "text": b.text[q], "share": b.share[q], "relevant": b.relevant[q], "adds": adds(q),
+                "control": {"searches": b.measured[q * k][0], "success": rate(&b.measured[q * k]), "truth": b.truth[q * k][0], "ndcg": b.ndcg[q * k]},
+                "arm": {"searches": b.measured[q * k + a][0], "success": rate(&b.measured[q * k + a]), "truth": b.truth[q * k + a][0], "ndcg": b.ndcg[q * k + a]},
+                "true_lift": lift(b.truth[q * k][0], b.truth[q * k + a][0]),
+            })
+        };
+        let losses: Vec<Value> = order.iter().take(25).filter(|&&q| adds(q) < 0.0).map(|&q| row(q)).collect();
+        let gains: Vec<Value> = order.iter().rev().take(10).filter(|&&q| adds(q) > 0.0).map(|&q| row(q)).collect();
+        let total: f64 = (0..nq).map(adds).sum();
+        // By how many rows are relevant.
+        let mut bands = Vec::new();
+        for (lo, hi, label) in RELEVANT_BANDS {
+            let qs: Vec<usize> = (0..nq).filter(|&q| b.relevant[q] >= lo.max(1) && b.relevant[q] <= hi).collect();
+            if qs.is_empty() {
+                continue;
+            }
+            let w: f64 = qs.iter().map(|&q| b.share[q]).sum();
+            let t = |arm: usize| qs.iter().map(|&q| b.share[q] * b.truth[q * k + arm][0]).sum::<f64>() / w.max(1e-12);
+            let m = |arm: usize| qs.iter().fold([0.0; 4], |mut acc, &q| {
+                for (x, y) in acc.iter_mut().zip(b.measured[q * k + arm]) {
+                    *x += y;
+                }
+                acc
+            });
+            let (m0, m1) = (m(0), m(a));
+            let (t0, t1) = (t(0), t(a));
+            bands.push(json!({
+                "label": label, "queries": qs.len(), "share": w,
+                "control": {"searches": m0[0], "success": rate(&m0), "truth": t0},
+                "arm": {"searches": m1[0], "success": rate(&m1), "truth": t1},
+                "lift": match (rate(&m0).as_f64(), rate(&m1).as_f64()) { (Some(x), Some(y)) if x > 0.0 => json!(y / x - 1.0), _ => Value::Null },
+                "true_lift": lift(t0, t1), "adds": w * (t1 - t0),
+            }));
+        }
+        let finding = band_finding(&d.spec.arms[a].name, &bands);
+        arms.push(json!({"arm": d.spec.arms[a].name, "losses": losses, "gains": gains, "bands": bands, "total": total, "finding": finding}));
+    }
+    json!({"queries": nq, "metric": "success", "arms": arms})
+}
+
+/// One sentence on the bands of relevant rows where an arm moved most and
+/// least, by the truth; none when the bands are too few or move alike.
+fn band_finding(arm: &str, bands: &[Value]) -> Option<String> {
+    let lifts: Vec<(f64, &str, u64)> = bands.iter().filter_map(|b| Some((b["true_lift"].as_f64()?, b["label"].as_str()?, b["queries"].as_u64()?))).filter(|x| x.2 >= 3).collect();
+    if lifts.len() < 2 {
+        return None;
+    }
+    let lo = lifts.iter().min_by(|x, y| x.0.total_cmp(&y.0))?;
+    let hi = lifts.iter().max_by(|x, y| x.0.total_cmp(&y.0))?;
+    if (hi.0 - lo.0).abs() < 0.05 {
+        return None;
+    }
+    let pct = |x: f64| format!("{}{:.0}%", if x < 0.0 { "−" } else { "+" }, (x * 100.0).abs());
+    let rows = |label: &str| if label == "1" { "1 relevant row".to_string() } else { format!("{label} relevant rows") };
+    Some(if lo.0 < 0.0 && hi.0 <= 0.0 {
+        format!("{arm} loses the most on queries with {} ({} success) and the least on those with {} ({}).", rows(lo.1), pct(lo.0), rows(hi.1), pct(hi.0))
+    } else if lo.0 >= 0.0 {
+        format!("{arm} gains the most on queries with {} ({} success) and the least on those with {} ({}).", rows(hi.1), pct(hi.0), rows(lo.1), pct(lo.0))
+    } else {
+        format!("{arm} gains on queries with {} ({} success) and loses on those with {} ({}).", rows(hi.1), pct(hi.0), rows(lo.1), pct(lo.0))
+    })
+}
+
 pub fn report(d: &RunData) -> Value {
     let k = d.spec.arms.len();
     let mut metrics = Vec::new();
@@ -1051,6 +1279,7 @@ pub fn report(d: &RunData) -> Value {
         "latency": latency,
         "whatif": d.whatif,
         "attributes": ATTRIBUTES,
+        "by_query": queries_report(d),
     })
 }
 
@@ -1132,7 +1361,7 @@ mod tests {
 
     #[test]
     fn users_split_as_planned() {
-        let spec = Spec { name: "x".into(), site: "s".into(), arms: vec![Arm { name: "A".into(), rank: "r".into(), share: 1.0 }, Arm { name: "B".into(), rank: "r".into(), share: 3.0 }], model: dbn(), users: users(), impressions: impressions(), explore_share: 0.2, explore: explore(), limit: 5, seed: 3, taste: taste(), appetite: appetite(), mode: fast(), primary: primary(), pre: pre() };
+        let spec = Spec { name: "x".into(), site: "s".into(), arms: vec![Arm { name: "A".into(), rank: "r".into(), share: 1.0, then: String::new() }, Arm { name: "B".into(), rank: "r".into(), share: 3.0, then: String::new() }], model: dbn(), users: users(), impressions: impressions(), explore_share: 0.2, explore: explore(), limit: 5, seed: 3, salt: 0, taste: taste(), appetite: appetite(), mode: fast(), primary: primary(), pre: pre() };
         let mut n = [0usize; 3];
         for u in 0..40_000 {
             match assign(&spec, u) {
@@ -1168,7 +1397,7 @@ mod tests {
         let server = Server::new("http://127.0.0.1:1", None);
         let mut significant = 0;
         for rep in 0..reps {
-            let spec = Spec { name: "t".into(), site: site.name.clone(), arms: vec![Arm { name: "A".into(), rank: w.rank.clone(), share: 1.0 }, Arm { name: "B".into(), rank: "oracle".into(), share: 1.0 }], model: "dbn".into(), users: 2000, impressions: 40_000, explore_share: 0.0, explore: explore(), limit: w.limit, seed: rep, taste: 0.35, appetite: appetite(), mode: fast(), primary: primary(), pre: 0.5 };
+            let spec = Spec { name: "t".into(), site: site.name.clone(), arms: vec![Arm { name: "A".into(), rank: w.rank.clone(), share: 1.0, then: String::new() }, Arm { name: "B".into(), rank: "oracle".into(), share: 1.0, then: String::new() }], model: "dbn".into(), users: 2000, impressions: 40_000, explore_share: 0.0, explore: explore(), limit: w.limit, seed: rep, salt: 0, taste: 0.35, appetite: appetite(), mode: fast(), primary: primary(), pre: 0.5 };
             let ranks = Ranks { arms: vec![w.ranked.clone(), oracle.clone()], took: vec![vec![1.0; site.queries.len()], vec![2.0; site.queries.len()]], explore: Vec::new() };
             let d = rt.block_on(run(&server, &spec, &format!("r{rep}"), site.clone(), ranks, Arc::new(Progress::default()))).unwrap();
             let r = report(&d);
