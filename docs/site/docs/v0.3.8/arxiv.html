@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chloedb-arxiv: arXiv on ChloeDB · ChloeDB docs</title>
+<link rel="icon" href="../../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="chloedb-arxiv is an explorer of every paper on arXiv: 3.25 million papers up to this week, the people who wrote them, the citations between them, about 1,100 topics found from what they say, techniques and domains,…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/arxiv.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../../features.html">Features</a>
+    <a href="../../scale.html">Laptop to cloud</a>
+    <a href="../../command-center.html">Command center</a>
+    <a href="../../benchmarks.html">Benchmarks</a>
+    <a href="../../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html" aria-current="page">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Apps</span>
+      <h1>chloedb-arxiv: arXiv on ChloeDB</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.8/docs/chloedb/arxiv.md">docs/chloedb/arxiv.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.8. <a href="../../docs/index.html">The docs of main</a> describe the code as it is now.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#where-the-data-comes-from">Where the data comes from</a></li><li><a href="#run-it">Run it</a></li><li><a href="#the-tables">The tables</a></li><li><a href="#tests">Tests</a></li></ol></details>
+    <div class="doc-body">
+
+<blockquote>
+<p><strong>A demo.</strong> chloedb-arxiv shows what ChloeDB can do; it is not part of ChloeDB's releases or their promises. It is tested on a train of its own (the <code>Demos</code> workflow, <code>.github/workflows/demos.yml</code>), outside CI's required check, and the command center marks it as a demo (<a href="compatibility.html#demos">compatibility</a>).</p>
+</blockquote>
+<p><code>chloedb-arxiv</code> is an explorer of every paper on arXiv: 3.25 million papers up to this week, the people who wrote them, the citations between them, about 1,100 topics found from what they say, techniques and domains, and a feed per reader that reads like a research newsletter. It is a program of its own, in Rust, that talks to chloedb-server over HTTP only, like <a href="crawler.html">the crawler</a> and <a href="sheets.html">the spreadsheets</a>, and the command center shows it as an app.</p>
+<p>Everything it does is a query to ChloeDB, and each page shows the queries it ran and their times (<strong>SQL</strong> at the bottom right):</p>
+<ul>
+<li><strong>Search by words and meaning at once.</strong> Titles and abstracts are ranked by BM25 and by the meaning of their text (a static embedding model on the server, no API call), fused by rank (<code>rrf</code>), with typos corrected from the titles' own words and the query's synonyms (<em>RAG</em>, <em>retrieval augmented generation</em>). A query is read for what it says: a year (<em>since 2023</em>), a person (<em>by Yann LeCun</em>), a category (<em>cs.IR</em>), a kind (<em>surveys of</em>), an id. Facets (year, category, technique, domain, kind, people) come from the same query. A question is answered in a paragraph whose claims cite the papers they come from (<code>llm()</code> on the server).</li>
+<li><strong>What to read next is ChloeDB's recommender.</strong> Every paper a work cites is a reading event, 5.2 million of them, counted by <code>CREATE RECOMMENDER reading ON ax_events(...)</code>: what is read together, what is read after. A paper's <strong>Read next</strong> fuses those counts with PageRank from it over the citation graph (<code>ppr(ax_cites, :id)</code>) and the nearest papers by meaning. <strong>For you</strong> does the same from the papers a reader opens and keeps here, which are events of the recommender as soon as they are written.</li>
+<li><strong>People, topics, techniques, domains, categories and venues each have a page</strong>: papers a year, who leads, what rose, the people nearest a person in the coauthor graph (<code>ppr(ax_coauthors, :who)</code>), a topic summed up from its papers with each claim cited.</li>
+<li><strong>What's rising</strong>, over a span the reader picks (a month, three, six, a year or two): the techniques, domains and topics whose share of papers grew most against the span before, and only where the growth is beyond chance.</li>
+<li><strong>Gaps.</strong> Rising techniques that have barely reached a domain where the techniques most like them already work. Over the last three years a technique's papers are counted by domain and by area; its look-alikes are the techniques whose domain counts point the same way (cosine, with the domain in question left out), and its expected papers in a domain are its papers times the look-alikes' share of that domain. A gap is a domain with a quarter of the expected papers or fewer, where the technique and the domain both grow faster than the median, their areas overlap, and two of the three closest look-alikes use the domain more than arXiv does. A gap's page shows the few papers that already combine the two, what the look-alikes did in the domain, and the people who write on both. The list is about 320 <code>GROUP BY</code> queries, kept for twelve hours (<code>src/gaps.rs</code>).</li>
+<li><strong>New topics.</strong> Topics that barely existed and now hold hundreds of papers, born in the last year, two or three. A topic's papers are counted by month over five years (one <code>GROUP BY topic, month</code> for 150 topics at a time) and smoothed over three months; it was born in the first month its count reached a fifth of its peak, when the year before held an eighth of the peak or less, so an old topic that merely grew is not new. Each shows its curve with the month it was born, the papers that started it (its most cited from six months before to two after) and where it is now: rising, fading, at its peak or steady, from its share of arXiv's papers over the last six full months against the six before (<code>src/born.rs</code>).</li>
+<li><strong>How techniques spread.</strong> When each technique left the field it grew up in and reached the next, year by year, with the most cited paper of its first two years in each. A technique's papers are counted by primary category and year (one <code>GROUP BY pcat, year</code> each); it reached a category in the first year with five or more papers there and a twentieth of its best year there, two years running. It grew up in the earliest of the categories that hold a twentieth of its papers, and earlier uses of the same words in small categories, often another meaning (a <em>transformer</em> in power systems), are left out. Pick a field to see what reached it and when (<code>src/spread.rs</code>).</li>
+<li><strong>Who coined it.</strong> Ask <em>who coined chain of thought</em> (or <em>who first used</em>, <em>where does X come from</em>): the answer names the papers that made the term known, the most cited early papers that use it in the sense of its most cited papers (the sense is their titles' meaning, so a 1996 solar physics paper that says <em>chain of thought</em> is set apart as another sense), the literal first use, the year it took off, and when it reached each area. A term in use before arXiv began says so.</li>
+<li><strong>What to cite.</strong> Paste a draft's abstract and references (arXiv ids, DOIs, links or written-out titles): you get the papers others cite together with those references (the recommender's pair counts, normalised by both papers' counts) and those nearest to them by meaning, fused by rank, minus what you already cite, each with why it is there. On 15 papers of October 2026 (posted after the citation data, so their own lists are not in the counts), with a fifth of the references each one resolves hidden, it put 14 of the 72 hidden references in its first 30, against 7 for raw pair counts and the abstract, 3 for the abstract alone and none for PageRank over the citations.</li>
+<li><strong>What is new here.</strong> On a paper's page: the three earlier papers it is closest to (those it cites first, then the most cited of the 40 nearest by meaning posted before it), and what it adds to each and shares with them, written once by <code>llm()</code> and kept.</li>
+<li><strong>Trends and the atlas.</strong> Any words, compared as a share of each year's papers. The atlas places the topics on one map, near topics near, colored by arXiv area, sized by papers, a ring on those that grew most last year.</li>
+<li><strong>Feeds you shape yourself.</strong> A feed says what you want in your words: topics, papers like some you name, categories, techniques, domains, people whose new papers always go in, words that keep a paper out, kinds (surveys, benchmarks, datasets, tools), how many papers, how many of one topic, for whom, and how much code, citations and known authors count. The papers an issue would hold are SQL and answer as the knobs move (no model is called). <strong>Write issue</strong> then reads each paper in full from its HTML page on arxiv.org (its sections, figures and tables) and explains it, so the issue can be read without opening the papers: an opening on what the week's papers share, a contents list, and for each paper <em>in brief</em>, the problem, the approach, the results with their numbers, the takeaway, the limits, the terms a newcomer needs, the one or two figures that explain it best (copied from the paper, with what to notice in each) and its main results table. A paper without an HTML version is explained from its abstract. While it writes, a screen follows it: the papers it chose, which one it is reading, explaining or copying a figure of, how long each took and about how long is left, with a line to smile at while arXiv's 15 seconds between pages pass; the page can be left and the screen comes back when the feed is opened again (<code>GET /v1/jobs/&lt;id&gt;</code> holds the writer's phase, paper and steps). Each issue has a page, a Markdown copy for a newsletter and an RSS feed. A feed set to write itself writes its issue every Monday from 06:00 UTC, so its RSS brings each week's issue to a feed reader with no one pressing a button (an hourly round writes the feeds due, longest waiting first, six at a time; a reader has three such feeds). A feed's owner can share it with a team by a link: whoever opens it can change the feed and write its issues with no sign-in, the feed stays the owner's, and <em>Stop sharing</em> makes the link stop working (<code>POST /v1/feeds/&lt;id&gt;/team</code>); the shorter styles of <a href="https://recsys.substack.com/">a weekly research newsletter</a> (a paragraph a paper, brief, bullets) remain.</li>
+<li><strong>Standing questions.</strong> Ask once (<em>tell me when someone uses diffusion models for weather forecasting</em>) and every new paper that answers it comes to you, on a page and in an RSS feed. Every hour the papers of the last week are searched for the question (all its words and most of them by BM25, and its meaning, fused by rank), and the fifteen closest not read for it yet go to the model in one call (<code>llm()</code> on the server), which says for each whether it does what the question asks and why. Every verdict is kept, so a paper is read once per question and an hour with nothing new calls no model; a new question reads the closest papers of the last month at once. A reader keeps ten questions (<code>src/watch.rs</code>).</li>
+<li><strong>People to work with.</strong> On a person's page: the people whose work of the last four years is nearest theirs in meaning but who have never written with them or with anyone they write with, with the techniques each would bring, their papers nearest the person's work, and the shortest way to them in the coauthor graph (through people with the fewest papers, since a name with thousands is many people sharing it). Their eight newest and eight most cited papers of the last six years are one text; the 500 nearest papers are read and each author scores by their papers' ranks there (<code>src/collab.rs</code>).</li>
+<li><strong>Who could review it.</strong> On a paper's page, or for a title and abstract pasted in with its authors: the people who know its subject (their papers among the 500 nearest to it in the last six years), with eight papers or more and one in the last three years, its authors and everyone who wrote with one of them in the last four years left out and named, each with their nearest papers and seniority.</li>
+<li><strong>Rising people</strong>, on the Rising page: people whose first paper is at most five years old, by the citations to their papers of the last one or two years (two cited papers or more, of 20 authors or fewer), by area.</li>
+<li><strong>Where someone's work went.</strong> A person's page shows their most used techniques year by year as a river, each band a technique and its width their papers using it that year.</li>
+<li><strong>Code and data.</strong> The share of papers that link their code, year by year, in all of arXiv or an area; the repositories behind the most papers; the techniques whose papers share code most and least; the newest and most cited papers with code and those with models or data on Hugging Face (<code>src/code.rs</code>). <code>has:code</code> in a search keeps only papers with code.</li>
+<li><strong>Labs.</strong> The organisations behind 2.5 million papers (78%), from the authors' affiliations in <a href="https://openalex.org">OpenAlex</a>'s public snapshot: the labs with the most papers of the last twelve months, those whose share of the papers grew most, who is moving into a technique (a button on its page), and a page per lab with its papers a year, what it is known for and moving into, who writes its papers, the labs and countries it writes with. A paper's page names its organisations. OpenAlex names organisations for fewer of the newest papers, so growth is a lab's share, not its count (<code>src/labs.rs</code>).</li>
+<li><strong>Likely classics.</strong> Recent papers that look, in their first months, like the papers that went on to be the most cited 1% of their year and area, by area and by how recently they were posted, each with its chance against the usual 1% and what weighed most. A logistic regression per window (no citations yet, or the arXiv papers citing it in its first 3, 6 or 12 months) is trained on 2016 to 2021 on what was known then: early citations, the authors' earlier papers, how fast its category and techniques grew, team size, code and kind. On 2022, which it did not see, 33% of its top 1% with six months of citations were in the real top 1%, against 18% for ranking by early citations and the authors' record (<code>tools/classics.py</code>, which writes <code>ax_classics</code> and the models' card; <code>GET /v1/classics?area=&amp;days=&amp;sort=</code>).</li>
+<li><strong>For and against.</strong> State a claim (<em>LLMs can self-correct their reasoning without external feedback</em>) and get the papers whose results support it, those that contradict it and those that find it holds only in some settings, each with the sentence of its abstract that shows it. The 40 papers nearest the claim are found by the words of its subject (all of them, and all but one) and by its meaning, fused by rank, and the model reads their abstracts against it ten to a call, all at once (<code>llm()</code> on the server). A side counts only with a sentence that is in the abstract word for word (spacing, case and punctuation aside), and the answer is kept, so a claim asked again calls no model (<code>src/claims.rs</code>).</li>
+<li><strong>Explain at my level.</strong> A paper's page explains it for a student, a practitioner or an expert, each hard term of its abstract with its meaning at that level, the paper the field credits with the term (the earliest of its most cited papers on arXiv, as <em>Who coined it</em> reads it, or none when the words were in use before arXiv began) and a link to the full answer. The level is kept in the browser: topic summaries are written for it and a new feed's audience follows it. Each explanation is kept per level (<code>GET /v1/explain/&lt;id&gt;?level=</code>).</li>
+<li><strong>From a reading list to related work.</strong> Name up to 30 papers (ids or links, a reading list, or your library) and get their BibTeX at once, made from their rows with no model (authors surname first, the venue when one is known, the arXiv identifiers; keys like <code>vaswani2017attention</code>), and a related-work section in LaTeX written by the model from their abstracts, grouped by theme under <code>\paragraph{}</code> and citing every paper by its key. A citation of a key not in the list is taken out, a paper left uncited is named, and the section is kept. Given a sentence on your own paper, each paragraph ends with how it differs (<code>src/related.rs</code>).</li>
+<li><strong>It stays current.</strong> <code>--live</code> reads the new and revised papers from arXiv's OAI-PMH interface every six hours, three seconds between pages, and a new paper goes to the topic whose centroid its text is nearest.</li>
+</ul>
+<h2 id="where-the-data-comes-from">Where the data comes from<a class="anchor" href="#where-the-data-comes-from" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Papers</strong>: arXiv's metadata (<a href="https://huggingface.co/datasets/librarian-bots/arxiv-metadata-snapshot">librarian-bots/arxiv-metadata-snapshot</a>, CC0), and the weeks after the snapshot from <a href="https://info.arxiv.org/help/oa/index.html">OAI-PMH</a>.</li>
+<li><strong>Citations</strong>: Crossref's references of arXiv papers' published versions (<a href="https://huggingface.co/datasets/cometadata/crossref-arxiv-citations">cometadata/crossref-arxiv-citations</a>). A citing work that is an arXiv paper, by its DOI, makes an edge of the citation graph; every citing work is a reader of the recommender.</li>
+<li><strong>Topics</strong>: <code>tools/topics.py</code> clusters every paper's embedding into 1,500 topics with k-means fitted on 300,000 older papers and 250,000 of the last two years (so recent research is not folded into a few catch-all topics), drops the topics fewer than 150 papers would join (<code>--min-papers</code>; 1,093 remain), places each paper in the nearest of its ten closest topics with a small pull toward topics that hold its primary category, puts each topic in one of 17 fields (arXiv's areas, by its papers' categories), names each from its terms and its most cited titles, and places them on the map. A topic that is mostly an old one keeps its id (<code>--keep</code>), and its name when its centroid has not moved (<code>--labels</code>). New papers are placed by the same rule in <code>src/live.rs</code>.</li>
+<li><strong>Organisations</strong> of each paper come from <a href="https://openalex.org">OpenAlex</a>'s public snapshot (CC0) on S3, read without a key: <code>tools/oa_orgs.py</code> reads only the columns it needs (whether a work is on arXiv, its arXiv link, its authors' institutions) from the 744 GB of Parquet files, about 30 GB, and <code>tools/labs.py</code> joins them with the papers' rows into <code>ax_lab_papers</code> and <code>ax_labs</code>.</li>
+<li><strong>Affiliations</strong> for a feed's papers are read from each paper's HTML page on arxiv.org, once a paper and fifteen seconds apart, as arXiv's <code>robots.txt</code> asks. The app never reads arxiv.org's search or API pages.</li>
+</ul>
+<h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
+<p>Build both programs, prepare the rows (a few GB of downloads), then start chloedb-arxiv with servers of its own:</p>
+<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release)
+cd chloedb-arxiv &amp;&amp; cargo build --release
+target/release/chloedb-arxiv prepare --snapshot ~/arxiv/snapshot --cites ~/arxiv/crossref/all.parquet --out ~/arxiv/rows
+python3 tools/topics.py --rows ~/arxiv/rows --name
+target/release/chloedb-arxiv prepare --snapshot ~/arxiv/snapshot --cites ~/arxiv/crossref/all.parquet --topics ~/arxiv/rows/topics.tsv --out ~/arxiv/rows
+target/release/chloedb-arxiv serve --local ./arxiv-search --local-graph ./arxiv-graph --rows ~/arxiv/rows --server-bin ../chloedb-server/target/release/chloedb-server</pre>
+<p>Open <code>http://127.0.0.1:7700</code> and go to <strong>Apps → arXiv</strong>. <code>--only cs.,stat.ML</code> on <code>prepare</code> keeps a slice, which fits on a laptop.</p>
+<h3 id="two-servers-split-by-job">Two servers, split by job<a class="anchor" href="#two-servers-split-by-job" aria-label="Link to this section">#</a></h3>
+<p>The papers, people, topics and their words live on one chloedb-server (the <strong>search server</strong>, <code>--strata</code>); the reading events, the recommender, the citation and coauthor graphs, what readers keep, and the model calls live on another (the <strong>graph server</strong>, <code>--graph</code>). A recommender and a graph walk each need their rows in one database, so these tables are not sharded over a coordinator; splitting by job gives each server a machine of its own instead. Without <code>--graph</code>, one server holds everything. The graph server holds a row per paper and per person (<code>ax_nodes</code>) for the walks to rank.</p>
+<pre data-lang="sh">chloedb-arxiv serve --strata http://search:7700 --graph http://graph:7700 --key &quot;$CHLOEDB_KEY&quot; --token &quot;$ARXIV_TOKEN&quot; --listen 0.0.0.0:7860 --live
+chloedb-server --app arxiv=http://arxiv-app:7860 ...    # the command center lists it</pre>
+<p><code>deploy/k8s.yaml</code> and <code>deploy/app.yaml</code> run it on Kubernetes: two nodes of 16 GB, a server on each, and the app beside the graph server. Each database is on its node's own SSD rather than a network volume, the graph database (3.6 GB) is read into memory after a start, and the search server allows a GROUP BY of two million groups, since "who writes most" on a broad subject groups every author of tens of thousands of papers. <code>deploy/backup.yaml</code> takes a checkpoint of each server a night (<code>POST /v1/admin/checkpoint</code> into <code>--backup-dir</code>, hard-linking what the previous one has) and keeps the two newest. With <code>--public</code> the app serves the page at <code>/</code> to anyone, reads and a reader's own library and feeds, within <code>--per-minute</code> requests a minute from one address; https://arxiv.chloetech.ai is this, through a web proxy.</p>
+<p><code>--answer-model</code> names the model of summaries and TL;DRs, and <code>--issue-model</code> the one that explains an issue's papers from their full text (both are called through the graph server's <code>llm()</code>, which holds the provider's key); <code>--llm-per-day</code> caps new calls a day, and everything written is kept, so it is written once. arXiv asks programs to read a page every 15 seconds, so the first issue of ten papers takes about ten minutes; a page and its figures, once read, are kept (<code>ax_notes</code>, <code>ax_figures</code>).</p>
+<h2 id="the-tables">The tables<a class="anchor" href="#the-tables" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>table</th>
+<th>server</th>
+<th>what</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ax_papers</code></td>
+<td>search</td>
+<td>a paper: title, abstract, people, categories, dates, techniques, domains, kinds, counts, topic, and <code>emb</code> (its text embedded by the server)</td>
+</tr>
+<tr>
+<td><code>ax_authors</code></td>
+<td>search</td>
+<td>a person: papers, citations, h-index, first and last paper, categories and techniques</td>
+</tr>
+<tr>
+<td><code>ax_topics</code>, <code>ax_concepts</code>, <code>ax_cats</code>, <code>ax_venues</code></td>
+<td>search</td>
+<td>topics, techniques and domains, categories, venues, with counts by year</td>
+</tr>
+<tr>
+<td><code>ax_complete</code></td>
+<td>search</td>
+<td>what the search box completes: phrases of titles, people, techniques, categories</td>
+</tr>
+<tr>
+<td><code>ax_nodes</code></td>
+<td>graph</td>
+<td>the graphs' nodes: every paper's id and every person's key</td>
+</tr>
+<tr>
+<td><code>ax_cites</code>, <code>ax_coauthors</code></td>
+<td>graph</td>
+<td>edges: who cites whom, who writes with whom and how often</td>
+</tr>
+<tr>
+<td><code>ax_events</code></td>
+<td>graph</td>
+<td>reading events: a citing work's references, and what readers open and save here</td>
+</tr>
+<tr>
+<td><code>reading_*</code></td>
+<td>graph</td>
+<td>the recommender's counts (<code>CREATE RECOMMENDER reading</code>)</td>
+</tr>
+<tr>
+<td><code>ax_feeds</code>, <code>ax_issues</code>, <code>ax_notes</code>, <code>ax_answers</code>, <code>ax_library</code></td>
+<td>graph</td>
+<td>feeds, their issues, the papers' pages as read and what the model wrote, readers' libraries</td>
+</tr>
+<tr>
+<td><code>ax_figures</code></td>
+<td>graph</td>
+<td>the figures issues show, each image copied once from the paper's page</td>
+</tr>
+<tr>
+<td><code>ax_labs</code>, <code>ax_lab_papers</code></td>
+<td>search</td>
+<td>each organisation with its papers in all, in the last twelve months and the twelve before; each paper's organisations with the columns a lab page counts by</td>
+</tr>
+<tr>
+<td><code>ax_watches</code>, <code>ax_matches</code></td>
+<td>graph</td>
+<td>readers' standing questions, and each paper read for one with the model's verdict and why</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="tests">Tests<a class="anchor" href="#tests" aria-label="Link to this section">#</a></h2>
+<p><code>tests/cluster.rs</code> starts two chloedb-servers through <code>serve --local --local-graph</code>, loads a small made-up arXiv into them (embedded by the <code>hash:512</code> model, so nothing is downloaded), and checks every page: search, a paper's citations and what to read next, a person, a topic, the atlas, events becoming For you, a feed's preview, what to cite for a draft, people to work with, reviewers for a paper and for a pasted abstract with its authors left out, a standing question kept, listed, read as RSS and dropped, and that gaps, new topics, spread, rising people, code, labs and trends answer.</p>
+<pre data-lang="sh">cd chloedb-arxiv &amp;&amp; cargo test --profile ci</pre>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/chloedb-server-v0.3.8/docs/chloedb/arxiv.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="hn.html">← Hacker News</a><a href="github.html">GitHub explorer →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.8/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../../assets/site.js?v=699f360f4f"></script>
+<script src="../../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>
