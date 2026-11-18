@@ -21,6 +21,7 @@ mod autopilot;
 mod arrow_answers;
 mod arrow_leaves;
 mod autoscale;
+mod blend;
 mod budgets;
 mod cc;
 mod aws;
