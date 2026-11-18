@@ -565,7 +565,7 @@ fn undone_edits(sup: &Supervisor, repo: &str, since_ms: i64, s: &mut Signals) {
 }
 
 fn git_out(dir: &FsPath, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null()).output().ok()?;
+    let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").stdin(std::process::Stdio::null()).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
 }
 

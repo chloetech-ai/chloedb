@@ -206,7 +206,7 @@ fn open(sup: &Supervisor, id: &str) -> Result<Arc<StateDb>, String> {
 
 fn run_git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Option<String> {
     let mut c = Command::new("git");
-    c.arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0");
+    c.arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0");
     for (k, v) in env {
         c.env(k, v);
     }

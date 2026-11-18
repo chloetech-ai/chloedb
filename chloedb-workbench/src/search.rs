@@ -397,6 +397,7 @@ pub fn list_files(dir: &Path) -> Result<Vec<String>, String> {
         .arg(dir)
         .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
         .map_err(|e| format!("cannot run git: {e}"))?;
     if !out.status.success() {
@@ -591,10 +592,10 @@ fn changed_files(a: &crate::db::Agent) -> Vec<String> {
     let dir = Path::new(&a.cwd);
     let mut out = Vec::new();
     let base = a.base.clone().unwrap_or_else(|| "HEAD".into());
-    if let Ok(o) = Command::new("git").arg("-C").arg(dir).args(["diff", "--name-only", "-z", &base]).env("GIT_TERMINAL_PROMPT", "0").output() {
+    if let Ok(o) = Command::new("git").arg("-C").arg(dir).args(["diff", "--name-only", "-z", &base]).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output() {
         out.extend(o.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).to_string()));
     }
-    if let Ok(o) = Command::new("git").arg("-C").arg(dir).args(["ls-files", "-z", "--others", "--exclude-standard"]).env("GIT_TERMINAL_PROMPT", "0").output() {
+    if let Ok(o) = Command::new("git").arg("-C").arg(dir).args(["ls-files", "-z", "--others", "--exclude-standard"]).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output() {
         out.extend(o.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).to_string()));
     }
     out.retain(|p| worth(p));
