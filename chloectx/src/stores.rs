@@ -330,31 +330,55 @@ pub fn is_record_id(s: &str) -> bool {
 struct Found {
     entry: Entry,
     started: bool,
+    /// The records a forget deletes: by id, or those whose own text holds
+    /// the text.
     total: usize,
     matches: Vec<Json>,
+    /// Those that hold the text only in their context: kept, and cut.
+    context_total: usize,
+    context: Vec<Json>,
+    /// The session states, log lines and receipts that hold it.
+    side: usize,
+    side_said: String,
+    named: Vec<String>,
 }
 
-/// `chloectx forget --everywhere WHAT`: the records of every store that
-/// `chloectx stores` lists whose text or context holds WHAT (whatever its
-/// case), or, when every word of WHAT is a record id, those records,
-/// wherever they are. Lists them by store and asks first (or `yes`), then
-/// forgets them with each store's own forget: deleted, scrubbed from the
-/// receipts that showed them, the automatic snapshots that hold them
-/// dropped. A daemon started here for a store is stopped after it.
+/// `chloectx forget --everywhere WHAT`: [`forget_in`] every store
+/// `chloectx stores` lists.
 pub fn forget_everywhere(home: &Path, what: &[String], o: &ForgetOptions) -> i32 {
+    forget_in(home, None, what, o)
+}
+
+/// `chloectx forget TEXT` in the store at `only` (with `--everywhere`,
+/// `only` is `None`: every store `chloectx stores` lists): when every word
+/// of WHAT is a record id, those records, wherever they are; else the text
+/// WHAT, whatever its case ([`crate::forget`]). The records whose own text
+/// holds it are deleted, and those that hold it only in their context (the
+/// request of the turn they came from, as a rule given in the same prompt
+/// as a private aside, JONAH-1) are kept, with it cut from that context.
+/// Lists, by store, each record that goes (its kind and first line), those
+/// that stay, and the other files that hold it, then asks (or `yes`), then
+/// forgets with each store's own forget, which scrubs the session state,
+/// the logs and the receipts too, and drops the automatic snapshots. A
+/// daemon started here for a store is stopped after it.
+pub fn forget_in(home: &Path, only: Option<&Path>, what: &[String], o: &ForgetOptions) -> i32 {
     let text = what.join(" ").trim().to_string();
     let ids: Vec<String> = what.iter().map(|w| w.trim().to_string()).filter(|w| !w.is_empty()).collect();
     let by_id = !ids.is_empty() && ids.iter().all(|w| is_record_id(w));
-    if !by_id && text.chars().count() < 3 {
-        eprintln!("chloectx forget --everywhere: give the text to look for (3 characters or more) or record ids");
+    let cmd = if only.is_some() { "chloectx forget" } else { "chloectx forget --everywhere" };
+    if !by_id && crate::forget::needle(&text).is_none() {
+        eprintln!("{cmd}: give the text to look for ({} characters or more) or record ids", crate::forget::MIN_CHARS);
         return 2;
     }
-    let all = survey(home);
+    let all: Vec<Entry> = survey(home).into_iter().filter(|e| only.is_none_or(|d| e.info.dir == d)).collect();
     if all.is_empty() {
-        println!("No stores in {}.", home.display());
+        match only {
+            Some(d) => println!("No store at {}.", d.display()),
+            None => println!("No stores in {}.", home.display()),
+        }
         return 0;
     }
-    let req = if by_id { json!({"op": "find", "ids": ids}) } else { json!({"op": "find", "text": text, "limit": 200}) };
+    let req = if by_id { json!({"op": "find", "ids": ids}) } else { json!({"op": "find", "text": text, "limit": 1000}) };
     let mut found: Vec<Found> = Vec::new();
     let mut failed = 0;
     let stop = |e: &Entry| {
@@ -379,15 +403,33 @@ pub fn forget_everywhere(home: &Path, what: &[String], o: &ForgetOptions) -> i32
                 continue;
             }
         };
-        let total = r["total"].as_u64().unwrap_or(0) as usize;
-        if total == 0 {
+        let count = |k: &str| r[k].as_u64().unwrap_or(0) as usize;
+        let side = &r["side"];
+        let (sessions, lines, receipts) = (side["sessions"].as_u64().unwrap_or(0), side["log_lines"].as_u64().unwrap_or(0), side["receipts"].as_u64().unwrap_or(0));
+        let mut said = Vec::new();
+        for (n, one, many) in [(sessions, "session's state", "sessions' state"), (lines, "log line", "log lines"), (receipts, "receipt", "receipts")] {
+            if n > 0 {
+                said.push(if n == 1 { format!("1 {one}") } else { format!("{n} {many}") });
+            }
+        }
+        let f = Found {
+            started: !running,
+            total: count("total"),
+            matches: r["matches"].as_array().cloned().unwrap_or_default(),
+            context_total: count("context_total"),
+            context: r["context"].as_array().cloned().unwrap_or_default(),
+            side: (sessions + lines + receipts) as usize,
+            side_said: and_list(&said),
+            named: side["named_snapshots"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect(),
+            entry: e,
+        };
+        if f.total + f.context_total + f.side == 0 {
             if !running {
-                stop(&e);
+                stop(&f.entry);
             }
             continue;
         }
-        let matches = r["matches"].as_array().cloned().unwrap_or_default();
-        found.push(Found { entry: e, started: !running, total, matches });
+        found.push(f);
     }
     let finish = |found: &[Found]| {
         for f in found.iter().filter(|f| f.started) {
@@ -396,36 +438,81 @@ pub fn forget_everywhere(home: &Path, what: &[String], o: &ForgetOptions) -> i32
     };
     let what_said = if by_id { ids.join(", ") } else { format!("\"{text}\"") };
     if found.is_empty() {
-        println!("No record in any of the stores holds {what_said}.");
+        match only {
+            Some(_) => println!("No record in this project's store holds {what_said}."),
+            None => println!("No record in any of the stores holds {what_said}."),
+        }
         return i32::from(failed > 0);
     }
     let now = crate::now();
-    let mut n = 0;
+    let line = |m: &Json| {
+        format!(
+            "    {:<14} {:<10} {:>12}  {}",
+            m["id"].as_str().unwrap_or(""),
+            m["kind"].as_str().unwrap_or(""),
+            crate::recall::fmt_ago(m["ts"].as_i64().unwrap_or(0), now),
+            crate::envelope::defuse(m["line"].as_str().or(m["snippet"].as_str()).unwrap_or(""))
+        )
+    };
+    let (mut n, mut kept, mut side) = (0, 0, 0);
     for f in &found {
         println!("{} ({}):", name(&f.entry), f.entry.info.dir.display());
-        for m in &f.matches {
-            let field = if m["field"] == "ctx" { " (in its context)" } else { "" };
-            println!("  {}  {} {}{field}: {}", m["id"].as_str().unwrap_or(""), m["kind"].as_str().unwrap_or(""), crate::recall::fmt_ago(m["ts"].as_i64().unwrap_or(0), now), m["snippet"].as_str().unwrap_or(""));
+        if f.total > 0 {
+            if by_id {
+                println!("  Deletes {}:", plural(f.total, "record"));
+            } else {
+                println!("  Deletes {} whose own text holds it:", plural(f.total, "record"));
+            }
+            for m in &f.matches {
+                println!("{}", line(m));
+            }
+            if f.total > f.matches.len() {
+                println!("    … and {} more", f.total - f.matches.len());
+            }
         }
-        if f.total > f.matches.len() {
-            println!("  … and {} more", f.total - f.matches.len());
+        if f.context_total > 0 {
+            if f.context_total == 1 {
+                println!("  Keeps 1 record that holds it only in its context (the request of the turn it came from), and cuts it from there:");
+            } else {
+                println!("  Keeps {} records that hold it only in their context (the request of the turn they came from), and cuts it from there:", f.context_total);
+            }
+            for m in f.context.iter().take(20) {
+                println!("{}", line(m));
+            }
+            if f.context_total > 20.min(f.context.len()) {
+                println!("    … and {} more", f.context_total - 20.min(f.context.len()));
+            }
+        }
+        if !f.side_said.is_empty() {
+            println!("  Scrubs it from {}.", f.side_said);
+        }
+        if !f.named.is_empty() {
+            println!("  Named snapshots keep what they held: {} (`chloectx snapshot drop NAME`).", f.named.join(", "));
         }
         n += f.total;
+        kept += f.context_total;
+        side += f.side;
     }
-    let what = format!("{n} record{} in {} store{}", if n == 1 { "" } else { "s" }, found.len(), if found.len() == 1 { "" } else { "s" });
+    let stores = found.len();
+    let what = format!("{} in {} store{}", plural(n, "record"), stores, if stores == 1 { "" } else { "s" });
+    let extra = match (kept, side) {
+        (0, 0) => String::new(),
+        (0, _) => ", and scrub it from the store's other files".to_string(),
+        (k, _) => format!(", and cut it from {}{}", if k == 1 { "1 more record, which stays".to_string() } else { format!("{k} more records, which stay") }, if side > 0 { ", and from the store's other files" } else { "" }),
+    };
     if o.dry_run {
-        println!("\nWould forget {what}. Nothing was changed.");
+        println!("\nWould forget {what}{extra}. Nothing was changed.");
         finish(&found);
         return i32::from(failed > 0);
     }
     if !o.yes {
         use std::io::{BufRead, IsTerminal, Write};
         if !std::io::stdin().is_terminal() {
-            println!("\nWould forget {what}. Run it again with --yes to forget them (it cannot be undone).");
+            println!("\nWould forget {what}{extra}. Run it again with --yes to forget them (it cannot be undone).");
             finish(&found);
             return i32::from(failed > 0);
         }
-        print!("\nForget {what}? It cannot be undone. [y/N] ");
+        print!("\nForget {what}{extra}? It cannot be undone. [y/N] ");
         let _ = std::io::stdout().flush();
         let mut answer = String::new();
         let _ = std::io::stdin().lock().read_line(&mut answer);
@@ -435,25 +522,18 @@ pub fn forget_everywhere(home: &Path, what: &[String], o: &ForgetOptions) -> i32
             return 0;
         }
     }
-    let mut forgotten = 0;
+    let (mut forgotten, mut cut) = (0, 0);
     for f in &found {
-        // Every match, not only the ones listed: asked again for the ids.
-        let ids: Vec<String> = if f.total > f.matches.len() {
-            match crate::daemon::request(&f.entry.info.dir, f.entry.info.project.as_deref().unwrap_or(""), &json!({"op": "find", "text": text, "limit": f.total + 1000}), Duration::from_secs(600)) {
-                Ok(r) => r["matches"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(String::from)).collect(),
-                Err(e) => {
-                    failed += 1;
-                    eprintln!("chloectx forget: {}: {e}", name(&f.entry));
-                    continue;
-                }
-            }
+        let req = if by_id {
+            json!({"op": "forget", "ids": f.matches.iter().filter_map(|m| m["id"].as_str()).collect::<Vec<_>>(), "wait": true})
         } else {
-            f.matches.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect()
+            // Every record that holds it then, not only the ones listed.
+            json!({"op": "forget", "text": text, "wait": true})
         };
-        match crate::daemon::request(&f.entry.info.dir, f.entry.info.project.as_deref().unwrap_or(""), &json!({"op": "forget", "ids": ids, "wait": true}), Duration::from_secs(600)) {
+        match crate::daemon::request(&f.entry.info.dir, f.entry.info.project.as_deref().unwrap_or(""), &req, Duration::from_secs(600)) {
             Ok(r) if r.get("error").is_none() => {
-                let d = r["deleted"].as_array().map_or(0, |a| a.len());
-                forgotten += d;
+                forgotten += r["deleted"].as_array().map_or(0, |a| a.len());
+                cut += r["cut"].as_array().map_or(0, |a| a.len());
                 println!("{}: {}", name(&f.entry), r["text"].as_str().unwrap_or(""));
             }
             Ok(r) => {
@@ -467,8 +547,30 @@ pub fn forget_everywhere(home: &Path, what: &[String], o: &ForgetOptions) -> i32
         }
     }
     finish(&found);
-    println!("Forgot {forgotten} record{}.", if forgotten == 1 { "" } else { "s" });
+    if cut > 0 {
+        println!("Forgot {}; cut it from the context of {} more, which {}.", plural(forgotten, "record"), cut, if cut == 1 { "stays" } else { "stay" });
+    } else {
+        println!("Forgot {}.", plural(forgotten, "record"));
+    }
     i32::from(failed > 0)
+}
+
+/// "a", "a and b", "a, b and c".
+fn and_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [a] => a.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// `n record`, or `n records`.
+fn plural(n: usize, what: &str) -> String {
+    if n == 1 {
+        format!("1 {what}")
+    } else {
+        format!("{n} {what}s")
+    }
 }
 
 /// A store's name for a person: its project, or its folder's name.

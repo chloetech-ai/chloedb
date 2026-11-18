@@ -44,7 +44,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <span class="eyebrow">Benchmarks</span>
     <h1>First overall when one system has to do it all</h1>
     <p class="lede">Applications need full text, filters, SQL, vectors and hybrids together. We test all of them at once, against thirteen search engines and databases. ChloeDB is not the fastest at everything, and this page shows where.</p>
-    <p class="updated">Updated 16 November 2026 · measured, never edited</p>
+    <p class="updated">Updated 17 November 2026 · measured, never edited</p>
   </div></div>
 
   <section class="gutter" id="results"><div class="wrap block">
@@ -52,7 +52,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="bench-10m.html" data-overall="cloud-10m" data-mode="tile"></a>
       <a href="bench-1m.html" data-overall="cloud-1m" data-mode="tile"></a>
       <a href="bench-laptop.html" data-overall="laptop" data-mode="tile"></a>
-      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">4.1× to 18×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB on five BEIR collections, every system on one node with ChloeDB 0.3.5, and as fast with ChloeDB held to one thread.</p></a>
+      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">4.5× to 24×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB on five BEIR collections, every system on one node with ChloeDB of 17 November, and as fast with ChloeDB held to one thread.</p></a>
       <a href="bench-graph.html"><span class="eyebrow">Graph · arXiv citations</span><span class="v">1st of 5</span><p>Against Neo4j, Memgraph, FalkorDB and ArangoDB, on one laptop: ChloeDB 31 points, Memgraph 60, and 21 against 24 without PageRank, which only ChloeDB and Neo4j run. Memgraph and FalkorDB answer one to three hops in about half ChloeDB's time.</p></a>
       <a href="bench-10m.html#writes"><span class="eyebrow">Fresh writes · 10M</span><span class="v">6.7 ms</span><p>From a write to a search that finds it, at the median. Vespa 10.0 ms, Elasticsearch 731, OpenSearch 867.</p></a>
     </div>
@@ -94,8 +94,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         <p>ChloeDB scores 8-bit codes and re-scores the best 40, so read its vector speeds with this recall. At 1M, asking for 256 candidates instead of 64 lifts it from 0.809 to 0.931, and 512 to 0.957; at a little less recall than Qdrant's (0.931 against 0.944, 0.957 against 0.965) it serves 1.4 and 1.7 times Qdrant's queries a second, and with a filter 2.6 to 6.2 times as many at about equal recall. <a href="bench-1m.html#recall">The sweep</a>.</p></div>
       <div class="loss"><div><h3>Short graph hops</h3><div class="nums">Graph · 1 hop 0.35 ms over gRPC; Memgraph 0.18</div></div>
         <p>Memgraph and FalkorDB, both in memory, answer one to three hops in about half ChloeDB's time. ChloeDB's own time on one hop is 0.10 ms against Memgraph's 0.02; gRPC instead of HTTP JSON took 0.1 ms off the rest. Not fixed yet.</p></div>
-      <div class="loss"><div><h3>Single-row writes in an app</h3><div class="nums">268 to 800 commits/s; SQLite at FULL 933 to 1,340</div></div>
-        <p>On the 16 November node, whose disk syncs about five times slower than the earlier ones, ChloeDB commits single rows at 29 to 60% of SQLite's rate at FULL, and updates a price at less than half (552 a second with a text and a vector index, against 1,286). Its log only grows, and on that disk a sync that grows a file takes twice one that overwrites; its 6 November build is as fast there. Not fixed yet.</p></div>
+      <div class="loss"><div><h3>Price updates in an app</h3><div class="nums">1,920 updates/s with indexes; SQLite at FULL 8,763</div></div>
+        <p>Since its log is written over space laid out ahead (#608), ChloeDB commits single rows faster than SQLite at FULL: 13,267 a second against 5,212 on 17 November's node. It still updates a price at less than half SQLite's rate, 3,149 a second without indexes against 7,149, and 1,920 with a text and a vector index against 8,763. The time goes to planning and running the <code>UPDATE</code>, not to the sync. Not fixed yet.</p></div>
     </div>
   </div></section>
 
@@ -157,7 +157,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js?v=37458d7418"></script>
+<script src="assets/bench-data.js?v=c72ae1d5f9"></script>
 <script src="assets/site.js?v=699f360f4f"></script>
 <script src="assets/bench.js?v=cc795d625d"></script>
 </body>

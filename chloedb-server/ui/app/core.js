@@ -488,6 +488,25 @@ export function findCopy(url, cluster = ctx.cluster) {
 }
 const hostPort = (url) => String(url).replace(/^[a-z]+:\/\//, "").replace(/\/.*$/, "");
 /**
+ * Why the server refuses `name` for a checkpoint, as it says (letters,
+ * digits, ".", "_" and "-", not starting with "."), or null.
+ */
+export function checkpointNameProblem(name) {
+  const n = String(name ?? "");
+  if (n && n.length <= 200 && !n.startsWith(".") && /^[A-Za-z0-9._-]+$/.test(n)) return null;
+  return `use letters, digits, ".", "_" and "-", not starting with "."`;
+}
+/**
+ * A checkpoint's default name: `prefix` (a copy's short name, say
+ * "127.0.0.1:17744", or "cluster") made of the characters the server
+ * takes, then the time `at` in UTC ("2026-11-17-18-52-11").
+ */
+export function checkpointName(prefix, at = new Date()) {
+  const safe = String(prefix ?? "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-{2,}/g, "-").replace(/^[.-]+|-+$/g, "");
+  const stamp = at.toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  return safe ? `${safe}-${stamp}` : stamp;
+}
+/**
  * The short name of a copy, as the cluster names it from its address
  * ("s1-0" for a pod the operator runs, "a0", "127.0.0.1:8004"); host:port
  * for a URL the cluster does not list.

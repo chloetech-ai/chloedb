@@ -18,6 +18,9 @@
 # GitHub (Linux x86_64 and aarch64 with glibc 2.35 or later, macOS arm64 and
 # x86_64, macOS 11 or later), checks the archive against the SHA-256 the
 # release publishes beside it, and puts `chloedb-server` in ~/.local/bin.
+# The newest release is asked of GitHub's API, and where that cannot be
+# reached (a proxy, or its limit of 60 requests an hour without a token),
+# of github.com's /releases/latest and then of this website.
 # It needs curl (or wget), tar and sha256sum (or shasum), changes nothing
 # outside the install folder, and asks for no password.
 #
@@ -39,6 +42,8 @@
 set -eu
 
 REPO="chloetech-ai/chloedb"
+# The website that serves this script, the docs and versions.json.
+SITE="https://chloetech-ai.github.io/chloedb"
 RELEASES_URL="${CHLOEDB_RELEASES_URL:-https://github.com/$REPO/releases/download}"
 INSTALL_DIR="${CHLOEDB_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${CHLOEDB_VERSION:-}"
@@ -154,6 +159,46 @@ fi
 
 # --- Which version ---------------------------------------------------------
 
+tmp=$(mktemp -d 2> /dev/null || mktemp -d -t chloedb)
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+# The address URL $1 redirects to, reading no page.
+redirect() {
+  if have curl; then
+    curl -fsSI -o /dev/null -w '%{redirect_url}' --retry 3 "$1"
+  elif have wget; then
+    wget -S --spider --max-redirect=0 "$1" 2>&1 | sed -n 's/^ *[Ll]ocation: *//p' | tr -d '\r' | head -n 1
+  else
+    fail "needs curl or wget to download the release"
+  fi
+}
+
+# Runs "$@" (a fetch of URL $1, or the address it redirects to), its
+# output in $got; on failure, the line "  URL: what went wrong" is added to
+# $tried, for the message that says so.
+tried=""
+attempt() {
+  url=$1
+  shift
+  if got=$("$@" 2> "$tmp/err") && [ -n "$got" ]; then
+    return 0
+  fi
+  why=$(tail -n 1 "$tmp/err" | sed 's/^curl: ([0-9]*) //')
+  tried="$tried
+  $url: ${why:-no answer}"
+  got=""
+  return 1
+}
+
+# The command that installs version $1 as this one was asked to, to show.
+again() {
+  line="curl -fsSL $SITE/install.sh | "
+  [ -z "${CHLOEDB_INSTALL_DIR:-}" ] || line="${line}CHLOEDB_INSTALL_DIR=$CHLOEDB_INSTALL_DIR "
+  line="${line}CHLOEDB_VERSION=$1 sh"
+  [ -z "$WITH" ] || line="$line -s -- --with $WITH"
+  printf '%s' "$line"
+}
+
 if [ -z "$VERSION" ]; then
   case "$RELEASES_URL" in
     https://github.com/*) ;;
@@ -163,10 +208,41 @@ if [ -z "$VERSION" ]; then
   # JavaScript packages), each under its own tag: the newest server tag.
   # GitHub lists releases newest first; drafts are not shown and
   # prereleases are skipped by name (a version with a hyphen).
-  VERSION=$(fetch "https://api.github.com/repos/$REPO/releases?per_page=100" \
-    | sed -n 's/.*"tag_name": *"chloedb-server-v\([0-9][0-9.]*\)".*/\1/p' | head -n 1) \
-    || true
-  [ -n "$VERSION" ] || fail "could not find a chloedb-server release on https://github.com/$REPO/releases (set CHLOEDB_VERSION to pick one)"
+  api="https://api.github.com/repos/$REPO/releases?per_page=100"
+  if attempt "$api" fetch "$api"; then
+    VERSION=$(printf '%s\n' "$got" | sed -n 's/.*"tag_name": *"chloedb-server-v\([0-9][0-9.]*\)".*/\1/p' | head -n 1)
+    [ -n "$VERSION" ] || tried="$tried
+  $api: no chloedb-server release listed"
+  fi
+  # Without the API (MAYA-1 of the persona study of 17 November 2026: a
+  # proxy refused it): the release GitHub marks as the latest, the
+  # server's (release-publish.yml marks it so), by the address of its page
+  # that /releases/latest redirects to.
+  if [ -z "$VERSION" ]; then
+    latest="https://github.com/$REPO/releases/latest"
+    if attempt "$latest" redirect "$latest"; then
+      VERSION=$(printf '%s\n' "$got" | sed -n 's|.*/releases/tag/chloedb-server-v\([0-9][0-9.]*\)$|\1|p')
+      [ -n "$VERSION" ] || tried="$tried
+  $latest: leads to $got, not a chloedb-server release"
+      [ -z "$VERSION" ] || say "The newest release is $VERSION, says $latest (GitHub's API did not answer)"
+    fi
+  fi
+  # Then the website this script comes from: the release its docs describe.
+  if [ -z "$VERSION" ]; then
+    site="$SITE/site/versions.json"
+    if attempt "$site" fetch "$site"; then
+      VERSION=$(printf '%s\n' "$got" | sed -n 's/.*"latest": *"\([0-9][0-9.]*\)".*/\1/p' | head -n 1)
+      [ -n "$VERSION" ] || tried="$tried
+  $site: names no release"
+      [ -z "$VERSION" ] || say "The newest release is $VERSION, says $site (GitHub did not answer)"
+    fi
+  fi
+  if [ -z "$VERSION" ]; then
+    printf 'chloedb install: could not tell which chloedb-server release is the newest:%s\n' "$tried" >&2
+    printf 'Name the version after the pipe (the releases are https://github.com/%s/releases, chloedb-server-v<version>; 0.3.7 was the newest when this script was written):\n' "$REPO" >&2
+    printf '  %s\n' "$(again '<version>')" >&2
+    exit 1
+  fi
 fi
 VERSION=${VERSION#v}
 VERSION=${VERSION#chloedb-server-v}
@@ -181,9 +257,6 @@ else
   fail "needs sha256sum or shasum to check the download"
 fi
 have tar || fail "needs tar to unpack the release"
-
-tmp=$(mktemp -d 2> /dev/null || mktemp -d -t chloedb)
-trap 'rm -rf "$tmp"' EXIT INT TERM
 
 # Installs the program $1 from its archive, $1-<platform>.tar.gz, of the
 # release chloedb-server-v$VERSION, after checking its SHA-256.
@@ -233,10 +306,10 @@ say "Try it: a demo catalogue of 20,000 products, with the query console at http
 say "  $bin --demo 20000 --db demo.chloedb"
 say "Then a first search, from another terminal:"
 say "  curl -s 127.0.0.1:7700/v1/sql -H 'content-type: application/json' -d '{\"sql\": \"SELECT title FROM products WHERE MATCH(body, '\\''waterproof jacket'\\'') LIMIT 5\"}'"
-say "The five-minute guide: https://chloetech.ai/site/docs/quickstart.html"
+say "The five-minute guide: $SITE/site/docs/quickstart.html"
 if "$INSTALL_DIR/chloedb-server" doctor --help > /dev/null 2>&1; then
   say "Something in the way? $bin doctor checks the version, the Python package, the models and port 7700."
 fi
 case " $EXTRA " in
-  *" chloectx "*) say "ChloeCtx for Claude Code: $INSTALL_DIR/chloectx fetch-model && $INSTALL_DIR/chloectx install --project /absolute/path/to/a/project (see https://chloetech.ai/site/docs/chloectx-setup.html)" ;;
+  *" chloectx "*) say "ChloeCtx for Claude Code: $INSTALL_DIR/chloectx fetch-model && $INSTALL_DIR/chloectx install --project /absolute/path/to/a/project --distill-model haiku (see $SITE/site/docs/chloectx-setup.html)" ;;
 esac

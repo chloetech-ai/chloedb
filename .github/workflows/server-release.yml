@@ -52,6 +52,7 @@ on:
       - .github/workflows/server-release.yml
       - docs/install.sh
       - install.sh
+      - scripts/test-install.sh
       - packaging/homebrew/**
       - packaging/server-wheels/**
 
@@ -95,6 +96,13 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # How the one-line installer finds the newest release, against a curl
+      # that answers in place of GitHub and the website: GitHub's API, then
+      # github.com's /releases/latest, then the website's versions.json,
+      # and when none answers, a message naming each and the command to run
+      # (scripts/test-install.sh; no network, no build).
+      - name: The installer finds the newest release without GitHub's API
+        run: sh scripts/test-install.sh docs/install.sh
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}

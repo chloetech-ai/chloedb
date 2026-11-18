@@ -1254,6 +1254,48 @@ impl Keys {
         Ok((key, full))
     }
 
+    /// What a key an agent makes ([`crate::ops::is_agent`]) with `POST
+    /// /v1/admin/keys` may be (LENA-2, CLU-4): an agent's key too, acting
+    /// for the person its maker acts for, expiring no later than its maker
+    /// and with a statement budget no looser, so that an agent never makes
+    /// a key that escapes the fence it is in (an agent's key does not
+    /// approve changes nor act at tier 3 alone, [`crate::ops`]). `asked`
+    /// is what the request said of `agent`, if anything; `more` and
+    /// `expires_ms` are made so. A person makes any other key, or approves
+    /// a change request for one.
+    pub fn fence_agents_key(&self, by: &Principal, asked: Option<bool>, more: &mut AgentKey, expires_ms: &mut Option<u64>) -> Result<(), ApiError> {
+        let refuse = |m: String| ApiError::coded(403, "change_request_required", m);
+        if asked == Some(false) {
+            return Err(refuse(format!(
+                "{:?} is an agent's key: the keys it makes are agents' keys too (\"agent\": true); a person makes any other, or approves a change request (POST /v1/admin/changes) for one",
+                by.name
+            )));
+        }
+        more.agent = true;
+        if let Some(p) = by.on_behalf_of.as_deref() {
+            match more.on_behalf_of.as_deref().map(str::trim) {
+                Some(q) if q != p => return Err(refuse(format!("the keys {:?} makes act for {p}, as it does, not for {q}", by.name))),
+                _ => more.on_behalf_of = Some(p.to_string()),
+            }
+        }
+        let maker = by.key.as_deref().and_then(|id| self.lock().keys.iter().find(|k| k.id == id).cloned());
+        if let Some(m) = maker {
+            if let Some(e) = m.expires_ms {
+                *expires_ms = Some(expires_ms.map_or(e, |x| x.min(e)));
+            }
+            if let Some(b) = m.budget {
+                more.budget = Some(more.budget.map_or(b, |x| x.within(b)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether key `id` is an agent's (or has a role), for [`Self::rotate`]
+    /// by an agent; `None` for no such key.
+    pub fn is_agents(&self, id: &str) -> Option<bool> {
+        self.lock().keys.iter().find(|k| k.id == id).map(|k| k.agent || k.role.is_some())
+    }
+
     /// A session for the person `email`, who signed in by `provider`
     /// (`google`, [`crate::signin`]), at `scope`: a key of every table,
     /// owned by their address, that lasts [`SESSION_MAX_MS`] at most and

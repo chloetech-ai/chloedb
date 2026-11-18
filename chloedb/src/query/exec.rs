@@ -43,6 +43,10 @@ pub const DEFAULT_K: usize = 100;
 /// then the most frequent), as Elasticsearch's `max_expansions`.
 pub const MAX_FUZZY_TERMS: usize = 50;
 
+/// Terms a prefix (`sof*`) stands for in a ranked query at most: those in
+/// the most rows ([`Executor::prefix_terms`]).
+pub const MAX_PREFIX_TERMS: usize = 128;
+
 /// The least chance ([`text::fuzzy::meant`]) at which
 /// [`Executor::corrections`] takes a word for a typo of its neighbour.
 pub const CORRECTION_CHANCE: f32 = 0.5;
@@ -1128,6 +1132,9 @@ struct Expanded {
     /// A prefix's runs of codes with typos, by segment, field, prefix and
     /// edits (the planner and the filter both need them).
     runs: HashMap<(usize, usize, String, u8), Arc<Vec<std::ops::Range<u32>>>>,
+    /// The terms a `bm25` prefix stands for, and how many it begins, by
+    /// field and prefix ([`Executor::prefix_terms`]).
+    prefixes: HashMap<(usize, String), Arc<(Vec<(String, u64)>, usize)>>,
 }
 
 fn err(m: impl Into<String>) -> Error {
@@ -1555,8 +1562,8 @@ impl<'a> Executor<'a> {
             if let Some(m) = m {
                 opts.insert("min".into(), Value::Int(m as i64));
             }
-            let (_, filter, y) = ranked_terms(text, &opts, self.schema.fields[*field].text_analyzer())?;
-            Ok((y, filter))
+            let r = ranked_terms(text, &opts, self.schema.fields[*field].text_analyzer())?;
+            Ok((r.optional, r.filter))
         };
         let y = match &g.site {
             GuardSite::AtLeast(items) => items.len(),
@@ -3455,12 +3462,12 @@ impl<'a> Executor<'a> {
     fn bm25_query(&self, field: usize, text: &str, opts: &Opts) -> Result<Bm25Query> {
         let analyzer = self.schema.fields[field].text_analyzer();
         let expand = Expand::from_opts(opts).map_err(err)?;
-        let (weighted, filter, _) = ranked_terms(text, opts, analyzer)?;
-        let seq: Vec<String> = weighted.iter().map(|(t, _)| t.clone()).collect();
-        let mut out = Bm25Query { filter: filter.map(|query| Pred::Match { field, query, expand }), ..Bm25Query::default() };
+        let ranked = ranked_terms(text, opts, analyzer)?;
+        let seq: Vec<String> = ranked.terms.iter().map(|(t, _)| t.clone()).collect();
+        let mut out = Bm25Query { filter: ranked.filter.clone().map(|query| Pred::Match { field, query, expand }), ..Bm25Query::default() };
         // The highest weight of each base term, for its expansions.
         let mut top: Vec<f32> = Vec::new();
-        for (t, x) in &weighted {
+        for (t, x) in &ranked.terms {
             match out.terms.iter().position(|(y, _)| y == t) {
                 Some(i) => {
                     out.terms[i].1 += x;
@@ -3500,7 +3507,10 @@ impl<'a> Executor<'a> {
                 }
             }
         }
-        if let Some(fz) = expand.fuzzy {
+        // A typo-tolerant word (`lether~`, `lether~1`) takes its own edits,
+        // whatever `fuzzy =>` says of the others.
+        let typo_of = |t: &str| ranked.typos.iter().find(|(x, _)| x == t).map(|(_, e)| *e);
+        if expand.fuzzy.is_some() || !ranked.typos.is_empty() {
             // `'auto'` corrects typos ([`text::fuzzy::known`],
             // [`text::fuzzy::meant`]): it leaves a word in enough documents
             // as it is, and adds only neighbours in more documents than the
@@ -3508,20 +3518,30 @@ impl<'a> Executor<'a> {
             // goes by this snapshot's counts, so that a shard adds the same
             // terms in a coordinator's statistics round and in its query;
             // the chances by the collection's where they were sent.
-            let auto = fz == Fuzzy::Auto;
             let raw = raw_forms(analyzer, text);
             let names: Vec<String> = out.terms[..n_base].iter().map(|(t, _)| t.clone()).collect();
-            let local = if auto { Some(self.local_stats(field, &names)?) } else { None };
+            let edits_of = |t: &str| -> (u8, bool) {
+                let len = t.chars().count();
+                match (typo_of(t), expand.fuzzy) {
+                    (Some(e), _) => (e.unwrap_or_else(|| text::query::auto_edits(len)), false),
+                    (None, Some(fz)) => (fz.edits(len), fz == Fuzzy::Auto),
+                    (None, None) => (0, false),
+                }
+            };
+            let local = if names.iter().any(|t| edits_of(t).1) { Some(self.local_stats(field, &names)?) } else { None };
             let sent = self.opts.stats.as_ref().and_then(|s| s.fields.get(&self.schema.fields[field].name));
             for (b, t) in names.iter().enumerate() {
                 let w = top[b];
                 let len = t.chars().count();
-                let e = fz.edits(len);
+                let (e, auto) = edits_of(t);
                 if e == 0 {
                     continue;
                 }
-                let df = local.as_ref().map_or(0, |st| st.df.get(t).copied().unwrap_or(0));
-                if let Some(st) = &local {
+                let df = match auto {
+                    true => local.as_ref().map_or(0, |st| st.df.get(t).copied().unwrap_or(0)),
+                    false => 0,
+                };
+                if let (true, Some(st)) = (auto, &local) {
                     if text::fuzzy::known(df, st.n_docs) {
                         continue;
                     }
@@ -3537,8 +3557,57 @@ impl<'a> Executor<'a> {
                 }
             }
         }
+        // A prefix (`sof*`) stands for the indexed terms that start with it,
+        // the most frequent [`MAX_PREFIX_TERMS`], as one group: they share
+        // its most frequent term's statistics, so that a row ranks by how
+        // well it holds a word the prefix begins rather than by how rare
+        // its completion is. Every row `MATCH(field, 'sof*')` keeps holds
+        // one of them, unless the prefix begins more terms than that.
+        for (p, w) in &ranked.prefixes {
+            let (found, all) = &*self.prefix_terms(field, p)?;
+            if *all > found.len() {
+                out.notes.push(format!("bm25 {p}*: the {} terms in the most rows, of the {all} it begins", found.len()));
+            }
+            let g = out.groups.len();
+            out.groups.push(Vec::new());
+            for (t, _) in found {
+                match out.terms.iter().position(|(x, _)| x == t) {
+                    // A term the text names, or another prefix's, scores
+                    // once, at the larger weight.
+                    Some(i) => out.terms[i].1 = out.terms[i].1.max(*w),
+                    None => add(t, *w, Some(g), &mut out),
+                }
+            }
+        }
         out.n_base = n_base;
         Ok(out)
+    }
+
+    /// The indexed terms of `field` that start with `prefix` (a `bm25`
+    /// word `sof*`), over the snapshot's segments, each with the rows that
+    /// hold it: the [`MAX_PREFIX_TERMS`] held by the most rows, then by
+    /// term, and how many terms start with it in all. By this snapshot's
+    /// counts, so that a shard finds the same terms in a coordinator's
+    /// statistics round and in its query.
+    fn prefix_terms(&self, field: usize, prefix: &str) -> Result<Arc<(Vec<(String, u64)>, usize)>> {
+        let key = (field, prefix.to_string());
+        if let Some(v) = self.expanded.lock().unwrap_or_else(|e| e.into_inner()).prefixes.get(&key) {
+            return Ok(v.clone());
+        }
+        let mut rows: HashMap<Vec<u8>, u64> = HashMap::new();
+        for s in self.stat_segs() {
+            self.text(s, field)?.dict.for_each_prefix(prefix, |t, info| {
+                *rows.entry(t.to_vec()).or_default() += info.df as u64;
+                true
+            });
+        }
+        let all = rows.len();
+        let mut found: Vec<(String, u64)> = rows.into_iter().map(|(t, n)| (String::from_utf8_lossy(&t).into_owned(), n)).collect();
+        found.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        found.truncate(MAX_PREFIX_TERMS);
+        let v = Arc::new((found, all));
+        self.expanded.lock().unwrap_or_else(|e| e.into_inner()).prefixes.insert(key, v.clone());
+        Ok(v)
     }
 
     /// The terms of a `bm25` query and the collection statistics it scores
@@ -3813,6 +3882,7 @@ impl<'a> Executor<'a> {
             let added: Vec<&str> = names[q.n_base..].iter().map(|t| t.as_str()).collect();
             self.stats.plan.push(format!("bm25 expanded with {} terms: {}", added.len(), added.join(", ")));
         }
+        self.stats.plan.extend(q.notes.iter().cloned());
         let (params, algo) = self.bm25_params(opts)?;
         // The best `k` scores of the segments searched so far: a segment
         // searched after them skips what cannot reach their `k`-th.
@@ -5119,8 +5189,8 @@ fn merge_top(mut hits: Vec<Hit>, k: usize) -> Vec<Hit> {
 /// The terms each BM25 input of `q` scores with, by field (as
 /// [`Executor::term_stats`] asks a database for their statistics), when
 /// they follow from the query and `schema` alone. `None` when an input
-/// widens its terms by what a database holds (typos, synonyms): only a
-/// shard finds those.
+/// widens its terms by what a database holds (typos, synonyms, prefixes):
+/// only a shard finds those.
 pub fn stat_terms(q: &Select, schema: &Schema) -> Result<Option<Vec<(usize, Vec<String>)>>> {
     let mut leaves = Vec::new();
     bm25_leaves(q, &mut leaves);
@@ -5130,10 +5200,13 @@ pub fn stat_terms(q: &Select, schema: &Schema) -> Result<Option<Vec<(usize, Vec<
             return Ok(None);
         }
         let Some(f) = schema.fields.get(field) else { return Ok(None) };
-        let (weighted, _, _) = ranked_terms(text, opts, f.text_analyzer())?;
+        let r = ranked_terms(text, opts, f.text_analyzer())?;
+        if r.widens() {
+            return Ok(None);
+        }
         // As Executor::bm25_query: each term once.
-        let mut terms: Vec<String> = Vec::with_capacity(weighted.len());
-        for (t, _) in weighted {
+        let mut terms: Vec<String> = Vec::with_capacity(r.terms.len());
+        for (t, _) in r.terms {
             if !terms.contains(&t) {
                 terms.push(t);
             }
@@ -5257,17 +5330,18 @@ pub(crate) fn need_of(v: &Value, what: &str) -> Result<text::query::Need> {
 /// a word or phrase they leave no term of is not one. A weight of 0
 /// scores nothing, but a required word still filters, and an optional one
 /// still counts toward `min`.
-fn ranked_terms(q: &str, opts: &Opts, analyzer: text::Analyzer) -> Result<(Vec<(String, f32)>, Option<String>, usize)> {
+fn ranked_terms(q: &str, opts: &Opts, analyzer: text::Analyzer) -> Result<RankedText> {
     let drop = opts.get("stopwords").and_then(|v| v.as_f64()).map_or(analyzer.drops_query_stopwords(), |x| x != 0.0);
     let min = min_need(opts)?;
     // As a MATCH phrase: the words, quotes left out.
     let phrase = |text: &str| format!("\"{}\"", text.replace('"', " "));
-    let (mut terms, mut must, mut not) = (Vec::new(), Vec::new(), Vec::new());
+    let mut out = RankedText::default();
+    let (mut must, mut not) = (Vec::new(), Vec::new());
     // The optional items, each once, for `min`.
     let mut should: Vec<(Vec<String>, String)> = Vec::new();
-    let mut optional = |seq: &Vec<String>, text: &str| {
+    let mut optional = |seq: &Vec<String>, text: String| {
         if min.is_some() && !should.iter().any(|(s, _)| s == seq) {
-            should.push((seq.clone(), phrase(text)));
+            should.push((seq.clone(), text));
         }
     };
     let syn = syntax(opts)?;
@@ -5275,33 +5349,65 @@ fn ranked_terms(q: &str, opts: &Opts, analyzer: text::Analyzer) -> Result<(Vec<(
         if min.is_some() {
             return Err(err("syntax => 'terms' takes no min"));
         }
-        return Ok((weighted_terms(q)?, None, 0));
+        out.terms = weighted_terms(q)?;
+        return Ok(out);
     }
     if syn == Syntax::Plain {
-        terms = analyzer.query_term_seq(q, drop).into_iter().map(|t| (t, 1.0)).collect();
+        out.terms = analyzer.query_term_seq(q, drop).into_iter().map(|t| (t, 1.0)).collect();
         for word in q.split_whitespace() {
             let seq = analyzer.query_term_seq(word, drop);
             if !seq.is_empty() {
-                optional(&seq, word);
+                optional(&seq, phrase(word));
             }
         }
     } else {
         for item in text::query::ranked_items(q) {
-            let seq = analyzer.query_term_seq(item.text, drop);
-            if seq.is_empty() {
+            let w = item.weight.unwrap_or(1.0);
+            let shape = if item.phrase { None } else { text::query::word_shape(item.text) };
+            // The item's terms; a prefix's own (`sof` of `sof*`) are the
+            // indexed terms that start with it, found where it runs.
+            let (seq, prefix) = match shape {
+                Some(text::query::WordShape::Prefix(stem)) => {
+                    let mut words = Vec::new();
+                    analyzer.for_each_token(stem, |x| words.push(x.to_string()));
+                    let Some(last) = words.pop() else { continue };
+                    (analyzer.query_term_seq(&words.join(" "), drop), Some(analyzer.prefix_of(&last)))
+                }
+                Some(text::query::WordShape::Typo(word, _)) => (analyzer.query_term_seq(word, drop), None),
+                None => (analyzer.query_term_seq(item.text, drop), None),
+            };
+            if seq.is_empty() && prefix.as_deref().is_none_or(str::is_empty) {
                 continue;
+            }
+            // The item as MATCH reads it: a typo-tolerant word as written
+            // (quoted, it would be the word alone), anything else quoted.
+            let matched = match shape {
+                Some(text::query::WordShape::Typo(..)) if item.text.chars().all(|c| c.is_alphanumeric() || c == '~') => item.text.to_string(),
+                _ => phrase(item.text),
+            };
+            // `min` counts the item once, as MATCH's group does.
+            let mut key = seq.clone();
+            match shape {
+                Some(text::query::WordShape::Prefix(_)) => key.push(format!("{}*", prefix.clone().unwrap_or_default())),
+                Some(text::query::WordShape::Typo(..)) => key.push("~".into()),
+                None => {}
             }
             match item.occur {
                 text::query::Occur::MustNot => {
-                    not.push(format!("NOT {}", phrase(item.text)));
+                    not.push(format!("NOT {matched}"));
                     continue;
                 }
-                text::query::Occur::Must => must.push(phrase(item.text)),
-                text::query::Occur::Should => optional(&seq, item.text),
+                text::query::Occur::Must => must.push(matched),
+                text::query::Occur::Should => optional(&key, matched),
             }
-            let w = item.weight.unwrap_or(1.0);
             if w > 0.0 {
-                terms.extend(seq.into_iter().map(|t| (t, w)));
+                if let Some(text::query::WordShape::Typo(_, edits)) = shape {
+                    out.typos.extend(seq.iter().map(|t| (t.clone(), edits)));
+                }
+                out.terms.extend(seq.into_iter().map(|t| (t, w)));
+                if let Some(p) = prefix.filter(|p| !p.is_empty()) {
+                    out.prefixes.push((p, w));
+                }
             }
         }
     }
@@ -5311,7 +5417,38 @@ fn ranked_terms(q: &str, opts: &Opts, analyzer: text::Analyzer) -> Result<(Vec<(
     }
     filter.extend(must);
     filter.extend(not);
-    Ok((terms, (!filter.is_empty()).then(|| filter.join(" ")), should.len()))
+    out.filter = (!filter.is_empty()).then(|| filter.join(" "));
+    out.optional = should.len();
+    Ok(out)
+}
+
+/// A `bm25` text read for ranking ([`ranked_terms`]).
+#[derive(Default)]
+struct RankedText {
+    /// Its terms in order, each with the weight of the word or phrase it
+    /// comes from (repeats included).
+    terms: Vec<(String, f32)>,
+    /// The `MATCH` query of the rows it may rank beyond having one of its
+    /// terms: its required and excluded items, and with `min`, the group
+    /// of its optional ones.
+    filter: Option<String>,
+    /// How many optional items it has, which `min` counts.
+    optional: usize,
+    /// Its prefixes (`sof` of `sof*`, folded as `MATCH` folds one), each
+    /// with its word's weight: they score as the indexed terms that start
+    /// with them ([`Executor::prefix_terms`]).
+    prefixes: Vec<(String, f32)>,
+    /// The terms of its typo-tolerant words (`lether~`, `lether~1`), each
+    /// with its edits (`None`: by length). Each is in `terms` too.
+    typos: Vec<(String, Option<u8>)>,
+}
+
+impl RankedText {
+    /// Whether it scores terms a database finds (prefixes, typos), beyond
+    /// those its text names.
+    fn widens(&self) -> bool {
+        !self.prefixes.is_empty() || !self.typos.is_empty()
+    }
 }
 
 /// The `y` items of a group query (`(a b c)@n` parsed, `n < y`), when it
@@ -5352,6 +5489,9 @@ struct Bm25Query {
     groups: Vec<Vec<usize>>,
     /// The query's own terms, before its expansions.
     n_base: usize,
+    /// What a plan says of it: a prefix that begins more terms than it
+    /// scores.
+    notes: Vec<String>,
 }
 
 /// Gives each group's terms the largest document frequency among them, so

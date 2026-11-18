@@ -123,6 +123,13 @@ tokio::task_local! {
 }
 
 tokio::task_local! {
+    /// The Postgres follower whose writes the request is
+    /// ([`POSTGRES_FOLLOWER_HEADER`]), which alone writes the tables it
+    /// follows ([`Service::may_write_followed`]).
+    pub static PG_FOLLOWER: Option<Arc<str>>;
+}
+
+tokio::task_local! {
     /// Whether the request is the cluster's own (its token: a coordinator's
     /// call to its shards, a follow process's write, or the server's own
     /// work), which may write the server's own marks
@@ -180,6 +187,23 @@ pub fn own() -> bool {
 /// the cluster it follows ([`FOLLOW`]); a coordinator passes it on to its
 /// shards.
 pub const FOLLOW_HEADER: &str = "x-strata-follow";
+
+/// The header by which `chloedb-server follow-postgres` names itself
+/// (its `--name`) on every request it makes; a coordinator passes it on
+/// to its shards. A table it follows takes writes from it alone
+/// ([`Service::may_write_followed`]). It guards against a write by
+/// mistake, not a client set on one: a client may send it too.
+pub const POSTGRES_FOLLOWER_HEADER: &str = "x-chloedb-postgres-follower";
+
+/// The Postgres follower the request being served is from
+/// ([`PG_FOLLOWER`]).
+pub fn postgres_follower() -> Option<Arc<str>> {
+    PG_FOLLOWER.try_with(Clone::clone).ok().flatten()
+}
+
+/// How long the tables Postgres followers follow are kept before they are
+/// read again ([`Service::may_write_followed`]).
+const FOLLOWED_EVERY: Duration = Duration::from_secs(2);
 
 /// The cluster the request being served writes the changes of
 /// ([`FOLLOW`]).
@@ -420,6 +444,16 @@ pub struct ModelJob {
     pub error: Option<String>,
     pub started_ms: u64,
     pub finished_ms: Option<u64>,
+    /// A fetch's bytes downloaded so far, and the sizes of the files it
+    /// began ([`crate::server::fetch_model_with`]).
+    pub bytes: u64,
+    pub size: u64,
+}
+
+impl ModelJob {
+    fn start(action: &'static str, from: Option<String>) -> ModelJob {
+        ModelJob { action, from, state: "running", error: None, started_ms: crate::telemetry::now_ms(), finished_ms: None, bytes: 0, size: 0 }
+    }
 }
 
 /// An embedded VECTOR field ([`chloedb::Embed`]) and its model, which
@@ -746,6 +780,10 @@ pub struct Service {
     writer_state: Arc<WriterState>,
     /// Idempotency keys of the writes it applied ([`crate::idem`]).
     idempotency: Arc<idem::Keys>,
+    /// The tables Postgres followers follow, by name in lower case: the
+    /// follower's name, as read at that moment
+    /// ([`Service::may_write_followed`]).
+    followed: std::sync::Mutex<Option<(Instant, Arc<HashMap<String, String>>)>>,
     /// The synonym list `synonyms => 1` searches use, and its file.
     synonyms: RwLock<Option<Arc<Synonyms>>>,
     /// A coordinator's gazetteers for query understanding
@@ -933,6 +971,7 @@ impl Service {
             writes,
             writer_state,
             idempotency,
+            followed: std::sync::Mutex::new(None),
             synonyms: RwLock::new(None),
             gazetteers: std::sync::Mutex::new(HashMap::new()),
             synonyms_file: None,
@@ -1715,7 +1754,24 @@ impl Service {
                 continue;
             }
             tracing::info!(table = %m.table, field = %m.field, model = name, "fetching the model of an embedded field");
-            match crate::server::fetch_model(name, &dir).await {
+            // A job as one asked for over HTTP is, so that the command
+            // center shows the download (MAYA-2 of the persona study of 17
+            // November 2026: "Add meaning" said the model did not open
+            // while it downloaded, and kept saying so once it had).
+            let running = {
+                let mut jobs = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner());
+                let running = jobs.get(&name.to_lowercase()).is_some_and(|j| j.state == "running");
+                if !running {
+                    jobs.insert(name.to_lowercase(), ModelJob::start("fetch", None));
+                }
+                running
+            };
+            if running {
+                continue;
+            }
+            let r = crate::server::fetch_model_with(name, &dir, &|bytes, size| self.model_job_progress(name, bytes, size)).await;
+            self.model_job_ended(name, r.as_ref().err().cloned());
+            match r {
                 Ok(_) => fetched = true,
                 Err(e) => tracing::warn!(model = name, error = %e, "could not fetch the model of an embedded field: fetch it with chloedb-server fetch-model, or start with --no-fetch-models"),
             }
@@ -1725,9 +1781,39 @@ impl Service {
         }
     }
 
-    /// The fetches and conversions of models asked for over HTTP.
+    /// The fetches and conversions of models: asked for over HTTP, and the
+    /// server's own for the fields that name them.
     pub fn model_jobs(&self) -> HashMap<String, ModelJob> {
         self.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn model_job_progress(&self, model: &str, bytes: u64, size: u64) {
+        if let Some(j) = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&model.to_lowercase()) {
+            (j.bytes, j.size) = (bytes, size);
+        }
+    }
+
+    fn model_job_ended(&self, model: &str, error: Option<String>) {
+        if let Some(j) = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&model.to_lowercase()) {
+            j.state = if error.is_none() { "done" } else { "failed" };
+            j.error = error;
+            j.finished_ms = Some(crate::telemetry::now_ms());
+        }
+    }
+
+    /// How the model of an embedded field that names `model` is being
+    /// fetched: its job ([`Self::model_jobs`]), or `queued` while this
+    /// server is about to fetch it (a field just added, before
+    /// [`Self::keep_models`] gets to it); `None` for a model it does not
+    /// fetch, or has.
+    pub fn model_fetch(&self, model: &str) -> Option<serde_json::Value> {
+        if let Some(j) = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).get(&model.to_lowercase()) {
+            return serde_json::to_value(j).ok();
+        }
+        let dir = self.models_dir.as_ref()?;
+        let name = chloedb::embed::to_fetch(model, dir).filter(|_| self.fetch_models)?;
+        let tried = self.fetch_tried.lock().unwrap_or_else(|e| e.into_inner()).contains(name);
+        (!tried).then(|| serde_json::json!({"action": "fetch", "state": "queued", "bytes": 0, "size": 0}))
     }
 
     /// Starts fetching model `name` of [`chloedb::embed::KNOWN_MODELS`]
@@ -1781,14 +1867,14 @@ impl Service {
             if jobs.get(&target.to_lowercase()).is_some_and(|j| j.state == "running") {
                 return Err(ApiError { code: None, status: 409, message: format!("model {target} is being made already") });
             }
-            let job = ModelJob { action: if from.is_some() { "convert" } else { "fetch" }, from: from.as_ref().map(|f| f.0.clone()), state: "running", error: None, started_ms: crate::telemetry::now_ms(), finished_ms: None };
+            let job = ModelJob::start(if from.is_some() { "convert" } else { "fetch" }, from.as_ref().map(|f| f.0.clone()));
             jobs.insert(target.to_lowercase(), job);
         }
         let svc = self.clone();
         let t = target.clone();
         tokio::spawn(async move {
             let done = match from {
-                None => crate::server::fetch_model(&t, &dir).await.map(|_| ()),
+                None => crate::server::fetch_model_with(&t, &dir, &|bytes, size| svc.model_job_progress(&t, bytes, size)).await.map(|_| ()),
                 Some((src, elem)) => {
                     let (a, b) = (dir.join(&src), dir.join(&t));
                     tokio::task::spawn_blocking(move || chloedb::embed::quantize_static(&a, &b, &elem).map(|_| ()).map_err(|e| e.to_string())).await.unwrap_or_else(|e| Err(e.to_string()))
@@ -1798,11 +1884,7 @@ impl Service {
                 Ok(()) => tracing::info!(model = %t, "made a model asked for over HTTP"),
                 Err(e) => tracing::warn!(model = %t, error = %e, "could not make a model asked for over HTTP"),
             }
-            if let Some(j) = svc.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&t.to_lowercase()) {
-                j.state = if done.is_ok() { "done" } else { "failed" };
-                j.error = done.as_ref().err().cloned();
-                j.finished_ms = Some(crate::telemetry::now_ms());
-            }
+            svc.model_job_ended(&t, done.as_ref().err().cloned());
             if done.is_ok() {
                 svc.reopen_models();
             }
@@ -2134,14 +2216,63 @@ impl Service {
 
     /// Writes a checkpoint of the database ([`chloedb::storage::Database::checkpoint`])
     /// named `name` in the backup directory, hard-linking the segments an
-    /// earlier checkpoint there (`link_from`) already holds.
-    pub async fn checkpoint(&self, name: &str, layout: Layout, link_from: Option<&str>) -> Result<CheckpointStats, ApiError> {
+    /// earlier checkpoint there (`link_from`) already holds, and beside it
+    /// what a server restored from it needs besides its rows, under the
+    /// names a server serving it with `--db` reads: the cluster map it
+    /// holds (`<name>.slots`) and its API keys (`<name>.keys.json`, readable
+    /// by its owner only), so that `chloedb-server restore` puts the three
+    /// in place of a copy's ([`crate::restore`]). The answer is the
+    /// checkpoint's [`CheckpointStats`], its `name`, the `files` it wrote,
+    /// and `slots` (its shard, the map's epoch and shards) and `keys` (how
+    /// many) when it has them. A checkpoint written while the map changed
+    /// (a move's flip) is not kept: its rows and map could disagree.
+    pub async fn checkpoint(&self, name: &str, layout: Layout, link_from: Option<&str>) -> Result<Json, ApiError> {
         let dir = self.backup_dir.as_ref().ok_or_else(|| ApiError::bad("checkpoints need the server started with --backup-dir"))?;
         let db = self.admin_db()?;
-        let dest = dir.join(checkpoint_name(name)?);
+        let name = checkpoint_name(name)?;
+        let dest = dir.join(name);
         let link_from = link_from.map(|n| checkpoint_name(n).map(|n| dir.join(n))).transpose()?;
         let opts = CheckpointOptions { layout, link_from };
-        tokio::task::spawn_blocking(move || db.storage().checkpoint(&dest, &opts)).await.map_err(ApiError::internal)?.map_err(Into::into)
+        let map = self.slots();
+        let since = self.slots_since.load(Ordering::Relaxed);
+        let to = dest.clone();
+        let stats: CheckpointStats = tokio::task::spawn_blocking(move || db.storage().checkpoint(&to, &opts)).await.map_err(ApiError::internal)??;
+        let held = |m: &Option<(SlotMap, usize)>| m.as_ref().map(|(m, s)| (m.epoch, *s));
+        let now = self.slots();
+        if held(&map) != held(&now) {
+            remove_checkpoint(&dest);
+            return Err(conflict(format!(
+                "the cluster map changed from epoch {} to {} while checkpoint {name} was written (slots moved), so it was not kept: write it again",
+                map.as_ref().map_or(0, |(m, _)| m.epoch),
+                now.as_ref().map_or(0, |(m, _)| m.epoch)
+            )));
+        }
+        let mut j = serde_json::to_value(&stats).map_err(ApiError::internal)?;
+        let mut files = vec![name.to_string()];
+        let kept = (|| -> Result<(), ApiError> {
+            if let Some((m, shard)) = &map {
+                let path = slots::file_of(&dest);
+                save_slots(&path, m, *shard, since).map_err(|e| ApiError::internal(format!("keep the slot map beside the checkpoint, in {}: {e}", path.display())))?;
+                files.push(format!("{name}.slots"));
+                j["slots"] = json!({"shard": shard, "epoch": m.epoch, "shards": m.shards()});
+            }
+            let keys = self.keys.set();
+            if !keys.keys.is_empty() || !keys.revoked.is_empty() {
+                let path = Keys::file_of(&dest);
+                let _ = std::fs::remove_file(&path);
+                Keys::open(path.clone()).map_err(ApiError::internal)?.merge(&keys)?;
+                files.push(format!("{name}.keys.json"));
+                j["keys"] = json!(keys.keys.len());
+            }
+            Ok(())
+        })();
+        if let Err(e) = kept {
+            remove_checkpoint(&dest);
+            return Err(e);
+        }
+        j["name"] = json!(name);
+        j["files"] = json!(files);
+        Ok(j)
     }
 
     /// Checks every byte of the database against its checksums
@@ -4513,9 +4644,10 @@ impl Service {
             }
         }
         let need = command_scope(&command);
-        // An UPDATE or DELETE with a LIMIT, which a coordinator runs by
-        // picking its rows first ([`Self::limited_write`]).
-        let limited = matches!(&command, Command::Write { write: chloedb::query::Write::Update { select, .. } | chloedb::query::Write::Delete { select }, .. } if select.limit.is_some());
+        // An UPDATE or DELETE with a LIMIT, or whose WHERE reads other rows
+        // (a subquery), which a coordinator runs by picking its rows first
+        // ([`Self::limited_write`]).
+        let limited = matches!(&command, Command::Write { write, .. } if write.picks_first());
         who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table, rank profile or function" }))?;
         if who.limited() {
             crate::scoped::check_statement(who, sql, &command, &self.table_names(), &self.functions())?;
@@ -4524,6 +4656,11 @@ impl Service {
         for t in changed_tables(&command) {
             crate::connectors::may_change(t, "a statement")?;
             crate::autopilot::may_change(who.root || who.limited() || who.scope >= Scope::Admin, t, "a statement")?;
+        }
+        // A table a Postgres follower follows takes its writes alone (its
+        // columns may still be added to, as an embedded vector's).
+        if let Command::Write { table, .. } = &command {
+            self.may_write_followed([table.as_str()]).await?;
         }
         // A dictionary's derived field on a coordinator: each shard would
         // tag its rows from its own slice of the dictionary's table, not
@@ -4787,6 +4924,10 @@ impl Service {
     /// IN (...)`), so that it changes at most n rows. It is two steps, not
     /// one: a row changed in between so that it no longer matches is left
     /// alone (the WHERE still holds it), and fewer than n rows may change.
+    /// An UPDATE or DELETE whose WHERE has a subquery runs so too, with or
+    /// without a LIMIT, of at most [`MAX_GET_KEYS`] rows: over those keys
+    /// alone (`WHERE key IN (...)`), since each shard would answer the
+    /// subquery from its own share of the rows.
     async fn limited_write(self: &Arc<Self>, sql: &str, params: &Params, key: Option<String>) -> Result<Written, ApiError> {
         use sqlparser::ast as a;
         let Backend::Cluster(c) = &self.backend else { return Err(ApiError::internal("limited_write is a coordinator's")) };
@@ -4805,11 +4946,24 @@ impl Service {
         let schema = self.table(&name.to_string()).await?;
         let pk = schema.primary_key.ok_or_else(|| ApiError::bad(format!("{} has no primary key: UPDATE and DELETE ... LIMIT through a coordinator pick their rows by key", schema.table)))?;
         let pk_name = schema.fields[pk].name.clone();
-        let n = limit.as_ref().map(|l| l.to_string()).unwrap_or_default();
-        let cap: usize = n.trim().parse().map_err(|_| ApiError::bad(format!("LIMIT {n}: through a coordinator, an UPDATE or DELETE takes a LIMIT that is a number")))?;
-        if cap > MAX_GET_KEYS {
-            return Err(ApiError::bad(format!("LIMIT {cap}: through a coordinator, an UPDATE or DELETE takes a LIMIT of at most {MAX_GET_KEYS}")));
-        }
+        // A WHERE with a subquery (SAM-2): each shard would answer it from
+        // its own share of the rows the subquery reads, so the coordinator
+        // picks the keys from all of them, and the shards change the rows
+        // of those keys alone, without the WHERE.
+        let reads_others = selection.as_ref().is_some_and(chloedb::query::sql::has_subquery) || order_by.iter().any(|o| chloedb::query::sql::has_subquery(&o.expr));
+        let cap: usize = match limit.as_ref() {
+            Some(l) => {
+                let n = l.to_string();
+                let cap = n.trim().parse().map_err(|_| ApiError::bad(format!("LIMIT {n}: through a coordinator, an UPDATE or DELETE takes a LIMIT that is a number")))?;
+                if cap > MAX_GET_KEYS {
+                    return Err(ApiError::bad(format!("LIMIT {cap}: through a coordinator, an UPDATE or DELETE takes a LIMIT of at most {MAX_GET_KEYS}")));
+                }
+                cap
+            }
+            // One more than it takes, to tell when there are more.
+            None => MAX_GET_KEYS + 1,
+        };
+        let unlimited = limit.is_none();
         let mut pick = format!("SELECT {} FROM {relation}", ident(&pk_name));
         if let Some(w) = selection.as_ref() {
             pick.push_str(&format!(" WHERE {w}"));
@@ -4823,6 +4977,11 @@ impl Service {
         if keys.is_empty() {
             return Ok(Written { receipt: None, ..Default::default() });
         }
+        if unlimited && keys.len() > MAX_GET_KEYS {
+            return Err(ApiError::bad(format!(
+                "nothing was written: through a coordinator, an UPDATE or DELETE whose WHERE has a subquery picks the keys of its rows first, at most {MAX_GET_KEYS} of them, and this one matches more: narrow its WHERE, or run it in parts (a range of {pk_name} at a time)"
+            )));
+        }
         let mut params = params.clone();
         let mut list = Vec::with_capacity(keys.len());
         for (j, k) in keys.into_iter().enumerate() {
@@ -4832,8 +4991,8 @@ impl Service {
         }
         let within = a::Expr::InList { expr: Box::new(a::Expr::Identifier(a::Ident::new(pk_name))), list, negated: false };
         *selection = Some(match selection.take() {
-            Some(w) => a::Expr::BinaryOp { left: Box::new(a::Expr::Nested(Box::new(w))), op: a::BinaryOperator::And, right: Box::new(within) },
-            None => within,
+            Some(w) if !reads_others => a::Expr::BinaryOp { left: Box::new(a::Expr::Nested(Box::new(w))), op: a::BinaryOperator::And, right: Box::new(within) },
+            _ => within,
         });
         *limit = None;
         c.sql(&stmt.to_string(), &params, key).await
@@ -5034,6 +5193,23 @@ impl Service {
         crate::connectors::may_write_ops(&ops, || self.default_table().ok().map(|t| t.table.clone()))?;
         // The autopilot's proposals and judgments are an admin's.
         crate::autopilot::may_write_ops(&ops, || self.default_table().ok().map(|t| t.table.clone()))?;
+        // A table a Postgres follower follows is its alone.
+        {
+            let default = || self.default_table().ok().map(|t| t.table.clone());
+            let mut tables: Vec<String> = Vec::new();
+            for op in ops.iter().filter(|op| !is_mark(op)) {
+                let t = match op["table"].as_str() {
+                    Some(t) => Some(t.to_string()),
+                    None => default(),
+                };
+                if let Some(t) = t {
+                    if !tables.iter().any(|h| h.eq_ignore_ascii_case(&t)) {
+                        tables.push(t);
+                    }
+                }
+            }
+            self.may_write_followed(tables.iter().map(String::as_str)).await?;
+        }
         let n = match &self.backend {
             Backend::Local(db) => {
                 // Before any work: a replica, a database behind on its
@@ -5192,6 +5368,62 @@ impl Service {
             }
             Backend::Cluster(c) => c.sources().await,
         }
+    }
+
+    /// Refuses (409) a write to any of `tables` that a Postgres follower
+    /// follows (`chloedb-server follow-postgres`), unless the request is
+    /// that follower's own ([`POSTGRES_FOLLOWER_HEADER`]): the follower
+    /// would undo it when Postgres next changes the row, and until then
+    /// the table would answer what Postgres does not (finding SAM-4). The
+    /// tables followed are read from the followers' marks in `_sources`
+    /// ([`crate::postgres::followed_tables`]) at most every
+    /// [`FOLLOWED_EVERY`]: a table starts being guarded within that time of
+    /// its copy, and stops once it leaves the publication or the slot is
+    /// dropped (`--drop-slot`).
+    pub async fn may_write_followed<'a>(&self, tables: impl IntoIterator<Item = &'a str>) -> Result<(), ApiError> {
+        let tables: Vec<&str> = tables.into_iter().collect();
+        if tables.is_empty() {
+            return Ok(());
+        }
+        let (cached, fresh) = match &*self.followed.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some((at, f)) => (Some(f.clone()), at.elapsed() < FOLLOWED_EVERY),
+            None => (None, false),
+        };
+        let followed = match (cached, fresh) {
+            (Some(f), true) => f,
+            (was, _) => {
+                // Unread (a shard down, say), the tables read last stand,
+                // for as long again: a write to another table is not held
+                // up by it, or refused.
+                let f = match self.sources().await {
+                    Ok(all) => Arc::new(crate::postgres::followed_tables(&all.into_iter().map(|s| (s.name, s.offset)).collect::<Vec<_>>())),
+                    Err(e) => {
+                        tracing::warn!("reading the tables Postgres followers follow: {}", e.message);
+                        was.unwrap_or_default()
+                    }
+                };
+                *self.followed.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), f.clone()));
+                f
+            }
+        };
+        if followed.is_empty() {
+            return Ok(());
+        }
+        let me = postgres_follower();
+        for t in tables {
+            let Some(by) = followed.get(&t.to_ascii_lowercase()) else { continue };
+            if me.as_deref() == Some(by.as_str()) {
+                continue;
+            }
+            return Err(ApiError {
+                code: Some("followed_table"),
+                status: 409,
+                message: format!(
+                    "nothing was written: table {t} follows Postgres (chloedb-server follow-postgres --name {by}), which alone writes it. A write here would answer what Postgres does not, until Postgres changes the row again and the follower undoes it. Write the change in Postgres; to write here, take the table out of the publication, or stop following (follow-postgres --name {by} --drop-slot)"
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// Each stream source's offset for the slots moving from this shard,
@@ -5739,10 +5971,15 @@ impl Service {
         match &self.backend {
             Backend::Local(db) => {
                 let s = db.snapshot();
-                let mut h = json!({"status": "ok", "role": "shard", "docs": s.n_live_docs(), "segments": s.segments().len(), "txn": s.txn()});
-                // cluster2: the rows of every table (`docs` counts the first
-                // only), which a move or a new copy sends: plans and moves
-                // count these.
+                // `docs` and `segments` are the default table's, which a
+                // request naming no table reads (a client's count()): on a
+                // database made with no tables, not its placeholder's, which
+                // has none.
+                let default = self.default_table().ok().and_then(|t| s.table(&t.table)).unwrap_or_else(|| s.clone());
+                let mut h = json!({"status": "ok", "role": "shard", "docs": default.n_live_docs(), "segments": default.segments().len(), "txn": s.txn()});
+                // cluster2: the rows of every table (`docs` counts the
+                // default one only), which a move or a new copy sends: plans
+                // and moves count these.
                 let tables: serde_json::Map<String, Json> = s.schemas().filter(|t| t.table != SOURCES && t.table != FUNCTIONS).filter_map(|t| s.table(&t.table).map(|v| (t.table.clone(), json!(v.n_live_docs())))).collect();
                 h["rows"] = json!(tables.values().filter_map(Json::as_u64).sum::<u64>());
                 h["tables"] = Json::Object(tables);
@@ -7060,9 +7297,20 @@ impl Queued {
     }
 }
 
+/// Removes the checkpoint at `dest` and what [`Service::checkpoint`] wrote
+/// beside it, which a server must not take for a whole checkpoint.
+fn remove_checkpoint(dest: &Path) {
+    let _ = match dest.is_dir() {
+        true => std::fs::remove_dir_all(dest),
+        false => std::fs::remove_file(dest),
+    };
+    let _ = std::fs::remove_file(slots::file_of(dest));
+    let _ = std::fs::remove_file(Keys::file_of(dest));
+}
+
 /// A checkpoint's name in the backup directory: letters, digits, '.', '_'
 /// and '-', not starting with '.', so that it stays in the directory.
-fn checkpoint_name(name: &str) -> Result<&str, ApiError> {
+pub(crate) fn checkpoint_name(name: &str) -> Result<&str, ApiError> {
     let ok = !name.is_empty() && name.len() <= 200 && !name.starts_with('.') && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
     ok.then_some(name).ok_or_else(|| ApiError::bad(format!("bad checkpoint name {name:?}: use letters, digits, '.', '_' and '-', not starting with '.'")))
 }
@@ -7719,6 +7967,37 @@ mod tests {
         changed.borrow_and_update();
         svc.reopen_models();
         assert!(!changed.has_changed().unwrap());
+    }
+
+    // MAYA-2 (the persona study of 17 November 2026): while the server
+    // downloaded the model of a field just added, the command center saw
+    // only the field's error ("fetch it first") and said the model did not
+    // open. The field says how its model is fetched: queued, running with
+    // its bytes, failed with why.
+    #[tokio::test]
+    async fn a_field_whose_model_the_server_fetches_says_how_the_fetch_goes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create_empty(&dir.path().join("t.strata"), chloedb::storage::DbOptions::default()).unwrap());
+        let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+        let mut svc = Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent, 16, Duration::from_secs(10));
+        svc.open_models(&dir.path().join("models"));
+        assert_eq!(svc.model_fetch("potion-base-8M"), None, "a server that does not fetch models");
+        svc.fetch_models = true;
+        let svc = Arc::new(svc);
+        let ddl = "CREATE TABLE listings (id KEYWORD PRIMARY KEY, title TEXT, emb VECTOR OPTIONS(embed = 'title', model = 'potion-base-8M'))";
+        svc.sql(&Principal::open(), ddl, &Params::new(), After::Any, 0).await.unwrap();
+        assert!(svc.models()[0].model.is_err());
+        assert_eq!(svc.model_fetch("potion-base-8M").unwrap()["state"], "queued");
+        assert_eq!(svc.model_fetch("hash:8"), None, "not a model to fetch");
+        // The download, as `fetch_known_models` records it.
+        svc.model_jobs.lock().unwrap().insert("potion-base-8m".into(), ModelJob::start("fetch", None));
+        svc.model_job_progress("potion-base-8M", 3_000_000, 30_000_000);
+        let f = svc.model_fetch("POTION-BASE-8M").unwrap();
+        assert_eq!((f["state"].as_str(), f["bytes"].as_u64(), f["size"].as_u64()), (Some("running"), Some(3_000_000), Some(30_000_000)), "{f}");
+        svc.model_job_ended("potion-base-8M", Some("https://huggingface.co/...: 503".into()));
+        let f = svc.model_fetch("potion-base-8M").unwrap();
+        assert_eq!(f["state"], "failed");
+        assert!(f["error"].as_str().unwrap().contains("503"), "{f}");
     }
 
     // Past saturation every query waited for a slot until its deadline, so

@@ -3,10 +3,12 @@
 //! as `chloectx doctor` does for ChloeCtx:
 //!
 //! - this server's version against the latest release on GitHub;
-//! - the Python package `chloedb`: ChloeDB, or PyPI's placeholder (which
+//! - the Python package `chloedb` installed (not a folder of that name in
+//!   the directory doctor runs in): ChloeDB, or PyPI's placeholder (which
 //!   only holds the name, and which pip falls back to when a release has
 //!   no wheel for the machine);
-//! - the models folder and the models in it;
+//! - the models folder and the models in it, each one this build runs or
+//!   why not (the feature it was built without: the releases run no BERT);
 //! - whether port 7700, which every guide uses, is free;
 //! - on Linux, the C library against what the prebuilt programs and wheels
 //!   need.
@@ -137,8 +139,17 @@ pub fn python_result(status: Option<i32>, stdout: &str, stderr: &str) -> Check {
     match status {
         None => Check::new(Level::Ok, name, "no Python 3 here (the package is optional)", None),
         Some(0) => {
-            let v = stdout.trim();
-            Check::new(Level::Ok, name, format!("chloedb {}", if v.is_empty() { "(a version from before __version__)" } else { v }), None)
+            let mut lines = stdout.lines().map(str::trim);
+            let (v, file) = (lines.next().unwrap_or(""), lines.next().unwrap_or(""));
+            // A folder named chloedb with no package in it (a checkout's
+            // crate, which Python takes as a namespace package where no
+            // chloedb is installed) imports with no file (PRIYA-9 of the
+            // persona study of 17 November 2026: it was an ok).
+            if file.is_empty() || file == "None" {
+                return Check::new(Level::Ok, name, "chloedb is not installed for this Python (optional; `import chloedb` finds only a folder of that name, not the package)", Some(wheels));
+            }
+            let at = Path::new(file).parent().map(|d| format!(", in {}", d.display())).unwrap_or_default();
+            Check::new(Level::Ok, name, format!("chloedb {}{at}", if v.is_empty() { "(a version from before __version__)" } else { v }), None)
         }
         Some(_) if stderr.contains("placeholder") => Check::new(
             Level::Fail,
@@ -152,7 +163,9 @@ pub fn python_result(status: Option<i32>, stdout: &str, stderr: &str) -> Check {
 }
 
 fn python(python: &str) -> Check {
-    let script = "import chloedb; print(getattr(chloedb, '__version__', ''))";
+    // The package installed for this Python, not a folder of the
+    // directory doctor runs in (`python -c` puts it first on the path).
+    let script = "import os, sys\nsys.path[:] = [p for p in sys.path if p not in ('', '.', os.getcwd())]\nimport chloedb\nprint(getattr(chloedb, '__version__', ''))\nprint(getattr(chloedb, '__file__', None))";
     match Command::new(python).args(["-c", script]).output() {
         Err(_) => python_result(None, "", ""),
         Ok(o) => python_result(Some(o.status.code().unwrap_or(1)), &String::from_utf8_lossy(&o.stdout), &String::from_utf8_lossy(&o.stderr)),
@@ -171,7 +184,55 @@ fn models(dir: &Path) -> Check {
     if found.is_empty() {
         return Check::new(Level::Warn, name, format!("no models in {}{note}: a table whose vectors ChloeDB embeds needs its model", dir.display()), Some(fetch));
     }
-    Check::new(Level::Ok, name, format!("{}{note}: {}", dir.display(), found.join(", ")), None)
+    // Each one this build runs, or why not (PRIYA-9 of the persona study of
+    // 17 November 2026: bge-small-en-v1.5 was listed as ok by a release
+    // build, which has no BERT).
+    let listed = chloedb::embed::catalog(dir);
+    let (mut runs, mut cannot) = (Vec::new(), Vec::new());
+    for m in &found {
+        match runs_here(m, dir, &listed) {
+            Ok(()) => runs.push(m.clone()),
+            Err(why) => cannot.push(format!("{m} ({why})")),
+        }
+    }
+    let ran = if runs.is_empty() { "none this build runs".to_string() } else { runs.join(", ") };
+    if !cannot.is_empty() {
+        let features = cannot.iter().any(|n| n.contains("feature"));
+        let fix = match features {
+            true => "release builds run Model2Vec models (potion-retrieval-32M, potion-base-8M): use one of those, or build chloedb-server with the feature named (cargo build --release --features bert, in chloedb-server of a checkout)".to_string(),
+            false => fetch,
+        };
+        return Check::new(Level::Warn, name, format!("{}{note}: {ran}; not run here: {}", dir.display(), cannot.join(", ")), Some(fix));
+    }
+    Check::new(Level::Ok, name, format!("{}{note}: {ran}", dir.display()), None)
+}
+
+/// Whether this build runs the model in folder `model` of `dir`, or why
+/// not: the feature it was built without, or files not all fetched.
+/// `listed` is the embedding models' catalog ([`chloedb::embed::catalog`]);
+/// a folder that is none of ChloeDB's models is let be.
+fn runs_here(model: &str, dir: &Path, listed: &[chloedb::embed::Listed]) -> Result<(), String> {
+    use chloedb::query::cross_encoder;
+    let path = dir.join(model);
+    let without = |feature: &str| Err(format!("built without the `{feature}` feature"));
+    if cross_encoder::is_cross_encoder(&path) {
+        return match path.join(cross_encoder::ONNX).exists() {
+            true if !cfg!(feature = "onnx") => without("onnx"),
+            false if !cfg!(feature = "bert") => without("bert"),
+            _ => Ok(()),
+        };
+    }
+    if let Some(&(known, _, _)) = chloedb::derive::KNOWN_MODELS.iter().find(|m| m.0.eq_ignore_ascii_case(model)) {
+        return match known.starts_with("blip") {
+            true if !cfg!(feature = "vision") => without("vision"),
+            false if !cfg!(feature = "audio") => without("audio"),
+            _ => Ok(()),
+        };
+    }
+    match listed.iter().find(|l| l.name.eq_ignore_ascii_case(model)) {
+        Some(l) => l.ready.clone().map_err(|e| if e.starts_with("not fetched") { "not all its files: fetch it again".to_string() } else { e }),
+        None => Ok(()),
+    }
 }
 
 fn port(port: u16) -> Check {
@@ -242,7 +303,10 @@ mod tests {
         // Not a release named after this build's version, which a build
         // from main is ahead of.
         assert!(!fix.contains(env!("CARGO_PKG_VERSION")), "{fix}");
-        assert_eq!(python_result(Some(0), "0.2.1\n", "").detail, "chloedb 0.2.1");
+        assert_eq!(python_result(Some(0), "0.2.1\n/usr/lib/python3/site-packages/chloedb/__init__.py\n", "").detail, "chloedb 0.2.1, in /usr/lib/python3/site-packages/chloedb");
+        // PRIYA-9: a folder named chloedb (a checkout's crate) is no package.
+        let c = python_result(Some(0), "\nNone\n", "");
+        assert!(c.detail.starts_with("chloedb is not installed") && c.fix.is_some(), "{}", c.line());
         assert_eq!(python_result(Some(1), "", "ModuleNotFoundError: No module named 'chloedb'").level, Level::Ok);
         assert_eq!(python_result(None, "", "").level, Level::Ok);
     }
@@ -260,10 +324,38 @@ mod tests {
     fn models_and_port() {
         let d = tempfile::tempdir().unwrap();
         assert_eq!(models(d.path()).level, Level::Warn);
-        std::fs::create_dir(d.path().join("potion-retrieval-32M")).unwrap();
+        let potion = d.path().join("potion-retrieval-32M");
+        std::fs::create_dir(&potion).unwrap();
+        // A folder without the model's files is not one that runs.
         let c = models(d.path());
-        assert_eq!(c.level, Level::Ok);
+        assert_eq!(c.level, Level::Warn, "{}", c.line());
+        assert!(c.detail.contains("potion-retrieval-32M (not all its files"), "{}", c.line());
+        for f in chloedb::embed::model_files("potion-retrieval-32M") {
+            std::fs::write(potion.join(f), b"{}").unwrap();
+        }
+        let c = models(d.path());
+        assert_eq!(c.level, Level::Ok, "{}", c.line());
         assert!(c.detail.contains("potion-retrieval-32M"));
+        // A folder that is no model of ChloeDB's is let be.
+        std::fs::create_dir(d.path().join("notes")).unwrap();
+        assert_eq!(models(d.path()).level, Level::Ok);
+        // PRIYA-9: a BERT model is not ok in a build without BERT (the
+        // releases), and the line says what runs.
+        let bge = d.path().join("bge-small-en-v1.5");
+        std::fs::create_dir(&bge).unwrap();
+        for f in chloedb::embed::model_files("bge-small-en-v1.5") {
+            std::fs::write(bge.join(f), b"{}").unwrap();
+        }
+        let c = models(d.path());
+        match cfg!(feature = "bert") {
+            true => assert_eq!(c.level, Level::Ok, "{}", c.line()),
+            false => {
+                assert_eq!(c.level, Level::Warn, "{}", c.line());
+                assert!(c.detail.contains("bge-small-en-v1.5 (built without the `bert` feature)"), "{}", c.line());
+                assert!(c.detail.contains(": notes, potion-retrieval-32M;"), "{}", c.line());
+                assert!(c.fix.as_deref().is_some_and(|f| f.contains("potion-retrieval-32M") && f.contains("--features bert")), "{}", c.line());
+            }
+        }
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         assert_eq!(port(l.local_addr().unwrap().port()).level, Level::Warn);
     }

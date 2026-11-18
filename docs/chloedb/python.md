@@ -6,63 +6,77 @@ LangChain, LangGraph and LlamaIndex take ChloeDB as a vector store, a checkpoint
 
 For dataframe work, `db["table"]` is a lazy frame written as Polars writes one, run where the data is, with the answer as Arrow: see [DataFrames](frames.md).
 
-## Install
-
-The package is in [`chloedb-py/`](https://github.com/chloetech-ai/chloedb/tree/main/chloedb-py): a Rust extension built with [maturin](https://www.maturin.rs), for CPython 3.10 and later.
-
-### Prebuilt
-
-Each `chloedb-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, for Python 3.10 and later, that installs with no Rust and no compiler. The same wheels are on [PyPI](https://pypi.org/project/chloedb/), so pip picks the one for your machine:
+## A first search
 
 ```sh
 pip install chloedb
 ```
 
+```python
+import chloedb
+
+db = chloedb.open("books.chloedb", schema={
+    "table": "books", "key": "id",
+    "fields": [
+        {"name": "id", "type": "keyword"},
+        {"name": "title", "type": "text"},
+        {"name": "year", "type": "int"},
+    ],
+})
+db.upsert([
+    {"id": "b1", "title": "The river and the dragon", "year": 1999},
+    {"id": "b2", "title": "Winter garden", "year": 2005},
+    {"id": "b3", "title": "Dragons of the northern rivers", "year": 2011},
+])
+
+# Words, ranked by BM25, with a filter
+for row in db.query("SELECT id, title FROM books WHERE MATCH(title, :q) AND year > :y "
+                    "ORDER BY bm25(title, :q) DESC", q="dragon", y=2000):
+    print(row["id"], row["title"])
+
+# A typo, forgiven
+for row in db.query("SELECT id, title FROM books ORDER BY bm25(title, :q, fuzzy => 'auto') DESC LIMIT 2", q="dragn"):
+    print(row["id"], row["title"])
+
+db.close()
+```
+
+```text
+b3 Dragons of the northern rivers
+b1 The river and the dragon
+b3 Dragons of the northern rivers
+```
+
+- `chloedb.open(path, schema)` creates the database the first time and opens it every time after, so the script runs again as it is. `upsert` replaces the rows whose keys it is given, so nothing is written twice; it replaces whole rows, and a field the new row leaves out is then empty. To change one field, use `UPDATE`: `db.sql("UPDATE books SET year = 2000 WHERE id = 'b1'")`.
+- Values go in as parameters (`:q`, `:y`), never into the SQL text.
+- The same methods work against a server: `chloedb.serve()` starts a chloedb-server of its own and returns a client of it (with `pip install "chloedb[server]"`), and `chloedb.connect("http://127.0.0.1:7700")` is a client of one already running. A server's tables are made with SQL:
+
+  ```python
+  with chloedb.serve() as db:          # a server on a free port, stopped when the block ends
+      db.sql("CREATE TABLE books (id KEYWORD PRIMARY KEY, title TEXT, year INT)")
+      db.upsert([{"id": "b1", "title": "The river and the dragon", "year": 1999}], table="books")
+      print(db.query("SELECT id, title FROM books ORDER BY bm25(title, :q, fuzzy => 'auto') DESC", q="dragn").rows)
+  ```
+
+- Rows like a given row ("more like this") rank by `similarity` to its stored vector, `{"vector_of": key}`: [similar rows](#similar-rows-more-like-this-vector_of).
+- When something fails, [common errors](#common-errors) has the messages people meet first and what each means.
+
+The [search guide](../guide/search.md) goes through every kind of search on a small catalogue, and [Build a search page](../guide/search-page.md) puts them in a Python web page.
+
+## Install
+
+```sh
+pip install chloedb               # prebuilt for CPython 3.10 and later, on macOS 11+ and Linux with glibc 2.28+
+pip install "chloedb[server]"     # the same, and chloedb-server of the same release
+```
+
+pip picks the wheel for your machine, so nothing is compiled. <!-- since 0.3.7 --> The `server` extra also installs [`chloedb-server`](server.md#run-it), the prebuilt server of the same release, which [`chloedb.serve()`](#a-server-started-from-python) starts.
+
 If `import chloedb` raises an `ImportError` that calls it a placeholder, pip installed `chloedb` 0.0.x, which only held the name before 0.3.0 was published: `pip install --upgrade chloedb` replaces it. pip also falls back to it when no release has a wheel for your machine (an older glibc, say): `chloedb-server doctor` says which you have.
 
 The old name, `import strata`, still works for a release, with a `DeprecationWarning`; release 0.1.0 was published as `strata-db` and imports as `strata` only.
 
-<!-- since 0.3.7 --> `pip install "chloedb[server]"` also installs [`chloedb-server`](server.md#run-it), the prebuilt server of the same release, which [`chloedb.serve()`](#a-server-started-from-python) starts.
-
-| platform | wheel |
-|---|---|
-| macOS 11+ on Apple silicon | `chloedb-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
-| macOS 11+ on Intel | `chloedb-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
-| Linux x86-64, glibc 2.28+ (RHEL 8, Amazon Linux 2023, Debian 10, Ubuntu 20.04 and later) | `chloedb-<version>-cp310-abi3-manylinux_2_28_x86_64.whl` |
-| Linux aarch64, glibc 2.28+ | `chloedb-<version>-cp310-abi3-manylinux_2_28_aarch64.whl` |
-| Linux x86-64 and aarch64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later), release 0.2.0 | `chloedb-0.2.0-cp310-abi3-manylinux_2_35_x86_64.whl`, `..._aarch64.whl` |
-
-The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `chloedb-py-v<version>` (or `strata-py-v<version>`; the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The Linux wheels are built in the manylinux_2_28 container (AlmaLinux 8). The same tag publishes them to PyPI, from 0.3.0 on; `pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v<version>` installs a release from GitHub instead. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
-
-### Only the client, with no build
-
-[`chloedb.connect`](#a-server-from-python), the client of a running chloedb-server, needs only Python's standard library. Without the extension, from a checkout of the repository, put `chloedb-py/python` on the path and import it:
-
-```sh
-PYTHONPATH=chloedb-py/python python3 -c 'import chloedb; print(chloedb.connect("http://127.0.0.1:7700").health())'
-```
-
-The package imports without the extension, and `chloedb.Client`, `chloedb.connect`, `chloedb.serve`, `chloedb.ChloeDBError`, `Result` and the query builder work. A database in the process (`chloedb.open`, `chloedb.Database`, `from_sqlite`, the codebook training) raises `ImportError` saying what to install.
-
-### From source
-
-It needs Rust (stable) and a C compiler; the build takes about 12 minutes on 4 cores.
-
-```sh
-pip install ./chloedb-py                    # from the repository's root: builds and installs a wheel
-```
-
-or, while working on it:
-
-```sh
-cd chloedb-py
-python3 -m venv .venv && . .venv/bin/activate
-pip install maturin pytest
-maturin develop --release                  # builds the extension into the virtualenv
-pytest tests                               # the client tests also need chloedb-server built
-```
-
-The package includes [DataFusion](query-language.md#subqueries-with-and-joins), which runs joins, groups and sorts over many joined rows (`--no-default-features` leaves it out). Model2Vec embedding models need nothing more. For the BERT models, build with `--features bert` (`--features accelerate` on a Mac): `maturin develop --release --features bert`, or `MATURIN_PEP517_ARGS="--features bert" pip install ./chloedb-py`. The extension runs on any CPU of its architecture: ChloeDB picks its SIMD kernels (AVX2, AVX-512, the aarch64 dot product instructions) at run time. `RUSTFLAGS="-C target-cpu=native"` builds one for the building machine only.
+Each platform's wheel, the client alone with no build, and a build from source (which the BERT embedding models need) are [at the end of this page](#wheels-platforms-and-building-from-source).
 
 ## A database in your process
 
@@ -99,7 +113,7 @@ db.close()
 
 A database written by a version of ChloeDB from before [field ids](index.md#wal-memtable-and-snapshots) does not open: `chloedb.upgrade(path)` copies it into this version's format in its place, keeps the old one as `<path>.before-field-ids`, and returns `(old_path, tables, rows)`, or `None` when the database needs no upgrade. Nothing may have it open meanwhile.
 
-One process at a time can have a database open to write it. Others can open it with `chloedb.open(path, read_only=True)` (or `Database.open(path, read_only=True)`) to read it while it is written, the other workers of a web server under gunicorn or uwsgi, say: each query sees the writer's commits so far, every write raises `ChloeDBError`, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). Within a process, threads can query at once: every call releases the GIL while it runs. Threads can write at once too: a write waits while another holds the writer, and the writes that wait share the next commit (one disk flush for all of them), so none fails as busy. For writes from several processes, serve the database with `chloedb-server` and use the client below. Segments are merged in the background as writes add them, one merge at a time, as a server merges them, so a table written to for weeks stays in a few segments without the rows its updates replaced. A `with` block, or `close()`, writes the rows still in memory into the file (so that the file alone holds the database, [backups](#backing-up-and-damaged-files)), merges the small segments that writes left, gives the file system back the space merges freed when it is an eighth of the file or more, and closes the file. `optimize()` goes further, for a table that is done changing: one segment, up to 2,000,000 rows.
+One process at a time can have a database open to write it. Others can open it with `chloedb.open(path, read_only=True)` (or `Database.open(path, read_only=True)`) to read it while it is written, the other workers of a web server under gunicorn or uwsgi, say, or the second process of Flask's debug reloader: each query sees the writer's commits so far, every write raises `ChloeDBError`, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). Within a process, threads can query at once: every call releases the GIL while it runs. Threads can write at once too: a write waits while another holds the writer, and the writes that wait share the next commit (one disk flush for all of them), so none fails as busy. For writes from several processes, serve the database with `chloedb-server` and use the client below. A second `open` to write a file that is open to write already, in another process or in this one, raises `BusyError` ([common errors](#busyerror-busy-the-database-is-open-elsewhere)). Segments are merged in the background as writes add them, one merge at a time, as a server merges them, so a table written to for weeks stays in a few segments without the rows its updates replaced. A `with` block, or `close()`, writes the rows still in memory into the file (so that the file alone holds the database, [backups](#backing-up-and-damaged-files)), merges the small segments that writes left, gives the file system back the space merges freed when it is an eighth of the file or more, and closes the file. `optimize()` goes further, for a table that is done changing: one segment, up to 2,000,000 rows.
 
 A commit waits for the disk (`fsync`), so a write that returned is still there after a power failure. On a disk that is slow to sync, that caps one-row commits from one thread at a few hundred to a few thousand a second (writes from several threads share a sync). `sync=False` (to `chloedb.open`, `Database.create`, `Database.open` and `connect`) commits without waiting for the disk: a commit still reaches the operating system before it returns, so a crash of the program loses nothing, but a power failure or a crash of the machine may lose the transactions committed since the last flush, newest first, and the database stays consistent, as SQLite's `synchronous=NORMAL` in WAL mode does. Bulk loads, `flush()`, `close()` and merges sync either way. The file does not keep the choice: each open makes it.
 
@@ -151,7 +165,7 @@ db.query("SELECT id FROM books ORDER BY similarity(embedding, :v) DESC LIMIT 10"
 db.query("SELECT id FROM books ORDER BY similarity(embedding, :v) DESC LIMIT 10", v={"vector_of": "b1"})
 ```
 
-A parameter is a number, a string, `None`, a list of numbers or a numpy array (a vector), a list, a dict of term weights, `{"embed": text}` (the text's vector by an embedded field's model; add `"field"` to pick one) or `{"vector_of": key}` (a stored row's vector). Either reads the table the statement's `FROM` names <!-- since 0.3.2 -->, unless it names another with `"table"` (before 0.3.2, the first table).
+A parameter is a number, a string, `None`, a list of numbers or a numpy array (a vector), a list, a dict of term weights, `{"embed": text}` (the text's vector by an embedded field's model; add `"field"` to pick one) or `{"vector_of": key}` (a stored row's vector, for [more like this](#similar-rows-more-like-this-vector_of)). Either reads the table the statement's `FROM` names <!-- since 0.3.2 -->, unless it names another with `"table"` (before 0.3.2, the first table).
 
 The answer is a `Result`:
 
@@ -202,6 +216,17 @@ db.search("dragon", where="year >= :y", params={"y": 1990})
 p = db.plan("SELECT id FROM books WHERE year >= :y LIMIT 3", y=2000)
 db.run(p)
 ```
+
+### Similar rows (more like this): `vector_of`
+
+`{"vector_of": key}` as a parameter is the vector a stored row already has, so ranking by `similarity` to it lists the rows nearest that row in meaning: "more like this" under a product, "readers also liked" under a book. Leave the row itself out by its key, and put any other condition in the same `WHERE`:
+
+```python
+db.query("SELECT id, title FROM books WHERE id <> :id AND genres = :g ORDER BY similarity(embedding, :v) DESC LIMIT 5",
+         id="b1", g="fantasy", v={"vector_of": "b1"})
+```
+
+The vector is the row's first `VECTOR` field's, embedded or given in its rows, from the table the statement's `FROM` names; `{"vector_of": key, "field": "emb", "table": "books"}` names another field or table. A key no row has is an error: `query error: no row "b99"`. The [search guide](../guide/search.md#similar-rows-more-like-this) runs it on a catalogue.
 
 ### Limits: memory, deadlines, interrupting
 
@@ -268,88 +293,6 @@ db.table().select("video", "id", score()).distinct_on("video").order_by(bm25("tr
 | `.alias(name)`, `.asc()`, `.desc(nulls_first=False)` | a column's name; an `order_by` direction |
 
 `select(...)` names the columns (without it, the stored fields but vectors, as `SELECT *`), `where(...)` keeps rows, `order_by(...)` ranks by a score best first or orders by fields ascending, `rerank(expr, count)` ranks its top `count` rows again ([rerank phases](query-language.md#rerank-phases)), `group_by(...)` and `having(...)` group, `distinct_on(...)` keeps the [first row of each group](query-language.md#the-first-row-of-each-group-distinct-on) in the query's order, `max_per(k, field)` keeps [at most k rows of each value](query-language.md#at-most-k-rows-of-a-value-max-k-per), and `limit(n)` and `offset(n)` page (groups, after `distinct_on`). A query is a [plan](query-language.md#explain), the same JSON that `plan(sql)` gives: `q.plan()` shows it, and a `Client` runs it on a server the same way.
-
-## The rank log
-
-`query_logged(sql, params, context=..., variant=..., candidates=...)` runs a ranked query and writes what it served to a [rank log](query-language.md#the-rank-log-what-each-query-served): a row per row answered, with its position, its score and the values its ranking read, as they were computed. `candidates` logs that many rows from the query's `OFFSET`, those past its `LIMIT` as not shown, and `ts` (a `datetime` or microseconds) says when it was served, now by default. The `Result` is the query's, with `result.request`, the id its log rows carry, for labelling them later. `export_rank_log(...)` reads the log back as a list of dicts for training, each with its context's history and its label as of the row's time, from a table of events:
-
-```python
-r = db.query_logged("SELECT id, title FROM books ORDER BY bm25(title, :q) DESC LIMIT 10",
-                    {"q": "dragon"}, context="u42", variant="b", candidates=50)
-db.sql("UPDATE rank_log SET label = 3 WHERE request = :r AND row_key = :k", {"r": r.request, "k": r.keys[0]})
-
-rows = db.export_rank_log(events={"table": "events", "user": "usr", "item": "item", "time": "ts", "action": "action"},
-                          history=20, window="30 minutes", grades={"click": 1, "buy": 3})
-rows[0]["features"], rows[0]["label"], rows[0]["history_items"]
-```
-
-## Semantic-ID codebooks
-
-A [semantic-ID field](server.md#semantic-ids) gives each row a code from its vector by a codebook, which `chloedb.train.codebook` trains and saves in the models directory before a table names it:
-
-```python
-h = chloedb.train.codebook(db, "items-rq", field="emb")       # a table's vectors
-h = chloedb.train.codebook(vectors, "items-rq")               # a list of lists, or a 2-D numpy array
-
-items = chloedb.open("items.chloedb", schema={
-    "table": "items", "key": "id",
-    "fields": [
-        {"name": "id", "type": "keyword"},
-        {"name": "emb", "type": "vector", "dim": 384},
-        {"name": "sid", "type": "keyword", "multi": True,
-         "semantic_id": {"from": "emb", "codebook": "items-rq"}},
-    ],
-})
-items.upsert(rows)                                            # each row gets its sid
-items.query("SELECT id FROM items WHERE sid = '12.7'")
-```
-
-It returns the SHA-256 of the file, which the table records. The options are `levels` (1 to 4, default 3), `k` centroids a level (up to 256), `iterations` of k-means a level (25), `sample`, the vectors it trains on (100 a centroid by default, drawn at random), `seed` (the same vectors and options give the same codebook), `balanced`, `table` (a database's first by default) and `models` (the default models directory, as for `Database.create`). Pass the same `models=` to `Database.create` and `Database.open`: a codebook that does not open is listed in `db.embed_errors`, and writes that need a code then fail.
-
-`chloedb.train.codebook_report(db, "items-rq", field="emb")` (or of vectors, as above) says what a codebook makes of a set of vectors, before a field names it for good:
-
-```python
-r = chloedb.train.codebook_report(vectors, "items-rq")
-r["rows"], r["codes"], r["shared_rows"], r["largest_group"]   # 12101, 10126, 3288, 12
-r["levels"][2]   # {"used": 256, "fullest": 630, "perplexity": 56.7, "residual": 0.135}
-```
-
-`shared_rows` are the rows whose code another row has too: only the tie number tells them apart, so a decoder that writes codes cannot. A level's `perplexity` is how many of its numbers the rows are spread over when weighed by use (`k` when every number has as many rows as any other), and `residual` the share of the vectors' squared length the code so far leaves unsaid.
-
-Plain k-means uses the later levels' numbers unevenly, as above: what a level leaves of the vectors points every way alike, and there most centroids end on one far vector each while a few near the middle take the rest. `balanced=True` trains each level with every centroid given the same number of the training vectors. On the 12,101 items of Amazon Beauty (text vectors of 384 dimensions, 3 levels of 256) the third level's perplexity goes from 57 to 251 and the rows sharing a code from 3,288 to 2,601; training takes 17 s, not 6 ([results](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/generative#balanced-codebooks)). It holds a distance for every training vector and centroid (8 bytes each: 52 MB at the default `sample`). Rows are coded by their nearest centroid either way.
-
-## Next items
-
-`chloedb.ngrams` keeps counts of what came after the last one or two items in a table, and `chloedb.next_items(db, history, k=10)` reads them with backoff ([Next items](next-items.md)):
-
-```python
-from chloedb import ngrams
-
-db = chloedb.open("next.chloedb", ngrams.schema())
-db.write(ngrams.ops(["a", "b"], "c"))       # after each event: "c" after [..., "a", "b"]
-chloedb.next_items(db, ["a", "b"], k=10)     # [("c", 1.0), ...]
-```
-
-## Sequence models
-
-[`encode('model', history)`](query-language.md#sequence-models-encodemodel-history) turns a user's events into a vector of an item field, by a model that `chloedb.train.sequence` trains with PyTorch (`pip install torch`) and saves in the models directory:
-
-```python
-import chloedb.train
-db = chloedb.Database.open("shop.chloedb", models="models")
-out = chloedb.train.sequence(db, "next", table="items", field="emb",
-                            events={"table": "events", "user": "usr", "item": "item", "action": "action", "time": "ts"},
-                            learn_items=True, negatives="all", holdout=True, models="models")
-chloedb.train.write_vectors(db, "next", models="models")      # the learned item vectors, into items.emb
-db.query("""SELECT id FROM items ORDER BY similarity(emb, encode('next',
-            (SELECT item, action, ts FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 200))) DESC LIMIT 10""", {"u": "u42"})
-```
-
-- **The histories** come from one of `events` (a table of the database: its columns of users, items, and optionally actions, times, and `order` for events with equal times), `sequences` (a dict from user to a list of `(item, action, time in seconds)`, oldest first) or `records` (the [rank log's export](#the-rank-log) with `history`: each record's history is a training example, and its row the target when its label is positive or missing). The item vectors are the field's, or `vectors` (a dict from key to vector).
-- **What it learns**: every event is the target of the events before it. Each item is scored as `similarity` scores it, the dot product of the model's unit vector with the item's vector, over `temperature` (0.05), and the loss is cross-entropy against the other targets of the batch (`negatives="in_batch"`, the default) or every item (`"all"`, for catalogs that fit). In a batch, an item that is often a target is a negative as often, which teaches the model to rank what is popular low: `logq=True` takes from each negative's score the log of the chance that the batch holds it, worked out from how often each item is a target (the target of its own row keeps its score), and `uniform_negatives=n` adds `n` items drawn evenly from all of them to every batch, so items that are seldom or never targets are negatives too. Use both for a catalog too large for `"all"`: on Yambda-50M's 629,298 tracks they took Recall@10 on held-out events from 0.0229 to 0.0334 after four epochs ([results](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/recsys#in-batch-negatives-corrected)). With `learn_items=True` the item vectors are trained too, starting from the field's, and returned normalized in `out["vectors"]`; without it the field keeps its vectors and the model learns to map histories into their space, so a new item is found as soon as it has a vector.
-- **The item vectors go with the model**: it is saved with the vectors it was trained with (`items.safetensors`, part of its hash), and `encode` refuses a history whose items have other vectors in the field. `chloedb.train.write_vectors(db, name, models=None)` writes them into the field the model's config names, by an `UPDATE` of that field alone for each item (a `Database` or a `Client`); returns the rows written. `chloedb._sequence.read_items(path)` reads them back.
-- **Options**: `width` (64), `layers` (2), `heads` (1), `ffn` (4 × width), `max_len` (200 events), `gap_buckets` (32), `actions` (the actions seen by default; others count as one more), `epochs` (50), `batch` (128), `lr` (1e-3), `dropout` (0.2), `seed`. With `holdout=True` each user's last event is kept out of training, and training stops when NDCG@10 on those has not risen for `patience` epochs (5), keeping the best epoch. `max_seconds` stops it after the first epoch that ends past that many seconds. `log=print` prints each epoch's loss and metrics, which `out["history"]` also holds.
-- It returns `{"path", "history", "vectors"}`. Pass the same `models=` to `Database.open`, or start the server with `--models`: a coordinator needs the model, its shards don't.
 
 ## A server from Python
 
@@ -442,7 +385,7 @@ Every error ChloeDB raises is a `chloedb.ChloeDBError` (`except chloedb.ChloeDBE
 | `conflict` | `ConflictError` | refused by the state it met (409): an `if_seq_no` that no longer holds, an idempotency key still running, a `min_seq_no` past the server's last write |
 | `conflict` | `DuplicateKeyError` | <!-- since 0.3.2 --> an `INSERT` of a key the table already holds; a `ConflictError` and a `BadRequestError` both (it was a `BadRequestError` alone before), with `.table`, `.field` (the key field), `.key` and `.row` (the row's place in the write, from 1) where the message names them |
 | `partial_write` | `PartialWriteError` | a coordinator wrote some shards and not others (`answer["partial"]`): send it again with the same `idempotency_key` |
-| `busy` | `BusyError` | the database is open in another process, or another writer holds it |
+| `busy` | `BusyError` | the database is open to write already, in another process or in this one (the message says which, and what to do instead), or another writer holds it ([common errors](#busyerror-busy-the-database-is-open-elsewhere)) |
 | `overloaded` | `OverloadedError` | refused for the server's load before any work (429), after the client's retries |
 | `timeout` | `DeadlineError` | a deadline passed: a query's `timeout_ms`, a coordinator's wait for a shard (504), the engine's own |
 | `unavailable` | `UnavailableError` | no copy can serve it now (503): a replica behind, a primary replaced, a hosted model down |
@@ -494,6 +437,158 @@ ingest.kafka(chloedb.connect("http://127.0.0.1:7700"), "clicks", click, brokers=
 
 The function gives an event's operations, which commit together with its offset; None writes the offset alone (for events to leave out). Without one, each value is JSON: an operation, or `{"ops": [...]}`. The consumer runs until interrupted, or until `max_events=` events were read or none came for `idle=` seconds, and returns counts (`events`, `written`, `skipped`, `streams`, `retries`). It keeps a stream open for `seconds_per_stream=` (1 by default), then commits the stream's offsets to Kafka for Kafka's own lag tools and opens the next. When the server cannot be reached, or answers 429 or 5xx, it waits and reads every partition again from the server's offsets, for up to `retry_for=` seconds (60). An event the function fails on stops it after the events before it are written, so a restart begins with that event. `config=` adds librdkafka settings, and consumers of one `group` share the partitions. `ingest.consume(client, log, to_ops)` runs the same loop over another log, through the small `ingest.Log` interface.
 
+## Common errors
+
+The errors people meet first, each as the last line of its traceback, with what it means and what to do. The [troubleshooting page](troubleshooting.md) has the server's and the installer's too.
+
+### `BusyError: busy: the database is open elsewhere`
+
+```text
+chloedb._native.BusyError: busy: the database is open elsewhere: process 3541 (python app.py), the parent of this process, has it open for writing. A reloader (Flask's debug mode, Django's runserver, uvicorn --reload) runs the program again in a child while its first process keeps what it opened at start: ... In Python: open it in a function the routes call (functools.cache keeps one), app.run(debug=True, use_reloader=False), or chloedb.connect('http://127.0.0.1:7700') to chloedb-server --db shop.chloedb
+```
+
+`chloedb.open` of a file that is open to write already: in another process (a second script, a chloedb-server serving it, the process that Flask's debug reloader starts beside yours, a second gunicorn worker), or in this one, by an earlier `chloedb.open` of the same path that is still open (a module imported under two names, a notebook cell run again before the old `db` was closed, a test that never closed its database). <!-- since 0.3.8 --> The message goes on to say which, from the process id the writer keeps beside the file: `this process has it open for writing already`, `process N (command), the parent of this process` (a reloader, as above), or `process N (command) has it open for writing` for any other process (the command on Linux), with what to do in each case, in Python's words at the end. Before 0.3.8 it stopped at `the database is open elsewhere`.
+
+- In one process, open a database once and share the object: a `db` at module level that every request and thread uses (threads may query and write it at once). `db.close()`, or a `with` block, closes it, and the next `open` then succeeds.
+- Under a reloader (Flask's `debug=True`, Django's runserver, `uvicorn --reload`), open the database in a function the routes call, with `functools.cache` on it so that one is kept, rather than at import: the reloader's first process imports the module and never serves, so only the process that serves opens it. Or run without the reloader: `app.run(debug=True, use_reloader=False)`.
+- To read it from other processes while one writes it, open it there with `chloedb.open(path, read_only=True)`: each query sees the writer's commits, and writes raise `ChloeDBError`.
+- To write from several processes (a web app's workers, a reloader), serve the file with `chloedb-server --db path` and connect each process with `chloedb.connect(url)`, as [Build a search page](../guide/search-page.md) does.
+- `chloedb-server --db path` on a file a script has open stops with `ERROR chloedb_server: open path: busy: the database is open elsewhere`: stop the script, or let it use the server.
+
+### `URLError: <urlopen error [Errno 111] Connection refused>`
+
+```text
+urllib.error.URLError: <urlopen error [Errno 111] Connection refused>
+```
+
+A client (`chloedb.connect`, `chloedb.AsyncClient`) found nothing listening at its URL: the server is not running, or it listens on another address or port (its log's `HTTP and UI on ...` line says which). `curl -s http://127.0.0.1:7700/livez` answers when one is up. The client tries again only when a server refused a request for its load (429), so it fails at once when none is there. `URLError` is not a `ChloeDBError`, so `except chloedb.ChloeDBError` lets it through; it is an `OSError`, as the client's own `TimeoutError` is:
+
+```python
+try:
+    hits = db.search(q, table="books").dicts()
+except chloedb.ChloeDBError as e:      # the server answered with an error: e.code, e.status, e.answer
+    ...
+except OSError:                        # no server answered (urllib.error.URLError), or none in time
+    ...
+```
+
+### `BadRequestError: ... bad value for minutes: "five"`
+
+```text
+chloedb._native.BadRequestError: schema error: row 1: schema error: bad value for minutes: "five"
+```
+
+A value of another type than its field's: here text for an `INT` field, in the first row of the write (rows count from 1). An `insert` writes all of its rows or none. Form fields and query strings arrive as text, so convert them before writing (`int(form["minutes"])`); `db.tables()` lists each field's type. The same mistake in SQL says `query error: minutes is an INT field: give it a number, not text 'five'`, and a field the table does not have says `schema error: row 1: schema error: no field minuts`.
+
+### `ChloeDBError: books.chloedb does not exist: pass a schema to create it`
+
+`chloedb.open(path)` without a schema, where no database is: a misspelt path, or a script started from another folder (a relative path is read from the current directory). Give the right path, or the schema to create the database. Its code is `error`.
+
+### `ChloeDBError: corrupt database: no valid meta slot`
+
+```text
+_chloedb.ChloeDBError: corrupt database: no valid meta slot
+```
+
+Most often the file is not a ChloeDB database at all: a JSON Lines file, a CSV or a SQLite database opened by mistake. ChloeDB does not change that file, but leaves an empty `<path>-readers` folder beside it, which you can delete. Rows from such a file go into a database with `db.import_file(path)` (JSON Lines, JSON, CSV, TSV), `db.import_sqlite(path)` or `db.import_parquet(path)`. A database that is really damaged names what is damaged and how to recover ([damaged files](#backing-up-and-damaged-files)). Its code is `corrupt`.
+
+### A vector field whose model is not open
+
+```text
+chloedb._native.BadRequestError: schema error: notes.emb is embedded by model potion-retrieval-32M, which is not open: the row would be written without its vector, which similarity() never finds. Open the model (...), give the vector in the write, or ...
+```
+
+A write that leaves a vector to a model the database could not open. `db.embed_errors` says why, for each such field:
+
+```python
+>>> db.embed_errors
+{'emb': 'schema error: model potion-retrieval-32M: no /home/me/.local/share/chloedb/models/potion-retrieval-32M/model.safetensors (fetch it first)'}
+```
+
+Fetch the model once with `chloedb-server fetch-model potion-retrieval-32M` (into `~/.local/share/chloedb/models`, or `$CHLOEDB_MODELS`), or open the database with `models=` the folder that has it, then open the database again. Until then, a query with `{"embed": text}` fails with `query error: no embedded field has its model open`. The BERT models (`bge-small-en-v1.5` and others) do not run in the prebuilt wheels: `embed_errors` then says `model bge-small-en-v1.5 is a BERT model: build with the `bert` feature`, and [troubleshooting](troubleshooting.md#a-bert-model-such-as-bge-small-does-not-run) says what to use instead.
+
+## The rank log
+
+`query_logged(sql, params, context=..., variant=..., candidates=...)` runs a ranked query and writes what it served to a [rank log](query-language.md#the-rank-log-what-each-query-served): a row per row answered, with its position, its score and the values its ranking read, as they were computed. `candidates` logs that many rows from the query's `OFFSET`, those past its `LIMIT` as not shown, and `ts` (a `datetime` or microseconds) says when it was served, now by default. The `Result` is the query's, with `result.request`, the id its log rows carry, for labelling them later. `export_rank_log(...)` reads the log back as a list of dicts for training, each with its context's history and its label as of the row's time, from a table of events:
+
+```python
+r = db.query_logged("SELECT id, title FROM books ORDER BY bm25(title, :q) DESC LIMIT 10",
+                    {"q": "dragon"}, context="u42", variant="b", candidates=50)
+db.sql("UPDATE rank_log SET label = 3 WHERE request = :r AND row_key = :k", {"r": r.request, "k": r.keys[0]})
+
+rows = db.export_rank_log(events={"table": "events", "user": "usr", "item": "item", "time": "ts", "action": "action"},
+                          history=20, window="30 minutes", grades={"click": 1, "buy": 3})
+rows[0]["features"], rows[0]["label"], rows[0]["history_items"]
+```
+
+## Semantic-ID codebooks
+
+A [semantic-ID field](server.md#semantic-ids) gives each row a code from its vector by a codebook, which `chloedb.train.codebook` trains and saves in the models directory before a table names it:
+
+```python
+h = chloedb.train.codebook(db, "items-rq", field="emb")       # a table's vectors
+h = chloedb.train.codebook(vectors, "items-rq")               # a list of lists, or a 2-D numpy array
+
+items = chloedb.open("items.chloedb", schema={
+    "table": "items", "key": "id",
+    "fields": [
+        {"name": "id", "type": "keyword"},
+        {"name": "emb", "type": "vector", "dim": 384},
+        {"name": "sid", "type": "keyword", "multi": True,
+         "semantic_id": {"from": "emb", "codebook": "items-rq"}},
+    ],
+})
+items.upsert(rows)                                            # each row gets its sid
+items.query("SELECT id FROM items WHERE sid = '12.7'")
+```
+
+It returns the SHA-256 of the file, which the table records. The options are `levels` (1 to 4, default 3), `k` centroids a level (up to 256), `iterations` of k-means a level (25), `sample`, the vectors it trains on (100 a centroid by default, drawn at random), `seed` (the same vectors and options give the same codebook), `balanced`, `table` (a database's first by default) and `models` (the default models directory, as for `Database.create`). Pass the same `models=` to `Database.create` and `Database.open`: a codebook that does not open is listed in `db.embed_errors`, and writes that need a code then fail.
+
+`chloedb.train.codebook_report(db, "items-rq", field="emb")` (or of vectors, as above) says what a codebook makes of a set of vectors, before a field names it for good:
+
+```python
+r = chloedb.train.codebook_report(vectors, "items-rq")
+r["rows"], r["codes"], r["shared_rows"], r["largest_group"]   # 12101, 10126, 3288, 12
+r["levels"][2]   # {"used": 256, "fullest": 630, "perplexity": 56.7, "residual": 0.135}
+```
+
+`shared_rows` are the rows whose code another row has too: only the tie number tells them apart, so a decoder that writes codes cannot. A level's `perplexity` is how many of its numbers the rows are spread over when weighed by use (`k` when every number has as many rows as any other), and `residual` the share of the vectors' squared length the code so far leaves unsaid.
+
+Plain k-means uses the later levels' numbers unevenly, as above: what a level leaves of the vectors points every way alike, and there most centroids end on one far vector each while a few near the middle take the rest. `balanced=True` trains each level with every centroid given the same number of the training vectors. On the 12,101 items of Amazon Beauty (text vectors of 384 dimensions, 3 levels of 256) the third level's perplexity goes from 57 to 251 and the rows sharing a code from 3,288 to 2,601; training takes 17 s, not 6 ([results](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/generative#balanced-codebooks)). It holds a distance for every training vector and centroid (8 bytes each: 52 MB at the default `sample`). Rows are coded by their nearest centroid either way.
+
+## Next items
+
+`chloedb.ngrams` keeps counts of what came after the last one or two items in a table, and `chloedb.next_items(db, history, k=10)` reads them with backoff ([Next items](next-items.md)):
+
+```python
+from chloedb import ngrams
+
+db = chloedb.open("next.chloedb", ngrams.schema())
+db.write(ngrams.ops(["a", "b"], "c"))       # after each event: "c" after [..., "a", "b"]
+chloedb.next_items(db, ["a", "b"], k=10)     # [("c", 1.0), ...]
+```
+
+## Sequence models
+
+[`encode('model', history)`](query-language.md#sequence-models-encodemodel-history) turns a user's events into a vector of an item field, by a model that `chloedb.train.sequence` trains with PyTorch (`pip install torch`) and saves in the models directory:
+
+```python
+import chloedb.train
+db = chloedb.Database.open("shop.chloedb", models="models")
+out = chloedb.train.sequence(db, "next", table="items", field="emb",
+                            events={"table": "events", "user": "usr", "item": "item", "action": "action", "time": "ts"},
+                            learn_items=True, negatives="all", holdout=True, models="models")
+chloedb.train.write_vectors(db, "next", models="models")      # the learned item vectors, into items.emb
+db.query("""SELECT id FROM items ORDER BY similarity(emb, encode('next',
+            (SELECT item, action, ts FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 200))) DESC LIMIT 10""", {"u": "u42"})
+```
+
+- **The histories** come from one of `events` (a table of the database: its columns of users, items, and optionally actions, times, and `order` for events with equal times), `sequences` (a dict from user to a list of `(item, action, time in seconds)`, oldest first) or `records` (the [rank log's export](#the-rank-log) with `history`: each record's history is a training example, and its row the target when its label is positive or missing). The item vectors are the field's, or `vectors` (a dict from key to vector).
+- **What it learns**: every event is the target of the events before it. Each item is scored as `similarity` scores it, the dot product of the model's unit vector with the item's vector, over `temperature` (0.05), and the loss is cross-entropy against the other targets of the batch (`negatives="in_batch"`, the default) or every item (`"all"`, for catalogs that fit). In a batch, an item that is often a target is a negative as often, which teaches the model to rank what is popular low: `logq=True` takes from each negative's score the log of the chance that the batch holds it, worked out from how often each item is a target (the target of its own row keeps its score), and `uniform_negatives=n` adds `n` items drawn evenly from all of them to every batch, so items that are seldom or never targets are negatives too. Use both for a catalog too large for `"all"`: on Yambda-50M's 629,298 tracks they took Recall@10 on held-out events from 0.0229 to 0.0334 after four epochs ([results](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/recsys#in-batch-negatives-corrected)). With `learn_items=True` the item vectors are trained too, starting from the field's, and returned normalized in `out["vectors"]`; without it the field keeps its vectors and the model learns to map histories into their space, so a new item is found as soon as it has a vector.
+- **The item vectors go with the model**: it is saved with the vectors it was trained with (`items.safetensors`, part of its hash), and `encode` refuses a history whose items have other vectors in the field. `chloedb.train.write_vectors(db, name, models=None)` writes them into the field the model's config names, by an `UPDATE` of that field alone for each item (a `Database` or a `Client`); returns the rows written. `chloedb._sequence.read_items(path)` reads them back.
+- **Options**: `width` (64), `layers` (2), `heads` (1), `ffn` (4 × width), `max_len` (200 events), `gap_buckets` (32), `actions` (the actions seen by default; others count as one more), `epochs` (50), `batch` (128), `lr` (1e-3), `dropout` (0.2), `seed`. With `holdout=True` each user's last event is kept out of training, and training stops when NDCG@10 on those has not risen for `patience` epochs (5), keeping the best epoch. `max_seconds` stops it after the first epoch that ends past that many seconds. `log=print` prints each epoch's loss and metrics, which `out["history"]` also holds.
+- It returns `{"path", "history", "vectors"}`. Pass the same `models=` to `Database.open`, or start the server with `--models`: a coordinator needs the model, its shards don't.
+
 ## Search on the device
 
 `chloedb.nearby(url, table, dir)` holds a [slice](slices.md) of a chloedb-server's table near a user: the rows of the tiles around them in a database in `dir`, searched with the server's statistics. `move_to(lat, lon)` fetches the tiles it lacks, and `search(q, k=10, d0=1000)` answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's `where` is `"device"` or `"server"` and `why` the reason. For a [vector slice](slices.md#vector-slices-more-like-this-on-the-device), `focus(taste, rows=20_000)` holds the clusters nearest a taste vector and `similar(vector, k=10)` answers a similarity search the same way, fetching the few clusters its codes name when that proves the answer.
@@ -504,3 +599,55 @@ near.move_to(40.7484, -73.9857)
 r = near.search("pizza", k=10)
 r.where, r.why            # ("device", "proved")
 ```
+
+## Wheels, platforms and building from source
+
+The package is in [`chloedb-py/`](https://github.com/chloetech-ai/chloedb/tree/main/chloedb-py): a Rust extension built with [maturin](https://www.maturin.rs), for CPython 3.10 and later. `pip install chloedb` ([install](#install)) is all most machines need; this is what it installs, and the other ways.
+
+### Prebuilt
+
+Each `chloedb-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) has a wheel per platform, for Python 3.10 and later, that installs with no Rust and no compiler. The same wheels are on [PyPI](https://pypi.org/project/chloedb/), so pip picks the one for your machine:
+
+```sh
+pip install chloedb
+```
+
+| platform | wheel |
+|---|---|
+| macOS 11+ on Apple silicon | `chloedb-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
+| macOS 11+ on Intel | `chloedb-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
+| Linux x86-64, glibc 2.28+ (RHEL 8, Amazon Linux 2023, Debian 10, Ubuntu 20.04 and later) | `chloedb-<version>-cp310-abi3-manylinux_2_28_x86_64.whl` |
+| Linux aarch64, glibc 2.28+ | `chloedb-<version>-cp310-abi3-manylinux_2_28_aarch64.whl` |
+| Linux x86-64 and aarch64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later), release 0.2.0 | `chloedb-0.2.0-cp310-abi3-manylinux_2_35_x86_64.whl`, `..._aarch64.whl` |
+
+The workflow [`py-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/py-release.yml) builds them on a tag `chloedb-py-v<version>` (or `strata-py-v<version>`; the version in `chloedb-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The Linux wheels are built in the manylinux_2_28 container (AlmaLinux 8). The same tag publishes them to PyPI, from 0.3.0 on; `pip install chloedb -f https://github.com/chloetech-ai/chloedb/releases/expanded_assets/chloedb-py-v<version>` installs a release from GitHub instead. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
+
+### Only the client, with no build
+
+[`chloedb.connect`](#a-server-from-python), the client of a running chloedb-server, needs only Python's standard library. Without the extension, from a checkout of the repository, put `chloedb-py/python` on the path and import it:
+
+```sh
+PYTHONPATH=chloedb-py/python python3 -c 'import chloedb; print(chloedb.connect("http://127.0.0.1:7700").health())'
+```
+
+The package imports without the extension, and `chloedb.Client`, `chloedb.connect`, `chloedb.serve`, `chloedb.ChloeDBError`, `Result` and the query builder work. A database in the process (`chloedb.open`, `chloedb.Database`, `from_sqlite`, the codebook training) raises `ImportError` saying what to install.
+
+### From source
+
+It needs Rust (stable) and a C compiler; the build takes about 12 minutes on 4 cores.
+
+```sh
+pip install ./chloedb-py                    # from the repository's root: builds and installs a wheel
+```
+
+or, while working on it:
+
+```sh
+cd chloedb-py
+python3 -m venv .venv && . .venv/bin/activate
+pip install maturin pytest
+maturin develop --release                  # builds the extension into the virtualenv
+pytest tests                               # the client tests also need chloedb-server built
+```
+
+The package includes [DataFusion](query-language.md#subqueries-with-and-joins), which runs joins, groups and sorts over many joined rows (`--no-default-features` leaves it out). Model2Vec embedding models need nothing more. For the BERT models, build with `--features bert` (`--features accelerate` on a Mac): `maturin develop --release --features bert`, or `MATURIN_PEP517_ARGS="--features bert" pip install ./chloedb-py`. The extension runs on any CPU of its architecture: ChloeDB picks its SIMD kernels (AVX2, AVX-512, the aarch64 dot product instructions) at run time. `RUSTFLAGS="-C target-cpu=native"` builds one for the building machine only.

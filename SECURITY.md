@@ -21,27 +21,52 @@ The parts this repository ships:
   driver;
 - `chloedb-crawl` and `chloedb-sheets`, and the app engine
   (`chloedb-apps/`) with its image;
-- ChloeCtx (`chloectx/`), its daemon, MCP server and inspector, and
-  `install.sh`.
+- ChloeCtx (`chloectx/`), its daemon, MCP server and inspector, its
+  Claude Code plugin (`chloectx/plugin/`), and `install.sh`;
+- `chloedb-workbench`, and the server's wheels on PyPI
+  (`packaging/server-wheels/`).
 
 ## What is supported
 
-Three releases have been published, all under ChloeDB's old name, Strata:
-`strata-js-v0.1.0` (2 November 2026), `strata-py-v0.1.0` (5 November) and
-`strata-server-v0.1.0` (6 November). Fixes go to `main` and into the next
-release; released versions are not patched. Report against `main` or the
-latest release. [docs/compatibility.md](docs/compatibility.md) says what a
-version promises, and [CHANGELOG.md](CHANGELOG.md) what changed.
+The latest release, 0.3.7 (16 November 2026), and `main`. Each release is
+tagged per package: `chloedb-server-v<version>` (the server, with
+`chloectx`, `chloedb-crawl`, `chloedb-sheets` and `chloedb-netops`
+attached prebuilt),
+`chloedb-py-v<version>` and `chloedb-js-v<version>`. Fixes go to `main` and
+into the next release; released versions are not patched, so upgrade to
+the release that has the fix. Report against `main` or the latest release.
+The 0.1.0 releases of 2 to 6 November 2026 were published under ChloeDB's
+old name, Strata (`strata-server-v0.1.0`, `strata-py-v0.1.0`,
+`strata-js-v0.1.0`), and are not supported.
+[docs/compatibility.md](docs/compatibility.md) says what a version
+promises, and [CHANGELOG.md](CHANGELOG.md) what changed.
 
-Server releases attach a `.sha256` per archive; Python and JavaScript
-releases from now on attach a `SHA256SUMS` of their wheels and tarballs,
-to check a download against.
+[The security model](docs/chloedb/security.md) says what each credential
+of a server reaches, what is open without one, and what is left to the
+operator: the network, the disks and the files the servers write.
+
+## Checking what you download
+
+- **Server archives** on GitHub each come with a `.sha256` from the same
+  release (`sha256sum -c chloedb-server-linux-x86_64.tar.gz.sha256`), which
+  `install.sh` and ChloeCtx's plugin check before they install.
+- **Python and JavaScript releases** on GitHub attach a `SHA256SUMS` of
+  their wheels and tarballs.
+- **PyPI**: the `chloedb` and `chloedb-server` packages are published from
+  this repository's workflows by trusted publishing, with attestations
+  that name the workflow that built them.
+- **npm**: the packages carry the registry's signatures
+  (`npm audit signatures`).
+
+The archives are not signed, and no release carries an SBOM yet.
 
 ## What counts as a vulnerability
 
 - Anything that lets a client of `chloedb-server` do more than its
-  credential allows: an API key acting beyond its scope (`read`, `write`,
-  `admin`), reaching the calls between the servers of a cluster without the
+  credential allows: an API key acting beyond its scope (`feed`, `read`,
+  `write`, `admin`, the roles `ops` and `propose`) or beyond the tables it
+  is limited to, a signed-in person beyond what the allow list gives them,
+  reaching the calls between the servers of a cluster without the
   cluster's token, or getting that token.
 - Reading or changing data without a credential on a server that has one.
 - A crafted database file, write-ahead log, model file, import (SQLite,
@@ -67,15 +92,10 @@ import) is a bug to report as an issue, not an advisory.
 
 ## Holes closed
 
-Each release lists the holes it closes under **Security** in
-[CHANGELOG.md](CHANGELOG.md), with what changes for a user. In 0.2.0:
-
-- `chloectx app` served any caller with no token on any address;
-- `chloectx app` started a thread per request and per exchange, without
-  bound;
-- `chloectx sync` sent transcripts and its key over plain HTTP to another
-  machine, and two syncs at once shared one header file;
-- the ChloeCtx inspector had no Content-Security-Policy;
-- `install.sh` built ChloeCtx without `--locked`;
-- `chloedb-sheets` ran a SQLite file's views with no deadline, and read an
-  xlsx file of any expanded size.
+Each release lists the holes it closes, and what changes for a user, under
+**Security** in [CHANGELOG.md](CHANGELOG.md): [0.2.0](CHANGELOG.md#020),
+[0.2.1](CHANGELOG.md#021), [0.3.0](CHANGELOG.md#030),
+[0.3.1](CHANGELOG.md#031) and [0.3.3](CHANGELOG.md#033) (the server's
+connectors and keys, and the app engine). [0.3.5](CHANGELOG.md#035)'s
+changes to auth are in its introduction: adding a server to a cluster
+takes the cluster's token.

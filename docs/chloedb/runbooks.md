@@ -11,7 +11,8 @@ tiers are explained in [chloedb-server](server.md#agents-and-administration).
 The server compiles this page in: `GET /v1/catalog` lists the routes the
 steps name, the MCP tool `runbook` finds a runbook by an alert's or a
 problem's id (`runbook {"for": "copy-down"}`), and each fleet problem's
-`next.runbook` names the one to read.
+`next.runbook` names the one to read. The last section, on upgrading
+servers outside Kubernetes, is for no alert.
 
 ## Queries are slow
 
@@ -81,8 +82,12 @@ For: `copy-down`, `copy-silent`, `under-replicated`, `shard-no-majority`, `copie
 3. A copy that does not come back (tier 2): replace it. `POST
    /v1/admin/plan` with the copy left out plans the repair (Cluster: Plan
    the repair, in the command center); file the plan as a change request.
-4. A shard with no majority: every search of it fails. Bring a copy back,
-   or remove the dead one (tier 2 for a replica, `DELETE
+4. A shard with no majority takes no writes, and its copies cannot elect
+   a primary. Its searches go on while a replica that is up serves reads
+   (the shard's state is `no_writes`); when the copy left is its primary,
+   it serves no reads either (`no_reads`), since with failover a primary
+   serves reads only while a majority of its copies answer. Bring a copy
+   back, or remove the dead one (tier 2 for a replica, `DELETE
    /v1/admin/shards/<i>/replicas`; promoting by force is tier 3 and a
    person's alone).
 
@@ -90,9 +95,14 @@ For: `copy-down`, `copy-silent`, `under-replicated`, `shard-no-majority`, `copie
 
 For: `replica-behind`, `out-of-sync`, `replica-reads`, `lag`, `follow-behind`
 
-1. Read how far behind and why: `GET /v1/cluster` (each copy's position
-   and lag) and `GET /v1/load` (the primary's write rate, the replica's
-   disk and CPU). `GET /v1/admin/follow` for a follower cluster.
+1. Read how far behind and why: the primary's `GET /v1/health`
+   (`replication.replicas`: each replica's `seq_no`, how many
+   transactions it is `behind`, and whether it is `in_sync`; on
+   `/metrics`, `chloedb_replica_behind`), and `GET /v1/load` (the
+   primary's write rate, the replica's disk and CPU). `GET /v1/cluster`
+   says each copy's role and whether it serves reads; its `txn` counts the
+   transactions of each process since it started, so it does not compare
+   two copies. `GET /v1/admin/follow` for a follower cluster.
 2. A replica catching up after a restart: wait, with `GET
    /v1/events?after=<id>&wait_s=30`, and silence the alert for the while
    (tier 1).
@@ -120,9 +130,10 @@ For: `failing`, `flush-failing`, `merge-failing`, `write-queue`, `write-p99`
 
 1. Read the server's lines: `GET /v1/logs?level=error` (a full disk, an
    I/O error).
-2. A database that refuses writes (`failing`) on a primary: hand the
-   primary over to a replica in sync first (tier 3, `POST
-   /v1/admin/shards/<i>/promote`, a person's), then fix the cause and
+2. A database that refuses writes (`failing`) on a primary: with
+   `--failover-after-ms` it hands its shard over to a replica in sync by
+   itself; without it, hand the primary over first (tier 3, `POST
+   /v1/admin/shards/<i>/promote`, a person's). Then fix the cause and
    restart the server.
 3. Slow writes with `--write-acks all`: a replica or its link is slow;
    follow "A replica is behind".
@@ -144,8 +155,8 @@ For: `primary-changed`
 1. Read why: `GET /v1/events?kind=primary_changed,copy_down` and the old
    primary's lines (`GET /v1/logs?q=<copy name>`).
 2. Nothing to do when the old primary is back as a replica in sync; it
-   resolves ten minutes after the last change. Otherwise follow "A copy
-   is down".
+   resolves ten minutes after the last change. A handover asked by hand
+   fires it too. Otherwise follow "A copy is down".
 
 ## A rollout is held
 
@@ -157,3 +168,70 @@ For: `rollout`, `held`
    /v1/admin/kube/resume`, filed as a change request; otherwise roll back
    (`POST /v1/admin/kube {"rollback": <the version before>}`), also a
    change request.
+
+## Restore from checkpoints
+
+For: `restore`, `lost-data`, `bad-write`
+
+Rows were deleted or overwritten by mistake, or a shard's copies all lost
+their disks, and the cluster has to go back to its checkpoints. Restoring
+is a person's alone (tier 3): it stops the cluster and takes back every
+write since the checkpoint. These steps are for servers you start
+yourself (by hand, from systemd, in a container); on Kubernetes the
+operator keeps its pods running and has no restore step yet.
+
+1. Have checkpoints of every shard from one cluster map: `POST
+   /v1/admin/checkpoint {"name": "nightly"}` on the coordinator writes
+   one on each shard's primary, into its `--backup-dir`, with the shard's
+   cluster map (`nightly.slots`) and the cluster's API keys
+   (`nightly.keys.json`) beside it, and answers the `slot_epoch` they are
+   of. Copy the three files of each shard off the machine. A checkpoint
+   of one copy is `POST /v1/admin/copies/checkpoint {"url": "...",
+   "name": "..."}`.
+2. Read what you are going back to: each shard's checkpoint names its
+   shard and epoch (`nightly.slots`), and `GET /v1/cluster` gives the
+   epoch now (`slot_epoch`). Slots moved since the checkpoint when the
+   two differ: then restore every shard, never one alone, or rows would
+   be in two shards or in none.
+3. Stop the coordinator and every copy of the shards you restore.
+4. On each copy, put its shard's checkpoint in place of its database:
+   `chloedb-server restore --from /backups/nightly --db /data/shop.chloedb`
+   (with `--keys FILE` when the server has `--keys FILE`). It checks the
+   checkpoint before it changes anything, moves the database's own files
+   aside into `/data/shop.chloedb.before-restore-<time>/`, puts the
+   shard's map beside it and merges the keys in (keys revoked since stay
+   revoked). It refuses while a server has the database open and when
+   the checkpoint is of another shard than the copy's. A copy on an empty
+   disk is restored the same way, or started empty: its primary sends it
+   every row, and the coordinator gives it the cluster map.
+5. Start each copy with the flags it had (`--replicas` on the shard's
+   primary, `--replica` on the others, the same `--cluster-token` and
+   `--seq-no`), then the coordinator with its `--shards`.
+6. Check before you let writes in: `GET /v1/health` on the coordinator,
+   and `GET /v1/cluster`, where each copy of a shard says the same
+   `slot_epoch` and the same `seq_no`, its replicas in sync, and the
+   shards' rows add up to the checkpoint's (`SELECT count(*)` through the
+   coordinator). The files moved aside can go once it does.
+
+## Upgrades outside Kubernetes
+
+On Kubernetes the operator rolls a new version through the cluster
+([upgrades](server.md#upgrades)). On machines of your own, upgrade one
+server at a time, waiting after each until the cluster is well again:
+
+1. In each shard, its replicas, one at a time: stop it with SIGTERM,
+   start it on the new binary without `--replicas` or `--replica` (it
+   takes up the part its `<db>.replication` keeps), and wait until its
+   own `GET /v1/health` says `replication.serves_reads` and `GET
+   /v1/cluster` says every shard `ok`. A replica must not be older than
+   its primary.
+2. Then hand the shard over to an upgraded replica (tier 3, a person's:
+   `POST /v1/admin/shards/<i>/promote {"url": "<its gRPC URL>"}`), and
+   upgrade the old primary, now a replica, as the others.
+3. The coordinators last, one at a time, each with `--drain-ms` behind
+   a load balancer.
+
+[Operate a cluster](../guide/operate-cluster.md#upgrade-one-server-at-a-time)
+runs this on one machine, and [versions and
+compatibility](../compatibility.md#a-cluster-of-mixed-versions) says what a
+cluster of mixed versions serves.

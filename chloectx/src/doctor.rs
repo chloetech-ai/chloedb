@@ -241,12 +241,11 @@ pub fn run(project: &Path) -> i32 {
         r.fail(
             "hooks",
             format!(
-                "none in {} or {}/.claude, and the {} plugin is not enabled; install the plugin (`/plugin install {}@{} --marketplace chloetech-ai/chloedb` in Claude Code), or run `chloectx install --user` (every session) or `chloectx install` here",
+                "none in {} or {}/.claude, and the {} plugin is not enabled; install the plugin (`/plugin install {} --marketplace chloetech-ai/chloedb` in Claude Code), or run `chloectx install --user` (every session) or `chloectx install` here",
                 user_settings.display(),
                 project.display(),
                 crate::plugin::NAME,
-                crate::plugin::NAME,
-                crate::plugin::MARKETPLACE
+                crate::plugin::NAME
             ),
         );
     } else if proj && (user || plugin_ok) {
@@ -333,7 +332,7 @@ pub fn run(project: &Path) -> i32 {
     } else {
         match &distill {
             Some((m, from)) => r.ok("distillation", format!("model {m} (from the {from}), after each turn")),
-            None => r.warn("distillation", "uses the Claude Code CLI's default model; a small one is enough (`chloectx install --user --distill-model haiku`)"),
+            None => r.warn("distillation", "uses the Claude Code CLI's default model; a small one is enough (`chloectx install --distill-model haiku`, with --user or --project DIR as installed)"),
         }
     }
     // The distiller and query understanding run `claude -p`, which needs
@@ -429,6 +428,12 @@ pub fn run(project: &Path) -> i32 {
                     "store",
                     format!("{} ({}, {}; daemon answered in {} ms)", store.display(), plural(n(&s["records"]), "record"), plural(n(&s["sessions"]), "session"), t0.elapsed().as_millis()),
                 );
+                // Turns a daemon stopped before distilling (ANA-5): the next
+                // daemon distills the newest few, `chloectx distill` all.
+                let missed = n(&s["undistilled"]);
+                if missed > 0 {
+                    r.warn("distillation", format!("{} ended with no notes written (the daemon stopped while distilling): the daemon distills the newest when it starts again, and `chloectx distill` distills them all", plural(missed, "turn")));
+                }
                 // What the store, its receipts and its snapshots take on
                 // disk, and against what budget (N-F9, X-F3).
                 let h = |b: u64| crate::stores::human(b);
@@ -494,7 +499,7 @@ pub fn run(project: &Path) -> i32 {
     if crate::sync::remote(&home).is_some() {
         let key = crate::sync::project_key(&home, &project.to_string_lossy());
         let remote = crate::sync::remote_for(&home, &key).expect("a server is set up");
-        let st = crate::sync::load_state(&store, &remote.url);
+        let st = crate::sync::load_state(&store, &remote.url, &key);
         let line = format!(
             "{}: this project syncs as {key} into the table {}, as machine {}, with {} (rules and decisions other machines send wait for `chloectx sync accept`)",
             remote.url,

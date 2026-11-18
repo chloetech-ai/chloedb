@@ -627,9 +627,9 @@ impl Database {
         Ok(self.get()?.catalog().iter().map(|s| s.to_short_json().to_string()).collect())
     }
 
-    /// Live rows.
+    /// The default table's live rows.
     fn count(&self) -> PyResult<u64> {
-        Ok(self.get()?.snapshot().n_live_docs())
+        Ok(self.get()?.count())
     }
 
     /// Runs a SELECT; returns {columns, rows, keys, scores, stats}.

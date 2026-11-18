@@ -46,11 +46,11 @@ impl Plan {
             Node::Update { table, input, sets } => {
                 r.table(table)?;
                 let sets = sets.iter().map(|s| r.assign(s, false)).collect::<Result<_>>()?;
-                Write::Update { select: Raise::new(schema).select(input)?, sets }
+                Write::Update { select: Raise::new(schema).select(input)?, sets, pick: None }
             }
             Node::Delete { table, input } => {
                 r.table(table)?;
-                Write::Delete { select: Raise::new(schema).select(input)? }
+                Write::Delete { select: Raise::new(schema).select(input)?, pick: None }
             }
             n => return Err(err(format!("a {} plan is not a write", name(n)))),
         })

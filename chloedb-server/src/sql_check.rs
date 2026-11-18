@@ -58,6 +58,14 @@ pub fn check(svc: &Service, sql: &str, params: &Params) -> Json {
             answer("ddl", Ok(notes))
         }
         Command::Write { table, write } => {
+            // An UPDATE or DELETE whose rows a query picks runs when that
+            // SELECT would.
+            if let Some(p) = write.pick() {
+                let profiles = |t: &str, n: &str| svc.rank_profile(t, n);
+                if let Err(e) = chloedb::query::compound::plan_read_calling(&p.sql(), &tables, &p.params, &profiles, &svc.functions()) {
+                    return answer("write", Err(e.into()));
+                }
+            }
             let mut notes = Vec::new();
             let placed = catalog.iter().find(|t| t.table == table).is_some_and(|t| t.shard_by.is_some() && t.shard_by_field() != t.primary_key);
             if cluster {
@@ -71,8 +79,11 @@ pub fn check(svc: &Service, sql: &str, params: &Params) -> Json {
                     Write::Insert { conflict: Conflict::Replace, .. } if placed => {
                         notes.push("INSERT OR REPLACE replaces a row only on the shard of its shard_by value: a row with the key and another shard_by value stays".to_string());
                     }
-                    Write::Update { select, .. } | Write::Delete { select } if select.limit.is_some() => {
+                    w @ (Write::Update { .. } | Write::Delete { .. }) if w.limited() => {
                         notes.push("UPDATE or DELETE with a LIMIT through a coordinator picks its rows by key first, then changes those that still match: two steps, not one".to_string());
+                    }
+                    w @ (Write::Update { .. } | Write::Delete { .. }) if w.picks_first() => {
+                        notes.push(format!("UPDATE or DELETE whose WHERE has a subquery, through a coordinator, picks the keys of its rows first (at most {}), then changes the rows of those keys: two steps, not one", crate::service::MAX_GET_KEYS));
                     }
                     _ => {}
                 }

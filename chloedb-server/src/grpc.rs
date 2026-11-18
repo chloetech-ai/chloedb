@@ -440,6 +440,9 @@ impl Grpc {
         // A follow process's writes, through a coordinator
         // ([`crate::service::FOLLOW`]).
         let follow: Option<Arc<str>> = req.metadata().get(crate::service::FOLLOW_HEADER).and_then(|v| v.to_str().ok()).map(Into::into);
+        // A Postgres follower's writes, through a coordinator
+        // ([`crate::service::PG_FOLLOWER`]).
+        let pg_follower: Option<Arc<str>> = req.metadata().get(crate::service::POSTGRES_FOLLOWER_HEADER).and_then(|v| v.to_str().ok()).map(Into::into);
         if follow.is_some() && !who.root && may.is_ok() {
             may = Err(ApiError { code: None, status: 403, message: format!("{} is a coordinator's, with the cluster's token", crate::service::FOLLOW_HEADER) });
         }
@@ -465,7 +468,7 @@ impl Grpc {
         let scope = if who.root || who.limited() { Scope::Admin } else { who.scope };
         let call = Box::pin(crate::service::SCOPE.scope(scope, f(self.0.clone(), who.clone(), req.into_inner())));
         let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), call)));
-        let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(who.root, call)));
+        let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::PG_FOLLOWER.scope(pg_follower, crate::service::OWN.scope(who.root, call))));
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
         let status = r.as_ref().map_or_else(|e| e.status, |_| 200);
         obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, status, t0, note) }).await;

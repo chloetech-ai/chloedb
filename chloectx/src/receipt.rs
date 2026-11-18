@@ -781,27 +781,44 @@ pub fn fmt_receipt(r: &Receipt) -> String {
     s
 }
 
-/// A record forgotten, as receipts are scrubbed of it.
+/// What was forgotten, as receipts are scrubbed of it.
 #[derive(Clone, Debug, Default)]
 pub struct Forgotten {
-    pub id: String,
-    /// The record's text when it was a prompt: the receipts whose query it
-    /// was lose their query too.
-    pub prompt: Option<String>,
+    /// The records deleted.
+    pub ids: Vec<String>,
+    /// Those that were prompts, by id with their text: the receipts whose
+    /// query one was lose their query too.
+    pub prompts: Vec<(String, String)>,
+    /// Texts forgotten by their words ([`crate::forget::needle`]): every
+    /// string of a receipt that holds one is replaced.
+    pub texts: Vec<String>,
+}
+
+impl Forgotten {
+    /// One record.
+    pub fn record(id: &str, prompt: Option<String>) -> Forgotten {
+        Forgotten { ids: vec![id.to_string()], prompts: prompt.map(|p| (id.to_string(), p)).into_iter().collect(), texts: Vec::new() }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty() && self.texts.is_empty()
+    }
 }
 
 /// Receipts scrubbed per page, in one commit each.
 const SCRUB_PAGE: usize = 500;
 
 impl Book {
-    /// Scrubs the receipts: with `forgotten`, those that showed that record
-    /// lose the text they were shown, and its rows their text's hash (they
-    /// keep ids and scores), and a prompt's receipts lose their query;
+    /// Scrubs the receipts: with `forgotten`, those that showed one of its
+    /// records lose the text they were shown, and its rows their text's
+    /// hash (they keep ids and scores), a prompt's receipts lose their
+    /// query, and every string that holds one of its texts is replaced;
     /// without, every receipt is redacted as records are
     /// ([`crate::redact::redact_json`]). Receipts are read and rewritten a
-    /// page at a time, each page in one commit. Then the file is
-    /// compacted, so the old versions leave it. The number of receipts
-    /// changed.
+    /// page at a time, each page in one commit, in one pass however many
+    /// records were forgotten. Then the file is compacted and its free
+    /// pages written with zeros, so the old versions leave it. The number
+    /// of receipts changed.
     pub fn scrub(&self, forgotten: Option<&Forgotten>) -> Result<usize> {
         let mut n = 0;
         // Pages in id order; a rewrite keeps its id, so the order holds.
@@ -828,9 +845,56 @@ impl Book {
         }
         if n > 0 {
             self.db.optimize()?;
+            self.db.storage().zero_free_pages()?;
         }
         Ok(n)
     }
+
+    /// How many receipts hold one of `texts` (lowercase), changing nothing.
+    pub fn count_holding(&self, texts: &[String]) -> Result<usize> {
+        let mut n = 0;
+        let mut offset = 0;
+        loop {
+            let rs = self.db.query(&format!("SELECT body FROM receipts ORDER BY id ASC LIMIT {SCRUB_PAGE} OFFSET {offset}"), &Params::new())?;
+            offset += rs.rows.len();
+            n += rs.rows.iter().filter(|r| r.first().and_then(|v| v.as_str()).is_some_and(|b| crate::forget::holds(&unescaped(b), texts))).count();
+            if rs.rows.len() < SCRUB_PAGE {
+                break;
+            }
+        }
+        Ok(n)
+    }
+}
+
+/// A receipt's stored JSON with its strings read back, for a search of
+/// their text (an escaped quote or line break would hide a match).
+fn unescaped(body: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) => {
+            let mut out = String::new();
+            strings(&v, &mut out);
+            out
+        }
+        Err(_) => body.to_string(),
+    }
+}
+
+fn strings(v: &serde_json::Value, out: &mut String) {
+    use serde_json::Value as Json;
+    match v {
+        Json::String(s) => {
+            out.push_str(s);
+            out.push('\n');
+        }
+        Json::Array(a) => a.iter().for_each(|x| strings(x, out)),
+        Json::Object(o) => o.values().for_each(|x| strings(x, out)),
+        _ => {}
+    }
+}
+
+/// Scrubs a receipt not written yet of `forgotten`; whether it changed.
+pub fn scrub_receipt(r: &mut Receipt, forgotten: &Forgotten) -> bool {
+    scrub_one(r, Some(forgotten)).unwrap_or(false)
 }
 
 /// Scrubs one receipt of `forgotten` (or redacts it); whether it changed.
@@ -843,22 +907,34 @@ fn scrub_one(r: &mut Receipt, forgotten: Option<&Forgotten>) -> Result<bool> {
         }
         return Ok(false);
     };
-    let id = f.id.as_str();
     let mut changed = false;
-    if r.shown.iter().any(|s| s == id) || r.text.contains(&format!("[{id}]")) {
-        r.text = format!("(removed: record {id} was forgotten, and the text shown with it is no longer kept)");
-        r.text_sha = sha(&r.text);
-        r.inputs.skip.retain(|s| s != id);
-        changed = true;
+    for id in &f.ids {
+        let id = id.as_str();
+        if r.shown.iter().any(|s| s == id) || r.text.contains(&format!("[{id}]")) {
+            r.text = format!("(removed: record {id} was forgotten, and the text shown with it is no longer kept)");
+            r.text_sha = sha(&r.text);
+            r.inputs.skip.retain(|s| s != id);
+            changed = true;
+        }
+        for row in r.rows.iter_mut().filter(|row| row.id == id && !row.sha.is_empty()) {
+            // A hash of a short text confirms a guess of it.
+            row.sha.clear();
+            changed = true;
+        }
     }
-    for row in r.rows.iter_mut().filter(|row| row.id == id && !row.sha.is_empty()) {
-        // A hash of a short text confirms a guess of it.
-        row.sha.clear();
-        changed = true;
-    }
-    if let Some(p) = f.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+    for (id, p) in f.prompts.iter().map(|(id, p)| (id, p.trim())).filter(|(_, p)| !p.is_empty()) {
         if r.inputs.query.contains(p) {
             r.inputs.query = format!("(removed: the prompt this recall answered, record {id}, was forgotten)");
+            changed = true;
+        }
+    }
+    if !f.texts.is_empty() {
+        let mut v = serde_json::to_value(&*r).map_err(|e| err(e.to_string()))?;
+        if crate::forget::scrub_json(&mut v, &f.texts) {
+            *r = serde_json::from_value(v).map_err(|e| err(e.to_string()))?;
+            if r.text_sha != sha(&r.text) && !r.text_sha.is_empty() {
+                r.text_sha = sha(&r.text);
+            }
             changed = true;
         }
     }

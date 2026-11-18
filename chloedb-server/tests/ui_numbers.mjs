@@ -405,5 +405,19 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.deepEqual(g.map((x) => [x.pattern, x.n]), [["collector=rrc<n> peer_as=<n>", 2]]);
 }
 
+// A checkpoint's default name is one the server takes (OLU-10): a copy named by its address loses the ":".
+{
+  const at = new Date(Date.UTC(2026, 10, 17, 18, 52, 11));
+  assert.equal(core.checkpointName("127.0.0.1:17744", at), "127.0.0.1-17744-2026-11-17-18-52-11");
+  assert.equal(core.checkpointName("s1-0", at), "s1-0-2026-11-17-18-52-11");
+  assert.equal(core.checkpointName(".hidden name", at), "hidden-name-2026-11-17-18-52-11");
+  assert.equal(core.checkpointName("", at), "2026-11-17-18-52-11");
+  for (const p of ["127.0.0.1:17744", "[::1]:7701", "pod/s0 a", "cp", "..x"]) assert.equal(core.checkpointNameProblem(core.checkpointName(p, at)), null, p);
+  assert.ok(core.checkpointNameProblem("127.0.0.1:17744-2026"));
+  assert.ok(core.checkpointNameProblem(".x"));
+  assert.ok(core.checkpointNameProblem(""));
+  assert.ok(core.checkpointNameProblem("x".repeat(201)));
+}
+
 console.log("ok");
 process.exit(0);

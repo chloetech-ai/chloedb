@@ -10,8 +10,9 @@ type Tables = string | Iterable<string>;
 type Bytes = Uint8Array | ArrayBuffer | ArrayBufferView;
 
 export interface OpenOptions {
-  /** Where embedded fields' models are ($CHLOEDB_MODELS or
-   * ~/.local/share/strata/models by default). */
+  /** Where embedded fields' models are: $CHLOEDB_MODELS, else
+   * ~/.local/share/chloedb/models (~/.local/share/strata/models on a machine
+   * that has that folder from before the rename and no ~/.local/share/chloedb). */
   models?: Path;
   /** Cores vector indexes build on and each query searches segments on
    * (default: every core). */
@@ -64,7 +65,8 @@ export declare class Database extends Searchable {
 
   schema(table?: string): Promise<Schema>;
   tables(): Promise<Schema[]>;
-  /** Live rows, in every table. */
+  /** The live rows of the default table: the first, or in a database made
+   * with no tables the first one created after it. */
   count(): Promise<number>;
   addColumn(name: string, type: string, options?: { table?: string; [option: string]: unknown }): Promise<void>;
   dropColumn(name: string, options?: { table?: string }): Promise<void>;

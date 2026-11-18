@@ -1,8 +1,120 @@
-# ChloeCtx: how it works
+# ChloeCtx: long-term memory for Claude Code
 
-ChloeCtx, an application built on [ChloeDB](../chloedb/index.md), gives a coding agent (Claude Code first) a memory that outlives its context window. It records every prompt, answer, tool call and compaction summary of a project into one ChloeDB file, brings the relevant pieces back at the moments they matter without the model having to ask, and gives the model tools to search its own history when it decides to.
+ChloeCtx gives Claude Code a memory that outlives its sessions. It records every prompt, answer, tool call and compaction summary of a project into a ChloeDB file on your machine, has a small model write down the decisions and rules each turn agreed, and brings the relevant ones back when a session starts and with each prompt, without the model having to ask. The model also gets tools to search that history itself.
 
-## The problem
+This page starts with what you install and use day to day. [How it works](#how-it-works-the-problem) follows, for those who want the design: what it stores, when it brings history back, and how it ranks.
+
+## Install it
+
+ChloeCtx runs on macOS and Linux (on Windows, inside WSL 2), and needs the [Claude Code](https://claude.com/claude-code) CLI, logged in (`claude auth status` shows `"loggedIn": true`). The quickest way is the Claude Code plugin, which downloads a prebuilt `chloectx` on its first session; in Claude Code:
+
+```text
+/plugin marketplace add chloetech-ai/chloedb
+/plugin install chloectx@chloedb
+```
+
+Or install it from a checkout, for every session or for one project:
+
+```sh
+git clone https://github.com/chloetech-ai/chloedb && cd chloedb
+./install.sh                                    # every Claude Code session on this machine
+./install.sh --project /path/to/your/project    # or one project
+```
+
+Then start a **new** Claude Code session: a session that was already open has neither the hooks nor the memory tools. `chloectx doctor`, run in a project's folder, checks the setup and says how to fix each line that failed. A project install covers that one folder: a git worktree of the same repository is a folder of its own and needs its own `chloectx install` (they then share one store), or install for every session instead. [Install ChloeCtx](setup.md) has every route (the plugin's details, a prebuilt binary, remote machines and dev containers), what each one changes in Claude Code's settings, upgrades and removal.
+
+## What happens on its own
+
+Once it is installed there is nothing to run. In each session:
+
+- **At the start**, Claude gets a briefing of at most 6,000 characters: the rules first, then decisions, planned work with its requirements, and facts. It is the same text from one session to the next while the notes are, so Claude Code's prompt cache holds it; what changes (how many records, the open tasks, where the last session stopped) comes with the first prompt, and in the briefing itself when a session is resumed (`claude --continue`, `--resume`) or compacted.
+- **With each prompt**, up to four notes that match the prompt come with it, and earlier records about it when the evidence is strong enough. Once the store holds 20 records, a small model also searches memory for the prompt in the background; what it finds comes with the turn's next tool result or with the next prompt, so a quick question answered without a tool call is answered before it arrives.
+- **After each turn**, a small model (`haiku` by default) writes down the decisions, rules, facts and planned work the turn agreed.
+- **When Claude decides to**, it calls the memory tools: `memory_ask`, `memory_search`, `memory_timeline`, `memory_sql`, `memory_remember` and `memory_forget`.
+
+ChloeCtx's own model calls run through `claude -p` and are billed to the CLI's login: about $0.003 a turn in all with Haiku once the store holds 20 records, none of it holding up a turn ([what each call costs](setup.md#what-you-need)). `chloectx doctor` shows what your own store measured over the last 30 days.
+
+A rule is only as good as the note it became. The briefing shows the newest 40 rules, 12 decisions, 10 items of planned work and 10 facts while its 6,000 characters last, each note whole up to 600 characters (a fact up to 300), so a project with many long notes can push the oldest out. A rule that must never be missed is safest as its own short note (`chloectx remember preference "Never suggest recurring todos in v1"`), or in `CLAUDE.md`, which Claude Code always loads.
+
+## Use it from a shell
+
+Run these in a project's folder: except `ui` and `stores`, which cover every store, each one works on that project's store.
+
+```sh
+chloectx doctor                                     # is it set up and working here?
+chloectx ui                                         # the inspector: what it stored, per project and per session
+chloectx briefing                                   # the briefing a new session would get now
+chloectx ask "how do invoice totals get rounded?"   # what memory holds on it: rules, notes and excerpts, by search alone
+chloectx ask --deep "..."                           # the same through the query engine (two model calls; --model sonnet for a stronger one)
+chloectx search "why did the planner pick post-filtering"
+chloectx sql "SELECT ts, text FROM memory WHERE kind = 'error' AND MATCH(files, 'exec') ORDER BY ts DESC LIMIT 5"
+chloectx remember decision "Prices are integer cents"   # or preference, fact, todo, note
+chloectx forget a1b2c3d4:42                         # delete a record for good (read "Forget something" below first)
+chloectx report [--days 7] [--session ID] [--json]  # where the project's time went
+chloectx repeats [--days 30] [--json]               # instructions you had to give again, and the rules kept for it
+chloectx blame src/pay.rs:42                        # which session wrote a line, and what memory had shown it
+chloectx backup ~/backups/chloectx-2026-10-28       # a consistent copy of this project's store
+chloectx redact [--all] [--dry-run]                 # redact secrets a store recorded before redaction caught them
+chloectx stores                                     # every store on this machine; `chloectx prune` removes the unused ones
+chloectx stats | stop
+chloectx pack ./work.capsule                        # a capsule another agent mounts
+chloectx mount ./work.capsule                       # serve it as MCP tools (stdio)
+```
+
+`chloectx ask` prints the context a model would be given, not a written answer. Three commands are for maintenance and cost model calls: `chloectx ingest-transcript ~/.claude/projects/<project>/<session>.jsonl` back-fills a session ChloeCtx did not record (one it recorded live is stored a second time); `chloectx distill` writes down the notes of the turns not distilled yet, one model call per turn (`--again` distills every turn again but a forget's, `--dry-run` counts them without a model call); `chloectx consolidate` merges overlapping notes now. `distill` and `consolidate` print one line of JSON when they are done (for `distill`: the turns, how many it distilled, and the notes it wrote).
+
+A capsule hands a slice of this memory to another agent as one read-only file it queries: [capsules](capsules.md). [Blame and receipts](receipts.md) explain `chloectx blame`.
+
+### Where the time went
+
+`chloectx report` reads the store and writes nothing. For each session of the last `--days` days (7 by default; `--session` picks one by its id or the start of it) and in all, it splits the time between the records into:
+
+| share | from | to |
+|---|---|---|
+| model | a prompt, or a tool's result | the next tool call, or the answer |
+| tools | a tool call | its result (while any call runs) |
+| waiting | an answer, or a notification (a permission prompt, an idle notice) | the next prompt; one wait counts up to 30 minutes, the rest is *away*, counted apart |
+| compaction | a compaction's start | its summary |
+
+Anything that ends in a prompt is waiting (a turn the user interrupted, which has no answer). A permission wait lasts until the tool's result, so it includes the tool's own run after the user answered. Records keep Unix seconds, so every span is whole seconds, and a tool call has a length only when its record says how long it took: calls under a second, and calls recorded before ChloeCtx timed them, count as instants.
+
+Then: the commands that took most time, normalised as [error to fix](#when-to-load) matches them (`cd x && cargo test 2>&1 | tail` is `cargo test`), with their runs, time per run and failures; time by tool; errors seen three or more times, by signature, with the session they came back most often in; files read four or more times in one session; compactions per hour of use. Last, up to five suggestions, each with the numbers behind it: a slow command run often, a loop on one error, a file reread often, permissions waited on often, frequent compactions. `--json` prints the same as JSON.
+
+## Where it keeps what it stores
+
+Each project's store is a folder outside the repository, because transcripts can contain secrets: `~/.local/share/chloectx/projects/<folder>-<hash>/` (under `$CHLOECTX_HOME/projects/` when that is set, and in `~/.local/share/engram/projects/` on a machine that has that folder from before the rename). It holds the ChloeDB file `memory.strata` and its write-ahead log, `state.json` (each session's live window and last prompts), `events.log` (the recall, search and distillation decisions), `receipts.strata` ([receipts](receipts.md)) and `snapshots/`. `chloectx doctor` names the store of the folder it runs in.
+
+A repository has one store, whichever of its git worktrees a session runs in: the store of a linked worktree (a folder whose `.git` file points at `<repo>/.git/worktrees/<name>`) is that of the same folder in the main checkout, so agents in different worktrees read and add to one memory, through one daemon. A main checkout and a folder outside git keep the store they always had. Each session remembers the folder it runs in (in the store's session state, and in `events.log` with its branch): its paths are stored relative to it, and notes tied to the code are checked against its files, not the main checkout's. `CHLOECTX_PER_WORKTREE=1` gives each worktree its own store again.
+
+A redaction pass replaces keys, tokens, private keys, passwords in URLs and headers, and values assigned to names such as `DB_PASSWORD` with markers before anything is stored or synced; a password written in prose is not caught. `chloectx redact` applies it to a store written before ([what is redacted](setup.md#secrets-and-chloectx-redact)). Treat a store like your shell history.
+
+## Forget something
+
+`chloectx forget` (and the model's `memory_forget`) deletes what ChloeCtx stored, for good: read [Forget something](setup.md#forget-something-chloectx-forget) in the install guide for what it matches and what it leaves before you use it.
+
+## Settings
+
+Set these in the environment Claude Code starts in, or in the `env` of its settings.
+
+| variable | effect |
+|---|---|
+| `CHLOECTX_DISABLE=1` | turns the hooks off: nothing is recorded or recalled. The memory tools stay; start Claude with `--disallowedTools mcp__chloectx` to leave them out of a session too |
+| `CHLOECTX_PER_WORKTREE=1` | a store for each git worktree, instead of one for the repository |
+| `CHLOECTX_HOME`, `CHLOECTX_MODELS` | relocate the store and the models |
+| `CHLOECTX_DISTILL=0` | turns distillation off (or `"distill": {"enabled": false}` in the store's `config.json`) |
+| `CHLOECTX_DISTILL_MODEL` | the model the distiller and consolidation use (`install --distill-model` writes it into the settings) |
+| `CHLOECTX_DEEP` | query engine mode: `off`, `tool`, `async` (default), `sync` |
+| `CHLOECTX_DEEP_MODEL`, `CHLOECTX_DEEP_PLANNER_MODEL`, `CHLOECTX_DEEP_RANKER_MODEL`, `CHLOECTX_DEEP_HARD_MODEL` | the query engine's models (default `haiku`; the hard model is unset) |
+| `CHLOECTX_DEEP_PLAN`, `CHLOECTX_DEEP_RANK` | `none` skips the planner; `local` ranks without a model call (defaults: `model`, `model`) |
+| `CHLOECTX_CONSOLIDATE=0` | turns consolidation off |
+| `CHLOECTX_SESSION_CONTEXT=1` | recall also searches with the session's last records ([session context](#ranking); or `"rank": {"tail": {"enabled": true}}` in the store's `config.json`) |
+| `CHLOECTX_NEXT_FILES=1` | before an edit, also the files usually edited next, with a note on each ([when to load](#when-to-load); or `"next_files": true` in the store's `config.json`) |
+| `CHLOECTX_ERROR_FIXES=0` | turns error to fix off ([when to load](#when-to-load); or `"error_fixes": false` in the store's `config.json`) |
+| `CHLOECTX_EMBEDDER` | `static` (default), `bert`, or `hash:<dim>` for a model-free hash embedder |
+
+Each is still read under its name from before the rename, `ENGRAM_*`, when the new one is not set.
+
+## How it works: the problem
 
 A long session on a complex project outgrows any context window. Claude Code then compacts it into a summary of about 15,000 characters. Summaries keep the plan and lose the particulars:
 
@@ -29,7 +141,7 @@ Only one process at a time may write a ChloeDB file, and hooks are short-lived p
 - **Reads in parallel, one writer.** Reads run on each client's own thread against a snapshot, any number at once, and the searches behind one prompt share that snapshot and run side by side while cores are free. Every write goes to one writer thread, which commits whatever is queued in one transaction and builds the new version before the write returns, so a reader never waits for a write or for the index build after it. In-memory chunks hold 256 records and scan their vectors instead of building an HNSW graph, so that build stays cheap. A full memtable becomes a segment, and segments merge, on ChloeDB's background threads, not on the writer's: with 150,000 appends back to back in the cloud container (4-core Xeon), the longest took 0.2–0.4 s, against 12–15 s when the writer flushed and merged itself ([results](https://github.com/chloetech-ai/chloedb/tree/main/chloectx/results/writes)).
 - **Never in the way.** A client that cannot reach the daemon within its deadline prints nothing and exits 0. A memory failure never blocks a prompt or a tool call.
 
-The store lives outside the repository, in `${CHLOECTX_HOME:-~/.local/share/chloectx}/<project-slug>/` (in `~/.local/share/engram` on a machine that has it from before the rename), because transcripts can contain secrets. A repository has one store, whichever of its git worktrees a session runs in: the slug of a linked worktree (a folder whose `.git` file points at `<repo>/.git/worktrees/<name>`) is that of the same folder in the main checkout, so agents in different worktrees read and add to one memory, through one daemon. A main checkout and a folder outside git keep the slug they always had. Each session remembers the folder it runs in (in the store's session state, and in `events.log` with its branch): its paths are stored relative to it, and notes tied to the code are checked against its files, not the main checkout's. `CHLOECTX_PER_WORKTREE=1` gives each worktree its own store again. A redaction pass replaces keys, tokens, private keys, passwords in URLs and headers, and values assigned to names such as `DB_PASSWORD` with markers before anything is stored or synced; `chloectx redact` applies it to a store written before ([what is redacted](setup.md#secrets-and-chloectx-redact)).
+The store lives outside the repository, one folder per project, and a repository's worktrees share one ([where](#where-it-keeps-what-it-stores)). A redaction pass replaces secrets with markers before anything is stored or synced ([what is redacted](setup.md#secrets-and-chloectx-redact)).
 
 ## The data model
 
@@ -104,9 +216,9 @@ After each `Stop`, off the prompt's path, the daemon gives the turn (request, co
 
 A new item whose analysed terms overlap an existing one by a Jaccard index J ≥ 0.6 is dropped. A note is superseded only by a stored note that names it and shares at least 30% of its words; when the replacement was dropped or is about something else, the old note stays live.
 
-**Who said it.** Every item says whether the request stated it or the assistant found it, and the record keeps its source in a `By:` line: `user`, `workbench` (a brief Workbench wrote), `agent:<name>` (another agent's brief or message) or `assistant[:<name>]`. Only the user makes rules: a rule stays a `preference` only when the user stated it as standing ("always", "never", "from now on", "by default", a convention, in a sentence about the same thing) or answered the assistant's question asking for one. Any other instruction, and anything an agent or Workbench told an agent to do, becomes a note for that session's task, which other sessions, the briefing and recall never see. A decision or fact another agent stated, or a Workbench agent concluded, reads "The agent lead said: …"; it is that agent's claim, not a fact. A person's prompt that states a decision ("My decision: …", "We decided …") is kept at once as the user's decision, whether or not the distiller runs. Workbench tells ChloeCtx who wrote each prompt with `CHLOECTX_PROMPT_SOURCE` (the session's task), `CHLOECTX_PROMPT_LOG` (later prompts it typed) and `CHLOECTX_AGENT_NAME`; a prompt that is a brief relayed to the session (`<coordinator-relay>`, `<relay from="NAME">`, or one that opens "The coordinator sent a message while you were working:" or "Another Claude session sent a message:") is that agent's (`coordinator`, NAME, `another-session`); a prompt nothing names is the user's.
+**Who said it.** Every item says whether the request stated it or the assistant found it, and the record keeps its source in a `By:` line: `user`, `workbench` (a brief Workbench wrote), `agent:<name>` (another agent's brief or message) or `assistant[:<name>]`. Only the user makes rules: a rule stays a `preference` only when the user stated it as standing ("always", "never", "from now on", "by default", "everywhere", a convention, in a sentence about the same thing), listed it after words that announce rules ("A few ground rules before we start: …", "Conventions:", but not "rules for this task"), or answered the assistant's question asking for one. Only a rule has a scope: a decision, requirement or fact the model calls "for this task" is kept as the project's. Any other instruction, and anything an agent or Workbench told an agent to do, becomes a note for that session's task, which other sessions, the briefing and recall never see. A decision or fact another agent stated, or a Workbench agent concluded, reads "The agent lead said: …"; it is that agent's claim, not a fact. A person's prompt that states a decision ("My decision: …", "We decided …") is kept at once as the user's decision, whether or not the distiller runs. Workbench tells ChloeCtx who wrote each prompt with `CHLOECTX_PROMPT_SOURCE` (the session's task), `CHLOECTX_PROMPT_LOG` (later prompts it typed) and `CHLOECTX_AGENT_NAME`; a prompt that is a brief relayed to the session (`<coordinator-relay>`, `<relay from="NAME">`, or one that opens "The coordinator sent a message while you were working:" or "Another Claude session sent a message:") is that agent's (`coordinator`, NAME, `another-session`); a prompt nothing names is the user's.
 
-**Said again.** An instruction the user gives and has to give again, later in the session or in another one, is a rule after all: the second time, it becomes a `preference` tagged `repeated` that every session is given ("Build apps from the CREATE statements (the user has said this in 2 sessions)", or "... 2 times" within one session), linked to what it repeats and superseding the notes among them. Which earlier sayings a request says again is a model's to judge, in a call of its own after each of the user's turns: it is shown the user's earlier requests and instructions most like this one, from this session and others (prompts, 6 by the vectors and 6 by BM25, and notes for a task and rules, 8 and 8), and the agent's reply before it. A request says one again when it asks for the same thing in any words, or complains that it still is not done ("why does it still say Strata?"); one that only shares a subject, asks for something else or changes its mind does not. The model quotes the request's words that say it again and writes the rule; a mark whose quote is not in the request is dropped, because a model given a request with little in it copies what it was shown. A correction is reworded more than words or vectors follow (in a week of real sessions an instruction and its saying again scored a cosine of 0.05 to 0.57, different instructions up to 0.73). An instruction that says what a rule already says (one kept this way, or one the user gave as a rule) means the rule did not hold, and the rule is written anew: in the newest words, counted once more, and with the situations (`when`), files and entities of both, so it is the newest rule and is recalled in this situation from now on. It counts the sessions and times it was said, the times it was said again once kept, and of those the times the session's context already held it when the prompt came (`Sessions:`, `Said:`, `Said again:`, `Said again after it was shown:`): shown and said again, the agent broke a rule it had; not shown, the rule was missing when it mattered. Only the user's own words count. `chloectx repeats [--days 30] [--json]` lists, without a model and without writing, the rules said again and what the store holds that was said again in nearly the same words; `--judge FILE` asks the model about cases of real sayings and counts the repeats it finds. Distillation costs about **$0.0013 a turn** and 8 s with a small model, and the check of what the user said again about $0.0005 more for each of the user's turns; neither delays a prompt.
+**Said again.** An instruction the user gives and has to give again, later in the session or in another one, is a rule after all: the second time, it becomes a `preference` tagged `repeated` that every session is given ("Build apps from the CREATE statements (the user has said this in 2 sessions)", or "... 2 times" within one session), linked to what it repeats and superseding the notes among them. Which earlier sayings a request says again is a model's to judge, in a call of its own after each of the user's turns: it is shown the user's earlier requests and instructions most like this one, from this session and others (prompts, 6 by the vectors and 6 by BM25, and notes for a task and rules, 8 and 8), and the agent's reply before it. A request says one again when it asks for the same thing in any words, or complains that it still is not done ("why does it still say Strata?"); one that only shares a subject, asks for something else or changes its mind does not. Nothing of the request's own turn is an earlier saying (the preference picked from its words, the notes an earlier distillation of it wrote), nor anything stored after it; nor is the same request sent again word for word (a scripted run), or a format the user pastes onto each task in the same words (six words or more, word for word in each earlier prompt). The model quotes the request's words that say it again and writes the rule; a mark whose quote is not in the request is dropped, because a model given a request with little in it copies what it was shown. A correction is reworded more than words or vectors follow (in a week of real sessions an instruction and its saying again scored a cosine of 0.05 to 0.57, different instructions up to 0.73). An instruction that says what a rule already says (one kept this way, or one the user gave as a rule) means the rule did not hold, and the rule is written anew: in the newest words, counted once more, and with the situations (`when`), files and entities of both, so it is the newest rule and is recalled in this situation from now on. It counts the sessions and times it was said, the times it was said again once kept, and of those the times the session's context already held it when the prompt came (`Sessions:`, `Said:`, `Said again:`, `Said again after it was shown:`): shown and said again, the agent broke a rule it had; not shown, the rule was missing when it mattered. Only the user's own words count. `chloectx repeats [--days 30] [--json]` lists, without a model and without writing, the rules said again and what the store holds that was said again in nearly the same words; `--judge FILE` asks the model about cases of real sayings and counts the repeats it finds. Distillation costs about **$0.0013 a turn** and 8 s with a small model, and the check of what the user said again about $0.0005 more for each of the user's turns; neither delays a prompt.
 
 Each note also carries **the situations it will matter in** (`when`), written at the same time: "choosing a library or standard-library module", "parsing a config file" for a note that the client machines run Python 3.8. A later request rarely uses the words of the note it needs; it uses the words of the task. The situations join the note's lexical key and its embedding, so "add a settings.toml loader" finds the Python 3.8 note although they share no word. This is document expansion (doc2query) done once, when the note is written.
 
@@ -126,7 +238,7 @@ A note about code goes stale when the code changes. Each note records what it wa
 
 A rule does not go stale because the code moved away from it: a teammate who switched invoices to banker's rounding did not cancel the client's requirement, so the rule stays where the model will see it, with a warning that the code may now break it.
 
-**Branches.** Worktrees of one repository share one store, but not their code. Each session's worktree, branch and commit are kept as an event when its hooks first name them and whenever the branch changes, so every record has a branch: its anchor's, else its session's at the time. A file an agent read or changed is anchored too (commit, branch, content hash). When a record is shown in another worktree, ChloeCtx asks git for the merge base of the record's branch with this HEAD: a record written after that commit came from work this worktree does not have, and is labelled "from branch wb/paybutton, not merged here: not a description of this worktree's code", unless its anchored files are the same here. The briefing moves such notes to the section of notes that may be out of date, and the query engine's ranker is told never to present them as the current code.
+**Branches.** Worktrees of one repository share one store, but not their code. Each session's worktree, branch and commit are kept as an event when its hooks first name them and whenever the branch changes, so every record has a branch: its anchor's, else its session's at the time. A file an agent read or changed is anchored too (commit, branch, content hash). When a record is shown in another worktree, ChloeCtx asks git for the merge base of the record's branch with this HEAD: a record written after that commit came from work this worktree does not have, and is labelled "from branch wb/paybutton, not merged here: not a description of this worktree's code", unless its anchored files are the same here. A rule the user gave holds on every branch and is never labelled, and a note that names no file (a decision or fact said in conversation) is labelled only when its branch has commits this HEAD lacks. The briefing moves such notes to the section of notes that may be out of date, and the query engine's ranker is told never to present them as the current code.
 
 ## When to load
 
@@ -171,7 +283,7 @@ sequenceDiagram
     E->>E: distill the turn, check notes against code, consolidate every 8 turns (background)
 ```
 
-1. **`SessionStart`: a briefing**, always, at most 6,000 characters: planned work with its requirements, rules, decisions, facts, open tasks, and where the previous session stopped, each note checked against the current code. It opens with an instruction to search memory before a design decision. After a compaction it also recalls the records most relevant to the last two prompts.
+1. **`SessionStart`: a briefing**, always, at most 6,000 characters: the rules first, then decisions, planned work with its requirements and facts, each note whole (a note longer than 600 characters, which the distiller never writes, is cut at a word, says that `memory_timeline` shows the rest, and is not counted as shown) and checked against the current code. It opens with an instruction to search memory before a design decision. It names no counts and no ages (a note's date, not "4 min ago"), so it is the same text from one session to the next while the notes are, and Claude Code's prompt cache holds it; what changes every session (how many records, the last activity, the open tasks at the last checkpoint and where the previous session stopped) comes with the session's first prompt. After a compaction or on a resume that part is in the briefing itself, and after a compaction it also recalls the records most relevant to the last two prompts.
 2. **`UserPromptSubmit`: knowledge, then gated recall.** Up to four knowledge records not yet shown that match the prompt on their own text, bypassing the gate:
 
    $$
@@ -182,7 +294,7 @@ sequenceDiagram
    Then the main search and a three-way gate: strong evidence injects the top records up to 4,000 characters; weak evidence injects three records up to 1,200, marked as a weak match; otherwise nothing.
 3. **`PreToolUse` on `Edit`/`Write`: file notes.** Up to two older errors, decisions or rules anchored to that path, once per file per window. With `CHLOECTX_NEXT_FILES=1` (an experiment, off by default) the hook also names the files earlier sessions usually edited next: B follows A when an edit of B came within three edits after one of A (consecutive edits of one file count once), weighted by one over the gap and summed over sessions, and files above 1 are shown, at most two, each with its newest note. The daemon counts these from the edits the store holds as tool calls, reading only what was stored since it last looked, so nothing new is written. On the memory bench it changed neither how many tasks were solved nor which files were edited ([results](results.md#next-files)), so it stays off.
 4. **`PostToolUse` and `PostToolUseFailure` on `Bash`: error to fix.** A command that fails and then passes, with edits or other commands between, is written down as a fix: an `error` record tagged `fix` holding the error's line, the steps (the last eight edits and commands that change something; `ls`, `grep`, `git status` and the like do not count) and what showed it fixed (the same command passed, or failed with another error). The same command means the same after `cd`, pipes, redirections, `timeout` and variable assignments are taken off (`cd x && cargo test 2>&1 | tail` is `cargo test`); a failure is followed for 60 tool calls, and one that passes with nothing between is not a fix. When a command later fails with the same error, in any session of the project, its fixes come with the failure, at most two, once a session. Errors are matched by their signature: the telling line (a compiler's `error:`, a panic, the last line of a Python traceback, `fatal:`, ...) with numbers, hashes, temporary paths and the project's path masked, or one sharing four in five of its words. The fix links to the prompt of the turn that fixed it.
-5. **Pull: MCP tools.** `memory_ask` (by search alone, [below](#answering-a-question); with `deep`, the query engine), `memory_search`, `memory_timeline` (the neighbourhood of a hit), `memory_sql` (one read-only SELECT over `memory`, with no model calls, a 2-second deadline and a 1,000-row cap), `memory_remember` and `memory_forget` (`chloectx forget ID` from a shell, and `chloectx forget --everywhere TEXT` for a fact in every store, [setup](setup.md#forget-something-chloectx-forget)).
+5. **Pull: MCP tools.** `memory_ask` (by search alone, [below](#answering-a-question); with `deep`, the query engine), `memory_search`, `memory_timeline` (the neighbourhood of a hit), `memory_sql` (one read-only SELECT over `memory`, with no model calls, a 2-second deadline and a 1,000-row cap), `memory_remember` and `memory_forget` (by its words, every record that holds a fact; `chloectx forget TEXT` from a shell, and `chloectx forget --everywhere TEXT` for a fact in every store, [setup](setup.md#forget-something-chloectx-forget)).
 
 The briefing also ends with a one-line index of the notes it had no room for ("31 older notes are not shown here, about: …"), so the model knows what to ask for.
 
@@ -271,7 +383,7 @@ It runs in one of four modes (`"deep": {"mode": …}` in the store's `config.jso
 |---|---|---|
 | `off` | never | |
 | `tool` | only when the model calls `memory_ask` with `deep` (or `chloectx ask --deep`) | the tool's result |
-| `async` (default) | after every prompt of four words or more, once the store holds 20 records, in the background | with the next tool result; if the turn ends first, with the next prompt, when the picks are still new and the ranker's confidence is high or medium. The end of a turn does not wait for it. With `"stop_recheck": true` the end of the turn waits up to `stop_wait_secs` (at most 3 s) and, when the picks are new, asks the model once to check its answer against them (Claude Code runs the model again for that, and it says only what changed) |
+| `async` (default) | after every prompt of four words or more, once the store holds 20 records, in the background | with the next tool result; if the turn ends first, with the next prompt, when the picks are still new and the ranker's confidence is high or medium. The end of a turn does not wait for it, but a search already finished then whose picks hold a rule or decision of the user's that the session was not shown is given at once, and Claude Code runs the model again to check its answer against it (the turn may be the session's only one). With `"stop_recheck": true` the end of the turn waits up to `stop_wait_secs` (at most 3 s) and, when the picks are new, asks the model once to check its answer against them (Claude Code runs the model again for that, and it says only what changed) |
 | `sync` | the same prompts, before the model starts | in the prompt's context, after a wait (12 s at the median and 16 s at p90 in the cloud container, six requests at a time) |
 
 Both model calls go through `claude -p` with no tools and no prompt caching (each prompt is new, so a cache write would cost more than it saves), like distillation, and together read about 5,800 tokens and write 1,150: $0.0012 a request with a small model ($0.58 for 500 LongMemEval questions).
@@ -290,67 +402,5 @@ Two settings make it cheaper. `"planner": "none"` (`CHLOECTX_DEEP_PLAN=none`) sk
 | query engine (planner and ranker) | off the prompt's path unless `sync` | 12 s p50, 16 s p90, $0.0012 per request with Haiku |
 
 The default embedder is static (Model2Vec potion-retrieval-32M: token lookup and mean, 512 dimensions, microseconds per record). BGE-small (384 dimensions) is optional (`--features bert`) and costs about 50 ms per record on a CPU.
-
-## Install and use
-
-[Install on your machine](setup.md) has the whole procedure, remote machines and dev containers included. In short:
-
-```sh
-git clone https://github.com/chloetech-ai/chloedb && cd chloedb && ./install.sh   # every Claude Code session
-./install.sh --project /path/to/your/project                              # or one project
-chloectx doctor                                                             # check the setup
-chloectx ui                                                                 # browse what it stored
-```
-
-```sh
-chloectx ask "where do invoice totals get rounded, and why that rounding mode?"   # the query engine
-chloectx ask --model sonnet "..."                                                  # with a stronger model
-chloectx search "why did the planner pick post-filtering"
-chloectx sql "SELECT ts, text FROM memory WHERE kind = 'error' AND MATCH(files, 'exec') ORDER BY ts DESC LIMIT 5"
-chloectx remember decision "Prices are integer cents"
-chloectx ingest-transcript ~/.claude/projects/<project>/<session>.jsonl   # back-fill old sessions
-chloectx distill                                                          # distill turns stored before distillation existed
-chloectx consolidate                                                      # merge overlapping notes now
-chloectx backup ~/backups/chloectx-2026-10-28                             # a consistent copy of this project's store
-chloectx redact [--all] [--dry-run]                                       # redact secrets a store recorded before redaction caught them
-chloectx report [--days 7] [--session ID] [--json]                         # where the project's time went
-chloectx repeats [--days 30] [--json]                                     # instructions you had to give again, and the rules kept for it
-chloectx stats | briefing | stop
-chloectx pack ./work.capsule                                              # a capsule another agent mounts
-chloectx mount ./work.capsule                                             # serve it as MCP tools (stdio)
-```
-
-A capsule hands a slice of this memory to another agent as one read-only file it queries: [capsules](capsules.md).
-
-### Where the time went
-
-`chloectx report` reads the store and writes nothing. For each session of the last `--days` days (7 by default; `--session` picks one by its id or the start of it) and in all, it splits the time between the records into:
-
-| share | from | to |
-|---|---|---|
-| model | a prompt, or a tool's result | the next tool call, or the answer |
-| tools | a tool call | its result (while any call runs) |
-| waiting | an answer, or a notification (a permission prompt, an idle notice) | the next prompt; one wait counts up to 30 minutes, the rest is *away*, counted apart |
-| compaction | a compaction's start | its summary |
-
-Anything that ends in a prompt is waiting (a turn the user interrupted, which has no answer). A permission wait lasts until the tool's result, so it includes the tool's own run after the user answered. Records keep Unix seconds, so every span is whole seconds, and a tool call has a length only when its record says how long it took: calls under a second, and calls recorded before ChloeCtx timed them, count as instants.
-
-Then: the commands that took most time, normalised as [error to fix](#when-to-load) matches them (`cd x && cargo test 2>&1 | tail` is `cargo test`), with their runs, time per run and failures; time by tool; errors seen three or more times, by signature, with the session they came back most often in; files read four or more times in one session; compactions per hour of use. Last, up to five suggestions, each with the numbers behind it: a slow command run often, a loop on one error, a file reread often, permissions waited on often, frequent compactions. `--json` prints the same as JSON.
-
-| variable | effect |
-|---|---|
-| `CHLOECTX_DISABLE=1` | turns the hooks off |
-| `CHLOECTX_PER_WORKTREE=1` | a store for each git worktree, instead of one for the repository |
-| `CHLOECTX_HOME`, `CHLOECTX_MODELS` | relocate the store and the models |
-| `CHLOECTX_DISTILL=0` | turns distillation off (or `"distill": {"enabled": false}` in the store's `config.json`) |
-| `CHLOECTX_DISTILL_MODEL` | the model the distiller and consolidation use |
-| `CHLOECTX_DEEP` | query engine mode: `off`, `tool`, `async` (default), `sync` |
-| `CHLOECTX_DEEP_MODEL`, `CHLOECTX_DEEP_PLANNER_MODEL`, `CHLOECTX_DEEP_RANKER_MODEL`, `CHLOECTX_DEEP_HARD_MODEL` | the query engine's models (default `haiku`; the hard model is unset) |
-| `CHLOECTX_DEEP_PLAN`, `CHLOECTX_DEEP_RANK` | `none` skips the planner; `local` ranks without a model call (defaults: `model`, `model`) |
-| `CHLOECTX_CONSOLIDATE=0` | turns consolidation off |
-| `CHLOECTX_SESSION_CONTEXT=1` | recall also searches with the session's last records ([session context](#ranking); or `"rank": {"tail": {"enabled": true}}` in the store's `config.json`) |
-| `CHLOECTX_NEXT_FILES=1` | before an edit, also the files usually edited next, with a note on each ([when to load](#when-to-load); or `"next_files": true` in the store's `config.json`) |
-| `CHLOECTX_ERROR_FIXES=0` | turns error to fix off ([when to load](#when-to-load); or `"error_fixes": false` in the store's `config.json`) |
-| `CHLOECTX_EMBEDDER` | `static` (default), `bert`, or `hash:<dim>` for a model-free hash embedder |
 
 The full design, including the evaluation plan, is in [`chloectx/DESIGN.md`](https://github.com/chloetech-ai/chloedb/blob/main/chloectx/DESIGN.md).

@@ -24,6 +24,7 @@ pub mod embed;
 pub mod envelope;
 pub mod env;
 pub mod fixes;
+pub mod forget;
 pub mod health;
 pub mod hook;
 pub mod inspect;

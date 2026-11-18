@@ -16,7 +16,9 @@ Python 3 is only needed for the scripted demo and the evaluation harnesses, not 
 
 The CLI login matters more than it looks. The distiller runs `claude -p` in the background, so an expired CLI login breaks it even while interactive sessions (or the desktop app) keep working. Recording and recall still work in that state, but nothing new is written down. `chloectx doctor` checks for it.
 
-ChloeCtx makes model calls of its own, through `claude -p` with a small model (`haiku` by default), billed to the CLI's login: one after each turn to write down decisions and rules (about $0.001); after each of your own turns that is like something you said before, one more to see whether you had to say it again, which makes it a rule (about $0.0005); and, once a project's store holds 20 records, two more after each prompt of four words or more, in the background, to search memory for it ([query understanding](index.md#query-understanding), about $0.001 a prompt). None of them holds up a turn: what the search finds comes with the turn's next tool result, or at the next prompt. `CHLOECTX_DISTILL=0` turns the first two off, `CHLOECTX_DEEP=off` (or `tool`, only when the model asks) the last.
+ChloeCtx makes model calls of its own, through `claude -p` with a small model (`haiku` by default), billed to the CLI's login: one after each turn to write down decisions and rules (about $0.001 to $0.002); after each of your own turns that is like something you said before, one more to see whether you had to say it again, which makes it a rule (about $0.0005); and, once a project's store holds 20 records, two more after each prompt of four words or more, in the background, to search memory for it ([query understanding](index.md#query-understanding), about $0.001 to $0.002 a prompt). `chloectx doctor` shows what these calls cost in your own store over the last 30 days. None of them holds up a turn: what the search finds comes with the turn's next tool result, or at the next prompt; a find that holds a rule or decision of yours the session was not shown, ready when the turn ends, is given then, and Claude checks its answer against it. `CHLOECTX_DISTILL=0` turns the first two off, `CHLOECTX_DEEP=off` (or `tool`, only when the model asks) the last.
+
+The session's own model reads ChloeCtx's context too: the briefing, up to 6,000 characters (about 1,500 tokens), at the start of each session and again on each `claude --continue` or `--resume`, and the notes that come with a prompt.
 
 The daemon that makes these calls finds the `claude` CLI where Claude Code's hooks found it, on its own `PATH`, or in the usual install places (`~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`); `CHLOECTX_CLAUDE` names it outright. `chloectx doctor` shows which one the running daemon uses.
 
@@ -39,7 +41,7 @@ It needs no Rust and no clone of your own. Then start a **new** session. Its hoo
 
 Until that is done, which is usually well under a minute, the hooks record nothing, and the first session's start says so; the memory tools come with the next session if they were not ready within 25 seconds. The launcher writes what it did to `~/.claude/plugins/data/chloectx-chloedb/setup.log`, and when it cannot set up, the next session's start says why. To watch it, or to try again by hand: `~/.claude/plugins/cache/chloedb/chloectx/<version>/scripts/chloectx-launch setup`. When the plugin is updated (`/plugin update`, or Claude Code's auto-update) to a new version, the launcher replaces a `chloectx` it downloaded with the new version's; one you installed yourself is yours to upgrade.
 
-Claude Code clones the whole repository for the marketplace (about 230 MB). `claude plugin marketplace add chloetech-ai/chloedb --sparse .claude-plugin chloectx/plugin` checks out only the plugin, which leaves no checkout to build from on a machine without a prebuilt `chloectx`.
+Claude Code clones the whole repository for the marketplace, into `~/.claude/plugins/marketplaces/chloedb`: 665 MB on 17 November 2026 (Claude Code 2.1.326), of which 213 MB is `.git` and most of the rest benchmark results the plugin does not use. `claude plugin marketplace add chloetech-ai/chloedb --sparse .claude-plugin chloectx/plugin` checks out only the plugin, about 2 MB, which leaves no checkout to build from on a machine without a prebuilt `chloectx`. Either way, the prebuilt `chloectx` takes another 137 MB in `~/.local/bin` and the embedding model 129 MB.
 
 How it differs from `chloectx install --user`:
 
@@ -55,7 +57,7 @@ How it differs from `chloectx install --user`:
 Both use the same stores, one per project. A project with its own `chloectx install` keeps using that one, and the plugin's hooks step aside there, as the user-level ones do. With both the plugin and `chloectx install --user`, the hooks of the user settings record and the plugin's step aside, but a session has the memory tools twice; `chloectx doctor` warns, and `chloectx uninstall --user` leaves only the plugin. Doctor shows the plugin:
 
 ```console
-  ok    plugin: chloectx@chloedb 0.3.2, enabled in /home/you/.claude/settings.json (9 hook events, through /home/you/.claude/plugins/cache/chloedb/chloectx/0.3.2/scripts/chloectx-launch)
+  ok    plugin: chloectx@chloedb 0.3.7, enabled in /home/you/.claude/settings.json (11 hook events, through /home/you/.claude/plugins/cache/chloedb/chloectx/0.3.7/scripts/chloectx-launch)
   ok    MCP server: the plugin's, plugin:chloectx:chloectx (its tools are mcp__plugin_chloectx_chloectx__*)
 ```
 
@@ -76,11 +78,11 @@ Both use the same stores, one per project. A project with its own `chloectx inst
 ```bash
 curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with ctx    # ~/.local/bin/chloectx
 ~/.local/bin/chloectx fetch-model                    # potion-retrieval-32M, 129 MB, SHA-256 checked
-~/.local/bin/chloectx install --project /absolute/path/to/project    # or: install --user, every session
+~/.local/bin/chloectx install --project /absolute/path/to/project --distill-model haiku    # or: install --user --distill-model haiku, every session
 ~/.local/bin/chloectx doctor
 ```
 
-Release 0.3.1 and earlier have no prebuilt `chloectx`: build it from source, below. This installer (the website's `install.sh`) is not the repository's `./install.sh`, which installs ChloeCtx from a checkout and wires it in one step (next section), and takes the same prebuilt binary when it can.
+Without `--distill-model`, the distiller runs the Claude Code CLI's default model, and `chloectx doctor` warns that a small one is enough; `install` again with `--distill-model haiku` to change it. Release 0.3.1 and earlier have no prebuilt `chloectx`: build it from source, below. This installer (the website's `install.sh`) is not the repository's `./install.sh`, which installs ChloeCtx from a checkout and wires it in one step (next section), and takes the same prebuilt binary when it can.
 
 ## Install in one command, from source
 
@@ -108,7 +110,7 @@ git clone https://github.com/chloetech-ai/chloedb && cd chloedb && ./install.sh
 
 From the release after 0.3.2, `install.sh` can take the binary that release carries instead of building it. Without `--prebuilt` or `--source`, it takes the prebuilt binary of release `chloedb-server-v<version>` (the version in `chloectx/Cargo.toml`), checked against the release's SHA-256, in two cases: when the checkout is that release's (the tag, with `chloectx/` and `chloedb/` unchanged since), and when there is no Rust on the machine (then it says the checkout may be newer than the release). Otherwise it builds, so a checkout of main, or one you changed, runs what is in it. To install such a release with nothing to compile, clone its tag: `git clone --branch chloedb-server-v<version> https://github.com/chloetech-ai/chloedb`, then `./install.sh` in it. (A checkout of 0.3.2 or earlier has the `install.sh` that always builds.)
 
-A prebuilt binary does not know the checkout it came with, so `chloectx upgrade` asks for it: `CHLOECTX_SOURCE=/path/to/chloedb chloectx upgrade`, or `git pull && ./install.sh` there.
+A prebuilt binary does not know the checkout it came with, so `chloectx upgrade` and `chloectx doctor` cannot compare it with one or rebuild it, even when `./install.sh` took it in a checkout of yours. To upgrade a checkout of a release tag, move it to the new release's tag and run the installer again, which takes that release's prebuilt binary: `git fetch --tags && git checkout chloedb-server-v<version> && ./install.sh`. `CHLOECTX_SOURCE=/path/to/chloedb chloectx upgrade` is for a checkout on a branch, such as main, which it pulls and builds; on a tag (a detached HEAD) it stops and says so.
 
 Sessions that were already open pick ChloeCtx up when they restart.
 
@@ -127,11 +129,11 @@ git clone https://github.com/chloetech-ai/chloedb && cd chloedb/chloectx
 cargo build --release --bin chloectx
 cargo install --path . --bin chloectx --root ~/.local       # a stable path for the hooks: ~/.local/bin/chloectx
 chloectx fetch-model                                        # potion-retrieval-32M, 129 MB, at a pinned revision, SHA-256 checked
-chloectx install --user --distill-model haiku               # or: chloectx install --project /path/to/project
+chloectx install --user --distill-model haiku               # or: chloectx install --project /path/to/project --distill-model haiku
 chloectx doctor
 ```
 
-`chloectx install --user` merges eleven hooks and a permission for the memory tools into `~/.claude/settings.json` (saving the previous file next to it as `settings.json.chloectx-<time>.bak`) and registers the MCP server at user scope with `claude mcp add-json`. A project install backs up the project's `.claude/settings.local.json` and `.mcp.json` the same way before it changes them (delete the `.bak` files once you are happy, and do not commit them). Every settings file is written to a file beside it and renamed into place, so an interrupted install leaves the old file whole, and its keys stay in the order they were. A project with its own `chloectx install` keeps using that one; the user-level hooks step aside there, so nothing is recorded twice.
+`chloectx install --user` merges eleven hooks and a permission for the memory tools into `~/.claude/settings.json` and registers the MCP server at user scope with `claude mcp add-json`. Each run saves the previous `settings.json` next to it as `settings.json.chloectx-<time>.bak`, and so does `chloectx uninstall --user`; nothing deletes these backups, so remove the old ones once you are happy. A project install backs up the project's `.claude/settings.local.json` and `.mcp.json` the same way, when it changes them. It adds those two files to the repository's `.git/info/exclude`, since they hold this machine's paths, but not the `.bak` files next to them: `git status` shows them (as `?? .claude/`). Delete them, and do not commit them. Every settings file is written to a file beside it and renamed into place, so an interrupted install leaves the old file whole, and its keys stay in the order they were. A project with its own `chloectx install` keeps using that one; the user-level hooks step aside there, so nothing is recorded twice.
 
 ## Check it
 
@@ -139,8 +141,9 @@ chloectx doctor
 $ chloectx doctor
 ChloeCtx 0.3.7 for /home/you/code/app
   ok    binary: /home/you/.local/bin/chloectx
-  ok    Claude Code CLI: 2.1.299 (Claude Code)
-  ok    user hooks: /home/you/.claude/settings.json (9 events, /home/you/.local/bin/chloectx)
+  ok    version: built from 1847ac7072, up to date with origin/main
+  ok    Claude Code CLI: 2.1.326 (Claude Code) (/home/you/.local/bin/claude)
+  ok    user hooks: /home/you/.claude/settings.json (11 events, /home/you/.local/bin/chloectx)
   ok    MCP server: user scope in /home/you/.claude.json (/home/you/.local/bin/chloectx mcp)
   ok    embedding model: /home/you/.local/share/chloectx/models/potion-retrieval-32M
   ok    distillation: model haiku (from the user settings), after each turn
@@ -148,11 +151,11 @@ ChloeCtx 0.3.7 for /home/you/code/app
   ok    query understanding: after the prompt, in the background (the default): after each prompt of 4 words or more, once the store holds 20 records, 2 model calls (haiku: one plans the searches, one picks the records); nothing waits for it: what it finds comes with the turn's next tool result or the next prompt, and the end of a turn does not wait (stop_recheck off)
   ok    query understanding cost: nothing measured in this store's last 30 days yet (about $0.001 a search with haiku)
   ok    distillation cost: nothing measured in this store's last 30 days yet (about $0.001 a turn with haiku)
-  ok    daemon: a scratch store opened and answered in 368 ms; this project's store will be /home/you/.local/share/chloectx/projects/app-251a5186 once a session runs here
+  ok    daemon: a scratch store opened and answered in 1016 ms; this project's store will be /home/you/.local/share/chloectx/projects/app-e10db370 once a session runs here
 ChloeCtx is ready. Start `claude` in a project; `chloectx ui` shows what it stores.
 ```
 
-`doctor` checks the current directory's project. Once a session has run there, the last line becomes the store itself (records, sessions, daemon round trip), and a `last distillation` line reports whether the most recent distillation worked. Every failed line says how to fix it, and the command exits non-zero when anything failed.
+`doctor` checks the current directory's project. The `version` line compares the binary with the checkout it was built from; a prebuilt binary has none, and the line says how to upgrade it instead ([below](#upgrade-and-remove)). Once a session has run there, the last line becomes the store itself (records, sessions, daemon round trip), lines for the store's size on disk and the daemon's own `claude` CLI follow, and a `last distillation` line reports whether the most recent distillation worked. Every failed line says how to fix it, and the command exits non-zero when anything failed.
 
 It also says what ChloeCtx's own model calls do and cost, with the settings the hooks see (the environment, then the `env` of the project's local settings, the project's settings and the user settings, then the store's `config.json`):
 
@@ -229,17 +232,37 @@ The project's daemon rewrites each record whose text redaction changes, redacts 
 
 ### Forget something: `chloectx forget`
 
-`chloectx forget ID...`, in a project's folder, deletes records of its store for good by id (the ids `chloectx search` and the inspector show, `session:seq`). Each record is deleted and scrubbed from the receipts that showed it, the automatic snapshots that hold it are dropped, the segments of the store that held it are rewritten without it, and the free pages of the store's file, where the old copies were, are written with zeros; the other records of its turn stay. Only those segments are rewritten, not every segment with an older delete, so the cost is their size, not the store's. `memory_forget` is the same for the model, except that it answers once the record is deleted and scrubbed and the snapshots dropped, and the segments are rewritten after the answer (no snapshot is taken meanwhile), so a large store does not run past MCP's 20 s deadline; `chloectx forget` waits for all of it and says so. With a [sync](#keep-the-memory-on-a-chloedb-server) set up, the record's row on the server is deleted too, and the store keeps the record's id (in `sync-forgotten.json`) so that no pull stores it again, whichever machine pushes it back; a delete the server did not answer is sent again with each push. A machine that pulled the record before keeps its copy until it forgets it there.
-
-A fact usually lives in more than one record and more than one store: the prompt that said it, the tool output that showed it, the notes written from it, in every project where it came up. `chloectx forget --everywhere` finds it in every store `chloectx stores` lists:
+A fact usually lives in more than one record: the prompt that said it, the tool output that showed it, the answer and the notes written from it. So forget it by its words, in a project's folder:
 
 ```bash
-chloectx forget --everywhere --dry-run "staging codeword"   # list the matches, change nothing
-chloectx forget --everywhere "staging codeword"             # list them, ask, forget
+chloectx forget --dry-run "staging codeword"   # list what goes and what stays, change nothing
+chloectx forget "staging codeword"             # list it, ask, forget
+chloectx forget a1b2c3d4:42                    # one record, by the id chloectx search shows
+```
+
+Given words that are not record ids (3 characters or more, whatever their case), it lists, before it asks:
+
+- the records whose own text holds them, which are deleted, each with its kind and first line;
+- the records that hold them only in their context, which stay. Every record of a turn carries that turn's request as its context, so a rule you gave in the same prompt as a private aside is one of these: the rule is kept, and the lines of its context that held the words are cut;
+- how many session states, log lines and receipts hold them, which are scrubbed.
+
+`--yes` skips the question; without a terminal and without `--yes` it only lists. Then the project's daemon deletes the records, cuts the words from the other records' context, and scrubs them from every file of the store: `state.json` (the session's last prompts), `events.log` and `daemon.log`, and every receipt that holds them (`receipts.strata`). The automatic snapshots are dropped, the segments of `memory.strata` and `receipts.strata` that held the old copies are rewritten, and the free pages of both files, where those copies were, are written with zeros. For five minutes after, nothing that holds the words is stored, so a note being distilled at that moment does not bring them back. Only the segments that held them are rewritten, not every segment with an older delete, so the cost is their size, not the store's.
+
+By id, `chloectx forget ID...` deletes those records only, with the same scrubbing of receipts and snapshots; the other records of their turn stay.
+
+`memory_forget` is the same for the model: asked to forget something, Claude passes its words as `text` (or one record's `id`). The turn that calls it stores no reply, card or narration and is not distilled, so no note says again what was forgotten, and nothing that holds the words is stored until the turn ends. It answers once the records are deleted and the files scrubbed, and the segments are rewritten after the answer (no snapshot is taken meanwhile), so a large store does not run past MCP's 20 s deadline; `chloectx forget` waits for all of it and says so.
+
+With a [sync](#keep-the-memory-on-a-chloedb-server) set up, the deleted records' rows on the server are deleted too, the records whose context was cut are sent again to replace the server's copies, and the store keeps the deleted ids (in `sync-forgotten.json`) so that no pull stores them again, whichever machine pushes them back; a delete the server did not answer is sent again with each push. A machine that pulled a record before keeps its copy until it forgets it there.
+
+To find a fact in every project, `--everywhere` looks in every store `chloectx stores` lists, by text or by id, and lists what it finds by store:
+
+```bash
+chloectx forget --everywhere --dry-run "staging codeword"
+chloectx forget --everywhere "staging codeword"
 chloectx forget --everywhere --yes a1b2c3d4:42              # by id, in whichever store has it
 ```
 
-It matches the records whose text or context holds the words given, whatever their case (3 characters or more), or, when every word is a record id, those records. It lists them by store with a snippet of each and asks before it forgets them (`--yes` skips the question; without a terminal and without `--yes` it only lists). Then each store's own forget runs on its matches. A daemon started to look into a store is stopped afterwards. What it cannot reach: named snapshots (it says which), backups made with `chloectx backup`, the copies other machines pulled from a sync server before the forget, and the server's own backups.
+A daemon started to look into a store is stopped afterwards. What forget cannot reach, and says when it can see it: named snapshots (`chloectx snapshot drop NAME`), a `memory.strata.before-field-ids` copy left by a format upgrade, backups made with `chloectx backup`, packs written with `chloectx pack`, Claude Code's own transcripts of your sessions (under `~/.claude/projects/`), the copies other machines pulled from a sync server before the forget, and the server's own backups.
 
 To back a store up, run `chloectx backup DEST` in the project directory. It copies the store while sessions go on: a consistent checkpoint of `memory.strata` (copying the file itself while the daemon writes can catch it half way through a commit), `state.json`, the config and `events.log`, into a new directory `DEST`. To restore, run `chloectx stop` and copy those files back into the store's directory. A backup is as private as the store.
 
@@ -296,7 +319,8 @@ Cloud sessions run in a fresh container each time, so a ChloeCtx store there sta
 `chloectx sync` copies each project's memory to a table of its own, `chloectx_mem_<project>`, on a ChloeDB server or a cluster's coordinator, and back. The store stays a local file, so hooks and recall never wait on the network:
 
 - the daemon pushes what it recorded every 30 seconds and as it exits, and when it starts it pulls the project's records the store lacks (written on another machine, or by a container that is gone) and embeds them here;
-- a project is its git repository (`owner/name` of `origin`), so checkouts in different folders share one memory, and `--rename owner/old=owner/new` lets a checkout of a renamed repository join the new name's; `chloectx sync status` says what the project syncs as (`synced_as`), and `chloectx doctor` names its table (`chloectx_mem_`, the name in lowercase letters, digits and `_`, then 8 hex digits of its hash: `chloectx_mem_acme_web_1a2b3c4d`), which the server can search too (`SELECT content FROM chloectx_mem_acme_web_1a2b3c4d ORDER BY bm25(content, '...') DESC LIMIT 10`).
+- a project is its git repository (`owner/name` of `origin`), so checkouts in different folders share one memory, and `--rename owner/old=owner/new` lets a checkout of a renamed repository join the new name's; `chloectx sync status` says what the project syncs as (`synced_as`), and `chloectx doctor` names its table (`chloectx_mem_`, the name in lowercase letters, digits and `_`, then 8 hex digits of its hash: `chloectx_mem_acme_web_1a2b3c4d`), which the server can search too (`SELECT content FROM chloectx_mem_acme_web_1a2b3c4d ORDER BY bm25(content, '...') DESC LIMIT 10`);
+- a folder with no `origin` syncs as its absolute path, and its table is named after that (`/home/you/code/app` syncs into `chloectx_mem_home_you_code_app_` and its hash), so another machine shares it only from the same path.
 
 ```bash
 # in the project's folder: the key from stdin, kept owner-only in ChloeCtx's home as this project's
@@ -304,11 +328,13 @@ printf %s "$KEY" | chloectx sync setup --url https://chloedb.example.com --token
 # or: read it, whenever the daemon syncs, from a variable (a cloud environment's, say)
 chloectx sync setup --url https://chloedb.example.com --token-env CHLOEDB_KEY
 chloectx sync status        # what was sent and received, what the server holds
-chloectx sync push          # now, rather than within 30 s
+chloectx sync push          # now, rather than within 30 s; --again sends every record again
 chloectx sync pull
 chloectx sync accept        # what other machines sent that waits, by machine
 chloectx sync accept --origin m-1a2b3c4d5e6f    # or --all
 ```
+
+**A project that is renamed starts its table again.** The table is named by what the project syncs as: its repository (`owner/name`, from `origin`) or, with no remote, its folder. When that changes (an `origin` added, a repository renamed), `setup` says so and the next push sends every record to the new table. `chloectx sync status` warns when the server holds fewer of the project's records than the store sent or took from it, and `chloectx sync push --again` sends them all again. (0.3.7 and earlier keep the mark of what they sent, so the new table starts without the older records: run `chloectx stop` in the project's folder, delete the store's `sync-state.json`, and `chloectx sync push`.)
 
 **One key per project and machine.** A table per project is the boundary between projects: a key limited to one project's table (`"tables": {"chloectx_mem_acme_web_1a2b3c4d": "write"}`) reads and writes that project and nothing else, so a laptop's key reads no other project's sessions, and a key that leaks writes only into its project. On a cluster's command center, "Make a sync key" on the ChloeCtx page (an admin's) asks for the project and the machine, makes the project's table and such a key, and shows the setup line with it (with `--no-create`, since that key cannot make tables). Without it: `setup` creates the project's table, which needs a key with the `admin` scope (`--no-create` skips it; the first push creates it when the key can), and an admin makes the key with `POST /v1/admin/keys`. A machine keeps a key for each project: `setup --token-stdin`, run in the project's folder, keeps the key as that project's (`sync-keys/<table>.token` in ChloeCtx's home), and the first key set up on a machine is the machine's too (`sync.token`), which a project without a key of its own sends. `--every-project` makes the key the machine's as well (an admin's key, or one that may write several projects' tables). `chloectx sync status` says which key the project sends (`key_from`), and `setup` and `chloectx doctor` name the table a refused key needs. A key for operations (role `propose` or `ops`, an on-call agent's) reads no synced memory and no local store through ChloeCtx's app, whatever else it reads.
 
@@ -327,11 +353,11 @@ chloectx stop --all          # restart daemons by hand (they start again on dema
 chloectx uninstall --user    # or `chloectx uninstall` in a project; stores are kept
 ```
 
-The binary knows the commit and the checkout it was built from (`chloectx --version` names the commit). `chloectx doctor` fetches that checkout's upstream branch (waiting at most 3 s; `upgrade --check` waits 20 s) and says how many commits on it change ChloeCtx or ChloeDB since the build, or, when the fetch failed, that it could not check and what the last fetch said (`upgrade --check` then exits 1), and a session that starts while the binary is behind says so once a day, from what the checkout last fetched. `chloectx upgrade` pulls the checkout (fast forward only: it stops when local commits or changes are in the way, and `--no-pull` builds the checkout as it is), stops the daemons of the old build, runs `install.sh --no-wire` into the binary's own prefix, writes the user-level install again (a version may add hook events; the distillation model you chose is kept), and ends with `doctor`. A prebuilt binary, or one built outside a checkout (no `.git`), cannot upgrade itself: `chloectx upgrade` and `doctor` say to run the installer again (`curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with ctx`, which replaces the binary and keeps the stores), or run `git pull && ./install.sh` in a checkout, or point `CHLOECTX_SOURCE` at one.
+The binary knows the commit and the checkout it was built from (`chloectx --version` names the commit). `chloectx doctor` fetches that checkout's upstream branch (waiting at most 3 s; `upgrade --check` waits 20 s) and says how many commits on it change ChloeCtx or ChloeDB since the build, or, when the fetch failed, that it could not check and what the last fetch said (`upgrade --check` then exits 1), and a session that starts while the binary is behind says so once a day, from what the checkout last fetched. `chloectx upgrade` pulls the checkout (fast forward only: it stops when local commits or changes are in the way, and `--no-pull` builds the checkout as it is), stops the daemons of the old build, runs `install.sh --no-wire` into the binary's own prefix, writes the user-level install again (a version may add hook events; the distillation model you chose is kept), and ends with `doctor`. A prebuilt binary, or one built outside a checkout (no `.git`), cannot upgrade itself: `chloectx upgrade` and `doctor` say to run the installer again (`curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh -s -- --with ctx`, which replaces the binary, keeps the stores and installs `chloedb-server` too), or point `CHLOECTX_SOURCE` at a checkout on a branch. A checkout of a release tag upgrades by moving to the new tag ([above](#install-in-one-command-from-source)), and one on main with `git pull && ./install.sh`.
 
 ## Keep the stores tidy: `chloectx stores` and `chloectx prune`
 
-Every directory a session runs in gets its own store, including the throwaway folders tools make under the system's temporary directory, so stores pile up over months. `chloectx stores` lists them all, most recently used first, with the project each records, its size on disk and when it was last used, and marks the ones `prune` would remove:
+Every directory a session runs in gets its own store, including the throwaway folders tools make under the system's temporary directory, so stores pile up over months. A health check of the MCP server makes one too: `claude mcp get chloectx` starts the server, and with it a daemon and a store, for the folder it runs in, even one where no session ever ran. `chloectx stores` lists them all, most recently used first, with the project each records, its size on disk and when it was last used, and marks the ones `prune` would remove:
 
 - the project folder no longer exists, and the store was not used for a week (a folder missing for less, or on a drive that is not mounted, such as `/Volumes/…` or `/media/…`, may have moved and is only marked; `chloectx move OLD NEW` attaches the store to the folder's new place);
 - the project is in a temporary folder (`/tmp`, `/var/folders` on macOS) and the store was not used for a day;
@@ -362,8 +388,11 @@ Sessions that were already running keep the old tool names until they restart.
 | the model has no `memory_*` tools | the MCP server is not registered or the session predates it: `claude mcp get chloectx`, then restart the session. With the plugin, `/mcp` lists `plugin:chloectx:chloectx`; when it failed to start, the plugin was still setting up (see its `setup.log`), and the next session has the tools |
 | a session starts with *ChloeCtx could not set itself up* (the plugin) | the launcher found no `chloectx` and could not download or build one; the message and `~/.claude/plugins/data/chloectx-chloedb/setup.log` say why. Install `chloectx` another way (above), or point `CHLOECTX_BIN` at one, and start a new session |
 | `daemon did not answer in time` | read the store's `daemon.log`; a missing embedding model is the usual cause (`chloectx fetch-model`) |
-| distillation costs | about $0.001 and 8 s per turn with a small model; `CHLOECTX_DISTILL=0` turns it off |
+| distillation costs | about $0.001 to $0.002 a turn with a small model, after the turn has ended; `chloectx doctor` shows the cost and the median time your store measured over the last 30 days, and `CHLOECTX_DISTILL=0` turns it off |
+| `doctor`: **distillation** warns that it *uses the Claude Code CLI's default model* | the install was made without `--distill-model`. Install again with it: `chloectx install --project /path/to/project --distill-model haiku` for a project install (the warning names `--user`, which is for every session) |
 | `doctor`: **last distillation** failed with something other than the login | the line shows what the CLI wrote on stderr and its exit status (an old CLI that does not know a flag, a crash, a proxy), and doctor makes one small model call to say whether it still fails |
 | `doctor`: **daemon's Claude Code CLI** fails | the running daemon was started by a process that has no `claude` on its `PATH`, and it is not in the usual places either: set `CHLOECTX_CLAUDE` to its path, or `chloectx stop` so that the next Claude Code hook starts the daemon |
-| a project folder was moved or renamed, and its sessions start with an empty memory | stores are kept by the folder's path: `chloectx move OLD NEW` attaches the old store to the new folder. `stores` marks a store whose folder went missing in the last week, or is on a drive that is not mounted, and `prune` leaves it alone. A `git worktree` is a folder of its own, with a store of its own |
+| a project folder was moved or renamed, and its sessions start with an empty memory | stores are kept by the folder's path: `chloectx move OLD NEW` attaches the old store to the new folder. `stores` marks a store whose folder went missing in the last week, or is on a drive that is not mounted, and `prune` leaves it alone. A linked `git worktree` uses its main checkout's store, whatever folder it is in |
+| `doctor` in a git worktree: **hooks** fails with *none in ~/.claude/settings.json or …/.claude, and the chloectx plugin is not enabled* | a project install writes its hooks into that folder's `.claude/settings.local.json`, which git does not carry into other worktrees. Run `chloectx install --project` in the worktree too (it then shares the main checkout's store), or install for every session |
 | a project should not be recorded | add `"env": {"CHLOECTX_DISABLE": "1"}` to that project's `.claude/settings.local.json`, or set `CHLOECTX_DISABLE=1` in the shell you start `claude` from |
+| the memory tools are still there with `CHLOECTX_DISABLE=1` | it turns the hooks off, not the MCP server: start Claude Code with `claude --disallowedTools mcp__chloectx` to leave the tools out of a session too |

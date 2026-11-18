@@ -46,7 +46,7 @@ A repaired or replaced item keeps the remaining warranty of the original.
 
 ## Split and store
 
-A passage is a section of a file: the text under one heading, cut further if it is long. Each passage keeps its file and heading, so an answer can cite them. The `emb` field is computed from the heading and the text by the embedding model when a row is written:
+A passage is a section of a file: the text under one heading, cut further if it is long. Each passage keeps its file and heading, so an answer can cite them. `text` is generated from the heading and the body, so that BM25 reads all of a passage's words as one field (it is indexed, not stored), and the `emb` field is computed from the same two by the embedding model when a row is written:
 
 ```python file=ingest.py
 import pathlib
@@ -61,6 +61,7 @@ SCHEMA = {
         {"name": "doc", "type": "keyword"},
         {"name": "heading", "type": "text"},
         {"name": "body", "type": "text"},
+        {"name": "text", "type": "text", "from": ["heading", "body"]},
         {"name": "n", "type": "int"},
         {"name": "emb", "type": "vector",
          "embed": {"from": ["heading", "body"], "model": "potion-retrieval-32M"}},
@@ -117,7 +118,7 @@ import chloedb
 
 QUERY = """
 SELECT id, doc, heading, body FROM passages
-ORDER BY rrf(bm25(body, :q), bm25(heading, :q), similarity(emb, :v)) DESC
+ORDER BY rrf(bm25(text, :q), similarity(emb, :v)) DESC
 MAX 2 PER doc
 LIMIT :k
 """
@@ -145,6 +146,8 @@ shipping.md#1 | Express
 ```
 
 The question says *parcel* and *broken*, which no passage does: the vector side finds the damaged-items passage by meaning, and BM25 still ranks exact terms such as an order number or a product name first when a question has them.
+
+BM25 ranks `text`, one field with all of a passage's words, rather than each field on its own. `rrf` gives every ranking it fuses the same weight, so `rrf(bm25(heading, :q), bm25(body, :q), similarity(emb, :v))` counts the words twice against the meaning once, and a heading of two words as much as the body. On BEIR's SciFact with potion-retrieval-32M's vectors, nDCG@10 was 0.7006 for `rrf(bm25(body, :q), similarity(emb, :v))` over one field of title and text, against 0.6513 for `rrf(bm25(text, :q), bm25(title, :q), similarity(emb, :v))` over the two fields (measured on 17 November 2026 on a shared 4-core cloud container). Give a table one generated field of the text you search (`"from": [...]`), and keep the separate fields for showing and filtering.
 
 ## Ask
 
@@ -222,6 +225,37 @@ Question: Can I get express delivery for a sofa?
 
 - **Rank by more than text.** Multiply in what you know about a passage: `ORDER BY rrf(...) * (1 + 0.2 * is_current) DESC`, or decay old ones by date with [`decay`](../chloedb/query-language.md#decayfield-origin-scale--closeness-to-a-value).
 - **Filter before ranking.** A `WHERE` clause (a product line, a language, what a user may see) is planned with the search, not applied after it: `WHERE audience IN ('public', :team)`.
-- **Rerank the top.** A cross-encoder reads the question and each of the top passages together and scores them more precisely, in the same query: [rerank phases](../chloedb/query-language.md#rerank-phases).
+- **Rerank the top.** A cross-encoder reads the question and each of the top passages together and scores them more precisely, in the same query: [cross-encoders](../chloedb/query-language.md#cross-encoders-cross_encodermodel-fields-query). The released builds run the hosted ones (`cohere/rerank-v3.5`, `voyage/rerank-2.5` or `jina/jina-reranker-v2-base-multilingual`, with the provider's key), not the local ones (below).
 - **Serve it.** The same query runs on chloedb-server over HTTP (`chloedb.connect(url)` has the same `query`), so several workers can retrieve from one index, and on a cluster when the documents outgrow a machine.
-- **Bring your own vectors.** A `VECTOR(1024)` field without `embed` takes vectors you computed, and `similarity(emb, :v)` takes the question's vector as a list. Hosted models (`openai/text-embedding-3-small`, `voyage/voyage-3.5` and others) can also fill a field: [embedded vector fields](../chloedb/server.md#embedded-vector-fields).
+
+## Another embedding model
+
+The released builds, `pip install chloedb`, `npm install chloedb`, the prebuilt chloedb-server (from PyPI, the install script or the image), run three kinds of embedding model:
+
+- the static models this page uses, `potion-retrieval-32M` and `potion-base-8M` (and their `-int8` copies), which `chloedb-server fetch-model` downloads;
+- hosted models, which ChloeDB calls with your key, such as `openai/text-embedding-3-small` or `voyage/voyage-3.5`, and models served by Ollama on your machine, such as `ollama/bge-m3`, with no key ([hosted models](../chloedb/server.md#hosted-models));
+- vectors you compute yourself.
+
+They do not run BERT models such as `bge-small-en-v1.5` and `snowflake-arctic-embed-m-v1.5`, ColBERT models, or local cross-encoders such as `ms-marco-MiniLM-L-6-v2`: those need a build with the `bert` feature (or `onnx` for the int8 cross-encoders), which only a build from source has (`cargo build --release --features bert` in `chloedb-server`, `maturin develop --release --features bert` in `chloedb-py`). On a released build, `chloedb-server fetch-model bge-small-en-v1.5` downloads the model and then stops with an error that it is a BERT model, which needs a build with the `bert` feature. The numbers the [server reference](../chloedb/server.md#embedded-vector-fields) gives for bge-small were measured with such a build.
+
+To use one of those models, or any other, compute the vectors where it runs and store them: a vector field without `embed`, with the model's dimensions, takes the vectors each row brings, and `similarity(emb, :v)` takes the question's vector as a list. Embed the question with the same model:
+
+```python norun
+# ingest.py and retrieve.py with vectors of your own, here from fastembed (pip install fastembed)
+from fastembed import TextEmbedding
+
+model = TextEmbedding("BAAI/bge-small-en-v1.5")
+
+# ingest.py: the vector field takes the model's dimensions instead of the model,
+SCHEMA["fields"][-1] = {"name": "emb", "type": "vector", "dim": 384}
+# and each row brings its vector (rows as ingest.py builds them)
+for row, vector in zip(rows, model.embed([f"{r['heading']}\n{r['body']}" for r in rows])):
+    row["emb"] = vector.tolist()
+db.upsert(rows)
+
+# retrieve.py: the question's vector by the same model, as a list
+v = next(iter(model.query_embed(question))).tolist()
+hits = db.query(QUERY, q=question, v=v, k=k)
+```
+
+The block is not run with this page, as it needs a library besides `chloedb`. A row written without a vector has none: a vector ranking leaves it out, and `rrf` finds it by its words alone.

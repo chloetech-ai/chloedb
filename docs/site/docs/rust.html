@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ChloeDB from Rust · ChloeDB docs</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="The chloedb crate is ChloeDB itself: the Python, JavaScript and Java packages and chloedb-server are built on it. A Rust program that depends on it opens a database file in its own process, with no server, and reads…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/rust.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../features.html">Features</a>
+    <a href="../scale.html">Laptop to cloud</a>
+    <a href="../command-center.html">Command center</a>
+    <a href="../benchmarks.html">Benchmarks</a>
+    <a href="../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html" aria-current="page">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Clients</span>
+      <h1>ChloeDB from Rust</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/rust.md">docs/chloedb/rust.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.7.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#add-it">Add it</a></li><li><a href="#open-or-create-a-database">Open or create a database</a></li><li><a href="#write">Write</a></li><li><a href="#search-and-query">Search and query</a></li><li><a href="#errors">Errors</a></li><li><a href="#where-the-examples-come-from">Where the examples come from</a></li></ol></details>
+    <div class="doc-body">
+
+<p>The <code>chloedb</code> crate is ChloeDB itself: the Python, JavaScript and Java packages and chloedb-server are built on it. A Rust program that depends on it opens a database file in its own process, with no server, and reads and writes it through SQL or through typed write operations.</p>
+<h2 id="add-it">Add it<a class="anchor" href="#add-it" aria-label="Link to this section">#</a></h2>
+<p>The crate is not on crates.io yet. The <code>chloedb</code> there is a placeholder that only holds the name (it still says Strata, ChloeDB's name before November 2026). Depend on the repository instead, at a release's tag:</p>
+<pre data-lang="yaml">[dependencies]
+chloedb = { git = &quot;https://github.com/chloetech-ai/chloedb&quot;, tag = &quot;chloedb-server-v0.3.7&quot; }</pre>
+<p>Cargo finds the crate in the repository's <code>chloedb/</code> folder. Building it needs Rust (stable) and a C compiler (<code>xcode-select --install</code> on macOS, <code>build-essential</code> on Debian and Ubuntu), because the tokenizer's regex library is C. The first build compiles ChloeDB and its dependencies, which takes several minutes. The default features are <code>embed</code> (embedding models run in the process) and <code>hosted</code> (embedding models behind an HTTP API); <code>sqlite</code>, <code>parquet</code>, <code>s3</code>, <code>bert</code> and <code>onnx</code> add SQLite and Parquet import and export, <code>s3://</code> URLs, and more model kinds (<code>chloedb/Cargo.toml</code> describes each one). <code>cargo doc -p chloedb --open</code> shows the API of the version you depend on.</p>
+<p>The examples below use these imports:</p>
+<pre data-lang="rust" data-title="Rust">use std::path::Path;
+
+use chloedb::db::{Db, SqlResult, WriteOp};
+use chloedb::query::Params;
+use chloedb::storage::DbOptions;
+use chloedb::{Error, Value};</pre>
+<h2 id="open-or-create-a-database">Open or create a database<a class="anchor" href="#open-or-create-a-database" aria-label="Link to this section">#</a></h2>
+<p><code>Db::open</code> opens a database that exists. On a path where there is none, it fails with <code>I/O error: No such file or directory (os error 2)</code>, which does not name the path, so create the database first. <code>Db::create_empty</code> makes a database with no tables; SQL then creates them:</p>
+<pre data-lang="rust" data-title="Rust">fn open(path: &amp;Path) -&gt; chloedb::Result&lt;Db&gt; {
+    if path.exists() {
+        Db::open(path, DbOptions::default())
+    } else {
+        Db::create_empty(path, DbOptions::default())
+    }
+}
+
+fn main() -&gt; chloedb::Result&lt;()&gt; {
+    let db = open(Path::new(&quot;notes.chloedb&quot;))?;
+    db.sql(&quot;CREATE TABLE IF NOT EXISTS notes (id KEYWORD PRIMARY KEY, body TEXT, year INT, v VECTOR(3))&quot;, &amp;Params::new())?;
+    // ...
+    db.close()?;
+    Ok(())
+}</pre>
+<p><code>CREATE TABLE IF NOT EXISTS</code> leaves a table that is there as it is, so the program can run again on the same file. A database can hold many tables, and every statement names the tables it reads or writes (<a href="sql.html#columns-and-types">the query language</a> has the column types). <code>Db::create(path, schema, options)</code> makes a database whose first table is given as a <code>Schema</code> instead, for example from JSON:</p>
+<pre data-lang="rust" data-title="Rust">let schema = chloedb::Schema::from_json(
+    r#&quot;{&quot;table&quot;: &quot;docs&quot;, &quot;key&quot;: &quot;id&quot;, &quot;fields&quot;: [
+        {&quot;name&quot;: &quot;id&quot;, &quot;type&quot;: &quot;keyword&quot;}, {&quot;name&quot;: &quot;body&quot;, &quot;type&quot;: &quot;text&quot;}, {&quot;name&quot;: &quot;n&quot;, &quot;type&quot;: &quot;int&quot;}]}&quot;#,
+)?;
+let db = Db::create(Path::new(&quot;docs.chloedb&quot;), schema, DbOptions::default())?;</pre>
+<p>Call <code>db.close()</code> before the program lets go of the database. It writes the rows still in memory into the file, so that the file alone holds the database (a copy of it is then a backup), and gives back to the file system the space that merges freed. The database still answers after it.</p>
+<p>A program that keeps writing for a long time also merges its segments in the background, as the Python and JavaScript packages do when they open a database: <code>db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() })</code>, with <code>chloedb::storage::MergerOptions</code>. Without it, a table written to for a long time collects segments, and each query visits every one.</p>
+<h2 id="write">Write<a class="anchor" href="#write" aria-label="Link to this section">#</a></h2>
+<p>SQL writes take parameters, named <code>:name</code> in the statement and set with <code>Params::set</code>:</p>
+<pre data-lang="rust" data-title="Rust">let p = Params::new()
+    .set(&quot;id&quot;, Value::Str(&quot;n1&quot;.into()))
+    .set(&quot;body&quot;, Value::Str(&quot;Invoice totals are rounded to whole cents&quot;.into()))
+    .set(&quot;v&quot;, Value::Vector(vec![1.0, 0.0, 0.0].into()));
+db.sql(&quot;INSERT INTO notes (id, body, year, v) VALUES (:id, :body, 2026, :v)&quot;, &amp;p)?;
+db.sql(&quot;UPDATE notes SET year = 2025 WHERE id = &#x27;n1&#x27;&quot;, &amp;Params::new())?;</pre>
+<p><code>db.sql</code> answers <code>SqlResult::Written(n)</code> for a write, with the number of rows it wrote.</p>
+<p>Each SQL statement is a transaction of its own; <code>BEGIN</code> and <code>COMMIT</code> are refused. To write several rows in one transaction, all or none, give <code>db.write_ops</code> a list of operations. A document is the row's values in the order of the table's columns:</p>
+<pre data-lang="rust" data-title="Rust">let doc = |id: &amp;str, body: &amp;str| vec![Value::Str(id.into()), Value::Str(body.into()), Value::Int(2026), Value::Vector(vec![0.0, 1.0, 0.0].into())];
+db.write_ops(vec![
+    WriteOp::Insert { table: &quot;notes&quot;.into(), doc: doc(&quot;n2&quot;, &quot;Prices are integer cents&quot;) },
+    WriteOp::Upsert { table: &quot;notes&quot;.into(), doc: doc(&quot;n3&quot;, &quot;The server runs Python 3.8&quot;) },
+    WriteOp::Delete { table: &quot;notes&quot;.into(), key: Value::Str(&quot;n1&quot;.into()) },
+])?;</pre>
+<p><code>Insert</code> fails when a row with the key is there, and <code>Upsert</code> replaces it. <code>Set</code>, <code>Add</code> and <code>AddOrInsert</code> change one numeric field of a row in place. Threads that call <code>write_ops</code> at the same time share commits.</p>
+<p>The storage layer has its own transaction, <code>db.storage().begin()</code>, for a program that reads its own writes before it commits. Name the table there with <code>tx.table("notes")</code>: <code>WriteTxn::insert</code> and <code>WriteTxn::upsert</code> write the database's first table, which in a database made by <code>Db::create_empty</code> is a hidden placeholder, so a row for <code>notes</code> fails with <code>schema error: document has 4 values, table has 1 fields</code>.</p>
+<pre data-lang="rust" data-title="Rust">let mut tx = db.storage().begin()?;
+let mut t = tx.table(&quot;notes&quot;)?;
+t.upsert(vec![Value::Str(&quot;n4&quot;.into()), Value::Str(&quot;Rules come from the client&quot;.into()), Value::Int(2026), Value::Null])?;
+tx.commit()?;</pre>
+<h2 id="search-and-query">Search and query<a class="anchor" href="#search-and-query" aria-label="Link to this section">#</a></h2>
+<p><code>db.sql</code> answers a <code>SELECT</code> with <code>SqlResult::Rows</code>, and <code>db.query</code> with the rows alone. <code>MATCH</code> filters by words, <code>bm25</code> ranks by them, and <code>similarity</code> ranks by a vector field:</p>
+<pre data-lang="rust" data-title="Rust">let p = Params::new().set(&quot;q&quot;, Value::Str(&quot;integer cents&quot;.into()));
+let SqlResult::Rows(r) = db.sql(&quot;SELECT id, score() FROM notes ORDER BY bm25(body, :q) DESC LIMIT 10&quot;, &amp;p)? else { unreachable!() };
+for row in &amp;r.rows {
+    println!(&quot;{} {}&quot;, row[0].as_str().unwrap_or(&quot;&quot;), row[1].as_f64().unwrap_or(0.0));
+}
+
+let q = Params::new().set(&quot;q&quot;, Value::Vector(vec![0.9, 0.1, 0.0].into()));
+let near = db.query(&quot;SELECT id FROM notes ORDER BY similarity(v, :q) DESC LIMIT 2&quot;, &amp;q)?;
+
+let n = db.query(&quot;SELECT count(*) FROM notes WHERE MATCH(body, &#x27;cents&#x27;)&quot;, &amp;Params::new())?.rows[0][0].as_i64();</pre>
+<p>A result has its <code>columns</code> and its <code>rows</code>, and each value is a <code>Value</code> (<code>Null</code>, <code>Int</code>, <code>Float</code>, <code>Str</code>, <code>Vector</code>, <code>List</code>, <code>Bool</code>, <code>Timestamp</code>), read with <code>as_str</code>, <code>as_i64</code> and <code>as_f64</code>. <a href="sql.html">The query language</a> has every statement and function: <a href="sql.html#full-text-match">full text</a>, <a href="sql.html#scores">scores</a> and their fusion with <code>rrf</code>, filters, grouping and joins.</p>
+<p>The examples give vectors as values. A field that ChloeDB embeds itself (<code>VECTOR(...) OPTIONS(embed = 'body', model = ...)</code>) needs its model loaded first, with <code>db.open_embedders(&amp;models_dir)</code>, as the Python package does when it opens a database.</p>
+<h2 id="errors">Errors<a class="anchor" href="#errors" aria-label="Link to this section">#</a></h2>
+<p>Every call returns <code>chloedb::Result&lt;T&gt;</code>, whose error is <code>chloedb::Error</code> (it implements <code>std::error::Error</code>, so <code>?</code> also works in a function that returns <code>Result&lt;T, Box&lt;dyn std::error::Error&gt;&gt;</code>). Its kind says what to do:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>variant</th>
+<th>when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Error::Io</code></td>
+<td>the file system failed, or the path does not exist (<code>Db::open</code>)</td>
+</tr>
+<tr>
+<td><code>Error::Schema</code></td>
+<td>a document or schema does not fit the table; a key the table holds already starts with <code>duplicate primary key</code></td>
+</tr>
+<tr>
+<td><code>Error::Query</code></td>
+<td>a statement failed to parse, bind or plan</td>
+</tr>
+<tr>
+<td><code>Error::Busy</code></td>
+<td>another process, or another open in this one, has the database open for writing (<code>the database is open elsewhere: ...</code>, which goes on to say which <span class="since unreleased">since 0.3.8 (unreleased)</span>), or another write held it for longer than <code>DbOptions::write_wait</code> (5 seconds)</td>
+</tr>
+<tr>
+<td><code>Error::Timeout</code>, <code>Error::Memory</code></td>
+<td>a query ran past its deadline or its memory budget</td>
+</tr>
+<tr>
+<td><code>Error::Corrupt</code></td>
+<td>the file failed a check</td>
+</tr>
+<tr>
+<td><code>Error::Unavailable</code></td>
+<td>a hosted embedding model did not answer</td>
+</tr>
+</tbody>
+</table></div>
+<pre data-lang="rust" data-title="Rust">match db.write_ops(vec![WriteOp::Insert { table: &quot;notes&quot;.into(), doc: doc(&quot;n2&quot;, &quot;again&quot;) }]) {
+    Err(Error::Schema(m)) if m.starts_with(&quot;duplicate primary key&quot;) =&gt; println!(&quot;n2 is there already&quot;),
+    Err(e) =&gt; return Err(e),
+    Ok(_) =&gt; {}
+}</pre>
+<p>One process writes a database at a time. Other processes on the same machine can read it while it does, opened with <code>DbOptions { read_only: true, ..DbOptions::default() }</code>; their writes fail. For many processes, or other machines, run <a href="server.html">chloedb-server</a> over the file instead.</p>
+<h2 id="where-the-examples-come-from">Where the examples come from<a class="anchor" href="#where-the-examples-come-from" aria-label="Link to this section">#</a></h2>
+<p>The calls on this page are the ones ChloeDB's own tests make, which CI compiles and runs: <code>chloedb/tests/empty_database.rs</code> (a database with no tables, then <code>CREATE TABLE</code>), <code>tests/sql_tables.rs</code> (SQL over several tables), <code>tests/many_writers.rs</code> (<code>write_ops</code> and <code>Error::Busy</code>), <code>tests/analyzer_languages.rs</code> (<code>MATCH</code> and <code>bm25</code> with parameters), <code>tests/alter_table.rs</code> (vectors as parameters and <code>similarity</code>) and <code>tests/cold_tier.rs</code> (<code>storage().begin()</code> and <code>tx.table</code>). They are the next place to look for how a call is used.</p>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/rust.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="javascript.html">← JavaScript</a><a href="java.html">Java and JDBC →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>
