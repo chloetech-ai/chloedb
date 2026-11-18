@@ -126,7 +126,12 @@ def version_line():
         link = f' (<a href="v{html.escape(latest)}/index.html">its docs</a>)' if snap.exists() else ""
         return (f'<p class="doc-version">These docs follow main ({html.escape(v)}, unreleased). '
                 f'The latest release is {html.escape(latest)}{link}; what is newer is marked "since {html.escape(v)}".</p>')
-    return f'<p class="doc-version">These docs describe release {html.escape(v)}.</p>'
+    # Main between a release and the next version: what merged after the
+    # release is described too, so these pages do not claim to be its.
+    snap = SERVED_OUT / f"v{v}" / "index.html"
+    link = f' (<a href="v{html.escape(v)}/index.html">its docs</a>)' if snap.exists() else ""
+    return (f'<p class="doc-version">These docs follow main, which can be ahead of the latest release, '
+            f'{html.escape(v)}{link}: a change made after it says so where it is described.</p>')
 
 # The sidebar, in order: (section, [(page, title, source, kind)]). A guide
 # page's examples are run by docs/guide/run.py; a reference page is

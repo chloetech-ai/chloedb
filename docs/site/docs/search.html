@@ -223,7 +223,7 @@ b10 | The Dragon Accords</pre>
 <pre data-lang="text" data-title="Output" class="output">id  | title
 ----+--------------
 b02 | Winter Garden</pre>
-<p><strong>Changed:</strong> a prefix matched only the stems that start with it before, so against a server or package of 0.3.8 or earlier a word typed in full and then <code>*</code> (<code>mystery*</code>, <code>battery*</code>, <code>headphone*</code>) finds nothing, though each letter before it found the rows.</p>
+<p><strong>Changed:</strong> a prefix matched only the stems that start with it before, so against a server or package of 0.3.7 or earlier a word typed in full and then <code>*</code> (<code>mystery*</code>, <code>battery*</code>, <code>headphone*</code>) finds nothing, though each letter before it found the rows.</p>
 <p><code>db.search(text)</code> ranks with <code>bm25</code> too, so it finds nothing for a word half typed unless the word ends in <code>*</code>. To complete whole values instead (the searches people ran before, names kept as <code>KEYWORD</code>), <code>PREFIX(field, :typed)</code> reads a keyword field's sorted values, with typos if asked (<a href="sql.html#prefixes-and-autocomplete">prefixes and autocomplete</a>).</p>
 <h2 id="typos">Typos<a class="anchor" href="#typos" aria-label="Link to this section">#</a></h2>
 <p><code>fuzzy =&gt; 'auto'</code> lets a word be an edit or two away, more for longer words, counted on the word as typed rather than on its stem: <em>choclate</em> is one edit from <em>chocolate</em>, though its stem, <em>choclat</em>, is three from <em>chocol</em>. Ranked, it corrects a typo rather than widening every word:</p>
@@ -356,7 +356,7 @@ seg 0: bm25 MaxScore, filter Probe</pre>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

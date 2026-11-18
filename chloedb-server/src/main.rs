@@ -37,7 +37,7 @@ macro_rules! out {
 }
 
 #[derive(Parser)]
-#[command(version, about = "ChloeDB over HTTP JSON and gRPC, with a query UI and an agent", args_conflicts_with_subcommands = true)]
+#[command(version = env!("CHLOEDB_VERSION_LINE"), about = "ChloeDB over HTTP JSON and gRPC, with a query UI and an agent", args_conflicts_with_subcommands = true)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,

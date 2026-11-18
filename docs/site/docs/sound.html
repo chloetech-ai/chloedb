@@ -137,7 +137,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>Like <a href="crawler.html">the crawler</a> and <a href="hn.html">Hacker News</a>, it is a program of its own, in Rust, that talks to chloedb-server over HTTP only, and the command center shows it as an app (<strong>Apps → Sound Explorer</strong>). Previews are MP3 files on the app's disk, served by it with HTTP ranges, since a cluster's coordinator keeps no media files.</p>
 <h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
 <p>Build the server with CLAP and the app, download the sounds, make the rows, and start the app with a server of its own:</p>
-<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release --features audio)
+<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release --bin chloedb-server --features audio)
 cd chloedb-sound &amp;&amp; cargo build --release
 python3 -I tools/fetch.py fsd50k ~/sounds/fsd50k --clips 2500
 python3 -I tools/fetch.py fma ~/sounds/fma --shards 9
@@ -275,7 +275,7 @@ chloedb-server ... --app sound=http://sound-host:7870     # with CHLOEDB_APP_TOK
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

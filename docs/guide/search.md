@@ -182,7 +182,7 @@ id  | title
 b02 | Winter Garden
 ```
 
-**Changed:** a prefix matched only the stems that start with it before, so against a server or package of 0.3.8 or earlier a word typed in full and then `*` (`mystery*`, `battery*`, `headphone*`) finds nothing, though each letter before it found the rows.
+**Changed:** a prefix matched only the stems that start with it before, so against a server or package of 0.3.7 or earlier a word typed in full and then `*` (`mystery*`, `battery*`, `headphone*`) finds nothing, though each letter before it found the rows.
 
 `db.search(text)` ranks with `bm25` too, so it finds nothing for a word half typed unless the word ends in `*`. To complete whole values instead (the searches people ran before, names kept as `KEYWORD`), `PREFIX(field, :typed)` reads a keyword field's sorted values, with typos if asked ([prefixes and autocomplete](../chloedb/query-language.md#prefixes-and-autocomplete)).
 
