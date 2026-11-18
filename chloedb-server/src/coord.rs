@@ -5343,7 +5343,7 @@ mod tests {
         let (new, silent) = left_out(&listed, &held, &answered);
         assert_eq!((new, silent.len()), (vec![&u(6)], 0));
         // Every server listed in the map: nothing left out.
-        let (new, silent) = left_out(&held.replicas().to_vec(), &held, &answered);
+        let (new, silent) = left_out(held.replicas(), &held, &answered);
         assert!(new.is_empty() && silent.is_empty());
     }
 
