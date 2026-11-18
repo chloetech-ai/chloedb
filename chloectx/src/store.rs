@@ -64,6 +64,12 @@ pub struct Filter {
     /// audit CTX-32) and are no [`crate::record::ASIDE`]: what recall puts
     /// into a prompt by itself.
     pub first_party: bool,
+    /// With `exclude_window`: the window's notes (decisions, rules, facts,
+    /// tasks, notes the distiller or the memory tool wrote during it) are
+    /// still results. The memory tools ask for them: the window holds the
+    /// exchanges, not the notes written from them, and an agent that does
+    /// not see them says they were never stored (ANA-210).
+    pub window_notes: bool,
 }
 
 impl Filter {
@@ -83,7 +89,11 @@ impl Filter {
     pub fn conds(&self) -> Vec<String> {
         let mut parts = Vec::new();
         if let Some((_, w)) = &self.exclude_window {
-            parts.push(format!("NOT (session = :window_session AND seq >= {w})"));
+            parts.push(if self.window_notes {
+                format!("NOT (session = :window_session AND seq >= {w} AND kind NOT IN ('decision', 'preference', 'fact', 'todo', 'note'))")
+            } else {
+                format!("NOT (session = :window_session AND seq >= {w})")
+            });
         }
         if !self.kinds.is_empty() {
             let ks: Vec<String> = self.kinds.iter().map(|k| format!("'{}'", k.as_str())).collect();
