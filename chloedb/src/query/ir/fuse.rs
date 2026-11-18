@@ -13,7 +13,8 @@
 //!
 //! * `Aggregate` of fields and paths over `Project` of fields over a
 //!   `Search` becomes `Aggregate` over the `Search`, under a `Project` of
-//!   its outputs; with the `Filter`, `Sort`, `Limit` and `Project` above it,
+//!   its outputs (of fields alone too, when each holds one value: the
+//!   aggregates under `ROUND(SUM(x), 2)` or a HAVING); with the `Filter`, `Sort`, `Limit` and `Project` above it,
 //!   when the executor takes those too;
 //! * `Project` over `[Limit]` over `Sort` by a path (then possibly the
 //!   primary key) over `Project` of fields over a `Search` becomes the
@@ -29,6 +30,7 @@
 //! or ranks its rows does not allow.
 
 use super::{raise, Agg, Column, Expr, Func, Node, Search, SortKey};
+use crate::query::logical::AggFn;
 use crate::schema::{FieldType, Schema};
 use crate::value::Value;
 
@@ -147,9 +149,13 @@ fn aggregate(n: &Node, catalog: &[&Schema]) -> Option<Node> {
     }
     let schema = table(catalog, s)?;
     let mut any_path = false;
+    let mut any_multi = false;
     let mut read = |e: &Expr| {
         let (x, read) = column(e, cols, schema)?;
         any_path |= read != Read::Field;
+        if let Expr::Field(f) = x {
+            any_multi |= schema.fields.get(f as usize).is_none_or(|fld| fld.multi);
+        }
         groupable(schema, &x).then_some(x)
     };
     let keys2 = keys.iter().map(&mut read).collect::<Option<Vec<_>>>()?;
@@ -163,7 +169,13 @@ fn aggregate(n: &Node, catalog: &[&Schema]) -> Option<Node> {
             Some(Agg { func: a.func, arg })
         })
         .collect::<Option<Vec<_>>>()?;
-    if !any_path {
+    // Fields alone are taken when each holds one value, so that the
+    // aggregates under `ROUND(SUM(x), 2)`, a HAVING or a window run from the
+    // columns; groups over a multi-valued field stay with the operators,
+    // and percentiles and distinct counts with DataFusion, which sorts and
+    // hashes their values faster.
+    let simple = aggs.iter().all(|a| matches!(a.func, AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max));
+    if !any_path && (any_multi || !simple) {
         return None;
     }
     let agg = Node::Aggregate { input: Box::new(Node::Search(s.clone())), keys: keys2, aggs: aggs2 };
