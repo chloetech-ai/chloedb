@@ -181,6 +181,12 @@ pub struct Session {
     /// the turn, and the records shown ([`crate::repeats::promote`]).
     #[serde(skip)]
     pub shown_before: (i64, HashSet<String>),
+    /// The pid of the Claude Code process the session runs in, as its
+    /// hooks are told it (`CLAUDE_PID`): the parent of the session's MCP
+    /// server, whose calls are filed under the session by it
+    /// ([`Daemon::caller_session`]). 0 when no hook said.
+    #[serde(default)]
+    pub pid: u32,
 }
 
 /// A query-understanding search started after a prompt (`async` mode).
@@ -505,6 +511,19 @@ impl Daemon {
                 let payload = req.get("payload").unwrap_or(&Json::Null);
                 let sid = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown");
                 self.note_worktree(sid, req);
+                // The Claude Code process it runs in, whose MCP server
+                // names it as its parent ([`Daemon::caller_session`]).
+                // A process runs one session at a time: after a `/clear`
+                // the new one.
+                if let Some(pid) = req.get("claude_pid").and_then(|v| v.as_u64()).filter(|p| *p > 1 && *p <= u32::MAX as u64).map(|p| p as u32) {
+                    let mut st = self.state.lock().unwrap();
+                    if st.sessions.get(sid).is_none_or(|s| s.pid != pid) {
+                        for s in st.sessions.values_mut().filter(|s| s.pid == pid) {
+                            s.pid = 0;
+                        }
+                        st.sessions.entry(sid.to_string()).or_default().pid = pid;
+                    }
+                }
                 if let Some(a) = req.get("agent").and_then(|v| v.as_str()).filter(|a| !a.is_empty()) {
                     let mut st = self.state.lock().unwrap();
                     if let crate::record::Source::Agent(n) = crate::record::Source::parse(&format!("agent:{a}")) {
@@ -753,6 +772,53 @@ impl Daemon {
         let st = self.state.lock().unwrap();
         let w = st.sessions.get(&st.active).map_or(0, |s| s.window_start);
         (st.active.clone(), w)
+    }
+
+    /// The session a request comes from, and where its window starts:
+    /// the one its `caller` names ([`caller`]), not the session whose hook
+    /// came last, which is another one whenever two sessions share the
+    /// store (the worktrees of a repository share one daemon; ANA-201).
+    /// - The Claude Code process's session (a hook said its pid): its
+    ///   current one, which after a `/clear` is the new session.
+    /// - Else the session Claude Code named in the caller's environment.
+    /// - Else, for the MCP server, the active session (an older Claude Code
+    ///   that names neither), and for the CLI none: a person typed it.
+    ///
+    /// A request without `caller` (an older client) gets the active
+    /// session, as before. None (or an empty id) means no session.
+    fn caller_session(&self, req: &Json) -> Option<(String, i64)> {
+        let Some(c) = req.get("caller").filter(|c| c.is_object()) else {
+            return Some(self.active_session()).filter(|(s, _)| !s.is_empty());
+        };
+        let pid = c.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let named = c.get("session").and_then(|v| v.as_str()).unwrap_or("");
+        let mcp = c.get("via").and_then(|v| v.as_str()) == Some("mcp");
+        let st = self.state.lock().unwrap();
+        let by_pid = st.sessions.iter().find(|(_, s)| pid > 0 && s.pid == pid);
+        if let Some((id, s)) = by_pid.or_else(|| st.sessions.get_key_value(named)) {
+            return Some((id.clone(), s.window_start));
+        }
+        if mcp && !named.is_empty() {
+            return Some((named.to_string(), 0));
+        }
+        if mcp {
+            let w = st.sessions.get(&st.active).map_or(0, |s| s.window_start);
+            return Some((st.active.clone(), w)).filter(|(s, _)| !s.is_empty());
+        }
+        None
+    }
+
+    /// `base` for a memory tool's search: without what the asking
+    /// session's window holds already (unless `include_current`), but with
+    /// the notes written during it (ANA-210).
+    fn tool_filter(&self, req: &Json, mut base: Filter) -> Filter {
+        if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if let Some(w) = self.caller_session(req) {
+                base.exclude_window = Some(w);
+                base.window_notes = true;
+            }
+        }
+        base
     }
 
     // ------------------------------------------------------------ hooks
@@ -1245,6 +1311,7 @@ impl Daemon {
                 let is_known = |id: &String| known.iter().any(|r| &r.id == id);
                 let replaced: Vec<String> = d.replaced.into_iter().filter(|id| is_known(id)).collect();
                 let done: Vec<String> = d.done.into_iter().filter(|id| known.iter().any(|r| &r.id == id && r.kind == Kind::Todo)).collect();
+                let retired: Vec<String> = d.retired.into_iter().filter(|id| is_known(id) && !replaced.contains(id) && !done.contains(id)).collect();
                 // An instruction for this task that the user gave in
                 // another session too is a rule of every session now.
                 // One that says what a rule says is that rule anew.
@@ -1312,10 +1379,34 @@ impl Daemon {
                 for id in &done {
                     let _ = self.store.retag(id, "done");
                 }
+                // Notes about what this turn scrapped (JONAH-201): replaced
+                // by its note that says so (the one that shares most of
+                // their words), else retired; either way out of the briefing.
+                let retired: Vec<String> = retired
+                    .into_iter()
+                    .filter(|id| {
+                        let Some(old) = known.iter().find(|r| &r.id == id) else { return false };
+                        let o = terms(&old.text);
+                        let by = stored
+                            .iter()
+                            .filter(|r| r.kind.is_knowledge() && r.kind != Kind::Todo && r.tag != crate::record::TASK_TAG)
+                            .map(|r| (terms(&r.text).intersection(&o).count(), r))
+                            .filter(|(n, _)| *n >= 2)
+                            .max_by_key(|(n, r)| (*n, -r.seq))
+                            .map(|(_, r)| r.id.clone());
+                        match by {
+                            Some(new) => self.store.supersede(id, &new).unwrap_or(false),
+                            None => self.store.retag(id, crate::record::RETIRED).unwrap_or(false),
+                        }
+                    })
+                    .collect();
+                // The decision the prompt stated, kept at once in the user's
+                // words, is replaced by the turn's note that says it (ANA-204).
+                let stated = self.supersede_stated(sid, turn, &stored);
                 let repeated = crate::repeats::supersede_repeated(&self.store, &stored);
                 self.store.warm();
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "items": n, "kept": kept,
-                    "replaced": replaced, "done": done, "said_again": checked.again.len(), "said_again_dropped": checked.dropped.len(), "repeated": repeated, "cost_usd": d.cost_usd + checked.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
+                    "replaced": replaced, "done": done, "retired": retired, "stated": stated, "said_again": checked.again.len(), "said_again_dropped": checked.dropped.len(), "repeated": repeated, "cost_usd": d.cost_usd + checked.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
             }
             Err(e) => {
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "error": e.to_string()}));
@@ -1534,6 +1625,35 @@ impl Daemon {
 
     /// The sequence number of a turn's first record (its prompt, stored
     /// with the picks from its words).
+    /// Supersedes the decisions a turn's prompt stated ([`capture::decision_sentences`],
+    /// tagged `stated`) by the turn's distilled decision or rule that holds
+    /// most of their words, when it holds at least half: two copies of one
+    /// decision are one. Returns the ids superseded.
+    fn supersede_stated(&self, sid: &str, turn: i64, stored: &[Record]) -> Vec<String> {
+        let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
+        let Ok(rs) = self.store.query_with(
+            &format!("SELECT {} FROM memory WHERE session = :session AND turn = {turn} AND kind = 'decision' AND tag = 'stated' LIMIT 20", crate::record::COLUMNS),
+            &Params::new().set("session", Value::Str(sid.to_string())),
+        ) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for old in rs.rows.iter().filter_map(|r| crate::store::row_record(r)) {
+            let o = terms(old.text.trim_start_matches("The user decided:"));
+            let best = stored
+                .iter()
+                .filter(|r| matches!(r.kind, Kind::Decision | Kind::Preference) && r.tag != crate::record::TASK_TAG)
+                .map(|r| (terms(&r.text).intersection(&o).count(), r))
+                .max_by_key(|(n, r)| (*n, -r.seq));
+            if let Some((n, new)) = best {
+                if !o.is_empty() && n * 2 >= o.len() && self.store.supersede(&old.id, &new.id).unwrap_or(false) {
+                    out.push(old.id.clone());
+                }
+            }
+        }
+        out
+    }
+
     fn first_seq_of(&self, sid: &str, turn: i64) -> Option<i64> {
         self.store
             .query_with(
@@ -1663,11 +1783,7 @@ impl Daemon {
         // By search alone unless a model is asked to plan and pick.
         let deep = req.get("deep").and_then(|v| v.as_bool()).unwrap_or(false) || req.get("model").and_then(|v| v.as_str()).is_some_and(|m| !m.is_empty());
         if !deep {
-            let (active, w) = self.active_session();
-            let mut filter = Filter::default();
-            if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
-                filter.exclude_window = Some((active.clone(), w));
-            }
+            let filter = self.tool_filter(req, Filter::default());
             let built = crate::context::build(&self.store, &q, &filter, &crate::context::ContextParams::default())?;
             let text = if built.text.is_empty() { "ChloeCtx found nothing relevant in memory.".to_string() } else { built.text };
             let ids: Vec<String> = built.records.iter().map(|r| r.id.clone()).collect();
@@ -1679,11 +1795,7 @@ impl Daemon {
             cfg.planner_model = m.to_string();
             cfg.ranker_model = m.to_string();
         }
-        let (active, w) = self.active_session();
-        let mut filter = Filter::default();
-        if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
-            filter.exclude_window = Some((active.clone(), w));
-        }
+        let filter = self.tool_filter(req, Filter::default());
         let tree = self.tree_of(req);
         let project = Path::new(&tree);
         let distill = self.distill_cfg();
@@ -2107,11 +2219,7 @@ impl Daemon {
         let q = req.get("query").and_then(|v| v.as_str()).unwrap_or("");
         let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(8).clamp(1, 50) as usize;
         let kinds: Vec<Kind> = req.get("kinds").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|k| k.as_str().and_then(Kind::parse)).collect()).unwrap_or_default();
-        let (active, w) = self.active_session();
-        let mut f = Filter { kinds, ..Default::default() };
-        if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
-            f.exclude_window = Some((active.clone(), w));
-        }
+        let mut f = self.tool_filter(req, Filter { kinds, ..Default::default() });
         if let Some(days) = req.get("since_days").and_then(|v| v.as_f64()) {
             f.since_ts = Some(now() - (days * 86_400.0) as i64);
         }
@@ -2130,6 +2238,8 @@ impl Daemon {
         if text.is_empty() {
             text = "No matching records.".into();
         }
+        // The receipt is the asking session's (ANA-201).
+        let active = self.caller_session(req).map(|(s, _)| s).unwrap_or_default();
         let turn = self.state.lock().unwrap().sessions.get(&active).map_or(0, |s| s.turn);
         let receipt = self.write_receipt(&active, turn, "search", &store, inputs, &out, &text);
         if let Some(id) = receipt.as_ref().filter(|_| !out.ids.is_empty()) {
@@ -2395,9 +2505,9 @@ impl Daemon {
             return Err(err("text is empty"));
         }
         let files: Vec<String> = req.get("files").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-        let (sid, _) = self.active_session();
-        let sid = if sid.is_empty() { "manual".to_string() } else { sid };
-        let turn = self.with_session(&sid, |s| s.turn);
+        // The session that asked (ANA-201), else a person's note: `manual`.
+        let sid = self.caller_session(req).map(|(s, _)| s).unwrap_or_else(|| "manual".to_string());
+        let turn = self.state.lock().unwrap().sessions.get(&sid).map_or(0, |s| s.turn);
         let old = match req.get("supersedes").and_then(|v| v.as_str()).filter(|o| !o.is_empty()) {
             Some(o) => Some(self.store.get(&[o.to_string()])?.pop().ok_or_else(|| err(format!("no record {o} to supersede: nothing was stored")))?),
             None => None,
@@ -2405,11 +2515,24 @@ impl Daemon {
         // Who asks to keep it: `by` (the CLI says `user`: a person ran it,
         // or Workbench for one); else the memory tool, which the session's
         // agent calls.
+        // The agent says who stated it (`said_by`); when it does not, a
+        // note that the turn's prompt says in most of its words is the
+        // prompt author's (JONAH-205: the user's decision, kept by the
+        // agent, read "the assistant said").
         let by = match req.get("by").and_then(|v| v.as_str()).filter(|b| !b.is_empty()) {
             Some(b) => crate::record::Source::parse(b),
             None => {
-                let agent = self.state.lock().unwrap().sessions.get(&sid).map(|s| s.agent.clone()).unwrap_or_default();
-                crate::record::Source::Assistant(agent)
+                let st = self.state.lock().unwrap();
+                let s = st.sessions.get(&sid);
+                let agent = s.map(|s| s.agent.clone()).unwrap_or_default();
+                let author = s.map(|s| crate::record::Source::parse(&s.source)).unwrap_or(crate::record::Source::User);
+                let prompted = s.and_then(|s| s.last_prompts.back()).is_some_and(|p| says_most_of(p, &text));
+                match req.get("said_by").and_then(|v| v.as_str()) {
+                    Some("user") => author,
+                    Some("assistant") => crate::record::Source::Assistant(agent),
+                    _ if prompted => author,
+                    _ => crate::record::Source::Assistant(agent),
+                }
             }
         };
         let a = anchor::make(Path::new(&self.tree_of(req)), &text, &files, &[]);
@@ -2430,7 +2553,7 @@ impl Daemon {
         }
         let place = self.paths.dir.join("memory.strata");
         Ok(json!({"id": recs[0].id, "supersedes": replaced, "store": place, "by": by.as_str(),
-            "text": format!("Stored {} as {}{} in ChloeCtx ({}), where Workbench and every later session see it.", kind.as_str(), recs[0].id,
+            "text": format!("Stored {} as {}{} in ChloeCtx ({}), where every later session sees it.", kind.as_str(), recs[0].id,
                 replaced.as_ref().map(|o| format!(", replacing {o}")).unwrap_or_default(), place.display())}))
     }
 
@@ -3113,6 +3236,15 @@ fn snippet_at(text: &str, at: usize, width: usize) -> String {
 /// its words (a replacement keeps what still holds, [`crate::distill`]).
 /// A note about something else that names `old` replaces nothing: half a
 /// ruling is not superseded by the other half.
+/// Whether `prompt` says most of `note`: at least half of the note's words
+/// (stemmed, stop words out), and two or more.
+fn says_most_of(prompt: &str, note: &str) -> bool {
+    let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
+    let n = terms(note);
+    let shared = terms(prompt).intersection(&n).count();
+    shared >= 2 && shared * 2 >= n.len()
+}
+
 pub fn successor_of(old: &Record, stored: &[Record]) -> Option<String> {
     let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
     let o = terms(&old.text);
@@ -3335,6 +3467,27 @@ fn try_request(socket: &Path, req: &Json, deadline: Instant) -> std::io::Result<
         return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "it closed the connection without answering (it stopped, or failed on the request)"));
     }
     serde_json::from_str(&line).map_err(|e| std::io::Error::other(e.to_string()))
+}
+
+/// Who sends a request, for the daemon to file what it stores under the
+/// session that made it ([`Daemon::caller_session`]): `via` is `mcp` (the
+/// session's MCP server) or `cli`. Claude Code names its session in the
+/// environment of the processes it starts (`CLAUDE_CODE_SESSION_ID`, as it
+/// was when it started them: a `/clear` makes a new one) and tells its
+/// hooks and commands its own pid (`CLAUDE_PID`); an MCP server is its
+/// child, so its parent is that process (an MCP server's `CLAUDE_PID`, when
+/// it has one, is an outer Claude Code's). A command typed in a terminal
+/// names neither, and its note is a person's (`manual`).
+pub fn caller(via: &str) -> Json {
+    let session = std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default();
+    let pid = if via == "mcp" { std::os::unix::process::parent_id() } else { claude_pid().unwrap_or(0) };
+    json!({"via": via, "session": session.trim(), "pid": if pid > 1 { pid } else { 0 }})
+}
+
+/// The pid of the Claude Code process a hook runs under (`CLAUDE_PID`), if
+/// it says.
+pub fn claude_pid() -> Option<u32> {
+    std::env::var("CLAUDE_PID").ok().and_then(|p| p.trim().parse::<u32>().ok()).filter(|p| *p > 1)
 }
 
 /// Sends one request to the project's daemon, starting it if needed.
