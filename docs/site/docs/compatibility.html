@@ -114,7 +114,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Server and cluster</span>
       <h1>Compatibility</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/compatibility.md">docs/compatibility.md</a>.</p>
-      <p class="doc-version">These docs describe release 0.3.7.</p>
+      <p class="doc-version">These docs follow main (0.3.8, unreleased). The latest release is 0.3.7 (<a href="v0.3.7/index.html">its docs</a>); what is newer is marked "since 0.3.8".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-database-file">The database file</a></li><li><a href="#the-packages-and-the-engine">The packages and the engine</a></li><li><a href="#a-cluster-of-mixed-versions">A cluster of mixed versions</a></li><li><a href="#old-names">Old names</a></li><li><a href="#experimental-features">Experimental features</a></li><li><a href="#demos">Demos</a></li><li><a href="#not-promised-yet">Not promised yet</a></li></ol></details>
     <div class="doc-body">
@@ -122,7 +122,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on <code>main</code>
-(November 2026, every crate and package at version 0.3.7 but the early
+(November 2026, every crate and package at version 0.3.8 but the early
 Workbench, <code>chloedb-workbench</code>, at 0.1.0). The
 <a href="https://github.com/chloetech-ai/chloedb/blob/main/CHANGELOG.md">changelog</a> says what changed.</p>
 <p>ChloeDB is pre-1.0: the statements below are the current behaviour, which
@@ -226,7 +226,7 @@ server of their own commit.</p>
 <p><strong>Not promised.</strong> A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.7; <code>chloedb-workbench</code> its own, 0.1.0),
+version of the last release (0.3.8; <code>chloedb-workbench</code> its own, 0.1.0),
 and keeps it between releases: name a
 build from a commit after a release by its commit.</p>
 <h2 id="a-cluster-of-mixed-versions">A cluster of mixed versions<a class="anchor" href="#a-cluster-of-mixed-versions" aria-label="Link to this section">#</a></h2>
@@ -283,7 +283,14 @@ gRPC with a numbered shard protocol (<code>chloedb-server/src/grpc.rs</code>:
   after it, until a later flip from the shard is marked or the replica is
   replaced. Finish the upgrade before moving slots.
   0.3.7 keeps the shard protocol at 21 and adds no plan feature and no
-  field, so 0.3.6 and 0.3.7 mix in either order.</li>
+  field, so 0.3.6 and 0.3.7 mix in either order.
+  0.3.8 keeps the shard protocol at 21 and adds no plan feature and no
+  field, so 0.3.7 and 0.3.8 mix in either order. A cluster that follows
+  Postgres (<code>follow-postgres</code>) upgrades its coordinators before its
+  shards: a coordinator of 0.3.8 passes the follower's name on to its
+  shards (<code>x-chloedb-postgres-follower</code>), and a server of 0.3.8 refuses
+  other writes to a table a follower follows, so behind a 0.3.7
+  coordinator a 0.3.8 shard can refuse the follower's own writes.</li>
 </ul>
 <p>So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
