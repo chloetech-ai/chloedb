@@ -107,6 +107,14 @@ fn group(u: &User) -> usize {
 }
 const GROUPS: usize = 18;
 
+/// A row's chances for a user of appetite `u.appetite`.
+fn appetite(s: Slot, u: &User) -> Slot {
+    if u.appetite == 1.0 {
+        return s;
+    }
+    Slot { attract: (s.attract * u.appetite).min(0.95), satisfy: s.satisfy }
+}
+
 fn fnv(s: &str) -> u32 {
     let h = s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
     (h ^ (h >> 32)) as u32
@@ -161,10 +169,11 @@ impl World {
 
     /// Row `key`'s chances for user `u` asking query `q`.
     pub fn slot(&self, u: &User, q: usize, key: &str) -> Slot {
-        match self.keyed[q].get(key) {
+        let s = match self.keyed[q].get(key) {
             Some(&i) => self.slots[q][group(u)][i as usize],
             None => self.slot_for(group(u), q, key),
-        }
+        };
+        appetite(s, u)
     }
 
     /// The ranked row `i` of query `q`, its index if among them.
@@ -187,7 +196,7 @@ impl World {
     pub fn react(&self, c: &Context, shown: &[u16]) -> Outcome {
         let u = self.user(c.user);
         let g = group(u);
-        let slots: Vec<Slot> = shown.iter().map(|&i| self.slots[c.query as usize][g][i as usize]).collect();
+        let slots: Vec<Slot> = shown.iter().map(|&i| appetite(self.slots[c.query as usize][g][i as usize], u)).collect();
         self.model.sample(&slots, &u.behaviour, &mut Rng::of(&format!("{}/clicks", c.request)))
     }
 
@@ -207,10 +216,15 @@ impl World {
     /// query to log table `log`; the clicks it gets are returned as write
     /// operations on table `events`.
     pub async fn served(&self, server: &Server, run: &str, log: &str, events: &str, i: u64) -> Result<(Impression, Vec<Value>)> {
+        self.served_as(server, run, run, log, events, i).await
+    }
+
+    /// [`World::served`], logged as variant `variant`.
+    pub async fn served_as(&self, server: &Server, run: &str, variant: &str, log: &str, events: &str, i: u64) -> Result<(Impression, Vec<Value>)> {
         let c = self.context(run, i);
         let q = c.query as usize;
         let ts = BASE_TS + i as i64 * STEP_US;
-        let mut l = json!({"request": c.request, "context": format!("u{}", c.user), "ts": ts, "table": log, "variant": run});
+        let mut l = json!({"request": c.request, "context": format!("u{}", c.user), "ts": ts, "table": log, "variant": variant});
         if self.policy != Policy::None {
             l["explore"] = self.policy.to_json();
         }
@@ -418,7 +432,7 @@ pub fn reordered(w: &World, order: impl Fn(usize, &Ranked) -> Vec<usize>) -> Vec
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::site::Query;
     use crate::users::Shape;

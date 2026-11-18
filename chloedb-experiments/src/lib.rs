@@ -5,6 +5,8 @@
 //! simulator knows. An app of the command center (`serve`, later), a
 //! client of chloedb-server over HTTP.
 
+pub mod ab;
+pub mod app;
 pub mod check;
 pub mod click;
 pub mod estimate;

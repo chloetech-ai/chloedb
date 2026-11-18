@@ -3,8 +3,8 @@
 Experiments on ChloeDB: what a ranking would have earned, measured on the
 log of another, and checked against the truth.
 
-This is phase 1 of the Experiments app of the command center: the parts
-everything else stands on. It has three of them:
+It is the Experiments app of the command center (`serve`, below) and the
+parts it stands on:
 
 - **Propensities in the rank log.** A query with `explore` draws its list
   from a logging policy and logs each shown row's exact chance of being
@@ -22,9 +22,51 @@ everything else stands on. It has three of them:
   bias and its intervals' coverage with the exact value of the ranking it
   estimates.
 
-It is a client of chloedb-server over HTTP, as the crawler is. The app, the
-A/B report with power and cohorts, and the agents that use a site come in
-later phases.
+- **A/B tests** (`src/ab.rs`). Users are split between arms by a hash of
+  who they are, each search is ranked by its user's arm, and the report has
+  every metric with its interval, p value, q value over the metrics, power
+  for the true effect and the smallest effect it could see, the same with
+  CUPED, the always-valid p value (mSPRT) beside the one a peek gives,
+  each user's value, each cohort, and a sample ratio check. Because the
+  users are simulated, it also has the truth of each arm and of each
+  cohort. A share of the users can explore instead, and its log values
+  every arm off-policy, beside what the arms measured.
+
+It is a client of chloedb-server over HTTP, as the crawler is. Interleaving,
+bandits, learning to rank and the agents that use a site come in later
+phases.
+
+## The app
+
+```bash
+chloedb-experiments serve --local /tmp/exp --beir ~/beir --collections nfcorpus,scifact
+```
+
+That starts a chloedb-server in `/tmp/exp` with the app in its command
+center (Apps → Experiments) and loads two BEIR collections as sites. Beside
+a running server, `serve --server URL --token T` serves the app and the
+server shows it with `--app experiments=URL` and
+`CHLOEDB_APP_TOKEN_EXPERIMENTS=T`.
+
+A site is any table with two more: its queries (`id`, `text`, `weight`, the
+query's share of the traffic) and their judged rows (`query`, `doc`,
+`grade` from 0 to 4). `POST /v1/sites` adds one (`name`, `table`,
+`queries`, `judgments`, and the rankings to offer). Its API:
+
+| route | what |
+|---|---|
+| `GET /v1/meta` | click models, metrics, cohorts, defaults and limits |
+| `GET /v1/sites`, `GET /v1/sites/<name>`, `POST /v1/sites` | the sites |
+| `POST /v1/preview` | what some rankings show for a site's busiest queries, with each row's grade |
+| `GET /v1/experiments`, `POST /v1/experiments` | the experiments; a spec starts one in the background |
+| `GET /v1/experiments/<id>`, `DELETE /v1/experiments/<id>` | one experiment, its progress and its report |
+| `POST /v1/experiments/<id>/cut` | every metric by two attributes at once, for the last three runs |
+
+Sites and experiments are rows of the server (`exp_sites`,
+`exp_experiments`); a served run's rank log and events are tables of their
+own (`exp_log_<id>`, `exp_events_<id>`), dropped with it. The page is
+`ui/view.js`, compiled in; `CHLOEDB_EXPERIMENTS_UI_DIR=ui` reads it from
+disk.
 
 ## The simulator
 
@@ -215,6 +257,7 @@ fast mode.
 cargo test --profile ci
 ```
 
-`tests/served.rs` needs the chloedb-server binary: `CHLOEDB_SERVER_BIN`, or
-`../chloedb-server/target/{ci,release}/chloedb-server`. Without it, the test
-is skipped unless `CHLOEDB_EXPERIMENTS_NEED_SERVER` is set.
+`tests/served.rs` and `tests/app.rs` (the app's API, a fast and a served
+experiment, on a site of its own tables) need the chloedb-server binary: `CHLOEDB_SERVER_BIN`, or
+`../chloedb-server/target/{ci,release}/chloedb-server`. Without it, they
+are skipped unless `CHLOEDB_EXPERIMENTS_NEED_SERVER` is set.
