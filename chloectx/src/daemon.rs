@@ -745,9 +745,19 @@ impl Daemon {
             let me = crate::sync::origin(&crate::paths::home());
             return Ok(json!({"text": text.trim_end(), "this_machine": me, "pending": by.iter().map(|(o, n, _)| json!({"origin": o, "records": n})).collect::<Vec<_>>()}));
         }
-        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
-        let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else {
-            return Ok(json!({"server": null, "note": "no server set up: chloectx sync setup --url URL"}));
+        let home = crate::paths::home();
+        let key = crate::sync::project_key(&home, &self.project);
+        let Some(remote) = crate::sync::remote_for(&home, &key) else {
+            let Some(server) = crate::sync::remote(&home) else {
+                return Ok(json!({"server": null, "syncs": false, "note": "no server set up: chloectx sync setup --url URL"}));
+            };
+            // A server is set up for other projects of the machine, not this one (LENA-301).
+            let mut note = format!("this project ({key}) does not sync: {}. To sync it, run `chloectx sync setup --url {}` in its folder", crate::sync::scope_line(&home), server.url);
+            note += &crate::sync::sent_before(&crate::sync::saved_state(&self.paths.dir), &server.url);
+            return Ok(json!({
+                "server": server.url, "syncs": false, "project": self.project, "synced_as": key,
+                "projects": crate::sync::set_up_projects(&home), "every_project": false, "warning": note,
+            }));
         };
         let again = req.get("again").and_then(|v| v.as_bool()).unwrap_or(false);
         let st = match what {
@@ -763,7 +773,8 @@ impl Daemon {
         let warning = on_server.as_ref().ok().and_then(|n| crate::sync::short_on_server(upto, *n));
         Ok(json!({
             "warning": warning,
-            "server": remote.url, "token": remote.has_token(), "key_from": remote.key_from, "project": self.project, "synced_as": key,
+            "server": remote.url, "syncs": true, "why": crate::sync::syncs(&home, &key), "scope": crate::sync::scope_line(&home),
+            "token": remote.has_token(), "key_from": remote.key_from, "project": self.project, "synced_as": key,
             "local_records": self.store.len(), "last_seq": self.store.last_seq(),
             "pushed_seq": st.pushed_seq, "pushed": st.pushed, "pulled": st.pulled,
             "last_push": st.last_push, "last_pull": st.last_pull, "last_error": st.last_error,

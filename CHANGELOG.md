@@ -30,6 +30,36 @@ changes collect under "Unreleased".
   replaces the session's copy of it, and a decision does not keep "not
   implemented yet". The command center's overview lists the user's rules,
   not a prompt's raw sentences ([what is kept](docs/chloectx/index.md#where-it-keeps-what-it-stores)).
+- **ChloeCtx: `chloectx sync setup` syncs the project it runs in, and no
+  other** (persona study round 3, LENA-301; audit CTX-34). The first key
+  set up on a machine was kept as the machine's too (`sync.token`), and
+  every other project's daemon then pushed its store with it: a project
+  never set up uploaded 55 records, one an unredacted PyPI token. Now a
+  project syncs once `setup` runs in its folder (listed in `sync.json`'s
+  `projects`, or with a key of its own); `--every-project` syncs every
+  project and keeps the key as the machine's, and `CHLOECTX_SYNC_URL` in
+  the environment syncs every project it runs. `setup`, `chloectx sync
+  status` (`syncs`, `projects`) and doctor say which projects sync, and
+  name the table a project that no longer syncs sent records to before;
+  `chloectx sync off` (`--every-project`) undoes a setup. A `sync.token`
+  an earlier setup kept is sent for no project, and a project set up
+  before without a key of its own (`--token-env`, or none) syncs again
+  once `setup` runs in its folder.
+- **ChloeCtx redacts 18 more kinds of token, a command line's passwords,
+  and an assignment after a label** (persona study round 3, ANA-301,
+  LENA-302; LENA-10 and CTX-35 before). `note: DB_PASSWORD=hunter2`,
+  `q3 run: PGPASSWORD=... psql` and `here is my config: DB_PASSWORD=...`
+  were stored as typed, since the rule read `note` as the name and the
+  assignment as its value; so was `{"cmd": "PGPASSWORD=... psql"}` as
+  text. Caught now as well: PyPI, Vault, age, Shopify, Square, Linear,
+  Postman, New Relic, Grafana, Sentry, Mailgun, Doppler, Databricks,
+  Supabase, Tailscale, Atlassian, Pulumi and Terraform Cloud tokens;
+  `--password=...`, `--token ...` and `--api-key ...`, `mysql -p...` and
+  `sshpass -p ...`; a Docker `config.json`'s `"auth"` and an `.npmrc`'s
+  `_auth`; and `NAME value` with a long value (a Dockerfile's `ENV`).
+  `chloectx redact` (`--all` for every store) rewrites what stores kept
+  before, and replaces the server's copies for the projects that sync
+  ([setup.md](docs/chloectx/setup.md#secrets-and-chloectx-redact)).
 - **Everyday SQL functions** (persona study round 2, SAM-7): `substr`
   (`substring`, `SUBSTRING(s FROM i FOR n)`), `trim`, `ltrim`, `rtrim`
   (`btrim`, `TRIM(LEADING ... FROM s)`), `replace`, `concat`, `nullif`,
@@ -148,6 +178,37 @@ or one server), so shards of older versions need nothing new.
   site in the run yourself. When it ends it becomes an experiment with the
   full report and an Agents tab
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#live-runs)).
+
+### Query plans
+
+Rules that read only the rows that can be in an answer, from what ChloeDB
+knows of its tables; no answer changes.
+
+- **`ORDER BY` several keys with a `LIMIT` reads only the ties of the
+  first.** `ORDER BY fare DESC, distance DESC LIMIT 10` sorted every row.
+  The scan now finds the first key's n-th value with its top-k (n is
+  `OFFSET` plus `LIMIT`) and reads only the rows that tie with it or beat
+  it, and those whose key is `NULL`. The first key has to be an indexed
+  `INT` or `FLOAT` field of one value. On a 4-core cloud VM (Xeon @
+  2.10GHz), the top 10 of 224,056 taxi trips by two keys went from 40 ms to
+  1 ms.
+- **A small, filtered side of a join is read first.** When a join's right
+  side is a filtered table of at most 1,024 rows, and the scan on the left
+  that holds the key counts 32 times as many, the right side is read whole
+  and restricts that scan to its keys. `trips JOIN zones ... WHERE
+  z.borough = 'Staten Island'` reads 8 zones and the 13 trips they hold,
+  not all 224,056 trips (40 ms to 0.8 ms on that VM). The operators and
+  DataFusion choose alike.
+- **Filters reach the tables they hold for.** A `WHERE` on a derived
+  table's plain column filters its table's scan, a condition on one inner
+  join key filters the other key's table too, and a `WHERE` on a `LEFT
+  JOIN`'s right table that drops `NULL`s plans the join inner. The queries
+  of that kind in the persona study's battery took 2.4 to 6.6 times less
+  time.
+- **A coordinator's BM25 ranking that pins the key** (or `shard_by`) asks
+  only the shards of those keys, as other reads by key do. Its statistics
+  still come from every shard, so the scores are a fan-out's. No protocol
+  change: servers of 0.3.8 mix with it in either order.
 
 ## 0.3.8
 

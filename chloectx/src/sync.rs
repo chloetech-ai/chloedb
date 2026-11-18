@@ -10,6 +10,12 @@
 //! git repository (`owner/name`, see [`project_key`]), so every checkout
 //! of it, under any folder or an old name, shares one memory.
 //!
+//! A project syncs once `chloectx sync setup` ran in its folder (it is in
+//! `sync.json`'s `projects`, or has a key of its own), or when the machine
+//! was set up for every project (`--every-project`, or `CHLOECTX_SYNC_URL`
+//! in the environment): setting up one project uploads no other's store
+//! (LENA-301, audit CTX-34). See [`syncs`].
+//!
 //! A table per project is the boundary: a key limited to one project's
 //! table (`{"chloectx_mem_<project>": "write"}`, which the Inspector makes
 //! per machine) reads and writes that project only. Before 0.3.4 every
@@ -145,10 +151,10 @@ pub fn pending_origin(r: &Record) -> Option<&str> {
     r.links.iter().find(|l| l.label == SYNCED_FROM).map(|l| l.to.as_str())
 }
 
-/// Where the sync is set up: `sync.json` (the URL), and the keys,
-/// readable by their owner only, in ChloeCtx's home: each project's own
-/// ([`project_token_path`]) and `sync.token`, the machine's, for the
-/// projects without one.
+/// Where the sync is set up: `sync.json` (the URL, the projects that
+/// sync), and the keys, readable by their owner only, in ChloeCtx's home:
+/// each project's own ([`project_token_path`]) and `sync.token`, the
+/// machine's, which `--every-project` keeps for the projects without one.
 pub fn config_path(home: &Path) -> PathBuf {
     home.join("sync.json")
 }
@@ -180,6 +186,15 @@ pub struct SyncConfig {
     /// (`chloectx sync accept --origin`), `*` for every machine.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trusted: Vec<String>,
+    /// The projects ([`project_key`]) `chloectx sync setup` ran in: only
+    /// they sync, unless `every_project` (LENA-301).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<String>,
+    /// `chloectx sync setup --every-project`: every project on the machine
+    /// syncs, and sends the machine's key (`sync.token`) when it has none
+    /// of its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub every_project: bool,
 }
 
 pub fn load_config(home: &Path) -> SyncConfig {
@@ -210,34 +225,114 @@ pub fn project_key(home: &Path, project: &str) -> String {
     }
 }
 
-/// The server to sync with, and the machine's key ([`remote_for`] with no
-/// project's own). `None` when no URL is set.
+fn env_var(k: &str) -> Option<String> {
+    std::env::var(k).ok().filter(|v| !v.trim().is_empty()).map(|t| t.trim().to_string())
+}
+
+/// Whether a server is set up on this machine at all (`$CHLOECTX_SYNC_URL`
+/// or `sync.json`), whichever projects sync with it ([`syncs`]), and the
+/// machine's key when it was set up for every project. `None` when no URL
+/// is set.
 pub fn remote(home: &Path) -> Option<Remote> {
     remote_with(home, None)
 }
 
-/// The server to sync project `project` (its [`project_key`]) with:
-/// `$CHLOECTX_SYNC_URL`, else `sync.json`; the key: `$CHLOECTX_SYNC_TOKEN`,
-/// else the variable `sync.json` names, else the project's own
-/// ([`project_token_path`]), else the machine's, `sync.token` (none: the
-/// server is open, or a proxy adds it). `None` when no URL is set.
+/// The server to sync project `project` (its [`project_key`]) with, when
+/// it syncs ([`syncs`]): `$CHLOECTX_SYNC_URL`, else `sync.json`; the key:
+/// `$CHLOECTX_SYNC_TOKEN`, else the variable `sync.json` names, else the
+/// project's own ([`project_token_path`]), else, when the machine was set
+/// up for every project, the machine's, `sync.token` (none: the server is
+/// open, or a proxy adds it). `None` when no URL is set or the project
+/// does not sync.
 pub fn remote_for(home: &Path, project: &str) -> Option<Remote> {
+    syncs(home, project)?;
     remote_with(home, Some(project))
+}
+
+/// Why project `project` (its [`project_key`]) syncs, or `None` when it
+/// does not: `chloectx sync setup` ran in its folder (it is in `sync.json`'s
+/// `projects`, or has a key of its own from a setup before they were
+/// listed), or the machine syncs every project (`--every-project`, or
+/// `$CHLOECTX_SYNC_URL`, which a cloud environment sets for all it runs).
+/// A setup in one project made every other one upload its store with the
+/// first project's key (LENA-301).
+pub fn syncs(home: &Path, project: &str) -> Option<&'static str> {
+    if env_var("CHLOECTX_SYNC_URL").is_some() {
+        return Some("$CHLOECTX_SYNC_URL is set: every project this environment runs syncs");
+    }
+    let cfg = load_config(home);
+    if cfg.url.trim().is_empty() {
+        return None;
+    }
+    if cfg.every_project {
+        Some("set up for every project on this machine (--every-project)")
+    } else if cfg.projects.iter().any(|p| p == project) || project_token_path(home, project).exists() {
+        Some("set up in this project")
+    } else {
+        None
+    }
+}
+
+/// The projects set up to sync on this machine ([`syncs`]), by name; a key
+/// kept before projects were listed is named by its table. Empty when the
+/// machine syncs every project.
+pub fn set_up_projects(home: &Path) -> Vec<String> {
+    let cfg = load_config(home);
+    let mut out = cfg.projects.clone();
+    let listed: std::collections::HashSet<String> = out.iter().map(|p| table_for(p)).collect();
+    let mut tables: Vec<String> = std::fs::read_dir(home.join("sync-keys"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".token").map(String::from))
+        .filter(|t| !listed.contains(t))
+        .collect();
+    tables.sort();
+    out.extend(tables.into_iter().map(|t| format!("the project of table {t}")));
+    out
+}
+
+/// One line on which projects of this machine sync, for `setup`, `sync
+/// status` and doctor.
+pub fn scope_line(home: &Path) -> String {
+    if env_var("CHLOECTX_SYNC_URL").is_some() {
+        return "every project this environment runs syncs ($CHLOECTX_SYNC_URL is set)".into();
+    }
+    if load_config(home).every_project {
+        return "every project on this machine syncs (set up with --every-project; `chloectx sync off --every-project` stops that)".into();
+    }
+    let ps = set_up_projects(home);
+    match ps.len() {
+        0 => "no project on this machine syncs yet".into(),
+        1 => format!("only {} syncs on this machine; another project syncs once `chloectx sync setup` runs in its folder", ps[0]),
+        n => format!("{n} projects sync on this machine: {}; another syncs once `chloectx sync setup` runs in its folder", ps.join(", ")),
+    }
+}
+
+/// What a store that does not sync now sent to `url` before (`st`, its
+/// saved state), and how it leaves the server: empty when nothing.
+pub fn sent_before(st: &SyncState, url: &str) -> String {
+    if st.pushed == 0 || st.url != url {
+        return String::new();
+    }
+    let table = if st.key.is_empty() { "its table".to_string() } else { table_for(&st.key) };
+    format!("; it sent {} record{} to {url} before, into {table}, which keeps them until an admin removes them there (DROP TABLE {table})", st.pushed, if st.pushed == 1 { "" } else { "s" })
 }
 
 fn remote_with(home: &Path, project: Option<&str>) -> Option<Remote> {
     let cfg = load_config(home);
-    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty()).map(|t| t.trim().to_string());
     let file = |p: PathBuf| std::fs::read_to_string(p).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-    let url = env("CHLOECTX_SYNC_URL").or_else(|| Some(cfg.url.clone()).filter(|u| !u.trim().is_empty()))?;
+    let url = env_var("CHLOECTX_SYNC_URL").or_else(|| Some(cfg.url.clone()).filter(|u| !u.trim().is_empty()))?;
     let named = Some(cfg.token_env.as_str()).filter(|k| !k.is_empty());
-    let (token, key_from) = if let Some(t) = env("CHLOECTX_SYNC_TOKEN") {
+    let (token, key_from) = if let Some(t) = env_var("CHLOECTX_SYNC_TOKEN") {
         (Some(t), "$CHLOECTX_SYNC_TOKEN".to_string())
-    } else if let Some((k, t)) = named.and_then(|k| env(k).map(|t| (k, t))) {
+    } else if let Some((k, t)) = named.and_then(|k| env_var(k).map(|t| (k, t))) {
         (Some(t), format!("${k}"))
     } else if let Some(t) = project.and_then(|p| file(project_token_path(home, p))) {
         (Some(t), "the project's key".to_string())
-    } else if let Some(t) = file(token_path(home)) {
+    } else if let Some(t) = Some(token_path(home)).filter(|_| cfg.every_project).and_then(file) {
+        // Only for every project: a key an earlier setup kept as the
+        // machine's (the first one set up, LENA-301) is sent for none.
         (Some(t), "the machine's key (sync.token)".to_string())
     } else {
         (None, "no key".to_string())
@@ -279,10 +374,13 @@ pub fn check_url(url: &str) -> Result<()> {
     Err(err(format!("sync server {u}: plain HTTP to another machine would send your sessions and the key in the clear; use https:// (or set CHLOECTX_SYNC_ALLOW_HTTP=1)")))
 }
 
-/// Writes the sync's settings, and the key, owner-only, when given: as
-/// the own key of the project in folder `folder` (by its [`project_key`]),
-/// and as the machine's (`sync.token`, for projects without one) when there
-/// is none yet or `every_project`. Where the key went.
+/// Writes the sync's settings, and the key, owner-only, when given. The
+/// project in folder `folder` (by its [`project_key`]) syncs from now on,
+/// and the key is its own; with `every_project` every project on the
+/// machine syncs, and the key is the machine's too (`sync.token`, for the
+/// projects without one). No other project syncs because of it (LENA-301:
+/// the first key set up was the machine's, and every project's daemon
+/// uploaded its store with it). Where the key went.
 pub fn setup(home: &Path, folder: &str, url: &str, token: Option<&str>, token_env: &str, renames: &[String], every_project: bool) -> Result<Vec<PathBuf>> {
     check_url(url)?;
     crate::paths::create_private_dir(home)?;
@@ -291,18 +389,23 @@ pub fn setup(home: &Path, folder: &str, url: &str, token: Option<&str>, token_en
         let (old, new) = r.split_once('=').ok_or_else(|| err(format!("--rename {r}: give OLD=NEW, as owner/old=owner/new")))?;
         map.insert(old.trim().to_lowercase(), new.trim().to_lowercase());
     }
-    let trusted = load_config(home).trusted;
-    let cfg = SyncConfig { url: url.trim().to_string(), token_env: token_env.trim().to_string(), renames: map, trusted };
+    let was = load_config(home);
+    let mut cfg = SyncConfig { url: url.trim().to_string(), token_env: token_env.trim().to_string(), renames: map, trusted: was.trusted, projects: was.projects, every_project: was.every_project || every_project };
+    // Written first: the project's name ([`project_key`]) reads the renames from it.
     std::fs::write(config_path(home), serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+    let project = project_key(home, folder);
+    if !cfg.projects.contains(&project) {
+        cfg.projects.push(project.clone());
+        std::fs::write(config_path(home), serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+    }
     let mut kept = Vec::new();
     if let Some(t) = token.map(str::trim).filter(|t| !t.is_empty()) {
         // The project's key is the one its daemon sends; the machine's is
-        // for the projects without one, so a later project's key does not
-        // replace it unless asked.
-        let own = project_token_path(home, &project_key(home, folder));
+        // for the projects without one, kept only when every project syncs.
+        let own = project_token_path(home, &project);
         crate::paths::create_private_dir(own.parent().expect("under sync-keys"))?;
         let mut paths = vec![own];
-        if every_project || !token_path(home).exists() {
+        if every_project {
             paths.push(token_path(home));
         }
         for p in paths {
@@ -315,6 +418,45 @@ pub fn setup(home: &Path, folder: &str, url: &str, token: Option<&str>, token_en
         }
     }
     Ok(kept)
+}
+
+/// `chloectx sync off`: the project in folder `folder` stops syncing, and
+/// its own key is removed; with `every_project`, the machine stops syncing
+/// every project (the projects set up in their folders go on) and its key,
+/// `sync.token`, is removed. What it did, one line each. The server keeps
+/// what it was sent.
+pub fn off(home: &Path, folder: &str, every_project: bool) -> Result<Vec<String>> {
+    let mut cfg = load_config(home);
+    let mut did = Vec::new();
+    if every_project {
+        if cfg.every_project {
+            cfg.every_project = false;
+            did.push("the machine no longer syncs every project".to_string());
+        }
+        if token_path(home).exists() {
+            std::fs::remove_file(token_path(home))?;
+            did.push(format!("removed the machine's key, {}", token_path(home).display()));
+        }
+    } else {
+        let project = project_key(home, folder);
+        let before = cfg.projects.len();
+        cfg.projects.retain(|p| *p != project);
+        let own = project_token_path(home, &project);
+        if own.exists() {
+            std::fs::remove_file(&own)?;
+            did.push(format!("removed this project's key, {}", own.display()));
+        }
+        if before != cfg.projects.len() || !did.is_empty() {
+            did.insert(0, format!("{project} no longer syncs"));
+        }
+        if cfg.every_project {
+            did.push("the machine still syncs every project (`chloectx sync off --every-project` stops that)".into());
+        }
+    }
+    if config_path(home).exists() {
+        std::fs::write(config_path(home), serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+    }
+    Ok(did)
 }
 
 /// A ChloeDB server's HTTP API, called with `curl`.
@@ -831,9 +973,9 @@ mod tests {
     }
 
     #[test]
-    fn each_project_syncs_with_its_own_key_and_the_first_is_the_machines() {
-        // A key is limited to one project's table: one sync.token for the
-        // machine sent the first project's key for every other, refused.
+    fn a_project_syncs_once_set_up_there_and_no_other_because_of_it() {
+        // LENA-301: the first key set up was the machine's too, and every
+        // other project's daemon uploaded its store with it.
         if std::env::var_os("CHLOECTX_SYNC_TOKEN").is_some() || std::env::var_os("CHLOECTX_SYNC_URL").is_some() {
             return;
         }
@@ -843,27 +985,65 @@ mod tests {
         let url = "https://chloedb.example.com";
         let (web_key, shop_key) = (project_key(&home, &web.to_string_lossy()), project_key(&home, &shop.to_string_lossy()));
         let kept = setup(&home, &web.to_string_lossy(), url, Some("sk_web_1\n"), "", &[], false).unwrap();
-        assert_eq!(kept, vec![project_token_path(&home, &web_key), token_path(&home)], "the first key is the machine's too");
-        let kept = setup(&home, &shop.to_string_lossy(), url, Some("sk_shop_2"), "", &[], false).unwrap();
-        assert_eq!(kept, vec![project_token_path(&home, &shop_key)], "a later one is its project's only");
+        assert_eq!(kept, vec![project_token_path(&home, &web_key)], "the project's key only");
+        assert!(!token_path(&home).exists());
         let token = |r: Option<Remote>| r.and_then(|r| r.token).unwrap_or_default();
+        assert_eq!(token(remote_for(&home, &web_key)), "sk_web_1");
+        assert_eq!(syncs(&home, &web_key), Some("set up in this project"));
+        // Another project of the machine does not sync, with any key.
+        assert!(remote_for(&home, &shop_key).is_none());
+        assert_eq!(syncs(&home, &shop_key), None);
+        assert!(remote(&home).is_some_and(|r| !r.has_token()), "a server is set up, and the machine has no key");
+        assert_eq!(set_up_projects(&home), vec![web_key.clone()]);
+        assert!(scope_line(&home).starts_with(&format!("only {web_key} syncs")), "{}", scope_line(&home));
+        // Set up there, it syncs with its own key.
+        let kept = setup(&home, &shop.to_string_lossy(), url, Some("sk_shop_2"), "", &[], false).unwrap();
+        assert_eq!(kept, vec![project_token_path(&home, &shop_key)]);
         assert_eq!(token(remote_for(&home, &web_key)), "sk_web_1");
         assert_eq!(token(remote_for(&home, &shop_key)), "sk_shop_2");
         assert_eq!(remote_for(&home, &shop_key).unwrap().key_from, "the project's key");
-        // A project without one sends the machine's.
-        assert_eq!(token(remote_for(&home, "acme/other")), "sk_web_1");
-        assert_eq!(remote_for(&home, "acme/other").unwrap().key_from, "the machine's key (sync.token)");
-        assert_eq!(token(remote(&home)), "sk_web_1");
-        // --every-project replaces the machine's; no key given keeps them all.
-        setup(&home, &shop.to_string_lossy(), url, Some("sk_admin_3"), "", &[], true).unwrap();
+        assert!(remote_for(&home, "acme/other").is_none());
+        // A setup without a key (an open server, or --token-env) lists the project too.
+        let open = t.path().join("open");
+        let open_key = project_key(&home, &open.to_string_lossy());
+        assert!(setup(&home, &open.to_string_lossy(), url, None, "", &[], false).unwrap().is_empty());
+        assert_eq!(remote_for(&home, &open_key).map(|r| r.key_from), Some("no key".to_string()));
+        assert_eq!(set_up_projects(&home), vec![web_key.clone(), shop_key.clone(), open_key.clone()]);
+        // --every-project: every project syncs, and one without a key sends the machine's.
+        let kept = setup(&home, &shop.to_string_lossy(), url, Some("sk_admin_3"), "", &[], true).unwrap();
+        assert_eq!(kept, vec![project_token_path(&home, &shop_key), token_path(&home)]);
         assert_eq!(token(remote_for(&home, "acme/other")), "sk_admin_3");
+        assert_eq!(remote_for(&home, "acme/other").unwrap().key_from, "the machine's key (sync.token)");
+        assert!(scope_line(&home).starts_with("every project on this machine syncs"));
+        // A later setup without the flag keeps it; no key given keeps the keys.
         assert!(setup(&home, &web.to_string_lossy(), url, None, "", &[], false).unwrap().is_empty());
         assert_eq!(token(remote_for(&home, &web_key)), "sk_web_1");
+        assert!(remote_for(&home, "acme/other").is_some());
         // Each file is its owner's only.
         use std::os::unix::fs::PermissionsExt;
         for p in [project_token_path(&home, &web_key), token_path(&home)] {
             assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o077, 0, "{}", p.display());
         }
+        // `sync off --every-project`: back to the projects set up, and the machine's key is gone.
+        let did = off(&home, &web.to_string_lossy(), true).unwrap();
+        assert_eq!(did.len(), 2, "{did:?}");
+        assert!(remote_for(&home, "acme/other").is_none() && !token_path(&home).exists());
+        assert_eq!(token(remote_for(&home, &shop_key)), "sk_admin_3");
+        // `sync off` in a project: it stops, and its key goes.
+        let did = off(&home, &shop.to_string_lossy(), false).unwrap();
+        assert!(did[0].contains("no longer syncs"), "{did:?}");
+        assert!(remote_for(&home, &shop_key).is_none() && !project_token_path(&home, &shop_key).exists());
+        assert!(remote_for(&home, &web_key).is_some());
+        // A key kept by a setup before projects were listed still counts as set up there.
+        let mut cfg = load_config(&home);
+        cfg.projects.clear();
+        std::fs::write(config_path(&home), serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(token(remote_for(&home, &web_key)), "sk_web_1");
+        assert!(remote_for(&home, &open_key).is_none());
+        assert_eq!(set_up_projects(&home), vec![format!("the project of table {}", table_for(&web_key))]);
+        // ... and the machine's key an earlier setup kept (the first one) is sent for no other.
+        std::fs::write(token_path(&home), "sk_web_1").unwrap();
+        assert!(remote_for(&home, "acme/other").is_none());
         // A 403 says which key the project needs; another error, nothing.
         let h = key_hint("acme/web", "https://x/v1/write: 403: a write touches table chloectx_mem_acme_web_9, which the key \"k\" may not");
         assert!(h.contains(&table_for("acme/web")) && h.contains("Make a sync key") && h.contains("acme/web"), "{h}");
