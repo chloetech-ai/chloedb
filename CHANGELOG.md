@@ -11,13 +11,31 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
-A replica exposes how many batches of its primary it applied and the seconds
-they took (`chloedb_replica_apply_batches_total`,
-`chloedb_replica_apply_seconds_total`). The test of a replica the primary's
-log no longer reaches no longer fails about a quarter of its runs on a
-two-CPU machine: its log was 2,000 bytes under an unthrottled writer, so the
-primary sent copy after copy; it now has a log that holds seconds of a
-throttled writer.
+- **SQL answers the same on either engine, and as PostgreSQL does in four
+  more places** (persona study round 2, SAM-201 to SAM-204, SAM-208).
+  `ORDER BY` an output column's alias after `GROUP BY` or `DISTINCT`
+  (`SELECT payment_type AS pt ... GROUP BY pt ORDER BY pt`) was "no such
+  column"; it orders, and an output name wins over an input column of the
+  same name. `json_extract(doc, '$.a.b')` was `NULL` outside `WHERE`; a
+  `'$.'` path reads everywhere, and `'$'` is the whole value. `NULLS FIRST`
+  was refused after `GROUP BY` or `DISTINCT`; it orders groups. A `SUM` or
+  `AVG` of `FLOAT`s on DataFusion (a plan over more than 4,096 rows) added
+  in order, so totals that tied on a small table (43.62 and
+  43.620000000000005) split as it grew and a `RANK` over them changed; it
+  adds exactly, the same bits as ChloeDB's operators. The refusals of
+  `ROLLUP`, `CUBE`, `GROUPING SETS`, `substr`, `JOIN ... USING`, `NATURAL
+  JOIN`, a join on no equality, `INSERT ... SELECT`, `CREATE TABLE ... AS
+  SELECT`, temporary tables and a time minus a time say what to write
+  instead, with the query's own tables.
+
+- **A replica counts its applied batches, and the test of a copy stops
+  flaking.** `chloedb_replica_apply_batches_total` and
+  `chloedb_replica_apply_seconds_total` (the seconds include the wait for a
+  free writer). `replication::a_replica_the_log_does_not_reach_is_sent_a_copy`
+  failed about a quarter of its runs on a two-CPU machine: its ship log was
+  2,000 bytes under an unthrottled writer, so the primary sent copy after
+  copy and the test, which waits for exactly one per replica, timed out. It
+  keeps a log that holds seconds of a throttled writer now.
 
 ## 0.3.8
 
