@@ -184,6 +184,35 @@ changes collect under "Unreleased".
   GitHub event since 2011, 11.2 billion of them, on four 8 GB machines,
   at https://gh.chloetech.ai. It is on the `Demos` train.
 
+### Security
+
+- **A server with a token named its tables and their rows to anyone.**
+  `GET /v1/health`, which takes no credential, answered every table's
+  name and row count on a single server or a shard (a coordinator
+  already answered `{status}` alone). Without a credential the server
+  takes, every server now answers `{"status": ...}` alone; with one it is
+  whole, as before. A key limited to tables sees its own tables' rows
+  alone there and in `/v1/cluster` (each copy's health), and an error for a
+  table of its grants there is none of (`INSERT INTO a_ghost ...`) names
+  the tables it reads, where it listed every table of the database. A
+  client that read `docs` or `tables` from `/v1/health` without a key on
+  a server with a token gets them with its key.
+- **An agent's admin key made a plain admin key outside its fence**
+  (CLU-4): the key it made was a person's, which drops tables and approves
+  changes alone. A key an agent makes is now an agent's too, for the person
+  its maker acts for, expiring no later than its maker and within its
+  statement budget; asking for `"agent": false` or another person is
+  refused (403 `change_request_required`), and an agent rotates agents'
+  keys alone, since rotating a person's key answered its new secret.
+- **`chloectx app` started by hand with no token served every space to any
+  program on the machine, and to a page through DNS rebinding** (CTX-41):
+  it refused to start without a token only off loopback. It now refuses
+  without `--token` (or `CHLOECTX_APP_TOKEN`) on any address unless
+  `--insecure`, and without a token on loopback answers only requests whose
+  `Host` is this machine. chloedb-server and the operator start it with a
+  token (the operator with `--insecure` for a cluster without one, as
+  before), so neither changes.
+
 ### Sign in with Google
 
 - **The command center takes a Google sign-in, from any browser, a

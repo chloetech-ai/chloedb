@@ -203,6 +203,9 @@ pub struct App {
     jobs: Mutex<Jobs>,
     /// The ChloeCtx home whose stores the Receipts and Blame pages read.
     local: Option<std::path::PathBuf>,
+    /// Requests must name this machine as their `Host`: an app with no
+    /// token on loopback ([`host_refused`]).
+    loopback_hosts: bool,
 }
 
 /// An error with the HTTP status it answers with.
@@ -363,7 +366,7 @@ Use only what the text says. Do not invent numbers, names or causes. If the text
 impl App {
     pub fn new(cluster: Arc<Cluster>, embedder: Arc<dyn Embedder>, model: Model, token: Option<String>) -> Result<App> {
         cluster.sql(CREATE_SPACES)?;
-        Ok(App { cluster, embedder, stores: Mutex::new(HashMap::new()), model, token, jobs: Mutex::new(Jobs::default()), local: None })
+        Ok(App { cluster, embedder, stores: Mutex::new(HashMap::new()), model, token, jobs: Mutex::new(Jobs::default()), local: None, loopback_hosts: false })
     }
 
     fn space_row(&self, name: &str) -> Result<Option<Json>> {
@@ -1368,6 +1371,10 @@ fn handle(app: &Arc<App>, mut stream: std::net::TcpStream) {
         respond_json(&mut stream, "403 Forbidden", &json!({"error": "chloectx app takes no requests from browsers: open it in ChloeDB's command center (chloedb-server --app chloectx=URL)"}));
         return;
     }
+    if let Some(why) = host_refused(app.loopback_hosts, req.header("host")) {
+        respond_json(&mut stream, "403 Forbidden", &json!({"error": why}));
+        return;
+    }
     if let Some(t) = &app.token {
         let given = req.header("authorization").and_then(|v| v.strip_prefix("Bearer ")).unwrap_or("");
         if !same(given, t) {
@@ -1422,16 +1429,36 @@ pub fn loopback(host: &str) -> bool {
     h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
-/// Refuses to serve every caller of a network with no token: anyone who
-/// reaches the port could read and write every space and start model calls
-/// billed to the app's key.
+/// Refuses to serve with no token unless told to (`--insecure`, LENA-3):
+/// whoever reaches the port, any program of this machine's on loopback,
+/// could read and write every space and start model calls billed to the
+/// app's key.
 pub fn check_exposure(host: &str, token: Option<&str>, insecure: bool) -> Result<()> {
-    if token.is_none() && !insecure && !loopback(host) {
+    if token.is_none() && !insecure {
+        let who = if loopback(host) { "any program on this machine (and any page a browser here opens, through DNS rebinding)".to_string() } else { format!("anyone who reaches {host}") };
         return Err(err(format!(
-            "chloectx app would serve anyone who reaches {host} with no token: set --token (CHLOECTX_APP_TOKEN; chloedb-server sends its CHLOEDB_APP_TOKEN), listen on 127.0.0.1, or pass --insecure"
+            "chloectx app would serve every space to {who} with no token: set --token (CHLOECTX_APP_TOKEN; chloedb-server sends its CHLOEDB_APP_TOKEN, and starts the app with one itself), or pass --insecure to serve without one"
         )));
     }
     Ok(())
+}
+
+/// Why a request is refused for its `Host` (LENA-3), when `loopback_hosts`
+/// (an app with no token on loopback, [`App::loopback_hosts`]): a page
+/// that reached it through DNS rebinding names a host of its own, which a
+/// program calling `127.0.0.1` or `localhost` does not. A request that
+/// names no host (HTTP/1.0) is no browser's.
+pub fn host_refused(loopback_hosts: bool, host: Option<&str>) -> Option<String> {
+    let h = host?.trim();
+    if !loopback_hosts {
+        return None;
+    }
+    // The name without its port: `127.0.0.1:7760`, `[::1]:7760`, `localhost`.
+    let name = match h.strip_prefix('[') {
+        Some(r) => r.split(']').next().unwrap_or(""),
+        None => h.rsplit_once(':').map_or(h, |(n, _)| n),
+    };
+    (!loopback(name)).then(|| format!("chloectx app without a token answers requests for this machine alone (Host 127.0.0.1 or localhost), not for {h:?}: start it with --token to serve under another name"))
 }
 
 /// Serves the app until the process ends.
@@ -1445,6 +1472,7 @@ pub fn run(opts: Options) -> Result<()> {
         match App::new(cluster.clone(), embedder.clone(), Model::from_env(), opts.token.clone()) {
             Ok(mut a) => {
                 a.local = opts.local.clone();
+                a.loopback_hosts = opts.token.is_none() && loopback(&opts.host);
                 break Arc::new(a);
             }
             Err(e) if tries < 30 => {
@@ -1520,16 +1548,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_token_is_refused_off_loopback() {
-        for host in ["127.0.0.1", "::1", "[::1]", "localhost", "127.0.0.2"] {
-            assert!(check_exposure(host, None, false).is_ok(), "{host} is this machine only");
-        }
-        for host in ["0.0.0.0", "::", "10.0.0.7", "chloectx.example.com"] {
+    fn no_token_is_refused_unless_insecure() {
+        // LENA-3: on loopback too, since every program of the machine (and
+        // a page through DNS rebinding) reaches it there.
+        for host in ["127.0.0.1", "::1", "[::1]", "localhost", "127.0.0.2", "0.0.0.0", "::", "10.0.0.7", "chloectx.example.com"] {
             let e = check_exposure(host, None, false).unwrap_err().to_string();
             assert!(e.contains("--token") && e.contains("--insecure"), "{host}: {e}");
             assert!(check_exposure(host, Some("t"), false).is_ok());
             assert!(check_exposure(host, None, true).is_ok(), "--insecure is the caller's choice");
         }
+        assert!(check_exposure("127.0.0.1", None, false).unwrap_err().to_string().contains("any program on this machine"));
+    }
+
+    #[test]
+    fn without_a_token_on_loopback_only_this_machine_is_a_host() {
+        for h in ["127.0.0.1:7760", "localhost:7760", "localhost", "[::1]:7760", "127.0.0.2"] {
+            assert_eq!(host_refused(true, Some(h)), None, "{h}");
+        }
+        for h in ["evil.example:7760", "evil.example", "10.0.0.7:7760", "[2001:db8::1]:7760", "localhost.evil.example"] {
+            let why = host_refused(true, Some(h)).unwrap_or_else(|| panic!("{h} is let in"));
+            assert!(why.contains("--token"), "{why}");
+        }
+        // No Host (HTTP/1.0) is no browser's; with a token, the token guards.
+        assert_eq!(host_refused(true, None), None);
+        assert_eq!(host_refused(false, Some("evil.example:7760")), None);
     }
 
     #[test]

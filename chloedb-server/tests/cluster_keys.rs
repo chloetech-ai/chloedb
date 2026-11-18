@@ -258,6 +258,24 @@ async fn a_coordinators_health_shows_its_copies_only_to_a_credential() {
     let (_, j) = http(&base, "POST", "/v1/admin/keys", Some(ADMIN), Some(json!({"name": "feed", "scope": "feed"}))).await;
     let (status, h) = http(&base, "GET", "/v1/health", j["secret"].as_str(), None).await;
     assert_eq!((status, h["docs"].as_u64()), (200, Some(N as u64)), "{h}");
+    // LENA-1: a key limited to tables sees its own tables' rows alone, in
+    // the coordinator's health and in each copy's in /v1/cluster.
+    let (status, j) = http(&base, "POST", "/v1/sql", Some(ADMIN), Some(json!({"sql": "CREATE TABLE a_notes (id KEYWORD PRIMARY KEY, body TEXT)"}))).await;
+    assert_eq!(status, 200, "{j}");
+    let (status, j) = http(&base, "POST", "/v1/sql", Some(ADMIN), Some(json!({"sql": "INSERT INTO a_notes (id, body) VALUES ('n1', 'x'), ('n2', 'y')"}))).await;
+    assert_eq!(status, 200, "{j}");
+    let (_, j) = http(&base, "POST", "/v1/admin/keys", Some(ADMIN), Some(json!({"name": "tenant-a", "tables": {"a_*": "admin"}}))).await;
+    let tenant = j["secret"].as_str();
+    let (status, h) = http(&base, "GET", "/v1/health", tenant, None).await;
+    assert_eq!((status, &h["tables"], &h["rows"], &h["docs"]), (200, &json!({"a_notes": 2}), &json!(2), &json!(2)), "{h}");
+    assert!(h["shards"].as_array().is_some_and(|s| s.iter().all(|s| s.get("docs").is_none())), "{h}");
+    let (status, c) = http(&base, "GET", "/v1/cluster", tenant, None).await;
+    assert_eq!(status, 200, "{c}");
+    let copies: Vec<&Json> = c["shards"].as_array().unwrap().iter().flat_map(|s| s["replicas"].as_array().unwrap()).collect();
+    // (The view may be from before a_notes was made: no other table, then.)
+    let theirs = |r: &&Json| r["detail"]["health"]["tables"].as_object().is_some_and(|t| t.keys().all(|k| k == "a_notes"));
+    assert!(!copies.is_empty() && copies.iter().all(|r| theirs(r) && r.get("docs").is_none()), "{c}");
+    assert!(!c.to_string().contains("\"products\""), "{c}");
 }
 
 /// A primary passes its keys to its replicas and takes theirs, so that a

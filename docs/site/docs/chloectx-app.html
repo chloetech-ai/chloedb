@@ -157,12 +157,12 @@ CHLOEDB_APP_TOKEN=&quot;$APP_TOKEN&quot; chloedb-server --shards ... --app chloe
 <tr>
 <td><code>--token</code> (<code>CHLOECTX_APP_TOKEN</code>)</td>
 <td>none</td>
-<td>the token every caller must send (<code>Authorization: Bearer</code>); chloedb-server sends its <code>CHLOEDB_APP_TOKEN</code></td>
+<td>the token every caller must send (<code>Authorization: Bearer</code>); chloedb-server sends its <code>CHLOEDB_APP_TOKEN</code>. Without one, <code>chloectx app</code> refuses to start unless <code>--insecure</code></td>
 </tr>
 <tr>
 <td><code>--insecure</code></td>
 <td>off</td>
-<td>serve any caller with no token on an address other than loopback; without it, <code>chloectx app</code> refuses to start with <code>--host 0.0.0.0</code> (or any non-loopback address) and no token, since whoever reached the port could read and write every space and start model calls billed to its key</td>
+<td>serve any caller with no token; without it, <code>chloectx app</code> refuses to start with no token, on loopback too, since whoever reached the port (on loopback, any program of the machine) could read and write every space and start model calls billed to its key. On loopback it then answers only requests whose <code>Host</code> is this machine (<code>127.0.0.1</code>, <code>localhost</code>, <code>[::1]</code>), so that a page reaching it through DNS rebinding is refused</td>
 </tr>
 <tr>
 <td><code>--host</code>, <code>--port</code></td>
