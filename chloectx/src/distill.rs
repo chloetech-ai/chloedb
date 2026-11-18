@@ -230,13 +230,15 @@ pub fn parse(text: &str) -> Distilled {
         if let Some(r) = &replaces {
             d = d.link("supersedes", r.clone());
         }
-        // Who stated it and the scope a rule was given: read by [`attribute`].
+        // Who stated it, and the scope a rule was given: read by
+        // [`attribute`] (`requester task` when the model kept it to the task).
         let said = v.get("said_by").and_then(|x| x.as_str()).unwrap_or("");
-        d.by = Some(if said == "assistant" { "assistant".into() } else { "requester".into() });
+        let scope = v.get("scope").and_then(|x| x.as_str()).unwrap_or("");
+        d.by = Some(format!("{}{}", if said == "assistant" { "assistant" } else { "requester" }, if scope == "task" { " task" } else { "" }));
         // A scope is a rule's: a decision, a requirement or a fact the
         // model calls "task" is still one (ANA-6: "Another decision with
         // the client: invoice numbers ..." was kept for that task only).
-        if k == Kind::Preference && v.get("scope").and_then(|x| x.as_str()) == Some("task") {
+        if k == Kind::Preference && scope == "task" {
             d.tag = TASK_TAG.into();
         }
         out.replaced.extend(replaces);
@@ -247,11 +249,16 @@ pub fn parse(text: &str) -> Distilled {
 
 /// Settles who said each item and how long it holds, whatever the model
 /// wrote:
-/// - a rule is standing only when the user stated it as one
-///   ([`crate::capture::standing_rule`]); any other instruction (the
-///   user's one-off, another agent's brief, Workbench's) is kept as a note
-///   for this session's task ([`TASK_TAG`]), never shown to other sessions
-///   as a rule;
+/// - a rule the user stated is standing unless it is an instruction for the
+///   task at hand: the model kept it to the task, or it tells the agent
+///   what not to touch or only to do now ([`crate::capture::task_instruction`]),
+///   and the user did not say it is standing ([`crate::capture::standing_rule`]).
+///   When unsure it is a rule, which the user can retire, rather than a
+///   note no other session sees (ANA-202: a client's conventions were kept
+///   "for this task only"). Any other instruction (the user's one-off,
+///   another agent's brief, Workbench's) is kept as a note for this
+///   session's task ([`TASK_TAG`]), never shown to other sessions as a
+///   rule;
 /// - an item the request stated is the request author's; one the assistant
 ///   found is the assistant's; neither an agent's nor Workbench's words
 ///   become the user's, and an agent's claim reads "The agent X said: …";
@@ -261,10 +268,17 @@ pub fn attribute(drafts: Vec<Draft>, request: &str, ex: &Exchange) -> Vec<Draft>
     drafts
         .into_iter()
         .map(|mut d| {
-            let by = if d.by.as_deref() == Some("assistant") { ex.assistant() } else { req_by.clone() };
+            let by = if d.by.as_deref().is_some_and(|b| b.starts_with("assistant")) { ex.assistant() } else { req_by.clone() };
             if d.kind == Kind::Preference || d.tag == TASK_TAG {
-                let standing = d.kind == Kind::Preference && d.tag != TASK_TAG && by.is_user() && crate::capture::standing_rule(request, &ex.prev_answer, &d.text);
-                if !standing {
+                let model_task = d.tag == TASK_TAG || d.by.as_deref().is_some_and(|b| b.ends_with(" task"));
+                let said_standing = crate::capture::standing_rule(request, &ex.prev_answer, &d.text);
+                let standing = d.kind == Kind::Preference && by.is_user() && (said_standing || (!model_task && !crate::capture::task_instruction(request, &d.text)));
+                if standing {
+                    // The user said it is standing, whatever the model thought.
+                    if d.tag == TASK_TAG {
+                        d.tag = "distilled".into();
+                    }
+                } else {
                     let whose = by.who();
                     let task = if ex.agent.is_empty() { "this task".to_string() } else { format!("{}'s task", ex.agent) };
                     d.kind = Kind::Note;
@@ -371,6 +385,38 @@ mod tests {
         assert_eq!(d[1].by.as_deref(), Some("agent:lead"));
         let p = prompt_for_exchange("x", "y", &[], &[], 0, &lead);
         assert!(p.contains("written by the agent lead") && p.contains("never the user's rules"), "{p}");
+    }
+
+    /// ANA-202: a client's conventions, given as the project's context, are
+    /// rules every session is told, not notes "for this task only". The
+    /// model's lines are what haiku answered for Ana's kickoff.
+    #[test]
+    fn a_projects_conventions_are_standing_rules() {
+        let kickoff = "Some context for this project, from the kickoff with the client: every timestamp column stores UTC epoch milliseconds and is named with an _at_ms suffix (created_at_ms, settled_at_ms). Interest calculations use banker's rounding (ROUND_HALF_EVEN), but fee calculations use ROUND_HALF_UP, because the regulator audits fee calculations against half-up rounding. Two things from ops: deployments to staging happen only on Tuesdays and Thursdays, and when a client retries a payment with an idempotency key we already saw, we return error code LDG-0007. Just acknowledge, nothing to do yet.";
+        let model = "{\"kind\": \"rule\", \"text\": \"Every timestamp column stores UTC epoch milliseconds and is named with an `_at_ms` suffix (e.g. `created_at_ms`, `settled_at_ms`), as set at the client kickoff.\", \"said_by\": \"requester\", \"scope\": \"standing\"}\n\
+                     {\"kind\": \"rule\", \"text\": \"Interest calculations use banker's rounding (ROUND_HALF_EVEN), as set by the client.\", \"said_by\": \"requester\", \"scope\": \"standing\"}\n\
+                     {\"kind\": \"rule\", \"text\": \"Fee calculations use ROUND_HALF_UP rounding, because the regulator audits fee calculations against half-up rounding.\", \"said_by\": \"requester\", \"scope\": \"standing\"}\n\
+                     {\"kind\": \"rule\", \"text\": \"Deployments to staging happen only on Tuesdays and Thursdays.\", \"said_by\": \"requester\", \"scope\": \"standing\"}\n\
+                     {\"kind\": \"fact\", \"text\": \"When a client retries a payment with an idempotency key already seen, the system returns error code LDG-0007.\", \"said_by\": \"requester\"}";
+        let d = attribute(parse(model).drafts, kickoff, &Exchange::default());
+        let kinds: Vec<(Kind, &str)> = d.iter().map(|x| (x.kind, x.tag.as_str())).collect();
+        assert_eq!(kinds, [(Kind::Preference, "distilled"), (Kind::Preference, "distilled"), (Kind::Preference, "distilled"), (Kind::Preference, "distilled"), (Kind::Fact, "distilled")], "{d:?}");
+        assert!(d.iter().all(|x| !x.text.contains("not a standing rule") && x.by.as_deref() == Some("user")), "{d:?}");
+        // Even with no scope from the model: a statement of how the project works.
+        let d = attribute(parse("{\"kind\": \"rule\", \"text\": \"Fee calculations use ROUND_HALF_UP rounding.\"}").drafts, kickoff, &Exchange::default());
+        assert_eq!(d[0].kind, Kind::Preference, "{d:?}");
+        // Maya's instruction for her task stays the task's, whatever scope
+        // the model gives it (haiku said "task"; here "standing").
+        let maya = "Fix the cent bug in the cart total: 0.1 + 0.2 shows 0.30000000000000004. Don't touch money.py or cart.py, paybutton works there. Only change totals.py and its tests.";
+        for scope in ["task", "standing", ""] {
+            let line = format!("{{\"kind\": \"rule\", \"text\": \"For the cent-bug fix, money.py and cart.py must not be touched, because the paybutton works there.\", \"said_by\": \"requester\", \"scope\": \"{scope}\"}}\n{{\"kind\": \"rule\", \"text\": \"Only totals.py and its tests may be changed in the cent-bug fix.\", \"scope\": \"{scope}\"}}");
+            let d = attribute(parse(&line).drafts, maya, &Exchange::default());
+            assert!(d.iter().all(|x| x.kind == Kind::Note && x.tag == TASK_TAG), "{scope}: {d:?}");
+        }
+        // The model keeps it to the task, the user said it stands: it stands.
+        let ops = "From ops: never deploy to staging on Fridays.";
+        let d = attribute(parse("{\"kind\": \"rule\", \"text\": \"Never deploy to staging on Fridays (ops rule).\", \"scope\": \"task\"}").drafts, ops, &Exchange::default());
+        assert_eq!((d[0].kind, d[0].tag.as_str()), (Kind::Preference, "distilled"), "{d:?}");
     }
 
     #[test]
