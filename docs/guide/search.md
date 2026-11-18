@@ -132,18 +132,31 @@ b11 | Quiet Machines
 
 ### As you type: prefixes
 
-A prefix is a condition of `MATCH` alone. `bm25` reads `drag*` as the word *drag*, which no book has, and a ranking by `bm25` returns only the rows it scores, so a search box that sends what has been typed so far to both finds nothing until the last word is whole:
+`bm25` reads a prefix as `MATCH` does: `drag*` ranks by the words of the field that begin *drag* ([weights, required and excluded words](../chloedb/query-language.md#weights-required-and-excluded-words)). So a search box can send what has been typed so far, its last word with a `*` while it is being typed, to both:
 
 ```sql db=books.chloedb
 SELECT id, title FROM books WHERE MATCH(title, 'drag*') ORDER BY bm25(title, 'drag*') DESC
 ```
 
 ```text output
-id | title
----+------
+id  | title
+----+--------------------------
+b01 | The River and the Dragon
+b10 | The Dragon Accords
+b03 | Dragons of the Salt Coast
 ```
 
-While a word is being typed, keep the prefix in the `MATCH`, and rank by the words already typed in full, or by a column while there are none:
+```sql db=books.chloedb
+SELECT id, title FROM books WHERE MATCH(title, 'salt drag*') ORDER BY bm25(title, 'salt drag*') DESC
+```
+
+```text output
+id  | title
+----+--------------------------
+b03 | Dragons of the Salt Coast
+```
+
+**Changed:** `bm25` read `drag*` as the word *drag* before, which no book has, and a ranking by `bm25` returns only the rows it scores, so the first query found nothing until the last word was whole. Against a server or package of 0.3.7 or earlier, rank by the words already typed in full, or by a column while there are none:
 
 ```sql db=books.chloedb
 SELECT id, title FROM books WHERE MATCH(title, 'drag*') ORDER BY rating DESC
@@ -157,17 +170,7 @@ b01 | The River and the Dragon
 b10 | The Dragon Accords
 ```
 
-```sql db=books.chloedb
-SELECT id, title FROM books WHERE MATCH(title, 'salt drag*') ORDER BY bm25(title, 'salt') DESC
-```
-
-```text output
-id  | title
-----+--------------------------
-b03 | Dragons of the Salt Coast
-```
-
-`db.search(text)` ranks with `bm25` too, so it finds nothing for a word half typed. A prefix is lowercased but not stemmed, and matches the stemmed words that start with it. To complete whole values instead (the searches people ran before, names kept as `KEYWORD`), `PREFIX(field, :typed)` reads a keyword field's sorted values, with typos if asked ([prefixes and autocomplete](../chloedb/query-language.md#prefixes-and-autocomplete)).
+`db.search(text)` ranks with `bm25` too, so it finds nothing for a word half typed unless the word ends in `*`. A prefix is lowercased but not stemmed, and matches the stemmed words that start with it. To complete whole values instead (the searches people ran before, names kept as `KEYWORD`), `PREFIX(field, :typed)` reads a keyword field's sorted values, with typos if asked ([prefixes and autocomplete](../chloedb/query-language.md#prefixes-and-autocomplete)).
 
 ## Typos
 
@@ -183,7 +186,7 @@ id  | title
 b04 | The Last Lighthouse
 ```
 
-`db.search(text)` searches the words as written, and so does the search box on a table's page in the command center: a search that should forgive typos asks for it in its SQL. With a `MATCH`, a row must have every word, each as typed or within its edits, and a `bm25` of the same text on the same field takes the `MATCH`'s `fuzzy`:
+`db.search(text)` searches the words as written, and so does the search box on a table's page in the command center: a search that should forgive typos asks for it in its SQL, or writes `~` after a word (`dragn~`), which `bm25` reads as `fuzzy => 'auto'` for that word. With a `MATCH`, a row must have every word, each as typed or within its edits, and a `bm25` of the same text on the same field takes the `MATCH`'s `fuzzy`:
 
 ```python
 import chloedb
