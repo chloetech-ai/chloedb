@@ -119,6 +119,8 @@ pub(crate) struct Http {
     auth: Option<String>,
     /// The source the follower's writes follow ([`FOLLOW_HEADER`]).
     follow: Option<String>,
+    /// Headers sent with every request ([`Http::with_header`]).
+    headers: Vec<(&'static str, String)>,
 }
 
 impl Http {
@@ -129,7 +131,14 @@ impl Http {
             b = b.add_root_certificate(cert);
         }
         let client = b.build().map_err(|e| ApiError::bad(format!("an HTTP client for {url}: {e}")))?;
-        Ok(Http { url: url.trim_end_matches('/').to_string(), client, auth: token.map(|t| format!("Bearer {t}")), follow: follow.map(String::from) })
+        Ok(Http { url: url.trim_end_matches('/').to_string(), client, auth: token.map(|t| format!("Bearer {t}")), follow: follow.map(String::from), headers: Vec::new() })
+    }
+
+    /// Sends header `name` with every request: as a Postgres follower
+    /// names itself ([`crate::service::POSTGRES_FOLLOWER_HEADER`]).
+    pub(crate) fn with_header(mut self, name: &'static str, value: &str) -> Http {
+        self.headers.push((name, value.to_string()));
+        self
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
@@ -139,6 +148,9 @@ impl Http {
         }
         if let Some(f) = &self.follow {
             r = r.header(FOLLOW_HEADER, f);
+        }
+        for (k, v) in &self.headers {
+            r = r.header(*k, v);
         }
         r
     }

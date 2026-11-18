@@ -80,10 +80,72 @@ pub enum Write {
     /// Documents in schema order (unnamed columns NULL), and what to do
     /// with one whose primary key is live.
     Insert { docs: Vec<Vec<Value>>, conflict: Conflict },
-    /// The documents `select` returns (their primary keys) get `sets`.
-    Update { select: Select, sets: Vec<(usize, Assign)> },
-    /// The documents `select` returns are deleted.
-    Delete { select: Select },
+    /// The documents `select` returns (their primary keys) get `sets`;
+    /// with a `pick`, those whose keys it picks, as it runs.
+    Update { select: Select, sets: Vec<(usize, Assign)>, pick: Option<Pick> },
+    /// The documents `select` returns are deleted; with a `pick`, those
+    /// whose keys it picks, as it runs.
+    Delete { select: Select, pick: Option<Pick> },
+}
+
+impl Write {
+    /// The rows an UPDATE or DELETE picks with a query as it runs
+    /// ([`Pick`]), if it does.
+    pub fn pick(&self) -> Option<&Pick> {
+        match self {
+            Write::Update { pick, .. } | Write::Delete { pick, .. } => pick.as_ref(),
+            Write::Insert { .. } => None,
+        }
+    }
+
+    /// Whether an UPDATE or DELETE has a LIMIT, in its rows' query or in
+    /// its pick's: over shards, each shard would keep its own LIMIT rows.
+    pub fn limited(&self) -> bool {
+        match self {
+            Write::Update { select, pick, .. } | Write::Delete { select, pick } => select.limit.is_some() || pick.as_ref().is_some_and(|p| p.query.limit_clause.is_some()),
+            Write::Insert { .. } => false,
+        }
+    }
+
+    /// Whether an UPDATE or DELETE must pick its rows by key before a
+    /// coordinator sends it to its shards: one with a LIMIT ([`Write::limited`]),
+    /// or whose pick reads other rows ([`Pick::reads_others`]).
+    pub fn picks_first(&self) -> bool {
+        self.limited() || self.pick().is_some_and(|p| p.reads_others)
+    }
+}
+
+/// The rows of an UPDATE or DELETE whose WHERE, ORDER BY or LIMIT the
+/// table's scan does not answer, which a SELECT takes (persona study
+/// SAM-2): a TEXT column compared (`country = 'Brazil'`) or matched with
+/// LIKE, a function of a column, a subquery (`id IN (SELECT ...)`, `NOT
+/// EXISTS (...)`). `query` selects their primary keys, `SELECT key FROM t
+/// WHERE ... [ORDER BY ...] [LIMIT n]`, and runs as any query runs, on the
+/// snapshot the write reads under the writer lock, so that no other write
+/// lands between the pick and the write; the write's `select` is then the
+/// rows of those keys (it is `WHERE FALSE` until then, so a write that
+/// loses its pick changes nothing).
+#[derive(Clone, Debug)]
+pub struct Pick {
+    pub query: Box<sql::Query>,
+    pub params: Params,
+    /// Whether the pick reads rows other than the one it tests (a
+    /// subquery): over shards, each shard would read its own share of
+    /// them, so a coordinator picks the keys itself.
+    pub reads_others: bool,
+}
+
+impl PartialEq for Pick {
+    fn eq(&self, o: &Pick) -> bool {
+        self.query == o.query && self.params.0 == o.params.0 && self.reads_others == o.reads_others
+    }
+}
+
+impl Pick {
+    /// The query as text, as a message or a plan shows it.
+    pub fn sql(&self) -> String {
+        self.query.to_string()
+    }
 }
 
 /// What an INSERT does with a document whose primary key is already live
@@ -322,7 +384,8 @@ pub(crate) fn bind_statement(stmt: &sql::Statement, tables: &[&Schema], params: 
                 _ => None,
             };
             let sets = Binder::new(schema, params).assignments(assignments, alias, false)?;
-            write(schema, Write::Update { select: selecting(schema, params, &t.relation, selection, &[], limit)?, sets })
+            let (select, pick) = selecting_or_picking(schema, params, &t.relation, selection, &[], limit)?;
+            write(schema, Write::Update { select, sets, pick })
         }
         sql::Statement::Delete(d) => {
             let sql::Delete { tables: named, from, using, selection, returning, order_by, limit } = d;
@@ -338,7 +401,7 @@ pub(crate) fn bind_statement(stmt: &sql::Statement, tables: &[&Schema], params: 
                 return Err(err("DELETE from exactly one table"));
             }
             let schema = table(plain_table(&t.relation, "DELETE")?)?;
-            let select = selecting(schema, params, &t.relation, selection, order_by, limit)?;
+            let (select, pick) = selecting_or_picking(schema, params, &t.relation, selection, order_by, limit)?;
             // A ranked read without LIMIT is cut at its default top rows; a
             // DELETE is never cut by a limit it did not write. Without LIMIT
             // the order chooses nothing, and the score's matches are not the
@@ -346,7 +409,7 @@ pub(crate) fn bind_statement(stmt: &sql::Statement, tables: &[&Schema], params: 
             if select.limit.is_none() && matches!(&select.order, Some(OrderBy::Score { score, .. }) if !matches!(score, Score::Column { .. })) {
                 return Err(err("DELETE ... ORDER BY a score needs a LIMIT: the order only chooses which rows a LIMIT keeps. To delete every row that matches, write the match in WHERE (WHERE MATCH(field, '...')) without ORDER BY"));
             }
-            write(schema, Write::Delete { select })
+            write(schema, Write::Delete { select, pick })
         }
         sql::Statement::CreateTable(ct) => {
             let (schema, if_not_exists) = ddl::create_table(ct, tables)?;
@@ -597,6 +660,45 @@ fn selecting(schema: &Schema, params: &Params, table: &sql::TableFactor, selecti
     select.projection = every_field(schema);
     select.types = projection_types(schema, &select.projection);
     Ok(select)
+}
+
+/// [`selecting`], or when the table's scan does not answer the WHERE, ORDER
+/// BY or LIMIT (the binder refuses them) and the table has a primary key,
+/// the rows of no key and the [`Pick`] that finds their keys as the write
+/// runs. A WHERE no SELECT takes either is refused as the SELECT would be
+/// when the pick is planned ([`crate::db::Db::prepare_write`]), or as it
+/// runs.
+fn selecting_or_picking(schema: &Schema, params: &Params, table: &sql::TableFactor, selection: &Option<Expr>, order_by: &[sql::OrderByExpr], limit: &Option<Expr>) -> Result<(Select, Option<Pick>)> {
+    let refused = match selecting(schema, params, table, selection, order_by, limit) {
+        Ok(select) => return Ok((select, None)),
+        Err(e) => e,
+    };
+    let Some(pk) = schema.primary_key else { return Err(refused) };
+    // Its key column, named through the statement's alias if it has one.
+    let key = match table {
+        sql::TableFactor::Table { alias: Some(a), .. } => Expr::CompoundIdentifier(vec![a.name.clone(), sql::Ident::with_quote('"', schema.fields[pk].name.clone())]),
+        _ => Expr::Identifier(sql::Ident::with_quote('"', schema.fields[pk].name.clone())),
+    };
+    let mut q = parse_query("SELECT 1 FROM t")?;
+    let sql::SetExpr::Select(s) = q.body.as_mut() else { return Err(err("a SELECT of the keys")) };
+    s.projection = vec![sql::SelectItem::UnnamedExpr(key)];
+    s.from[0].relation = table.clone();
+    s.selection = selection.clone();
+    if !order_by.is_empty() {
+        q.order_by = Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(order_by.to_vec()), interpolate: None });
+    }
+    q.limit_clause = limit.clone().map(|l| sql::LimitClause::LimitOffset { limit: Some(l), offset: None, limit_by: Vec::new() });
+    super::parse::as_parsed(&mut q)?;
+    let reads_others = selection.iter().any(has_subquery) || order_by.iter().any(|o| has_subquery(&o.expr));
+    Ok((keyed_rows(schema, Vec::new())?, Some(Pick { query: q, params: params.clone(), reads_others })))
+}
+
+/// Whether `e` holds a subquery (`IN (SELECT ...)`, `EXISTS (...)`, `(SELECT
+/// ...)`), which reads rows other than the one it is of.
+pub fn has_subquery(e: &Expr) -> bool {
+    let mut found = false;
+    crate::query::compound::walk(e, &mut |x| found |= matches!(x, Expr::Subquery(_) | Expr::InSubquery { .. } | Expr::Exists { .. }));
+    found
 }
 
 /// Every field of the rows whose primary key is one of `keys`, as a query
@@ -1206,7 +1308,7 @@ impl<'a> Binder<'a> {
                         self.group_order(&es[0].expr, desc, &projection, &group_by)?
                     } else {
                         self.ordering.set(true);
-                        let order = self.order(&es[0].expr, desc, &projection);
+                        let order = self.order(by_alias(&es[0].expr, &s.projection), desc, &projection);
                         self.ordering.set(false);
                         order?
                     };
@@ -1537,7 +1639,7 @@ impl<'a> Binder<'a> {
     /// The expression an ORDER BY key stands for: the selected column it
     /// names by position, or itself.
     fn ordered_expr<'e>(&self, e: &'e Expr, items: &'e [sql::SelectItem]) -> Result<&'e Expr> {
-        let Some(n) = literal_usize(e) else { return Ok(e) };
+        let Some(n) = literal_usize(e) else { return Ok(by_alias(e, items)) };
         match items.get(n.wrapping_sub(1)) {
             Some(sql::SelectItem::UnnamedExpr(Expr::Function(f))) if fname(f) == "features" => Err(err(format!("ORDER BY {n}: features() is not one column"))),
             Some(sql::SelectItem::UnnamedExpr(x) | sql::SelectItem::ExprWithAlias { expr: x, .. }) => Ok(x),
@@ -1926,6 +2028,7 @@ impl<'a> Binder<'a> {
                         };
                         let field = self.searched_field(field, "bm25")?;
                         let text = self.literal(text)?.as_str().ok_or_else(|| err("bm25 text must be a string"))?.to_string();
+                        check_opts("bm25", &opts, &[&BM25_OPTS, &FUSION_OPTS])?;
                         let mut opts = opts;
                         if !opts.contains_key("fuzzy") {
                             let key = text.trim().to_lowercase();
@@ -1970,14 +2073,21 @@ impl<'a> Binder<'a> {
                                 },
                             })
                             .collect::<Result<Vec<_>>>()?;
+                        check_opts("rrf", &opts, &[&RRF_OPTS])?;
                         let num = |k: &str, d: f64| opts.get(k).and_then(|v| v.as_f64()).unwrap_or(d);
-                        Ok(Score::Rrf { inputs, k: num("k", 60.0), depth: num("depth", 100.0) as usize })
+                        let (k, depth) = (num("k", 60.0), num("depth", 100.0) as usize);
+                        match opts.get("weights") {
+                            None => Ok(Score::Rrf { inputs, k, depth }),
+                            Some(w) => weighted_rrf(inputs, weights_of(w).unwrap_or_default(), k, depth),
+                        }
                     }
                     "ppr" => Ok(Score::Ppr { graph: self.graph(f, "ppr")? }),
                     "decay" => self.decay(f),
                     // The number of hops, in an expression.
                     "hops" if args.is_empty() => Ok(Score::Hops { graph: self.hops_graph()?, far_first: true }),
                     "seq_no" if args.is_empty() => Ok(Score::SeqNo),
+                    // These take no options: `check_opts` refuses any.
+                    "ranked" | "minmax" | "rank" | "zscore" if !opts.is_empty() => check_opts(&name, &opts, &[]).map(|()| Score::Num(0.0)),
                     "ranked" => match args.as_slice() {
                         [keys] => Ok(Score::Ranked { keys: self.ranked_keys(keys)? }),
                         _ => Err(err("ranked(keys) takes one argument: a list of primary keys, best first")),
@@ -2026,6 +2136,7 @@ impl<'a> Binder<'a> {
                     }
                     n => match Func::numeric(n) {
                         Some(func) => {
+                            check_opts(n, &opts, &[])?;
                             func.arity(args.len()).map_err(|a| err(format!("{n}() takes {a}")))?;
                             Ok(Score::Call { func, args: args.iter().map(|a| self.rank(a)).collect::<Result<_>>()? })
                         }
@@ -2094,10 +2205,12 @@ impl<'a> Binder<'a> {
                 xs => err(format!("{}: similarity ranks by {} of {}", e.to_string().trim_start_matches("query error: "), hint::listing(xs, 5), self.schema.table)),
             }
         })?;
+        let func = if distance { "distance" } else { "similarity" };
         if self.schema.fields[field].ty == FieldType::Sparse {
             if distance {
                 return Err(err("a SPARSE field takes similarity(...), not distance(...)"));
             }
+            check_opts(func, &opts, &[&SPARSE_OPTS, &FUSION_OPTS])?;
             let fld = &self.schema.fields[field];
             let terms = crate::text::sparse::parse(&self.literal(v)?).map_err(|e| match &fld.embed {
                 // Text for a field a model weighs: the model weighs it too.
@@ -2117,6 +2230,7 @@ impl<'a> Binder<'a> {
         if self.schema.fields[field].multi {
             return Err(err(multi_similarity(&self.schema.fields[field].name)));
         }
+        check_opts(func, &opts, &[&VECTOR_OPTS, &FUSION_OPTS])?;
         if let Some(e) = self.encode(v)? {
             if distance {
                 return Err(err("encode(..) ranks by similarity(field, encode(..)), larger first, not by distance"));
@@ -2166,6 +2280,7 @@ impl<'a> Binder<'a> {
         let [field, vs] = args else { return Err(err("maxsim(field, vectors)")) };
         let field = self.typed_field(field, |t| matches!(t, FieldType::Vector { .. }), "VECTOR")?;
         let FieldType::Vector { dim, .. } = self.schema.fields[field].ty else { unreachable!("a VECTOR field") };
+        check_opts("maxsim", &opts, &[&VECTOR_OPTS, &MAXSIM_OPTS, &FUSION_OPTS])?;
         for k in ["max_vectors", "depth", "candidates"] {
             if let Some(v) = opts.get(k) {
                 v.as_f64().filter(|x| *x >= 1.0 && x.fract() == 0.0).ok_or_else(|| err(format!("{k} => a whole number, at least 1")))?;
@@ -2224,6 +2339,7 @@ impl<'a> Binder<'a> {
     fn decay(&self, f: &sql::Function) -> Result<Score> {
         let (args, opts) = self.args(f)?;
         let usage = "decay(field, origin, scale, offset => .., decay => .., shape => 'exp' | 'gauss' | 'linear')";
+        check_opts("decay", &opts, &[&DECAY_OPTS, &FUSION_OPTS])?;
         let [field, origin, scale] = args.as_slice() else { return Err(err(usage)) };
         let field = self.numeric_field(field)?;
         if self.schema.fields[field].multi {
@@ -2552,7 +2668,7 @@ impl<'a> Binder<'a> {
                     from = x + 1;
                 }
                 gaps.push(int_range(f, from, i64::MAX as i128));
-                gaps.retain(|g| *g != Pred::False);
+                gaps.retain(|g| *g != Pred::False && !empty_int_range(g));
                 match gaps.len() {
                     0 => Pred::True,
                     1 => Pred::Not(Box::new(gaps.pop().expect("a range"))),
@@ -2704,7 +2820,14 @@ impl<'a> Binder<'a> {
         let (pos, named) = self.args_raw(f)?;
         let mut opts = Opts::new();
         for (k, e) in named {
-            opts.insert(k, self.literal(e)?);
+            // A list (`weights => [0.3, 0.7]`), which no other option takes:
+            // read as one, it is refused by name rather than as no value.
+            let v = match e {
+                Expr::Array(a) => Value::List(a.elem.iter().map(|x| self.literal(x)).collect::<Result<_>>()?),
+                Expr::Tuple(xs) => Value::List(xs.iter().map(|x| self.literal(x)).collect::<Result<_>>()?),
+                e => self.literal(e)?,
+            };
+            opts.insert(k, v);
         }
         Ok((pos, opts))
     }
@@ -3403,6 +3526,181 @@ fn without_norm(mut opts: Opts) -> Opts {
     opts
 }
 
+/// What a named option of a ranking function takes ([`check_opts`]).
+#[derive(Clone, Copy, Debug)]
+enum OptKind {
+    /// A number from the first to the second.
+    Num(f64, f64),
+    /// A whole number of at least this.
+    Whole(f64),
+    /// 0 or 1 (FALSE or TRUE).
+    Flag,
+    /// One of these words, written as here.
+    Word(&'static [&'static str]),
+    /// A list of numbers of at least 0 (`rrf`'s `weights`).
+    Weights,
+    /// Checked where it is read, with its own message.
+    Read,
+}
+
+/// The options any score takes as an input of a fusion
+/// ([`crate::query::rank`]): `depth` and `exact`, which a weighted sum, a
+/// set function or `rrf` reads from any of its inputs, and `norm =>
+/// 'none'`, which kept raw scores in a sum before ranking expressions and
+/// now changes nothing.
+const FUSION_OPTS: [(&str, OptKind); 3] = [("depth", OptKind::Whole(1.0)), ("exact", OptKind::Flag), ("norm", OptKind::Word(&["none"]))];
+
+/// `bm25`'s options. `fuzzy`, `synonyms`, `syntax`, `min`, the guard's
+/// `min_rows` and `max_rows`, expansion's and understanding's are checked
+/// where they are read.
+const BM25_OPTS: [(&str, OptKind); 17] = [
+    ("k1", OptKind::Num(0.0, f64::MAX)),
+    ("b", OptKind::Num(0.0, 1.0)),
+    ("algo", OptKind::Word(&["maxscore", "bmw", "wand", "exhaustive"])),
+    ("stopwords", OptKind::Flag),
+    ("fuzzy", OptKind::Read),
+    ("synonyms", OptKind::Read),
+    ("syntax", OptKind::Read),
+    ("min", OptKind::Read),
+    ("min_rows", OptKind::Read),
+    ("max_rows", OptKind::Read),
+    (crate::query::prf::EXPAND, OptKind::Read),
+    (crate::query::prf::EXPAND_TERMS, OptKind::Read),
+    (crate::query::prf::EXPAND_WEIGHT, OptKind::Read),
+    (crate::query::understand::UNDERSTAND, OptKind::Read),
+    (crate::query::understand::UNDERSTAND_FIELDS, OptKind::Read),
+    (crate::query::understand::UNDERSTAND_WEIGHT, OptKind::Read),
+    (crate::query::understand::UNDERSTAND_SHARE, OptKind::Read),
+];
+
+/// The search options of a vector field's `similarity`, `distance`, `dot`
+/// and `maxsim`.
+const VECTOR_OPTS: [(&str, OptKind); 4] = [
+    ("strategy", OptKind::Word(&["auto", "prefilter", "postfilter", "index", "ivf", "hnsw", "flat", "partition"])),
+    ("ef", OptKind::Whole(1.0)),
+    ("nprobe", OptKind::Whole(1.0)),
+    ("rerank", OptKind::Whole(0.0)),
+];
+
+/// `maxsim`'s own options, beside [`VECTOR_OPTS`].
+const MAXSIM_OPTS: [(&str, OptKind); 2] = [("max_vectors", OptKind::Whole(1.0)), ("candidates", OptKind::Whole(1.0))];
+
+/// A `SPARSE` field's `similarity`: its top-k algorithm, as `bm25`'s.
+const SPARSE_OPTS: [(&str, OptKind); 1] = [("algo", OptKind::Word(&["maxscore", "bmw", "wand", "exhaustive"]))];
+
+/// `decay`'s options, which it checks itself.
+const DECAY_OPTS: [(&str, OptKind); 3] = [("offset", OptKind::Read), ("decay", OptKind::Read), ("shape", OptKind::Read)];
+
+/// `rrf`'s options.
+const RRF_OPTS: [(&str, OptKind); 3] = [("k", OptKind::Num(0.0, f64::MAX)), ("depth", OptKind::Whole(1.0)), ("weights", OptKind::Weights)];
+
+/// Refuses an option `func` does not take, naming the ones it does, and a
+/// value of the wrong kind: an option no code reads, or one read as a
+/// number that is text, would otherwise change nothing without a word
+/// (`bm25(body, 'x', bogus => 7)`, `similarity(emb, :v, ef => 'x')`).
+/// `sets` are the lists of options it takes.
+fn check_opts(func: &str, opts: &Opts, sets: &[&[(&str, OptKind)]]) -> Result<()> {
+    let known = || sets.iter().flat_map(|s| s.iter().map(|(n, _)| *n));
+    for (k, v) in opts {
+        let Some(kind) = sets.iter().flat_map(|s| s.iter()).find(|(n, _)| n == k).map(|(_, kind)| *kind) else {
+            let names: Vec<&str> = known().collect();
+            return Err(err(match names.as_slice() {
+                [] => format!("{func} takes no options, and {k} => {} was given", hint::sql_value(v)),
+                _ => format!("unknown option {k} for {func}{}: {}", hint::did_you_mean(k, names.iter().copied()), names.join(", ")),
+            }));
+        };
+        let what = match kind {
+            OptKind::Read => continue,
+            OptKind::Num(lo, hi) => match v.as_f64() {
+                Some(x) if x.is_finite() && (lo..=hi).contains(&x) => continue,
+                _ if hi == f64::MAX => format!("a number of at least {lo}"),
+                _ => format!("a number from {lo} to {hi}"),
+            },
+            // A large one is cut to what there is where it is used, as a
+            // LIMIT is.
+            OptKind::Whole(lo) => match v.as_f64() {
+                Some(x) if x.fract() == 0.0 && x >= lo => continue,
+                _ => format!("a whole number of at least {lo}"),
+            },
+            OptKind::Flag => match v.as_i64() {
+                Some(0 | 1) => continue,
+                _ => "0 or 1".to_string(),
+            },
+            OptKind::Word(words) => match v.as_str() {
+                Some(s) if words.contains(&s) => continue,
+                _ => one_of(words),
+            },
+            OptKind::Weights => match weights_of(v) {
+                Some(_) => continue,
+                None => "a list of numbers of at least 0, one per ranking ([0.3, 0.7])".to_string(),
+            },
+        };
+        return Err(err(format!("{func}'s {k} is {what}, not {}", hint::sql_value(v))));
+    }
+    Ok(())
+}
+
+/// An ORDER BY key that names a selected column by its alias (`SELECT id,
+/// bm25(name, 'sofa') AS score ... ORDER BY score DESC`): that column's
+/// expression, as Postgres reads an output column's name before an input
+/// column's (and as [`super::compound::ranks_rows`] does). Any other key
+/// is itself.
+fn by_alias<'e>(e: &'e Expr, items: &'e [sql::SelectItem]) -> &'e Expr {
+    let Expr::Identifier(id) = e else { return e };
+    items
+        .iter()
+        .find_map(|i| match i {
+            sql::SelectItem::ExprWithAlias { expr, alias } if alias.value.eq_ignore_ascii_case(&id.value) => Some(expr),
+            _ => None,
+        })
+        .unwrap_or(e)
+}
+
+/// `rrf(s1, s2, ..., weights => [w1, w2, ...])`, weighted reciprocal rank
+/// fusion: each row scores the sum of `w_i / (k + rank_i)` over the
+/// rankings it is in, as the sum of each ranking's own `rrf` weighed by
+/// its weight. Weights of 1 are `rrf` itself; any others are written to a
+/// plan as that sum of `rrf`s of one ranking each, which needs nothing new
+/// of a plan or a shard.
+fn weighted_rrf(inputs: Vec<Score>, weights: Vec<f64>, k: f64, depth: usize) -> Result<Score> {
+    if weights.len() != inputs.len() {
+        let n = weights.len();
+        return Err(err(format!("rrf's weights are one per ranking: {} rankings and {n} weight{}", inputs.len(), if n == 1 { "" } else { "s" })));
+    }
+    if weights.iter().all(|w| *w == 0.0) {
+        return Err(err("rrf's weights are all 0, which ranks no row above another: give one ranking a weight above 0"));
+    }
+    if weights.iter().all(|w| *w == 1.0) {
+        return Ok(Score::Rrf { inputs, k, depth });
+    }
+    let mut terms = inputs.into_iter().zip(weights).map(|(s, w)| Score::Arith { op: ArithOp::Mul, left: Box::new(Score::Num(w)), right: Box::new(Score::Rrf { inputs: vec![s], k, depth }) });
+    let first = terms.next().expect("rrf has two rankings at least");
+    Ok(terms.fold(first, |acc, t| Score::Arith { op: ArithOp::Add, left: Box::new(acc), right: Box::new(t) }))
+}
+
+/// `'a', 'b' or 'c'`.
+fn one_of(words: &[&str]) -> String {
+    let quoted: Vec<String> = words.iter().map(|w| format!("'{w}'")).collect();
+    match quoted.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    }
+}
+
+/// The numbers of `rrf`'s `weights => [...]` (an array, a tuple, a
+/// parameter holding a list, or a JSON array as text), each finite and at
+/// least 0.
+fn weights_of(v: &Value) -> Option<Vec<f64>> {
+    let xs: Vec<f64> = match v {
+        Value::List(xs) => xs.iter().map(Value::as_f64).collect::<Option<_>>()?,
+        Value::Vector(xs) => xs.iter().map(|x| *x as f64).collect(),
+        Value::Str(s) => serde_json::from_str::<Vec<f64>>(s).ok()?,
+        _ => return None,
+    };
+    xs.iter().all(|x| x.is_finite() && *x >= 0.0).then_some(xs)
+}
+
 /// `e` without the parentheses around it.
 fn strip_nested(e: &Expr) -> &Expr {
     match e {
@@ -3601,13 +3899,23 @@ pub(crate) fn floor(v: &Value) -> i128 {
     }
 }
 
-/// INT field `f` within `[lo, hi]`, cut to the 64-bit range.
+/// INT field `f` within `[lo, hi]`, cut to the 64-bit range. A range no
+/// integer is in (`n = 1.5`, `n > 1e30`) is still a test of the field,
+/// `[1, 0]`, not FALSE: it is FALSE of a row with a value and UNKNOWN of a
+/// row without one, so that its NOT (`n != 1.5`) keeps the rows with a
+/// value and leaves out the others, as SQL's three-valued logic does
+/// (persona study SAM-6, audit ENG-Q4).
 pub(crate) fn int_range(f: usize, lo: i128, hi: i128) -> Pred {
     let (lo, hi) = (lo.max(i64::MIN as i128), hi.min(i64::MAX as i128));
     if lo > hi {
-        return Pred::False;
+        return Pred::IntRange { field: f, lo: 1, hi: 0 };
     }
     Pred::IntRange { field: f, lo: lo as i64, hi: hi as i64 }
+}
+
+/// Whether `p` is a range [`int_range`] made that no integer is in.
+pub(crate) fn empty_int_range(p: &Pred) -> bool {
+    matches!(p, Pred::IntRange { lo, hi, .. } if lo > hi)
 }
 
 pub(crate) fn next_up(x: f64) -> f64 {

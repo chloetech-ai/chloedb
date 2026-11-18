@@ -436,11 +436,34 @@ pub fn ranked_items(text: &str) -> Vec<Item<'_>> {
     out
 }
 
-/// Whether a ranked query uses an operator ([`ranked_items`]): a sign or
-/// a weight, which a Strata from before them reads as plain words. Quotes
-/// alone do not count: a phrase's words score as the words do.
+/// Whether a ranked query uses an operator ([`ranked_items`]): a sign, a
+/// weight, a prefix (`sof*`) or a typo-tolerant word (`lether~`), which a
+/// Strata from before them reads as plain words. Quotes alone do not
+/// count: a phrase's words score as the words do.
 pub fn has_operators(text: &str) -> bool {
-    ranked_items(text).iter().any(|i| i.occur != Occur::Should || i.weight.is_some())
+    ranked_items(text).iter().any(|i| i.occur != Occur::Should || i.weight.is_some() || (!i.phrase && word_shape(i.text).is_some()))
+}
+
+/// What a word of a ranked (`bm25`) query stands for beyond its own terms,
+/// as `MATCH` reads the same word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WordShape<'a> {
+    /// `sof*`: the indexed terms that start with the word before the `*`.
+    Prefix(&'a str),
+    /// `lether~` or `lether~1`: the word, and the indexed terms within that
+    /// many edits of its terms (`None`: by length, [`auto_edits`]).
+    Typo(&'a str, Option<u8>),
+}
+
+/// The [`WordShape`] of a word of a ranked query, `None` for a plain word.
+/// A `*` alone, or after something other than a letter or a digit
+/// (`c++*`), is no prefix, as in `MATCH`; neither is `~` with more than 2
+/// edits.
+pub fn word_shape(w: &str) -> Option<WordShape<'_>> {
+    if let Some(stem) = w.strip_suffix('*') {
+        return stem.chars().next_back().is_some_and(char::is_alphanumeric).then_some(WordShape::Prefix(stem));
+    }
+    fuzzy_suffix(w).map(|(word, edits)| WordShape::Typo(word, edits))
 }
 
 struct Parser {

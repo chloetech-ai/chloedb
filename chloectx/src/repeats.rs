@@ -144,9 +144,13 @@ fn users_draft(d: &Draft) -> bool {
 
 /// The user's earlier requests and instructions most like `request`, in
 /// this session or any other, for [`check`] to judge which it says again:
-/// the user's prompts (but this turn's, `session` and `turn`), notes for
-/// one task and rules, by each of the vectors and BM25.
-pub fn said_before(store: &Store, request: &str, session: &str, turn: i64) -> Result<Vec<Record>> {
+/// the user's prompts, notes for one task and rules, by each of the
+/// vectors and BM25. Earlier means before the turn (`session`, `turn`):
+/// nothing of the turn itself (its prompt, the preference picked from its
+/// words, the notes an earlier distillation of it wrote: ANA-1, a rule said
+/// once counted "2 times"), nor anything stored after its first record
+/// (`from_seq`, when a turn is distilled again later).
+pub fn said_before(store: &Store, request: &str, session: &str, turn: i64, from_seq: i64) -> Result<Vec<Record>> {
     let q: String = request.chars().take(1500).collect();
     if terms(&q).is_empty() {
         return Ok(Vec::new());
@@ -170,8 +174,11 @@ pub fn said_before(store: &Store, request: &str, session: &str, turn: i64) -> Re
                 if taken == n {
                     break;
                 }
-                // Not this turn's own prompt, and one chunk of a prompt.
-                if r.kind == Kind::Prompt && ((r.session == session && r.turn == turn) || !turns.insert((r.session.clone(), r.turn))) {
+                // Nothing of this turn or after it, and one chunk of a prompt.
+                // The same request sent again word for word (a scripted
+                // run, a question asked once more) is not a correction
+                // (JONAH-10: "reply with just the word OK" became a rule).
+                if (r.session == session && r.turn == turn) || r.seq >= from_seq || (r.kind == Kind::Prompt && (!turns.insert((r.session.clone(), r.turn)) || plain(&r.text) == plain(&q))) {
                     continue;
                 }
                 taken += 1;
@@ -231,7 +238,7 @@ const CHECK: &str = r#"A user works with AI coding agents. Below are things the 
 
 Say which of said_before the request says again. The request says one again when the user has to ask again for what they asked before: the same thing in any words, shorter, longer or more specific, or a complaint or question that the agent still has not done it or did the opposite ("why does it still say Strata?", "these still look bad", "I told you to build it from the SQL"). An earlier saying can be a complaint or a question too: it counts when the request asks for the same thing.
 
-The request does not say one again when it only shares a subject or words with it, asks for something else about the same thing, asks for the opposite or changes its mind, or answers the agent's question. Judge the request's own words only: something in said_before or in previous_reply that the request does not ask for again is not said again.
+Words the user puts on each request the same way (a format pasted onto every task, such as "reply with the code only; do not edit any files") are part of each task, not said again. The request does not say one again when it only shares a subject or words with it, asks for something else about the same thing, asks for the opposite or changes its mind, or answers the agent's question. Judge the request's own words only: something in said_before or in previous_reply that the request does not ask for again is not said again.
 
 For each thing the request says again, give:
 - "ids": the ids of the earlier sayings it says again (each one that asks for the same thing);
@@ -309,6 +316,21 @@ pub fn parse_check(text: &str, request: &str, said: &[(String, String)]) -> (Vec
     (kept, dropped)
 }
 
+/// Words of the request pasted again: a quote of six words or more that
+/// each earlier prompt it names holds word for word, as a format put on
+/// every task does (ANA-6: "reply with the code only; do not create or
+/// edit any files", on each prompt, became a rule "said in 9 sessions").
+/// A correction is said in other words, or as a complaint.
+pub fn pasted(a: &Again, before: &[Record]) -> bool {
+    let q = plain(&a.quote);
+    let q = q.trim_matches(|c: char| !c.is_alphanumeric());
+    if q.split_whitespace().count() < 6 {
+        return false;
+    }
+    let said: Vec<&Record> = a.ids.iter().filter_map(|id| before.iter().find(|r| &r.id == id)).collect();
+    !said.is_empty() && said.iter().all(|r| r.kind == Kind::Prompt && plain(&r.text).contains(q))
+}
+
 /// What a check found, kept and dropped, and what it cost.
 #[derive(Debug, Default)]
 pub struct Checked {
@@ -349,7 +371,7 @@ pub fn promote(drafts: Vec<Draft>, again: &[Again], session: &str, shown: &HashS
     let mut out = Promoted::default();
     let mut drafts: Vec<Option<Draft>> = drafts.into_iter().map(Some).collect();
     let mut used: HashSet<&str> = HashSet::new();
-    for a in again {
+    for a in again.iter().filter(|a| !pasted(a, before)) {
         let said: Vec<&Record> = a.ids.iter().filter(|id| used.insert(id.as_str())).filter_map(|id| before.iter().find(|r| &r.id == id)).collect();
         if said.is_empty() || a.rule.trim().is_empty() {
             continue;
@@ -608,7 +630,7 @@ mod tests {
         s.append("s2", 5, 160, vec![Draft::new(Kind::Prompt, "ok")]).unwrap();
         // This turn's own prompt is stored before it is distilled.
         s.append("s3", 1, 200, vec![Draft::new(Kind::Prompt, "Build the shop from the CREATE statements, please")]).unwrap();
-        let before = said_before(&s, "Build the shop from the CREATE statements, please", "s3", 1).unwrap();
+        let before = said_before(&s, "Build the shop from the CREATE statements, please", "s3", 1, i64::MAX).unwrap();
         let texts: Vec<&str> = before.iter().map(|r| instruction(&r.text)).collect();
         assert_eq!(
             texts,
@@ -620,6 +642,51 @@ mod tests {
         assert!(l[1].1.contains("another session, a rule of the user's: Always") && l[2].1.contains("another session, the user asked: why"), "{l:?}");
         let p = check_prompt("Build it from the CREATE statements!", "I built it from a JSON file.", &l);
         assert!(p.contains(&format!("[{}] 1970-01-01, this session", before[0].id)) && p.contains("<previous_reply>\nI built it from a JSON file.") && p.contains("<request>\nBuild it from the CREATE statements!"), "{p}");
+    }
+
+    /// ANA-1: a rule said once, in one turn, was counted "said 2 times":
+    /// the preference picked from the prompt's own words, and the notes an
+    /// earlier distillation of the turn wrote, were shown to the check as
+    /// earlier sayings. Nothing of the turn, nor anything stored after it
+    /// (a turn distilled again later), is an earlier saying.
+    #[test]
+    fn nothing_of_the_turn_itself_or_after_it_was_said_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let said = "From now on always run ruff check before you tell me you are done.";
+        let first = s
+            .append("s1", 3, 100, vec![Draft::new(Kind::Prompt, said), Draft::new(Kind::Preference, format!("User preference: {said}")).tag("cue")])
+            .unwrap()[0]
+            .seq;
+        // An earlier distillation of the same turn, and a later turn's.
+        s.append("s1", 3, 101, vec![Draft::new(Kind::Preference, "Always run ruff check before saying the work is done.").tag("distilled").by(&Source::User)]).unwrap();
+        s.append("s1", 4, 120, vec![Draft::new(Kind::Prompt, "remember: run ruff check before you say you are done")]).unwrap();
+        assert!(said_before(&s, said, "s1", 3, first).unwrap().is_empty());
+        // Live, the turn's first record is the newest of the store's turns:
+        // the same turn is still left out by its session and number.
+        let ids: Vec<i64> = said_before(&s, said, "s1", 3, i64::MAX).unwrap().iter().map(|r| r.turn).collect();
+        assert_eq!(ids, [4], "only another turn's saying");
+    }
+
+    /// JONAH-10 and ANA-6: the same request sent again word for word, and
+    /// a format pasted onto each task, are not said again.
+    #[test]
+    fn a_request_sent_again_or_a_pasted_format_is_not_said_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        s.append("s1", 1, 100, vec![Draft::new(Kind::Prompt, "Reply with just the word OK.")]).unwrap();
+        let fmt = "Add an invoice total. Reply with the code only; do not create or edit any files.";
+        let p = s.append("s2", 1, 110, vec![Draft::new(Kind::Prompt, fmt)]).unwrap().remove(0);
+        assert!(said_before(&s, "Reply with just the word OK.", "s3", 1, i64::MAX).unwrap().iter().all(|r| !r.text.contains("word OK")));
+        let request = "Round VAT per invoice line. Reply with the code only; do not create or edit any files.";
+        let before = said_before(&s, request, "s3", 1, i64::MAX).unwrap();
+        assert!(before.iter().any(|r| r.id == p.id), "a different request is shown");
+        let a = Again { ids: vec![p.id.clone()], quote: "Reply with the code only; do not create or edit any files".into(), rule: "Reply with code only and never edit files.".into() };
+        assert!(pasted(&a, &before));
+        assert!(promote(Vec::new(), &[a.clone()], "s3", &HashSet::new(), &before).drafts.is_empty(), "no rule");
+        // Said in other words, or short: a correction.
+        assert!(!pasted(&Again { quote: "only the code, please, and leave the files alone".into(), ..a.clone() }, &before));
+        assert!(!pasted(&Again { quote: "do not edit any files".into(), ..a }, &before));
     }
 
     #[test]

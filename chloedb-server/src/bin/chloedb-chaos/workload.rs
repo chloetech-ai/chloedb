@@ -327,7 +327,7 @@ impl Workload {
     /// while that is safe: `Some(true)` acknowledged, `Some(false)` may
     /// have applied, `None` surely not applied.
     async fn add_one(&self, kind: &'static str, client: &str, key: &str, idem: &str) -> Option<bool> {
-        let body = json!({"ops": [{"op": "add", "field": "sold", "value": 1, "doc": {"id": key, "title": format!("chaos counter {key}")}}], "idempotency_key": idem, "timeout_ms": 5000});
+        let body = json!({"ops": [{"op": "add", "field": "sold", "value": 1, "doc": {"id": key, "title": format!("chaos counter {key}")}}], "idempotency_key": idem});
         let first = Instant::now();
         let mut maybe = false;
         loop {

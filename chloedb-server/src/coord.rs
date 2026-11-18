@@ -331,6 +331,10 @@ impl tonic::service::Interceptor for Credentials {
         if let Some(f) = crate::service::following().and_then(|f| f.parse().ok()) {
             req.metadata_mut().insert(crate::service::FOLLOW_HEADER, f);
         }
+        // And a Postgres follower's, as its: the tables it follows are its.
+        if let Some(f) = crate::service::postgres_follower().and_then(|f| f.parse().ok()) {
+            req.metadata_mut().insert(crate::service::POSTGRES_FOLLOWER_HEADER, f);
+        }
         // workdata (L7): the shard's part runs to the client's own deadline.
         if crate::service::client_deadline().is_some() {
             req.metadata_mut().insert(crate::service::CLIENT_DEADLINE, tonic::metadata::MetadataValue::from_static("client"));
@@ -3073,9 +3077,12 @@ impl Coordinator {
                     _ => self.write_ops(ops, key).await,
                 }
             }
-            // Each shard would take its own LIMIT rows: the service picks
-            // the rows first ([`crate::service::Service::sql_in`]).
-            Write::Update { select, .. } | Write::Delete { select } if select.limit.is_some() => Err(ApiError::bad("UPDATE ... LIMIT and DELETE ... LIMIT through a coordinator pick their rows first: send the statement to /v1/sql")),
+            // Each shard would take its own LIMIT rows, or answer a subquery
+            // from its own rows: the service picks the rows first
+            // ([`crate::service::Service::sql_in`]).
+            w @ (Write::Update { .. } | Write::Delete { .. }) if w.picks_first() => {
+                Err(ApiError::bad("UPDATE and DELETE with a LIMIT, or with a subquery in WHERE, through a coordinator pick their rows first: send the statement to /v1/sql"))
+            }
             _ => self.statement(sql, params, Some(key.unwrap_or_else(auto_key))).await,
         }
     }
@@ -4212,7 +4219,7 @@ impl Coordinator {
         let mut shards = Vec::new();
         let (mut docs, mut segments, mut all_up, mut every_shard) = (0, 0, true, true);
         // LIV-13: the rows of every table, summed over the shards from the
-        // health each copy sends (`docs` counts the first table only); none
+        // health each copy sends (`docs` counts the default table only); none
         // when a shard does not say (an older server).
         let mut tables: Option<serde_json::Map<String, Json>> = Some(Default::default());
         for (i, answers) in join_all(calls).await.into_iter().enumerate() {
