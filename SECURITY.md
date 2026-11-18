@@ -28,7 +28,7 @@ The parts this repository ships:
 
 ## What is supported
 
-The latest release, 0.3.7 (16 November 2026), and `main`. Each release is
+The latest release, 0.3.8 (18 November 2026), and `main`. Each release is
 tagged per package: `chloedb-server-v<version>` (the server, with
 `chloectx`, `chloedb-crawl`, `chloedb-sheets` and `chloedb-netops`
 attached prebuilt),
@@ -71,7 +71,7 @@ operator: the network, the disks and the files the servers write.
   `--bundle chloedb-server-linux-x86_64.tar.gz.sigstore.jsonl` to check it
   from that file without signing in. The website's installer
   (`docs/install.sh`), the repository's `install.sh` and ChloeCtx's
-  plugin check the SHA-256 always, and from 0.3.9 the provenance too
+  plugin check the SHA-256 always, and from 0.3.8 the provenance too
   where `gh` is installed: an archive whose provenance does not verify is
   not installed, even when its `.sha256` matches. Without `gh` they say so
   and install on the SHA-256; `CHLOEDB_VERIFY=require` (the plugin: `CHLOECTX_VERIFY`)
@@ -85,7 +85,15 @@ operator: the network, the disks and the files the servers write.
   `.cdx.json` to check that file. `SHA256SUMS` lists every file of the
   release.
 - **Python and JavaScript releases** on GitHub attach a `SHA256SUMS` of
-  their wheels and tarballs.
+  their wheels and tarballs. From 0.3.9 the JavaScript release also
+  carries the packages npm serves, byte for byte and under the names
+  `npm pack` gives them, and its `SHA256SUMS` lists them, so a package
+  from npm can be checked against the release:
+
+  ```bash
+  npm pack chloedb@0.3.9 @chloedb/linux-x64-gnu@0.3.9
+  sha256sum -c --ignore-missing SHA256SUMS    # the release's SHA256SUMS
+  ```
 - **PyPI**: the `chloedb` and `chloedb-server` packages are published from
   this repository's workflows by trusted publishing, with attestations
   that name the workflow that built them. Check a downloaded wheel with
@@ -100,13 +108,18 @@ operator: the network, the disks and the files the servers write.
   (the file `pip download` saved; `chloedb-server` the same way). From
   0.3.8 every wheel carries the licence in its `dist-info/licenses`, and
   `chloedb-server`'s the third-party notices too.
-- **npm**: the packages carry the registry's signatures
-  (`npm audit signatures`).
+- **npm**: the packages carry the registry's signatures, and from 0.3.9
+  npm's provenance too: a statement, signed with Sigstore and logged in
+  its transparency log, that this repository's `js-release.yml` published
+  the package from the release's tag (`chloedb` and each
+  `@chloedb/<platform>`). `npm audit signatures`, in a project that
+  installed them, checks both ("verified registry signatures", "verified
+  attestations"), and npm's page of a version links its provenance.
+  0.3.5 to 0.3.8 have the registry's signatures alone.
 
-Releases before 0.3.8 have no build provenance and no SBOM: their
-archives are checked by their `.sha256` alone. The installers check
-0.3.8's archives by their `.sha256` too, and its provenance with
-`gh attestation verify` as above.
+Releases before 0.3.8 have no build provenance and no SBOM: the
+installers check their archives by their `.sha256` alone, and
+`CHLOEDB_VERIFY=require` (`CHLOECTX_VERIFY=require`) refuses them.
 
 ## What counts as a vulnerability
 

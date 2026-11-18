@@ -36,7 +36,7 @@
 # (laid out as <url>/chloedb-server-v<version>/chloectx-<platform>.tar.gz).
 # Where GitHub's CLI is installed (gh, a version with `gh attestation verify
 # --source-ref`), the download is also checked against its build provenance
-# (releases from 0.3.9): GitHub's attestation, in the Sigstore bundle beside
+# (releases from 0.3.8): GitHub's attestation, in the Sigstore bundle beside
 # the archive, that this repository's server-release.yml built it from the
 # release's tag. One that does not verify is not installed (and is built
 # instead, when it can be). CHLOEDB_VERIFY=require fails without gh,
@@ -152,7 +152,7 @@ sha256() {
 }
 
 # The first release whose archives have build provenance beside them.
-ATTESTED_FROM=0.3.9
+ATTESTED_FROM=0.3.8
 VERIFY="${CHLOEDB_VERIFY:-auto}"
 case "$VERIFY" in auto|require|off) ;; *) die "CHLOEDB_VERIFY is auto, require or off, not $VERIFY" ;; esac
 
