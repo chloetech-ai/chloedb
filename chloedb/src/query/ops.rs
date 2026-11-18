@@ -114,7 +114,7 @@ pub fn run(plan: &Plan, schema: &Schema, runner: &mut Runner, opts: &ExecOptions
 
 /// [`run`] of a plan whose leaves read any tables of `catalog`.
 pub fn run_in(plan: &Plan, catalog: &[&Schema], runner: &mut Runner, opts: &ExecOptions) -> Result<ResultSet> {
-    let mut ops = Ops { catalog, runner, opts, charge: Charge::new(opts.memory.clone()), steps: 0, ctes: Vec::new(), driver: None, per: None, plan: Vec::new(), encoded: Vec::new(), clock: Clock::new(opts.profile), prof: Vec::new(), dropped: 0, filter_docs: 0, scored: 0 };
+    let mut ops = Ops { catalog, runner, opts, charge: Charge::new(opts.memory.clone()), steps: 0, ctes: Vec::new(), driver: None, per: None, semi: Vec::new(), plan: Vec::new(), encoded: Vec::new(), clock: Clock::new(opts.profile), prof: Vec::new(), dropped: 0, filter_docs: 0, scored: 0 };
     let rows = ops.node(&plan.root, "query")?;
     let keys = rows.keys.filter(|k| k.iter().all(|k| !matches!(k, Value::Null)));
     Ok(ResultSet {
@@ -167,6 +167,9 @@ struct Ops<'a, 'r> {
     /// The cap a `MAX k PER` right above the driven scan puts on its rows,
     /// which the scan may keep itself ([`super::ir::Search::per`]).
     per: Option<(*const Node, super::ir::PerCap)>,
+    /// The conditions joins read first put on scans of their left sides
+    /// ([`semi_target`]): the scan, the condition, and its values.
+    semi: Vec<(*const Node, Expr, usize)>,
     plan: Vec<String>,
     /// The vectors of the `encode(..)`s run so far, with the `WITH`
     /// results in scope then: a column and the ORDER BY that names it
@@ -438,6 +441,7 @@ impl<'a> Ops<'a, '_> {
         // as SQL reads it, not as an error.
         unknown(&mut leaf, &self.catalog);
         let mut restricted = 0;
+        let restrict: Vec<(Expr, usize)> = self.semi.iter().filter(|(p, ..)| std::ptr::eq(*p, n)).map(|(_, c, k)| (c.clone(), *k)).chain(restrict).collect();
         if !restrict.is_empty() {
             let s = leaf.search_mut().expect("a leaf");
             let mut conds: Vec<Expr> = restrict.into_iter().map(|(c, n)| {
@@ -1159,7 +1163,10 @@ impl<'a> Ops<'a, '_> {
 
     fn join(&mut self, n: &Node) -> Result<Rows> {
         let Node::Join { left, right, kind, keys, on } = n else { unreachable!("a join") };
-        let l = self.node(left, "scan")?;
+        let mark = self.semi.len();
+        let ran = self.semi(left, right, *kind, keys).and_then(|whole| Ok((whole, self.node(left, "scan")?)));
+        self.semi.truncate(mark);
+        let (whole, l) = ran?;
         if l.rows.len() > MAX_ROWS {
             return Err(err(format!("a table of the join would read more than {MAX_ROWS} rows; add conditions on it")));
         }
@@ -1184,7 +1191,9 @@ impl<'a> Ops<'a, '_> {
         let full = *kind == JoinKind::Full;
         // A full join reads the whole right side: its rows that match no
         // left row are part of the answer.
-        let r = if full {
+        let r = if let Some(r) = whole {
+            r
+        } else if full {
             self.node(right, "join")?
         } else if lefts.iter().any(|v| v.is_empty()) {
             Rows { columns: self.columns(right), ..Rows::default() }
@@ -1405,6 +1414,61 @@ impl<'a> Ops<'a, '_> {
         }
         self.plan.push(format!("join (as-of): {} rows, {found} matched", out.rows.len()));
         Ok(out)
+    }
+
+    /// A join's right side read first, whole, when it restricts a scan of
+    /// its left side ([`semi_target`]): it counts at most [`SEMI_MAX`]
+    /// rows and the scan [`SEMI_RATIO`] times as many. The scan is then
+    /// restricted to the right rows' key values (until the left side has
+    /// run, [`Ops::join`]) when that at least halves its rows. As
+    /// DataFusion's lowering does, so that their leaves' plans agree.
+    fn semi(&mut self, left: &Node, right: &Node, kind: JoinKind, keys: &[JoinKey]) -> Result<Option<Rows>> {
+        let Some((t, f, j)) = semi_target(left, right, kind, keys, self.catalog) else { return Ok(None) };
+        if self.per.is_some_and(|(p, _)| std::ptr::eq(p, t)) {
+            return Ok(None);
+        }
+        let Some(nr) = self.count(right)?.filter(|&n| n > 0 && n <= SEMI_MAX) else { return Ok(None) };
+        let Some(nt) = self.count(t)?.filter(|&n| n > nr.saturating_mul(SEMI_RATIO)) else { return Ok(None) };
+        let r = self.leaf(right, "join", Vec::new())?;
+        let mut seen = HashSet::new();
+        let mut vals = Vec::new();
+        for row in &r.rows {
+            match row.get(j) {
+                None | Some(Value::Null) => {}
+                Some(v) => {
+                    if seen.insert(part(v)) {
+                        vals.push(v.clone());
+                    }
+                }
+            }
+        }
+        let vals = equal_to(Some(self.table(t)?), Some(f as usize), vals)?;
+        if !vals.is_empty() {
+            let n = vals.len();
+            let c = Expr::In { expr: Box::new(Expr::Field(f)), list: vals.into_iter().map(Expr::Lit).collect() };
+            if self.count(&with_condition(t, c.clone()))?.is_some_and(|k| k.saturating_mul(2) <= nt) {
+                self.semi.push((t as *const Node, c, n));
+            }
+        }
+        Ok(Some(r))
+    }
+
+    /// How many rows the leaf `n`'s Search gives ([`count_plan`]), `None`
+    /// if the executor does not count it.
+    fn count(&mut self, n: &Node) -> Result<Option<u64>> {
+        self.opts.check()?;
+        let schema = self.table(n)?;
+        let mut leaf = n.clone();
+        leaf.leaf_exprs_mut(&mut |e| e.visit_mut(&mut |x| self.resolve(x, Some(schema))))?;
+        unknown(&mut leaf, &self.catalog);
+        let Some(s) = leaf.search() else { return Ok(None) };
+        let plan = count_plan(s);
+        let n = match (self.runner)(&plan) {
+            Ok(rs) => rs.rows.first().and_then(|r| r.first()).and_then(Value::as_i64).map(|n| n.max(0) as u64),
+            Err(_) => None,
+        };
+        self.opts.check()?;
+        Ok(n)
     }
 
     /// The condition restricting a joined leaf to the left's join values
@@ -1691,6 +1755,125 @@ pub(crate) fn output(e: &Expr) -> Result<usize> {
         Expr::Output(i) => Ok(*i as usize),
         e => Err(err(format!("a join key's right side is a column of the right rows, not {e:?}"))),
     }
+}
+
+/// The most rows a join's right side reads, by its count, to be read
+/// first and restrict a scan of its left side ([`semi_target`]): what a
+/// restriction of the right side by the left's values takes in any case
+/// ([`crate::query::df`]'s `RESTRICT_ALWAYS`).
+pub(crate) const SEMI_MAX: u64 = 1024;
+
+/// A scan restricted by a join's right side reads at least this many
+/// times the right side's rows ([`semi_target`]): a value costs the
+/// restricted scan about what reading tens of rows does.
+pub(crate) const SEMI_RATIO: u64 = 32;
+
+/// The scan of an inner join's left side that the join's right side can
+/// restrict, read first: the join has one key, a field of a plain right
+/// leaf ([`plain_leaf`]) that filters its rows, and the key's left side is
+/// a column the left side takes from a field of that scan, through the
+/// left sides of inner and left joins and filters, an indexed field of the
+/// same plain type (INT, FLOAT or KEYWORD, one value a row). Rows of the
+/// scan whose field holds none of the right rows' keys join no right row,
+/// and no row above them in the left side keeps them but through the
+/// join, so the restriction drops only rows the join drops. Gives the
+/// scan, its field, and the right side's key column; both engines run the
+/// same choice ([`Ops::semi`]), so that the plans of their leaves agree.
+pub(crate) fn semi_target<'n>(left: &'n Node, right: &Node, kind: JoinKind, keys: &[JoinKey], catalog: &[&Schema]) -> Option<(&'n Node, u32, usize)> {
+    if kind != JoinKind::Inner || keys.len() != 1 || !plain_leaf(right) {
+        return None;
+    }
+    let k = &keys[0];
+    if k.left_links || k.right_links || matches!(right.search()?.filter, Expr::Lit(Value::Bool(true))) {
+        return None;
+    }
+    let j = output(&k.right).ok()?;
+    let Expr::Output(c) = k.left else { return None };
+    let (t, tc) = key_leaf(left, c as usize)?;
+    if !plain_leaf(t) {
+        return None;
+    }
+    let (ft, a) = key_field(t, tc, catalog)?;
+    let (_, b) = key_field(right, j, catalog)?;
+    let simple = |x: &crate::schema::Field| !x.multi && x.logical.is_none() && matches!(x.ty, FieldType::Int | FieldType::Float | FieldType::Keyword);
+    (simple(a) && simple(b) && a.ty == b.ty && a.indexed).then_some((t, ft, j))
+}
+
+/// The field a leaf's column `col` reads, and its table's definition of it.
+fn key_field<'s>(leaf: &Node, col: usize, catalog: &[&'s Schema]) -> Option<(u32, &'s crate::schema::Field)> {
+    let Node::Project { columns, .. } = leaf else { return None };
+    let Expr::Field(f) = columns.get(col)?.expr else { return None };
+    let table = &leaf.search()?.table;
+    let s: &'s Schema = catalog.iter().find(|s| s.table.eq_ignore_ascii_case(table))?;
+    Some((f, s.fields.get(f as usize)?))
+}
+
+/// The leaf whose column `c` of `n`'s rows is, through the left sides of
+/// inner and left joins and filters, and its column there.
+fn key_leaf(n: &Node, c: usize) -> Option<(&Node, usize)> {
+    if n.is_leaf() {
+        return Some((n, c));
+    }
+    match n {
+        Node::Join { left, kind: JoinKind::Inner | JoinKind::Left, .. } if c < width(left)? => key_leaf(left, c),
+        Node::Filter { input, .. } => key_leaf(input, c),
+        _ => None,
+    }
+}
+
+/// How many columns the rows of a leaf, or of joins and filters of
+/// leaves, have.
+fn width(n: &Node) -> Option<usize> {
+    match n {
+        Node::Project { columns, .. } if n.is_leaf() => Some(columns.len()),
+        Node::Join { left, right, .. } => Some(width(left)? + width(right)?),
+        Node::Filter { input, .. } if !n.is_leaf() => width(input),
+        _ => None,
+    }
+}
+
+/// Whether the leaf `n` returns the same rows restricted or not, but for
+/// the rows the restriction drops: `Project [Sort] [Filter] Search`, with
+/// no LIMIT or aggregate whose rows would change with it.
+pub(crate) fn plain_leaf(n: &Node) -> bool {
+    let Node::Project { input, .. } = n else { return false };
+    let mut n: &Node = input;
+    loop {
+        match n {
+            Node::Sort { input, .. } | Node::Filter { input, .. } => n = input,
+            Node::Search(s) => return s.per.is_none(),
+            _ => return false,
+        }
+    }
+}
+
+/// The leaf `n` with `c` first among its Search's conditions, as a
+/// restricted leaf runs.
+pub(crate) fn with_condition(n: &Node, c: Expr) -> Node {
+    let mut n = n.clone();
+    if let Some(s) = n.search_mut() {
+        let mut conds = vec![c];
+        match std::mem::replace(&mut s.filter, Expr::Lit(Value::Bool(true))) {
+            Expr::Lit(Value::Bool(true)) => {}
+            Expr::And(xs) => conds.extend(xs),
+            f => conds.push(f),
+        }
+        s.filter = if conds.len() == 1 { conds.pop().expect("a condition") } else { Expr::And(conds) };
+    }
+    n
+}
+
+/// The plan counting the rows of a leaf's Search (its order, phases and
+/// per-value cap left out).
+pub(crate) fn count_plan(s: &crate::query::ir::Search) -> Plan {
+    let mut search = s.clone();
+    search.order.clear();
+    search.phases.clear();
+    search.per = None;
+    Plan::new(Node::Project {
+        input: Box::new(Node::Aggregate { input: Box::new(Node::Search(search)), keys: Vec::new(), aggs: vec![Agg { func: crate::query::AggFn::Count, arg: None }] }),
+        columns: vec![crate::query::ir::Column { name: "n".into(), expr: Expr::Output(0) }],
+    })
 }
 
 /// A value as a join or group key: numbers equal by value whatever their

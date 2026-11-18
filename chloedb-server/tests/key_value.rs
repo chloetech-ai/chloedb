@@ -163,6 +163,28 @@ async fn rows_by_key_from_a_server_and_a_coordinator() {
         assert_eq!(got.rs.rows, want.rs.rows, "{sql}");
         assert_eq!(got.rs.stats.plan.iter().any(|l| l.starts_with("routed by key: 1 of 2")), routed, "{sql}: {:?}", got.rs.stats.plan);
     }
+    // A ranking by BM25 that pins the key asks only its shard, scored
+    // with every shard's statistics (from a statistics round, then those
+    // the coordinator kept): it answers as the same ranking asked of both
+    // shards, which a condition the key does not pin sends it to.
+    for (i, sql) in [
+        "SELECT id, score() FROM kv WHERE (id = '{k}'{or}) ORDER BY bm25(note, 'row') DESC LIMIT 3",
+        "SELECT id, score() FROM kv WHERE (id = '{k}'{or}) ORDER BY bm25(note, 'row') DESC LIMIT 3",
+        "SELECT id, n, score() FROM kv WHERE (id IN ('{k}', '{k}'){or}) AND MATCH(note, 'row 6') ORDER BY score() DESC",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let ask = |or: &str| chloedb_server::service::QueryReq { sql: sql.replace("{k}", &key(6)).replace("{or}", or), ..Default::default() };
+        let pinned = coord.query(ask("")).await.unwrap_or_else(|e| panic!("{sql}: {}", e.message));
+        let both = coord.query(ask(" OR n < -1")).await.unwrap();
+        let one_db = one.query(ask("")).await.unwrap();
+        assert_eq!(pinned.rs.rows.len(), 1, "{i}: {:?}", pinned.rs.rows);
+        assert_eq!(pinned.rs.rows, both.rs.rows, "{i}: {sql}");
+        assert_eq!(pinned.rs.rows[0][0], one_db.rs.rows[0][0], "{i}");
+        assert!(pinned.rs.stats.plan.iter().any(|l| l.starts_with("routed by key: 1 of 2")), "{i}: {:?}", pinned.rs.stats.plan);
+        assert!(!both.rs.stats.plan.iter().any(|l| l.starts_with("routed")), "{i}: {:?}", both.rs.stats.plan);
+    }
     let sql = "SELECT COUNT(*) FROM kv WHERE n > 100";
     let got = coord.query(chloedb_server::service::QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap();
     assert!(!got.rs.stats.plan.iter().any(|l| l.starts_with("routed")), "{:?}", got.rs.stats.plan);
