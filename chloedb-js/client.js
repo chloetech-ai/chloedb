@@ -5,7 +5,8 @@
 // browsers and edge workers, with no native code: `import { connect } from
 // "chloedb/client"`. In a browser, the server answers pages of its own
 // origin (a page it serves, or one behind the same reverse proxy): it
-// sends no CORS headers, and refuses writes from other origins.
+// sends no CORS headers, and refuses every request but GET and HEAD from
+// other origins, reads by POST included.
 
 import { ChloeDBError, Result, Searchable, decode, encode, given, makeError, orderedSchema } from "./common.js";
 

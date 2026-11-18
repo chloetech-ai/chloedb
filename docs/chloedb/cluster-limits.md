@@ -2,7 +2,7 @@
 
 A coordinator over shards ([sharding](server.md#sharding-one-coordinator-many-shards)) answers most requests as one server does: the tests run every query kind against three shards and one database and compare the answers. This page lists what it refuses, and what it does in another way, so that nobody finds out in production. A table placed by a column (`OPTIONS(shard_by = '...')`, [tables on shards](server.md#tables-on-shards)) has a few differences of its own, listed after.
 
-`POST /v1/sql/check` with `{"sql": ..., "params": ...}` says whether a statement will run on the deployment it is sent to, without running it: `{"runs": true, "deployment": "cluster", "kind": "write", "notes": [...]}`, or `runs: false` with the `error` it would get. A pipeline's CI can send its statements to the cluster it deploys to (an admin or full key; a key limited to tables is refused, as for `/v1/plan`).
+`POST /v1/sql/check` with `{"sql": ..., "params": ...}` says whether a statement will run on the deployment it is sent to, without running it: `{"runs": true, "deployment": "cluster", "kind": "write", "notes": [...]}`, or `runs: false` with the `error` it would get. A pipeline's CI can send its statements to the cluster it deploys to, with a key of every table, a read key included (a key limited to tables is refused).
 
 ## Refused on a cluster
 
