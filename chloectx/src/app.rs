@@ -1164,6 +1164,8 @@ fn allowed(caller: &Caller, m: &str, p: &[&str], req: &Request) -> std::result::
         // Each project's table is checked as the call reads it (the list
         // shows the projects the caller reads).
         ("GET", ["v1", "memory", ..]) => return Ok(()),
+        // Retiring a synced note for the project's every machine writes its table.
+        ("POST", ["v1", "memory", "retire"]) => (2, Some(crate::sync::table_for(body_json(req)?["project"].as_str().unwrap_or("").trim()))),
         ("POST", ["v1", "incidents"]) | ("POST", ["v1", "incidents", "draft"]) => (2, Some(incidents)),
         // Asking a store of this machine reads it.
         ("GET", _) | ("POST", ["v1", "local", _, "ask"]) => (1, None),
@@ -1245,6 +1247,15 @@ fn route(app: &Arc<App>, req: &Request) -> Answer {
         ("GET", ["v1", "memory", "notes"]) => app.memory_notes(req.param("project").unwrap_or(""), req.param("kind"), req.param("all").is_some_and(|v| v == "1" || v == "true")),
         ("GET", ["v1", "memory", "overview"]) => app.memory_overview(req.param("project").unwrap_or("")),
         ("GET", ["v1", "memory", "graph"]) => app.memory_graph(req.param("project").unwrap_or("")),
+        ("POST", ["v1", "memory", "retire"]) => {
+            let b = body_json(req)?;
+            // Who retired it, as the server names the caller's key.
+            let by = match req.header("x-chloedb-principal").map(str::trim) {
+                Some(n) if !n.is_empty() && n != "token" && n != "open" => n.to_string(),
+                _ => "the server's token".to_string(),
+            };
+            app.memory_retire(b["project"].as_str().unwrap_or(""), b["id"].as_str().unwrap_or(""), &by)
+        }
         ("GET", ["v1", "memory", "records"]) => app.memory_records(
             req.param("project").unwrap_or(""),
             req.param("session"),

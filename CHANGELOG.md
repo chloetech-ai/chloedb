@@ -11,6 +11,24 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **ChloeCtx: a team's forgets, deletions and retired rules reach every
+  machine, and a teammate's notes say whose they are** (persona study
+  round 3, WEI-304, WEI-303, WEI-306). A forget deleted the record's row
+  on the server, and every teammate who had pulled it kept it; an admin's
+  `DELETE` of a leaver's rows reached no store; and a rule could be
+  retired on one laptop only. Now a forget leaves a tombstone (a row of
+  kind `forgotten`) that each machine's next pull forgets, receipts and
+  segments too; another machine's rows deleted on the server are forgotten
+  on each machine that pulled them; a record retired or replaced on the
+  server, or whose context a forget cut, is so on each machine that has
+  it; and a push no longer sends back what it pulled (`--again` does).
+  `chloectx sync retire ID`, or Retire on a synced project's Memories in
+  the command center (`POST /v1/memory/retire`, with write on the
+  project's table), retires a note for the whole project and records who
+  did (`retired_by`). A teammate's note reads `from alice-laptop` in the
+  briefing and the prompt's context, and a rule said again counts only
+  this machine's sayings. setup.md says how to offboard someone
+  ([setup.md](docs/chloectx/setup.md#keep-the-memory-on-a-chloedb-server)).
 - **ChloeCtx: what an unaccepted machine sent stays out of every prompt,
   and `sync accept` names machines** (persona study round 3, WEI-302,
   WEI-308). A decision pulled from a machine no one had accepted reached
