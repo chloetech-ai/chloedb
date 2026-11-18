@@ -8,7 +8,8 @@
 //!
 //! The follower copies a publication's tables, then applies inserts,
 //! updates (one leaving a large TOASTed value out), key changes,
-//! deletes, a TRUNCATE, an added and a renamed column, a transaction of
+//! deletes, a TRUNCATE, an added and a renamed column, columns added with
+//! a default (constant, and volatile), a refused local write, a transaction of
 //! thousands of rows, and a table that joins the publication, into one
 //! server and into a cluster of two shards; stopped in the middle of a
 //! transaction it writes in steps, and started again, it applies each
@@ -415,6 +416,52 @@ async fn follows_changes_into(shards: usize) {
     exec(&src, "ALTER TABLE items RENAME COLUMN rating TO stars; UPDATE items SET stars = 9 WHERE id = 1").await;
     converges(&src, &dst, "SELECT id::text, stars::text FROM items ORDER BY id", "SELECT id, stars FROM items ORDER BY id LIMIT 100000").await;
 
+    // Columns added with a default (finding SAM-4): the rows before read
+    // it, as in Postgres, which keeps a constant one as the column's
+    // missing value and never sends it in the stream.
+    exec(
+        &src,
+        "ALTER TABLE items ADD COLUMN vip boolean DEFAULT false, ADD COLUMN channel text DEFAULT 'it''s web', ADD COLUMN score float8 DEFAULT -0.5, ADD COLUMN seen timestamptz DEFAULT '2024-01-02 03:04:05+00', ADD COLUMN plain int;
+         UPDATE items SET vip = true WHERE id < 5",
+    )
+    .await;
+    converges(&src, &dst, "SELECT id::text, vip::text, channel, score::text, plain::text FROM items ORDER BY id", "SELECT id, vip, channel, score, plain FROM items ORDER BY id LIMIT 100000").await;
+    let not_vip = strata_rows(&dst, "SELECT COUNT(*) FROM items WHERE NOT vip").await;
+    let pg_not_vip = pg_rows(&src, "SELECT count(*)::text FROM items WHERE NOT vip").await;
+    assert_eq!(not_vip[0][0].to_string(), pg_not_vip[0][0].clone().unwrap(), "NOT vip counts the rows from before the column");
+    let seen = strata_rows(&dst, "SELECT seen FROM items WHERE id = 30").await;
+    assert_eq!(seen[0][0], json!("2024-01-02T03:04:05Z"));
+    // A volatile default, which Postgres writes into each row: the table
+    // is copied again.
+    exec(&src, "ALTER TABLE items ADD COLUMN token int DEFAULT (random() * 1000000)::int; UPDATE items SET title = title WHERE id = 1").await;
+    converges(&src, &dst, "SELECT id::text, token::text FROM items ORDER BY id", "SELECT id, token FROM items ORDER BY id LIMIT 100000").await;
+
+    // A followed table takes the follower's writes alone: one sent here
+    // would answer what Postgres does not, until Postgres changed the row.
+    // (A server reads the follower's marks again every two seconds.)
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (status, j) = call(&dst, "POST", "/v1/sql", Some(json!({"sql": "UPDATE items SET n = n WHERE id = 1"}))).await;
+        if status == 409 {
+            break;
+        }
+        assert!(status == 200 && Instant::now() < until, "{status} {j}");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    for (path, body) in [
+        ("/v1/sql", json!({"sql": "UPDATE items SET n = 99 WHERE id = 1"})),
+        ("/v1/sql", json!({"sql": "DELETE FROM pairs WHERE a = 1"})),
+        ("/v1/write", json!({"ops": [{"op": "upsert", "table": "items", "doc": {"id": 1, "title": "here"}}]})),
+    ] {
+        let (status, j) = call(&dst, "POST", path, Some(body.clone())).await;
+        assert_eq!(status, 409, "{body} -> {j}");
+        assert!(j["error"].as_str().is_some_and(|e| e.contains("follows Postgres") && e.contains("--name shop")), "{j}");
+    }
+    let (status, j) = call(&dst, "POST", "/v1/sql", Some(json!({"sql": "CREATE TABLE mine (id INT PRIMARY KEY, x INT)"}))).await;
+    assert_eq!(status, 200, "{j}");
+    let (status, j) = call(&dst, "POST", "/v1/sql", Some(json!({"sql": "INSERT INTO mine VALUES (1, 2)"}))).await;
+    assert_eq!(status, 200, "a table no follower follows takes writes: {j}");
+
     // A transaction of thousands of rows, written in steps; a TRUNCATE.
     exec(&src, "INSERT INTO items (id, title, n) SELECT i, 'bulk ' || i, i FROM generate_series(5000, 7499) i").await;
     converges(&src, &dst, ITEMS_PG, ITEMS).await;
@@ -461,6 +508,18 @@ async fn follows_changes_into(shards: usize) {
     drop(_run);
     let dropped = postgres::drop_slot(options(&src, &dst, "shop")).await.unwrap();
     assert_eq!(dropped["dropped"], json!(true));
+    assert!(dropped["released"].as_array().is_some_and(|r| r.contains(&json!("items"))), "{dropped}");
+    // Its slot dropped, its tables take writes again (once a server reads
+    // the marks again, within seconds).
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (status, j) = call(&dst, "POST", "/v1/sql", Some(json!({"sql": "UPDATE items SET n = 99 WHERE id = 1"}))).await;
+        if status == 200 {
+            break;
+        }
+        assert!(status == 409 && Instant::now() < until, "{status} {j}");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

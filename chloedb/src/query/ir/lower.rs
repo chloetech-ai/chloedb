@@ -36,12 +36,12 @@ impl Plan {
                     Conflict::Update(sets) => OnConflict::Update(sets.iter().map(|(f, a)| lower.set(*f, a)).collect()),
                 },
             },
-            Write::Update { select, sets } => Node::Update {
+            Write::Update { select, sets, .. } => Node::Update {
                 table,
                 input: Box::new(Lower { schema, graphs: &select.graphs }.select(select)),
                 sets: sets.iter().map(|(f, a)| lower.set(*f, a)).collect(),
             },
-            Write::Delete { select } => Node::Delete { table, input: Box::new(Lower { schema, graphs: &select.graphs }.select(select)) },
+            Write::Delete { select, .. } => Node::Delete { table, input: Box::new(Lower { schema, graphs: &select.graphs }.select(select)) },
         })
     }
 }

@@ -103,7 +103,47 @@ impl Names {
     fn table(&self, c: u64, oid: u32, table: &str) -> String {
         format!("postgres/{}/{c}/t/{oid}/{table}", self.name)
     }
+    /// A copy of table `oid` owed (odd) or made (even), after Postgres
+    /// gave a column it added values the stream does not send.
+    fn again(&self, c: u64, oid: u32) -> String {
+        format!("postgres/{}/{c}/again/{oid}", self.name)
+    }
 }
+
+/// What the rows Postgres had read in a column it added.
+#[derive(Debug, PartialEq)]
+enum Added {
+    /// NULL: it has no default.
+    Null,
+    /// Its default as Postgres keeps it for them (its missing value): the
+    /// column's `DEFAULT` here, as an SQL literal.
+    Default(String),
+    /// Values Postgres wrote into the rows (a volatile default rewrites
+    /// the table), or a default this cannot write here: the table is
+    /// copied again.
+    CopyAgain,
+}
+
+/// The `DEFAULT` of a ChloeDB column of type `decl` that gives Postgres's
+/// missing value `text`, if a constant here gives it: `None` for a type
+/// whose constants differ (JSON, arrays, vectors), and for NaN and the
+/// infinities.
+fn default_literal(decl: &str, text: &str) -> Option<String> {
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    match decl {
+        "BOOL" => match text {
+            "t" | "true" => Some("TRUE".into()),
+            "f" | "false" => Some("FALSE".into()),
+            _ => None,
+        },
+        "INT" => text.parse::<i64>().ok().map(|n| n.to_string()),
+        "FLOAT" => text.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| format!("{x:?}")),
+        "TEXT" | "KEYWORD" => Some(quote(text)),
+        "TIMESTAMP" if !text.ends_with(" BC") && !text.contains("infinity") => Some(quote(text)),
+        _ => None,
+    }
+}
+
 
 fn mark(name: String, offset: i64) -> Json {
     json!({"op": "source", "source": {"name": name, "offset": offset}})
@@ -326,7 +366,18 @@ pub async fn drop_slot(o: Options) -> Result<Json, ApiError> {
     if found {
         f.sql_pg(&format!("SELECT pg_drop_replication_slot({})", literal(&f.slot))).await?;
     }
-    Ok(json!({"slot": f.slot, "dropped": found}))
+    // Its tables are no longer followed: they take other writes again
+    // ([`crate::service::Service::may_write_followed`]), and a follower
+    // started again copies them afresh (the slot is gone).
+    let kept = f.kept().await?;
+    let mut released = Vec::new();
+    if let Some(c) = kept.copy {
+        let now = crate::telemetry::now_ms() as i64 * 2;
+        let marks: Vec<Json> = kept.tables.iter().filter(|(_, (_, on, _))| *on).map(|(oid, (t, _, _))| mark(f.names.table(c, *oid, t), now)).collect();
+        released = kept.tables.values().filter(|(_, on, _)| *on).map(|(t, _, _)| t.clone()).collect();
+        f.write(marks).await?;
+    }
+    Ok(json!({"slot": f.slot, "dropped": found, "released": released}))
 }
 
 #[derive(Debug)]
@@ -353,7 +404,9 @@ impl Follower {
         if slot.is_empty() || slot.len() > 63 || !slot.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') {
             return Err(ApiError::bad(format!("--slot {slot:?}: a slot's name is 1 to 63 lower-case letters, digits and '_'")));
         }
-        let dst = Http::new(&o.target, o.target_token.as_deref(), o.target_ca.as_deref(), None)?;
+        // Named on every request: the tables it follows take its writes
+        // alone ([`crate::service::Service::may_write_followed`]).
+        let dst = Http::new(&o.target, o.target_token.as_deref(), o.target_ca.as_deref(), None)?.with_header(crate::service::POSTGRES_FOLLOWER_HEADER, &o.name);
         Ok(Follower {
             names: Names { name: o.name.clone() },
             cfg,
@@ -658,7 +711,20 @@ impl Follower {
                 continue;
             }
             if let Some(t) = decl(i) {
-                let sql = format!("ALTER TABLE {} ADD COLUMN {} {t}", ident(&rel.table), ident(&c.name));
+                // The rows before it read Postgres's default, which the
+                // stream never sends.
+                let default = match self.added(rel, &c.name, &t).await? {
+                    Added::Null => String::new(),
+                    Added::Default(v) => format!(" DEFAULT {v}"),
+                    Added::CopyAgain => {
+                        // Owed before the column is added, so that a
+                        // follower stopped before the copy makes it.
+                        tracing::info!(table = %rel.table, column = %c.name, "Postgres wrote the rows' values of a column it added: copying the table again");
+                        self.write(vec![mark(self.names.again(self.copy, rel.oid), crate::telemetry::now_ms() as i64 * 2 + 1)]).await?;
+                        String::new()
+                    }
+                };
+                let sql = format!("ALTER TABLE {} ADD COLUMN {} {t}{default}", ident(&rel.table), ident(&c.name));
                 tracing::info!(table = %rel.table, "Postgres has a column the table lacks: {sql}");
                 if let Err(e) = self.sql(&sql).await {
                     // An earlier try, its answer lost, may have added it.
@@ -674,6 +740,61 @@ impl Follower {
             self.load_tables().await?;
         }
         Ok(true)
+    }
+
+    /// What the rows `rel` had read in column `name`, which Postgres
+    /// added (of ChloeDB type `decl`): from the catalog, its missing value
+    /// (Postgres 11 and later keep a constant default there rather than
+    /// writing the rows) or whether it has a default at all.
+    async fn added(&mut self, rel: &Rel, name: &str, decl: &str) -> Result<Added, ApiError> {
+        let v = self.conn().await?.version;
+        let missing = if v >= 110000 { "atthasmissing::text AS m, attmissingval::text AS v" } else { "'false' AS m, NULL AS v" };
+        let r = self.sql_pg(&format!("SELECT atthasdef::text AS d, {missing} FROM pg_attribute WHERE attrelid = {} AND attname = {} AND NOT attisdropped", rel.oid, literal(name))).await?;
+        if r.rows.is_empty() {
+            return Ok(Added::Null);
+        }
+        let yes = |c: &str| r.get(0, c).is_some_and(|v| v == "true" || v == "t");
+        if yes("m") {
+            let items = r.get(0, "v").map(super::types::array_items).transpose().map_err(ApiError::bad)?.unwrap_or_default();
+            return Ok(match items.as_slice() {
+                [None] | [] => Added::Null,
+                [Some(t)] => default_literal(decl, t).map_or(Added::CopyAgain, Added::Default),
+                _ => Added::CopyAgain,
+            });
+        }
+        // A default, and no missing value: the rows hold their values
+        // (a volatile default wrote them, or a rewrite since did), or
+        // NULL (the default was set after the column was added); copied
+        // again, either way they are right.
+        Ok(if yes("d") { Added::CopyAgain } else { Added::Null })
+    }
+
+    /// Makes the copy of `rel` owed since Postgres added a column whose
+    /// rows' values the stream does not send ([`Added::CopyAgain`]): its
+    /// rows as of now, over those here (the stream's changes since then
+    /// bring each to where Postgres has it, as for a table that joins the
+    /// publication); then marks it made.
+    async fn copy_owed(&mut self, rel: &Rel) -> Result<(), ApiError> {
+        let name = self.names.again(self.copy, rel.oid);
+        let j = retry("ChloeDB's stream sources", || self.dst.get("/v1/sources")).await?;
+        let owed = j["sources"].as_array().into_iter().flatten().any(|s| s["name"].as_str() == Some(name.as_str()) && s["offset"].as_i64().is_some_and(|o| o % 2 == 1));
+        if !owed {
+            return Ok(());
+        }
+        let mut rel = rel.clone();
+        if let Some(p) = self.publication().await?.into_iter().find(|p| p.oid == rel.oid) {
+            rel.filter = p.filter;
+        }
+        let schema = self.schema(&rel.table)?;
+        let mut conn = Conn::connect(&self.cfg, false).await.map_err(pg)?;
+        conn.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await.map_err(pg)?;
+        let rows = copy_table(&mut conn, &self.dst, &rel, &schema, self.o.batch).await?;
+        conn.query("COMMIT").await.map_err(pg)?;
+        conn.close().await;
+        self.stats.copied += rows;
+        self.write(vec![mark(name, crate::telemetry::now_ms() as i64 * 2)]).await?;
+        tracing::info!(table = %rel.table, rows, "copied the table again, with the column Postgres added");
+        Ok(())
     }
 
     fn schema(&self, table: &str) -> Result<Arc<Schema>, ApiError> {
@@ -1240,6 +1361,7 @@ impl Follower {
             }
         }
         self.ensure_table(&rel).await?;
+        self.copy_owed(&rel).await?;
         self.rels.insert(r.oid, Arc::new(rel));
         Ok(())
     }

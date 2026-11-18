@@ -1071,10 +1071,12 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
                 req.extensions_mut().insert(w.clone());
             }
             let follow: Option<Arc<str>> = follow.map(Into::into);
+            // A Postgres follower's writes ([`crate::service::PG_FOLLOWER`]).
+            let pg_follower: Option<Arc<str>> = header_str(req.headers(), header::HeaderName::from_static(crate::service::POSTGRES_FOLLOWER_HEADER)).map(Into::into);
             let own = who.as_ref().is_some_and(|w| w.root);
             let scope = who.as_ref().map_or(Scope::Feed, |w| if w.root || w.limited() { Scope::Admin } else { w.scope });
             let run = Box::pin(crate::service::SCOPE.scope(scope, keys::noting_change(next.run(req))));
-            telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(own, run))).await
+            telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::PG_FOLLOWER.scope(pg_follower, crate::service::OWN.scope(own, run)))).await
         }
     };
     let status = res.status().as_u16();
