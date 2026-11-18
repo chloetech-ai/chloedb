@@ -2501,8 +2501,40 @@ function render(page, r) {
     try { kube = await api("/v1/admin/kube/autoscale/dismiss", { body: {} }); toast("Dismissed: the rules wait their cooldown before they ask again", "ok"); } catch (e) { toast(`Not dismissed: ${e.message}`, "bad", 8000); }
     drawCapacity();
   }
+  /**
+   * The disks of the copies a plan of moves sends rows to, and its disk
+   * checks (`disks`, `preflight` of a rebalance's dry run): the table and
+   * the checks' lines, and whether one failed.
+   */
+  function diskBlock(p, nMoves) {
+    const checks = (p.preflight || []).filter((c) => c.text);
+    const diskFail = checks.some((c) => c.ok === false);
+    const table = nMoves && (p.disks || []).length ? h("table", { class: "t compact cc-ldisk" },
+      h("thead", {}, h("tr", {}, h("th", {}, "disk of the copies sent rows"), h("th", { class: "num" }, "now"), h("th", { class: "num" }, "after"), h("th", { class: "num" }, "sent"))),
+      h("tbody", {}, p.disks.map((d) => h("tr", {}, h("td", { class: "mono" }, d.copy || short(d.url)), h("td", { class: "num" }, pct0(d.now)), h("td", { class: "num" + (d.after >= 0.98 ? " cc-bad" : d.after >= 0.85 ? " cc-warn" : "") }, pct0(d.after)), h("td", { class: "num dim" }, fmt.bytes(d.adds_bytes)))))) : null;
+    const lines = checks.filter((c) => c.level !== "ok" || !table).map((c) => h("p", { class: "small " + (c.ok === false ? "cc-bad" : c.level === "warn" ? "cc-warn" : "dim"), style: { margin: 0 } }, cap(c.text) + (c.ok === false ? ": nothing can move until it has room." : ".")));
+    return { diskFail, diskParts: [table, ...lines] };
+  }
+
   async function evenOut() {
-    const ok = await ask({ title: "Even out the slots", body: "Slots move from the shards holding the most to those holding the fewest, up to 256 at a time, while the cluster serves. Writes to each run pause for a moment as it flips.", ok: "Move them" });
+    // Its plan first, as a dry run: the moves, and the disks they fill.
+    let p;
+    try { p = (await api("/v1/admin/rebalance", { body: { dry_run: true } })).plan; }
+    catch (e) { toast(`No plan: ${plainError(e)}`, "bad", 9000); return; }
+    const nMoves = (p.moves || []).length;
+    const { diskFail, diskParts } = diskBlock(p, nMoves);
+    const body = h("div", { class: "stack", style: { gap: "10px" } },
+      h("p", { style: { margin: 0 } }, nMoves
+        ? `${plural(p.slots_moved, "slot")} move in ${plural(nMoves, "move")}, from the shards holding the most to those holding the fewest, up to 256 at a time, while the cluster serves. Writes to each run pause for a moment as it flips.`
+        : cap(p.why || "the slots are even already") + "."),
+      diskParts);
+    if (!nMoves || diskFail) {
+      const close = h("button", { class: "btn primary" }, "Close");
+      const m = modal({ title: "Even out the slots", body, foot: [close] });
+      close.onclick = () => m.close();
+      return;
+    }
+    const ok = await ask({ title: "Even out the slots", body, ok: "Move them" });
     if (!ok) return;
     try { takeRun((await api("/v1/admin/plan/apply", { body: { steps: [{ kind: "rebalance", text: "The slots even out over the shards" }] }, reason: ok.reason })).run); }
     catch (e) { toast(`Not started: ${plainError(e)}`, "bad", 9000); return; }
@@ -2533,19 +2565,13 @@ function render(page, r) {
       h("td", { class: "num dim" }, moved(i) > 0 ? `gives ${fmt.n(moved(i))}` : moved(i) < 0 ? `takes ${fmt.n(-moved(i))}` : "")));
     const skipped = (p.coordinators || []).filter((c) => !c.ok);
     const nMoves = (p.moves || []).length;
-    // The disks of the copies sent rows (the plan's disk checks).
-    const checks = (p.preflight || []).filter((c) => c.text);
-    const diskFail = checks.some((c) => c.ok === false);
-    const disks = nMoves && (p.disks || []).length ? h("table", { class: "t compact cc-ldisk" },
-      h("thead", {}, h("tr", {}, h("th", {}, "disk of the copies sent rows"), h("th", { class: "num" }, "now"), h("th", { class: "num" }, "after"), h("th", { class: "num" }, "sent"))),
-      h("tbody", {}, p.disks.map((d) => h("tr", {}, h("td", { class: "mono" }, d.copy || short(d.url)), h("td", { class: "num" }, pct0(d.now)), h("td", { class: "num" + (d.after >= 0.98 ? " cc-bad" : d.after >= 0.85 ? " cc-warn" : "") }, pct0(d.after)), h("td", { class: "num dim" }, fmt.bytes(d.adds_bytes)))))) : null;
+    const { diskFail, diskParts } = diskBlock(p, nMoves);
     const body = h("div", { class: "stack", style: { gap: "10px" } },
       h("p", { style: { margin: 0 } }, nMoves
         ? `${plural(p.slots_moved, "slot")} move in ${plural(nMoves, "move")}, from the busiest shard to the quietest: the busiest goes from ${p.before.skew.toFixed(2)}× the mean of the keyed load to ${p.after.skew.toFixed(2)}×.`
         : cap(p.why || "nothing to move") + "."),
       h("table", { class: "t compact cc-lplan" }, h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, h("span", { class: "row nw", style: { gap: "8px" } }, h("i", { class: "cc-lb before sw" }), "now", h("i", { class: "cc-lb after sw" }), "after")), h("th", { class: "num" }, "keyed load"), h("th", { class: "num" }, "slots"))), h("tbody", {}, shards)),
-      disks,
-      checks.filter((c) => c.level !== "ok" || !disks).map((c) => h("p", { class: "small " + (c.ok === false ? "cc-bad" : c.level === "warn" ? "cc-warn" : "dim"), style: { margin: 0 } }, cap(c.text) + (c.ok === false ? ": nothing can move until it has room." : "."))),
+      diskParts,
       (p.disk_full || []).length ? h("p", { class: "small dim", style: { margin: 0 } }, `Passed over for want of disk: ${p.disk_full.map((i) => `shard ${i}`).join(", ")} (it would pass 85% full).`) : null,
       p.unsplit ? h("p", { class: "small", style: { margin: 0 } }, `Slot ${p.unsplit.slot} stays on shard ${p.unsplit.shard}: at ${loadRate(p.unsplit.load_per_s)}/s it would make any other shard the hot one. It is one key or one shard_by value: cache it, or spread its writes over several keys.`) : null,
       p.warning ? h("p", { class: "small cc-warn", style: { margin: 0 } }, `${cap(p.warning)}. Wait until the counts cover most of the window (4 minutes) before moving rows.`) : null,

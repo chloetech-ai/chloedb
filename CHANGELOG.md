@@ -11,6 +11,14 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Evening out the slots checks the disks first.** `POST
+  /v1/admin/rebalance` checked nothing of the room of the copies it sends
+  rows to; it now runs a plan's disk checks on its moves (`disks`,
+  `preflight` in its answer's `plan`), and a failed check (the rows would
+  not fit, or would take a disk to 98%) refuses it (409), as does the
+  plan's `rebalance` step. `dry_run` answers the plan and moves nothing,
+  and the Cluster page's **Even out the slots…** shows it, with each
+  receiving copy's disk now and after, before it moves anything.
 - **The Cluster page evens out the keyed load.** **Even out by load…**,
   offered on a hot range (in Key slots and What needs attention) and in
   Capacity, asks the coordinator for a rebalance by load's plan as a dry
