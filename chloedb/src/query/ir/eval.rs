@@ -377,6 +377,15 @@ fn arith(op: ArithOp, a: &Value, b: &Value) -> Result<Value> {
         (Value::Int(x), Value::Float(y)) => float(*x as f64, *y),
         (Value::Float(x), Value::Int(y)) => float(*x, *y as f64),
         (Value::Float(x), Value::Float(y)) => float(*x, *y),
+        // A time minus a time: SQL's INTERVAL, which ChloeDB has no type for
+        // (SAM-208).
+        (Value::Timestamp(_), Value::Timestamp(_)) if op == ArithOp::Sub => {
+            return Err(err(format!(
+                "cannot compute {} - {}: a TIMESTAMP minus a TIMESTAMP is an INTERVAL, which ChloeDB has no type for; date_diff('second', a, b) is the seconds between two times (date_diff('day', a, b) the days), and EXTRACT(epoch FROM b) - EXTRACT(epoch FROM a) the seconds with their fractions",
+                sv(&a),
+                sv(&b)
+            )))
+        }
         _ => return Err(err(format!("cannot compute {} {name} {}", sv(&a), sv(&b)))),
     })
 }
@@ -418,7 +427,14 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
                 Some(Value::Str(k)) => Some(crate::json::Kind::parse(k).ok_or_else(|| err(format!("json_extract's type is 'string', 'number' or 'bool', not {k:?}")))?),
                 Some(v) => return Err(err(format!("json_extract's type is text, not {}", sv(&v)))),
             };
-            crate::json::extract(&one, path, kind)
+            // `'$.dims.w'`, as JSONPath, SQLite and DuckDB write it, is the
+            // path `'dims.w'` (SAM-202: it read the key "$" and gave NULL
+            // on every row, while WHERE read it as the path); `'$'` is the
+            // whole value.
+            match crate::json::bare_path(path) {
+                Some(p) => crate::json::extract(&one, p, kind),
+                None => crate::json::extract_whole(&one, kind),
+            }
         }
         // UNKNOWN is not TRUE.
         Func::CountTrue => {

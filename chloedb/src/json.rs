@@ -157,6 +157,35 @@ pub fn keys(path: &str) -> Vec<String> {
     out
 }
 
+/// A path as [`extract`] reads it: `$.dims.w` as `dims.w`, as
+/// [`parse_path`] reads it; `None` for `$`, the whole value.
+pub fn bare_path(text: &str) -> Option<&str> {
+    match text {
+        "$" => None,
+        t => Some(t.strip_prefix("$.").unwrap_or(t)),
+    }
+}
+
+/// [`extract`] of the whole value (the path `$`): an object or array as
+/// its JSON text, a plain value as itself.
+pub fn extract_whole(v: &Value, kind: Option<Kind>) -> Result<Value> {
+    let s = match v {
+        Value::Null => return Ok(Value::Null),
+        Value::Str(s) => s,
+        v => return Err(Error::Query(format!("json_extract reads a JSON field, not {v:?}"))),
+    };
+    let j: Json = serde_json::from_str(s).map_err(|e| Error::Query(format!("json_extract: not JSON ({e})")))?;
+    Ok(match &j {
+        Json::Object(_) | Json::Array(_) if kind.is_none() => Value::Str(j.to_string()),
+        Json::Object(_) | Json::Array(_) | Json::Null => Value::Null,
+        x => match (plain(x), kind) {
+            (Some(v), Some(k)) if Kind::of(&v) != Some(k) => Value::Null,
+            (Some(v), _) => v,
+            (None, _) => Value::Null,
+        },
+    })
+}
+
 /// A path as a query names it, checked and in the form terms spell it:
 /// keys joined by dots (`dims.w`, or `$.dims.w` as JSONPath writes it), a
 /// dot or backslash within a key escaped by a backslash.

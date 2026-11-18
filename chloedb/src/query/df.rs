@@ -41,10 +41,11 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::arrow::array::{
-    Array, ArrayRef, AsArray, BooleanBuilder, Float64Array, Float64Builder, Int64Builder, StringBuilder, UInt64Array,
+    Array, ArrayRef, AsArray, BinaryArray, BooleanArray, BooleanBuilder, Float64Array, Float64Builder, Int64Builder, StringBuilder,
+    UInt64Array,
 };
 use datafusion::arrow::compute::kernels::numeric;
-use datafusion::arrow::datatypes::{DataType, Field, Int64Type, Schema as ArrowSchema};
+use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Float64Type, Int64Type, Schema as ArrowSchema};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::{Column as DfColumn, DFSchema, DataFusionError, ScalarValue};
 use datafusion::datasource::{provider_as_source, MemTable};
@@ -55,7 +56,9 @@ use datafusion::functions_aggregate::expr_fn as agg_fn;
 use datafusion::functions_window::expr_fn as win_fn;
 use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::expr::Like;
+use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
+    Accumulator, AggregateUDF, AggregateUDFImpl, EmitTo, GroupsAccumulator,
     binary_expr, cast, in_list, lit, not, when, ColumnarValue, Expr as DExpr, ExprFunctionExt, ExprSchemable, JoinType, LogicalPlan, LogicalPlanBuilder, Operator, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, SortExpr, Volatility,
 };
 use datafusion::physical_plan::{displayable, ExecutionPlan};
@@ -68,6 +71,7 @@ use crate::query::ir::{Agg, ArithOp, Bound, CmpOp, Expr, FrameUnits, Func, JoinK
 use crate::query::memory::Charge;
 use crate::query::ops;
 use crate::query::steps::{self, Clock, Step};
+use crate::query::agg::ExactSum;
 use crate::query::AggFn;
 use crate::schema::Schema;
 use crate::value::Value;
@@ -1319,14 +1323,18 @@ impl<'a> Lower<'a, '_> {
                 // Integers sum exactly: a decimal sum, read back as an INT
                 // where it fits and a FLOAT where not, as the operators'.
                 (AggFn::Sum, Some(x), Some(t)) if is_int(&t) => col(&part(self, agg_fn::sum(cast(x, DataType::Decimal128(38, 0))))),
-                (AggFn::Sum, Some(x), Some(t)) if is_float(&t) => col(&part(self, agg_fn::sum(x))),
+                (AggFn::Sum, Some(x), Some(t)) if is_float(&t) => col(&part(self, exact_sum(x))),
                 (AggFn::Sum, Some(_), Some(DataType::Null)) => lit(ScalarValue::Float64(None)),
                 (AggFn::Avg, Some(x), Some(t)) if is_int(&t) => {
                     let s = part(self, agg_fn::sum(cast(x.clone(), DataType::Decimal128(38, 0))));
                     let c = part(self, agg_fn::count(x));
                     when(col(&c).eq(lit(0i64)), lit(ScalarValue::Float64(None))).otherwise(cast(col(&s), DataType::Float64) / cast(col(&c), DataType::Float64))?
                 }
-                (AggFn::Avg, Some(x), Some(t)) if is_float(&t) => col(&part(self, agg_fn::avg(x))),
+                (AggFn::Avg, Some(x), Some(t)) if is_float(&t) => {
+                    let s = part(self, exact_sum(x.clone()));
+                    let c = part(self, agg_fn::count(x));
+                    when(col(&c).eq(lit(0i64)), lit(ScalarValue::Float64(None))).otherwise(col(&s) / cast(col(&c), DataType::Float64))?
+                }
                 (AggFn::Avg, Some(_), Some(DataType::Null)) => lit(ScalarValue::Float64(None)),
                 (f, _, t) => return no(format!("aggregate {f:?} of {t:?}")),
             };
@@ -1471,14 +1479,18 @@ impl<'a> Lower<'a, '_> {
                                 (AggFn::Min, Some((x, _))) => over(self, agg_fn::min(x))?,
                                 (AggFn::Max, Some((x, _))) => over(self, agg_fn::max(x))?,
                                 (AggFn::Sum, Some((x, t))) if is_whole(&t) => over(self, agg_fn::sum(cast(x, DataType::Decimal128(38, 0))))?,
-                                (AggFn::Sum, Some((x, t))) if is_float(&t) => over(self, agg_fn::sum(x))?,
+                                (AggFn::Sum, Some((x, t))) if is_float(&t) => over(self, exact_sum(x))?,
                                 (AggFn::Sum | AggFn::Avg, Some((_, DataType::Null))) => lit(ScalarValue::Float64(None)),
                                 (AggFn::Avg, Some((x, t))) if is_whole(&t) => {
                                     let s = over(self, agg_fn::sum(cast(x.clone(), DataType::Decimal128(38, 0))))?;
                                     let c = over(self, agg_fn::count(x))?;
                                     when(c.clone().eq(lit(0i64)), lit(ScalarValue::Float64(None))).otherwise(cast(s, DataType::Float64) / cast(c, DataType::Float64))?
                                 }
-                                (AggFn::Avg, Some((x, t))) if is_float(&t) => over(self, agg_fn::avg(x))?,
+                                (AggFn::Avg, Some((x, t))) if is_float(&t) => {
+                                    let s = over(self, exact_sum(x.clone()))?;
+                                    let c = over(self, agg_fn::count(x))?;
+                                    when(c.clone().eq(lit(0i64)), lit(ScalarValue::Float64(None))).otherwise(s / cast(c, DataType::Float64))?
+                                }
                                 (f, x) => return no(format!("a window aggregate {f:?} of {:?}", x.map(|x| x.1))),
                             }
                         }
@@ -2817,6 +2829,215 @@ impl ScalarUDFImpl for StrataCall {
             }
         };
         Ok(ColumnarValue::Array(out))
+    }
+}
+
+/// `SUM(x)` of FLOAT values as the operators add them
+/// ([`crate::query::agg::ExactSum`]): exactly, and rounded once, so that
+/// a sum is the same bits whichever engine runs the plan and in whatever
+/// order DataFusion reads the rows (SAM-203: a RANK over two customers'
+/// equal totals held below [`SMALL`] rows and broke above it, where
+/// DataFusion's own `sum` added in order). NULL over no values. `AVG` is
+/// this over `count(x)`, as the operators divide the exact total once.
+fn exact_sum(x: DExpr) -> DExpr {
+    static UDAF: OnceLock<Arc<AggregateUDF>> = OnceLock::new();
+    UDAF.get_or_init(|| Arc::new(AggregateUDF::new_from_impl(ExactFloatSum { signature: Signature::exact(vec![DataType::Float64], Volatility::Immutable) }))).call(vec![cast(x, DataType::Float64)])
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ExactFloatSum {
+    signature: Signature,
+}
+
+impl std::hash::Hash for ExactFloatSum {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        "chloedb_exact_sum".hash(h);
+    }
+}
+
+impl AggregateUDFImpl for ExactFloatSum {
+    fn name(&self) -> &str {
+        "chloedb_exact_sum"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Float64)
+    }
+
+    fn accumulator(&self, _: AccumulatorArgs) -> datafusion::error::Result<Box<dyn Accumulator>> {
+        Ok(Box::<ExactAcc>::default())
+    }
+
+    /// A group's sum as [`ExactSum::to_bytes`] writes it, NULL before a value.
+    fn state_fields(&self, _: StateFieldsArgs) -> datafusion::error::Result<Vec<FieldRef>> {
+        Ok(vec![Arc::new(Field::new("exact_sum", DataType::Binary, true))])
+    }
+
+    fn groups_accumulator_supported(&self, _: AccumulatorArgs) -> bool {
+        true
+    }
+
+    fn create_groups_accumulator(&self, _: AccumulatorArgs) -> datafusion::error::Result<Box<dyn GroupsAccumulator>> {
+        Ok(Box::<ExactGroups>::default())
+    }
+}
+
+fn floats(a: &ArrayRef) -> datafusion::error::Result<&Float64Array> {
+    a.as_primitive_opt::<Float64Type>().ok_or_else(|| DataFusionError::Internal(format!("chloedb_exact_sum of {}", a.data_type())))
+}
+
+fn exact_state(a: &ArrayRef) -> datafusion::error::Result<&BinaryArray> {
+    a.as_binary_opt::<i32>().ok_or_else(|| DataFusionError::Internal(format!("chloedb_exact_sum's state as {}", a.data_type())))
+}
+
+fn exact_of(b: &[u8]) -> datafusion::error::Result<ExactSum> {
+    ExactSum::from_bytes(b).ok_or_else(|| DataFusionError::Internal("chloedb_exact_sum's state is not a sum".into()))
+}
+
+/// One sum ([`ExactFloatSum`]): of a window's frame too, which takes away
+/// the values that leave it. The infinities and NaNs in it are counted
+/// apart, since a sum cannot take them away; `n` counts its values.
+#[derive(Debug, Default)]
+struct ExactAcc {
+    sum: ExactSum,
+    n: i64,
+    nan: i64,
+    pos: i64,
+    neg: i64,
+}
+
+impl ExactAcc {
+    fn total(&self) -> ExactSum {
+        let mut s = self.sum.clone();
+        for (k, x) in [(self.nan, f64::NAN), (self.pos, f64::INFINITY), (self.neg, f64::NEG_INFINITY)] {
+            if k > 0 {
+                s.add(x);
+            }
+        }
+        s
+    }
+
+    fn take(&mut self, values: &[ArrayRef], sign: i64) -> datafusion::error::Result<()> {
+        for x in floats(&values[0])?.iter().flatten() {
+            self.n += sign;
+            match x {
+                x if x.is_nan() => self.nan += sign,
+                f64::INFINITY => self.pos += sign,
+                f64::NEG_INFINITY => self.neg += sign,
+                x if sign > 0 => self.sum.add(x),
+                x => self.sum.sub(x),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Accumulator for ExactAcc {
+    fn update_batch(&mut self, values: &[ArrayRef]) -> datafusion::error::Result<()> {
+        self.take(values, 1)
+    }
+
+    fn retract_batch(&mut self, values: &[ArrayRef]) -> datafusion::error::Result<()> {
+        self.take(values, -1)
+    }
+
+    fn supports_retract_batch(&self) -> bool {
+        true
+    }
+
+    fn evaluate(&mut self) -> datafusion::error::Result<ScalarValue> {
+        Ok(ScalarValue::Float64((self.n > 0).then(|| self.total().value())))
+    }
+
+    fn state(&mut self) -> datafusion::error::Result<Vec<ScalarValue>> {
+        Ok(vec![ScalarValue::Binary((self.n > 0).then(|| self.total().to_bytes()))])
+    }
+
+    fn merge_batch(&mut self, states: &[ArrayRef]) -> datafusion::error::Result<()> {
+        for b in exact_state(&states[0])?.iter().flatten() {
+            self.sum.merge(&exact_of(b)?);
+            self.n += 1;
+        }
+        Ok(())
+    }
+
+    fn size(&self) -> usize {
+        std::mem::size_of_val(self)
+    }
+}
+
+/// [`ExactFloatSum`] of each group of a GROUP BY.
+#[derive(Debug, Default)]
+struct ExactGroups {
+    sums: Vec<ExactSum>,
+    any: Vec<bool>,
+}
+
+impl ExactGroups {
+    fn grow(&mut self, groups: usize) {
+        if self.sums.len() < groups {
+            self.sums.resize_with(groups, ExactSum::new);
+            self.any.resize(groups, false);
+        }
+    }
+}
+
+/// Whether row `i` passes the aggregate's `FILTER`.
+fn kept(filter: Option<&BooleanArray>, i: usize) -> bool {
+    filter.is_none_or(|f| f.is_valid(i) && f.value(i))
+}
+
+impl GroupsAccumulator for ExactGroups {
+    fn update_batch(&mut self, values: &[ArrayRef], group_indices: &[usize], opt_filter: Option<&BooleanArray>, total_num_groups: usize) -> datafusion::error::Result<()> {
+        self.grow(total_num_groups);
+        let xs = floats(&values[0])?;
+        for (i, &g) in group_indices.iter().enumerate() {
+            if xs.is_valid(i) && kept(opt_filter, i) {
+                self.sums[g].add(xs.value(i));
+                self.any[g] = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn evaluate(&mut self, emit_to: EmitTo) -> datafusion::error::Result<ArrayRef> {
+        let (sums, any) = (emit_to.take_needed(&mut self.sums), emit_to.take_needed(&mut self.any));
+        Ok(Arc::new(sums.iter().zip(any).map(|(s, a)| a.then(|| s.value())).collect::<Float64Array>()))
+    }
+
+    fn state(&mut self, emit_to: EmitTo) -> datafusion::error::Result<Vec<ArrayRef>> {
+        let (sums, any) = (emit_to.take_needed(&mut self.sums), emit_to.take_needed(&mut self.any));
+        Ok(vec![Arc::new(sums.iter().zip(any).map(|(s, a)| a.then(|| s.to_bytes())).collect::<BinaryArray>())])
+    }
+
+    fn merge_batch(&mut self, values: &[ArrayRef], group_indices: &[usize], total_num_groups: usize) -> datafusion::error::Result<()> {
+        self.grow(total_num_groups);
+        let states = exact_state(&values[0])?;
+        for (i, &g) in group_indices.iter().enumerate() {
+            if states.is_valid(i) {
+                self.sums[g].merge(&exact_of(states.value(i))?);
+                self.any[g] = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn convert_to_state(&self, values: &[ArrayRef], opt_filter: Option<&BooleanArray>) -> datafusion::error::Result<Vec<ArrayRef>> {
+        let xs = floats(&values[0])?;
+        let one = |i: usize| {
+            let mut s = ExactSum::new();
+            s.add(xs.value(i));
+            s.to_bytes()
+        };
+        Ok(vec![Arc::new((0..xs.len()).map(|i| (xs.is_valid(i) && kept(opt_filter, i)).then(|| one(i))).collect::<BinaryArray>())])
+    }
+
+    fn size(&self) -> usize {
+        self.sums.capacity() * std::mem::size_of::<ExactSum>() + self.any.capacity()
     }
 }
 

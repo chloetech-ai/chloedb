@@ -238,6 +238,53 @@ impl ExactSum {
         }
     }
 
+    /// The sum as bytes, which [`Self::from_bytes`] reads back as the same
+    /// sum: a byte of flags (NaN, +infinity, -infinity), then each chunk
+    /// that is not 0 once carried, as its number (a byte) and its value
+    /// (eight bytes, little-endian). DataFusion passes a group's sum so
+    /// from its partial aggregates to its final ones
+    /// ([`crate::query::df`]).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut s = self.clone();
+        s.flush_near();
+        s.carry();
+        let mut out = vec![s.nan as u8 | (s.pos_inf as u8) << 1 | (s.neg_inf as u8) << 2];
+        for (i, c) in s.chunks() {
+            if c != 0 {
+                out.push(i as u8);
+                out.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        out
+    }
+
+    /// The sum [`Self::to_bytes`] wrote; `None` for bytes it did not write.
+    pub fn from_bytes(b: &[u8]) -> Option<ExactSum> {
+        let (&flags, mut rest) = b.split_first()?;
+        if flags > 7 || rest.len() % 9 != 0 {
+            return None;
+        }
+        let mut s = ExactSum { nan: flags & 1 != 0, pos_inf: flags & 2 != 0, neg_inf: flags & 4 != 0, ..ExactSum::default() };
+        while let Some((&i, r)) = rest.split_first() {
+            let i = i as usize;
+            if i >= CHUNKS {
+                return None;
+            }
+            let c = i64::from_le_bytes(r[..8].try_into().expect("eight bytes"));
+            s.add_chunks(i, &[c]);
+            s.counted();
+            rest = &r[8..];
+        }
+        Some(s)
+    }
+
+    /// Takes `x` away exactly, as adding `-x` does: what a sum over a
+    /// window's frame drops as the frame moves on. An infinity or NaN
+    /// cannot be taken away (a caller keeps them apart).
+    pub fn sub(&mut self, x: f64) {
+        self.add(-x)
+    }
+
     /// The sum plus the integer `x`, rounded once.
     pub fn value_plus(&self, x: i128) -> f64 {
         if x == 0 {
@@ -569,5 +616,44 @@ mod tests {
         let want = units.value() / 2f64.powi(52);
         assert_eq!(s.value(), want);
         assert_eq!(t.value(), want);
+    }
+
+    #[test]
+    fn bytes_give_back_the_same_sum() {
+        let cases: [&[f64]; 5] = [
+            &[],
+            &[0.1, 0.2, 0.3, 43.62, -1e-300, 1e300, 3.0],
+            &[f64::INFINITY, 1.0],
+            &[f64::NAN],
+            &[5e-324, -5e-324, 1e-320, 2f64.powi(1000), -2f64.powi(1000), 0.5],
+        ];
+        for xs in cases {
+            let mut s = ExactSum::new();
+            xs.iter().for_each(|&x| s.add(x));
+            let back = ExactSum::from_bytes(&s.to_bytes()).expect("its own bytes");
+            assert_eq!(back.value().to_bits(), s.value().to_bits(), "{xs:?}");
+            // Merged with more values, as a final aggregate merges partials.
+            let (mut a, mut b) = (s.clone(), back);
+            a.add(0.7);
+            b.add(0.7);
+            assert_eq!(a.value().to_bits(), b.value().to_bits(), "{xs:?} + 0.7");
+        }
+        assert!(ExactSum::from_bytes(&[]).is_none());
+        assert!(ExactSum::from_bytes(&[0, 1]).is_none());
+        assert!(ExactSum::from_bytes(&[8]).is_none());
+        let mut bad = vec![0u8, 67];
+        bad.extend(1i64.to_le_bytes());
+        assert!(ExactSum::from_bytes(&bad).is_none());
+    }
+
+    #[test]
+    fn taken_away_exactly() {
+        let xs = [0.1, 43.62, 1e-12, 7e40, -3.25, 1e300];
+        let mut s = ExactSum::new();
+        xs.iter().for_each(|&x| s.add(x));
+        for &x in &xs[2..] {
+            s.sub(x);
+        }
+        assert_eq!(s.value().to_bits(), sum(&xs[..2]).to_bits());
     }
 }
