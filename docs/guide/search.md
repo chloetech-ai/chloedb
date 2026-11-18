@@ -2,7 +2,9 @@
 
 This page builds a small catalogue of books and searches it every way ChloeDB can: words, phrases and typos, filters and facets, meaning, a blend of the two, and results spread across authors. Each query is SQL, and every block runs, in order, against the code it documents. The [SQL reference](../chloedb/query-language.md) has every function and option; this page shows which to reach for.
 
-You need Python with the `chloedb` package and `chloedb-server` on your `PATH` ([quickstart](../quickstart.md)).
+You need Python with the `chloedb` package and `chloedb-server` on your `PATH` ([quickstart](../quickstart.md)). The server program fetches the embedding model once; everything else runs in your Python process, with no server.
+
+**Running this page's SQL yourself.** Each SQL block below is one statement, with the rows it returns under it. Pass it to the database as a string: in Python, `db.query(sql)`, with a value for each `:name` placeholder as a keyword argument (`db.query(sql, q="dragon")`); in JavaScript, `await db.query(sql, {q: "dragon"})` ([JavaScript](../chloedb/javascript.md#querying)); over HTTP, `POST /v1/sql` with `{"sql": "...", "params": {"q": "dragon"}}` to a chloedb-server that serves the file (`chloedb-server --db books.chloedb`, [HTTP API](../chloedb/server.md#http-api)). The command center's SQL workbench runs them as they are. The first search below shows the Python form.
 
 ## The catalogue
 
@@ -62,7 +64,7 @@ python3 load.py
 12 books
 ```
 
-The same table in SQL, for a server or the `chloedb` shell, is `CREATE TABLE books (id KEYWORD PRIMARY KEY, title TEXT, description TEXT, author KEYWORD, genres KEYWORD[], year INT, rating FLOAT, emb VECTOR OPTIONS(embed = 'title, description', model = 'potion-retrieval-32M'))`.
+The same table in SQL, as `db.sql(...)` and a server's `POST /v1/sql` take it, is `CREATE TABLE books (id KEYWORD PRIMARY KEY, title TEXT, description TEXT, author KEYWORD, genres KEYWORD[], year INT, rating FLOAT, emb VECTOR OPTIONS(embed = 'title, description', model = 'potion-retrieval-32M'))`.
 
 ## Words: `MATCH` and `bm25`
 
@@ -80,6 +82,25 @@ id  | title                    | score()
 b01 | The River and the Dragon | 1.322
 b09 | Bread and Salt           | 1.322
 b02 | Winter Garden            | 1.213
+```
+
+The same statement from Python, with the search's words as a parameter:
+
+```python
+import chloedb
+
+db = chloedb.open("books.chloedb", read_only=True)
+r = db.query("""SELECT id, title, score() FROM books
+                WHERE MATCH(description, :q)
+                ORDER BY bm25(description, :q) DESC LIMIT 5""", q="village")
+for row in r:
+    print(row["id"], row["title"], round(row["score()"], 3))
+```
+
+```text output
+b01 The River and the Dragon 1.322
+b09 Bread and Salt 1.322
+b02 Winter Garden 1.213
 ```
 
 Words are stemmed, so `dragon` finds *dragons*. `MATCH` reads a small query language: words side by side must all be there, `OR` and `-` (not) combine them, quotes ask for a phrase, `*` for a prefix:
@@ -109,6 +130,48 @@ b05 | Machine Hearts
 b11 | Quiet Machines
 ```
 
+### As you type: prefixes
+
+`bm25` reads a prefix as `MATCH` does: `drag*` ranks by the words of the field that begin *drag* ([weights, required and excluded words](../chloedb/query-language.md#weights-required-and-excluded-words)). So a search box can send what has been typed so far, its last word with a `*` while it is being typed, to both:
+
+```sql db=books.chloedb
+SELECT id, title FROM books WHERE MATCH(title, 'drag*') ORDER BY bm25(title, 'drag*') DESC
+```
+
+```text output
+id  | title
+----+--------------------------
+b01 | The River and the Dragon
+b10 | The Dragon Accords
+b03 | Dragons of the Salt Coast
+```
+
+```sql db=books.chloedb
+SELECT id, title FROM books WHERE MATCH(title, 'salt drag*') ORDER BY bm25(title, 'salt drag*') DESC
+```
+
+```text output
+id  | title
+----+--------------------------
+b03 | Dragons of the Salt Coast
+```
+
+**Changed:** `bm25` read `drag*` as the word *drag* before, which no book has, and a ranking by `bm25` returns only the rows it scores, so the first query found nothing until the last word was whole. Against a server or package of 0.3.7 or earlier, rank by the words already typed in full, or by a column while there are none:
+
+```sql db=books.chloedb
+SELECT id, title FROM books WHERE MATCH(title, 'drag*') ORDER BY rating DESC
+```
+
+```text output
+id  | title
+----+--------------------------
+b03 | Dragons of the Salt Coast
+b01 | The River and the Dragon
+b10 | The Dragon Accords
+```
+
+`db.search(text)` ranks with `bm25` too, so it finds nothing for a word half typed unless the word ends in `*`. A prefix is lowercased but not stemmed, and matches the stemmed words that start with it. To complete whole values instead (the searches people ran before, names kept as `KEYWORD`), `PREFIX(field, :typed)` reads a keyword field's sorted values, with typos if asked ([prefixes and autocomplete](../chloedb/query-language.md#prefixes-and-autocomplete)).
+
 ## Typos
 
 `fuzzy => 'auto'` lets a word be an edit or two away, more for longer words; ranked, it corrects a typo rather than widening every word:
@@ -122,6 +185,27 @@ id  | title
 ----+--------------------
 b04 | The Last Lighthouse
 ```
+
+`db.search(text)` searches the words as written, and so does the search box on a table's page in the command center: a search that should forgive typos asks for it in its SQL, or writes `~` after a word (`dragn~`), which `bm25` reads as `fuzzy => 'auto'` for that word. With a `MATCH`, a row must have every word, each as typed or within its edits, and a `bm25` of the same text on the same field takes the `MATCH`'s `fuzzy`:
+
+```python
+import chloedb
+
+db = chloedb.open("books.chloedb", read_only=True)
+r = db.query("""SELECT id, title FROM books
+                WHERE MATCH(description, :q, fuzzy => 'auto')
+                ORDER BY bm25(description, :q) DESC LIMIT 3""", q="dragn villge")
+for row in r:
+    print(row["id"], row["title"])
+print(len(db.search("dragn villge", mode="text")), "rows from db.search, by the words as written")
+```
+
+```text output
+b01 The River and the Dragon
+0 rows from db.search, by the words as written
+```
+
+[Build a search page](search-page.md) puts this behind a search box, with the matched words highlighted and "did you mean" for a misspelt word.
 
 ## Filters and facets
 
@@ -176,6 +260,28 @@ b05 Machine Hearts
 b11 Quiet Machines
 b06 Stars Over Lagos
 ```
+
+## Similar rows: more like this
+
+`{"vector_of": key}` is the vector a row already has, so ranking by `similarity` to it lists the rows nearest it in meaning: "more like this" under a product, "readers also liked" under a book. `id <> :id` leaves the row itself out, and any other condition goes in the same `WHERE`:
+
+```python
+import chloedb
+
+db = chloedb.open("books.chloedb", read_only=True)
+r = db.query("SELECT id, title FROM books WHERE id <> :id ORDER BY similarity(emb, :v) DESC LIMIT 3",
+             id="b01", v={"vector_of": "b01"})
+for row in r:
+    print(row["id"], row["title"])
+```
+
+```text output
+b10 The Dragon Accords
+b03 Dragons of the Salt Coast
+b07 The Cartographer's Daughter
+```
+
+The vector is read from the table the statement names (`{"vector_of": "b01", "table": "books"}` names one). The parameter is the same from JavaScript (`{vector_of: "b01"}`), in the `params` of a server's `POST /v1/sql`, and through a client of a server (`chloedb.connect`).
 
 ## Both: hybrid ranking
 
@@ -237,7 +343,7 @@ b08 | Tomas Berg  | Murder at the Observatory
 
 ## What the planner did
 
-Each answer says how it was found. In Python, `stats["plan"]` holds a line for each segment the query read: which conditions came from an index, which were tested row by row, and how the rows were ranked. [Reading a plan](../chloedb/query-language.md#reading-a-plan) explains the lines; the `chloedb` shell prints them with `--plan`, and a server's `POST /v1/explain` takes the same `SELECT`.
+Each answer says how it was found. In Python, `stats["plan"]` holds a line for each segment the query read: which conditions came from an index, which were tested row by row, and how the rows were ranked. [Reading a plan](../chloedb/query-language.md#reading-a-plan) explains the lines, and a server's `POST /v1/explain` takes the same `SELECT` and answers its plan as a tree too.
 
 ```python
 import chloedb
@@ -257,6 +363,7 @@ seg 0: bm25 MaxScore, filter Probe
 
 ## Next
 
+- [Build a search page](search-page.md): this page's queries behind a search box in a Python web app, with highlights, did you mean and more like this.
 - [Retrieval for RAG](rag.md): the hybrid query above, feeding passages to a model.
 - [The SQL reference](../chloedb/query-language.md): joins, window functions, graphs, rank profiles, rerankers.
 - [Python](../chloedb/python.md): queries built in Python rather than SQL text, Arrow results, writes.

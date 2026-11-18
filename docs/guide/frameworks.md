@@ -95,6 +95,13 @@ e1042 | uploads | 0.0328
 sso | accounts | 0.0161
 ```
 
+A filter's operators are checked, its keys and values are not: a key no
+document has (`{"topik": "uploads"}`), or a value of another type than the
+key holds (`{"updated": "2026"}`, where `updated` is a number), keeps no
+document and raises nothing, so an empty answer can be a filter's typo. An
+unknown operator is refused with the list of those it takes (`unknown filter
+operator '$gtee': use $eq, $ne, $gt, ...`).
+
 `as_retriever()` is the same store as LangChain's `Retriever`, to put in a
 chain:
 
@@ -225,6 +232,11 @@ for hit in index.as_retriever(similarity_top_k=1).retrieve("my file is too big")
 ```text output
 uploads | Error E1042 means the upload was larger than 2 GB; split the file.
 ```
+
+LlamaIndex keeps a node's document under the metadata keys `doc_id`,
+`document_id` and `ref_doc_id`, so a document's own `doc_id` in its metadata
+is replaced by LlamaIndex's id: it does not come back, and no filter finds it.
+Give yours another name, such as `kb_id`.
 
 `as_query_engine(vector_store_query_mode="hybrid")` ranks by words and vectors
 together, as the LangChain store's `mode="hybrid"` does; a query engine needs

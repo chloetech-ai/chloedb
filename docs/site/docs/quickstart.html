@@ -19,7 +19,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/docs.css?v=fd8b9d06a7">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
 </head>
 <body class="docs">
 <!-- Google Tag Manager (noscript) -->
@@ -40,6 +40,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </div></header>
 
 <main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
   <details class="doc-menu" open>
     <summary>Documentation</summary>
     <nav class="doc-nav" aria-label="Documentation">
@@ -48,8 +54,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="quickstart.html" aria-current="page">Quickstart</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
       <span class="h">Search and SQL</span>
       <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
       <a href="sql.html">SQL reference</a>
       <a href="graphs.html">Graphs</a>
       <a href="next-items.html">Next items</a>
@@ -64,18 +72,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="python.html">Python</a>
       <a href="frames.html">DataFrames</a>
       <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
       <a href="java.html">Java and JDBC</a>
       <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
       <a href="frameworks-reference.html">Framework adapters reference</a>
       <span class="h">Server and cluster</span>
       <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
       <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
       <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -86,15 +105,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
-      <a href="chloectx.html">ChloeCtx</a>
-      <a href="chloectx-setup.html">Install ChloeCtx</a>
-      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
-      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
-      <a href="chloectx-capsules.html">Context capsules</a>
-      <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
+  </div>
   <article class="doc">
     <div class="doc-head">
       <span class="eyebrow">Start</span>
@@ -111,8 +125,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>Pick one. Each gives you a <code>chloedb-server</code> program, prebuilt (a download of about 50 MB), in under a minute.</p>
 <p><strong>The install script</strong> puts it in <code>~/.local/bin</code> (it says what to add to your <code>PATH</code> if that folder is not on it yet). It checks the download against the release's SHA-256 and changes nothing else. <a href="../../install.sh">Read it</a> first if you like.</p>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh</pre>
-<p><strong>pipx or uv</strong> <span class="since">since 0.3.7</span>: the same server, from <a href="https://pypi.org/project/chloedb-server/">PyPI</a>, on the same Macs and on Linux with glibc 2.34 or later. <code>pipx install</code> and <code>uv tool install</code> put <code>chloedb-server</code> on your <code>PATH</code>; <code>uvx chloedb-server</code> runs it without installing it.</p>
+<p>It asks GitHub's API (<code>api.github.com</code>) which release is the newest, and when a proxy or firewall blocks that address, or your network's address has used up GitHub's 60 requests an hour for clients without an account (an office, a school, a CI runner), it asks <code>github.com</code> and then this website instead, and says which one answered. If it stops with these lines, none answered:</p>
+<pre data-lang="text" data-title="Output">chloedb install: could not tell which chloedb-server release is the newest:
+  https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
+  ...
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v&lt;version&gt;; 0.3.7 was the newest when this script was written):
+  curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=&lt;version&gt; sh</pre>
+<p>A copy of the script from before 18 November 2026 asked GitHub's API alone, and stopped with <code>could not find a chloedb-server release on https://github.com/chloetech-ai/chloedb/releases (set CHLOEDB_VERSION to pick one)</code>. Either way, name the version, and the script downloads it without asking. The variable goes after the pipe, where <code>sh</code> reads it (in front of <code>curl</code>, the script never sees it):</p>
+<pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.7 sh</pre>
+<p><strong>pipx, uv or pip</strong> <span class="since">since 0.3.7</span>: the same server, from <a href="https://pypi.org/project/chloedb-server/">PyPI</a>, which asks GitHub nothing, on the same Macs and on Linux with glibc 2.34 or later. <code>pipx install</code> and <code>uv tool install</code> put <code>chloedb-server</code> on your <code>PATH</code>; <code>uvx chloedb-server</code> runs it without installing it.</p>
 <pre data-lang="sh">pipx install chloedb-server      # or: uv tool install chloedb-server</pre>
+<p>In a virtualenv, pip puts it in the virtualenv's <code>bin</code>, on your <code>PATH</code> while the virtualenv is active; <code>"chloedb[server]"</code> installs the Python package beside it, for the last section of this page:</p>
+<pre data-lang="sh">python3 -m venv .venv &amp;&amp; . .venv/bin/activate
+pip install chloedb-server       # or: pip install &quot;chloedb[server]&quot;</pre>
 <p><strong>Homebrew</strong> is not available yet: there is no tap to install from. Use the install script above, which works on the same Macs and Linux machines.</p>
 <p><strong>Docker</strong>: skip to <a href="#chloedb-in-docker">ChloeDB in Docker</a> below, which runs the same steps against the image.</p>
 <p><strong>By hand</strong>: each <code>chloedb-server-v&lt;version&gt;</code> <a href="https://github.com/chloetech-ai/chloedb/releases">release</a> has an archive per platform (<code>linux-x86_64</code>, <code>linux-aarch64</code>, <code>macos-arm64</code>, <code>macos-x86_64</code>) with a <code>.sha256</code> beside it:</p>
@@ -121,6 +146,7 @@ curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-serv
 tar xzf chloedb-server-$p.tar.gz &amp;&amp; mkdir -p ~/.local/bin &amp;&amp; mv chloedb-server-$p/chloedb-server ~/.local/bin/</pre>
 <p>Check that it runs:</p>
 <pre data-lang="sh">chloedb-server --version</pre>
+<p>If it does not, or a later step stops with an error, <a href="troubleshooting.html">Troubleshooting</a> has the usual messages and what to do; <code>chloedb-server doctor</code> checks this machine for their causes.</p>
 <h2 id="2-start-it">2. Start it<a class="anchor" href="#2-start-it" aria-label="Link to this section">#</a></h2>
 <p>A database is a file, with its write-ahead log and the server's own logs beside it (<code>quickstart.chloedb-wal</code>, <code>quickstart.chloedb.logs</code>). Give the server a path that does not exist yet and it creates an empty database there; it listens on <code>127.0.0.1:7700</code>, which only this machine can reach.</p>
 <pre data-lang="sh">mkdir -p chloedb-quickstart &amp;&amp; cd chloedb-quickstart
@@ -197,9 +223,14 @@ db.upsert([
     {&quot;id&quot;: &quot;b3&quot;, &quot;title&quot;: &quot;Dragons of the northern rivers&quot;, &quot;year&quot;: 2011},
 ])
 print(db.query(&quot;SELECT id, title FROM books WHERE MATCH(title, &#x27;dragon&#x27;) AND year &gt; 2000&quot;).rows)
+# a typo, forgiven: each word may be an edit or two away, by its length
+print(db.query(&quot;SELECT id, title FROM books WHERE MATCH(title, :q, fuzzy =&gt; &#x27;auto&#x27;) &quot;
+               &quot;ORDER BY bm25(title, :q) DESC&quot;, q=&quot;dragn&quot;).rows)
 db.close()
 EOF</pre>
-<p>The same methods talk to a server: <code>chloedb.connect("http://127.0.0.1:7700")</code> in place of <code>chloedb.open(...)</code>.</p>
+<pre data-lang="text" data-title="Output" class="output">[[&#x27;b3&#x27;, &#x27;Dragons of the northern rivers&#x27;]]
+[[&#x27;b1&#x27;, &#x27;The river and the dragon&#x27;], [&#x27;b3&#x27;, &#x27;Dragons of the northern rivers&#x27;]]</pre>
+<p><code>chloedb.open</code> creates the database the first time and opens it after; one process at a time may open it to write. The same methods talk to a server: <code>chloedb.connect("http://127.0.0.1:7700")</code> in place of <code>chloedb.open(...)</code>. <a href="python.html">Python</a> goes on from here, and <a href="search-page.html">Build a search page</a> makes a search box with typos, highlights and filters from these pieces.</p>
 <h2 id="chloedb-in-docker">ChloeDB in Docker<a class="anchor" href="#chloedb-in-docker" aria-label="Link to this section">#</a></h2>
 <p>The image <code>ghcr.io/chloetech-ai/chloedb-server</code> (Linux, x86-64 and arm64) keeps its database in <code>/data</code>: mount a volume there to keep it. Inside a container the server listens on all of the container's interfaces, which it allows only with a token, so pick one. Publishing the port on <code>127.0.0.1</code> keeps it to this machine.</p>
 <pre data-lang="sh">docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
@@ -229,6 +260,7 @@ EOF</pre>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

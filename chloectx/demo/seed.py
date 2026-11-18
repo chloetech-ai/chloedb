@@ -25,8 +25,9 @@ stores are not touched. Then, with --server:
   (POST /v1/apps/chloectx/v1/spaces...): each exchange and each note, dated,
   with the corrections as replacements. Only adds: a space that exists is
   refused unless --space-reuse.
-* --sync copies the store into the cluster's chloectx_memory (chloectx sync),
-  where the Spaces page lists it as the synced project acme/harbor.
+* --sync copies the store into the cluster, into the project's own table
+  chloectx_mem_acme_harbor_58e121ba (chloectx sync), where the Spaces page
+  lists it as the synced project acme/harbor.
 
 The key is read from the environment variable --key-env names (never from
 the command line). Then:
@@ -339,7 +340,7 @@ def main():
     ap.add_argument("--key-env", default="CHLOEDB_KEY", help="the environment variable holding the server's key (default CHLOEDB_KEY)")
     ap.add_argument("--space", help="write the story into this team space too (needs --server)")
     ap.add_argument("--space-reuse", action="store_true", help="add to --space when it exists")
-    ap.add_argument("--sync", action="store_true", help="copy the store into the server's chloectx_memory (needs --server; https, or http on this machine)")
+    ap.add_argument("--sync", action="store_true", help="copy the store into the server, as the project acme/harbor (needs --server; https, or http on this machine)")
     args = ap.parse_args()
 
     if args.check:

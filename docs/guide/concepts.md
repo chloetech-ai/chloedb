@@ -54,7 +54,7 @@ CREATE TABLE books (
 | `EDGES` | typed, weighted links to other rows | `REACHABLE`, `PATH`, `ppr` |
 | `MEDIA` | images and sounds, by URI | the vectors and text made from them |
 
-A vector field with `embed` is filled by an embedding model from other fields when a row is written, so you insert text and search by meaning. The model runs inside ChloeDB (`potion-retrieval-32M`, a fast static model, or BERT models when built with them) or behind an API (OpenAI, Cohere, Voyage, Gemini, Ollama). The [SQL reference](../chloedb/query-language.md#columns-and-types) lists every type and option.
+A vector field with `embed` is filled by an embedding model from other fields when a row is written, so you insert text and search by meaning. The model runs inside ChloeDB or behind an API (OpenAI, Cohere, Voyage, Gemini, Ollama). Inside it, every build runs `potion-retrieval-32M`, a fast static model; BERT models such as `bge-small-en-v1.5` run only in a build from source with the `bert` feature, which the prebuilt server, wheels, npm package and Docker image leave out ([a BERT model does not run](../chloedb/troubleshooting.md#a-bert-model-such-as-bge-small-does-not-run)). The [SQL reference](../chloedb/query-language.md#columns-and-types) lists every type and option.
 
 ## Every row, indexed three ways
 
@@ -78,14 +78,14 @@ A cost-based **planner** decides, for each segment and from exact statistics, ho
 
 The same database, and the same SQL, run three ways:
 
-| | how | when |
-|---|---|---|
-| **In your process** | `chloedb.open("books.chloedb")` | one program owns the data: an app, a notebook, an agent |
-| **One server** | `chloedb-server --db books.chloedb` | many clients, other languages, a browser UI |
-| **A cluster** | a coordinator over shards, each with replicas | more data or traffic than one machine holds |
+| | how | when | start with |
+|---|---|---|---|
+| **In your process** | `chloedb.open("books.chloedb")` | one program owns the data: an app, a notebook, an agent | [Python](../quickstart.md#chloedb-from-python-with-no-server) or [JavaScript](../chloedb/javascript.md) |
+| **One server** | `chloedb-server --db books.chloedb` | many clients, other languages, a browser UI, a web app with several worker processes | [the quickstart](../quickstart.md) |
+| **A cluster** | a coordinator over shards, each with replicas | more data or traffic than one machine holds, or a copy to fail over to | [Operate a cluster](operate-cluster.md) |
 
-[chloedb-server](../chloedb/server.md) serves a database over HTTP JSON and gRPC, with a command center in the browser for queries, health and performance, and an agent that answers questions by writing SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas. The Python, JavaScript and Java clients have the same methods for a file and a server, so code moves from one to the other unchanged.
+One process at a time writes a database file, so a program whose processes all write it, such as a web app run by several workers or a reloader, serves it with a server and uses the clients ([Build a search page](search-page.md) does). [chloedb-server](../chloedb/server.md) serves a database over HTTP JSON and gRPC, with a command center in the browser for queries, health and performance, and an agent that answers questions by writing SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas. The Python, JavaScript and Java clients have the same methods for a file and a server, so code moves from one to the other unchanged.
 
 ## Apps on a cluster
 
-Some programs built on ChloeDB run beside a server and appear in its command center: the [crawler](../chloedb/crawler.md), which turns a site into a table, [Sheets](../chloedb/sheets.md), spreadsheets whose cells are rows, and [ChloeCtx](../chloectx/index.md), long-term memory for Claude Code. [Apps on a cluster](apps.md) says how they attach.
+Some programs built on ChloeDB run beside a server and appear in its command center: the [crawler](../chloedb/crawler.md), which turns a site into a table, [Sheets](../chloedb/sheets.md), spreadsheets whose cells are rows, and [ChloeCtx](../chloectx/index.md), long-term memory for Claude Code. [Apps on a cluster](apps.md) says how they attach. ChloeCtx also runs on its own, beside Claude Code on your machine, with no server: [Install ChloeCtx](../chloectx/setup.md).

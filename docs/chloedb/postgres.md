@@ -2,6 +2,8 @@
 
 `chloedb-server follow-postgres` keeps ChloeDB in step with a Postgres database by logical replication: it copies the tables of a publication, then applies every insert, update, delete, `TRUNCATE` and new column a moment after Postgres commits it, so ChloeDB serves search over the rows Postgres holds without a nightly job or a Debezium and Kafka pipeline in between. It speaks Postgres's own protocol (`pgoutput`, the plugin Postgres ships, from version 10), and keeps what it applied in ChloeDB's `_sources`, in the same transactions as the rows, so a follower stopped and started again goes on from there and applies each change once.
 
+This is ChloeDB reading from Postgres, not ChloeDB speaking to Postgres clients: ChloeDB serves no Postgres protocol of its own, so `psql`, DBeaver, Metabase and dbt's Postgres adapter cannot connect to it. [Running SQL](query-language.md#running-sql) lists the ways in.
+
 ## Set up Postgres
 
 Postgres writes what logical replication needs once `wal_level` is `logical` (a restart takes it):
@@ -51,6 +53,8 @@ Stop it whenever: started again it resumes from what ChloeDB applied. While it i
 
 Transactions are applied whole, each in one write (several at once while Postgres sends faster than they are written), but one of more than 1,000 changes, more than 16 MB of values, or with a `TRUNCATE`, is written in steps: a reader can see part of it, as it can see part of any write across a cluster's shards.
 
+**Changed:** a follower of 0.3.7 or earlier adds a new column with its type only, so the rows from before read `NULL` in it until Postgres next changes each of them (add the column in ChloeDB first, with the same default, or copy again with `--copy`), and its server takes other writes to the followed tables, whose rows then differ from Postgres's, with no warning, until Postgres changes them.
+
 ### How Postgres columns become fields
 
 | Postgres | ChloeDB |
@@ -70,13 +74,14 @@ Transactions are applied whole, each in one write (several at once while Postgre
 
 ### Choosing ChloeDB types
 
-To choose the types, analyzers, an embedded vector or fields of ChloeDB's own, make the table in ChloeDB before the first run, with the Postgres key as its key and the columns of the names Postgres has:
+A `text` or `varchar` column becomes `TEXT`, which is searched by its words. It groups (`GROUP BY country`, `SELECT DISTINCT country`) and compares with `=` by its stored text, read row by row, where a `KEYWORD`'s index answers both ([differences from PostgreSQL](query-language.md#differences-from-postgresql)). A column of names, codes or statuses that you group and filter by its whole value (`brand` below) belongs in a `KEYWORD`. To choose the types, analyzers, an embedded vector or fields of ChloeDB's own, make the table in ChloeDB before the first run, with the Postgres key as its key and the columns of the names Postgres has:
 
 ```sql
 CREATE TABLE products (
   id INT PRIMARY KEY,
   title TEXT,
   sku KEYWORD,
+  brand KEYWORD,
   description TEXT OPTIONS(analyzer = 'english'),
   price FLOAT,
   emb VECTOR OPTIONS(embed = 'title, description', model = 'potion-retrieval-32M')

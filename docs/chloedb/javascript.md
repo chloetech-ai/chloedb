@@ -71,9 +71,9 @@ r.rows;          // [[1999, 1]]
 await db.close();
 ```
 
-`open(path, {schema})` opens the file, or creates it with the schema when it does not exist; `Database.create(path, schema)` and `Database.open(path)` do one or the other. A schema is an object, JSON text or the path of a JSON file, in the [short form or the long one](server.md#schemas). `directory: true` keeps a database as a directory of segment files, `models` is where embedded fields' models are (`$CHLOEDB_MODELS`, else `~/.local/share/chloedb/models` (or `~/.local/share/strata/models`, on a machine that has that folder from before the rename; before 0.3.2, always); `chloedb-server fetch-model` fetches them), and `threads` how many cores index builds and each query use (every core by default).
+`open(path, {schema})` opens the file, or creates it with the schema when it does not exist; `Database.create(path, schema)` and `Database.open(path)` do one or the other. A schema is an object, JSON text or the path of a JSON file, in the [short form or the long one](server.md#schemas). `directory: true` keeps a database as a directory of segment files, `models` is where embedded fields' models are (`$CHLOEDB_MODELS`, else `~/.local/share/chloedb/models` (or `~/.local/share/strata/models`, on a machine that has that folder from before the rename and no `~/.local/share/chloedb`; before 0.3.2, always); `chloedb-server fetch-model` fetches them), and `threads` how many cores index builds and each query use (every core by default).
 
-Every call answers a promise and runs on a worker thread of Node's pool, so queries and writes leave the event loop free and many run at once. Writes made at once wait for each other and share commits (one disk flush for all those waiting), so none fails as busy. One process at a time may have a database open to write it (a second one gets "busy: the database is open elsewhere"). Others can open it with `Database.open(path, { readOnly: true })` to read it while it is written, the workers of a cluster, say: each query sees the writer's commits so far, every write fails, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). For writes from several processes, serve it with chloedb-server.
+Every call answers a promise and runs on a worker thread of Node's pool, so queries and writes leave the event loop free and many run at once. Writes made at once wait for each other and share commits (one disk flush for all those waiting), so none fails as busy. One process at a time may have a database open to write it, and only once: a second `open` of the file, by another process or by the same one, gets "busy: the database is open elsewhere", so a program opens it once and shares the `Database` (in a dev server that runs modules again, [on `globalThis`](#the-same-in-the-process)). Others can open it with `Database.open(path, { readOnly: true })` to read it while it is written, the workers of a cluster, say: each query sees the writer's commits so far, every write fails, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). For writes from several processes, serve it with chloedb-server.
 
 ### Querying
 
@@ -146,7 +146,7 @@ Errors reject with a `ChloeDBError`, whose message is the database's (`StrataErr
 | `timeout` | `DeadlineError` | a deadline passed: `timeoutMs`, a coordinator's wait for a shard (504) |
 | `unavailable` | `UnavailableError` | no copy can serve it now (503) |
 
-Other codes are `memory` (a query past its memory budget), `corrupt`, `io`, `internal` and `error`; `errorCode(message, status, answer)` gives the code of any message.
+Other codes are `memory` (a query past its memory budget), `corrupt`, `io`, `internal` and `error` (which is also what `open` of a file that does not exist, without a schema, rejects with: "x.chloedb does not exist: pass a schema to create it"); `errorCode(message, status, answer)` gives the code of any message.
 
 ## A server from JavaScript
 
@@ -158,7 +158,7 @@ await client.upsert([{ id: "b2", title: "A second book", year: 2001 }]);
 const r = await client.search("book", { limit: 5 });
 ```
 
-`Client` has the methods of `Database` that a server offers, over its [HTTP API](server.md#http-api), and more of the server's own: `health()`, `stats()`, `explain(sql)`, `put(key, row, {ifSeqNo})`, `stream(events)` (an iterable or async iterable of [stream events](server.md#streams), applied once), `source(name)` and `sources()`, `ask(question)` (the server's agent), and the file calls, which upload a path's bytes (Node, Bun, Deno) or bytes given (a `Uint8Array`, a `Blob`). `exportSqlite(null)` and `exportParquet(null)` give the file's bytes instead of writing it. Rows are written 1,000 a request, keys read 10,000 a request. An error the server answers rejects with a `ChloeDBError` whose `status` is the HTTP status and `answer` its JSON; one where the server cannot be reached rejects with `fetch`'s error. `timeout` (milliseconds, 30 seconds by default) bounds each request, and `fetch` takes another fetch. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retryFor` milliseconds (10 seconds; 0 sends each request once), and rejects with the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
+`Client` has the methods of `Database` that a server offers, over its [HTTP API](server.md#http-api), and more of the server's own: `health()`, `stats()`, `explain(sql)`, `put(key, row, {ifSeqNo})`, `stream(events)` (an iterable or async iterable of [stream events](server.md#streams), applied once), `source(name)` and `sources()`, `ask(question)` (the server's agent), and the file calls, which upload a path's bytes (Node, Bun, Deno) or bytes given (a `Uint8Array`, a `Blob`). `exportSqlite(null)` and `exportParquet(null)` give the file's bytes instead of writing it. Rows are written 1,000 a request, keys read 10,000 a request. An error the server answers rejects with a `ChloeDBError` whose `status` is the HTTP status and `answer` its JSON; one where the server cannot be reached rejects with `fetch`'s error. `count()` reads the server's `/v1/health`, whose `docs` counts its first table: on a server started without a schema, whose tables were made since by `CREATE TABLE`, that is an empty placeholder table, and `count()` answers 0; `(await client.query("SELECT COUNT(*) FROM products")).scalar()` counts a table on any server. Highlighting (`POST /v1/highlight`), "did you mean" (`POST /v1/correct`) and scrolls have no method: call them with `fetch` ([a route over HTTP](#a-route-over-http)). `timeout` (milliseconds, 30 seconds by default) bounds each request, and `fetch` takes another fetch. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retryFor` milliseconds (10 seconds; 0 sends each request once), and rejects with the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
 
 `write(ops, {idempotencyKey})` and `sql(sql, params, {idempotencyKey})` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator rejects with a `ChloeDBError` whose `answer` says so (`partial: true`) and names its key: `await client.write(ops, { idempotencyKey: e.answer.idempotency_key })` writes the rest.
 
@@ -181,7 +181,150 @@ await client.get("u2", { minSeqNo: w.seqNo, minSeqNos: w.seqNos });
 
 The numbers go with reads only: a server refuses them on a write, so a session leaves them off an `INSERT`, `UPDATE` or `DELETE` by `sql`, judging a statement by its first word. A `Database` in the process ignores them: it reads every write it committed.
 
-In a browser, the client works from pages of the server's own origin (a page it serves, or behind the same reverse proxy): chloedb-server sends no CORS headers, and refuses writes from pages of other sites ([security](server.md#security)).
+## A search box in a web app
+
+A search box sends what was typed to your app's own server code, which queries ChloeDB and answers the page. A page cannot query chloedb-server itself unless chloedb-server serves the page's origin.
+
+### Why a page cannot call chloedb-server
+
+chloedb-server refuses every request but `GET` and `HEAD` that carries an `Origin` other than the server's own, reads included: a `POST /v1/query` with a `SELECT` from a page on `http://localhost:3000` to a server on port 7700 gets 403, "a page from http://localhost:3000 cannot change this server". Its `error_code`, `scope_refused`, and its hint to ask for a key with another scope do not apply: no key lets such a request through. The server sends no CORS headers and answers a preflight `OPTIONS` with 405, so a browser does not even send the client's `POST` (it sends JSON, which needs the preflight), and the call rejects with `fetch`'s network error, which the browser's console shows as a CORS error. There is no search-only key to put in a page, as Algolia has one.
+
+So the page calls a route of your app, and the route queries ChloeDB: over HTTP from the server side, where `fetch` sends no `Origin`, or in the process, with the database open there. A page calls chloedb-server directly only from the server's own origin: a page it serves, or a page behind a reverse proxy that serves your app and ChloeDB under one host name, passes the `Host` header on, and starts chloedb-server with `--allow-host` and that name ([security](server.md#security)).
+
+### Search as you type
+
+`search()` ranks by `bm25` of its text as written, so a word half typed (`so`) finds nothing; `so*` and `lether~` are a prefix and a word with its typos there, as in a query, where `ORDER BY bm25(name, 'sof*')` ranks the rows `MATCH(name, 'sof*')` keeps ([weights, required and excluded words](query-language.md#weights-required-and-excluded-words); **changed:** `bm25` read `sof*` as the word *sof* before, and returned no rows). A search box writes its own query: it filters with `MATCH` by what was typed, its last word a prefix while it is being typed, and ranks by `bm25` of the words typed whole, or by a column while the first word is still being typed. `fuzzy => 'auto'` takes typos in the words (`lether`). These are the queries for a table `products` (`id`, a TEXT `name`, a KEYWORD `brand`, `price`, `rating` and `in_stock`), shared by the two routes below:
+
+```ts
+// lib/search.ts: the queries of a search box, for what was typed so far
+export type Hit = { id: string; name: string; brand: string; price: number };
+
+/** The words typed, lowercased and of letters and digits only, so that none is an operator of MATCH. */
+export function words(typed: string) {
+  const all = typed.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const typing = all.length > 0 && !/\s$/.test(typed); // the last word is still being typed
+  const whole = typing ? all.slice(0, -1) : all;
+  return { text: all.join(" "), match: all.join(" ") + (typing ? "*" : ""), whole: whole.join(" ") };
+}
+
+const WHERE = "MATCH(name, :match, fuzzy => 'auto') AND in_stock";
+
+/** The hits, best first: by the words typed whole, or by rating while there are none. */
+export function hitsSql(whole: string) {
+  const order = whole ? "bm25(name, :whole, fuzzy => 'auto') * (1 + 0.1 * rating) DESC" : "rating DESC, id";
+  return `SELECT id, name, brand, price FROM products WHERE ${WHERE} ORDER BY ${order} LIMIT 10`;
+}
+
+/** The brands of all the rows that match, with how many each: a facet. */
+export const BRANDS_SQL = `SELECT brand, COUNT(*) AS n FROM products WHERE ${WHERE} GROUP BY brand ORDER BY n DESC LIMIT 10`;
+```
+
+Typed `lether so`, the hits are filtered by `MATCH(name, 'lether so*', fuzzy => 'auto')` and ranked by `bm25(name, 'lether', fuzzy => 'auto')`; typed `so`, they are filtered by `MATCH(name, 'so*', fuzzy => 'auto')` and ranked by rating.
+
+### A route over HTTP
+
+A Next.js route handler (the App Router's `app/api/search/route.ts`) answers the hits, a facet of their brands and, from two routes of chloedb-server that the client has no method for, each hit's name with the words that matched marked ([`POST /v1/highlight`](server.md#http-api)) and a "did you mean" ([`POST /v1/correct`](query-language.md#did-you-mean-correcting-a-querys-words)). It needs nothing but `fetch`, so it runs on Node and on the Edge runtime alike:
+
+```ts
+// app/api/search/route.ts: the search box's answers, from chloedb-server
+import { connect, type Result } from "chloedb/client";
+import { BRANDS_SQL, hitsSql, words, type Hit } from "../../../lib/search";
+
+const SERVER = process.env.CHLOEDB_URL ?? "http://127.0.0.1:7700";
+const TOKEN = process.env.CHLOEDB_TOKEN;
+const chloedb = connect(SERVER, { token: TOKEN });
+
+/** A route of chloedb-server that the client has no method for. */
+async function post(path: string, body: object) {
+  const r = await fetch(SERVER + path, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(TOKEN ? { authorization: `Bearer ${TOKEN}` } : {}) },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`${path}: ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+export async function GET(request: Request) {
+  const { text, match, whole } = words(new URL(request.url).searchParams.get("q") ?? "");
+  if (!text) return Response.json({ hits: [], brands: [], didYouMean: null });
+  const [hits, brands, corrected] = await Promise.all([
+    chloedb.query(hitsSql(whole), { match, whole }) as Promise<Result<Hit>>,
+    chloedb.query(BRANDS_SQL, { match }),
+    post("/v1/correct", { table: "products", field: "name", text }),
+  ]);
+  const marked = await post("/v1/highlight", { table: "products", field: "name", query: match, texts: hits.column("name") });
+  return Response.json({
+    hits: hits.objects().map((hit, i) => ({ ...hit, marked: marked.texts[i] })),
+    brands: brands.objects(),
+    didYouMean: corrected.changed ? corrected.text : null,
+  });
+}
+```
+
+`GET /api/search?q=lether%20so` answers:
+
+```json
+{"hits": [{"id": "p1", "name": "Leather sofa", "brand": "acme", "price": 318.5, "marked": "<mark>Leather</mark> <mark>sofa</mark>"}, ...],
+ "brands": [{"brand": "acme", "n": 1}, ...],
+ "didYouMean": "leather so"}
+```
+
+`marked` is HTML-escaped around its `<mark>` tags, so the page can set it as HTML (React's `dangerouslySetInnerHTML`); every other value is plain text, for the page to escape as usual. `/v1/correct` changes a word only when no row holds it and a neighbour one edit away is in 5 rows or more, so a small table gets few corrections. A deep page of hits comes from a [scroll](server.md#reading-past-the-window-scrolls) (`page_size` and a `cursor` on `POST /v1/query`), which has no client method either.
+
+### The same in the process
+
+With the database in the app's process, there is no server to run, and no highlighting or "did you mean": those are chloedb-server's routes, and a `Database` has neither. Open the file once and share the `Database`:
+
+```ts
+// lib/chloedb.ts: the one Database of the process
+import { open, type Database } from "chloedb";
+
+// `next dev` runs a module again when it changes, and a second open of the
+// file in one process is refused as busy: keep the first on globalThis.
+const g = globalThis as typeof globalThis & { chloedb?: Promise<Database> };
+
+export function db(): Promise<Database> {
+  return (g.chloedb ??= open(process.env.CHLOEDB_PATH ?? "products.chloedb"));
+}
+```
+
+```ts
+// app/api/search/route.ts, with the database in the process
+import type { Result } from "chloedb";
+import { db } from "../../../lib/chloedb";
+import { BRANDS_SQL, hitsSql, words, type Hit } from "../../../lib/search";
+
+export async function GET(request: Request) {
+  const { text, match, whole } = words(new URL(request.url).searchParams.get("q") ?? "");
+  if (!text) return Response.json({ hits: [], brands: [] });
+  const products = await db();
+  const [hits, brands] = await Promise.all([
+    products.query(hitsSql(whole), { match, whole }) as Promise<Result<Hit>>,
+    products.query(BRANDS_SQL, { match }),
+  ]);
+  return Response.json({ hits: hits.objects(), brands: brands.objects() });
+}
+```
+
+Next.js bundles server code, and its bundler cannot take the addon (`next build` stops with "chloedb.node (node addon) is not placeable in ESM chunks"), so leave the package out of the bundle:
+
+```js
+// next.config.mjs
+export default { serverExternalPackages: ["chloedb"] };
+```
+
+The route runs on Node, Next.js's default for route handlers: on the Edge runtime (`export const runtime = "edge"`) `"chloedb"` is the client alone, which has no `open`. One process may open the file to write it. When another process writes it (chloedb-server, an import job), or the app runs as several processes, open it with `{ readOnly: true }` in the app: each query sees the writer's commits so far.
+
+### What a route sends
+
+`Response.json(result)` sends the whole `Result`: `columns`, the `rows` as arrays, `keys`, `scores` and `stats`, whose `plan` lists what the engine did (`"seg 0: bm25 MaxScore, filter Probe"`). Send `result.objects()`, the rows as objects, or what you make of them, as the routes above do. An INT past 2^53 comes back as a `BigInt`, which `JSON.stringify` and `Response.json` refuse ("Do not know how to serialize a BigInt"); write it as text first, `JSON.stringify(rows, (k, v) => (typeof v === "bigint" ? String(v) : v))`.
+
+### TypeScript
+
+`query()` answers a `Result` whose rows are `Record<string, Value>`. A row type of your own is a cast, `as Result<Hit>` (or `as Promise<Result<Hit>>`), which nothing checks against the query's columns. Declare the row with `type`, not `interface`: TypeScript does not take an interface for a `Record<string, Value>` ("Index signature for type 'string' is missing").
+
+The declarations use `Symbol.asyncDispose`, from TypeScript's `esnext.disposable` library. TypeScript 7 includes no `@types` package that `types` does not name, so with `skipLibCheck` off and a `target` older than `ESNext`, `tsc` stops with "Property 'asyncDispose' does not exist on type 'SymbolConstructor'". Name Node's types (`"types": ["node"]`, with `@types/node` installed), or, for code that runs in a page or a worker, give the library: `"lib": ["ES2022", "DOM", "ESNext.Disposable"]`. The `tsconfig.json` that Next.js writes has `skipLibCheck` on and `esnext` in `lib`.
 
 ## Search on the device
 
@@ -201,6 +344,54 @@ console.log(r.where, r.why);   // device proved
 Bun loads the addon as Node does: `bun run app.js`. Deno loads it through its Node compatibility with `--allow-ffi` (and `--allow-read`, `--allow-write`, `--allow-env` for the files and `$CHLOEDB_MODELS`); the client needs only `--allow-net`.
 
 ## Tests
+
+### Your app's tests
+
+A test opens a database of its own in a directory of its own, and removes the directory after. A database is the file and two entries beside it, `<name>-wal` and the directory `<name>-readers`, and there is no database in memory only: `open(":memory:")` makes the three in the working directory, named `:memory:`.
+
+```js
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { open } from "chloedb";
+
+const SCHEMA = {
+  table: "products", key: "id",
+  fields: [
+    { name: "id", type: "keyword" }, { name: "name", type: "text" },
+    { name: "rating", type: "float" }, { name: "in_stock", type: "bool" },
+  ],
+};
+
+test("a word being typed finds the sofa", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "shop-"));
+  const db = await open(join(dir, "products.chloedb"), { schema: SCHEMA });
+  try {
+    await db.upsert([
+      { id: "p1", name: "Leather sofa", rating: 4.1, in_stock: true },
+      { id: "p2", name: "Leather armchair", rating: 3.9, in_stock: true },
+    ]);
+    const r = await db.query(
+      "SELECT id FROM products WHERE MATCH(name, :match, fuzzy => 'auto') AND in_stock ORDER BY bm25(name, :whole, fuzzy => 'auto') DESC LIMIT 10",
+      { match: "lether so*", whole: "lether" },
+    );
+    assert.deepEqual(r.column("id"), ["p1"]);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+```
+
+A test against chloedb-server starts a server of its own, on other ports than the app's server: `--listen` moves only the HTTP port, and a second server left on gRPC's 7701 stops with "the address is in use", so give it `--grpc` another port too, or `--grpc off`:
+
+```sh
+chloedb-server --db "$(mktemp -d)/test.chloedb" --listen 127.0.0.1:7710 --grpc off
+```
+
+### The package's tests
 
 ```sh
 cd chloedb-js

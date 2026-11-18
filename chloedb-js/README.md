@@ -3,7 +3,7 @@
 ChloeDB opened from its file inside a Node, Bun or Deno process, with no
 server, the way better-sqlite3 opens a SQLite file; or a client of a running
 chloedb-server from any JavaScript runtime with `fetch`. Both have the same
-methods. Documentation: [docs/chloedb/javascript.md](../docs/chloedb/javascript.md).
+methods. Documentation: [ChloeDB from JavaScript](https://chloetech-ai.github.io/chloedb/site/docs/javascript.html).
 
 ```js
 import { open } from "chloedb";
@@ -23,7 +23,7 @@ await db.close();
 Prebuilt for macOS and Linux (no Rust needed): `npm install chloedb`, which
 takes the addon of your platform from its package (`@chloedb/darwin-arm64`
 and the like); each `chloedb-js-v<version>` GitHub release has the same as a
-tarball per platform ([docs](../docs/chloedb/javascript.md#prebuilt)).
+tarball per platform ([docs](https://chloetech-ai.github.io/chloedb/site/docs/javascript.html#prebuilt)).
 Release 0.1.0, from before the rename, was published as `strata-db`. Build
 (Rust and a C compiler), test, and use from an app:
 

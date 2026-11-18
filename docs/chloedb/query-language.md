@@ -2,6 +2,8 @@
 
 ChloeDB speaks standard SQL over the tables of a database: `SELECT` with functions for full text, vectors, rank fusion and graphs, aggregates, typo-tolerant and synonym searches, and subqueries, `WITH` and joins of a table with itself; `INSERT`, `UPDATE` and `DELETE`; `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE`; and functions stored in the database (`CREATE FUNCTION`), which queries call. Text, structured and vector conditions mix freely in one statement, and the planner decides how to evaluate them together.
 
+It reads like PostgreSQL's SQL and gives the same answers for most queries, but it is not PostgreSQL: a few expressions give other answers, some statements are refused, and no Postgres client connects to it, since ChloeDB serves no Postgres wire protocol. [Differences from PostgreSQL](#differences-from-postgresql) lists them, and [Running SQL](#running-sql) the ways a statement gets in.
+
 ## A first look
 
 ```sql
@@ -89,7 +91,7 @@ Predicates combine with `AND`, `OR`, `NOT`, [`AT_LEAST`](#some-of-the-conditions
 
 A `KEYWORD` compares with text: `k = 1` is an error that points to `k = '1'`, as `n = '2'` is on an `INT` (a write still stores the number 1 in a `KEYWORD` as `'1'`). `INT` values are 64-bit integers and compare exactly: `id = 9007199254740993` finds that row and not 9007199254740992, which a double cannot tell apart. Arithmetic of `INT`s (`+`, `-`, `*`, `%`) is exact while its result fits in 64 bits; a result that does not is a `FLOAT`, not an error (`n * 9223372036854775807` of an `n` of 3 is `2.7670116110564327e19`), `/` always gives a `FLOAT`, and dividing by 0 (with `/` or `%`) gives `NULL`. A client that reads such a column as integers gets a float where a result overflowed. A fraction bounds integers by rounding inward (`n > 2.5` is `n >= 3`, `n = 2.5` matches nothing). A write gives an `INT` a float with no fraction as its whole number (`2.0` is 2, as pandas writes whole numbers in a column with gaps), from SQL, JSON and CSV alike, and refuses `2.5`.
 
-`NULL` follows SQL's three-valued logic. A comparison with a missing value is neither true nor false, and so is its negation: `rating != 2` and `NOT rating > 2` leave out the rows without a rating. Ask for them with `rating IS NULL` (`IS NOT NULL` for the others). `MATCH` and graph predicates are always true or false, so `NOT MATCH(body, 'x')` includes rows without a body. A filter on a multi-valued field holds when some value matches, and its negation when none does, so `tags != 'red'` includes rows without tags (`tags IS NULL` finds those). `rating = NULL` is an error that points to `IS NULL`. `rating IN (1, NULL)` is TRUE where the rating is 1 and UNKNOWN elsewhere, so `rating NOT IN (1, NULL)`, like `NOT IN` a subquery that returns a `NULL`, keeps no row; a multi-valued field's `IN` is TRUE or FALSE (the `NULL` matches none of its values). `LIKE '%'` and `PREFIX(f, '')` hold for every row with a value and are UNKNOWN for the others, so their `NOT` keeps no row of a single-valued field. A scalar subquery that finds no row is `NULL`, and a comparison with it keeps no row either way.
+`NULL` follows SQL's three-valued logic. A comparison with a missing value is neither true nor false, and so is its negation: `rating != 2` and `NOT rating > 2` leave out the rows without a rating. Ask for them with `rating IS NULL` (`IS NOT NULL` for the others). So does a comparison no value can meet, such as `passengers != 1.5` on an `INT` field. `MATCH` and graph predicates are always true or false, so `NOT MATCH(body, 'x')` includes rows without a body. A filter on a multi-valued field holds when some value matches, and its negation when none does, so `tags != 'red'` includes rows without tags (`tags IS NULL` finds those). `rating = NULL` is an error that points to `IS NULL`. `rating IN (1, NULL)` is TRUE where the rating is 1 and UNKNOWN elsewhere, so `rating NOT IN (1, NULL)`, like `NOT IN` a subquery that returns a `NULL`, keeps no row; a multi-valued field's `IN` is TRUE or FALSE (the `NULL` matches none of its values). `LIKE '%'` and `PREFIX(f, '')` hold for every row with a value and are UNKNOWN for the others, so their `NOT` keeps no row of a single-valued field. A scalar subquery that finds no row is `NULL`, and a comparison with it keeps no row either way.
 
 A `BOOL` is `TRUE` or `FALSE`; a write also takes 1 and 0 and the text `'true'`, `'false'`, `'t'`, `'f'`, `'1'` and `'0'`, and refuses anything else. A field named alone is a condition (`WHERE done AND NOT archived`), with `NULL` neither true nor false: `NOT done` and `done != TRUE` leave out the rows without a value, `done IS NOT TRUE` takes them in. `SUM(done)` counts the trues, and answers come back as booleans.
 
@@ -284,6 +286,19 @@ primary := "(" query ")" ["@" n | "@" p "%"] | ("\"phrase\"" | word | word* | wo
 | `(mrna vaccine trial phase)@2`, `(…)@50%` | at least 2 of the group's items, or half of them |
 
 Operators are uppercase; lowercase `and`, `or` and `not` are ordinary words (and stopwords). Parentheses and `NOT`s nest at most 100 deep. Words and phrases are analysed like the field's documents, by its [analyzer](#tables): a word that analyses to several terms (`e-mail`) becomes a phrase, and one that analyses to none (a stopword) is dropped. A prefix is lowercased and folded but not stemmed, and matches the stemmed terms that start with it. A weight (`vaccine^2`, `"messenger rna"^0.5`) is read and ignored, since `MATCH` only says whether a row matches: `vaccine^2 mrna` matches what `vaccine mrna` does, so one text can go to both `MATCH` and [`bm25`](#weights-required-and-excluded-words). A weight of 0 is read and ignored too, while `bm25` scores nothing for that word. A `^` before something that starts like a number but is not a weight (`vaccine^1e308`, `vaccine^-1`, `vaccine^2x`), and a `~` with more than 2 typos (`apple~9`), are errors in `MATCH`, where they would otherwise be searched as words; `bm25` reads its text leniently, and there they are words.
+
+**A prefix filters; it does not score.** `bm25` scores a text's whole words and passes over its prefixes (`bm25(name, 'leather sof*')` scores `leather` alone), so a query ranked by `bm25(name, 'sof*')`, which has no whole word, returns no row, even where `MATCH(name, 'sof*')` keeps many, and neither does a ranking expression with it in (`bm25(name, 'sof*') + rating`). For search as you type, filter by what was typed with its last word as a prefix and rank by the words typed whole, or, while the first word is still being typed, by a column:
+
+```sql
+-- typed "lether so": the prefix in MATCH, the whole words in bm25 (with the same fuzzy, given again)
+SELECT id, name FROM products WHERE MATCH(name, 'lether so*', fuzzy => 'auto') AND in_stock
+ORDER BY bm25(name, 'lether', fuzzy => 'auto') * (1 + 0.1 * rating) DESC LIMIT 10;
+
+-- typed "so": no whole word yet
+SELECT id, name FROM products WHERE MATCH(name, 'so*') AND in_stock ORDER BY rating DESC, id LIMIT 10;
+```
+
+A `bm25` takes its `MATCH`'s `fuzzy` only when its text is the `MATCH`'s ([typos](#typos-and-synonyms)), so here it names its own. A `KEYWORD` field of whole values (a product's name, a past query) completes with [`PREFIX`](#prefixes-and-autocomplete) instead, ordered by a column.
 
 A group with `@n` matches a row with at least `n` of its items: its operands, whether juxtaposed, joined by `AND` or by `OR`, each a word, a phrase, a prefix, a typo-tolerant word or a parenthesised query (`vaccine AND (mrna "messenger rna" trial~ (phase OR stage))@2`). A negated item (`-animal`) is not counted: the row must not have it. An item written twice is one item, as in `bm25`'s `min` (`(apple apple cherry)@2` needs both words), and so are words that analyse to the same term. A stopword is not an item, and a word's synonyms and typo neighbours count as it does. `@p%` asks for p percent of the items, rounded down; a count or percentage of 0 is an error, and either is clamped to between 1 and the number of items, as Lucene's `minimum_should_match` is, so `@1` is any of them and a count past the end is all of them. `MATCH(body, 'a b c d', min => 2)` (or `min => '75%'`) treats the whole query as one group. A group nests anywhere a parenthesised query does. A group reads each item's matches once, so it costs about what an `OR` of its items does.
 
@@ -1373,6 +1388,8 @@ ORDER BY ppr(cooc, (SELECT item FROM events WHERE usr = :u ORDER BY ts DESC LIMI
 
 A function is kept in the database under a name, and any query calls it as it calls a built-in one. Its body is SQL: an expression of its parameters for a function that returns a value, a `SELECT` for one that returns rows (`RETURNS TABLE`).
 
+A function that returns rows stands where another database has a view (`CREATE VIEW` is refused here): `CREATE FUNCTION spend_by_country() RETURNS TABLE AS SELECT country, SUM(total) AS spend FROM invoices GROUP BY country`, read with `SELECT * FROM spend_by_country()`, joined or filtered like a table, and it may take parameters and keeps its versions.
+
 ```sql
 CREATE FUNCTION boosted(s FLOAT, importance FLOAT, w FLOAT DEFAULT 0.2)
   RETURNS FLOAT AS :s * (1 + :w * :importance);
@@ -1514,13 +1531,29 @@ INSERT INTO chunks (id, doc, n, body, tokens)
 
 ## Running SQL
 
-The `chloedb` shell runs one statement, or reads statements from standard input. It opens a database that exists and does not create one; these lines read the demo catalogue that `chloedb-server --demo 20000 --db products.chloedb` makes:
+A statement reaches ChloeDB from a program, over HTTP or in the command center. ChloeDB serves no Postgres wire protocol, so `psql` and the tools built on Postgres's drivers (DBeaver, Metabase, dbt's Postgres adapter, SQLAlchemy's Postgres dialect) do not connect to it. The ways in, quickest first:
 
-```sh
-cd chloedb && cargo build --release
-target/release/chloedb products.chloedb "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
-target/release/chloedb products.chloedb --param t='waterproof tent' < queries.sql
-```
+- **Python, on a file.** `pip install chloedb`, then `chloedb.open(path).sql(statement)` runs any statement on a database file in the process, and `chloedb.dbapi` is a DB-API 2.0 driver that pandas' `read_sql`, and tools written for `sqlite3`, take ([Python](python.md)):
+
+  ```sh
+  python3 -c 'import chloedb; print(chloedb.open("products.chloedb", read_only=True).sql("SELECT category, COUNT(*) FROM products GROUP BY category").rows)'
+  ```
+
+- **A server, and its SQL workbench.** `uvx chloedb-server --demo 20000 --db products.chloedb` (or `pip install chloedb-server`, then `chloedb-server ...`) serves a database on `http://127.0.0.1:7700`, whose command center has a SQL workbench (completion with the columns' types, parameters, the plan as a tree, and a check before a write). `POST /v1/sql` takes one statement, and `chloedb-server cc` is the command center in a terminal, with a SQL screen:
+
+  ```sh
+  curl -s localhost:7700/v1/sql -H 'content-type: application/json' \
+    -d '{"sql": "SELECT category, COUNT(*) FROM products WHERE MATCH(body, '"'"'waterproof'"'"') GROUP BY category ORDER BY 2 DESC LIMIT 5"}'
+  ```
+
+- **Other languages.** `db.sql` in [JavaScript](javascript.md), the JDBC driver (`jdbc:chloedb:`) in Java, and `Db::sql` in Rust, which takes any statement, on any table, writes and `CREATE TABLE` included.
+- **The `chloedb` shell**, built from source, runs one statement or reads statements from standard input. It opens a database that exists and does not create one; these lines read the demo catalogue the server above makes:
+
+  ```sh
+  cd chloedb && cargo build --release
+  target/release/chloedb products.chloedb "SELECT category, COUNT(*) FROM products WHERE MATCH(body, 'waterproof') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
+  target/release/chloedb products.chloedb --param t='waterproof tent' < queries.sql
+  ```
 
 | flag | effect |
 |---|---|
@@ -1529,7 +1562,7 @@ target/release/chloedb products.chloedb --param t='waterproof tent' < queries.sq
 | `--repeat n` | runs each statement *n* times and reports the median time |
 | `--read-only` | opens the database read-only, to read it while another process writes it ([readers in other processes](index.md#readers-in-other-processes)); without it, the shell opens a database another process has open to write read-only, and says so |
 
-From Rust, `Db::query` takes a `SELECT` and a `Params` map, and `Db::sql` takes any statement, on any table, writes and `CREATE TABLE` included. Over the network, [chloedb-server](server.md) serves the same SQL over every table of a database.
+From Rust, `Db::query` takes a `SELECT` and a `Params` map. Over the network, [chloedb-server](server.md) serves the same SQL over every table of a database.
 
 ## Tables
 
@@ -1634,8 +1667,8 @@ DELETE FROM products WHERE stock = 0 ORDER BY price LIMIT 100;
 - **`INSERT`** fails on a primary key that already exists. **`INSERT OR REPLACE`** (or `REPLACE INTO`) replaces that row, an upsert. **`ON CONFLICT (key) DO NOTHING`** (or `INSERT OR IGNORE`) writes only the rows whose key is new, and the first of a key the statement repeats. **`ON CONFLICT (key) DO UPDATE SET ...`** inserts the new keys and sets fields of the rows already there, where `excluded.column` is the value the statement gave; a key that comes twice in one such statement is an error. On a cluster, a table placed by `shard_by` keeps its keys unique across shards for `INSERT`, `INSERT OR REPLACE` replaces a row only on its `shard_by` value's shard, `ON CONFLICT DO UPDATE` takes rows of one shard, and `UPDATE`/`DELETE ... LIMIT` pick their rows first ([cluster limits](cluster-limits.md)). Lists are `ARRAY[…]`; a vector is a parameter, `ARRAY[…]` or a JSON array string; a multi-vector value is a list of vectors (`ARRAY[ARRAY[…], ARRAY[…]]`, a parameter holding a list of vectors, or `'[[…], […]]'`), and one vector given to it is a list of one; a `SPARSE` value is a JSON object string, and a `MEDIA` value a URI or a JSON object string.
 - **`UPDATE`** takes any `WHERE` a `SELECT` of its table takes, and a `LIMIT`. A `WHERE` the table's indexes answer runs as it is; another (a `TEXT` column compared with `=`, `LIKE` of a `TEXT` column, `lower(...)`, `IN (SELECT ...)`, `[NOT] EXISTS`) picks the rows' keys with that `SELECT`, under the writer lock as the write runs, and writes those rows, so the rows a `SELECT` with that `WHERE` counts are the rows written (`EXPLAIN` says `picks its rows by key`). Through a coordinator, one whose `WHERE` has a subquery picks the keys over every shard first ([cluster limits](cluster-limits.md)). Setting only single-valued `INT` and `FLOAT` fields (`SET clicks = clicks + 1`) changes them in place, without rewriting the row, which suits counters and prices that change often. Setting any other field rewrites the row, which needs every text field stored or generated.
 - **`SET`** takes a value or any expression of the row: arithmetic, `||`, `CASE`, `NOT`, comparisons, `lower`, `upper`, `length`, `abs`, `round` and `coalesce` over the row's columns, and in `ON CONFLICT DO UPDATE` over `excluded.column` too. Every expression reads the row as it was, so `SET a = b, b = a` swaps two fields. The result is stored as the field's type: a whole number fits an `INT` (`clicks = price * 2`), but `7 / 2` is 3.5 and an error there (`round(clicks / 2)` fits); one value set to a multi-valued field becomes a list of it. NULL in gives NULL out, as in SQL, except `field + number` and `field - number`, which count a NULL as zero, as a counter does; `coalesce(field, 0) + other` does the same elsewhere. A multi-valued field without values is NULL to `coalesce` and `IS NULL`. Searches, scores and aggregates (`MATCH`, `bm25`, `score()`, `COUNT`) are errors in `SET`. A statement that cannot set one of its rows sets none.
-- **`DELETE`** takes any `WHERE` a `SELECT` of its table takes, as `UPDATE` does, and `ORDER BY` with `LIMIT` to delete the first rows in that order.
-- `RETURNING`, `UPDATE ... FROM`, `DELETE ... USING`, `INSERT ... SELECT`, `ON DUPLICATE KEY UPDATE` and `DO UPDATE ... WHERE` are errors.
+- **`DELETE`** takes any `WHERE` a `SELECT` of its table takes, as `UPDATE` does, and `ORDER BY` with `LIMIT` to delete the first rows in that order. `DELETE FROM t` without one deletes every row (there is no `TRUNCATE`).
+- `RETURNING`, `UPDATE ... FROM`, `DELETE ... USING`, `INSERT ... SELECT` (but from [`chunks_of`](#chunks-of-a-tables-text-chunks_of)), `ON DUPLICATE KEY UPDATE` and `DO UPDATE ... WHERE` are errors.
 
 ### Loading a file: CSV, TSV, JSON lines
 
@@ -1694,3 +1727,33 @@ Every statement runs as its plan, and a plan in JSON runs on its own: `Db::run` 
 ## Reading a plan
 
 `--plan` shows what the planner decided, segment by segment. The same statement can get different plans as the data changes. In the evaluation, an `OR` filter matching about 15% of documents was scanned exactly on SciFact's 5,183 documents, but on the larger collections the planner measured 11% near the query and post-filtered the HNSW result. An RRF query's topic filter matched 11% of Quora globally but only 3.4% near the query, so the planner switched to an exact scan of its 58,767 members, at 3.1 ms. [Planning and execution](index.md#planning-and-execution) describes the choices.
+
+## Differences from PostgreSQL
+
+A query written for PostgreSQL mostly runs here and gives the same rows, but not always. These are the differences people porting SQL from PostgreSQL meet, as this release has them: first the answers that differ without an error, then what is refused (most refusals' messages say what to do instead).
+
+**Connecting.** There is no Postgres wire protocol: `psql`, DBeaver, Metabase, dbt's Postgres adapter and SQLAlchemy's Postgres dialect do not connect, and there is no dbt adapter or SQLAlchemy dialect of ChloeDB's own. [Running SQL](#running-sql) lists the ways in: Python's `chloedb.dbapi` (DB-API 2.0, which pandas' `read_sql` reads), JDBC, HTTP and the SQL workbench. [Following Postgres](postgres.md) copies a Postgres database into ChloeDB; it does not let Postgres's clients in.
+
+**Answers that differ, with no error:**
+
+| expression | ChloeDB | PostgreSQL | to get PostgreSQL's |
+|---|---|---|---|
+| `7 / 2` | `3.5`: `/` always gives a `FLOAT` | `3` for two integers | `(7 - 7 % 2) / 2` (3.0) |
+| `ORDER BY x DESC` with `NULL`s | `NULL`s last | `NULL`s first | `ORDER BY x DESC NULLS FIRST` |
+| `greatest(1, 2)`, `least(1, 2)` | `2.0`, `1.0` (`FLOAT`) | `2`, `1` | `CAST(greatest(a, b) AS INT)` |
+
+Ascending order puts `NULL`s last in both. [Following Postgres](postgres.md#how-postgres-columns-become-fields) makes a `numeric` column a `FLOAT`, so `CAST` and `round` take its halves to the even neighbour (2.5 to 2), where PostgreSQL rounds a `numeric`'s away from zero (to 3). **Changed:** 0.3.7 and earlier rounded every half away from zero, kept the rows without a value in `n != 1.5` on an `INT` column, and gave `'a'` for `'a' || NULL`; each now answers as PostgreSQL does.
+
+**`TEXT` and `KEYWORD`.** A `TEXT` column is text searched by its words (`MATCH`, `bm25`), and a `KEYWORD` a value compared whole; PostgreSQL's `text` is both. A stored `TEXT` column also groups (`GROUP BY country`, `SELECT DISTINCT country`) and compares with `=` and `LIKE`, by its stored text read row by row, where a `KEYWORD`'s index answers both. Imports make a column of prose a `TEXT` one, by its values (more than two and a half words a value on average: [SQLite](sqlite.md#how-sqlite-columns-become-fields), [Parquet](parquet.md#how-parquet-columns-become-fields)), and following Postgres makes every `text` and `varchar` one: create the table first with `KEYWORD` for the columns you group and filter by often.
+
+**Writes.** An `UPDATE` or a `DELETE` takes any `WHERE` a `SELECT` of its table takes ([writes](#writes)); one the indexes cannot answer (a subquery, a `TEXT` column compared, a function of a column) picks the rows' keys first, under the writer lock. **Changed:** 0.3.7 and earlier refused such a `WHERE` in a write. Refused: `UPDATE ... FROM`, `DELETE ... USING`, `RETURNING`, `TRUNCATE` (`DELETE FROM t` deletes every row), and `INSERT ... SELECT` except from `chunks_of`.
+
+**Transactions.** `BEGIN`, `COMMIT` and `ROLLBACK` are refused: each statement is a transaction of its own. Several writes commit together as the operations of one `POST /v1/write` (or `write(ops)` in Python and JavaScript), and through Rust's transaction API ([Loading a file](#loading-a-file-csv-tsv-json-lines), at its end).
+
+**Tables, views and indexes.** Refused: `CREATE VIEW` and `CREATE MATERIALIZED VIEW` (a [stored function](#stored-functions) `RETURNS TABLE` is a view with parameters, and a [rollup](#rollups-create-rollup-a-materialized-view-of-counts-over-time) keeps counts up to date), `CREATE TABLE ... AS SELECT`, temporary tables, `CREATE INDEX` (every column is indexed by its type when the table is made), `ALTER COLUMN ... TYPE`, `ALTER TABLE ... RENAME TO`, `UNIQUE`, `CHECK`, and a primary key of more than one column. `REFERENCES` are recorded, not enforced. The first table of a database cannot be dropped.
+
+**Queries.** Refused: `WITH RECURSIVE` (walk a graph with [`REACHABLE` and `PATH`](#graphs)), `GROUP BY ROLLUP`, `CUBE` and `GROUPING SETS` (a `UNION ALL` of `GROUP BY`s), `CROSS JOIN`, tables listed with commas, `LATERAL`, `JOIN ... USING`, `NATURAL JOIN`, a join whose `ON` has no equality of the two tables' columns, and a window frame `RANGE` with an `INTERVAL` offset. `INTERVAL '1 month'` moves a time written as a value, not a column's, and two times do not subtract: `EXTRACT(epoch FROM b) - EXTRACT(epoch FROM a)` is the seconds between them.
+
+**Functions.** Over rows ChloeDB computes `lower`, `upper`, `length`, `abs`, `round`, `coalesce`, `ln`, `log`, `exp`, `sqrt`, `pow`, `least`, `greatest`, `sigmoid`, `clamp`, `dot`, `date_trunc`, `date_part` (`EXTRACT`), `strftime`, `date_bin`, `time_bucket`, `hash`, `CASE` and `CAST`, besides its search, vector and JSON functions; over groups, the [aggregates](#aggregates). Among those PostgreSQL has and ChloeDB does not: `substr`, `replace`, `trim`, `concat`, `position`, `split_part`, `regexp_replace`, `nullif`, `floor`, `ceil`, `trunc`, `random`, `md5`, `to_char`, `age` and `string_agg`. An unknown function's error lists those that exist.
+
+**The catalog.** There is no `information_schema` or `pg_catalog`, and `DESCRIBE` runs in the SQL workbench only. `SHOW TABLES` lists the tables, and `GET /v1/tables` gives each table's columns and the `CREATE TABLE` that makes it.

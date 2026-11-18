@@ -33,7 +33,7 @@ Other ways rows come in stay as they are, and the Connectors page lists their so
 
 - `name`: 1 to 48 lowercase letters, digits, `-` and `_`.
 - `target`: the table it writes. Left out, the kind's own table, which is made then (its columns are in the table above's [defaults](#default-tables-and-presets)). A table that does not exist and is not the kind's own is refused, unless `config.create_target` is `true`, which makes it with the columns of the connector's own `map` when it has one (each typed by its `as`: `int` an `INT`, `float` a `FLOAT`, `bool` a `BOOL`, `time` or `{"now": true}` a `TIMESTAMP`, `list` a `KEYWORD[]`, `json` a `JSON`, `hash` a `KEYWORD`, any other `TEXT`, or the type a spec says: `{"path": "$.action", "type": "KEYWORD"}` for a value kept whole, to group or filter by, rather than searched as words; `id` its primary key, or none without an `id`), else with the kind's columns.
-- `every_s`: seconds between pulls (at least 10; 0 runs only when asked). The defaults: 60 for Prometheus, 300 for Jira, ServiceNow and HTTP pulls, 900 for Oxidized. A failed pull waits twice as long each time, up to an hour; one that stopped at its limit (20,000 records a run) runs again at once.
+- `every_s`: seconds between pulls (at least 10; 0 runs only when asked). The defaults: 60 for Prometheus, 300 for Jira, ServiceNow and HTTP pulls, 900 for Oxidized. A failed pull waits twice as long after each failure in a row, up to 32 times its interval and never more than an hour; one that stopped at its limit (20,000 records a run) runs again at once.
 - `config`: the kind's settings (below) and an optional `map`.
 - `secrets`: passwords and tokens, by name. They are never written to a table nor answered: the server keeps them in `<db>.connectors.json` beside the database, readable by its user only (`--connector-secrets FILE`; a coordinator without one keeps them in memory, so give it one, or name each secret as `"env:VARIABLE"`, which the server reads from its environment at each run, as a Kubernetes Secret gives it). An `env:` secret names a variable whose name starts with `CHLOEDB_CONNECTOR_SECRET_` (`--connector-env-prefix` chooses another prefix), so that no connector reads the server's own tokens, model keys or cloud credentials; another name is refused with a 400.
 - `enabled` (default `true`) and `note`.
@@ -55,7 +55,7 @@ The answer has the connector, `made_target`, and for a push connector its key's 
 
 | health | |
 |---|---|
-| `ok` | the last run went well (and, for a pull, within three times its interval or 15 minutes) |
+| `ok` | the last run went well (and, for a pull, within three times its interval, or 15 minutes when that is longer) |
 | `warning` | the last run went well but found something wrong: `state.last_warning` (and the run's `warning`) says what. An `http_json` pull whose `records` path matched nothing in an answer that had a body (no key of that name, as against an empty list) reads 0 records and says so: "the records path $.items matched nothing; the top-level keys are data, next". A dry run answers it as `warning` too |
 | `invalid` | its row fails the API's checks (`invalid` says why): it does not run |
 | `failing` | the last run failed: `state.last_error` says why, `state.failures` how many in a row (a request that failed says why, from its causes: the connection refused, a name that does not resolve, TLS, a timeout; an error names a URL without its query, and a secret's value nowhere: it reads `***`, since a read key reads these tables) |
