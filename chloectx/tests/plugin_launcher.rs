@@ -5,8 +5,10 @@
 //! the model, runs the program with the hook's arguments and its settings,
 //! prefers a chloectx already on PATH, says why it could not set up, and
 //! replaces a program it downloaded when the plugin moves to another
-//! version. Then the real program: the plugin's hooks step aside where the
-//! user settings hold `chloectx install --user`'s.
+//! version; with gh, it checks the archive's build provenance against the
+//! release's bundle and refuses an archive whose .sha256 was replaced with
+//! it (LENA-201). Then the real program: the plugin's hooks step aside where
+//! the user settings hold `chloectx install --user`'s.
 
 #![cfg(unix)]
 
@@ -98,6 +100,8 @@ impl Env {
             .env("CLAUDE_PLUGIN_DATA", &self.data)
             .env("CHLOECTX_RELEASES_URL", format!("file://{}", self.releases.display()))
             .env("CHLOECTX_BUILD", "0")
+            // No gh, whatever this machine has, unless a test names one.
+            .env("CHLOECTX_GH", self.home.join("no-gh"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -161,6 +165,109 @@ fn the_release_is_installed_checked_and_run_with_the_plugins_settings() {
     assert_eq!(out.trim(), "released ran: hook --user Stop plugin=1 model=sonnet");
     let (_, out, _) = e.run(&["mcp"], "", &[]);
     assert_eq!(out.trim(), "released ran: mcp plugin=1 model=haiku");
+}
+
+/// A gh whose `attestation verify FILE --bundle B ... --source-ref R`
+/// passes when B holds the line "<FILE's SHA-256> R", as a release's bundle
+/// names its archive's digest and tag; it notes its arguments in `log`.
+fn fake_gh(path: &Path, log: &Path) {
+    write_exe(
+        path,
+        &format!(
+            r#"#!/bin/sh
+[ "$1 $2" = "attestation verify" ] || exit 2
+shift 2
+if [ "$1" = --help ]; then echo "  --source-ref string"; exit 0; fi
+echo "gh $*" >> '{}'
+file=$1 bundle="" ref=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --bundle) bundle=$2; shift 2 ;;
+    --source-ref) ref=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+sum=$({{ sha256sum "$file" 2> /dev/null || shasum -a 256 "$file"; }} | cut -d' ' -f1)
+grep -qxF "$sum $ref" "$bundle" && exit 0
+echo "Error: no matching attestation for $sum" >&2
+exit 1
+"#,
+            log.display()
+        ),
+    );
+}
+
+/// The bundle of release `ver`'s archive, as the release workflow puts it
+/// beside the archive (here: the line the fake gh checks).
+fn bundle(dir: &Path, ver: &str) {
+    let name = format!("chloectx-{}", platform());
+    let rel = dir.join(format!("chloedb-server-v{ver}"));
+    let sum = sha256(&rel.join(format!("{name}.tar.gz")));
+    std::fs::write(rel.join(format!("{name}.tar.gz.sigstore.jsonl")), format!("{sum} refs/tags/chloedb-server-v{ver}\n")).unwrap();
+}
+
+#[test]
+fn with_gh_the_build_provenance_is_checked_and_a_replaced_archive_is_refused() {
+    let e = env();
+    let gh = e.home.join("tools/gh");
+    fake_gh(&gh, &e.log);
+    let gh = gh.to_string_lossy().into_owned();
+    let with_gh = [("CHLOECTX_VERSION", "9.9.9"), ("CHLOECTX_GH", gh.as_str())];
+
+    // The release's archive, and its bundle: checked, then installed.
+    release(&e.releases, "9.9.9", &fake_chloectx("released", &e.log), true);
+    bundle(&e.releases, "9.9.9");
+    let (code, out, err) = e.run(&["setup"], "", &with_gh);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(err.contains("build provenance checked: built by chloetech-ai/chloedb's server-release.yml from refs/tags/chloedb-server-v9.9.9"), "{err}");
+    assert!(e.installed().is_file());
+    let asked = e.calls();
+    assert!(
+        asked.contains("--repo chloetech-ai/chloedb --signer-workflow chloetech-ai/chloedb/.github/workflows/server-release.yml --source-ref refs/tags/chloedb-server-v9.9.9 --deny-self-hosted-runners"),
+        "{asked}"
+    );
+    assert!(asked.contains(&format!("chloectx-{}.tar.gz.sigstore.jsonl", platform())), "from the bundle: {asked}");
+
+    // The archive and its .sha256 replaced together, as whoever can change
+    // the release could: the SHA-256 matches, the provenance does not.
+    let e = env();
+    fake_gh(&e.home.join("tools/gh"), &e.log);
+    let gh = e.home.join("tools/gh").to_string_lossy().into_owned();
+    let with_gh = [("CHLOECTX_VERSION", "9.9.9"), ("CHLOECTX_GH", gh.as_str())];
+    release(&e.releases, "9.9.9", &fake_chloectx("released", &e.log), true);
+    bundle(&e.releases, "9.9.9");
+    release(&e.releases, "9.9.9", &fake_chloectx("not ours", &e.log), true);
+    let (code, _, err) = e.run(&["setup"], "", &with_gh);
+    assert_ne!(code, 0);
+    assert!(err.contains("gh could not verify the build provenance") && err.contains("no matching attestation"), "{err}");
+    assert!(!e.installed().exists(), "nothing installed");
+
+    // No bundle beside the archive of a release that has provenance.
+    std::fs::remove_file(e.releases.join(format!("chloedb-server-v9.9.9/chloectx-{}.tar.gz.sigstore.jsonl", platform()))).unwrap();
+    let (code, _, err) = e.run(&["setup"], "", &with_gh);
+    assert_ne!(code, 0);
+    assert!(err.contains("the archive's build provenance: not installing it"), "{err}");
+    assert!(!e.installed().exists());
+    // CHLOECTX_VERIFY=off: the SHA-256 alone.
+    let (code, out, err) = e.run(&["setup"], "", &[with_gh[0], with_gh[1], ("CHLOECTX_VERIFY", "off")]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(e.installed().is_file());
+
+    // Without gh, the SHA-256 alone, saying so; a release from before
+    // provenance asks gh nothing.
+    let e = env();
+    release(&e.releases, "9.9.9", &fake_chloectx("released", &e.log), true);
+    let (code, out, err) = e.run(&["setup"], "", &[("CHLOECTX_VERSION", "9.9.9")]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(err.contains("build provenance not checked: no gh here"), "{err}");
+    let e = env();
+    fake_gh(&e.home.join("tools/gh"), &e.log);
+    let gh = e.home.join("tools/gh").to_string_lossy().into_owned();
+    release(&e.releases, "0.3.7", &fake_chloectx("released", &e.log), true);
+    let (code, out, err) = e.run(&["setup"], "", &[("CHLOECTX_VERSION", "0.3.7"), ("CHLOECTX_GH", gh.as_str())]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(err.contains("release 0.3.7 is older than build provenance (0.3.9)"), "{err}");
+    assert!(!e.calls().contains("gh "), "{}", e.calls());
 }
 
 #[test]

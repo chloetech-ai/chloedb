@@ -18,6 +18,14 @@
 # GitHub (Linux x86_64 and aarch64 with glibc 2.35 or later, macOS arm64 and
 # x86_64, macOS 11 or later), checks the archive against the SHA-256 the
 # release publishes beside it, and puts `chloedb-server` in ~/.local/bin.
+# Where GitHub's CLI is installed (gh, a version with `gh attestation
+# verify --source-ref`), it also checks the archive's build provenance
+# (releases from 0.3.9): that this repository's release workflow,
+# server-release.yml, built it from the release's tag, on GitHub's own
+# runners. It reads the Sigstore bundle the release publishes beside the
+# archive (<archive>.sigstore.jsonl), so gh needs no sign-in, and an
+# archive that does not verify is not installed. Without gh it installs on
+# the SHA-256 alone and says so.
 # The newest release is asked of GitHub's API, and where that cannot be
 # reached (a proxy, or its limit of 60 requests an hour without a token),
 # of github.com's /releases/latest and then of this website.
@@ -34,6 +42,12 @@
 #                         repository's GitHub releases; a local folder or
 #                         server for testing, laid out as
 #                         <url>/chloedb-server-v<version>/chloedb-server-<platform>.tar.gz)
+#   CHLOEDB_VERIFY        the provenance check: auto (default: when gh is
+#                         here), require (fail without gh) or off (the SHA-256 alone)
+#   CHLOEDB_GH            the gh to check it with (default: gh on the PATH)
+#   CHLOEDB_VERIFY_SOURCE_REF  the git ref the provenance must name (default
+#                         refs/tags/chloedb-server-v<version>; for testing a
+#                         run of the release workflow on a branch)
 #
 # This file is published by GitHub Pages from docs/install.sh of
 # https://github.com/chloetech-ai/chloedb. Read it first if you like:
@@ -48,6 +62,9 @@ RELEASES_URL="${CHLOEDB_RELEASES_URL:-https://github.com/$REPO/releases/download
 INSTALL_DIR="${CHLOEDB_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${CHLOEDB_VERSION:-}"
 WITH="${CHLOEDB_WITH:-}"
+VERIFY="${CHLOEDB_VERIFY:-auto}"
+# The first release whose archives have build provenance beside them.
+ATTESTED_FROM=0.3.9
 
 say() { printf '%s\n' "$*"; }
 fail() {
@@ -76,10 +93,14 @@ Settings (after the pipe: curl ... | CHLOEDB_VERSION=0.3.7 sh):
   CHLOEDB_WITH          the programs --with names, when it is not given
   CHLOEDB_INSTALL_DIR   where to put the programs (default ~/.local/bin)
   CHLOEDB_RELEASES_URL  where the release archives are (default GitHub's)
+  CHLOEDB_VERIFY        the build provenance check: auto (when gh is here),
+                        require (fail without gh) or off
 
-It checks each download against the release's SHA-256 and changes nothing
-outside the install folder. Platforms: Linux x86_64 and aarch64 (glibc 2.35
-or later), macOS 11 or later on arm64 and x86_64.
+It checks each download against the release's SHA-256 and, where GitHub's
+CLI (gh) is installed, against its build provenance (from 0.3.9: GitHub's
+attestation that the release workflow built it from the release's tag), and
+changes nothing outside the install folder. Platforms: Linux x86_64 and
+aarch64 (glibc 2.35 or later), macOS 11 or later on arm64 and x86_64.
 USAGE
 }
 
@@ -258,8 +279,62 @@ else
 fi
 have tar || fail "needs tar to unpack the release"
 
+# Whether version $1 is $2 or later (numbers.numbers.numbers).
+at_least() {
+  a=$1 b=$2
+  for _ in 1 2 3; do
+    x=${a%%.*} y=${b%%.*}
+    x=${x%%[!0-9]*} y=${y%%[!0-9]*}
+    [ "${x:-0}" -gt "${y:-0}" ] && return 0
+    [ "${x:-0}" -lt "${y:-0}" ] && return 1
+    case "$a" in *.*) a=${a#*.} ;; *) a=0 ;; esac
+    case "$b" in *.*) b=${b#*.} ;; *) b=0 ;; esac
+  done
+  return 0
+}
+
+case "$VERIFY" in
+  auto | require | off) ;;
+  *) fail "CHLOEDB_VERIFY is auto, require or off, not $VERIFY" ;;
+esac
+# A gh that verifies attestations against a tag (`gh attestation verify
+# --source-ref`), or nothing.
+GH=
+gh=${CHLOEDB_GH:-gh}
+if [ "$VERIFY" != off ] && have "$gh" && "$gh" attestation verify --help 2> /dev/null | grep -q -- '--source-ref'; then GH=$gh; fi
+[ "$VERIFY" = require ] && [ -z "$GH" ] && fail "CHLOEDB_VERIFY=require, and there is no gh here that verifies attestations (gh attestation verify --source-ref): install a recent gh from https://cli.github.com"
+
+# Checks the archive $1, downloaded from $2, against the build provenance of
+# the release: GitHub's attestation, in the Sigstore bundle $2.sigstore.jsonl,
+# that server-release.yml of this repository built it from the release's
+# tag on a GitHub-hosted runner. Fails when it does not verify; without gh,
+# or for a release from before 0.3.9, says so and returns.
+provenance() {
+  [ "$VERIFY" = off ] && return 0
+  if ! at_least "$VERSION" "$ATTESTED_FROM"; then
+    [ "$VERIFY" = require ] && fail "release $VERSION has no build provenance (releases have it from $ATTESTED_FROM)"
+    say "  release $VERSION is older than build provenance ($ATTESTED_FROM): checked by its SHA-256 alone"
+    return 0
+  fi
+  if [ -z "$GH" ]; then
+    say "  build provenance not checked: no gh here (with a recent gh, from https://cli.github.com, this checks it; SECURITY.md says how by hand)"
+    return 0
+  fi
+  fetch "$2.sigstore.jsonl" "$1.sigstore.jsonl" 2> /dev/null \
+    || fail "could not download $2.sigstore.jsonl, the archive's build provenance: not installing it (CHLOEDB_VERIFY=off installs on the SHA-256 alone)"
+  ref=${CHLOEDB_VERIFY_SOURCE_REF:-refs/tags/chloedb-server-v$VERSION}
+  if out=$("$GH" attestation verify "$1" --bundle "$1.sigstore.jsonl" --repo "$REPO" \
+    --signer-workflow "$REPO/.github/workflows/server-release.yml" --source-ref "$ref" --deny-self-hosted-runners 2>&1); then
+    say "  build provenance checked: built by $REPO's server-release.yml from $ref"
+  else
+    printf '%s\n' "$out" | tail -n 8 >&2
+    fail "gh could not verify the build provenance of $2 (above): not installing it. CHLOEDB_VERIFY=off installs on the SHA-256 alone"
+  fi
+}
+
 # Installs the program $1 from its archive, $1-<platform>.tar.gz, of the
-# release chloedb-server-v$VERSION, after checking its SHA-256.
+# release chloedb-server-v$VERSION, after checking its SHA-256 and, with gh,
+# its build provenance.
 install_program() {
   prog=$1
   name="$prog-$platform"
@@ -271,6 +346,7 @@ install_program() {
   want=$(cut -d' ' -f1 < "$tmp/$name.tar.gz.sha256")
   got=$(sha256 "$tmp/$name.tar.gz")
   [ -n "$want" ] && [ "$want" = "$got" ] || fail "the download's SHA-256 is $got, and the release says $want: not installing it"
+  provenance "$tmp/$name.tar.gz" "$url"
 
   tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
   [ -f "$tmp/$name/$prog" ] || fail "the archive has no $name/$prog"

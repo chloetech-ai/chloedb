@@ -47,18 +47,64 @@ operator: the network, the disks and the files the servers write.
 
 ## Checking what you download
 
-- **Server archives** on GitHub each come with a `.sha256` from the same
-  release (`sha256sum -c chloedb-server-linux-x86_64.tar.gz.sha256`), which
-  `install.sh` and ChloeCtx's plugin check before they install.
+- **Server archives** on GitHub (`chloedb-server`, `chloectx`,
+  `chloedb-crawl`, `chloedb-sheets` and `chloedb-netops`, one per
+  platform) each come with a `.sha256` from the same release
+  (`sha256sum -c chloedb-server-linux-x86_64.tar.gz.sha256`), and from
+  0.3.9 with GitHub's build provenance: a signed statement, logged in
+  Sigstore's public transparency log, that this repository's
+  `server-release.yml` built the archive from the release's tag on
+  GitHub's runners. A `.sha256` says the download was not damaged; the
+  provenance says who built it. Check it with [GitHub's CLI](https://cli.github.com)
+  (a recent one, whose `gh attestation verify --help` lists `--source-ref`):
+
+  ```bash
+  gh attestation verify chloedb-server-linux-x86_64.tar.gz \
+    --repo chloetech-ai/chloedb \
+    --signer-workflow chloetech-ai/chloedb/.github/workflows/server-release.yml \
+    --source-ref refs/tags/chloedb-server-v0.3.9
+  ```
+
+  That asks GitHub for the attestation, and needs `gh auth login`. Each
+  archive's Sigstore bundles are beside it too
+  (`chloedb-server-linux-x86_64.tar.gz.sigstore.jsonl`): add
+  `--bundle chloedb-server-linux-x86_64.tar.gz.sigstore.jsonl` to check it
+  from that file without signing in. The website's installer
+  (`docs/install.sh`), the repository's `install.sh` and ChloeCtx's
+  plugin check the SHA-256 always, and the provenance too where `gh` is
+  installed: an archive whose provenance does not verify is not installed,
+  even when its `.sha256` matches. Without `gh` they say so and install on
+  the SHA-256; `CHLOEDB_VERIFY=require` (the plugin: `CHLOECTX_VERIFY`)
+  fails instead, and `=off` skips the check.
+- **What is in them.** Each archive has a CycloneDX SBOM beside it
+  (`chloedb-server-linux-x86_64.cdx.json`: every crate compiled into the
+  program, with its version, licence and the checksum Cargo.lock pins) and
+  `THIRD-PARTY-NOTICES.md` inside it (their licences). The SBOM is attested
+  too, as the archive's: add `--predicate-type https://cyclonedx.org/bom` to
+  the command above to check it, and run the same command on the
+  `.cdx.json` to check that file. `SHA256SUMS` lists every file of the
+  release.
 - **Python and JavaScript releases** on GitHub attach a `SHA256SUMS` of
   their wheels and tarballs.
 - **PyPI**: the `chloedb` and `chloedb-server` packages are published from
   this repository's workflows by trusted publishing, with attestations
-  that name the workflow that built them.
+  that name the workflow that built them. Check a downloaded wheel with
+  [pypi-attestations](https://pypi.org/project/pypi-attestations/):
+
+  ```bash
+  pip download --no-deps chloedb==0.3.7
+  uvx pypi-attestations verify pypi --repository https://github.com/chloetech-ai/chloedb \
+    pypi:chloedb-0.3.7-cp310-abi3-manylinux_2_28_x86_64.whl
+  ```
+
+  (the file `pip download` saved; `chloedb-server` the same way). From
+  0.3.9 every wheel carries the licence in its `dist-info/licenses`, and
+  `chloedb-server`'s the third-party notices too.
 - **npm**: the packages carry the registry's signatures
   (`npm audit signatures`).
 
-The archives are not signed, and no release carries an SBOM yet.
+Releases before 0.3.9 have no build provenance and no SBOM: their
+archives are checked by their `.sha256` alone.
 
 ## What counts as a vulnerability
 

@@ -192,7 +192,7 @@ async fn a_route_is_told_what_fired_and_resolved() {
     svc.identity.public_url = Some("https://cc.example.com/".into());
     let svc = Arc::new(svc);
     let base = http(svc.clone()).await;
-    let routes = json!({"routes": [{"name": "pager", "url": format!("{hurl}/hook/secret"), "severities": ["critical"]}, {"name": "chat", "url": format!("{hurl}/nowhere"), "severities": ["info"]}]});
+    let routes = json!({"routes": [{"name": "pager", "url": format!("{hurl}/hook/secret"), "severities": ["critical"], "allow_internal": true}, {"name": "chat", "url": format!("{hurl}/nowhere"), "severities": ["info"], "allow_internal": true}]});
     let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(routes)).await;
     assert_eq!(status, 200, "{j}");
     assert_eq!(j["routes"][0]["url"], format!("{hurl}/..."), "a webhook's path is its secret: {j}");
@@ -252,6 +252,82 @@ async fn a_route_is_told_what_fired_and_resolved() {
     let (status, j) = call(&base, "POST", "/v1/alerts/routes/chat/test", Some(json!({}))).await;
     assert_eq!((status, j["ok"].as_bool()), (200, Some(false)), "a 404 is a failed delivery: {j}");
     assert!(got.lock().unwrap()[2]["text"].as_str().unwrap().starts_with("[chloedb TEST]"));
+}
+
+/// Where a route may post (CLU-5 of the 15 November audit, LENA-7 of the
+/// persona study): the public internet, unless the route says
+/// `"allow_internal": true`; never a link-local address (cloud metadata);
+/// and never on through a redirect to another origin, where a webhook's
+/// path or an Opsgenie key would follow.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_route_reaches_the_public_internet_only_and_follows_no_redirect_elsewhere() {
+    // A canary on this machine that notes what reaches it, and a hook that
+    // redirects there (another port: another origin).
+    let canary_got = Arc::new(Mutex::new(Vec::<String>::new()));
+    let keep = canary_got.clone();
+    let canary = axum::Router::new().fallback(move |req: axum::extract::Request| {
+        let keep = keep.clone();
+        async move {
+            keep.lock().unwrap().push(format!("{} {}", req.method(), req.uri()));
+            "ok"
+        }
+    });
+    let cl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let canary_url = format!("http://127.0.0.1:{}", cl.local_addr().unwrap().port());
+    tokio::spawn(async move { axum::serve(cl, canary).await });
+    let to = canary_url.clone();
+    let redirector = axum::Router::new().fallback(move || {
+        let to = to.clone();
+        async move { (axum::http::StatusCode::TEMPORARY_REDIRECT, [("location", format!("{to}/stolen"))], "") }
+    });
+    let rl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let redirect_url = format!("http://127.0.0.1:{}", rl.local_addr().unwrap().port());
+    tokio::spawn(async move { axum::serve(rl, redirector).await });
+
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(dir.path()));
+    let base = http(svc.clone()).await;
+
+    // This machine, a private network, a name for this machine: refused,
+    // saying how to allow it.
+    for url in [format!("{canary_url}/alert-hook"), "http://10.0.0.7/hook".into(), "http://localhost:9093/hook".into(), "http://[::1]:9/hook".into()] {
+        let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [{"name": "probe", "url": url}]}))).await;
+        assert_eq!(status, 400, "{url}: {j}");
+        let e = j["error"].as_str().unwrap_or_default();
+        assert!(e.contains("not an address an alert route may reach") && e.contains("\"allow_internal\": true on the route"), "{url}: {j}");
+    }
+    // Cloud metadata: refused even when the route allows this network.
+    for url in ["http://169.254.169.254/latest/meta-data/", "http://[fe80::1]/hook"] {
+        let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [{"name": "probe", "url": url, "allow_internal": true}]}))).await;
+        assert_eq!(status, 400, "{url}: {j}");
+        assert!(j["error"].as_str().unwrap_or_default().contains("link-local addresses (cloud metadata) are never reached"), "{j}");
+    }
+    let (_, a) = call(&base, "GET", "/v1/alerts", None).await;
+    assert!(a["routes"].as_array().unwrap().is_empty(), "nothing refused was kept: {a}");
+    assert!(canary_got.lock().unwrap().is_empty(), "nothing reached the canary");
+
+    // Allowed inside the network: it posts, and says so in the list. Saved
+    // again with its URL kept, it stays allowed.
+    let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [{"name": "inside", "url": format!("{canary_url}/hook"), "allow_internal": true}]}))).await;
+    assert_eq!(status, 200, "{j}");
+    let (status, j) = call(&base, "POST", "/v1/alerts/routes/inside/test", Some(json!({}))).await;
+    assert_eq!((status, j["ok"].as_bool()), (200, Some(true)), "{j}");
+    assert_eq!(canary_got.lock().unwrap().as_slice(), ["POST /hook"]);
+    assert_eq!(call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [{"name": "inside", "url": ""}]}))).await.0, 200);
+    let (_, a) = call(&base, "GET", "/v1/alerts", None).await;
+    assert_eq!(a["routes"][0]["allow_internal"], true, "{a}");
+
+    // A redirect to another origin: not followed, and not a delivery.
+    let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [{"name": "redir", "url": format!("{redirect_url}/alert-redir"), "allow_internal": true, "kind": "opsgenie", "key": "genie-secret"}]}))).await;
+    assert_eq!(status, 200, "{j}");
+    let (status, j) = call(&base, "POST", "/v1/alerts/routes/redir/test", Some(json!({}))).await;
+    assert_eq!((status, j["ok"].as_bool()), (200, Some(false)), "a redirect elsewhere is a failed delivery: {j}");
+    let e = j["error"].as_str().unwrap_or_default();
+    assert!(e.contains("a redirect to") && e.contains("which is not followed") && !e.contains("/stolen"), "the error names the origin, not the path: {j}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(canary_got.lock().unwrap().as_slice(), ["POST /hook"], "the redirect led nowhere");
+    let (_, a) = call(&base, "GET", "/v1/alerts", None).await;
+    assert_eq!(a["routes"][0]["failed"], 1, "{a}");
 }
 
 /// A backtest replays a rule over the log store's minutes of load (7
@@ -598,7 +674,7 @@ async fn a_failing_route_holds_up_no_other_and_the_cluster_is_named_from_the_sta
     let (_, a) = call(&base, "GET", "/v1/alerts", None).await;
     assert_eq!(a["cluster"]["name"], "search-demo", "{a}");
     // The busy route first: each message used to wait for its three tries.
-    let routes = json!({"routes": [{"name": "busy", "url": format!("{hurl}/busy"), "severities": ["critical"]}, {"name": "oncall", "url": format!("{hurl}/ok"), "severities": ["critical"]}]});
+    let routes = json!({"routes": [{"name": "busy", "url": format!("{hurl}/busy"), "severities": ["critical"], "allow_internal": true}, {"name": "oncall", "url": format!("{hurl}/ok"), "severities": ["critical"], "allow_internal": true}]});
     let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(routes)).await;
     assert_eq!(status, 200, "{j}");
     let (status, j) = call(&base, "POST", "/v1/alerts/routes/oncall/test", Some(json!({}))).await;
@@ -723,7 +799,7 @@ async fn a_restart_keeps_what_fired_and_does_not_page_again() {
     n.args = vec!["--alerts".into(), file.display().to_string(), "--cluster-name".into(), "kept".into()];
     n.start().await;
     let base = n.base();
-    let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [{"name": "oncall", "url": format!("{hurl}/hook")}]}))).await;
+    let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [{"name": "oncall", "url": format!("{hurl}/hook"), "allow_internal": true}]}))).await;
     assert_eq!(status, 200, "{j}");
     let rule = json!({"id": "docs", "name": "Docs", "metric": "docs", "op": ">", "threshold": 10.0, "eval": "max", "window_s": 10, "severity": "critical"});
     assert_eq!(call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": [rule]}))).await.0, 200);
