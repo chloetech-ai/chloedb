@@ -144,7 +144,7 @@ pip install chloedb-server       # or: pip install &quot;chloedb[server]&quot;</
 <pre data-lang="sh">v=0.3.8 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz &amp;&amp; mkdir -p ~/.local/bin &amp;&amp; mv chloedb-server-$p/chloedb-server ~/.local/bin/</pre>
-<p>From 0.3.9 each archive also has GitHub's build provenance and an SBOM of what is compiled into it: <a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md#checking-what-you-download">checking what you download</a> shows the <code>gh attestation verify</code> command that checks them.</p>
+<p>From 0.3.8 each archive also has GitHub's build provenance and an SBOM of what is compiled into it: <a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md#checking-what-you-download">checking what you download</a> shows the <code>gh attestation verify</code> command that checks them (the install script runs it for you from 0.3.9).</p>
 <p>Check that it runs:</p>
 <pre data-lang="sh">chloedb-server --version</pre>
 <p>If it does not, or a later step stops with an error, <a href="troubleshooting.html">Troubleshooting</a> has the usual messages and what to do; <code>chloedb-server doctor</code> checks this machine for their causes.</p>
@@ -261,7 +261,7 @@ EOF</pre>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="../assets/site.js?v=699f360f4f"></script>
-<script src="../assets/docs-search.js?v=89d7a71e46" defer></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
 <script>
 // On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
 if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;

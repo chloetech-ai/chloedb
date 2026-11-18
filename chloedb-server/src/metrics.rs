@@ -520,8 +520,8 @@ impl Metrics {
         let m = self.inner();
         let mut out = String::new();
         let o = &mut out;
-        head(o, "chloedb_build_info", "gauge", "The server's version and the SIMD kernels it runs (always 1).");
-        let _ = writeln!(o, "chloedb_build_info{{version=\"{}\",simd=\"{}\"}} 1", env!("CARGO_PKG_VERSION"), esc(&chloedb::simd::describe()));
+        head(o, "chloedb_build_info", "gauge", "The server's version, the commit it was built from and the SIMD kernels it runs (always 1).");
+        let _ = writeln!(o, "chloedb_build_info{{version=\"{}\",commit=\"{}\",simd=\"{}\"}} 1", env!("CARGO_PKG_VERSION"), crate::BUILD_COMMIT.unwrap_or(""), esc(&chloedb::simd::describe()));
         head(o, "process_start_time_seconds", "gauge", "When the process started, in seconds since the Unix epoch.");
         let _ = writeln!(o, "process_start_time_seconds {}", self.started.duration_since(SystemTime::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64()));
         for p in process() {
@@ -653,6 +653,24 @@ mod tests {
         assert!(text.contains("chloedb_query_admission_wait_seconds_count 0"), "{text}");
         assert!(text.contains("chloedb_x{table=\"a\"} 2"), "{text}");
         assert!(text.contains("process_cpu_seconds_total "), "{text}");
+    }
+
+    /// Two builds of one version say which commit each was built from
+    /// (OLU-207): in the build info, and in `--version`'s line.
+    #[test]
+    fn build_info_names_the_commit_built_from() {
+        let text = Metrics::default().render(&[]);
+        let line = text.lines().find(|l| l.starts_with("chloedb_build_info{")).unwrap();
+        let commit = crate::BUILD_COMMIT.unwrap_or("");
+        assert!(line.starts_with(&format!("chloedb_build_info{{version=\"{}\",commit=\"{commit}\",simd=", env!("CARGO_PKG_VERSION"))), "{line}");
+        match crate::BUILD_COMMIT {
+            Some(c) => {
+                assert!(c.len() == 10 && c.bytes().all(|b| b.is_ascii_hexdigit()), "{c}");
+                assert_eq!(env!("CHLOEDB_VERSION_LINE"), format!("{} (built from {c})", env!("CARGO_PKG_VERSION")));
+            }
+            // Built outside a git checkout (or where git refuses it).
+            None => assert_eq!(env!("CHLOEDB_VERSION_LINE"), env!("CARGO_PKG_VERSION")),
+        }
     }
 
     /// Routes and kinds over a window count only what happened in it.

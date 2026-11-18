@@ -335,7 +335,7 @@ sha256sum -c chloedb-server-$p.tar.gz.sha256 && tar xzf chloedb-server-$p.tar.gz
 sudo install chloedb-server-$p/chloedb-server /usr/local/bin/chloedb-server   # where the unit runs it from
 ```
 
-From 0.3.9, `gh attestation verify` checks that the release workflow built the archive, before you install it on every machine: [checking what you download](../../SECURITY.md#checking-what-you-download).
+From 0.3.8, `gh attestation verify` checks that the release workflow built the archive, before you install it on every machine: [checking what you download](../../SECURITY.md#checking-what-you-download).
 
 Here the new binary is the one on your `PATH` already, so the upgrade is a rolling restart in the same order, which is how you rehearse one. `restart` stops a copy with SIGTERM (it ends the requests under way first), starts it again without role flags, waits until the copy's own `/v1/health` says it serves reads (a replica does once it holds its primary's last transaction), and then until the coordinator sees the whole cluster well. Wait for both before the next copy: two copies of a shard down at once leave it without a majority. `handover` makes a copy its shard's primary:
 

@@ -27,6 +27,24 @@ changes collect under "Unreleased".
   JOIN`, a join on no equality, `INSERT ... SELECT`, `CREATE TABLE ... AS
   SELECT`, temporary tables and a time minus a time say what to write
   instead, with the query's own tables.
+- **A server says which commit it was built from** (OLU-207): two builds
+  of one version (a hotfix, a branch) said the same `0.3.8` everywhere.
+  `chloedb-server --version` prints `0.3.9 (built from 1a2b3c4d5e)`,
+  `/v1/system` and each copy's `version` in `/v1/cluster` carry `commit`,
+  `chloedb_build_info` has a `commit` label, and Rollouts counts two builds
+  of one version apart. A build outside a git checkout records none.
+- **Docs** (persona study round 2, ANA-207, MAYA-209, JONAH-11, JONAH-209,
+  SAM-217): building from source names the program
+  (`cargo build --release --bin chloedb-server`), so cargo no longer builds
+  the crate's ten tools and benchmarks beside it; the docs' search box
+  lists the sections that hold some of the words after those that hold
+  them all, so "similar recipes" finds "more like this"; the home page
+  has a ChloeCtx section; the plugin's tools are turned off with
+  `--disallowedTools mcp__plugin_chloectx_chloectx`; main's docs no longer
+  say they describe the last release once something has merged after it;
+  and the pages that said release archives carry build provenance from
+  0.3.9 say 0.3.8, as SECURITY.md does (the installers check it from
+  0.3.9).
 
 ### Analytical SQL
 

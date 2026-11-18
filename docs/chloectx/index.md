@@ -103,7 +103,7 @@ Set these in the environment Claude Code starts in, or in the `env` of its setti
 
 | variable | effect |
 |---|---|
-| `CHLOECTX_DISABLE=1` | turns the hooks off: nothing is recorded or recalled. The memory tools stay; start Claude with `--disallowedTools mcp__chloectx` to leave them out of a session too |
+| `CHLOECTX_DISABLE=1` | turns the hooks off: nothing is recorded or recalled. The memory tools stay; start Claude with `--disallowedTools mcp__chloectx` to leave them out of a session too (`mcp__plugin_chloectx_chloectx` with the plugin, whose tools are named `mcp__plugin_chloectx_chloectx__*`) |
 | `CHLOECTX_PER_WORKTREE=1` | a store for each git worktree, instead of one for the repository |
 | `CHLOECTX_HOME`, `CHLOECTX_MODELS` | relocate the store and the models |
 | `CHLOECTX_DISTILL=0` | turns distillation off (or `"distill": {"enabled": false}` in the store's `config.json`) |

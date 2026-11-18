@@ -550,6 +550,9 @@ impl Place {
     /// Its version: this build's, and the image's.
     pub fn version(&self) -> Json {
         let mut v = json!({"version": env!("CARGO_PKG_VERSION")});
+        if let Some(c) = crate::BUILD_COMMIT {
+            v["commit"] = json!(c);
+        }
         if let Some(i) = &self.image {
             v["image"] = json!(i);
         }
@@ -6178,7 +6181,7 @@ impl Service {
             Backend::Cluster(_) => Json::Null,
         };
         json!({
-            "version": env!("CARGO_PKG_VERSION"), "pid": std::process::id(), "started_ms": started, "uptime_s": uptime,
+            "version": env!("CARGO_PKG_VERSION"), "commit": crate::BUILD_COMMIT, "pid": std::process::id(), "started_ms": started, "uptime_s": uptime,
             "cores": self.cores, "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "simd": chloedb::simd::describe(),
             "rss_bytes": rss, "cpu_seconds": cpu, "memory_limit_bytes": chloedb::storage::memory_limit(),
             "backend": match self.backend { Backend::Local(_) => "local", Backend::Cluster(_) => "coordinator" },
