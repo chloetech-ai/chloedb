@@ -67,6 +67,8 @@ const CSS = `
 .ea-map .maplibregl-ctrl-attrib { font-size: 10px; }
 .ea-maptl { position: absolute; left: 10px; top: 10px; z-index: 2; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; pointer-events: none; }
 .ea-maptl > * { pointer-events: auto; }
+/* On a phone the title goes under the buttons rather than behind them. */
+@media (max-width: 640px) { .ea-maptl { top: 46px; right: 10px; } }
 .ea-mapttl { background: rgba(13, 15, 18, .72); color: #fff; padding: 5px 10px; border-radius: 7px; font-size: 13px; }
 .ea-onair { display: inline-flex; align-items: center; gap: 7px; background: rgba(13, 15, 18, .72); color: #fff; padding: 4px 10px 4px 8px; border-radius: 999px; font-size: 12px; }
 .ea-onair b { letter-spacing: .06em; font-size: 11px; }

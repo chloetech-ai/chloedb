@@ -353,12 +353,17 @@ async fn home(State(svc): State<Shared>) -> Answer {
     }
     let (biggest, twins, backtest, counts) = tokio::join!(
         c.soft("the largest fires GOES saw", format!("SELECT {} FROM ea_fires WHERE state = 'out' ORDER BY area_km2 DESC LIMIT 8", pages::FIRE_CARD), json!({})),
-        c.soft("the closest climate twins", format!("SELECT {}, twin, twin_sim, twin_score FROM ea_places WHERE region = 'california' AND twin_score > -1 ORDER BY twin_score DESC LIMIT 6", pages::PLACE_SMALL), json!({})),
+        c.soft("the closest climate twins", format!("SELECT {}, twin, twin_sim, twin_score FROM ea_places WHERE region = 'california' AND twin_score > -1 ORDER BY twin_score DESC LIMIT 60", pages::PLACE_SMALL), json!({})),
         c.soft("the backtest", "SELECT * FROM ea_backtest ORDER BY region, hours LIMIT 10", json!({})),
         c.soft("how much was read", "SELECT COUNT(*) AS scans, SUM(pixels) AS pixels FROM ea_scans", json!({})),
     );
     let ids: Vec<String> = twins.iter().map(|r| crate::strata::RowExt::s(r, "twin")).collect();
     let theirs = if ids.is_empty() { Vec::new() } else { c.soft("their twins", format!("SELECT {} FROM ea_places WHERE id IN (:ids)", pages::PLACE_SMALL), json!({"ids": ids})).await };
+    // Only pairs whose land the layers agree on, as Climate twins puts
+    // first: the closest pictures are often dark ones, a shadowed forest
+    // and deep water.
+    let kind = |id: &str| theirs.iter().find(|t| crate::strata::RowExt::s(*t, "id") == id).map(|t| crate::strata::RowExt::s(t, "kind"));
+    let twins: Vec<_> = twins.into_iter().filter(|a| kind(&crate::strata::RowExt::s(a, "twin")).is_some_and(|k| k == crate::strata::RowExt::s(a, "kind"))).take(6).collect();
     let v = json!({
         "regions": regions, "biggest": biggest, "twins": twins, "their_twins": theirs, "backtest": backtest, "counts": counts.first(),
         "replays": pages::REPLAYS.iter().map(|r| json!({"id": r.id, "region": r.region, "title": r.title, "about": r.about, "center": [r.center.0, r.center.1], "zoom": r.zoom})).collect::<Vec<_>>(),
