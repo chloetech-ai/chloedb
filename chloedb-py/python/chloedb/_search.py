@@ -3,6 +3,7 @@ parameters, `table`, `search` and the rank log."""
 
 from __future__ import annotations
 
+import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from ._native import ChloeDBError
@@ -21,11 +22,42 @@ def ordered_schema(s: dict) -> dict:
     return out
 
 
-def params(given: Mapping[str, Any] | None, kw: Mapping[str, Any]) -> dict | None:
-    """Query parameters from a dict and keyword arguments."""
+def params(given: Mapping[str, Any] | None, kw: Mapping[str, Any], sql: str | None = None, call: str = "query") -> dict | None:
+    """Query parameters from a dict and keyword arguments. They are named,
+    as ChloeDB's SQL names them (`:q`): values by position, sqlite3's `?`
+    and psycopg's `%s` with a tuple, raise a TypeError that shows the call
+    with names (MAYA-405)."""
+    if given is not None and not hasattr(given, "keys"):
+        raise TypeError(positional(given, sql, call))
     if not given and not kw:
         return None
     return {**(given or {}), **kw}
+
+
+# A quoted string or identifier, or a placeholder by position: `?`, `?1`,
+# `$1`, `%s`.
+_POSITIONAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|\?\d*|\$\d+|%s")
+
+
+def positional(given: Any, sql: str | None, call: str) -> str:
+    """Why parameters given by position are refused, with the call that
+    gives them by name: each `?` or `%s` of `sql` becomes :p1, :p2, ..."""
+    holes = [m for m in _POSITIONAL.finditer(sql or "") if m.group(0)[0] not in "'\""]
+    # A tuple is the values, as sqlite3 takes them; a list too, unless the
+    # statement has one placeholder and it holds several (a vector, or
+    # IN (?)).
+    values = list(given) if isinstance(given, tuple) or (isinstance(given, list) and (len(holes) != 1 or len(given) == 1)) else [given]
+    names = [f"p{i + 1}" for i in range(max(len(values), len(holes), 1))]
+    if sql and holes:
+        it = iter(names)
+        shown = _POSITIONAL.sub(lambda m: m.group(0) if m.group(0)[0] in "'\"" else ":" + next(it, "p"), sql)
+    else:
+        shown = "... :p1 ..."
+    args = ", ".join(f"{n}={v!r}" for n, v in zip(names, values))
+    return (
+        f"query parameters are named in ChloeDB's SQL (:name) and given by keyword or in a dict, "
+        f"not by position as sqlite3's ? and psycopg's %s take them: db.{call}({shown!r}, {args})"
+    )
 
 
 def quote(name: str) -> str:
@@ -41,7 +73,8 @@ def _time(t: Any) -> Any:
 class Search:
     """`table`, `search` and the rank log, shared by `Database` and
     `Client`, which give `schema`, `_table_schema(name)` (a table's, read
-    without reading the first table's), `_embedded(table)` (the embedded
+    without reading the first table's), `_table_names()` and `_holder`
+    (for `_check_table`), `_embedded(table)` (the embedded
     vector fields whose model is open), `embed`, `query`, `run`,
     `_query_logged` and `_export_rank_log`."""
 
@@ -109,13 +142,29 @@ class Search:
         opts = {"table": table, "events": events, "history": history, "window": window, "grades": grades, "since": _time(since), "until": _time(until)}
         return self._export_rank_log({k: v for k, v in opts.items() if v is not None})
 
+    def _check_table(self, table: str | None, call: str) -> None:
+        """Refuses a call that names no table where there are several: it
+        would read or change the first table, which is seldom the one
+        meant (MAYA-403: `db.search("lasagna")` on a server of products,
+        library_help and recipes answered shoes, and `db.get` of a recipe
+        None). With one table, it is that one."""
+        if table is not None:
+            return
+        names = self._table_names()
+        if len(names) > 1:
+            raise ChloeDBError(
+                f"db.{call} names no table, and this {self._holder} has {len(names)}: {', '.join(names)}. "
+                f"Pass table=, as in db.{call}(..., table={names[-1]!r})"
+            )
+
     def table(self, name: str | None = None) -> Query:
-        """A query of the first table or the one named, built from Python
+        """A query of the table named (or of the only table), built from Python
         values (`chloedb.build`):
         `db.table().where(col("year") >= 2019).order_by(bm25("body",
         q)).limit(10)`. A table named is read alone: the first table's
         schema is not, so a key limited to other tables can use it."""
         if name is None:
+            self._check_table(None, "table")
             return Query(self, self.schema)
         try:
             s = self._table_schema(name)
@@ -142,7 +191,7 @@ class Search:
         timeout_ms: int | None = None,
         memory: int | None = None,
     ) -> Result:
-        """The rows of the first table, or of `table`, that best match
+        """The rows of `table` (or of the only table) that best match
         `text`. `min_seq_no(s)` name writes the
         answer must see, and `timeout_ms` bounds it, as `query` takes them;
         a `Database` also takes `memory`, as its `query` does.
@@ -162,6 +211,7 @@ class Search:
         limits = {k: v for k, v in (("timeout_ms", timeout_ms), ("memory", memory)) if v is not None}
         if memory is not None and not getattr(self, "_local", False):
             raise TypeError(f"{type(self).__name__}.search() takes no memory: the server's queries share its --query-memory-mb")
+        self._check_table(table, "search")
         s = self.schema if table is None else self._table_schema(table)
         if text_fields is None:
             texts = [f for f in s["fields"] if f["type"] == "text" and f.get("indexed", True)]

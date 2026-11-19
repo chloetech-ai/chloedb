@@ -35,7 +35,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { Nearby } from "./nearby.js";
-import { ChloeDBError, Result, Searchable, decode, encode, given, makeError, orderedSchema, pickTable, resultOrWritten } from "./common.js";
+import { ChloeDBError, Result, Searchable, decode, encode, given, makeError, namedParams, orderedSchema, pickTable, resultOrWritten } from "./common.js";
 
 export { ChloeDBError, StrataError, Result, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError } from "./common.js";
 export { Client, Session, connect } from "./client.js";
@@ -362,27 +362,41 @@ export class Database extends Searchable {
     return (await this.#call("tables")).map(orderedSchema);
   }
 
+  /** @internal The tables' names, the first first (`_checkTable`). */
+  async _tableNames() {
+    // On this thread: it reads the catalog alone, so a write or a get does
+    // not wait for a second turn of the thread pool to check it.
+    try {
+      return decode(this.#n.callSync("table_names", "{}"));
+    } catch (e) {
+      throw failed(e);
+    }
+  }
+
   /** Live rows, in every table. */
   async count() {
     return this.#call("count");
   }
 
   /**
-   * Adds a column to the first table or `table`, as `ALTER TABLE ... ADD
+   * Adds a column to `table` (or the only table), as `ALTER TABLE ... ADD
    * COLUMN` does: `options` are the field's, in the short form of a schema
    * (`default`, `not_null`, `indexed`, `embed` and `model`, ...).
    */
   async addColumn(name, type, { table, ...options } = {}) {
+    await this._checkTable(table, "addColumn");
     await this.#call("alter", { alters: [{ add: { name, type, ...options } }], table });
   }
 
-  /** Drops a column of the first table or `table`, with its values. */
+  /** Drops a column of `table` (or the only table), with its values. */
   async dropColumn(name, { table } = {}) {
+    await this._checkTable(table, "dropColumn");
     await this.#call("alter", { alters: [{ drop: name }], table });
   }
 
-  /** Renames a column of the first table or `table`, keeping its values. */
+  /** Renames a column of `table` (or the only table), keeping its values. */
   async renameColumn(from, to, { table } = {}) {
+    await this._checkTable(table, "renameColumn");
     await this.#call("alter", { alters: [{ rename: [from, to] }], table });
   }
 
@@ -417,6 +431,7 @@ export class Database extends Searchable {
   async query(sql, params, { timeoutMs, memory, signal, pageSize, keepAliveMs } = {}) {
     if (pageSize == null && keepAliveMs != null) throw new TypeError("keepAliveMs is a cursor's: it goes with pageSize");
     const paging = pageSize != null ? pageArgs({ pageSize, keepAliveMs }) : {};
+    namedParams(sql, params, "query");
     return new Result(await this.#query("query", { sql, params, ...paging }, { timeoutMs, memory, signal }));
   }
 
@@ -455,6 +470,7 @@ export class Database extends Searchable {
    * INSERT, UPDATE or DELETE wrote. `timeoutMs`, `memory` and `signal`
    * limit a SELECT as `query` takes them; a write is not cut short. */
   async sql(sql, params, { timeoutMs, memory, signal } = {}) {
+    namedParams(sql, params, "sql");
     return resultOrWritten(await this.#query("sql", { sql, params }, { timeoutMs, memory, signal }));
   }
 
@@ -471,6 +487,7 @@ export class Database extends Searchable {
   /** The plan of a SELECT, INSERT, UPDATE or DELETE, without running it:
    * the plan IR as JSON, which `run` takes. */
   async plan(sql, params) {
+    namedParams(sql, params, "plan");
     return this.#call("plan", { sql, params });
   }
 
@@ -481,10 +498,11 @@ export class Database extends Searchable {
     return resultOrWritten(await this.#query("run", { plan }, { timeoutMs, memory, signal }));
   }
 
-  /** Inserts a row or rows, whose keys must be new, into the first table or
-   * `table`; all or none are written. Returns how many. A vector may be a
+  /** Inserts a row or rows, whose keys must be new, into `table` (or the
+   * only table); all or none are written. Returns how many. A vector may be a
    * Float32Array (read from its bytes), a Float64Array or an array. */
   async insert(rows, { table } = {}) {
+    await this._checkTable(table, "insert");
     const { rows: r, places, vectors } = splitVectors(rows);
     return this.#call("insert", { rows: r, table, vectors: places }, vectors);
   }
@@ -492,25 +510,29 @@ export class Database extends Searchable {
   /** Inserts a row or rows, replacing the rows that have their keys, in
    * transactions of 10,000 rows. Returns how many. */
   async upsert(rows, { table } = {}) {
+    await this._checkTable(table, "upsert");
     const { rows: r, places, vectors } = splitVectors(rows);
     return this.#call("upsert", { rows: r, table, vectors: places }, vectors);
   }
 
-  /** The row with this primary key in the first table or `table`, read
+  /** The row with this primary key in `table` (or the only table), read
    * without SQL: an object of the columns `SELECT *` answers, or null when
    * no live row has the key (or its `expire_by` time has passed). */
   async get(key, { table } = {}) {
+    await this._checkTable(table, "get");
     return (await this.#call("get_many", { keys: [key], table }))[0];
   }
 
   /** `get` of several keys at once, in their order. */
   async getMany(keys, { table } = {}) {
+    await this._checkTable(table, "getMany");
     return this.#call("get_many", { keys: [...keys], table });
   }
 
   /** Deletes the rows with this key or these keys; returns how many there
    * were. */
   async delete(keys, { table } = {}) {
+    await this._checkTable(table, "delete");
     const list = typeof keys === "string" || typeof keys === "number" || typeof keys === "bigint" ? [keys] : [...keys];
     return this.#call("delete", { keys: list, table });
   }
@@ -529,11 +551,12 @@ export class Database extends Searchable {
   }
 
   /** Loads a JSON Lines, JSON (an array), CSV or TSV file, in `format` or
-   * the one its extension names, into the first table or `table`. Into an
+   * the one its extension names, into `table` (or the only table). Into an
    * empty table the rows are bulk-loaded in one commit; otherwise they are
    * upserted. Returns {rows, bulk, skippedFields}: the columns the schema
    * lacks. */
   async importFile(path, { format, table } = {}) {
+    await this._checkTable(table, "importFile");
     const r = await this.#call("import_file", { path: paths(path), format, table });
     return { rows: r.rows, bulk: r.bulk, skippedFields: r.skipped_fields };
   }
@@ -594,6 +617,7 @@ export class Database extends Searchable {
    * ("" for the first number) among the rows SQL condition `where`
    * matches, or all rows: {prefix: {code: rows}}. */
   async sidNext(prefixes, { field, where, params, table } = {}) {
+    await this._checkTable(table, "sidNext");
     const got = await this.#call("sid_next", { prefixes: [...prefixes], field, where, params, table });
     return Object.fromEntries(Object.entries(got).map(([p, cs]) => [p, Object.fromEntries(cs)]));
   }

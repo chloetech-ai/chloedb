@@ -175,6 +175,12 @@ def _reads(sql: str) -> bool:
     return bool(m) and m.group(1).lower() in ("select", "with", "explain", "values", "show", "describe")
 
 
+def _changes_tables(sql: str) -> bool:
+    """Whether a statement makes, drops or changes a table, after which the
+    tables and the first table's schema are read again."""
+    return re.match(r"(?:\s|\(|--[^\n]*|/\*.*?\*/)*(create|drop|alter)\s+table\b", sql, re.S | re.I) is not None
+
+
 # The rows a frame asks of each page of a server's answer: the server cuts
 # it to its --max-result-window.
 FRAME_PAGE = 100_000
@@ -200,6 +206,9 @@ class Client(Search, FrameStore):
         # /v1/schema's answer for the first table, under None (kept until a
         # table is made here); a table named is read each time.
         self._schemas: dict[str | None, dict] = {}
+        # The tables' names, read with the first table's schema and kept
+        # as long (`_check_table`).
+        self._names: list[str] | None = None
         self._json_only = False  # a server that answers no Arrow
         self._conns = threading.local()
         # The chloedb-server `chloedb.serve` started for this client, which
@@ -361,6 +370,7 @@ class Client(Search, FrameStore):
         # Setting it to None (a table was made) forgets every table's.
         if value is None:
             self._schemas.clear()
+            self._names = None
         else:
             self._schemas[None] = value
 
@@ -376,6 +386,15 @@ class Client(Search, FrameStore):
     def tables(self) -> list[dict]:
         """Every table's schema in its short form, the first first."""
         return [ordered_schema(t["short"]) for t in self._call("GET", "/v1/tables")["tables"]]
+
+    # What `_check_table` reads: the tables this key may read, asked once
+    # and kept until a table is made here, as the first table's schema is.
+    _holder = "server"
+
+    def _table_names(self) -> list[str]:
+        if self.__dict__.get("_names") is None:
+            self._names = [t["short"]["table"] for t in self._call("GET", "/v1/tables")["tables"]]
+        return self._names or []
 
     def _embedded(self, table: str | None = None) -> list[str]:
         return [e["field"] for e in self._schema_answer(table).get("embeddings", []) if e.get("loaded")]
@@ -418,7 +437,7 @@ class Client(Search, FrameStore):
         """Runs a SELECT. With `min_seq_no` (a server's `Written.seq_no`) or
         `min_seq_nos` (a coordinator's `Written.seq_nos`), the copy that
         answers holds those writes: a replica waits for them up to a second."""
-        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw), **self._after(min_seq_no, min_seq_nos)}
+        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw, sql, "query"), **self._after(min_seq_no, min_seq_nos)}
         if timeout_ms:
             body["timeout_ms"] = timeout_ms
         return Result._of(self._call("POST", "/v1/query", body))
@@ -428,7 +447,7 @@ class Client(Search, FrameStore):
         the server as an Arrow IPC stream (no JSON either way), its columns
         typed as `Database.query_arrow` types them. Needs pyarrow. A server
         too old for Arrow answers JSON, which this types from the values."""
-        return self._arrow_answer(sql, _params(params, kw), timeout_ms, {}, self._after(min_seq_no, min_seq_nos))
+        return self._arrow_answer(sql, _params(params, kw, sql, "query_arrow"), timeout_ms, {}, self._after(min_seq_no, min_seq_nos))
 
     def _arrow_answer(self, sql: str, params: Mapping[str, Any], timeout_ms: int | None, types: Mapping[str, dict], after: Mapping[str, Any] | None = None):
         body: dict[str, Any] = {"sql": sql, "params": params, **(self._after() if after is None else after)}
@@ -468,7 +487,7 @@ class Client(Search, FrameStore):
         leaving the loop early ends it. A server from before scrolls
         answers in one page. `min_seq_no(s)` apply to the version the first
         page reads, which every page then reads."""
-        pages = self._pages(sql, _params(params, kw), page_size=page_size, arrow=arrow, keep_alive_ms=keep_alive_ms, timeout_ms=timeout_ms, after=self._after(min_seq_no, min_seq_nos))
+        pages = self._pages(sql, _params(params, kw, sql, "scroll"), page_size=page_size, arrow=arrow, keep_alive_ms=keep_alive_ms, timeout_ms=timeout_ms, after=self._after(min_seq_no, min_seq_nos))
         try:
             for page, _ in pages:
                 yield page
@@ -511,17 +530,19 @@ class Client(Search, FrameStore):
         INSERT, UPDATE or DELETE wrote (a `Written`, an int with the write's
         sequence numbers). With `idempotency_key`, a write sent again is not
         applied twice (see `write`); `min_seq_no(s)` as for `query`."""
-        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw)}
+        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw, sql, "sql")}
         if idempotency_key is not None:
             body["idempotency_key"] = idempotency_key
         # A session's numbers go with a read only: a server refuses them on
         # a write, which sees every write before it anyway.
         body.update(self._after(min_seq_no, min_seq_nos) if _reads(sql) else _after_body(min_seq_no, min_seq_nos))
         r = self._call("POST", "/v1/sql", body)
+        if _changes_tables(sql):
+            self._schema = None
         return Result._of(r) if "rows" in r else self._note(Written._of(r))
 
     def _query_logged(self, sql: str, params: Mapping[str, Any] | None, log: dict) -> Result:
-        return Result._of(self._call("POST", "/v1/query", {"sql": sql, "params": _params(params, {}), "log": log}))
+        return Result._of(self._call("POST", "/v1/query", {"sql": sql, "params": _params(params, {}, sql, "query_logged"), "log": log}))
 
     def _export_rank_log(self, opts: dict) -> list[dict]:
         # NDJSON, a record a line; a failure partway is the last line.
@@ -534,7 +555,7 @@ class Client(Search, FrameStore):
         """Runs the query and returns its plan: the plan IR as JSON ("ir")
         and as lines ("tree"), the executor's plan lines ("plan") and the
         bound query ("logical")."""
-        return self._call("POST", "/v1/explain", {"sql": sql, "params": _params(params, kw)})
+        return self._call("POST", "/v1/explain", {"sql": sql, "params": _params(params, kw, sql, "explain")})
 
     def run(self, plan: Mapping[str, Any] | Query, *, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None) -> Result | Written:
         """Runs a plan (the "ir" of `explain`, or a `Query`): a read's
@@ -549,7 +570,7 @@ class Client(Search, FrameStore):
 
     def embed(self, text: str | None = None, field: str | None = None, *, table: str | None = None, image: bytes | None = None, audio: bytes | None = None) -> list[float]:
         """The query vector of `text` by an embedded field's model (of the
-        first table, or of `table`), or of `image` or `audio`, the bytes of
+        `table`, or of the only table), or of `image` or `audio`, the bytes of
         an image or sound file, by a model of that, on the server."""
         b64 = lambda d: None if d is None else base64.b64encode(d).decode()
         body = {k: v for k, v in {"text": text, "image": b64(image), "audio": b64(audio), "field": field, "table": table}.items() if v is not None}
@@ -565,6 +586,7 @@ class Client(Search, FrameStore):
         """The codes that can follow each prefix of semantic-ID field
         `field` among the rows `where` matches (POST /v1/sid/next), summed
         over the shards on a coordinator: {prefix: {code: rows}}."""
+        self._check_table(table, "sid_next")
         body = {"field": field, "prefixes": list(prefixes), "where": where, "params": _params(params, kw), "table": table, **self._after(min_seq_no, min_seq_nos)}
         got = self._call("POST", "/v1/sid/next", {k: v for k, v in body.items() if v is not None})
         return {n["prefix"]: {c["code"]: c["count"] for c in n["next"]} for n in got["next"]}
@@ -593,17 +615,20 @@ class Client(Search, FrameStore):
         """Inserts a row or rows, whose keys must be new, into the first
         table or `table`, 1,000 rows a request. Returns how many (a
         `Written`, with the last request's sequence numbers)."""
+        self._check_table(table, "insert")
         return self._ops("insert", _rows(rows), table)
 
     def upsert(self, rows: Mapping[str, Any] | Iterable[Mapping[str, Any]], *, table: str | None = None) -> Written:
         """Inserts a row or rows, replacing the rows that have their keys,
         1,000 rows a request. Returns how many (a `Written`)."""
+        self._check_table(table, "upsert")
         return self._ops("upsert", _rows(rows), table)
 
     def delete(self, keys: Any, *, table: str | None = None, routing: Any = None) -> Written:
         """Deletes the rows with this key or these keys. Through a
         coordinator, `routing` gives the `shard_by` value of a table placed
         by a column. Returns how many (a `Written`)."""
+        self._check_table(table, "delete")
         keys = [keys] if isinstance(keys, (str, int)) else list(keys)
         named = {k: v for k, v in {"table": table, "routing": routing}.items() if v is not None}
         n = Written(0)
@@ -611,16 +636,17 @@ class Client(Search, FrameStore):
             n = n._then(self.write([{"op": "delete", **named, "key": k} for k in keys[i : i + WRITE_BATCH]]))
         return n
 
-    def _table(self, table: str | None) -> str:
+    def _table(self, table: str | None, call: str) -> str:
+        self._check_table(table, call)
         return table if table is not None else self.schema["table"]
 
     def get(self, key: Any, *, table: str | None = None, min_seq_no: int | None = None, min_seq_nos: Sequence[int] | None = None) -> dict | None:
-        """The row with this primary key in the first table or `table`, read
+        """The row with this primary key in `table` (or the only table), read
         without SQL (GET /v1/kv/:table/:key): a dict of the columns `SELECT
         *` answers, or None when no live row has the key (or its
         `expire_by` time has passed). A coordinator asks the key's shard.
         `min_seq_no(s)` as for `query`."""
-        path = f"/v1/kv/{urllib.parse.quote(self._table(table), safe='')}/{urllib.parse.quote(str(key), safe='')}"
+        path = f"/v1/kv/{urllib.parse.quote(self._table(table, "get"), safe='')}/{urllib.parse.quote(str(key), safe='')}"
         after = self._after(min_seq_no, min_seq_nos)
         if after:
             path += "?" + urllib.parse.urlencode({k: ",".join(map(str, v)) if isinstance(v, list) else v for k, v in after.items()})
@@ -637,7 +663,7 @@ class Client(Search, FrameStore):
         ranker's features, say), which reads no other. `min_seq_no(s)` as
         for `query`."""
         keys = list(keys)
-        body: dict[str, Any] = {"table": self._table(table), **self._after(min_seq_no, min_seq_nos)}
+        body: dict[str, Any] = {"table": self._table(table, "get_many"), **self._after(min_seq_no, min_seq_nos)}
         if columns is not None:
             body["columns"] = list(columns)
         out: list[dict | None] = []
@@ -650,7 +676,7 @@ class Client(Search, FrameStore):
         in place of any that has it; with `if_seq_no`, only while that
         row's sequence number is that. Returns the rows written (a
         `Written`)."""
-        path = f"/v1/kv/{urllib.parse.quote(self._table(table), safe='')}/{urllib.parse.quote(str(key), safe='')}"
+        path = f"/v1/kv/{urllib.parse.quote(self._table(table, "put"), safe='')}/{urllib.parse.quote(str(key), safe='')}"
         if if_seq_no is not None:
             path += f"?if_seq_no={int(if_seq_no)}"
         return self._note(Written._of(self._call("PUT", path, dict(row))))
@@ -713,12 +739,13 @@ class Client(Search, FrameStore):
     def import_file(self, path: str | os.PathLike, format: str | None = None, *, table: str | None = None) -> dict:
         """Uploads a JSON Lines, JSON (an array), CSV or TSV file (up to the
         server's 256 MB), in `format` or the one its extension names, into
-        the first table or `table`; its rows are upserted. Returns {rows,
+        `table` (or the only table); its rows are upserted. Returns {rows,
         bulk, skipped_fields}."""
         path = os.fspath(path)
         format = format or FORMATS.get(os.path.splitext(path)[1].lower())
         if not format:
             raise ValueError(f"name the format of {path}: jsonl, json, csv or tsv")
+        self._check_table(table, "import_file")
         with open(path, "rb") as f:
             size = os.fstat(f.fileno()).st_size
             ct = CONTENT_TYPES.get(format, "application/octet-stream")

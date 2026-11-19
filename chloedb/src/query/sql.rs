@@ -64,8 +64,21 @@ pub const DISTANCE_OPT: &str = "metric";
 /// The functions a ranking expression computes, besides the scores.
 const RANK_FUNCS: [&str; 16] = ["abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "tmm", "minmax", "zscore", "count_true"];
 
+/// Whether `placeholder` stands for a value by position (`?`, `?1`, `$1`),
+/// as sqlite3 and Postgres number them, rather than by name (`:q`).
+fn positional(placeholder: &str) -> bool {
+    placeholder.starts_with(['?', '$']) && placeholder[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// What a placeholder by position means here (MAYA-405): the SQL names its
+/// parameters.
+const BY_NAME: &str = "ChloeDB's parameters are named: write :q where the value goes and give q (in Python db.query(sql, q=...), from JavaScript query(sql, { q }), over HTTP \"params\": {\"q\": ...})";
+
 /// Why parameter `placeholder` (`:q`) has no value, and how to give it one.
 pub(crate) fn unbound(placeholder: &str) -> String {
+    if positional(placeholder) {
+        return format!("unbound parameter {placeholder}: {placeholder} stands for a value by position, as sqlite3 and psycopg write them, and {BY_NAME}");
+    }
     let name = placeholder.trim_start_matches([':', '$', '@', '?']);
     format!("unbound parameter {placeholder}: the statement names {placeholder} but no value was given for it (send \"params\": {{\"{name}\": ...}} with the query; in the SQL workbench, fill it in under Parameters)")
 }
@@ -1119,11 +1132,13 @@ struct Binder<'a> {
     guards: RefCell<Vec<(Guard, Option<Pred>, bool)>>,
     /// Whether `ORDER BY` is being bound.
     ordering: Cell<bool>,
-    /// The `fuzzy` option of each `MATCH` bound so far, by field and text:
-    /// a `bm25` of the same field and text without its own takes it, so
-    /// that ranking the rows a forgiving `MATCH` found does not score the
-    /// misspelt words as written and drop every row (found by the Swarm).
-    match_fuzzy: RefCell<Vec<(usize, String, Value)>>,
+    /// The `fuzzy` option and the plain syntax of each `MATCH` bound so
+    /// far, by field and text (as typed): a `bm25` of the same field and
+    /// text without its own takes them, so that ranking the rows a
+    /// forgiving `MATCH` found does not score the misspelt words as written
+    /// and drop every row (found by the Swarm), nor read a visitor's text
+    /// as operators the `MATCH` did not.
+    match_fuzzy: RefCell<Vec<(usize, String, Option<Value>, bool)>>,
 }
 
 impl<'a> Binder<'a> {
@@ -2046,10 +2061,13 @@ impl<'a> Binder<'a> {
                         let text = self.literal(text)?.as_str().ok_or_else(|| err("bm25 text must be a string"))?.to_string();
                         check_opts("bm25", &opts, &[&BM25_OPTS, &FUSION_OPTS])?;
                         let mut opts = opts;
-                        if !opts.contains_key("fuzzy") {
-                            let key = text.trim().to_lowercase();
-                            if let Some((_, _, z)) = self.match_fuzzy.borrow().iter().find(|(f, t, _)| *f == field && *t == key) {
+                        let key = text.trim().to_lowercase();
+                        if let Some((_, _, z, plain)) = self.match_fuzzy.borrow().iter().find(|(f, t, _, _)| *f == field && *t == key) {
+                            if let (Some(z), false) = (z, opts.contains_key("fuzzy")) {
                                 opts.insert("fuzzy".into(), z.clone());
+                            }
+                            if *plain && !opts.contains_key("syntax") {
+                                opts.insert("syntax".into(), Value::Str("plain".into()));
                             }
                         }
                         Expand::from_opts(&opts).map_err(err)?;
@@ -2522,12 +2540,29 @@ impl<'a> Binder<'a> {
                     )));
                 };
                 let field = self.searched_field(field, "MATCH")?;
-                if let Some(k) = opts.keys().find(|k| !matches!(k.as_str(), "synonyms" | "fuzzy" | "min" | "min_rows" | "max_rows")) {
-                    return Err(err(format!("unknown option {k} for MATCH: synonyms, fuzzy, min, min_rows, max_rows")));
+                if let Some(k) = opts.keys().find(|k| !matches!(k.as_str(), "synonyms" | "fuzzy" | "syntax" | "min" | "min_rows" | "max_rows")) {
+                    return Err(err(format!("unknown option {k} for MATCH: synonyms, fuzzy, syntax, min, min_rows, max_rows")));
                 }
-                let text = self.literal(q)?.as_str().ok_or_else(|| err("MATCH query must be a string"))?.to_string();
-                crate::text::query::parse_match_with(&text, self.schema.fields[field].text_analyzer())?;
+                let typed = self.literal(q)?.as_str().ok_or_else(|| err("MATCH query must be a string"))?.to_string();
+                // `syntax => 'plain'`: a search box's text, its words alone,
+                // written as a query of them that no quote, bracket or
+                // sign makes an operator ([`text::query::plain_match`]).
+                let plain = match opts.get("syntax") {
+                    None => false,
+                    Some(v) => match v.as_str() {
+                        Some("query") => false,
+                        Some("plain") => true,
+                        _ => return Err(err(format!("MATCH's syntax is 'query' (the default: quotes, -, OR and brackets are operators) or 'plain' (the words alone, for what a visitor types), not {}", hint::sql_value(v)))),
+                    },
+                };
+                let text = if plain { crate::text::query::plain_match(&typed) } else { typed.clone() };
+                crate::text::query::parse_match_with(&text, self.schema.fields[field].text_analyzer()).map_err(|e| match e {
+                    Error::Query(m) => err(format!("{m}; to search the words of what a visitor typed, none of it read as an operator, MATCH(field, :q, syntax => 'plain')")),
+                    e => e,
+                })?;
                 let need = crate::query::exec::min_need(&opts)?;
+                let mut opts = opts;
+                opts.remove("syntax");
                 let mut guarded = opts.clone();
                 let expand = Expand::from_opts(&opts).map_err(err)?;
                 // `min => n`: the query as one group a row needs n of.
@@ -2536,8 +2571,10 @@ impl<'a> Binder<'a> {
                     None => text.clone(),
                 };
                 let p = Pred::Match { field, query, expand };
-                if let Some(z) = opts.get("fuzzy") {
-                    self.match_fuzzy.borrow_mut().push((field, text.trim().to_lowercase(), z.clone()));
+                // What a bm25 of the same text on the same field takes
+                // from it, unless it says otherwise.
+                if opts.contains_key("fuzzy") || plain {
+                    self.match_fuzzy.borrow_mut().push((field, typed.trim().to_lowercase(), opts.get("fuzzy").cloned(), plain));
                 }
                 self.guard(&mut guarded, || GuardSite::Match { field, text, expand }, need, Some(&p), "MATCH")?;
                 p
@@ -3262,6 +3299,7 @@ impl<'a> Binder<'a> {
             Expr::Value(v) => match &v.value {
                 sql::Value::Placeholder(p) => match self.params.get(p) {
                     Ok(x) => format!("{p} ({} {})", hint::kind_of(x), hint::sql_value(x)),
+                    Err(_) if positional(p) => format!("{p}, a value by position, which has none ({BY_NAME})"),
                     Err(_) => format!("{p}, which has no value"),
                 },
                 sql::Value::SingleQuotedString(_) | sql::Value::DoubleQuotedString(_) => format!("the text {e}"),

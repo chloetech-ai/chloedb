@@ -965,6 +965,7 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>, q: Option<Li
     match op {
         "schema" => Ok(table_of(db, a.str("table")?)?.to_short_json()),
         "tables" => Ok(Json::Array(db.catalog().iter().map(|s| s.to_short_json()).collect())),
+        "table_names" => Ok(Json::Array(db.catalog().iter().map(|s| Json::String(s.table.clone())).collect())),
         "count" => Ok(json!(db.count())),
         "alter" => {
             let table = table_of(db, a.str("table")?)?.table.clone();

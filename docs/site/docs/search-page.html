@@ -186,7 +186,7 @@ db = chloedb.connect(SERVER)
 
 def where(q, category=None, max_price=None):
     &quot;&quot;&quot;The WHERE clause and parameters of a search for q.&quot;&quot;&quot;
-    conds, params = [&quot;MATCH(body, :q, fuzzy =&gt; &#x27;auto&#x27;)&quot;], {&quot;q&quot;: q}
+    conds, params = [&quot;MATCH(body, :q, syntax =&gt; &#x27;plain&#x27;, fuzzy =&gt; &#x27;auto&#x27;)&quot;], {&quot;q&quot;: q}
     if category:
         conds.append(&quot;category = :category&quot;)
         params[&quot;category&quot;] = category
@@ -240,7 +240,7 @@ def did_you_mean(q):
     return answer[&quot;text&quot;] if answer[&quot;changed&quot;] else None</pre>
 <p>The sections below try each function from Python before the page puts them together.</p>
 <h3 id="typos">Typos<a class="anchor" href="#typos" aria-label="Link to this section">#</a></h3>
-<p><code>MATCH(body, :q, fuzzy =&gt; 'auto')</code> keeps the products that have every word of the search, each spelt as typed or an edit away (two edits for words of six letters or more; none for words of one or two letters). <code>bm25(body, :q)</code> ranks them, and since it ranks the same text on the same field, it takes the <code>MATCH</code>'s <code>fuzzy</code> too (<a href="sql.html#typos-and-synonyms">typos</a>). So "jaket" finds every jacket:</p>
+<p><code>MATCH(body, :q, syntax =&gt; 'plain', fuzzy =&gt; 'auto')</code> keeps the products that have every word of the search, each spelt as typed or an edit away (two edits for words of six letters or more; none for words of one or two letters). <code>syntax =&gt; 'plain'</code> reads the search as its words alone, so what a visitor types is never an error: a stray quote or bracket (<code>rain jacket"</code>) is left out, and <code>-</code>, <code>OR</code> and <code>*</code> are no operators. <code>bm25(body, :q)</code> ranks them, and since it ranks the same text on the same field, it reads the words as the <code>MATCH</code> does and ranks every product the <code>MATCH</code> keeps, those spelt as typed first (<a href="sql.html#typos-and-synonyms">typos</a>). So "jaket" finds every jacket:</p>
 <pre data-lang="python">import shop
 
 for p in shop.search(&quot;jaket&quot;):

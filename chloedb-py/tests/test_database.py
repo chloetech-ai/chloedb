@@ -215,7 +215,7 @@ def test_optimize_leaves_one_segment_and_a_compact_file(tmp_path):
     with chloedb.open(path, schema) as db:
         db.sql("CREATE TABLE u (id KEYWORD PRIMARY KEY, n INT)")
         for b in range(4):
-            db.insert([{"id": f"r{b}-{i}", "body": f"batch {b} row {i} " * 4} for i in range(10_000)])
+            db.insert([{"id": f"r{b}-{i}", "body": f"batch {b} row {i} " * 4} for i in range(10_000)], table="t")
             db.insert([{"id": f"u{b}-{i}", "n": i} for i in range(10_000)], table="u")
         db.sql("DELETE FROM t WHERE id LIKE 'r2-%' OR id LIKE 'r3-%'")
         before = path.stat().st_size
@@ -227,7 +227,7 @@ def test_optimize_leaves_one_segment_and_a_compact_file(tmp_path):
         plan = db.query("SELECT id FROM t WHERE MATCH(body, 'batch') ORDER BY bm25(body, 'batch') DESC LIMIT 1").stats
         assert all(s.get("seg", 0) == 0 for s in plan.get("steps", []))
     with chloedb.open(path) as db:
-        assert len(db) == 20_000 and db.get("r1-9999") is not None and db.get("r3-0") is None
+        assert len(db) == 20_000 and db.get("r1-9999", table="t") is not None and db.get("r3-0", table="t") is None
 
 
 def test_a_table_rewritten_crawl_after_crawl_closes_near_its_size(tmp_path):
@@ -244,11 +244,11 @@ def test_a_table_rewritten_crawl_after_crawl_closes_near_its_size(tmp_path):
         for c in range(crawls):
             ts = f"2026-09-{1 + c // 6:02d}T{c % 6 * 4:02d}:00:00Z"
             db.insert([{"item": f"v{i}", "ts": ts, "total": (i * 31 + c * 7) % 500 + 0.5} for i in range(items)], table="snapshots")
-            db.upsert([{"id": f"v{i}", "title": f"vintage camera lens {i}, boxed and tested", "status": "ACTIVE", "total": (i * 31 + c * 7) % 500 + 0.5} for i in range(items)])
+            db.upsert([{"id": f"v{i}", "title": f"vintage camera lens {i}, boxed and tested", "status": "ACTIVE", "total": (i * 31 + c * 7) % 500 + 0.5} for i in range(items)], table="listings")
     closed = path.stat().st_size
     with chloedb.open(path) as db:
         assert len(db) == items and db.query("SELECT count(*) FROM snapshots").scalar() == crawls * items
-        assert db.get("v7")["total"] == (7 * 31 + (crawls - 1) * 7) % 500 + 0.5
+        assert db.get("v7", table="listings")["total"] == (7 * 31 + (crawls - 1) * 7) % 500 + 0.5
         db.optimize()
         optimized = path.stat().st_size
     assert closed < optimized * 3 // 2, (closed, optimized)

@@ -361,7 +361,7 @@ test("optimize leaves one segment and a compact file", async () => {
   const db = await open(path, { schema });
   await db.sql("CREATE TABLE u (id KEYWORD PRIMARY KEY, n INT)");
   for (let b = 0; b < 4; b++) {
-    await db.insert(Array.from({ length: 10_000 }, (_, i) => ({ id: `r${b}-${i}`, body: `batch ${b} row ${i} `.repeat(4) })));
+    await db.insert(Array.from({ length: 10_000 }, (_, i) => ({ id: `r${b}-${i}`, body: `batch ${b} row ${i} `.repeat(4) })), { table: "t" });
     await db.insert(Array.from({ length: 10_000 }, (_, i) => ({ id: `u${b}-${i}`, n: i })), { table: "u" });
   }
   await db.sql("DELETE FROM t WHERE id LIKE 'r2-%' OR id LIKE 'r3-%'");
@@ -376,7 +376,7 @@ test("optimize leaves one segment and a compact file", async () => {
   await db.close();
   const again = await Database.open(path);
   assert.equal(await again.count(), 20_000);
-  assert.notEqual(await again.get("r1-9999"), null);
-  assert.equal(await again.get("r3-0"), null);
+  assert.notEqual(await again.get("r1-9999", { table: "t" }), null);
+  assert.equal(await again.get("r3-0", { table: "t" }), null);
   await again.close();
 });
