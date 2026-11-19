@@ -3084,6 +3084,28 @@ impl Db {
         Ok(Corrected { text: crate::query::exec::corrected_text(text, &words), changed: !words.is_empty(), words })
     }
 
+    /// The rows of query `sql`'s funnel ([`crate::query::funnel`]): how
+    /// many rows each input of its ranking matches, how many each
+    /// condition of `WHERE` leaves, the candidates and the page, and each
+    /// row seen with where it left and why. Its probes read one snapshot.
+    /// A query of several tables (a join, `WITH`) has no funnel of rows.
+    pub fn funnel(&self, sql: &str, params: &Params) -> Result<crate::query::funnel::Rows> {
+        let all = self.snapshot();
+        let functions = self.functions_at(&all)?;
+        let q = qsql::parse_query_cached(sql)?;
+        let (q, embedded) = self.embed_texts(&all, sql, q, params)?;
+        let params = embedded.as_ref().unwrap_or(params);
+        let plan = plan_of_parsed(&all, &q, params, &functions)?;
+        if plan.root.uses_operators() {
+            return Err(crate::query::funnel::refused("a query of several tables (a join, WITH, a subquery) has no funnel of rows"));
+        }
+        let snap = all.table(plan.table()).ok_or_else(|| Error::Query(format!("no table {}", plan.table())))?;
+        let schema = snap.shared_schema().clone();
+        let select = plan.to_select(&schema)?;
+        let probes = crate::query::funnel::Probes::of(&schema, &select, self.exec.fusion_depth);
+        Ok(crate::query::funnel::run(&probes, |s| self.execute(&snap, s, &self.exec)))
+    }
+
     /// The marks of a search `query` of `table`'s TEXT field `field`, as
     /// its analyzer reads the words, with the server's synonyms and the
     /// table's own ([`crate::text::highlight`]), to highlight many texts

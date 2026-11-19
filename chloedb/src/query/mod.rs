@@ -12,6 +12,8 @@
 //! * [`paths`]: the paths listing of a JSON field (`json_paths(...)`).
 //! * [`memory`]: the memory breaker queries count what they hold against.
 //! * [`steps`]: a query's profile, the timed steps of its execution.
+//! * [`funnel`]: a query's funnel: the time and the rows of each stage
+//!   from its text to its answer.
 //! * [`model`]: ranking models (`gbdt()`), read from LightGBM and XGBoost
 //!   files.
 //! * [`cross_encoder`]: cross-encoders (`cross_encoder()`), which a global
@@ -33,6 +35,7 @@ pub mod embed_sql;
 pub mod df;
 pub mod exec;
 pub mod function;
+pub mod funnel;
 pub mod fusion;
 pub mod hint;
 pub mod chunks;

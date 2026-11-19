@@ -43,6 +43,7 @@
 //! | `POST /v1/derive/preview` | `{model, text, table?, field?, many?}` | `{model, many, values}`: what a content model makes of a text, as a derived KEYWORD field would hold it: a built-in one (`builtin:lang`, `builtin:keyphrases`, `builtin:minhash`), a dictionary (`dict:<table>.<field>`, the text analysed as `table`'s `field`), or a classifier (`classifier:<name>`, its best label, or with `many` the labels a `KEYWORD[]` holds, and `top`) |
 //! | `POST /v1/classify` | `{name, text, k?}` | `{label, score, top: [[label, probability]], classifier, version, table, field, labels_from, min_score}`: a text's classes by a classifier `CREATE CLASSIFIER` made, the text embedded by its field's model |
 //! | `POST /v1/understand` | `{table, field, text, mode?, fields?, weight?}` | `{spans, ranges, ranked, filters, boosts, line, ...}`: the values of the table's keyword fields the words name, and ranges of numbers, as `bm25(.., understand => ..)` takes them |
+//! | `POST /v1/funnel` | `{sql, params?, timeout_ms?}` | a query's funnel ([`crate::funnel`]): it runs once, its time on the stages from its text to its rows, the words understood and the terms they became, the texts embedded, and the rows each stage kept and dropped, each row seen with where it left and why |
 //! | `POST /v1/correct` | `{table, field, text}` | `{text, changed, words: [{word, term, to, to_word, edits, chance}]}`: "did you mean", the words in no row taken for typos of the field's terms (one server or shard) |
 //! | `POST /v1/highlight` | `{table, field, query, texts, size?, pre?, post?}` | `{texts, took_ms}`: each text with the words `query` matches marked as the field's analyzer and synonyms read them (stems, synonyms, typos, prefixes, phrases, and code such as `C++` where its characters are), the stretch of about `size` characters with the most (160; 0 the whole text), HTML-escaped between `<mark>` tags, or as given between `pre` and `post` |
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
@@ -69,6 +70,7 @@
 //! | `GET /v1/queries/recent?since=ms&limit=n`, `/v1/queries/slow?limit=n` | | `{queries}`: the latest that ended (or the slow ones), the newest first, each with its trace |
 //! | `GET /v1/queries/request/:id` | | `{queries}`: those a request (its `x-request-id`) ran |
 //! | `GET /v1/queries/finished/:id` | | one ended query with its whole profile: trace, steps ([`chloedb::query::steps`]) and plan lines (the lists give each without them, unless `full=true`) |
+//! | `GET /v1/queries/funnel?since=&table=&fingerprint=&kind=&id=` | | the latest queries' time on the funnel's stages: together, by statement (with each one's rows by stage) and the slowest one by one; `id` one of them |
 //! | `GET /v1/profile/settings`, `PUT /v1/profile/settings` | `{slow_ms?, cpu_all?}` | the slow threshold (until restarted) and whether every query's CPU time is measured; on a coordinator `?node=` a copy's, `?coordinator=` (URL or name) another coordinator's |
 //! | `POST /v1/profile/cpu?format=folded&node=` | `{seconds?, hz?, sql?, params?, clients?}` | a CPU profile ([`crate::profiler`]) of the whole server for `seconds`, or of `sql` run again and again for that long by `clients` callers at once (1 to 64): every thread's stacks, sampled `hz` times a CPU second; `format=folded` answers folded lines (flamegraph.pl, speedscope); 409 while another is taken |
 //! | `GET /v1/profile/memory?node=` | | the heap ([`crate::heap`]: bytes in use and their peak, bytes allocated, allocations and frees), the resident memory and its peak, and the threads |
@@ -335,6 +337,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/correct", post(correct))
         .route("/v1/highlight", post(highlight))
         .route("/v1/understand", post(understand))
+        .route("/v1/funnel", post(funnel))
         .route("/v1/classify", post(classify))
         .route("/v1/classifiers", get(classifiers))
         .route("/v1/derive/preview", post(derive_preview))
@@ -411,6 +414,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/queries/slow", get(slow_queries))
         .route("/v1/queries/request/:id", get(request_queries))
         .route("/v1/queries/finished/:id", get(finished_query))
+        .route("/v1/queries/funnel", get(queries_funnel))
         .route("/v1/profile/settings", get(profile_settings).merge(put(put_profile_settings)))
         .route("/v1/profile/cpu", post(cpu_profile))
         .route("/v1/profile/memory", get(memory))
@@ -4162,6 +4166,40 @@ async fn understand(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     v["boosts"] = json!(u.boosts());
     v["line"] = json!(u.line());
     Ok(AxJson(v))
+}
+
+/// `{sql, params?, timeout_ms?, budget?}`: the query run once, and its
+/// funnel ([`crate::funnel`]): the time of each stage from its text to
+/// its rows, and the rows each stage kept and dropped, and why.
+async fn funnel(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    let sql = body_str(&b, "sql")?;
+    let who = who(w);
+    reads_ok(&app, &who, sql).await?;
+    let params = app.svc.params_for(b.get("params"), Some(sql), &who).await?;
+    let ask = crate::funnel::Ask { sql: sql.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms")?, budget: body_budget(&b)? };
+    let mut j = crate::funnel::one(&app.svc, &who, ask).await?;
+    // The shards' hosts, for an admin key's eyes only.
+    if !(who.scope == Scope::Admin && !who.limited()) {
+        if let Some(steps) = j.get_mut("steps") {
+            let mut s: Vec<chloedb::query::steps::Step> = serde_json::from_value(steps.take()).unwrap_or_default();
+            hide_hosts(&who, &mut s);
+            *steps = json!(s);
+        }
+        for s in j.get_mut("spans").and_then(Json::as_array_mut).into_iter().flatten() {
+            if let Some(o) = s.as_object_mut() {
+                o.remove("replica");
+            }
+        }
+    }
+    Ok(AxJson(j))
+}
+
+/// `GET /v1/queries/funnel?since=&limit=&table=&fingerprint=&kind=&id=`:
+/// the time of the queries this server ran on the funnel's stages
+/// ([`crate::funnel::many`]), or of the one numbered `id`.
+async fn queries_funnel(State(app): State<App>, Query(q): Params) -> Res {
+    let (since, limit) = (param_u64(&q, "since", 0)?, param_u64(&q, "limit", telemetry::RECENT as u64)? as usize);
+    Ok(AxJson(crate::funnel::many(&app.svc, &q, since, limit.min(telemetry::RECENT))?))
 }
 
 /// `{name, text, k?}`: the classes of a text by a classifier `CREATE

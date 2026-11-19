@@ -70,6 +70,7 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("views/oncall.js", JS, include_str!("../ui/app/views/oncall.js")),
     ("views/queries.js", JS, include_str!("../ui/app/views/queries.js")),
     ("views/statement.js", JS, include_str!("../ui/app/views/statement.js")),
+    ("views/funnel.js", JS, include_str!("../ui/app/views/funnel.js")),
     ("views/profile.js", JS, include_str!("../ui/app/views/profile.js")),
     ("views/logs.js", JS, include_str!("../ui/app/views/logs.js")),
     ("views/explorer.js", JS, include_str!("../ui/app/views/explorer.js")),
