@@ -285,7 +285,7 @@ async fn presets_are_grants_and_routes() {
     let (s, made) = call(&base, "POST", "/v1/admin/keys", ROOT, Some(json!({"name": "netops", "preset": "oncall", "prefix": "netops_*"}))).await;
     assert_eq!(s, 200, "{made}");
     assert_eq!(made["key"]["tables"], json!({"netops_*": "write", "ctx_netops_*": "write", "ctx_incidents": "read"}), "{made}");
-    assert_eq!((&made["key"]["preset"], &made["key"]["allow"]["routes"]), (&json!("oncall"), &json!(["fleet"])), "{made}");
+    assert_eq!((&made["key"]["preset"], &made["key"]["allow"]["routes"]), (&json!("oncall"), &json!(["fleet", "alerts"])), "{made}");
     // Kept as grants: the file holds them, whatever reads it.
     let file = std::fs::read_to_string(dir.path().join("a.strata.keys.json")).unwrap();
     assert!(file.contains("netops_*") && file.contains("\"fleet\""), "{file}");
@@ -327,6 +327,98 @@ async fn presets_are_grants_and_routes() {
     // Given by hand, as a preset gives them.
     let (s, made) = call(&base, "POST", "/v1/admin/keys", ROOT, Some(json!({"name": "ops2", "tables": {"logs_*": "write"}, "routes": ["fleet"]}))).await;
     assert_eq!((s, &made["key"]["allow"]["routes"]), (200, &json!(["fleet"])), "{made}");
+}
+
+/// MARCO-301: the key the logs guide makes for the rotation (`oncall`)
+/// reads an alert's page and the runbooks, and acknowledges, silences and
+/// notes it, as itself in the audit log; it still changes no rule nor
+/// route, and reads no admin route. A key limited to tables without the
+/// `alerts` group does none of it, and one given it that does not write
+/// reads the alert alone. `/v1/whoami` lists the routes each may call.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_oncall_key_acknowledges_silences_and_notes_an_alert() {
+    let dir = tempfile::tempdir().unwrap();
+    let (base, svc) = start(dir.path(), Vec::new()).await;
+    let rules = json!({"rules": [{"id": "payments-errors", "name": "Payments errors", "metric": "p99_ms", "op": ">", "threshold": 100.0, "eval": "mean", "window_s": 60, "severity": "critical"}]});
+    let (s, j) = call(&base, "PUT", "/v1/alerts/rules", ROOT, Some(rules.clone())).await;
+    assert_eq!(s, 200, "{j}");
+    let t = chloedb_server::telemetry::now_ms();
+    let points: Vec<Arc<Json>> = (0..31u64).map(|i| Arc::new(json!({"t": t - (30 - i) * 2000, "p99_ms": 300.0}))).collect();
+    let fired = svc.alerts.check(&points, t);
+    assert_eq!(fired.iter().map(|e| (e.rule.as_str(), e.state)).collect::<Vec<_>>(), [("payments-errors", "firing")]);
+    chloedb_server::alerts::deliver(&svc, fired);
+
+    let oncall = key(&base, json!({"name": "netops", "preset": "oncall", "prefix": "logs_*"})).await;
+    let k = Some(oncall.as_str());
+    let (s, j) = call(&base, "GET", "/v1/alerts/payments-errors", k, None).await;
+    assert_eq!((s, j["rule"].as_str().or(j["state"]["rule"].as_str())), (200, Some("payments-errors")), "{j}");
+    let (s, j) = call(&base, "GET", "/v1/runbooks?for=payments-errors", k, None).await;
+    assert_eq!(s, 200, "{j}");
+    let (s, j) = call(&base, "POST", "/v1/alerts/payments-errors/ack", k, Some(json!({"note": "on it"}))).await;
+    assert_eq!((s, j["ack"]["by"].as_str()), (200, Some("netops")), "{j}");
+    let (s, j) = call(&base, "POST", "/v1/alerts/payments-errors/silence", k, Some(json!({"minutes": 30, "reason": "rolling back"}))).await;
+    assert_eq!((s, j["silenced"]["reason"].as_str()), (200, Some("rolling back")), "{j}");
+    let (s, j) = call(&base, "POST", "/v1/alerts/payments-errors/notes", k, Some(json!({"text": "the deploy of 14:02"}))).await;
+    assert_eq!(s, 200, "{j}");
+    assert!(j["notes"].as_array().unwrap().iter().any(|n| n["by"] == "netops" && n["text"] == "the deploy of 14:02"), "{j}");
+    let (s, j) = call(&base, "DELETE", "/v1/alerts/payments-errors/silence", k, None).await;
+    assert_eq!(s, 200, "{j}");
+    // Its own name in the audit log.
+    let (_, audit) = call(&base, "GET", "/v1/admin/audit", ROOT, None).await;
+    let ack = audit["entries"].as_array().unwrap().iter().find(|e| e["route"] == "/v1/alerts/:rule/ack").expect("audited");
+    assert_eq!(ack["who"], "netops", "{ack}");
+
+    // Still not the rules, the routes, a backtest, the server's own log, or
+    // any admin route.
+    for (method, path, body) in [
+        ("PUT", "/v1/alerts/rules", Some(rules.clone())),
+        ("GET", "/v1/alerts/routes", None),
+        ("PUT", "/v1/alerts/routes", Some(json!({"routes": []}))),
+        ("POST", "/v1/alerts/routes/x/test", Some(json!({}))),
+        ("POST", "/v1/alerts/backtest", Some(json!({"rule": rules["rules"][0], "from": t - 60_000, "to": t}))),
+        ("GET", "/v1/alerts/peer", None),
+        ("GET", "/v1/logs", None),
+        ("POST", "/v1/logs/query", Some(json!({"sql": "SELECT * FROM logs LIMIT 1"}))),
+        ("GET", "/v1/admin/audit", None),
+        ("GET", "/v1/admin/keys", None),
+        ("POST", "/v1/admin/oncall", Some(json!({"alert": "payments-errors"}))),
+        ("POST", "/v1/events/notes", Some(json!({"text": "x"}))),
+    ] {
+        let (s, j) = call(&base, method, path, k, body).await;
+        assert_eq!(s, 403, "{method} {path}: {j}");
+    }
+    let (_, me) = call(&base, "GET", "/v1/whoami", k, None).await;
+    let routes: Vec<&str> = me["may"]["routes"].as_array().unwrap_or_else(|| panic!("{me}")).iter().filter_map(Json::as_str).collect();
+    for r in ["GET /v1/alerts", "GET /v1/alerts/:rule", "GET /v1/runbooks", "POST /v1/alerts/:rule/ack", "POST /v1/alerts/:rule/silence", "DELETE /v1/alerts/:rule/silence", "POST /v1/alerts/:rule/notes", "GET /v1/events", "POST /v1/sql"] {
+        assert!(routes.contains(&r), "{r}: {routes:?}");
+    }
+    for r in ["PUT /v1/alerts/rules", "GET /v1/alerts/routes", "POST /v1/alerts/backtest", "GET /v1/logs", "GET /v1/admin/keys"] {
+        assert!(!routes.contains(&r), "{r}: {routes:?}");
+    }
+
+    // A key limited to tables without the group: the list of what fires,
+    // and nothing of one alert.
+    let fleet = key(&base, json!({"name": "shipper", "tables": {"logs_*": "write"}, "routes": ["fleet"]})).await;
+    for (method, path, body) in [("GET", "/v1/alerts/payments-errors", None), ("GET", "/v1/runbooks", None), ("POST", "/v1/alerts/payments-errors/notes", Some(json!({"text": "x"})))] {
+        let (s, j) = call(&base, method, path, Some(&fleet), body).await;
+        assert_eq!(s, 403, "{method} {path}: {j}");
+        assert!(j["error"].as_str().unwrap().contains("not for a key limited to tables"), "{j}");
+    }
+    assert_eq!(call(&base, "GET", "/v1/alerts", Some(&fleet), None).await.0, 200);
+    // Given the group without writing: it reads the alert, and changes nothing.
+    let (s, made) = call(&base, "POST", "/v1/admin/keys", ROOT, Some(json!({"name": "viewer", "tables": {"logs_*": "read"}, "routes": ["alerts"]}))).await;
+    assert_eq!((s, &made["key"]["allow"]["routes"]), (200, &json!(["alerts"])), "{made}");
+    let viewer = Some(made["secret"].as_str().unwrap());
+    assert_eq!(call(&base, "GET", "/v1/alerts/payments-errors", viewer, None).await.0, 200);
+    let (s, j) = call(&base, "POST", "/v1/alerts/payments-errors/notes", viewer, Some(json!({"text": "x"}))).await;
+    assert_eq!(s, 403, "{j}");
+    assert!(j["error"].as_str().unwrap().contains("write scope"), "{j}");
+    let (_, me) = call(&base, "GET", "/v1/whoami", viewer, None).await;
+    let routes = me["may"]["routes"].to_string();
+    assert!(routes.contains("\"GET /v1/alerts/:rule\"") && !routes.contains("POST /v1/alerts/:rule/notes"), "{routes}");
+    // A key of every table has no such list: its scope says what it may.
+    let (_, me) = call(&base, "GET", "/v1/whoami", ROOT, None).await;
+    assert!(me["may"].get("routes").is_none(), "{me}");
 }
 
 /// The logs quickstart (docs/guide/logs.md): an `oncall` key imports JSON

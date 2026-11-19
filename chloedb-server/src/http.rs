@@ -7261,6 +7261,12 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
         may["reason_required"] = json!(true);
     }
     j["may"] = may;
+    // MARCO-301: a key limited to tables calls some of the server's routes
+    // alone: which, each as "METHOD /route", so that the command center
+    // offers what it may do and says why it may not do the rest.
+    if w.limited() {
+        j["may"]["routes"] = json!(limited_routes(&w));
+    }
     j["caller"] = json!(caller);
     // The presets a key limited to tables can be made from.
     j["presets"] = json!(keys::PRESETS.iter().map(|(n, w)| json!({"name": n, "what": w})).collect::<Vec<_>>());
@@ -7270,6 +7276,19 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
         j["signed_in"] = json!({"email": email, "provider": provider});
     }
     AxJson(j)
+}
+
+/// The routes key `w`, limited to tables, may call, as `"METHOD /route"`:
+/// those every such key calls ([`crate::scoped::route_ok`]; a connector's
+/// push key, [`crate::scoped::push_route_ok`]) and its groups'
+/// ([`keys::Allow`]), each with the scope it needs. What it then may do on
+/// each is checked by its tables, as ever.
+pub(crate) fn limited_routes(w: &Principal) -> Vec<String> {
+    let reaches = |m: &axum::http::Method, route: &str| match w.push_only() {
+        true => crate::scoped::push_route_ok(m, route),
+        false => crate::scoped::route_ok(m, route) || w.allowed_route(m, route),
+    };
+    crate::catalog::routes().iter().flat_map(|r| r.methods.iter().filter(|m| reaches(m, r.path) && w.scope >= route_scope(m, r.path)).map(move |m| format!("{m} {}", r.path))).collect()
 }
 
 // ----- sign-in: people sign in to the command center with Google ([`crate::signin`])

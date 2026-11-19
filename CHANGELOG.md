@@ -11,6 +11,20 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **The on-call key does on-call** (persona study round 3, MARCO-301,
+  MARCO-313). A key limited to tables may be given the route group
+  `alerts`: an alert's page (`GET /v1/alerts/<rule>`), the runbooks, and
+  acknowledging, silencing and noting an alert (with a key that writes);
+  never the rules, the routes or a backtest. The `oncall` preset gives it,
+  so the key "Search your logs" makes for the rotation can claim what it
+  is paged for; an `oncall` key made before keeps `fleet` alone, so make
+  it again. `/v1/whoami` lists the server's routes such a key may call
+  (`may.routes`), and the command center offers those alone: the alert
+  page's buttons a key cannot use say why, Edit rule reads View rule, and
+  a refusal is told in the server's words. `chloedb-server cc`'s Logs,
+  the server's own log, which an admin key reads, says so for another key
+  and lists the log tables it reads, and `Enter` shows one's newest lines
+  in SQL ([server.md](docs/chloedb/server.md#security)).
 - **An answer gives its columns' types, and a column's type follows its
   expression** (persona study round 3, SAM-301, SAM-308). `POST
   /v1/query` answers `types` beside `columns` (`"timestamp"`, `"int"`,
