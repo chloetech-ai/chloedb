@@ -223,6 +223,28 @@ test('the spend cap refuses calls past it, and remembers what was spent', async 
   }
 })
 
+test('a web search that brings back no sources is asked for once more', async () => {
+  const { claude, Budget } = await import('../chat/model.mjs')
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'instant-apps-research-'))
+  try {
+    // A claude whose first search fills the shape with nothing, as one did
+    // on a Mac ("dummy"), and whose second finds a page.
+    const fake = path.join(tmp, 'claude')
+    const none = JSON.stringify({ structured_output: { query: 'dummy', goal: 'answer', answer: { text: 'dummy' }, items: [], documents: [] }, total_cost_usd: 0.01 })
+    const some = JSON.stringify({ structured_output: { query: '42 inch TVs at lider.cl', goal: 'pick', answer: { text: 'The LG.' }, items: [{ name: 'LG 43LR6000' }], documents: [{ title: 'Televisores', url: 'https://www.lider.cl/tv', summary: 'TVs.' }] }, total_cost_usd: 0.01 })
+    ;(await import('node:fs')).writeFileSync(fake, `#!/bin/sh\ncat > /dev/null\nif [ -f "${tmp}/once" ]; then echo '${some}'; else touch "${tmp}/once"; echo '${none}'; fi\n`, { mode: 0o755 })
+    const model = claude({ bin: fake, budget: new Budget({ daily: 1 }) })
+    const said = []
+    const found = await model.research({ request: 'Compare 42” tvs from líder.cl', query: 'Compare 42” tvs from líder.cl', history: [] }, line => said.push(line))
+    assert.equal(found.documents.length, 1)
+    assert.equal(found.query, '42 inch TVs at lider.cl')
+    assert.match(said[0], /0 source\(s\), 0 item\(s\), query "dummy"/)
+    assert.match(said[1], /^research again .* 1 source\(s\)/)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('one visitor’s requests in an hour are limited', { skip }, async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'instant-apps-limit-'))
   const chat = await start({ port: 0, data: dir, model: scripted(), log: () => {}, shared: false, perHour: 1 })
@@ -259,5 +281,5 @@ test('a request to find things searches the web first, and the Search results ap
   // Nothing found is said in words, with no app.
   const none = await events('/api/turn', { text: 'find nothing at all' })
   assert.ok(!none.some(e => e.type === 'app'))
-  assert.match(none.find(e => e.type === 'reply').text, /found nothing on the web/)
+  assert.match(none.find(e => e.type === 'reply').text, /couldn’t find anything on the web for “find nothing at all”/)
 })

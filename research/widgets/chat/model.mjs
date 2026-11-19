@@ -166,9 +166,21 @@ export function claude({
     },
     // The web searched for a request, and what was found as the findings
     // tool takes it.
-    async research(input) {
-      const found = await run({ system: RESEARCH, prompt: researchPrompt(input), model: fast, schema: RESEARCH_SCHEMA, tools: ['WebSearch'], mcp: READER, turns: 14, timeoutMs: 240_000 })
-      return clip({ ...found, query: found.query || input.query })
+    // An answer with no sources is asked for once more: a model whose
+    // search failed fills the shape with nothing (once, on a Mac, with
+    // the query "dummy"), and the web rarely has nothing at all.
+    async research(input, log = console.error) {
+      const ask = async () => {
+        const found = await run({ system: RESEARCH, prompt: researchPrompt(input), model: fast, schema: RESEARCH_SCHEMA, tools: ['WebSearch'], mcp: READER, turns: 14, timeoutMs: 240_000 })
+        return clip({ ...found, query: found.query || input.query })
+      }
+      let found = await ask()
+      log(`research for "${input.request}": ${found.documents.length} source(s), ${found.items?.length ?? 0} item(s), query "${found.query}"`)
+      if (!found.documents.length) {
+        found = await ask()
+        log(`research again for "${input.request}": ${found.documents.length} source(s), ${found.items?.length ?? 0} item(s), query "${found.query}"`)
+      }
+      return found
     },
     async make(input) {
       return written(makePrompt(input))

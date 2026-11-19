@@ -131,7 +131,8 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         return
       }
       if (!args.documents.length) {
-        send({ type: 'reply', text: `I found nothing on the web for “${args.query}”.` })
+        // In the person's words: the model's own query may be anything.
+        send({ type: 'reply', text: `I couldn’t find anything on the web for “${text}”. Try again, or put it another way.` })
         return
       }
     }
