@@ -319,6 +319,7 @@ impl Lower<'_> {
             // number of hops in an expression ([`super::raise`]).
             Score::Hops { .. } => Expr::Hops,
             Score::SeqNo => Expr::SeqNo,
+            Score::Hash { field, seed } => Expr::Call { func: Func::Hash, args: vec![Expr::Field(*field as u32), Expr::Lit(Value::Int(*seed))] },
             Score::Ranked { keys } => Expr::Ranked { keys: keys.clone() },
             Score::Cond(p) => self.pred(p),
             // NaN is NULL: a scalar subquery's value of no row.

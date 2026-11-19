@@ -818,6 +818,19 @@ impl<'a> Raise<'a> {
             Expr::Call { func: Func::CountTrue, args } if !args.is_empty() => {
                 Score::Call { func: Func::CountTrue, args: args.iter().map(|a| Ok(Score::Cond(Box::new(self.filter(a)?)))).collect::<Result<_>>()? }
             }
+            // A row's seeded hash of its value of a field ([`Score::Hash`]).
+            Expr::Call { func: Func::Hash, args } => {
+                let (field, seed) = match args.as_slice() {
+                    [Expr::Field(f)] => (*f as usize, 0),
+                    [Expr::Field(f), Expr::Lit(Value::Int(seed))] => (*f as usize, *seed),
+                    _ => return Err(err("hash in a ranking takes a field of the row and an INT seed")),
+                };
+                let Some(f) = self.schema.fields.get(field) else { return Err(err(format!("hash in a ranking: no field {field}"))) };
+                if Some(field) != self.schema.primary_key && !f.stored {
+                    return Err(err(format!("hash in a ranking reads the row's value of a stored field, and {} is not stored", f.name)));
+                }
+                Score::Hash { field, seed }
+            }
             Expr::Call { func, args } => {
                 if Func::numeric(func.name()).is_none() {
                     return Err(err(format!("{}() takes text: a ranking expression is numeric", func.name())));

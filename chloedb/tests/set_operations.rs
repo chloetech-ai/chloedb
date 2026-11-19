@@ -112,9 +112,13 @@ fn lite_rows(lite: &Connection, sql: &str) -> Vec<Vec<Value>> {
     .unwrap()
 }
 
+/// SQLite's value `a` against ChloeDB's `b`. SQLite keeps each value's
+/// type in a column, where ChloeDB makes a column of INTs and FLOATs FLOAT,
+/// as PostgreSQL and DuckDB do (SAM-308): its INT is then ChloeDB's FLOAT.
 fn same_value(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Float(x), Value::Float(y)) => (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1.0),
+        (Value::Int(x), Value::Float(y)) => *x as f64 == *y,
         _ => a == b,
     }
 }
@@ -193,11 +197,9 @@ fn set_operations_answer_as_sqlite_does() {
             assert!(same_rows(&want, &got.rows), "{sql} ({engine:?}):\nsqlite {want:?}\nstrata {:?}", got.rows);
         }
     }
-    // DataFusion runs them all but the one whose sides' types differ, which
-    // the operators answer.
-    let expected = ["SELECT x FROM t UNION SELECT z FROM u"];
-    assert!(fell_back.iter().all(|f| expected.iter().any(|e| f.contains(e))), "{fell_back:#?}");
-    assert_eq!(fell_back.len(), if cfg!(feature = "datafusion") { expected.len() } else { 0 }, "{fell_back:#?}");
+    // DataFusion runs them all: an INT side and a FLOAT side make a FLOAT
+    // column (SAM-308), as the operators make it.
+    assert!(fell_back.is_empty(), "{fell_back:#?}");
 }
 
 /// What a set operation gives, from its sides' rows in their order: each

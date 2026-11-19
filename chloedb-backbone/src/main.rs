@@ -33,6 +33,11 @@ enum Command {
         /// the K root server from every probe; 5001: traceroutes to it).
         #[arg(long, value_delimiter = ',', default_value = "1001,5001")]
         atlas: Vec<u64>,
+        /// Keep a file fetched less than this many hours ago (0: fetch
+        /// every one). The feed's container fetches before it starts, so a
+        /// restart in the day does not ask the sources again.
+        #[arg(long, default_value_t = 20.0)]
+        fresh_hours: f64,
     },
     /// Make the tables, and load the records `fetch` downloaded.
     Load {
@@ -137,8 +142,8 @@ fn logs() {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if let Command::Fetch { dir, only, atlas } = cli.command {
-        return fetch::run(fetch::Opts { dir, only, atlas });
+    if let Command::Fetch { dir, only, atlas, fresh_hours } = cli.command {
+        return fetch::run(fetch::Opts { dir, only, atlas, fresh: std::time::Duration::from_secs_f64(fresh_hours.max(0.0) * 3600.0) });
     }
     logs();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;

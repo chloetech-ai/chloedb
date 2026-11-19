@@ -131,10 +131,12 @@ fn to_py<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'py, PyAny>> {
     })
 }
 
-/// A query's answer as a dict: columns, rows (lists), keys, scores, stats.
+/// A query's answer as a dict: columns, their types (from their values,
+/// [`ResultSet::types`]), rows (lists), keys, scores, stats.
 fn result_py<'py>(py: Python<'py>, rs: &ResultSet) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("columns", PyList::new(py, &rs.columns)?)?;
+    d.set_item("types", PyList::new(py, rs.types())?)?;
     let rows = rs.rows.iter().map(|r| PyList::new(py, r.iter().map(|v| to_py(py, v)).collect::<PyResult<Vec<_>>>()?)).collect::<PyResult<Vec<_>>>()?;
     d.set_item("rows", PyList::new(py, rows)?)?;
     d.set_item("keys", PyList::new(py, rs.keys.iter().map(|v| to_py(py, v)).collect::<PyResult<Vec<_>>>()?)?)?;
@@ -216,8 +218,29 @@ fn params(db: &Db, j: &[(String, Json)], sql: &str) -> chloedb::Result<Params> {
     if j.is_empty() {
         return Ok(Params::new());
     }
-    let from = chloedb::query::tables::read_by_sql(sql).into_iter().find(|t| db.storage().table(t).is_some());
-    params_in(db, j, from.as_deref())
+    let read = chloedb::query::tables::read_by_sql(sql);
+    let from = read.iter().find(|t| db.storage().table(t).is_some()).cloned();
+    // A `{"embed"}` or `{"vector_of"}` that names no field is the field the
+    // statement ranks it against (`similarity(bge, :v)`), of the table of
+    // the statement's that has it.
+    let used = chloedb::query::tables::param_fields(sql);
+    let j: Vec<(String, Json)> = j
+        .iter()
+        .map(|(k, v)| match (v, used.get(k.trim_start_matches([':', '$', '@']))) {
+            (Json::Object(o), Some(f)) if (o.contains_key("embed") || o.contains_key("vector_of")) && !o.contains_key("field") => {
+                let mut o = o.clone();
+                o.insert("field".into(), Json::String(f.clone()));
+                if !o.contains_key("table") {
+                    if let Some(t) = read.iter().find(|t| db.storage().table(t).is_some_and(|s| s.field(f).is_some())) {
+                        o.insert("table".into(), Json::String(t.clone()));
+                    }
+                }
+                (k.clone(), Json::Object(o))
+            }
+            _ => (k.clone(), v.clone()),
+        })
+        .collect();
+    params_in(db, &j, from.as_deref())
 }
 
 /// The parameters, those that name no table reading `from` (else the first table).
@@ -609,6 +632,44 @@ impl Database {
         let opts = chloedb::storage::CheckpointOptions { layout, ..Default::default() };
         let stats = py.detach(|| db.storage().checkpoint(&dest, &opts)).map_err(err)?;
         serde_json::to_string(&stats).map_err(|e| err(chloedb::Error::Schema(e.to_string())))
+    }
+
+    /// How many rows of the first table, or of `table`, have no vector in
+    /// embedded field `field` ([`Db::missing_vectors`]): rows written
+    /// before the field was added or while its model was not open, and
+    /// rows whose sources are all empty.
+    #[pyo3(signature = (field, table = None))]
+    fn missing_vectors(&self, py: Python<'_>, field: &str, table: Option<&str>) -> PyResult<usize> {
+        let db = self.get()?;
+        let table = table_of(&db, table).map_err(err)?.table.clone();
+        py.detach(|| db.missing_vectors(&table, field)).map(|k| k.len()).map_err(err)
+    }
+
+    /// Fills in the vectors of embedded field `field` of the first table,
+    /// or of `table`, that its rows lack, with the field's model, `batch`
+    /// rows a write ([`Db::embed_backfill`]); `progress(done, total)` is
+    /// called before the first and after each write. Ctrl-C stops it
+    /// between writes, the rows filled so far kept. Returns the rows given
+    /// a vector (rows whose sources are all empty get none).
+    #[pyo3(signature = (field, table = None, batch = 256, progress = None))]
+    fn embed_backfill(&self, py: Python<'_>, field: &str, table: Option<&str>, batch: usize, progress: Option<Bound<'_, PyAny>>) -> PyResult<u64> {
+        let db = self.get()?;
+        let table = table_of(&db, table).map_err(err)?.table.clone();
+        let keys = py.detach(|| db.missing_vectors(&table, field)).map_err(err)?;
+        let total = keys.len();
+        if let Some(p) = &progress {
+            p.call1((0usize, total))?;
+        }
+        let (mut filled, mut done) = (0u64, 0usize);
+        for chunk in keys.chunks(batch.max(1)) {
+            py.check_signals()?;
+            filled += py.detach(|| db.prepare_backfill(&table, field, chunk.to_vec()).and_then(|w| db.write_prepared(&w))).map_err(err)?;
+            done += chunk.len();
+            if let Some(p) = &progress {
+                p.call1((done, total))?;
+            }
+        }
+        Ok(filled)
     }
 
     /// Lets writes store rows without the vectors of embedded fields whose

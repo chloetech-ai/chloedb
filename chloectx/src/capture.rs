@@ -128,11 +128,129 @@ pub fn preference_sentences(prompt: &str) -> Vec<String> {
     });
     let mut out = Vec::new();
     for s in sentences(prompt) {
-        if s.len() >= 12 && s.len() <= 400 && re.is_match(s) {
+        // "Please don't commit yet" says how to do this turn (JONAH-303):
+        // what is left of the sentence without it must still read as a rule.
+        let rest = beyond_this_turn(s);
+        if s.len() >= 12 && s.len() <= 400 && re.is_match(&rest.join(", ")) {
             out.push(s.to_string());
         }
     }
     out
+}
+
+/// Words that keep an instruction to now: "yet", "for now", "this time".
+fn temporary_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)\b(?:yet|for now|right now|just now|at the moment|for the moment|this time|until (?:i say|further notice|told|later|tomorrow)|for this (?:turn|step|reply|answer|message|one))\b").unwrap())
+}
+
+/// A clause that says how to do this turn rather than how the project
+/// works: "no code changes", "just answer", "don't change anything", "read
+/// only", "nothing to do", "reply with the code only".
+fn turn_mode_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)^\W*(?:(?:please|and|but|also|so|ok|okay|now|first|then|for now)\W+)*(?:(?:make |do )?no (?:code )?(?:changes|edits)\b|no code\b|(?:don[’']?t|do not|dont) (?:make |do )?(?:any )?(?:code )?(?:changes|edits)\b|(?:don[’']?t|do not|dont) (?:change|edit|touch|modify|write) (?:anything|any (?:code|files?))\b|(?:just|only) (?:answer|reply|respond|explain|tell me|acknowledge|confirm|read|look|discuss|think|plan|describe|list|summari[sz]e)\b|nothing to do\b|read[- ]only\b|reply with (?:the )?code only\b)").unwrap()
+    })
+}
+
+/// Whether `text` (a rule, a quote of a request) is an instruction for the
+/// turn at hand: a clause of it says how to do this turn ("no code changes",
+/// "just answer"), or tells the agent what not to do now ("don't commit
+/// yet", "no tests for now"). Said in two sessions, such an instruction is
+/// still the turn's, not a rule (JONAH-303: "don't write tests and don't
+/// commit yet" was a rule of the next session, and two "no code changes"
+/// prompts made a rule "said in 2 sessions").
+pub fn for_this_turn(text: &str) -> bool {
+    static NO: OnceLock<Regex> = OnceLock::new();
+    let no = NO.get_or_init(|| Regex::new(r"(?i)^\W*(?:(?:and|but|also|so|please)\s+)*(?:no|not|never mind)\b").unwrap());
+    sentences(text).into_iter().flat_map(clauses).any(|c| turn_mode_re().is_match(c) || ((restrictive_re().is_match(c) || no.is_match(c)) && temporary_re().is_match(c)))
+}
+
+/// The clauses of `sentence` that do not say how to do this turn
+/// ([`for_this_turn`]): a restriction joined to one that does goes with it
+/// ("don't write tests and don't commit yet": the "yet" is both's).
+fn beyond_this_turn(sentence: &str) -> Vec<&str> {
+    let cs = clauses(sentence);
+    let mut keep = vec![true; cs.len()];
+    for i in 0..cs.len() {
+        if !for_this_turn(cs[i]) {
+            continue;
+        }
+        keep[i] = false;
+        let mut j = i;
+        while j > 0 && cs[j].trim_start().to_lowercase().starts_with("and ") && restrictive_re().is_match(cs[j - 1]) {
+            j -= 1;
+            keep[j] = false;
+        }
+    }
+    cs.into_iter().zip(keep).filter(|(_, k)| *k).map(|(c, _)| c).collect()
+}
+
+/// Whether a request asks how to do something, for advice, rather than for
+/// the work: "I want a toggle for the new PDF renderer. How should I add
+/// it?" plans nothing (ANA-308: it was filed as planned work). A request
+/// that also asks for the work ("Add it", "Can you build it?") is not one.
+pub fn asks_how(request: &str) -> bool {
+    static HOW: OnceLock<Regex> = OnceLock::new();
+    static WORK: OnceLock<Regex> = OnceLock::new();
+    let how = HOW.get_or_init(|| {
+        Regex::new(r"(?i)^\W*(?:(?:so|ok|okay|and|but|also|quick question)\W+)*(?:how (?:should|do|would|could|can|might|shall) (?:i|we)\b|how (?:would|do) you (?:do|add|build|approach|handle|implement|structure|design)\b|what(?:[’']s| is| would be) the (?:best|right|cleanest|simplest|easiest|usual) way\b|what would you (?:do|suggest|recommend)\b|should (?:i|we)\b|which (?:\w+ ){0,3}should (?:i|we)\b|is it (?:better|worth)\b|would it be (?:better|worth)\b|do you think\b|any (?:ideas|suggestions|advice)\b)").unwrap()
+    });
+    let work = WORK.get_or_init(|| {
+        Regex::new(r"(?i)^\W*(?:(?:then|next|now|also|and|ok|okay|so)\W+)*(?:please\b|(?:can|could|would|will) you\b|let[’']?s\b|go ahead\b|(?:add|build|implement|create|make|write|fix|change|update|do|start|wire|hook|put)\b)").unwrap()
+    });
+    let ss: Vec<&str> = sentences(request);
+    let asked = request.split_inclusive('?').filter(|q| q.ends_with('?')).any(|q| sentences(q).last().is_some_and(|s| how.is_match(s)));
+    asked && !ss.iter().any(|s| work.is_match(s))
+}
+
+/// A decision's text without what says whether its work is built yet: "Not
+/// implemented yet; planned for a later session" goes stale the day it is
+/// built (JONAH-304), and the decision is what was decided and why. The
+/// text as it was when nothing else would be left.
+pub fn without_status(text: &str) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"(?i)^\W*(?:(?:but|and|so|it(?:[’']s| is)|this is|that is|which is|currently)\s+)*(?:not (?:yet )?(?:implemented|built|done|started|coded|written|in place|shipped|added)(?: yet)?|(?:planned|scheduled|left|deferred|saved|kept) for (?:a |the )?(?:later|future|another|next)(?: (?:session|sprint|release|time|step|pr|day))?|(?:to be|will be) (?:implemented|built|done|added) (?:later|next|in a (?:later|future) session)|nothing (?:is )?(?:built|implemented) yet|no code (?:written )?yet)\W*$").unwrap()
+    });
+    // Pieces at ". ", ";" and ", ", each with what ends it.
+    let mut pieces: Vec<(&str, &str)> = Vec::new();
+    let mut start = 0;
+    let b = text.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        let next_ws = b.get(i + 1).is_none_or(|n| n.is_ascii_whitespace());
+        if (c == b'.' || c == b';' || c == b',') && next_ws {
+            pieces.push((&text[start..i], &text[i..i + 1]));
+            start = i + 1;
+        }
+        i += 1;
+    }
+    if start < text.len() {
+        pieces.push((&text[start..], ""));
+    }
+    let status = |p: &str| {
+        let p = p.trim().trim_start_matches('(').trim_end_matches(')');
+        re.is_match(p)
+    };
+    if !pieces.iter().any(|(p, _)| status(p)) {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let kept: Vec<&(&str, &str)> = pieces.iter().filter(|(p, _)| !status(p)).collect();
+    for (n, (p, end)) in kept.iter().enumerate() {
+        out.push_str(p);
+        // The last piece ends the sentence.
+        out.push_str(if n + 1 == kept.len() && (*end == "," || *end == ";") { "." } else { end });
+    }
+    let out = out.trim().to_string();
+    if out.chars().filter(|c| c.is_alphanumeric()).count() < 12 {
+        text.to_string()
+    } else {
+        out
+    }
 }
 
 /// `text` split into sentences: at line breaks, `!`, `?`, and a `.` that
@@ -171,6 +289,10 @@ pub fn prompt_drafts(prompt: &str) -> Vec<Draft> {
 /// prompt someone other than the user wrote is stored with its source.
 pub fn prompt_drafts_by(prompt: &str, by: &Source) -> Vec<Draft> {
     let prompt = redact(&crate::envelope::clean(prompt));
+    // What the user asked not to keep is never stored, nor picked as a
+    // rule or a decision (WEI-301): the daemon cuts it first, and so does
+    // every other way in (`ingest-transcript`).
+    let prompt = crate::private::cut(&prompt).kept;
     if prompt.trim().is_empty() {
         return Vec::new();
     }
@@ -271,6 +393,9 @@ fn task_scope_re() -> &'static Regex {
 /// Anything else the user told an agent to do or not do is an instruction
 /// for that task ("Don't touch money.py or cart.py").
 pub fn standing_rule(request: &str, prev_answer: &str, rule: &str) -> bool {
+    if for_this_turn(rule) {
+        return false;
+    }
     let re = standing_re();
     let terms = |t: &str| -> BTreeSet<String> { chloedb::text::analyze(t).into_iter().collect() };
     let rule_terms = terms(rule);
@@ -285,6 +410,15 @@ pub fn standing_rule(request: &str, prev_answer: &str, rule: &str) -> bool {
     for s in sentences(request) {
         let lead = s.split_once(':').is_some_and(|(head, _)| re.is_match(head) || authority_re().is_match(head));
         listed = listed || ((rules_lead_re().is_match(s) || lead) && !task_scope_re().is_match(s));
+        // What says how to do this turn is no rule, even in a list of them
+        // ("A few ground rules: ... Don't write tests and don't commit yet",
+        // JONAH-303).
+        let rest = beyond_this_turn(s);
+        if rest.is_empty() {
+            continue;
+        }
+        let s = rest.join(", ");
+        let s = s.as_str();
         if !listed && !re.is_match(s) && !authority_re().is_match(s) {
             continue;
         }
@@ -937,5 +1071,44 @@ mod tests {
         assert!(!task_instruction("Two things from ops: staging deploys happen only on Tuesdays and Thursdays.", "Staging deploys happen only on Tuesdays and Thursdays."));
         assert!(!task_instruction("Add a refunds table.", "Money is kept as integer cents."));
         assert_eq!(clauses("Fix it, but don't touch web/ and keep the diff small"), ["Fix it", "but don't touch web/", "and keep the diff small"]);
+    }
+
+    /// JONAH-303: how to do this turn is not a rule, said once or again.
+    #[test]
+    fn an_instruction_for_this_turn_is_not_a_rule() {
+        for t in ["Don't write tests and don't commit yet.", "No code changes, just answer.", "no code changes", "Just answer: why is it slow?", "Don't push for now.", "No tests this time."] {
+            assert!(for_this_turn(t), "{t}");
+        }
+        for t in ["Always run ruff before committing.", "Never commit generated files.", "Don't write tests that hit the network.", "Use tabs.", "Money is kept as integer cents."] {
+            assert!(!for_this_turn(t), "{t}");
+        }
+        assert!(preference_sentences("Sketch the export command. Please don't commit yet.").is_empty());
+        assert!(preference_sentences("No code changes, just answer: why is the export slow?").is_empty());
+        // A ground rule said with one is still one.
+        assert_eq!(preference_sentences("From now on, always run ruff before committing, but don't commit yet."), ["From now on, always run ruff before committing, but don't commit yet"]);
+        let r = "Ground rules for this repo: always use ruff for linting. Sketch the export command; don't write tests and don't commit yet.";
+        assert!(!standing_rule(r, "", "Don't write tests and don't commit yet."));
+        assert_eq!(beyond_this_turn("Sketch the export command; don't write tests and don't commit yet."), ["Sketch the export command"], "the \"yet\" is both's");
+        assert!(standing_rule(r, "", "Use ruff for linting."));
+    }
+
+    /// ANA-308: a question how to build something asks for advice.
+    #[test]
+    fn a_question_how_to_do_it_asks_for_no_work() {
+        for q in ["I want a toggle for the new PDF renderer. How should I add it?", "What's the best way to cache the rates?", "Should we split the billing module?", "We may want rate limiting one day. Any ideas?"] {
+            assert!(asks_how(q), "{q}");
+        }
+        for q in ["Add a toggle for the PDF renderer. How should I test it?", "How should I add it? Then go ahead and build it.", "Can you add rate limiting?", "Add rate limiting to the public API.", "How does the cache work?"] {
+            assert!(!asks_how(q), "{q}");
+        }
+    }
+
+    /// JONAH-304: a decision holds what was decided, not whether it is built.
+    #[test]
+    fn a_decision_loses_its_status() {
+        assert_eq!(without_status("The --json flag prints one object per line. Not implemented yet; planned for a later session."), "The --json flag prints one object per line.");
+        assert_eq!(without_status("Retries back off exponentially, not implemented yet."), "Retries back off exponentially.");
+        assert_eq!(without_status("Storage stays JSON because admins edit the files by hand."), "Storage stays JSON because admins edit the files by hand.");
+        assert_eq!(without_status("Not implemented yet."), "Not implemented yet.", "nothing would be left");
     }
 }

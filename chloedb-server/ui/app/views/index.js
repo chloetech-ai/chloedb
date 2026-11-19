@@ -45,6 +45,7 @@ export const VIEWS = [
   { id: "slices", title: "Slices", icon: "layers", group: "Data", range: false, keywords: "slices slice device devices phone offline on-device edge tiles tile map geo near nearby location vector vectors cluster clusters taste similar recommendations manifest download cloud fallback proof proved fresh stale rebuild", load: () => import("./slices.js") },
   { id: "builder", title: "Query builder", icon: "builder", group: "Labs", full: true, range: false, keywords: "visual query builder drag drop filter facet boost hybrid fusion rrf group no code", load: () => import("./builder.js") },
   { id: "relevance", title: "Relevance lab", icon: "relevance", group: "Labs", full: true, range: false, keywords: "relevance ranking compare a/b judgments ndcg mrr precision tune weights hybrid fusion rrf bm25 vector rank profile evaluation", load: () => import("./relevance.js") },
+  { id: "blend", title: "Blending", icon: "sliders", group: "Labs", range: false, keywords: "blend blending blender utility layer after ranking mix sources federated search results page slate heads relevance engagement recency calibrate tmm quota quotas share top k pin slot spacing diversity diversify mmr dedupe near duplicates cap per author receipts rule cost versions train tune off-policy evaluation counterfactual doubly robust snips propensity explore clicks", load: () => import("./blend.js") },
   { id: "autopilot", title: "Relevance autopilot", icon: "relevance", group: "Labs", range: false, keywords: "relevance autopilot ranking tune proposal ndcg proof rank profile rank log judgments replay held out sign test", load: () => import("./autopilot.js") },
   { id: "recsys", title: "Recsys eval", icon: "recsys", group: "Labs", full: true, range: false, keywords: "recommender recsys evaluation rank log a/b test variants ndcg hit rate mrr ctr position bias labels events clicks purchases offline metrics training export features auc", load: () => import("./recsys.js") },
   { id: "sid", title: "Semantic IDs", icon: "sid", group: "Labs", full: true, range: false, keywords: "semantic ids codebook residual quantization rq-vae generative retrieval recommender beam search decoding prefix codes clusters sunburst", load: () => import("./sid.js") },
@@ -116,6 +117,7 @@ export const NAV = [
   ["Labs", [
     { id: "relevance", title: "Relevance lab", icon: "relevance" },
     { id: "autopilot", title: "Relevance autopilot", icon: "relevance", scope: "admin" },
+    { id: "blend", title: "Blending", icon: "sliders" },
     { id: "recsys", title: "Recsys eval", icon: "recsys" },
     { id: "sid", title: "Semantic IDs", icon: "sid" },
     { id: "autocomplete", title: "Autocomplete", icon: "autocomplete" },

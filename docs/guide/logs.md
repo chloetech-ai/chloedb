@@ -49,7 +49,7 @@ made
 
 ## A key for the on-call engineer and the log shipper
 
-The `oncall` preset makes a key [limited to tables](../chloedb/server.md#security): it writes and reads the tables its prefix names (rows, imports and OpenTelemetry logs alike), writes notes into its [ChloeCtx](../chloectx/app.md) spaces `ctx_logs_*`, and reads the fleet's health, events, alerts and metrics. It cannot read other tables or change the server.
+The `oncall` preset makes a key [limited to tables](../chloedb/server.md#security): it writes and reads the tables its prefix names (rows, imports and OpenTelemetry logs alike), writes notes into its [ChloeCtx](../chloectx/app.md) spaces `ctx_logs_*`, reads the fleet's health, events, alerts and metrics, and acknowledges, silences and notes an alert, as the alert's page and `chloedb-server cc` offer it. It cannot read other tables, change alert rules or routes, or change the server otherwise.
 
 ```sh
 export CHLOEDB_LOGS_KEY=$(curl -s -X POST localhost:7700/v1/admin/keys -H "authorization: Bearer $ADMIN_KEY" \

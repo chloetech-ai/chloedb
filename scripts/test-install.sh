@@ -14,7 +14,9 @@
 # it), with a gh that verifies a made-up bundle: a release whose bundle
 # names the archive installs; one whose archive and .sha256 were both
 # replaced, or whose bundle is missing, does not; without gh, or for a
-# release older than provenance, it installs on the SHA-256 and says so.
+# release older than provenance, it installs on the SHA-256 and says so;
+# 0.3.8, the first release with provenance, is checked (LENA-303 of round
+# 3), by install.sh too.
 # server-release.yml checks the real thing, with GitHub's gh, on the
 # attestations a run made.
 #
@@ -85,21 +87,23 @@ exit 1
 GH
 chmod 755 "$web/bin/gh"
 
-# Releases 0.3.7, 9.9.8 and 9.9.9 of a server that only says its version,
-# for every platform; 9.9.x with a bundle beside each archive, as releases
-# from 0.3.9 have.
-for v in 0.3.7 9.9.8 9.9.9; do
-  for p in linux-x86_64 linux-aarch64 macos-arm64 macos-x86_64; do
-    d="$work/build/chloedb-server-$p"
-    mkdir -p "$d" "$web/releases/chloedb-server-v$v"
-    printf '#!/bin/sh\necho "chloedb-server %s"\n' "$v" > "$d/chloedb-server"
-    chmod 755 "$d/chloedb-server"
-    tar -C "$work/build" -czf "$web/releases/chloedb-server-v$v/chloedb-server-$p.tar.gz" "chloedb-server-$p"
-    (cd "$web/releases/chloedb-server-v$v" && { sha256sum "chloedb-server-$p.tar.gz" 2> /dev/null || shasum -a 256 "chloedb-server-$p.tar.gz"; } > "chloedb-server-$p.tar.gz.sha256")
-    if [ "$v" != 0.3.7 ]; then
-      echo "$(cut -d' ' -f1 < "$web/releases/chloedb-server-v$v/chloedb-server-$p.tar.gz.sha256") refs/tags/chloedb-server-v$v" > "$web/releases/chloedb-server-v$v/chloedb-server-$p.tar.gz.sigstore.jsonl"
-    fi
-    rm -rf "$d"
+# Releases 0.3.7, 0.3.8, 9.9.8 and 9.9.9 of a server (and a chloectx) that
+# only say their version, for every platform; from 0.3.8 with a bundle
+# beside each archive, as the releases have from 0.3.8 on.
+for v in 0.3.7 0.3.8 9.9.8 9.9.9; do
+  for prog in chloedb-server chloectx; do
+    for p in linux-x86_64 linux-aarch64 macos-arm64 macos-x86_64; do
+      d="$work/build/$prog-$p"
+      mkdir -p "$d" "$web/releases/chloedb-server-v$v"
+      printf '#!/bin/sh\necho "%s %s"\n' "$prog" "$v" > "$d/$prog"
+      chmod 755 "$d/$prog"
+      tar -C "$work/build" -czf "$web/releases/chloedb-server-v$v/$prog-$p.tar.gz" "$prog-$p"
+      (cd "$web/releases/chloedb-server-v$v" && { sha256sum "$prog-$p.tar.gz" 2> /dev/null || shasum -a 256 "$prog-$p.tar.gz"; } > "$prog-$p.tar.gz.sha256")
+      if [ "$v" != 0.3.7 ]; then
+        echo "$(cut -d' ' -f1 < "$web/releases/chloedb-server-v$v/$prog-$p.tar.gz.sha256") refs/tags/chloedb-server-v$v" > "$web/releases/chloedb-server-v$v/$prog-$p.tar.gz.sigstore.jsonl"
+      fi
+      rm -rf "$d"
+    done
   done
 done
 
@@ -217,8 +221,52 @@ mv "$work/bundle" "$rel/chloedb-server-$here.tar.gz.sigstore.jsonl"
 V=0.3.7 run_given
 unset V
 check "a release older than provenance installs with gh here" installed 0.3.7
-check "  on its SHA-256 alone, saying so" said "release 0.3.7 is older than build provenance (0.3.9)"
+check "  on its SHA-256 alone, saying so" said "release 0.3.7 is older than build provenance (0.3.8)"
 check "  asking gh nothing" [ ! -e "$web/gh-asked" ]
+VERIFY=require V=0.3.7 run_given
+unset VERIFY V
+check "  CHLOEDB_VERIFY=require refuses it" [ "$status" = 1 ]
+check "  saying it has no provenance" said "release 0.3.7 has no build provenance (releases have it from 0.3.8)"
+
+# 0.3.8, the first release with provenance beside its archives (LENA-303
+# of round 3 of the study: the installers took it on its SHA-256 alone,
+# saying it was older than provenance, and CHLOEDB_VERIFY=require refused
+# it).
+V=0.3.8 run_given
+unset V
+check "0.3.8 with gh: its provenance is checked" said "build provenance checked: built by chloetech-ai/chloedb's server-release.yml from refs/tags/chloedb-server-v0.3.8"
+check "  and it installs" installed 0.3.8
+check "  from its bundle" grep -qF "chloedb-server-v0.3.8/chloedb-server-$here.tar.gz.sigstore.jsonl" "$web/asked"
+VERIFY=require V=0.3.8 run_given
+unset VERIFY V
+check "  CHLOEDB_VERIFY=require installs it" installed 0.3.8
+check "  having checked it" said "build provenance checked: built by chloetech-ai/chloedb's server-release.yml from refs/tags/chloedb-server-v0.3.8"
+
+# The repository's install.sh, in a checkout of 0.3.8 (its chloectx's
+# version), takes that release's chloectx the same way.
+mkdir -p "$work/checkout/chloectx"
+cp "$(cd "$(dirname "$0")/.." && pwd)/install.sh" "$work/checkout/install.sh"
+printf '[package]\nname = "chloectx"\nversion = "0.3.8"\n' > "$work/checkout/chloectx/Cargo.toml"
+run_checkout() {
+  rm -rf "$work/ctx" "$web/asked" "$web/gh-asked"
+  status=0
+  env -u CHLOEDB_RELEASES_URL -u CHLOEDB_VERIFY_SOURCE_REF PATH="$web/bin:$PATH" FAKE_WEB="$web" \
+    CHLOEDB_VERIFY=${VERIFY:-auto} CHLOEDB_GH="${GH_FOR_TEST:-$web/no-gh}" \
+    sh "$work/checkout/install.sh" --prebuilt --no-wire --no-model --prefix "$work/ctx" > "$work/out" 2>&1 || status=$?
+}
+ctx_installed() { [ "$status" = 0 ] && [ "$("$work/ctx/bin/chloectx" --version)" = "chloectx $1" ]; }
+run_checkout
+check "install.sh takes 0.3.8's chloectx, its provenance checked" said "build provenance checked: built by chloetech-ai/chloedb's server-release.yml from refs/tags/chloedb-server-v0.3.8"
+check "  and installs it" ctx_installed 0.3.8
+VERIFY=require run_checkout
+unset VERIFY
+check "  and with CHLOEDB_VERIFY=require" ctx_installed 0.3.8
+mv "$web/releases/chloedb-server-v0.3.8/chloectx-$here.tar.gz.sigstore.jsonl" "$work/bundle"
+run_checkout
+check "  but not without its bundle" [ "$status" != 0 ]
+check "  saying so" said "chloedb-server-v0.3.8/chloectx-$here.tar.gz.sigstore.jsonl, the archive's build provenance: not installing it"
+check "  installing nothing" [ ! -e "$work/ctx/bin/chloectx" ]
+mv "$work/bundle" "$web/releases/chloedb-server-v0.3.8/chloectx-$here.tar.gz.sigstore.jsonl"
 
 # require: no gh, no install.
 GH_FOR_TEST="$web/no-gh" VERIFY=require run_given

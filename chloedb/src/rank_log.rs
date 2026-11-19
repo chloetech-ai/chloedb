@@ -336,6 +336,36 @@ pub fn fits(log: &Log, schema: &Schema) -> Result<()> {
     Ok(())
 }
 
+/// Fits the rows of a logged blend ([`crate::query::blend`]) to log
+/// table `schema` as [`keep`] fits a query's: `query` on the first row
+/// where the table keeps it, the propensities and the policy where it
+/// keeps them, and `took_ms` on the first row where it keeps that.
+pub fn keep_rows(entries: &mut [Entry], query: &str, schema: &Schema, took_ms: f64) {
+    let (q, prop, took) = (keeps_query(schema), keeps_propensity(schema), keeps_took(schema));
+    for (i, e) in entries.iter_mut().enumerate() {
+        e.query = (q && i == 0).then(|| query.to_string());
+        if !prop {
+            e.propensity = None;
+            e.prefix_propensity = None;
+            e.policy = None;
+        }
+        e.took_ms = (took && i == 0).then_some(took_ms);
+    }
+}
+
+/// Refuses a log of a blend that a blend's log cannot be: an
+/// interleaved one, or one of a number of candidates (a blend logs every
+/// row of its sources).
+pub fn fits_blend(log: &Log) -> Result<()> {
+    if log.interleave.is_some() {
+        return Err(bad("a logged blend explores (softmax over the rows that fit each slot) or not; it does not interleave"));
+    }
+    if log.candidates.is_some() {
+        return Err(bad("a logged blend logs every row of its sources: leave out candidates"));
+    }
+    Ok(())
+}
+
 /// Fits the rows `served` logs to log table `schema` before they are
 /// written: `p`'s query on the first row where the table keeps it
 /// ([`keep_query`]), the propensities and the policy where it keeps them

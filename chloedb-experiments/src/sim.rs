@@ -99,6 +99,9 @@ pub struct World {
     pick_query: Alias,
     /// Per query, taste group and ranked row: the row's chances.
     slots: Vec<Vec<Vec<Slot>>>,
+    /// What the site does to the server's rows before showing them
+    /// ([`crate::ab::then_apply`]); `ranked` holds them so done.
+    pub then: String,
 }
 
 /// The taste group of a user: age band and gender.
@@ -156,9 +159,16 @@ impl World {
             })
             .collect();
         let pick_query = Alias::new(&site.queries.iter().map(|q| q.weight).collect::<Vec<_>>());
-        let mut w = World { site, users, model, policy, limit, rank, ranked, keyed, kept, pick_query, slots: Vec::new() };
+        let mut w = World { site, users, model, policy, limit, rank, ranked, keyed, kept, pick_query, slots: Vec::new(), then: String::new() };
         w.slots = (0..w.ranked.len()).map(|q| (0..GROUPS).map(|g| w.ranked[q].keys.iter().map(|k| w.slot_for(g, q, k)).collect()).collect()).collect();
         w
+    }
+
+    /// This world with `then` taken after the server's rows (its ranked
+    /// rows must be so already, as [`crate::ab::rank`] gives them).
+    pub fn then(mut self, then: &str) -> Self {
+        self.then = then.to_string();
+        self
     }
 
     fn slot_for(&self, g: usize, q: usize, key: &str) -> Slot {
@@ -229,7 +239,8 @@ impl World {
             l["explore"] = self.policy.to_json();
         }
         let a = server.query(&self.logged_sql(), json!({"t": self.site.queries[q].text}), Some(l)).await?;
-        let keys: Vec<String> = a["keys"].as_array().ok_or_else(|| format!("{}: no keys in {a}", c.request))?.iter().map(key_text).collect();
+        let mut keys: Vec<String> = a["keys"].as_array().ok_or_else(|| format!("{}: no keys in {a}", c.request))?.iter().map(key_text).collect();
+        crate::ab::then_apply(&self.then, &mut keys);
         let shown: Vec<u16> = keys.iter().map(|k| self.index(q, k).ok_or_else(|| format!("{}: row {k} is not among the query's ranked rows (did the table change?)", c.request))).collect::<Result<_>>()?;
         let propensity: Vec<f64> = match a["propensities"].as_array() {
             Some(p) => p.iter().map(|x| x.as_f64().unwrap_or(f64::NAN)).collect(),

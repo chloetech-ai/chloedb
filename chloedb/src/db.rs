@@ -33,6 +33,7 @@ use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, 
 use crate::value::{Document, Value};
 use crate::vector::VectorReader;
 
+mod blend;
 mod recommend;
 mod rollup;
 mod writes;
@@ -1520,6 +1521,12 @@ impl Db {
     /// looked at for the features it may call), as a step of another reads
     /// it ([`crate::query::pack`]): without printing it and parsing it again.
     fn query_parsed_at(&self, snap: &Snapshot, sql: &str, q: Arc<qsql::Parsed>, params: &Params, opts: &ExecOptions) -> Result<ResultSet> {
+        // `FROM blend(...)`: its sources' rows, placed in its slots.
+        if crate::query::blend::may_blend(sql) {
+            if let Some(rs) = self.blend_query(snap, &q.query, params, opts)? {
+                return Ok(rs);
+            }
+        }
         // `recommend(...)`: the items a recommender ranks for a user, as
         // `ranked(...)` of their keys, or `FROM recommend(...)`'s rows.
         if crate::query::recommend::may_recommend(sql) {
@@ -1750,6 +1757,9 @@ impl Db {
         let schema = self.table(&log.table)?;
         rank_log::check(&schema)?;
         rank_log::fits(log, &schema)?;
+        if let Some((call, cols)) = crate::query::blend::table_call_sql(sql, params)? {
+            return self.blend_logged(sql, params, log, &schema, call, &cols);
+        }
         let p = rank_log::prepare(sql, params, log)?;
         let started = std::time::Instant::now();
         let mut served = match &log.interleave {
@@ -2040,6 +2050,10 @@ impl Db {
         }
         if let Some(st) = crate::query::recommend::parse_statement(sql)? {
             return self.recommender_statement(&st, opts);
+        }
+        // `CREATE BLEND`, `DROP BLEND`: a stored function.
+        if let Some(st) = crate::query::blend::parse_statement(sql)? {
+            return self.blend_statement(&st, opts);
         }
         // `CREATE ROLLUP`, `REFRESH ROLLUP`, `DROP ROLLUP`.
         if let Some(st) = crate::query::rollup::parse_statement(sql)? {
@@ -2972,8 +2986,8 @@ impl Db {
     /// rank profiles checked and its ranking models open; `None` for any
     /// other, which runs whole.
     fn scroll_plan(&self, snap: &Snapshot, sql: &str, params: &Params) -> Result<Option<Plan>> {
-        use crate::query::{chunks, pack, paths, prf, recommend, understand};
-        if paths::Call::of_sql(sql)?.is_some() || chunks::may_call(sql) || pack::may_pack(sql) || recommend::may_recommend(sql) || understand::may_understand(sql) || prf::may_expand(sql) {
+        use crate::query::{blend, chunks, pack, paths, prf, recommend, understand};
+        if paths::Call::of_sql(sql)?.is_some() || chunks::may_call(sql) || pack::may_pack(sql) || blend::may_blend(sql) || recommend::may_recommend(sql) || understand::may_understand(sql) || prf::may_expand(sql) {
             return Ok(None);
         }
         let q = qsql::parse_query_cached(sql)?;

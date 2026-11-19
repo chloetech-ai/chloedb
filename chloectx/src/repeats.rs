@@ -127,9 +127,13 @@ fn same_terms(ta: &BTreeSet<String>, tb: &BTreeSet<String>) -> bool {
 }
 
 /// Whether a record holds the user's own words (a record with no `By:`
-/// line was written before sources were kept, and is the user's).
+/// line was written before sources were kept, and is the user's): said on
+/// this machine. One pulled from a teammate's machine holds their words,
+/// not this user's: repeats count per person (WEI-306), so a teammate's
+/// request or rule is not this user's earlier saying, nor theirs, said
+/// once, a second saying of this user's.
 fn users(r: &Record) -> bool {
-    matches!(r.source(), None | Some(Source::User))
+    !crate::sync::pulled(r) && matches!(r.source(), None | Some(Source::User))
 }
 
 /// Whether a record is an instruction the user gave: a note for one task,
@@ -336,7 +340,10 @@ pub fn parse_check(text: &str, request: &str, said: &[(String, String)]) -> (Vec
             quote: m["quote"].as_str().unwrap_or("").trim().to_string(),
             rule: m["rule"].as_str().unwrap_or("").trim().to_string(),
         };
-        if a.ids.is_empty() || a.rule.is_empty() || !quoted_from(&a.quote, request) || asks_what_holds(&a.quote, request) {
+        // How to do this turn ("no code changes", "just answer") is said
+        // again with each turn that wants it, not because a rule failed
+        // (JONAH-303).
+        if a.ids.is_empty() || a.rule.is_empty() || !quoted_from(&a.quote, request) || asks_what_holds(&a.quote, request) || crate::capture::for_this_turn(&a.quote) {
             dropped.push(Again { ids, ..a });
         } else {
             kept.push(a);
@@ -673,6 +680,25 @@ mod tests {
         assert!(p.contains(&format!("[{}] 1970-01-01, this session", before[0].id)) && p.contains("<previous_reply>\nI built it from a JSON file.") && p.contains("<request>\nBuild it from the CREATE statements!"), "{p}");
     }
 
+    /// WEI-306: a teammate's request and rule, pulled from their machine,
+    /// counted as this user's earlier sayings: what two people said once
+    /// each became a rule "said 2 times".
+    #[test]
+    fn a_teammates_sayings_are_not_the_users_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let from = |d: Draft, label: &str| d.link(label, "m-44fb96669a15");
+        s.append("t1", 1, 100, vec![from(task("Add Redis for the job queue."), crate::sync::SYNCED_FROM)]).unwrap();
+        s.append("t1", 2, 110, vec![from(Draft::new(Kind::Prompt, "why is there still no Redis for the job queue?"), crate::sync::ACCEPTED)]).unwrap();
+        s.append("t2", 1, 120, vec![from(Draft::new(Kind::Preference, "Always use Redis for the job queue.").by(&Source::User), crate::sync::ACCEPTED)]).unwrap();
+        let mine = s.append("s1", 1, 130, vec![task("Add Redis to the job queue.")]).unwrap().remove(0);
+        let before = said_before(&s, "Add Redis for the job queue, please", "s2", 1, i64::MAX).unwrap();
+        assert_eq!(before.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), [mine.id.as_str()], "only this user's own saying");
+        // Nor does the scan group a teammate's note with this user's.
+        let j = scan(&s, 0, 100).unwrap();
+        assert_eq!(j["text"].as_str().unwrap().lines().next().unwrap(), "1 of your instructions for one task, since 1970-01-01; 0 said again in nearly the same words; 0 rules kept for being said again.", "{j}");
+    }
+
     /// ANA-1: a rule said once, in one turn, was counted "said 2 times":
     /// the preference picked from the prompt's own words, and the notes an
     /// earlier distillation of the turn wrote, were shown to the check as
@@ -894,5 +920,16 @@ mod tests {
         assert_eq!((g[0]["sessions"].as_u64(), g[0]["times"].as_u64()), (Some(2), Some(3)));
         assert_eq!(g[0]["rule"], "Build the app from SQL CREATE statements (the user has said this in 2 sessions)");
         assert!(r["text"].as_str().unwrap().contains("1 said again in nearly the same words"), "{}", r["text"]);
+    }
+
+    /// JONAH-303: "no code changes" said in two sessions is each turn's
+    /// instruction, not a rule broken.
+    #[test]
+    fn an_instruction_for_the_turn_said_again_is_not_a_rule() {
+        let said = vec![("a:1".to_string(), "No code changes, just answer: why is the export slow?".to_string())];
+        let request = "No code changes, just answer: why does the export buffer every row?";
+        let reply = json!({"said_again": [{"ids": ["a:1"], "quote": "No code changes, just answer", "rule": "Make no code changes."}]});
+        let (kept, dropped) = parse_check(&reply.to_string(), request, &said);
+        assert!(kept.is_empty() && dropped.len() == 1, "{kept:?}");
     }
 }

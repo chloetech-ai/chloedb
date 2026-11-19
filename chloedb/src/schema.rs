@@ -2239,7 +2239,7 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
     use serde_json::Value as J;
     let name = j.get("name").and_then(J::as_str).ok_or_else(|| Error::Schema(format!("a field needs a \"name\": {j}")))?;
     let bad = |m: &str| Error::Schema(format!("field {name}: {m}"));
-    let known = ["name", "type", "stored", "indexed", "multi", "positions", "from", "dim", "index", "codes", "keep_f32", "pool", "pool_factor", "embed", "references", "not_null", "default", "analyzer", "kind", "semantic_id", "derive", "text", "partition", "substring"];
+    let known = ["name", "type", "stored", "indexed", "multi", "positions", "from", "dim", "index", "codes", "keep_f32", "pool", "pool_factor", "embed", "model", "references", "not_null", "default", "analyzer", "kind", "semantic_id", "derive", "text", "partition", "substring"];
     if let Some(k) = j.as_object().into_iter().flat_map(|o| o.keys()).find(|k| !known.contains(&k.as_str())) {
         return Err(bad(&format!("unknown option {k:?} (known: {})", known.join(", "))));
     }
@@ -2289,7 +2289,7 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
             FieldType::Keyword
         }
         "vector" => {
-            let model_dim = j.get("embed").and_then(|e| e.get("model")).and_then(J::as_str).and_then(crate::embed::known_dim);
+            let model_dim = j.get("embed").and_then(|e| e.get("model")).or_else(|| j.get("model")).and_then(J::as_str).and_then(crate::embed::known_dim);
             let dim = match j.get("dim") {
                 None | Some(J::Null) => model_dim.ok_or_else(|| bad("a vector needs \"dim\", its number of dimensions"))?,
                 Some(d) => d.as_u64().filter(|&d| d > 0).ok_or_else(|| bad("dim is a positive number"))? as usize,
@@ -2362,7 +2362,17 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
         None | Some(J::Null) => {}
         Some(p) => f.partition = Some(serde_json::from_value(p.clone()).map_err(|e| bad(&format!("partition is {{\"by\": column, \"bounds\": [numbers]}}: {e}")))?),
     }
-    match j.get("embed") {
+    // `"embed": ["title"], "model": "potion-retrieval-32M"` is the same
+    // as `"embed": {"from": ["title"], "model": ...}` (Python's
+    // `add_column("emb", "vector", embed=["title"], model=...)`).
+    let embed = match (j.get("embed"), j.get("model")) {
+        (Some(J::String(_) | J::Array(_)), Some(J::String(m))) => Some(serde_json::json!({"from": j["embed"], "model": m})),
+        (Some(J::String(_) | J::Array(_)), None | Some(J::Null)) => return Err(bad("embed needs a \"model\": \"embed\": [\"title\"], \"model\": \"potion-retrieval-32M\"")),
+        (Some(J::Object(_)), Some(m)) if !m.is_null() => return Err(bad("model goes in embed once: \"embed\": {\"from\": [...], \"model\": ...} or \"embed\": [...], \"model\": ...")),
+        (None | Some(J::Null), Some(m)) if !m.is_null() => return Err(bad("model is an embedded field's: give the fields it embeds too, \"embed\": [\"title\"]")),
+        (e, _) => e.cloned(),
+    };
+    match &embed {
         None | Some(J::Null) => {}
         Some(e) => {
             let from = match e.get("from") {

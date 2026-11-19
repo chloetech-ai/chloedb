@@ -8,7 +8,8 @@
 //! grants here: a space is its table `ctx_<space>` (read to read it and ask
 //! it, write to add, replace or retire notes and hand over exchanges, admin
 //! to create it; building apps from it is an unlimited admin's), the incidents are `ctx_incidents`,
-//! the Inspector reads `chloectx_memory`, and the machine's local stores
+//! the Inspector reads `chloectx_memory` and a project's table (write on
+//! it to retire a synced note), and the machine's local stores
 //! are no limited key's. A caller without the header (an admin, the
 //! server's token) is not limited.
 //!
@@ -120,6 +121,8 @@ pub fn check(g: &Grants, method: &str, p: &[&str]) -> Result<(), Fail> {
         (_, ["v1", "incidents", ..]) => g.need(&space("incidents"), Scope::Write, "record or draft incidents"),
         // Each project's table, as the call reads it (`App::memory_table`).
         ("GET", ["v1", "memory", ..]) => Ok(()),
+        // Write on the project's table, which the route reads from the body.
+        ("POST", ["v1", "memory", "retire"]) => Ok(()),
         (_, ["v1", "local", ..]) => Err(Fail(403, "the local stores are this machine's sessions: no key limited to tables reads them".into())),
         _ => Err(Fail(403, "a key limited to tables may not call this".into())),
     }

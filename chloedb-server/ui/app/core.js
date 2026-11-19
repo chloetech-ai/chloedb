@@ -429,6 +429,8 @@ export function can(scope, route = null) {
   const w = ctx.whoami;
   if (!w) return scope === "read";
   if (w.root) return true;
+  // A key limited to tables calls the server's routes whoami lists (MARCO-301), each at its scope.
+  if (route && w.tables && Array.isArray(w.may?.routes)) return w.may.routes.includes(route);
   const r = route ? ROUTES?.get(route) : null;
   const need = r?.scope || scope;
   // A key limited to tables is never the server's admin: its admin is its
@@ -445,6 +447,11 @@ export function needs(scope, route = null) {
   const r = route ? ROUTES?.get(route) : null;
   const need = r?.scope || scope;
   if (ctx.whoami?.tables && need === "admin") return "needs an admin key of the server (this key is limited to tables)";
+  // A route whoami does not list for a key limited to tables: not its scope, its routes.
+  if (route && ctx.whoami?.tables && Array.isArray(ctx.whoami.may?.routes) && !ctx.whoami.may.routes.includes(route)) {
+    const w = ctx.whoami, a = need === "write" && !["write", "admin"].includes(w.scope) ? "a write key" : "a key";
+    return `needs ${a} given ${route} (this key is limited to tables: ${grantsText(w.tables)})`;
+  }
   const a = need === "admin" ? "an admin" : `a ${need}`;
   const ops = route && (r ? r.roles?.ops : false);
   const role = roleOf();

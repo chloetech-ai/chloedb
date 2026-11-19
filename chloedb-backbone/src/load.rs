@@ -115,10 +115,48 @@ pub struct Opts<'a> {
     pub only: Vec<String>,
 }
 
+/// The reference files' names, sizes and times, as one short tag: a full
+/// load whose files carry the tag of the last one loads only the latest
+/// Atlas rounds and outages. (The feed's container loads before it starts,
+/// and writing two million rows again on each restart kept ChloeDB busy
+/// for minutes.)
+pub fn reference_tag(dir: &Path) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for f in ["rpki/vrps.json", "caida/pfx2as-v4.gz", "caida/pfx2as-v6.gz", "caida/as-rel2.txt.bz2", "ripe/asn.txt", "atlas/probes.json"] {
+        parts.push(stamp(&dir.join(f), f));
+    }
+    let mut pdb: Vec<_> = std::fs::read_dir(dir.join("pdb")).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect()).unwrap_or_default();
+    pdb.sort();
+    for p in pdb {
+        parts.push(stamp(&p, &p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+    }
+    crate::api::etag(&parts.join("\n")).trim_matches('"').to_string()
+}
+
+fn stamp(p: &Path, name: &str) -> String {
+    let m = std::fs::metadata(p).ok();
+    let size = m.as_ref().map_or(0, |m| m.len());
+    let at = m.and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+    format!("{name} {size} {at}")
+}
+
 pub async fn run(db: &Strata, o: Opts<'_>, r: &Reference) -> Result<()> {
     create(db).await?;
-    let want = |s: &str| o.only.is_empty() || o.only.iter().any(|x| x == s);
     let dir = o.dir;
+    let tag = o.only.is_empty().then(|| reference_tag(dir));
+    let loaded = match &tag {
+        Some(tag) => db
+            .query("SELECT note FROM bb_feed WHERE id = 'reference'", Value::Null)
+            .await
+            .ok()
+            .and_then(|rows| rows.first().map(|x| crate::strata::RowExt::s(x, "note")))
+            .is_some_and(|n| n.ends_with(tag.as_str())),
+        None => false,
+    };
+    if loaded {
+        tracing::info!("the reference files are those loaded last: loading the latest Atlas rounds and outages only");
+    }
+    let want = |s: &str| if loaded { matches!(s, "atlas" | "ioda") } else { o.only.is_empty() || o.only.iter().any(|x| x == s) };
     let t0 = std::time::Instant::now();
     let say = |what: &str, n: usize| tracing::info!(what, rows = n, secs = t0.elapsed().as_secs_f32(), "loaded");
 
@@ -286,6 +324,12 @@ pub async fn run(db: &Strata, o: Opts<'_>, r: &Reference) -> Result<()> {
             let rows = crate::outages::rows(&j, fetched, &|a| r.country(a as u32).to_string());
             say("bb_outage", import(db, "bb_outage", rows).await?);
         }
+    }
+    if let (Some(tag), false) = (tag, loaded) {
+        let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        db.upsert("bb_feed", vec![json!({"id": "reference", "kind": "load", "at": at, "rows": 0, "note": format!("networks, relationships, exchanges, ROAs, probes · files {tag}")})])
+            .await
+            .map_err(|e| anyhow::anyhow!("bb_feed: {e}"))?;
     }
     Ok(())
 }
