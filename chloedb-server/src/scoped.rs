@@ -321,8 +321,8 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
     let blends = chloedb::query::blend::names_sql(text);
     for n in &blends {
         for (d, _) in chloedb::query::blend::versions(functions, n) {
-            for s in d.iter().flat_map(|d| d.sources.iter()) {
-                reads(who, &s.sql, tables, functions, &[])?;
+            for q in d.iter().flat_map(|d| d.queries()) {
+                reads(who, q, tables, functions, &[])?;
             }
         }
     }

@@ -1592,7 +1592,7 @@ SELECT * FROM blend('serp@3', q => 'rust async') LIMIT 20;   -- version 3
 DROP BLEND serp;
 ```
 
-- **The definition**: `CREATE [OR REPLACE] BLEND name AS SOURCES (name AS (SELECT ...), ...)` and then, each optional and in this order:
+- **The definition**: `CREATE [OR REPLACE] BLEND name AS SOURCES (name AS (SELECT ...), ...)` (a source may be a blend of its own, `name AS BLEND (...)`: [stacking blends](#stacking-blends-a-blend-as-anothers-source)) and then, each optional and in this order:
   - `HEADS (head [CALIBRATE tmm|minmax|rank|raw] [LO n] [MISSING neutral|zero], ...)`: the columns a row is worth by. A head is a column the sources name alike (`... AS relevance`), or `score`, each source's own ranking score, which needs no column. `tmm` (the default) divides by the source's best value, from `LO` (0 by default); `minmax` spans the source's lowest to its best; `rank` keeps only the order, as `rrf` does (61 / (60 + rank)); `raw` keeps the value. A source without the head gives its rows the mean of the others' (`MISSING neutral`, the default) or 0 (`MISSING zero`). Without `HEADS`, the one head is `score CALIBRATE tmm`.
   - `UTILITY 1 * relevance + 0.2 * quality - 0.1 * age`: the heads' weights (a head not named weighs 0; a name not among the heads adds one, `tmm`). `BOOST (source w, ...)` adds `w` to every row of a source.
   - `SLOT n => column = 'value'`, more than one: slot *n* is kept for rows of that value.
@@ -1611,6 +1611,43 @@ DROP BLEND serp;
 - **From Rust**, `Db::sql` runs the statements and the calls, `Db::blends` lists each blend's current definition, and `Db::blend_run(&def, version, &params, k, Want { costs: true })` runs a definition, stored or not, into a `Blended` whose `receipts()` is the JSON of every row's heads, raw and as weighted parts of its utility, its slot and why, the rows passed over and what barred them, each quota's count and each rule's cost: the share of the slate's discounted utility (each slot's over log2(slot + 1), as DCG discounts) that it gives up, from filling the slate again without it.
 - **On chloedb-server**, `CREATE` and `DROP BLEND` need an admin key, and a key limited to tables reads a blend only when it may read every source's tables, of every version the call could read. `GET /v1/blends` lists the blends (each current version's definition, its SQL and how many versions), `GET /v1/blends/:name` every version, `PUT /v1/blends/:name {"def": {...}, "note": "..."}` writes the next version from a definition as JSON, and `DELETE /v1/blends/:name` drops it. `POST /v1/blends/preview {"name": "serp"}` (or `"version"`, or a definition not stored, `"def"`) with `"params"` and `"k"` runs it and answers the receipts, rule costs included unless `"costs": false`. The command center's **Labs → Blending** page edits a blend on these routes, previewing the draft as it changes.
 - **Through a coordinator** a blend's versions are written on every shard, as functions are, and each source runs as a query of the cluster, merged from the shards, before the fill: the slate is the one database's.
+
+### Stacking blends: a blend as another's source
+
+A source may be a blend of its own, a node stacked under the one above it: `name AS BLEND ( SOURCES (...) HEADS ... WITH (k => n) )`, the same clauses as a blend's. The node runs first, into its own *k* slots under its own rules, and the rows it places are that source's rows above, so the blend above weighs, places and rules them as one source among its others.
+
+```sql
+CREATE BLEND page AS
+  SOURCES (
+    organic AS BLEND (
+      SOURCES (
+        stories AS (SELECT id, title, author, score() AS relevance, pop AS engagement FROM stories ORDER BY bm25(title, :q) DESC LIMIT 50),
+        videos  AS (SELECT id, title, author, score() AS relevance, pop AS engagement FROM videos ORDER BY bm25(title, :q) DESC LIMIT 30)
+      )
+      HEADS (relevance CALIBRATE tmm, engagement CALIBRATE minmax)
+      UTILITY 1 * relevance + 0.4 * engagement
+      MAX 2 PER author
+      WITH (k => 20)
+    ),
+    sponsored AS BLEND (SOURCES (ads AS (SELECT id, title, author, bid AS score FROM ads ORDER BY bid DESC LIMIT 6)) WITH (k => 3)),
+    news AS (SELECT id, title, author, 1.0 / age AS freshness FROM news ORDER BY age LIMIT 10)
+  )
+  SLOT 2 => source = 'sponsored'
+  QUOTA (source = 'news' AT LEAST 20% IN TOP 5, via = 'organic/videos' AT MOST 30%)
+  WITH (k => 10);
+
+SELECT slot, source, via, id, title FROM blend('page', q => :q);
+-- slot | source      | via               | id    | title
+-- 1    | 'organic'   | 'organic/stories' | 's12' | 'Async Rust...'
+-- 2    | 'sponsored' | 'sponsored/ads'   | 'a3'  | '...'
+-- 3    | 'news'      | 'news'            | 'n1'  | '...'
+```
+
+- **A node's rows**, as the blend above reads them: its sources' columns, `slot` (its own), `via` and `utility`, which is also their score, so the head `score` above is the node's utility; their keys stay theirs, so a row a node and another source both give is one row above. `via` names the source a row came from, through each node on the way (`organic/stories`): every blend answers it, and a rule above may read it (`QUOTA (via = 'organic/videos' AT MOST 30%)`).
+- **Its rules hold among its own rows**: a node's quotas, caps and diversity shape the rows it gives, and the blend above may pass over some of them. A node is named as its source; its own `name` may be left out in JSON.
+- **Limits**: blends stack at most 4 deep, the top one counted, and a blend runs at most 32 queries under every node. A source that reads `blend('...')` is refused: stack the blend as a node instead.
+- **Logged and valued**, a stacked blend explores at the top only (each node takes its best rows), and the log keeps the rows each node gave as that source's rows, so [Value on the log](#valuing-a-blend-on-its-log-exploring-fills-cascade-doubly-robust-and-snips) and tuning work on the top blend's heads, quotas and diversity as they do for any blend.
+- **The receipts** of a stacked blend carry each node's own under `nodes` (`"nodes": {"organic": {...}}`, nodes of nodes within them), each row's `via`, and the SQL writes nodes back as `name AS BLEND (...)`. On chloedb-server a key limited to tables reads a stacked blend only when it may read the tables of every query under every node.
 
 ### Valuing a blend on its log: exploring fills, cascade doubly robust and SNIPS
 
