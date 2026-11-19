@@ -51,6 +51,11 @@ pub struct Service {
     pub per_minute: usize,
     pub seen: Mutex<HashMap<String, (i64, usize)>>,
     pub started: Instant,
+    /// The token the Experiments app calls `/v1/experiment` with; without
+    /// one the site takes no experiments ([`crate::experiment`]).
+    pub experiments_token: Option<String>,
+    /// Indexes an arm may read besides hn_stories: (name, table).
+    pub indexes: Vec<(String, String)>,
 }
 
 pub type Shared = Arc<Service>;
@@ -108,6 +113,16 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/canon/work", get(canon_work_route))
         .route("/v1/minds/arc", get(arc_route))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
+        // Experiments by the command center's Experiments app: their own
+        // token, in public too.
+        .merge(
+            Router::new()
+                .route("/v1/experiment", get(exp_describe))
+                .route("/v1/experiment/search", axum::routing::post(exp_search))
+                .route("/v1/experiment/item/:id", get(exp_item))
+                .route("/v1/experiment/sample", get(exp_sample))
+                .layer(axum::middleware::from_fn_with_state(svc.clone(), exp_guard)),
+        )
         // Up, for a probe: no token, nothing read.
         .route("/healthz", get(|| async { "ok" }))
         .with_state(svc)
@@ -158,6 +173,119 @@ async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response 
         }
     }
     next.run(req).await
+}
+
+/// `/v1/experiment` answers the Experiments app alone: its token, and none
+/// when the site was started without one (it takes no experiments).
+async fn exp_guard(State(svc): State<Shared>, req: Request, next: Next) -> Response {
+    let Some(t) = &svc.experiments_token else {
+        return ApiError(StatusCode::NOT_FOUND, "this site takes no experiments (start it with --experiments-token)".into()).into_response();
+    };
+    let got = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+    if !got.is_some_and(|g| constant_eq(g.as_bytes(), t.as_bytes())) {
+        return ApiError(StatusCode::UNAUTHORIZED, "experiments need the site's experiments token".into()).into_response();
+    }
+    next.run(req).await
+}
+
+async fn exp_describe(State(svc): State<Shared>) -> Json<Value> {
+    let mut d = crate::experiment::describe(&svc.indexes);
+    d["allowed"] = json!(true);
+    Json(d)
+}
+
+#[derive(serde::Deserialize)]
+struct ExpSearch {
+    q: String,
+    #[serde(default)]
+    knobs: Value,
+    #[serde(default)]
+    per: Option<usize>,
+}
+
+/// A row of a page, as an arm shows it: the title, and a line of what the
+/// site shows under it.
+fn exp_row(r: &crate::strata::Row) -> Value {
+    let year = r.s("created").get(..4).unwrap_or("").to_string();
+    let mut line = Vec::new();
+    let site = r.s("site");
+    if !site.is_empty() {
+        line.push(site);
+    }
+    line.push(format!("{} points", r.i("points")));
+    line.push(format!("{} comments", r.i("comments")));
+    if !year.is_empty() {
+        line.push(year);
+    }
+    line.push(format!("by {}", r.s("author")));
+    json!({"id": r.i("id").to_string(), "title": r.s("title"), "snippet": line.join(" · "), "url": r.s("url"), "points": r.i("points"), "comments": r.i("comments"), "created": r.s("created")})
+}
+
+/// The first page of the stories for `q`, searched with an arm's knobs.
+async fn exp_search(State(svc): State<Shared>, Json(b): Json<ExpSearch>) -> Answer {
+    let t0 = Instant::now();
+    let k = crate::experiment::Knobs::from_json(&b.knobs, &svc.indexes).map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
+    let q: String = b.q.chars().take(300).collect();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let p = if k.understand { understand(&c, &q).await } else { query::Parsed { text: q.clone(), ..Default::default() } };
+    let per = b.per.unwrap_or(10).clamp(1, 30);
+    let sort = p.sort.clone().unwrap_or_else(|| "best".into());
+    let r = SearchReq { q: q.clone(), only: "story".into(), sort, mode: String::new(), page: 0, per_page: per, facets: false, knobs: k };
+    let (rows, total) = search::stories(&c, &p, &r, per, 0).await?;
+    let queries = trace.take();
+    let server_ms: f64 = queries.iter().filter_map(|q| q["ms"].as_f64()).sum();
+    Ok(Json(json!({
+        "q": q, "rows": rows.iter().map(exp_row).collect::<Vec<_>>(), "total": total,
+        "understood": p.notes, "took_ms": (t0.elapsed().as_secs_f64() * 10_000.0).round() / 10.0, "server_ms": server_ms,
+    })))
+}
+
+/// What a reader sees on opening a story: it, and its most answered comments.
+async fn exp_item(State(svc): State<Shared>, Path(id): Path<i64>) -> Answer {
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let Some(st) = thread::story_row(&c, id).await else { return Err(ApiError(StatusCode::NOT_FOUND, format!("no story {id}"))) };
+    let top = c.soft("its most answered comments", &format!("SELECT body, author, replies FROM hn_comments WHERE story = {id} ORDER BY replies DESC LIMIT 6"), Value::Null).await;
+    let row = exp_row(&st);
+    let mut text = format!("{}\n{}\n{}\n", st.s("title"), st.s("url"), row["snippet"].as_str().unwrap_or(""));
+    let body = crate::text::html_to_text(&st.s("body"));
+    if !body.trim().is_empty() {
+        text.push('\n');
+        text.push_str(&crate::text::clip(&body, 1500));
+        text.push('\n');
+    }
+    if !top.is_empty() {
+        text.push_str("\nThe most answered comments:\n");
+        for cm in &top {
+            text.push_str(&format!("\n- {}: {}\n", cm.s("author"), crate::text::clip(&crate::text::html_to_text(&cm.s("body")), 420)));
+        }
+    }
+    Ok(Json(json!({"id": id.to_string(), "title": st.s("title"), "url": st.s("url"), "text": text})))
+}
+
+#[derive(serde::Deserialize)]
+struct ExpSample {
+    #[serde(default)]
+    n: Option<usize>,
+    #[serde(default)]
+    seed: Option<u64>,
+}
+
+/// Stories to write personas and needs from: well known ones and ordinary
+/// ones, a slice of each that the seed picks.
+async fn exp_sample(State(svc): State<Shared>, Query(a): Query<ExpSample>) -> Answer {
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, trace: &trace };
+    let n = a.n.unwrap_or(60).clamp(4, 120);
+    let seed = a.seed.unwrap_or(7);
+    let cols = search::STORY_COLS;
+    let (top, plain) = tokio::join!(
+        c.rows("well known stories", &format!("SELECT {cols} FROM hn_stories WHERE points >= 100 AND id % 97 = {} ORDER BY points DESC LIMIT {}", seed % 97, n / 2), Value::Null),
+        c.rows("ordinary stories", &format!("SELECT {cols} FROM hn_stories WHERE points >= 5 AND points < 100 AND id % 89 = {} ORDER BY id DESC LIMIT {}", seed % 89, n - n / 2), Value::Null),
+    );
+    let rows: Vec<Value> = top?.iter().chain(plain?.iter()).map(exp_row).collect();
+    Ok(Json(json!({"rows": rows})))
 }
 
 async fn index(State(svc): State<Shared>) -> Response {
@@ -287,7 +415,7 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
         // lookups (a word that may be a person stays a word).
         let mut p = query::parse(&a.q, crate::ingest::now());
         p.confirm_author(false);
-        let r = SearchReq { q: a.q.clone(), only: "story".into(), sort: "best".into(), mode: "instant".into(), page: a.page, per_page: 20, facets: false };
+        let r = SearchReq { q: a.q.clone(), only: "story".into(), sort: "best".into(), mode: "instant".into(), page: a.page, per_page: 20, facets: false, knobs: Default::default() };
         let per = a.per.filter(|n| (1..=50).contains(n)).unwrap_or(20);
         let (stories, total) = search::stories(&c, &p, &r, per, a.page * per).await?;
         return done(&trace, json!({
@@ -298,7 +426,7 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
     let p = understand(&c, &a.q).await;
     let only = if !a.only.is_empty() { a.only.clone() } else { p.only.clone().unwrap_or_else(|| "all".into()) };
     let sort = if !a.sort.is_empty() { a.sort.clone() } else { p.sort.clone().unwrap_or_else(|| "best".into()) };
-    let r = SearchReq { q: a.q.clone(), only: only.clone(), sort, mode: a.mode.clone(), page: a.page, per_page: 20, facets: a.facets != Some(0) };
+    let r = SearchReq { q: a.q.clone(), only: only.clone(), sort, mode: a.mode.clone(), page: a.page, per_page: 20, facets: a.facets != Some(0), knobs: Default::default() };
     let per = a.per.filter(|n| (1..=50).contains(n)).unwrap_or(if only == "all" { 15 } else { 25 });
     let off = a.page * per;
     let want_s = only != "comment";

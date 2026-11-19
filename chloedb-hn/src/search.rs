@@ -31,6 +31,8 @@ pub struct Request {
     pub page: usize,
     pub per_page: usize,
     pub facets: bool,
+    /// What an experiment's arm changes of the search ([`crate::experiment`]).
+    pub knobs: crate::experiment::Knobs,
 }
 
 pub struct Ctx<'a> {
@@ -277,27 +279,29 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
     }
     // Phase 1, words: the exact top rows by BM25 times popularity.
     // Enough for the first pages after tiers reorder them; each candidate
-    // costs the rerank five scores, so the lists are kept short.
+    // costs the rerank five scores, so the lists are kept short. An
+    // experiment's arm may change the knobs (the defaults are the site).
+    let k = &r.knobs;
+    let mode = if mode == "hybrid" && !k.meaning { "words" } else { mode };
+    let table = k.index.as_str();
+    let o = k.word_opts();
+    let votes = format!("(1 + {} * pop)", crate::experiment::num(k.votes));
     let cand = (offset + limit).max(60) * 2;
-    let lex = format!(
-        "SELECT id FROM hn_stories {} ORDER BY bm25(title, :q, fuzzy => 'auto', synonyms => 1, min => :min) * (1 + 0.35 * pop) DESC LIMIT {cand}",
-        where_("")
-    );
-    let body_sql = format!(
-        "SELECT id FROM hn_stories {} ORDER BY bm25(body, :q, fuzzy => 'auto', synonyms => 1, min => :min) * (1 + 0.35 * pop) DESC LIMIT 30",
-        where_("")
-    );
+    let lex = format!("SELECT id FROM {table} {} ORDER BY bm25(title, :q{o}, min => :min) * {votes} DESC LIMIT {cand}", where_(""));
+    let body_sql = format!("SELECT id FROM {table} {} ORDER BY bm25(body, :q{o}, min => :min) * {votes} DESC LIMIT 30", where_(""));
     // Code as written (`std::move`, `node.js`): the substring index finds
     // what the analyzer split or dropped.
     let mut code_sql = Vec::new();
-    for (i, x) in p.code.iter().take(2).enumerate() {
-        params.insert(format!("cx{i}"), json!(like(x)));
-        code_sql.push((format!("candidates with “{x}” exactly (substring index)"), format!("SELECT id FROM hn_stories {} ORDER BY points DESC LIMIT 50", where_(&format!("title ILIKE :cx{i}")))));
+    if k.exact {
+        for (i, x) in p.code.iter().take(2).enumerate() {
+            params.insert(format!("cx{i}"), json!(like(x)));
+            code_sql.push((format!("candidates with “{x}” exactly (substring index)"), format!("SELECT id FROM {table} {} ORDER BY points DESC LIMIT 50", where_(&format!("title ILIKE :cx{i}")))));
+        }
     }
     if mode == "hybrid" {
-        params.insert("v".into(), json!({"embed": words, "field": "emb", "table": "hn_stories"}));
+        params.insert("v".into(), json!({"embed": words, "field": "emb", "table": table}));
     }
-    let vec_sql = format!("SELECT id FROM hn_stories {} ORDER BY similarity(emb, :v) * (1 + 0.1 * pop) DESC LIMIT 40", where_(""));
+    let vec_sql = format!("SELECT id FROM {table} {} ORDER BY similarity(emb, :v) * (1 + 0.1 * pop) DESC LIMIT 40", where_(""));
     // Every candidate list and the count at once: one round trip's time, not five.
     let pv = Value::Object(params.clone());
     let count_where = where_(matched);
@@ -306,7 +310,7 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
         c.soft("candidates by text", &body_sql, pv.clone()),
         futures_util::future::join_all(code_sql.iter().map(|(what, sql)| c.within(what, sql, pv.clone(), BUDGET_MS))),
         async { if mode == "hybrid" { c.within("candidates by meaning", &vec_sql, pv.clone(), BUDGET_MS).await } else { Vec::new() } },
-        count(c, "hn_stories", &count_where, &params),
+        count(c, table, &count_where, &params),
     );
     let lex_rows = lex_rows?;
     let mut ids: Vec<i64> = lex_rows.iter().chain(body_rows.iter()).chain(code_rows.iter().flatten()).chain(v.iter()).map(|r| r.i("id")).collect();
@@ -317,28 +321,32 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
     }
     let list: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
     params.insert("phrase".into(), json!(format!("\"{}\"", words.replace('"', ""))));
-    let sim = if mode == "hybrid" { " + 2.5 * coalesce(similarity(emb, :v), 0)" } else { "" };
     // Phase 2: the candidates, ranked together: how well the words fit
     // (title first, the words together, then the text and the link), times
     // the votes, strongly, as HN readers expect of a search of HN (a 700
     // point story about the words beats a 60 point one with a shorter
     // title), a little newer first.
-    let rank = format!(
-        "(coalesce(bm25(title, :q, fuzzy => 'auto', synonyms => 1), 0) + 0.8 * coalesce(bm25(title, :phrase), 0) + 0.2 * coalesce(bm25(body, :q, fuzzy => 'auto', synonyms => 1), 0) + 0.3 * coalesce(bm25(urlwords, :q), 0){sim}) * pow(points + 1, 0.35) * (0.8 + 0.2 * decay(created, now(), 157680000))"
-    );
+    let rank = k.ranking(mode == "hybrid");
     // The top candidates by score are re-ordered by tier; fetching every
     // candidate's row costs more than the order gains past the first 80.
-    let sql = format!("SELECT {STORY_COLS}, score() AS score FROM hn_stories WHERE id IN ({}) ORDER BY {rank} DESC LIMIT {}", list.join(", "), (offset + limit).max(80).min(ids.len()));
+    let sql = format!("SELECT {STORY_COLS}, score() AS score FROM {table} WHERE id IN ({}) ORDER BY {rank} DESC LIMIT {}", list.join(", "), (offset + limit).max(80).min(ids.len()));
     let mut rows = c.rows("stories, ranked", &sql, Value::Object(params.clone())).await?;
     // Then tiers, as people expect of a search box: a code word as typed
     // in the title, then every word of a short query in the title (as
     // typed, then with a typo), before the rest; the score within each.
-    let tiers = crate::tier::Tiers::new(&words, &p.code);
-    for r in rows.iter_mut() {
-        let t = tiers.of(&r.s("title"), &r.s("url"));
-        r.insert("tier".into(), json!(t));
+    if k.tiers {
+        let tiers = crate::tier::Tiers::new(&words, &p.code);
+        for r in rows.iter_mut() {
+            let t = tiers.of(&r.s("title"), &r.s("url"));
+            r.insert("tier".into(), json!(t));
+        }
+        rows.sort_by_key(|r| std::cmp::Reverse(r.i("tier")));
     }
-    rows.sort_by_key(|r| std::cmp::Reverse(r.i("tier")));
+    // Blending, when an arm asks for it: a site's stories past a number
+    // move down, and places go to the last year's best.
+    if k.max_per_site > 0 || k.fresh > 0 {
+        rows = k.blend(rows, |r| r.s("site"), |r| created_s(r), crate::ingest::now(), offset + limit);
+    }
     let rows: Vec<Row> = rows.into_iter().skip(offset).take(limit).collect();
     let mut total = total;
     if total == 0 && !rows.is_empty() {
@@ -443,6 +451,11 @@ pub async fn mark(c: &Ctx<'_>, p: &Parsed, stories: &mut [Row], comments: &mut [
             r.insert("body_hl".into(), json!(x));
         }
     }
+}
+
+/// A row's `created` (an ISO time) in unix seconds; 0 when it has none.
+fn created_s(r: &Row) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(&r.s("created")).map(|d| d.timestamp()).unwrap_or(0)
 }
 
 async fn count(c: &Ctx<'_>, table: &str, wh: &str, params: &serde_json::Map<String, Value>) -> i64 {
