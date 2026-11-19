@@ -1039,19 +1039,24 @@ fn variants(start: &Def, n: usize, seed: u64) -> Vec<(Def, String)> {
                 let q = rng.below(d.quotas.len());
                 let step = [-20.0, -10.0, 10.0, 20.0][rng.below(4)];
                 let quota = &mut d.quotas[q];
-                let before = quota.sql();
+                let top = quota.top.map_or(String::new(), |n| format!(" of the top {n}"));
                 if quota.min > 0.0 {
+                    let was = quota.min;
                     quota.min = (quota.min + step).clamp(0.0, quota.max.min(100.0));
+                    if quota.min != was {
+                        what.push(format!("{} at least {}% → {}%{top}", quota.when.sql(), num(was), num(quota.min)));
+                    }
                 } else {
+                    let was = quota.max;
                     quota.max = (quota.max + step).clamp(quota.min, 100.0);
-                }
-                if quota.sql() != before {
-                    what.push(format!("{before} → {}", quota.sql()));
+                    if quota.max != was {
+                        what.push(format!("{} at most {}% → {}%{top}", quota.when.sql(), num(was), num(quota.max)));
+                    }
                 }
             } else if let Some(dv) = d.diversify.as_mut() {
                 let l = [0.0, 0.1, 0.2, 0.4, 0.6, 0.8][rng.below(6)];
                 if l != dv.lambda {
-                    what.push(format!("DIVERSIFY {} → {}", dv.lambda, l));
+                    what.push(format!("diversity {} → {}", num(dv.lambda), num(l)));
                     dv.lambda = l;
                 }
             }
@@ -1068,8 +1073,9 @@ fn variants(start: &Def, n: usize, seed: u64) -> Vec<(Def, String)> {
 /// Tunes `start` (served as the best taken) toward the log's reward: the
 /// start and [`TuneOptions::rounds`] blends near it valued by cascade
 /// doubly robust on half the requests, the click model cross-fitted
-/// within that half; the best then valued, with the start, on the other
-/// half, its click model fitted on the first.
+/// within that half; the best of those the log covers ([`MIN_COVERAGE`])
+/// then valued, with the start, on the other half, its click model fitted
+/// on the first.
 pub fn tune(reqs: &mut [Request], logging: &(dyn Fn(i64) -> Option<Def> + Sync), start: &Target, o: TuneOptions) -> Result<Tuned> {
     let reading = ready(reqs, logging)?;
     let kl = logged_k(reqs);
@@ -1095,7 +1101,13 @@ pub fn tune(reqs: &mut [Request], logging: &(dyn Fn(i64) -> Option<Def> + Sync),
         let e = estimate(&t, &train, k, opts, &m, &pick_train)?;
         tried.push(Tried { def: d, change, train: e });
     }
-    let best_i = (0..tried.len()).max_by(|&a, &b| tried[a].train.cdr.value.total_cmp(&tried[b].train.cdr.value).then(b.cmp(&a))).unwrap_or(0);
+    // Only a blend the log could mostly have drawn is chosen: past that,
+    // its value is the click model's guess, and the most the model guesses
+    // is the most it is wrong by.
+    let best_i = (0..tried.len())
+        .filter(|&i| i == 0 || tried[i].train.coverage >= MIN_COVERAGE)
+        .max_by(|&a, &b| tried[a].train.cdr.value.total_cmp(&tried[b].train.cdr.value).then(b.cmp(&a)))
+        .unwrap_or(0);
     let (best, start_test) = if test.is_empty() {
         (None, None)
     } else {
@@ -1114,7 +1126,7 @@ mod tests {
 
     #[test]
     fn cells_read_back_as_they_were() {
-        for v in [Value::Null, Value::Int(3), Value::Float(3.0), Value::Float(0.1), Value::Str("a".into()), Value::Bool(true), Value::Timestamp(1_700_000_000_000_000), Value::Vector(vec![0.25, -1.5e-3, 7.0])] {
+        for v in [Value::Null, Value::Int(3), Value::Float(3.0), Value::Float(0.1), Value::Str("a".into()), Value::Bool(true), Value::Timestamp(1_700_000_000_000_000), Value::Vector(vec![0.25, -1.5e-3, 7.0].into())] {
             let j = blend::cell_json(&v, true).unwrap();
             let back = cell_value(&serde_json::from_str::<Json>(&j.to_string()).unwrap());
             assert_eq!(back, v, "{v:?} as {j}");

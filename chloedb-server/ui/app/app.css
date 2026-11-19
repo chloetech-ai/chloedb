@@ -3907,6 +3907,7 @@ pre.code.diff > .del { background: color-mix(in srgb, var(--crit) 14%, transpare
 .bt-try { display: grid; grid-template-columns: minmax(0, 1fr) 160px 64px; gap: 10px; align-items: center; padding: 3px 0; border-bottom: 1px solid var(--line); }
 .bt-try.start { color: var(--muted); }
 .bt-try.best { font-weight: 600; }
+.bt-try.beyond { color: var(--muted); }
 .bt-delta { position: relative; height: 8px; background: var(--surface-3); border-radius: 3px; }
 .bt-delta::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--line-2); }
 .bt-delta i { position: absolute; top: 0; bottom: 0; border-radius: 3px; }

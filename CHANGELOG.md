@@ -11,6 +11,22 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Blends explore, are logged with each slot's chance, and are valued
+  and tuned off-policy.** A blend served with `"log": {"explore":
+  {"policy": "softmax", "tau": 0.3, "top": 5}}` draws each slot among the
+  best rows that fit it by their utility, from the request's id, and logs
+  every row of every source with the page's chances. A replay of any blend
+  of the same sources over those pages gives its chance of each, so
+  cascade doubly robust (with a click model cross-fitted over two halves
+  of the searches) values it, with SNIPS beside it over the top slots as a
+  check, its support (effective searches), its coverage of what the log
+  could draw and a verdict against the blend that logged; tuning tries
+  weights, shares and diversity on half the searches and proves the best
+  on the other half. `Db::blend_requests` and `query::blend_eval` in Rust;
+  `POST /v1/blends/:name/evaluate` and `/tune` on chloedb-server, through
+  a coordinator too; the command center's Labs → Blending has **Value on
+  the log** and **Tune toward clicks**
+  ([query-language.md](docs/chloedb/query-language.md#valuing-a-blend-on-its-log-exploring-fills-cascade-doubly-robust-and-snips)).
 - **Blends: one list from several queries, after each has ranked its own.**
   `CREATE BLEND name AS SOURCES (stories AS (SELECT ...), comments AS
   (SELECT ...))` with calibrated heads (`HEADS (relevance CALIBRATE tmm,

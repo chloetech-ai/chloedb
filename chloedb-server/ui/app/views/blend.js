@@ -626,12 +626,12 @@ function editor(page, head, body, name, asked) {
       const lift = e.lift?.value;
       return h("div", { class: "bt-verdict" },
         h("div", { class: "row nw", style: { gap: "8px" } }, h("b", { class: "mono" }, e.label), h("span", { class: "pill " + cls }, e.verdict), h("span", { class: "grow" }), h("span", { class: "mono" }, `${num(e.cdr.value)} ± ${num(1.96 * e.cdr.se)}`)),
-        lift != null ? h("div", { class: "small" }, `${lift >= 0 ? "+" : "−"}${num(Math.abs(lift))} ± ${num(1.96 * e.lift.se)} against ${e.against}`) : null,
-        h("div", { class: "small muted" }, e.why),
+        lift != null ? h("div", { class: "small" }, `${lift >= 0 ? "+" : "−"}${num(Math.abs(lift))} ± ${num(1.96 * e.lift.se)} a search against ${e.against}`) : null,
+        h("div", { class: "small muted" }, e.verdict === "not proven" ? e.why : e.why.replace(/^no difference shown against [^:]+: /, "")),
         h("div", { class: "bt-facts small dim" },
           fact("support", `${fmt.n(e.support)} effective searches at slot 1`, e.trusted ? "" : "warn"),
           fact("coverage", fmt.pct(e.coverage), e.coverage < 0.95 ? "warn" : ""),
-          e.switched > 0.005 ? fact("model only", `${fmt.pct(e.switched)} of pages from a slot down`, "") : null,
+          e.switched > 0.005 ? fact("model alone", `below a slot on ${fmt.pct(e.switched)} of pages`, "") : null,
           fact("SNIPS checks", `the top ${e.check_depth} slot${e.check_depth === 1 ? "" : "s"}`, e.check_depth ? "" : "warn")));
     }
 
@@ -644,7 +644,8 @@ function editor(page, head, body, name, asked) {
     }
 
     function plot(rows, caption) {
-      const W = 640, L = 150, R = 16, rh = 26, H = rows.length * rh + 28;
+      const narrow = innerWidth < 700;
+      const W = narrow ? 380 : 640, L = narrow ? 110 : 150, R = 16, rh = 26, H = rows.length * rh + 28;
       const all = rows.flatMap((r) => r.parts.flatMap(([, iv]) => [iv.value - 1.96 * iv.se, iv.value + 1.96 * iv.se])).filter(Number.isFinite);
       let lo = Math.min(...all), hi = Math.max(...all);
       if (!(hi > lo)) { lo -= 0.5; hi += 0.5; }
@@ -676,7 +677,7 @@ function editor(page, head, body, name, asked) {
     function slots(e) {
       const S = e.slots || [];
       if (!S.length) return empty("recsys", "No slots valued");
-      const W = 640, L = 40, R = 12, top = 150, strip = 46, H = top + strip + 26;
+      const W = innerWidth < 700 ? 380 : 640, L = 40, R = 12, top = 150, strip = 46, H = top + strip + 26;
       const vals = S.flatMap((x) => [x.cdr, x.snips, x.logged]).filter(Number.isFinite);
       const hi = Math.max(1e-9, ...vals) * 1.12, lo = Math.min(0, ...vals);
       const cw = (W - L - R) / S.length;
@@ -696,6 +697,7 @@ function editor(page, head, body, name, asked) {
         const share = Math.max(0, Math.min(1, x.ess / Math.max(1, e.requests)));
         const bh = Math.max(1.5, share * (strip - 10));
         col.append(svg("rect", { class: "bt-ess" + (x.coverage < 0.95 ? " thin" : ""), x: cx(i) - cw * 0.32, width: cw * 0.64, y: top + strip - bh, height: bh, rx: 2 }));
+        col.append(svg("text", { x: cx(i), y: top + strip - bh - 3, class: "bt-tick", "text-anchor": "middle" }, fmt.si(x.ess)));
         col.append(svg("text", { x: cx(i), y: H - 8, class: "bt-tick", "text-anchor": "middle" }, String(x.slot)));
         g.append(col);
       });
@@ -718,11 +720,13 @@ function editor(page, head, body, name, asked) {
       const start = j.tried[0].train.cdr.value;
       const sorted = j.tried.map((t, i) => ({ ...t, i })).sort((a, b) => b.train.cdr.value - a.train.cdr.value);
       const best = j.best, b = best?.estimate;
-      const span = Math.max(1e-9, ...sorted.map((t) => Math.abs(t.train.cdr.value - start)));
+      const shown = sorted.slice(0, 12);
+      const span = Math.max(1e-9, ...shown.map((t) => Math.abs(t.train.cdr.value - start)));
       const row = (t) => {
         const dv = t.train.cdr.value - start;
-        return h("div", { class: "bt-try" + (t.i === 0 ? " start" : "") + (t === sorted[0] && t.i !== 0 ? " best" : "") },
-          h("span", { class: "small" }, t.i === 0 ? "the start" : t.change),
+        const beyond = t.i !== 0 && t.train.coverage < 0.95;
+        return h("div", { class: "bt-try" + (t.i === 0 ? " start" : "") + (best && t.sql === best.sql && t.i !== 0 ? " best" : "") + (beyond ? " beyond" : ""), title: beyond ? `${fmt.pct(1 - t.train.coverage, 0)} of its worth lies on pages the log could not draw: not chosen` : "" },
+          h("span", { class: "small" }, t.i === 0 ? "the start" : t.change, beyond ? h("span", { class: "pill warn", style: { marginLeft: "6px" } }, "beyond the log") : null),
           h("span", { class: "bt-delta" }, h("i", { class: dv >= 0 ? "up" : "down", style: { width: `${(Math.abs(dv) / span) * 50}%`, [dv >= 0 ? "left" : "right"]: "50%" } })),
           h("span", { class: "mono small" }, `${dv >= 0 ? "+" : "−"}${num(Math.abs(dv))}`));
       };
@@ -732,19 +736,21 @@ function editor(page, head, body, name, asked) {
         body: [
           b ? h("div", { class: "bt-verdict" },
             h("div", { class: "row nw", style: { gap: "8px" } }, h("b", {}, "The best, on the other half"), h("span", { class: "pill " + ({ better: "ok", worse: "bad", "not proven": "warn" }[b.verdict] || "") }, b.verdict), h("span", { class: "grow" }), h("span", { class: "mono" }, `${num(b.cdr.value)} ± ${num(1.96 * b.cdr.se)}`)),
-            h("div", { class: "small" }, `${b.lift.value >= 0 ? "+" : "−"}${num(Math.abs(b.lift.value))} ± ${num(1.96 * b.lift.se)} against the start there (${num(j.start?.cdr?.value)})`),
-            h("div", { class: "small muted" }, best.def.note ? best.def.note.replace(/^tuned: /, "It changes: ") : "It is the start: nothing near it did better."),
+            h("div", { class: "small" }, `${b.lift.value >= 0 ? "+" : "−"}${num(Math.abs(b.lift.value))} ± ${num(1.96 * b.lift.se)} a search against the start there (${num(j.start?.cdr?.value)})`),
+            h("div", { class: "small" }, best.def.note ? best.def.note.replace(/^tuned: /, "It changes ") : "It is the start: nothing near it did better."),
+            b.verdict === "not proven" ? h("div", { class: "small muted" }, b.why) : null,
             h("div", { class: "row", style: { gap: "8px" } },
               h("button", { class: "btn sm primary", disabled: !best.def.note, onclick: () => { draft = { ...clone(best.def), name }; delete draft.note; d.close(); changed(); toast("The tuned blend is in the editor: look at its pages, then save it to serve it", "ok", 6000); } }, icon("edit"), "Open it in the editor"),
               h("button", { class: "btn sm ghost", onclick: () => copy(best.sql, "The SQL") }, icon("copy"), "SQL"))) : null,
-          h("div", { class: "small muted" }, "Each blend tried, against the start, on the half that chose"),
-          h("div", { class: "bt-tries" }, sorted.slice(0, 12).map(row)),
+          h("div", { class: "small muted" }, "Each blend tried, against the start, on the half that chose; one whose pages the log could mostly not have drawn is valued by the click model's guess, and not chosen"),
+          h("div", { class: "bt-tries" }, shown.map(row)),
+          sorted.length > shown.length ? h("div", { class: "small muted" }, `and ${sorted.length - shown.length} more, each worth less`) : null,
         ],
       }));
     }
   }
 
-  async function drop() {  async function drop() {
+  async function drop() {
     const ok = await confirm({ title: `Drop ${name}?`, body: `Queries of blend('${name}') fail from now on. Its versions stay readable as ${name}@n, and saving it again makes the next version.`, ok: "Drop", danger: true, typed: name });
     if (!ok) return;
     try { await api(`/v1/blends/${encodeURIComponent(name)}`, { method: "DELETE" }); toast(`Dropped ${name}`, "ok"); location.hash = "#/blend"; } catch (e) { toast(e.message, "bad", 8000); }
