@@ -90,11 +90,15 @@ function matches(meal, { query, cuisine, kind, ingredient }) {
 // overnight) said apart; else a rough guess from its steps that cook.
 const WORDS = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twelve: 12, fifteen: 15, twenty: 20, thirty: 30, forty: 40, 'half an': 0.5, 'half a': 0.5 }
 const AMOUNT = '(\\d+(?:[.,]\\d+)?|half an?|an?|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|thirty|forty)'
-const DURATION = new RegExp(`(\\bevery\\s+|\\b(?:to|or|up to)\\s+)?${AMOUNT}(?:\\s*(?:-|–|to|or)\\s*${AMOUNT})?\\s*(?:and a half\\s*)?(hours?|hrs?|minutes?|mins?)\\b(\\s*(?:on|per)\\s*(?:each|every)?\\s*side)?|\\b(overnight)\\b`, 'gi')
+const DURATION = new RegExp(`(\\bevery\\s+|\\b(?:to|or|up to)\\s+)?${AMOUNT}(?:\\s*(?:-|–|to|or)\\s*${AMOUNT})?\\s*(?:and a half\\s*)?(weeks?|days?|hours?|hrs?|minutes?|mins?)\\b(?![\\s-]*old)(\\s*(?:on|per)\\s*(?:each|every)?\\s*side)?|\\b(overnight)\\b`, 'gi')
 const COOKS = /\b(boil|simmer|bake|roast|fry|saut[eé]|grill|broil|cook|oven|stew|braise|caramel[iy]ze|toast|steam|poach|reduce)/i
 const WAITS = /\b(marinat|rest|chill|refrigerat|fridge|freez|soak|prove|proof|rise|dry out|cool|set aside|leave)/i
 const amountOf = text => WORDS[text.toLowerCase()] ?? Number(text.replace(',', '.'))
-const hours = m => (m >= 120 ? `${Math.round(m / 60)} h` : `${m} min`)
+const hours = m => (m >= 2 * 1440 ? `${Math.round(m / 1440)} days` : m >= 120 ? `${Math.round(m / 60)} h` : `${m} min`)
+const UNIT = { w: 7 * 1440, d: 1440, h: 60, m: 1 }
+// What a recipe says one might do (if there is no leftover rice, can be made
+// ahead) is not part of making it (MAYA-6).
+const ASIDE = /^(if|otherwise|alternatively|optionally|you can|you could|can be|tip|note|nb)\b/i
 export function estimate(meal) {
   const named = /\b(\d{1,3})[\s-]*min(?:ute)?s?\b/i.exec(meal.strMeal ?? '')
   if (named) return { minutes: Number(named[1]), minutes_note: 'from its name' }
@@ -103,7 +107,9 @@ export function estimate(meal) {
   let waiting = 0
   let untimed = 0
   for (const step of steps) {
+    if (ASIDE.test(step.replace(/^(step \d+|\d+[.)])\s*/i, ''))) continue
     let found = false
+    let waited = false
     for (const m of step.matchAll(DURATION)) {
       // "every 5 minutes", and the far end of "30 minutes to one hour".
       if (m[1]) continue
@@ -114,10 +120,14 @@ export function estimate(meal) {
         const high = m[3] ? amountOf(m[3]) : low
         if (!Number.isFinite(low) || !Number.isFinite(high)) continue
         const half = /and a half/i.test(m[0]) ? 0.5 : 0
-        took = ((low + high) / 2 + half) * (/^h/i.test(m[4]) ? 60 : 1) * (m[5] ? 2 : 1)
+        took = ((low + high) / 2 + half) * UNIT[m[4][0].toLowerCase()] * (m[5] ? 2 : 1)
       }
-      if (WAITS.test(step) && !COOKS.test(step.slice(Math.max(0, m.index - 30), m.index))) waiting += took
-      else cooking += took
+      // Waits named in one step are choices ("at least five days, or three
+      // weeks for more flavour"): the first is the one.
+      if (WAITS.test(step) && !COOKS.test(step.slice(Math.max(0, m.index - 30), m.index))) {
+        if (!waited) waiting += took
+        waited = true
+      } else cooking += took
       found = true
     }
     if (!found && COOKS.test(step)) untimed++
@@ -125,7 +135,7 @@ export function estimate(meal) {
   const ready = 5 + ingredients(meal).length
   const round = n => Math.max(10, Math.round(n / 5) * 5)
   if (cooking || waiting) {
-    const wait = round(Math.min(waiting, 24 * 60))
+    const wait = round(Math.min(waiting, 30 * 1440))
     return { minutes: round(Math.min(cooking, 12 * 60) + untimed * 10 + ready + (waiting ? wait : 0)), minutes_note: waiting ? `estimated from its steps, ${hours(wait)} of it waiting` : 'estimated from its steps' }
   }
   return { minutes: round(Math.max(1, untimed) * 10 + ready), minutes_note: 'a rough guess: the recipe gives no times' }
@@ -179,7 +189,7 @@ export const recipesBrowse = {
     'Dishes to cook, with a photo, cuisine, kind, ingredients with their amounts and about how long each takes (an estimate: the source gives no times), ' +
     'a page of 24 at a time with the total that match: by words in the name ("curry"), by cuisine ' +
     '(Thai, Italian, Mexican, Japanese, Indian, French...), by kind (Vegetarian, Vegan, Seafood, Dessert, Pasta, ' +
-    'Chicken, Beef, Breakfast), by a main ingredient ("salmon"), within a time ("under 30 minutes": max_minutes 30), quickest first; a few at random when given nothing.',
+    'Chicken, Beef, Breakfast), by a main ingredient ("salmon"), within a time ("under 30 minutes": max_minutes 30), quickest first; given nothing, dinners of the usual kinds, the same ones each time (page 2 and on for others).',
   input: {
     query: z.string().max(40).optional().describe('Words in the dish’s name'),
     cuisine: z.string().max(20).optional().describe('A cuisine, "Thai"'),
@@ -230,10 +240,11 @@ export const recipesBrowse = {
           out = { ...paged([], ids.length), recipes: (await lookup(pageIds)).map(card) }
         }
       } else {
-        const seen = new Set()
-        const meals = (await Promise.all(Array.from({ length: 10 }, () => fetchJson(`${API}/random.php`).then(b => b.meals?.[0]).catch(() => null))))
-          .filter(m => m && !seen.has(m.idMeal) && seen.add(m.idMeal))
-        out = { recipes: meals.map(card), total: meals.length, page: 1, pages: 1, more: false }
+        // Given nothing, dinners of the usual kinds, the same ones for the
+        // same ask (page 2 for others): a plan made from them is the same
+        // on every opening and every phone it is shared with (MAYA-1).
+        const ids = spread([...new Set((await Promise.all(DINNERS.map(c => get(`filter.php?c=${c}`).then(b => b.meals ?? []).catch(() => [])))).flat().map(m => m.idMeal))], 'any')
+        out = { ...paged([], ids.length), recipes: (await lookup(ids.slice((page - 1) * PAGE, page * PAGE))).map(card) }
       }
       return { widget: 'recipes', mode: 'browse', ...asked, ...out, times: 'estimated: TheMealDB gives no cooking times', source: 'TheMealDB' }
     } catch (error) {

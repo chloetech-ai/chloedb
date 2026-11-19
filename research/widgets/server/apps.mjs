@@ -44,37 +44,57 @@ const ARGS = z.record(z.string(), z.any())
 // person alone in Claude Desktop or Claude Code).
 export const KEEPING = ['app_keep', 'app_kept']
 
-// Whether a new value takes out something the old one had: an entry of a
-// list (by its id, else by how many there are), a field of a record, or a
-// value cleared. Ticking an entry or changing a number takes nothing out.
-export function takesOut(before, after, depth = 0) {
-  const empty = v => v == null || v === '' || (Array.isArray(v) && !v.length) || (typeof v === 'object' && !Array.isArray(v) && !Object.keys(v).length)
-  if (empty(before)) return false
-  if (empty(after)) return true
+// What a helper link may not do to what an app keeps (INES-2, LENA-4): take
+// out or change what is there. It may add (an entry, a field that was
+// empty) and tick (false to true), and a time an app writes as it keeps
+// ("updated") may move.
+const blank = v => v == null || v === '' || (Array.isArray(v) && !v.length) || (typeof v === 'object' && !Array.isArray(v) && !Object.keys(v).length)
+const STAMP = /(updated|modified|saved|changed|edited|synced|^last|_at$|At$)/
+export function changesWhatIsThere(before, after, depth = 0, key = '') {
+  if (blank(before)) return false
+  // A tick may be made, not taken back: a helper un-booking a night is a change (TOM-2).
+  if (typeof before === 'boolean') return before ? after !== true : typeof after !== 'boolean' && after != null
+  if (blank(after)) return true
   if (depth > 6) return false
   if (Array.isArray(before)) {
     if (!Array.isArray(after)) return true
     const ids = before.filter(e => e && typeof e === 'object' && e.id != null)
-    if (ids.length) {
-      return ids.some(e => {
+    if (ids.length === before.length) {
+      return before.some(e => {
         const now = after.find(x => x && typeof x === 'object' && String(x.id) === String(e.id))
-        return !now || takesOut(e, now, depth + 1)
+        return !now || changesWhatIsThere(e, now, depth + 1)
       })
     }
-    return after.length < before.length
+    // A list without ids: each entry still there, as it was or ticked, in any order.
+    if (before.length > 500) return after.length < before.length
+    const left = [...after]
+    return before.some(e => {
+      const at = left.findIndex(x => !changesWhatIsThere(e, x, depth + 1))
+      if (at < 0) return true
+      left.splice(at, 1)
+      return false
+    })
   }
   if (typeof before === 'object') {
     if (typeof after !== 'object' || Array.isArray(after)) return true
-    return Object.entries(before).some(([k, v]) => !empty(v) && (empty(after[k]) || takesOut(v, after[k], depth + 1)))
+    return Object.entries(before).some(([k, v]) => changesWhatIsThere(v, after[k], depth + 1, k))
   }
-  return false
+  if (typeof after === 'object' || typeof after === 'boolean') return true
+  if (STAMP.test(key) && /^\d{4}-\d\d-\d\d/.test(String(before)) && /^\d{4}-\d\d-\d\d/.test(String(after))) return false
+  return String(before) !== String(after)
 }
-export async function keeping(apps, appId, name, args = {}, owner = '') {
+
+// A name from "view:" on (a filter, a sort, a tab) is how one person looks
+// at the app: kept with their own browser even when the app is shared, so
+// one crew lead's filter isn't everyone's (MARCUS-3).
+export const isView = key => String(key).startsWith('view:')
+export async function keeping(apps, appId, name, args = {}, owner = '', self = '') {
   // All of it at once, for the kit to hand draw as data.kept.
   if (name === 'app_kept' && args?.all === true) {
     try {
       // Names from "-" on are the chat's own (a share's links), never the app's.
-      const values = Object.fromEntries(Object.entries(await apps.keptAll(appId, owner)).filter(([k]) => !k.startsWith('-')))
+      const values = Object.fromEntries(Object.entries(await apps.keptAll(appId, owner)).filter(([k]) => !k.startsWith('-') && (!self || self === owner || !isView(k))))
+      if (self && self !== owner) Object.assign(values, Object.fromEntries(Object.entries(await apps.keptAll(appId, self)).filter(([k]) => isView(k))))
       return { content: [{ type: 'text', text: 'What this app kept.' }], structuredContent: { values } }
     } catch (error) {
       return { content: [{ type: 'text', text: error.message }], isError: true }
@@ -82,6 +102,7 @@ export async function keeping(apps, appId, name, args = {}, owner = '') {
   }
   const key = String(args?.key ?? '').slice(0, 80)
   if (!key || key.startsWith('-')) return { content: [{ type: 'text', text: 'Say what to keep it as (a key that does not start with "-").' }], isError: true }
+  if (self && isView(key)) owner = self
   try {
     if (name === 'app_keep') {
       await apps.keep(appId, key, args.value, owner)

@@ -183,6 +183,18 @@
     .top .faint { display: none; }
     .user { max-width: 88%; }
   }
+  /* A guest (a page opened only by a helper, view or copy link) gets its apps and nothing else. */
+  .guest .rail, .guest .composer, .guest .chats, .guest #newchat, .guest .toolline { display: none !important; }
+  .guest .shell { grid-template-columns: minmax(0, 1fr); }
+  .guest-note { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  /* Printing one app (TOM-5): that app, all of it, and nothing else. */
+  @media print {
+    .print-one .rail, .print-one .top, .print-one .composer, .print-one .ask-new, .print-one .printing .wbar, .print-one .printing .changer, .print-one .printing .sharebox, .print-one .printing .morebox { display: none !important; }
+    .print-one .shell, .print-one .chat { display: block; height: auto; }
+    .print-one .log { overflow: visible; padding: 0; }
+    .print-one .col > :not(:has(.printing)), .print-one :has(> .printing) > :not(.printing) { display: none !important; }
+    .print-one .widget.printing { max-width: none; border: 0; box-shadow: none; }
+  }
 </style>
 </head>
 <body>
@@ -256,18 +268,32 @@ const roleOf = id => (shared[id] ? roles[id] ?? 'full' : 'own')
 const limited = id => ['helper', 'viewer'].includes(roleOf(id))
 // The helper and view links of an app this browser shared.
 const links = stored('instant-apps-links')
-const shareUrl = (id, as = 'full') => `${location.origin}${location.pathname}?app=${encodeURIComponent(id)}&share=${as === 'full' ? shared[id] : links[id]?.[as]}${as === 'full' ? '' : `&as=${as}`}`
+const shareUrl = (id, as = 'full') =>
+  as === 'copy'
+    ? `${location.origin}${location.pathname}?app=${encodeURIComponent(id)}&as=copy`
+    : `${location.origin}${location.pathname}?app=${encodeURIComponent(id)}&share=${as === 'full' ? shared[id] : links[id]?.[as]}${as === 'full' ? '' : `&as=${as}`}`
 // Apps marked private: the chat reads nothing of them, and what they keep
 // stays in this browser.
 const privateApps = stored('instant-apps-private')
 const privately = stored('instant-apps-local')
 const isPrivate = id => Boolean(privateApps[id])
+const PRIVATE = /\b(private(ly)?|confidential|secret|sensitive)\b|\b(don'?t|do not|never|without) (send|share|read|show)(ing)? (it |this |anything )?(to )?(the )?(chat|claude|you|server)|\bnot (be )?(sent|read|shared)\b|\bstays? (local|offline|in (the|my) browser|on my (machine|laptop|computer|phone|device))/i
 const saveLocal = () => { local.set('instant-apps-private', JSON.stringify(privateApps)); local.set('instant-apps-local', JSON.stringify(privately)) }
+// Apps this browser was given by a link without what they keep (a copy:
+// it keeps its own, here).
+const given = stored('instant-apps-given')
+const firstVisit = !local.get('instant-apps-me')
 // Opened from a share link: that app, with what everyone with the link kept.
 const linked = (() => {
   const q = new URLSearchParams(location.search)
   const app = q.get('app')
   const token = q.get('share')
+  if (app && q.get('as') === 'copy' && !token) {
+    given[app] = true
+    local.set('instant-apps-given', JSON.stringify(given))
+    window.history.replaceState(null, "", location.pathname)
+    return app
+  }
   if (!app || !/^[0-9a-f]{32}$/.test(token ?? '')) return null
   shared[app] = token
   local.set('instant-apps-shared', JSON.stringify(shared))
@@ -276,10 +302,37 @@ const linked = (() => {
   window.history.replaceState(null, "", location.pathname)
   return app
 })()
+// A browser that came only by a helper, view or copy link (a husband's
+// phone, a flatmate's laptop, a tester's) is a guest: it gets the apps given
+// to it and nothing else of the site: no Your apps, no Remove, no chat
+// (PRIYA-1, INES-1, LENA-5, MAYA-2).
+const guest = (() => {
+  if (local.get('instant-apps-guest') === '1') return true
+  if (!linked || !firstVisit || !(given[linked] || limited(linked))) return false
+  local.set('instant-apps-guest', '1')
+  return true
+})()
+const guestApps = () => [...new Set([...Object.keys(shared), ...Object.keys(given)])]
+if (guest) document.documentElement.classList.add('guest')
 const me = local.get('instant-apps-me') || newId()
 local.set('instant-apps-me', me)
 let talk = local.get('instant-apps-talk') || newId()
 local.set('instant-apps-talk', talk)
+// Every request about an app or a turn says which apps this browser has by
+// a link, so the server holds to what a helper or view link can't do.
+{
+  const send = window.fetch.bind(window)
+  window.fetch = (url, init) => {
+    if (typeof url === 'string' && /^\/api\/(apps\/|turn$)/.test(url) && init?.method === 'POST') {
+      let payload = {}
+      try {
+        payload = JSON.parse(init.body || '{}') ?? {}
+      } catch {}
+      init = { ...init, body: JSON.stringify({ ...payload, links: shared, ...(guest ? { guest: true } : {}) }) }
+    }
+    return send(url, init)
+  }
+}
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const textOf = result => result?.content?.find(c => c.type === 'text')?.text ?? ''
 // A turn of the conversation, kept for this browser.
@@ -318,6 +371,7 @@ const scroll = () => requestAnimationFrame(() => log.scrollTo({ top: log.scrollH
 // ---- the rail ----
 let known = new Set()
 async function rail(highlight) {
+  if (guest) return
   const { apps } = await (await fetch('/api/apps')).json()
   document.getElementById('count').textContent = `${apps.length} kept`
   const groups = document.getElementById('groups')
@@ -498,7 +552,55 @@ function frozen(w, ms) {
   box.querySelector('.fix').onclick = () => w.change?.(`Fix this app: it froze the whole page for ${Math.round(ms / 1000)} seconds, most likely a pattern or a loop that runs without end on what was typed. Run typed patterns with Kit.regex.`, 'Fixing it')
   w.node.querySelector('.wbar').after(box)
 }
+// Prints one app, all of it, as it is on screen (TOM-5): a frame can't
+// print itself.
+function printing(w) {
+  const iframe = w.node.querySelector('iframe')
+  const was = iframe?.style.height
+  if (iframe && w.height) iframe.style.height = `${w.height}px`
+  w.node.classList.add('printing')
+  document.documentElement.classList.add('print-one')
+  const done = () => {
+    w.node.classList.remove('printing')
+    document.documentElement.classList.remove('print-one')
+    if (iframe) iframe.style.height = was
+    removeEventListener('afterprint', done)
+  }
+  addEventListener('afterprint', done)
+  window.print()
+}
+
+// An app that never comes back (a loop without end) stops the page with it,
+// and the kit can't say so (DEV-3). The app the page was drawing or the
+// person was using is noted here, and the note goes when the page closes as
+// usual: found when the page opens again, that app was the one.
+const BUSY = 'instant-apps-busy'
+const inUse = w => local.set(BUSY, JSON.stringify({ app: w.app.id, name: w.app.name, version: w.app.version, at: Date.now() }))
+const notInUse = () => { try { localStorage.removeItem(BUSY) } catch {} }
+addEventListener('pagehide', notInUse)
+document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && notInUse())
+// Using an app moves the focus into its frame.
+addEventListener('blur', () => {
+  const name = document.activeElement?.tagName === 'IFRAME' ? document.activeElement.name : ''
+  const w = name && widgets.find(x => x.frameName === name)
+  if (w) inUse(w)
+})
+const stuck = (() => {
+  try {
+    const was = JSON.parse(local.get(BUSY) || 'null')
+    notInUse()
+    return was?.app ? was : null
+  } catch {
+    return null
+  }
+})()
+if (stuck) {
+  froze[stuck.app] = { ms: 0, version: stuck.version, at: stuck.at, name: stuck.name, stopped: true }
+  local.set('instant-apps-froze', JSON.stringify(froze))
+}
+
 async function draw(w) {
+  if (!w.folded) inUse(w)
   const frame = w.node.querySelector('.frame')
   frame.innerHTML = ''
   // Settles once the app has said what it shows (or never, for an app that can't).
@@ -519,6 +621,10 @@ async function draw(w) {
   bridge.oncalltool = async params => {
     if (params.name === 'app_regex') return regexApart(params.arguments)
     if (params.name === 'app_download') return download(params.arguments ?? {})
+    if (params.name === 'app_print') {
+      printing(w)
+      return { content: [{ type: 'text', text: 'printed' }], structuredContent: {} }
+    }
     if (isPrivate(w.app.id) && (params.name === 'app_keep' || params.name === 'app_kept')) {
       const mine = (privately[w.app.id] ??= {})
       const a = params.arguments ?? {}
@@ -537,12 +643,14 @@ async function draw(w) {
       w.node.querySelector('.frozebox')?.remove()
       const box = document.createElement('div')
       box.className = 'frozebox'
-      box.innerHTML = `<span>It froze the page last time (${Math.round(froze[w.app.id].ms / 1000)} s), so it opened without what it kept.</span><button class="btn keep" type="button">Open with what it kept</button>`
+      const how = froze[w.app.id].stopped ? 'stopped the page last time, while it was working' : `froze the page last time (${Math.round(froze[w.app.id].ms / 1000)} s)`
+      box.innerHTML = `<span><b>${esc(w.app.name)}</b> ${how}, so it opened without what it kept.</span><button class="btn keep" type="button">Open with what it kept</button>${limited(w.app.id) || guest ? '' : '<button class="btn fix" type="button">Fix it</button>'}`
       box.querySelector('.keep').onclick = () => { delete froze[w.app.id]; local.set('instant-apps-froze', JSON.stringify(froze)); box.remove(); draw(w) }
+      box.querySelector('.fix')?.addEventListener('click', () => w.change?.('Fix this app: it stopped the whole page while it was working, most likely a loop that never ends or a pattern that runs without end on what was typed. Make every loop end, and run typed patterns with Kit.regex.', 'Fixing it'))
       w.node.querySelector('.wbar').after(box)
       return { content: [{ type: 'text', text: 'nothing kept' }], structuredContent: params.arguments?.all ? { values: {} } : { value: null } }
     }
-    const { acted, ...result } = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: w.app.id, me: ownerOf(w.app.id), ...params }) })).json()
+    const { acted, ...result } = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: w.app.id, me: ownerOf(w.app.id), self: me, ...params }) })).json()
     const said = result.content?.find(c => c.type === 'text')?.text ?? ''
     if (!result.isError && params.name === w.app.tool) {
       lastApp = { id: w.app.id, args: params.arguments }
@@ -560,7 +668,8 @@ async function draw(w) {
     if (!height || w.folded) return
     const following = log.scrollHeight - log.scrollTop - log.clientHeight < 120
     // A widget stays a widget: past this height the app scrolls inside it.
-    iframe.style.height = `${Math.min(680, Math.ceil(height))}px`
+    w.height = Math.ceil(height)
+    iframe.style.height = `${Math.min(680, w.height)}px`
     if (following) scroll()
   }
   bridge.onmessage = async params => {
@@ -738,10 +847,10 @@ function bar(w) {
     ? `<span class="chip saved">Kept as ${esc(w.keptAs)}</span>`
     : answer
       ? `<button class="wbtn save keep" type="button" title="Keep this answer in your apps as it is: a later search does not replace it">${ICON.save}Keep this answer</button>`
-      : app.saved ? '' : `<button class="wbtn save" type="button" title="Keep it in your apps: it opens by itself next time">${ICON.save}Save</button>`
-  const share = app.tool === 'findings' || limited(app.id) || isPrivate(app.id) ? '' : `<button class="wbtn share" type="button" title="Links that open this app, with what it keeps, on another phone or computer">${ICON.share}${shared[app.id] ? 'Shared' : 'Share'}</button>`
+      : app.saved || guest || limited(app.id) ? '' : `<button class="wbtn save" type="button" title="Keep it in your apps: it opens by itself next time">${ICON.save}Save</button>`
+  const share = app.tool === 'findings' || guest || limited(app.id) || isPrivate(app.id) ? '' : `<button class="wbtn share" type="button" title="Links that open this app, with what it keeps, on another phone or computer">${ICON.share}${shared[app.id] ? 'Shared' : 'Share'}</button>`
   const more = `<button class="wbtn more" type="button" title="Download what it keeps, or make it private" aria-label="More">${ICON.more}</button>`
-  const changes = limited(app.id) ? '' : `<button class="wbtn change" type="button" title="Change how it looks or works, by asking">${ICON.change}Change</button>${app.version > 1 ? `<button class="wbtn undo" type="button" title="Back to version ${app.version - 1}">${ICON.undo}Undo change</button>` : ''}${w.newer ? `<button class="wbtn redo" type="button" title="Forward to version ${app.version + 1}">${ICON.redo}Redo</button>` : ''}`
+  const changes = guest || limited(app.id) ? '' : `<button class="wbtn change" type="button" title="Change how it looks or works, by asking">${ICON.change}Change</button>${app.version > 1 ? `<button class="wbtn undo" type="button" title="Back to version ${app.version - 1}">${ICON.undo}Undo change</button>` : ''}${w.newer ? `<button class="wbtn redo" type="button" title="Forward to version ${app.version + 1}">${ICON.redo}Redo</button>` : ''}`
   acts.innerHTML = `${keep}${share}${changes}${more}`
   const changer = w.node.querySelector('.changer')
   acts.querySelector('.keep')?.addEventListener('click', async () => {
@@ -784,10 +893,24 @@ function bar(w) {
     box.className = 'sharebox'
     const LINK = [
       ['full', 'Can change everything', 'for your other phone or computer, or someone who runs it with you'],
-      ['helper', 'Can add and tick', 'nothing they do takes anything out'],
-      ['viewer', 'Can only look', 'they see it as it is now, and can change nothing'],
+      ['helper', 'Can add and tick', 'they add entries and tick them; they can’t change, untick or take out what is there'],
+      ['viewer', 'Can only look', 'they see it as it is, and change nothing'],
+      ['copy', 'A copy, empty', 'the app without anything it keeps: theirs keeps its own, on their phone'],
     ]
-    box.innerHTML = `<span class="sharehead">Links that open <b>${esc(app.name)}</b> with what it keeps, on any phone or computer. Anyone with a link can do what it says, so send each only to people you trust.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}`
+    box.innerHTML = `<span class="sharehead">Links that open <b>${esc(app.name)}</b> on any phone or computer. Each opens only this app: nobody with a link sees your other apps or the chat. Anyone with a link can do what it says, so send each only to people you trust.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
+    box.querySelector('.unshare').onclick = async () => {
+      const out = await (await fetch('/api/unshare', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me }) })).json().catch(error => ({ error: error.message }))
+      if (!out.stopped) return box.querySelector('.stop span').replaceWith(Object.assign(document.createElement('span'), { className: 'error', textContent: out.error ?? 'Could not stop it' }))
+      delete shared[app.id]
+      delete links[app.id]
+      delete roles[app.id]
+      local.set('instant-apps-shared', JSON.stringify(shared))
+      local.set('instant-apps-links', JSON.stringify(links))
+      local.set('instant-apps-roles', JSON.stringify(roles))
+      box.remove()
+      bar(w)
+      draw(w)
+    }
     for (const button of box.querySelectorAll('button[data-as]')) {
       button.onclick = async () => {
         button.previousElementSibling.select()
@@ -802,8 +925,13 @@ function bar(w) {
     if (box) return box.remove()
     box = document.createElement('div')
     box.className = 'morebox'
-    const canPrivate = !shared[app.id] && app.tool !== 'findings'
-    box.innerHTML = `<button class="btn csv" type="button">Download as CSV</button><button class="btn json" type="button">Download all (JSON)</button>${canPrivate ? `<button class="btn private" type="button">${isPrivate(app.id) ? 'Stop keeping it private' : 'Make it private'}</button>` : ''}<span class="faint">${isPrivate(app.id) ? 'Private: Claude reads nothing of this app, and what it keeps stays in this browser.' : shared[app.id] ? 'Shared apps can’t be private.' : 'Private: Claude reads nothing of it, and what it keeps stays in this browser only.'}</span>`
+    const canPrivate = !guest && !shared[app.id] && app.tool !== 'findings'
+    const print = `<button class="btn print" type="button">Print</button>`
+    box.innerHTML = `<button class="btn csv" type="button">Download as CSV</button><button class="btn json" type="button">Download all (JSON)</button>${print}${canPrivate ? `<button class="btn private" type="button">${isPrivate(app.id) ? 'Stop keeping it private' : 'Make it private'}</button>` : ''}<span class="faint">${guest ? '' : isPrivate(app.id) ? 'Private: Claude reads nothing of this app, and what it keeps stays in this browser.' : shared[app.id] ? 'A shared app can be private once you stop sharing it (Share, then Stop sharing).' : 'Private: Claude reads nothing of it, and what it keeps stays in this browser only.'}</span>`
+    box.querySelector('.print').onclick = () => {
+      box.remove()
+      printing(w)
+    }
     box.querySelector('.csv').onclick = async () => download({ name: `${slug(app.name)}.csv`, text: csvOf(await keptOf(app)), type: 'text/csv' })
     box.querySelector('.json').onclick = async () => download({ name: `${slug(app.name)}.json`, text: JSON.stringify(await keptOf(app), null, 2), type: 'application/json' })
     box.querySelector('.private')?.addEventListener('click', async () => {
@@ -939,6 +1067,12 @@ async function ask(question) {
         if (making) {
           making.previousElementSibling?.remove()
           making.remove()
+        }
+        // Asked to be private ("private from the start", "nothing leaves my
+        // laptop"): it is, before it draws or keeps anything (DEV-1).
+        if (ev.how === 'made' && PRIVATE.test(question) && !shared[ev.app.id]) {
+          privateApps[ev.app.id] = true
+          saveLocal()
         }
         shownNow = widget(body, ev, { request: question })
         here.push(entry(ev))
@@ -1101,7 +1235,14 @@ text.addEventListener('keydown', e => {
   }
 })
 window.ask = ask
-restore().then(() => linked && openFromRail(linked, 'the shared app', 'linked'))
+if (guest) {
+  // Only what was given to this browser, each opened as it is now.
+  document.querySelector('.top .faint').textContent = 'shared with you by a link'
+  el('guest-note', 'This page has only what was shared with you. What you can do is on each app’s bar.', col)
+  ;(async () => {
+    for (const id of guestApps()) await openFromRail(id, 'the shared app', 'linked')
+  })()
+} else restore().then(() => linked && openFromRail(linked, 'the shared app', 'linked'))
 // A shared app shows what the others kept since, when the page is looked at again.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return

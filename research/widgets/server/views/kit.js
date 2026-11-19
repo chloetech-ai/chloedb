@@ -32,6 +32,8 @@ async function connect(name, draw) {
   if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark'
   connected = app.connect().then(() => app)
   await connected
+  // The frame can't print itself (TOM-5): the page prints this app.
+  globalThis.print = () => print(app)
   theme(app.getHostContext())
   report()
   return app
@@ -85,8 +87,9 @@ function drawing(draw, connection, keeps = true) {
       let kept = {}
       try {
         if (keeps) kept = (await globalThis.Kit.call(app, 'app_kept', { all: true }))?.values ?? {}
-      } catch {
-        // An app whose host keeps nothing gets none.
+      } catch (error) {
+        // An app whose host keeps nothing gets none; a stopped link says so.
+        if (/stopped/i.test(error?.message ?? '')) banner(error.message)
       }
       // Shared by a link: what it keeps is not in this browser alone, and its words say so.
       if (data?.shared && !sharedKept) {
@@ -262,6 +265,9 @@ addEventListener('load', e => e.target instanceof HTMLImageElement && report(), 
 async function keep(app, key, value) {
   try {
     await globalThis.Kit.call(app, 'app_keep', { key: String(key), value: value ?? null })
+    // Kept: a "Not kept" said earlier no longer stands (LENA-6).
+    const box = document.getElementById('kit-banner')
+    if (box && /^Not kept/.test(box.textContent)) box.remove()
     return true
   } catch (error) {
     banner(error.message)
@@ -285,6 +291,11 @@ function banner(text) {
     document.body.prepend(box)
   }
   box.textContent = text
+}
+
+// Prints the app, all of it (the page does it: a frame can't print).
+function print(app) {
+  return globalThis.Kit.call(app, 'app_print', {}).catch(() => {})
 }
 
 // A file for the person to take elsewhere (a CSV for a spreadsheet, a file
@@ -427,4 +438,4 @@ new MutationObserver(changes => {
 }).observe(document.documentElement, { childList: true, subtree: true, characterData: true })
 if (document.body) textForm(document.body)
 
-globalThis.Kit = { connect, drawing, replayed, call, ask, tell, keep, kept, download, link, money, number, parse, regex, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }
+globalThis.Kit = { connect, drawing, replayed, call, ask, tell, keep, kept, download, print, link, money, number, parse, regex, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }

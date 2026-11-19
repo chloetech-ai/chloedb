@@ -478,7 +478,7 @@ test('a request to find things searches the web first, and the Search results ap
   assert.match(none.find(e => e.type === 'reply').text, /couldn’t find anything on the web for “find nothing at all”/)
 })
 
-test('a helper link adds and ticks but takes nothing out, and a view link only looks', { skip }, async () => {
+test('a helper link adds and ticks but changes and takes out nothing, and a view link only looks', { skip }, async () => {
   const me = '3'.repeat(32)
   const list = await chat.apps.put({ name: 'Shared list', about: 'What to buy.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('list'), args: { request: 'list' }, saved: true }, 'made by hand')
   const items = [{ id: 'a', name: 'milk', done: false }, { id: 'b', name: 'eggs', done: false }]
@@ -496,8 +496,10 @@ test('a helper link adds and ticks but takes nothing out, and a view link only l
   // But can't take eggs out, or clear the list.
   const out = await keep(share.helper, [ticked[0], ticked[2]])
   assert.equal(out.isError, true)
-  assert.match(out.content[0].text, /can add and tick, but not take anything out/)
+  assert.match(out.content[0].text, /can add and tick, but not change or take out what is there/)
   assert.equal((await keep(share.helper, [])).isError, true)
+  // Nor change what is there (INES-2, LENA-4).
+  assert.equal((await keep(share.helper, [{ ...ticked[0], name: 'oat milk' }, ticked[1], ticked[2]])).isError, true)
   assert.deepEqual((await read(share.token)).items, ticked, 'nothing was taken out')
   // A view link changes nothing; the full link can take things out.
   assert.match((await keep(share.viewer, ticked)).content[0].text, /can only look/)
@@ -521,4 +523,34 @@ test('a booking stays with the app that made it, and can be cancelled (TOM-5)', 
   assert.equal(cancelled.isError, undefined, 'an app that books can cancel')
   assert.ok((await kept())[0].cancelled, 'and the booking says it was cancelled')
   assert.equal((await post('/api/call', { app: app.id, me: '5'.repeat(32), name: 'app_kept', arguments: { all: true } })).structuredContent.values.bookings, undefined, 'another browser has none')
+})
+
+test('a helper or view link changes no app, a guest has no chat, and sharing can be stopped (round 4)', { skip }, async () => {
+  const me = '6'.repeat(32)
+  const app = await chat.apps.put({ name: 'Week plan', about: 'Dinners for the week.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('plan'), args: { request: 'plan' }, saved: true }, 'made by hand')
+  await post('/api/call', { app: app.id, me, name: 'app_keep', arguments: { key: 'days', value: [{ id: 'mon', dish: 'burgers' }] } })
+  const share = await post('/api/share', { app: app.id, me })
+  const status = async (route, body) => (await fetch(chat.url + route.slice(1), { method: 'POST', body: JSON.stringify(body) })).status
+  // MAYA-3, LENA-1: neither the helper's nor the viewer's phone removes it, undoes it or saves it.
+  assert.equal(await status(`/api/apps/${app.id}/remove`, { links: { [app.id]: share.helper } }), 403)
+  assert.equal(await status(`/api/apps/${app.id}/unsave`, { links: { [app.id]: share.viewer } }), 403)
+  assert.equal(await status(`/api/apps/${app.id}/remove`, { guest: true }), 403, 'nor any app, from a guest page')
+  assert.ok((await chat.apps.get(app.id)).saved, 'still in Your apps')
+  // INES-1, MAYA-2: a page opened only by links has no chat.
+  const events = await (await fetch(`${chat.url}api/turn`, { method: 'POST', body: JSON.stringify({ text: 'what did I spend on coffee', guest: true, links: { [app.id]: share.helper } }) })).text()
+  assert.match(events, /only what was shared with you/)
+  // MARCUS-3: a filter is one person's own, even in a shared app.
+  const browser = '7'.repeat(32)
+  await post('/api/call', { app: app.id, me: `s-${share.helper}`, self: browser, name: 'app_keep', arguments: { key: 'view:crew', value: 'A' } })
+  assert.equal((await post('/api/call', { app: app.id, me: `s-${share.token}`, self: me, name: 'app_kept', arguments: { all: true } })).structuredContent.values['view:crew'], undefined, 'the owner does not get the helper’s filter')
+  assert.equal((await post('/api/call', { app: app.id, me: `s-${share.helper}`, self: browser, name: 'app_kept', arguments: { all: true } })).structuredContent.values['view:crew'], 'A')
+  // DEV-2: stopping it gives what it kept back to the browser that stops it, and every link opens nothing.
+  assert.equal((await post('/api/unshare', { app: app.id, me: `s-${share.helper}`, self: browser })).error, 'Only whoever shared it can stop sharing it.')
+  assert.equal((await post('/api/unshare', { app: app.id, me: `s-${share.token}`, self: me })).stopped, true)
+  assert.deepEqual((await post('/api/call', { app: app.id, me, name: 'app_kept', arguments: { all: true } })).structuredContent.values.days, [{ id: 'mon', dish: 'burgers' }])
+  for (const token of [share.token, share.helper, share.viewer]) {
+    const out = await post('/api/call', { app: app.id, me: `s-${token}`, name: 'app_kept', arguments: { all: true } })
+    assert.match(out.content[0].text, /stopped/, 'a stopped link reads nothing')
+    assert.match((await post('/api/call', { app: app.id, me: `s-${token}`, name: 'app_keep', arguments: { key: 'days', value: [] } })).content[0].text, /stopped/)
+  }
 })

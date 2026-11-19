@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 
 import { described } from '../server/guide.mjs'
 import { TOOLS, callTool, domainsOf, fragmentOf, render } from '../server/index.mjs'
-import { KEEPING, keeping, takesOut } from '../server/apps.mjs'
+import { KEEPING, keeping, changesWhatIsThere, isView } from '../server/apps.mjs'
 import { claude } from './model.mjs'
 import { Apps, valueNames } from '../server/store.mjs'
 
@@ -87,7 +87,8 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   // Whose kept values a browser reaches for an app, and what it may do with
   // them: its own ("own"), or a share link's ("s-<token>"): the link that
   // made it changes everything ("full"), a helper link adds and ticks but
-  // takes nothing out ("helper"), a view link only looks ("viewer").
+  // takes nothing out ("helper"), a view link only looks ("viewer"); a
+  // link whose sharing was stopped reaches nothing ("gone").
   const LINKS = '-links-'
   async function owning(appId, me) {
     const id = own(me)
@@ -96,14 +97,30 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const link = await apps.kept(appId, `link:${id.slice(2)}`, LINKS).catch(() => null)
     return link ? { owner: link.owner, role: link.role } : { owner: id, role: 'full' }
   }
+  const STOPPED = 'This link was stopped by whoever shared it: it opens nothing any more.'
+  // What a request's links let it do to an app itself (change it, undo,
+  // save, remove): only its owner, or a link that changes everything. A
+  // page opened only by helper or view links (a guest) changes no app.
+  async function mayChange(appId, input) {
+    const token = input?.links?.[appId]
+    if (typeof token === 'string' && /^[0-9a-f]{32}$/.test(token)) {
+      const who = await owning(appId, `s-${token}`)
+      if (who?.role === 'gone') return STOPPED
+      if (who?.role === 'helper' || who?.role === 'viewer') return 'This link can’t change the app itself. Whoever shared it can.'
+      return ''
+    }
+    return input?.guest ? 'This page has only what was shared with you, and can’t change apps.' : ''
+  }
   // What a helper or view link may not keep: a view link changes nothing, a
-  // helper link adds and changes but takes nothing out (an entry, a field, a
-  // value cleared).
+  // helper link adds and ticks but changes and takes out nothing (an entry,
+  // a field, a number).
   async function refusal(who, appId, args) {
+    if (who.role === 'gone') return STOPPED
+    if (isView(args?.key ?? '')) return ''
     if (who.role === 'viewer') return 'Not kept: this link can only look. Whoever shared it can change it.'
     if (who.role !== 'helper') return ''
     const before = await apps.kept(appId, String(args?.key ?? ''), who.owner).catch(() => null)
-    return takesOut(before, args?.value) ? 'Not kept: this link can add and tick, but not take anything out. Whoever shared it can.' : ''
+    return changesWhatIsThere(before, args?.value) ? 'Not kept: this link can add and tick, but not change or take out what is there. Whoever shared it can.' : ''
   }
   // Each app sent to a page with a conversation is recorded as shown in it,
   // with what it was filled with, so it opens again as it was.
@@ -182,7 +199,13 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     return { ...args, values: rest }
   }
 
-  async function turn({ text, history = [], lastApp, screen, talk }, send) {
+  async function turn({ text, history = [], lastApp, screen, talk, links, guest }, send) {
+    // A page opened only by helper or view links has no chat: what was
+    // shared is all it gets (INES-1, LENA-5).
+    if (guest) {
+      send({ type: 'reply', text: 'This page has only what was shared with you. Use the app itself; whoever shared it can do the rest.' })
+      return
+    }
     send({ type: 'status', text: 'Looking through your apps' })
     const candidates = await apps.recall(text, 8)
     send({ type: 'recall', candidates: candidates.map(c => ({ id: c.id, name: c.name, score: c.score })) })
@@ -199,6 +222,11 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     // A change asked in words is the same change as the app's Change box,
     // and an undo the same as its version button: done, never just said.
     if ((plan.mode === 'change' || plan.mode === 'undo') && plan.app && (await apps.get(plan.app))) {
+      const refused = await mayChange(plan.app, { links })
+      if (refused) {
+        send({ type: 'reply', text: refused })
+        return
+      }
       // The app as the page shows it, newest first: its own data.
       const target = { shownId: onScreen(screen).find(w => w.id === plan.app)?.shown, talk: own(talk) }
       if (plan.mode === 'undo') {
@@ -257,7 +285,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       const how = lastApp?.id === app.id ? 'updated' : app.saved ? 'recalled' : 'again'
       send({ type: 'app', app: view(app), html: htmlOf(app), tool, args, result, how, why: plan.why })
       shown.set(app.id, { args, result, data, tool })
-      await apps.used(app.id, text, lasting(args), how)
+      // Filled by a helper's or a viewer's link: on their screen only, never
+      // what the app opens with for everyone (MAYA-2).
+      if (!(await mayChange(app.id, { links }))) await apps.used(app.id, text, lasting(args), how)
       // The answer is written once the page tells what the app shows (/api/say).
       send({ type: 'say', token: sayToken(text, data.summary) })
       return
@@ -428,19 +458,22 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       }
       // A tool an app calls from its view: only the tools it was made with.
       if (req.method === 'POST' && url.pathname === '/api/call') {
-        const { app: appId, name, arguments: args, me } = await body(req)
+        const { app: appId, name, arguments: args, me, self } = await body(req)
         const app = await apps.get(appId)
         if (app && KEEPING.includes(name)) {
           const who = await owning(app.id, me)
-          const refused = who && name === 'app_keep' ? await refusal(who, app.id, args) : ''
+          const refused = who?.role === 'gone' ? STOPPED : who && name === 'app_keep' ? await refusal(who, app.id, args) : ''
           if (refused) return json(res, { content: [{ type: 'text', text: refused }], isError: true })
-          return json(res, await keeping(apps, app.id, name, args, who?.owner ?? ''))
+          // How each person looks at it (view: names) stays with their own browser.
+          const mine = own(self) && !own(self).startsWith('s-') ? own(self) : ''
+          return json(res, await keeping(apps, app.id, name, args, who?.owner ?? '', mine))
         }
         // An app that books can cancel what it booked.
         const its = app && (app.tools.includes(name) || (name === 'table_cancel' && app.tools.includes('table_book')))
         if (!its) return json(res, { content: [{ type: 'text', text: `${name} is not one of this app's tools` }], isError: true })
         const acting = TOOLS.find(t => t.name === name)?.acts === true
         const who = acting ? await owning(app.id, me) : null
+        if (who?.role === 'gone') return json(res, { content: [{ type: 'text', text: STOPPED }], isError: true })
         if (who?.role === 'viewer') return json(res, { content: [{ type: 'text', text: 'Not done: this link can only look. Whoever shared it can.' }], isError: true })
         const { result, data } = await run(name, args)
         // What is done in an app stays with it (TOM-5): each booking, and
@@ -479,6 +512,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         const app = appId ? await apps.get(String(appId)) : null
         const who = app && (await owning(app.id, me))
         if (!who) return json(res, { error: 'no such app' }, 404)
+        if (who.role === 'gone') return json(res, { error: STOPPED }, 403)
         if (who.role === 'helper' || who.role === 'viewer') return json(res, { error: 'Only whoever shared it can share it further.' }, 403)
         let token = who.role === 'full' ? who.owner.slice(2) : ''
         if (!token) {
@@ -495,6 +529,23 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         }
         return json(res, { token, ...links })
       }
+      // Stop sharing (DEV-2): every link of it opens nothing from now on, and
+      // what it kept comes back to the browser that stops it, its own again.
+      if (req.method === 'POST' && url.pathname === '/api/unshare') {
+        const { app: appId, me, self } = await body(req)
+        const app = appId ? await apps.get(String(appId)) : null
+        const who = app && (await owning(app.id, me))
+        const mine = own(self) && !own(self).startsWith('s-') ? own(self) : ''
+        if (!who || !mine || !who.owner.startsWith('s-')) return json(res, { error: 'not shared' }, 404)
+        if (who.role !== 'full') return json(res, { error: 'Only whoever shared it can stop sharing it.' }, 403)
+        const token = who.owner.slice(2)
+        const values = await apps.keptAll(app.id, who.owner)
+        const links = values['-links']
+        for (const [key, value] of Object.entries(values)) if (!key.startsWith('-')) await apps.keep(app.id, key, value, mine)
+        for (const tok of [token, links?.helper, links?.viewer].filter(Boolean)) await apps.keep(app.id, `link:${tok}`, { owner: who.owner, role: 'gone' }, LINKS)
+        for (const key of Object.keys(values)) await apps.keep(app.id, key, null, who.owner)
+        return json(res, { stopped: true })
+      }
       if (req.method === 'POST' && url.pathname === '/api/note') {
         const { app: appId, summary, history = [] } = await body(req)
         const app = await apps.get(appId)
@@ -507,6 +558,11 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         const appId = decodeURIComponent(parts[2])
         const input = await body(req)
         if (!(await apps.get(appId))) return json(res, { error: 'no such app' }, 404)
+        // A helper's or a viewer's phone changes no app, and removes none (MAYA-3, LENA-1).
+        if (parts[3] !== 'open') {
+          const refused = await mayChange(appId, input)
+          if (refused) return json(res, { error: refused }, 403)
+        }
         if (parts[3] === 'change') return stream(res, send => (limited(req) ? Promise.reject(new Error(tooMany)) : change(appId, String(input.text ?? ''), send, { shownId: String(input.shown ?? ''), talk: own(input.talk), inPlace: true })))
         if (parts[3] === 'open') {
           return stream(res, async send => {
