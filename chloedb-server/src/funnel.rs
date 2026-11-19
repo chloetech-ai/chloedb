@@ -316,6 +316,11 @@ fn table_of(sql: &str) -> Option<String> {
 /// `GET /v1/queries/funnel`: the stages' time over the queries the server
 /// ran (`since` a time in ms, `table`, `fingerprint`, `kind`), the slowest
 /// listed with their stages; `id` one logged query's.
+/// A query the answer cache answered: it ran no stage of its own.
+fn cached(f: &Finished) -> bool {
+    f.steps.iter().any(|s| s.op == "answer cache")
+}
+
 pub fn many(svc: &Service, q: &HashMap<String, String>, since: u64, limit: usize) -> Result<Json, ApiError> {
     if let Some(id) = q.get("id").filter(|s| !s.is_empty()) {
         let id: u64 = id.parse().map_err(|_| ApiError::bad("id is a query's number in the query log"))?;
@@ -352,15 +357,25 @@ pub fn many(svc: &Service, q: &HashMap<String, String>, since: u64, limit: usize
     }).collect();
     let all = fun::aggregate(&each.iter().map(|(_, t, n)| (*t, *n)).collect::<Vec<_>>());
     // The rows each stage ended with, on average over the queries whose
-    // steps say.
-    let mut rows: BTreeMap<Stage, (u64, u64)> = BTreeMap::new();
-    for (f, _, _) in &each {
-        for (s, n) in fun::step_rows(&f.steps) {
-            let e = rows.entry(s).or_default();
-            (e.0, e.1) = (e.0 + n, e.1 + 1);
+    // steps say: the queries of one statement make one funnel, and those
+    // of many shapes one only together.
+    let rows_of = |ix: &mut dyn Iterator<Item = &Arc<Finished>>| -> BTreeMap<String, Json> {
+        let mut rows: BTreeMap<Stage, (u64, u64)> = BTreeMap::new();
+        let (mut answered, mut n) = (0u64, 0u64);
+        for f in ix {
+            for (s, k) in fun::step_rows(&f.steps) {
+                let e = rows.entry(s).or_default();
+                (e.0, e.1) = (e.0 + k, e.1 + 1);
+            }
+            (answered, n) = (answered + f.rows as u64, n + 1);
         }
-    }
-    let stage_rows: BTreeMap<String, Json> = rows.into_iter().map(|(s, (sum, n))| (fun::stage_key(s), json!({"mean": round3(sum as f64 / n as f64), "queries": n}))).collect();
+        let mut out: BTreeMap<String, Json> = rows.into_iter().map(|(s, (sum, n))| (fun::stage_key(s), json!({"mean": round3(sum as f64 / n as f64), "queries": n}))).collect();
+        if n > 0 {
+            out.insert("answered".into(), json!({"mean": round3(answered as f64 / n as f64), "queries": n}));
+        }
+        out
+    };
+    let stage_rows = rows_of(&mut each.iter().map(|(f, _, _)| f));
     // By statement: the queries of one fingerprint together.
     let mut by: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, (f, _, _)) in each.iter().enumerate() {
@@ -372,7 +387,9 @@ pub fn many(svc: &Service, q: &HashMap<String, String>, since: u64, limit: usize
             let a = fun::aggregate(&ix.iter().map(|&i| (each[i].1, each[i].2)).collect::<Vec<_>>());
             let first = &each[ix[0]].0;
             let stages: serde_json::Map<String, Json> = a.stages.iter().filter(|s| s.mean_ms > 0.0).map(|s| (fun::stage_key(s.stage), json!(s.mean_ms))).collect();
-            json!({"fingerprint": fp, "sql": first.sql, "table": table_of(&first.sql), "queries": a.queries, "mean_ms": a.mean_ms, "p95_ms": a.p95_ms, "stages": stages, "last_id": first.id})
+            let rows = rows_of(&mut ix.iter().map(|&i| &each[i].0));
+            let hits = ix.iter().filter(|&&i| cached(&each[i].0)).count();
+            json!({"fingerprint": fp, "sql": first.sql, "table": table_of(&first.sql), "queries": a.queries, "cached": hits, "mean_ms": a.mean_ms, "p95_ms": a.p95_ms, "stages": stages, "rows": rows, "last_id": first.id})
         })
         .collect();
     statements.sort_by(|a, b| {
@@ -384,10 +401,11 @@ pub fn many(svc: &Service, q: &HashMap<String, String>, since: u64, limit: usize
     let listed: Vec<Json> = slowest
         .into_iter()
         .take(LISTED)
-        .map(|(f, t, total)| json!({"id": f.id, "ts_ms": f.ts_ms, "sql": f.sql, "kind": f.kind, "outcome": f.outcome, "rows": f.rows, "ms": round3(total / 1e3), "stages": fun::times_json(t), "params": f.params}))
+        .map(|(f, t, total)| json!({"id": f.id, "ts_ms": f.ts_ms, "sql": f.sql, "kind": f.kind, "outcome": f.outcome, "rows": f.rows, "ms": round3(total / 1e3), "stages": fun::times_json(t), "params": f.params, "cached": cached(f)}))
         .collect();
     Ok(json!({
         "queries": all.queries,
+        "cached": each.iter().filter(|(f, _, _)| cached(f)).count(),
         "mean_ms": all.mean_ms,
         "p50_ms": all.p50_ms,
         "p95_ms": all.p95_ms,

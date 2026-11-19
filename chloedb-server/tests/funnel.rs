@@ -100,6 +100,8 @@ fn fates(rows: &Json) -> Vec<(i64, String)> {
 }
 
 const SEARCH: &str = "SELECT id FROM items WHERE price < 100 ORDER BY bm25(title, :t, fuzzy => 1) DESC LIMIT 1";
+/// A search for "did you mean": a word in many rows, typed wrong.
+const TYPO: &str = "SELECT id FROM items ORDER BY bm25(title, :t) DESC LIMIT 3";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_search_s_funnel_says_each_stage_s_time_and_rows() {
@@ -134,8 +136,14 @@ async fn a_search_s_funnel_says_each_stage_s_time_and_rows() {
     let term = |t: &str| terms.iter().find(|x| x["term"] == t).unwrap_or_else(|| panic!("no term {t}: {terms:?}"));
     assert_eq!((term("chiar")["kind"].as_str(), term("chiar")["df"].as_u64()), (Some("word"), Some(0)));
     assert_eq!((term("chair")["kind"].as_str(), term("chair")["of"].as_str(), term("chair")["df"].as_u64()), (Some("typo"), Some("chiar"), Some(4)));
-    assert_eq!(search["corrected"]["text"], "red chair", "{search}");
+    // "chair" is in 4 rows of 20: too few for "did you mean" to take
+    // "chiar" for its typo (it wants a neighbour in 5).
+    assert_eq!(search["corrected"]["changed"], false, "{search}");
     assert_eq!(j["answer"]["rows"], json!([[1]]));
+    // "shelf" is in 14: "shelg" is its typo.
+    let (st, s) = call(&base, "POST", "/v1/funnel", Some(json!({"sql": TYPO, "params": {"t": "oak shelg"}}))).await;
+    assert_eq!(st, 200, "{s}");
+    assert_eq!(s["text"]["searches"][0]["corrected"]["text"], "oak shelf", "{}", s["text"]);
 
     // Understood words: the brand the words name becomes a condition, a
     // stage of its own, and the query that ran says it.
@@ -169,6 +177,11 @@ async fn a_search_s_funnel_says_each_stage_s_time_and_rows() {
     assert!(m["stage_rows"]["match"]["mean"].as_f64().is_some(), "{}", m["stage_rows"]);
     assert_eq!(m["statements"].as_array().unwrap().len(), 1, "{}", m["statements"]);
     assert_eq!(m["statements"][0]["queries"], 3);
+    // Its own funnel of rows: what the matching found, down to the one row
+    // each answered.
+    let rows = &m["statements"][0]["rows"];
+    assert!(rows["match"]["mean"].as_f64().is_some_and(|n| n >= 1.0), "{rows}");
+    assert_eq!(rows["answered"]["mean"].as_f64(), Some(1.0), "{rows}");
     let slowest = m["slowest"].as_array().unwrap();
     assert_eq!(slowest.len(), 3);
     assert!(slowest.iter().all(|q| !q["sql"].as_str().unwrap().contains("funnel")), "{slowest:?}");
@@ -212,12 +225,16 @@ async fn through_a_coordinator_the_rows_funnel_is_one_database_s() {
         // The coordinator's time: its calls to the shards, and the shards'
         // own steps on their stages.
         assert!(stage_ms(&got, "shards") > 0.0, "{sql}: {}", got["stages"]);
-        assert!(stage_ms(&got, "match") > 0.0, "{sql}: {}", got["stages"]);
+        if sql.contains("bm25") {
+            assert!(stage_ms(&got, "match") > 0.0, "{sql}: {}", got["stages"]);
+        }
     }
     // The words' terms through the coordinator: summed over the shards.
     let ask = Ask { sql: SEARCH.into(), params: Params::new().set("t", chloedb::value::Value::Str("red chiar".into())), timeout_ms: 0, budget: Default::default() };
     let got = funnel::one(&coord, &Principal::open(), ask).await.unwrap();
     let terms = got["text"]["searches"][0]["terms"].as_array().unwrap().clone();
     assert!(terms.iter().any(|t| t["term"] == "chair" && t["df"] == 4 && t["kind"] == "typo"), "{terms:?}");
-    assert_eq!(got["text"]["searches"][0]["corrected"]["text"], "red chair");
+    let ask = Ask { sql: TYPO.into(), params: Params::new().set("t", chloedb::value::Value::Str("oak shelg".into())), timeout_ms: 0, budget: Default::default() };
+    let got = funnel::one(&coord, &Principal::open(), ask).await.unwrap();
+    assert_eq!(got["text"]["searches"][0]["corrected"]["text"], "oak shelf", "{}", got["text"]);
 }

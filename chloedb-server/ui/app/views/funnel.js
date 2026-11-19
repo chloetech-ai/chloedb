@@ -28,10 +28,10 @@ export const STAGES = [
   ["select", "Select", "var(--s2)"],
   ["rank", "Rank", "var(--s4)"],
   ["rerank", "Rerank", "var(--s8)"],
-  ["blend", "Blend", "var(--s5)"],
+  ["blend", "Blend", "color-mix(in srgb, var(--s7) 55%, var(--s5))"],
   ["shards", "Shards", "var(--muted)"],
   ["fetch", "Fetch", "var(--line-2)"],
-  ["other", "Other", "var(--grid)"],
+  ["other", "Other", "repeating-linear-gradient(135deg, var(--line-2) 0 3px, transparent 3px 6px)"],
 ];
 const NAME = Object.fromEntries(STAGES.map(([k, n]) => [k, n]));
 const COLOR = Object.fromEntries(STAGES.map(([k, , c]) => [k, c]));
@@ -71,6 +71,7 @@ function legend(ms) {
   return h("div", { class: "fn-legend" }, STAGES.filter(([k]) => (ms[k] || 0) > 0).map(([k, n]) => h("span", { class: "row nw" }, h("span", { class: "fn-dot", style: { background: COLOR[k] } }), n)));
 }
 
+const nw = (text) => h("span", { class: "fn-nw" }, text);
 const msOf = (stages) => Object.fromEntries((stages || []).map((s) => [s.stage, s.ms ?? s.mean_ms ?? 0]));
 
 function render(page, r) {
@@ -134,13 +135,13 @@ function allQueries(el, params) {
     const top = stages.slice().sort((a, b) => b.share - a.share)[0];
     clear(out,
       h("div", { class: "grid g4" },
-        kpi("Queries", fmt.n(j.queries), `of the latest ${fmt.n(j.kept)} the server keeps`),
+        kpi("Queries", fmt.n(j.queries), j.cached ? `${fmt.n(j.cached)} answered from the answer cache` : `of the latest ${fmt.n(j.kept)} the server keeps`, j.cached ? "The answer cache answers a query it answered before on the same version of the data: it runs no stage of its own" : null),
         kpi("Mean", fmt.ms(j.mean_ms), `p50 ${fmt.ms(j.p50_ms)}`),
         kpi("p95", fmt.ms(j.p95_ms)),
         kpi("Most time in", top ? NAME[top.stage] : "–", top ? `${fmt.pct(top.share)} of all their time` : null)),
       card({ title: "Where the time goes", sub: "each stage's share of every query's time, its mean over all of them and its percentiles over those that ran it",
         body: [stageBar(mean, { height: 22 }), legend(mean), stageTable(stages, j.queries)] }),
-      rowsCard(j.stage_rows),
+      fp || j.statements?.length === 1 ? rowsCard(j.stage_rows) : null,
       statementsCard(j.statements),
       slowestCard(j.slowest));
   }
@@ -152,22 +153,43 @@ function stageTable(stages, n) {
   return table([
     { key: "name", label: "Stage", render: (s) => h("span", { class: "row nw" }, h("span", { class: "fn-dot", style: { background: COLOR[s.stage] } }), h("b", {}, s.name)) },
     { key: "says", label: "What it is", sortable: false, render: (s) => h("span", { class: "small dim" }, s.says) },
-    { key: "ran", label: "Ran in", num: true, render: (s) => `${fmt.n(s.ran)} of ${fmt.n(n)}` },
-    { key: "mean_ms", label: "Mean", num: true, render: (s) => fmt.ms(s.mean_ms) },
-    { key: "p50_ms", label: "p50", num: true, render: (s) => fmt.ms(s.p50_ms) },
-    { key: "p95_ms", label: "p95", num: true, render: (s) => fmt.ms(s.p95_ms) },
-    { key: "max_ms", label: "Max", num: true, render: (s) => fmt.ms(s.max_ms) },
+    { key: "ran", label: "Ran in", num: true, render: (s) => nw(`${fmt.n(s.ran)} of ${fmt.n(n)}`) },
+    { key: "mean_ms", label: "Mean", num: true, render: (s) => nw(fmt.ms(s.mean_ms)) },
+    { key: "p50_ms", label: "p50", num: true, render: (s) => nw(fmt.ms(s.p50_ms)) },
+    { key: "p95_ms", label: "p95", num: true, render: (s) => nw(fmt.ms(s.p95_ms)) },
+    { key: "max_ms", label: "Max", num: true, render: (s) => nw(fmt.ms(s.max_ms)) },
     { key: "share", label: "Share", num: true, render: (s) => h("div", { class: "row nw", style: { gap: "8px" } }, h("div", { class: "barbox" }, h("div", { class: "bar", style: { width: Math.min(100, s.share * 100) + "%", background: COLOR[s.stage] } })), h("span", { class: "small dim num" }, fmt.pct(s.share))) },
   ], { rows: stages, compact: true });
 }
 
-/** The rows each stage's steps held, on average: the funnel of many queries. */
+/** The stages whose rows a statement's queries say, in order, and the rows answered. */
+const ROW_STAGES = [["match", "Matched"], ["select", "Kept by WHERE"], ["rank", "Ranked"], ["rerank", "Reranked"], ["blend", "Blended"], ["answered", "Answered"]];
+
+/** The stages a statement's queries say rows for, the most rows first and
+ * the rows answered last: a funnel in the order the rows narrowed, which
+ * is not always the stages' (a search by meaning with WHERE filters first,
+ * then takes each input's top rows). */
+const rowOrder = (rows) => ROW_STAGES.filter(([k]) => rows?.[k]).sort(([a], [b]) => (a === "answered") - (b === "answered") || rows[b].mean - rows[a].mean);
+
+/** The rows each stage's steps held, on average, for the queries of one statement: its funnel. */
 function rowsCard(rows) {
-  const order = ["match", "select", "rank", "rerank", "blend", "fetch"].filter((k) => rows?.[k]);
-  if (!order.length) return null;
-  const max = Math.max(...order.map((k) => rows[k].mean), 1);
-  return card({ title: "Rows at each stage", sub: "on average, the most rows a step of each stage held: what the matching found, what WHERE kept, what the ranking ranked and what was answered",
-    body: h("div", { class: "fn-funnel" }, order.map((k) => funnelRow(NAME[k], rows[k].mean, max, COLOR[k], `${fmt.plural(rows[k].queries, "query", "queries")}`))) });
+  const order = rowOrder(rows);
+  if (order.length < 2) return null;
+  const max = Math.max(...order.map(([k]) => rows[k].mean), 1);
+  return card({ title: "Rows at each stage", sub: "this statement's queries on average: the most rows a step of each stage held, from what the matching found to what was answered",
+    body: h("div", { class: "fn-funnel" }, order.map(([k, label]) => funnelRow(label, rows[k].mean, max, k === "answered" ? "var(--good, var(--s3))" : COLOR[k], `in ${fmt.plural(rows[k].queries, "query", "queries")}`))) });
+}
+
+/** A statement's rows by stage, in a line: matched → kept → ranked → answered. */
+function rowsLine(rows) {
+  const order = rowOrder(rows);
+  if (!order.length) return h("span", { class: "dim" }, "–");
+  const line = h("span", { class: "row nw small", style: { gap: "4px" }, title: order.map(([k, l]) => `${l}: ${fmt.n(rows[k].mean, 1)} on average`).join("\n") });
+  order.forEach(([k], i) => {
+    if (i) line.append(h("span", { class: "dim" }, "→"));
+    line.append(h("span", { class: "row nw", style: { gap: "0" } }, h("span", { class: "fn-dot", style: { background: k === "answered" ? "var(--good, var(--s3))" : COLOR[k] } }), h("span", { class: "num" }, fmt.si(rows[k].mean))));
+  });
+  return line;
 }
 
 /** One bar of a funnel, on a log scale so that 10 rows of a million show. */
@@ -185,10 +207,11 @@ function statementsCard(list) {
   return card({ title: "By statement", sub: "the queries of one shape together, the most time first · click one to see only its queries", flush: true,
     body: table([
       { key: "sql", label: "Statement", render: (x) => h("span", { class: "mono small ellipsis", style: { maxWidth: "420px", display: "inline-block" }, title: x.sql }, x.sql) },
-      { key: "queries", label: "Queries", num: true },
-      { key: "mean_ms", label: "Mean", num: true, render: (x) => fmt.ms(x.mean_ms) },
-      { key: "p95_ms", label: "p95", num: true, render: (x) => fmt.ms(x.p95_ms) },
-      { key: "stages", label: "Its stages", sortable: false, width: "220px", render: (x) => stageBar(x.stages) },
+      { key: "queries", label: "Queries", num: true, render: (x) => h("span", { class: "fn-nw", title: x.cached ? `${fmt.n(x.cached)} answered from the answer cache` : null }, fmt.n(x.queries), x.cached ? h("span", { class: "dim" }, ` (${fmt.n(x.cached)} cached)`) : null) },
+      { key: "mean_ms", label: "Mean", num: true, render: (x) => nw(fmt.ms(x.mean_ms)) },
+      { key: "p95_ms", label: "p95", num: true, render: (x) => nw(fmt.ms(x.p95_ms)) },
+      { key: "stages", label: "Its stages", sortable: false, width: "200px", render: (x) => stageBar(x.stages) },
+      { key: "rows", label: "Rows by stage", sortable: false, title: "on average, the most rows a step of each stage held, down to the rows answered (hover for the stages)", render: (x) => rowsLine(x.rows) },
       { label: "", sortable: false, render: (x) => h("a", { class: "btn ghost sm", href: link("funnel", { tab: "one", id: x.last_id }), title: "Its latest query's stages, and its rows traced" }, "Its funnel", icon("right")) },
     ], { rows: list, onRow: (x) => { location.hash = link("funnel", { tab: "all", fp: x.fingerprint }); } }) });
 }
@@ -199,9 +222,9 @@ function slowestCard(list) {
     body: table([
       { key: "ts_ms", label: "When", render: (x) => h("span", { class: "small nw" }, fmt.time(x.ts_ms)) },
       { key: "sql", label: "Query", render: (x) => h("span", { class: "mono small ellipsis", style: { maxWidth: "380px", display: "inline-block" }, title: x.sql + (x.params ? "\n" + paramsText(x.params, 400) : "") }, x.sql) },
-      { key: "outcome", label: "", sortable: false, render: (x) => x.outcome === "ok" ? null : outcomePill(x.outcome) },
+      { key: "outcome", label: "", sortable: false, render: (x) => x.outcome !== "ok" ? outcomePill(x.outcome) : x.cached ? h("span", { class: "pill info", title: "the answer cache answered it: it ran no stage of its own" }, "cached") : null },
       { key: "rows", label: "Rows", num: true },
-      { key: "ms", label: "Time", num: true, render: (x) => fmt.ms(x.ms) },
+      { key: "ms", label: "Time", num: true, render: (x) => nw(fmt.ms(x.ms)) },
       { key: "stages", label: "Its stages", sortable: false, width: "220px", render: (x) => stageBar(x.stages, { total: x.ms }) },
     ], { rows: list, onRow: (x) => { location.hash = link("funnel", { tab: "one", id: x.id }); } }) });
 }
@@ -213,7 +236,7 @@ function oneQuery(el, params) {
   const sql = h("textarea", { class: "input mono", rows: 4, style: { width: "100%" }, spellcheck: "false", "aria-label": "The query to trace", placeholder: "SELECT id, title FROM docs WHERE year >= 2020 ORDER BY rrf(bm25(body, :q), similarity(emb, :q)) DESC LIMIT 10" });
   const pin = h("input", { class: "input mono", style: { width: "100%" }, placeholder: '{"q": "red chair"}', "aria-label": "Its parameters, as JSON" });
   sql.value = params.get("sql") ?? store.get("funnel.sql", "");
-  pin.value = params.get("p") ?? store.get("funnel.p", "");
+  pin.value = params.get("p") ?? (params.get("sql") ? "" : store.get("funnel.p", ""));
   const runBtn = h("button", { class: "btn primary", onclick: () => run() }, icon("play"), "Trace it");
   const note = h("div", { class: "small muted" }, "Runs the query once, then the funnel's probes: counts and top rows of each stage, quiet (not in the query log, not in the time shown).");
   const out = h("div", { class: "stack" });
@@ -275,17 +298,17 @@ function oneResult(j, clientMs, { rerun }) {
     say.push(" ", chain.join(" → "), ".");
   }
   if (j.ran && j.ran !== j.sql) say.push(" It ran as rewritten by its understood or expanded words (below).");
-  parts.push(h("div", { class: "wl-story" }, say));
+  parts.push(h("div", { class: "wl-story fn-say" }, say));
   parts.push(h("div", { class: "grid g4" },
     kpi("Server time", fmt.ms(total), `${fmt.ms(clientMs)} with the probes, from this page`),
     kpi("Rows answered", fmt.n(j.answer?.total_rows ?? 0)),
     rows ? kpi("Rows seen", fmt.n(rows.rows?.length ?? 0), "by the probes, each with where it left") : kpi("Kind", j.kind),
     kpi("Stages", fmt.n((j.stages || []).filter((s) => s.ms > 0).length), "that took any time")));
   parts.push(timeCard(j, rows));
-  if (rows && rows.kind !== "other") parts.push(rowsFunnel(rows), fatesCard(rows));
+  if (rows && rows.kind !== "other") parts.push(rowsFunnel(rows, [...(rows.notes || []), ...(j.notes || [])]), fatesCard(rows));
   else if (j.kind === "other" || j.kind === "compound") parts.push(h("div", { class: "notice" }, j.kind === "compound" ? "A query of several tables (a join, WITH, a subquery, UNION): its time is shown, and its rows are its parts'. Trace each part on its own." : "A query of groups or counts: its time is shown; it ranks no rows to follow."));
   if (j.blend) parts.push(blendCard(j, rerun));
-  for (const n of [...(rows?.notes || []), ...(j.notes || [])]) parts.push(h("div", { class: "small muted" }, n));
+  if (!rows || rows.kind === "other") for (const n of [...(rows?.notes || []), ...(j.notes || [])]) parts.push(h("div", { class: "small muted" }, n));
   parts.push(stepsCard(j));
   if (j.answer) parts.push(answerCard(j.answer));
   return parts;
@@ -297,7 +320,11 @@ function timeCard(j, rows) {
   const total = j.took_ms || Object.values(ms).reduce((a, b) => a + b, 0);
   const text = j.text || {};
   const detail = {
-    wait: () => { const w = (j.spans || []).filter((s) => s.name === "admission" || s.name === "wait for writes"); return w.length ? w.map((s) => `${s.name} ${fmt.ms(s.dur_us / 1000)}`).join(" · ") : null; },
+    wait: () => {
+      const w = [...(j.spans || []).filter((s) => s.name === "admission" || s.name === "wait for writes").map((s) => [s.name === "admission" ? "a query slot" : "the writes it must see", s.dur_us]),
+        ...(j.steps || []).filter((s) => /^wait/.test(s.op)).map((s) => [s.op.replace(/^wait for /, ""), s.us])];
+      return w.length ? h("span", { class: "small" }, "for ", w.map(([n, us]) => `${n} ${fmt.ms(us / 1000)}`).join(" · ")) : null;
+    },
     understand: () => text.understood?.length ? h("div", {}, text.understood.map((l) => h("div", { class: "mono small" }, l))) : null,
     expand: () => [text.expanded?.length ? h("div", {}, text.expanded.map((l) => h("div", { class: "mono small" }, l))) : null, ...(text.searches || []).map(termsOf)],
     embed: () => text.embedded?.length ? h("div", {}, text.embedded.map((e) => h("div", { class: "small" }, h("b", {}, e.table ? `${e.table}.${e.field}` : e.model), e.model && e.table ? h("span", { class: "dim" }, ` by ${e.model}`) : null, ": ", h("span", { class: "mono" }, `"${e.text}"`), e.ms != null ? h("span", { class: "dim" }, ` · ${fmt.ms(e.ms)}`) : null))) : null,
@@ -309,8 +336,8 @@ function timeCard(j, rows) {
     rank: () => rows && rows.kind !== "other" ? h("div", { class: "small" }, rows.fused ? [h("span", { class: "mono" }, rows.fused), ": "] : null, rows.candidates != null ? `${fmt.plural(rows.candidates, "candidate")} ranked, ` : "", `the first ${fmt.n(rows.ranked)} up to the page's end`) : null,
     rerank: () => rows?.phases?.length ? h("div", {}, rows.phases.map((p) => h("div", { class: "small" }, h("span", { class: "mono" }, p.text), `: the top ${fmt.n(p.count)} ranked again`))) : null,
     blend: () => j.blend ? h("div", { class: "small" }, `${fmt.plural(j.blend.sources.length, "source")} filled ${fmt.plural(j.blend.rows.length, "slot")} in ${fmt.ms(j.blend.fill_ms)}`) : null,
-    shards: () => { const calls = (j.spans || []).filter((s) => s.shard != null); return calls.length ? `${fmt.plural(calls.length, "call")} to ${fmt.plural(new Set(calls.map((c) => c.shard)).size, "shard")}` : null; },
-    fetch: () => j.answer ? `${fmt.plural(j.answer.total_rows, "row")} answered` : null,
+    shards: () => { const calls = (j.spans || []).filter((s) => s.shard != null); return calls.length ? h("span", { class: "small" }, `${fmt.plural(calls.length, "call")} to ${fmt.plural(new Set(calls.map((c) => c.shard)).size, "shard")}`) : null; },
+    fetch: () => j.answer ? h("span", { class: "small" }, `${fmt.plural(j.answer.total_rows, "row")} answered`) : null,
     other: () => h("span", { class: "small dim" }, "reading the request, writing the answer, and anything else no stage names"),
   };
   const lines = STAGES.map(([k, name]) => {
@@ -320,7 +347,7 @@ function timeCard(j, rows) {
     if (!ran && (d == null || (Array.isArray(d) && !d.filter(Boolean).length))) return h("div", { class: "fn-stage off" }, h("span", { class: "fn-dot", style: { background: COLOR[k] } }), h("b", {}, name), h("span", { class: "small muted" }, "did not run"));
     return h("div", { class: "fn-stage" },
       h("span", { class: "fn-dot", style: { background: COLOR[k] } }), h("b", {}, name),
-      h("div", { class: "fn-time" }, h("div", { class: "fn-tbar" }, h("div", { style: { width: Math.min(100, v / Math.max(total, 1e-9) * 100) + "%", background: COLOR[k] } })), h("span", { class: "num small" }, ran ? `${fmt.ms(v)} · ${fmt.pct(v / Math.max(total, 1e-9))}` : "–")),
+      h("div", { class: "fn-time" }, h("div", { class: "fn-tbar" }, h("div", { style: { width: Math.min(100, v / Math.max(total, 1e-9) * 100) + "%", background: COLOR[k] } })), h("span", { class: "num small fn-nw" }, ran ? `${fmt.ms(v)} · ${fmt.pct(v / Math.max(total, 1e-9))}` : "–")),
       h("div", { class: "fn-detail" }, d));
   });
   return card({ title: "From its text to its rows", sub: "each stage in the order a query meets it, its time (summing to the whole) and what it did", body: [stageBar(ms, { height: 18, total }), h("div", { class: "fn-stages" }, lines)] });
@@ -337,7 +364,7 @@ function termsOf(s) {
 }
 
 /** The rows left after each stage of one query. */
-function rowsFunnel(rows) {
+function rowsFunnel(rows, notes = []) {
   const steps = [];
   if (rows.live != null) steps.push(["In the table", rows.live, "var(--axis)", "its live rows"]);
   if (rows.matched != null) steps.push(["Matched", rows.matched, COLOR.match, rows.inputs.some((i) => i.generates && i.matched == null) ? "a search by meaning reaches every row with a vector" : rows.inputs.filter((i) => i.matched != null).map((i) => `${i.label} ${fmt.n(i.matched)}`).join(" · ")]);
@@ -347,7 +374,8 @@ function rowsFunnel(rows) {
   if (rows.phases?.length) for (const p of rows.phases) steps.push([`Reranked: ${p.text}`, Math.min(p.count, rows.ranked), COLOR.rerank, ""]);
   steps.push(["Shown", rows.shown, "var(--good, var(--s3))", "on the page"]);
   const max = Math.max(...steps.map((s) => s[1] || 0), 1);
-  return card({ title: "Rows, stage by stage", sub: "the rows left after each stage (bars on a log scale)", body: h("div", { class: "fn-funnel" }, steps.map(([l, n, c, note]) => funnelRow(l, n, max, c, note))) });
+  return card({ title: "Rows, stage by stage", sub: "the rows left after each stage (bars on a log scale)", body: h("div", { class: "fn-funnel" }, steps.map(([l, n, c, note]) => funnelRow(l, n, max, c, note))),
+    foot: notes.length ? h("div", { class: "small muted" }, notes.map((n) => n[0].toUpperCase() + n.slice(1).replace(/\.$/, "")).join(". ") + ".") : null });
 }
 
 /** Every row the probes saw, with where it left and why. */
@@ -368,7 +396,7 @@ function fatesCard(rows) {
       render: (r) => { const m = r.matched[i], s = r.selected[i]; return m == null && s == null ? h("span", { class: "dim" }, "–") : h("span", { class: "small nw" }, m ? `#${m[0]}` : "–", h("span", { class: "dim" }, " · "), s ? `#${s}` : h("span", { class: "dim" }, "–")); } })),
   ], { rows: list, compact: true, maxHeight: "480px" });
   const filter = seg([["all", `All ${list.length}`], ...Object.keys(FATES).filter((f) => counts[f]).map((f) => [f, `${FATES[f][0]} ${counts[f]}`])], pick, (v) => { pick = v; t.update(v === "all" ? list : list.filter((r) => r.fate === v)); });
-  return card({ title: "Where each row left", sub: "every row the probes saw: the page, the rows ranked just past it, each input's top rows, and those WHERE took from them", tools: filter, body: t, flush: true });
+  return card({ title: "Where each row left", sub: "every row the probes saw: the page, the rows ranked just past it, each input's top rows, and those WHERE took from them", body: [h("div", { class: "fn-filter" }, filter), t], flush: true });
 }
 
 function blendCard(j, rerun) {
