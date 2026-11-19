@@ -288,7 +288,12 @@ one does not wait for the engine's tests. An app whose manifest says
   assets of an existing tag (`--clobber`). Check a download against the
   release's `SHA256SUMS` (Python, JavaScript) or `.sha256` (server), or
   PyPI's attestations ([checking what you download](../SECURITY.md#checking-what-you-download)).
-- Signed release archives, or an SBOM.
+- Signatures and SBOMs on every download. The server archives carry
+  GitHub's build provenance and a CycloneDX SBOM from 0.3.8, the PyPI
+  packages attestations, and the npm packages npm's provenance from
+  0.3.9; the Python and JavaScript archives on GitHub are checked by their
+  `SHA256SUMS` alone, and releases before 0.3.8 by their `.sha256`
+  ([checking what you download](../SECURITY.md#checking-what-you-download)).
 - Stability of anything not described above: the Rust crate's API, the
   command center's routes, the operator's resource beyond its documented
   fields.

@@ -87,6 +87,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
       <a href="compatibility.html" aria-current="page">Versions and compatibility</a>
       <span class="h">ChloeCtx</span>
       <a href="chloectx.html">ChloeCtx</a>
@@ -478,7 +479,12 @@ one does not wait for the engine's tests. An app whose manifest says
   assets of an existing tag (<code>--clobber</code>). Check a download against the
   release's <code>SHA256SUMS</code> (Python, JavaScript) or <code>.sha256</code> (server), or
   PyPI's attestations (<a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md#checking-what-you-download">checking what you download</a>).</li>
-<li>Signed release archives, or an SBOM.</li>
+<li>Signatures and SBOMs on every download. The server archives carry
+  GitHub's build provenance and a CycloneDX SBOM from 0.3.8, the PyPI
+  packages attestations, and the npm packages npm's provenance from
+  0.3.9; the Python and JavaScript archives on GitHub are checked by their
+  <code>SHA256SUMS</code> alone, and releases before 0.3.8 by their <code>.sha256</code>
+  (<a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md#checking-what-you-download">checking what you download</a>).</li>
 <li>Stability of anything not described above: the Rust crate's API, the
   command center's routes, the operator's resource beyond its documented
   fields.</li>
@@ -486,7 +492,7 @@ one does not wait for the engine's tests. An app whose manifest says
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/compatibility.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="opensearch.html">← OpenSearch API</a><a href="chloectx.html">ChloeCtx →</a></span>
+      <span class="pager"><a href="tenants.html">← Tenants in an object store (experimental)</a><a href="chloectx.html">ChloeCtx →</a></span>
     </footer>
   </article>
 </div></main>

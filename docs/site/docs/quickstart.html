@@ -87,6 +87,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
       <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">ChloeCtx</span>
       <a href="chloectx.html">ChloeCtx</a>
@@ -154,6 +155,7 @@ tar xzf chloedb-server-$p.tar.gz &amp;&amp; mkdir -p ~/.local/bin &amp;&amp; mv 
 chloedb-server --db quickstart.chloedb &gt; server.log 2&gt;&amp;1 &amp;
 server=$!
 until curl -sf http://127.0.0.1:7700/livez &gt; /dev/null; do sleep 0.2; done</pre>
+<p>For a server you keep, rather than this try, add two flags. <code>--alerts alerts.json</code> keeps the alert rules and routes you make in that file: without it a server on its own keeps them in memory, and a restart loses them (<a href="server.html#alerts">alerts</a>). <code>--environment production</code> (or <code>staging</code>, <code>dev</code>) names what it is: the command center shows it in its header and, on production, asks for a reason before each change. A server with none is shown as a sandbox when you reach it on this machine, and as production from another.</p>
 <p>Everything below talks to it over HTTP with JSON. To keep the commands short, <code>sql</code> sends the statement it reads from its input to <code>POST /v1/sql</code>, which runs any statement:</p>
 <pre data-lang="sh">sql() { curl -sS http://127.0.0.1:7700/v1/sql -H &#x27;content-type: application/json&#x27; --data-binary @-; echo; }</pre>
 <h2 id="3-make-a-table-and-fill-it">3. Make a table and fill it<a class="anchor" href="#3-make-a-table-and-fill-it" aria-label="Link to this section">#</a></h2>

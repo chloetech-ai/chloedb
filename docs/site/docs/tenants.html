@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tenants: a database kept in an object store (experimental) · ChloeDB docs</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="A tenant is one ChloeDB database that lives whole in an object store: a directory, or S3 and the stores that speak its API. A node that serves it works on a local copy, which is only a cache. Any node pointed at the…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/tenants.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../features.html">Features</a>
+    <a href="../scale.html">Laptop to cloud</a>
+    <a href="../command-center.html">Command center</a>
+    <a href="../benchmarks.html">Benchmarks</a>
+    <a href="../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html" aria-current="page">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Server and cluster</span>
+      <h1>Tenants: a database kept in an object store (experimental)</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/tenants.md">docs/chloedb/tenants.md</a>.</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#from-rust">From Rust</a></li><li><a href="#from-the-server">From the server</a></li><li><a href="#a-blackboard-for-agents">A blackboard for agents</a></li><li><a href="#what-it-does-not-do-yet">What it does not do yet</a></li></ol></details>
+    <div class="doc-body">
+
+<blockquote>
+<p><strong>Experimental.</strong> This is a first slice of the design in
+<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/design/0.7.0-file-per-agent.md"><code>docs/design/0.7.0-file-per-agent.md</code></a>,
+which is a proposal. The objects it writes are <code>layout: 0</code>, and a later
+version may refuse to read them. Do not keep data in it that you cannot
+load again. Nothing uses it unless you ask.</p>
+</blockquote>
+<p>A <strong>tenant</strong> is one ChloeDB database that lives whole in an object store: a
+directory, or S3 and the stores that speak its API. A node that serves it
+works on a local copy, which is only a cache. Any node pointed at the same
+store can open the same tenant, and a node can lose its disk without losing
+a write.</p>
+<pre data-lang="text" data-title="Output">&lt;tenant&gt;/HEAD                                         names the rest; the only object that is replaced
+&lt;tenant&gt;/&lt;incarnation&gt;/base/&lt;seq&gt;-&lt;epoch&gt;.chloedb     the database up to a transaction, as one ordinary file
+&lt;tenant&gt;/&lt;incarnation&gt;/log/&lt;first seq&gt;-&lt;epoch&gt;.arc    the transactions after it</pre>
+<p>A write is committed by replacing <code>HEAD</code> on the condition that it is still
+the version the node last read. The store decides: of two nodes that write
+one tenant at once, the later is refused and nothing of its write is
+kept. There is no lease and no clock to trust.</p>
+<h2 id="from-rust">From Rust<a class="anchor" href="#from-rust" aria-label="Link to this section">#</a></h2>
+<pre data-lang="rust" data-title="Rust">use std::sync::Arc;
+use chloedb::query::Params;
+use chloedb::storage::DirStore;
+use chloedb::tenant::{Tenant, TenantError, TenantOptions};
+
+let store = Arc::new(DirStore::new(&quot;/mnt/tenants&quot;)?);   // or chloedb::storage::open_store(&quot;s3://bucket/prefix/&quot;)?
+let t = Tenant::create(store.clone(), &quot;agent-7&quot;, TenantOptions::new(&quot;/var/cache/agent-7&quot;), |db| {
+    db.sql(&quot;CREATE TABLE notes (id INT PRIMARY KEY, body TEXT)&quot;, &amp;Params::new()).map(|_| ())
+})?;
+
+// Committed when this returns: one conditional put of HEAD.
+t.write(|db| db.sql(&quot;INSERT INTO notes VALUES (1, &#x27;the harbour at dawn&#x27;)&quot;, &amp;Params::new()))?;
+
+// Reads run on the local copy.
+t.read(|db| db.sql(&quot;SELECT id FROM notes WHERE MATCH(body, &#x27;harbour&#x27;)&quot;, &amp;Params::new()))?;
+
+// Another node, with an empty cache: two reads of the store.
+let other = Tenant::open(store, &quot;agent-7&quot;, TenantOptions::new(&quot;/var/cache/elsewhere&quot;))?;
+match other.write(|db| db.sql(&quot;INSERT INTO notes VALUES (2, &#x27;two&#x27;)&quot;, &amp;Params::new())) {
+    Ok(_) =&gt; {}                                   // this node is the writer now
+    Err(TenantError::NotWriter) =&gt; { /* another node wrote first: nothing was committed, wait a moment and try again */ }
+    Err(e) =&gt; return Err(e.into()),
+}</pre>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>call</th>
+<th>what it costs</th>
+<th>what it sees</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read</code></td>
+<td>nothing from the store</td>
+<td>what this handle committed, and what others had at its last <code>refresh</code></td>
+</tr>
+<tr>
+<td><code>read_latest</code></td>
+<td>one read of <code>HEAD</code>, and the new transactions if any</td>
+<td>every write committed before the call</td>
+</tr>
+<tr>
+<td><code>write</code></td>
+<td>one conditional put (two the first time, when the handle becomes the writer; one more upload when the log is sealed), shared with the writes that waited for the one before</td>
+<td></td>
+</tr>
+<tr>
+<td><code>make_base</code></td>
+<td>one upload of the database, one put</td>
+<td>(the next open is two reads)</td>
+</tr>
+<tr>
+<td><code>tenant::list(store)</code></td>
+<td>one listing, and eight bytes of each <code>HEAD</code></td>
+<td>the ids of the store's tenants</td>
+</tr>
+</tbody>
+</table></div>
+<p>Writes of one handle that arrive while a commit is on its way to the store
+wait, and the next commit takes all of them: their statements run one
+after another, each on its caller's thread, and one put of <code>HEAD</code> commits
+them together or not at all.</p>
+<p>A handle holds its cache directory: a second handle on the same directory,
+in this process or another, is refused. The directory keeps the tenant's
+working copy, and the next handle to open the tenant there takes it up
+again when it is a copy of the tenant as the store has it (the last
+transaction it holds is in <code>HEAD</code>'s history), and fetches only the
+transactions after it. Otherwise it starts from the base.</p>
+<p>A write fails in one of three ways. <code>NotWriter</code>: another node committed
+first, nothing was written, and the handle has loaded the tenant again;
+wait a random while before trying again, longer after each refusal in a
+row (up to a few times what the refused write took). A node that is not
+the writer takes the tenant with one put of <code>HEAD</code> and commits with a
+second, and a node that takes the tenant between the two refuses the
+first node's commit: nodes that try again at once can take it from each
+other for as long as they keep trying, with none committing, when the
+store's puts are slow. <code>InDoubt</code>: the store did not answer and could not be asked again, so the
+write may or may not be there. Anything else: not committed. The writes
+that shared its commit fail with it, the same way.</p>
+<p>A handle does not take a store's refusal for <code>NotWriter</code>: it loads the
+tenant again and looks. A store's client may send a put twice (after an
+answer it lost) and report the store's refusal of the second; the write
+is then committed, and the handle says so.</p>
+<h2 id="from-the-server">From the server<a class="anchor" href="#from-the-server" aria-label="Link to this section">#</a></h2>
+<pre data-lang="sh">chloedb-server --db main.chloedb --tenants /mnt/tenants --tenant-cache /var/cache/tenants
+# or --tenants s3://bucket/prefix/   (configured by the environment, as `import` reads S3)
+
+chloedb-server tenants check-store /mnt/tenants   # does this store refuse a put whose condition fails?
+chloedb-server tenants list /mnt/tenants          # the ids of its tenants</pre>
+<p>The server probes the store when it starts, and does not start on one that
+takes a put whatever the condition. It opens a tenant when a request names
+it and closes the ones no request has named for <code>--tenant-idle-s</code> seconds
+(300), or the least recently used beyond <code>--tenant-open-max</code> (1,000). A
+tenant it wrote is given a new base before it is closed, so that the next
+open, here or on another server, is two reads.</p>
+<p>The routes need an admin key until tenants have keys of their own.</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>route</th>
+<th>does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /v1/admin/tenants</code></td>
+<td>creates one: <code>{"id": "agent-7", "sql": ["CREATE TABLE notes (id INT PRIMARY KEY, body TEXT)"]}</code></td>
+</tr>
+<tr>
+<td><code>GET /v1/admin/tenants</code></td>
+<td>the ids of the store's tenants, and those this server has open</td>
+</tr>
+<tr>
+<td><code>GET /v1/admin/tenants/:id</code></td>
+<td>its epoch, base, logs and last transaction</td>
+</tr>
+<tr>
+<td><code>POST /v1/admin/tenants/:id/sql</code></td>
+<td>one statement: <code>{"sql": "…", "params": {}, "latest": false, "objects": false}</code></td>
+</tr>
+<tr>
+<td><code>POST /v1/admin/tenants/:id/base</code></td>
+<td>makes a new base now</td>
+</tr>
+<tr>
+<td><code>DELETE /v1/admin/tenants/:id</code></td>
+<td>deletes it</td>
+</tr>
+</tbody>
+</table></div>
+<p>A statement that reads (a query or an <code>EXPLAIN</code>, as the engine reads the
+statement, not by its first word) runs on the server's copy, through what
+cannot write; <code>"latest": true</code> looks at the store first. Any other
+statement is a write. A write that another server beat answers 409: send
+it again. Two servers started on one store answer for the same tenants.</p>
+<h2 id="a-blackboard-for-agents">A blackboard for agents<a class="anchor" href="#a-blackboard-for-agents" aria-label="Link to this section">#</a></h2>
+<p>A <strong>blackboard</strong> is a tenant that many agents share to work one job: tasks
+they claim under a lease, findings they post for each other, and the
+events of both in order. It is made from a template, and its tools are
+calls of the server or an MCP server an agent is pointed at.</p>
+<pre data-lang="sh">curl -H &quot;Authorization: Bearer $ADMIN&quot; $URL/v1/admin/tenants \
+  -d &#x27;{&quot;id&quot;: &quot;migration&quot;, &quot;template&quot;: &quot;blackboard&quot;}&#x27;
+curl -H &quot;Authorization: Bearer $ADMIN&quot; $URL/v1/admin/tenants/migration/board/add_tasks \
+  -d &#x27;{&quot;agent&quot;: &quot;lead&quot;, &quot;tasks&quot;: [{&quot;id&quot;: &quot;lexer&quot;, &quot;title&quot;: &quot;port the lexer&quot;, &quot;spec&quot;: &quot;...&quot;}]}&#x27;
+curl -H &quot;Authorization: Bearer $ADMIN&quot; $URL/v1/admin/tenants/migration/board/claim \
+  -d &#x27;{&quot;agent&quot;: &quot;worker-7&quot;, &quot;key&quot;: &quot;claim-1&quot;}&#x27;
+
+# an agent, named by the URL it is given
+claude mcp add --transport http board &quot;$URL/v1/admin/tenants/migration/mcp?agent=worker-7&quot; \
+  --header &quot;Authorization: Bearer $ADMIN&quot;</pre>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>tool</th>
+<th>does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>add_tasks(tasks, key?)</code></td>
+<td>takes tasks in; one whose id the board has already is left as it is (a list with a task that has no id needs a <code>key</code>)</td>
+</tr>
+<tr>
+<td><code>claim(key, n?, lease_s?)</code></td>
+<td>gives the caller up to <code>n</code> tasks, oldest first: open ones, and claimed ones whose lease has passed</td>
+</tr>
+<tr>
+<td><code>heartbeat(task, lease_s?)</code></td>
+<td>extends the caller's lease; refused once another agent has the task</td>
+</tr>
+<tr>
+<td><code>complete(task, result, key)</code>, <code>fail(task, why, key)</code></td>
+<td>end the caller's claim; refused once another agent has the task, so a task is done once</td>
+</tr>
+<tr>
+<td><code>post(body, key, task?)</code></td>
+<td>records a finding, as a duplicate (<code>dup_of</code>) of an earlier one that says the same</td>
+</tr>
+<tr>
+<td><code>search(q, limit?)</code></td>
+<td>findings and tasks by their words, best first; a finding's duplicates are counted, not listed</td>
+</tr>
+<tr>
+<td><code>timeline(since?, limit?)</code></td>
+<td>what happened, in order: tasks taken in, claims, tasks done or failed, findings</td>
+</tr>
+<tr>
+<td><code>status()</code>, <code>get_task(id)</code></td>
+<td>the board in numbers; one task</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>POST /v1/admin/tenants/:id/board/:tool</code> takes a tool's arguments and
+<code>"agent"</code> in its body. <code>POST /v1/admin/tenants/:id/mcp?agent=NAME</code> is the
+same tools over the Model Context Protocol (Streamable HTTP, no session).
+From Rust they are <code>chloedb::blackboard::Board</code>.</p>
+<ul>
+<li><strong>One winner.</strong> A call that writes is one transaction, committed by the
+  tenant's replacement of <code>HEAD</code>, so the store orders every claim: of two
+  agents that claim the same task, through one server or two, one is given
+  it.</li>
+<li><strong>Leases.</strong> A claimed task is its owner's until its lease passes (300
+  seconds unless asked, a day at most), by the clock of the server that
+  answers. After that another agent's <code>claim</code> may take it, and the first
+  agent's <code>heartbeat</code> and <code>complete</code> are refused.</li>
+<li><strong>Applied once.</strong> A <code>key</code> is the caller's own name for one call. A call
+  that failed or timed out may be sent again with the same <code>key</code>: if the
+  first was committed, the second changes nothing and answers what the
+  first answered. Keys are kept in the tenant, so any server knows them,
+  and a key is its agent's: two agents that choose the same word are not
+  answered each other's calls. Over HTTP and MCP the calls that are not
+  the same when made twice (<code>claim</code>, <code>complete</code>, <code>fail</code>, <code>post</code>, and
+  <code>add_tasks</code> of a task without an id) are refused without a key (400;
+  over MCP, an invalid-parameters error). From Rust the key is the
+  caller's choice. Keys are never deleted yet.</li>
+<li><strong>Duplicates.</strong> Two findings say the same when they share at least 80%
+  of their words (letters and digits, in any case). This is a comparison
+  of words, not of meaning: the design's comparison by vectors is not
+  built.</li>
+</ul>
+<p>A refused call answers 409 over HTTP, and an answer marked <code>isError</code> over
+MCP. A call that another server beat to the tenant is tried again by the
+server, twice, before it answers 409.</p>
+<h2 id="what-it-does-not-do-yet">What it does not do yet<a class="anchor" href="#what-it-does-not-do-yet" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>It has run on a directory store, and its S3 code against a mock of S3
+  (moto) only, not against a real bucket. A store must refuse a put whose
+  condition fails (AWS S3, R2, MinIO, GCS and Azure say they do;
+  DigitalOcean Spaces is not known): <code>chloedb-server tenants check-store
+  URL</code> tries it.</li>
+<li>A base is always the whole database as one file, fetched whole when a
+  node opens the tenant. Reading a large index by range, without a local
+  copy, is the design's next step.</li>
+<li>A write waits for a round trip to the store, its own or the one it
+  shares. Nothing is acknowledged before the store has it.</li>
+<li>Bulk loads and attached segments skip the log, so they are not committed
+  through <code>write</code>: use SQL or transactions.</li>
+<li>The server has no per-tenant keys, quotas, routing or directory: every
+  server on a store answers for every tenant, and two that write the same
+  one take it from each other (each write that loses answers 409). An
+  agent of a blackboard therefore holds an admin key of the server: run
+  one only where that is acceptable, until tenants have keys of their own.</li>
+<li>The format is not frozen. Log objects are written as version 1 of
+  <code>STRARC01</code>, the experimental one; the accepted format begins at 2, and
+  its readers will not take what is written now for theirs.</li>
+</ul>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/tenants.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="opensearch.html">← OpenSearch API</a><a href="compatibility.html">Versions and compatibility →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>

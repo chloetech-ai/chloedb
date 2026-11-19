@@ -1538,7 +1538,7 @@ DROP CLASSIFIER topic;
 
 ## Recommenders: `CREATE RECOMMENDER` and `recommend()`
 
-A recommender keeps counts of a table of events (what came right after what, what was seen together, how often each item was seen, each user's last items) as the events are written, and `recommend(name, user)` ranks items for a user by them, fused with the similarity of the user's recent items and with popularity, leaving out the items the user had.
+A recommender keeps counts of a table of events (what came right after what, what was seen together, how often each item was seen, each user's last items) as the events are written, and `recommend(name, user)` ranks items for a user by them, fused with the similarity of the user's recent items and with popularity, leaving out the user's recent items (the last `history`; an item the user had before those can come back: filter with `id NOT IN (SELECT item FROM events WHERE usr = :u)` to leave out every one).
 
 ```sql
 CREATE TABLE events (id KEYWORD PRIMARY KEY, usr KEYWORD, item KEYWORD, ts TIMESTAMP);
@@ -1897,7 +1897,7 @@ Every statement runs as its plan, and a plan in JSON runs on its own: `Db::run` 
 
 ## Differences from PostgreSQL
 
-A query written for PostgreSQL mostly runs here and gives the same rows, but not always. These are the differences people porting SQL from PostgreSQL meet, as this release has them: first the answers that differ without an error, then what is refused (most refusals' messages say what to do instead).
+A query written for PostgreSQL mostly runs here and gives the same rows, but not always. These are the differences people porting SQL from PostgreSQL meet most, as this release has them: first the answers that differ without an error, then what is refused (most refusals' messages say what to do instead). The list of refusals is not complete: a statement it does not name can still be refused, and its message says so.
 
 **Connecting.** There is no Postgres wire protocol: `psql`, DBeaver, Metabase, dbt's Postgres adapter and SQLAlchemy's Postgres dialect do not connect, and there is no dbt adapter or SQLAlchemy dialect of ChloeDB's own. [Running SQL](#running-sql) lists the ways in: Python's `chloedb.dbapi` (DB-API 2.0, which pandas' `read_sql` reads), JDBC, HTTP and the SQL workbench. [Following Postgres](postgres.md) copies a Postgres database into ChloeDB; it does not let Postgres's clients in.
 
@@ -1912,18 +1912,32 @@ A query written for PostgreSQL mostly runs here and gives the same rows, but not
 | `concat('a', TRUE)` | `'atrue'` | `'at'` | `CASE WHEN b THEN 't' ELSE 'f' END` |
 | `SELECT a.id, b.title FROM a JOIN b ...` | columns `a.id`, `b.title` | `id`, `title` | `a.id AS id, b.title AS title` |
 | a correlated `(SELECT COUNT(*) ... WHERE t.a = o.a)` | `10.0` (`FLOAT`) | `10` | alias it and read it as a number |
+| `UPDATE t SET n = n + 1` where `n` is `NULL` | `n` becomes `1`: in `SET`, `field + number` and `field - number` count a `NULL` as zero, as a counter does ([writes](#writes)) | stays `NULL` | `UPDATE t SET n = n + 1 WHERE n IS NOT NULL` |
 
 Ascending order puts `NULL`s last in both. [Following Postgres](postgres.md#how-postgres-columns-become-fields) makes a `numeric` column a `FLOAT`, so `CAST` and `round` take its halves to the even neighbour (2.5 to 2), where PostgreSQL rounds a `numeric`'s away from zero (to 3). **Changed:** 0.3.7 and earlier rounded every half away from zero, kept the rows without a value in `n != 1.5` on an `INT` column, and gave `'a'` for `'a' || NULL`; each now answers as PostgreSQL does. **Changed:** 0.3.8 and earlier refused `ORDER BY` the alias of a group column after `GROUP BY` or `DISTINCT` ("no such column") and `NULLS FIRST` there, read `json_extract(doc, '$.a.b')` as `NULL` outside `WHERE`, and on DataFusion (a query over more than 4,096 rows) added `FLOAT` sums in order, so totals that tie on fewer rows could differ in their last digit and a `RANK` over them change; each now answers as PostgreSQL does, and as on fewer rows.
 
 **`TEXT` and `KEYWORD`.** A `TEXT` column is text searched by its words (`MATCH`, `bm25`), and a `KEYWORD` a value compared whole; PostgreSQL's `text` is both. A stored `TEXT` column also groups (`GROUP BY country`, `SELECT DISTINCT country`) and compares with `=` and `LIKE`, by its stored text read row by row, where a `KEYWORD`'s index answers both. Imports make a column of prose a `TEXT` one, by its values (more than two and a half words a value on average: [SQLite](sqlite.md#how-sqlite-columns-become-fields), [Parquet](parquet.md#how-parquet-columns-become-fields)), and following Postgres makes every `text` and `varchar` one: create the table first with `KEYWORD` for the columns you group and filter by often.
 
-**Writes.** An `UPDATE` or a `DELETE` takes any `WHERE` a `SELECT` of its table takes ([writes](#writes)); one the indexes cannot answer (a subquery, a `TEXT` column compared, a function of a column) picks the rows' keys first, under the writer lock. **Changed:** 0.3.7 and earlier refused such a `WHERE` in a write. Refused: `UPDATE ... FROM`, `DELETE ... USING`, `RETURNING`, `TRUNCATE` (`DELETE FROM t` deletes every row), and `INSERT ... SELECT` except from `chunks_of`.
+**Writes.** An `UPDATE` or a `DELETE` takes any `WHERE` a `SELECT` of its table takes ([writes](#writes)); one the indexes cannot answer (a subquery, a `TEXT` column compared, a function of a column) picks the rows' keys first, under the writer lock. **Changed:** 0.3.7 and earlier refused such a `WHERE` in a write. Refused: `UPDATE ... FROM`, `DELETE ... USING`, `RETURNING`, `TRUNCATE` (`DELETE FROM t` deletes every row), `INSERT ... SELECT` except from `chunks_of`, a subquery as a value in `SET` (`SET x = (SELECT MIN(y) FROM t)`: run it first and pass its answer as a parameter), and `ON CONFLICT ... DO UPDATE ... WHERE` (put the condition in the value: `SET x = CASE WHEN n > 3 THEN excluded.x ELSE x END`).
 
 **Transactions.** `BEGIN`, `COMMIT` and `ROLLBACK` are refused: each statement is a transaction of its own. Several writes commit together as the operations of one `POST /v1/write` (or `write(ops)` in Python and JavaScript), and through Rust's transaction API ([Loading a file](#loading-a-file-csv-tsv-json-lines), at its end).
 
 **Tables, views and indexes.** Refused: `CREATE VIEW` and `CREATE MATERIALIZED VIEW` (a [stored function](#stored-functions) `RETURNS TABLE` is a view with parameters, and a [rollup](#rollups-create-rollup-a-materialized-view-of-counts-over-time) keeps counts up to date), `CREATE TABLE ... AS SELECT` and temporary tables (the messages say what to write instead), `CREATE INDEX` (every column is indexed by its type when the table is made), `ALTER COLUMN ... TYPE`, `ALTER TABLE ... RENAME TO`, `UNIQUE`, `CHECK`, and a primary key of more than one column. `REFERENCES` are recorded, not enforced. The first table of a database cannot be dropped.
 
-**Queries.** Refused: `WITH RECURSIVE` (walk a graph with [`REACHABLE` and `PATH`](#graphs)), `GROUP BY ROLLUP`, `CUBE` and `GROUPING SETS` (a `UNION ALL` of `GROUP BY`s), `CROSS JOIN`, tables listed with commas, `LATERAL`, `JOIN ... USING`, `NATURAL JOIN`, a join whose `ON` has no equality of the two tables' columns, and a window frame `RANGE` with an `INTERVAL` offset; the messages of the `ROLLUP` and `USING` refusals show the query to write instead. `INTERVAL '1 month'` moves a time written as a value, not a column's, and two times do not subtract: [`date_diff('second', a, b)`](#parts-of-times-date_trunc-extract-and-strftime) is the seconds between them (`'day'` the days), and `EXTRACT(epoch FROM b) - EXTRACT(epoch FROM a)` the seconds with their fractions.
+**Queries.** Refused: `WITH RECURSIVE` (walk a graph with [`REACHABLE` and `PATH`](#graphs)), `GROUP BY ROLLUP`, `CUBE` and `GROUPING SETS` (a `UNION ALL` of `GROUP BY`s), `CROSS JOIN`, tables listed with commas, `LATERAL`, `JOIN ... USING`, `NATURAL JOIN`, a join whose `ON` has no equality of the two tables' columns, and a window frame `RANGE` with an `INTERVAL` offset; the messages of the `ROLLUP` and `USING` refusals show the query to write instead. Also refused, with what to write:
+
+| refused | write instead |
+|---|---|
+| `a IS DISTINCT FROM 'x'` | `(a != 'x' OR a IS NULL)` |
+| `<`, `>`, `BETWEEN` on a `KEYWORD` (`sku BETWEEN 'A' AND 'C'`, `month >= '2023-01'`) | `IN`, `LIKE 'prefix%'`, or the value kept as a number or a time (`month` as the `INT` 202301, or a `TIMESTAMP`), which compares by range |
+| `SUM(DISTINCT x)`, `AVG(DISTINCT x)` | `SELECT SUM(x) FROM (SELECT DISTINCT x FROM t) d` |
+| `COUNT(DISTINCT a, b)` | `SELECT COUNT(*) FROM (SELECT DISTINCT a, b FROM t) d` |
+| a subquery as a value in `HAVING` (`HAVING SUM(x) > (SELECT AVG(x) FROM t)`) | run the inner query first and pass its answer as a parameter |
+| `LIKE ... ESCAPE` | none yet: `%` and `_` in a pattern are always wildcards |
+| `ILIKE ANY (ARRAY[...])` | `a ILIKE '%x%' OR a ILIKE '%y%'` |
+| `doc->>'color'`, `doc->'a'` | `doc.color`, or `json_extract(doc, '$.color')` ([JSON fields](#json-fields-keys-no-schema-names)) |
+
+`INTERVAL '1 month'` moves a time written as a value, not a column's, and two times do not subtract: [`date_diff('second', a, b)`](#parts-of-times-date_trunc-extract-and-strftime) is the seconds between them (`'day'` the days), and `EXTRACT(epoch FROM b) - EXTRACT(epoch FROM a)` the seconds with their fractions.
 
 **Functions.** Over rows ChloeDB computes `lower`, `upper`, `length`, [`substr` (`SUBSTRING`), `trim` (`TRIM`, `btrim`), `ltrim`, `rtrim`, `replace`, `concat`, `nullif`](#text-and-numbers-substr-trim-replace-concat-nullif-floor-and-ceil), `abs`, `round`, `floor`, `ceil`, `coalesce`, `ln`, `log`, `exp`, `sqrt`, `pow`, `least`, `greatest`, `sigmoid`, `clamp`, `dot`, `date_trunc`, `date_part` (`EXTRACT`), `date_diff`, `strftime`, `date_bin`, `time_bucket`, `hash`, `CASE` and `CAST`, besides its search, vector and JSON functions; over groups, the [aggregates](#aggregates), `STRING_AGG` among them. Among those PostgreSQL has and ChloeDB does not: `left`, `right`, `position`, `split_part`, `regexp_replace`, `lpad`, `initcap`, `concat_ws`, `trunc`, `mod`, `sign`, `random`, `md5`, `to_char`, `age` and `array_agg`. An unknown function's error lists those that exist. **Changed:** 0.3.8 and earlier refused `substr`, `trim`, `replace`, `concat`, `nullif`, `floor`, `ceil`, `date_diff` and `STRING_AGG`.
 
