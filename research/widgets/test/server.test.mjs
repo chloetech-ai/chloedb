@@ -35,7 +35,7 @@ test('the server says when to open an app', () => {
 test('every widget tool names its view, and the sources are plain tools', async () => {
   const { tools } = await client.listTools()
   const names = tools.map(t => t.name).sort()
-  assert.deepEqual(names, ['app_call', 'app_change', 'app_kit', 'app_make', 'app_open', 'app_save', 'app_source', 'app_undo', 'apps_find', 'cart_add', 'cart_view', 'exchange_rate', 'flight_track', 'my_apps', 'recipe_get', 'recipes_browse', 'shop_search', 'show_findings', 'stock_quote', 'table_book', 'table_cancel', 'table_search'])
+  assert.deepEqual(names, ['app_call', 'app_change', 'app_kit', 'app_make', 'app_open', 'app_save', 'app_source', 'app_undo', 'apps_find', 'cart_add', 'cart_view', 'exchange_rate', 'flight_track', 'my_apps', 'recipe_get', 'recipes_browse', 'recipes_shop', 'shop_search', 'show_findings', 'stock_quote', 'table_book', 'table_cancel', 'table_search'])
   for (const tool of tools) {
     if (/^(table|recipe)|^(apps_find|app_kit|app_save|app_undo|exchange_rate)$/.test(tool.name)) {
       assert.equal(tool._meta?.ui, undefined, tool.name)
@@ -206,4 +206,35 @@ test('what a helper link may keep: adding and ticking, not changing or taking ou
   assert.equal(changes('note', ''), true)
   assert.equal(changes(false, true), false, 'a tick')
   assert.equal(changes(true, false), true, 'a tick taken back, a night un-booked (TOM-2)')
+})
+
+test('a shopping list is for the people asked, in what one buys, each thing once (MAYA-7)', async () => {
+  const { parse, shown, shopping, serves } = await import('../server/widgets/amounts.mjs')
+  assert.equal(shown(parse('450 grams Boneless skin')), '1 lb', 'not grams')
+  assert.equal(shown(parse('2/3 Cup')), '¾ cup')
+  assert.equal(shown(parse('250 g'), 'metric'), '250 g', 'grams where asked')
+  assert.equal(parse('4 - 6').qty, 6, 'a range is the more of the two, to buy')
+  assert.equal(shown(parse('2 cloves')), '2 cloves')
+  assert.equal(parse('Halved').note, 'halved', 'how to cut it is not an amount')
+  assert.equal(serves({ instructions: 'Serves 6. Mix it.', amounts: [] }).serves, 6)
+  assert.match(serves({ instructions: 'Grill.', amounts: [{ name: 'Chicken Breasts', amount: '2' }] }).serves_note, /about/, 'a guess says so')
+  const mon = { id: '1', title: 'Burgers', day: 'Mon', instructions: 'Grill.', amounts: [{ name: 'Chicken Breasts', amount: '2' }, { name: 'Buns', amount: '2' }, { name: 'Avocado', amount: 'Peeled and Sliced' }, { name: 'Lemon Juice', amount: '0.5' }, { name: 'Salt', amount: 'pinch' }] }
+  const tue = { id: '2', title: 'Salad', day: 'Tue', instructions: 'Serves 4.', amounts: [{ name: 'chicken breast', amount: '4 - 6' }, { name: 'Cabbage', amount: '0.25' }, { name: 'Grape Tomatoes', amount: 'Halved' }] }
+  const list = shopping([mon, tue], 4)
+  const buy = Object.fromEntries(list.items.map(i => [i.name, i]))
+  assert.equal(buy.buns.buy, '4 buns', 'Monday feeds two, so twice its buns for four')
+  assert.equal(buy['chicken breasts'].buy, '10 chicken breasts', 'one line for both days, added up')
+  assert.deepEqual(buy['chicken breasts'].for, ['Mon', 'Tue'])
+  assert.equal(buy.avocados.buy, '2 avocados', 'whole things to pick off a shelf')
+  assert.equal(buy.cabbage.buy, '1 cabbage', 'a quarter is bought whole')
+  assert.equal(buy.lemon.buy, '1 lemon', 'juice is bought as the fruit')
+  assert.equal(buy['grape tomatoes'].buy, 'some grape tomatoes')
+  assert.deepEqual(list.pantry.map(p => p.name), ['salt'], 'staples apart')
+})
+
+test('found facts show money in dollars with commas (MARCUS-6)', async () => {
+  const html = (await import('node:fs')).readFileSync(new URL('../server/views/findings.html', import.meta.url), 'utf8')
+  const MONEY = new Function(`${html.match(/const MONEY = [^\n]*/)[0]}\nreturn MONEY`)()
+  for (const name of ['total_with_destination', 'cummins_option', 'msrp', 'price']) assert.ok(MONEY.test(name), name)
+  assert.ok(!MONEY.test('towing_lbs'))
 })

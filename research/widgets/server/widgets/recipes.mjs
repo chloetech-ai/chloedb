@@ -6,6 +6,7 @@
 // or WIDGETS_SIMULATE is set, labelled so.
 import { z } from 'zod'
 
+import { forPeople, serves, shopping } from './amounts.mjs'
 import { SIMULATE, fetchJson } from './common.mjs'
 
 const API = 'https://www.themealdb.com/api/json/v1/1'
@@ -266,18 +267,28 @@ export const recipeGet = {
   view: null,
   domains: ['https://www.themealdb.com'],
   description: 'One dish in full: its photo, ingredients with amounts, steps and a video link when there is one. Use an id from recipes_browse.',
-  input: { id: z.string().min(1).max(12).describe('A recipe id from recipes_browse') },
+  input: {
+    id: z.string().min(1).max(12).describe('A recipe id from recipes_browse'),
+    people: z.number().int().min(1).max(30).optional().describe('How many it is for: each amount is also given for them (for_people), in units one buys'),
+    units: z.enum(['us', 'metric']).optional().describe('"us": pounds, ounces and cups (the default); "metric": grams and millilitres'),
+  },
   example: { id: '52814' },
-  async run({ id }) {
+  async run({ id, people, units = 'us' }) {
     if (!SIMULATE) {
       try {
         const meal = (await get(`lookup.php?i=${encodeURIComponent(id)}`)).meals?.[0]
         if (meal) {
+          // How many it feeds (an estimate, as TheMealDB doesn't say), and
+          // each amount for the people asked (MAYA-7).
+          const fed = serves({ instructions: meal.strInstructions, amounts: ingredients(meal) })
+          const factor = people ? people / fed.serves : 1
           return {
             widget: 'recipes',
             mode: 'recipe',
             ...card(meal),
-            amounts: ingredients(meal),
+            ...fed,
+            ...(people ? { people, units } : {}),
+            amounts: ingredients(meal).map(a => (people ? { ...a, for_people: forPeople(a, factor, units) } : a)),
             steps: (meal.strInstructions ?? '').split(/\r?\n+/).map(s => s.replace(/^(step\s*)?\d+[.):]?\s*/i, '').trim()).filter(s => s.length > 3),
             video: meal.strYoutube || null,
             link: meal.strSource || null,
@@ -293,7 +304,46 @@ export const recipeGet = {
   },
   summary(d) {
     // The amounts too: an answer written from this summary must never say the source has none.
-    const amounts = d.amounts.map(a => (a.amount ? `${a.amount} ${a.name}` : a.name)).join('; ')
-    return `${d.title} (${d.cuisine ?? ''} ${d.kind ?? ''}): ${d.amounts.length} ingredients (${amounts}), ${d.steps.length} steps. Source: ${d.source}.`
+    const amounts = d.amounts.map(a => (a.for_people ? `${a.for_people} ${a.name}` : a.amount ? `${a.amount} ${a.name}` : a.name)).join('; ')
+    const fed = d.serves ? ` Serves ${d.serves} (${d.serves_note})${d.people ? `; amounts for ${d.people}` : ''}.` : ''
+    return `${d.title} (${d.cuisine ?? ''} ${d.kind ?? ''}): ${d.amounts.length} ingredients (${amounts}), ${d.steps.length} steps.${fed} Source: ${d.source}.`
+  },
+}
+
+// One shopping list for several dishes: each thing once, its amounts added
+// up for the people asked, in units one buys ("2 avocados", "1 ¼ lb"), what
+// each is for, and the pantry's staples apart (MAYA-7).
+export const recipesShop = {
+  name: 'recipes_shop',
+  title: 'Shopping list',
+  view: null,
+  domains: ['https://www.themealdb.com'],
+  description:
+    'A shopping list for several dishes (a week of dinners): every ingredient once, its amounts added up and scaled to the people asked for, ' +
+    'in units one buys (pounds and cups, or grams), whole things rounded up ("2 avocados"), with the days or dishes each is for and the pantry staples apart; ' +
+    'and each dish\'s amounts for them. How many a dish feeds is an estimate when the recipe does not say (serves_note).',
+  input: {
+    dishes: z.array(z.object({ id: z.string().min(1).max(12), day: z.string().max(12).optional() })).min(1).max(14).describe('The dishes, each { id from recipes_browse, day: "Mon" }'),
+    people: z.number().int().min(1).max(30).optional().describe('How many to cook for (4 when not said)'),
+    units: z.enum(['us', 'metric']).optional().describe('"us": pounds, ounces and cups (the default); "metric": grams and millilitres'),
+  },
+  example: { dishes: [{ id: '52772', day: 'Mon' }, { id: '52814', day: 'Tue' }], people: 4 },
+  async run({ dishes, people = 4, units = 'us' }) {
+    const recipes = []
+    let note
+    for (const d of dishes) {
+      let meal = null
+      if (!SIMULATE) meal = (await get(`lookup.php?i=${encodeURIComponent(d.id)}`).catch(() => null))?.meals?.[0] ?? null
+      if (meal) recipes.push({ id: d.id, day: d.day ?? null, title: meal.strMeal, instructions: meal.strInstructions, amounts: ingredients(meal) })
+      else {
+        const r = OFFLINE.find(x => x.id === d.id) ?? OFFLINE[0]
+        recipes.push({ id: d.id, day: d.day ?? null, title: r.title, instructions: '', amounts: r.amounts })
+        note = 'Some dishes are from the offline sample, without amounts.'
+      }
+    }
+    return { widget: 'recipes', mode: 'shopping', ...shopping(recipes, people, units), ...(note ? { note } : {}), source: note ? 'offline sample' : 'TheMealDB' }
+  },
+  summary(d) {
+    return `A shopping list for ${d.dishes.length} dishes for ${d.people} (${d.units === 'metric' ? 'grams and millilitres' : 'pounds and cups'}): ${d.items.map(i => i.buy).join('; ')}. From the pantry: ${d.pantry.map(i => i.name).join(', ') || 'nothing'}. Servings: ${d.dishes.map(x => `${x.title} feeds ${x.serves} (${x.serves_note})`).join('; ')}. Source: ${d.source}.`
   },
 }
