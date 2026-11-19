@@ -23,7 +23,7 @@ import { RESOURCE_MIME_TYPE, registerAppResource, registerAppTool } from '@model
 import { z } from 'zod'
 
 import { RUNNER, SHELF, registerApps } from './apps.mjs'
-import { tableBook, tableSearch } from './widgets/booking.mjs'
+import { tableBook, tableCancel, tableSearch } from './widgets/booking.mjs'
 import { findings } from './widgets/findings.mjs'
 import { inputs } from './widgets/inputs.mjs'
 import { exchangeRate } from './widgets/rates.mjs'
@@ -39,7 +39,7 @@ export const WIDGETS = [stock, flight, shopSearch, cartAdd, cartShow]
 // Claude of the conversation found itself (findings), which it hands to an
 // app rather than calls, and the starting values of an app that works
 // everything out itself (inputs).
-export const TOOLS = [...WIDGETS, tableSearch, tableBook, recipesBrowse, recipeGet, exchangeRate, findings, inputs]
+export const TOOLS = [...WIDGETS, tableSearch, tableBook, tableCancel, recipesBrowse, recipeGet, exchangeRate, findings, inputs]
 
 export const VIEWS = {
   stock: { title: 'Stock widget', domains: [] },

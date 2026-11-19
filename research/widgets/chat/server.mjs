@@ -436,8 +436,22 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           if (refused) return json(res, { content: [{ type: 'text', text: refused }], isError: true })
           return json(res, await keeping(apps, app.id, name, args, who?.owner ?? ''))
         }
-        if (!app || !app.tools.includes(name)) return json(res, { content: [{ type: 'text', text: `${name} is not one of this app's tools` }], isError: true })
+        // An app that books can cancel what it booked.
+        const its = app && (app.tools.includes(name) || (name === 'table_cancel' && app.tools.includes('table_book')))
+        if (!its) return json(res, { content: [{ type: 'text', text: `${name} is not one of this app's tools` }], isError: true })
+        const acting = TOOLS.find(t => t.name === name)?.acts === true
+        const who = acting ? await owning(app.id, me) : null
+        if (who?.role === 'viewer') return json(res, { content: [{ type: 'text', text: 'Not done: this link can only look. Whoever shared it can.' }], isError: true })
         const { result, data } = await run(name, args)
+        // What is done in an app stays with it (TOM-5): each booking, and
+        // its cancelling, kept as bookings, which the app gets in data.kept.
+        if (who && !result.isError && data?.code && (name === 'table_book' || name === 'table_cancel')) {
+          const bookings = (await apps.kept(app.id, 'bookings', who.owner).catch(() => null)) ?? []
+          const at = bookings.findIndex(b => b?.code === data.code)
+          if (name === 'table_book' && at < 0) bookings.push({ id: data.code, code: data.code, name: data.name, restaurant: data.restaurant, date: data.date, time: data.time, party: data.party, guest: data.guest, booked: new Date().toISOString(), demo: true })
+          if (name === 'table_cancel' && at >= 0) bookings[at] = { ...bookings[at], cancelled: new Date().toISOString() }
+          await apps.keep(app.id, 'bookings', bookings.slice(-50), who.owner).catch(() => {})
+        }
         // A call of its first tool (another range, another search) is what
         // it shows now; an action's answer (a booking) is not.
         if (!result.isError && name === app.tool) shown.set(app.id, { args, result, data, tool: name })

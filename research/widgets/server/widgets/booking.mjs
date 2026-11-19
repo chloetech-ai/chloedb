@@ -159,3 +159,21 @@ export const tableBook = {
     return `Booked (demo) ${d.name ?? `restaurant ${d.restaurant}`} for ${d.party} on ${d.date} at ${d.time}, code ${d.code}. ${d.note}`
   },
 }
+
+// Takes back a booking made with table_book, by its code. Demo, like it.
+export const tableCancel = {
+  name: 'table_cancel',
+  title: 'Cancel a table',
+  view: null,
+  acts: true,
+  domains: [],
+  description: 'Cancels a table booked with table_book, by its code. Demo: nothing was booked, so nothing is cancelled.',
+  input: { code: z.string().min(1).max(20).describe('The booking’s code from table_book, "DEMO-1E4F1"') },
+  example: { code: 'DEMO-1E4F1' },
+  async run({ code }) {
+    return { widget: 'booking', mode: 'cancelled', cancelled: true, code: String(code).toUpperCase(), source: 'Demo reservations (made up)', note: 'Demo: nothing was booked, so nothing was cancelled.' }
+  },
+  summary(d) {
+    return `Cancelled (demo) the booking ${d.code}. ${d.note}`
+  },
+}

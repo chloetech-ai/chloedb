@@ -161,10 +161,17 @@
     .row-app .x { display: block; position: static; transform: none; min-height: 44px; }
     .row-app { display: flex; align-items: center; gap: 4px; }
     .row-app .uses { display: none; }
+    /* The app's row takes what Remove leaves, so Remove stays on the screen (TOM-9, INES-11). */
+    .row-app .app { flex: 1 1 auto; min-width: 0; width: auto; }
+    .row-app .x { flex: none; }
   }
 
   @media (max-width: 860px) {
     .shell { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+    /* Earlier chats opens across the top, inside the screen (TOM-7). */
+    .top { position: relative; }
+    .chats { position: static; }
+    .chats-list { left: 12px; right: 12px; width: auto; }
     .rail { border-left: 0; border-top: 1px solid var(--line); max-height: 55vh; padding: 10px 16px; }
     /* The rail folds to one line on a small screen; its head opens it. */
     .rail-head { cursor: pointer; min-height: 40px; margin: 0; }

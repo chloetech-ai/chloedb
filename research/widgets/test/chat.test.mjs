@@ -508,3 +508,17 @@ test('a helper link adds and ticks but takes nothing out, and a view link only l
   // An app can't read or write the share's own records.
   assert.equal((await post('/api/call', { app: list.id, me: `s-${share.token}`, name: 'app_kept', arguments: { key: '-links' } })).isError, true)
 })
+
+test('a booking stays with the app that made it, and can be cancelled (TOM-5)', { skip }, async () => {
+  const me = '4'.repeat(32)
+  const app = await chat.apps.put({ name: 'Table booking', about: 'Book a table.', kind: 'action', tool: 'table_search', tools: ['table_search', 'table_book'], source: FRAGMENT('book'), args: { where: 'Lisbon' }, saved: true }, 'made by hand')
+  const booked = await post('/api/call', { app: app.id, me, name: 'table_book', arguments: { restaurant: '7', name: 'Pier 9', date: '2027-04-12', time: '19:30', party: 2 } })
+  assert.equal(booked.acted, true)
+  const code = booked.structuredContent.code
+  const kept = async () => (await post('/api/call', { app: app.id, me, name: 'app_kept', arguments: { all: true } })).structuredContent.values.bookings
+  assert.deepEqual((await kept()).map(b => [b.code, b.name, b.party, b.cancelled ?? null]), [[code, 'Pier 9', 2, null]])
+  const cancelled = await post('/api/call', { app: app.id, me, name: 'table_cancel', arguments: { code } })
+  assert.equal(cancelled.isError, undefined, 'an app that books can cancel')
+  assert.ok((await kept())[0].cancelled, 'and the booking says it was cancelled')
+  assert.equal((await post('/api/call', { app: app.id, me: '5'.repeat(32), name: 'app_kept', arguments: { all: true } })).structuredContent.values.bookings, undefined, 'another browser has none')
+})
