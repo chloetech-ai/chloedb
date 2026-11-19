@@ -55,10 +55,24 @@ pub enum SqlResult {
 /// ([`Db::write_prepared`]): bound again, it runs.
 const ALTERED: &str = "while the statement ran; run it again";
 
-/// How many times a write whose table was altered as it ran is bound again
-/// and run ([`altered_while_running`]) before its error is answered: each
-/// time lost is an `ALTER TABLE` that committed meanwhile.
-pub const ALTERED_TRIES: usize = 10;
+/// How many times, at most, a write whose table was altered as it ran is
+/// bound again and run ([`altered_while_running`]) before its error is
+/// answered: each time lost is an `ALTER TABLE` that committed meanwhile,
+/// so only a sustained stream of them reaches it. A server stops sooner,
+/// at the statement's deadline.
+pub const ALTERED_TRIES: usize = 1000;
+
+/// How long to wait before binding a write again after an `ALTER TABLE`
+/// raced it the `tries`-th time: nothing at first, then 1 ms doubling to
+/// 4 ms, so that a stream of `ALTER TABLE`s does not win every time.
+pub fn altered_backoff(tries: usize) -> std::time::Duration {
+    std::time::Duration::from_millis(match tries {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        _ => 4,
+    })
+}
 
 /// Whether the error `message` says that the write's table was altered
 /// after the write was bound, so that the same statement bound again may
@@ -1757,6 +1771,9 @@ impl Db {
         let schema = self.table(&log.table)?;
         rank_log::check(&schema)?;
         rank_log::fits(log, &schema)?;
+        if let Some((call, cols)) = crate::query::blend::table_call_sql(sql, params)? {
+            return self.blend_logged(sql, params, log, &schema, call, &cols);
+        }
         let p = rank_log::prepare(sql, params, log)?;
         let started = std::time::Instant::now();
         let mut served = match &log.interleave {
@@ -2170,9 +2187,13 @@ impl Db {
                 let mut r = self.write_queued(writes::Job::Sql(self.prepare(schema.clone(), write)?));
                 // An ALTER TABLE committed between binding the statement and
                 // writing it: it is bound again, to the table as it is now.
-                for _ in 0..ALTERED_TRIES {
+                for tries in 0..ALTERED_TRIES {
                     if !r.as_ref().is_err_and(|e| altered_while_running(&e.to_string())) {
                         break;
+                    }
+                    match altered_backoff(tries) {
+                        d if d.is_zero() => std::thread::yield_now(),
+                        d => std::thread::sleep(d),
                     }
                     let Some(p) = self.prepare_write_here(sql, params)? else { break };
                     r = self.write_queued(writes::Job::Sql(p));

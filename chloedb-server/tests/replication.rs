@@ -440,13 +440,20 @@ async fn a_replica_the_log_does_not_reach_is_sent_a_copy() {
     let dir = tempfile::tempdir().unwrap();
     let [(fresh, fresh_at), (dir_layout, dir_at), (other, other_at), (restored, restored_at), (ahead, ahead_at)] =
         [nobody().await, nobody().await, nobody().await, nobody().await, nobody().await];
-    // A ship log of a few transactions, and copies sent in chunks of 64 KiB.
-    let pdb = create_with(dir.path(), "p.strata", 2000, |_| true);
+    // A ship log that no longer holds the first transaction, and copies sent
+    // in chunks of 64 KiB. The log is large enough that a replica a few
+    // thousand transactions behind (a slow machine under an unthrottled
+    // writer) is still reached by it: with one of a few transactions, such a
+    // replica is sent a copy again and again, and "one copy" never holds.
+    let pdb = create_with(dir.path(), "p.strata", 256 << 10, |_| true);
     let opts = PrimaryOptions { copy_chunk_bytes: 64 << 10, copy_retry: Duration::from_millis(300), ..ships_to(&[&fresh, &dir_layout, &other, &restored, &ahead], Acks::Primary) };
     let p = primary(pdb.clone(), None, opts, Duration::from_secs(5));
     let pu = grpc(p.clone()).await;
-    for i in 0..100 {
-        p.write_ops(vec![set(&format!("p{:07}", i), "sold", json!(i))], None).await.unwrap();
+    let mut i = 0;
+    while !matches!(pdb.storage().log_from(1, 1), LogRead::Gone { .. }) {
+        assert!(i < 100_000, "the log never let go of the first transaction");
+        p.write_ops(vec![set(&format!("p{:07}", i % N), "sold", json!(i))], None).await.unwrap();
+        i += 1;
     }
     let id = p.health().await["replication"]["id"].as_str().unwrap().to_string();
 
@@ -469,11 +476,14 @@ async fn a_replica_the_log_does_not_reach_is_sent_a_copy() {
             while writing.load(std::sync::atomic::Ordering::Relaxed) {
                 p.write_ops(vec![set(&format!("p{:07}", i % N), "reviews", json!(i))], None).await.unwrap();
                 i += 1;
+                // A thousand a second at most, whatever the machine: the log
+                // holds seconds of them, so a copy is followed from it.
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
             i
         })
     };
-    let (fr, _) = replica_on(fdb.clone(), None, Some(TcpListener::bind(fresh_at).await.unwrap())).await;
+    let (fr, _) =replica_on(fdb.clone(), None, Some(TcpListener::bind(fresh_at).await.unwrap())).await;
     let (dr, _) = replica_on(ddb.clone(), None, Some(TcpListener::bind(dir_at).await.unwrap())).await;
     until("both are sent a copy", || async { follower(&p, 0).await["copies"] == 1 && follower(&p, 1).await["copies"] == 1 }).await;
     writing.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -614,6 +624,57 @@ async fn copy_arrived(dir: &Path) {
         sent.len() == 1 && got.contains(&sent[0])
     })
     .await;
+}
+
+/// A replica that cannot keep up with a primary that never waits for it
+/// (`--write-acks primary`) is sent a copy, follows from the log the primary
+/// holds while the copy is sent, and is not sent another copy at once when
+/// the writes made meanwhile outgrew that log.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replica_that_cannot_keep_up_is_not_sent_copy_after_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let (near, near_at) = nobody().await;
+    let pdb = create_with(dir.path(), "p.strata", 64 << 10, |_| true);
+    let p = primary(pdb.clone(), None, PrimaryOptions { copy_retry: Duration::from_millis(300), ..ships_to(&[&near], Acks::Primary) }, Duration::from_secs(5));
+    let mut i = 0;
+    while !matches!(pdb.storage().log_from(1, 1), LogRead::Gone { .. }) {
+        p.write_ops(vec![set(&format!("p{:07}", i % N), "sold", json!(i))], None).await.unwrap();
+        i += 1;
+    }
+    let writing = Arc::new(AtomicBool::new(true));
+    let writer = {
+        let (p, writing) = (p.clone(), writing.clone());
+        tokio::spawn(async move {
+            let mut i = 0;
+            while writing.load(Ordering::Relaxed) {
+                p.write_ops(vec![set(&format!("p{:07}", i % N), "reviews", json!(i))], None).await.unwrap();
+                i += 1;
+            }
+            i
+        })
+    };
+    // The replica's writer is held for longer than the primary takes to
+    // write four times its log, so the log the primary holds for the copy
+    // is passed before the replica installs it.
+    let ndb = create(dir.path(), "near.strata");
+    let held = stall(&ndb);
+    let (nr, _) = replica_on(ndb.clone(), None, Some(TcpListener::bind(near_at).await.unwrap())).await;
+    let t0 = Instant::now();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    drop(held);
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    writing.store(false, Ordering::Relaxed);
+    let wrote = writer.await.unwrap();
+    let end = last(&pdb);
+    until("the replica holds the primary's last", || async { let f = follower(&p, 0).await; f["in_sync"] == true && f["seq_no"] == end }).await;
+    let copies = follower(&p, 0).await["copies"].as_u64().unwrap();
+    let restores = nr.health().await["replication"]["restores"].as_u64().unwrap();
+    // One copy is expected, and a second when the writes made while the
+    // first was held up passed the log the primary holds for it. A copy
+    // after every copy (without a pause between them) would make about ten
+    // a second, as the primary takes writes faster than a copy is sent.
+    assert!(wrote > 0 && (1..=3).contains(&copies) && restores == copies, "{wrote} writes, {copies} copies sent and {restores} installed in {:?}", t0.elapsed());
+    assert_eq!(rows(&ndb), rows(&pdb));
 }
 
 #[tokio::test(flavor = "multi_thread")]

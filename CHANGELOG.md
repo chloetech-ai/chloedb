@@ -11,6 +11,39 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A write racing ALTER TABLE is bound again until its deadline**: an
+  INSERT, UPDATE or DELETE whose table an `ALTER TABLE` changed while it
+  ran was bound again ten times at most, and a stream of `ALTER TABLE`s
+  (which take the storage lock without queueing) could win all ten. The
+  server now binds it again, waiting a few milliseconds more each time,
+  until the statement's deadline (an embedded `Db::sql` up to 1000
+  times). A write still raced then is refused with its own code,
+  `table_altered`, which is `retryable: true` (it was `query_invalid`,
+  not retryable); nothing was written, so sending it again is safe.
+- **A replica counts its applied batches, and the test of a copy stops
+  flaking.** `chloedb_replica_apply_batches_total` and
+  `chloedb_replica_apply_seconds_total` (the seconds include the wait for a
+  free writer). `replication::a_replica_the_log_does_not_reach_is_sent_a_copy`
+  failed about a quarter of its runs on a two-CPU machine: its ship log was
+  2,000 bytes under an unthrottled writer, so the primary sent copy after
+  copy and the test, which waits for exactly one per replica, timed out. It
+  keeps a log that holds seconds of a throttled writer now.
+- **Blends explore, are logged with each slot's chance, and are valued
+  and tuned off-policy.** A blend served with `"log": {"explore":
+  {"policy": "softmax", "tau": 0.3, "top": 5}}` draws each slot among the
+  best rows that fit it by their utility, from the request's id, and logs
+  every row of every source with the page's chances. A replay of any blend
+  of the same sources over those pages gives its chance of each, so
+  cascade doubly robust (with a click model cross-fitted over two halves
+  of the searches) values it, with SNIPS beside it over the top slots as a
+  check, its support (effective searches), its coverage of what the log
+  could draw and a verdict against the blend that logged; tuning tries
+  weights, shares and diversity on half the searches and proves the best
+  on the other half. `Db::blend_requests` and `query::blend_eval` in Rust;
+  `POST /v1/blends/:name/evaluate` and `/tune` on chloedb-server, through
+  a coordinator too; the command center's Labs → Blending has **Value on
+  the log** and **Tune toward clicks**
+  ([query-language.md](docs/chloedb/query-language.md#valuing-a-blend-on-its-log-exploring-fills-cascade-doubly-robust-and-snips)).
 - **The on-call key does on-call** (persona study round 3, MARCO-301,
   MARCO-313). A key limited to tables may be given the route group
   `alerts`: an alert's page (`GET /v1/alerts/<rule>`), the runbooks, and

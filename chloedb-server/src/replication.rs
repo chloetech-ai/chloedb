@@ -1242,6 +1242,11 @@ pub struct Follow {
     core: Mutex<shard::Replica>,
     /// Transactions applied, and copies of the primary installed.
     applied: AtomicU64,
+    /// Batches applied, and the microseconds spent on them (a wait for the
+    /// writer included): with `applied`, the transactions per batch and an
+    /// upper bound of the time per transaction.
+    apply_batches: AtomicU64,
+    apply_micros: AtomicU64,
     restores: AtomicU64,
     /// The last number committed, as the database's commit hook says, for
     /// reads waiting for a write ([`Follow::holding`]).
@@ -1307,6 +1312,8 @@ impl Follow {
             one: Arc::new(tokio::sync::Mutex::new(())),
             core: Mutex::new(core),
             applied: AtomicU64::new(0),
+            apply_batches: AtomicU64::new(0),
+            apply_micros: AtomicU64::new(0),
             restores: AtomicU64::new(0),
             committed,
             read_waits: AtomicU64::new(0),
@@ -1654,6 +1661,7 @@ impl Follow {
         }
         let (db, prev, txns) = (self.db.clone(), SeqNo { term: r.prev_term, seq: r.prev_seq }, r.txns);
         let count = txns.len() as u64;
+        let started = Instant::now();
         let applied = tokio::task::spawn_blocking(move || {
             let txns: Vec<&[u8]> = txns.iter().map(|t| &t[..]).collect();
             // A flush or a merge may hold the writer for a moment.
@@ -1672,6 +1680,8 @@ impl Follow {
         }
         if let Ok(Applied::At(_)) = &applied {
             self.applied.fetch_add(count, Ordering::Relaxed);
+            self.apply_batches.fetch_add(1, Ordering::Relaxed);
+            self.apply_micros.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
         }
         let db_term = self.db.storage().numbering().map_or(0, |n| n.term);
         let a = self.core().applied(r.term, r.behind, r.global_checkpoint, applied, db_term)?;
@@ -1850,6 +1860,8 @@ impl Follow {
             Family::one("chloedb_replication_role", "gauge", "1 on a primary (--replicas), 2 on a replica (--replica).", 2.0),
             Family::one("chloedb_global_checkpoint", "gauge", "The highest sequence number every in-sync replica holds, as the primary last said.", gc as f64),
             Family::one("chloedb_replica_applied_total", "counter", "Transactions this replica applied from its primary.", self.applied.load(Ordering::Relaxed) as f64),
+            Family::one("chloedb_replica_apply_batches_total", "counter", "Batches (calls) of its primary this replica applied: with chloedb_replica_applied_total, the transactions per batch.", self.apply_batches.load(Ordering::Relaxed) as f64),
+            Family::one("chloedb_replica_apply_seconds_total", "counter", "Seconds this replica spent applying its primary's batches, from the call to its answer (a wait for a free writer included): divided by the transactions applied, an upper bound of the time per transaction.", self.apply_micros.load(Ordering::Relaxed) as f64 / 1e6),
             Family::one("chloedb_replica_restores_total", "counter", "Copies of its primary this replica installed.", self.restores.load(Ordering::Relaxed) as f64),
             Family::one("chloedb_replica_serves_reads", "gauge", "1 while this replica serves reads: its primary's last call reached the primary's last transaction.", serves as u8 as f64),
             Family::one("chloedb_replica_read_waits_total", "counter", "Reads that waited for this replica to apply a write they must see (min_seq_no).", self.read_waits.load(Ordering::Relaxed) as f64),
