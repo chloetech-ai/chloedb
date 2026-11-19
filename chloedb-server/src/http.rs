@@ -335,6 +335,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/correct", post(correct))
         .route("/v1/highlight", post(highlight))
         .route("/v1/understand", post(understand))
+        .route("/v1/funnel", post(funnel))
         .route("/v1/classify", post(classify))
         .route("/v1/classifiers", get(classifiers))
         .route("/v1/derive/preview", post(derive_preview))
@@ -411,6 +412,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/queries/slow", get(slow_queries))
         .route("/v1/queries/request/:id", get(request_queries))
         .route("/v1/queries/finished/:id", get(finished_query))
+        .route("/v1/queries/funnel", get(queries_funnel))
         .route("/v1/profile/settings", get(profile_settings).merge(put(put_profile_settings)))
         .route("/v1/profile/cpu", post(cpu_profile))
         .route("/v1/profile/memory", get(memory))
@@ -4153,6 +4155,40 @@ async fn understand(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     v["boosts"] = json!(u.boosts());
     v["line"] = json!(u.line());
     Ok(AxJson(v))
+}
+
+/// `{sql, params?, timeout_ms?, budget?}`: the query run once, and its
+/// funnel ([`crate::funnel`]): the time of each stage from its text to
+/// its rows, and the rows each stage kept and dropped, and why.
+async fn funnel(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    let sql = body_str(&b, "sql")?;
+    let who = who(w);
+    reads_ok(&app, &who, sql).await?;
+    let params = app.svc.params_for(b.get("params"), Some(sql), &who).await?;
+    let ask = crate::funnel::Ask { sql: sql.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms")?, budget: body_budget(&b)? };
+    let mut j = crate::funnel::one(&app.svc, &who, ask).await?;
+    // The shards' hosts, for an admin key's eyes only.
+    if !(who.scope == Scope::Admin && !who.limited()) {
+        if let Some(steps) = j.get_mut("steps") {
+            let mut s: Vec<chloedb::query::steps::Step> = serde_json::from_value(steps.take()).unwrap_or_default();
+            hide_hosts(&who, &mut s);
+            *steps = json!(s);
+        }
+        for s in j.get_mut("spans").and_then(Json::as_array_mut).into_iter().flatten() {
+            if let Some(o) = s.as_object_mut() {
+                o.remove("replica");
+            }
+        }
+    }
+    Ok(AxJson(j))
+}
+
+/// `GET /v1/queries/funnel?since=&limit=&table=&fingerprint=&kind=&id=`:
+/// the time of the queries this server ran on the funnel's stages
+/// ([`crate::funnel::many`]), or of the one numbered `id`.
+async fn queries_funnel(State(app): State<App>, Query(q): Params) -> Res {
+    let (since, limit) = (param_u64(&q, "since", 0)?, param_u64(&q, "limit", telemetry::RECENT as u64)? as usize);
+    Ok(AxJson(crate::funnel::many(&app.svc, &q, since, limit.min(telemetry::RECENT))?))
 }
 
 /// `{name, text, k?}`: the classes of a text by a classifier `CREATE

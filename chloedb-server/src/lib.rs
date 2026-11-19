@@ -63,6 +63,7 @@ pub mod events;
 pub mod feedback;
 pub mod export;
 pub mod fleet;
+pub mod funnel;
 pub mod follow;
 pub mod grpc;
 pub mod heap;

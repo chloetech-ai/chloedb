@@ -2511,7 +2511,7 @@ impl Service {
     /// The tables a query may read: [`Self::catalog`], and a local
     /// database's system tables (`_functions`, `_sources`), which
     /// [`Db::query`] reads too.
-    fn readable(&self) -> Vec<Arc<Schema>> {
+    pub(crate) fn readable(&self) -> Vec<Arc<Schema>> {
         let mut c = self.catalog();
         if let Backend::Local(db) = &self.backend {
             let snap = db.snapshot();
@@ -2522,7 +2522,7 @@ impl Service {
 
     /// The table named `name` that a query reads ([`Self::table`]), a
     /// local database's system tables too ([`Self::readable`]).
-    async fn readable_table(&self, name: &str) -> Result<Arc<Schema>, ApiError> {
+    pub(crate) async fn readable_table(&self, name: &str) -> Result<Arc<Schema>, ApiError> {
         match self.readable().into_iter().find(|t| t.table.eq_ignore_ascii_case(name)) {
             Some(t) => Ok(t),
             None => self.table(name).await,
@@ -2532,7 +2532,7 @@ impl Service {
     /// The plan of a query `sql`, bound as [`Self::bound`] binds, over the
     /// tables a query may read ([`Self::readable`]), its rank profiles and
     /// its stored functions written out.
-    async fn bound_read(self: &Arc<Self>, sql: &str, params: &Params, timeout: Duration, budget: chloedb::query::budget::Budget) -> Result<Plan, ApiError> {
+    pub(crate) async fn bound_read(self: &Arc<Self>, sql: &str, params: &Params, timeout: Duration, budget: chloedb::query::budget::Budget) -> Result<Plan, ApiError> {
         // Texts where vectors go, embedded before the query is bound.
         let mut embedded = self.embed_texts(sql, params).await?;
         // A rank profile whose body takes text where a vector goes
@@ -2683,6 +2683,7 @@ impl Service {
             .await
             .map_err(ApiError::internal)??;
             self.metrics.embedded("query", 1, t0.elapsed().as_secs_f64());
+            telemetry::record("embed", t0, "ok");
             given.insert(r, v);
         }
         Ok(embed_sql::written(sql, &refs, params, &given)?)
@@ -3487,19 +3488,12 @@ impl Service {
         // words name become conditions, then the query runs as any does
         // (and may still expand).
         if req.plan.is_none() && !req.shard {
-            if let Some(u) = chloedb::query::understand::plan_sql(&req.sql, &req.params)? {
-                let t0 = Instant::now();
-                let catalog = self.catalog();
-                let gaz = self.gazetteers(&u.needs(&catalog)?, Some(&req)).await?;
-                let mut made = u.understood(&catalog, &gaz, &req.params)?;
-                for m in &mut made {
-                    let counts = self.understanding_counts(m, Some(&req)).await?;
-                    m.confirm(&counts);
-                }
+            let t0 = Instant::now();
+            if let Some((sql, lines)) = self.understood_sql(&req).await? {
                 let mut second = req.clone();
-                second.sql = u.rewrite(&made)?.to_string();
+                second.sql = sql;
                 let mut a = Box::pin(self.dispatch(second)).await?;
-                a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
+                a.rs.stats.plan.splice(0..0, lines);
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
             }
@@ -3509,29 +3503,12 @@ impl Service {
         // coordinator's from its shards, merged), then the query rewritten
         // to the terms they hold, which every shard ranks by alike.
         if req.plan.is_none() && !req.shard {
-            if let Some(x) = chloedb::query::prf::plan_sql(&req.sql, &req.params)? {
-                let t0 = Instant::now();
-                let mut rows = Vec::new();
-                let catalog = self.catalog();
-                let schemas: Vec<&chloedb::Schema> = catalog.iter().map(|s| s.as_ref()).collect();
-                for f in x.feedback(&schemas)? {
-                    let mut fr = req.clone();
-                    (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
-                    rows.push(Box::pin(self.dispatch(fr)).await?.rs);
-                }
-                let analyzers = x
-                    .fields()
-                    .iter()
-                    .map(|(t, f)| {
-                        let schema = catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| ApiError::bad(format!("no table {t}")))?;
-                        Ok(schema.field(f).ok_or_else(|| ApiError::bad(format!("{t} has no field {f}")))?.text_analyzer())
-                    })
-                    .collect::<Result<Vec<_>, ApiError>>()?;
-                let (rewritten, made) = x.finish(&rows, &analyzers, &req.params)?;
+            let t0 = Instant::now();
+            if let Some((sql, lines)) = self.expanded_sql(&req).await? {
                 let mut second = req.clone();
-                second.sql = rewritten.to_string();
+                second.sql = sql;
                 let mut a = Box::pin(self.dispatch(second)).await?;
-                a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
+                a.rs.stats.plan.splice(0..0, lines);
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
             }
@@ -3608,6 +3585,63 @@ impl Service {
         self.query_admitted(req).await
     }
 
+    /// `req`'s query with its understood words as conditions
+    /// (`bm25(.., understand => ..)`, [`chloedb::query::understand`]): the
+    /// table's keyword values the words name, read and counted as any
+    /// query (a coordinator's from its shards), and the plan's lines that
+    /// say what they became; `None` for a query that understands no words.
+    /// Its time is the span `understand` of the request's trace.
+    pub(crate) async fn understood_sql(self: &Arc<Self>, req: &QueryReq) -> Result<Option<(String, Vec<String>)>, ApiError> {
+        let Some(u) = chloedb::query::understand::plan_sql(&req.sql, &req.params)? else { return Ok(None) };
+        let t0 = Instant::now();
+        let r: Result<_, ApiError> = async {
+            let catalog = self.catalog();
+            let gaz = self.gazetteers(&u.needs(&catalog)?, Some(req)).await?;
+            let mut made = u.understood(&catalog, &gaz, &req.params)?;
+            for m in &mut made {
+                let counts = self.understanding_counts(m, Some(req)).await?;
+                m.confirm(&counts);
+            }
+            Ok((u.rewrite(&made)?.to_string(), made.iter().map(|m| m.line()).collect()))
+        }
+        .await;
+        telemetry::record("understand", t0, if r.is_ok() { "ok" } else { "error" });
+        r.map(Some)
+    }
+
+    /// `req`'s query with its expanded rankings (`bm25(.., expand => n)`,
+    /// [`chloedb::query::prf`]) written to the terms their first rows hold,
+    /// which every shard ranks by alike, and the plan's lines that say
+    /// which; `None` for a query that expands none. Its time is the span
+    /// `expand` of the request's trace.
+    pub(crate) async fn expanded_sql(self: &Arc<Self>, req: &QueryReq) -> Result<Option<(String, Vec<String>)>, ApiError> {
+        let Some(x) = chloedb::query::prf::plan_sql(&req.sql, &req.params)? else { return Ok(None) };
+        let t0 = Instant::now();
+        let r: Result<_, ApiError> = async {
+            let mut rows = Vec::new();
+            let catalog = self.catalog();
+            let schemas: Vec<&chloedb::Schema> = catalog.iter().map(|s| s.as_ref()).collect();
+            for f in x.feedback(&schemas)? {
+                let mut fr = req.clone();
+                (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
+                rows.push(Box::pin(self.dispatch(fr)).await?.rs);
+            }
+            let analyzers = x
+                .fields()
+                .iter()
+                .map(|(t, f)| {
+                    let schema = catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| ApiError::bad(format!("no table {t}")))?;
+                    Ok(schema.field(f).ok_or_else(|| ApiError::bad(format!("{t} has no field {f}")))?.text_analyzer())
+                })
+                .collect::<Result<Vec<_>, ApiError>>()?;
+            let (rewritten, made) = x.finish(&rows, &analyzers, &req.params)?;
+            Ok((rewritten.to_string(), made.iter().map(|m| m.line()).collect()))
+        }
+        .await;
+        telemetry::record("expand", t0, if r.is_ok() { "ok" } else { "error" });
+        r.map(Some)
+    }
+
     /// `SELECT ... FROM blend(...)`, or `None` for a query that reads no
     /// blend.
     async fn blend_query(self: &Arc<Self>, req: &QueryReq) -> Result<Option<Answer>, ApiError> {
@@ -3618,8 +3652,9 @@ impl Service {
         let t0 = Instant::now();
         let (def, version) = self.blend_def(&call.name, call.version).await?;
         let k = call.limit.unwrap_or(def.k);
-        let b = self.run_blend(req, &def, version, &call.params, k, chloedb::query::blend::Want::default()).await?;
-        let rs = b.result(&cols)?;
+        let b = self.run_blend(req, &def, version, &call.params, k, chloedb::query::blend::Want::default()).await;
+        telemetry::record("blend", t0, if b.is_ok() { "ok" } else { "error" });
+        let rs = b?.result(&cols)?;
         Ok(Some(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "blend", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
     }
 

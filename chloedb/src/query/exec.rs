@@ -4046,7 +4046,13 @@ impl<'a> Executor<'a> {
     /// ([`TextFieldReader::top_k_capped`]), by decreasing score.
     #[allow(clippy::too_many_arguments)]
     fn bm25_rows(&mut self, field: usize, query: &str, opts: &Opts, p: &Pred, k: usize, ties: bool, cap: Option<PerGroup>) -> Result<Vec<Hit>> {
+        // The words as the terms searched, with what typos, synonyms and
+        // prefixes add: a step of its own, the funnel's Expand
+        // ([`crate::query::funnel`]).
+        let m = self.mark();
         let (q, stats) = self.bm25_scoring(field, query, opts)?;
+        let added = q.terms.len().saturating_sub(q.n_base);
+        self.step(m, "terms", format!("{} of the text, {added} added by typos, synonyms and prefixes", q.n_base), Some(q.terms.len() as u64));
         let terms = &q.terms;
         if terms.is_empty() {
             return Ok(Vec::new());

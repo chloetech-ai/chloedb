@@ -3917,3 +3917,40 @@ pre.code.diff > .del { background: color-mix(in srgb, var(--crit) 14%, transpare
 @media (max-width: 560px) { .bt-try { grid-template-columns: minmax(0, 1fr) 80px 56px; } }
 @media (max-width: 1100px) { .bl-ed { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 560px) { .bl-cost { grid-template-columns: minmax(0, 1fr) 60px 46px; } .bl-cost > :last-child { display: none; } .bl-ubar { width: 90px; } }
+
+/* Query funnel (views/funnel.js): the stages' time as one stacked bar, the
+   stages in order with what each did, and the rows left after each. */
+.fn-stack { display: flex; width: 100%; border-radius: 4px; overflow: hidden; background: var(--surface-2); }
+.fn-seg { height: 100%; min-width: 2px; border-right: 1px solid var(--surface); }
+.fn-seg:last-child { border-right: 0; }
+.fn-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0 10px; font-size: 12px; color: var(--text-2); }
+.fn-dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; margin-right: 6px; }
+.fn-stages { display: flex; flex-direction: column; margin-top: 12px; }
+.fn-stage { display: grid; grid-template-columns: 16px 110px 200px minmax(0, 1fr); align-items: start; gap: 4px 8px; padding: 7px 0; border-top: 1px solid var(--line); }
+.fn-stage .fn-dot { margin-top: 4px; }
+.fn-stage.off { grid-template-columns: 16px 110px minmax(0, 1fr); opacity: .55; padding: 4px 0; }
+.fn-time { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fn-tbar { flex: 1; height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; min-width: 40px; }
+.fn-tbar > div { height: 100%; border-radius: 4px; }
+.fn-detail { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.fn-terms { display: flex; flex-direction: column; gap: 4px; }
+.fn-term { display: inline-flex; align-items: baseline; gap: 5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line-2); font-size: 12px; font-family: var(--mono, ui-monospace, monospace); }
+.fn-term .n { color: var(--muted); font-size: 11px; }
+.fn-term .k { color: var(--text-2); font-size: 11px; font-family: var(--sans, inherit); }
+.fn-term.typo { border-color: var(--s6); }
+.fn-term.prefix { border-color: var(--s7); }
+.fn-term.synonym { border-color: var(--s5); }
+.fn-term.none { text-decoration: line-through; color: var(--muted); }
+.fn-funnel { display: flex; flex-direction: column; gap: 6px; }
+.fn-frow { display: grid; grid-template-columns: minmax(120px, 220px) minmax(0, 1fr) 80px minmax(0, 260px); align-items: center; gap: 10px; }
+.fn-flabel { font-size: 12.5px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fn-fbar { height: 16px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.fn-fbar > div { height: 100%; border-radius: 3px; }
+.fn-fn { font-weight: 650; text-align: right; }
+.fn-fnote { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 900px) {
+  .fn-stage { grid-template-columns: 16px minmax(0, 1fr) 150px; }
+  .fn-stage .fn-detail { grid-column: 2 / -1; }
+  .fn-frow { grid-template-columns: minmax(90px, 140px) minmax(0, 1fr) 64px; }
+  .fn-fnote { display: none; }
+}

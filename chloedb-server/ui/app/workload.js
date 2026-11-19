@@ -209,6 +209,8 @@ export const workbenchLink = (sql, params) => "#/sql?q=" + encodeURIComponent(sq
 /** The profiler with a query filled in, never run on open; `fp` names its statement (its p99, its contain rules). */
 export const profileLink = (sql, params, fp) => "#/profile?tab=query&sql=" + encodeURIComponent(sql) + (paramsObj(params) ? "&p=" + encodeURIComponent(JSON.stringify(paramsObj(params))) : "") + (fp ? "&fp=" + encodeURIComponent(fp) : "");
 export const nodeLink = (url, tab = "cpu") => link("profile", { tab, node: url });
+/** A query's funnel (views/funnel.js): this server's logged query by its number (its time as it ran), and its text to trace it again. */
+export const funnelLink = (q, params = paramsObj(q.params)) => link("funnel", { tab: "one", id: q.id != null && !q.node && !q.shard ? q.id : null, sql: q.sql, p: params ? JSON.stringify(params) : null });
 export const copyLink = (url) => link("cluster", { copy: url });
 export const shardLink = (i) => link("cluster", { shard: i });
 
@@ -567,6 +569,7 @@ export function queryDrawer(q) {
       h("div", { class: "row between" }, h("b", {}, "SQL"), h("div", { class: "row" },
         h("button", { class: "btn sm", onclick: () => copy(q.sql, "SQL copied") }, icon("copy"), "Copy"),
         h("a", { class: "btn sm", href: profileLink(q.sql, params, q.fingerprint || null), title: "Open it in the Profiler with its parameters: it asks before it runs", onclick: close }, icon("flame"), "Profile it again"),
+        h("a", { class: "btn sm", href: funnelLink(q, params), title: "Its time stage by stage, from its text to its rows, and the rows each stage kept and dropped", onclick: close }, icon("filter"), "Its funnel"),
         h("a", { class: "btn sm", href: workbenchLink(q.sql, params), title: "Open it in the SQL workbench, with its parameters", onclick: close }, icon("play"), "Open in the workbench"))),
       sqlBlock(q.sql),
       q.error ? h("div", { class: o.server ? "error" : "notice" }, q.error) : null,
