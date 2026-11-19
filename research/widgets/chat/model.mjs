@@ -248,10 +248,10 @@ function screenText(screen = []) {
 
 function routePrompt({ request, history, candidates, last, screen, tools }) {
   const saved = candidates.length
-    ? candidates.map(a => `- id ${a.id}: "${a.name}" (${a.kind}), ${a.about} Its first tool: ${a.tool}. Asked for before with: ${a.examples || 'nothing yet'}.`).join('\n')
+    ? candidates.map(a => `- id ${a.id}: "${a.name}" (${a.kind}), ${a.about} Its first tool: ${a.tool}.${a.reads?.length ? ` It reads the values ${a.reads.join(', ')}: give each number the request names under one of these names, and every one the request changes.` : ''} Asked for before with: ${a.examples || 'nothing yet'}.`).join('\n')
     : '(none yet)'
   const called = JSON.stringify(last?.args ?? {})
-  const shown = last ? `The app shown just before: id ${last.id}, "${last.name}", tools ${last.tools.join(', ')}, called with ${called.length > 600 ? `${called.slice(0, 600)}... (cut)` : called}.` : 'No app was shown just before.'
+  const shown = last ? `The app shown just before: id ${last.id}, "${last.name}", tools ${last.tools.join(', ')}, called with ${called.length > 600 ? `${called.slice(0, 600)}... (cut)` : called}.${last.reads?.length ? ` It reads the values ${last.reads.join(', ')}.` : ''}` : 'No app was shown just before.'
   const said = history.length ? history.map(h => `${h.role}: ${h.text}`).join('\n') : '(nothing yet)'
   return `Today is ${new Date().toDateString()}.
 

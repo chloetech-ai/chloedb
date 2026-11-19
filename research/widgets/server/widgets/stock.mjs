@@ -6,7 +6,9 @@ import { z } from 'zod'
 import { SIMULATE, fetchJson, hash, random, round } from './common.mjs'
 
 const RANGES = ['1d', '5d', '1mo', '6mo', '1y', '5y']
-const INTERVAL = { '1d': '5m', '5d': '30m', '1mo': '1d', '6mo': '1d', '1y': '1wk', '5y': '1mo' }
+// Daily for a year, so its range is the 52-week range people know (from
+// each day's high and low, not from weekly closes).
+const INTERVAL = { '1d': '5m', '5d': '30m', '1mo': '1d', '6mo': '1d', '1y': '1d', '5y': '1wk' }
 const SPAN_MS = { '1d': 6.5 * 3600e3, '5d': 5 * 86400e3, '1mo': 30 * 86400e3, '6mo': 182 * 86400e3, '1y': 365 * 86400e3, '5y': 5 * 365 * 86400e3 }
 const POINTS = { '1d': 78, '5d': 65, '1mo': 22, '6mo': 126, '1y': 52, '5y': 60 }
 
@@ -32,6 +34,12 @@ async function live(symbol, range) {
     .map((t, i) => [t * 1000, closes[i]])
     .filter(([, close]) => typeof close === 'number')
     .map(([t, close]) => [t, round(close)])
+  // The range's high and low are the highest and lowest trades in it,
+  // as quote pages give them, not the highest and lowest close.
+  const quote = result.indicators?.quote?.[0] ?? {}
+  const numbers = list => (list ?? []).filter(v => typeof v === 'number')
+  const highs = numbers(quote.high)
+  const lows = numbers(quote.low)
   const price = meta.regularMarketPrice ?? points.at(-1)?.[1]
   const base = range === '1d' ? meta.chartPreviousClose ?? meta.previousClose ?? points[0]?.[1] : points[0]?.[1]
   return {
@@ -42,8 +50,8 @@ async function live(symbol, range) {
     price: round(price),
     base: round(base),
     // The day's range for a day, else the range's own.
-    high: round((range === '1d' && meta.regularMarketDayHigh) || Math.max(...points.map(p => p[1]))),
-    low: round((range === '1d' && meta.regularMarketDayLow) || Math.min(...points.map(p => p[1]))),
+    high: round((range === '1d' && meta.regularMarketDayHigh) || Math.max(...(highs.length ? highs : points.map(p => p[1])))),
+    low: round((range === '1d' && meta.regularMarketDayLow) || Math.min(...(lows.length ? lows : points.map(p => p[1])))),
     volume: meta.regularMarketVolume ?? null,
     asOf: (meta.regularMarketTime ?? Date.now() / 1000) * 1000,
     points,

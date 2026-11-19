@@ -348,6 +348,13 @@ test('the math kit reads formulas as typed and takes exact derivatives', async (
     const e = M.parse(formula)
     assert.ok(near(e.derive().f(0.7), M.slope(e.f, 0.7)), formula)
   }
+  // A corner has no slope; a point where the formula alone is 0/0 but both
+  // sides agree has one.
+  assert.ok(Number.isNaN(M.parse('|x|').derive().f(0)), '|x| at its corner')
+  assert.equal(M.parse('|x|').derive().f(-2), -1)
+  assert.equal(M.parse('x|x|').derive().f(0), 0)
+  assert.ok(Number.isNaN(M.parse('x|x|').derive().derive().f(0)), "x|x|'' at 0")
+  assert.ok(Number.isNaN(M.parse('|x^2 - 1|').derive().f(1)))
   assert.equal(M.parse('x^2').html, '<i>x</i><sup>2</sup>')
   assert.equal(M.parse('x^(1/3)').f(-8), -2)
   assert.deepEqual(M.parse('a x^2 + t').vars, ['x', 'a', 't'])
@@ -358,4 +365,16 @@ test('the math kit reads formulas as typed and takes exact derivatives', async (
   for (const [bad, said] of [['sin(x', /Missing \)/], ['x +', /ends too soon/], ['x $ 2', /can't read "\$"/], ['', /Type a formula/], ['sin', /needs something to work on/]]) {
     assert.throws(() => M.parse(bad), said, bad)
   }
+})
+
+test("a saved app's value names are read from its script, so new numbers land in its own fields; TAP's flight numbers find TAP's callsigns", async () => {
+  const { valueNames } = await import('../server/store.mjs')
+  const script = "connect('d', data => { const v = data.values ?? {}; fixed.value = v.fixed ?? 9800; price.value = v['price'] ?? 4.25; const { cost: c = 2.9, days } = data.values; draw(values.margin) })"
+  assert.deepEqual(valueNames(script, { values: { fixed: 9800, costPerUnit: 1.1 } }).sort(), ['cost', 'costPerUnit', 'days', 'fixed', 'margin', 'price'])
+  assert.deepEqual(valueNames('', {}), [])
+  const { callsignOf } = await import('../server/widgets/flight.mjs')
+  assert.equal(callsignOf('TP 244'), 'TAP244')
+  assert.equal(callsignOf('tp210'), 'TAP210')
+  assert.equal(callsignOf('TAP244'), 'TAP244')
+  assert.equal(callsignOf('UA 857'), 'UAL857')
 })

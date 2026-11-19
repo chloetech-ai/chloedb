@@ -21,6 +21,16 @@ const AIRLINES = {
   TK: ['THY', 'Turkish Airlines'], FR: ['RYR', 'Ryanair'], U2: ['EZY', 'easyJet'], LX: ['SWR', 'Swiss'],
   EY: ['ETD', 'Etihad Airways'], VS: ['VIR', 'Virgin Atlantic'], NZ: ['ANZ', 'Air New Zealand'],
   AZ: ['ITY', 'ITA Airways'], SK: ['SAS', 'SAS'], AY: ['FIN', 'Finnair'], EI: ['EIN', 'Aer Lingus'],
+  TP: ['TAP', 'TAP Air Portugal'], UX: ['AEA', 'Air Europa'], VY: ['VLG', 'Vueling'], OS: ['AUA', 'Austrian'],
+  SN: ['BEL', 'Brussels Airlines'], LO: ['LOT', 'LOT Polish Airlines'], A3: ['AEE', 'Aegean'], W6: ['WZZ', 'Wizz Air'],
+  DY: ['NOZ', 'Norwegian'], FI: ['ICE', 'Icelandair'], AT: ['RAM', 'Royal Air Maroc'], MS: ['MSR', 'EgyptAir'],
+  ET: ['ETH', 'Ethiopian Airlines'], SA: ['SAA', 'South African Airways'], KE: ['KAL', 'Korean Air'],
+  OZ: ['AAR', 'Asiana Airlines'], CI: ['CAL', 'China Airlines'], BR: ['EVA', 'EVA Air'], CA: ['CCA', 'Air China'],
+  MU: ['CES', 'China Eastern'], CZ: ['CSN', 'China Southern'], AI: ['AIC', 'Air India'], TG: ['THA', 'Thai Airways'],
+  MH: ['MAS', 'Malaysia Airlines'], GA: ['GIA', 'Garuda Indonesia'], PR: ['PAL', 'Philippine Airlines'],
+  VA: ['VOZ', 'Virgin Australia'], WS: ['WJA', 'WestJet'], F9: ['FFT', 'Frontier'], NK: ['NKS', 'Spirit'],
+  HA: ['HAL', 'Hawaiian Airlines'], G3: ['GLO', 'Gol'], AD: ['AZU', 'Azul'], AR: ['ARG', 'Aerolíneas Argentinas'],
+  H2: ['SKU', 'Sky Airline'], JA: ['JAT', 'JetSMART'], Y4: ['VOI', 'Volaris'], SV: ['SVA', 'Saudia'],
 }
 const BY_ICAO = Object.fromEntries(Object.values(AIRLINES).map(([icao, name]) => [icao, name]))
 
@@ -110,7 +120,12 @@ function fromState(s, query) {
 async function live(query) {
   const callsign = callsignOf(query)
   const all = await states()
-  const state = all.find(s => (s[1] ?? '').trim() === callsign && s[5] != null)
+  // Exactly, else with a letter the airline adds on the radar (TAP210R
+  // for TP 210).
+  const flying = all.filter(s => s[5] != null)
+  const state =
+    flying.find(s => (s[1] ?? '').trim() === callsign) ??
+    flying.find(s => { const cs = (s[1] ?? '').trim(); return cs.length === callsign.length + 1 && cs.startsWith(callsign) && /[A-Z]$/.test(cs) })
   if (state) return fromState(state, query)
   const prefix = callsign.slice(0, 3)
   const airborne = all

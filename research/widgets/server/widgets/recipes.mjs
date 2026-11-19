@@ -38,6 +38,25 @@ function card(meal) {
   }
 }
 
+// A stock, broth or bouillon of an ingredient doesn't make it a main one:
+// a dish made with chicken stock is not a chicken dish, nor vegetarian.
+const ONLY_FLAVOUR = /\b(stock|broth|bouillon|cube|gravy|powder|fat)\b/i
+const MEAT = /\b(chicken|beef|pork|lamb|mutton|veal|bacon|ham|pancetta|chorizo|sausages?|turkey|duck|goose|fish|anchov(y|ies)|prawns?|shrimps?|salmon|tuna|cod|crab|lobster|mussels|clams|squid|gelatine?|lard|suet)\b/i
+function has(meal, word) {
+  const w = String(word).toLowerCase().trim()
+  return ingredients(meal).some(i => i.name.toLowerCase().includes(w) && !ONLY_FLAVOUR.test(i.name))
+}
+function matches(meal, { query, cuisine, kind, ingredient }) {
+  const same = (a, b) => String(a ?? '').toLowerCase() === String(b).toLowerCase().trim()
+  if (ingredient && !has(meal, ingredient)) return false
+  if (query && !String(meal.strMeal).toLowerCase().includes(query.toLowerCase().trim()) && !has(meal, query)) return false
+  if (cuisine && !same(meal.strArea, cuisine)) return false
+  if (kind && !same(meal.strCategory, kind)) return false
+  // TheMealDB files some dishes made with chicken stock as vegetarian.
+  if (kind && /^(vegetarian|vegan)$/i.test(kind.trim()) && ingredients(meal).some(i => MEAT.test(i.name))) return false
+  return true
+}
+
 // TheMealDB gives no times: a rough one from the steps and ingredients.
 function estimate(meal) {
   const steps = (meal.strInstructions ?? '').split(/\r?\n|\. /).filter(s => s.trim().length > 12).length
@@ -79,18 +98,24 @@ export const recipesBrowse = {
     const asked = { query: query ?? null, cuisine: cuisine ?? null, kind: kind ?? null, ingredient: ingredient ?? null }
     if (SIMULATE) return { widget: 'recipes', mode: 'browse', ...asked, recipes: offline(query ?? cuisine ?? kind ?? ingredient ?? ''), source: 'offline sample' }
     try {
+      // Every filter given applies together ("chicken and rice" is dishes
+      // with chicken whose name or ingredients have rice): the narrowest
+      // list first, then the dishes in full, kept when they match the rest.
       let meals
-      if (query) meals = (await get(`search.php?s=${encodeURIComponent(query)}`)).meals ?? []
-      else {
-        const filter = cuisine ? `a=${encodeURIComponent(cuisine)}` : kind ? `c=${encodeURIComponent(kind)}` : ingredient ? `i=${encodeURIComponent(ingredient.replace(/\s+/g, '_'))}` : null
-        if (filter) {
-          const ids = ((await get(`filter.php?${filter}`)).meals ?? []).slice(0, 12).map(m => m.idMeal)
+      const filters = [ingredient && 'ingredient', query && 'query', cuisine && 'cuisine', kind && 'kind'].filter(Boolean)
+      if (filters.length) {
+        const first = filters[0]
+        if (first === 'query') meals = (await get(`search.php?s=${encodeURIComponent(query)}`)).meals ?? []
+        else {
+          const filter = first === 'ingredient' ? `i=${encodeURIComponent(ingredient.trim().replace(/\s+/g, '_'))}` : first === 'cuisine' ? `a=${encodeURIComponent(cuisine)}` : `c=${encodeURIComponent(kind)}`
+          const ids = ((await get(`filter.php?${filter}`)).meals ?? []).slice(0, filters.length > 1 ? 40 : 24).map(m => m.idMeal)
           meals = (await Promise.all(ids.map(id => get(`lookup.php?i=${id}`).then(b => b.meals?.[0]).catch(() => null)))).filter(Boolean)
-        } else {
-          const seen = new Set()
-          meals = (await Promise.all(Array.from({ length: 10 }, () => fetchJson(`${API}/random.php`).then(b => b.meals?.[0]).catch(() => null))))
-            .filter(m => m && !seen.has(m.idMeal) && seen.add(m.idMeal))
         }
+        meals = meals.filter(meal => matches(meal, { query, cuisine, kind, ingredient }))
+      } else {
+        const seen = new Set()
+        meals = (await Promise.all(Array.from({ length: 10 }, () => fetchJson(`${API}/random.php`).then(b => b.meals?.[0]).catch(() => null))))
+          .filter(m => m && !seen.has(m.idMeal) && seen.add(m.idMeal))
       }
       return { widget: 'recipes', mode: 'browse', ...asked, recipes: meals.slice(0, 12).map(card), source: 'TheMealDB' }
     } catch (error) {
@@ -136,6 +161,8 @@ export const recipeGet = {
     return { widget: 'recipes', mode: 'recipe', ...r, amounts: r.ingredients.map(name => ({ name, amount: '' })), steps: ['Cook it as you like.'], video: null, link: null, source: 'offline sample' }
   },
   summary(d) {
-    return `${d.title} (${d.cuisine ?? ''} ${d.kind ?? ''}): ${d.amounts.length} ingredients, ${d.steps.length} steps. Source: ${d.source}.`
+    // The amounts too: an answer written from this summary must never say the source has none.
+    const amounts = d.amounts.map(a => (a.amount ? `${a.amount} ${a.name}` : a.name)).join('; ')
+    return `${d.title} (${d.cuisine ?? ''} ${d.kind ?? ''}): ${d.amounts.length} ingredients (${amounts}), ${d.steps.length} steps. Source: ${d.source}.`
   },
 }

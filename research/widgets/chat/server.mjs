@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { described } from '../server/guide.mjs'
 import { TOOLS, callTool, domainsOf, render } from '../server/index.mjs'
 import { claude } from './model.mjs'
-import { Apps } from '../server/store.mjs'
+import { Apps, valueNames } from '../server/store.mjs'
 
 const require = createRequire(new URL('../server/', import.meta.url))
 
@@ -107,7 +107,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       request: text,
       history: history.slice(-6),
       candidates,
-      last: last && { ...last, args: lastApp.args ?? last.args },
+      last: last && { ...last, args: lastApp.args ?? last.args, reads: last.tool === 'inputs' ? valueNames(last.source, lastApp.args ?? last.args) : undefined },
       screen: onScreen(screen),
       tools: described(TOOLS),
     })

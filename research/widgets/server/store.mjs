@@ -120,10 +120,13 @@ export class Apps {
       ? 'rrf(bm25(name, :q), bm25(about, :q), bm25(examples, :q), similarity(meaning, :q))'
       : 'rrf(bm25(name, :q), bm25(about, :q), bm25(examples, :q))'
     const rows = await this.db.query(
-      `SELECT id, name, about, kind, tool, tools, examples, uses, score() AS score FROM ia_apps WHERE saved = true ORDER BY ${fused} DESC LIMIT ${limit}`,
+      `SELECT id, name, about, kind, tool, tools, examples, uses, args, source, score() AS score FROM ia_apps WHERE saved = true ORDER BY ${fused} DESC LIMIT ${limit}`,
       { q: text },
     )
-    return rows.map(tidy)
+    // An app that works things out in the page reads its values by name:
+    // the router is told those names, so new numbers land in the app's own
+    // fields and not under a name it ignores.
+    return rows.map(tidy).map(({ source, args, ...app }) => (app.tool === 'inputs' ? { ...app, reads: valueNames(source, args) } : app))
   }
 
   // The rail: saved apps, the last used first.
@@ -279,6 +282,29 @@ function freePort() {
       s.close(() => resolve(port))
     })
   })
+}
+
+// The value names an app's script reads from its data's values: values.cost,
+// values['cost'], { cost, price } = data.values, and v.cost after
+// const v = data.values; with the names it was last called with.
+export function valueNames(source = '', args = {}) {
+  const names = new Set()
+  const add = name => {
+    if (/^[A-Za-z_$][\w$]{0,40}$/.test(name) && !['length', 'map', 'forEach', 'filter', 'keys', 'entries'].includes(name)) names.add(name)
+  }
+  const code = String(source ?? '')
+  for (const m of code.matchAll(/\bvalues\??\.([A-Za-z_$][\w$]*)/g)) add(m[1])
+  for (const m of code.matchAll(/\bvalues\[\s*['"]([^'"]+)['"]\s*\]/g)) add(m[1])
+  for (const m of code.matchAll(/\{([^{}]{1,400})\}\s*=\s*(?:[\w$.?]*\.)?values\b/g)) {
+    for (const part of m[1].split(',')) add(part.split(/[:=]/)[0].trim())
+  }
+  for (const m of code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$.?]*\.)?values\b(?!\s*[.[])/g)) {
+    const alias = m[1].replace(/\$/g, '\\$')
+    for (const n of code.matchAll(new RegExp(`\\b${alias}\\??\\.([A-Za-z_$][\\w$]*)`, 'g'))) add(n[1])
+    for (const n of code.matchAll(new RegExp(`\\b${alias}\\[\\s*['"]([^'"]+)['"]\\s*\\]`, 'g'))) add(n[1])
+  }
+  for (const name of Object.keys(args?.values ?? {})) add(name)
+  return [...names].slice(0, 24)
 }
 
 function tidy(row) {

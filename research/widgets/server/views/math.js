@@ -407,7 +407,8 @@
       case 'log': return div(num(1), mul(u, fn('ln', num(10))))
       case 'sqrt': return div(num(1), mul(num(2), fn('sqrt', u)))
       case 'cbrt': return div(num(1), mul(num(3), pow(fn('cbrt', u), num(2))))
-      case 'abs': return fn('sign', u)
+      // u/|u|, not sign(u): it has no value at a corner (0/0), where |x| has no slope.
+      case 'abs': return div(u, fn('abs', u))
       case 'sign': return num(0)
       default: throw new Error(`I don't know the derivative of ${name}`)
     }
@@ -485,19 +486,37 @@
   const text = n => show(n, false)
 
   // ---- The expression people use ----
-  function expression(tree) {
+  // A derivative whose formula has no value at a point (0/0 in
+  // x^2/|x| at 0) takes the slope from both sides of the function it came
+  // from when they agree, and stays undefined where they don't: a corner
+  // (|x| at 0) or a jump.
+  function bothSides(F, x) {
+    const h = 1e-7
+    const at = F(x)
+    if (!Number.isFinite(at)) return NaN
+    const left = (at - F(x - h)) / h
+    const right = (F(x + h) - at) / h
+    if (!Number.isFinite(left) || !Number.isFinite(right)) return NaN
+    if (Math.abs(left - right) > 1e-3 * Math.max(1, Math.abs(left), Math.abs(right))) return NaN
+    return Math.round(((left + right) / 2) * 1e6) / 1e6
+  }
+  function expression(tree, from = null) {
     const run = compile(tree)
     const vars = [...varsOf(tree)].sort((a, b) => (a === 'x' ? -1 : b === 'x' ? 1 : a.localeCompare(b)))
     const first = vars[0] ?? 'x'
+    const f = value => {
+      const v = run({ [first]: value })
+      return Number.isNaN(v) && from ? bothSides(from, value) : v
+    }
     return {
       tree,
       text: text(tree),
       html: show(tree, true),
       vars,
-      f: value => run({ [first]: value }),
+      f,
       eval: env => run(env ?? {}),
       derive(x = first) {
-        return expression(simplify(d(tree, x)))
+        return expression(simplify(d(tree, x)), x === first && vars.length <= 1 ? f : null)
       },
       simplify() {
         return expression(simplify(tree))
