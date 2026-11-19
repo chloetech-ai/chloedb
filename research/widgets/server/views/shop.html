@@ -59,7 +59,7 @@ function draw(next) {
     </div>
     ${data.items.length ? `<div class="grid">${data.items.map(i => `
       <div class="card">
-        <div class="pic">${i.thumbnail ? `<img src="${esc(i.thumbnail)}" alt="" loading="lazy">` : '🛍'}</div>
+        <div class="pic">${i.thumbnail ? `<img src="${esc(i.thumbnail)}" alt="" loading="lazy">` : ''}</div>
         <div class="name" title="${esc(i.title)}">${esc(i.title)}</div>
         <div class="faint">${esc(i.brand ?? i.category)}</div>
         <div class="price num">${money(i.price)}${i.discountPct >= 5 ? `<span class="was">${money(i.price / (1 - i.discountPct / 100))}</span>` : ''}</div>

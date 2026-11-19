@@ -125,4 +125,35 @@ function broke(message) {
 addEventListener('error', e => broke(e.error?.message ?? e.message))
 addEventListener('unhandledrejection', e => broke(e.reason?.message ?? e.reason))
 
+// Apple's devices draw some symbols as emoji pictures (▶ as a blue box, and
+// ↗ ⏸ ☀ ✔ ✖ ⚠ alike) unless the text asks for the text form, so every
+// text the page shows asks for it: U+FE0E after each such symbol. Emoji
+// that are pictures in every form (a headphones emoji) stay as they are;
+// the guide asks apps not to use them.
+const SYMBOL = /(?!\p{Emoji_Presentation})(\p{Extended_Pictographic})(?![\uFE0E\uFE0F])/gu
+const SKIP = /^(SCRIPT|STYLE|TEXTAREA)$/
+function textForm(node) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const parent = node.parentElement
+    if (!parent || SKIP.test(parent.nodeName) || parent.isContentEditable) return
+    SYMBOL.lastIndex = 0
+    if (!SYMBOL.test(node.data)) return
+    SYMBOL.lastIndex = 0
+    node.data = node.data.replace(SYMBOL, '$1\uFE0E')
+    return
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE || SKIP.test(node.nodeName)) return
+  const walk = document.createTreeWalker(node, NodeFilter.SHOW_TEXT)
+  const found = []
+  for (let n; (n = walk.nextNode()); ) found.push(n)
+  found.forEach(textForm)
+}
+new MutationObserver(changes => {
+  for (const c of changes) {
+    if (c.type === 'characterData') textForm(c.target)
+    else c.addedNodes.forEach(textForm)
+  }
+}).observe(document.documentElement, { childList: true, subtree: true, characterData: true })
+if (document.body) textForm(document.body)
+
 globalThis.Kit = { connect, call, ask, tell, link, money, number, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }
