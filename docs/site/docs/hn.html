@@ -116,7 +116,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/hn.md">docs/chloedb/hn.md</a>.</p>
       <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#the-questions-it-reads">The questions it reads</a></li><li><a href="#read-the-linked-pages">Read the linked pages</a></li><li><a href="#tables">Tables</a></li><li><a href="#the-api">The API</a></li><li><a href="#measured-against-hnalgoliacom">Measured against hn.algolia.com</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#the-questions-it-reads">The questions it reads</a></li><li><a href="#read-the-linked-pages">Read the linked pages</a></li><li><a href="#tables">Tables</a></li><li><a href="#the-api">The API</a></li><li><a href="#experiments">Experiments</a></li><li><a href="#measured-against-hnalgoliacom">Measured against hn.algolia.com</a></li></ol></details>
     <div class="doc-body">
 
 <blockquote>
@@ -319,6 +319,69 @@ chloedb-server ... --app hn=http://hn-host:7850     # with CHLOEDB_APP_TOKEN=$HN
 </tr>
 </tbody>
 </table></div>
+<h2 id="experiments">Experiments<a class="anchor" href="#experiments" aria-label="Link to this section">#</a></h2>
+<p>The Experiments app (<a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-experiments/README.md#real-sites">its README</a>) can study this site's real search. It puts AI agents, playing people written from the stories, on the search with some of it changed. The app takes experiments only when it is started with a token for them:</p>
+<pre data-lang="sh">chloedb-hn serve ... --experiments-token &quot;$HN_EXPERIMENTS_TOKEN&quot; --experiment-index v2=hn_stories_v2
+chloedb-experiments serve ... --source hn=app:http://hn-host:7850     # with CHLOEDB_SOURCE_HN_TOKEN=$HN_EXPERIMENTS_TOKEN</pre>
+<p>The token (<code>--experiments-token</code>, or <code>CHLOEDB_HN_EXPERIMENTS_TOKEN</code>) opens only <code>/v1/experiment</code>. These routes read: they write nothing, and hold no key of the cluster. They answer in <code>--public</code> mode too. Without the token they answer 404, and with a wrong one 401.</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>route</th>
+<th>what</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /v1/experiment</code></td>
+<td>the site, its knobs, presets and indexes</td>
+</tr>
+<tr>
+<td><code>POST /v1/experiment/search</code></td>
+<td><code>{q, knobs, per}</code>: the site's own search of stories, with the knobs, and what it understood</td>
+</tr>
+<tr>
+<td><code>GET /v1/experiment/item/:id</code></td>
+<td>a story's title, link and text</td>
+</tr>
+<tr>
+<td><code>GET /v1/experiment/sample?n=&amp;seed=</code></td>
+<td>stories to write people from: well voted and ordinary, across the years</td>
+</tr>
+</tbody>
+</table></div>
+<p>The knobs, by group (an arm names the ones it changes; the rest stay as the site is):</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>group</th>
+<th>knobs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Query understanding</td>
+<td><code>understand</code>: "by pg", "in 2015", "ask hn", "points&gt;100" and questions in a sentence become filters and sorts; off, every word is searched as typed</td>
+</tr>
+<tr>
+<td>Retrieval</td>
+<td><code>typos</code> (fuzzy title words), <code>synonyms</code>, <code>meaning</code> (stories near the words in meaning are candidates and meaning counts in the ranking), <code>exact</code> (code such as <code>std::move</code> found as written by the substring index)</td>
+</tr>
+<tr>
+<td>Ranking</td>
+<td><code>votes</code> (the exponent of points + 1), <code>recency</code> (the share of the score a five-year decay of age decides), <code>meaning_weight</code>, <code>phrase</code> (the words as a phrase in the title), <code>body</code>, <code>link</code>; <code>rank</code>, a whole <code>ORDER BY</code> expression of ChloeDB's SQL over <code>hn_stories</code> (<code>:q</code>, <code>:phrase</code>, <code>:v</code>) in place of them; <code>tiers</code> (every word in the title first)</td>
+</tr>
+<tr>
+<td>Blending</td>
+<td><code>max_per_site</code> (a site's stories past this many in the page move below the others), <code>fresh</code> (places of the page for the best stories of the last year)</td>
+</tr>
+<tr>
+<td>Index</td>
+<td><code>index</code>: <code>main</code>, or an index named by <code>--experiment-index NAME=TABLE</code>, the stories indexed another way (other analyzers, fields or embeddings) beside the main one</td>
+</tr>
+</tbody>
+</table></div>
+<p>A knob it does not have, a number out of its range, an index it was not given, or an expression with more than an expression in it (a <code>;</code>, a comment, a statement's words) is refused with 400.</p>
 <h2 id="measured-against-hnalgoliacom">Measured against hn.algolia.com<a class="anchor" href="#measured-against-hnalgoliacom" aria-label="Link to this section">#</a></h2>
 <p><code>eval/compare.py</code> asks both the same queries, made from stories both hold: a story found again from three words of its title, the same with a typo, the story described in other words, and topics whose top ten a model grades blind to which engine found what. The results are in <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-hn/eval/results"><code>chloedb-hn/eval/results</code></a>, with the machine and the date they were measured on.</p>
 <p><code>eval/instant.py</code> types six searches a character at a time and asks both at each keystroke, as their pages do. On 2026-11-16, while <code>crawl</code> was writing pages into the same cluster, the app's instant search took 10 ms at the median on the server (22 ms at the 90th percentile) against Algolia's 13.5 ms (34 ms), and its round trip from the same cloud machine 48 ms against Algolia's 199 ms (<a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-hn/eval/results/instant-2026-11-16.json">the numbers</a>).</p>

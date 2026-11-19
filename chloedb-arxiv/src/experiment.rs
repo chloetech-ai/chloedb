@@ -300,9 +300,9 @@ pub fn describe(indexes: &[(String, String)]) -> Value {
     knobs.push(json!({"key": "max_per_category", "group": "Blending", "title": "At most this many of one category", "about": "after ranking, a primary category's papers past this many in the page move below the others (0: any number)", "kind": "int", "default": 0, "min": 0, "max": 10}));
     knobs.push(json!({"key": "max_per_author", "group": "Blending", "title": "At most this many of one first author", "about": "after ranking, a first author's papers past this many in the page move below the others (0: any number)", "kind": "int", "default": 0, "min": 0, "max": 10}));
     knobs.push(json!({"key": "fresh", "group": "Blending", "title": "Places for the last year", "about": "after ranking, this many places of the page go to the best papers of the last year, if the ranking left them below", "kind": "int", "default": 0, "min": 0, "max": 5}));
-    let mut index_choices = vec![json!({"value": "main", "title": MAIN_INDEX, "about": "the papers as the site indexes them"})];
+    let mut index_choices = vec![json!({"value": "main", "title": "main", "about": format!("{}: the papers as the site indexes them", MAIN_INDEX)})];
     for (n, t) in indexes {
-        index_choices.push(json!({"value": n, "title": t, "about": format!("{t}, an index of the papers built another way")}));
+        index_choices.push(json!({"value": n, "title": n, "about": format!("{t}: an index of the papers built another way")}));
     }
     knobs.push(json!({"key": "index", "group": "Index", "title": "Index", "about": "the table of papers the search reads: an index built with other analyzers, fields or embeddings, beside the main one", "kind": "choice", "default": "main", "choices": index_choices}));
     json!({
