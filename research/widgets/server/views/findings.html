@@ -84,7 +84,10 @@ let chosen = null
 const open = new Set()
 
 const GOAL = { pick: 'To pick', answer: 'Answer', overview: 'Overview', 'how-to': 'How to', news: 'What happened' }
-const value = (name, v) => (v === true ? 'yes' : v === false ? 'no' : v == null ? '—' : typeof v === 'number' && /price|cost/i.test(name) ? money(v) : String(v))
+// Money in dollars with its commas, by the fact's name; other big whole
+// numbers with commas, years left as they are (MARCUS-6).
+const MONEY = /price|cost|total|msrp|fee|fare|rent|salary|budget|payment|amount|option|usd|dollar|destination|tax|tuition|wage/i
+const value = (name, v) => (v === true ? 'yes' : v === false ? 'no' : v == null ? '—' : typeof v === 'number' && MONEY.test(name) ? money(v) : typeof v === 'number' && Math.abs(v) >= 10000 && !/year/i.test(name) ? v.toLocaleString('en-US') : String(v))
 const label = name => name.replace(/_/g, ' ')
 const docOf = n => data.documents.find(d => d.n === n)
 const cites = list => (list ?? []).map(n => `<button class="cite" data-cite="${n}" title="${esc(docOf(n)?.source ?? docOf(n)?.title ?? '')}">${n}</button>`).join('')

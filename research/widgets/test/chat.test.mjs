@@ -72,9 +72,10 @@ function scripted() {
       calls.editSource = source
       return FRAGMENT(`v2: ${change}`)
     },
-    async reply({ summary, shows }) {
+    async reply({ summary, shows, before }) {
       calls.reply++
       calls.shows = shows
+      calls.before = before
       return shows ? `On screen: ${shows.slice(0, 30)}` : summary.slice(0, 40)
     },
   }
@@ -155,7 +156,7 @@ test('the flow: make, act, change, undo, save, and recall', { skip }, async () =
   assert.equal((await post(`/api/apps/${app.app.id}/redo`)).app.version, 2, 'nothing newer to go to')
 
   // Asked in words, a change is made for real, and so is an undo.
-  const screenNow = [{ id: app.app.id, version: 2, name: 'Table booking', shows: 'Places', did: [] }]
+  const screenNow = [{ id: app.app.id, version: 2, name: 'Table booking', shows: 'Places', did: [], told: 'On screen now: Lagos 3 nights, Porto 4 nights' }]
   const worded = await events('/api/turn', { text: 'make it show the price', screen: screenNow })
   const wordedApp = worded.find(e => e.type === 'app')
   assert.equal(wordedApp.how, 'changed')
@@ -165,6 +166,8 @@ test('the flow: make, act, change, undo, save, and recall', { skip }, async () =
   assert.ok(!worded.some(e => e.type === 'reply'))
   const saidChange = await post('/api/say', { token: worded.find(e => e.type === 'say').token, shows: '' })
   assert.match(saidChange.text, /^Table booking was rewritten as version 3/)
+  // TOM-4: the answer compares what it showed before with what it shows now.
+  assert.equal(model.calls.before, 'On screen now: Lagos 3 nights, Porto 4 nights')
   const back = await events('/api/turn', { text: 'undo it', screen: [{ ...screenNow[0], version: 3 }] })
   const backApp = back.find(e => e.type === 'app')
   assert.equal(backApp.how, 'undone')

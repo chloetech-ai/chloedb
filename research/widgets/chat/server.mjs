@@ -76,9 +76,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   // app shows (/api/say): by a one-time token the turn hands the page, so
   // the answer is part of the turn and not a request of its own.
   const sayable = new Map()
-  const sayToken = (request, summary) => {
+  const sayToken = (request, summary, before = '') => {
     const token = randomBytes(12).toString('hex')
-    sayable.set(token, { request, summary, at: Date.now() })
+    sayable.set(token, { request, summary, before, at: Date.now() })
     for (const [t, v] of sayable) if (Date.now() - v.at > 600_000) sayable.delete(t)
     return token
   }
@@ -242,10 +242,14 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         return
       }
       const what = String(plan.what || text)
+      // What it showed before the change, so the answer compares the two
+      // and says "not done" only when what was asked is the same in both,
+      // and names what the change left out (TOM-3, TOM-4).
+      const before = onScreen(screen).find(w => w.id === plan.app)?.told
       const { app: changed, copied, data } = await change(plan.app, what, send, target)
       // Said from what the changed app shows, not taken for granted.
       const copy = copied ? ` It is a copy of that answer, kept in the person's apps as "${changed.name}"; other answers are as they were.` : ''
-      send({ type: 'say', token: sayToken(text, `${changed.name} was rewritten as version ${changed.version} for: ${what}.${copy} Its Undo button takes the change back. What it was filled with: ${data?.summary ?? ''}`) })
+      send({ type: 'say', token: sayToken(text, `${changed.name} was rewritten as version ${changed.version} for: ${what}.${copy} Its Undo button takes the change back. What it was filled with: ${data?.summary ?? ''}`, before) })
       return
     }
     if (plan.mode === 'chat' || !plan.tool || !KNOWN.has(plan.tool)) {
@@ -500,8 +504,8 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         const turned = sayable.get(String(token ?? ''))
         if (!turned) return json(res, { error: 'nothing to say' }, 404)
         sayable.delete(String(token))
-        const { request, summary } = turned
-        const said = await model.reply({ request: String(request ?? '').slice(0, 500), summary: String(summary ?? '').slice(0, 4000), shows: String(shows ?? '').slice(0, 6000) }).catch(() => '')
+        const { request, summary, before } = turned
+        const said = await model.reply({ request: String(request ?? '').slice(0, 500), summary: String(summary ?? '').slice(0, 4000), shows: String(shows ?? '').slice(0, 6000), before: String(before ?? '').slice(0, 6000) }).catch(() => '')
         return json(res, { text: said || String(summary ?? '') })
       }
       // What the chat says after something was done in an app.
