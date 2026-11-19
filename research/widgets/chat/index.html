@@ -109,6 +109,9 @@
   .composer textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; padding: 6px 0; height: 28px; max-height: 140px; }
   .send { width: 34px; height: 34px; border-radius: 10px; border: 0; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: 17px; }
   .send:disabled { opacity: .45; }
+  .sharebox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 13px; color: var(--ink-2); }
+  .sharebox span { flex: 1 1 260px; }
+  .sharebox input { flex: 1 1 220px; min-width: 0; font: 12px ui-monospace, monospace; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }
   .composer-note { max-width: 760px; margin: 6px auto 0; font-size: 12px; color: var(--ink-3); text-align: center; }
 
   .hello { margin: 9vh auto 0; max-width: 620px; text-align: center; }
@@ -226,6 +229,22 @@ const local = {
   set: (key, value) => { try { localStorage.setItem(key, value) } catch {} },
 }
 const newId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('')
+// Apps shared by a link keep what they keep with everyone who has the
+// link, on any phone or computer, instead of in this browser alone.
+const shared = (() => { try { return JSON.parse(local.get('instant-apps-shared') || '{}') ?? {} } catch { return {} } })()
+const ownerOf = id => (shared[id] ? `s-${shared[id]}` : me)
+const shareUrl = id => `${location.origin}${location.pathname}?app=${encodeURIComponent(id)}&share=${shared[id]}`
+// Opened from a share link: that app, with what everyone with the link kept.
+const linked = (() => {
+  const q = new URLSearchParams(location.search)
+  const app = q.get('app')
+  const token = q.get('share')
+  if (!app || !/^[0-9a-f]{32}$/.test(token ?? '')) return null
+  shared[app] = token
+  local.set('instant-apps-shared', JSON.stringify(shared))
+  window.history.replaceState(null, "", location.pathname)
+  return app
+})()
 const me = local.get('instant-apps-me') || newId()
 local.set('instant-apps-me', me)
 let talk = local.get('instant-apps-talk') || newId()
@@ -348,6 +367,7 @@ async function events(response, on) {
 // ---- the assistant's messages ----
 const MARK = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5l1.5 4.4 4.6.1-3.7 2.8 1.4 4.4L8 10.5l-3.8 2.7 1.4-4.4L1.9 6l4.6-.1z"/></svg>'
 const ICON = {
+  share: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V2.5M5 5l3-3 3 3"/><path d="M3 8.5v4.5h10V8.5"/></svg>',
   save: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M4 2.5h8v11L8 10.5l-4 3z"/></svg>',
   change: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M10.5 2.5l3 3-8 8H2.5v-3z"/></svg>',
   undo: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4L2 7l3 3"/><path d="M2.5 7H10a3.5 3.5 0 010 7H7"/></svg>',
@@ -388,7 +408,7 @@ const withoutEntries = payload => {
   }
 }
 
-const REPLAY = new Set(['opened', 'again', 'changed', 'undone'])
+const REPLAY = new Set(['opened', 'again', 'changed', 'undone', 'linked'])
 async function draw(w) {
   const frame = w.node.querySelector('.frame')
   frame.innerHTML = ''
@@ -405,7 +425,7 @@ async function draw(w) {
     { hostContext: { theme, displayMode: 'inline', availableDisplayModes: ['inline'], platform: 'web', locale: 'en-US' } },
   )
   bridge.oncalltool = async params => {
-    const { acted, ...result } = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: w.app.id, me, ...params }) })).json()
+    const { acted, ...result } = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: w.app.id, me: ownerOf(w.app.id), ...params }) })).json()
     const said = result.content?.find(c => c.type === 'text')?.text ?? ''
     if (!result.isError && params.name === w.app.tool) {
       lastApp = { id: w.app.id, args: params.arguments }
@@ -445,7 +465,8 @@ async function draw(w) {
     // asked: what the person typed in it since is kept and newer (Kit.replayed).
     const again = w.drawn || REPLAY.has(w.payload.how)
     const data = w.payload.result?.structuredContent
-    await bridge.sendToolResult(again && data ? { ...w.payload.result, structuredContent: { ...data, again: true } } : w.payload.result)
+    const marks = { ...(again ? { again: true } : {}), ...(shared[w.app.id] ? { shared: true } : {}) }
+    await bridge.sendToolResult(data && Object.keys(marks).length ? { ...w.payload.result, structuredContent: { ...data, ...marks } } : w.payload.result)
     w.drawn = true
     // An entry asked for is sent once: drawn again (a change, an undo), the app has it kept.
     w.payload = withoutEntries(w.payload)
@@ -477,6 +498,7 @@ const LINE = {
   updated: p => `Filled ${p.app.name} again${sent(p)}`,
   again: p => `Opened ${p.app.name} again${sent(p)}`,
   opened: p => `Opened ${p.app.name} from your apps`,
+  linked: p => `Opened ${p.app.name}, shared with you by its link`,
   changed: p => `Changed ${p.app.name}: now version ${p.app.version}`,
   undone: p => `Back to version ${p.app.version} of ${p.app.name}`,
 }
@@ -562,7 +584,8 @@ function bar(w) {
     : answer
       ? `<button class="wbtn save keep" type="button" title="Keep this answer in your apps as it is: a later search does not replace it">${ICON.save}Keep this answer</button>`
       : app.saved ? '' : `<button class="wbtn save" type="button" title="Keep it in your apps: it opens by itself next time">${ICON.save}Save</button>`
-  acts.innerHTML = `${keep}<button class="wbtn change" type="button" title="Change how it looks or works, by asking">${ICON.change}Change</button>${app.version > 1 ? `<button class="wbtn undo" type="button" title="Back to version ${app.version - 1}">${ICON.undo}Undo change</button>` : ''}${w.newer ? `<button class="wbtn redo" type="button" title="Forward to version ${app.version + 1}">${ICON.redo}Redo</button>` : ''}`
+  const share = app.tool === 'findings' ? '' : `<button class="wbtn share" type="button" title="A link that opens this app, with what it keeps, on another phone or computer">${ICON.share}${shared[app.id] ? 'Shared' : 'Share'}</button>`
+  acts.innerHTML = `${keep}${share}<button class="wbtn change" type="button" title="Change how it looks or works, by asking">${ICON.change}Change</button>${app.version > 1 ? `<button class="wbtn undo" type="button" title="Back to version ${app.version - 1}">${ICON.undo}Undo change</button>` : ''}${w.newer ? `<button class="wbtn redo" type="button" title="Forward to version ${app.version + 1}">${ICON.redo}Redo</button>` : ''}`
   const changer = w.node.querySelector('.changer')
   acts.querySelector('.keep')?.addEventListener('click', async () => {
     const when = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -583,6 +606,27 @@ function bar(w) {
     w.how = 'saved'
     bar(w)
     await rail(app.id)
+  })
+  acts.querySelector('.share')?.addEventListener('click', async () => {
+    let box = w.node.querySelector('.sharebox')
+    if (box) return box.remove()
+    if (!shared[app.id]) {
+      const out = await (await fetch('/api/share', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id) }) })).json().catch(error => ({ error: error.message }))
+      if (!out.token) return acts.querySelector('.share').replaceWith(Object.assign(document.createElement('span'), { className: 'error', textContent: out.error ?? 'Could not share it' }))
+      shared[app.id] = out.token
+      local.set('instant-apps-shared', JSON.stringify(shared))
+      bar(w)
+      draw(w)
+    }
+    box = document.createElement('div')
+    box.className = 'sharebox'
+    box.innerHTML = `<span>Anyone with this link sees and changes what <b>${esc(app.name)}</b> keeps, on any phone or computer. Send it only to people you trust.</span><input readonly value="${esc(shareUrl(app.id))}"><button class="btn" type="button">Copy link</button>`
+    box.querySelector('button').onclick = async () => {
+      box.querySelector('input').select()
+      await navigator.clipboard?.writeText(shareUrl(app.id)).catch(() => {})
+      box.querySelector('button').textContent = 'Copied'
+    }
+    w.node.querySelector('.wbar').after(box)
   })
   acts.querySelector('.change').addEventListener('click', () => {
     changer.hidden = !changer.hidden
@@ -744,7 +788,7 @@ async function ask(question) {
   }
 }
 
-async function openFromRail(id, name) {
+async function openFromRail(id, name, how) {
   if (busy) return
   col.querySelector('.hello')?.remove()
   const body = bot()
@@ -753,6 +797,7 @@ async function openFromRail(id, name) {
   await events(res, async ev => {
     if (ev.type === 'app') {
       status.remove()
+      if (how) ev = { ...ev, how }
       widget(body, ev)
       record({ request: '', reply: '', shown: [entry(ev)] })
       scroll()
@@ -859,7 +904,12 @@ text.addEventListener('keydown', e => {
   }
 })
 window.ask = ask
-restore()
+restore().then(() => linked && openFromRail(linked, 'the shared app', 'linked'))
+// A shared app shows what the others kept since, when the page is looked at again.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return
+  for (const w of widgets) if (!w.folded && !w.stub && !w.removed && shared[w.app.id]) draw(w)
+})
 rail()
 </script>
 </body>

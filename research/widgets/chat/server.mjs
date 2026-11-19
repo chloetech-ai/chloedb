@@ -430,6 +430,20 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         return json(res, { text: said || String(summary ?? '') })
       }
       // What the chat says after something was done in an app.
+      // A link that opens one app, with what it keeps, on another phone or
+      // computer: whoever has it sees and changes the same kept values,
+      // under the link's own key. What this browser kept is copied there
+      // once; the link is as private as the person keeps it.
+      if (req.method === 'POST' && url.pathname === '/api/share') {
+        const { app: appId, me } = await body(req)
+        const owner = own(me)
+        const app = owner && appId ? await apps.get(String(appId)) : null
+        if (!app) return json(res, { error: 'no such app' }, 404)
+        if (owner.startsWith('s-')) return json(res, { token: owner.slice(2) })
+        const token = randomBytes(16).toString('hex')
+        for (const [key, value] of Object.entries(await apps.keptAll(app.id, owner))) await apps.keep(app.id, key, value, `s-${token}`)
+        return json(res, { token })
+      }
       if (req.method === 'POST' && url.pathname === '/api/note') {
         const { app: appId, summary, history = [] } = await body(req)
         const app = await apps.get(appId)

@@ -230,6 +230,23 @@ test('what an app keeps is kept for one browser, and goes when the app is remove
   assert.equal((await chat.apps.kept(id, 'stars', me)), null, 'what it kept went with it')
 })
 
+test('a share link opens an app with what it kept, for everyone who has the link', { skip }, async () => {
+  const me = '1'.repeat(32)
+  const friend = '2'.repeat(32)
+  const list = await chat.apps.put({ name: 'Grocery list', about: 'What to buy.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('list'), args: { request: 'list' }, saved: true }, 'made by hand')
+  await post('/api/call', { app: list.id, me, name: 'app_keep', arguments: { key: 'items', value: ['milk', 'eggs'] } })
+  const { token } = await post('/api/share', { app: list.id, me })
+  assert.match(token, /^[0-9a-f]{32}$/)
+  const link = `s-${token}`
+  assert.deepEqual((await post('/api/call', { app: list.id, me: link, name: 'app_kept', arguments: { all: true } })).structuredContent.values, { items: ['milk', 'eggs'] }, 'the link starts with what it kept')
+  // A friend with the link changes it, and the one who shared it sees that.
+  await post('/api/call', { app: list.id, me: link, name: 'app_keep', arguments: { key: 'items', value: ['milk', 'eggs', 'bread'] } })
+  assert.deepEqual((await post('/api/call', { app: list.id, me: link, name: 'app_kept', arguments: { key: 'items' } })).structuredContent.value, ['milk', 'eggs', 'bread'])
+  assert.deepEqual((await post('/api/share', { app: list.id, me: link })).token, token, 'sharing it again gives the same link')
+  assert.deepEqual((await post('/api/call', { app: list.id, me: friend, name: 'app_kept', arguments: { all: true } })).structuredContent.values, {}, 'without the link, a browser has none of it')
+  assert.equal((await fetch(`${chat.url}api/share`, { method: 'POST', body: JSON.stringify({ app: 'no-such-app', me }) })).status, 404)
+})
+
 test('a conversation is kept for its browser, and each app in it opens again as it was', { skip }, async () => {
   const talk = 'c'.repeat(32)
   const first = await events('/api/turn', { text: 'find reviews of quiet headphones', talk })

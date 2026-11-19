@@ -63,6 +63,7 @@ function replayed(data, kept) {
   const values = Object.fromEntries(Object.entries(data.values).filter(([k]) => !have.has(k.toLowerCase())))
   return { ...data, values }
 }
+let sharedKept = false
 function drawing(draw, connection, keeps = true) {
   let queue = Promise.resolve()
   let first = true
@@ -80,6 +81,11 @@ function drawing(draw, connection, keeps = true) {
         if (keeps) kept = (await globalThis.Kit.call(app, 'app_kept', { all: true }))?.values ?? {}
       } catch {
         // An app whose host keeps nothing gets none.
+      }
+      // Shared by a link: what it keeps is not in this browser alone, and its words say so.
+      if (data?.shared && !sharedKept) {
+        sharedKept = true
+        if (document.body) textForm(document.body)
       }
       draw({ ...replayed(data, kept), kept })
     }).catch(error => broke(error?.message ?? error)))
@@ -283,6 +289,7 @@ function textForm(node) {
   if (node.nodeType === Node.TEXT_NODE) {
     const parent = node.parentElement
     if (!parent || SKIP.test(parent.nodeName) || parent.isContentEditable) return
+    if (sharedKept && /kept in this browser/i.test(node.data)) node.data = node.data.replace(/(k)ept in this browser/gi, (_, k) => `${k}ept for everyone with its link`)
     SYMBOL.lastIndex = 0
     if (!SYMBOL.test(node.data)) return
     SYMBOL.lastIndex = 0
