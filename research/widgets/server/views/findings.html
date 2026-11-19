@@ -103,7 +103,7 @@ function card(item) {
   const best = bestFor(item)
   const lead = data.goal === 'news' && item.when ? `<span class="when">${esc(item.when)}</span>` : `<span class="rank">${item.n}</span>`
   return `<div class="opt${chosen === item.n ? ' on' : ''}" id="item-${item.n}">
-    <div class="top">${lead}<div>${name(item)}${best.length ? `<div class="bestfor">Best for ${best.map(esc).join(', ')}</div>` : ''}</div></div>
+    <div class="top">${lead}<div>${name(item)}${best.length ? `<div class="bestfor">Best for ${best.map(b => esc(/^[A-Z][a-z]/.test(b) ? b[0].toLowerCase() + b.slice(1) : b)).join(', ')}</div>` : ''}</div></div>
     <div class="in">
       ${item.verdict ? `<div class="verdict">${esc(item.verdict)}</div>` : ''}
       ${item.about ? `<div class="about">${esc(item.about)}</div>` : ''}
