@@ -154,7 +154,7 @@ function draw(next) {
     ${data.needs.length ? `<div class="needs">${data.needs.map((x, i) => `<button class="need" data-need="${i}" aria-pressed="${chosen != null && chosen === x.item}" title="${esc(x.why ?? '')}"><small>${esc(x.need)}</small><b>${esc(x.pick)}</b></button>`).join('')}</div>` : ''}
     ${data.items.length ? `<div class="row between bar"><span class="faint">${pick ? `${data.items.length} options` : data.goal === 'how-to' ? `${data.items.length} steps` : ''}</span>${pick ? `<span class="tabs"><button class="tab" data-view="cards" aria-pressed="${view === 'cards'}">Options</button><button class="tab" data-view="table" aria-pressed="${view === 'table'}">Side by side</button></span>` : ''}</div>
       ${pick && view === 'table' ? table() : `<div class="opts">${data.items.map(card).join('')}</div>`}` : ''}
-    <form class="row ask" id="ask"><input id="what" placeholder="${pick ? 'What matters to you? (I fly a lot, under $300...)' : 'Ask a follow-up'}" autocomplete="off"><button class="btn primary">${pick ? 'Pick for me' : 'Ask'}</button></form>
+    <form class="row ask" id="ask"><input id="what" placeholder="${pick ? 'What matters to you? (I fly a lot, under $300...)' : 'Ask a follow-up'}" autocomplete="off"><button class="btn primary" type="submit">${pick ? 'Pick for me' : 'Ask'}</button></form>
     ${data.notes ? `<div class="notes"><b>Worth knowing:</b> ${esc(data.notes)}</div>` : ''}
     ${sources(!data.items.length)}
     <div class="foot faint">Found by Claude on the web for this request; every claim links to its source.</div>`

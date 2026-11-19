@@ -64,4 +64,36 @@ const ago = ms => {
 }
 const esc = text => String(text ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)
 
+// Hosts draw views in frames sandboxed with allow-scripts alone, where a
+// form is never submitted: the browser drops the submission before its
+// submit event. So a submit button's click and Enter in a form's field
+// send the submit event here instead, and nothing is sent anywhere (a
+// handler reads the fields). It behaves the same in a frame that may
+// submit forms.
+function submitHere(form, submitter, e) {
+  if (!form || form.method === 'dialog') return
+  e.preventDefault()
+  const init = { bubbles: true, cancelable: true }
+  const event = typeof SubmitEvent === 'function' ? new SubmitEvent('submit', { ...init, submitter: submitter ?? null }) : new Event('submit', init)
+  form.dispatchEvent(event)
+}
+document.addEventListener(
+  'click',
+  e => {
+    const b = e.target instanceof Element ? e.target.closest('button, input[type=submit], input[type=image]') : null
+    if (b && b.type === 'submit' && !b.disabled && b.form) submitHere(b.form, b, e)
+  },
+  true,
+)
+document.addEventListener(
+  'keydown',
+  e => {
+    const f = e.target
+    if (e.key !== 'Enter' || e.isComposing || e.defaultPrevented || !(f instanceof HTMLInputElement) || !f.form) return
+    if (/^(button|submit|reset|checkbox|radio|file|image|color|range)$/.test(f.type)) return
+    submitHere(f.form, null, e)
+  },
+  true,
+)
+
 globalThis.Kit = { connect, call, ask, tell, link, money, number, ago, esc }
