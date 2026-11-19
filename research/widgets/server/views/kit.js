@@ -64,10 +64,16 @@ function replayed(data, kept) {
   return { ...data, values }
 }
 let sharedKept = false
+let role = null
+// Draws the last data again from what is kept: after a keep the link can't
+// make, so a helper's screen doesn't show an item gone that is still there.
+let redraw = null
+let restored = 0
 function drawing(draw, connection, keeps = true) {
   let queue = Promise.resolve()
   let first = true
-  return data =>
+  let last
+  const run = data =>
     (queue = queue.then(async () => {
       const app = await connection()
       if (first) {
@@ -87,7 +93,8 @@ function drawing(draw, connection, keeps = true) {
         sharedKept = true
         if (document.body) textForm(document.body)
       }
-      if (data?.role === 'viewer') banner('Shared with you to look at: what you change here is not kept.')
+      role = data?.role ?? role
+      if (role === 'viewer') banner('Shared with you to look at: what you change here is not kept.')
       const start = performance.now()
       try {
         draw({ ...replayed(data, kept), kept })
@@ -95,6 +102,11 @@ function drawing(draw, connection, keeps = true) {
         slow(performance.now() - start)
       }
     }).catch(error => broke(error?.message ?? error)))
+  redraw = () => last !== undefined && run(last)
+  return data => {
+    last = data
+    return run(data)
+  }
 }
 
 // Calls one of the server's tools from the view and returns its data.
@@ -253,6 +265,12 @@ async function keep(app, key, value) {
     return true
   } catch (error) {
     banner(error.message)
+    // A viewer may try things on screen; a helper sees what is kept again
+    // (at most every few seconds, so an app that keeps as it draws can't loop).
+    if (role !== 'viewer' && redraw && Date.now() - restored > 3000) {
+      restored = Date.now()
+      redraw()
+    }
     return false
   }
 }
