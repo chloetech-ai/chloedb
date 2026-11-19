@@ -2003,7 +2003,14 @@ impl Service {
             None => field.unwrap_or("").to_string(),
         };
         let m = match field {
-            Some(f) => models.iter().filter(of_table).find(|m| m.field.eq_ignore_ascii_case(f)).ok_or_else(|| ApiError::bad(format!("{named} is not an embedded VECTOR field; pass a vector")))?,
+            Some(f) => models.iter().filter(of_table).find(|m| m.field.eq_ignore_ascii_case(f)).ok_or_else(|| {
+                // A VECTOR field of no model holds the rows' own vectors.
+                let own = self.catalog().iter().filter(|s| table.is_none_or(|t| s.table.eq_ignore_ascii_case(t))).find_map(|s| s.field(f).filter(|x| matches!(x.ty, chloedb::FieldType::Vector { .. })).map(|x| (s.table.clone(), x.name.clone(), x.ty.clone())));
+                match own {
+                    Some((t, x, chloedb::FieldType::Vector { dim, .. })) => ApiError::bad(format!("{t}.{x} is embedded by no model: its vectors are the rows' own, so text is not embedded for it; pass a vector of {dim} numbers, or {{\"vector_of\": key}} for a stored row's")),
+                    _ => ApiError::bad(format!("{named} is not an embedded VECTOR field; pass a vector")),
+                }
+            })?,
             None => models.iter().filter(of_table).find(|m| m.model.is_ok()).ok_or_else(|| ApiError::bad("no table has a field this server can embed text for; pass a vector"))?,
         };
         match &m.model {
@@ -2968,10 +2975,16 @@ impl Service {
         // a value, as most parameters are, needs none of it.
         let mut read: Option<Vec<String>> = None;
         let mut named_of = || -> Vec<String> { read.get_or_insert_with(|| sql.map(crate::scoped::named_tables).unwrap_or_default()).clone() };
+        // The field each parameter is ranked against, `similarity(bge,
+        // :v)`: a `{"vector_of"}` or `{"embed"}` with no `"field"` is that
+        // field's, not the table's first vector field's.
+        let mut used: Option<std::collections::HashMap<String, String>> = None;
+        let mut used_with = |k: &str| -> Option<String> { used.get_or_insert_with(|| sql.map(chloedb::query::tables::param_fields).unwrap_or_default()).get(k.trim_start_matches([':', '$', '@'])).cloned() };
         for (k, v) in m {
             let value = match v {
                 Json::Object(o) if o.contains_key("vector_of") && o.keys().all(|k| ["vector_of", "field", "table"].contains(&k.as_str())) => {
-                    let field = o.get("field").and_then(|f| f.as_str());
+                    let inferred = if o.get("field").is_none() { used_with(k) } else { None };
+                    let field = o.get("field").and_then(|f| f.as_str()).or(inferred.as_deref());
                     let catalog = self.catalog();
                     let has = |t: &str| {
                         catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).is_some_and(|s| match field {
@@ -2996,8 +3009,10 @@ impl Service {
                     self.vector_of(&table, &o["vector_of"], &field).await?
                 }
                 Json::Object(o) if o.get("embed").is_some_and(|e| e.is_string() || e.get("image").is_some() || e.get("audio").is_some()) && o.keys().all(|k| ["embed", "field", "table"].contains(&k.as_str())) => {
-                    let (table, _) = self.embed_target(o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()), &named_of(), who).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
-                    let (table, field, e) = self.model(Some(&table), o.get("field").and_then(|f| f.as_str()))?;
+                    let inferred = if o.get("field").is_none() { used_with(k) } else { None };
+                    let field = o.get("field").and_then(|f| f.as_str()).or(inferred.as_deref());
+                    let (table, _) = self.embed_target(o.get("table").and_then(|t| t.as_str()), field, &named_of(), who).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
+                    let (table, field, e) = self.model(Some(&table), field).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
                     // A multi-vector field's model embeds the query's tokens.
                     let tokens = self.catalog().iter().find(|s| s.table.eq_ignore_ascii_case(&table)).and_then(|s| s.field(&field)).is_some_and(|f| f.multi);
                     let file = match &o["embed"] {

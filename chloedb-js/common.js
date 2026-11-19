@@ -184,8 +184,13 @@ export function decode(text) {
  * Iterating gives each row as an object of column to value; `at(i)` is row
  * `i` as one, and `length` the number of rows. */
 export class Result {
-  constructor({ columns = [], rows = [], keys = [], scores = [], stats = {}, took_ms, request, teams, cursor } = {}) {
+  constructor({ columns = [], types, rows = [], keys = [], scores = [], stats = {}, took_ms, request, teams, cursor } = {}) {
     this.columns = columns;
+    /** Each column's type as its values have it ("int", "float", "bool",
+     * "timestamp", "text", "vector", "list"; null for a column of only
+     * NULLs), whatever its name: `MAX(ts)` and `ts AS d` are "timestamp"
+     * as `ts` is. Null from a server from before 0.3.9. */
+    this.types = types ?? null;
     this.rows = rows;
     this.keys = keys ?? [];
     this.scores = scores ?? [];

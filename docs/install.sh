@@ -20,7 +20,7 @@
 # release publishes beside it, and puts `chloedb-server` in ~/.local/bin.
 # Where GitHub's CLI is installed (gh, a version with `gh attestation
 # verify --source-ref`), it also checks the archive's build provenance
-# (releases from 0.3.9): that this repository's release workflow,
+# (releases from 0.3.8): that this repository's release workflow,
 # server-release.yml, built it from the release's tag, on GitHub's own
 # runners. It reads the Sigstore bundle the release publishes beside the
 # archive (<archive>.sigstore.jsonl), so gh needs no sign-in, and an
@@ -64,7 +64,7 @@ VERSION="${CHLOEDB_VERSION:-}"
 WITH="${CHLOEDB_WITH:-}"
 VERIFY="${CHLOEDB_VERIFY:-auto}"
 # The first release whose archives have build provenance beside them.
-ATTESTED_FROM=0.3.9
+ATTESTED_FROM=0.3.8
 
 say() { printf '%s\n' "$*"; }
 fail() {
@@ -97,7 +97,7 @@ Settings (after the pipe: curl ... | CHLOEDB_VERSION=0.3.8 sh):
                         require (fail without gh) or off
 
 It checks each download against the release's SHA-256 and, where GitHub's
-CLI (gh) is installed, against its build provenance (from 0.3.9: GitHub's
+CLI (gh) is installed, against its build provenance (from 0.3.8: GitHub's
 attestation that the release workflow built it from the release's tag), and
 changes nothing outside the install folder. Platforms: Linux x86_64 and
 aarch64 (glibc 2.35 or later), macOS 11 or later on arm64 and x86_64.
@@ -308,7 +308,7 @@ if [ "$VERIFY" != off ] && have "$gh" && "$gh" attestation verify --help 2> /dev
 # the release: GitHub's attestation, in the Sigstore bundle $2.sigstore.jsonl,
 # that server-release.yml of this repository built it from the release's
 # tag on a GitHub-hosted runner. Fails when it does not verify; without gh,
-# or for a release from before 0.3.9, says so and returns.
+# or for a release from before $ATTESTED_FROM (0.3.8), says so and returns.
 provenance() {
   [ "$VERIFY" = off ] && return 0
   if ! at_least "$VERSION" "$ATTESTED_FROM"; then
