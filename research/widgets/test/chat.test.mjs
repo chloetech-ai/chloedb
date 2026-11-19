@@ -539,6 +539,11 @@ test('a helper or view link changes no app, a guest has no chat, and sharing can
   // INES-1, MAYA-2: a page opened only by links has no chat.
   const events = await (await fetch(`${chat.url}api/turn`, { method: 'POST', body: JSON.stringify({ text: 'what did I spend on coffee', guest: true, links: { [app.id]: share.helper } }) })).text()
   assert.match(events, /only what was shared with you/)
+  // MAYA-4, MARCUS-2: the chat is told an app is shared, so it never says it can't reach his phone.
+  await (await fetch(`${chat.url}api/turn`, { method: 'POST', body: JSON.stringify({ text: 'will he see it on his phone?', links: { [app.id]: share.token }, screen: [{ id: app.id, name: 'Week plan', version: 1, shows: 'plan' }, { id: 'other', name: 'Other', version: 1 }] }) })).text()
+  const told = model.calls.route.at(-1).screen
+  assert.equal(told[0].shared, true)
+  assert.equal(told[1].shared, undefined, 'an app not shared is not marked')
   // MARCUS-3: a filter is one person's own, even in a shared app.
   const browser = '7'.repeat(32)
   await post('/api/call', { app: app.id, me: `s-${share.helper}`, self: browser, name: 'app_keep', arguments: { key: 'view:crew', value: 'A' } })

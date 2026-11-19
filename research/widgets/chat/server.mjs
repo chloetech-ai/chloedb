@@ -215,7 +215,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       history: history.slice(-6),
       candidates,
       last: last && { ...last, args: lastApp.args ?? last.args, reads: last.tool === 'inputs' ? valueNames(last.source, lastApp.args ?? last.args) : undefined },
-      screen: onScreen(screen),
+      // An app this browser shared is kept for everyone with its link, so
+      // the chat can say so (MAYA-4, MARCUS-2).
+      screen: onScreen(screen).map(w => (links?.[w.id] ? { ...w, shared: true } : w)),
       tools: described(TOOLS),
     })
     send({ type: 'route', mode: plan.mode, kind: plan.kind, why: plan.why })
