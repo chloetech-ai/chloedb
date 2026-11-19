@@ -97,8 +97,9 @@ export function claude({
   }
   // `tools` are Claude Code's own tools the call may use: none, or the web
   // search alone for research (never WebFetch, which would reach the
-  // services beside this one).
-  async function call({ system, prompt, model, schema, tools = [], turns = 0, timeoutMs = 240_000 }) {
+  // services beside this one); `mcp` the MCP servers it may use, such as
+  // the reader of public pages.
+  async function call({ system, prompt, model, schema, tools = [], mcp = null, turns = 0, timeoutMs = 240_000 }) {
     budget.check()
     const dir = await mkdtemp(path.join(os.tmpdir(), 'widgets-claude-'))
     try {
@@ -106,7 +107,9 @@ export function claude({
       await writeFile(systemFile, system, { mode: 0o600 })
       const args = ['-p', '--output-format', 'json', '--model', model, '--system-prompt-file', systemFile, '--tools', tools.join(','),
         '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence']
-      if (tools.length) args.push('--allowedTools', tools.join(','))
+      const allowed = [...tools, ...Object.keys(mcp ?? {}).map(name => `mcp__${name}`)]
+      if (mcp) args.push('--mcp-config', JSON.stringify({ mcpServers: mcp }))
+      if (allowed.length) args.push('--allowedTools', allowed.join(','))
       if (turns) args.push('--max-turns', String(turns))
       if (schema) args.push('--json-schema', JSON.stringify(schema))
       const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !PRIVATE.test(k)))
@@ -142,7 +145,7 @@ export function claude({
     // The web searched for a request, and what was found as the findings
     // tool takes it.
     async research(input) {
-      const found = await run({ system: RESEARCH, prompt: researchPrompt(input), model: fast, schema: RESEARCH_SCHEMA, tools: ['WebSearch'], turns: 8, timeoutMs: 180_000 })
+      const found = await run({ system: RESEARCH, prompt: researchPrompt(input), model: fast, schema: RESEARCH_SCHEMA, tools: ['WebSearch'], mcp: READER, turns: 14, timeoutMs: 240_000 })
       return clip({ ...found, query: found.query || input.query })
     },
     async make(input) {
@@ -169,7 +172,7 @@ For each request you decide one of three things:
 
 A follow-up that changes what the app shown just before should show (another time, fewer people, not spicy, a cheaper one) is "use" of that app with the new arguments: it is filled again in the conversation.
 
-A request to find, research or look up things on the web (reviews, articles, news, papers, what people say about something, how to do something, the best of something) uses the tool "findings" with args {"query": the request in a few words}: the chat searches the web for it first and fills the app with the pages it found, each with its source, date and what it says. The saved app "Search results" shows any such list; make another app on findings only when the request needs another way to show them (a reading list, a comparison table of the products the reviews name). A question about what a "Search results" app in the conversation shows is "chat".
+A request to find, research or look up things on the web (the best of something to buy or visit, reviews, what people say, news, papers, how to do something, a question the tools have no data for) uses the tool "findings" with args {"query": the request in a few words}: the chat searches the web for it first and fills the app with what it found, shaped to the request (for a pick, the options compared and which one for which need, with the sources behind each claim). The saved app "Search results" shows it; make another app on findings only when the request needs another way to show it (a reading list, a trip plan). A follow-up to a "Search results" app in the conversation that changes what it should show (a need of the person's, a budget, a narrower question, "which should I get if I fly a lot") is "use" of that app with tool "findings", which starts from what it shows; a question it already answers is "chat".
 
 For "make": name it in 2 or 3 words that fit later requests of the same kind ("Stock chart", "Product comparison", "Table booking", "Dinner ideas"; never one stock, product or city). "about" is one sentence on what it does, also general. "look" says what it shows and which controls it has, in 2 to 4 sentences that fit the tools' data. "tools" lists every tool it may call: its first one and those its buttons need (booking needs the search and the booking tool; a shop needs the cart tools; recipes the recipe tool).
 
@@ -211,7 +214,8 @@ function routePrompt({ request, history, candidates, last, screen, tools }) {
   const saved = candidates.length
     ? candidates.map(a => `- id ${a.id}: "${a.name}" (${a.kind}), ${a.about} Its first tool: ${a.tool}. Asked for before with: ${a.examples || 'nothing yet'}.`).join('\n')
     : '(none yet)'
-  const shown = last ? `The app shown just before: id ${last.id}, "${last.name}", tools ${last.tools.join(', ')}, called with ${JSON.stringify(last.args)}.` : 'No app was shown just before.'
+  const called = JSON.stringify(last?.args ?? {})
+  const shown = last ? `The app shown just before: id ${last.id}, "${last.name}", tools ${last.tools.join(', ')}, called with ${called.length > 600 ? `${called.slice(0, 600)}... (cut)` : called}.` : 'No app was shown just before.'
   const said = history.length ? history.map(h => `${h.role}: ${h.text}`).join('\n') : '(nothing yet)'
   return `Today is ${new Date().toDateString()}.
 
@@ -271,15 +275,57 @@ ${source.startsWith('view:') ? '(a page made by hand; rewrite it as a fragment)'
 Change it as the person asks, keeping everything else as it is, and answer with the whole new fragment: ${change}`
 }
 
-const RESEARCH = `You look things up on the web for a chat, where what you find is shown as a list the person can read through, filter and compare. Search the web (at most 3 searches) and pick the 4 to 8 most useful pages for the request: recent, from sources that know, and different from each other. Use only what the search results say; never invent a page, an address, a date or a passage.
+const RESEARCH = `You look things up on the web for a chat, and what you find is shown to the person as an app that answers their request: not a list of pages, but what they want to know, with the pages behind every claim. For "the best headphones to buy", that is the headphones themselves: which one to get, which one for which need, each one's facts (price, battery, how well it cancels noise, comfort...), pros and cons, and what each source says about it.
 
-For each page give its title, its address (url), the site or publisher (source), its date when the results give one (as written), what kind of page it is (review, article, news, paper, docs, forum, listing...), a summary of what it says that matters for this request in 1 to 3 sentences of your own, 1 or 2 short passages quoted exactly from the results (quotes), and, when the pages are about things to compare (products, places, options), facts: the same few names across pages (such as "pick", "price", "rating") with the values each page gives. "query" is the request in a few words, and "notes" says in a sentence or two what the pages agree or disagree on, or what is missing.`
+Search the web (at most 4 searches), then read 3 or 4 of the most useful pages, from different sites, with read_page (a test with measurements, a review, a shop or the maker's page for prices and specs): search results alone are too thin for facts. Use 4 to 8 sources in all: what you read, and the search results that add something. Search or read again for what is missing that matters (current prices, specs, dates, the newest models). Use only what the pages and results say; never invent a page, an address, a date, a price or a quote. Prefer sources that tested or know first hand, recent ones, and several that disagree over many that agree.
+
+Answer with:
+- "goal": pick (choosing among things to buy, visit or use), answer (a question), overview (a subject), how-to (steps) or news (what happened).
+- "answer": the bottom line in 1 to 3 sentences, as a friend who read everything would say it ("Get the X unless you fly a lot: then Y"), with "cites", the numbers of the documents behind it.
+- "items": for a pick, the 3 to 6 options themselves, best first, each with "name", "verdict" (one sentence: who it is for and the catch), "facts", "pros" and "cons" (a few words each) and "says" ({doc, text}: what each source says about it, quoted or close); for an answer or an overview, its 3 to 6 points ("name" a short heading, "about" the point, "says" its evidence); for a how-to, its steps in order; for news, its events with "when".
+- "facts": the same 3 to 6 names for every item, short values that compare at a glance (449, "30 h", "best tested", "250 g"), in the same units for every item; a price as a number in dollars when there is one. Leave a fact out of an item when the sources do not give it; never write that it is unknown.
+- "needs": for a pick, the best item for 2 to 4 kinds of need ("most people", "long flights", "on a budget"), by the item's exact name, with "why" and "cites".
+- "criteria": the facts' names exactly as in the items, most important for this request first.
+- "documents": the 4 to 8 sources used, numbered from 1 in this order (doc and cites use those numbers): title, url, source (the site or publisher), date only when the results give one, kind (review, test, article, news, forum, shop...), a summary of what each says for this request, and quotes passed exactly.
+- "query": the request in a few words, and "notes": what the sources disagree on or leave out, and what to check, in a sentence or two.
+
+When what was found before is given and the request follows it up (a need of the person's, a budget, a narrower question), start from it: re-rank, add or drop items and update the answer and needs for them, and search only for what is missing.`
+
+// The reader of public web pages (../server/reader.mjs), for the facts a
+// search result's snippet leaves out.
+const READER = { reader: { command: process.execPath, args: [new URL('../server/reader.mjs', import.meta.url).pathname] } }
 
 const FACT = { type: ['string', 'number', 'boolean', 'null'] }
+const CITES = { type: 'array', items: { type: 'integer' } }
 const RESEARCH_SCHEMA = {
   type: 'object',
   properties: {
     query: { type: 'string' },
+    goal: { type: 'string', enum: ['pick', 'answer', 'overview', 'how-to', 'news'] },
+    answer: { type: 'object', properties: { text: { type: 'string' }, cites: CITES }, required: ['text'] },
+    needs: {
+      type: 'array',
+      items: { type: 'object', properties: { need: { type: 'string' }, pick: { type: 'string' }, why: { type: 'string' }, cites: CITES }, required: ['need', 'pick'] },
+    },
+    criteria: { type: 'array', items: { type: 'string' } },
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          about: { type: 'string' },
+          verdict: { type: 'string' },
+          facts: { type: 'object', additionalProperties: FACT },
+          pros: { type: 'array', items: { type: 'string' } },
+          cons: { type: 'array', items: { type: 'string' } },
+          says: { type: 'array', items: { type: 'object', properties: { doc: { type: 'integer' }, text: { type: 'string' } }, required: ['doc', 'text'] } },
+          when: { type: 'string' },
+          url: { type: 'string' },
+        },
+        required: ['name'],
+      },
+    },
     documents: {
       type: 'array',
       items: {
@@ -292,19 +338,27 @@ const RESEARCH_SCHEMA = {
           kind: { type: 'string' },
           summary: { type: 'string' },
           quotes: { type: 'array', items: { type: 'string' } },
-          facts: { type: 'object', additionalProperties: FACT },
         },
         required: ['title', 'url', 'summary'],
       },
     },
     notes: { type: 'string' },
   },
-  required: ['query', 'documents'],
+  required: ['query', 'goal', 'answer', 'items', 'documents'],
 }
 
-function researchPrompt({ request, query, history = [] }) {
+// What was found before, as the research step reads it: what the app shows,
+// without the numbering and the fields the view adds.
+function before(found) {
+  if (!found?.documents?.length) return ''
+  const { query, goal, answer, needs, criteria, items, documents, notes } = found
+  const text = JSON.stringify({ query, goal, answer, needs, criteria, items, documents, notes })
+  return `What was found before in this conversation:\n${text.length > 24000 ? `${text.slice(0, 24000)}... (cut)` : text}\n\n`
+}
+
+function researchPrompt({ request, query, history = [], found }) {
   const said = history.length ? `The conversation so far:\n${history.map(h => `${h.role}: ${h.text}`).join('\n')}\n\n` : ''
-  return `Today is ${new Date().toDateString()}.\n\n${said}Look up on the web: ${query}\n\n(The person asked: ${request})`
+  return `Today is ${new Date().toDateString()}.\n\n${said}${before(found)}Look up on the web: ${query}\n\n(The person asked: ${request})`
 }
 
 const REPLY = `You answer in a chat. An app with the details is shown above your answer, so answer the request in one or two short sentences, at most 45 words: the answer itself, not every number or option, and nothing about the app or its buttons (the person can see them). If the data is made up for a demo, say so in a few words. The data you get is what the app's first call returned; when the request asks about several things (three stocks, two cities), the app loads the others itself, so answer from what you have and never say that the rest is missing.`

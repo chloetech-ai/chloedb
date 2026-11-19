@@ -252,6 +252,10 @@ test('a request to find things searches the web first, and the Search results ap
   // Kept with the app, so it shows them again when opened from the rail.
   assert.equal((await rail()).find(a => a.id === 'search-results').uses, 2)
 
+  // A follow-up starts from what it found.
+  await events('/api/turn', { text: 'find which of those is best for flights', lastApp: { id: 'search-results', args: app.args } })
+  assert.equal(model.calls.research.at(-1).found.documents[0].title, 'Quiet headphones, tested')
+
   // Nothing found is said in words, with no app.
   const none = await events('/api/turn', { text: 'find nothing at all' })
   assert.ok(!none.some(e => e.type === 'app'))

@@ -15,6 +15,7 @@ import { z } from 'zod'
 
 import { described, fragment, kitGuide, toolList } from './guide.mjs'
 import { Apps } from './store.mjs'
+import { INPUT as FOUND } from './widgets/findings.mjs'
 
 export const RUNNER = 'ui://widgets/app.html'
 export const SHELF = 'ui://widgets/apps.html'
@@ -77,8 +78,8 @@ export function registerApps(server, { TOOLS, callTool, fragmentOf }) {
       title: 'Find an app',
       description:
         'Call this first when a request would be answered better by a small live app in the conversation than by text: live data (a price, where a flight is), ' +
-        'things to compare side by side, something to book or buy, things to browse for ideas, or what you found yourself (pages from a web search, documents ' +
-        'you read) for the person to look through. It searches the person’s saved apps by words and meaning ' +
+        'things to compare side by side, something to book or buy, or things to browse for ideas (what you found yourself on the web or in documents goes to ' +
+        'show_findings). It searches the person’s saved apps by words and meaning ' +
         'and lists those that may fit, best first, with the tool and arguments that fill each. When one does the job the request asks for (even with other ' +
         'inputs: another stock, city or dish), call app_open with its id and the arguments for this request. When none does, call app_kit, then app_make to ' +
         'make one: sharing a tool is not enough (comparing products side by side is another job than a shop’s list, a recipe to cook tonight another than ' +
@@ -121,6 +122,33 @@ export function registerApps(server, { TOOLS, callTool, fragmentOf }) {
       const app = await apps.get(id)
       if (!app) return fail(`No app ${id}: apps_find lists them.`)
       return show(apps, app, args ?? app.args, request, app.saved ? 'recalled' : 'opened', app.saved ? 'Opened from the person’s apps.' : 'Opened again.')
+    },
+  )
+
+  // What the model found itself, typed so its host checks it: shown in the
+  // person's app for what Claude found that fits the request best (Search
+  // results, or one they made on `findings`).
+  registerAppTool(
+    server,
+    'show_findings',
+    {
+      title: 'Show what you found',
+      description:
+        'After you searched the web or read pages or files for a request to find, research, compare or pick something, show what you found as an app in ' +
+        'the conversation, before you answer. Shape it to what the person wants, not as a list of pages: for "the best headphones to buy", the headphones ' +
+        'themselves compared on what matters, which one for which need, and what each source says about each, with the pages behind every claim; for a ' +
+        'question, the answer and the points behind it; for a how-to, the steps; for news, what happened when. Search again first if you lack facts that ' +
+        'matter (prices, specs, dates). It opens the person’s app for what Claude found; then answer in two or three sentences, since it shows the details.',
+      inputSchema: { request: z.string().min(1).max(500).describe('The person’s request, in their words'), ...FOUND },
+      annotations: { readOnlyHint: true },
+      _meta: { ui: { resourceUri: RUNNER } },
+    },
+    async ({ request, ...found }) => {
+      const apps = await store()
+      const fit = (await apps.recall(request, 5)).find(a => a.tool === 'findings')
+      const app = await apps.get(fit?.id ?? 'search-results')
+      if (!app) return fail('The person has no app for what Claude found: make one with app_kit and app_make on the tool findings.')
+      return show(apps, app, found, request, app.saved ? 'recalled' : 'opened', `Shown in "${app.name}".`)
     },
   )
 

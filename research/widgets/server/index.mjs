@@ -62,10 +62,9 @@ export const INSTRUCTIONS = [
   'ask, and my_apps shows what they kept. The tools stock_quote, flight_track and shop_search open the apps made',
   'by hand directly.',
   'What you find yourself is data for an app too: after a web search, or pages or files you read, for a request',
-  'to find, research or compare things, show what you found before you answer, with app_open on id "search-results"',
-  '(the Search results app) or another app apps_find lists, with the tool findings and as its args the request in',
-  'query and the documents (title, url, source, date, a summary of what it says for this request, passages quoted',
-  'exactly, comparable facts under the same names).',
+  'to find, research, compare or pick things, call show_findings before you answer, shaped to what the person',
+  'wants: for the best headphones to buy, the headphones compared, the pick for each need and what each source',
+  'says about each, not a list of pages.',
 ].join(' ')
 
 const here = path => new URL(path, import.meta.url)

@@ -18,7 +18,7 @@ import type { Actions, Kit } from './cards'
 
 const PANE = 'widgets'
 const SHELF = 'apps'
-const KINDS: Kind[] = ['stock_quote', 'flight_track', 'shop_search', 'cart_add', 'cart_view', 'app_open', 'app_make', 'app_change']
+const KINDS: Kind[] = ['stock_quote', 'flight_track', 'shop_search', 'cart_add', 'cart_view', 'app_open', 'app_make', 'app_change', 'show_findings']
 // The app tools without a card of their own, which the model reaches for
 // first (apps_find) or after a card (app_save, my_apps).
 const APP_TOOL = /^mcp__.+__(apps_find|app_kit|app_save|app_undo|my_apps)$/
@@ -28,10 +28,10 @@ const SERVER = 'plugin_widgets_widgets'
 // can show.
 const FOUND_TOOL = /^(WebSearch|WebFetch)$/
 const foundNote = (server: string) =>
-  `If the person would want to look through, compare or keep what you found, show it in an app before you answer: call mcp__${server}__app_open with id "search-results" ` +
-  '(their Search results app), request (their words) and args {query, documents, notes}: each document with its title, url, source, date, kind, a summary of what it ' +
-  'says for this request, quotes (passages quoted exactly) and facts (comparable values under the same names across documents). Or call apps_find for another of ' +
-  'their apps. Search first if you need more; then answer in a few sentences, since the app shows the details.'
+  `When you have what the request needs, show it with mcp__${server}__show_findings before you answer, shaped to what the person wants rather than as a list ` +
+  'of pages: to pick something (the best headphones), the options themselves compared on what matters, which one for which need and what each source says ' +
+  'about each; for a question, the answer and its points; for a how-to, the steps. Search again first for facts that matter and are missing (prices, specs, ' +
+  'dates). Then answer in two or three sentences, since the app shows the details.'
 const MAX_CARDS = 40
 const REFRESH_MS = 20_000
 

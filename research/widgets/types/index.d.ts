@@ -2,7 +2,7 @@
 // tool_use_id), the widgets pinned to the live pane and their latest data,
 // and the person's saved apps for the Your apps pane.
 
-export type Kind = 'stock_quote' | 'flight_track' | 'shop_search' | 'cart_add' | 'cart_view' | 'app_open' | 'app_make' | 'app_change'
+export type Kind = 'stock_quote' | 'flight_track' | 'shop_search' | 'cart_add' | 'cart_view' | 'app_open' | 'app_make' | 'app_change' | 'show_findings'
 
 // The app an instant-app tool (app_open, app_make, app_change) answered with.
 export type Instant = {
@@ -106,7 +106,9 @@ export type Shop = {
 }
 
 // What the Claude of the conversation found itself (a web search, pages it
-// read), handed to an app through the tool findings.
+// read), shaped to what the person wants and handed to an app.
+export type FactValue = string | number | boolean | null
+
 export type Found = {
   n: number
   title: string
@@ -116,13 +118,31 @@ export type Found = {
   kind: string | null
   summary: string
   quotes: string[]
-  facts: { [name: string]: string | number | boolean | null }
+  facts: { [name: string]: FactValue }
+}
+
+export type FoundItem = {
+  n: number
+  name: string
+  about: string | null
+  verdict: string | null
+  facts: { [name: string]: FactValue }
+  pros: string[]
+  cons: string[]
+  says: { doc: number; text: string }[]
+  when: string | null
+  url: string | null
 }
 
 export type Findings = {
   widget: 'findings'
   summary: string
   query: string
+  goal: 'pick' | 'answer' | 'overview' | 'how-to' | 'news'
+  answer: { text: string; cites: number[] } | null
+  needs: { need: string; pick: string; item: number | null; why: string | null; cites: number[] }[]
+  criteria: string[]
+  items: FoundItem[]
   documents: Found[]
   facts: string[]
   notes: string | null

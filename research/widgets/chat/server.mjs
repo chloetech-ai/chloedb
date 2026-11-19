@@ -123,7 +123,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     if (plan.tool === 'findings') {
       send({ type: 'status', text: 'Searching the web' })
       try {
-        args = await model.research({ request: text, query: String(args.query || text), history: history.slice(-6) })
+        // A follow-up starts from what the app shown just before found.
+        const found = last?.tool === 'findings' ? (lastApp.args ?? last.args) : null
+        args = await model.research({ request: text, query: String(args.query || text), history: history.slice(-6), found })
       } catch (error) {
         send({ type: 'reply', text: `I could not search the web just now: ${error.message}` })
         return

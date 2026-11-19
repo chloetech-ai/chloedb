@@ -13,7 +13,8 @@
   main { max-width: 720px; margin: 0 auto; padding: 20px 16px 40px; display: flex; flex-direction: column; gap: 14px; }
   .user { align-self: flex-end; max-width: 80%; background: var(--bubble); border-radius: 16px; padding: 8px 14px; }
   .tool { font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
-  .tool code { font: 12px ui-monospace, Menlo, monospace; }
+  .tool summary { cursor: pointer; list-style: none; } .tool summary::-webkit-details-marker { display: none; }
+  .tool code { display: block; margin-top: 6px; font: 12px ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
   .frame { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
   iframe { display: block; width: 100%; border: 0; height: 120px; }
   .reply p { margin: 0 0 10px; } .reply ul { margin: 0 0 10px; padding-left: 22px; }
@@ -36,9 +37,11 @@ const add = (cls, html) => { const el = document.createElement('div'); el.classN
 window.events = []
 
 if (q.get('prompt')) add('user', q.get('prompt'))
-// A made app's html in the arguments is shown by its size.
-const brief = JSON.stringify(args, (k, v) => (typeof v === 'string' && v.length > 80 ? `${v.slice(0, 32)}… (${(v.length / 1024).toFixed(1)} KB)` : v))
-add('tool', `<span>⚙</span> <code>${tool}(${brief.replace(/</g, '&lt;')})</code>`)
+// What Claude did before the call (?steps=Searched the web|Searched again),
+// then the call as Claude's apps show one: a line, its arguments folded.
+for (const step of (q.get('steps') ?? '').split('|').filter(Boolean)) add('tool', `<span>⚙ ${step.replace(/</g, '&lt;')}</span>`)
+const brief = JSON.stringify(args, (k, v) => (typeof v === 'string' && v.length > 80 ? `${v.slice(0, 32)}… (${(v.length / 1024).toFixed(1)} KB)` : v), 1)
+add('tool', `<details><summary>⚙ Used ${tool}</summary><code>${brief.replace(/</g, '&lt;')}</code></details>`)
 
 const { tools } = await (await fetch('/tools')).json()
 const uri = tools.find(t => t.name === tool)?._meta?.ui?.resourceUri

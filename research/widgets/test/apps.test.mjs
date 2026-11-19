@@ -171,7 +171,7 @@ const FOUND = {
 test('what Claude found fills the Search results app, and is never a tool of its own', { skip }, async () => {
   const { tools } = await client.listTools()
   assert.ok(!tools.some(t => t.name === 'findings'), 'findings is only handed to apps')
-  assert.match(tools.find(t => t.name === 'apps_find').description, /found yourself/)
+  assert.match(tools.find(t => t.name === 'apps_find').description, /show_findings/)
 
   const found = await ok('apps_find', { request: 'find reviews of quiet headphones' })
   assert.equal(found.structuredContent.apps[0].id, 'search-results')
@@ -189,7 +189,7 @@ test('what Claude found fills the Search results app, and is never a tool of its
   assert.equal(d.documents[0].source, 'example.com')
   assert.equal(d.documents[1].url, null)
   assert.deepEqual(d.facts, ['pick', 'price'])
-  assert.match(text(opened), /2 document\(s\) for "quiet headphones for flights": The best noise-cancelling headphones \(example\.com, 2026-10-02\)/)
+  assert.match(text(opened), /From 2 source\(s\): example\.com, somewhere\./)
   const { structuredContent } = await ok('app_source', { id: 'search-results' })
   assert.match(structuredContent.source, /Kit|link\(app, d\.url\)/)
 
@@ -216,4 +216,60 @@ test('a folder from before a seed was added gets it once, and keeps it out once 
   await apps.db.write([{ op: 'delete', table: 'ia_apps', key: 'search-results' }])
   const again = await Apps.open({ url: apps.db.url })
   assert.equal((await again.get('search-results')).saved, true)
+})
+
+// For a pick, what was found answers it: the bottom line, the pick for each
+// need, the options with what each source says.
+const PICK = {
+  request: 'which noise cancelling headphones should I get',
+  query: 'best noise cancelling headphones',
+  goal: 'pick',
+  answer: { text: 'Get the Sony unless you fly a lot: then the Bose.', cites: [1, 2, 9] },
+  needs: [{ need: 'long flights', pick: 'bose qc ultra 2', why: 'Most comfortable', cites: [2] }, { need: 'on a budget', pick: 'Something not listed' }],
+  criteria: ['price', 'weight'],
+  items: [
+    { name: 'Sony WH-1000XM6', verdict: 'Best all-round.', facts: { price: 449, battery: '30 h', 'best for': 'most people' }, says: [{ doc: 1, text: 'Quietest we tried.' }, { doc: 7, text: 'A source that is not there.' }] },
+    { name: 'Bose QC Ultra 2', verdict: 'Most comfortable.', facts: { price: 429, battery: '24 h', comfort: 'best' }, says: [{ doc: 2, text: 'Best for flights.' }], url: 'ftp://example.com/x' },
+  ],
+  documents: [
+    { title: 'The best noise-cancelling headphones', url: 'https://example.com/best', summary: 'Sony first.' },
+    { title: 'Bose QC Ultra 2 review', url: 'https://www.example.org/bose', summary: 'Bose for flights.' },
+  ],
+}
+
+test('show_findings answers a pick in the app for what Claude found, its claims held to its sources', { skip }, async () => {
+  const { tools } = await client.listTools()
+  const tool = tools.find(t => t.name === 'show_findings')
+  assert.equal(tool._meta.ui.resourceUri, 'ui://widgets/app.html')
+  assert.ok(tool.inputSchema.properties.items && tool.inputSchema.properties.needs, 'its host checks the shape')
+
+  const shown = await ok('show_findings', PICK)
+  const d = shown.structuredContent
+  assert.equal(d.instant.id, 'search-results')
+  assert.equal(d.instant.saved, true)
+  assert.equal(d.instant.how, 'recalled')
+  assert.equal(d.goal, 'pick')
+  assert.deepEqual(d.answer.cites, [1, 2], 'a cite of a source that is not there is dropped')
+  assert.deepEqual(d.needs.map(x => x.item), [2, null], 'a pick names its item, whatever its case')
+  assert.deepEqual(d.items[0].says.map(x => x.doc), [1])
+  assert.equal(d.items[1].url, null)
+  assert.equal(d.documents[1].source, 'example.org')
+  // The criteria named that the items give, then the other facts, most given first.
+  assert.deepEqual(d.criteria, ['price', 'battery', 'comfort'])
+  assert.match(text(shown), /^For "best noise cancelling headphones": Get the Sony unless you fly a lot: then the Bose\. Best for: long flights, bose qc ultra 2; on a budget, Something not listed\. Options: Sony WH-1000XM6; Bose QC Ultra 2\. From 2 source\(s\): example\.com, example\.org\./)
+  assert.match(text(shown), /shows this in the conversation/)
+
+  const bad = await call('show_findings', { ...PICK, goal: 'shopping' })
+  assert.equal(bad.isError, true)
+})
+
+test('the research step reads public pages only', async () => {
+  const { readPage, publicAddress, text } = await import('../server/reader.mjs')
+  for (const url of ['http://127.0.0.1/', 'http://localhost/', 'http://169.254.169.254/latest/meta-data/', 'http://10.1.2.3/', 'http://[::1]/', 'http://[::ffff:10.0.0.1]/', 'file:///etc/passwd', 'https://example.com:8443/', 'http://user:pw@example.com/', 'http://db.instant.svc.cluster.local/']) {
+    await assert.rejects(readPage(url), /public address|only|user or password/, url)
+  }
+  assert.deepEqual(['8.8.8.8', '100.64.0.1', '172.20.0.1', '192.168.1.1', '2606:4700::1111', 'fd00::1', 'fe80::1'].map(publicAddress), [true, false, false, false, true, false, false])
+  const page = text('<html><head><title>A &amp; B</title><script>evil()</script></head><body><nav>Menu</nav><main><h1>Best</h1><p>Sony&nbsp;first.</p><table><tr><td>Battery</td><td>30 h</td></tr></table></main></body></html>')
+  assert.equal(page.title, 'A & B')
+  assert.equal(page.text, '# Best\nSony first.\nBattery | 30 h |')
 })

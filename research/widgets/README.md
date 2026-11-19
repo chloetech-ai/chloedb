@@ -154,30 +154,36 @@ third did the same for smartphones, and "Which apps have I saved?" called
 ### What Claude found
 
 What Claude finds itself (a web search, pages or files it read) fills an app
-too. `findings` is a tool no model calls: it is what `app_open` and
-`app_make` take as the arguments of an app whose first tool it is, the
-request in `query` and a list of `documents`, each with its title, address,
-source, date, kind, a summary of what it says for the request, passages
-quoted exactly and comparable facts under the same names, with `notes` on
-what they agree on. The server checks them against its schema, keeps only
-web addresses, and names a document's source from its address when it has
-none. The saved app **Search results** (`server/views/findings.html`) shows
-them: the request and the notes first, each document with its link (opened
-through the host, `Kit.link`), source and date, summary, passages and facts,
-a filter, newest first, and the facts side by side when the documents share
-them; Ask about this puts a question in the chat. A made app can be filled by
-what Claude found too (a reading list, a table of the products the reviews
-name). The server's instructions tell Claude to show what it found this way,
-and in Claude Code the mod adds a line after each WebSearch and WebFetch
-result saying how, which Claude follows; it draws the documents as a card.
+too, shaped to what the person wants rather than as a list of pages. For "the
+best headphones to buy" that is the headphones themselves: the bottom line,
+which one for which need, each one's facts, pros and cons and what each
+source says about it, with the pages behind every claim. A question gets its
+answer and the points behind it, a how-to its steps, news its events.
+
+`show_findings` is the tool Claude calls with it, typed so its host checks
+the shape (`server/widgets/findings.mjs`: `query`, `goal` (pick, answer,
+overview, how-to, news), `answer` with the documents it cites, `needs`,
+`criteria`, `items` with `facts`, `pros`, `cons` and `says` per source, and
+the numbered `documents`). It opens the person's app for what Claude found
+that fits the request, the saved **Search results** unless they made
+another on the tool `findings`, which `app_open` and `app_make` also take as
+arguments. The server keeps only web addresses and drops a citation of a
+source that is not there. Search results (`server/views/findings.html`)
+shows the bottom line with its sources, a button per need that picks out its
+option, the options as cards or side by side, "What matters to you?", which
+asks Claude to pick again for that, and the sources, which every citation
+opens to. The server's instructions tell Claude to call it after finding
+things, and in Claude Code the mod adds a line after each WebSearch and
+WebFetch result saying how, which Claude follows (without it Claude answered
+in text); it draws the result as a card with the pick per need, the options
+and the sources as links.
 
 A run (Claude Code, `claude -p --plugin-dir research/widgets` with WebSearch
-allowed, 2026-11-19): asked to "find the best noise cancelling headphones
-reviews from this year", Claude searched twice and called `app_open` on
-`search-results` with six review roundups (What Hi-Fi?, Tom's Guide,
-TechRadar, SoundGuys, T3, SlashGear), then answered in a paragraph; 29 s,
-$0.28. Without the mod's line, the same request got a table in text and no
-app.
+allowed, 2026-11-19): asked "what are the best noise cancelling headphones
+to buy right now?", Claude searched three times (the guides, a test of the
+top three, their prices) and called `show_findings` with six headphones, a
+pick for five needs and ten sources, RTINGS' measured attenuation among the
+facts; 65 s, $0.63.
 
 ## On instant.chloetech.ai
 
@@ -190,10 +196,15 @@ requests a visitor an hour and 3 calls at once. Everyone who signs in shares
 the same saved apps.
 
 A request to find or research something is routed to `findings`: the chat
-first has Claude search the web (`claude -p` with WebSearch alone, never
-WebFetch, which could reach the services beside it, at most three searches,
-on the fast model and under the same caps), and what it found fills Search
-results, or the app made for it. One search took 18 s and $0.05.
+first has Claude look it up (`claude -p` on the fast model, under the same
+caps, with WebSearch and `server/reader.mjs`, an MCP server that reads public
+pages: http(s) on the usual ports, every address the name resolves to
+public, the connection pinned to the address checked, each redirect checked
+again; Claude Code's own WebFetch would reach the chloedb-server beside the
+chat and the cluster's services). It searches up to four times, reads three
+or four pages for the facts, and returns the shape above, which fills Search
+results. A follow-up to it ("I fly a lot") starts from what was found. One
+pick took 28 s and $0.11.
 
 ## Tests
 

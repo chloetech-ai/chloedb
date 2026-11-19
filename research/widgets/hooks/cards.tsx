@@ -119,40 +119,71 @@ function made(t: Kit, d: Made, place: Place): RenderElement {
   )
 }
 
-// What Claude found: the request, what the documents agree on, and each
-// document's title (a link where it has an address), where and when it is
-// from, what it says and its first passage. Ask about one from its button.
+// What Claude found, shaped to the request: the bottom line, which option
+// for which need, the options with their facts and verdicts (or the points,
+// steps or events), and the sources, each a link, numbered as the claims
+// cite them.
 function findings(t: Kit, d: Findings, place: Place, act: Actions): RenderElement {
   const { Box, Text, Button, Link } = t
   const width = Math.max(24, place.columns - 6)
   const cut = (text: string, n: number) => (text.length > n ? `${text.slice(0, n - 1)}…` : text)
-  const docs = d.documents.slice(0, place.compact ? 3 : 6)
-  if (!d.documents.length) return <Text dimColor>Nothing found for “{d.query}” yet.</Text>
+  const refs = (list: number[]) => (list.length ? ` [${list.join(', ')}]` : '')
+  const value = (name: string, v: unknown) => (v === true ? 'yes' : v === false ? 'no' : v == null ? '—' : typeof v === 'number' && /price|cost/i.test(name) ? money(v) : String(v))
+  const items = (d.items ?? []).slice(0, place.compact ? 3 : 6)
+  const docs = (d.documents ?? []).slice(0, place.compact ? 3 : 8)
+  const needs = d.needs ?? []
+  if (!d.documents.length && !items.length) return <Text dimColor>Nothing found for “{d.query}” yet.</Text>
+  const pick = d.goal === 'pick'
   return (
     <Box flexDirection="column">
       <Text>
         <Text bold>{d.query}</Text>
         <Text dimColor>
           {'  '}
-          {d.documents.length} source{d.documents.length > 1 ? 's' : ''}, found by Claude
+          {d.documents.length} source{d.documents.length === 1 ? '' : 's'}, found by Claude
         </Text>
       </Text>
-      {d.notes && !place.compact && <Text italic>{cut(d.notes, width * 2)}</Text>}
-      {docs.map(doc => (
-        <Box key={`doc-${doc.n}`} flexDirection="column" marginTop={place.compact ? 0 : 1}>
-          <Text>
-            <Text dimColor>{doc.n} </Text>
-            {doc.url ? <Link href={doc.url} label={cut(doc.title, width)} /> : <Text bold>{cut(doc.title, width)}</Text>}
-          </Text>
-          {[doc.source, doc.date, doc.kind].some(Boolean) && <Text dimColor>{'  '}{[doc.source, doc.date, doc.kind].filter(Boolean).join(' · ')}</Text>}
-          {!place.compact && <Text>{'  '}{cut(doc.summary, width * 2)}</Text>}
-          {!place.compact && doc.quotes[0] && <Text dimColor>{'  '}“{cut(doc.quotes[0], width * 2)}”</Text>}
+      {d.answer && <Text>{cut(d.answer.text, width * 3) + refs(d.answer.cites)}</Text>}
+      {needs.length > 0 && (
+        <Box flexDirection="column" marginTop={place.compact ? 0 : 1}>
+          {needs.slice(0, place.compact ? 2 : 4).map((x, i) => (
+            <Text key={`need-${i}`}>
+              <Text dimColor>For {x.need}: </Text>
+              <Text bold>{x.pick}</Text>
+              {!place.compact && x.why ? <Text dimColor>{`  ${cut(x.why, width)}`}</Text> : null}
+            </Text>
+          ))}
         </Box>
-      ))}
-      {d.documents.length > docs.length && <Text dimColor>and {d.documents.length - docs.length} more</Text>}
+      )}
+      {items.map(item => {
+        const facts = d.criteria.filter(c => c in item.facts).slice(0, 4).map(c => `${c.replace(/_/g, ' ')} ${value(c, item.facts[c])}`)
+        return (
+          <Box key={`item-${item.n}`} flexDirection="column" marginTop={place.compact ? 0 : 1}>
+            <Text>
+              <Text dimColor>{d.goal === 'news' && item.when ? `${item.when} ` : `${item.n} `}</Text>
+              {item.url ? <Link href={item.url} label={cut(item.name, width)} /> : <Text bold>{cut(item.name, width)}</Text>}
+              {facts.length ? <Text dimColor>{`  ${cut(facts.join(' · '), width)}`}</Text> : null}
+            </Text>
+            {!place.compact && (item.verdict || item.about) && <Text>{'  '}{cut(item.verdict ?? item.about ?? '', width * 2)}{refs([...new Set(item.says.map(s => s.doc))].slice(0, 4))}</Text>}
+          </Box>
+        )
+      })}
+      {!place.compact && (
+        <Box flexDirection="column" marginTop={1}>
+          <Text dimColor>Sources</Text>
+          {docs.map(doc => (
+            <Text key={`doc-${doc.n}`}>
+              <Text dimColor>{doc.n} </Text>
+              {doc.url ? <Link href={doc.url} label={cut(doc.title, width - 4)} /> : <Text>{cut(doc.title, width - 4)}</Text>}
+              {doc.source ? <Text dimColor>{`  ${doc.source}${doc.date ? `, ${doc.date}` : ''}`}</Text> : null}
+            </Text>
+          ))}
+        </Box>
+      )}
       {!place.compact && (
         <Box gap={1} marginTop={1}>
-          <Button key="compare" label="Compare them" onPress={() => act.ask(`Compare what these sources say about ${d.query}.`)} />
+          {pick && <Button key="narrow" label="Pick for me" onPress={() => act.ask(`For me, what matters most is `)} />}
+          <Button key="compare" label={pick ? 'Side by side' : 'Go deeper'} onPress={() => act.ask(pick ? `Put the ${d.query} side by side on what matters.` : `Go deeper on ${d.query}.`)} />
           <Button key="more" label="Find more" onPress={() => act.ask(`Find more sources on ${d.query}.`)} />
         </Box>
       )}
