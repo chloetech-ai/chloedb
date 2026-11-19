@@ -1,6 +1,6 @@
 """A table named is read alone: `search(table=)`, `table(name)`,
 `{"vector_of": key}` and `{"embed": text}` parameters of a statement read
-the table the call or the statement names, not the first table, in this
+the table the call or the statement names, never the first table, in this
 process and through a server (with a key limited to other tables than the
 first). Also the package's version, its typing marker, `AsyncClient` and
 `DuplicateKeyError`."""
@@ -53,7 +53,8 @@ def test_database_search_takes_a_table(tmp_path):
     with two_tables(tmp_path / "two.chloedb") as db:
         hits = db.search("mountain", table="mine_notes", mode="text")
         assert set(hits.keys) == {"a", "c"}
-        assert db.search("jacket").keys == ["p1"], "the first table without table="
+        with pytest.raises(chloedb.ChloeDBError, match="names no table"):
+            db.search("jacket")  # two tables: it asks which, rather than read the first
         assert db.search("mountain", table="mine_notes", where=col("id") != "a", mode="text").keys == ["c"]
         assert db.search("mountain", table="mine_notes", mode="vector").keys[:1] in (["a"], ["c"])
         assert db.table("mine_notes").limit(5).run().keys

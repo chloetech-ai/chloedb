@@ -100,7 +100,7 @@ db = chloedb.connect(SERVER)
 
 def where(q, category=None, max_price=None):
     """The WHERE clause and parameters of a search for q."""
-    conds, params = ["MATCH(body, :q, fuzzy => 'auto')"], {"q": q}
+    conds, params = ["MATCH(body, :q, syntax => 'plain', fuzzy => 'auto')"], {"q": q}
     if category:
         conds.append("category = :category")
         params["category"] = category
@@ -158,7 +158,7 @@ The sections below try each function from Python before the page puts them toget
 
 ### Typos
 
-`MATCH(body, :q, fuzzy => 'auto')` keeps the products that have every word of the search, each spelt as typed or an edit away (two edits for words of six letters or more; none for words of one or two letters). `bm25(body, :q)` ranks them, and since it ranks the same text on the same field, it takes the `MATCH`'s `fuzzy` too ([typos](../chloedb/query-language.md#typos-and-synonyms)). So "jaket" finds every jacket:
+`MATCH(body, :q, syntax => 'plain', fuzzy => 'auto')` keeps the products that have every word of the search, each spelt as typed or an edit away (two edits for words of six letters or more; none for words of one or two letters). `syntax => 'plain'` reads the search as its words alone, so what a visitor types is never an error: a stray quote or bracket (`rain jacket"`) is left out, and `-`, `OR` and `*` are no operators. `bm25(body, :q)` ranks them, and since it ranks the same text on the same field, it reads the words as the `MATCH` does and ranks every product the `MATCH` keeps, those spelt as typed first ([typos](../chloedb/query-language.md#typos-and-synonyms)). So "jaket" finds every jacket:
 
 ```python
 import shop

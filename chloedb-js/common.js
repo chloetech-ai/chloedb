@@ -324,6 +324,19 @@ function camel(o) {
  * `next`, `closeCursor`, `sql`, `_highlight`, `_correct`, `_queryLogged`
  * and `_exportRankLog`. */
 export class Searchable {
+  /** @internal Refuses a call that names no table where there are several:
+   * it would read or change the first table, which is seldom the one meant
+   * (MAYA-403: a search for "lasagna" on a server of products,
+   * library_help and recipes answered shoes). With one table, it is that
+   * one. `_tableNames()` gives the names. */
+  async _checkTable(table, call) {
+    if (table != null) return;
+    const names = await this._tableNames();
+    if (names.length > 1) {
+      throw new ChloeDBError(`${call} names no table, and this ${this._local ? "database" : "server"} has ${names.length}: ${names.join(", ")}. Pass table, as in ${call}(..., { table: ${JSON.stringify(names[names.length - 1])} })`);
+    }
+  }
+
   /**
    * `texts` (one text, or a list of them: a page's hits' names, say) with
    * the words `query` matches marked, as a search of TEXT field `field`
@@ -427,6 +440,7 @@ export class Searchable {
     // A client's query takes timeoutMs alone: a server's queries share its
     // memory budget.
     if ((memory != null || signal != null) && !this._local) throw new TypeError(`${this.constructor.name}.search() takes no ${memory != null ? "memory" : "signal"}`);
+    await this._checkTable(table, "search");
     const s = await this.schema(table);
     if (textFields == null) {
       const texts = s.fields.filter((f) => f.type === "text" && (f.indexed ?? true));
@@ -462,6 +476,36 @@ export class Searchable {
     const opts = Object.fromEntries(Object.entries({ minSeqNo, minSeqNos, timeoutMs, memory, signal }).filter(([, v]) => v != null));
     return Object.keys(opts).length ? this.query(sql, p, opts) : this.query(sql, p);
   }
+}
+
+// A quoted string or identifier, or a placeholder by position: `?`, `?1`,
+// `$1`, `%s`.
+const POSITIONAL = /'(?:[^']|'')*'|"(?:[^"]|"")*"|\?\d*|\$\d+|%s/g;
+
+/**
+ * Refuses query parameters given by position (MAYA-405): ChloeDB's SQL
+ * names them (`:q`), and they are given as an object. An array (the `?`
+ * of better-sqlite3 and node-postgres's `$1`) or a lone value raises a
+ * TypeError that shows the call with names.
+ */
+export function namedParams(sql, params, call) {
+  if (params == null || (typeof params === "object" && !Array.isArray(params) && !ArrayBuffer.isView(params))) return params;
+  const holes = [...String(sql).matchAll(POSITIONAL)].filter((m) => !`'"`.includes(m[0][0]));
+  // An array is the values, unless the statement has one placeholder and
+  // it holds several (a vector, or IN (?)).
+  const values = Array.isArray(params) && (holes.length !== 1 || params.length === 1) ? params : [params];
+  const names = Array.from({ length: Math.max(values.length, holes.length, 1) }, (_, i) => `p${i + 1}`);
+  let n = 0;
+  const shown = holes.length ? String(sql).replace(POSITIONAL, (m) => (`'"`.includes(m[0]) ? m : `:${names[n++] ?? "p"}`)) : "... :p1 ...";
+  const shownValue = (v) => {
+    try {
+      return JSON.stringify(v) ?? String(v);
+    } catch {
+      return String(v);
+    }
+  };
+  const args = values.map((v, i) => `${names[i]}: ${shownValue(v)}`).join(", ");
+  throw new TypeError(`query parameters are named in ChloeDB's SQL (:name) and given as an object, not by position as better-sqlite3's ? and node-postgres's $1 take them: ${call}(${JSON.stringify(shown)}, { ${args} })`);
 }
 
 /** The schema of `table` (any case) among `tables`, or the first. */

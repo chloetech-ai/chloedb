@@ -11,6 +11,30 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A search box's typo search keeps every row it matched, and takes the
+  text as words.** `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f,
+  :q)`, the search the docs teach, now ranks every row its `WHERE` keeps:
+  the `bm25` reads the words as the `MATCH` does, those spelt as typed
+  first. **Changed:** it ranked only the rows of the word typed when that
+  word was in the index, so "colour" returned 2 of the 7 rows it matched
+  and a misspelling found more than either spelling. A `bm25` alone still
+  corrects a typo rather than widening a word it knows.
+  `MATCH(f, :q, syntax => 'plain')` reads the text as words alone, so a
+  stray quote or bracket is never an error and `-`, `OR` and `*` are no
+  operators; the `bm25` beside it reads it as plain too. A bad `MATCH` query
+  says what is wrong in words (`has a ) without its (`) and how to search a
+  visitor's text, rather than naming the parser's tokens. A `?`, `?1` or
+  `$1` placeholder says that ChloeDB's parameters are named and how to give
+  them, over HTTP too.
+- **The Python and JavaScript packages name the table or refuse.** A call
+  that reads or writes one table (`search`, `insert`, `upsert`, `delete`,
+  `get`, `get_many`, `import_file`, `sid_next`, the column calls, `table()`
+  and `frame()` in Python) and names none, on a database or a server of
+  several tables, raises `ChloeDBError` naming them. **Changed:** it used
+  the first table. Values by position (`db.query(sql, ("soup",))` with
+  sqlite3's `?` or psycopg's `%s`; an array with better-sqlite3's `?` or
+  node-postgres's `$1`) raise a `TypeError` that shows the call with
+  names.
 - **A query's funnel: each stage's time, and the rows each stage kept and
   dropped.** Everything a query does between its text and its rows is laid
   on thirteen stages in order (wait, understand, expand terms, embed, plan,

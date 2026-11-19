@@ -220,13 +220,14 @@ _CLIENT_ONLY = {
 }
 
 
-def _local_params(method: str, given: Mapping[str, Any] | None, kw: Mapping[str, Any]) -> dict | None:
+def _local_params(method: str, given: Mapping[str, Any] | None, kw: Mapping[str, Any], sql: str | None = None) -> dict | None:
     """Query parameters from a dict and keyword arguments, refusing a
-    keyword that is a client's option (`_CLIENT_ONLY`)."""
+    keyword that is a client's option (`_CLIENT_ONLY`), and values by
+    position (`_search.params`)."""
     for name in kw:
         if name in _CLIENT_ONLY:
             raise TypeError(_CLIENT_ONLY[name].format(method=method))
-    return _params(given, kw)
+    return _params(given, kw, sql, method)
 
 
 def _limits(timeout_ms: int | None, memory: int | None) -> tuple[int | None, int | None]:
@@ -493,8 +494,16 @@ class Database(Search, FrameStore):
             return []
         return [ordered_schema(json.loads(t)) for t in self._db.tables_json()]
 
+    # What `_check_table` reads.
+    _holder = "database"
+
+    def _table_names(self) -> list[str]:
+        if isinstance(self._db, _Pending):
+            return []
+        return list(self._db.table_names())
+
     def add_column(self, name: str, type: str, *, table: str | None = None, progress: Any = None, **options: Any) -> None:
-        """Adds a column to the first table or `table`, as `ALTER TABLE ...
+        """Adds a column to `table` (or the only table), as `ALTER TABLE ...
         ADD COLUMN` does: `options` are the field's, in the short form of a
         schema (`default`, `not_null`, `indexed`, `embed` and `model`, ...).
         Rows written before it read it as its default, or None.
@@ -507,12 +516,13 @@ class Database(Search, FrameStore):
         so that `similarity()` finds them; when its model is not open
         here (see `embed_errors`), it warns that they have no vector yet.
         """
+        self._check_table(table, "add_column")
         with _new_embedded(self, table):
             self._db.alter_table_json(json.dumps([{"add": {"name": name, "type": type, **options}}]), table)
         _fill_new(self, progress)
 
     def embed_backfill(self, field: str, *, table: str | None = None, progress: Any = None, batch: int = 256) -> int:
-        """Embeds the rows of the first table or `table` that have no
+        """Embeds the rows of `table` (or the only table) that have no
         vector in embedded field `field`: rows written before it was added
         (`add_column` and `ALTER TABLE ... ADD COLUMN` do this for them
         themselves) or while its model was not open (`set_embed_later`).
@@ -521,25 +531,29 @@ class Database(Search, FrameStore):
         seconds prints how far it is on stderr every two seconds, and
         `progress=False` prints nothing. Ctrl-C stops it, keeping the rows
         filled so far. Returns the rows it wrote."""
+        self._check_table(table, "embed_backfill")
         report = _Progress(field, table or self.schema["table"]) if progress is None else (progress or None)
         return self._db.embed_backfill(field, table, max(int(batch), 1), report)
 
     def missing_vectors(self, field: str, *, table: str | None = None) -> int:
-        """How many rows of the first table or `table` have no vector in
+        """How many rows of `table` (or the only table) have no vector in
         embedded field `field`, which `similarity()` cannot find:
         `embed_backfill` fills them in (rows whose sources are all empty
         get none)."""
+        self._check_table(table, "missing_vectors")
         return self._db.missing_vectors(field, table)
 
     def drop_column(self, name: str, *, table: str | None = None) -> None:
-        """Drops a column of the first table or `table`, with its values,
+        """Drops a column of `table` (or the only table), with its values,
         as `ALTER TABLE ... DROP COLUMN` does. The key, and a column another
         field or the table's options name, stay."""
+        self._check_table(table, "drop_column")
         self._db.alter_table_json(json.dumps([{"drop": name}]), table)
 
     def rename_column(self, old: str, new: str, *, table: str | None = None) -> None:
-        """Renames a column of the first table or `table`, keeping its
+        """Renames a column of `table` (or the only table), keeping its
         values; the fields and options that name it follow."""
+        self._check_table(table, "rename_column")
         self._db.alter_table_json(json.dumps([{"rename": [old, new]}]), table)
 
     @property
@@ -579,7 +593,7 @@ class Database(Search, FrameStore):
         committed. A client's other options (`idempotency_key`, ...) raise
         TypeError rather than bind as parameters; a parameter of that name
         goes in `params`."""
-        return Result._of(self._db.query(sql, _local_params("query", params, kw), *_limits(timeout_ms, memory)))
+        return Result._of(self._db.query(sql, _local_params("query", params, kw, sql), *_limits(timeout_ms, memory)))
 
     def query_arrow(self, sql: str, params: Mapping[str, Any] | None = None, *, timeout_ms: int | None = None, memory: int | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> ArrowResult:
         """Runs a SELECT: its answer as Arrow columns, which pyarrow,
@@ -587,7 +601,7 @@ class Database(Search, FrameStore):
         `timeout_ms` and `memory` as `query` takes them."""
         if not hasattr(self._db, "query_arrow"):
             raise ChloeDBError("this build of chloedb has no Arrow: build it with the feature datafusion (the default)")
-        return ArrowResult(self._db.query_arrow(sql, _local_params("query_arrow", params, kw), *_limits(timeout_ms, memory)))
+        return ArrowResult(self._db.query_arrow(sql, _local_params("query_arrow", params, kw, sql), *_limits(timeout_ms, memory)))
 
     def scroll(self, sql: str, params: Mapping[str, Any] | None = None, *, page_size: int = 10_000, arrow: bool = False, timeout_ms: int | None = None, memory: int | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> Iterator[Any]:
         """Runs a SELECT and yields its answer a page at a time, as
@@ -596,7 +610,7 @@ class Database(Search, FrameStore):
         answers every row at once, so its pages are slices of one answer,
         and `timeout_ms` and `memory` (as `query` takes them) bound that
         answer."""
-        _local_params("scroll", params, kw)
+        _local_params("scroll", params, kw, sql)
         n = max(int(page_size), 1)
         if arrow:
             import pyarrow
@@ -614,7 +628,7 @@ class Database(Search, FrameStore):
         INSERT, UPDATE or DELETE wrote. `timeout_ms` and `memory` limit a
         SELECT as `query` takes them; a write is not cut short. A client's
         `idempotency_key` raises TypeError (see `query`)."""
-        p = _local_params("sql", params, kw)
+        p = _local_params("sql", params, kw, sql)
         if re.match(r"\s*alter\s+table\b", sql, re.I):
             # A column a model embeds is filled in for the rows before it.
             with _new_embedded(self, None, every=True):
@@ -625,7 +639,7 @@ class Database(Search, FrameStore):
         return r if isinstance(r, int) else Result._of(r)
 
     def _query_logged(self, sql: str, params: Mapping[str, Any] | None, log: dict) -> Result:
-        return Result._of(self._db.query_logged(sql, _params(params, {}), json.dumps(log)))
+        return Result._of(self._db.query_logged(sql, _params(params, {}, sql, "query_logged"), json.dumps(log)))
 
     def _export_rank_log(self, opts: dict) -> list[dict]:
         return json.loads(self._db.export_rank_log(json.dumps(opts)))
@@ -633,7 +647,7 @@ class Database(Search, FrameStore):
     def plan(self, sql: str, params: Mapping[str, Any] | None = None, **kw: Any) -> dict:
         """The plan of a SELECT, INSERT, UPDATE or DELETE, without running
         it: the plan IR as JSON, which `run` takes."""
-        return json.loads(self._db.plan(sql, _local_params("plan", params, kw)))
+        return json.loads(self._db.plan(sql, _local_params("plan", params, kw, sql)))
 
     def run(self, plan: Mapping[str, Any] | Query, *, timeout_ms: int | None = None, memory: int | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None) -> Result | int:
         """Runs a plan (as `plan`, a `Query` or a server's /v1/explain gives
@@ -649,22 +663,26 @@ class Database(Search, FrameStore):
         table or `table`; all or none are written. Returns how many. A
         vector may be a numpy array (float32 or float64), read from its
         bytes."""
+        self._check_table(table, "insert")
         return self._db.insert(rows, table)
 
     def upsert(self, rows: Mapping[str, Any] | Iterable[Mapping[str, Any]], *, table: str | None = None) -> int:
         """Inserts a row or rows, replacing the rows that have their keys,
         in transactions of 10,000 rows. Returns how many."""
+        self._check_table(table, "upsert")
         return self._db.upsert(rows, table)
 
     def get(self, key: Any, *, table: str | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None) -> dict | None:
-        """The row with this primary key in the first table or `table`, read
+        """The row with this primary key in `table` (or the only table), read
         without SQL: a dict of the columns `SELECT *` answers, or None when
         no live row has the key (or its `expire_by` time has passed).
         `min_seq_no(s)` change nothing here (see `query`)."""
+        self._check_table(table, "get")
         return self._db.get_many([key], table)[0]
 
     def get_many(self, keys: Iterable[Any], *, table: str | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None) -> list[dict | None]:
         """`get` of several keys at once, in their order."""
+        self._check_table(table, "get_many")
         return self._db.get_many(list(keys), table)
 
     def expire(self) -> int:
@@ -675,6 +693,7 @@ class Database(Search, FrameStore):
     def delete(self, keys: Any, *, table: str | None = None) -> int:
         """Deletes the rows with this key or these keys; returns how many
         there were."""
+        self._check_table(table, "delete")
         return self._db.delete(keys, table)
 
     def write(self, ops: list[dict], *, idempotency_key: str | None = None) -> int:
@@ -689,10 +708,11 @@ class Database(Search, FrameStore):
 
     def import_file(self, path: str | os.PathLike, format: str | None = None, *, table: str | None = None) -> dict:
         """Loads a JSON Lines, JSON (an array), CSV or TSV file, in `format`
-        or the one its extension names, into the first table or `table`.
+        or the one its extension names, into `table` (or the only table).
         Into an empty table the rows are bulk-loaded in one commit;
         otherwise they are upserted. Returns {rows, bulk, skipped_fields}:
         the columns the schema lacks."""
+        self._check_table(table, "import_file")
         rows, bulk, skipped = self._db.import_file(os.fspath(path), format, table)
         return {"rows": rows, "bulk": bulk, "skipped_fields": skipped}
 
@@ -754,8 +774,8 @@ class Database(Search, FrameStore):
     def import_arrow(self, data: Any, *, table: str | None = None) -> dict:
         """Writes rows from anything that gives an Arrow stream: a pyarrow
         Table, RecordBatch or RecordBatchReader, a polars DataFrame, a
-        DuckDB relation, a pandas DataFrame (through pyarrow), into the
-        first table or `table`. Each column fills the field of its name;
+        DuckDB relation, a pandas DataFrame (through pyarrow), into
+        `table` (or the only table). Each column fills the field of its name;
         the others are left out. Into an empty table the rows are
         bulk-loaded in one commit; otherwise they are upserted by key.
         Returns {table, rows, bulk, skipped, notes}."""
@@ -763,11 +783,12 @@ class Database(Search, FrameStore):
             import pyarrow
 
             data = pyarrow.Table.from_pandas(data, preserve_index=False)
+        self._check_table(table, "import_arrow")
         return json.loads(self._db.import_arrow(data, table))
 
     def embed(self, text: str | None = None, field: str | None = None, *, table: str | None = None, image: bytes | None = None, audio: bytes | None = None) -> list[float]:
         """The query vector of `text` by an embedded field's model (of the
-        first table, or of `table`), or of `image` or `audio`, the bytes of
+        `table`, or of the only table), or of `image` or `audio`, the bytes of
         an image or sound file, by a model of that."""
         return self._db.embed(text, field, table, None if image is None else bytes(image), None if audio is None else bytes(audio))
 
@@ -784,6 +805,7 @@ class Database(Search, FrameStore):
         each prefix in the order of their last numbers. At most 64
         prefixes."""
         prefixes = builtins.list(prefixes)
+        self._check_table(table, "sid_next")
         got = self._db.sid_next(field, prefixes, where, _params(params, kw), table)
         return {p: dict(cs) for p, cs in zip(prefixes, got)}
 
