@@ -532,6 +532,87 @@ async fn a_cluster_follows_postgres() {
     follows_changes_into(2).await;
 }
 
+/// The follower tells ChloeDB how it stands every 2 s (ROSA-302, ROSA-307):
+/// its state, its positions as Postgres writes them, how far behind
+/// Postgres's own position it is and since when, on Data > Connectors
+/// (`GET /v1/admin/connectors`), in `/metrics` and in the points the
+/// built-in alert follow-behind reads; killed, it goes silent and its lag
+/// grows, so that the alert fires; its slot dropped, it is stopped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_follower_says_how_it_stands() {
+    let Some(pg) = postgres().await else { return };
+    let src = database(&pg, "status").await;
+    exec(&src, "CREATE TABLE items (id int PRIMARY KEY, title text); INSERT INTO items SELECT i, 'item ' || i FROM generate_series(1, 50) i; CREATE PUBLICATION strata FOR TABLE items;").await;
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(empty(dir.path(), "one.strata"));
+    let dst = http(svc.clone()).await;
+    let run = start(options(&src, &dst, "shop"));
+    let items = ("SELECT id::text, title FROM items ORDER BY id", "SELECT id, title FROM items ORDER BY id LIMIT 1000");
+    converges(&src, &dst, items.0, items.1).await;
+    // The follower as Data > Connectors shows it, once `f` holds of it.
+    let follower = |f: &'static (dyn Fn(&Json) -> bool + Sync)| {
+        let dst = dst.clone();
+        async move {
+            let until = Instant::now() + Duration::from_secs(40);
+            loop {
+                let (status, j) = call(&dst, "GET", "/v1/admin/connectors", None).await;
+                let one = j["followers"].as_array().and_then(|a| a.iter().find(|x| x["name"] == "shop")).cloned();
+                if let Some(one) = one.filter(|o| f(o)) {
+                    return one;
+                }
+                assert!(Instant::now() < until, "{status} {}", j["followers"]);
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    };
+    let lsn = |v: &Json| v.as_str().and_then(postgres::pgoutput::parse_lsn).unwrap_or_else(|| panic!("an LSN as Postgres writes it: {v}"));
+    exec(&src, "INSERT INTO items VALUES (51, 'one more'); UPDATE items SET title = 'changed' WHERE id < 5").await;
+    converges(&src, &dst, items.0, items.1).await;
+    let pg_at = lsn(&json!(pg_rows(&src, "SELECT pg_current_wal_lsn()::text").await[0][0]));
+    let f = follower(&|f| f["state"] == "following" && f["postgres_lsn"].is_string() && f["confirmed_lsn"].is_string()).await;
+    assert_eq!((f["kind"].as_str(), f["publication"].as_str(), f["slot"].as_str(), f["tables"].as_u64()), (Some("postgres"), Some("strata"), Some("strata_shop"), Some(1)), "{f}");
+    assert!(f["source"].as_str().is_some_and(|s| s.starts_with("postgres://postgres@") && !s.contains(&PASSWORD.replace(' ', "%20"))), "its source, without the password: {f}");
+    // Caught up: Postgres's position, less what it confirmed, is small;
+    // what it applied is where the last transaction ended.
+    let f = follower(&|f| f["behind_bytes"].as_u64().is_some_and(|b| b < 64 << 10) && f["lag_ms"].as_u64().is_some_and(|l| l < 10_000)).await;
+    let (applied, confirmed, at) = (lsn(&f["applied_lsn"]), lsn(&f["confirmed_lsn"]), lsn(&f["postgres_lsn"]));
+    assert!(applied <= confirmed && confirmed <= at + 8192 && at >= pg_at, "applied {applied:X} confirmed {confirmed:X} Postgres {at:X} (asked {pg_at:X}): {f}");
+    assert_eq!(f["behind_bytes"].as_u64(), Some(at.saturating_sub(confirmed)), "{f}");
+    let (_, s) = call(&dst, "GET", "/v1/sources", None).await;
+    let marks = s["sources"].as_array().unwrap();
+    let mark = marks.iter().find(|m| m["name"].as_str().and_then(|n| n.strip_prefix("postgres/shop/")).is_some_and(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit()))).cloned().unwrap_or_else(|| panic!("{s}"));
+    assert_eq!(lsn(&mark["lsn"]), mark["offset"].as_u64().unwrap(), "the applied LSN as Postgres writes it too: {mark}");
+    assert!(marks.iter().filter(|m| m["name"].as_str().is_some_and(|n| n.ends_with("/copy") || n.contains("/t/") || n.ends_with("/step") || n.ends_with("/base"))).all(|m| m.get("lsn").is_none()), "only positions get an LSN: {s}");
+    // In /metrics and the alert's points, and not a cluster this one follows.
+    let metrics = || {
+        let dst = dst.clone();
+        async move { chloedb_server::http_client().build().unwrap().get(format!("{dst}/metrics")).send().await.unwrap().text().await.unwrap() }
+    };
+    let text = metrics().await;
+    for series in ["chloedb_follow_lag_seconds{name=\"shop\",kind=\"postgres\"}", "chloedb_follow_behind_bytes{name=\"shop\",kind=\"postgres\"}", "chloedb_follow_up{name=\"shop\",kind=\"postgres\"} 1"] {
+        assert!(text.contains(series), "{series} in:\n{}", text.lines().filter(|l| l.contains("follow")).collect::<Vec<_>>().join("\n"));
+    }
+    assert!(svc.sample().gauges.contains_key("follow_lag_s"), "the built-in alert follow-behind has data");
+    let (_, clusters) = call(&dst, "GET", "/v1/admin/follow", None).await;
+    assert!(clusters["clusters"].as_array().is_none_or(|c| c.iter().all(|x| x["name"] != "shop")), "{clusters}");
+
+    // Killed: silent, and behind for as long, while Postgres goes on.
+    drop(run);
+    exec(&src, "INSERT INTO items VALUES (52, 'while it is down')").await;
+    let f = follower(&|f| f["silent"] == true && f["lag_s"].as_f64().is_some_and(|l| l > 10.0)).await;
+    assert_eq!(f["state"], "following", "what it last said: {f}");
+    let text = metrics().await;
+    assert!(text.contains("chloedb_follow_up{name=\"shop\",kind=\"postgres\"} 0"), "{text}");
+    assert!(svc.sample().gauges.get("follow_lag_s").is_some_and(|l| *l > 10.0), "the alert follow-behind sees it fall behind");
+
+    // Its slot dropped: stopped, and no longer counted as behind.
+    let dropped = postgres::drop_slot(options(&src, &dst, "shop")).await.unwrap();
+    assert_eq!(dropped["dropped"], json!(true));
+    let f = follower(&|f| f["state"] == "stopped").await;
+    assert!(f["why"].as_str().is_some_and(|w| w.contains("--drop-slot")), "{f}");
+    assert!(!svc.sample().gauges.contains_key("follow_lag_s"), "nothing follows now");
+}
+
 /// SCRAM, MD5 and TLS sign-ins, and the refusals that say what to fix.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn signs_in_and_says_what_is_missing() {

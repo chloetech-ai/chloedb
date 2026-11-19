@@ -11,6 +11,108 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A search box's typo search keeps every row it matched, and takes the
+  text as words.** `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f,
+  :q)`, the search the docs teach, now ranks every row its `WHERE` keeps:
+  the `bm25` reads the words as the `MATCH` does, those spelt as typed
+  first. **Changed:** it ranked only the rows of the word typed when that
+  word was in the index, so "colour" returned 2 of the 7 rows it matched
+  and a misspelling found more than either spelling. A `bm25` alone still
+  corrects a typo rather than widening a word it knows.
+  `MATCH(f, :q, syntax => 'plain')` reads the text as words alone, so a
+  stray quote or bracket is never an error and `-`, `OR` and `*` are no
+  operators; the `bm25` beside it reads it as plain too. A bad `MATCH` query
+  says what is wrong in words (`has a ) without its (`) and how to search a
+  visitor's text, rather than naming the parser's tokens. A `?`, `?1` or
+  `$1` placeholder says that ChloeDB's parameters are named and how to give
+  them, over HTTP too.
+- **The Python and JavaScript packages name the table or refuse.** A call
+  that reads or writes one table (`search`, `insert`, `upsert`, `delete`,
+  `get`, `get_many`, `import_file`, `sid_next`, the column calls, `table()`
+  and `frame()` in Python) and names none, on a database or a server of
+  several tables, raises `ChloeDBError` naming them. **Changed:** it used
+  the first table. Values by position (`db.query(sql, ("soup",))` with
+  sqlite3's `?` or psycopg's `%s`; an array with better-sqlite3's `?` or
+  node-postgres's `$1`) raise a `TypeError` that shows the call with
+  names.
+- **A query's funnel: each stage's time, and the rows each stage kept and
+  dropped.** Everything a query does between its text and its rows is laid
+  on thirteen stages in order (wait, understand, expand terms, embed, plan,
+  match, select, rank, rerank, blend, shards, fetch, other), each
+  microsecond counted once. The command center's new **Query funnel** page
+  (Watch, beside Queries) shows the latest queries' time by stage, by
+  statement and one by one, and traces one query: the words it understood,
+  the terms its words became with their typos, prefixes and synonyms and
+  the rows holding each, "did you mean", the texts embedded, each input's
+  matches, `WHERE` a condition at a time, the candidates and the ranking,
+  and every row it saw with where it left and why (on the page, ranked
+  past it, reranked off it, below every input's top, or dropped by the
+  condition it names). A query's drawer in Queries opens it with **Its
+  funnel**. `POST /v1/funnel` and `GET /v1/queries/funnel` on
+  chloedb-server, through a coordinator too; the request's trace has the
+  spans `understand`, `expand`, `embed` and `blend`; a BM25 search's
+  profile has a step `terms`; `Db::funnel` and `query::funnel` in Rust
+  ([server.md](docs/chloedb/server.md#a-querys-funnel)).
+- **Blends stack, and Labs → Blending builds them by drag and drop.** A
+  blend's source may be a blend of its own, `name AS BLEND (SOURCES (...)
+  ... WITH (k => n))`: it runs into its own k slots under its own rules,
+  and its rows are that source's rows above, with `via` naming the source
+  each came from through the nodes (`organic/videos`), which every blend
+  answers and a rule above may read. Up to 4 blends deep and 32 queries;
+  the receipts carry each node's own; on one database and through a
+  coordinator alike. The command center's Blending editor opens on a
+  canvas of the stack, wired up to the top by each source's share: drag a
+  query, a blend, a copy of a saved blend, a rule or a head from the
+  palette onto a node, a source onto another to stack a blend on the two,
+  or onto the bin; a click selects a node, whose settings and rows show
+  below ([query-language.md](docs/chloedb/query-language.md#stacking-blends-a-blend-as-anothers-source)).
+- **A write racing ALTER TABLE is bound again until its deadline**: an
+  INSERT, UPDATE or DELETE whose table an `ALTER TABLE` changed while it
+  ran was bound again ten times at most, and a stream of `ALTER TABLE`s
+  (which take the storage lock without queueing) could win all ten. The
+  server now binds it again, waiting a few milliseconds more each time,
+  until the statement's deadline (an embedded `Db::sql` up to 1000
+  times). A write still raced then is refused with its own code,
+  `table_altered`, which is `retryable: true` (it was `query_invalid`,
+  not retryable); nothing was written, so sending it again is safe.
+- **A replica counts its applied batches, and the test of a copy stops
+  flaking.** `chloedb_replica_apply_batches_total` and
+  `chloedb_replica_apply_seconds_total` (the seconds include the wait for a
+  free writer). `replication::a_replica_the_log_does_not_reach_is_sent_a_copy`
+  failed about a quarter of its runs on a two-CPU machine: its ship log was
+  2,000 bytes under an unthrottled writer, so the primary sent copy after
+  copy and the test, which waits for exactly one per replica, timed out. It
+  keeps a log that holds seconds of a throttled writer now.
+- **Blends explore, are logged with each slot's chance, and are valued
+  and tuned off-policy.** A blend served with `"log": {"explore":
+  {"policy": "softmax", "tau": 0.3, "top": 5}}` draws each slot among the
+  best rows that fit it by their utility, from the request's id, and logs
+  every row of every source with the page's chances. A replay of any blend
+  of the same sources over those pages gives its chance of each, so
+  cascade doubly robust (with a click model cross-fitted over two halves
+  of the searches) values it, with SNIPS beside it over the top slots as a
+  check, its support (effective searches), its coverage of what the log
+  could draw and a verdict against the blend that logged; tuning tries
+  weights, shares and diversity on half the searches and proves the best
+  on the other half. `Db::blend_requests` and `query::blend_eval` in Rust;
+  `POST /v1/blends/:name/evaluate` and `/tune` on chloedb-server, through
+  a coordinator too; the command center's Labs → Blending has **Value on
+  the log** and **Tune toward clicks**
+  ([query-language.md](docs/chloedb/query-language.md#valuing-a-blend-on-its-log-exploring-fills-cascade-doubly-robust-and-snips)).
+- **The on-call key does on-call** (persona study round 3, MARCO-301,
+  MARCO-313). A key limited to tables may be given the route group
+  `alerts`: an alert's page (`GET /v1/alerts/<rule>`), the runbooks, and
+  acknowledging, silencing and noting an alert (with a key that writes);
+  never the rules, the routes or a backtest. The `oncall` preset gives it,
+  so the key "Search your logs" makes for the rotation can claim what it
+  is paged for; an `oncall` key made before keeps `fleet` alone, so make
+  it again. `/v1/whoami` lists the server's routes such a key may call
+  (`may.routes`), and the command center offers those alone: the alert
+  page's buttons a key cannot use say why, Edit rule reads View rule, and
+  a refusal is told in the server's words. `chloedb-server cc`'s Logs,
+  the server's own log, which an admin key reads, says so for another key
+  and lists the log tables it reads, and `Enter` shows one's newest lines
+  in SQL ([server.md](docs/chloedb/server.md#security)).
 - **A plan waits until a new copy counts among its shard's copies before
   it goes on.** A copy that installed its primary's rows is in sync at
   once, but it serves reads and counts itself among the copies only on
@@ -333,6 +435,28 @@ or one server), so shards of older versions need nothing new.
   up, each experiment takes a fresh seed, and a report's Queries tab shows
   where the difference came from
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#checking-a-result)).
+
+- **Experiments on real sites** (`chloedb-experiments`, `chloedb-hn`,
+  `chloedb-arxiv`, demos). The Experiments app studies a site's real
+  search with AI agents, who play people written from the site's own
+  rows. A ChloeDB app opts in with `--experiments-token`, which opens
+  only `/v1/experiment`: these routes read, hold no key of the cluster,
+  and list the knobs an arm may change. The knobs are query understanding,
+  retrieval (typos, synonyms, meaning, code as written, authors), ranking
+  (each weight, or a whole `ORDER BY` expression), blending after the
+  ranking (at most so many of one site, category or author; places for
+  the last year), and an index built another way beside the main one
+  (`--experiment-index NAME=TABLE`). chloedb-hn and chloedb-arxiv take
+  experiments. A public search can be an arm too: HN's or arXiv's on
+  ChloeDB, or Algolia's of the same stories (`--source NAME=KIND:URL`).
+  Personas have needs that are either a row they remember (the exact
+  truth) or a topic, which a judge grades once, with the grades kept. A
+  study tries every need on every arm and compares them need by need,
+  with McNemar's test. Its page shows each need's sessions side by side,
+  and a site's page shows a search as it is beside your knobs, with a
+  line from each row to where it moved
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#real-sites),
+  [hn](docs/chloedb/hn.md#experiments), [arXiv](docs/chloedb/arxiv.md#experiments)).
 
 ### Query plans
 

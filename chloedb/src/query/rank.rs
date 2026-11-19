@@ -840,7 +840,7 @@ fn visit(e: &Expr, f: &mut dyn FnMut(&Expr)) {
 }
 
 /// A leaf as plan lines name it: its function and field.
-fn leaf_name(s: &Score, schema: &Schema) -> String {
+pub fn leaf_name(s: &Score, schema: &Schema) -> String {
     let name = |f: &usize| schema.fields.get(*f).map_or("?", |f| f.name.as_str());
     match s {
         Score::Bm25 { field, .. } => format!("bm25({})", name(field)),

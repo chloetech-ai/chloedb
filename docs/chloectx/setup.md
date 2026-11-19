@@ -190,7 +190,7 @@ chloectx ui --home ~/chloectx-demo/chloectx  # stores kept elsewhere (here: the 
 
 `chloectx ui` is the [live inspector](inspector.md) pointed at your own data. The left column picks a store (one per project directory, newest first) and a session, and replays that session from its records: prompts, answers, tool calls (open one to see its stored result), the briefing at session start, every recall decision with its gate score and the records it injected, and the notes the distiller kept, superseded or closed. A session that is still running grows as it goes. The right side has every panel of the inspector, scoped to the chosen store: the live feed of records and daemon events, knowledge, the table, the graph, the vectors, an SQL console and the storage layout.
 
-It is built into the binary (no Python, no checkout needed) and only reads: each store is opened through its project's daemon, as the hooks do, so it is safe to keep open while sessions write. It listens on 127.0.0.1, and every request must carry the random token in the URL it prints, because stores hold transcripts. Links keep the store, session and tab in the address (`?store=…&session=…&tab=knowledge`), so a view can be reopened later.
+It is built into the binary (no Python, no checkout needed). It reads each store through its project's daemon, as the hooks do, so it is safe to keep open while sessions write; the one thing it changes is what you tell it to forget, from the **Forget…** button on a knowledge card or record, which lists what would go before it deletes anything ([forget something](#forget-something-chloectx-forget)). It listens on 127.0.0.1, and every request must carry the random token in the URL it prints, because stores hold transcripts. Links keep the store, session and tab in the address (`?store=…&session=…&tab=knowledge`), so a view can be reopened later.
 
 It is also the quickest way to debug an install. A `DISTILL` event with an error in the live feed means the distiller cannot run `claude -p`; a `RECALL · SKIP` on every prompt with few candidates means the store is still small; no records at all for a session means its hooks did not run.
 
@@ -360,6 +360,40 @@ chloectx sync retire a1b2c3d4:42    # a rule (or decision, fact, to-do, note) re
 **From 0.3.3 and before.** Every project shared one table, `chloectx_memory`, and any key that could write it read every project's transcripts. A project's rows there are still pulled, where the key may read that table, held back as from a machine no one accepted (`unknown`); nothing is pushed there any more. Once every machine of a project syncs into its own table, an admin removes the old rows (`DELETE FROM chloectx_memory WHERE project = 'acme/web'`) and revokes the old shared keys.
 
 `CHLOECTX_SYNC_URL` and `CHLOECTX_SYNC_TOKEN` override the settings (`CHLOECTX_SYNC_URL` for every project, as above). What is sent is what the store holds, transcripts of your sessions included, redacted again on the way ([secrets](#secrets-and-chloectx-redact)) and without the [private asides](index.md#where-it-keeps-what-it-stores) a store kept before ChloeCtx cut them out: use a server you control, over HTTPS, with a key (plain `http://` is refused except to this machine, `127.0.0.1` or `localhost`; `CHLOECTX_SYNC_ALLOW_HTTP=1` allows it). Sync adds records, and carries what was forgotten, deleted and retired to every machine: one forgotten here has its row on the server replaced by a tombstone, which every machine's next pull forgets, and is never pulled back ([forget](#forget-something-chloectx-forget)); another machine's rows deleted on the server (an admin's `DELETE`) are forgotten on each machine that pulled them, at its next pull; and a record retired or replaced on the server, or whose context a forget cut, is retired, replaced or cut on each machine that has it. A machine's own rows deleted on the server stay in its store, which is that person's to forget. A record pulled from another machine is not sent back (`chloectx sync push --again` sends it too, to fill a table that lost rows), so a delete on the server holds. A table dropped and made again, holding no row, is not read as a delete of every record: fill it again with `chloectx sync push --again` from one machine. A note retagged here after it was pushed is not sent again, but for one retired with `chloectx sync retire`. A key limited to the project's table cannot delete its rows in the table of 0.3.3 and before, `chloectx_memory`; those stay there, held back, until an admin removes them. Two machines writing the same project at once can, rarely, give two records one id (`manual:<seq>` from `chloectx remember` in a terminal; run from a session's Bash, its note has that session's id); the server keeps the last one sent.
+
+## For a team
+
+Two ways to share memory, which a team can use together:
+
+| | sync (`chloectx sync`, [above](#keep-the-memory-on-a-chloedb-server)) | team spaces ([ChloeCtx on a cluster](app.md)) |
+|---|---|---|
+| what it holds | each teammate's sessions in a repository, recorded by the hooks, and the rules, decisions and facts distilled from them | notes and exchanges that people and agents write to a space on purpose, through the app's API or a space's MCP server |
+| who reads it | every session in that repository, on every teammate's machine: the briefing and the recall at each prompt | an agent that asks the space before a task (`ctx_<space>`), in any repository |
+| fed by the hooks | yes | no |
+| use it for | a team working in the same repositories, so that one person's decision reaches the next person's session | knowledge that is not one repository's: runbooks, on-call notes, a product's decisions |
+
+To roll ChloeCtx out to a repository's team with the plugin, commit the repository's `.claude/settings.json` with the marketplace, the plugin and its tools' permission:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "chloedb": {"source": {"source": "github", "repo": "chloetech-ai/chloedb", "sparsePaths": [".claude-plugin", "chloectx/plugin"]}}
+  },
+  "enabledPlugins": {"chloectx@chloedb": true},
+  "permissions": {"allow": ["mcp__plugin_chloectx_chloectx"]}
+}
+```
+
+Claude Code does not install a plugin a project's settings enable by itself: until it is installed, its hooks record nothing, `chloectx doctor` fails on it, and `/plugin` says so. So a new teammate, in their clone of the repository, runs once:
+
+```bash
+claude plugin install chloectx@chloedb --scope project
+# then the sync key an admin made for them and this machine ("Make a sync key" on the ChloeCtx page)
+printf %s "$THEIR_KEY" | chloectx sync setup --url https://chloedb.example.com --token-stdin --no-create
+chloectx doctor
+```
+
+Give each person a key of their own for each project, so that a key revoked when someone leaves ([when someone leaves the team](#keep-the-memory-on-a-chloedb-server)) stops only theirs. What is said in a session reaches every teammate's: say so to the team, and keep private asides marked ([where it keeps what it stores](index.md#where-it-keeps-what-it-stores)).
 
 ## Upgrade and remove
 

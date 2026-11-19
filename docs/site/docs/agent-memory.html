@@ -87,6 +87,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
       <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">ChloeCtx</span>
       <a href="chloectx.html">ChloeCtx</a>
@@ -158,7 +159,7 @@ class Memory:
 
     def remember(self, session, n, role, text, at):
         &quot;&quot;&quot;Store one turn of a session.&quot;&quot;&quot;
-        self.db.upsert({&quot;id&quot;: f&quot;{session}/{n:04d}&quot;, &quot;session&quot;: session, &quot;role&quot;: role, &quot;text&quot;: text, &quot;at&quot;: at})
+        self.db.upsert({&quot;id&quot;: f&quot;{session}/{n:04d}&quot;, &quot;session&quot;: session, &quot;role&quot;: role, &quot;text&quot;: text, &quot;at&quot;: at}, table=&quot;turns&quot;)
 
     def learn(self, key, value, at):
         &quot;&quot;&quot;Store a fact; a newer value of the same key replaces the old one.&quot;&quot;&quot;

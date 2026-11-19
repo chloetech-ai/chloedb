@@ -833,8 +833,8 @@ fn check_own_statement(sql: &str, tables: &[std::sync::Arc<chloedb::Schema>]) ->
     if let Some(st) = chloedb::query::blend::parse_statement(sql).map_err(|e| e.to_string())? {
         return Ok(Some(match st {
             chloedb::query::blend::Statement::Create { def, replace } => {
-                for s in &def.sources {
-                    for t in crate::scoped::named_tables(&s.sql) {
+                for q in def.queries() {
+                    for t in crate::scoped::named_tables(q) {
                         find(&t)?;
                     }
                 }

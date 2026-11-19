@@ -200,7 +200,7 @@ id  | title
 b04 | The Last Lighthouse
 ```
 
-`db.search(text)` searches the words as written. The search box on a table's page in the command center forgives a typo in each word, and when nothing is found offers the correction ("did you mean") if there is one. A search that should forgive typos asks for it in its SQL, or writes `~` after a word (`dragn~`), which `bm25` reads as `fuzzy => 'auto'` for that word. With a `MATCH`, a row must have every word, each as typed or within its edits, and a `bm25` of the same text on the same field takes the `MATCH`'s `fuzzy`:
+`db.search(text)` searches the words as written. The search box on a table's page in the command center forgives a typo in each word, and when nothing is found offers the correction ("did you mean") if there is one. A search that should forgive typos asks for it in its SQL, or writes `~` after a word (`dragn~`), which `bm25` reads as `fuzzy => 'auto'` for that word. With a `MATCH`, a row must have every word, each as typed or within its edits, and a `bm25` of the same text on the same field takes the `MATCH`'s `fuzzy` and ranks every row the `MATCH` keeps, the words as typed first. For the text of a search box, `MATCH(description, :q, syntax => 'plain')` reads it as words alone, so a stray quote or bracket is no error ([what a visitor typed](../chloedb/query-language.md#full-text-match)):
 
 ```python
 import chloedb

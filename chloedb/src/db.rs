@@ -55,10 +55,24 @@ pub enum SqlResult {
 /// ([`Db::write_prepared`]): bound again, it runs.
 const ALTERED: &str = "while the statement ran; run it again";
 
-/// How many times a write whose table was altered as it ran is bound again
-/// and run ([`altered_while_running`]) before its error is answered: each
-/// time lost is an `ALTER TABLE` that committed meanwhile.
-pub const ALTERED_TRIES: usize = 10;
+/// How many times, at most, a write whose table was altered as it ran is
+/// bound again and run ([`altered_while_running`]) before its error is
+/// answered: each time lost is an `ALTER TABLE` that committed meanwhile,
+/// so only a sustained stream of them reaches it. A server stops sooner,
+/// at the statement's deadline.
+pub const ALTERED_TRIES: usize = 1000;
+
+/// How long to wait before binding a write again after an `ALTER TABLE`
+/// raced it the `tries`-th time: nothing at first, then 1 ms doubling to
+/// 4 ms, so that a stream of `ALTER TABLE`s does not win every time.
+pub fn altered_backoff(tries: usize) -> std::time::Duration {
+    std::time::Duration::from_millis(match tries {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        _ => 4,
+    })
+}
 
 /// Whether the error `message` says that the write's table was altered
 /// after the write was bound, so that the same statement bound again may
@@ -1757,6 +1771,9 @@ impl Db {
         let schema = self.table(&log.table)?;
         rank_log::check(&schema)?;
         rank_log::fits(log, &schema)?;
+        if let Some((call, cols)) = crate::query::blend::table_call_sql(sql, params)? {
+            return self.blend_logged(sql, params, log, &schema, call, &cols);
+        }
         let p = rank_log::prepare(sql, params, log)?;
         let started = std::time::Instant::now();
         let mut served = match &log.interleave {
@@ -2170,9 +2187,13 @@ impl Db {
                 let mut r = self.write_queued(writes::Job::Sql(self.prepare(schema.clone(), write)?));
                 // An ALTER TABLE committed between binding the statement and
                 // writing it: it is bound again, to the table as it is now.
-                for _ in 0..ALTERED_TRIES {
+                for tries in 0..ALTERED_TRIES {
                     if !r.as_ref().is_err_and(|e| altered_while_running(&e.to_string())) {
                         break;
+                    }
+                    match altered_backoff(tries) {
+                        d if d.is_zero() => std::thread::yield_now(),
+                        d => std::thread::sleep(d),
                     }
                     let Some(p) = self.prepare_write_here(sql, params)? else { break };
                     r = self.write_queued(writes::Job::Sql(p));
@@ -3061,6 +3082,28 @@ impl Db {
         let readers = self.readers(&snap)?;
         let words = Executor::new(&snap, &readers, &self.exec).corrections(f, text)?;
         Ok(Corrected { text: crate::query::exec::corrected_text(text, &words), changed: !words.is_empty(), words })
+    }
+
+    /// The rows of query `sql`'s funnel ([`crate::query::funnel`]): how
+    /// many rows each input of its ranking matches, how many each
+    /// condition of `WHERE` leaves, the candidates and the page, and each
+    /// row seen with where it left and why. Its probes read one snapshot.
+    /// A query of several tables (a join, `WITH`) has no funnel of rows.
+    pub fn funnel(&self, sql: &str, params: &Params) -> Result<crate::query::funnel::Rows> {
+        let all = self.snapshot();
+        let functions = self.functions_at(&all)?;
+        let q = qsql::parse_query_cached(sql)?;
+        let (q, embedded) = self.embed_texts(&all, sql, q, params)?;
+        let params = embedded.as_ref().unwrap_or(params);
+        let plan = plan_of_parsed(&all, &q, params, &functions)?;
+        if plan.root.uses_operators() {
+            return Err(crate::query::funnel::refused("a query of several tables (a join, WITH, a subquery) has no funnel of rows"));
+        }
+        let snap = all.table(plan.table()).ok_or_else(|| Error::Query(format!("no table {}", plan.table())))?;
+        let schema = snap.shared_schema().clone();
+        let select = plan.to_select(&schema)?;
+        let probes = crate::query::funnel::Probes::of(&schema, &select, self.exec.fusion_depth);
+        Ok(crate::query::funnel::run(&probes, |s| self.execute(&snap, s, &self.exec)))
     }
 
     /// The marks of a search `query` of `table`'s TEXT field `field`, as

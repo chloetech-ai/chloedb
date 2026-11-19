@@ -327,6 +327,37 @@ pub(crate) const HOLD_WRITES: &str = "POST /v1/admin/hold-writes";
 /// silent before it counts as behind for as long ([`Service::follow_lags`]).
 pub const SILENT_MS: u64 = 10_000;
 
+/// A follow process that writes through this server, as it last said of
+/// itself ([`Service::follow_lags`]).
+#[derive(Clone, Debug)]
+pub(crate) struct FollowLag {
+    pub name: String,
+    /// `cluster` (a cluster following another, [`crate::follow`]) or
+    /// `postgres` (`chloedb-server follow-postgres`, [`crate::postgres`]).
+    pub kind: &'static str,
+    /// How far behind its source, in seconds: as it last said, and once it
+    /// is silent for over [`SILENT_MS`] (or said it failed), plus how long
+    /// since: it applies nothing.
+    pub lag_s: f64,
+    /// A cluster's: the source's transactions it has not applied.
+    pub behind: Option<f64>,
+    /// A Postgres follower's: the bytes of Postgres's WAL it has not
+    /// confirmed.
+    pub behind_bytes: Option<f64>,
+    /// Heard within [`SILENT_MS`], and following (or copying, catching up).
+    pub up: bool,
+}
+
+/// The key a follow process's status is kept under: a cluster's name, or
+/// `postgres/<name>` for a Postgres follower, whose names are their own.
+fn status_key(name: &str, status: &Json) -> String {
+    if status["kind"] == "postgres" {
+        format!("postgres/{name}")
+    } else {
+        name.to_string()
+    }
+}
+
 impl Service {
     /// This server's feed from transaction `from` on, in chunks of lines
     /// (each ending with a newline). `after` is the term of transaction
@@ -536,23 +567,55 @@ impl Service {
     }
 
     /// Keeps what follow process `name` says of itself, for
-    /// [`Self::follow_view`].
+    /// [`Self::follow_view`], or of a Postgres follower (`"kind":
+    /// "postgres"`), for [`Self::postgres_followers`].
     pub fn note_follow_status(&self, name: &str, status: Json) {
-        self.follows.note(name, status);
+        self.follows.note(&status_key(name, &status), status);
     }
 
     /// Per follow process that writes through this server and has not
-    /// stopped following: how far behind its source it is, in seconds (as
-    /// it last said, and once it is silent for over [`SILENT_MS`], plus
-    /// how long since: it applies nothing), and in transactions.
-    pub(crate) fn follow_lags(&self) -> Vec<(String, f64, f64)> {
+    /// stopped following: a cluster following another, or a Postgres
+    /// follower ([`FollowLag`]), by name.
+    pub(crate) fn follow_lags(&self) -> Vec<FollowLag> {
         self.follows
             .said()
             .into_iter()
             .filter(|(_, (_, st))| st["state"] != "stopped")
-            .map(|(name, (age_ms, st))| {
-                let lag_ms = st["lag_ms"].as_u64().unwrap_or(0) + if age_ms > SILENT_MS { age_ms } else { 0 };
-                (name, lag_ms as f64 / 1e3, st["behind"].as_f64().unwrap_or(0.0))
+            .map(|(_, (age_ms, st))| {
+                let failed = st["state"] == "failed";
+                let silent = age_ms > SILENT_MS || failed;
+                let lag_ms = st["lag_ms"].as_u64().unwrap_or(0) + if silent { age_ms } else { 0 };
+                let postgres = st["kind"] == "postgres";
+                let up = !silent && matches!(st["state"].as_str(), Some("following" | "copying" | "catching up"));
+                FollowLag {
+                    name: st["name"].as_str().unwrap_or_default().to_string(),
+                    kind: if postgres { "postgres" } else { "cluster" },
+                    lag_s: lag_ms as f64 / 1e3,
+                    behind: (!postgres).then(|| st["behind"].as_f64().unwrap_or(0.0)),
+                    behind_bytes: if postgres { st["behind_bytes"].as_f64() } else { None },
+                    up,
+                }
+            })
+            .collect()
+    }
+
+    /// The Postgres followers that write through this server, as each last
+    /// said of itself (ROSA-302): its status ([`crate::postgres::follow`]'s
+    /// `status_body`) with `age_ms` (since it said it), `silent` (over
+    /// [`SILENT_MS`]: killed, or cut off from ChloeDB), and `lag_s` as
+    /// `/metrics` and the alert `follow-behind` count it.
+    pub fn postgres_followers(&self) -> Vec<Json> {
+        let lags = self.follow_lags();
+        self.follows
+            .said()
+            .into_iter()
+            .filter(|(_, (_, st))| st["kind"] == "postgres")
+            .map(|(_, (age_ms, mut st))| {
+                let name = st["name"].as_str().unwrap_or_default().to_string();
+                st["age_ms"] = json!(age_ms);
+                st["silent"] = json!(age_ms > SILENT_MS);
+                st["lag_s"] = json!(lags.iter().find(|l| l.kind == "postgres" && l.name == name).map(|l| l.lag_s));
+                st
             })
             .collect()
     }
@@ -572,7 +635,8 @@ impl Service {
     /// its own clients' writes, if it does.
     pub async fn follow_view(self: &Arc<Self>) -> Result<Json, ApiError> {
         let shards = self.sources_by_shard().await?;
-        let said = self.follows.said();
+        // Clusters only: a Postgres follower is no cluster to switch to.
+        let said: BTreeMap<String, (u64, Json)> = self.follows.said().into_iter().filter(|(_, (_, st))| st["kind"] != "postgres").collect();
         let mut names: BTreeMap<String, ()> = said.keys().map(|n| (n.clone(), ())).collect();
         let own: Vec<Marks> = own_marks_of(&shards).collect();
         for m in &own {

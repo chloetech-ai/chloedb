@@ -66,6 +66,7 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::tokenizer::{Token, Tokenizer};
 
 use crate::error::{Error, Result};
+use crate::explore::Rng as ExploreRng;
 use crate::query::exec::ResultSet;
 use crate::query::function::{Function, FunctionSet};
 use crate::query::Params;
@@ -76,17 +77,23 @@ pub const NAME: &str = "blend";
 /// How a blend's function body begins.
 pub const MARK: &str = "blend:";
 /// How `CREATE BLEND` is written.
-pub const CREATE_FORM: &str = "CREATE [OR REPLACE] BLEND name AS SOURCES (name AS (SELECT ...), ...) [HEADS (head [CALIBRATE tmm|minmax|rank|raw] [LO n] [MISSING neutral|zero], ...)] [UTILITY w * head + ...] [BOOST (source w, ...)] [SLOT n => column = 'value'] [QUOTA (column = 'value' BETWEEN a% AND b% | AT LEAST a% [IF ANY] | AT MOST b% [IN TOP n], ...)] [SPACING (column = 'value' AT MOST n PER m ROWS, ...)] [DIVERSIFY λ ON column] [MAX n PER column] [DEDUPE t ON vector_column] [WITH (k => 10, note => '...')]";
+pub const CREATE_FORM: &str = "CREATE [OR REPLACE] BLEND name AS SOURCES (name AS (SELECT ...) | name AS BLEND (SOURCES (...) ...), ...) [HEADS (head [CALIBRATE tmm|minmax|rank|raw] [LO n] [MISSING neutral|zero], ...)] [UTILITY w * head + ...] [BOOST (source w, ...)] [SLOT n => column = 'value'] [QUOTA (column = 'value' BETWEEN a% AND b% | AT LEAST a% [IF ANY] | AT MOST b% [IN TOP n], ...)] [SPACING (column = 'value' AT MOST n PER m ROWS, ...)] [DIVERSIFY λ ON column] [MAX n PER column] [DEDUPE t ON vector_column] [WITH (k => 10, note => '...')]";
 /// How `DROP BLEND` is written.
 pub const DROP_FORM: &str = "DROP BLEND [IF EXISTS] name";
 /// How a call is written.
 pub const USAGE: &str = "SELECT ... FROM blend('name[@version]' [, parameter => value, ...]) [LIMIT k]";
 /// Sources a blend takes at most.
 pub const MAX_SOURCES: usize = 16;
+
+/// The most blends stacked one on another, the top one counted.
+pub const MAX_DEPTH: usize = 4;
+
+/// The most queries a blend runs, under every node.
+pub const MAX_QUERIES: usize = 32;
 /// Rows a blend places at most.
 pub const MAX_K: usize = 1000;
 /// The columns every blended row has, besides its source's.
-pub const COLUMNS: [&str; 5] = ["slot", "source", "key", "utility", "blend_decision"];
+pub const COLUMNS: [&str; 6] = ["slot", "source", "via", "key", "utility", "blend_decision"];
 /// The rank constant of `CALIBRATE rank`, as `rrf`'s.
 const RRF_K: f64 = 60.0;
 /// Rows passed over that the receipts list at most.
@@ -111,7 +118,8 @@ fn is_false(b: &bool) -> bool {
 /// A blend's definition.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Def {
-    /// Lower case.
+    /// Lower case. A node's is its source's, and may be left out.
+    #[serde(default)]
     pub name: String,
     pub sources: Vec<Source>,
     /// None: one head, `score`, each source's own score by `tmm`.
@@ -139,12 +147,27 @@ pub struct Def {
     pub note: Option<String>,
 }
 
-/// A query whose rows a blend places.
+/// What a blend places rows from: a query, or a node, a blend of its own
+/// stacked under this one whose placed rows are this source's rows.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Source {
     /// Lower case; the value of the column `source`.
     pub name: String,
+    /// Its query; empty for a node.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sql: String,
+    /// The node: its rows are those it places, with its sources' columns,
+    /// `slot`, `via` (the source under it that gave the row, `a/b` through
+    /// nodes) and `utility`, which is their score.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend: Option<Box<Def>>,
+}
+
+impl Source {
+    /// A source that is a query.
+    pub fn query(name: &str, sql: &str) -> Source {
+        Source { name: name.to_string(), sql: sql.to_string(), blend: None }
+    }
 }
 
 /// A value rows are worth by.
@@ -355,6 +378,23 @@ impl Def {
         format!("CREATE {}FUNCTION {}() RETURNS TEXT OPTIONS (description = {}) AS {}", if replace { "OR REPLACE " } else { "" }, self.name, quote(&what), quote(&body))
     }
 
+    /// Every query it runs: its sources' and those of the nodes under it.
+    pub fn queries(&self) -> Vec<&str> {
+        let mut out = Vec::new();
+        for s in &self.sources {
+            match &s.blend {
+                Some(b) => out.extend(b.queries()),
+                None => out.push(s.sql.as_str()),
+            }
+        }
+        out
+    }
+
+    /// How many blends are stacked here, this one counted.
+    pub fn depth(&self) -> usize {
+        1 + self.sources.iter().filter_map(|s| s.blend.as_ref()).map(|b| b.depth()).max().unwrap_or(0)
+    }
+
     /// The source named `name`.
     pub fn source(&self, name: &str) -> Option<usize> {
         self.sources.iter().position(|s| s.name.eq_ignore_ascii_case(name))
@@ -387,10 +427,23 @@ impl Def {
 
     /// `CREATE [OR REPLACE] BLEND` that defines it, as it reads back.
     pub fn sql(&self, replace: bool) -> String {
+        format!("CREATE {}BLEND {} AS\n{}", if replace { "OR REPLACE " } else { "" }, crate::query::sql::ident(&self.name), self.body_sql())
+    }
+
+    /// What follows `AS`, each clause on a line of its own: a node's is
+    /// the same, inside `name AS BLEND ( ... )`.
+    fn body_sql(&self) -> String {
         use crate::query::sql::ident;
-        let mut s = format!("CREATE {}BLEND {} AS\n  SOURCES (\n", if replace { "OR REPLACE " } else { "" }, ident(&self.name));
+        let mut s = "  SOURCES (\n".to_string();
         for (i, src) in self.sources.iter().enumerate() {
-            s += &format!("    {} AS ({}){}\n", ident(&src.name), src.sql.trim(), if i + 1 < self.sources.len() { "," } else { "" });
+            let comma = if i + 1 < self.sources.len() { "," } else { "" };
+            match &src.blend {
+                Some(b) => {
+                    let inner: Vec<String> = b.body_sql().lines().map(|l| format!("    {l}")).collect();
+                    s += &format!("    {} AS BLEND (\n{}\n    ){comma}\n", ident(&src.name), inner.join("\n"));
+                }
+                None => s += &format!("    {} AS ({}){comma}\n", ident(&src.name), src.sql.trim()),
+            }
         }
         s += "  )";
         if !self.heads.is_empty() {
@@ -452,10 +505,24 @@ impl Def {
     }
 
     /// Checks what a definition says of itself: its names, numbers and
-    /// rules, each source a query, and quotas the slots can hold.
+    /// rules, each source a query or a node that checks too, no more than
+    /// [`MAX_DEPTH`] blends stacked and [`MAX_QUERIES`] queries, and quotas
+    /// the slots can hold.
     pub fn check(&self) -> Result<()> {
+        let depth = self.depth();
+        if depth > MAX_DEPTH {
+            return Err(err(format!("blends stack at most {MAX_DEPTH} deep, the top one counted; this one is {depth}")));
+        }
+        let n = self.queries().len();
+        if n > MAX_QUERIES {
+            return Err(err(format!("a blend runs at most {MAX_QUERIES} queries, under every node; this one runs {n}")));
+        }
+        self.check_node(true)
+    }
+
+    fn check_node(&self, top: bool) -> Result<()> {
         let plain = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !n.starts_with(|c: char| c.is_ascii_digit());
-        if !plain(&self.name) {
+        if (top || !self.name.is_empty()) && !plain(&self.name) {
             return Err(err(format!("a blend's name is letters, digits and _, not {:?}", self.name)));
         }
         if self.sources.is_empty() || self.sources.len() > MAX_SOURCES {
@@ -468,9 +535,19 @@ impl Def {
             if self.sources[..i].iter().any(|o| o.name.eq_ignore_ascii_case(&s.name)) {
                 return Err(err(format!("two sources are named {}", s.name)));
             }
+            if let Some(b) = &s.blend {
+                if !s.sql.trim().is_empty() {
+                    return Err(err(format!("source {} is a query or a node, not both", s.name)));
+                }
+                if !b.name.is_empty() && !b.name.eq_ignore_ascii_case(&s.name) {
+                    return Err(err(format!("node {} holds a blend named {}: a node is named as its source", s.name, b.name)));
+                }
+                b.check_node(false).map_err(|e| e.within(&format!("node {}", s.name)))?;
+                continue;
+            }
             let q = crate::query::sql::parse_query(&s.sql).map_err(|e| err(format!("source {}: {e}", s.name)))?;
             if call_name(&q).is_some() {
-                return Err(err(format!("source {} reads blend(...): a blend's sources are queries of tables", s.name)));
+                return Err(err(format!("source {} reads blend(...): stack the blend under this one as a node (source AS BLEND (...)) instead", s.name)));
             }
         }
         if !(1..=MAX_K).contains(&self.k) {
@@ -822,8 +899,18 @@ pub fn parse_statement(text: &str) -> Result<Option<Statement>> {
             "SOURCES" => t.list("the sources", |t| {
                 let name = t.name("a source's name")?;
                 t.want_word("AS", "AS after the source's name")?;
+                if t.eat_word("BLEND") {
+                    // A node: the clauses of a blend of its own.
+                    let inner = t.group_text(&format!("node {name}'s blend"))?;
+                    let node = match parse_statement(&format!("CREATE BLEND {} AS {inner}", crate::query::sql::ident(&name))).map_err(|e| e.within(&format!("node {name}")))? {
+                        Some(Statement::Create { def, .. }) => def,
+                        _ => return Err(err(format!("node {name}: expected the clauses of a blend inside BLEND ( ... )"))),
+                    };
+                    def.sources.push(Source { name, sql: String::new(), blend: Some(Box::new(node)) });
+                    return Ok(());
+                }
                 let sql = t.group_text(&format!("source {name}'s query"))?;
-                def.sources.push(Source { name, sql });
+                def.sources.push(Source { name, sql, blend: None });
                 Ok(())
             })?,
             "HEADS" => t.list("the heads", |t| {
@@ -1162,9 +1249,49 @@ pub fn table_call_sql(sql: &str, params: &Params) -> Result<Option<(Call, Vec<(S
 pub struct Want {
     /// Each rule's cost: a fill without it, for each.
     pub costs: bool,
+    /// Each slot's row drawn among the best that fit it ([`Explore`]),
+    /// from the stream of draws the number names ([`seed`]), rather than
+    /// the best taken.
+    pub explore: Option<(Explore, u64)>,
+}
+
+/// An exploring fill: each slot's row drawn among the `top` rows that
+/// fit it best, by a softmax of their utilities (less what diversity
+/// takes off) at temperature `tau`, a share of the utilities' range. The
+/// chance of the row drawn, given the rows above it, is kept
+/// ([`Placed::chance`]), so that a log of exploring fills values other
+/// blends ([`crate::query::blend_eval`]). `top` 1 takes the best.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Explore {
+    pub tau: f64,
+    pub top: usize,
+}
+
+impl Explore {
+    /// A logged query's exploration ([`crate::explore::Policy`]) as a
+    /// blend's: `softmax` by score (the utility), or none.
+    pub fn of_policy(p: &crate::explore::Policy) -> Result<Option<Explore>> {
+        use crate::explore::{By, Policy};
+        match p {
+            Policy::None => Ok(None),
+            Policy::Softmax { tau, top, by: By::Score } => Ok(Some(Explore { tau: *tau, top: *top })),
+            _ => Err(err("a blend explores by softmax over the rows that fit each slot: {\"policy\": \"softmax\", \"tau\": 0.2, \"top\": 5} (tau a share of the utilities' range)")),
+        }
+    }
+
+    pub fn to_json(self) -> Json {
+        json!({"tau": self.tau, "top": self.top})
+    }
+}
+
+/// The stream of draws of request `request`, as
+/// [`crate::explore::Rng::of`] makes it.
+pub fn seed(request: &str) -> u64 {
+    request.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
 }
 
 /// One source's rows, as its query answered them.
+#[derive(Clone, Debug)]
 pub struct Input {
     pub rs: ResultSet,
     pub took_ms: f64,
@@ -1196,9 +1323,12 @@ pub struct Placed {
     pub slot: usize,
     /// Its utility less what diversity took off.
     pub adjusted: f64,
-    /// `pin`, `quota`, `utility` or `relaxed`.
+    /// `pin`, `quota`, `utility`, `relaxed` or `explore`.
     pub kind: &'static str,
     pub why: String,
+    /// The chance the fill placed it here, given the rows above it: 1
+    /// for a fill that takes the best.
+    pub chance: f64,
 }
 
 /// A rule's cost: what the slate gives up for it.
@@ -1245,6 +1375,14 @@ pub struct Blended {
     pub quotas: Vec<QuotaMet>,
     pub costs: Vec<Cost>,
     pub fill_ms: f64,
+    /// The exploration the fill drew by, if it explored.
+    pub explore: Option<Explore>,
+    /// Every source's rows, as they came.
+    pub inputs: Vec<Input>,
+    /// Each source's node, run, for a source that is one.
+    pub nodes: Vec<Option<Blended>>,
+    /// Whether each source is a node.
+    pub is_node: Vec<bool>,
 }
 
 /// What the fill reads of each candidate, made once.
@@ -1365,18 +1503,20 @@ fn round(x: f64) -> f64 {
 
 /// Blends the rows of `inputs` (one per source, in the definition's
 /// order) into `k` slots.
-pub fn blend(def: &Def, version: i64, k: usize, inputs: Vec<Input>, want: Want) -> Result<Blended> {
-    let t0 = std::time::Instant::now();
-    if inputs.len() != def.sources.len() {
-        return Err(err("a blend's run needs every source's rows"));
-    }
-    // A LIMIT other than the blend's k may leave a quota short: the fill
-    // keeps what it can and the receipts say which is not met.
-    let k = k.clamp(1, MAX_K);
+/// Every source's rows as candidates, their heads calibrated and their
+/// utilities summed, one per key.
+struct Built {
+    heads: Vec<Head>,
+    columns: Vec<String>,
+    col_of: Vec<HashMap<String, usize>>,
+    cands: Vec<Cand>,
+}
+
+fn build(def: &Def, inputs: &[&Input]) -> Built {
     let heads = def.heads();
     let mut columns: Vec<String> = Vec::new();
     let mut col_of = Vec::new();
-    for inp in &inputs {
+    for inp in inputs {
         let mut m = HashMap::new();
         for (i, c) in inp.rs.columns.iter().enumerate() {
             m.entry(c.to_ascii_lowercase()).or_insert(i);
@@ -1489,10 +1629,22 @@ pub fn blend(def: &Def, version: i64, k: usize, inputs: Vec<Input>, want: Want) 
             kept.push(cand);
         }
     }
-    let cands = kept;
+    Built { heads, columns, col_of, cands: kept }
+}
+
+/// What the fill reads of `b`'s candidates, for `k` slots.
+fn context<'a>(def: &'a Def, k: usize, b: &'a Built) -> Ctx<'a> {
+    let (cands, col_of) = (&b.cands, &b.col_of);
     let get = |c: &Cand, col: &str| -> Value {
+        let src = &def.sources[c.source];
         if col.eq_ignore_ascii_case("source") {
-            return Value::Str(def.sources[c.source].name.clone());
+            return Value::Str(src.name.clone());
+        }
+        if col.eq_ignore_ascii_case("via") {
+            return Value::Str(match col_of[c.source].get("via").map(|&i| &c.row[i]) {
+                Some(Value::Str(v)) if src.blend.is_some() => format!("{}/{v}", src.name),
+                _ => src.name.clone(),
+            });
         }
         col_of[c.source].get(&col.to_ascii_lowercase()).map_or(Value::Null, |&i| c.row[i].clone())
     };
@@ -1505,10 +1657,10 @@ pub fn blend(def: &Def, version: i64, k: usize, inputs: Vec<Input>, want: Want) 
     let finite: Vec<f64> = cands.iter().map(|c| c.utility).filter(|u| u.is_finite()).collect();
     let spread = finite.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - finite.iter().cloned().fold(f64::INFINITY, f64::min);
     let cap_val: Vec<Vec<Option<String>>> = def.caps.iter().map(|cp| cands.iter().map(|c| Some(text(&get(c, &cp.per))).filter(|t| !t.is_empty())).collect()).collect();
-    let ctx = Ctx {
+    Ctx {
         def,
         k,
-        cands: &cands,
+        cands,
         order,
         slot_of: def.slots.iter().enumerate().map(|(i, s)| (s.slot, i)).collect(),
         slot_hit: def.slots.iter().map(|s| hit(&s.when)).collect(),
@@ -1538,14 +1690,31 @@ pub fn blend(def: &Def, version: i64, k: usize, inputs: Vec<Input>, want: Want) 
             None => vec![None; cands.len()],
         },
         scale: if spread.is_finite() && spread > 1e-12 { spread } else { 1.0 },
+    }
+}
+
+pub fn blend(def: &Def, version: i64, k: usize, inputs: Vec<Input>, want: Want) -> Result<Blended> {
+    let t0 = std::time::Instant::now();
+    if inputs.len() != def.sources.len() {
+        return Err(err("a blend's run needs every source's rows"));
+    }
+    // A LIMIT other than the blend's k may leave a quota short: the fill
+    // keeps what it can and the receipts say which is not met.
+    let k = k.clamp(1, MAX_K);
+    let built = build(def, &inputs.iter().collect::<Vec<_>>());
+    let ctx = context(def, k, &built);
+    let cands = &built.cands;
+    let explore = want.explore.map(|e| e.0);
+    let base = match want.explore {
+        Some((ex, seed)) => fill(&ctx, None, &mut Mode::Draw(ex, ExploreRng::seeded(seed))),
+        None => fill(&ctx, None, &mut Mode::Best),
     };
-    let base = fill(&ctx, None);
     let mut costs = Vec::new();
     if want.costs {
         let worth = |f: &Fill| -> f64 { f.placed.iter().enumerate().map(|(i, p)| cands[p.cand].utility.max(0.0) / ((i + 2) as f64).log2()).sum() };
         let w0 = worth(&base);
         for r in def.rules() {
-            let without = fill(&ctx, Some(r));
+            let without = fill(&ctx, Some(r), &mut Mode::Best);
             let w = worth(&without);
             let moved = (0..k).filter(|&i| base.placed.get(i).map(|p| p.cand) != without.placed.get(i).map(|p| p.cand)).count();
             costs.push(Cost { rule: def.rule_sql(r), share: if w > 0.0 { round(((w - w0) / w).max(0.0)) } else { 0.0 }, moved });
@@ -1574,6 +1743,7 @@ pub fn blend(def: &Def, version: i64, k: usize, inputs: Vec<Input>, want: Want) 
         })
         .collect();
     let n_src = def.sources.len();
+    let Built { heads, columns, col_of, cands } = built;
     Ok(Blended {
         name: def.name.clone(),
         version,
@@ -1590,11 +1760,130 @@ pub fn blend(def: &Def, version: i64, k: usize, inputs: Vec<Input>, want: Want) 
         costs,
         cands,
         fill_ms: t0.elapsed().as_secs_f64() * 1e3,
+        explore,
+        inputs,
+        nodes: Vec::new(),
+        is_node: def.sources.iter().map(|s| s.blend.is_some()).collect(),
     })
     .map(|mut b| {
         b.sources.truncate(n_src);
         b
     })
+}
+
+/// A slate replayed through a blend: its candidates (from the same
+/// sources' rows) and, slot by slot, the chance the blend places the
+/// slate's row there given the rows above it, with the rows it could
+/// place there instead.
+#[derive(Clone, Debug)]
+pub struct Replay {
+    pub cands: Vec<Cand>,
+    /// The blend's source names, which the candidates' `source` indexes.
+    pub sources: Vec<String>,
+    /// One per slot replayed: down to the slate's end, the blend's k, or
+    /// the first row the blend would not place, whichever comes first.
+    pub steps: Vec<Step>,
+}
+
+/// Replays slate `keys` (each slot's row key, as [`text`] writes it)
+/// through blend `def` over `inputs` (in `def`'s source order), filling
+/// `k` slots as an exploring fill (`explore`) or one that takes the best
+/// (`None`). Replaying the blend that served the slate, with the same
+/// exploration, gives back the chances it logged.
+pub fn replay(def: &Def, k: usize, inputs: &[&Input], keys: &[String], explore: Option<Explore>) -> Result<Replay> {
+    if inputs.len() != def.sources.len() {
+        return Err(err("a blend's replay needs every source's rows"));
+    }
+    let k = k.clamp(1, MAX_K);
+    let built = build(def, inputs);
+    let ctx = context(def, k, &built);
+    let by_key: HashMap<String, usize> = built.cands.iter().enumerate().map(|(i, c)| (text(&c.key), i)).collect();
+    let slate: Vec<Option<usize>> = keys.iter().take(k).map(|key| by_key.get(key).copied()).collect();
+    let mut mode = Mode::Replay { explore, slate: &slate, steps: Vec::new() };
+    fill(&ctx, None, &mut mode);
+    let Mode::Replay { steps, .. } = mode else { unreachable!("a replay stays a replay") };
+    drop(ctx);
+    Ok(Replay { cands: built.cands, sources: def.sources.iter().map(|s| s.name.clone()).collect(), steps })
+}
+
+/// A slate replayed through a blend with, at each slot, the rest of the
+/// blend's page from there ([`replay_with_rest`]).
+#[derive(Clone, Debug)]
+pub struct Walked {
+    pub replay: Replay,
+    /// Per slot replayed below the last: the blend's best page below it,
+    /// after the slate's rows above and the blend's likeliest row there
+    /// (empty where `keep` stopped the walk).
+    pub rest: Vec<Vec<usize>>,
+}
+
+/// [`replay`], and at each slot l while `keep(l, chance)` holds (it is
+/// given each slot's chance in turn), the blend's best page below l
+/// after the slate's rows above l and its likeliest row at l: one build
+/// of the candidates for all of it.
+pub fn replay_with_rest(def: &Def, k: usize, inputs: &[&Input], keys: &[String], explore: Option<Explore>, keep: &mut dyn FnMut(usize, f64) -> bool) -> Result<Walked> {
+    if inputs.len() != def.sources.len() {
+        return Err(err("a blend's replay needs every source's rows"));
+    }
+    let k = k.clamp(1, MAX_K);
+    let built = build(def, inputs);
+    let ctx = context(def, k, &built);
+    let by_key: HashMap<String, usize> = built.cands.iter().enumerate().map(|(i, c)| (text(&c.key), i)).collect();
+    let slate: Vec<Option<usize>> = keys.iter().take(k).map(|key| by_key.get(key).copied()).collect();
+    let mut mode = Mode::Replay { explore, slate: &slate, steps: Vec::new() };
+    fill(&ctx, None, &mut mode);
+    let Mode::Replay { mut steps, .. } = mode else { unreachable!("a replay stays a replay") };
+    let mut rest = Vec::with_capacity(steps.len());
+    for (l, st) in steps.iter().enumerate() {
+        if !keep(l, st.chance) {
+            rest.push(Vec::new());
+            break;
+        }
+        let top = st.dist.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map(|d| d.0);
+        let (Some(top), true) = (top, l + 1 < k) else {
+            rest.push(Vec::new());
+            continue;
+        };
+        let mut prefix: Vec<usize> = slate[..l].iter().map_while(|c| *c).collect();
+        if prefix.len() < l || prefix.contains(&top) {
+            rest.push(Vec::new());
+            continue;
+        }
+        prefix.push(top);
+        let mut m = Mode::Complete { prefix: &prefix, after: Vec::new() };
+        fill(&ctx, None, &mut m);
+        let Mode::Complete { after, .. } = m else { unreachable!("a completion stays one") };
+        rest.push(after);
+    }
+    steps.truncate(rest.len());
+    drop(ctx);
+    Ok(Walked { replay: Replay { cands: built.cands, sources: def.sources.iter().map(|s| s.name.clone()).collect(), steps }, rest })
+}
+
+/// The rest of blend `def`'s page after `prefix` (row keys, placed as
+/// they are whatever the rules say): the best that fits each slot below,
+/// down to `k`, as candidates of the blend's (the first of the pair).
+/// Keys the blend has no candidate for end the prefix there.
+pub fn complete(def: &Def, k: usize, inputs: &[&Input], prefix: &[String]) -> Result<(Vec<Cand>, Vec<usize>)> {
+    if inputs.len() != def.sources.len() {
+        return Err(err("a blend's completion needs every source's rows"));
+    }
+    let k = k.clamp(1, MAX_K);
+    let built = build(def, inputs);
+    let ctx = context(def, k, &built);
+    let by_key: HashMap<String, usize> = built.cands.iter().enumerate().map(|(i, c)| (text(&c.key), i)).collect();
+    let mut first = Vec::with_capacity(prefix.len());
+    for key in prefix.iter().take(k) {
+        match by_key.get(key) {
+            Some(&c) if !first.contains(&c) => first.push(c),
+            _ => break,
+        }
+    }
+    let mut mode = Mode::Complete { prefix: &first, after: Vec::new() };
+    fill(&ctx, None, &mut mode);
+    let Mode::Complete { after, .. } = mode else { unreachable!("a completion stays one") };
+    drop(ctx);
+    Ok((built.cands, after))
 }
 
 /// A fill's rows, and why each row it passed over was.
@@ -1649,7 +1938,58 @@ enum Bar {
     QuotaMax = 16,
 }
 
-fn fill(ctx: &Ctx, skip: Option<Rule>) -> Fill {
+/// How a fill takes each slot's row.
+enum Mode<'a> {
+    /// The best that fits.
+    Best,
+    /// Drawn among the best that fit ([`Explore`]).
+    Draw(Explore, ExploreRng),
+    /// The rows of `slate` (a candidate per slot; `None` for a row this
+    /// blend has no candidate for), with each slot's chances under
+    /// `explore` (`None`: the best taken) kept in `steps`, until a row it
+    /// would not place there.
+    Replay { explore: Option<Explore>, slate: &'a [Option<usize>], steps: Vec<Step> },
+    /// The rows of `prefix` placed whatever the rules say, then the best
+    /// that fits each slot below, kept in `after`.
+    Complete { prefix: &'a [usize], after: Vec<usize> },
+}
+
+impl Mode<'_> {
+    /// How many of the best that fit a slot its chances spread over.
+    fn top(&self) -> usize {
+        match self {
+            Mode::Best | Mode::Replay { explore: None, .. } | Mode::Complete { .. } => 1,
+            Mode::Draw(ex, _) | Mode::Replay { explore: Some(ex), .. } => ex.top.max(1),
+        }
+    }
+}
+
+/// The chances of the rows `best` (best first, by adjusted utility):
+/// a softmax at temperature `t`, or the first when `t` is `None`.
+fn chances(best: &[(usize, f64, f64, usize)], t: Option<f64>) -> Vec<f64> {
+    match t {
+        None => (0..best.len()).map(|i| if i == 0 { 1.0 } else { 0.0 }).collect(),
+        Some(t) => {
+            let top = best[0].1;
+            let w: Vec<f64> = best.iter().map(|b| ((b.1 - top) / t).exp()).collect();
+            let sum: f64 = w.iter().sum();
+            w.iter().map(|x| x / sum).collect()
+        }
+    }
+}
+
+/// A slot of a slate replayed through a blend ([`replay`]).
+#[derive(Clone, Debug)]
+pub struct Step {
+    /// The chance the blend places the slate's row here, given the rows
+    /// above it.
+    pub chance: f64,
+    /// The rows the blend could place here and their chances, as
+    /// (candidate, chance).
+    pub dist: Vec<(usize, f64)>,
+}
+
+fn fill(ctx: &Ctx, skip: Option<Rule>, mode: &mut Mode) -> Fill {
     let (def, k, cands) = (ctx.def, ctx.k, ctx.cands);
     let n = cands.len();
     let mut used = vec![false; n];
@@ -1695,6 +2035,26 @@ fn fill(ctx: &Ctx, skip: Option<Rule>) -> Fill {
     // copy of a row placed: they are gone, and the rules are counted anew.
     let mut slot = 1;
     while slot <= k {
+        // A completion's prefix is placed as it is.
+        if let Mode::Complete { prefix, .. } = mode {
+            if let Some(&c) = prefix.get(slot - 1) {
+                catch_up(c, &placed, &mut seen, &mut like_most, &mut gone, &mut block);
+                used[c] = true;
+                for (q, h) in ctx.quota_hit.iter().enumerate() {
+                    if h[c] {
+                        quota_count[q] += 1;
+                    }
+                }
+                for (ci, ids) in ctx.cap_id.iter().enumerate() {
+                    if let Some(v) = ids[c] {
+                        cap_count[ci][v] += 1;
+                    }
+                }
+                placed.push(Placed { cand: c, slot, adjusted: cands[c].utility, kind: "replay", why: String::new(), chance: 1.0 });
+                slot += 1;
+                continue;
+            }
+        }
         let pin = pin_at(slot);
         // Quotas that need their kind now, and those full.
         let mut forced: Vec<usize> = Vec::new();
@@ -1774,13 +2134,15 @@ fn fill(ctx: &Ctx, skip: Option<Rule>) -> Fill {
         if fits.is_empty() {
             break;
         }
-        // The best of them, less its likeness to the rows placed.
-        let mut best: Option<(usize, f64, f64, usize)> = None;
+        // The best of them, less their likeness to the rows placed: the
+        // one best, or the `m` best when the slot's row is drawn.
+        let m = mode.top();
+        let mut best: Vec<(usize, f64, f64, usize)> = Vec::with_capacity(m + 1);
         for &i in &fits {
             let c = open[i];
             // In order of utility, and diversity only takes off: a row
-            // worth no more than the best adjusted so far cannot beat it.
-            if best.is_some_and(|b| cands[c].utility <= b.1) {
+            // worth no more than the m-th best adjusted cannot beat it.
+            if best.len() >= m && cands[c].utility <= best[m - 1].1 {
                 break;
             }
             catch_up(c, &placed, &mut seen, &mut like_most, &mut gone, &mut block);
@@ -1788,14 +2150,69 @@ fn fill(ctx: &Ctx, skip: Option<Rule>) -> Fill {
                 continue;
             }
             let (most, like_slot) = if lambda > 0.0 { like_most[c] } else { (0.0, 0) };
-            let adj = cands[c].utility - lambda * ctx.scale * most;
-            if best.is_none_or(|b| adj > b.1) {
-                best = Some((c, adj, lambda * ctx.scale * most, like_slot));
+            let off = lambda * ctx.scale * most;
+            let adj = cands[c].utility - off;
+            let at = best.partition_point(|b| b.1 >= adj);
+            if at < m {
+                best.insert(at, (c, adj, off, like_slot));
+                best.truncate(m);
             }
         }
         // Every row that fit was a near copy: the slot again without them.
-        let Some((c, adj, off, like_slot)) = best else { continue };
-        let (kind, why) = if !aside.is_empty() {
+        if best.is_empty() {
+            continue;
+        }
+        let (pick, chance) = match mode {
+            Mode::Best | Mode::Complete { .. } => (0, 1.0),
+            Mode::Draw(ex, rng) => {
+                let p = chances(&best, Some(ex.tau * ctx.scale));
+                let u = rng.uniform();
+                let mut acc = 0.0;
+                let j = p.iter().position(|&x| {
+                    acc += x;
+                    u < acc
+                });
+                let j = j.unwrap_or(p.len() - 1);
+                (j, p[j])
+            }
+            Mode::Replay { explore, slate, steps } => {
+                let p = chances(&best, explore.map(|ex| ex.tau * ctx.scale));
+                let want = slate.get(slot - 1).copied().flatten();
+                let j = want.and_then(|w| best.iter().position(|b| b.0 == w));
+                let chance = j.map_or(0.0, |j| p[j]);
+                steps.push(Step { chance, dist: best.iter().zip(&p).filter(|(_, &q)| q > 0.0).map(|(b, &q)| (b.0, q)).collect() });
+                match j {
+                    // A row this blend would not place here: the slots below
+                    // it have no chance.
+                    Some(j) if chance > 0.0 && slot < slate.len() => (j, chance),
+                    _ => break,
+                }
+            }
+        };
+        let (c, adj, off, like_slot) = best[pick];
+        if let Mode::Complete { after, .. } = mode {
+            after.push(c);
+        }
+        if let Mode::Replay { .. } | Mode::Complete { .. } = mode {
+            // A replay keeps the chances, not why.
+            used[c] = true;
+            for (q, h) in ctx.quota_hit.iter().enumerate() {
+                if h[c] {
+                    quota_count[q] += 1;
+                }
+            }
+            for (ci, ids) in ctx.cap_id.iter().enumerate() {
+                if let Some(v) = ids[c] {
+                    cap_count[ci][v] += 1;
+                }
+            }
+            placed.push(Placed { cand: c, slot, adjusted: adj, kind: "replay", why: String::new(), chance });
+            slot += 1;
+            continue;
+        }
+        let (kind, why) = if pick > 0 {
+            ("explore", format!("drawn among the {} best that fit (chance {chance:.3}); the best was worth {:.3}", best.len(), best[0].1))
+        } else if !aside.is_empty() {
             let names: Vec<&str> = aside
                 .iter()
                 .map(|b| match b {
@@ -1852,12 +2269,15 @@ fn fill(ctx: &Ctx, skip: Option<Rule>) -> Fill {
                 cap_count[ci][v] += 1;
             }
         }
-        placed.push(Placed { cand: c, slot, adjusted: adj, kind, why });
+        placed.push(Placed { cand: c, slot, adjusted: adj, kind, why, chance });
         slot += 1;
     }
     // The rows the receipts show as passed over (worth more than the least
     // placed, best first) are compared with every row placed, so that a
     // near copy says so.
+    if let Mode::Replay { .. } | Mode::Complete { .. } = mode {
+        return Fill { placed, block };
+    }
     let least = placed.iter().map(|p| cands[p.cand].utility).fold(f64::INFINITY, f64::min);
     for &c in ctx.order.iter().filter(|&&c| !used[c] && cands[c].utility > least).take(PASSED) {
         if gone[c].is_none() {
@@ -1868,12 +2288,51 @@ fn fill(ctx: &Ctx, skip: Option<Rule>) -> Fill {
 }
 
 impl Blended {
+    /// The rows it placed as the rows of a source of the blend above it:
+    /// its sources' columns, `slot`, `via` (the source that gave the row,
+    /// `node/source` through a node under it) and `utility`, which is
+    /// also their score; their keys stay theirs.
+    pub fn as_source(&self) -> ResultSet {
+        let own = |c: &str| ["slot", "via", "utility", "score"].contains(&c.to_ascii_lowercase().as_str());
+        let cols: Vec<&String> = self.columns.iter().filter(|c| !own(c)).collect();
+        let mut columns = vec!["slot".to_string(), "via".to_string()];
+        columns.extend(cols.iter().map(|c| c.to_string()));
+        columns.push("utility".into());
+        let rows = self
+            .placed
+            .iter()
+            .map(|p| {
+                let c = &self.cands[p.cand];
+                let mut row = vec![Value::Int(p.slot as i64), Value::Str(self.via(c))];
+                row.extend(cols.iter().map(|col| self.col_of[c.source].get(&col.to_ascii_lowercase()).map_or(Value::Null, |&i| c.row[i].clone())));
+                row.push(Value::Float(round(c.utility)));
+                row
+            })
+            .collect();
+        ResultSet { columns, rows, keys: self.placed.iter().map(|p| self.cands[p.cand].key.clone()).collect(), scores: self.placed.iter().map(|p| round(self.cands[p.cand].utility)).collect(), parts: None, stats: Default::default() }
+    }
+
+    /// The source that gave a row: its own, or `node/source` through
+    /// the nodes under it.
+    pub fn via(&self, c: &Cand) -> String {
+        let src = &self.sources[c.source];
+        match self.col_of[c.source].get("via").map(|&i| &c.row[i]) {
+            Some(Value::Str(v)) if self.is_node.get(c.source) == Some(&true) => format!("{src}/{v}"),
+            _ => src.clone(),
+        }
+    }
+
+    fn stacked(&self) -> bool {
+        self.is_node.iter().any(|&n| n)
+    }
+
     /// The value of output column `col` of the row in slot `p`.
     fn cell(&self, p: &Placed, col: &str) -> Value {
         let c = &self.cands[p.cand];
         match col.to_ascii_lowercase().as_str() {
             "slot" => Value::Int(p.slot as i64),
             "source" => Value::Str(self.sources[c.source].clone()),
+            "via" => Value::Str(self.via(c)),
             "key" => c.key.clone(),
             "utility" => Value::Float(round(c.utility)),
             "blend_decision" => Value::Str(p.why.clone()),
@@ -1884,7 +2343,11 @@ impl Blended {
     /// The columns `*` stands for.
     pub fn star(&self) -> Vec<String> {
         let mut cols = vec!["slot".to_string(), "source".to_string()];
-        cols.extend(self.columns.iter().cloned());
+        // `via` after the source, for a blend with nodes under it.
+        if self.stacked() {
+            cols.push("via".into());
+        }
+        cols.extend(self.columns.iter().filter(|c| !(self.stacked() && c.eq_ignore_ascii_case("via"))).cloned());
         cols.push("utility".into());
         cols.push("blend_decision".into());
         cols
@@ -1953,6 +2416,7 @@ impl Blended {
             }
             json!({
                 "source": self.sources[c.source],
+                "via": self.via(c),
                 "rank": c.rank,
                 "key": value_json(&c.key),
                 "utility": round(c.utility),
@@ -1972,6 +2436,7 @@ impl Blended {
                 j["adjusted"] = json!(round(p.adjusted));
                 j["kind"] = json!(p.kind);
                 j["why"] = json!(p.why);
+                j["chance"] = json!(round(p.chance));
                 j
             })
             .collect();
@@ -1999,8 +2464,129 @@ impl Blended {
             "quotas": self.quotas.iter().map(|q| json!({"rule": q.rule, "top": q.top, "got": q.got, "least": q.least, "most": q.most, "idle": q.idle, "met": q.met})).collect::<Vec<_>>(),
             "costs": self.costs.iter().map(|c| json!({"rule": c.rule, "share": c.share, "moved": c.moved})).collect::<Vec<_>>(),
             "fill_ms": round(self.fill_ms),
+            "explore": self.explore.map(Explore::to_json),
+            "chance": round(self.chance()),
             "plan": self.lines(),
+            "nodes": self.sources.iter().zip(&self.nodes).filter_map(|(s, n)| n.as_ref().map(|n| (s.clone(), n.receipts()))).collect::<serde_json::Map<String, Json>>(),
         })
+    }
+}
+
+/// The longest text a logged blend keeps of a cell.
+pub const LOGGED_TEXT: usize = 256;
+
+/// A cell as a logged blend keeps it, or `None` for one it does not keep:
+/// numbers, booleans, `null`, text up to [`LOGGED_TEXT`] characters, a
+/// time as `{"ts": microseconds}`, a list as `{"list": [...]}`, and a
+/// vector (when `vectors`) as its numbers. Read back by
+/// [`crate::query::blend_eval::cell_value`].
+pub fn cell_json(v: &Value, vectors: bool) -> Option<Json> {
+    Some(match v {
+        Value::Null => Json::Null,
+        Value::Int(n) => json!(n),
+        Value::Float(x) if x.is_finite() => json!(x),
+        Value::Float(_) => Json::Null,
+        Value::Bool(b) => json!(b),
+        Value::Str(t) if t.chars().count() <= LOGGED_TEXT => json!(t),
+        Value::Str(_) => return None,
+        Value::Timestamp(t) => json!({"ts": t}),
+        // Each number written as short as reads back to the same f32.
+        Value::Vector(xs) if vectors => Json::Array(xs.iter().map(|x| serde_json::Number::from_f64(format!("{x}").parse::<f64>().unwrap_or(0.0)).map_or(json!(0), Json::Number)).collect()),
+        Value::Vector(_) => return None,
+        Value::List(xs) => {
+            let items: Vec<Json> = xs.iter().map(|x| cell_json(x, false)).collect::<Option<_>>()?;
+            let j = json!({"list": items});
+            if j.to_string().len() > 2 * LOGGED_TEXT {
+                return None;
+            }
+            j
+        }
+    })
+}
+
+impl Blended {
+    /// The rows a logged run writes to a rank log ([`crate::rank_log`]):
+    /// every row every source gave, so that a replay has them all
+    /// ([`crate::query::blend_eval`]). The rows placed come first, shown,
+    /// each with its chance given the rows above it (`propensity`) and the
+    /// chance of the page down to it (`prefix_propensity`); the rest
+    /// follow, not shown. Each row's features are its source, its rank
+    /// there, its source's score and its cells ([`cell_json`]; vectors
+    /// only of the columns `def` diversifies or dedupes on). The first
+    /// row keeps the policy: the blend, its version, k, the exploration
+    /// and the sources.
+    pub fn log_entries(&self, def: &Def, request: &str, ts: i64, log: &crate::rank_log::Log) -> Vec<crate::rank_log::Entry> {
+        let vec_cols: Vec<String> = def.diversify.iter().map(|d| d.on.to_ascii_lowercase()).chain(def.dedupe.iter().map(|d| d.on.to_ascii_lowercase())).collect();
+        let cand_of: HashMap<(usize, usize), usize> = self.cands.iter().enumerate().map(|(i, c)| ((c.source, c.rank), i)).collect();
+        let entry = |s: usize, i: usize, position: usize| -> crate::rank_log::Entry {
+            let rs = &self.inputs[s].rs;
+            let row = &rs.rows[i];
+            let key = match rs.keys.get(i) {
+                Some(v) if *v != Value::Null => v.clone(),
+                _ => row.first().cloned().unwrap_or(Value::Null),
+            };
+            let mut cells = serde_json::Map::new();
+            for (c, v) in rs.columns.iter().zip(row) {
+                if let Some(j) = cell_json(v, vec_cols.contains(&c.to_ascii_lowercase())) {
+                    cells.insert(c.clone(), j);
+                }
+            }
+            let mut f = serde_json::Map::new();
+            f.insert("source".into(), json!(self.sources[s]));
+            f.insert("rank".into(), json!(i + 1));
+            if rs.scores.len() == rs.rows.len() && rs.scores[i].is_finite() {
+                f.insert("score".into(), json!(rs.scores[i]));
+            }
+            f.insert("cells".into(), Json::Object(cells));
+            crate::rank_log::Entry {
+                id: format!("{request}#{position}"),
+                request: request.to_string(),
+                ts,
+                context: log.context.clone(),
+                row_key: text(&key),
+                position,
+                shown: false,
+                score: cand_of.get(&(s, i + 1)).map(|&c| round(self.cands[c].utility)).filter(|u| u.is_finite()),
+                features: Json::Object(f).to_string(),
+                variant: log.variant.clone(),
+                query: None,
+                propensity: None,
+                prefix_propensity: None,
+                policy: None,
+                took_ms: None,
+            }
+        };
+        let mut out = Vec::with_capacity(self.inputs.iter().map(|i| i.rs.rows.len()).sum());
+        let mut prefix = 1.0;
+        let mut shown = std::collections::HashSet::new();
+        for p in &self.placed {
+            let c = &self.cands[p.cand];
+            let mut e = entry(c.source, c.rank - 1, p.slot - 1);
+            prefix *= p.chance;
+            e.shown = true;
+            e.propensity = Some(p.chance);
+            e.prefix_propensity = Some(prefix);
+            out.push(e);
+            shown.insert((c.source, c.rank));
+        }
+        for s in 0..self.inputs.len() {
+            for i in 0..self.inputs[s].rs.rows.len() {
+                if !shown.contains(&(s, i + 1)) {
+                    let pos = out.len();
+                    out.push(entry(s, i, pos));
+                }
+            }
+        }
+        if let Some(e) = out.first_mut() {
+            let (tau, top) = self.explore.map_or((Json::Null, Json::Null), |x| (json!(x.tau), json!(x.top)));
+            e.policy = Some(json!({"policy": "blend", "blend": self.name, "version": self.version, "k": self.k, "tau": tau, "top": top, "sources": self.sources}).to_string());
+        }
+        out
+    }
+
+    /// The chance of the page placed: each slot's chance, multiplied.
+    pub fn chance(&self) -> f64 {
+        self.placed.iter().map(|p| p.chance).product()
     }
 }
 
@@ -2146,7 +2732,7 @@ mod tests {
         // At least half of the top 6 from b: b's rows come in once they must.
         d.slots.clear();
         d.quotas.push(Quota { when: Pred { column: "source".into(), value: json!("b") }, min: 50.0, max: 100.0, top: None, if_any: false });
-        let b = blend(&d, 1, 6, inputs(), Want { costs: true }).unwrap();
+        let b = blend(&d, 1, 6, inputs(), Want { costs: true, ..Want::default() }).unwrap();
         assert_eq!(slate(&b).iter().filter(|k| k.starts_with('b')).count(), 3);
         assert!(b.quotas[0].met);
         assert_eq!(b.costs.len(), 1);
@@ -2259,7 +2845,7 @@ mod tests {
         for round in 0..300 {
             let n_src = rng.gen_range(1..=4);
             let names: Vec<String> = (0..n_src).map(|i| format!("s{i}")).collect();
-            let sources = names.iter().map(|n| Source { name: n.clone(), sql: "SELECT id, author, rel FROM t LIMIT 5".into() }).collect();
+            let sources = names.iter().map(|n| Source::query(n, "SELECT id, author, rel FROM t LIMIT 5")).collect();
             let k = rng.gen_range(1..=12);
             let mut d = Def { name: "r".into(), sources, heads: vec![Head { name: "rel".into(), weight: 1.0, calibrate: [Calibrate::Tmm, Calibrate::Minmax, Calibrate::Rank, Calibrate::Raw][rng.gen_range(0..4)], lo: None, missing: Missing::Neutral }], boost: Vec::new(), slots: Vec::new(), quotas: Vec::new(), spacing: Vec::new(), diversify: None, caps: Vec::new(), dedupe: None, k, note: None };
             if rng.gen_bool(0.5) {

@@ -3917,7 +3917,7 @@ fn literal(v: &sql::Value, params: &Params) -> Result<Value> {
         sql::Value::SingleQuotedString(s) | sql::Value::DoubleQuotedString(s) => Value::Str(s.clone()),
         sql::Value::Boolean(b) => Value::Bool(*b),
         sql::Value::Null => Value::Null,
-        sql::Value::Placeholder(p) => params.0.get(p.trim_start_matches([':', '$', '@', '?'])).cloned().ok_or_else(|| err(format!("unbound parameter {p}")))?,
+        sql::Value::Placeholder(p) => params.0.get(p.trim_start_matches([':', '$', '@', '?'])).cloned().ok_or_else(|| err(crate::query::sql::unbound(p)))?,
         v => return Err(err(format!("unsupported literal {v}"))),
     })
 }

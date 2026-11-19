@@ -457,7 +457,7 @@ pub fn persona_text(u: &User) -> String {
 }
 
 /// The words of `s`, lower-cased, of three letters or more.
-fn words(s: &str) -> Vec<String> {
+pub(crate) fn words(s: &str) -> Vec<String> {
     s.split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 3).map(|w| w.to_lowercase()).collect()
 }
 
@@ -1480,7 +1480,7 @@ fn verdict(spec: &LiveSpec, metrics: &[Value], a: usize) -> Value {
 }
 
 /// A results page, as the agent reads it.
-fn render_page(query: &str, rows: &[Row]) -> String {
+pub(crate) fn render_page(query: &str, rows: &[Row]) -> String {
     if rows.is_empty() {
         return format!("No results for \"{query}\".");
     }
@@ -1515,7 +1515,7 @@ fn tools() -> Value {
     ])
 }
 
-struct Mind<'a> {
+pub(crate) struct Mind<'a> {
     brain: &'a Brain,
     http: &'a reqwest::Client,
     need: String,
@@ -1526,7 +1526,7 @@ struct Mind<'a> {
 }
 
 impl<'a> Mind<'a> {
-    fn new(brain: &'a Brain, http: &'a reqwest::Client, who: String, about: &str, need: &str) -> Mind<'a> {
+    pub(crate) fn new(brain: &'a Brain, http: &'a reqwest::Client, who: String, about: &str, need: &str) -> Mind<'a> {
         let first = format!(
             "You are {who}.\n\nThe site: {about}\n\nYou came to it looking for this:\n\n\"{need}\"\n\nFind a page on the site that answers it, as this person would. You have at most {AGENT_STEPS} actions."
         );
@@ -1535,7 +1535,7 @@ impl<'a> Mind<'a> {
 
     /// The next action after `obs` (what the last one showed), and what
     /// deciding it cost, in dollars.
-    async fn act(&mut self, obs: Option<String>, rows: &[Row]) -> Result<(Action, f64)> {
+    pub(crate) async fn act(&mut self, obs: Option<String>, rows: &[Row]) -> Result<(Action, f64)> {
         self.step += 1;
         match self.brain {
             Brain::Scripted => Ok((self.scripted(rows), 0.0)),
@@ -1546,7 +1546,7 @@ impl<'a> Mind<'a> {
                         None => self.messages.push(json!({"role": "user", "content": o})),
                     }
                 }
-                let (_, _, pin, pout, fallbacks) = AGENT_MODELS.iter().copied().find(|m| m.0 == model.as_str()).unwrap_or(AGENT_MODELS[0]);
+                let (_, _, _, _, fallbacks) = model_of(model);
                 let mut body = json!({
                     "model": model, "max_tokens": 4096, "system": SYSTEM, "tools": tools(),
                     "tool_choice": {"type": "auto", "disable_parallel_tool_use": true},
@@ -1556,9 +1556,7 @@ impl<'a> Mind<'a> {
                     body["fallbacks"] = json!("default");
                 }
                 let r = call(self.http, base, key, fallbacks, &body).await?;
-                let u = &r["usage"];
-                let f = |k: &str| u[k].as_f64().unwrap_or(0.0);
-                let cost = (f("input_tokens") * pin + f("cache_creation_input_tokens") * pin * 1.25 + f("cache_read_input_tokens") * pin * 0.1 + f("output_tokens") * pout) / 1e6;
+                let cost = cost_of(model, &r["usage"]);
                 let stop = r["stop_reason"].as_str().unwrap_or("");
                 if stop == "refusal" {
                     return Ok((Action::Quit("the model declined to go on".into()), cost));
@@ -1617,8 +1615,20 @@ impl<'a> Mind<'a> {
     }
 }
 
+/// A model of [`AGENT_MODELS`] by its id (the first when unknown).
+pub(crate) fn model_of(model: &str) -> (&'static str, &'static str, f64, f64, bool) {
+    AGENT_MODELS.iter().copied().find(|m| m.0 == model).unwrap_or(AGENT_MODELS[0])
+}
+
+/// What a call's usage cost, in dollars.
+pub(crate) fn cost_of(model: &str, u: &Value) -> f64 {
+    let (_, _, pin, pout, _) = model_of(model);
+    let f = |k: &str| u[k].as_f64().unwrap_or(0.0);
+    (f("input_tokens") * pin + f("cache_creation_input_tokens") * pin * 1.25 + f("cache_read_input_tokens") * pin * 0.1 + f("output_tokens") * pout) / 1e6
+}
+
 /// One call to the Messages API, again on overload or a lost connection.
-async fn call(http: &reqwest::Client, base: &str, key: &str, fallbacks: bool, body: &Value) -> Result<Value> {
+pub(crate) async fn call(http: &reqwest::Client, base: &str, key: &str, fallbacks: bool, body: &Value) -> Result<Value> {
     let url = format!("{}/v1/messages", base.trim_end_matches('/'));
     let mut wait = Duration::from_secs(2);
     for attempt in 0.. {
@@ -1651,6 +1661,35 @@ async fn call(http: &reqwest::Client, base: &str, key: &str, fallbacks: bool, bo
         return Err(format!("the Messages API ({status}): {m}"));
     }
     unreachable!()
+}
+
+/// One answer by a tool: `tool`'s input, and what the call cost. The
+/// newest models refuse a forced `tool_choice`, so the call is `auto` with
+/// the tool named in the message, and made again (twice at most) when no
+/// call of it comes back.
+pub(crate) async fn tool_answer(http: &reqwest::Client, base: &str, key: &str, model: &str, system: &str, tool: &Value, message: &str, max_tokens: u32) -> Result<(Value, f64)> {
+    let name = tool["name"].as_str().unwrap_or("answer");
+    let (_, _, _, _, fallbacks) = model_of(model);
+    let mut body = json!({
+        "model": model, "max_tokens": max_tokens, "system": system, "tools": [tool],
+        "tool_choice": {"type": "auto", "disable_parallel_tool_use": true},
+        "messages": [{"role": "user", "content": format!("{message}\n\nAnswer only by calling the {name} tool, once.")}],
+    });
+    if fallbacks {
+        body["fallbacks"] = json!("default");
+    }
+    let mut cost = 0.0;
+    for _ in 0..3 {
+        let r = call(http, base, key, fallbacks, &body).await?;
+        cost += cost_of(model, &r["usage"]);
+        if let Some(b) = r["content"].as_array().into_iter().flatten().find(|b| b["type"] == "tool_use" && b["name"] == name) {
+            return Ok((b["input"].clone(), cost));
+        }
+        if r["stop_reason"] == "max_tokens" {
+            return Err(format!("the answer was cut off at {max_tokens} tokens: ask for less"));
+        }
+    }
+    Err(format!("the model did not call {name}"))
 }
 
 /// Whether a live run whose last second's numbers are `snapshot` is

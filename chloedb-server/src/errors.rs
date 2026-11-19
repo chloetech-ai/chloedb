@@ -62,6 +62,7 @@ pub const CODES: &[Code] = &[
     c("table_not_found", false, "list the tables the key may read (GET /v1/tables, or the list_tables tool)", "schemas"),
     c("column_not_found", false, "describe the table (GET /v1/schema?table=..., or the describe_table tool) for its fields", "schemas"),
     c("query_invalid", false, "the statement is refused as the error says (a word that does not parse, or a table, column or value it does not bind): POST /v1/sql/check, or the check_sql tool, checks one without running it", "http-api"),
+    c("table_altered", true, "an ALTER TABLE (or a DROP and CREATE) of the table committed while the statement ran, again and again until its deadline, and nothing was written: send the same statement again, or with a larger timeout_ms", "schemas"),
     c("schema_invalid", false, "the schema is refused as the error says (check_sql, or POST /v1/schema/check, checks one without making it)", "schemas"),
     c("value_invalid", false, "a row's value does not fit its field, as the error says (which row, field and value): fix the value; the schema is fine as it is", "schemas"),
     c("idempotency_conflict", false, "this idempotency key was used for another request: send a new key", "writes-from-many-clients"),
@@ -109,6 +110,8 @@ pub fn classify(status: u16, message: &str) -> &'static str {
         422 => "unprocessable",
         501 => "not_implemented",
         502 => "upstream",
+        // Bound again until its deadline, and raced still (schema_race).
+        400 if chloedb::db::altered_while_running(m) => "table_altered",
         _ if has("no such table") || has("unknown table") => "table_not_found",
         _ if has("no such column") || has("unknown field") || has("no such field") => "column_not_found",
         400 if m.starts_with("query error") || has("parse error") => "query_invalid",
@@ -193,6 +196,7 @@ mod tests {
             (400, "query error: no such column: price"),
             (400, "query error: expected FROM"),
             (400, "schema error: a field twice"),
+            (400, "query error: table race was altered, or dropped and created again, while the statement ran; run it again"),
             (400, "say which statement"),
             (404, "no such table: orders"),
             (404, "no proposal p9"),
@@ -245,6 +249,17 @@ mod tests {
         assert_eq!(j["error_code"], "query_invalid");
         let hint = j["hint"].as_str().unwrap();
         assert!(hint.contains("POST /v1/sql/check") && !hint.contains("search_docs"), "{hint}");
+    }
+
+    /// A write that an ALTER TABLE raced until its deadline wrote nothing:
+    /// the same statement sent again may run, so it is retryable.
+    #[test]
+    fn a_write_raced_by_alter_table_is_retryable() {
+        let e = ApiError::bad("query error: table race was altered, or dropped and created again, while the statement ran; run it again");
+        let j = answer(&e);
+        assert_eq!(e.status, 400);
+        assert_eq!(j["error_code"], "table_altered");
+        assert_eq!(j["retryable"], true);
     }
 
     #[test]

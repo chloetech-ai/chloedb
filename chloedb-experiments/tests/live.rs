@@ -95,7 +95,7 @@ async fn a_live_run_counts_every_second_and_ends_as_an_experiment() {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(app::serve(server.clone(), listener, Opts { token: Some("t".into()), beir: Vec::new(), anthropic_key: Some("k".into()), anthropic_base: Some(base) }));
+    tokio::spawn(app::serve(server.clone(), listener, Opts { token: Some("t".into()), beir: Vec::new(), anthropic_key: Some("k".into()), anthropic_base: Some(base), sources: Vec::new() }));
     let c = Client { url, http: reqwest::Client::new() };
     common::ready(&c).await;
     c.post("/v1/sites", common::shop_site()).await;

@@ -1336,11 +1336,14 @@ class FrameStore:
     `_load` (Arrow in)."""
 
     def frame(self, table: str | None = None) -> Frame:
-        """A frame of every row of `table` (the first table without one)."""
+        """A frame of every row of `table` (the only table without one)."""
         tables = self.tables()
         if table is None:
             if not tables:
                 raise ChloeDBError("the store has no tables yet: create one with create_table(name, data)")
+            if len(tables) > 1:
+                names = [t["table"] for t in tables]
+                raise ChloeDBError(f"frame() names no table, and this store has {len(names)}: {', '.join(names)}. Name one, as in frame({names[-1]!r}) or store[{names[-1]!r}]")
             schema = tables[0]
         else:
             match = [t for t in tables if t["table"] == table] or [t for t in tables if t["table"].lower() == table.lower()]

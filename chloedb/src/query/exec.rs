@@ -1194,6 +1194,10 @@ pub struct Executor<'a> {
     /// The rows of the page being ranked (its LIMIT, or [`DEFAULT_K`]),
     /// OFFSET aside: what raises a fused ranking's depth.
     page_rows: Option<usize>,
+    /// The forgiving `MATCH`es of the queries run ([`Executor::see`]):
+    /// their field, text and edits, which a `bm25` of the same text
+    /// widens by ([`Executor::widens`]).
+    matched: Vec<(usize, String, Fuzzy)>,
 }
 
 /// The last [`Executor::query`] handed out.
@@ -1364,7 +1368,65 @@ impl<'a> Executor<'a> {
             clock: Clock::new(opts.profile),
             query: QUERIES.fetch_add(1, Ordering::Relaxed) + 1,
             page_rows: None,
+            matched: Vec::new(),
         }
+    }
+
+    /// Notes the forgiving `MATCH`es of `q`'s filter, and of its seeds'
+    /// subqueries, for [`Executor::widens`]: on a shard as in one
+    /// database, from the plan alone, so that a coordinator's statistics
+    /// round and the query add the same terms.
+    fn see(&mut self, q: &Select) {
+        fn walk(p: &Pred, out: &mut Vec<(usize, String, Fuzzy)>) {
+            match p {
+                Pred::Match { field, query, expand: Expand { fuzzy: Some(z), .. } } => {
+                    if !out.iter().any(|(f, t, y)| f == field && t == query && y == z) {
+                        out.push((*field, query.clone(), *z));
+                    }
+                }
+                Pred::And(ps) | Pred::Or(ps) | Pred::AtLeast { items: ps, .. } => ps.iter().for_each(|p| walk(p, out)),
+                _ => {}
+            }
+        }
+        walk(&q.filter, &mut self.matched);
+        for g in &q.graphs {
+            let seeds = match &g.kind {
+                crate::query::logical::GraphKind::Path { to, .. } => vec![&g.seeds, to],
+                _ => vec![&g.seeds],
+            };
+            for s in seeds {
+                if let Seeds::Query(sub) = s {
+                    self.see(sub);
+                }
+            }
+        }
+    }
+
+    /// Whether `bm25(field, text, ...)` with these options ranks the text a
+    /// forgiving `MATCH` of the query filters by, with its edits: then
+    /// it reads the words as the `MATCH` does, each widened to every
+    /// indexed term within its edits, rather than correcting a typo
+    /// alone, so that every row the `MATCH` keeps holds a term it scores
+    /// and the ranking returns them all (MAYA-401: with `'auto'`, a word
+    /// the index has was left as typed, and the rows of its neighbours,
+    /// `lasagna` for `lasagne`, dropped out).
+    fn widens(&self, field: usize, text: &str, opts: &Opts, fuzzy: Fuzzy) -> bool {
+        if self.matched.is_empty() {
+            return false;
+        }
+        let words = match syntax(opts) {
+            Ok(Syntax::Query) => text.to_string(),
+            Ok(Syntax::Plain) => text::query::plain_match(text),
+            _ => return false,
+        };
+        let key = |t: &str| t.trim().to_lowercase();
+        let want = key(&words);
+        // A MATCH's `min => n` makes its text a group `(text)@n`.
+        let inner = |q: &str| -> Option<String> {
+            let (body, need) = q.trim().strip_prefix('(')?.rsplit_once(")@")?;
+            text::query::Need::parse(need).map(|_| key(body))
+        };
+        self.matched.iter().any(|(f, q, z)| *f == field && *z == fuzzy && (key(q) == want || inner(q).as_deref() == Some(want.as_str())))
     }
 
     /// `q` without the rows that have expired ([`ExecOptions::now`]), unless
@@ -1446,7 +1508,8 @@ impl<'a> Executor<'a> {
     /// This database's BM25 statistics for every term `q` scores with
     /// (subqueries of graph seeds included), for a coordinator to sum over
     /// shards and send back as [`ExecOptions::stats`].
-    pub fn term_stats(self, q: &Select) -> Result<TermStats> {
+    pub fn term_stats(mut self, q: &Select) -> Result<TermStats> {
+        self.see(q);
         let mut leaves = Vec::new();
         bm25_leaves(q, &mut leaves);
         let mut out = TermStats::default();
@@ -1651,6 +1714,7 @@ impl<'a> Executor<'a> {
     /// [`Executor::guard_counts`] of a query whose expired rows are left
     /// out already.
     fn level_counts(&mut self, q: &Select) -> Result<(usize, Vec<u64>)> {
+        self.see(q);
         let Some(g) = &q.guard else { return Ok((0, Vec::new())) };
         // A bm25 site's options, and its MATCH filter at level m.
         let bm25 = |m: Option<usize>| -> Result<(usize, Option<String>)> {
@@ -1739,7 +1803,8 @@ impl<'a> Executor<'a> {
     /// docID), in their order, as [`Executor::execute`] would give them
     /// before typing them ([`Select::typed`]): what reads by key fetch
     /// once they have found their rows ([`crate::db::Db::get_many_at`]).
-    pub fn rows_at(self, q: &Select, at: &[(usize, DocId)]) -> Result<Vec<Vec<Value>>> {
+    pub fn rows_at(mut self, q: &Select, at: &[(usize, DocId)]) -> Result<Vec<Vec<Value>>> {
+        self.see(q);
         let hits: Vec<Hit> = at.iter().map(|&(seg, doc)| Hit { seg, doc, score: f64::NAN }).collect();
         self.project(q, &hits)
     }
@@ -1794,6 +1859,7 @@ impl<'a> Executor<'a> {
     }
 
     fn answer(mut self, q: &Select, arrow_over: Option<usize>) -> Result<Leaf> {
+        self.see(q);
         let unexpired = self.unexpired(q);
         let q = unexpired.as_ref();
         let m = self.mark();
@@ -1928,6 +1994,7 @@ impl<'a> Executor<'a> {
         if q.guard.is_some() {
             return Err(err("min_rows and max_rows guard a query, not its seed subquery"));
         }
+        self.see(q);
         self.run_graphs(&q.graphs)?;
         let hits = self.ordered_hits(q, None)?;
         Ok(hits.into_iter().skip(q.offset).collect())
@@ -3647,6 +3714,10 @@ impl<'a> Executor<'a> {
             // terms in a coordinator's statistics round and in its query;
             // the chances by the collection's where they were sent.
             let raw = raw_forms(analyzer, text);
+            // Beside a forgiving MATCH of the same text, every neighbour
+            // the MATCH takes, a word the index has too: 'auto' still
+            // weighs each by the chance it was meant.
+            let widen = expand.fuzzy.is_some_and(|z| self.widens(field, text, opts, z));
             let names: Vec<String> = out.terms[..n_base].iter().map(|(t, _)| t.clone()).collect();
             let edits_of = |t: &str| -> (u8, bool) {
                 let len = t.chars().count();
@@ -3669,13 +3740,17 @@ impl<'a> Executor<'a> {
                     true => local.as_ref().map_or(0, |st| st.df.get(t).copied().unwrap_or(0)),
                     false => 0,
                 };
-                if let (true, Some(st)) = (auto, &local) {
+                // Correcting, a word in enough documents stays as it is,
+                // and takes only neighbours in more.
+                let corrects = auto && !widen;
+                if let (true, Some(st)) = (corrects, &local) {
                     if text::fuzzy::known(df, st.n_docs) {
                         continue;
                     }
                 }
                 let near = self.near_terms_of(field, t, raw.get(t).map(String::as_str), e)?;
-                for (n, ndf, d) in near.iter().filter(|x| x.2 > 0 && (!auto || x.1 > df)).take(MAX_FUZZY_TERMS) {
+                let most = if widen { usize::MAX } else { MAX_FUZZY_TERMS };
+                for (n, ndf, d) in near.iter().filter(|x| x.2 > 0 && (!corrects || x.1 > df)).take(most) {
                     let mut x = w * text::fuzzy::weight(*d, len);
                     if auto {
                         let (df, ndf) = sent.and_then(|g| Some((*g.df.get(t)?, *g.df.get(n)?))).unwrap_or((df, *ndf));
@@ -4046,7 +4121,13 @@ impl<'a> Executor<'a> {
     /// ([`TextFieldReader::top_k_capped`]), by decreasing score.
     #[allow(clippy::too_many_arguments)]
     fn bm25_rows(&mut self, field: usize, query: &str, opts: &Opts, p: &Pred, k: usize, ties: bool, cap: Option<PerGroup>) -> Result<Vec<Hit>> {
+        // The words as the terms searched, with what typos, synonyms and
+        // prefixes add: a step of its own, the funnel's Expand
+        // ([`crate::query::funnel`]).
+        let m = self.mark();
         let (q, stats) = self.bm25_scoring(field, query, opts)?;
+        let added = q.terms.len().saturating_sub(q.n_base);
+        self.step(m, "terms", format!("{} of the text, {added} added by typos, synonyms and prefixes", q.n_base), Some(q.terms.len() as u64));
         let terms = &q.terms;
         if terms.is_empty() {
             return Ok(Vec::new());

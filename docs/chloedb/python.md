@@ -152,13 +152,13 @@ Rows are dicts of field name to value: `str`, `int`, `float`, `None`, `bool` for
 
 `chloedb.from_sqlite("shop.sqlite", "shop.chloedb")` creates a database from a SQLite file's tables, and `chloedb.plan_sqlite("shop.sqlite")` says what it would make of them without writing; edit the plan and pass it to either as `schemas`. `chloedb.from_parquet("events.parquet", "lake.chloedb")` and `chloedb.plan_parquet(...)` do the same for Parquet. Any of these paths, and `import_file`'s, may be an `s3://` URL, read with the `AWS_*` variables ([S3](parquet.md#s3-and-s3-compatible-stores)).
 
-`insert`, `upsert`, `delete` and `import_file` write the database's first table, the one `schema` describes, or the one `table=` names (`db.insert(rows, table="events")`); `sql` names the table it writes, and `tables()` lists every table's schema. Through a coordinator, `delete` on a table placed by a column takes that column's value as `routing=` ([tables on shards](server.md#tables-on-shards)). A key a row leaves out gets its field's `default`, and a field with `not_null` refuses a row without a value ([schema options](server.md#schemas)); a `timestamp` defaulting to `"now"` takes one time for all the rows of a call.
+`insert`, `upsert`, `delete` and `import_file` write the table `table=` names (`db.insert(rows, table="events")`), or the only table there is; `sql` names the table it writes, and `tables()` lists every table's schema. A call that names no table where there are several raises `ChloeDBError` and names them, rather than write the first (`db.insert names no table, and this server has 3: products, library_help, recipes. Pass table=, as in db.insert(..., table='recipes')`), and so do `get`, `get_many`, `search`, `table()`, `sid_next` and the column calls. **Changed:** they read and wrote the first table before, so on a server of several tables `db.search("lasagna")` answered rows of another table. A client asks the server for its tables once, and again after a table is made, dropped or changed through it. Through a coordinator, `delete` on a table placed by a column takes that column's value as `routing=` ([tables on shards](server.md#tables-on-shards)). A key a row leaves out gets its field's `default`, and a field with `not_null` refuses a row without a value ([schema options](server.md#schemas)); a `timestamp` defaulting to `"now"` takes one time for all the rows of a call.
 
 Vectors of embedded fields that a row leaves out are computed by the field's model when it is open, here or behind an API: a field naming `openai/text-embedding-3-small`, `cohere/embed-v4.0`, `voyage/voyage-3.5`, `gemini/gemini-embedding-001`, `ollama/nomic-embed-text` or another [hosted model](server.md#hosted-models) gets its vectors from the provider, with the key in the process's environment (`OPENAI_API_KEY`, ...), so inserting plain text is enough. A write whose vectors the provider will not give (after its retries) raises `ChloeDBError` and writes nothing. `db.embed_errors` lists the embedded fields whose model did not open (a hosted model without its key says which variable to set), whose vectors rows must then bring: a write that leaves one to a model ChloeDB could run but has not open fails, and says so, unless `db.set_embed_later()` lets it store the row without its vector, to be filled in once the model opens (a server does it itself; here, `db.embed_backfill("emb")`) (before, such a row was stored without a vector, and no error said so; a server still does that, and fills them in itself). A table records the fingerprint of its model's weights (the SHA-256 of its weights file) when it is created with the model in its models directory, and a model of the same name with other weights does not open for it: it is listed in `db.embed_errors`, with what to do. It also lists the [semantic-ID fields](#semantic-id-codebooks) whose codebook did not open.
 
 ## Querying
 
-`query(sql, params)` runs a `SELECT` in [ChloeDB's SQL](query-language.md). Parameters bind `:name` placeholders, from a dict, keyword arguments, or both:
+`query(sql, params)` runs a `SELECT` in [ChloeDB's SQL](query-language.md). Parameters bind `:name` placeholders, from a dict, keyword arguments, or both; values by position, sqlite3's `?` and psycopg's `%s` with a tuple, raise a `TypeError` that shows the call with names (`db.query('SELECT id FROM recipes WHERE MATCH(name, :p1)', p1='soup')`):
 
 ```python
 db.query("SELECT id, title FROM books WHERE year >= :y ORDER BY bm25(title, :q) DESC LIMIT 10", {"y": 2000}, q="dragon")
@@ -203,7 +203,7 @@ duckdb.sql("SELECT avg(rating) FROM r")
 
 A computed column has the type of its values: a column of only NULLs (or of no rows) is `null`, and one of integers and floats `float64`. Values of other types mixed in one column (a `CASE` that answers a number in some rows and text in others) are not one Arrow array: `query_arrow` raises `ChloeDBError` naming the column, and `query` answers it. `r.columns`, `len(r)` and `r.stats` are as a `Result`'s. `query_arrow` comes with the package's default feature `datafusion`. A `Client`'s `query_arrow` asks the server for an Arrow answer (`"format": "arrow"`) and returns a pyarrow Table with the same column types; it needs pyarrow, and a server too old for Arrow answers JSON, which it types from the values.
 
-`search(text, table=None, limit=10, where=None, columns="*", mode="auto")` writes the query for the common case, on the first table or on `table` <!-- since 0.3.2 --> (which reads that table alone: a client with a key limited to other tables than the first can search its own). It ranks by BM25 over the text fields (the generated ones if the table has any, such as a combined `body`, else every indexed text field) fused by reciprocal rank with the similarity of the first embedded vector field whose model is open; `mode="text"` or `"vector"` uses one side only. `where` adds a condition, [built in Python](#queries-built-in-python) or in SQL with `params` for its placeholders:
+`search(text, table=None, limit=10, where=None, columns="*", mode="auto")` writes the query for the common case, on `table` <!-- since 0.3.2 --> (which reads that table alone: a client with a key limited to other tables than the first can search its own), or on the only table, since with several it names them and asks for one. It ranks by BM25 over the text fields (the generated ones if the table has any, such as a combined `body`, else every indexed text field) fused by reciprocal rank with the similarity of the first embedded vector field whose model is open; `mode="text"` or `"vector"` uses one side only. `where` adds a condition, [built in Python](#queries-built-in-python) or in SQL with `params` for its placeholders:
 
 ```python
 db.search("dragon", where=col("year") >= 1990, columns=["id", "title"])
@@ -487,6 +487,22 @@ A value of another type than its field's: here text for an `INT` field, in the f
 ### `ChloeDBError: books.chloedb does not exist: pass a schema to create it`
 
 `chloedb.open(path)` without a schema, where no database is: a misspelt path, or a script started from another folder (a relative path is read from the current directory). Give the right path, or the schema to create the database. Its code is `error`.
+
+### `ChloeDBError: db.search names no table, and this server has 3: ...`
+
+```text
+_chloedb.ChloeDBError: db.search names no table, and this server has 3: products, library_help, recipes. Pass table=, as in db.search(..., table='recipes')
+```
+
+A call that reads or writes one table (`search`, `insert`, `upsert`, `delete`, `get`, `import_file`) without `table=`, on a database or server of several tables. Name the table, as the message shows; a database of one table needs no name.
+
+### `TypeError: query parameters are named in ChloeDB's SQL (:name) ...`
+
+```text
+TypeError: query parameters are named in ChloeDB's SQL (:name) and given by keyword or in a dict, not by position as sqlite3's ? and psycopg's %s take them: db.query('SELECT id FROM recipes WHERE MATCH(name, :p1)', p1='soup')
+```
+
+Values by position, a tuple or list with `?` or `%s` in the SQL, as sqlite3 and psycopg take them. Write `:q` where the value goes and pass `q=...`, or the dict `{"q": ...}`. A `?` or `$1` sent another way (over HTTP, from the command center's console) gets the same advice from the server.
 
 ### `ChloeDBError: corrupt database: no valid meta slot`
 

@@ -82,7 +82,8 @@ socket.
   prompt or a tool call.
 
 The store lives outside the repository, in
-`${CHLOECTX_HOME:-~/.local/share/chloectx}/<project-slug>/`, because
+`${CHLOECTX_HOME:-~/.local/share/chloectx}/projects/<folder>-<8 hex>/`
+(the project folder's name and a hash of its path), because
 transcripts can contain secrets. A redaction pass removes common key and
 token formats before anything is stored.
 
@@ -253,6 +254,11 @@ normalised over the union \(C\), with a missing score counting as 0:
 Priors then break near-ties without overriding relevance:
 
 \[ S(r) = \mathrm{rel}(r)\,\bigl(1 + \lambda_\iota\,\iota(r)\bigr) + \lambda_t\, e^{-(\mathrm{seq}_{\max} - \mathrm{seq}(r))/\tau}. \]
+
+A record of routine work (a test run that passed, a bare test command such
+as `cargo test`, a tool's empty answer) has its whole \(S\) multiplied by
+0.3, since it matches any question about its turn and says nothing
+(`boilerplate` in `src/recall.rs`).
 
 Candidates exclude answers that admitted not knowing (tagged `uncertain`
 at capture) and stored prompts that are the same question again; both match

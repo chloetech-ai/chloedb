@@ -10,6 +10,7 @@ use crate::query::blend::{self, Blended, Def, Input, Statement, Want};
 use crate::query::exec::{ExecOptions, ResultSet};
 use crate::query::function::Function;
 use crate::query::Params;
+use crate::rank_log::{self, Log, Logged};
 use crate::storage::Snapshot;
 
 fn err(m: impl Into<String>) -> Error {
@@ -57,14 +58,82 @@ impl Db {
 
     /// Runs blend `def` (as version `version`) into `k` slots: each source
     /// with `params`, as of `snap`, then the fill.
+    /// A source that is a node runs as a blend of its own, into its own k
+    /// slots, and gives its placed rows ([`Blended::as_source`]); only the
+    /// top blend explores.
     pub fn blend_at(&self, snap: &Snapshot, def: &Def, version: i64, params: &Params, k: usize, want: Want, opts: &ExecOptions) -> Result<Blended> {
         let mut inputs = Vec::with_capacity(def.sources.len());
+        let mut nodes = Vec::with_capacity(def.sources.len());
         for s in &def.sources {
             let t0 = Instant::now();
-            let rs = self.query_at(snap, &s.sql, params, opts).map_err(|e| e.within(&format!("blend {} source {}", def.name, s.name)))?;
-            inputs.push(Input { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
+            match &s.blend {
+                Some(node) => {
+                    let named = Def { name: s.name.clone(), ..(**node).clone() };
+                    let b = self.blend_at(snap, &named, 0, params, named.k, Want { costs: want.costs, explore: None }, opts).map_err(|e| e.within(&format!("blend {} node {}", def.name, s.name)))?;
+                    inputs.push(Input { rs: b.as_source(), took_ms: t0.elapsed().as_secs_f64() * 1e3 });
+                    nodes.push(Some(b));
+                }
+                None => {
+                    let rs = self.query_at(snap, &s.sql, params, opts).map_err(|e| e.within(&format!("blend {} source {}", def.name, s.name)))?;
+                    inputs.push(Input { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
+                    nodes.push(None);
+                }
+            }
         }
-        blend::blend(def, version, k, inputs, want)
+        let mut b = blend::blend(def, version, k, inputs, want)?;
+        b.nodes = nodes;
+        Ok(b)
+    }
+
+    /// `SELECT ... FROM blend(...)` run and logged ([`Db::query_logged`]):
+    /// the fill explores when `log` does ([`crate::query::blend::Explore`],
+    /// drawn from the request's stream), and every row of every source is
+    /// logged ([`Blended::log_entries`]) in one transaction.
+    pub(crate) fn blend_logged(&self, sql: &str, params: &Params, log: &Log, schema: &crate::schema::Schema, call: blend::Call, cols: &[(String, String)]) -> Result<Logged> {
+        rank_log::fits_blend(log)?;
+        let explore = match &log.explore {
+            Some(p) => blend::Explore::of_policy(p)?,
+            None => None,
+        };
+        let request = match &log.request {
+            Some(r) if r.is_empty() => return Err(err("a log's request id is not empty")),
+            Some(r) => r.clone(),
+            None => format!("{:032x}", rand::random::<u128>()),
+        };
+        let started = Instant::now();
+        let snap = self.snapshot();
+        let (def, version) = blend::resolve(&*self.functions_at(&snap)?, &call.name, call.version)?;
+        let want = Want { costs: false, explore: explore.map(|e| (e, blend::seed(&request))) };
+        let b = self.blend_at(&snap, &def, version, &call.params, call.limit.unwrap_or(def.k), want, &self.exec)?;
+        let rs = b.result(cols)?;
+        let mut entries = b.log_entries(&def, &request, log.ts.unwrap_or_else(crate::timestamp::now), log);
+        rank_log::keep_rows(&mut entries, &rank_log::query_json(sql, params), schema, started.elapsed().as_secs_f64() * 1000.0);
+        let now = crate::timestamp::now();
+        let mut t = self.storage.begin()?;
+        {
+            let mut tt = t.table(&schema.table)?;
+            for e in &entries {
+                tt.upsert(crate::ingest::document_at(schema, &e.to_json(), now)?)?;
+            }
+        }
+        let seq_no = t.commit_seq()?;
+        let propensities = match explore {
+            Some(_) => b.placed.iter().map(|p| p.chance).collect(),
+            None => Vec::new(),
+        };
+        Ok(Logged { rs, request, seq_no, teams: Vec::new(), propensities })
+    }
+
+    /// The logged requests of blend `name` in a log table, read from one
+    /// snapshot ([`crate::query::blend_eval`]): those that explored, with
+    /// every source's rows and the page shown, ready to value.
+    pub fn blend_requests(&self, x: &crate::rank_log::Export, name: &str) -> Result<crate::query::blend_eval::Gathered> {
+        let mut logs = crate::query::blend_eval::Logs::default();
+        self.export_rank_log(x, |r| {
+            logs.add(&r);
+            Ok(())
+        })?;
+        Ok(logs.finish(name))
     }
 
     /// A blend's rows and receipts on the latest snapshot: a stored

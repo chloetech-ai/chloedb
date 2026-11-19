@@ -28,6 +28,10 @@ use crate::live::{self, Brain, Live, LiveSpec};
 use crate::policy::Policy;
 use crate::server::{lit, Server};
 use crate::site::{self, Site, Tables};
+use crate::judge::Judge;
+use crate::personas::{self, PersonaSet};
+use crate::source::Source;
+use crate::study::{self, Study, StudySpec};
 use crate::users::{AGES, ATTRIBUTES, COUNTRIES, DEVICES, GENDERS, TENURES};
 
 pub const VIEW: &str = include_str!("../ui/view.js");
@@ -37,6 +41,8 @@ pub const ICON: &str = r#"<path d="M9 3h6"/><path d="M10 3v6.5L4.6 18.4A1.7 1.7 
 
 const SITES: &str = "exp_sites";
 const EXPERIMENTS: &str = "exp_experiments";
+const PERSONAS: &str = "exp_personas";
+const STUDIES: &str = "exp_studies";
 /// Runs kept in memory for cuts by two attributes.
 const KEPT: usize = 3;
 
@@ -49,6 +55,8 @@ pub struct Opts {
     pub anthropic_key: Option<String>,
     /// The Messages API's address (default https://api.anthropic.com).
     pub anthropic_base: Option<String>,
+    /// Real sites to study ([`crate::source`]).
+    pub sources: Vec<Source>,
 }
 
 pub struct App {
@@ -65,6 +73,11 @@ pub struct App {
     lives: Mutex<VecDeque<Arc<Live>>>,
     anthropic_key: Option<String>,
     anthropic_base: String,
+    sources: Vec<Arc<Source>>,
+    /// Persona sets being written, by id: what it is doing, or why it failed.
+    writing: Mutex<HashMap<String, Value>>,
+    /// Studies in memory, newest first: the one running, and a few that ended.
+    studies: Mutex<VecDeque<Arc<Study>>>,
 }
 
 type Shared = Arc<App>;
@@ -172,6 +185,9 @@ pub async fn serve(server: Server, listener: tokio::net::TcpListener, o: Opts) -
         lives: Mutex::new(VecDeque::new()),
         anthropic_key: o.anthropic_key.filter(|k| !k.trim().is_empty()),
         anthropic_base: o.anthropic_base.filter(|b| !b.trim().is_empty()).unwrap_or_else(|| "https://api.anthropic.com".into()),
+        sources: o.sources.into_iter().map(Arc::new).collect(),
+        writing: Mutex::new(HashMap::new()),
+        studies: Mutex::new(VecDeque::new()),
     });
     {
         let app = app.clone();
@@ -199,10 +215,26 @@ async fn start(app: Shared, beir: Vec<(PathBuf, String)>) {
     let tables = [
         format!("CREATE TABLE IF NOT EXISTS {SITES} (name KEYWORD PRIMARY KEY, doc TEXT OPTIONS(indexed = false), created INT)"),
         format!("CREATE TABLE IF NOT EXISTS {EXPERIMENTS} (id KEYWORD PRIMARY KEY, name TEXT, site KEYWORD, created INT, status KEYWORD, spec TEXT OPTIONS(indexed = false), summary TEXT OPTIONS(indexed = false), report TEXT OPTIONS(indexed = false), error TEXT OPTIONS(indexed = false), seconds FLOAT)"),
+        format!("CREATE TABLE IF NOT EXISTS {PERSONAS} (id KEYWORD PRIMARY KEY, source KEYWORD, created INT, doc TEXT OPTIONS(indexed = false))"),
+        format!("CREATE TABLE IF NOT EXISTS {STUDIES} (id KEYWORD PRIMARY KEY, name TEXT, created INT, status KEYWORD, state TEXT OPTIONS(indexed = false), sessions TEXT OPTIONS(indexed = false))"),
     ];
     for t in &tables {
         if let Err(e) = s.sql(t, json!({})).await {
             eprintln!("chloedb-experiments: {e}");
+        }
+    }
+    if let Err(e) = Judge::create_table(s).await {
+        eprintln!("chloedb-experiments: {e}");
+    }
+    // Studies a restart cut short keep what they did.
+    if let Ok(a) = s.query(&format!("SELECT id, state FROM {STUDIES} WHERE status = 'running'"), json!({}), None).await {
+        for r in a["rows"].as_array().into_iter().flatten() {
+            if let (Some(id), Some(v)) = (r[0].as_str(), r[1].as_str().and_then(|v| serde_json::from_str::<Value>(v).ok())) {
+                let mut v = v;
+                v["status"] = json!("stopped");
+                v["error"] = json!("the app restarted while it ran");
+                let _ = s.write(vec![json!({"op": "update", "table": STUDIES, "key": id, "set": {"status": "stopped", "state": v.to_string()}})]).await;
+            }
         }
     }
     // Runs left queued or running by a process that ended.
@@ -264,6 +296,15 @@ pub fn router(app: Shared) -> Router {
         .route("/v1/live/:id/try/open", post(try_open))
         .route("/v1/live/:id/try/done", post(try_done))
         .route("/v1/live/:id/cohorts", post(live_cohorts))
+        .route("/v1/real", get(real_sites))
+        .route("/v1/real/:source/search", post(real_search))
+        .route("/v1/real/:source/item/*id", get(real_item))
+        .route("/v1/personas", get(persona_sets).post(write_personas))
+        .route("/v1/personas/:id", get(persona_set).delete(drop_personas))
+        .route("/v1/studies", get(studies).post(create_study))
+        .route("/v1/studies/:id", get(one_study))
+        .route("/v1/studies/:id/sessions", get(study_sessions))
+        .route("/v1/studies/:id/stop", post(stop_study))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(app)
@@ -350,6 +391,10 @@ async fn meta(State(app): State<Shared>) -> Json<Value> {
             "limits": {"users": live::MAX_USERS, "rate": live::MAX_RATE, "minutes": live::MAX_MINUTES, "agents": live::MAX_AGENTS, "budget": live::MAX_BUDGET, "steps": live::AGENT_STEPS},
             "models": live::AGENT_MODELS.iter().map(|(id, name, pin, pout, fallbacks)| json!({"id": id, "name": name, "input": pin, "output": pout, "fallbacks": fallbacks})).collect::<Vec<_>>(),
             "claude": app.anthropic_key.is_some(),
+        },
+        "real": {
+            "sources": app.sources.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+            "limits": {"arms": study::MAX_ARMS, "workers": study::MAX_WORKERS, "sessions": study::MAX_SESSIONS, "budget": study::MAX_BUDGET, "personas": personas::MAX_PERSONAS, "needs": personas::MAX_NEEDS, "steps": live::AGENT_STEPS},
         },
         "policies": [
             {"name": "Softmax over the top 10", "explore": {"policy": "softmax", "tau": 1.0, "top": 10, "by": "rank"}},
@@ -803,4 +848,263 @@ async fn try_done(State(app): State<Shared>, Path(id): Path<String>, Json(b): Js
     let request = b["request"].as_str().ok_or_else(|| bad("which page (request)?"))?;
     let n = b["result"].as_u64().unwrap_or(0) as usize;
     Ok(Json(l.try_done(request, n, b["found"].as_bool().unwrap_or(false)).map_err(bad)?))
+}
+
+// ------------------------------------------------------------ real sites
+
+impl App {
+    fn source(&self, name: &str) -> Result<Arc<Source>, ApiError> {
+        self.sources.iter().find(|s| s.name == name).cloned().ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no source {name}: the app is started with --source NAME=KIND:URL")))
+    }
+
+    fn brain(&self, kind: &str, model: &str) -> Result<Brain, ApiError> {
+        if kind == "scripted" {
+            return Ok(Brain::Scripted);
+        }
+        match &self.anthropic_key {
+            Some(k) => Ok(Brain::Claude { key: k.clone(), model: model.to_string(), base: self.anthropic_base.clone() }),
+            None => Err(bad("Claude needs an API key: start the app with ANTHROPIC_API_KEY, or choose scripted")),
+        }
+    }
+
+    async fn persona_set_of(&self, id: &str) -> Result<PersonaSet, ApiError> {
+        let a = self.server.query(&format!("SELECT doc FROM {PERSONAS} WHERE id = {}", lit(id)), json!({}), None).await.map_err(upstream)?;
+        let doc = a["rows"][0][0].as_str().ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no personas {id}")))?;
+        serde_json::from_str(doc).map_err(|e| upstream(format!("personas {id}: {e}")))
+    }
+
+    fn study(&self, id: &str) -> Option<Arc<Study>> {
+        self.studies.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|s| s.id == id).cloned()
+    }
+}
+
+/// The real sites: each source with what it says of itself (its knobs and
+/// presets, or why it takes no experiments).
+async fn real_sites(State(app): State<Shared>) -> Json<Value> {
+    let all = futures_join(app.sources.iter().map(|s| {
+        let s = s.clone();
+        async move { s.describe().await }
+    }))
+    .await;
+    Json(json!({"sources": all, "kinds": crate::source::KINDS.iter().map(|(k, a)| json!({"kind": k, "about": a})).collect::<Vec<_>>()}))
+}
+
+async fn futures_join<F: std::future::Future<Output = Value> + Send + 'static>(fs: impl Iterator<Item = F>) -> Vec<Value> {
+    let hs: Vec<_> = fs.map(tokio::spawn).collect();
+    let mut out = Vec::new();
+    for h in hs {
+        out.push(h.await.unwrap_or(Value::Null));
+    }
+    out
+}
+
+#[derive(serde::Deserialize)]
+struct RealSearch {
+    q: String,
+    #[serde(default)]
+    knobs: Value,
+    #[serde(default)]
+    per: Option<usize>,
+}
+
+/// A search of a real site with knobs, as an arm would see it.
+async fn real_search(State(app): State<Shared>, Path(source): Path<String>, Json(b): Json<RealSearch>) -> Answer {
+    let s = app.source(&source)?;
+    let page = s.search(b.q.trim(), &b.knobs, b.per.unwrap_or(10).clamp(1, 30)).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(json!(page)))
+}
+
+async fn real_item(State(app): State<Shared>, Path((source, id)): Path<(String, String)>) -> Answer {
+    let s = app.source(&source)?;
+    let it = s.item(&id).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(json!(it)))
+}
+
+async fn persona_sets(State(app): State<Shared>) -> Answer {
+    let a = app.server.query(&format!("SELECT doc FROM {PERSONAS} ORDER BY created DESC LIMIT 200"), json!({}), None).await.map_err(upstream)?;
+    let sets: Vec<Value> = a["rows"].as_array().into_iter().flatten().filter_map(|r| r[0].as_str().and_then(|d| serde_json::from_str::<PersonaSet>(d).ok())).map(|s| s.summary()).collect();
+    let writing: Vec<Value> = app.writing.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+    Ok(Json(json!({"sets": sets, "writing": writing})))
+}
+
+async fn persona_set(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
+    if let Some(w) = app.writing.lock().unwrap_or_else(|e| e.into_inner()).get(&id) {
+        return Ok(Json(w.clone()));
+    }
+    let s = app.persona_set_of(&id).await?;
+    let mut v = json!(s);
+    v["status"] = json!("ready");
+    Ok(Json(v))
+}
+
+async fn drop_personas(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
+    app.server.write(vec![json!({"op": "delete", "table": PERSONAS, "key": id})]).await.map_err(upstream)?;
+    Ok(Json(json!({"deleted": id})))
+}
+
+#[derive(serde::Deserialize)]
+struct WritePersonas {
+    source: String,
+    #[serde(default)]
+    count: Option<usize>,
+    #[serde(default)]
+    needs: Option<usize>,
+    #[serde(default)]
+    seed: Option<u64>,
+    /// `claude` or `scripted`.
+    #[serde(default)]
+    brain: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+/// Personas written from a real site's rows, in the background: the id
+/// answers what it is doing until they are kept.
+async fn write_personas(State(app): State<Shared>, Json(b): Json<WritePersonas>) -> Answer {
+    let src = app.source(&b.source)?;
+    let d = src.describe().await;
+    if d["allowed"] != json!(true) {
+        return Err(bad(format!("{} takes no experiments: {}", src.name, d["error"].as_str().unwrap_or(""))));
+    }
+    let model = b.model.unwrap_or_else(|| "claude-opus-5-5".into());
+    if !live::AGENT_MODELS.iter().any(|m| m.0 == model) {
+        return Err(bad(format!("models are one of {}", live::AGENT_MODELS.iter().map(|m| m.0).collect::<Vec<_>>().join(", "))));
+    }
+    let brain = app.brain(b.brain.as_deref().unwrap_or("claude"), &model)?;
+    let (count, needs, seed) = (b.count.unwrap_or(8).clamp(1, personas::MAX_PERSONAS), b.needs.unwrap_or(3).clamp(1, personas::MAX_NEEDS), b.seed.unwrap_or(7));
+    let created = now_ms();
+    let id = format!("ps{created}");
+    let status = |what: &str| json!({"id": id, "source": src.name, "title": d["title"], "status": "writing", "stage": what, "created": created});
+    app.writing.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), status("reading the site's rows"));
+    {
+        let (app, id) = (app.clone(), id.clone());
+        tokio::spawn(async move {
+            let r: Result<PersonaSet, String> = async {
+                let rows = src.sample(60, seed).await?;
+                if rows.is_empty() {
+                    return Err(format!("{} gave no rows to write from", src.name));
+                }
+                app.writing.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), json!({"id": id, "source": src.name, "title": d["title"], "status": "writing", "stage": format!("writing {count} people from {} of its rows", rows.len()), "created": created}));
+                let (ps, cost) = personas::write(&brain, &reqwest::Client::new(), &id, &d, &rows, count, needs, seed).await?;
+                if ps.is_empty() {
+                    return Err("no personas came back".into());
+                }
+                let set = PersonaSet { id: id.clone(), source: src.name.clone(), title: d["title"].as_str().unwrap_or("").into(), created, model: brain.name().into(), seed, rows: rows.len(), cost, personas: ps };
+                app.server.write(vec![json!({"op": "upsert", "table": PERSONAS, "doc": {"id": id, "source": set.source, "created": created, "doc": serde_json::to_string(&set).unwrap_or_default()}})]).await?;
+                Ok(set)
+            }
+            .await;
+            let mut w = app.writing.lock().unwrap_or_else(|e| e.into_inner());
+            match r {
+                Ok(_) => {
+                    w.remove(&id);
+                }
+                Err(e) => {
+                    w.insert(id.clone(), json!({"id": id, "source": src.name, "status": "failed", "error": e, "created": created}));
+                }
+            }
+        });
+    }
+    Ok(Json(json!({"id": id})))
+}
+
+async fn studies(State(app): State<Shared>) -> Answer {
+    let a = app.server.query(&format!("SELECT id, state FROM {STUDIES} ORDER BY created DESC LIMIT 200"), json!({}), None).await.map_err(upstream)?;
+    let mut out = Vec::new();
+    for r in a["rows"].as_array().into_iter().flatten() {
+        let id = r[0].as_str().unwrap_or("");
+        let v = match app.study(id) {
+            Some(s) => s.view(),
+            None => r[1].as_str().and_then(|v| serde_json::from_str(v).ok()).unwrap_or(Value::Null),
+        };
+        let cmp = &v["report"]["comparisons"];
+        out.push(json!({"id": id, "name": v["name"], "status": v["status"], "created": v["created"], "done": v["done"], "total": v["total"], "spent": v["spent"], "arms": v["spec"]["arms"], "personas": v["personas"], "comparisons": cmp}));
+    }
+    Ok(Json(json!({"studies": out})))
+}
+
+async fn one_study(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
+    if let Some(s) = app.study(&id) {
+        return Ok(Json(s.view()));
+    }
+    let a = app.server.query(&format!("SELECT state FROM {STUDIES} WHERE id = {}", lit(&id)), json!({}), None).await.map_err(upstream)?;
+    let v = a["rows"][0][0].as_str().and_then(|v| serde_json::from_str::<Value>(v).ok()).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no study {id}")))?;
+    Ok(Json(v))
+}
+
+#[derive(serde::Deserialize)]
+struct SessionsQ {
+    #[serde(default)]
+    need: Option<String>,
+}
+
+/// A study's sessions, every step of each: of one need, or all.
+async fn study_sessions(State(app): State<Shared>, Path(id): Path<String>, Query(q): Query<SessionsQ>) -> Answer {
+    let all: Vec<study::Session> = match app.study(&id) {
+        Some(s) => s.kept().1,
+        None => {
+            let a = app.server.query(&format!("SELECT sessions FROM {STUDIES} WHERE id = {}", lit(&id)), json!({}), None).await.map_err(upstream)?;
+            a["rows"][0][0].as_str().and_then(|v| serde_json::from_str(v).ok()).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no study {id}")))?
+        }
+    };
+    let list: Vec<&study::Session> = all.iter().filter(|s| q.need.as_ref().is_none_or(|n| &s.need == n)).collect();
+    Ok(Json(json!({"sessions": list})))
+}
+
+async fn stop_study(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
+    let s = app.study(&id).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no running study {id}")))?;
+    s.stop();
+    Ok(Json(json!({"stopping": id})))
+}
+
+/// A study, started: every need of the personas on every arm.
+async fn create_study(State(app): State<Shared>, Json(spec): Json<StudySpec>) -> Answer {
+    let set = app.persona_set_of(&spec.personas).await?;
+    spec.check(&set).map_err(bad)?;
+    if let Some(on) = app.studies.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|s| s.running()) {
+        return Err(ApiError(StatusCode::CONFLICT, format!("a study is running ({}): stop it first", on.spec.name)));
+    }
+    let mut sources = Vec::new();
+    for a in &spec.arms {
+        let s = app.source(&a.source)?;
+        let d = s.describe().await;
+        if d["allowed"] != json!(true) {
+            return Err(bad(format!("{}: {} takes no experiments ({})", a.name, s.name, d["error"].as_str().unwrap_or(""))));
+        }
+        // An arm's knobs are checked by a search before the study starts.
+        s.search("test", &a.knobs, 3).await.map_err(|e| bad(format!("{}: {e}", a.name)))?;
+        sources.push(s);
+    }
+    let about = match app.sources.iter().find(|s| s.name == set.source) {
+        Some(s) => s.describe().await["about"].as_str().unwrap_or("").to_string(),
+        None => sources[0].describe().await["about"].as_str().unwrap_or("").to_string(),
+    };
+    let brain = app.brain(&spec.brain, &spec.agent_model)?;
+    let judge = Arc::new(Judge::new(app.brain(&spec.brain, &spec.judge_model)?, app.server.clone()));
+    let created = now_ms();
+    let id = format!("st{created}");
+    let s = Arc::new(Study::new(&id, spec, set, sources, about, brain, judge, created));
+    {
+        let mut ls = app.studies.lock().unwrap_or_else(|e| e.into_inner());
+        ls.push_front(s.clone());
+        ls.truncate(3);
+    }
+    let save_server = app.server.clone();
+    // One write at a time, of the study as it is when the write starts, so
+    // the last write kept is the last state.
+    let turn = Arc::new(tokio::sync::Mutex::new(()));
+    let save = move |st: Arc<Study>| {
+        let (server, turn) = (save_server.clone(), turn.clone());
+        tokio::spawn(async move {
+            let _t = turn.lock().await;
+            let (view, sessions) = st.kept();
+            let doc = json!({"id": st.id, "name": st.spec.name, "created": st.created, "status": view["status"], "state": view.to_string(), "sessions": serde_json::to_string(&sessions).unwrap_or_default()});
+            if let Err(e) = server.write(vec![json!({"op": "upsert", "table": STUDIES, "doc": doc})]).await {
+                eprintln!("chloedb-experiments: keeping study {}: {e}", st.id);
+            }
+        });
+    };
+    save(s.clone());
+    tokio::spawn(s.clone().run(save));
+    Ok(Json(json!({"id": id})))
 }

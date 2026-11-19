@@ -81,6 +81,8 @@ server=$!
 until curl -sf http://127.0.0.1:7700/livez > /dev/null; do sleep 0.2; done
 ```
 
+For a server you keep, rather than this try, add two flags. `--alerts alerts.json` keeps the alert rules and routes you make in that file: without it a server on its own keeps them in memory, and a restart loses them ([alerts](chloedb/server.md#alerts)). `--environment production` (or `staging`, `dev`) names what it is: the command center shows it in its header and, on production, asks for a reason before each change. A server with none is shown as a sandbox when you reach it on this machine, and as production from another.
+
 Everything below talks to it over HTTP with JSON. To keep the commands short, `sql` sends the statement it reads from its input to `POST /v1/sql`, which runs any statement:
 
 ```sh

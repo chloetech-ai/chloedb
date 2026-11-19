@@ -168,6 +168,8 @@ pub struct Request {
     pub sort: String,
     /// `hybrid`, `words`, `meaning`, `exact`.
     pub mode: String,
+    /// What an experiment's arm changes; the site as it is by default.
+    pub knobs: crate::experiment::Knobs,
 }
 
 /// The query's parameters for its words: `:q` (the words), `:m` (for
@@ -188,10 +190,19 @@ pub fn word_params(p: &Parsed, params: &mut Map<String, Value>) -> bool {
 
 /// The papers for a query, and how many match.
 pub async fn papers(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset: usize) -> Result<(Vec<Row>, i64), crate::strata::Error> {
+    let k = &r.knobs;
+    let table = k.index.as_str();
     let mut params = Map::new();
     let conds = filters(p, &mut params);
     let has_text = word_params(p, &mut params);
-    let mode = if r.mode.is_empty() { "hybrid" } else { r.mode.as_str() };
+    if has_text && table != "ax_papers" {
+        params["v"]["table"] = json!(table);
+    }
+    let mode = match r.mode.as_str() {
+        "" | "hybrid" if !k.meaning => "words",
+        "" => "hybrid",
+        m => m,
+    };
     let order_simple = match r.sort.as_str() {
         "date" => Some("created DESC"),
         "old" => Some("created ASC"),
@@ -201,47 +212,48 @@ pub async fn papers(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset: 
     let pv = |m: &Map<String, Value>| Value::Object(m.clone());
     if !has_text {
         let ord = order_simple.unwrap_or(if conds.is_empty() { "created DESC" } else { "cites DESC" });
-        let sql = format!("SELECT {COLS_ABS} FROM ax_papers {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_of(&conds, ""));
-        let (rows, total) = tokio::join!(c.rows("papers", &sql, pv(&params)), count(c, &where_of(&conds, ""), &params));
+        let sql = format!("SELECT {COLS_ABS} FROM {table} {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_of(&conds, ""));
+        let (rows, total) = tokio::join!(c.rows("papers", &sql, pv(&params)), count_in(c, table, &where_of(&conds, ""), &params));
         return Ok((rows?, total));
     }
     if mode == "exact" {
         params.insert("xall".into(), json!(like(&p.words())));
         let cond = "title ILIKE :xall";
         let ord = order_simple.unwrap_or("cites DESC");
-        let sql = format!("SELECT {COLS_ABS} FROM ax_papers {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_of(&conds, cond));
-        let (rows, total) = tokio::join!(c.rows("papers, the title exactly (substring index)", &sql, pv(&params)), count(c, &where_of(&conds, cond), &params));
+        let sql = format!("SELECT {COLS_ABS} FROM {table} {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_of(&conds, cond));
+        let (rows, total) = tokio::join!(c.rows("papers, the title exactly (substring index)", &sql, pv(&params)), count_in(c, table, &where_of(&conds, cond), &params));
         return Ok((rows?, total));
     }
     if mode == "meaning" {
-        let sql = format!("SELECT {COLS_ABS}, score() AS score FROM ax_papers {} ORDER BY similarity(emb, :v) DESC LIMIT {limit} OFFSET {offset}", where_of(&conds, ""));
+        let sql = format!("SELECT {COLS_ABS}, score() AS score FROM {table} {} ORDER BY similarity(emb, :v) DESC LIMIT {limit} OFFSET {offset}", where_of(&conds, ""));
         let rows = c.rows("papers by meaning", &sql, pv(&params)).await?;
         return Ok((rows, 0));
     }
     if let Some(ord) = order_simple {
         // Newest (or most cited) of those the words are in.
-        let sql = format!("SELECT {COLS_ABS} FROM ax_papers {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_of(&conds, MATCHED));
-        let (rows, total) = tokio::join!(c.rows("papers with the words", &sql, pv(&params)), count(c, &where_of(&conds, MATCHED), &params));
+        let sql = format!("SELECT {COLS_ABS} FROM {table} {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_of(&conds, MATCHED));
+        let (rows, total) = tokio::join!(c.rows("papers with the words", &sql, pv(&params)), count_in(c, table, &where_of(&conds, MATCHED), &params));
         let rows = rows?;
-        if !rows.is_empty() {
+        if !rows.is_empty() || !k.typos {
             return Ok((rows, total));
         }
-        let sql = format!("SELECT {COLS_ABS} FROM ax_papers {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_of(&conds, MATCHED_FUZZY));
-        let (rows, total) = tokio::join!(c.rows("papers with the words, typos corrected", &sql, pv(&params)), count(c, &where_of(&conds, MATCHED_FUZZY), &params));
+        let sql = format!("SELECT {COLS_ABS} FROM {table} {} ORDER BY {ord}, id DESC LIMIT {limit} OFFSET {offset}", where_of(&conds, MATCHED_FUZZY));
+        let (rows, total) = tokio::join!(c.rows("papers with the words, typos corrected", &sql, pv(&params)), count_in(c, table, &where_of(&conds, MATCHED_FUZZY), &params));
         return Ok((rows?, total));
     }
     // Phase 1: candidates by words (title, abstract, authors) and by meaning.
     let cand = (offset + limit).max(100) * 2;
     let wh = where_of(&conds, "");
-    let title_sql = format!("SELECT id FROM ax_papers {wh} ORDER BY bm25(title, :q, fuzzy => 'auto', synonyms => 1, min => :min) * (1 + 0.25 * pop) DESC LIMIT {cand}");
-    let abs_sql = format!("SELECT id FROM ax_papers {wh} ORDER BY bm25(abstract, :q, synonyms => 1, min => :min) * (1 + 0.25 * pop) DESC LIMIT {}", cand / 2);
-    let au_sql = format!("SELECT id FROM ax_papers {wh} ORDER BY bm25(authors, :q) * (1 + 0.3 * pop) DESC LIMIT 30");
-    let vec_sql = format!("SELECT id FROM ax_papers {wh} ORDER BY similarity(emb, :v) * (1 + 0.04 * pop) DESC LIMIT 100");
+    let (to, ao) = (k.title_opts(), k.abstract_opts());
+    let title_sql = format!("SELECT id FROM {table} {wh} ORDER BY bm25(title, :q{to}, min => :min) * (1 + 0.25 * pop) DESC LIMIT {cand}");
+    let abs_sql = format!("SELECT id FROM {table} {wh} ORDER BY bm25(abstract, :q{ao}, min => :min) * (1 + 0.25 * pop) DESC LIMIT {}", cand / 2);
+    let au_sql = format!("SELECT id FROM {table} {wh} ORDER BY bm25(authors, :q) * (1 + 0.3 * pop) DESC LIMIT 30");
+    let vec_sql = format!("SELECT id FROM {table} {wh} ORDER BY similarity(emb, :v) * (1 + 0.04 * pop) DESC LIMIT 100");
     let pr = pv(&params);
     let (t, a, au, v) = tokio::join!(
         c.rows("candidates by the title's words", &title_sql, pr.clone()),
         c.soft("candidates by the abstract's words", &abs_sql, pr.clone()),
-        c.soft("candidates by authors' names", &au_sql, pr.clone()),
+        async { if k.authors { c.soft("candidates by authors' names", &au_sql, pr.clone()).await } else { Vec::new() } },
         async { if mode == "hybrid" { c.soft("candidates by meaning", &vec_sql, pr.clone()).await } else { Vec::new() } },
     );
     let mut ids: Vec<String> = t?.iter().chain(a.iter()).chain(au.iter()).chain(v.iter()).map(|r| r.s("id")).collect();
@@ -251,23 +263,33 @@ pub async fn papers(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset: 
         return Ok((Vec::new(), 0));
     }
     params.insert("ids".into(), json!(ids));
-    let sim = if mode == "hybrid" { " + 3.0 * coalesce(similarity(emb, :v), 0)" } else { "" };
     // Phase 2: the candidates ranked together.
-    let rank = format!(
-        "(coalesce(bm25(title, :q, fuzzy => 'auto', synonyms => 1), 0) + 0.8 * coalesce(bm25(title, :phrase), 0) + 0.35 * coalesce(bm25(abstract, :q, synonyms => 1), 0) + 0.25 * coalesce(bm25(abstract, :phrase), 0) + 0.6 * coalesce(bm25(authors, :q), 0){sim}) * pow(cites + 1, 0.18) * (0.85 + 0.15 * decay(created, now(), 157680000))"
-    );
-    let sql = format!("SELECT {COLS_ABS}, score() AS score FROM ax_papers WHERE id IN (:ids) ORDER BY {rank} DESC LIMIT {limit} OFFSET {offset}");
-    let (rows, total) = tokio::join!(c.rows("papers, ranked", &sql, pv(&params)), count(c, &where_of(&conds, MATCHED), &params));
-    let rows = rows?;
+    let rank = k.ranking(mode == "hybrid");
+    // Blending moves rows within the first pages, so it ranks more of them.
+    let (lim, off) = if k.blends() { ((offset + limit).max(40), 0) } else { (limit, offset) };
+    let sql = format!("SELECT {COLS_ABS}, score() AS score FROM {table} WHERE id IN (:ids) ORDER BY {rank} DESC LIMIT {lim} OFFSET {off}");
+    let (rows, total) = tokio::join!(c.rows("papers, ranked", &sql, pv(&params)), count_in(c, table, &where_of(&conds, MATCHED), &params));
+    let mut rows = rows?;
+    if k.blends() {
+        let first = |r: &Row| r.s("authors").split(',').next().unwrap_or("").trim().to_lowercase();
+        let created = |r: &Row| chrono::DateTime::parse_from_rfc3339(&r.s("created")).map(|d| d.timestamp()).unwrap_or(0);
+        rows = k.blend(rows, |r| r.s("pcat"), first, created, crate::live::now(), offset + limit);
+        rows = rows.into_iter().skip(offset).take(limit).collect();
+    }
     let mut total = total;
     if total == 0 && !rows.is_empty() {
-        total = count(c, &where_of(&conds, MATCHED_FUZZY), &params).await;
+        total = count_in(c, table, &where_of(&conds, MATCHED_FUZZY), &params).await;
     }
     Ok((rows, total))
 }
 
 pub fn count<'a>(c: &Ctx<'a>, wh: &str, params: &Map<String, Value>) -> impl std::future::Future<Output = i64> + 'a {
-    let f = c.soft("how many match", &format!("SELECT COUNT(*) AS n FROM ax_papers {wh}"), Value::Object(params.clone()));
+    count_in(c, "ax_papers", wh, params)
+}
+
+/// How many papers of `table` match.
+pub fn count_in<'a>(c: &Ctx<'a>, table: &str, wh: &str, params: &Map<String, Value>) -> impl std::future::Future<Output = i64> + 'a {
+    let f = c.soft("how many match", &format!("SELECT COUNT(*) AS n FROM {table} {wh}"), Value::Object(params.clone()));
     async move { f.await.first().map(|r| r.i("n")).unwrap_or(0) }
 }
 

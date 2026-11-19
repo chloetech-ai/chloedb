@@ -87,6 +87,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
       <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">ChloeCtx</span>
       <a href="chloectx.html">ChloeCtx</a>
@@ -185,7 +186,7 @@ db = chloedb.connect(SERVER)
 
 def where(q, category=None, max_price=None):
     &quot;&quot;&quot;The WHERE clause and parameters of a search for q.&quot;&quot;&quot;
-    conds, params = [&quot;MATCH(body, :q, fuzzy =&gt; &#x27;auto&#x27;)&quot;], {&quot;q&quot;: q}
+    conds, params = [&quot;MATCH(body, :q, syntax =&gt; &#x27;plain&#x27;, fuzzy =&gt; &#x27;auto&#x27;)&quot;], {&quot;q&quot;: q}
     if category:
         conds.append(&quot;category = :category&quot;)
         params[&quot;category&quot;] = category
@@ -239,7 +240,7 @@ def did_you_mean(q):
     return answer[&quot;text&quot;] if answer[&quot;changed&quot;] else None</pre>
 <p>The sections below try each function from Python before the page puts them together.</p>
 <h3 id="typos">Typos<a class="anchor" href="#typos" aria-label="Link to this section">#</a></h3>
-<p><code>MATCH(body, :q, fuzzy =&gt; 'auto')</code> keeps the products that have every word of the search, each spelt as typed or an edit away (two edits for words of six letters or more; none for words of one or two letters). <code>bm25(body, :q)</code> ranks them, and since it ranks the same text on the same field, it takes the <code>MATCH</code>'s <code>fuzzy</code> too (<a href="sql.html#typos-and-synonyms">typos</a>). So "jaket" finds every jacket:</p>
+<p><code>MATCH(body, :q, syntax =&gt; 'plain', fuzzy =&gt; 'auto')</code> keeps the products that have every word of the search, each spelt as typed or an edit away (two edits for words of six letters or more; none for words of one or two letters). <code>syntax =&gt; 'plain'</code> reads the search as its words alone, so what a visitor types is never an error: a stray quote or bracket (<code>rain jacket"</code>) is left out, and <code>-</code>, <code>OR</code> and <code>*</code> are no operators. <code>bm25(body, :q)</code> ranks them, and since it ranks the same text on the same field, it reads the words as the <code>MATCH</code> does and ranks every product the <code>MATCH</code> keeps, those spelt as typed first (<a href="sql.html#typos-and-synonyms">typos</a>). So "jaket" finds every jacket:</p>
 <pre data-lang="python">import shop
 
 for p in shop.search(&quot;jaket&quot;):
@@ -250,7 +251,7 @@ p03 Packable rain jacket 89.0
 p06 Softshell cycling jacket 109.0
 p01 Waterproof hiking jacket 129.0
 p04 Fleece jacket 69.0</pre>
-<p>Typos are forgiven only where a query asks for it: <code>db.search(text)</code> and the table page of the command center search the words as written, so a search box should send its text through a query with <code>fuzzy =&gt; 'auto'</code>, as <code>shop.search</code> does. Every word of the search must be there; for a box where any word will do, rank with <code>bm25(body, :q, fuzzy =&gt; 'auto')</code> and leave the <code>MATCH</code> out (a ranked <code>bm25</code> returns the rows that have any of its words).</p>
+<p>Typos are forgiven only where a query asks for it: <code>db.search(text)</code> searches the words as written (the search box on a table's page in the command center asks for <code>fuzzy =&gt; 'auto'</code> itself), so a search box should send its text through a query with <code>fuzzy =&gt; 'auto'</code>, as <code>shop.search</code> does. Every word of the search must be there; for a box where any word will do, rank with <code>bm25(body, :q, fuzzy =&gt; 'auto')</code> and leave the <code>MATCH</code> out (a ranked <code>bm25</code> returns the rows that have any of its words).</p>
 <h3 id="a-filter-with-its-counts">A filter, with its counts<a class="anchor" href="#a-filter-with-its-counts" aria-label="Link to this section">#</a></h3>
 <p>The filter is one more condition in the <code>WHERE</code>, and its counts are a <code>GROUP BY</code> over the same conditions, so each count is the number of products its link shows:</p>
 <pre data-lang="python">import shop

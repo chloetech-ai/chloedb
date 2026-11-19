@@ -8,7 +8,7 @@
 // sends no CORS headers, and refuses every request but GET and HEAD from
 // other origins, reads by POST included.
 
-import { ChloeDBError, Result, Searchable, decode, encode, given, makeError, orderedSchema } from "./common.js";
+import { ChloeDBError, Result, Searchable, decode, encode, given, makeError, namedParams, orderedSchema } from "./common.js";
 
 export { ChloeDBError, StrataError, Result, errorCode, BadRequestError, UnauthorizedError, NotFoundError, ConflictError, PartialWriteError, BusyError, OverloadedError, DeadlineError, UnavailableError } from "./common.js";
 
@@ -151,6 +151,9 @@ function retryAfter(v) {
  */
 export class Client extends Searchable {
   #schema;
+  // The tables' names, asked once and kept until this client makes, drops
+  // or changes a table, as the first table's schema is (`_checkTable`).
+  #names;
 
   constructor(url = "http://127.0.0.1:7700", { token, timeout = 30_000, retryFor = 10_000, fetch: f } = {}) {
     super();
@@ -211,6 +214,11 @@ export class Client extends Searchable {
   async #schemaAnswer(table) {
     if (table != null) return this._call("GET", `/v1/schema?table=${encodeURIComponent(table)}`);
     return (this.#schema ??= await this._call("GET", "/v1/schema"));
+  }
+
+  /** @internal The names of the tables this key may read, the first first. */
+  async _tableNames() {
+    return (this.#names ??= (await this._call("GET", "/v1/tables")).tables.map((t) => t.short.table));
   }
 
   /** The first table's schema, or `table`'s, in its short form: {table,
@@ -285,6 +293,7 @@ export class Client extends Searchable {
   async query(sql, params, { timeoutMs, minSeqNo, minSeqNos, pageSize, keepAliveMs } = {}) {
     if (pageSize == null && keepAliveMs != null) throw new TypeError("keepAliveMs is a cursor's: it goes with pageSize");
     if (pageSize != null && !(Number.isInteger(pageSize) && pageSize >= 1)) throw new RangeError("pageSize is a whole number, at least 1");
+    namedParams(sql, params, "query");
     return new Result(await this._call("POST", "/v1/query", given({ sql, params, timeout_ms: timeoutMs, page_size: pageSize, keep_alive_ms: keepAliveMs, ...this._after(minSeqNo, minSeqNos) })));
   }
 
@@ -316,8 +325,11 @@ export class Client extends Searchable {
   /** Runs any statement: a SELECT's `Result`, or the number of rows an
    * INSERT, UPDATE or DELETE wrote. */
   async sql(sql, params, { idempotencyKey, minSeqNo, minSeqNos } = {}) {
+    namedParams(sql, params, "sql");
     const after = reads(sql) ? this._after(minSeqNo, minSeqNos) : afterBody(minSeqNo, minSeqNos);
     const a = await this._call("POST", "/v1/sql", given({ sql, params, idempotency_key: idempotencyKey, ...after }));
+    // A table made, dropped or changed: the tables are read again.
+    if (/^(?:\s|\(|--[^\n]*|\/\*[\s\S]*?\*\/)*(create|drop|alter)\s+table\b/i.test(sql)) this.#schema = this.#names = undefined;
     return a && "rows" in a ? new Result(a) : this._note(written(a)).written;
   }
 
@@ -341,6 +353,7 @@ export class Client extends Searchable {
    * ("tree"), the executor's plan ("plan") and the bound query
    * ("logical"). */
   async explain(sql, params) {
+    namedParams(sql, params, "explain");
     return this._call("POST", "/v1/explain", given({ sql, params }));
   }
 
@@ -368,6 +381,7 @@ export class Client extends Searchable {
    * among the rows `where` matches, summed over the shards on a
    * coordinator: {prefix: {code: rows}}. */
   async sidNext(prefixes, { field, where, params, table, minSeqNo, minSeqNos } = {}) {
+    await this._checkTable(table, "sidNext");
     const got = await this._call("POST", "/v1/sid/next", given({ field, prefixes: [...prefixes], where, params, table, ...this._after(minSeqNo, minSeqNos) }));
     return Object.fromEntries(got.next.map((n) => [n.prefix, Object.fromEntries(n.next.map((c) => [c.code, c.count]))]));
   }
@@ -394,21 +408,24 @@ export class Client extends Searchable {
     return n;
   }
 
-  /** Inserts a row or rows, whose keys must be new, into the first table or
-   * `table`, 1,000 rows a request. Returns how many. */
+  /** Inserts a row or rows, whose keys must be new, into `table` (or the
+   * only table), 1,000 rows a request. Returns how many. */
   async insert(rows, { table } = {}) {
+    await this._checkTable(table, "insert");
     return this.#ops("insert", rowsOf(rows), table);
   }
 
   /** Inserts a row or rows, replacing the rows that have their keys, 1,000
    * rows a request. Returns how many. */
   async upsert(rows, { table } = {}) {
+    await this._checkTable(table, "upsert");
     return this.#ops("upsert", rowsOf(rows), table);
   }
 
   /** Deletes the rows with this key or these keys. Through a coordinator,
    * `routing` gives the `shard_by` value of a table placed by a column. */
   async delete(keys, { table, routing } = {}) {
+    await this._checkTable(table, "delete");
     const list = typeof keys === "string" || typeof keys === "number" || typeof keys === "bigint" ? [keys] : [...keys];
     let n = 0;
     for (let i = 0; i < list.length; i += WRITE_BATCH) {
@@ -417,21 +434,22 @@ export class Client extends Searchable {
     return n;
   }
 
-  async #table(table) {
+  async #table(table, call) {
+    await this._checkTable(table, call);
     return table ?? (await this.schema()).table;
   }
 
-  async #kvPath(key, table) {
-    return `/v1/kv/${encodeURIComponent(await this.#table(table))}/${encodeURIComponent(String(key))}`;
+  async #kvPath(key, table, call) {
+    return `/v1/kv/${encodeURIComponent(await this.#table(table, call))}/${encodeURIComponent(String(key))}`;
   }
 
-  /** The row with this primary key in the first table or `table`, read
+  /** The row with this primary key in `table` (or the only table), read
    * without SQL: an object of the columns `SELECT *` answers, or null. A
    * coordinator asks the key's shard. */
   async get(key, { table, minSeqNo, minSeqNos } = {}) {
     const after = this._after(minSeqNo, minSeqNos);
     try {
-      return (await this._call("GET", (await this.#kvPath(key, table)) + query(after))).row;
+      return (await this._call("GET", (await this.#kvPath(key, table, "get")) + query(after))).row;
     } catch (e) {
       if (e instanceof ChloeDBError && e.status === 404 && e.answer?.found === false) return null;
       throw e;
@@ -445,7 +463,7 @@ export class Client extends Searchable {
    */
   async getMany(keys, { table, columns, minSeqNo, minSeqNos } = {}) {
     const list = [...keys];
-    const body = { table: await this.#table(table), ...this._after(minSeqNo, minSeqNos) };
+    const body = { table: await this.#table(table, "getMany"), ...this._after(minSeqNo, minSeqNos) };
     if (columns !== undefined) body.columns = [...columns];
     const out = [];
     for (let i = 0; i < list.length; i += GET_BATCH) {
@@ -458,7 +476,7 @@ export class Client extends Searchable {
    * with `ifSeqNo`, only while that row's sequence number is that. Returns
    * the rows written. */
   async put(key, row, { table, ifSeqNo } = {}) {
-    const path = (await this.#kvPath(key, table)) + query({ if_seq_no: ifSeqNo });
+    const path = (await this.#kvPath(key, table, "put")) + query({ if_seq_no: ifSeqNo });
     return this._note(written(await this._call("PUT", path, { ...row }))).written;
   }
 
@@ -520,11 +538,12 @@ export class Client extends Searchable {
 
   /** Uploads a JSON Lines, JSON (an array), CSV or TSV file (a path, or its
    * bytes; up to the server's 256 MB), in `format` or the one its
-   * extension names, into the first table or `table`; its rows are
+   * extension names, into `table` (or the only table); its rows are
    * upserted. Returns {rows, bulk, skippedFields}. */
   async importFile(file, { format, table } = {}) {
     format ??= FORMATS[extension(file)];
     if (!format) throw new ChloeDBError(`name the format of ${typeof file === "string" ? file : "the file"}: jsonl, json, csv or tsv`);
+    await this._checkTable(table, "importFile");
     const r = await this.#upload(file, format, { table });
     return { rows: r.written, bulk: false, skippedFields: r.skipped_fields ?? [] };
   }
