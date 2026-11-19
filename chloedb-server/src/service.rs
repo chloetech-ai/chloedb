@@ -3639,22 +3639,48 @@ impl Service {
 
     /// Runs blend `def` (as version `version`) into `k` slots: each source
     /// a query of `req`'s, with `params`, all at once, then the fill.
+    /// A source that is a node runs as a blend of its own, its queries at
+    /// once with the others', and gives its placed rows; only the top
+    /// blend explores.
     pub async fn run_blend(self: &Arc<Self>, req: &QueryReq, def: &chloedb::query::blend::Def, version: i64, params: &Params, k: usize, want: chloedb::query::blend::Want) -> Result<chloedb::query::blend::Blended, ApiError> {
-        let runs = def.sources.iter().map(|s| {
+        self.clone().run_blend_boxed(req.clone(), def.clone(), version, params.clone(), k, want).await
+    }
+
+    /// [`Service::run_blend`] as a future of a named type, which a node's
+    /// run awaits within its blend's.
+    fn run_blend_boxed(self: Arc<Self>, req: QueryReq, def: chloedb::query::blend::Def, version: i64, params: Params, k: usize, want: chloedb::query::blend::Want) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<chloedb::query::blend::Blended, ApiError>> + Send>> {
+        Box::pin(async move { self.run_blend_now(&req, &def, version, &params, k, want).await })
+    }
+
+    async fn run_blend_now(self: &Arc<Self>, req: &QueryReq, def: &chloedb::query::blend::Def, version: i64, params: &Params, k: usize, want: chloedb::query::blend::Want) -> Result<chloedb::query::blend::Blended, ApiError> {
+        use chloedb::query::blend::{Blended, Def, Input, Want};
+        type Run = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Input, Option<Blended>), ApiError>> + Send>>;
+        let runs = def.sources.iter().map(|s| -> Run {
+            let me = self.clone();
+            let (blend, source) = (def.name.clone(), s.name.clone());
+            if let Some(node) = &s.blend {
+                let named = Def { name: s.name.clone(), ..(**node).clone() };
+                let (req, params) = (req.clone(), params.clone());
+                return Box::pin(async move {
+                    let t0 = Instant::now();
+                    let b = me.run_blend_boxed(req, named.clone(), 0, params, named.k, Want { costs: want.costs, explore: None }).await.map_err(|e| ApiError { message: format!("blend {blend} node {source}: {}", e.message), ..e })?;
+                    Ok((Input { rs: b.as_source(), took_ms: t0.elapsed().as_secs_f64() * 1e3 }, Some(b)))
+                });
+            }
             let mut sub = req.clone();
             sub.sql = s.sql.clone();
             sub.params = params.clone();
             (sub.scroll, sub.hold, sub.release, sub.cache_key, sub.arrow, sub.profile) = (None, false, false, None, None, false);
-            let me = self.clone();
-            let (blend, source) = (def.name.clone(), s.name.clone());
-            async move {
+            Box::pin(async move {
                 let t0 = Instant::now();
                 let a = Box::pin(me.dispatch(sub)).await.map_err(|e| ApiError { message: format!("blend {blend} source {source}: {}", e.message), ..e })?;
-                Ok::<_, ApiError>(chloedb::query::blend::Input { rs: a.rs, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
-            }
+                Ok((Input { rs: a.rs, took_ms: t0.elapsed().as_secs_f64() * 1e3 }, None))
+            })
         });
-        let inputs = futures::future::try_join_all(runs).await?;
-        Ok(chloedb::query::blend::blend(def, version, k, inputs, want)?)
+        let (inputs, nodes): (Vec<Input>, Vec<Option<Blended>>) = futures::future::try_join_all(runs).await?.into_iter().unzip();
+        let mut b = chloedb::query::blend::blend(def, version, k, inputs, want)?;
+        b.nodes = nodes;
+        Ok(b)
     }
 
     /// `CREATE BLEND` or `DROP BLEND` ([`chloedb::query::blend`]): the
@@ -3682,8 +3708,8 @@ impl Service {
                 blend::may_define(&set, &def, replace)?;
                 // A key limited to tables writes a blend of the tables it reads.
                 if who.limited() {
-                    for s in &def.sources {
-                        crate::scoped::check_reads(who, &s.sql, &self.table_names(), &set)?;
+                    for q in def.queries() {
+                        crate::scoped::check_reads(who, q, &self.table_names(), &set)?;
                     }
                 }
                 Box::pin(self.sql_in(who, &def.function_sql(replace), &Params::new(), after, timeout_ms, None, None)).await?;

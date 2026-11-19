@@ -1818,10 +1818,10 @@ async fn blend_preview(State(app): State<App>, w: Option<axum::Extension<Princip
             app.svc.blend_def(&name, v).await?
         }
     };
-    for s in &def.sources {
-        reads_ok(&app, &w, &s.sql).await?;
+    for q in def.queries() {
+        reads_ok(&app, &w, q).await?;
     }
-    let params = app.svc.params_for(b.get("params"), def.sources.first().map(|s| s.sql.as_str()), &w).await?;
+    let params = app.svc.params_for(b.get("params"), def.queries().first().copied(), &w).await?;
     let k = match body_u64(&b, "k")? {
         0 => def.k,
         n => (n as usize).min(chloedb::query::blend::MAX_K),
