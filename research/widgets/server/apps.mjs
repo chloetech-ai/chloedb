@@ -88,6 +88,36 @@ export function changesWhatIsThere(before, after, depth = 0, key = '') {
 // at the app: kept with their own browser even when the app is shared, so
 // one crew lead's filter isn't everyone's (MARCUS-3).
 export const isView = key => String(key).startsWith('view:')
+
+// A link for one person may show only part of an app (one crew's jobs):
+// its lists hold only the entries whose field has that value (MARCUS-4).
+const inPart = (entry, only) => entry && typeof entry === 'object' && String(entry[only.field] ?? '').trim().toLowerCase() === String(only.value).trim().toLowerCase()
+const parted = (value, only) => Array.isArray(value) && value.some(e => e && typeof e === 'object' && only.field in e)
+export function partOf(value, only) {
+  if (!only?.field || !parted(value, only)) return value
+  return value.filter(e => inPart(e, only))
+}
+// What a person's link keeps, put back into the whole: entries it added
+// say who added them (by) and belong to its part, and the entries it never
+// saw (the other crews') stay as they were, where they were (INES-5, MARCUS-4).
+export function withPart(before, after, { by, only } = {}) {
+  if (!Array.isArray(after)) return after
+  const was = new Set((Array.isArray(before) ? before : []).map(e => e?.id).filter(id => id != null))
+  const added = after.map(e => (e && typeof e === 'object' && !Array.isArray(e) && (e.id == null || !was.has(e.id)) ? { ...e, ...(by && e.by == null ? { by } : {}), ...(only?.field && e[only.field] == null ? { [only.field]: only.value } : {}) } : e))
+  if (!only?.field || !parted(before, only)) return added
+  const theirs = new Map(added.filter(e => e?.id != null).map(e => [e.id, e]))
+  const out = []
+  const placed = new Set()
+  for (const e of before) {
+    if (!inPart(e, only)) out.push(e)
+    else if (e?.id != null && theirs.has(e.id)) {
+      out.push(theirs.get(e.id))
+      placed.add(e.id)
+    }
+  }
+  for (const e of added) if (e?.id == null || !placed.has(e.id)) out.push(e)
+  return out
+}
 export async function keeping(apps, appId, name, args = {}, owner = '', self = '') {
   // All of it at once, for the kit to hand draw as data.kept.
   if (name === 'app_kept' && args?.all === true) {

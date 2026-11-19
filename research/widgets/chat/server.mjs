@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 
 import { described } from '../server/guide.mjs'
 import { TOOLS, callTool, domainsOf, fragmentOf, render } from '../server/index.mjs'
-import { KEEPING, keeping, changesWhatIsThere, isView } from '../server/apps.mjs'
+import { KEEPING, keeping, changesWhatIsThere, isView, partOf, withPart } from '../server/apps.mjs'
 import { claude } from './model.mjs'
 import { Apps, valueNames } from '../server/store.mjs'
 
@@ -95,7 +95,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     if (!id) return null
     if (!id.startsWith('s-')) return { owner: id, role: 'own' }
     const link = await apps.kept(appId, `link:${id.slice(2)}`, LINKS).catch(() => null)
-    return link ? { owner: link.owner, role: link.role } : { owner: id, role: 'full' }
+    return link ? { owner: link.owner, role: link.role, ...(link.name ? { name: link.name } : {}), ...(link.only?.field ? { only: link.only } : {}) } : { owner: id, role: 'full' }
   }
   const STOPPED = 'This link was stopped by whoever shared it: it opens nothing any more.'
   // What a request's links let it do to an app itself (change it, undo,
@@ -119,7 +119,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     if (isView(args?.key ?? '')) return ''
     if (who.role === 'viewer') return 'Not kept: this link can only look. Whoever shared it can change it.'
     if (who.role !== 'helper') return ''
-    const before = await apps.kept(appId, String(args?.key ?? ''), who.owner).catch(() => null)
+    const before = partOf(await apps.kept(appId, String(args?.key ?? ''), who.owner).catch(() => null), who.only)
     return changesWhatIsThere(before, args?.value) ? 'Not kept: this link can add and tick, but not change or take out what is there. Whoever shared it can.' : ''
   }
   // Each app sent to a page with a conversation is recorded as shown in it,
@@ -472,7 +472,19 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           if (refused) return json(res, { content: [{ type: 'text', text: refused }], isError: true })
           // How each person looks at it (view: names) stays with their own browser.
           const mine = own(self) && !own(self).startsWith('s-') ? own(self) : ''
-          return json(res, await keeping(apps, app.id, name, args, who?.owner ?? '', mine))
+          // A person's link: what it adds says who added it, and it sees and
+          // keeps only its part (INES-5, MARCUS-4).
+          let asked = args
+          if (name === 'app_keep' && (who?.name || who?.only) && !isView(args?.key ?? '')) {
+            const before = await apps.kept(app.id, String(args?.key ?? ''), who.owner).catch(() => null)
+            asked = { ...args, value: withPart(before, args?.value, { by: who.name, only: who.only }) }
+          }
+          const out = await keeping(apps, app.id, name, asked, who?.owner ?? '', mine)
+          if (who?.only && name === 'app_kept' && out.structuredContent) {
+            const sc = out.structuredContent
+            out.structuredContent = sc.values ? { ...sc, values: Object.fromEntries(Object.entries(sc.values).map(([k, v]) => [k, partOf(v, who.only)])) } : { ...sc, value: partOf(sc.value, who.only) }
+          }
+          return json(res, out)
         }
         // An app that books can cancel what it booked.
         const its = app && (app.tools.includes(name) || (name === 'table_cancel' && app.tools.includes('table_book')))
@@ -514,7 +526,8 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       // under the link's own key. What this browser kept is copied there
       // once; the link is as private as the person keeps it.
       if (req.method === 'POST' && url.pathname === '/api/share') {
-        const { app: appId, me } = await body(req)
+        const input = await body(req)
+        const { app: appId, me } = input
         const app = appId ? await apps.get(String(appId)) : null
         const who = app && (await owning(app.id, me))
         if (!who) return json(res, { error: 'no such app' }, 404)
@@ -533,12 +546,26 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           await apps.keep(app.id, `link:${links.viewer}`, { owner: `s-${token}`, role: 'viewer' }, LINKS)
           await apps.keep(app.id, '-links', links, `s-${token}`)
         }
-        return json(res, { token, ...links })
+        // A link for one person: named, so what they add says it was them,
+        // and maybe for part of the app only (one crew's jobs) (INES-5, MARCUS-4).
+        const { person } = input
+        if (person && typeof person === 'object') {
+          const name = String(person.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 30)
+          const role = person.role === 'viewer' ? 'viewer' : 'helper'
+          const field = String(person.only?.field ?? '').trim().slice(0, 40)
+          const only = field && person.only?.value != null && String(person.only.value).trim() ? { field, value: String(person.only.value).trim().slice(0, 60) } : null
+          if (!name) return json(res, { error: 'Give the person a name.' }, 400)
+          const tok = randomBytes(16).toString('hex')
+          await apps.keep(app.id, `link:${tok}`, { owner: `s-${token}`, role, name, ...(only ? { only } : {}) }, LINKS)
+          links = { ...links, people: [...(links.people ?? []), { token: tok, name, role, ...(only ? { only } : {}) }] }
+          await apps.keep(app.id, '-links', links, `s-${token}`)
+        }
+        return json(res, { token, helper: links.helper, viewer: links.viewer, people: links.people ?? [] })
       }
       // Stop sharing (DEV-2): every link of it opens nothing from now on, and
       // what it kept comes back to the browser that stops it, its own again.
       if (req.method === 'POST' && url.pathname === '/api/unshare') {
-        const { app: appId, me, self } = await body(req)
+        const { app: appId, me, self, person } = await body(req)
         const app = appId ? await apps.get(String(appId)) : null
         const who = app && (await owning(app.id, me))
         const mine = own(self) && !own(self).startsWith('s-') ? own(self) : ''
@@ -547,8 +574,16 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         const token = who.owner.slice(2)
         const values = await apps.keptAll(app.id, who.owner)
         const links = values['-links']
+        // One person's link only: it opens nothing from now on, and the app
+        // stays shared with the others.
+        if (typeof person === 'string' && (links?.people ?? []).some(p => p.token === person)) {
+          await apps.keep(app.id, `link:${person}`, { owner: who.owner, role: 'gone' }, LINKS)
+          const people = links.people.filter(p => p.token !== person)
+          await apps.keep(app.id, '-links', { ...links, people }, who.owner)
+          return json(res, { stopped: true, people })
+        }
         for (const [key, value] of Object.entries(values)) if (!key.startsWith('-')) await apps.keep(app.id, key, value, mine)
-        for (const tok of [token, links?.helper, links?.viewer].filter(Boolean)) await apps.keep(app.id, `link:${tok}`, { owner: who.owner, role: 'gone' }, LINKS)
+        for (const tok of [token, links?.helper, links?.viewer, ...(links?.people ?? []).map(p => p.token)].filter(Boolean)) await apps.keep(app.id, `link:${tok}`, { owner: who.owner, role: 'gone' }, LINKS)
         for (const key of Object.keys(values)) await apps.keep(app.id, key, null, who.owner)
         return json(res, { stopped: true })
       }

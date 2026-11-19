@@ -562,3 +562,38 @@ test('a helper or view link changes no app, a guest has no chat, and sharing can
     assert.match((await post('/api/call', { app: app.id, me: `s-${token}`, name: 'app_keep', arguments: { key: 'days', value: [] } })).content[0].text, /stopped/)
   }
 })
+
+test('a link for one person says who added what, can show only their part, and stops alone (INES-5, MARCUS-4)', { skip }, async () => {
+  const me = '8'.repeat(32)
+  const app = await chat.apps.put({ name: 'Crew week', about: 'Jobs by crew.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('week'), args: { request: 'week' }, saved: true }, 'made by hand')
+  const jobs = [{ id: 'j1', client: 'Smith', crew: 'A', done: false }, { id: 'j2', client: 'Lee', crew: 'B', done: false }, { id: 'j3', client: 'Patel', crew: 'A', done: false }]
+  await post('/api/call', { app: app.id, me, name: 'app_keep', arguments: { key: 'jobs', value: jobs } })
+  const share = await post('/api/share', { app: app.id, me })
+  const owner = `s-${share.token}`
+  const joana = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Joana', role: 'helper' } })).people.at(-1)
+  const dave = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Dave', role: 'helper', only: { field: 'crew', value: 'A' } } })).people.at(-1)
+  assert.equal(dave.only.value, 'A')
+  assert.equal((await post('/api/share', { app: app.id, me: `s-${joana.token}`, person: { name: 'X' } })).error, 'Only whoever shared it can share it further.')
+  // INES-5: what Joana adds says it was her.
+  await post('/api/call', { app: app.id, me: `s-${joana.token}`, name: 'app_keep', arguments: { key: 'jobs', value: [...jobs, { id: 'j4', client: 'Gomes', crew: 'B', done: false }] } })
+  const read = async who => (await post('/api/call', { app: app.id, me: who, name: 'app_kept', arguments: { all: true } })).structuredContent.values.jobs
+  assert.equal((await read(owner)).find(j => j.id === 'j4').by, 'Joana')
+  assert.equal((await read(owner)).find(j => j.id === 'j1').by, undefined, 'what was there is as it was')
+  // MARCUS-4: Dave sees crew A's jobs only, ticks one and adds one; crew B's are as they were.
+  const his = await read(`s-${dave.token}`)
+  assert.deepEqual(his.map(j => j.id), ['j1', 'j3'])
+  const out = await post('/api/call', { app: app.id, me: `s-${dave.token}`, name: 'app_keep', arguments: { key: 'jobs', value: [{ ...his[0], done: true }, his[1], { id: 'j5', client: 'Kim', done: false }] } })
+  assert.ok(!out.isError, out.content?.[0]?.text)
+  const all = await read(owner)
+  assert.deepEqual(all.map(j => j.id), ['j1', 'j2', 'j3', 'j4', 'j5'], 'nothing of crew B taken out, in its place')
+  assert.equal(all.find(j => j.id === 'j1').done, true)
+  assert.deepEqual([all.find(j => j.id === 'j5').crew, all.find(j => j.id === 'j5').by], ['A', 'Dave'], 'his new job is crew A, by him')
+  // His link still can't take out or change crew A's jobs.
+  assert.ok((await post('/api/call', { app: app.id, me: `s-${dave.token}`, name: 'app_keep', arguments: { key: 'jobs', value: [] } })).isError)
+  // Stopping Joana's link leaves Dave's and the others working.
+  const stopped = await post('/api/unshare', { app: app.id, me: owner, self: me, person: joana.token })
+  assert.deepEqual(stopped.people.map(p => p.name), ['Dave'])
+  assert.match((await post('/api/call', { app: app.id, me: `s-${joana.token}`, name: 'app_kept', arguments: { all: true } })).content[0].text, /stopped/)
+  assert.equal((await read(`s-${dave.token}`)).length, 3)
+  assert.equal((await read(`s-${share.helper}`)).length, 5)
+})

@@ -119,6 +119,9 @@
   .morebox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 13px; color: var(--ink-2); }
   .morebox .faint { flex: 1 1 220px; }
   .sharebox input { flex: 1 1 220px; min-width: 0; font: 12px ui-monospace, monospace; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }
+  .sharebox .people { display: contents; }
+  .sharebox .addperson input[name=name] { font: inherit; flex: 1 1 140px; }
+  .sharebox select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); max-width: 100%; }
   .composer-note { max-width: 760px; margin: 6px auto 0; font-size: 12px; color: var(--ink-3); text-align: center; }
 
   .hello { margin: 9vh auto 0; max-width: 620px; text-align: center; }
@@ -876,19 +879,19 @@ function bar(w) {
   acts.querySelector('.share')?.addEventListener('click', async () => {
     let box = w.node.querySelector('.sharebox')
     if (box) return box.remove()
-    if (!shared[app.id] || !links[app.id]) {
-      const first = !shared[app.id]
-      const out = await (await fetch('/api/share', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id) }) })).json().catch(error => ({ error: error.message }))
-      if (!out.token) return acts.querySelector('.share').replaceWith(Object.assign(document.createElement('span'), { className: 'error', textContent: out.error ?? 'Could not share it' }))
-      shared[app.id] = out.token
-      links[app.id] = { helper: out.helper, viewer: out.viewer }
-      local.set('instant-apps-shared', JSON.stringify(shared))
-      local.set('instant-apps-links', JSON.stringify(links))
-      if (first) {
-        bar(w)
-        draw(w)
-      }
+    // Made once, the same links after; asked each time for the people's links.
+    const first = !shared[app.id]
+    const out = await (await fetch('/api/share', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id) }) })).json().catch(error => ({ error: error.message }))
+    if (!out.token) return acts.querySelector('.share').replaceWith(Object.assign(document.createElement('span'), { className: 'error', textContent: out.error ?? 'Could not share it' }))
+    shared[app.id] = out.token
+    links[app.id] = { helper: out.helper, viewer: out.viewer }
+    local.set('instant-apps-shared', JSON.stringify(shared))
+    local.set('instant-apps-links', JSON.stringify(links))
+    if (first) {
+      bar(w)
+      draw(w)
     }
+    let people = out.people ?? []
     box = document.createElement('div')
     box.className = 'sharebox'
     const LINK = [
@@ -897,7 +900,51 @@ function bar(w) {
       ['viewer', 'Can only look', 'they see it as it is, and change nothing'],
       ['copy', 'A copy, empty', 'the app without anything it keeps: theirs keeps its own, on their phone'],
     ]
-    box.innerHTML = `<span class="sharehead">Links that open <b>${esc(app.name)}</b> on any phone or computer. Each opens only this app: nobody with a link sees your other apps or the chat. Anyone with a link can do what it says, so send each only to people you trust.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
+    // The parts a person's link can be for: a field of a kept list with a
+    // few values (crew A or B, a month) (MARCUS-4).
+    const kept = (await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me, name: 'app_kept', arguments: { all: true } }) })).json().catch(() => ({}))).structuredContent?.values ?? {}
+    const parts = []
+    for (const list of Object.values(kept)) {
+      if (!Array.isArray(list) || !list.some(e => e && typeof e === 'object')) continue
+      const fields = new Map()
+      for (const e of list) for (const [k, v] of Object.entries(e ?? {})) if (!/^(id|by)$/.test(k) && (typeof v === 'string' || typeof v === 'number') && String(v).trim() && String(v).length <= 24) fields.set(k, (fields.get(k) ?? new Set()).add(String(v).trim()))
+      for (const [field, values] of fields) if (values.size >= 2 && values.size <= 12 && values.size < list.length) for (const value of values) if (!parts.some(p => p.field === field && p.value === value)) parts.push({ field, value })
+    }
+    const personUrl = p => `${location.origin}${location.pathname}?app=${encodeURIComponent(app.id)}&share=${p.token}&as=${p.role}`
+    const peopleRows = () => people.map(p => `<div class="sharerow person"><span><b>${esc(p.name)}</b> · ${p.role === 'viewer' ? 'can only look' : 'can add and tick'}${p.only ? ` · only ${esc(p.only.field)} ${esc(p.only.value)}` : ''}</span><input readonly value="${esc(personUrl(p))}"><button class="btn" type="button" data-person="${p.token}">Copy</button><button class="btn stopone" type="button" data-stop="${p.token}">Stop</button></div>`).join('')
+    box.innerHTML = `<span class="sharehead">Links that open <b>${esc(app.name)}</b> on any phone or computer. Each opens only this app: nobody with a link sees your other apps or the chat. Anyone with a link can do what it says, so send each only to people you trust.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<span class="sharehead">Or a link for one person: what they add says it was them, and you can stop theirs alone${parts.length ? '. It can show them only their part' : ''}.</span><div class="people">${peopleRows()}</div><form class="sharerow addperson"><input name="name" maxlength="30" placeholder="Their name" aria-label="Their name"><select name="role" aria-label="What they can do"><option value="helper">Can add and tick</option><option value="viewer">Can only look</option></select>${parts.length ? `<select name="only" aria-label="What they see"><option value="">All of it</option>${parts.map((p, i) => `<option value="${i}">Only ${esc(p.field)} ${esc(p.value)}</option>`).join('')}</select>` : ''}<button class="btn" type="submit">Make their link</button></form><div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
+    const wirePeople = () => {
+      for (const button of box.querySelectorAll('button[data-person]')) {
+        button.onclick = async () => {
+          button.previousElementSibling.select()
+          await navigator.clipboard?.writeText(button.previousElementSibling.value).catch(() => {})
+          button.textContent = 'Copied'
+        }
+      }
+      for (const button of box.querySelectorAll('button[data-stop]')) {
+        button.onclick = async () => {
+          const done = await (await fetch('/api/unshare', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me, person: button.dataset.stop }) })).json().catch(error => ({ error: error.message }))
+          if (!done.stopped) return (button.textContent = done.error ?? 'Could not stop it')
+          people = done.people
+          box.querySelector('.people').innerHTML = peopleRows()
+          wirePeople()
+        }
+      }
+    }
+    box.querySelector('.addperson').onsubmit = async e => {
+      e.preventDefault()
+      const form = e.currentTarget
+      const name = form.elements.name.value.trim()
+      if (!name) return form.elements.name.focus()
+      const only = form.elements.only?.value ? parts[Number(form.elements.only.value)] : null
+      const made = await (await fetch('/api/share', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), person: { name, role: form.elements.role.value, only } }) })).json().catch(error => ({ error: error.message }))
+      if (!made.people) return (form.querySelector('button').textContent = made.error ?? 'Could not make it')
+      people = made.people
+      form.reset()
+      box.querySelector('.people').innerHTML = peopleRows()
+      wirePeople()
+    }
+    wirePeople()
     box.querySelector('.unshare').onclick = async () => {
       const out = await (await fetch('/api/unshare', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me }) })).json().catch(error => ({ error: error.message }))
       if (!out.stopped) return box.querySelector('.stop span').replaceWith(Object.assign(document.createElement('span'), { className: 'error', textContent: out.error ?? 'Could not stop it' }))
