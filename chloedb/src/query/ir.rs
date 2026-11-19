@@ -66,10 +66,10 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 37] = [
+pub const FEATURES: [&str; 38] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
     SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE, ASOF_JOIN, TERMS_SYNTAX, DATE_BIN, APPROX_PERCENTILES,
-    FULL_JOIN, SQL_FUNCTIONS,
+    FULL_JOIN, SQL_FUNCTIONS, GEO,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
@@ -215,6 +215,14 @@ pub const DATE_BIN: &str = "date_bin";
 /// aggregate [`AggFn::StringAgg`]. (`nullif` and `concat` are written
 /// with CASE, `||` and `coalesce`, which every version reads.)
 pub const SQL_FUNCTIONS: &str = "sql_functions";
+
+/// The feature of a plan with the trigonometric and geographic functions
+/// a ChloeDB from before them does not have ([`Func::needs_geo`]): `sin`
+/// and the other trigonometric functions, `haversine`, the H3 cells of
+/// points (`h3_*`) and the shapes kept as WKT or GeoJSON text (`st_*`,
+/// [`crate::geo`]). (`radians`, `degrees`, `pi`, `cot`, `st_within` and
+/// `st_dwithin` are written with arithmetic, comparisons and these.)
+pub const GEO: &str = "geo";
 
 /// The feature of a plan with a percentile ([`AggFn::PercentileCont`],
 /// [`AggFn::PercentileDisc`]), which a Strata from before them cannot read.
@@ -895,6 +903,76 @@ pub enum Func {
     /// `date_diff('month', '2026-01-31', '2026-02-01')` is 1. Needs
     /// [`SQL_FUNCTIONS`].
     DateDiff,
+    /// `sin(x)`, of `x` in radians, a FLOAT. Needs [`GEO`], as the
+    /// functions below do.
+    Sin,
+    /// `cos(x)`, of `x` in radians.
+    Cos,
+    /// `tan(x)`, of `x` in radians.
+    Tan,
+    /// `asin(x)`, in radians from -pi/2 to pi/2; NULL for `x` beyond -1 to
+    /// 1, as `sqrt` of a negative number is.
+    Asin,
+    /// `acos(x)`, in radians from 0 to pi; NULL beyond -1 to 1.
+    Acos,
+    /// `atan(x)`, in radians from -pi/2 to pi/2.
+    Atan,
+    /// `atan2(y, x)`: the angle of the point (x, y) from the x axis, in
+    /// radians from -pi to pi.
+    Atan2,
+    /// `haversine(lat1, lon1, lat2, lon2)`: the great-circle distance in
+    /// kilometers between two points given in degrees, on a sphere of
+    /// radius 6371 km, as Snowflake's `HAVERSINE` ([`crate::geo::haversine`]).
+    Haversine,
+    /// `h3_latlng_to_cell(lat, lng, res)`: the H3 cell of resolution `res`
+    /// (0 to 15) that a point is in, an INT ([`crate::geo::sql`]).
+    H3LatLngToCell,
+    /// `h3_latlng_to_cell_string(lat, lng, res)`: that cell as its hex text.
+    H3LatLngToCellString,
+    /// `h3_cell_to_parent(cell, res)`: the cell of the coarser resolution
+    /// `res` that holds `cell`, an INT for an INT, text for text.
+    H3CellToParent,
+    /// `h3_get_resolution(cell)`: the cell's resolution, an INT.
+    H3GetResolution,
+    /// `h3_grid_distance(a, b)`: the cells between two cells of one
+    /// resolution, an INT; NULL where H3 cannot count them (far apart, or
+    /// across a pentagon).
+    H3GridDistance,
+    /// `h3_cell_to_point(cell)`: the cell's center, a POINT in WKT.
+    H3CellToPoint,
+    /// `h3_cell_to_boundary(cell)`: the cell's hexagon (or pentagon), a
+    /// POLYGON in WKT.
+    H3CellToBoundary,
+    /// `h3_int_to_string(cell)`: a cell's INT as its hex text.
+    H3IntToString,
+    /// `h3_string_to_int(cell)`: a cell's hex text as its INT.
+    H3StringToInt,
+    /// `h3_is_valid_cell(cell)`: whether an INT or text is an H3 cell, a
+    /// BOOL.
+    H3IsValidCell,
+    /// `st_point(lon, lat)` (and `st_makepoint`, `st_geogpoint`): the point
+    /// as WKT text, `'POINT(-122.42 37.77)'`.
+    StPoint,
+    /// `st_x(point)`: a point's longitude, a FLOAT.
+    StX,
+    /// `st_y(point)`: a point's latitude, a FLOAT.
+    StY,
+    /// `st_contains(a, b)`: whether shape `b` is inside shape `a`
+    /// (`st_within(b, a)`), a BOOL: a point on a polygon's boundary is not
+    /// ([`crate::geo::Geom::contains`]).
+    StContains,
+    /// `st_intersects(a, b)`: whether two shapes share a point, a BOOL.
+    StIntersects,
+    /// `st_distance(a, b)`: the least distance in meters between two
+    /// shapes, on the sphere; 0 where they meet.
+    StDistance,
+    /// `st_area(shape)`: the area in square meters, on the sphere.
+    StArea,
+    /// `st_astext(shape)` (and `st_geomfromtext`, `st_geomfromgeojson`):
+    /// the shape as WKT text, as PostGIS writes it.
+    StAsText,
+    /// `st_asgeojson(shape)`: the shape as a GeoJSON geometry.
+    StAsGeoJson,
 }
 
 impl Func {
@@ -933,7 +1011,78 @@ impl Func {
             Func::Rtrim => "rtrim",
             Func::Replace => "replace",
             Func::DateDiff => "date_diff",
+            Func::Sin => "sin",
+            Func::Cos => "cos",
+            Func::Tan => "tan",
+            Func::Asin => "asin",
+            Func::Acos => "acos",
+            Func::Atan => "atan",
+            Func::Atan2 => "atan2",
+            Func::Haversine => "haversine",
+            Func::H3LatLngToCell => "h3_latlng_to_cell",
+            Func::H3LatLngToCellString => "h3_latlng_to_cell_string",
+            Func::H3CellToParent => "h3_cell_to_parent",
+            Func::H3GetResolution => "h3_get_resolution",
+            Func::H3GridDistance => "h3_grid_distance",
+            Func::H3CellToPoint => "h3_cell_to_point",
+            Func::H3CellToBoundary => "h3_cell_to_boundary",
+            Func::H3IntToString => "h3_int_to_string",
+            Func::H3StringToInt => "h3_string_to_int",
+            Func::H3IsValidCell => "h3_is_valid_cell",
+            Func::StPoint => "st_point",
+            Func::StX => "st_x",
+            Func::StY => "st_y",
+            Func::StContains => "st_contains",
+            Func::StIntersects => "st_intersects",
+            Func::StDistance => "st_distance",
+            Func::StArea => "st_area",
+            Func::StAsText => "st_astext",
+            Func::StAsGeoJson => "st_asgeojson",
         }
+    }
+
+    /// The geography functions, in the order of their numbers in the
+    /// shard protocol.
+    pub const GEO: [Func; 27] = [
+        Func::Sin,
+        Func::Cos,
+        Func::Tan,
+        Func::Asin,
+        Func::Acos,
+        Func::Atan,
+        Func::Atan2,
+        Func::Haversine,
+        Func::H3LatLngToCell,
+        Func::H3LatLngToCellString,
+        Func::H3CellToParent,
+        Func::H3GetResolution,
+        Func::H3GridDistance,
+        Func::H3CellToPoint,
+        Func::H3CellToBoundary,
+        Func::H3IntToString,
+        Func::H3StringToInt,
+        Func::H3IsValidCell,
+        Func::StPoint,
+        Func::StX,
+        Func::StY,
+        Func::StContains,
+        Func::StIntersects,
+        Func::StDistance,
+        Func::StArea,
+        Func::StAsText,
+        Func::StAsGeoJson,
+    ];
+
+    /// Whether a plan with the function needs [`GEO`].
+    pub fn needs_geo(self) -> bool {
+        Func::GEO.contains(&self)
+    }
+
+    /// Whether the function is one of shapes or H3 cells, which
+    /// [`crate::geo::sql`] computes (not the trigonometric ones or
+    /// `haversine`, which are numeric).
+    pub fn is_shape_or_cell(self) -> bool {
+        self.needs_geo() && !matches!(self, Func::Sin | Func::Cos | Func::Tan | Func::Asin | Func::Acos | Func::Atan | Func::Atan2 | Func::Haversine)
     }
 
     /// Whether a plan with the function needs [`SQL_FUNCTIONS`].
@@ -957,6 +1106,14 @@ impl Func {
             "greatest" => Func::Greatest,
             "sigmoid" => Func::Sigmoid,
             "clamp" => Func::Clamp,
+            "sin" => Func::Sin,
+            "cos" => Func::Cos,
+            "tan" => Func::Tan,
+            "asin" => Func::Asin,
+            "acos" => Func::Acos,
+            "atan" => Func::Atan,
+            "atan2" => Func::Atan2,
+            "haversine" => Func::Haversine,
             _ => return None,
         })
     }
@@ -965,6 +1122,12 @@ impl Func {
     pub fn arity(self, n: usize) -> std::result::Result<(), &'static str> {
         let ok = match self {
             Func::Lower | Func::Upper | Func::Length | Func::Abs | Func::Ln | Func::Exp | Func::Sqrt | Func::Sigmoid | Func::Floor | Func::Ceil => n == 1,
+            Func::Sin | Func::Cos | Func::Tan | Func::Asin | Func::Acos | Func::Atan => n == 1,
+            Func::H3GetResolution | Func::H3CellToPoint | Func::H3CellToBoundary | Func::H3IntToString | Func::H3StringToInt | Func::H3IsValidCell => n == 1,
+            Func::StX | Func::StY | Func::StArea | Func::StAsText | Func::StAsGeoJson => n == 1,
+            Func::Atan2 | Func::H3CellToParent | Func::H3GridDistance | Func::StPoint | Func::StContains | Func::StIntersects | Func::StDistance => n == 2,
+            Func::H3LatLngToCell | Func::H3LatLngToCellString => n == 3,
+            Func::Haversine => n == 4,
             Func::Round | Func::Log | Func::Hash | Func::Trim | Func::Ltrim | Func::Rtrim => n == 1 || n == 2,
             Func::Pow | Func::Dot | Func::SidAt | Func::DateTrunc | Func::DatePart | Func::Strftime => n == 2,
             Func::Substr => n == 2 || n == 3,
@@ -989,6 +1152,15 @@ impl Func {
             (_, Func::Trim | Func::Ltrim | Func::Rtrim) => Err("one or two arguments: a text and the characters to take off (spaces without them)"),
             (_, Func::Replace) => Err("three arguments: a text, what to replace in it and what to replace that with"),
             (_, Func::DateDiff) => Err("three arguments: a unit ('day', 'month', 'hour', ...), the start TIMESTAMP and the end TIMESTAMP"),
+            (_, Func::Atan2) => Err("two arguments: y and x"),
+            (_, Func::Haversine) => Err("four arguments: the first point's latitude and longitude, then the second's, in degrees"),
+            (_, Func::H3LatLngToCell | Func::H3LatLngToCellString) => Err("three arguments: a latitude and a longitude in degrees, and a resolution from 0 to 15"),
+            (_, Func::H3CellToParent) => Err("two arguments: an H3 cell and a coarser resolution"),
+            (_, Func::H3GridDistance) => Err("two arguments: two H3 cells of one resolution"),
+            (_, Func::StPoint) => Err("two arguments: a longitude and a latitude, in degrees"),
+            (_, Func::StContains | Func::StIntersects | Func::StDistance) => Err("two arguments: two shapes, as WKT or GeoJSON text"),
+            (_, Func::H3GetResolution | Func::H3CellToPoint | Func::H3CellToBoundary | Func::H3IntToString | Func::H3StringToInt | Func::H3IsValidCell) => Err("one argument: an H3 cell"),
+            (_, Func::StX | Func::StY | Func::StArea | Func::StAsText | Func::StAsGeoJson) => Err("one argument: a shape, as WKT or GeoJSON text"),
             _ => Err("one argument"),
         }
     }
@@ -1023,6 +1195,37 @@ impl Func {
             | Func::Rtrim
             | Func::Replace
             | Func::DateDiff => f64::NAN,
+            Func::H3LatLngToCell
+            | Func::H3LatLngToCellString
+            | Func::H3CellToParent
+            | Func::H3GetResolution
+            | Func::H3GridDistance
+            | Func::H3CellToPoint
+            | Func::H3CellToBoundary
+            | Func::H3IntToString
+            | Func::H3StringToInt
+            | Func::H3IsValidCell
+            | Func::StPoint
+            | Func::StX
+            | Func::StY
+            | Func::StContains
+            | Func::StIntersects
+            | Func::StDistance
+            | Func::StArea
+            | Func::StAsText
+            | Func::StAsGeoJson => f64::NAN,
+            Func::Sin => x.sin(),
+            Func::Cos => x.cos(),
+            Func::Tan => x.tan(),
+            Func::Asin if (-1.0..=1.0).contains(&x) => x.asin(),
+            Func::Acos if (-1.0..=1.0).contains(&x) => x.acos(),
+            Func::Asin | Func::Acos => f64::NAN,
+            Func::Atan => x.atan(),
+            Func::Atan2 => x.atan2(args.get(1).copied().unwrap_or(f64::NAN)),
+            Func::Haversine => match args {
+                [lat1, lon1, lat2, lon2] => crate::geo::haversine(*lat1, *lon1, *lat2, *lon2, crate::geo::HAVERSINE_RADIUS_KM),
+                _ => f64::NAN,
+            },
             Func::Floor => x.floor(),
             Func::Ceil => x.ceil(),
             Func::Abs => x.abs(),
@@ -2237,8 +2440,10 @@ impl Plan {
         }
         let (mut sid_at, mut json, mut dates, mut hash, mut date_bin) = (false, false, false, false, false);
         let mut sql_functions = root.has_string_aggs();
+        let mut geo = false;
         root.visit_exprs(&mut |e| {
             sql_functions |= matches!(e, Expr::Call { func, .. } if func.needs_sql_functions());
+            geo |= matches!(e, Expr::Call { func, .. } if func.needs_geo());
             if let Expr::Subquery(n) | Expr::Values(n) | Expr::Keys(n) | Expr::Exists(n) | Expr::Scalar(n) | Expr::Encode { rows: n, .. } = e {
                 sql_functions |= n.has_string_aggs();
             }
@@ -2253,6 +2458,9 @@ impl Plan {
         }
         if sql_functions {
             features.push(SQL_FUNCTIONS.to_string());
+        }
+        if geo {
+            features.push(GEO.to_string());
         }
         if date_bin {
             features.push(DATE_BIN.to_string());

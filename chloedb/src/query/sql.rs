@@ -62,7 +62,10 @@ impl Params {
 pub const DISTANCE_OPT: &str = "metric";
 
 /// The functions a ranking expression computes, besides the scores.
-const RANK_FUNCS: [&str; 16] = ["abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "tmm", "minmax", "zscore", "count_true"];
+const RANK_FUNCS: [&str; 28] = [
+    "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "tmm", "minmax", "zscore", "count_true", "sin", "cos", "tan", "cot", "asin", "acos", "atan", "atan2", "radians", "degrees",
+    "pi", "haversine",
+];
 
 /// Why parameter `placeholder` (`:q`) has no value, and how to give it one.
 pub(crate) fn unbound(placeholder: &str) -> String {
@@ -2170,6 +2173,18 @@ impl<'a> Binder<'a> {
                         let cond = |c: &Expr| Ok(Score::Cond(Box::new(self.pred(c)?.three_valued(&|f| self.schema.fields[f].multi).simplify())));
                         Ok(Score::Call { func: Func::CountTrue, args: args.iter().map(|a| cond(a)).collect::<Result<_>>()? })
                     }
+                    // radians(x), degrees(x), cot(x) and pi(), as the row
+                    // evaluator writes them.
+                    n @ ("radians" | "degrees" | "cot") if opts.is_empty() => {
+                        let x = Box::new(self.rank(one("x")?)?);
+                        let rpd = Box::new(Score::Num(crate::query::compound::RADIANS_PER_DEGREE));
+                        Ok(match n {
+                            "radians" => Score::Arith { op: ArithOp::Mul, left: x, right: rpd },
+                            "degrees" => Score::Arith { op: ArithOp::Div, left: x, right: rpd },
+                            _ => Score::Arith { op: ArithOp::Div, left: Box::new(Score::Num(1.0)), right: Box::new(Score::Call { func: Func::Tan, args: vec![*x] }) },
+                        })
+                    }
+                    "pi" if args.is_empty() && opts.is_empty() => Ok(Score::Num(std::f64::consts::PI)),
                     n => match Func::numeric(n) {
                         Some(func) => {
                             check_opts(n, &opts, &[])?;
@@ -2182,7 +2197,7 @@ impl<'a> Binder<'a> {
                         None if matches!(
                             n,
                             "lower" | "upper" | "length" | "date_trunc" | "date_part" | "strftime" | "date_bin" | "json_extract" | "floor" | "ceil" | "ceiling" | "substr" | "substring" | "trim" | "btrim" | "ltrim" | "rtrim" | "replace" | "concat" | "nullif" | "date_diff" | "datediff"
-                        ) =>
+                        ) || crate::query::compound::GEO_ROW.contains(&n) =>
                         {
                             Err(err(format!(
                                 "{n}() is a value of each row, which a ranking with scores does not take: order by it on its own (ORDER BY {n}(...), a score after it), or select it and order by its name"

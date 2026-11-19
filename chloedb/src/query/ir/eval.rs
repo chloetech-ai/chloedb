@@ -219,6 +219,18 @@ pub fn eval(e: &Expr, row: &Row) -> Result<Value> {
             }
             otherwise.as_ref().map(|x| eval(x, row)).transpose()?.unwrap_or(Value::Null)
         }
+        // A shape written out (a perimeter of thousands of vertices) is
+        // read where it is, not copied for each row.
+        Expr::Call { func, args } if func.is_shape_or_cell() => {
+            let vals = args
+                .iter()
+                .map(|a| match a {
+                    Expr::Lit(v) => Ok(std::borrow::Cow::Borrowed(v)),
+                    a => eval(a, row).map(std::borrow::Cow::Owned),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            crate::geo::sql::call(*func, &vals.iter().map(|v| v.as_ref()).collect::<Vec<_>>())?
+        }
         Expr::Call { func, args } => call(*func, &args.iter().map(|a| eval(a, row)).collect::<Result<Vec<_>>>()?)?,
         // A row without a value scores 0, as the executor scores it.
         Expr::Decay { field, decay, .. } => match row(Ref::Field(*field))? {
@@ -453,7 +465,23 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
         Func::Round => round(args, false),
         // A list without values is NULL here, as to IS NULL.
         Func::Coalesce => Ok(args.iter().find(|v| !matches!(v, Value::Null) && !matches!(v, Value::List(xs) if xs.is_empty())).cloned().unwrap_or(Value::Null)),
-        Func::Ln | Func::Log | Func::Exp | Func::Sqrt | Func::Pow | Func::Least | Func::Greatest | Func::Sigmoid | Func::Clamp => {
+        Func::Ln
+        | Func::Log
+        | Func::Exp
+        | Func::Sqrt
+        | Func::Pow
+        | Func::Least
+        | Func::Greatest
+        | Func::Sigmoid
+        | Func::Clamp
+        | Func::Sin
+        | Func::Cos
+        | Func::Tan
+        | Func::Asin
+        | Func::Acos
+        | Func::Atan
+        | Func::Atan2
+        | Func::Haversine => {
             let xs = args
                 .iter()
                 .map(|v| match v {
@@ -470,6 +498,25 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
         Func::Floor | Func::Ceil => whole(func, &one),
         Func::Substr | Func::Trim | Func::Ltrim | Func::Rtrim | Func::Replace => texts(func, args),
         Func::DateDiff => date_diff(&one, args.get(1).unwrap_or(&Value::Null), args.get(2).unwrap_or(&Value::Null)),
+        Func::H3LatLngToCell
+        | Func::H3LatLngToCellString
+        | Func::H3CellToParent
+        | Func::H3GetResolution
+        | Func::H3GridDistance
+        | Func::H3CellToPoint
+        | Func::H3CellToBoundary
+        | Func::H3IntToString
+        | Func::H3StringToInt
+        | Func::H3IsValidCell
+        | Func::StPoint
+        | Func::StX
+        | Func::StY
+        | Func::StContains
+        | Func::StIntersects
+        | Func::StDistance
+        | Func::StArea
+        | Func::StAsText
+        | Func::StAsGeoJson => crate::geo::sql::call(func, &args.iter().collect::<Vec<_>>()),
         // With the kernel similarity() uses, so the two agree to the bit.
         Func::Dot => match (vector(&one)?, vector(args.get(1).unwrap_or(&Value::Null))?) {
             (Some(a), Some(b)) if a.len() == b.len() => Ok(Some(crate::vector::kernels::dot_f32(&a, &b) as f64).filter(|d| d.is_finite()).map_or(Value::Null, Value::Float)),

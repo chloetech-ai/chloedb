@@ -85,6 +85,30 @@ pub(crate) const STATS: [&str; 9] = ["stddev", "stddev_samp", "stddev_pop", "var
 pub(crate) const PERCENTILES: [&str; 4] = ["median", "percentile_cont", "percentile_disc", "approx_percentile"];
 /// Functions whose value a ranking computes (a score, a graph's, a model's,
 /// a set function's, a row's sequence number), not the row evaluator.
+/// The functions of shapes and H3 cells ([`crate::geo::sql`]), with the
+/// other names they go by, which the row evaluator computes: a value of
+/// each row, not a ranking with scores.
+pub(crate) const GEO_ROW: [&str; 27] = [
+    "h3_latlng_to_cell", "h3_latlng_to_cell_string", "h3_cell_to_parent", "h3_get_resolution", "h3_grid_distance", "h3_cell_to_point", "h3_cell_to_boundary", "h3_int_to_string", "h3_string_to_int", "h3_is_valid_cell", "st_point",
+    "st_makepoint", "st_geogpoint", "st_x", "st_y", "st_contains", "st_within", "st_intersects", "st_distance", "st_dwithin", "st_area", "st_astext", "st_asgeojson", "st_geomfromtext", "st_geogfromtext", "st_geomfromgeojson",
+    "st_geogfromgeojson",
+];
+
+/// The geography functions that are conditions, which the row evaluator
+/// tests over the rows a table's scan returns (`WHERE st_contains(:area,
+/// st_point(lon, lat))`).
+const GEO_CONDITIONS: [&str; 5] = ["st_contains", "st_within", "st_intersects", "st_dwithin", "h3_is_valid_cell"];
+
+/// The trigonometric functions and `haversine`: numbers a ranking takes
+/// too (`bm25(..) / (1 + haversine(..))`), but which order the rows by
+/// their own value, nearest first, without one (`ORDER BY haversine(lat,
+/// lon, 37.77, -122.42) LIMIT 10`).
+const TRIG: [&str; 12] = ["sin", "cos", "tan", "cot", "asin", "acos", "atan", "atan2", "radians", "degrees", "pi", "haversine"];
+
+/// PostgreSQL's `RADIANS_PER_DEGREE`, which `radians(x)` multiplies by and
+/// `degrees(x)` divides by.
+pub(crate) const RADIANS_PER_DEGREE: f64 = std::f64::consts::PI / 180.0;
+
 const RANKING: [&str; 20] = [
     "bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops", "score", "seq_no", "ranked", "features", "minmax", "tmm", "zscore", "rank", "gbdt", "cross_encoder", "rank_profile", "match",
 ];
@@ -618,6 +642,8 @@ fn needs_rows(c: &Expr, schema: &Schema) -> bool {
             computed(expr) || !plain(expr).is_some_and(|f| f.ty == FieldType::Keyword && f.indexed) || !prefix_or_value
         }
         Expr::Case { .. } => true,
+        // `WHERE st_contains(:area, st_point(lon, lat))`.
+        Expr::Function(f) => GEO_CONDITIONS.contains(&fname(f).as_str()),
         _ => false,
     }
 }
@@ -1176,7 +1202,8 @@ fn orders_by_row_values(q: &sql::Query, s: &sql::Select) -> bool {
                         | "nullif"
                         | "date_diff"
                         | "datediff"
-                ),
+                ) || GEO_ROW.contains(&fname(f).as_str())
+                    || TRIG.contains(&fname(f).as_str()),
                 Expr::Extract { .. } | Expr::Substring { .. } | Expr::Trim { .. } | Expr::Ceil { .. } | Expr::Floor { .. } => true,
                 _ => false,
             }
@@ -4191,6 +4218,52 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 "rtrim" => Func::Rtrim,
                 "replace" => Func::Replace,
                 "date_diff" | "datediff" => Func::DateDiff,
+                "h3_latlng_to_cell" => Func::H3LatLngToCell,
+                "h3_latlng_to_cell_string" => Func::H3LatLngToCellString,
+                "h3_cell_to_parent" => Func::H3CellToParent,
+                "h3_get_resolution" => Func::H3GetResolution,
+                "h3_grid_distance" => Func::H3GridDistance,
+                "h3_cell_to_point" => Func::H3CellToPoint,
+                "h3_cell_to_boundary" => Func::H3CellToBoundary,
+                "h3_int_to_string" => Func::H3IntToString,
+                "h3_string_to_int" => Func::H3StringToInt,
+                "h3_is_valid_cell" => Func::H3IsValidCell,
+                "st_point" | "st_makepoint" | "st_geogpoint" => Func::StPoint,
+                "st_x" => Func::StX,
+                "st_y" => Func::StY,
+                "st_contains" => Func::StContains,
+                "st_intersects" => Func::StIntersects,
+                "st_distance" => Func::StDistance,
+                "st_area" => Func::StArea,
+                // The shape read and written again as WKT: what PostGIS's
+                // constructors of text are, where shapes are text.
+                "st_astext" | "st_geomfromtext" | "st_geogfromtext" | "st_geomfromgeojson" | "st_geogfromgeojson" => Func::StAsText,
+                "st_asgeojson" => Func::StAsGeoJson,
+                // radians(x) and degrees(x): x * (pi / 180) and x / (pi /
+                // 180), as PostgreSQL computes them; pi(); cot(x), 1 /
+                // tan(x).
+                n @ ("radians" | "degrees" | "cot") => {
+                    let [x] = func_args(f)[..] else { return Err(err(format!("{n}() takes one argument: an angle, {}", if n == "degrees" { "in radians" } else if n == "radians" { "in degrees" } else { "in radians" }))) };
+                    let x = Box::new(go(x)?);
+                    return Ok(match n {
+                        "radians" => ir::Expr::Arith { op: ArithOp::Mul, left: x, right: Box::new(ir::Expr::Lit(Value::Float(RADIANS_PER_DEGREE))) },
+                        "degrees" => ir::Expr::Arith { op: ArithOp::Div, left: x, right: Box::new(ir::Expr::Lit(Value::Float(RADIANS_PER_DEGREE))) },
+                        _ => ir::Expr::Arith { op: ArithOp::Div, left: Box::new(ir::Expr::Lit(Value::Float(1.0))), right: Box::new(ir::Expr::Call { func: Func::Tan, args: vec![*x] }) },
+                    });
+                }
+                "pi" if func_args(f).is_empty() => return Ok(ir::Expr::Lit(Value::Float(std::f64::consts::PI))),
+                "pi" => return Err(err("pi() takes no arguments")),
+                // st_within(a, b): st_contains(b, a); st_dwithin(a, b, m):
+                // st_distance(a, b) <= m.
+                "st_within" => {
+                    let [a, b] = func_args(f)[..] else { return Err(err("st_within() takes two arguments: a shape and the shape it is in, as WKT or GeoJSON text")) };
+                    return Ok(ir::Expr::Call { func: Func::StContains, args: vec![go(b)?, go(a)?] });
+                }
+                "st_dwithin" => {
+                    let [a, b, m] = func_args(f)[..] else { return Err(err("st_dwithin() takes three arguments: two shapes and a distance in meters")) };
+                    let d = ir::Expr::Call { func: Func::StDistance, args: vec![go(a)?, go(b)?] };
+                    return Ok(ir::Expr::Cmp { op: CmpOp::Le, left: Box::new(d), right: Box::new(go(m)?) });
+                }
                 // nullif(a, b): CASE WHEN a = b THEN NULL ELSE a END.
                 "nullif" => {
                     let [a, b] = func_args(f)[..] else { return Err(err("nullif() takes two arguments: a value, and the value that makes it NULL")) };
@@ -4346,7 +4419,7 @@ pub(crate) fn grouping_sets(e: &Expr) -> String {
 }
 
 /// What the row evaluator computes, for an error about what it does not.
-const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT, SUBSTRING, TRIM and the functions lower, upper, length, substr, trim, ltrim, rtrim, replace, concat, nullif, abs, round, floor, ceil, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part, date_diff, strftime, time_bucket and hash";
+const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT, SUBSTRING, TRIM and the functions lower, upper, length, substr, trim, ltrim, rtrim, replace, concat, nullif, abs, round, floor, ceil, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part, date_diff, strftime, time_bucket, hash, the trigonometric functions (sin, cos, tan, cot, asin, acos, atan, atan2, radians, degrees, pi), haversine, the H3 functions (h3_latlng_to_cell, h3_cell_to_parent, ...) and those of shapes as WKT or GeoJSON text (st_point, st_contains, st_intersects, st_distance, st_area, ...)";
 
 /// The part `EXTRACT(part FROM t)` names, as `date_part` takes it.
 pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
@@ -4362,9 +4435,9 @@ pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
 /// Why a function is not one the row evaluator knows: the one meant, if
 /// the name is near one, or what there is.
 fn unknown_function(n: &str) -> String {
-    const ROW_FUNCTIONS: [&str; 32] = [
+    const ROW_FUNCTIONS: [&str; 44] = [
         "lower", "upper", "length", "substr", "trim", "ltrim", "rtrim", "replace", "concat", "nullif", "abs", "round", "floor", "ceil", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot",
-        "date_trunc", "date_part", "date_diff", "strftime", "date_bin", "time_bucket", "hash",
+        "date_trunc", "date_part", "date_diff", "strftime", "date_bin", "time_bucket", "hash", "sin", "cos", "tan", "cot", "asin", "acos", "atan", "atan2", "radians", "degrees", "pi", "haversine",
     ];
     let hint = match n {
         "left" | "right" => "; substr(s, 1, n) is a text's first n characters",
@@ -4380,12 +4453,18 @@ fn unknown_function(n: &str) -> String {
         "char_length" | "character_length" | "len" => "; length(text) counts its characters",
         "llm" => "; llm() asks a language model about the rows a query returns, after the query finds them: Db::query and a server's queries run it, not a plan",
         "lcase" => "; lower(text)",
+        "st_geomfromwkb" | "st_asbinary" | "st_aswkb" | "st_makeenvelope" | "st_buffer" | "st_union" | "st_intersection" | "st_difference" | "st_centroid" | "st_length" | "st_transform" | "st_setsrid" | "st_srid" => {
+            "; ChloeDB's shapes are WKT or GeoJSON text, longitude and latitude in degrees: st_point, st_x, st_y, st_contains, st_within, st_intersects, st_distance, st_dwithin, st_area, st_astext and st_asgeojson take them"
+        }
+        n if n.starts_with("st_") || n.starts_with("h3_") => {
+            "; of shapes (WKT or GeoJSON text) ChloeDB computes st_point, st_x, st_y, st_contains, st_within, st_intersects, st_distance, st_dwithin, st_area, st_astext and st_asgeojson, and of H3 cells h3_latlng_to_cell, h3_latlng_to_cell_string, h3_cell_to_parent, h3_get_resolution, h3_grid_distance, h3_cell_to_point, h3_cell_to_boundary, h3_int_to_string, h3_string_to_int and h3_is_valid_cell"
+        }
         "ucase" => "; upper(text)",
         _ => "",
     };
     format!(
         "unknown function {n}(){}: over rows ChloeDB computes {}, and over groups the aggregates {}{hint}",
-        hint::did_you_mean(n, ROW_FUNCTIONS.iter().chain(AGGREGATES.iter()).chain(STATS.iter()).copied()),
+        hint::did_you_mean(n, ROW_FUNCTIONS.iter().chain(GEO_ROW.iter()).chain(AGGREGATES.iter()).chain(STATS.iter()).copied()),
         ROW_FUNCTIONS.join(", "),
         AGGREGATES.iter().chain(STATS.iter()).map(|a| a.to_uppercase()).collect::<Vec<_>>().join(", ")
     )

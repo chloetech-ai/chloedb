@@ -1286,6 +1286,39 @@ enum Func {
   FUNC_RTRIM = 29;
   FUNC_REPLACE = 30;
   FUNC_DATE_DIFF = 31;
+  // The trigonometric and geographic functions (plan feature "geo"):
+  // sin, cos, tan, asin, acos and atan of radians, atan2(y, x), FLOATs;
+  // haversine(lat1, lon1, lat2, lon2), kilometers on a sphere of radius
+  // 6371 km; the H3 cells of points, as INTs or their hex text, and
+  // shapes as WKT or GeoJSON text (longitude then latitude, in degrees),
+  // their lengths and areas in meters on a sphere of radius 6371008.8 m.
+  FUNC_SIN = 32;
+  FUNC_COS = 33;
+  FUNC_TAN = 34;
+  FUNC_ASIN = 35;
+  FUNC_ACOS = 36;
+  FUNC_ATAN = 37;
+  FUNC_ATAN2 = 38;
+  FUNC_HAVERSINE = 39;
+  FUNC_H3_LATLNG_TO_CELL = 40;
+  FUNC_H3_LATLNG_TO_CELL_STRING = 41;
+  FUNC_H3_CELL_TO_PARENT = 42;
+  FUNC_H3_GET_RESOLUTION = 43;
+  FUNC_H3_GRID_DISTANCE = 44;
+  FUNC_H3_CELL_TO_POINT = 45;
+  FUNC_H3_CELL_TO_BOUNDARY = 46;
+  FUNC_H3_INT_TO_STRING = 47;
+  FUNC_H3_STRING_TO_INT = 48;
+  FUNC_H3_IS_VALID_CELL = 49;
+  FUNC_ST_POINT = 50;
+  FUNC_ST_X = 51;
+  FUNC_ST_Y = 52;
+  FUNC_ST_CONTAINS = 53;
+  FUNC_ST_INTERSECTS = 54;
+  FUNC_ST_DISTANCE = 55;
+  FUNC_ST_AREA = 56;
+  FUNC_ST_AS_TEXT = 57;
+  FUNC_ST_AS_GEO_JSON = 58;
 }
 
 message Match {

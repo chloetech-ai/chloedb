@@ -2340,7 +2340,25 @@ impl<'a> Lower<'a, '_> {
                 }
                 f::coalesce(xs)
             }
-            Func::Abs | Func::Round | Func::Ln | Func::Log | Func::Exp | Func::Sqrt | Func::Pow | Func::Least | Func::Greatest | Func::Sigmoid | Func::Clamp => {
+            Func::Abs
+            | Func::Round
+            | Func::Ln
+            | Func::Log
+            | Func::Exp
+            | Func::Sqrt
+            | Func::Pow
+            | Func::Least
+            | Func::Greatest
+            | Func::Sigmoid
+            | Func::Clamp
+            | Func::Sin
+            | Func::Cos
+            | Func::Tan
+            | Func::Asin
+            | Func::Acos
+            | Func::Atan
+            | Func::Atan2
+            | Func::Haversine => {
                 if !ts.iter().all(|t| is_int(t) || is_float(t) || *t == DataType::Null) {
                     return no(format!("{} of {ts:?}", func.name()));
                 }
@@ -2372,6 +2390,31 @@ impl<'a> Lower<'a, '_> {
                 ScalarUDF::new_from_impl(StrataCall::new(func, DataType::Utf8)).call(xs)
             }
             Func::Trim | Func::Ltrim | Func::Rtrim | Func::Replace if text => ScalarUDF::new_from_impl(StrataCall::new(func, DataType::Utf8)).call(xs),
+            // Shapes (text) and H3 cells (an INT or text), by the evaluator's
+            // own functions.
+            f if f.is_shape_or_cell() => {
+                let num = |t: &DataType| is_int(t) || is_float(t) || *t == DataType::Null;
+                let txt = |t: &DataType| is_text(t) || *t == DataType::Null;
+                let cell = |t: &DataType| is_int(t) || txt(t);
+                let fits = match f {
+                    Func::StPoint | Func::H3LatLngToCell | Func::H3LatLngToCellString => ts.iter().all(num),
+                    Func::H3CellToParent => cell(&ts[0]) && num(&ts[1]),
+                    Func::H3GetResolution | Func::H3GridDistance | Func::H3CellToPoint | Func::H3CellToBoundary | Func::H3IsValidCell => ts.iter().all(cell),
+                    Func::H3IntToString => ts.iter().all(|t| is_int(t) || *t == DataType::Null),
+                    _ => ts.iter().all(txt),
+                };
+                if !fits {
+                    return no(format!("{}({ts:?}) above a leaf", f.name()));
+                }
+                let ret = match f {
+                    Func::H3LatLngToCell | Func::H3GetResolution | Func::H3GridDistance | Func::H3StringToInt => DataType::Int64,
+                    Func::H3CellToParent if !is_text(&ts[0]) => DataType::Int64,
+                    Func::H3IsValidCell | Func::StContains | Func::StIntersects => DataType::Boolean,
+                    Func::StX | Func::StY | Func::StDistance | Func::StArea => DataType::Float64,
+                    _ => DataType::Utf8,
+                };
+                ScalarUDF::new_from_impl(StrataCall::new(f, ret)).call(xs)
+            }
             Func::DatePart | Func::DateTrunc | Func::DateBin | Func::Strftime => match time_fn(func, args, ts) {
                 Some((op, ret, at)) => ScalarUDF::new_from_impl(TimeFn::new(op, ret)).call(vec![xs[at].clone()]),
                 None => return no(format!("{}({ts:?}) above a leaf", func.name())),
@@ -3005,6 +3048,17 @@ impl ScalarUDFImpl for StrataCall {
                         Value::Null => b.append_null(),
                         Value::Int(x) => b.append_value(x),
                         v => return Err(DataFusionError::Execution(format!("chloedb: {} gave {v:?} for an INT column", self.func.name()))),
+                    }
+                }
+                Arc::new(b.finish())
+            }
+            DataType::Boolean => {
+                let mut b = BooleanBuilder::with_capacity(rows.len());
+                for r in &rows {
+                    match crate::query::ir::eval::call(self.func, r).map_err(fail)? {
+                        Value::Null => b.append_null(),
+                        Value::Bool(x) => b.append_value(x),
+                        v => return Err(DataFusionError::Execution(format!("chloedb: {} gave {v:?} for a BOOL column", self.func.name()))),
                     }
                 }
                 Arc::new(b.finish())

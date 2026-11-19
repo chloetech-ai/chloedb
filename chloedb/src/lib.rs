@@ -53,6 +53,7 @@ pub mod env;
 pub mod error;
 pub mod explore;
 pub mod forward;
+pub mod geo;
 pub mod graph;
 pub mod hosted;
 pub mod ingest;

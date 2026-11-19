@@ -268,6 +268,36 @@ async fn everyday_functions_over_shards() {
     assert_eq!((s, &a["rows"][0][0]), (200, &json!(3)), "{a}");
 }
 
+/// The Earth explorer's functions through a coordinator: places on both
+/// shards found nearest first, counted per H3 cell, inside a shape and
+/// within a distance, as one server answers them (`chloedb/tests/geo_functions.rs`).
+#[tokio::test]
+async fn geo_functions_over_shards() {
+    let (_dir, api) = api().await;
+    let (s, a) = api.sql("CREATE TABLE spots (id KEYWORD PRIMARY KEY, lat FLOAT, lon FLOAT)").await;
+    assert_eq!(s, 200, "{a}");
+    let places = [("sf", 37.7749, -122.4194), ("oakland", 37.8044, -122.2712), ("sanjose", 37.3382, -121.8863), ("la", 34.0522, -118.2437), ("santiago", -33.4489, -70.6693), ("valparaiso", -33.0472, -71.6127)];
+    let ops: Vec<Json> = places.iter().map(|(id, lat, lon)| json!({"op": "upsert", "table": "spots", "doc": {"id": id, "lat": lat, "lon": lon}})).collect();
+    let (s, a) = api.post("/v1/write", json!({"ops": ops})).await;
+    assert_eq!(s, 200, "{a}");
+    let rows = |a: &Json| a["rows"].as_array().unwrap_or_else(|| panic!("{a}")).clone();
+    let ids = |a: &Json| rows(a).iter().map(|r| r[0].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let (s, a) = api.post("/v1/query", json!({"sql": "SELECT id FROM spots ORDER BY haversine(lat, lon, 37.7749, -122.4194) LIMIT 3"})).await;
+    assert_eq!((s, ids(&a)), (200, vec!["sf".to_string(), "oakland".into(), "sanjose".into()]), "{a}");
+    let (s, a) = api.post("/v1/query", json!({"sql": "SELECT id, haversine(lat, lon, 37.7749, -122.4194) AS km FROM spots WHERE haversine(lat, lon, 37.7749, -122.4194) < 100 ORDER BY km DESC"})).await;
+    assert_eq!((s, ids(&a)), (200, vec!["sanjose".to_string(), "oakland".into(), "sf".into()]), "{a}");
+    assert!((rows(&a)[1][1].as_f64().unwrap() - 13.42962533402683).abs() < 1e-9, "{a}");
+    let (s, a) = api.post("/v1/query", json!({"sql": "SELECT h3_latlng_to_cell_string(lat, lon, 5) AS c, COUNT(*) AS n FROM spots GROUP BY c ORDER BY n DESC, c LIMIT 2"})).await;
+    assert_eq!((s, &a["rows"]), (200, &json!([["85283083fffffff", 2], ["85283473fffffff", 1]])), "{a}");
+    let (s, a) = api.post("/v1/query", json!({"sql": "SELECT h3_latlng_to_cell(lat, lon, 2) AS c, COUNT(*) FROM spots WHERE lat < 0 GROUP BY c"})).await;
+    assert_eq!((s, &a["rows"]), (200, &json!([[588613104569417727_i64, 2]])), "{a}");
+    let (s, a) = api.post("/v1/query", json!({"sql": "SELECT id FROM spots WHERE st_contains('POLYGON((-122.52 37.70, -122.35 37.70, -122.35 37.83, -122.52 37.83, -122.52 37.70))', st_point(lon, lat))"})).await;
+    assert_eq!((s, ids(&a)), (200, vec!["sf".to_string()]), "{a}");
+    let (s, a) = api.post("/v1/query", json!({"sql": "SELECT id FROM spots WHERE st_dwithin(st_point(lon, lat), 'POINT(-70.6693 -33.4489)', 150000) ORDER BY id"})).await;
+    assert_eq!((s, ids(&a)), (200, vec!["santiago".to_string(), "valparaiso".into()]), "{a}");
+    assert_eq!(api.count("SELECT COUNT(*) FROM spots WHERE sin(radians(lat)) < 0").await, 2);
+}
+
 #[tokio::test]
 async fn a_cluster_exports_a_table_s_rows() {
     let (_dir, api) = api().await;
