@@ -46,10 +46,14 @@ let last = null
 let lastInput = null
 let ready
 
+// The app's draw, handed what it kept with each result (Kit.drawing).
 Kit.connect = async (name, fn) => {
-  draw = fn
+  const deliver = Kit.drawing(fn, () => ready)
+  deliver.input = fn.input
+  deliver.error = fn.error
+  draw = deliver
   if (lastInput) fn.input?.(lastInput)
-  if (last) fn(last)
+  if (last) deliver(last)
   return ready
 }
 Kit.call = async (app, name, args) => {

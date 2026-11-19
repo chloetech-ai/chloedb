@@ -30,6 +30,16 @@
   .faint { color: var(--ink-3); font-size: 13px; }
   .newchat { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 6px 12px; cursor: pointer; font-size: 14px; white-space: nowrap; }
   .newchat:hover { border-color: var(--ink-3); }
+  .chats { position: relative; }
+  .chats-list { position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; width: min(320px, 86vw); max-height: 60vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 6px; }
+  .chats-list[hidden] { display: none; }
+  .chats-list button { display: block; width: 100%; text-align: left; border: 0; background: none; border-radius: 8px; padding: 8px 10px; cursor: pointer; font-size: 14px; }
+  .chats-list button:hover { background: var(--panel-2); }
+  .chats-list button.here { font-weight: 600; }
+  .chats-list small { display: block; color: var(--ink-3); font-size: 12px; }
+  .ask-new { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: 760px; margin: 0 auto 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 14px; }
+  .ask-new[hidden] { display: none; }
+  .ask-new span { flex: 1 1 200px; }
   .log { flex: 1; overflow-y: auto; padding: 8px 22px 24px; }
   .col { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
   .user { align-self: flex-end; max-width: 80%; background: var(--bubble); border-radius: 18px; padding: 9px 15px; white-space: pre-wrap; }
@@ -42,6 +52,9 @@
   .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; flex: none; }
   @keyframes spin { to { transform: rotate(1turn); } }
   .reply { white-space: pre-wrap; }
+  /* An answer written about an app that has changed since. */
+  .reply.stale { color: var(--ink-3); }
+  .stale-note { font-size: 13px; font-style: italic; }
   .error { color: #c8372d; font-size: 15px; }
   .toolline { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); min-height: 26px; }
   .toolline b { font-weight: 600; color: var(--ink); }
@@ -157,7 +170,8 @@
 <body>
 <div class="shell">
   <main class="chat">
-    <div class="top"><b>Instant apps</b><span class="faint">a prototype: answers come with apps, and the apps you keep come back</span><button class="newchat" id="newchat" type="button" title="Start a new conversation; this one stays in this browser until you start another">New chat</button></div>
+    <div class="top"><b>Instant apps</b><span class="faint">a prototype: answers come with apps, and the apps you keep come back</span><span class="chats"><button class="newchat" id="earlier" type="button" hidden aria-expanded="false">Earlier chats</button><div class="chats-list" id="chatlist" hidden></div></span><button class="newchat" id="newchat" type="button" title="Start a new conversation; this one stays under Earlier chats">New chat</button></div>
+    <div class="ask-new" id="asknew" hidden><span>Start a new chat? This one stays under Earlier chats, in this browser.</span><button class="btn" id="newyes" type="button">Start a new chat</button><button class="btn" id="newno" type="button">Keep this one</button></div>
     <div class="log" id="log"><div class="col" id="col"></div></div>
     <div class="composer">
       <form id="ask"><textarea id="text" rows="1" placeholder="Ask anything"></textarea><button class="send" id="send" aria-label="Send">↑</button></form>
@@ -217,7 +231,27 @@ local.set('instant-apps-talk', talk)
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const textOf = result => result?.content?.find(c => c.type === 'text')?.text ?? ''
 // A turn of the conversation, kept for this browser.
-const record = turn => fetch('/api/talk', { method: 'POST', body: JSON.stringify({ talk, ...turn }) }).catch(() => {})
+const record = turn => {
+  remember(turn.request || turn.shown?.[0]?.name)
+  return fetch('/api/talk', { method: 'POST', body: JSON.stringify({ talk, ...turn }) }).catch(() => {})
+}
+// The conversations this browser had, newest first, to open again: their
+// ids and first words stay in this browser alone.
+const talks = () => {
+  try {
+    const list = JSON.parse(local.get('instant-apps-talks') || '[]')
+    return Array.isArray(list) ? list.filter(t => t && typeof t.id === 'string') : []
+  } catch {
+    return []
+  }
+}
+function remember(title) {
+  const list = talks()
+  const was = list.find(t => t.id === talk)
+  const next = [{ id: talk, at: Date.now(), title: was?.title || String(title || 'A conversation').replace(/\s+/g, ' ').trim().slice(0, 70) }, ...list.filter(t => t.id !== talk)]
+  local.set('instant-apps-talks', JSON.stringify(next.slice(0, 30)))
+  earlier()
+}
 const entry = (ev, how = ev.how) => ({ id: ev.shown, app: ev.app.id, name: ev.app.name, kind: ev.app.kind, how, shows: textOf(ev.result).slice(0, 400) })
 
 function el(cls, html, parent = col) {
@@ -334,7 +368,7 @@ window.widgets = widgets
 // Every app in the conversation, newest first, folded ones too: the chat
 // reads what each shows on screen to answer about it, and its id to change it.
 function screen() {
-  return widgets.slice().reverse().slice(0, 12).map(w => ({ id: w.app.id, version: w.app.version, name: w.app.name, folded: w.folded, shows: w.shows, did: w.did, told: w.told }))
+  return widgets.slice().reverse().slice(0, 12).map(w => ({ id: w.app.id, shown: w.shownId, version: w.app.version, name: w.app.name, folded: w.folded, shows: w.shows, did: w.did, told: w.told }))
 }
 
 async function draw(w) {
@@ -394,21 +428,38 @@ async function draw(w) {
   iframe.srcdoc = w.payload.html
 }
 
+// The line above an app says what was done (opened, filled with these
+// values), never what was meant to come of it: whether an entry was added
+// is for the app to show and the answer below to read from it.
+const short = x => (x && typeof x === 'object' ? Object.entries(x).filter(([k]) => k !== 'id').map(([, y]) => (y && typeof y === 'object' ? JSON.stringify(y) : String(y))).join(' ') : String(x ?? ''))
+function sentOf(args) {
+  const values = args?.values
+  if (!values || typeof values !== 'object') return ''
+  const parts = []
+  for (const [k, x] of Object.entries(values)) {
+    if (k === 'add') parts.push(...(Array.isArray(x) ? x : [x]).map(e => `add ${short(e)}`))
+    else if (k === 'edit') parts.push(`change ${short(x?.find)} to ${short(x?.set)}`)
+    else parts.push(`${k} ${short(x)}`)
+  }
+  const text = parts.join(', ')
+  return text.length > 90 ? `${text.slice(0, 89)}…` : text
+}
+const sent = p => (sentOf(p.args) ? ` · sent: ${sentOf(p.args)}` : '')
 const LINE = {
   made: why => `Made a new app${why ? ` · ${why}` : ''}`,
-  recalled: why => `Opened from your apps${why ? ` · ${why}` : ''}`,
-  updated: why => `Updated${why ? ` · ${why}` : ''}`,
-  again: why => `Opened again${why ? ` · ${why}` : ''}`,
-  opened: () => 'Opened from your apps',
-  changed: () => 'Changed it, as you asked',
-  undone: () => 'Back to the version before',
+  recalled: p => `Opened ${p.app.name} from your apps${sent(p)}`,
+  updated: p => `Filled ${p.app.name} again${sent(p)}`,
+  again: p => `Opened ${p.app.name} again${sent(p)}`,
+  opened: p => `Opened ${p.app.name} from your apps`,
+  changed: p => `Changed ${p.app.name}: now version ${p.app.version}`,
+  undone: p => `Back to version ${p.app.version} of ${p.app.name}`,
 }
 const CHIP = { made: ['made', 'New app'], recalled: ['recalled', 'From your apps'], updated: ['updated', 'Updated'] }
 
 // A widget of an app; `at` is a folded answer from before that it opens in place of.
 function widget(body, payload, { at = null, request = '' } = {}) {
   const { app, how } = payload
-  if (!at) el('toolline', `${miniTile(app.kind)}<span>${esc((LINE[how] ?? LINE.opened)(payload.why))}</span>`, body)
+  if (!at) el('toolline', `${miniTile(app.kind)}<span>${esc(how === 'made' ? LINE.made(payload.why) : (LINE[how] ?? LINE.opened)(payload))}</span>`, body)
   const node = el('widget fresh', `
     <div class="wbar">${miniTile(app.kind)}<button class="wname" type="button">${esc(app.name)}</button><span class="slot"></span><span class="fold-note">· an earlier answer</span><button class="wbtn reopen" type="button">Show it again</button><span class="spacer"></span><span class="acts"></span></div>
     <form class="changer" hidden><input placeholder="What should change? For example: put the best rated first" /><button class="btn">Change</button></form>
@@ -450,6 +501,16 @@ function stub(body, shown, request) {
   return open
 }
 
+// The words under an app were said about the version it showed then: once
+// the app changes in place, they say so.
+function stale(w) {
+  for (const node of w.replies ?? []) {
+    if (node.classList.contains('stale')) continue
+    node.classList.add('stale')
+    node.insertAdjacentHTML('beforeend', `<span class="stale-note"> (said about version ${w.saidAbout}; the app has changed since)</span>`)
+  }
+}
+
 function fold(w, folded) {
   w.folded = folded
   w.node.classList.toggle('folded', folded)
@@ -479,7 +540,7 @@ function bar(w) {
   const changer = w.node.querySelector('.changer')
   acts.querySelector('.keep')?.addEventListener('click', async () => {
     const when = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-    const asked = (w.request || app.name).replace(/\s+/g, ' ').trim()
+    const asked = String(w.payload?.args?.query || w.request || app.name).replace(/\s+/g, ' ').trim()
     const name = `${asked.length > 44 ? `${asked.slice(0, 43)}…` : asked} · ${when}`
     const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/keep-answer`, { method: 'POST', body: JSON.stringify({ talk, shown: w.shownId, name, request: asked }) })).json().catch(error => ({ error: error.message }))
     if (out.error) {
@@ -503,11 +564,12 @@ function bar(w) {
   })
   // Undo goes back a version and Redo forward again, until a new change.
   const step = async way => {
-    const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/${way}`, { method: 'POST', body: '{}' })).json()
+    const out = await (await fetch(`/api/apps/${encodeURIComponent(w.app.id)}/${way}`, { method: 'POST', body: '{}' })).json()
     w.app = out.app
     w.newer = out.newer
     w.how = 'changed'
     w.payload.html = out.html
+    stale(w)
     draw(w)
     bar(w)
   }
@@ -523,16 +585,21 @@ function bar(w) {
     const input = changer.querySelector('input')
     changer.hidden = true
     acts.innerHTML = `<span class="status"><span class="spin"></span>${esc(label)}</span>`
-    const res = await fetch(`/api/apps/${encodeURIComponent(app.id)}/change`, { method: 'POST', body: JSON.stringify({ text: what }) })
+    // That widget's own data, so the change is made to what it shows.
+    const res = await fetch(`/api/apps/${encodeURIComponent(w.app.id)}/change`, { method: 'POST', body: JSON.stringify({ text: what, shown: w.shownId, talk }) })
     await events(res, async ev => {
       if (ev.type === 'app') {
+        // One answer of what was found changes as a copy of its own.
+        if (ev.copied) w.keptAs = ev.app.name
         w.app = ev.app
         w.newer = false
         w.how = 'changed'
         w.payload = { ...w.payload, html: ev.html }
+        stale(w)
         await draw(w)
         bar(w)
         input.value = ''
+        if (ev.copied) rail(ev.app.id)
       }
       if (ev.type === 'error') acts.innerHTML = `<span class="error">${esc(ev.text)}</span>`
     })
@@ -616,7 +683,11 @@ async function ask(question) {
         wait.remove()
         if (out.text) {
           reply = out.text
-          el('reply', esc(out.text), body)
+          const said = el('reply', esc(out.text), body)
+          if (shownNow) {
+            shownNow.replies = [...(shownNow.replies ?? []), said]
+            shownNow.saidAbout = shownNow.app.version
+          }
           scroll()
         }
       }
@@ -665,7 +736,9 @@ async function openFromRail(id, name) {
 // last one open again.
 async function restore() {
   const { turns = [] } = await fetch(`/api/talk?talk=${talk}`).then(r => r.json()).catch(() => ({}))
+  earlier()
   if (!turns.length) return hello()
+  if (!talks().some(t => t.id === talk)) remember(turns.find(t => t.request)?.request)
   let last = null
   for (const t of turns) {
     if (t.request) {
@@ -687,17 +760,62 @@ async function restore() {
   scroll()
 }
 
-// A new conversation; the one before is no longer opened in this browser.
-document.getElementById('newchat').onclick = () => {
-  if (busy) return
-  talk = newId()
+// Another conversation of this browser in place of this one: a new one,
+// or one from before, read back as restore() does.
+function switchTo(id) {
+  if (busy) return false
+  talk = id
   local.set('instant-apps-talk', talk)
   widgets.length = 0
   history.length = 0
   lastApp = null
   col.innerHTML = ''
-  hello()
+  earlier()
+  return true
 }
+
+// A new conversation asks first, in place, when this one has anything in
+// it; this one stays under Earlier chats.
+const askNew = document.getElementById('asknew')
+document.getElementById('newchat').onclick = () => {
+  if (busy) return
+  if (!col.querySelector('.user, .widget')) return
+  askNew.hidden = false
+  document.getElementById('newyes').focus()
+}
+document.getElementById('newno').onclick = () => (askNew.hidden = true)
+document.getElementById('newyes').onclick = () => {
+  askNew.hidden = true
+  if (switchTo(newId())) hello()
+}
+
+// Earlier chats: every conversation of this browser, to open one again.
+const earlierButton = document.getElementById('earlier')
+const chatList = document.getElementById('chatlist')
+function earlier() {
+  const others = talks().filter(t => t.id !== talk)
+  earlierButton.hidden = !others.length
+  if (!others.length) chatList.hidden = true
+}
+earlierButton.onclick = () => {
+  const open = chatList.hidden
+  chatList.hidden = !open
+  earlierButton.setAttribute('aria-expanded', String(open))
+  if (!open) return
+  chatList.innerHTML = talks()
+    .map(t => `<button type="button" data-id="${esc(t.id)}" class="${t.id === talk ? 'here' : ''}">${esc(t.title)}<small>${t.id === talk ? 'This chat' : new Date(t.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</small></button>`)
+    .join('')
+  chatList.querySelectorAll('button').forEach(b => {
+    b.onclick = () => {
+      chatList.hidden = true
+      earlierButton.setAttribute('aria-expanded', 'false')
+      if (b.dataset.id !== talk && switchTo(b.dataset.id)) restore()
+    }
+  })
+}
+document.addEventListener('click', e => {
+  if (!chatList.hidden && !e.target.closest('.chats')) chatList.hidden = true
+})
 
 document.getElementById('ask').onsubmit = e => {
   e.preventDefault()

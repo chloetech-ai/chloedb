@@ -249,12 +249,23 @@ export class Apps {
     return row ? JSON.parse(row.value) : null
   }
 
+  // Everything an app kept for one browser, as { key: value }: what its
+  // draw gets as data.kept.
+  async keptAll(appId, owner = '') {
+    const mine = stateId(owner, appId, '')
+    const rows = await this.db.query('SELECT id, name, value FROM ia_state WHERE app = :app LIMIT 1000', { app: appId }).catch(() => [])
+    return Object.fromEntries(rows.filter(r => r.id.startsWith(mine)).map(r => [r.name, JSON.parse(r.value)]))
+  }
+
   // A copy of an answer of what was found, kept as its own app: it opens
   // with the same findings, which a later search does not replace.
   async keepAnswer(appId, { name, request, args }) {
     const app = await this.get(appId)
     if (!app) return null
-    return this.put({ ...app, id: `answer-${id(name)}`, name, about: `What was found for: ${request}`.slice(0, 200), examples: request, args, saved: true, uses: 0, version: 1, made: now() }, 'kept answer')
+    // Its own id: another answer kept under the same name stays as it is.
+    let key = `answer-${id(name)}`
+    for (let n = 2; await this.get(key); n++) key = `answer-${id(name)}-${n}`
+    return this.put({ ...app, id: key, name, about: `What was found for: ${request}`.slice(0, 200), examples: request, args, saved: true, uses: 0, version: 1, made: now() }, 'kept answer')
   }
 
   // An app shown in a conversation, with what it was filled with.

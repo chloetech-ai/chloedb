@@ -18,13 +18,15 @@ let connected = null // the connection, once a view or app made it
 
 async function connect(name, draw) {
   const app = new App({ name, version: '0.1.0' })
+  // A made app's page says so: its host keeps what it keeps (a view of its own keeps nothing).
+  const deliver = drawing(draw, () => connected, Boolean(document.querySelector('meta[name="kit-keeps"]')))
   app.ontoolinput = params => draw.input?.(params.arguments ?? {})
   app.ontoolresult = result => {
     if (result.isError) {
       draw.error?.(result.content?.find(c => c.type === 'text')?.text ?? 'The tool failed.')
       return
     }
-    draw(result.structuredContent ?? {})
+    deliver(result.structuredContent ?? {})
   }
   app.onhostcontextchanged = theme
   if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark'
@@ -33,6 +35,35 @@ async function connect(name, draw) {
   theme(app.getHostContext())
   report()
   return app
+}
+
+// Hands each tool result to the app's draw, in order, with what the app
+// kept in this browser as data.kept, so an app starts from it and puts the
+// request's values over it. The first result waits for the reads an app
+// makes as it opens (await Kit.kept(app, key) right after connect): an
+// app written to copy kept values in then would otherwise copy them over
+// the values just asked for.
+const tick = () => new Promise(resolve => setTimeout(resolve, 0))
+function drawing(draw, connection, keeps = true) {
+  let queue = Promise.resolve()
+  let first = true
+  return data =>
+    (queue = queue.then(async () => {
+      const app = await connection()
+      if (first) {
+        first = false
+        await tick()
+        for (let i = 0; reads.size && i < 20; i++) await Promise.race([Promise.allSettled([...reads]), new Promise(resolve => setTimeout(resolve, 3000))])
+        await tick()
+      }
+      let kept = {}
+      try {
+        if (keeps) kept = (await globalThis.Kit.call(app, 'app_kept', { all: true }))?.values ?? {}
+      } catch {
+        // An app whose host keeps nothing gets none.
+      }
+      draw({ ...data, kept })
+    }).catch(error => broke(error?.message ?? error)))
 }
 
 // Calls one of the server's tools from the view and returns its data.
@@ -102,14 +133,18 @@ addEventListener('change', report, true)
 
 // What an app keeps from one opening to the next (a chore chart's stars,
 // prices typed into a tracker, the rate the person set): stored with the
-// app, in the same place as the app. The frame itself keeps nothing (no
-// storage, cookies or IndexedDB). A value is anything JSON holds.
+// app for this browser (the chat's id for it), in the same place as the
+// app. The frame itself keeps nothing (no storage, cookies or IndexedDB).
+// A value is anything JSON holds.
 async function keep(app, key, value) {
   await globalThis.Kit.call(app, 'app_keep', { key: String(key), value: value ?? null })
 }
+const reads = new Set() // Kit.kept calls not answered yet
 async function kept(app, key) {
-  const data = await globalThis.Kit.call(app, 'app_kept', { key: String(key) })
-  return data?.value ?? null
+  const read = globalThis.Kit.call(app, 'app_kept', { key: String(key) }).then(data => data?.value ?? null)
+  reads.add(read)
+  read.then(() => reads.delete(read), () => reads.delete(read))
+  return read
 }
 
 // Opens a web address through the host (a view's iframe may not open one
@@ -217,4 +252,4 @@ new MutationObserver(changes => {
 }).observe(document.documentElement, { childList: true, subtree: true, characterData: true })
 if (document.body) textForm(document.body)
 
-globalThis.Kit = { connect, call, ask, tell, keep, kept, link, money, number, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }
+globalThis.Kit = { connect, drawing, call, ask, tell, keep, kept, link, money, number, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }

@@ -35,6 +35,8 @@ function scripted() {
         const app = input.screen[0]?.id
         return change[1].toLowerCase() === 'undo' ? { mode: 'undo', kind: 'action', app, why: 'take it back' } : { mode: 'change', kind: 'action', app, what: input.request.slice(8), why: 'a change' }
       }
+      const entry = /^add (\w+) ([\d.,]+)/i.exec(input.request)
+      if (entry) return { mode: 'use', kind: 'tool', use: input.screen[0]?.id, tool: 'inputs', args: { request: 'budget', values: { month: 'Nov', add: { item: entry[1], amount: Number(entry[2].replace(',', '.')) } } }, why: 'your budget' }
       if (/^find /i.test(input.request)) {
         const saved = input.candidates.find(c => c.id === (this.pick ?? 'search-results'))
         return { mode: 'use', kind: 'info', use: saved.id, tool: 'findings', args: { query: input.request.slice(5) }, why: 'your search results' }
@@ -158,7 +160,10 @@ test('the flow: make, act, change, undo, save, and recall', { skip }, async () =
   assert.equal(wordedApp.how, 'changed')
   assert.equal(wordedApp.app.version, 3)
   assert.match(wordedApp.html, /v2: show the price/)
-  assert.match(worded.find(e => e.type === 'reply').text, /Changed Table booking/)
+  // The answer is written from what the changed app shows, never taken for granted.
+  assert.ok(!worded.some(e => e.type === 'reply'))
+  const saidChange = await post('/api/say', { token: worded.find(e => e.type === 'say').token, shows: '' })
+  assert.match(saidChange.text, /^Table booking was rewritten as version 3/)
   const back = await events('/api/turn', { text: 'undo it', screen: [{ ...screenNow[0], version: 3 }] })
   const backApp = back.find(e => e.type === 'app')
   assert.equal(backApp.how, 'undone')
@@ -261,6 +266,48 @@ test('a conversation is kept for its browser, and each app in it opens again as 
   assert.equal(asked.app.id, keptApp.id)
   assert.equal(asked.result.structuredContent.documents[0].title, 'Quiet headphones, tested')
   assert.equal(model.calls.research.length, searches)
+})
+
+test('an app gets all it kept with its data, and an entry asked for in words is sent once, with an id', { skip }, async () => {
+  const me = 'e'.repeat(32)
+  const budget = await chat.apps.put({ name: 'Budget tracker', about: 'Expenses by month.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('budget'), args: { request: 'budget', values: { month: 'Nov' } }, saved: true }, 'made by hand')
+  await post('/api/call', { app: budget.id, me, name: 'app_keep', arguments: { key: 'rows', value: [{ item: 'rent', amount: 600 }] } })
+  await post('/api/call', { app: budget.id, me, name: 'app_keep', arguments: { key: 'month', value: 'Oct' } })
+  const all = await post('/api/call', { app: budget.id, me, name: 'app_kept', arguments: { all: true } })
+  assert.deepEqual(all.structuredContent.values, { rows: [{ item: 'rent', amount: 600 }], month: 'Oct' })
+  assert.deepEqual((await post('/api/call', { app: budget.id, me: 'f'.repeat(32), name: 'app_kept', arguments: { all: true } })).structuredContent.values, {}, 'another browser has none')
+
+  const added = (await events('/api/turn', { text: 'add lunch 4,80', screen: [{ id: budget.id, version: 1, name: 'Budget tracker', shows: '', did: [] }] })).find(e => e.type === 'app')
+  assert.equal(added.app.id, budget.id)
+  assert.ok(!added.result.isError, 'the app’s own inputs take entries')
+  assert.match(added.result.content[0].text, /add = \[\{"id"/)
+  const [entry] = added.args.values.add
+  assert.equal(entry.item, 'lunch')
+  assert.equal(entry.amount, 4.8)
+  assert.match(entry.id, /^[0-9a-f]{10}$/, 'each entry has an id, so the app adds it once')
+  assert.deepEqual((await chat.apps.get(budget.id)).args.values, { month: 'Nov' }, 'the app opens next time without the entry')
+})
+
+test('a change is made to what that widget shows, and a web answer changes as a copy of its own', { skip }, async () => {
+  const talk = '9'.repeat(32)
+  const first = (await events('/api/turn', { text: 'find reviews of quiet headphones', talk })).find(e => e.type === 'app')
+  await events('/api/turn', { text: 'find good cameras', talk })
+  const before = await chat.apps.get('search-results')
+  const changed = (await events('/api/apps/search-results/change', { text: 'bigger text', shown: first.shown, talk })).find(e => e.type === 'app')
+  assert.equal(changed.copied, true)
+  assert.match(changed.app.id, /^answer-/)
+  assert.match(changed.app.name, /^Reviews of quiet headphones · /)
+  assert.equal(changed.args.documents[0].title, 'Quiet headphones, tested', 'that answer’s own findings, not the latest search’s')
+  assert.match(changed.html, /v2: bigger text/)
+  const after = await chat.apps.get('search-results')
+  assert.equal(after.version, before.version, 'Search results itself is unchanged')
+  assert.equal(after.source, before.source)
+  // That place in the conversation opens again as the changed copy.
+  const again = await (await fetch(`${chat.url}api/shown/${first.shown}?talk=${talk}`)).json()
+  assert.equal(again.app.id, changed.app.id)
+  // Another answer kept under the same name gets an id of its own.
+  const twin = await chat.apps.keepAnswer('search-results', { name: changed.app.name, request: 'x', args: first.args })
+  assert.notEqual(twin.id, changed.app.id)
 })
 
 test('a saved app is recalled by meaning, with no word in common', { skip }, async () => {

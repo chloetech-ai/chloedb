@@ -39,9 +39,12 @@ Apps serve three kinds of need, and the rail groups them so:
 ## Widgets in an ongoing conversation
 
 An app is a widget inside the assistant's reply, not a page of its own: a
-line says where it came from ("Opened from your apps", "Made a new app",
-"Updated"), the widget has a bar with its name, Save, Change and Undo, and
-the written answer follows it. The conversation and the widgets keep each
+line says what was done ("Opened Budget from your apps · sent: add lunch
+4.8", "Made a new app", "Filled Stock chart again"), never what was meant to
+come of it; the widget has a bar with its name, Save, Change, Undo change
+and Redo; and the written answer follows it, written from what the app
+shows on screen (`POST /api/say`), and marked as said about an earlier
+version once the app changes in place. The conversation and the widgets keep each
 other informed:
 
 - **The assistant sees what the widgets show.** Each turn sends, for the
@@ -53,6 +56,20 @@ other informed:
 - **A follow-up updates the widget.** "7:30 would work better" after a booking
   app opens the same app again with the new inputs, marked Updated, and the
   older widget of that app folds to its bar ("updated below").
+- **An app keeps what is typed into it, in this browser.** `Kit.keep` and
+  `Kit.kept` store values per app and per browser (`ia_state`), and each
+  draw gets all of them as `data.kept`, so an app starts from them and the
+  values a request names win over kept ones.
+- **Entries go in by asking.** "Add lunch 4,80 to my budget" opens the
+  budget app with `values.add` (each entry with an id, so it is added once)
+  and "the groceries were 32.40" with `values.edit`; the app shows whether
+  it took them, and the answer says so.
+- **A change is made to what that widget shows.** Change and Undo use the
+  widget's own data, and a change to one web answer is made to a copy of
+  it, kept in the person's apps, so other answers stay as they were.
+- **Conversations come back.** Each browser's conversations are kept
+  (`ia_talk`, `ia_shown`); New chat asks first, and Earlier chats opens one
+  from before.
 - **An action in a widget gets a reply.** A tool marked `acts: true` (booking
   a table, adding to the cart) is done by the person, so after it the
   assistant writes a sentence or two in the chat (`POST /api/note`): what

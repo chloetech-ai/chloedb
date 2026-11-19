@@ -124,6 +124,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   const onScreen = screen =>
     (Array.isArray(screen) ? screen : []).slice(0, 12).map((w, i) => ({
       id: String(w.id ?? '').slice(0, 64),
+      shown: String(w.shown ?? '').slice(0, 64),
       version: Number(w.version) || 1,
       name: String(w.name ?? '').slice(0, 60),
       folded: Boolean(w.folded),
@@ -132,7 +133,23 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       told: String(w.told ?? '').slice(0, i < 3 ? 2500 : 400),
     }))
 
-  async function turn({ text, history = [], lastApp, screen }, send) {
+  // An entry the person asked the chat to put into an app (values.add):
+  // each gets an id, so an app that opens again with it adds it once.
+  function entries(args) {
+    const values = args?.values
+    if (!values || typeof values !== 'object' || values.add == null) return args
+    const add = (Array.isArray(values.add) ? values.add : [values.add]).filter(e => e && typeof e === 'object').map(e => ({ id: String(e.id ?? randomBytes(5).toString('hex')), ...e }))
+    return { ...args, values: { ...values, add } }
+  }
+  // What an app opens with next time: not the entries asked for once.
+  function lasting(args) {
+    const values = args?.values
+    if (!values || typeof values !== 'object' || (values.add == null && values.edit == null)) return args
+    const { add, edit, ...rest } = values
+    return { ...args, values: rest }
+  }
+
+  async function turn({ text, history = [], lastApp, screen, talk }, send) {
     send({ type: 'status', text: 'Looking through your apps' })
     const candidates = await apps.recall(text, 8)
     send({ type: 'recall', candidates: candidates.map(c => ({ id: c.id, name: c.name, score: c.score })) })
@@ -149,19 +166,23 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     // A change asked in words is the same change as the app's Change box,
     // and an undo the same as its version button: done, never just said.
     if ((plan.mode === 'change' || plan.mode === 'undo') && plan.app && (await apps.get(plan.app))) {
+      // The app as the page shows it, newest first: its own data.
+      const target = { shownId: onScreen(screen).find(w => w.id === plan.app)?.shown, talk: own(talk) }
       if (plan.mode === 'undo') {
         const was = await apps.get(plan.app)
         if (was.version <= 1) {
           send({ type: 'reply', text: `${was.name} has no earlier version to go back to.` })
           return
         }
-        await undo(plan.app, send)
+        await undo(plan.app, send, target)
         send({ type: 'reply', text: `${was.name} is back to version ${was.version - 1}. Its Redo button brings the change back.` })
         return
       }
       const what = String(plan.what || text)
-      await change(plan.app, what, send)
-      send({ type: 'reply', text: `Changed ${(await apps.get(plan.app)).name} as you asked. Its Undo button takes the change back.` })
+      const { app: changed, copied, data } = await change(plan.app, what, send, target)
+      // Said from what the changed app shows, not taken for granted.
+      const copy = copied ? ` It is a copy of that answer, kept in the person's apps as "${changed.name}"; other answers are as they were.` : ''
+      send({ type: 'say', token: sayToken(text, `${changed.name} was rewritten as version ${changed.version} for: ${what}.${copy} Its Undo button takes the change back. What it was filled with: ${data?.summary ?? ''}`) })
       return
     }
     if (plan.mode === 'chat' || !plan.tool || !KNOWN.has(plan.tool)) {
@@ -169,7 +190,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       return
     }
     let app = plan.mode === 'use' && plan.use ? await apps.get(plan.use) : null
-    let args = plan.args ?? {}
+    let args = entries(plan.args ?? {})
     // A kept answer opens with what it found then; a new search is Search results'.
     const keptAnswer = app?.id.startsWith('answer-')
     if (keptAnswer) args = app.args
@@ -199,7 +220,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       const how = lastApp?.id === app.id ? 'updated' : app.saved ? 'recalled' : 'again'
       send({ type: 'app', app: view(app), html: htmlOf(app), tool, args, result, how, why: plan.why })
       shown.set(app.id, { args, result, data, tool })
-      await apps.used(app.id, text, args, how)
+      await apps.used(app.id, text, lasting(args), how)
       // The answer is written once the page tells what the app shows (/api/say).
       send({ type: 'say', token: sayToken(text, data.summary) })
       return
@@ -225,12 +246,34 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     send({ type: 'say', token: sayToken(text, data.summary) })
   }
 
-  async function change(appId, text, send) {
-    const app = await apps.get(appId)
-    let was = shown.get(appId)
-    if (!was) {
-      const { result, data } = await run(app.tool, app.args)
-      was = { args: app.args, result, data, tool: app.tool }
+  // What an app was filled with where the page shows it (its shown row),
+  // else what it showed last here, else its own arguments.
+  async function filling(app, { shownId, talk } = {}) {
+    const row = shownId && talk ? await apps.shownOf(shownId, talk) : null
+    if (row && row.app === app.id) {
+      const tool = app.tools.includes(row.tool) ? row.tool : app.tool
+      const { result, data } = await run(tool, row.args)
+      return { args: row.args, result, data, tool }
+    }
+    const was = shown.get(app.id)
+    if (was) return was
+    const { result, data } = await run(app.tool, app.args)
+    return { args: app.args, result, data, tool: app.tool }
+  }
+
+  // Changes the app a widget shows, with that widget's data. An answer of
+  // what was found is one of many answers of the same app (Search
+  // results), so its change is made to a copy of its own, kept in the
+  // person's apps, and the other answers stay as they were.
+  async function change(appId, text, send, at = {}) {
+    let app = await apps.get(appId)
+    const was = await filling(app, at)
+    let copied = false
+    if (app.tool === 'findings' && !app.id.startsWith('answer-')) {
+      const topic = String(was.args?.query || text).replace(/\s+/g, ' ').trim().slice(0, 50)
+      const when = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      app = await apps.keepAnswer(app.id, { name: `${topic.charAt(0).toUpperCase()}${topic.slice(1)} · ${when}`, request: topic, args: was.args })
+      copied = true
     }
     send({ type: 'status', text: `Changing ${app.name}` })
     const source = await model.edit({
@@ -242,14 +285,17 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       data: was.data,
       tools: described(TOOLS.filter(t => app.tools.includes(t.name))),
     })
-    const next = await apps.change(appId, source, text)
-    send({ type: 'app', app: view(next), html: htmlOf(next), tool: was.tool, args: was.args, result: was.result, how: 'changed', newer: false })
+    const next = await apps.change(app.id, source, text)
+    // The widget's place in the conversation now shows the changed app.
+    if (at.inPlace && at.shownId && at.talk) await apps.show({ id: at.shownId, talk: at.talk, app: next.id, version: next.version, tool: was.tool, args: was.args, how: 'changed' }).catch(log)
+    send({ type: 'app', app: view(next), html: htmlOf(next), tool: was.tool, args: was.args, result: was.result, how: 'changed', newer: false, copied })
+    return { app: next, copied, data: was.data }
   }
 
-  // Back one version, as the version button does.
-  async function undo(appId, send) {
+  // Back one version, as the version button does, with the widget's data.
+  async function undo(appId, send, at = {}) {
     const app = await apps.undo(appId)
-    const was = shown.get(appId) ?? (await run(app.tool, app.args).then(({ result, data }) => ({ args: app.args, result, data, tool: app.tool })))
+    const was = await filling(app, at)
     send({ type: 'app', app: view(app), html: htmlOf(app), tool: was.tool, args: was.args, result: was.result, how: 'undone', newer: true })
   }
 
@@ -376,7 +422,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         const appId = decodeURIComponent(parts[2])
         const input = await body(req)
         if (!(await apps.get(appId))) return json(res, { error: 'no such app' }, 404)
-        if (parts[3] === 'change') return stream(res, send => (limited(req) ? Promise.reject(new Error(tooMany)) : change(appId, String(input.text ?? ''), send)))
+        if (parts[3] === 'change') return stream(res, send => (limited(req) ? Promise.reject(new Error(tooMany)) : change(appId, String(input.text ?? ''), send, { shownId: String(input.shown ?? ''), talk: own(input.talk), inPlace: true })))
         if (parts[3] === 'open') {
           return stream(res, async send => {
             const out = recording(own(input.talk), send)

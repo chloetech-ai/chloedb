@@ -44,6 +44,14 @@ const ARGS = z.record(z.string(), z.any())
 // person alone in Claude Desktop or Claude Code).
 export const KEEPING = ['app_keep', 'app_kept']
 export async function keeping(apps, appId, name, args = {}, owner = '') {
+  // All of it at once, for the kit to hand draw as data.kept.
+  if (name === 'app_kept' && args?.all === true) {
+    try {
+      return { content: [{ type: 'text', text: 'What this app kept.' }], structuredContent: { values: await apps.keptAll(appId, owner) } }
+    } catch (error) {
+      return { content: [{ type: 'text', text: error.message }], isError: true }
+    }
+  }
   const key = String(args?.key ?? '').slice(0, 80)
   if (!key) return { content: [{ type: 'text', text: 'Say what to keep it as (a key).' }], isError: true }
   try {
