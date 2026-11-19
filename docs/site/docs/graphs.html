@@ -184,7 +184,7 @@ SELECT id FROM papers ORDER BY rrf(bm25(body, :t), similarity(emb, :q),
 <p>The traversals:</p>
 <ul>
 <li><strong>Reachability:</strong> breadth-first search, frontier by frontier; a search that would meet more than <code>max_nodes</code> rows besides its seeds is an error rather than an answer that depends on the order of the edges.</li>
-<li><strong>Shortest paths:</strong> bidirectional breadth-first search, always expanding the smaller frontier, forward along the edges or backward against them.</li>
+<li><strong>Shortest paths:</strong> bidirectional breadth-first search, always expanding the smaller frontier, forward along the edges or backward against them. With <code>through</code>, each side keeps the rows it meets that fail it as dead ends, and the halves meet only at a row that passes it or at an end, so every middle row of the path passes <code>through</code>.</li>
 <li><strong>Personalized PageRank:</strong> forward push (Andersen, Chung and Lang, 2006). The vector π solves</li>
 </ul>
 <p>$$
@@ -195,6 +195,7 @@ $$</p>
 p(u) \mathrel{+}= \alpha\, r(u), \qquad r(v) \mathrel{+}= (1 - \alpha)\, r(u)\, W_{uv}\ \ \forall v, \qquad r(u) \leftarrow 0
 $$</p>
 <p>while some <em>r</em>(<em>u</em>) ≥ ε·deg(<em>u</em>). Each estimate is then within ε·deg(<em>u</em>) of π(<em>u</em>), and the work is bounded by 1/(αε) pushes whatever the graph's size. A row is queued only once its residual reaches ε, the least any threshold can be. Rows that merely received a little mass are never resolved, and resolving them had been most of the original cost.</p>
+<p>The estimates add up to the share of the walk that has settled, Σ <em>p</em>; the rest is residuals no push spread. A fixed ε stops the walk at the seeds when their neighbours have many edges, since ε·deg(<em>u</em>) is then far above the residual a neighbour gets: from a user of the tests' user-item graph, whose 30 items have at least 300 edges each, ε = 10⁻⁴ settles the user's 15% and ranks no item. Without <code>eps</code> the walk starts at 10⁻⁴ and, while Σ <em>p</em> &lt; ½, halves ε and pushes on from the residuals it has (an estimate only grows, so the walk at the lower ε continues the one at the higher), for at most 100,000 pushes; on that graph it stops at 3.1·10⁻⁶ with 72% settled, after 9,078 pushes. A walk that ends with Σ <em>p</em> &lt; ½, at a given <code>eps</code> or out of pushes, reports <code>ppr_unsettled</code> in its stats.</p>
 <h2 id="speed">Speed<a class="anchor" href="#speed" aria-label="Link to this section">#</a></h2>
 <p>Two graphs, each queried from 200 random seeds on a warm cache, on one thread of an Apple M2 MacBook Air, through SQL (parsing and planning included; <code>COUNT(*)</code>, so that no rows are fetched):</p>
 <ul>

@@ -202,7 +202,10 @@ export function toSql(st) {
     } else if (rank) sql += `\nORDER BY ${rank} DESC`;
     sql += `\nLIMIT ${num(st.limit || 20)}`;
   }
-  return { sql: sql + ";", params, ranked: !!rank && !st.sort && !grouped, grouped, notes };
+  // How many rows the filters keep, counted (GRACE-301): the answer's
+  // stats count only the rows a LIMIT let the executor look at.
+  const count = where.length ? `SELECT COUNT(*) FROM ${quoteName(t.table)}\nWHERE ${where.join("\n  AND ")};` : null;
+  return { sql: sql + ";", params, ranked: !!rank && !st.sort && !grouped, grouped, notes, count };
 }
 
 function measureSql(m, F) {
@@ -441,7 +444,7 @@ function render(page, r) {
     let n = null, label = "";
     const stt = last?.j?.stats;
     if (after === "source") { n = total; label = "rows"; }
-    else if (after === "filter" && stt?.filter_docs != null && (st.filters.length || st.signals.some((s) => s.kind === "words" && (s.must || grouped)))) { n = stt.filter_docs; label = "pass"; }
+    else if (after === "filter" && last?.matched != null && (st.filters.length || st.signals.some((s) => s.kind === "words" && (s.must || grouped)))) { n = last.matched; label = "pass"; }
     else if (after === "boost" && stt?.scored && q?.ranked) { n = stt.scored; label = "scored"; }
     else if (after === "group" && grouped && last?.j?.rows) { n = last.j.rows.length; label = "groups"; }
     else if (after === "order" && last?.j?.rows && !grouped) { n = last.j.rows.length; label = "shown"; }
@@ -627,17 +630,18 @@ function render(page, r) {
     const mine = running;
     out.classList.add("loading");
     try {
-      const j = await api("/v1/query", { body: { sql: q.sql, params: q.params }, signal: mine.signal });
+      const counted = q.count ? api("/v1/query", { body: { sql: q.count }, signal: mine.signal }).then((c) => c.rows?.[0]?.[0] ?? null).catch(() => null) : Promise.resolve(null);
+      const [j, matched] = await Promise.all([api("/v1/query", { body: { sql: q.sql, params: q.params }, signal: mine.signal }), counted]);
       if (mine !== running) return;
-      last = { ...last, j, ran: q.sql };
+      last = { ...last, j, matched, ran: q.sql };
       clear(out, h("section", { class: "card" },
         h("div", { class: "hd" }, h("h3", {}, "Answer"), h("div", { class: "tools" }, j.rows?.length ? exportMenu(j, `chloedb-${st.table}`) : null)),
-        h("div", { class: "bd", style: { paddingBottom: "4px" } }, answerStats(j)),
+        h("div", { class: "bd", style: { paddingBottom: "4px" } }, answerStats(j, { matched })),
         h("div", { class: "bd flush" }, j.rows?.length ? h("div", { class: "tbl-wrap" }, grid(j, { max: 200 })) : empty("search", "No rows", "Loosen a filter, or try other words."))));
       drawConns();
     } catch (e) {
       if (e.name === "AbortError") return;
-      last = { ...last, j: null };
+      last = { ...last, j: null, matched: null };
       clear(out, h("div", { class: "error" }, e.message));
       drawConns();
     } finally { if (mine === running) { out.classList.remove("loading"); running = null; } }

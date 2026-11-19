@@ -496,21 +496,41 @@ pub fn run(project: &Path) -> i32 {
     }
 
     // Sync: where this project's memory goes, with what (X-F1).
-    if crate::sync::remote(&home).is_some() {
+    // Which projects of the machine sync, this one or not (LENA-301).
+    if let Some(server) = crate::sync::remote(&home) {
         let key = crate::sync::project_key(&home, &project.to_string_lossy());
-        let remote = crate::sync::remote_for(&home, &key).expect("a server is set up");
-        let st = crate::sync::load_state(&store, &remote.url, &key);
-        let line = format!(
-            "{}: this project syncs as {key} into the table {}, as machine {}, with {} (rules and decisions other machines send wait for `chloectx sync accept`)",
-            remote.url,
-            crate::sync::table_for(&key),
-            crate::sync::origin(&home),
-            remote.key_from
-        );
-        if st.last_error.is_empty() {
-            r.ok("sync", line);
+        let scope = crate::sync::scope_line(&home);
+        let cfg = crate::sync::load_config(&home);
+        let stale = if crate::sync::token_path(&home).exists() && !cfg.every_project && std::env::var_os("CHLOECTX_SYNC_URL").is_none() {
+            format!("; {} holds a key an earlier setup kept as the machine's, which no project sends now (`chloectx sync off --every-project` removes it)", crate::sync::token_path(&home).display())
         } else {
-            r.warn("sync", format!("{line}; the last sync failed: {}{}", st.last_error, crate::sync::key_hint(&key, &st.last_error)));
+            String::new()
+        };
+        match crate::sync::remote_for(&home, &key) {
+            Some(remote) => {
+                let st = crate::sync::load_state(&store, &remote.url, &key);
+                let line = format!(
+                    "{}: this project syncs as {key} into the table {}, as machine {}, with {} (rules and decisions other machines send wait for `chloectx sync accept`); {scope}{stale}",
+                    remote.url,
+                    crate::sync::table_for(&key),
+                    crate::sync::origin(&home),
+                    remote.key_from
+                );
+                if st.last_error.is_empty() {
+                    r.ok("sync", line);
+                } else {
+                    r.warn("sync", format!("{line}; the last sync failed: {}{}", st.last_error, crate::sync::key_hint(&key, &st.last_error)));
+                }
+            }
+            None => {
+                let before = crate::sync::sent_before(&crate::sync::saved_state(&store), &server.url);
+                let line = format!("{}: this project ({key}) does not sync, and sends nothing; {scope} (`chloectx sync setup` in this folder syncs it){before}{stale}", server.url);
+                if before.is_empty() {
+                    r.ok("sync", line);
+                } else {
+                    r.warn("sync", line);
+                }
+            }
         }
     }
 

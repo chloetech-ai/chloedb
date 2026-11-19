@@ -156,11 +156,14 @@ pub struct Principal {
 
 /// What a key limited to tables may reach beyond the routes of its tables
 /// ([`crate::scoped::route_ok`]), as its maker gave it or a preset
-/// ([`preset`]) expanded: groups of read-only routes ([`ROUTE_GROUPS`]),
-/// and apps that do not check a caller's tables themselves, which it may
-/// read through (`GET`) only if it reads every table. It never widens what
-/// the key may do to a table. A server from before it reads such a key
-/// without it: the key may do less there, never more.
+/// ([`preset`]) expanded: groups of the server's routes
+/// ([`ROUTE_GROUPS`]), and apps that do not check a caller's tables
+/// themselves, which it may read through (`GET`) only if it reads every
+/// table. It never widens what the key may do to a table, nor its scope: a
+/// route of a group that changes something still needs the scope the
+/// route does ([`crate::http::route_scope`]). A server from before it, or
+/// from before one of its groups, reads such a key without them: the key
+/// may do less there, never more.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Allow {
     /// The preset it was made from, for showing.
@@ -173,18 +176,42 @@ pub struct Allow {
 }
 
 /// The groups of routes a key limited to tables may be given
-/// ([`Allow::routes`]): each `GET` alone.
-pub const ROUTE_GROUPS: &[(&str, &[&str], &str)] = &[(
-    "fleet",
-    &["/v1/health/fleet", "/v1/events", "/metrics", "/v1/timeseries", "/v1/coordinators"],
-    "the fleet's health, its events (which name every table and who changed what), its metrics and charts",
-)];
+/// ([`Allow::routes`]), each a list of `(method, route)` (`GET` takes
+/// `HEAD` too):
+///
+/// - `fleet` reads the fleet's health, events, metrics and charts;
+/// - `alerts` is on-call's (MARCO-301): one alert's page with its events,
+///   the runbooks compiled in, and acknowledging, silencing and noting an
+///   alert, which need the write scope as for any key. Not the rules nor
+///   the routes (an admin's), nor a backtest, nor the server's own log.
+///
+/// `GET /v1/alerts`, the list of what fires, is every limited key's
+/// ([`crate::scoped::route_ok`]).
+pub const ROUTE_GROUPS: &[(&str, &[(&str, &str)], &str)] = &[
+    (
+        "fleet",
+        &[("GET", "/v1/health/fleet"), ("GET", "/v1/events"), ("GET", "/metrics"), ("GET", "/v1/timeseries"), ("GET", "/v1/coordinators")],
+        "the fleet's health, its events (which name every table and who changed what), its metrics and charts",
+    ),
+    (
+        "alerts",
+        &[
+            ("GET", "/v1/alerts/:rule"),
+            ("GET", "/v1/runbooks"),
+            ("POST", "/v1/alerts/:rule/ack"),
+            ("POST", "/v1/alerts/:rule/silence"),
+            ("DELETE", "/v1/alerts/:rule/silence"),
+            ("POST", "/v1/alerts/:rule/notes"),
+        ],
+        "an alert's page and the runbooks, and acknowledging, silencing and noting an alert (with a key that writes); not the rules or the routes",
+    ),
+];
 
 impl Allow {
-    /// Whether it opens `GET route`.
+    /// Whether it opens `method route`.
     pub fn route(&self, method: &axum::http::Method, route: &str) -> bool {
-        let get = method == axum::http::Method::GET || method == axum::http::Method::HEAD;
-        get && ROUTE_GROUPS.iter().any(|(g, routes, _)| self.routes.iter().any(|r| r == g) && routes.contains(&route))
+        let m = if method == axum::http::Method::HEAD { "GET" } else { method.as_str() };
+        ROUTE_GROUPS.iter().any(|(g, routes, _)| self.routes.iter().any(|r| r == g) && routes.contains(&(m, route)))
     }
 
     pub fn json(&self) -> Json {
@@ -221,7 +248,7 @@ impl Allow {
 /// is its grants and allowance, as a key could be given them by hand.
 pub const PRESETS: &[(&str, &str)] = &[
     ("analyst", "reads every table, and is admin of the prefix's (its own results); makes its own workbooks in Sheets, whose queries read as the key may"),
-    ("oncall", "writes logs (OTLP too) into the prefix's tables and notes into ChloeCtx spaces ctx_<prefix>, reads the incidents, and sees the fleet's health, events, alerts and metrics"),
+    ("oncall", "writes logs (OTLP too) into the prefix's tables and notes into ChloeCtx spaces ctx_<prefix>, reads the incidents, sees the fleet's health, events, alerts and metrics, and acknowledges, silences and notes alerts"),
     ("ml-app", "is admin of the prefix's tables: queries logged into them, their rank logs, plans, PACK, and the models of their fields"),
     ("app-owner", "is admin of the prefix's tables: app_* builds, changes and publishes apps in the app creator, app_<id>_* one app"),
 ];
@@ -240,7 +267,7 @@ pub fn preset(name: &str, prefix: &str) -> Result<(Vec<Grant>, Allow), ApiError>
             vec![g("*", Scope::Read)?, own]
         }
         "oncall" => {
-            allow.routes = vec!["fleet".into()];
+            allow.routes = vec!["fleet".into(), "alerts".into()];
             let space = format!("ctx_{}*", stem.strip_prefix("ctx_").unwrap_or(stem));
             vec![g(&prefix, Scope::Write)?, g(&space, Scope::Write)?, g("ctx_incidents", Scope::Read)?]
         }

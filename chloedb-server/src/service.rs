@@ -2003,7 +2003,14 @@ impl Service {
             None => field.unwrap_or("").to_string(),
         };
         let m = match field {
-            Some(f) => models.iter().filter(of_table).find(|m| m.field.eq_ignore_ascii_case(f)).ok_or_else(|| ApiError::bad(format!("{named} is not an embedded VECTOR field; pass a vector")))?,
+            Some(f) => models.iter().filter(of_table).find(|m| m.field.eq_ignore_ascii_case(f)).ok_or_else(|| {
+                // A VECTOR field of no model holds the rows' own vectors.
+                let own = self.catalog().iter().filter(|s| table.is_none_or(|t| s.table.eq_ignore_ascii_case(t))).find_map(|s| s.field(f).filter(|x| matches!(x.ty, chloedb::FieldType::Vector { .. })).map(|x| (s.table.clone(), x.name.clone(), x.ty.clone())));
+                match own {
+                    Some((t, x, chloedb::FieldType::Vector { dim, .. })) => ApiError::bad(format!("{t}.{x} is embedded by no model: its vectors are the rows' own, so text is not embedded for it; pass a vector of {dim} numbers, or {{\"vector_of\": key}} for a stored row's")),
+                    _ => ApiError::bad(format!("{named} is not an embedded VECTOR field; pass a vector")),
+                }
+            })?,
             None => models.iter().filter(of_table).find(|m| m.model.is_ok()).ok_or_else(|| ApiError::bad("no table has a field this server can embed text for; pass a vector"))?,
         };
         match &m.model {
@@ -2968,10 +2975,16 @@ impl Service {
         // a value, as most parameters are, needs none of it.
         let mut read: Option<Vec<String>> = None;
         let mut named_of = || -> Vec<String> { read.get_or_insert_with(|| sql.map(crate::scoped::named_tables).unwrap_or_default()).clone() };
+        // The field each parameter is ranked against, `similarity(bge,
+        // :v)`: a `{"vector_of"}` or `{"embed"}` with no `"field"` is that
+        // field's, not the table's first vector field's.
+        let mut used: Option<std::collections::HashMap<String, String>> = None;
+        let mut used_with = |k: &str| -> Option<String> { used.get_or_insert_with(|| sql.map(chloedb::query::tables::param_fields).unwrap_or_default()).get(k.trim_start_matches([':', '$', '@'])).cloned() };
         for (k, v) in m {
             let value = match v {
                 Json::Object(o) if o.contains_key("vector_of") && o.keys().all(|k| ["vector_of", "field", "table"].contains(&k.as_str())) => {
-                    let field = o.get("field").and_then(|f| f.as_str());
+                    let inferred = if o.get("field").is_none() { used_with(k) } else { None };
+                    let field = o.get("field").and_then(|f| f.as_str()).or(inferred.as_deref());
                     let catalog = self.catalog();
                     let has = |t: &str| {
                         catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).is_some_and(|s| match field {
@@ -2996,8 +3009,10 @@ impl Service {
                     self.vector_of(&table, &o["vector_of"], &field).await?
                 }
                 Json::Object(o) if o.get("embed").is_some_and(|e| e.is_string() || e.get("image").is_some() || e.get("audio").is_some()) && o.keys().all(|k| ["embed", "field", "table"].contains(&k.as_str())) => {
-                    let (table, _) = self.embed_target(o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()), &named_of(), who).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
-                    let (table, field, e) = self.model(Some(&table), o.get("field").and_then(|f| f.as_str()))?;
+                    let inferred = if o.get("field").is_none() { used_with(k) } else { None };
+                    let field = o.get("field").and_then(|f| f.as_str()).or(inferred.as_deref());
+                    let (table, _) = self.embed_target(o.get("table").and_then(|t| t.as_str()), field, &named_of(), who).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
+                    let (table, field, e) = self.model(Some(&table), field).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
                     // A multi-vector field's model embeds the query's tokens.
                     let tokens = self.catalog().iter().find(|s| s.table.eq_ignore_ascii_case(&table)).and_then(|s| s.field(&field)).is_some_and(|f| f.multi);
                     let file = match &o["embed"] {
@@ -3521,6 +3536,14 @@ impl Service {
                 return Ok(a);
             }
         }
+        // `FROM blend(...)` ([`chloedb::query::blend`]): each source a
+        // query as any other (a coordinator's merged from its shards), then
+        // the fill, here.
+        if req.plan.is_none() && !req.shard && chloedb::query::blend::may_blend(&req.sql) {
+            if let Some(a) = self.blend_query(&req).await? {
+                return Ok(a);
+            }
+        }
         // `recommend(...)` ([`chloedb::query::recommend`]): the items a
         // recommender ranks, computed on this database, then the query with
         // each call as `ranked(...)` of their keys.
@@ -3583,6 +3606,92 @@ impl Service {
             }
         }
         self.query_admitted(req).await
+    }
+
+    /// `SELECT ... FROM blend(...)`, or `None` for a query that reads no
+    /// blend.
+    async fn blend_query(self: &Arc<Self>, req: &QueryReq) -> Result<Option<Answer>, ApiError> {
+        let Some((call, cols)) = chloedb::query::blend::table_call_sql(&req.sql, &req.params)? else { return Ok(None) };
+        if req.scroll.is_some() {
+            return Err(ApiError::bad("a blend is not scrolled: LIMIT k places k rows"));
+        }
+        let t0 = Instant::now();
+        let (def, version) = self.blend_def(&call.name, call.version).await?;
+        let k = call.limit.unwrap_or(def.k);
+        let b = self.run_blend(req, &def, version, &call.params, k, chloedb::query::blend::Want::default()).await?;
+        let rs = b.result(&cols)?;
+        Ok(Some(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "blend", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+    }
+
+    /// Blend `name`'s definition: version `version`, or the current one. A
+    /// coordinator that does not know it asks its shards for their
+    /// functions again first.
+    pub async fn blend_def(&self, name: &str, version: Option<i64>) -> Result<(chloedb::query::blend::Def, i64), ApiError> {
+        match chloedb::query::blend::resolve(&self.functions(), name, version) {
+            Ok(d) => Ok(d),
+            Err(_) if matches!(self.backend, Backend::Cluster(_)) => {
+                self.learn_tables(true).await;
+                Ok(chloedb::query::blend::resolve(&self.functions(), name, version)?)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Runs blend `def` (as version `version`) into `k` slots: each source
+    /// a query of `req`'s, with `params`, all at once, then the fill.
+    pub async fn run_blend(self: &Arc<Self>, req: &QueryReq, def: &chloedb::query::blend::Def, version: i64, params: &Params, k: usize, want: chloedb::query::blend::Want) -> Result<chloedb::query::blend::Blended, ApiError> {
+        let runs = def.sources.iter().map(|s| {
+            let mut sub = req.clone();
+            sub.sql = s.sql.clone();
+            sub.params = params.clone();
+            (sub.scroll, sub.hold, sub.release, sub.cache_key, sub.arrow, sub.profile) = (None, false, false, None, None, false);
+            let me = self.clone();
+            let (blend, source) = (def.name.clone(), s.name.clone());
+            async move {
+                let t0 = Instant::now();
+                let a = Box::pin(me.dispatch(sub)).await.map_err(|e| ApiError { message: format!("blend {blend} source {source}: {}", e.message), ..e })?;
+                Ok::<_, ApiError>(chloedb::query::blend::Input { rs: a.rs, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+            }
+        });
+        let inputs = futures::future::try_join_all(runs).await?;
+        Ok(chloedb::query::blend::blend(def, version, k, inputs, want)?)
+    }
+
+    /// `CREATE BLEND` or `DROP BLEND` ([`chloedb::query::blend`]): the
+    /// stored function that holds it, written or dropped as any function
+    /// (on every shard, through a coordinator).
+    async fn blend_statement(self: &Arc<Self>, who: &Principal, st: chloedb::query::blend::Statement, after: After, timeout_ms: u64) -> Result<SqlAnswer, ApiError> {
+        use chloedb::query::blend::{self, Statement};
+        who.may(Scope::Admin, "a blend statement")?;
+        let t0 = Instant::now();
+        self.learn_tables(true).await;
+        let set = self.functions();
+        match st {
+            Statement::Drop { name, if_exists } => {
+                match set.current(&name).filter(|f| !f.dropped) {
+                    Some(f) if blend::Def::of_body(&f.def.body).is_some() => {
+                        Box::pin(self.sql_in(who, &format!("DROP FUNCTION {name}"), &Params::new(), after, timeout_ms, None, None)).await?;
+                    }
+                    Some(_) => return Err(ApiError::bad(format!("query error: function {name} is not a blend: DROP FUNCTION drops it"))),
+                    None if if_exists => {}
+                    None => return Err(ApiError::bad(format!("query error: no blend named {name}"))),
+                }
+                Ok(SqlAnswer::Written { w: Written::default(), took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+            }
+            Statement::Create { def, replace } => {
+                blend::may_define(&set, &def, replace)?;
+                // A key limited to tables writes a blend of the tables it reads.
+                if who.limited() {
+                    for s in &def.sources {
+                        crate::scoped::check_reads(who, &s.sql, &self.table_names(), &set)?;
+                    }
+                }
+                Box::pin(self.sql_in(who, &def.function_sql(replace), &Params::new(), after, timeout_ms, None, None)).await?;
+                self.learn_tables(true).await;
+                let v = self.functions().current(&def.name).map_or(0, |f| f.version);
+                Ok(SqlAnswer::Rows(Answer { rs: blend::made(&def, v), took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "blend", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+            }
+        }
     }
 
     /// A query that calls `recommend(...)`, or `None` for one that calls
@@ -4613,6 +4722,11 @@ impl Service {
                 chloedb::db::SqlResult::Rows(rs) => SqlAnswer::Rows(Answer { rs, took_ms, kind: "recommender", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }),
                 chloedb::db::SqlResult::Written(_) => SqlAnswer::Written { w: Written::default(), took_ms },
             });
+        }
+        // `CREATE BLEND`, `DROP BLEND`: a stored function, which a
+        // coordinator writes on every shard ([`chloedb::query::blend`]).
+        if let Some(st) = chloedb::query::blend::parse_statement(sql)? {
+            return self.blend_statement(who, st, after, timeout_ms).await;
         }
         // `CREATE ROLLUP`, `REFRESH ROLLUP`, `DROP ROLLUP`
         // ([`chloedb::query::rollup`]).

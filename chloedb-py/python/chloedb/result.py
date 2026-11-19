@@ -15,10 +15,15 @@ class Result:
     row i as a dict, and `len(result)` the number of rows.
     """
 
-    __slots__ = ("columns", "rows", "keys", "scores", "took_ms", "request", "teams", "propensities", "_stats")
+    __slots__ = ("columns", "types", "rows", "keys", "scores", "took_ms", "request", "teams", "propensities", "_stats")
 
-    def __init__(self, columns: list[str], rows: list[list[Any]], keys: list[Any] | None = None, scores: list[float] | None = None, stats: Any = None, took_ms: float | None = None, request: str | None = None, teams: list[str | None] | None = None, propensities: list[float] | None = None):
+    def __init__(self, columns: list[str], rows: list[list[Any]], keys: list[Any] | None = None, scores: list[float] | None = None, stats: Any = None, took_ms: float | None = None, request: str | None = None, teams: list[str | None] | None = None, propensities: list[float] | None = None, types: list[str | None] | None = None):
         self.columns = columns
+        # Each column's type as its values have it ("int", "float", "bool",
+        # "timestamp", "text", "vector", "list"; None for a column of only
+        # NULLs), whatever its name: `MAX(ts)` and `ts AS d` are
+        # "timestamp" as `ts` is. None from a server from before 0.3.9.
+        self.types = list(types) if types is not None else None
         self.rows = rows
         self.keys = keys or []
         self.scores = scores or []
@@ -33,7 +38,7 @@ class Result:
 
     @classmethod
     def _of(cls, d: dict) -> "Result":
-        return cls(d["columns"], d["rows"], d.get("keys"), d.get("scores"), d.get("stats"), d.get("took_ms"), d.get("request"), d.get("teams"), d.get("propensities"))
+        return cls(d["columns"], d["rows"], d.get("keys"), d.get("scores"), d.get("stats"), d.get("took_ms"), d.get("request"), d.get("teams"), d.get("propensities"), d.get("types"))
 
     @property
     def stats(self) -> dict:
@@ -80,13 +85,40 @@ class Result:
         return self.rows[0][0] if self.rows and self.rows[0] else None
 
     def to_pandas(self):
-        """The rows as a pandas DataFrame (pandas must be installed)."""
+        """The rows as a pandas DataFrame (pandas must be installed), each
+        TIMESTAMP column (by `types`: an alias, `MAX` or `date_trunc` of one
+        too) as datetimes in UTC (`datetime64[us, UTC]`)."""
         import pandas
 
-        return pandas.DataFrame(self.rows, columns=self.columns)
+        df = pandas.DataFrame(self.rows, columns=self.columns)
+        for i, t in enumerate(self.types or ()):
+            if t == "timestamp":
+                stamps = _datetimes(pandas, df.iloc[:, i])
+                if stamps is not None:
+                    df.isetitem(i, stamps)
+        return df
 
     def __repr__(self) -> str:
         return f"<chloedb.Result {len(self.rows)} row{'' if len(self.rows) == 1 else 's'}: {', '.join(self.columns)}>"
+
+
+def _datetimes(pandas: Any, column: Any) -> Any:
+    """A column of a TIMESTAMP's ISO 8601 text as datetimes in UTC, in
+    microseconds as `query_arrow` gives them (nanoseconds on pandas 1);
+    None when pandas cannot hold one (a year past 2262 on pandas 1)."""
+    try:
+        stamps = pandas.to_datetime(column, utc=True, format="ISO8601")
+    except (ValueError, TypeError):
+        try:
+            stamps = pandas.to_datetime(column, utc=True)
+        except (ValueError, TypeError, OverflowError):
+            return None
+    except OverflowError:
+        return None
+    try:
+        return stamps.astype("datetime64[us, UTC]")
+    except (TypeError, ValueError):
+        return stamps
 
 
 class ArrowResult:

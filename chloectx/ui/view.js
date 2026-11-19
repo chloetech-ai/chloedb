@@ -400,6 +400,9 @@ function sourceOf(ctx, type, id) {
     type, id, label: "Claude Code project, synced to this cluster",
     overview: () => api(`/v1/memory/overview?${p}`),
     notes,
+    // Retired for every machine of the project, on its next pull: a key
+    // that writes the project's table may.
+    retire: (n) => { cache = null; return api("/v1/memory/retire", { body: { project: id, id: n } }); },
     // The synced copy keeps a note's links: its history is walked here.
     history: async (n) => {
       cache = cache || await notes(true);
@@ -841,13 +844,20 @@ function memoriesTab(page, ctx, src, only) {
       body.replaceChildren(notes.length ? empty("search", "Nothing matches", "No note of this kind has these words.") : empty("note", all ? "No notes yet" : "No current notes", src.writes ? "Add one here, or write to the space from an agent." : "The distiller writes notes down after each turn of a session."));
       return;
     }
+    // A synced project's note is retired for every machine of the
+    // project, which each applies on its next pull.
+    const retireSynced = (n) => h("div", { class: "cx-acts", onclick: (e) => e.stopPropagation() },
+      h("button", { class: "btn ghost icon sm", title: "Retire for the whole project: every machine leaves it out of every context after its next pull", "aria-label": "Retire", onclick: async () => {
+        if (!(await ctx.core.confirm({ title: "Retire this note for the project?", body: `“${n.text}” stays in the project's history, and every machine that syncs ${src.id} stops showing it after its next pull (as ChloeCtx starts there, or with chloectx sync pull). It needs a key that writes the project's table.`, ok: "Retire", danger: true }))) return;
+        try { await src.retire(n.id); toast("Retired for every machine of the project"); load(); } catch (e) { toast(e.message, "bad"); }
+      } }, icon("x")));
     body.replaceChildren(h("div", { class: "cx-hint", style: { marginBottom: "4px" } }, `${fmt.plural(ns.length, "note")}, the newest first. Open one for its history.`), h("ul", { class: "cx-list" }, ns.slice(0, 400).map((n) => noteLine(ctx, src, n, {
-      tools: src.writes && !closed(n) ? h("div", { class: "cx-acts", onclick: (e) => e.stopPropagation() },
+      tools: closed(n) ? null : src.writes ? h("div", { class: "cx-acts", onclick: (e) => e.stopPropagation() },
         h("button", { class: "btn ghost icon sm", title: "Replace with a new version", "aria-label": "Replace", onclick: () => noteForm(ctx, src.id, n, load) }, icon("edit")),
         h("button", { class: "btn ghost icon sm", title: "Retire: leave it out of every context", "aria-label": "Retire", onclick: async () => {
           if (!(await ctx.core.confirm({ title: "Retire this note?", body: `“${n.text}” stays in the space's history but no context shows it again.`, ok: "Retire", danger: true }))) return;
           try { await ctx.api(`/v1/spaces/${encodeURIComponent(src.id)}/notes/${encodeURIComponent(n.id)}`, { method: "DELETE" }); load(); } catch (e) { toast(e.message, "bad"); }
-        } }, icon("x"))) : null,
+        } }, icon("x"))) : src.retire ? retireSynced(n) : null,
     }))));
   };
   async function load() {

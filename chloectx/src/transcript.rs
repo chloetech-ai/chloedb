@@ -194,6 +194,14 @@ pub fn drafts(events: &[Timed], project: &str) -> Vec<Batch> {
     let mut ep = EpisodeAcc::default();
     // Narration batches of the current turn: (index in out, text).
     let mut narr: Vec<(usize, String)> = Vec::new();
+    // The session's private asides ([`crate::private`]): what a reply must
+    // not say again, and whether nothing of the current turn is kept.
+    let mut private: Option<(crate::private::Echo, bool)> = None;
+    let mut asides: Vec<String> = Vec::new();
+    let unsaid = |p: &Option<(crate::private::Echo, bool)>, t: &str| match p {
+        Some((e, _)) => crate::private::scrub(t, e),
+        None => t.to_string(),
+    };
     for e in events {
         if let Event::Stop { answer } = &e.event {
             // The final message is stored as the answer, not as narration.
@@ -206,9 +214,14 @@ pub fn drafts(events: &[Timed], project: &str) -> Vec<Batch> {
         let (drafts, compact) = match &e.event {
             Event::Prompt { text } => {
                 turn += 1;
-                ep = EpisodeAcc { prompt: text.clone(), ..Default::default() };
-                (capture::prompt_drafts(text), false)
+                let cut = crate::private::cut(&crate::redact::redact(&crate::envelope::clean(text)));
+                asides.extend(cut.asides.iter().cloned());
+                private = (!asides.is_empty()).then(|| (crate::private::Echo::new(&asides, &cut.kept), cut.whole));
+                let kept = if cut.any() { cut.kept } else { text.clone() };
+                ep = EpisodeAcc { prompt: kept.clone(), ..Default::default() };
+                (capture::prompt_drafts(&kept), false)
             }
+            _ if private.as_ref().is_some_and(|p| p.1) => (Vec::new(), false),
             Event::Tool { name, input, response, started } => {
                 let c = ctx();
                 ep.add_tool(name, input, response, project);
@@ -218,15 +231,16 @@ pub fn drafts(events: &[Timed], project: &str) -> Vec<Batch> {
             }
             Event::Stop { answer } => {
                 let c = ctx();
-                let mut d: Vec<Draft> = capture::answer_drafts(answer).into_iter().map(|d| d.ctx(c.clone())).collect();
-                d.extend(ep.card(turn, answer));
+                let answer = unsaid(&private, answer);
+                let mut d: Vec<Draft> = capture::answer_drafts(&answer).into_iter().map(|d| d.ctx(c.clone())).collect();
+                d.extend(ep.card(turn, &answer));
                 (d, false)
             }
             Event::Compact { summary } => (capture::summary_drafts(summary), true),
             Event::Narration { text } => {
                 let c = ctx();
                 narr.push((out.len(), text.clone()));
-                (capture::narration_drafts(text).into_iter().map(|d| d.ctx(c.clone())).collect(), false)
+                (capture::narration_drafts(&unsaid(&private, text)).into_iter().map(|d| d.ctx(c.clone())).collect(), false)
             }
         };
         if !drafts.is_empty() {

@@ -99,10 +99,11 @@ When this exchange scraps, reverts or drops work, a plan or a decision ("scrap i
 Leave out:
 - a request to forget something, to delete it from memory or not to keep it (a private plan, a secret), and what it was about: write nothing about it, not even that it is private;
 - anything already noted above, unless this exchange changes it;
-- status that will soon be stale (test counts and results, what was committed or pushed and to which branch);
+- status that will soon be stale (test counts and results, what was committed or pushed and to which branch, whether a decision's work is built yet);
+- how the user wants this turn done ("no code changes", "just answer", "don't commit yet"): it is not a rule;
 - the assistant's own habits and conventions, even when it says it always follows them ("as usual I'll ...": commit message style, formatting, tool usage), and its suggestions the user did not take up;
 - questions the assistant asked and assumptions it made that the user has not answered or confirmed: they are not requirements, and never write one up as something that must be settled before the work can start;
-- what the user's question asks about or assumes, and the details of an example asked for in the reply only (no file written): "write a function for a 2.5% fee, code in the reply only" does not make 2.5% the project's fee, "SQL for a refunds table with a created column" plans no refunds table, and asking for a branch name for a ticket starts no work on it. They are the project's only when the user says so or the work is written into its files;
+- what the user's question asks about or assumes, and the details of an example asked for in the reply only (no file written): "write a function for a 2.5% fee, code in the reply only" does not make 2.5% the project's fee, "SQL for a refunds table with a created column" plans no refunds table, asking for a branch name for a ticket starts no work on it, and a question how to build something ("I want a toggle for the new renderer. How should I add it?") plans nothing: it is planned work only once the user asks for it to be built. They are the project's only when the user says so or the work is written into its files;
 - the assistant's answer to a question from what is noted already (above, or in the briefing it was given): the note it came from is kept already, and that the assistant could not also find it in the code is no fact about the project;
 - details of the code that reading it shows (signatures, what a function does).
 
@@ -238,6 +239,9 @@ pub fn parse(text: &str) -> Distilled {
         let replaces = id_of(&v, "replaces");
         let entities = strings(&v, "entities", 6, 60);
         let when = strings(&v, "when", 4, 160);
+        // A decision is what was decided and why, not whether it is built.
+        let text = if k == Kind::Decision { crate::capture::without_status(text) } else { text.to_string() };
+        let text = text.as_str();
         let mut d = Draft::new(k, clip(&redact(text), 600)).tag(tag).files(crate::capture::paths_in(text)).entities(entities).when(when);
         if let Some(r) = &replaces {
             d = d.link("supersedes", r.clone());
@@ -284,7 +288,10 @@ pub fn attribute(drafts: Vec<Draft>, request: &str, ex: &Exchange) -> Vec<Draft>
             if d.kind == Kind::Preference || d.tag == TASK_TAG {
                 let model_task = d.tag == TASK_TAG || d.by.as_deref().is_some_and(|b| b.ends_with(" task"));
                 let said_standing = crate::capture::standing_rule(request, &ex.prev_answer, &d.text);
-                let standing = d.kind == Kind::Preference && by.is_user() && (said_standing || (!model_task && !crate::capture::task_instruction(request, &d.text)));
+                // How to do this turn ("don't commit yet", "no code changes")
+                // is never a rule, whoever said it and however (JONAH-303).
+                let now_only = crate::capture::for_this_turn(&d.text);
+                let standing = d.kind == Kind::Preference && by.is_user() && !now_only && (said_standing || (!model_task && !crate::capture::task_instruction(request, &d.text)));
                 if standing {
                     // The user said it is standing, whatever the model thought.
                     if d.tag == TASK_TAG {
@@ -313,6 +320,20 @@ pub fn attribute(drafts: Vec<Draft>, request: &str, ex: &Exchange) -> Vec<Draft>
             d
         })
         .collect()
+}
+
+/// The drafts of a turn without planned work when its request only asked
+/// how to do something and the turn changed no file (ANA-308: "How should I
+/// add it?" was filed as planned work in every briefing). How many it left
+/// out, too.
+pub fn not_planned(drafts: Vec<Draft>, request: &str, changed_files: bool) -> (Vec<Draft>, usize) {
+    if changed_files || !crate::capture::asks_how(request) {
+        return (drafts, 0);
+    }
+    let n = drafts.len();
+    let kept: Vec<Draft> = drafts.into_iter().filter(|d| d.kind != Kind::Todo).collect();
+    let left = n - kept.len();
+    (kept, left)
 }
 
 /// Runs the model on one exchange.
@@ -441,5 +462,21 @@ mod tests {
         // 2024-03-15 09:00 UTC: the day it was said, for relative dates.
         let p = prompt_for("Ship it tomorrow.", "OK.", &[], &[], 1_710_493_200);
         assert!(p.contains("It took place on 2024-03-15"), "{p}");
+    }
+
+    /// JONAH-303 and ANA-308: a rule for this turn is the task's note, and a
+    /// question how to build something plans nothing.
+    #[test]
+    fn a_turns_instruction_and_a_question_make_no_rule_or_plan() {
+        let request = "Ground rules: always use ruff for linting. Sketch the export command; don't write tests and don't commit yet.";
+        let d = parse("{\"kind\": \"rule\", \"text\": \"Don't write tests and don't commit yet.\", \"said_by\": \"requester\"}\n{\"kind\": \"rule\", \"text\": \"Use ruff for linting.\", \"said_by\": \"requester\"}");
+        let a = attribute(d.drafts, request, &Exchange::default());
+        assert_eq!(a.iter().map(|x| (x.kind, x.tag.as_str())).collect::<Vec<_>>(), [(Kind::Note, TASK_TAG), (Kind::Preference, "distilled")], "{a:?}");
+        let plan = parse("{\"kind\": \"requirement\", \"text\": \"Add rate limiting to the public API.\"}\n{\"kind\": \"fact\", \"text\": \"The gateway runs middleware before the routes.\"}").drafts;
+        let (kept, left) = not_planned(plan.clone(), "We may want rate limiting on the public API. How should I add it?", false);
+        assert_eq!((kept.len(), left), (1, 1));
+        assert_eq!(kept[0].kind, Kind::Fact);
+        assert_eq!(not_planned(plan.clone(), "Add rate limiting to the public API.", false).1, 0);
+        assert_eq!(not_planned(plan, "How should I add it?", true).1, 0, "a turn that changed files did work");
     }
 }

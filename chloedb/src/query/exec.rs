@@ -848,6 +848,11 @@ pub struct ExecStats {
     /// scores are those of a shorter walk.
     #[serde(default, skip_serializing_if = "is_false")]
     pub max_pushes_reached: bool,
+    /// A `ppr` walk ended with less than half of its mass in its scores:
+    /// its `eps` (or `max_pushes`) stopped it near its seeds, so rows
+    /// further away have no score (NADIA-302).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ppr_unsettled: bool,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -892,6 +897,45 @@ pub struct ResultSet {
     /// coordinator ranks every row by.
     pub parts: Option<RankParts>,
     pub stats: ExecStats,
+}
+
+impl ResultSet {
+    /// Each column's type, as its values have it, so that a client types
+    /// a column by its expression rather than by its name: `MAX(ts)`,
+    /// `ts AS d` and `date_trunc('month', ts)` are `timestamp` as `ts`
+    /// is ([`column_type`]).
+    pub fn types(&self) -> Vec<Option<&'static str>> {
+        (0..self.columns.len()).map(|c| column_type(self.rows.iter().map(|r| r.get(c).unwrap_or(&Value::Null)))).collect()
+    }
+}
+
+/// The type of a column of `values`: `int`, `float`, `bool`, `timestamp`,
+/// `text`, `vector` or `list`, the names a schema's short form gives its
+/// fields' types. A column of INTs and FLOATs is `float` (the operators
+/// and DataFusion widen a UNION's to FLOAT). None when it holds only
+/// NULLs, or values of types that do not mix (a CASE of text and
+/// numbers).
+pub fn column_type<'a>(values: impl Iterator<Item = &'a Value>) -> Option<&'static str> {
+    let name = |v: &Value| match v {
+        Value::Null => None,
+        Value::Int(_) => Some("int"),
+        Value::Float(_) => Some("float"),
+        Value::Bool(_) => Some("bool"),
+        Value::Timestamp(_) => Some("timestamp"),
+        Value::Str(_) => Some("text"),
+        Value::Vector(_) => Some("vector"),
+        Value::List(_) => Some("list"),
+    };
+    let mut ty = None;
+    for t in values.filter_map(name) {
+        ty = match (ty, t) {
+            (None, t) => Some(t),
+            (Some(a), b) if a == b => Some(a),
+            (Some("int" | "float"), "int" | "float") => Some("float"),
+            _ => return None,
+        };
+    }
+    ty
 }
 
 /// A search leaf's rows for DataFusion ([`Executor::execute_arrow`]):
@@ -1373,6 +1417,7 @@ impl<'a> Executor<'a> {
             Score::Ppr { graph } => ("graph", format!("ppr of graph {graph}")),
             Score::Hops { graph, .. } => ("graph", format!("hops of graph {graph}")),
             Score::Ranked { keys } => ("ranked", format!("{} keys", keys.len())),
+            Score::Hash { field, seed } => ("hash", format!("{}, seed {seed}", self.field_name(*field))),
             _ => ("score", String::new()),
         }
     }
@@ -4663,7 +4708,8 @@ impl<'a> Executor<'a> {
                 }
                 Score::Cond(p) => (RowLeaf::Cond(self.materialize(s, p)?), Interval::new(0.0, 1.0, false)),
                 Score::SeqNo => (RowLeaf::SeqNo, Interval::new(0.0, f64::INFINITY, false)),
-                _ => return Err(err("a rank-safe boost reads columns, decays, conditions and seq_no()")),
+                Score::Hash { field, seed } => (RowLeaf::Hash { field: *field, seed: *seed }, Interval::new(0.0, HASH_MAX, true)),
+                _ => return Err(err("a rank-safe boost reads columns, decays, conditions, seq_no() and hash()")),
             };
             leaves.push(l);
             boxes.push(b);
@@ -4787,6 +4833,15 @@ impl<'a> Executor<'a> {
                     out[i] = self.snap.key(c.0, c.1).map_or(f64::NAN, |k| b.get(&k));
                 }
             }
+            Score::Hash { field, seed } => {
+                for (seg, range) in by_seg {
+                    self.check_deadline()?;
+                    let s = &self.seg_by_ord(seg);
+                    for i in range {
+                        out[i] = row_hash(&self.row_value(s, *field, cands[i].1)?, *seed)?;
+                    }
+                }
+            }
             // NULL for a row whose key is not listed.
             Score::Ranked { keys } => {
                 let at = self.ranked_rows(keys)?;
@@ -4803,9 +4858,25 @@ impl<'a> Executor<'a> {
                 let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
                 out = m.score(query, &texts, &mut || self.check_deadline())?;
             }
-            _ => return Err(err("a ranking expression's leaves are bm25, similarity, ppr, hops, decay, seq_no(), ranked or a column")),
+            _ => return Err(err("a ranking expression's leaves are bm25, similarity, ppr, hops, decay, seq_no(), hash(), ranked or a column")),
         }
         Ok(out)
+    }
+
+    /// Row `d` of segment `s`'s value of `field`: its primary key, or a
+    /// stored field's value, with what was written in place; NULL where it
+    /// has none.
+    fn row_value(&self, s: &Seg<'a>, field: usize, d: DocId) -> Result<Value> {
+        if Some(field) == self.schema.primary_key {
+            return Ok(self.snap.key(s.ord, d).unwrap_or(Value::Null));
+        }
+        if let Some(u) = self.updates(s, field).and_then(|u| u.get(field, d)) {
+            return Ok(u.clone());
+        }
+        Ok(match s.r.store()? {
+            Some(st) => st.get_fields(d, &[field])?.into_iter().next().unwrap_or(Value::Null),
+            None => Value::Null,
+        })
     }
 
     /// The text a cross-encoder reads of each candidate: its values of
@@ -5426,6 +5497,19 @@ enum RowLeaf<'c> {
     Decay { field: usize, col: &'c NumericColumn, decay: &'c Decay },
     Cond(DocSet),
     SeqNo,
+    Hash { field: usize, seed: i64 },
+}
+
+/// The greatest value `hash()` gives, 2^63 - 1, as a float.
+const HASH_MAX: f64 = i64::MAX as f64;
+
+/// `hash(v, seed)` as a ranking reads it ([`Score::Hash`]): the INT as a
+/// float, NaN for NULL.
+fn row_hash(v: &Value, seed: i64) -> Result<f64> {
+    Ok(match crate::query::ir::eval::hash(v, &Value::Int(seed))? {
+        Value::Int(h) => h as f64,
+        _ => f64::NAN,
+    })
 }
 
 /// A rank-safe boost over one segment ([`Rank::driver`]): the expression of
@@ -5461,6 +5545,8 @@ impl Boost for RowBoost<'_, '_> {
                     }
                 }
                 RowLeaf::SeqNo => rowseq::of_view(s.view, d).map_or(f64::NAN, |x| x as f64),
+                // As exact_scores reads it; a row it cannot read is NULL.
+                RowLeaf::Hash { field, seed } => ex.row_value(s, *field, d).and_then(|v| row_hash(&v, *seed)).unwrap_or(f64::NAN),
             };
         }
         self.rank.eval_row(&self.vals)

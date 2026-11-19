@@ -375,7 +375,9 @@ pub fn plan(store: &Store, cfg: &DeepConfig, cli: &DistillConfig, request: &str,
 pub fn run_query(store: &Store, q: &Query, filter: &Filter, n: usize) -> Result<Vec<Record>> {
     let mut f = filter.clone();
     f.kinds = q.kinds.clone();
-    let useful = |r: &Record| !r.kind.is_hidden() && r.tag != "uncertain" && !crate::record::closed_tag(&r.tag);
+    // A rule or decision of a machine not accepted yet is no candidate
+    // (WEI-302: a deep search picked three of them).
+    let useful = |r: &Record| !r.kind.is_hidden() && r.tag != "uncertain" && !crate::record::closed_tag(&r.tag) && !crate::sync::held_back(r);
     let out: Vec<Record> = match q.kind.as_str() {
         "text" => recall::search(store, &q.q, &f, &RankParams { n: n.max(20), ..Default::default() })?.0.into_iter().map(|h| h.record).collect(),
         "keywords" => {

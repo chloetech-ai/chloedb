@@ -154,6 +154,24 @@ core.provide({ whoami: { name: "w", scope: "write", may: { data: "write", server
 assert.ok(core.can("write", ACK) && !core.can("admin", NOTE) && core.can("write"));
 assert.equal(core.needs("admin", NOTE), "needs an admin or an ops key");
 assert.equal(core.roleOf(), null);
+// MARCO-301: a key limited to tables calls the server's routes whoami lists
+// for it (the oncall preset's: the alert's actions), and the page offers
+// no other, with a tooltip that says why; a server from before the list
+// is read by the key's scope, as before.
+const RULES = "PUT /v1/alerts/rules";
+const oncall = { name: "netops", scope: "write", tables: { "logs_*": "write", ctx_incidents: "read" }, preset: "oncall", may: { data: "write", server_views: false, routes: ["GET /v1/alerts", "GET /v1/alerts/:rule", "POST /v1/alerts/:rule/ack", "POST /v1/alerts/:rule/silence", "DELETE /v1/alerts/:rule/silence", "POST /v1/alerts/:rule/notes"] } };
+core.provide({ whoami: oncall });
+assert.ok(core.can("write", ACK) && core.can("write", "POST /v1/alerts/:rule/notes"));
+assert.ok(!core.can("admin", RULES) && !core.can("admin", NOTE) && !core.can("admin"));
+assert.equal(core.needs("admin", RULES), "needs an admin key of the server (this key is limited to tables)");
+core.provide({ whoami: { ...oncall, name: "shipper", tables: { "logs_*": "write" }, preset: undefined, may: { data: "write", routes: ["GET /v1/alerts"] } } });
+assert.ok(!core.can("write", ACK));
+assert.equal(core.needs("write", ACK), "needs a key given POST /v1/alerts/:rule/ack (this key is limited to tables: logs_* write)");
+core.provide({ whoami: { name: "viewer", scope: "read", tables: { "logs_*": "read" }, may: { data: "read", routes: ["GET /v1/alerts", "GET /v1/alerts/:rule"] } } });
+assert.ok(!core.can("write", ACK));
+assert.equal(core.needs("write", ACK), "needs a write key given POST /v1/alerts/:rule/ack (this key is limited to tables: logs_* read)");
+core.provide({ whoami: { name: "old", scope: "write", tables: { "logs_*": "write" }, may: { data: "write" } } });
+assert.ok(core.can("write", ACK), "a server that lists no routes: by the key's scope, as before");
 core.provide({ whoami: null });
 core.provideRoutes(null);
 
@@ -478,6 +496,49 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.ok(noise.p > 0.5, String(noise.p));
   assert.equal(rel.fmtP(0.0001), "p < 0.001");
   assert.equal(rel.fmtP(0.0421), "p = 0.042");
+}
+
+// GRACE-301: the answer's header says how many rows match only when it
+// was counted (the builder's COUNT of the same WHERE); the executor's
+// filter_docs counts the rows of the segments a LIMIT let it look at, so
+// it is not shown as a count of matching rows anywhere.
+{
+  const { answerFigures } = await import(new URL("results.js", app));
+  const j = { rows: Array.from({ length: 20 }, () => [1]), took_ms: 3.2, stats: { filter_docs: 2036, scored: 189 } };
+  const text = (f) => f.map(([n, l]) => `${n} ${l}`).join(" · ");
+  assert.ok(!/2,036|2036|passed the filter/.test(text(answerFigures(j))), text(answerFigures(j)));
+  assert.match(text(answerFigures(j)), /^20 rows · .* · 189 scored$/);
+  assert.match(text(answerFigures(j, { matched: 3694 })), /^20 rows · 3,694 match · /);
+  assert.match(text(answerFigures({ rows: [[1]], took_ms: 1, stats: {} }, { matched: 1 })), /^1 row · 1 matches · /);
+  // The builder counts what its filters keep with the WHERE it ranks by.
+  globalThis.fetch = async () => ({ status: 200, ok: true, text: async () => JSON.stringify({ tables: [{ table: "tickets", short: { key: "id", table: "tickets", fields: [
+    { name: "id", type: "keyword" }, { name: "domain", type: "keyword" }, { name: "subject", type: "text" }, { name: "created", type: "timestamp" }] } }] }) });
+  const { tables } = await import(new URL("catalog.js", app));
+  await tables(true);
+  const { toSql } = await import(new URL("views/builder.js", app));
+  const st = { table: "tickets", signals: [], fusion: "weighted", filters: [{ field: "domain", op: "=", value: "northwindtraders.com" }], any: false, boosts: [], group: null, sort: { field: "created", dir: "desc" }, columns: ["id", "subject"], score: true, limit: 20 };
+  const q = toSql(st);
+  assert.match(q.sql, /WHERE domain = 'northwindtraders\.com'\nORDER BY created DESC, id\nLIMIT 20;$/);
+  assert.equal(q.count, "SELECT COUNT(*) FROM tickets\nWHERE domain = 'northwindtraders.com';");
+  assert.equal(toSql({ ...st, filters: [] }).count, null, "no filter, nothing to count but the table");
+  globalThis.fetch = async () => ({ status: 200, ok: true, text: async () => "{}" });
+}
+
+// NADIA-302: the Graph explorer's PageRank takes an eps (none: the walk
+// lowers it from 1e-4 as it needs) and says when the walk stayed near the
+// node it started from.
+{
+  const gx = await import(new URL("views/graph.js", app));
+  const q = (eps, dir = "both") => gx.pprSql({ cols: ["id", "title"], nodes: "movies", graph: "ui", id: "'u1'", dir, eps });
+  assert.equal(q(""), "SELECT id, title, score() FROM movies ORDER BY ppr(ui, 'u1') DESC LIMIT 15");
+  assert.equal(q("1e-6", "out"), "SELECT id, title, score() FROM movies ORDER BY ppr(ui, 'u1', dir => 'out', eps => 0.000001) DESC LIMIT 15");
+  assert.deepEqual(gx.EPS.map((e) => e[0]), ["", "1e-5", "1e-6", "1e-7"]);
+  const lowered = gx.pprNote({ plan: ["graph 0: ppr over ui, 1 seeds, 3100 rows, 563336 edges followed, 9078 pushes, eps lowered to 3.1e-6, 72% settled, 9.15 ms"] });
+  assert.deepEqual(lowered, { lowered: "3.1e-6", settled: 72, warn: null });
+  const near = gx.pprNote({ ppr_unsettled: true, plan: ["graph 0: ppr over ui, 1 seeds, 3 rows, 260 edges followed, 3 pushes, 18% settled (its scores hold 18% of the walk, the rest stayed near the seeds: lower eps, or leave it out to let the walk lower it), 1.82 ms"] });
+  assert.equal(near.settled, 18);
+  assert.match(near.warn, /stayed near the node: its scores hold 18% of the walk; pick a lower eps/);
+  assert.match(gx.pprNote({ max_pushes_reached: true, plan: [] }).warn, /stopped at max_pushes/);
 }
 
 console.log("ok");
