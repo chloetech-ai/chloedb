@@ -161,3 +161,17 @@ test('an app opened again keeps what was typed since over what it was last asked
   // A new request's values win, as before.
   assert.deepEqual(replayed({ values: { budget: 700 } }, { budget: 680 }).values, { budget: 700 })
 })
+
+test('a dish’s time is an estimate from its own words, and says so (MAYA-4)', async () => {
+  const { estimate } = await import('../server/widgets/recipes.mjs')
+  const meal = (name, steps, n = 6) => ({ strMeal: name, strInstructions: steps, ...Object.fromEntries(Array.from({ length: n }, (_, i) => [`strIngredient${i + 1}`, `thing ${i}`])) })
+  assert.deepEqual(estimate(meal('15-minute chicken & halloumi burgers', 'Fry for 3-4 mins on each side.\nServe.')), { minutes: 15, minutes_note: 'from its name' })
+  // 3.5 min on each side is 7, and 11 to get 6 things ready: 20.
+  assert.deepEqual(estimate(meal('Burgers', 'Shape the patties and season them well.\nFry for 3-4 mins on each side, until golden.')), { minutes: 20, minutes_note: 'estimated from its steps' })
+  const marinated = estimate(meal('Shawarma', 'Mix the spices into the yoghurt.\nMarinate overnight or up to 24 hours.\nGrill for 5 minutes on each side.'))
+  assert.equal(marinated.minutes, 500)
+  assert.equal(marinated.minutes_note, 'estimated from its steps, 8 h of it waiting')
+  // "every 5 minutes" is not five more minutes, and a step that cooks without a time is ten.
+  assert.equal(estimate(meal('Stew', 'Simmer for 30 minutes, stirring every 5 minutes.\nBake in the oven until golden.')).minutes, 50)
+  assert.equal(estimate(meal('Salad', 'Chop everything finely.\nToss it all together and serve.')).minutes_note, 'a rough guess: the recipe gives no times')
+})
