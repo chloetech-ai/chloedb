@@ -179,8 +179,9 @@ function render(page, r) {
     r = route;
     const name = r.rest?.[0];
     if (name) return detail(name);
-    const live = list.filter((f) => f.current != null);
     const cur = (f) => f.versions.find((v) => v.version === f.current) || {};
+    // A blend is a stored function too; Labs → Blending shows it.
+    const live = list.filter((f) => f.current != null && !/^'blend:/.test(cur(f).body || ""));
     const tablesFns = live.filter((f) => cur(f).kind === "table"), scalars = live.filter((f) => cur(f).kind !== "table");
     if (!tablesFns.length && !scalars.length) {
       clear(body, card({ body: empty("bookmark", "No saved searches yet", "Search one of your tables, then Save: the search becomes a function, an endpoint and an agent's tool.", h("a", { class: "btn primary", href: "#/table" }, icon("search"), "Search a table")) }));

@@ -2003,7 +2003,14 @@ impl Service {
             None => field.unwrap_or("").to_string(),
         };
         let m = match field {
-            Some(f) => models.iter().filter(of_table).find(|m| m.field.eq_ignore_ascii_case(f)).ok_or_else(|| ApiError::bad(format!("{named} is not an embedded VECTOR field; pass a vector")))?,
+            Some(f) => models.iter().filter(of_table).find(|m| m.field.eq_ignore_ascii_case(f)).ok_or_else(|| {
+                // A VECTOR field of no model holds the rows' own vectors.
+                let own = self.catalog().iter().filter(|s| table.is_none_or(|t| s.table.eq_ignore_ascii_case(t))).find_map(|s| s.field(f).filter(|x| matches!(x.ty, chloedb::FieldType::Vector { .. })).map(|x| (s.table.clone(), x.name.clone(), x.ty.clone())));
+                match own {
+                    Some((t, x, chloedb::FieldType::Vector { dim, .. })) => ApiError::bad(format!("{t}.{x} is embedded by no model: its vectors are the rows' own, so text is not embedded for it; pass a vector of {dim} numbers, or {{\"vector_of\": key}} for a stored row's")),
+                    _ => ApiError::bad(format!("{named} is not an embedded VECTOR field; pass a vector")),
+                }
+            })?,
             None => models.iter().filter(of_table).find(|m| m.model.is_ok()).ok_or_else(|| ApiError::bad("no table has a field this server can embed text for; pass a vector"))?,
         };
         match &m.model {
@@ -2504,7 +2511,7 @@ impl Service {
     /// The tables a query may read: [`Self::catalog`], and a local
     /// database's system tables (`_functions`, `_sources`), which
     /// [`Db::query`] reads too.
-    fn readable(&self) -> Vec<Arc<Schema>> {
+    pub(crate) fn readable(&self) -> Vec<Arc<Schema>> {
         let mut c = self.catalog();
         if let Backend::Local(db) = &self.backend {
             let snap = db.snapshot();
@@ -2515,7 +2522,7 @@ impl Service {
 
     /// The table named `name` that a query reads ([`Self::table`]), a
     /// local database's system tables too ([`Self::readable`]).
-    async fn readable_table(&self, name: &str) -> Result<Arc<Schema>, ApiError> {
+    pub(crate) async fn readable_table(&self, name: &str) -> Result<Arc<Schema>, ApiError> {
         match self.readable().into_iter().find(|t| t.table.eq_ignore_ascii_case(name)) {
             Some(t) => Ok(t),
             None => self.table(name).await,
@@ -2525,7 +2532,7 @@ impl Service {
     /// The plan of a query `sql`, bound as [`Self::bound`] binds, over the
     /// tables a query may read ([`Self::readable`]), its rank profiles and
     /// its stored functions written out.
-    async fn bound_read(self: &Arc<Self>, sql: &str, params: &Params, timeout: Duration, budget: chloedb::query::budget::Budget) -> Result<Plan, ApiError> {
+    pub(crate) async fn bound_read(self: &Arc<Self>, sql: &str, params: &Params, timeout: Duration, budget: chloedb::query::budget::Budget) -> Result<Plan, ApiError> {
         // Texts where vectors go, embedded before the query is bound.
         let mut embedded = self.embed_texts(sql, params).await?;
         // A rank profile whose body takes text where a vector goes
@@ -2676,6 +2683,7 @@ impl Service {
             .await
             .map_err(ApiError::internal)??;
             self.metrics.embedded("query", 1, t0.elapsed().as_secs_f64());
+            telemetry::record("embed", t0, "ok");
             given.insert(r, v);
         }
         Ok(embed_sql::written(sql, &refs, params, &given)?)
@@ -2968,10 +2976,16 @@ impl Service {
         // a value, as most parameters are, needs none of it.
         let mut read: Option<Vec<String>> = None;
         let mut named_of = || -> Vec<String> { read.get_or_insert_with(|| sql.map(crate::scoped::named_tables).unwrap_or_default()).clone() };
+        // The field each parameter is ranked against, `similarity(bge,
+        // :v)`: a `{"vector_of"}` or `{"embed"}` with no `"field"` is that
+        // field's, not the table's first vector field's.
+        let mut used: Option<std::collections::HashMap<String, String>> = None;
+        let mut used_with = |k: &str| -> Option<String> { used.get_or_insert_with(|| sql.map(chloedb::query::tables::param_fields).unwrap_or_default()).get(k.trim_start_matches([':', '$', '@'])).cloned() };
         for (k, v) in m {
             let value = match v {
                 Json::Object(o) if o.contains_key("vector_of") && o.keys().all(|k| ["vector_of", "field", "table"].contains(&k.as_str())) => {
-                    let field = o.get("field").and_then(|f| f.as_str());
+                    let inferred = if o.get("field").is_none() { used_with(k) } else { None };
+                    let field = o.get("field").and_then(|f| f.as_str()).or(inferred.as_deref());
                     let catalog = self.catalog();
                     let has = |t: &str| {
                         catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).is_some_and(|s| match field {
@@ -2996,8 +3010,10 @@ impl Service {
                     self.vector_of(&table, &o["vector_of"], &field).await?
                 }
                 Json::Object(o) if o.get("embed").is_some_and(|e| e.is_string() || e.get("image").is_some() || e.get("audio").is_some()) && o.keys().all(|k| ["embed", "field", "table"].contains(&k.as_str())) => {
-                    let (table, _) = self.embed_target(o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()), &named_of(), who).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
-                    let (table, field, e) = self.model(Some(&table), o.get("field").and_then(|f| f.as_str()))?;
+                    let inferred = if o.get("field").is_none() { used_with(k) } else { None };
+                    let field = o.get("field").and_then(|f| f.as_str()).or(inferred.as_deref());
+                    let (table, _) = self.embed_target(o.get("table").and_then(|t| t.as_str()), field, &named_of(), who).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
+                    let (table, field, e) = self.model(Some(&table), field).map_err(|e| ApiError { message: format!("parameter :{k}: {}", e.message), ..e })?;
                     // A multi-vector field's model embeds the query's tokens.
                     let tokens = self.catalog().iter().find(|s| s.table.eq_ignore_ascii_case(&table)).and_then(|s| s.field(&field)).is_some_and(|f| f.multi);
                     let file = match &o["embed"] {
@@ -3472,19 +3488,12 @@ impl Service {
         // words name become conditions, then the query runs as any does
         // (and may still expand).
         if req.plan.is_none() && !req.shard {
-            if let Some(u) = chloedb::query::understand::plan_sql(&req.sql, &req.params)? {
-                let t0 = Instant::now();
-                let catalog = self.catalog();
-                let gaz = self.gazetteers(&u.needs(&catalog)?, Some(&req)).await?;
-                let mut made = u.understood(&catalog, &gaz, &req.params)?;
-                for m in &mut made {
-                    let counts = self.understanding_counts(m, Some(&req)).await?;
-                    m.confirm(&counts);
-                }
+            let t0 = Instant::now();
+            if let Some((sql, lines)) = self.understood_sql(&req).await? {
                 let mut second = req.clone();
-                second.sql = u.rewrite(&made)?.to_string();
+                second.sql = sql;
                 let mut a = Box::pin(self.dispatch(second)).await?;
-                a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
+                a.rs.stats.plan.splice(0..0, lines);
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
                 return Ok(a);
             }
@@ -3494,30 +3503,21 @@ impl Service {
         // coordinator's from its shards, merged), then the query rewritten
         // to the terms they hold, which every shard ranks by alike.
         if req.plan.is_none() && !req.shard {
-            if let Some(x) = chloedb::query::prf::plan_sql(&req.sql, &req.params)? {
-                let t0 = Instant::now();
-                let mut rows = Vec::new();
-                let catalog = self.catalog();
-                let schemas: Vec<&chloedb::Schema> = catalog.iter().map(|s| s.as_ref()).collect();
-                for f in x.feedback(&schemas)? {
-                    let mut fr = req.clone();
-                    (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
-                    rows.push(Box::pin(self.dispatch(fr)).await?.rs);
-                }
-                let analyzers = x
-                    .fields()
-                    .iter()
-                    .map(|(t, f)| {
-                        let schema = catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| ApiError::bad(format!("no table {t}")))?;
-                        Ok(schema.field(f).ok_or_else(|| ApiError::bad(format!("{t} has no field {f}")))?.text_analyzer())
-                    })
-                    .collect::<Result<Vec<_>, ApiError>>()?;
-                let (rewritten, made) = x.finish(&rows, &analyzers, &req.params)?;
+            let t0 = Instant::now();
+            if let Some((sql, lines)) = self.expanded_sql(&req).await? {
                 let mut second = req.clone();
-                second.sql = rewritten.to_string();
+                second.sql = sql;
                 let mut a = Box::pin(self.dispatch(second)).await?;
-                a.rs.stats.plan.splice(0..0, made.iter().map(|m| m.line()));
+                a.rs.stats.plan.splice(0..0, lines);
                 a.took_ms = t0.elapsed().as_secs_f64() * 1e3;
+                return Ok(a);
+            }
+        }
+        // `FROM blend(...)` ([`chloedb::query::blend`]): each source a
+        // query as any other (a coordinator's merged from its shards), then
+        // the fill, here.
+        if req.plan.is_none() && !req.shard && chloedb::query::blend::may_blend(&req.sql) {
+            if let Some(a) = self.blend_query(&req).await? {
                 return Ok(a);
             }
         }
@@ -3583,6 +3583,176 @@ impl Service {
             }
         }
         self.query_admitted(req).await
+    }
+
+    /// `req`'s query with its understood words as conditions
+    /// (`bm25(.., understand => ..)`, [`chloedb::query::understand`]): the
+    /// table's keyword values the words name, read and counted as any
+    /// query (a coordinator's from its shards), and the plan's lines that
+    /// say what they became; `None` for a query that understands no words.
+    /// Its time is the span `understand` of the request's trace.
+    pub(crate) async fn understood_sql(self: &Arc<Self>, req: &QueryReq) -> Result<Option<(String, Vec<String>)>, ApiError> {
+        let Some(u) = chloedb::query::understand::plan_sql(&req.sql, &req.params)? else { return Ok(None) };
+        let t0 = Instant::now();
+        let r: Result<_, ApiError> = async {
+            let catalog = self.catalog();
+            let gaz = self.gazetteers(&u.needs(&catalog)?, Some(req)).await?;
+            let mut made = u.understood(&catalog, &gaz, &req.params)?;
+            for m in &mut made {
+                let counts = self.understanding_counts(m, Some(req)).await?;
+                m.confirm(&counts);
+            }
+            Ok((u.rewrite(&made)?.to_string(), made.iter().map(|m| m.line()).collect()))
+        }
+        .await;
+        telemetry::record("understand", t0, if r.is_ok() { "ok" } else { "error" });
+        r.map(Some)
+    }
+
+    /// `req`'s query with its expanded rankings (`bm25(.., expand => n)`,
+    /// [`chloedb::query::prf`]) written to the terms their first rows hold,
+    /// which every shard ranks by alike, and the plan's lines that say
+    /// which; `None` for a query that expands none. Its time is the span
+    /// `expand` of the request's trace.
+    pub(crate) async fn expanded_sql(self: &Arc<Self>, req: &QueryReq) -> Result<Option<(String, Vec<String>)>, ApiError> {
+        let Some(x) = chloedb::query::prf::plan_sql(&req.sql, &req.params)? else { return Ok(None) };
+        let t0 = Instant::now();
+        let r: Result<_, ApiError> = async {
+            let mut rows = Vec::new();
+            let catalog = self.catalog();
+            let schemas: Vec<&chloedb::Schema> = catalog.iter().map(|s| s.as_ref()).collect();
+            for f in x.feedback(&schemas)? {
+                let mut fr = req.clone();
+                (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
+                rows.push(Box::pin(self.dispatch(fr)).await?.rs);
+            }
+            let analyzers = x
+                .fields()
+                .iter()
+                .map(|(t, f)| {
+                    let schema = catalog.iter().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| ApiError::bad(format!("no table {t}")))?;
+                    Ok(schema.field(f).ok_or_else(|| ApiError::bad(format!("{t} has no field {f}")))?.text_analyzer())
+                })
+                .collect::<Result<Vec<_>, ApiError>>()?;
+            let (rewritten, made) = x.finish(&rows, &analyzers, &req.params)?;
+            Ok((rewritten.to_string(), made.iter().map(|m| m.line()).collect()))
+        }
+        .await;
+        telemetry::record("expand", t0, if r.is_ok() { "ok" } else { "error" });
+        r.map(Some)
+    }
+
+    /// `SELECT ... FROM blend(...)`, or `None` for a query that reads no
+    /// blend.
+    async fn blend_query(self: &Arc<Self>, req: &QueryReq) -> Result<Option<Answer>, ApiError> {
+        let Some((call, cols)) = chloedb::query::blend::table_call_sql(&req.sql, &req.params)? else { return Ok(None) };
+        if req.scroll.is_some() {
+            return Err(ApiError::bad("a blend is not scrolled: LIMIT k places k rows"));
+        }
+        let t0 = Instant::now();
+        let (def, version) = self.blend_def(&call.name, call.version).await?;
+        let k = call.limit.unwrap_or(def.k);
+        let b = self.run_blend(req, &def, version, &call.params, k, chloedb::query::blend::Want::default()).await;
+        telemetry::record("blend", t0, if b.is_ok() { "ok" } else { "error" });
+        let rs = b?.result(&cols)?;
+        Ok(Some(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "blend", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+    }
+
+    /// Blend `name`'s definition: version `version`, or the current one. A
+    /// coordinator that does not know it asks its shards for their
+    /// functions again first.
+    pub async fn blend_def(&self, name: &str, version: Option<i64>) -> Result<(chloedb::query::blend::Def, i64), ApiError> {
+        match chloedb::query::blend::resolve(&self.functions(), name, version) {
+            Ok(d) => Ok(d),
+            Err(_) if matches!(self.backend, Backend::Cluster(_)) => {
+                self.learn_tables(true).await;
+                Ok(chloedb::query::blend::resolve(&self.functions(), name, version)?)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Runs blend `def` (as version `version`) into `k` slots: each source
+    /// a query of `req`'s, with `params`, all at once, then the fill.
+    /// A source that is a node runs as a blend of its own, its queries at
+    /// once with the others', and gives its placed rows; only the top
+    /// blend explores.
+    pub async fn run_blend(self: &Arc<Self>, req: &QueryReq, def: &chloedb::query::blend::Def, version: i64, params: &Params, k: usize, want: chloedb::query::blend::Want) -> Result<chloedb::query::blend::Blended, ApiError> {
+        self.clone().run_blend_boxed(req.clone(), def.clone(), version, params.clone(), k, want).await
+    }
+
+    /// [`Service::run_blend`] as a future of a named type, which a node's
+    /// run awaits within its blend's.
+    fn run_blend_boxed(self: Arc<Self>, req: QueryReq, def: chloedb::query::blend::Def, version: i64, params: Params, k: usize, want: chloedb::query::blend::Want) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<chloedb::query::blend::Blended, ApiError>> + Send>> {
+        Box::pin(async move { self.run_blend_now(&req, &def, version, &params, k, want).await })
+    }
+
+    async fn run_blend_now(self: &Arc<Self>, req: &QueryReq, def: &chloedb::query::blend::Def, version: i64, params: &Params, k: usize, want: chloedb::query::blend::Want) -> Result<chloedb::query::blend::Blended, ApiError> {
+        use chloedb::query::blend::{Blended, Def, Input, Want};
+        type Run = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Input, Option<Blended>), ApiError>> + Send>>;
+        let runs = def.sources.iter().map(|s| -> Run {
+            let me = self.clone();
+            let (blend, source) = (def.name.clone(), s.name.clone());
+            if let Some(node) = &s.blend {
+                let named = Def { name: s.name.clone(), ..(**node).clone() };
+                let (req, params) = (req.clone(), params.clone());
+                return Box::pin(async move {
+                    let t0 = Instant::now();
+                    let b = me.run_blend_boxed(req, named.clone(), 0, params, named.k, Want { costs: want.costs, explore: None }).await.map_err(|e| ApiError { message: format!("blend {blend} node {source}: {}", e.message), ..e })?;
+                    Ok((Input { rs: b.as_source(), took_ms: t0.elapsed().as_secs_f64() * 1e3 }, Some(b)))
+                });
+            }
+            let mut sub = req.clone();
+            sub.sql = s.sql.clone();
+            sub.params = params.clone();
+            (sub.scroll, sub.hold, sub.release, sub.cache_key, sub.arrow, sub.profile) = (None, false, false, None, None, false);
+            Box::pin(async move {
+                let t0 = Instant::now();
+                let a = Box::pin(me.dispatch(sub)).await.map_err(|e| ApiError { message: format!("blend {blend} source {source}: {}", e.message), ..e })?;
+                Ok((Input { rs: a.rs, took_ms: t0.elapsed().as_secs_f64() * 1e3 }, None))
+            })
+        });
+        let (inputs, nodes): (Vec<Input>, Vec<Option<Blended>>) = futures::future::try_join_all(runs).await?.into_iter().unzip();
+        let mut b = chloedb::query::blend::blend(def, version, k, inputs, want)?;
+        b.nodes = nodes;
+        Ok(b)
+    }
+
+    /// `CREATE BLEND` or `DROP BLEND` ([`chloedb::query::blend`]): the
+    /// stored function that holds it, written or dropped as any function
+    /// (on every shard, through a coordinator).
+    async fn blend_statement(self: &Arc<Self>, who: &Principal, st: chloedb::query::blend::Statement, after: After, timeout_ms: u64) -> Result<SqlAnswer, ApiError> {
+        use chloedb::query::blend::{self, Statement};
+        who.may(Scope::Admin, "a blend statement")?;
+        let t0 = Instant::now();
+        self.learn_tables(true).await;
+        let set = self.functions();
+        match st {
+            Statement::Drop { name, if_exists } => {
+                match set.current(&name).filter(|f| !f.dropped) {
+                    Some(f) if blend::Def::of_body(&f.def.body).is_some() => {
+                        Box::pin(self.sql_in(who, &format!("DROP FUNCTION {name}"), &Params::new(), after, timeout_ms, None, None)).await?;
+                    }
+                    Some(_) => return Err(ApiError::bad(format!("query error: function {name} is not a blend: DROP FUNCTION drops it"))),
+                    None if if_exists => {}
+                    None => return Err(ApiError::bad(format!("query error: no blend named {name}"))),
+                }
+                Ok(SqlAnswer::Written { w: Written::default(), took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+            }
+            Statement::Create { def, replace } => {
+                blend::may_define(&set, &def, replace)?;
+                // A key limited to tables writes a blend of the tables it reads.
+                if who.limited() {
+                    for q in def.queries() {
+                        crate::scoped::check_reads(who, q, &self.table_names(), &set)?;
+                    }
+                }
+                Box::pin(self.sql_in(who, &def.function_sql(replace), &Params::new(), after, timeout_ms, None, None)).await?;
+                self.learn_tables(true).await;
+                let v = self.functions().current(&def.name).map_or(0, |f| f.version);
+                Ok(SqlAnswer::Rows(Answer { rs: blend::made(&def, v), took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "blend", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+            }
+        }
     }
 
     /// A query that calls `recommend(...)`, or `None` for one that calls
@@ -3758,6 +3928,9 @@ impl Service {
         };
         rank_log::check(&schema)?;
         rank_log::fits(&log, &schema)?;
+        if let Some((call, cols)) = chloedb::query::blend::table_call_sql(&req.sql, &req.params)? {
+            return self.blend_logged(req, log, &schema, call, cols).await;
+        }
         let p = rank_log::prepare(&req.sql, &req.params, &log)?;
         let started = std::time::Instant::now();
         let take = |a: &mut Answer| std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
@@ -3791,6 +3964,43 @@ impl Service {
             false => self.write_ops(ops, None).await?,
         };
         Ok((a, served, w))
+    }
+
+    /// `SELECT ... FROM blend(...)` run and logged ([`Service::query_logged`]):
+    /// the fill explores when `log` does, drawn from the request's stream
+    /// ([`chloedb::query::blend::seed`]), and every row of every source is
+    /// logged, the page's first with each slot's chance
+    /// ([`chloedb::query::blend::Blended::log_entries`]).
+    async fn blend_logged(self: &Arc<Self>, req: QueryReq, log: Log, schema: &chloedb::schema::Schema, call: chloedb::query::blend::Call, cols: Vec<(String, String)>) -> Result<(Answer, rank_log::Served, Written), ApiError> {
+        use chloedb::query::blend;
+        rank_log::fits_blend(&log)?;
+        if req.scroll.is_some() {
+            return Err(ApiError::bad("a blend is not scrolled: LIMIT k places k rows"));
+        }
+        let explore = match &log.explore {
+            Some(p) => blend::Explore::of_policy(p)?,
+            None => None,
+        };
+        let request = match &log.request {
+            Some(r) if r.is_empty() => return Err(ApiError::bad("a log's request id is not empty")),
+            Some(r) => r.clone(),
+            None => format!("{:032x}", rand::random::<u128>()),
+        };
+        let t0 = Instant::now();
+        let (def, version) = self.blend_def(&call.name, call.version).await?;
+        let want = blend::Want { costs: false, explore: explore.map(|e| (e, blend::seed(&request))) };
+        let b = self.run_blend(&req, &def, version, &call.params, call.limit.unwrap_or(def.k), want).await?;
+        let rs = b.result(&cols)?;
+        let mut entries = b.log_entries(&def, &request, log.ts.unwrap_or_else(chloedb::timestamp::now), &log);
+        let took_ms = t0.elapsed().as_secs_f64() * 1e3;
+        rank_log::keep_rows(&mut entries, &rank_log::query_json(&req.sql, &req.params), schema, took_ms);
+        let ops: Vec<Json> = entries.iter().map(|e| json!({"op": "upsert", "table": log.table, "doc": e.to_json()})).collect();
+        let w = match ops.is_empty() {
+            true => Written::default(),
+            false => self.write_ops(ops, None).await?,
+        };
+        let a = Answer { rs: rs.clone(), took_ms, kind: "blend", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None };
+        Ok((a, rank_log::Served { rs, request, entries, teams: Vec::new() }, w))
     }
 
     /// Runs a plan ([`chloedb::query::ir`]): a read answers as
@@ -4614,6 +4824,11 @@ impl Service {
                 chloedb::db::SqlResult::Written(_) => SqlAnswer::Written { w: Written::default(), took_ms },
             });
         }
+        // `CREATE BLEND`, `DROP BLEND`: a stored function, which a
+        // coordinator writes on every shard ([`chloedb::query::blend`]).
+        if let Some(st) = chloedb::query::blend::parse_statement(sql)? {
+            return self.blend_statement(who, st, after, timeout_ms).await;
+        }
         // `CREATE ROLLUP`, `REFRESH ROLLUP`, `DROP ROLLUP`
         // ([`chloedb::query::rollup`]).
         if let Some(st) = chloedb::query::rollup::parse_statement(sql)? {
@@ -4740,6 +4955,7 @@ impl Service {
                 let only = slots.as_ref().map(|s| moving::mask_outside(s));
                 let key = key.map(|k| (k, statement_hash(sql, params, slots.as_deref())));
                 let mut tries = 0;
+                let until = t0 + self.timeout_of(timeout_ms);
                 loop {
                     let (text, p, only) = (sql.to_string(), params.clone(), only.clone());
                     let refused = Arc::new(Mutex::new(None));
@@ -4758,8 +4974,17 @@ impl Service {
                         (Some(e), Err(_)) => break Err(e),
                         // An ALTER TABLE committed between binding the
                         // statement and writing it, which wrote nothing:
-                        // it is bound again, to the table as it is now.
-                        (None, Err(e)) if tries < chloedb::db::ALTERED_TRIES && chloedb::db::altered_while_running(&e.message) => tries += 1,
+                        // it is bound again, to the table as it is now,
+                        // until the statement's deadline: a stream of
+                        // ALTER TABLEs, which take the storage lock without
+                        // queueing, may win several times in a row.
+                        (None, Err(e)) if tries < chloedb::db::ALTERED_TRIES && Instant::now() < until && chloedb::db::altered_while_running(&e.message) => {
+                            match chloedb::db::altered_backoff(tries) {
+                                d if d.is_zero() => tokio::task::yield_now().await,
+                                d => tokio::time::sleep(d).await,
+                            }
+                            tries += 1;
+                        }
                         (_, r) => break r,
                     }
                 }
@@ -6106,11 +6331,17 @@ impl Service {
         }
         g.insert("running", self.running() as f64);
         g.insert("live", self.live.len() as f64);
-        // A cluster that follows another: its follow processes' lag.
+        // A cluster that follows another, or a Postgres follower: their
+        // follow processes' lag (the alert follow-behind's).
         let lags = self.follow_lags();
         if !lags.is_empty() {
-            g.insert("follow_lag_s", lags.iter().map(|l| l.1).fold(0.0, f64::max));
-            g.insert("follow_behind", lags.iter().map(|l| l.2).fold(0.0, f64::max));
+            g.insert("follow_lag_s", lags.iter().map(|l| l.lag_s).fold(0.0, f64::max));
+            if lags.iter().any(|l| l.behind.is_some()) {
+                g.insert("follow_behind", lags.iter().filter_map(|l| l.behind).fold(0.0, f64::max));
+            }
+            if lags.iter().any(|l| l.behind_bytes.is_some()) {
+                g.insert("follow_behind_bytes", lags.iter().filter_map(|l| l.behind_bytes).fold(0.0, f64::max));
+            }
         }
         g.insert("slots_free", self.admission.available_permits() as f64);
         if let Some(b) = &self.query_memory {
@@ -6487,11 +6718,18 @@ impl Service {
         ];
         let lags = self.follow_lags();
         if !lags.is_empty() {
-            let family = |name, help, f: fn(&(String, f64, f64)) -> f64| Family { name, ty: "gauge", help, values: lags.iter().map(|l| (format!("name=\"{}\"", metrics::esc(&l.0)), f(l))).collect() };
-            more.extend([
-                family("chloedb_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by the source's name: since the source first reached a transaction it has not applied (and while it is silent, since it last said).", |l| l.1),
-                family("chloedb_follow_behind_transactions", "Transactions of the source a follow process writing through this server has not applied, over the source's shards.", |l| l.2),
-            ]);
+            let label = |l: &crate::service::feed::FollowLag| format!("name=\"{}\",kind=\"{}\"", metrics::esc(&l.name), l.kind);
+            let family = |name, help, f: fn(&crate::service::feed::FollowLag) -> Option<f64>| Family { name, ty: "gauge", help, values: lags.iter().filter_map(|l| Some((label(l), f(l)?))).collect() };
+            more.extend(
+                [
+                    family("chloedb_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by its name and kind (cluster: a cluster following another; postgres: chloedb-server follow-postgres): since the source first reached a transaction (a cluster) or a WAL position (Postgres) it has not applied, and while it is silent, since it last said.", |l| Some(l.lag_s)),
+                    family("chloedb_follow_up", "1 while a follow process writing through this server says it follows (or copies, or catches up), and said so within the last 10 s; 0 while it retries, failed or is silent.", |l| Some(if l.up { 1.0 } else { 0.0 })),
+                    family("chloedb_follow_behind_transactions", "Transactions of the source a cluster's follow process writing through this server has not applied, over the source's shards.", |l| l.behind),
+                    family("chloedb_follow_behind_bytes", "Bytes of Postgres's WAL a Postgres follower writing through this server has not confirmed: Postgres's position (pg_current_wal_lsn()) less the follower's, as it last said.", |l| l.behind_bytes),
+                ]
+                .into_iter()
+                .filter(|f| !f.values.is_empty()),
+            );
         }
         if let Some(s) = &self.log_store {
             more.extend(s.metrics());

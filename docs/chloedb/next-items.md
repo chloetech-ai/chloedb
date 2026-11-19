@@ -74,11 +74,11 @@ LIMIT 20;
 
 A walk runs on one database: a coordinator refuses `ppr` and the other graph queries ([graphs on a cluster](graphs.md#on-a-cluster)), while the counts above run anywhere.
 
-Personalized PageRank pushes a row only while its share of the walk is at least `eps` (1e-4 by default) times the sum of its edges' weights, so a single seed whose edges add up to more than 10,000 is never pushed and the walk returns nothing. Pass a smaller `eps`, as above, or keep the weights decayed or normalised.
+Personalized PageRank pushes a row only while its share of the walk is at least `eps` times its number of edges. Without `eps`, the walk starts at 1e-4 and lowers it until half of the walk has settled, so seeds whose neighbours have thousands of edges still reach rows past them ([how far `ppr` walks](query-language.md#how-far-ppr-walks)); a given `eps`, as above, walks exactly that far, and a walk that stopped near its seeds says so in its stats (`ppr_unsettled`).
 
 ## Kept for you: `CREATE RECOMMENDER`
 
-`CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS items(emb)` keeps the counts of order 1 and items seen together from the writes of an events table, and `ORDER BY recommend('shop', :u)` fuses them with the similarity of the user's recent items and with popularity, leaving out what the user had ([recommenders](query-language.md#recommenders-create-recommender-and-recommend)). It runs on one database; a coordinator refuses it, and the tables of this page are what a cluster uses.
+`CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS items(emb)` keeps the counts of order 1 and items seen together from the writes of an events table, and `ORDER BY recommend('shop', :u)` fuses them with the similarity of the user's recent items and with popularity, leaving out the user's recent items (the last `history` of them), not every item the user has had ([recommenders](query-language.md#recommenders-create-recommender-and-recommend)). To leave out everything the user has an event for, filter it: `SELECT id FROM items WHERE id NOT IN (SELECT item FROM events WHERE usr = :u) ORDER BY recommend('shop', :u, k => 500) DESC LIMIT 10`. It runs on one database; a coordinator refuses it, and the tables of this page are what a cluster uses.
 
 ## Which to use
 

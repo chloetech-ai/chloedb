@@ -87,6 +87,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
       <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">ChloeCtx</span>
       <a href="chloectx.html">ChloeCtx</a>
@@ -203,9 +204,9 @@ SELECT nxt FROM next WHERE id IN (...) AND n &gt; 0;   -- the candidates&#x27; k
 ORDER BY ppr(cooc, (SELECT item FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 5), dir =&gt; &#x27;out&#x27;, eps =&gt; 1e-6) DESC
 LIMIT 20;</pre>
 <p>A walk runs on one database: a coordinator refuses <code>ppr</code> and the other graph queries (<a href="graphs.html#on-a-cluster">graphs on a cluster</a>), while the counts above run anywhere.</p>
-<p>Personalized PageRank pushes a row only while its share of the walk is at least <code>eps</code> (1e-4 by default) times the sum of its edges' weights, so a single seed whose edges add up to more than 10,000 is never pushed and the walk returns nothing. Pass a smaller <code>eps</code>, as above, or keep the weights decayed or normalised.</p>
+<p>Personalized PageRank pushes a row only while its share of the walk is at least <code>eps</code> times its number of edges. Without <code>eps</code>, the walk starts at 1e-4 and lowers it until half of the walk has settled, so seeds whose neighbours have thousands of edges still reach rows past them (<a href="sql.html#how-far-ppr-walks">how far <code>ppr</code> walks</a>); a given <code>eps</code>, as above, walks exactly that far, and a walk that stopped near its seeds says so in its stats (<code>ppr_unsettled</code>).</p>
 <h2 id="kept-for-you-create-recommender">Kept for you: <code>CREATE RECOMMENDER</code><a class="anchor" href="#kept-for-you-create-recommender" aria-label="Link to this section">#</a></h2>
-<p><code>CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS items(emb)</code> keeps the counts of order 1 and items seen together from the writes of an events table, and <code>ORDER BY recommend('shop', :u)</code> fuses them with the similarity of the user's recent items and with popularity, leaving out what the user had (<a href="sql.html#recommenders-create-recommender-and-recommend">recommenders</a>). It runs on one database; a coordinator refuses it, and the tables of this page are what a cluster uses.</p>
+<p><code>CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS items(emb)</code> keeps the counts of order 1 and items seen together from the writes of an events table, and <code>ORDER BY recommend('shop', :u)</code> fuses them with the similarity of the user's recent items and with popularity, leaving out the user's recent items (the last <code>history</code> of them), not every item the user has had (<a href="sql.html#recommenders-create-recommender-and-recommend">recommenders</a>). To leave out everything the user has an event for, filter it: <code>SELECT id FROM items WHERE id NOT IN (SELECT item FROM events WHERE usr = :u) ORDER BY recommend('shop', :u, k =&gt; 500) DESC LIMIT 10</code>. It runs on one database; a coordinator refuses it, and the tables of this page are what a cluster uses.</p>
 <h2 id="which-to-use">Which to use<a class="anchor" href="#which-to-use" aria-label="Link to this section">#</a></h2>
 <p>Counts are exact and live: an event changes the next answer, and each suggestion is explained by a count. They know only the last one or two items and nothing about a context never seen, where they fall back to the last item alone. A walk over directed edges reaches several steps ahead and related items, at five writes per event. Learned sequence models, which read long histories and combine what they have not seen together, are the next step; these counts are the baseline they have to beat.</p>
     </div>

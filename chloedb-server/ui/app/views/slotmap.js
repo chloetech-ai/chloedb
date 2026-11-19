@@ -185,6 +185,8 @@ export function slotMap({ onShard, model, past, onBalance, canBalance }) {
   });
 
   const offTheme = bus.on("theme", () => paint());
+  // A key given after the card asked without one (OLU-308): asked again at once.
+  const offToken = bus.on("token", () => { if (err) load(); });
   const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => { if (R) paint(); }) : null;
   ro?.observe(body);
   const stopPoll = every(10000, load, false);
@@ -200,6 +202,6 @@ export function slotMap({ onShard, model, past, onBalance, canBalance }) {
       if (!data && !err && !loading) load();
       draw();
     },
-    stop() { stopPoll(); offTheme?.(); ro?.disconnect(); hideTip(); },
+    stop() { stopPoll(); offTheme?.(); offToken(); ro?.disconnect(); hideTip(); },
   };
 }

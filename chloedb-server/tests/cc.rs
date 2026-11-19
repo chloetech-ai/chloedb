@@ -218,6 +218,69 @@ async fn the_terminal_reads_a_cluster_and_hands_its_primary_over() {
     assert!(audited.contains("chloedb-cc"), "the audit log names the app: {audited}");
 }
 
+/// MARCO-313 and MARCO-301 in the terminal: with the key the logs guide
+/// makes for the rotation (`oncall`), Logs, which is the server's own log
+/// and an admin's, lists the log tables the key reads instead of failing,
+/// and Enter shows a table's newest lines in SQL; Alerts acknowledges what
+/// fires.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_oncall_key_sees_its_log_tables_and_acknowledges() {
+    use chloedb_server::auth::{Access, Secret};
+    use chloedb_server::keys::Keys;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("a.strata"), demo::schema(10), DbOptions::default()).unwrap();
+    let schema = (*db.schema()).clone();
+    let agent = AgentConfig { api_key: None, model: chloedb_server::agent::DEFAULT_MODEL.into(), base_url: "http://unused".into() };
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent, 16, Duration::from_secs(10));
+    svc.keys = Arc::new(Keys::open(dir.path().join("a.strata.keys.json")).unwrap());
+    let svc = Arc::new(svc);
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+    tokio::spawn(server::serve_http(svc.clone(), l, Access { token: Some(Secret::new("root-token")), ..Default::default() }));
+    let root = |method: &str, path: &str, body: Json| {
+        let (method, url) = (method.parse::<reqwest::Method>().unwrap(), format!("{base}{path}"));
+        async move {
+            let r = chloedb_server::http_client().build().unwrap().request(method, &url).bearer_auth("root-token").json(&body).send().await.unwrap();
+            let status = r.status();
+            let j: Json = r.json().await.unwrap();
+            assert!(status.is_success(), "{url}: {j}");
+            j
+        }
+    };
+    root("POST", "/v1/sql", serde_json::json!({"sql": "CREATE TABLE logs_app (ts TIMESTAMP NOT NULL, severity KEYWORD, service KEYWORD, body TEXT)"})).await;
+    root("POST", "/v1/sql", serde_json::json!({"sql": "INSERT INTO logs_app (ts, severity, service, body) VALUES (now(), 'error', 'payments', 'PAY-5031 card declined upstream')"})).await;
+    let made = root("POST", "/v1/admin/keys", serde_json::json!({"name": "netops", "preset": "oncall", "prefix": "logs_*"})).await;
+    let api = Api::new(&base, made["secret"].as_str().map(String::from), None).unwrap();
+    let who = Who::of(&api.get("/v1/whoami").await.unwrap());
+    assert!(who.limited.is_some() && !who.reads_server_log(), "{who:?}");
+    let shared = Arc::new(Mutex::new(Shared::new(&base, who)));
+    let mut app = App::default();
+
+    // Logs: what it is and who reads it, then the key's log tables.
+    let logs = show(&mut app, &api, &shared, Screen::Logs).await;
+    assert!(logs.contains("the server's own log, which an admin key"), "{logs}");
+    assert!(logs.contains("netops is limited to tables") && logs.contains("logs_* write"), "{logs}");
+    assert!(logs.lines().any(|l| l.trim_start().starts_with("logs_app") && l.contains("ts")), "{logs}");
+    let Effect::Run(job) = press(&mut app, &shared, KeyEvent::from(KeyCode::Enter)) else { panic!("Enter shows the newest lines") };
+    assert_eq!(app.screen, Screen::Sql);
+    api::run_job(api.clone(), shared.clone(), Arc::new(Notify::new()), job).await;
+    let sql = show(&mut app, &api, &shared, Screen::Sql).await;
+    assert!(sql.contains("PAY-5031") && sql.contains("payments"), "{sql}");
+
+    // Alerts: what fires, acknowledged with the key.
+    let rules = serde_json::json!({"rules": [{"id": "payments-errors", "name": "Payments errors", "metric": "p99_ms", "op": ">", "threshold": 100.0, "eval": "mean", "window_s": 60, "severity": "critical"}]});
+    root("PUT", "/v1/alerts/rules", rules).await;
+    let t = chloedb_server::telemetry::now_ms();
+    let points: Vec<Arc<Json>> = (0..31u64).map(|i| Arc::new(serde_json::json!({"t": t - (30 - i) * 2000, "p99_ms": 300.0}))).collect();
+    chloedb_server::alerts::deliver(&svc, svc.alerts.check(&points, t));
+    let al = show(&mut app, &api, &shared, Screen::Alerts).await;
+    assert!(al.contains("Payments errors"), "{al}");
+    let Effect::Run(job) = press(&mut app, &shared, key('a')) else { panic!("a acknowledges") };
+    api::run_job(api.clone(), shared.clone(), Arc::new(Notify::new()), job).await;
+    let note = api::lock(&shared).note.clone().unwrap();
+    assert_eq!((note.tone, note.text.as_str()), (api::Tone::Good, "Acknowledged: Payments errors"));
+}
+
 /// Without a terminal it says what to use instead, and draws nothing.
 #[test]
 fn without_a_terminal_it_points_at_admin() {

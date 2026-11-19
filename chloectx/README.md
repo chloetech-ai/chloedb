@@ -127,8 +127,9 @@ demo/run.sh --model <model> --distill-model <small model>   # a chat in a scratc
 `$CHLOECTX_HOME/projects` (`--home` for another directory): pick a store and a
 session, read the session rebuilt from its records with the briefing, each
 recall decision and the distilled notes, and use every panel below on that
-store. It only reads, through each project's daemon, listens on 127.0.0.1
-and wants the token in the URL it prints.
+store. It reads through each project's daemon and changes only what you tell
+it to forget (its **Forget…** buttons list what would go first), listens on
+127.0.0.1 and wants the token in the URL it prints.
 
 The demo:
 

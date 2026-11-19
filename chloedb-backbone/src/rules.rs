@@ -21,6 +21,8 @@ pub struct Rule {
     pub title: &'static str,
     pub kind: &'static str,
     pub severity: &'static str,
+    /// How often it runs, in seconds (a run of the rules is each minute).
+    pub every_s: u64,
     pub about: &'static str,
     pub sql: &'static str,
 }
@@ -33,6 +35,7 @@ pub const RULES: &[Rule] = &[
         title: "RPKI-invalid route seen by 3 or more peers",
         kind: "invalid",
         severity: "bad",
+        every_s: 60,
         about: "An origin announced a prefix that a ROA gives to another network (or not so long): a mistake, a lease whose ROA did not move, or a hijack. Only lengths the internet routes (IPv4 /24, IPv6 /48 or shorter): a /32 is most often a network blackholing one of its own addresses, which the blackhole rule shows.",
         sql: "SELECT prefix, origin, owner, COUNT(DISTINCT peer) AS peers, COUNT(*) AS updates, MIN(ts) AS first, MAX(ts) AS last
 FROM bb_updates WHERE ts >= :since AND kind = 'A' AND origin > 0 AND rpki IN ('invalid', 'invalid-length')
@@ -44,6 +47,7 @@ GROUP BY prefix, origin, owner HAVING COUNT(DISTINCT peer) >= 3 ORDER BY peers D
         title: "A prefix announced by a new, unrelated origin",
         kind: "origin",
         severity: "warn",
+        every_s: 60,
         about: "RouteViews saw this prefix from another network yesterday, the two are not customer and provider, and no ROA says which is right.",
         sql: "SELECT prefix, origin, owner, COUNT(DISTINCT peer) AS peers, COUNT(*) AS updates, MIN(ts) AS first, MAX(ts) AS last
 FROM bb_updates WHERE ts >= :since AND kind = 'A' AND origin > 0 AND seen = 'new-origin' AND rpki = 'unknown'
@@ -55,6 +59,7 @@ GROUP BY prefix, origin, owner HAVING COUNT(DISTINCT peer) >= 10 ORDER BY peers 
         title: "A longer prefix inside another network's space",
         kind: "subprefix",
         severity: "warn",
+        every_s: 60,
         about: "A prefix no one announced yesterday, inside space another network announces, from an origin that is not its customer and no ROA covers: how a sub-prefix hijack looks, and also how many new customers do.",
         sql: "SELECT prefix, origin, owner, COUNT(DISTINCT peer) AS peers, COUNT(*) AS updates, MIN(ts) AS first, MAX(ts) AS last
 FROM bb_updates WHERE ts >= :since AND kind = 'A' AND origin > 0 AND seen = 'more-specific' AND rpki = 'unknown'
@@ -66,9 +71,15 @@ GROUP BY prefix, origin, owner HAVING COUNT(DISTINCT peer) >= 20 ORDER BY peers 
         title: "A prefix announced and withdrawn thousands of times an hour",
         kind: "flap",
         severity: "warn",
+        // It counts an hour of every prefix's updates, the dearest of the
+        // rules: every five minutes. Its peers are counted afterwards for
+        // the prefixes it finds (`peers_of`): a distinct count for each of
+        // 300,000 prefixes took 8 to 10 s and 7 GB, without it 2 s and 1 GB
+        // (6 million updates, 18 November 2026).
+        every_s: 300,
         about: "Every change of a route is sent across the internet; a prefix that changes this often costs every router that hears it, and its network's users see a link that comes and goes.",
         sql: "SELECT prefix, MAX(origin) AS origin, MAX(owner) AS owner, COUNT(*) AS updates, COUNT(*) FILTER (WHERE kind = 'W') AS withdrawn,
-  COUNT(DISTINCT peer) AS peers, MIN(ts) AS first, MAX(ts) AS last
+  MIN(ts) AS first, MAX(ts) AS last
 FROM bb_updates WHERE ts >= :since_hour GROUP BY prefix HAVING COUNT(*) >= 10000 * :collectors ORDER BY updates DESC LIMIT 20",
     },
     Rule {
@@ -76,6 +87,7 @@ FROM bb_updates WHERE ts >= :since_hour GROUP BY prefix HAVING COUNT(*) >= 10000
         title: "A network's prefixes withdrawn by many peers at once",
         kind: "outage",
         severity: "bad",
+        every_s: 60,
         about: "Five or more peers withdrew twenty or more of one network's prefixes in the window: the network, or its only way out, is gone from the routing table.",
         sql: "SELECT origin, COUNT(DISTINCT prefix) AS prefixes, COUNT(DISTINCT peer) AS peers, COUNT(*) AS updates, MIN(ts) AS first, MAX(ts) AS last
 FROM bb_updates WHERE ts >= :since AND kind = 'W' AND origin IS NOT NULL
@@ -86,6 +98,7 @@ GROUP BY origin HAVING COUNT(DISTINCT prefix) >= 20 AND COUNT(DISTINCT peer) >= 
         title: "A prefix tagged for blackholing (65535:666)",
         kind: "blackhole",
         severity: "info",
+        every_s: 60,
         about: "A network asked its neighbours to drop all traffic to this prefix, as networks do while one of their addresses is under a denial-of-service attack.",
         sql: "SELECT prefix, origin, owner, COUNT(DISTINCT peer) AS peers, COUNT(*) AS updates, MIN(ts) AS first, MAX(ts) AS last
 FROM bb_updates WHERE ts >= :since AND kind = 'A' AND comms = '65535:666'
@@ -96,6 +109,7 @@ GROUP BY prefix, origin, owner ORDER BY peers DESC LIMIT 100",
         title: "A country or region IODA sees going dark (routes, pings or traffic)",
         kind: "outage",
         severity: "bad",
+        every_s: 60,
         about: "IODA (Georgia Tech) watches every country, region and network: when its routes, the addresses that answer pings, or the traffic it sends fall well below normal, it opens an event. This rule takes the countries and regions whose event began in the last two days; a network's own outage is the withdrawn rule's.",
         sql: "SELECT id, kind, entity, asn, country, name, source, start, until, score FROM bb_outage
 WHERE open AND kind IN ('country', 'region') AND start >= :since_2d ORDER BY score DESC LIMIT 12",
@@ -105,6 +119,7 @@ WHERE open AND kind IN ('country', 'region') AND start >= :since_2d ORDER BY sco
         title: "A country whose probes reach the K root server slowly",
         kind: "slow",
         severity: "warn",
+        every_s: 60,
         about: "Half or more of a country's RIPE Atlas probes take over 100 ms to reach the nearest K root server, though K has a node on most continents: their networks do not meet the node near them.",
         sql: "SELECT country, MEDIAN(rtt) AS med, COUNT(DISTINCT probe) AS probes, COUNT(*) FILTER (WHERE rtt > 100) AS slow, COUNT(*) AS pings
 FROM bb_ping WHERE ts >= :since_atlas AND msm = 1001 AND rtt IS NOT NULL GROUP BY country
@@ -112,10 +127,30 @@ HAVING COUNT(DISTINCT probe) >= 5 AND MEDIAN(rtt) > 100 ORDER BY med DESC LIMIT 
     },
 ];
 
+/// Writes the rules' statements, keeping each one's last run: `load` runs
+/// this every few minutes from the feed, and a rule run every five minutes
+/// would otherwise read as never run for most of them.
 pub async fn install(db: &Strata) -> Result<()> {
+    let last: FxHashMap<String, Row> = db
+        .query("SELECT id, last_run, last_ms, last_rows FROM bb_rules LIMIT 100", Value::Null)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.s("id"), r))
+        .collect();
     let rows: Vec<Value> = RULES
         .iter()
-        .map(|r| json!({"id": r.id, "title": r.title, "kind": r.kind, "severity": r.severity, "every_s": 60, "sql": r.sql, "about": r.about, "enabled": true}))
+        .map(|r| {
+            let mut row = json!({"id": r.id, "title": r.title, "kind": r.kind, "severity": r.severity, "every_s": r.every_s, "sql": r.sql, "about": r.about, "enabled": true});
+            if let Some(was) = last.get(r.id).filter(|was| !was.s("last_run").is_empty()) {
+                for k in ["last_run", "last_ms", "last_rows"] {
+                    if let Some(v) = was.get(k).filter(|v| !v.is_null()) {
+                        row[k] = v.clone();
+                    }
+                }
+            }
+            row
+        })
         .collect();
     db.upsert("bb_rules", rows).await.map_err(|e| anyhow::anyhow!("bb_rules: {e}"))?;
     Ok(())
@@ -129,18 +164,49 @@ pub fn parse_ts(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp_micros())
 }
 
+/// How many peers sent each of `rows`' prefixes since `since`: one small
+/// query over the prefixes a rule found, rather than a distinct count for
+/// every prefix of the hour.
+async fn peers_of(db: &Strata, trace: &Trace, rows: &mut [Row], since: &str) {
+    let prefixes: Vec<String> = rows.iter().map(|r| r.s("prefix")).filter(|p| !p.is_empty()).collect();
+    if prefixes.is_empty() {
+        return;
+    }
+    let sql = "SELECT prefix, COUNT(DISTINCT peer) AS peers FROM bb_updates WHERE prefix IN (:p) AND ts >= :since GROUP BY prefix LIMIT 100";
+    let got = match db.traced_within(trace, "flapping: its prefixes' peers", sql, json!({"p": prefixes, "since": since}), Some(60_000)).await {
+        Ok(got) => got,
+        Err(e) => {
+            tracing::warn!(error = %e, "flapping: peers");
+            return;
+        }
+    };
+    let by: FxHashMap<String, i64> = got.iter().map(|x| (x.s("prefix"), x.i("peers"))).collect();
+    for r in rows.iter_mut() {
+        r.insert("peers".into(), json!(by.get(&r.s("prefix")).copied().unwrap_or(0)));
+    }
+}
+
 /// The newest update's time, the newest ping's, and how many collectors
 /// are being read.
+///
+/// The newest rows are read from where the last run found them (a MAX over
+/// three days of updates costs seconds, and its deadline when the feed is
+/// busy), and the collectors from the rollup of updates a minute rather
+/// than two days of rows.
 pub async fn clock(db: &Strata) -> (i64, i64, usize) {
+    static SEEN: std::sync::Mutex<(i64, i64)> = std::sync::Mutex::new((0, 0));
+    let (su, sp) = *SEEN.lock().unwrap_or_else(|e| e.into_inner());
     let (u, p, c) = tokio::join!(
-        db.query("SELECT MAX(ts) AS t FROM bb_updates", Value::Null),
-        db.query("SELECT MAX(ts) AS t FROM bb_ping", Value::Null),
-        db.query("SELECT collector, COUNT(*) AS n FROM bb_updates WHERE ts >= now() - INTERVAL '2 days' GROUP BY collector", Value::Null),
+        db.query("SELECT MAX(ts) AS t FROM bb_updates WHERE ts >= :since", json!({"since": iso(su)})),
+        db.query("SELECT MAX(ts) AS t FROM bb_ping WHERE ts >= :since", json!({"since": iso(sp)})),
+        db.query("SELECT collector, SUM(count) AS n FROM bb_updates_1m WHERE bucket >= now() - INTERVAL '2 days' GROUP BY collector", Value::Null),
     );
     let t = |r: Result<Vec<Row>, crate::strata::Error>| r.ok().and_then(|r| r.first().and_then(|x| parse_ts(&x.s("t")))).unwrap_or(0);
     let n = c.map(|r| r.len()).unwrap_or(1).max(1);
     let wall = chrono::Utc::now().timestamp_micros() + 60_000_000;
-    (t(u).min(wall), t(p).min(wall), n)
+    let (u, p) = (t(u).min(wall).max(su), t(p).min(wall).max(sp));
+    *SEEN.lock().unwrap_or_else(|e| e.into_inner()) = (u, p);
+    (u, p, n)
 }
 
 /// One run of every rule: alerts opened, kept and ended, then incidents.
@@ -156,7 +222,23 @@ pub async fn run_once(db: &Strata, names: &Names) -> Result<Value> {
     let since_2d = iso(now_u - 2 * 86400 * 1_000_000);
     let mut found: Vec<Value> = Vec::new();
     let mut ran: Vec<String> = Vec::new();
+    // When each rule last ran: one not due keeps its alerts as they are.
+    static LAST: std::sync::Mutex<Vec<(&str, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
     for r in RULES {
+        let due = {
+            let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+            let at = last.iter().find(|x| x.0 == r.id).map(|x| x.1);
+            // A few seconds early is on time: the runs are a minute apart.
+            let due = at.is_none_or(|t| t.elapsed().as_secs() + 10 >= r.every_s);
+            if due {
+                last.retain(|x| x.0 != r.id);
+                last.push((r.id, std::time::Instant::now()));
+            }
+            due
+        };
+        if !due {
+            continue;
+        }
         let mut params = serde_json::Map::new();
         for (k, v) in [("since", json!(since)), ("since_hour", json!(since_hour)), ("since_atlas", json!(since_atlas)), ("since_2d", json!(since_2d)), ("collectors", json!(collectors))] {
             if r.sql.contains(&format!(":{k}")) {
@@ -164,13 +246,16 @@ pub async fn run_once(db: &Strata, names: &Names) -> Result<Value> {
             }
         }
         let t0 = std::time::Instant::now();
-        let rows = match db.traced_within(&trace, r.id, r.sql, Value::Object(params), Some(60_000)).await {
+        let mut rows = match db.traced_within(&trace, r.id, r.sql, Value::Object(params), Some(60_000)).await {
             Ok(rows) => rows,
             Err(e) => {
                 tracing::warn!(rule = r.id, error = %e, "rule");
                 continue;
             }
         };
+        if r.id == "flapping" {
+            peers_of(db, &trace, &mut rows, &since_hour).await;
+        }
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         let _ = db
             .write(vec![

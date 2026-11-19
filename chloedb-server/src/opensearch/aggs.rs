@@ -148,7 +148,11 @@ pub fn run<'a>(os: &'a Os, ix: &'a Index, pred: Option<String>, aggs: &'a Json) 
 fn parts(spec: &Json) -> Result<(String, Json, Option<Json>), OsError> {
     let m = spec.as_object().ok_or_else(|| OsError::parsing("an aggregation is an object"))?;
     let subs = m.get("aggs").or_else(|| m.get("aggregations")).cloned();
-    let (kind, body) = m.iter().find(|(k, _)| !matches!(k.as_str(), "aggs" | "aggregations" | "meta")).ok_or_else(|| OsError::parsing("an aggregation names its type"))?;
+    let mut kinds = m.iter().filter(|(k, _)| !matches!(k.as_str(), "aggs" | "aggregations" | "meta"));
+    let (kind, body) = kinds.next().ok_or_else(|| OsError::parsing("an aggregation names its type"))?;
+    if let Some((other, _)) = kinds.next() {
+        return Err(OsError::parsing(format!("Found two aggregation type definitions: [{kind}] and [{other}]")));
+    }
     Ok((kind.clone(), body.clone(), subs))
 }
 
@@ -272,7 +276,15 @@ fn one<'a>(os: &'a Os, ix: &'a Index, pred: Option<String>, spec: &'a Json) -> B
                 let x = cx.target(field).sql();
                 return bucket(os, ix, with(&pred, format!("{x} IS NULL")), Map::new(), subs.as_ref()).await;
             }
-            "global" => return bucket(os, ix, None, Map::new(), subs.as_ref()).await,
+            // Every document the search may see: through a filtered
+            // alias, those its filter matches.
+            "global" => {
+                let base = match &ix.alias_filter {
+                    Some(f) => compile(f, &mut Ctx::new(ix))?.pred,
+                    None => None,
+                };
+                return bucket(os, ix, base, Map::new(), subs.as_ref()).await;
+            }
             other => return Err(OsError::parsing(format!("Unknown aggregation type [{other}]: ChloeDB's OpenSearch API answers terms, histogram, date_histogram, range, date_range, filters, filter, missing, global, avg, sum, min, max, value_count, cardinality, stats, extended_stats, percentiles and top_hits")).kind("unknown_named_object_exception")),
         };
         if let Some(meta) = spec.get("meta") {

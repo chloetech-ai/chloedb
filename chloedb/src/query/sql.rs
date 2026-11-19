@@ -1476,9 +1476,11 @@ impl<'a> Binder<'a> {
             "path" => GraphKind::Path { to: self.seeds(args[2])?, max_hops: count("max_hops", 6.0)? },
             "ppr" => {
                 let alpha = num("alpha", 0.15)?;
-                let eps = num("eps", 1e-4)?;
-                if !(alpha > 0.0 && alpha < 1.0) || eps <= 0.0 {
-                    return Err(err("ppr needs 0 < alpha < 1 and eps > 0"));
+                // Not given: 0, which the walk reads as 10⁻⁴ lowered while
+                // it settles less than half of its mass.
+                let eps = num("eps", 0.0)?;
+                if !(alpha > 0.0 && alpha < 1.0) || (eps <= 0.0 && opts.contains_key("eps")) {
+                    return Err(err("ppr needs 0 < alpha < 1 and eps > 0 (or no eps, to let the walk lower it from 1e-4 as it needs)"));
                 }
                 GraphKind::Ppr { alpha, eps, max_pushes: num("max_pushes", 1e6)? as u64, weighted: num("weighted", 0.0)? != 0.0 }
             }
@@ -2285,7 +2287,7 @@ impl<'a> Binder<'a> {
                 // with its dimensions.
                 return Err(err(match &fld.embed {
                     Some(e) => format!(
-                        "similarity({}, ...) takes a vector, and {} is text. {} holds {}'s embeddings of {}; give the text as a parameter for the server to embed, \"params\": {{\"q\": {{\"embed\": \"some words\", \"table\": \"{}\", \"field\": \"{}\"}}}} with similarity({}, :q) (in the SQL workbench, pick “embed text” for :q), or a vector of {dim} numbers as a JSON array",
+                        "similarity({}, ...) takes a vector, and {} is text. {} holds {}'s embeddings of {}; give the text as a parameter for the server to embed, \"params\": {{\"{q}\": {{\"embed\": \"some words\", \"table\": \"{}\", \"field\": \"{}\"}}}} with similarity({}, :{q}) (in the SQL workbench, pick “embed text” for :{q}), or a vector of {dim} numbers as a JSON array",
                         fld.name,
                         self.described(v),
                         fld.name,
@@ -2293,15 +2295,17 @@ impl<'a> Binder<'a> {
                         e.from.join(" and "),
                         self.schema.table,
                         fld.name,
-                        fld.name
+                        fld.name,
+                        q = param_name(v)
                     ),
                     None => format!(
-                        "similarity({}, ...) takes a vector, and {} is text. {} is embedded by no model (it has no OPTIONS(embed = ..., model = ...)), so text is not searched against it: give a vector of {dim} numbers as a JSON array, the vector of a stored row (\"params\": {{\"q\": {{\"vector_of\": \"<key>\", \"table\": \"{}\", \"field\": \"{}\"}}}}), or embed('<model>', :q) by a model of {dim} dimensions",
+                        "similarity({}, ...) takes a vector, and {} is text. {} is embedded by no model (it has no OPTIONS(embed = ..., model = ...)), so text is not searched against it: give a vector of {dim} numbers as a JSON array, the vector of a stored row (\"params\": {{\"{q}\": {{\"vector_of\": \"<key>\", \"table\": \"{}\", \"field\": \"{}\"}}}}), or embed('<model>', :{q}) by a model of {dim} dimensions",
                         fld.name,
                         self.described(v),
                         fld.name,
                         self.schema.table,
-                        fld.name
+                        fld.name,
+                        q = param_name(v)
                     ),
                 }));
             }
@@ -3791,6 +3795,18 @@ pub(crate) fn encode_call(f: &sql::Function, literal: &dyn Fn(&Expr) -> Result<V
         Some(v) => return Err(err(format!("encode's now is a time (a TIMESTAMP, or microseconds since the Unix epoch), not {v:?}"))),
     };
     Ok(ir::Expr::Encode { model, hash: String::new(), rows, now, open: Default::default() })
+}
+
+/// The name of the parameter `e` is (`:v` gives `v`), for the examples an
+/// error shows; `q` for a literal.
+fn param_name(e: &Expr) -> String {
+    match e {
+        Expr::Value(v) => match &v.value {
+            sql::Value::Placeholder(p) => p.trim_start_matches([':', '$', '@', '?']).to_string(),
+            _ => "q".to_string(),
+        },
+        _ => "q".to_string(),
+    }
 }
 
 fn fname(f: &sql::Function) -> String {

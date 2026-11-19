@@ -43,6 +43,7 @@
 //! | `POST /v1/derive/preview` | `{model, text, table?, field?, many?}` | `{model, many, values}`: what a content model makes of a text, as a derived KEYWORD field would hold it: a built-in one (`builtin:lang`, `builtin:keyphrases`, `builtin:minhash`), a dictionary (`dict:<table>.<field>`, the text analysed as `table`'s `field`), or a classifier (`classifier:<name>`, its best label, or with `many` the labels a `KEYWORD[]` holds, and `top`) |
 //! | `POST /v1/classify` | `{name, text, k?}` | `{label, score, top: [[label, probability]], classifier, version, table, field, labels_from, min_score}`: a text's classes by a classifier `CREATE CLASSIFIER` made, the text embedded by its field's model |
 //! | `POST /v1/understand` | `{table, field, text, mode?, fields?, weight?}` | `{spans, ranges, ranked, filters, boosts, line, ...}`: the values of the table's keyword fields the words name, and ranges of numbers, as `bm25(.., understand => ..)` takes them |
+//! | `POST /v1/funnel` | `{sql, params?, timeout_ms?}` | a query's funnel ([`crate::funnel`]): it runs once, its time on the stages from its text to its rows, the words understood and the terms they became, the texts embedded, and the rows each stage kept and dropped, each row seen with where it left and why |
 //! | `POST /v1/correct` | `{table, field, text}` | `{text, changed, words: [{word, term, to, to_word, edits, chance}]}`: "did you mean", the words in no row taken for typos of the field's terms (one server or shard) |
 //! | `POST /v1/highlight` | `{table, field, query, texts, size?, pre?, post?}` | `{texts, took_ms}`: each text with the words `query` matches marked as the field's analyzer and synonyms read them (stems, synonyms, typos, prefixes, phrases, and code such as `C++` where its characters are), the stretch of about `size` characters with the most (160; 0 the whole text), HTML-escaped between `<mark>` tags, or as given between `pre` and `post` |
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
@@ -69,6 +70,7 @@
 //! | `GET /v1/queries/recent?since=ms&limit=n`, `/v1/queries/slow?limit=n` | | `{queries}`: the latest that ended (or the slow ones), the newest first, each with its trace |
 //! | `GET /v1/queries/request/:id` | | `{queries}`: those a request (its `x-request-id`) ran |
 //! | `GET /v1/queries/finished/:id` | | one ended query with its whole profile: trace, steps ([`chloedb::query::steps`]) and plan lines (the lists give each without them, unless `full=true`) |
+//! | `GET /v1/queries/funnel?since=&table=&fingerprint=&kind=&id=` | | the latest queries' time on the funnel's stages: together, by statement (with each one's rows by stage) and the slowest one by one; `id` one of them |
 //! | `GET /v1/profile/settings`, `PUT /v1/profile/settings` | `{slow_ms?, cpu_all?}` | the slow threshold (until restarted) and whether every query's CPU time is measured; on a coordinator `?node=` a copy's, `?coordinator=` (URL or name) another coordinator's |
 //! | `POST /v1/profile/cpu?format=folded&node=` | `{seconds?, hz?, sql?, params?, clients?}` | a CPU profile ([`crate::profiler`]) of the whole server for `seconds`, or of `sql` run again and again for that long by `clients` callers at once (1 to 64): every thread's stacks, sampled `hz` times a CPU second; `format=folded` answers folded lines (flamegraph.pl, speedscope); 409 while another is taken |
 //! | `GET /v1/profile/memory?node=` | | the heap ([`crate::heap`]: bytes in use and their peak, bytes allocated, allocations and frees), the resident memory and its peak, and the threads |
@@ -292,6 +294,11 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/schema", get(schema))
         .route("/v1/tables", get(tables))
         .route("/v1/functions", get(functions))
+        .route("/v1/blends", get(blends))
+        .route("/v1/blends/preview", post(blend_preview))
+        .route("/v1/blends/:name", get(blend_versions).merge(put(blend_put)).merge(axum::routing::delete(blend_delete)))
+        .route("/v1/blends/:name/evaluate", post(blend_evaluate))
+        .route("/v1/blends/:name/tune", post(blend_tune))
         .route("/v1/tables/:table/paths", get(json_paths))
         .route("/v1/index", get(index))
         .route("/v1/index/reads/reset", post(reset_reads))
@@ -330,6 +337,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/correct", post(correct))
         .route("/v1/highlight", post(highlight))
         .route("/v1/understand", post(understand))
+        .route("/v1/funnel", post(funnel))
         .route("/v1/classify", post(classify))
         .route("/v1/classifiers", get(classifiers))
         .route("/v1/derive/preview", post(derive_preview))
@@ -406,6 +414,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/queries/slow", get(slow_queries))
         .route("/v1/queries/request/:id", get(request_queries))
         .route("/v1/queries/finished/:id", get(finished_query))
+        .route("/v1/queries/funnel", get(queries_funnel))
         .route("/v1/profile/settings", get(profile_settings).merge(put(put_profile_settings)))
         .route("/v1/profile/cpu", post(cpu_profile))
         .route("/v1/profile/memory", get(memory))
@@ -828,8 +837,10 @@ fn event_of_row(r: &Json) -> Json {
 
 /// `GET /v1/events?from=&to=&kind=a,b&limit=` ([`crate::events`]): the
 /// events from `from` to `to` (ms; the last 24 hours by default), the
-/// newest first; from the log store for what memory no longer holds. Who
-/// did what is the admin's to read.
+/// newest first; on a coordinator, those its shards kept from before it
+/// started ([`crate::kept`], OLU-301), and from the log store what memory
+/// no longer holds. `record_from_ms` says from when the answer holds every
+/// event. Who did what is the admin's to read.
 async fn events_list(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Params) -> Res {
     let limit = param_u64(&q, "limit", 500)?.clamp(1, 5000) as usize;
     let kinds: Vec<String> = q.get("kind").map(|k| k.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
@@ -860,17 +871,36 @@ async fn events_list(State(app): State<App>, w: Option<axum::Extension<Principal
     let from = param_u64(&q, "from", to.saturating_sub(86_400_000))?;
     let (kept, oldest) = app.svc.events.range(from, to, &kinds, limit);
     let mut events: Vec<Json> = kept.iter().map(|r| json!(**r)).collect();
+    let mut ids: std::collections::HashSet<i64> = kept.iter().map(|r| r.id).collect();
     let mut source = vec!["memory"];
     let mut error = None;
     // What memory no longer holds (or never held, before a restart).
     let held = app.svc.events.held_from();
+    let mut record = held;
+    // What the shards kept of the coordinators before this one started.
+    if from < held {
+        let restored = app.svc.kept.restored_events(from, held.min(to), &kinds, limit);
+        let shards = app.svc.kept.events_from();
+        if let Some(f) = shards {
+            record = record.min(f);
+        }
+        if shards.is_some() || !restored.is_empty() {
+            source.push("shards");
+        }
+        for e in restored {
+            if e["id"].as_i64().is_none_or(|id| ids.insert(id)) {
+                events.push(e);
+            }
+        }
+    }
     if let (Some(store), true) = (&app.svc.log_store, from < held) {
         let and = (!kinds.is_empty()).then(|| format!("kind IN ({})", kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ")));
         match store.kept_rows(crate::logstore::EVENTS, from, held.min(to), and, limit).await {
             Ok(rows) => {
-                let ids: std::collections::HashSet<i64> = kept.iter().map(|r| r.id).collect();
                 events.extend(rows.iter().filter(|r| r["id"].as_i64().is_none_or(|id| !ids.contains(&id))).map(event_of_row));
                 source.push("log_store");
+                // It keeps them for 30 days.
+                record = record.min(from);
             }
             Err(e) => error = Some(format!("the log store did not answer: {}", e.message)),
         }
@@ -887,7 +917,7 @@ async fn events_list(State(app): State<App>, w: Option<axum::Extension<Principal
             }
         }
     }
-    let mut j = json!({"events": events, "from_ms": from, "to_ms": to, "source": source, "memory_from_ms": held, "oldest_in_memory_ms": oldest});
+    let mut j = json!({"events": events, "from_ms": from, "to_ms": to, "source": source, "memory_from_ms": held, "record_from_ms": record, "oldest_in_memory_ms": oldest});
     if let Some(e) = error {
         j["error"] = json!(e);
     }
@@ -1299,6 +1329,8 @@ pub(crate) fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // grades, and applying a proposal replaces a rank profile.
         "/v1/relevance/autopilot" | "/v1/relevance/proposals/:id/apply" | "/v1/relevance/proposals/:id/dismiss" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
+        // A blend is a stored function: writing one is an admin's.
+        "/v1/blends/:name" if method == Method::PUT || method == Method::DELETE => Scope::Admin,
         // Mining reads a table's words and compares them pairwise, and
         // proposes a change to ranking: an admin's, as the list it feeds.
         "/v1/synonyms/mine" => Scope::Admin,
@@ -1690,6 +1722,281 @@ async fn functions(State(app): State<App>) -> Res {
         out.push(json!({"name": name, "current": set.current(name).map(|f| f.version), "versions": versions}));
     }
     Ok(AxJson(json!({"functions": out})))
+}
+
+/// A blend's version as JSON ([`chloedb::query::blend`]).
+fn blend_json(d: &chloedb::query::blend::Def, f: &chloedb::query::function::Function) -> Json {
+    json!({
+        "name": d.name, "version": f.version, "note": d.note, "k": d.k,
+        "sources": d.sources.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+        "created": f.created.map(chloedb::timestamp::format), "created_by": f.created_by,
+        "def": d, "sql": d.sql(true),
+    })
+}
+
+/// `GET /v1/blends`: every blend, its current version.
+async fn blends(State(app): State<App>) -> Res {
+    app.svc.learn_functions().await;
+    let set = app.svc.functions();
+    let out: Vec<Json> = chloedb::query::blend::defs(&set)
+        .iter()
+        .map(|(d, f)| {
+            let mut j = blend_json(d, f);
+            j["versions"] = json!(set.all().filter(|g| g.def.name == f.def.name).count());
+            j
+        })
+        .collect();
+    Ok(AxJson(json!({"blends": out})))
+}
+
+/// `GET /v1/blends/:name`: every version of a blend, oldest first.
+async fn blend_versions(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>) -> Res {
+    app.svc.learn_functions().await;
+    let set = app.svc.functions();
+    let name = name.to_ascii_lowercase();
+    let vs = chloedb::query::blend::versions(&set, &name);
+    if vs.is_empty() {
+        return Err(ApiError { code: None, status: 404, message: format!("no blend named {name}") });
+    }
+    let current = set.current(&name).filter(|f| !f.dropped).map(|f| f.version);
+    let versions: Vec<Json> = vs
+        .iter()
+        .map(|(d, f)| match d {
+            Some(d) => blend_json(d, f),
+            None => json!({"name": name, "version": f.version, "dropped": true, "created": f.created.map(chloedb::timestamp::format), "created_by": f.created_by}),
+        })
+        .collect();
+    Ok(AxJson(json!({"name": name, "current": current, "versions": versions})))
+}
+
+/// `PUT /v1/blends/:name {"def": {...}, "note"?}`: the blend's next
+/// version, as `CREATE OR REPLACE BLEND` writes it.
+async fn blend_put(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(name): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    let w = who(w);
+    let mut def: chloedb::query::blend::Def = serde_json::from_value(b.get("def").cloned().ok_or_else(|| ApiError::bad("the body needs the blend's definition, \"def\""))?).map_err(|e| ApiError::bad(format!("the blend's definition: {e}")))?;
+    def.name = name.to_ascii_lowercase();
+    if let Some(n) = b.get("note").and_then(Json::as_str) {
+        def.note = Some(n.to_string()).filter(|n| !n.trim().is_empty());
+    }
+    def.check()?;
+    let sql = def.sql(true);
+    audit_ui_write(&sql, None, None);
+    let t0 = Instant::now();
+    let r = app.svc.sql(&w, &sql, &chloedb::query::Params::new(), crate::service::After::Any, body_u64(&b, "timeout_ms")?).await?;
+    let version = match &r {
+        SqlAnswer::Rows(a) => a.rs.rows.first().and_then(|r| r.get(1)).and_then(|v| v.as_i64()).unwrap_or(0),
+        SqlAnswer::Written { .. } => 0,
+    };
+    Ok(AxJson(json!({"name": def.name, "version": version, "sql": sql, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
+}
+
+/// `DELETE /v1/blends/:name`: `DROP BLEND`, a tombstone version (older
+/// versions stay readable as `name@n`).
+async fn blend_delete(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(name): axum::extract::Path<String>) -> Res {
+    let w = who(w);
+    let sql = format!("DROP BLEND {}", chloedb::query::sql::ident(&name.to_ascii_lowercase()));
+    audit_ui_write(&sql, None, None);
+    app.svc.sql(&w, &sql, &chloedb::query::Params::new(), crate::service::After::Any, 0).await?;
+    Ok(AxJson(json!({"dropped": name.to_ascii_lowercase()})))
+}
+
+/// `POST /v1/blends/preview {"name"?, "version"?, "def"?, "params"?, "k"?,
+/// "costs"?}`: a blend's run with its receipts, of a stored version or of
+/// a draft (`def`, not stored): each row's slot and why, its heads' parts,
+/// the rows passed over, each quota's count and each rule's cost.
+async fn blend_preview(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    let w = who(w);
+    let t0 = Instant::now();
+    let (def, version) = match b.get("def").filter(|d| !d.is_null()) {
+        Some(d) => {
+            let mut def: chloedb::query::blend::Def = serde_json::from_value(d.clone()).map_err(|e| ApiError::bad(format!("the blend's definition: {e}")))?;
+            if def.name.is_empty() {
+                def.name = "draft".into();
+            }
+            def.check()?;
+            (def, 0)
+        }
+        None => {
+            let name = body_str(&b, "name")?.to_ascii_lowercase();
+            let v = b.get("version").and_then(Json::as_i64);
+            app.svc.blend_def(&name, v).await?
+        }
+    };
+    for q in def.queries() {
+        reads_ok(&app, &w, q).await?;
+    }
+    let params = app.svc.params_for(b.get("params"), def.queries().first().copied(), &w).await?;
+    let k = match body_u64(&b, "k")? {
+        0 => def.k,
+        n => (n as usize).min(chloedb::query::blend::MAX_K),
+    };
+    let costs = !matches!(b.get("costs"), Some(Json::Bool(false)));
+    let req = crate::service::QueryReq { timeout_ms: body_u64(&b, "timeout_ms")?, who: Some(w.clone()), ..Default::default() };
+    let blended = app.svc.run_blend(&req, &def, version, &params, k, chloedb::query::blend::Want { costs, ..Default::default() }).await?;
+    let mut j = blended.receipts();
+    j["sql"] = json!(def.sql(true));
+    j["took_ms"] = json!(t0.elapsed().as_secs_f64() * 1e3);
+    Ok(AxJson(j))
+}
+
+/// A blend to value off-policy ([`chloedb::query::blend_eval::Target`]):
+/// `"name"` or `"name@3"` (a stored version), or an object of `def` (a
+/// draft) or `name` and `version`, with `label` and `explore` (`{tau,
+/// top}`: valued as an exploring fill; the best taken without).
+async fn blend_target(app: &App, t: &Json) -> Result<chloedb::query::blend_eval::Target, ApiError> {
+    use chloedb::query::blend::{Def, Explore};
+    use chloedb::query::blend_eval::Target;
+    let named = |s: &str| -> Result<(String, Option<i64>), ApiError> {
+        let s = s.trim().to_ascii_lowercase();
+        match s.split_once('@') {
+            Some((n, v)) => Ok((n.to_string(), Some(v.parse::<i64>().map_err(|_| ApiError::bad(format!("blend {s:?}: a version after @ is a number")))?))),
+            None => Ok((s, None)),
+        }
+    };
+    let (def, label, explore) = match t {
+        Json::String(s) => {
+            let (n, v) = named(s)?;
+            let (def, v) = app.svc.blend_def(&n, v).await?;
+            (def, format!("{n}@{v}"), None)
+        }
+        Json::Object(m) => {
+            let explore = match m.get("explore").filter(|e| !e.is_null()) {
+                Some(e) => {
+                    let tau = e.get("tau").and_then(Json::as_f64).ok_or_else(|| ApiError::bad("a target's explore is {tau, top}: tau a share of the utilities' range"))?;
+                    let top = e.get("top").and_then(Json::as_u64).unwrap_or(5) as usize;
+                    if !(tau > 0.0) || top < 1 {
+                        return Err(ApiError::bad("a target's explore has tau above 0 and top 1 or more"));
+                    }
+                    Some(Explore { tau, top })
+                }
+                None => None,
+            };
+            let (def, label) = match m.get("def").filter(|d| !d.is_null()) {
+                Some(d) => {
+                    let mut def: Def = serde_json::from_value(d.clone()).map_err(|e| ApiError::bad(format!("a target's definition: {e}")))?;
+                    if def.name.is_empty() {
+                        def.name = "draft".into();
+                    }
+                    def.check()?;
+                    (def, "draft".to_string())
+                }
+                None => {
+                    let n = m.get("name").and_then(Json::as_str).ok_or_else(|| ApiError::bad("a target is a blend's name (\"name@3\"), or an object of def, or name and version"))?;
+                    let (n, mut v) = named(n)?;
+                    if let Some(x) = m.get("version").and_then(Json::as_i64) {
+                        v = Some(x);
+                    }
+                    let (def, v) = app.svc.blend_def(&n, v).await?;
+                    (def, format!("{n}@{v}"))
+                }
+            };
+            let label = m.get("label").and_then(Json::as_str).map_or(label, str::to_string);
+            (def, label, explore)
+        }
+        _ => return Err(ApiError::bad("a target is a blend's name (\"name@3\"), or an object of def, or name and version")),
+    };
+    Ok(Target { label, def, explore })
+}
+
+/// The logged requests of blend `name` in the log the body's `export`
+/// names (`/v1/rank_log/export`'s body: `table`, `events`, `window`,
+/// `grades`, `since`, `until`), read from a local database or through
+/// the coordinator; and the logging blend's versions.
+async fn blend_logs(app: &App, who: &Principal, name: &str, b: &Json) -> Result<(chloedb::query::blend_eval::Gathered, std::collections::HashMap<i64, chloedb::query::blend::Def>), ApiError> {
+    use chloedb::query::blend_eval::{self, Logs};
+    let x = chloedb::rank_log::Export::from_json(b.get("export").ok_or_else(|| ApiError::bad("the body needs the log to read, \"export\": {table, events: {table, user, item, time, action?}, window?, grades?}"))?)?;
+    if x.events.is_none() {
+        return Err(ApiError::bad("a blend is valued by what its pages earned: the export needs events ({table, user, item, time, action?}) and a window"));
+    }
+    rank_log_ok(who, &x)?;
+    chloedb::rank_log::check(&*app.svc.table(&x.table).await?)?;
+    let (n, x2) = (name.to_string(), x.clone());
+    let gathered = match app.svc.local_db().cloned() {
+        Some(db) => tokio::task::spawn_blocking(move || db.blend_requests(&x2, &n)).await.map_err(ApiError::internal)??,
+        None => {
+            let logs = Arc::new(std::sync::Mutex::new(Logs::default()));
+            let l = logs.clone();
+            crate::export::rank_log(&app.svc, &crate::service::scroll_owner(who), x, move |r| {
+                l.lock().unwrap_or_else(|e| e.into_inner()).add(&r);
+                Ok(())
+            })
+            .await?;
+            let l = std::mem::take(&mut *logs.lock().unwrap_or_else(|e| e.into_inner()));
+            l.finish(name)
+        }
+    };
+    app.svc.learn_functions().await;
+    Ok((gathered, blend_eval::versions(&app.svc.functions(), name)))
+}
+
+fn gathered_json(g: &chloedb::query::blend_eval::Gathered) -> Json {
+    json!({"requests": g.requests.len(), "not_exploring": g.not_exploring, "other": g.other, "broken": g.broken})
+}
+
+/// `POST /v1/blends/:name/evaluate {export, targets?, discount?}`: blends
+/// valued off-policy over blend `name`'s exploring requests in a rank log
+/// ([`chloedb::query::blend_eval::evaluate`]): each target (its current
+/// version without `targets`) by cascade doubly robust over each slot's
+/// chance with SNIPS beside it, the first judged against the logged
+/// blend, each other one against the first. `{gathered, estimates,
+/// model, took_ms}`.
+async fn blend_evaluate(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(name): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    use chloedb::query::blend_eval::{self, Options};
+    let w = who(w);
+    let name = name.to_ascii_lowercase();
+    let t0 = Instant::now();
+    let asked: Vec<Json> = match b.get("targets") {
+        None | Some(Json::Null) => vec![json!(name)],
+        Some(Json::Array(a)) if !a.is_empty() && a.len() <= 8 => a.clone(),
+        Some(_) => return Err(ApiError::bad("targets is a list of one to eight blends: names (\"name@3\") or objects of def")),
+    };
+    let mut targets = Vec::with_capacity(asked.len());
+    for t in &asked {
+        targets.push(blend_target(&app, t).await?);
+    }
+    let discount = matches!(b.get("discount"), Some(Json::Bool(true)));
+    let (g, versions) = blend_logs(&app, &w, &name, &b).await?;
+    let counts = gathered_json(&g);
+    if g.requests.is_empty() {
+        return Ok(AxJson(json!({"blend": name, "gathered": counts, "estimates": [], "took_ms": t0.elapsed().as_secs_f64() * 1e3})));
+    }
+    let mut reqs = g.requests;
+    let (est, model) = tokio::task::spawn_blocking(move || blend_eval::evaluate(&mut reqs, &|v| versions.get(&v).cloned(), &targets, Options { discount }))
+        .await
+        .map_err(ApiError::internal)??;
+    Ok(AxJson(json!({"blend": name, "gathered": counts, "estimates": est.iter().map(|e| e.json()).collect::<Vec<_>>(), "model": model, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
+}
+
+/// `POST /v1/blends/:name/tune {export, start?, rounds?, seed?, discount?}`:
+/// blends near `start` (a target as `evaluate` takes one; the current
+/// version without) tried on half of blend `name`'s exploring requests,
+/// head weights, shares and diversity moved, and the best valued against
+/// the start on the other half ([`chloedb::query::blend_eval::tune`]).
+/// `{gathered, tried: [{change, sql, train}], best: {def, sql, estimate},
+/// start, took_ms}`.
+async fn blend_tune(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(name): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    use chloedb::query::blend_eval::{self, TuneOptions};
+    let w = who(w);
+    let name = name.to_ascii_lowercase();
+    let t0 = Instant::now();
+    let start = blend_target(&app, b.get("start").filter(|s| !s.is_null()).unwrap_or(&json!(name))).await?;
+    let mut o = TuneOptions { discount: matches!(b.get("discount"), Some(Json::Bool(true))), ..Default::default() };
+    if let Some(r) = b.get("rounds").and_then(Json::as_u64) {
+        o.rounds = (r as usize).clamp(1, 200);
+    }
+    if let Some(s) = b.get("seed").and_then(Json::as_u64) {
+        o.seed = s;
+    }
+    let (g, versions) = blend_logs(&app, &w, &name, &b).await?;
+    let counts = gathered_json(&g);
+    if g.requests.is_empty() {
+        return Ok(AxJson(json!({"blend": name, "gathered": counts, "tried": [], "best": null, "took_ms": t0.elapsed().as_secs_f64() * 1e3})));
+    }
+    let mut reqs = g.requests;
+    let t = tokio::task::spawn_blocking(move || blend_eval::tune(&mut reqs, &|v| versions.get(&v).cloned(), &start, o)).await.map_err(ApiError::internal)??;
+    let tried: Vec<Json> = t.tried.iter().map(|x| json!({"change": x.change, "sql": x.def.sql(true), "def": x.def, "train": x.train.json()})).collect();
+    let best = t.best.as_ref().map(|(d, e)| json!({"def": d, "sql": d.sql(true), "estimate": e.json()}));
+    Ok(AxJson(json!({"blend": name, "gathered": counts, "tried": tried, "best": best, "start": t.start.as_ref().map(|e| e.json()), "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
 }
 
 /// `GET /v1/index?table=&sample=&seed=&terms=&top=`: the index
@@ -3351,10 +3658,14 @@ async fn follow_view(State(app): State<App>) -> Res {
     Ok(AxJson(app.svc.follow_view().await?))
 }
 
-/// `POST /v1/admin/follow/status`: a follow process says how it stands
-/// (the cluster's token only).
+/// `POST /v1/admin/follow/status`: a follow process says how it stands:
+/// a cluster's with the cluster's token only; a Postgres follower's
+/// (`"kind": "postgres"`, [`crate::postgres`]) with that or an admin's
+/// key, which its `--target-token` may be.
 async fn follow_status(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
-    root_only(&who(w), "a follow process's status")?;
+    if b["kind"] != "postgres" {
+        root_only(&who(w), "a follow process's status")?;
+    }
     let name = b["name"].as_str().filter(|n| crate::service::follow_name_ok(n)).ok_or_else(|| ApiError::bad("the status names its cluster: {\"name\": ...}"))?.to_string();
     app.svc.note_follow_status(&name, b);
     Ok(AxJson(json!({"noted": name})))
@@ -3474,7 +3785,12 @@ async fn source(State(app): State<App>, axum::extract::Path(name): axum::extract
 }
 
 fn source_json(s: chloedb::db::Source) -> Json {
-    json!({"name": s.name, "offset": s.offset, "updated": s.updated.map(chloedb::timestamp::format)})
+    let mut j = json!({"name": s.name, "offset": s.offset, "updated": s.updated.map(chloedb::timestamp::format)});
+    // A Postgres follower's positions, as Postgres writes them (ROSA-307).
+    if crate::postgres::is_lsn_mark(&s.name) {
+        j["lsn"] = json!(crate::postgres::pgoutput::lsn_text(s.offset.max(0) as u64));
+    }
+    j
 }
 
 /// Whether a statement would run on this deployment, without running it
@@ -3850,6 +4166,40 @@ async fn understand(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     v["boosts"] = json!(u.boosts());
     v["line"] = json!(u.line());
     Ok(AxJson(v))
+}
+
+/// `{sql, params?, timeout_ms?, budget?}`: the query run once, and its
+/// funnel ([`crate::funnel`]): the time of each stage from its text to
+/// its rows, and the rows each stage kept and dropped, and why.
+async fn funnel(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    let sql = body_str(&b, "sql")?;
+    let who = who(w);
+    reads_ok(&app, &who, sql).await?;
+    let params = app.svc.params_for(b.get("params"), Some(sql), &who).await?;
+    let ask = crate::funnel::Ask { sql: sql.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms")?, budget: body_budget(&b)? };
+    let mut j = crate::funnel::one(&app.svc, &who, ask).await?;
+    // The shards' hosts, for an admin key's eyes only.
+    if !(who.scope == Scope::Admin && !who.limited()) {
+        if let Some(steps) = j.get_mut("steps") {
+            let mut s: Vec<chloedb::query::steps::Step> = serde_json::from_value(steps.take()).unwrap_or_default();
+            hide_hosts(&who, &mut s);
+            *steps = json!(s);
+        }
+        for s in j.get_mut("spans").and_then(Json::as_array_mut).into_iter().flatten() {
+            if let Some(o) = s.as_object_mut() {
+                o.remove("replica");
+            }
+        }
+    }
+    Ok(AxJson(j))
+}
+
+/// `GET /v1/queries/funnel?since=&limit=&table=&fingerprint=&kind=&id=`:
+/// the time of the queries this server ran on the funnel's stages
+/// ([`crate::funnel::many`]), or of the one numbered `id`.
+async fn queries_funnel(State(app): State<App>, Query(q): Params) -> Res {
+    let (since, limit) = (param_u64(&q, "since", 0)?, param_u64(&q, "limit", telemetry::RECENT as u64)? as usize);
+    Ok(AxJson(crate::funnel::many(&app.svc, &q, since, limit.min(telemetry::RECENT))?))
 }
 
 /// `{name, text, k?}`: the classes of a text by a classifier `CREATE
@@ -7120,6 +7470,12 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
         may["reason_required"] = json!(true);
     }
     j["may"] = may;
+    // MARCO-301: a key limited to tables calls some of the server's routes
+    // alone: which, each as "METHOD /route", so that the command center
+    // offers what it may do and says why it may not do the rest.
+    if w.limited() {
+        j["may"]["routes"] = json!(limited_routes(&w));
+    }
     j["caller"] = json!(caller);
     // The presets a key limited to tables can be made from.
     j["presets"] = json!(keys::PRESETS.iter().map(|(n, w)| json!({"name": n, "what": w})).collect::<Vec<_>>());
@@ -7129,6 +7485,19 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
         j["signed_in"] = json!({"email": email, "provider": provider});
     }
     AxJson(j)
+}
+
+/// The routes key `w`, limited to tables, may call, as `"METHOD /route"`:
+/// those every such key calls ([`crate::scoped::route_ok`]; a connector's
+/// push key, [`crate::scoped::push_route_ok`]) and its groups'
+/// ([`keys::Allow`]), each with the scope it needs. What it then may do on
+/// each is checked by its tables, as ever.
+pub(crate) fn limited_routes(w: &Principal) -> Vec<String> {
+    let reaches = |m: &axum::http::Method, route: &str| match w.push_only() {
+        true => crate::scoped::push_route_ok(m, route),
+        false => crate::scoped::route_ok(m, route) || w.allowed_route(m, route),
+    };
+    crate::catalog::routes().iter().flat_map(|r| r.methods.iter().filter(|m| reaches(m, r.path) && w.scope >= route_scope(m, r.path)).map(move |m| format!("{m} {}", r.path))).collect()
 }
 
 // ----- sign-in: people sign in to the command center with Google ([`crate::signin`])

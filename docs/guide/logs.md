@@ -24,6 +24,8 @@ export ADMIN_KEY=$(curl -s -X POST localhost:7700/v1/admin/keys -H 'content-type
 
 A log table is any table with a `TIMESTAMP` and a text column. This one names its columns as OpenTelemetry does (`ts`, `severity`, `host`, `service`, `body`, `attributes`), so that the OpenTelemetry Collector and a JSON lines import both fill it. `substring = true` gives `host` and `body` a [substring index](../chloedb/query-language.md#substrings-like-and-ilike-anywhere-in-a-value), which answers `LIKE` and `ILIKE` with `%` anywhere (`'%GigabitEthernet0/1%'`, `'%10.0.12.2%'`) from the index rather than by reading every line. `retain` drops lines older than 30 days. A log line has no key, so the table has none.
 
+Choose the retention now: a table's `retain` cannot be changed later (`ALTER TABLE ... SET (retain = ...)` is refused), so another one means a new table and the shippers moved to it. Size the disk for it too. How many bytes a line takes depends on the lines: short ones that repeat themselves, as a router's syslog, take tens of bytes (30 to 43 on four of Loghub's logs, without substring indexes: [OpenTelemetry logs](../chloedb/server.md#opentelemetry-logs)), while a service's lines with a trace id and a JSON body took about 500 bytes each in this table, 312 without the two substring indexes, and 195 with `body` not indexed either (200,000 such lines, measured in a persona study on a 4-core cloud container, 2026-11-18). At 1,000 lines a second, 500 bytes a line is 43 GB a day. `GET /v1/index/tables` gives each table's bytes: read it after a day of your own lines. A [vacuum](../chloedb/runbooks.md#the-disk-is-filling) to free deleted rows needs room first, since the file grows while it runs.
+
 ```sql file=logs_syslog.sql
 CREATE TABLE logs_syslog (
   ts TIMESTAMP NOT NULL,
@@ -49,7 +51,7 @@ made
 
 ## A key for the on-call engineer and the log shipper
 
-The `oncall` preset makes a key [limited to tables](../chloedb/server.md#security): it writes and reads the tables its prefix names (rows, imports and OpenTelemetry logs alike), writes notes into its [ChloeCtx](../chloectx/app.md) spaces `ctx_logs_*`, and reads the fleet's health, events, alerts and metrics. It cannot read other tables or change the server.
+The `oncall` preset makes a key [limited to tables](../chloedb/server.md#security): it writes and reads the tables its prefix names (rows, imports and OpenTelemetry logs alike), writes notes into its [ChloeCtx](../chloectx/app.md) spaces `ctx_logs_*`, reads the fleet's health, events, alerts and metrics, and acknowledges, silences and notes an alert, as the alert's page and `chloedb-server cc` offer it. It cannot read other tables, change alert rules or routes, or change the server otherwise. Since it can silence an alert, give the Collector a key of its own that only writes these tables (`POST /v1/admin/keys {"name": "collector", "tables": {"logs_*": "write"}}`, which `POST /v1/logs` takes): a key read from a shipper's config file should not be able to quiet the pages. This page uses one key for both, to stay short.
 
 ```sh
 export CHLOEDB_LOGS_KEY=$(curl -s -X POST localhost:7700/v1/admin/keys -H "authorization: Bearer $ADMIN_KEY" \
@@ -277,6 +279,18 @@ sql "SELECT count(*) FROM audit" || true
 ```text output
 a query touches table audit, which the key "netops" may not: it is limited to logs_* (write), ctx_logs_* (write), ctx_incidents (read)
 ```
+
+## Alert on your logs
+
+An alert rule can watch a query over a log table: its `sql` is a `SELECT` whose first number is the value, run every 30 seconds with `:since` (the start of the rule's window) and `:now` ([a rule on the data](../chloedb/server.md#alerts)). Fire when the payments service logs more than 50 errors in a minute, and resolve under 10:
+
+```json
+{"id": "payments-errors", "name": "payments errors (from its logs)",
+ "sql": "SELECT COUNT(*) FROM logs_syslog WHERE service = 'payments' AND severity = 'ERROR' AND ts > :since",
+ "op": ">", "threshold": 50, "resolve": 10, "eval": "max", "window_s": 60, "severity": "critical"}
+```
+
+Add it on the command center's **Alerts** page (**New rule**, then **Or a query**, which runs the query once and shows what it answers), or in the list `PUT /v1/alerts/rules` takes, with an admin key: the on-call key may acknowledge, silence and note an alert, not change the rules. It is routed and paged as any rule is, and fires within about a minute of the lines that cross it. `GET /v1/alerts` says when each such query last ran, what it answered and any error.
 
 ## The Log explorer
 

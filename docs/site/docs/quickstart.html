@@ -87,6 +87,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
       <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">ChloeCtx</span>
       <a href="chloectx.html">ChloeCtx</a>
@@ -123,7 +124,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>You need macOS 11 or later (Apple silicon or Intel), or Linux on x86-64 or aarch64 with glibc 2.35 or later (Ubuntu 22.04, Debian 12 and newer), and <code>curl</code>. On Windows, use WSL 2 or Docker.</p>
 <h2 id="1-install-the-server">1. Install the server<a class="anchor" href="#1-install-the-server" aria-label="Link to this section">#</a></h2>
 <p>Pick one. Each gives you a <code>chloedb-server</code> program, prebuilt (a download of about 50 MB), in under a minute.</p>
-<p><strong>The install script</strong> puts it in <code>~/.local/bin</code> (it says what to add to your <code>PATH</code> if that folder is not on it yet). It checks the download against the release's SHA-256 and, where <a href="https://cli.github.com">GitHub's CLI</a> (<code>gh</code>) is installed, its build provenance (releases from 0.3.9: that this repository's release workflow built it), and changes nothing else. <a href="../../install.sh">Read it</a> first if you like.</p>
+<p><strong>The install script</strong> puts it in <code>~/.local/bin</code> (it says what to add to your <code>PATH</code> if that folder is not on it yet). It checks the download against the release's SHA-256 and, where <a href="https://cli.github.com">GitHub's CLI</a> (<code>gh</code>) is installed, its build provenance (releases from 0.3.8: that this repository's release workflow built it), and changes nothing else. <a href="../../install.sh">Read it</a> first if you like.</p>
 <pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh</pre>
 <p>It asks GitHub's API (<code>api.github.com</code>) which release is the newest, and when a proxy or firewall blocks that address, or your network's address has used up GitHub's 60 requests an hour for clients without an account (an office, a school, a CI runner), it asks <code>github.com</code> and then this website instead, and says which one answered. If it stops with these lines, none answered:</p>
 <pre data-lang="text" data-title="Output">chloedb install: could not tell which chloedb-server release is the newest:
@@ -144,7 +145,7 @@ pip install chloedb-server       # or: pip install &quot;chloedb[server]&quot;</
 <pre data-lang="sh">v=0.3.8 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz &amp;&amp; mkdir -p ~/.local/bin &amp;&amp; mv chloedb-server-$p/chloedb-server ~/.local/bin/</pre>
-<p>From 0.3.8 each archive also has GitHub's build provenance and an SBOM of what is compiled into it: <a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md#checking-what-you-download">checking what you download</a> shows the <code>gh attestation verify</code> command that checks them (the install script runs it for you from 0.3.9).</p>
+<p>From 0.3.8 each archive also has GitHub's build provenance and an SBOM of what is compiled into it: <a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md#checking-what-you-download">checking what you download</a> shows the <code>gh attestation verify</code> command that checks them (the install script runs it for you where <code>gh</code> is installed).</p>
 <p>Check that it runs:</p>
 <pre data-lang="sh">chloedb-server --version</pre>
 <p>If it does not, or a later step stops with an error, <a href="troubleshooting.html">Troubleshooting</a> has the usual messages and what to do; <code>chloedb-server doctor</code> checks this machine for their causes.</p>
@@ -154,6 +155,7 @@ tar xzf chloedb-server-$p.tar.gz &amp;&amp; mkdir -p ~/.local/bin &amp;&amp; mv 
 chloedb-server --db quickstart.chloedb &gt; server.log 2&gt;&amp;1 &amp;
 server=$!
 until curl -sf http://127.0.0.1:7700/livez &gt; /dev/null; do sleep 0.2; done</pre>
+<p>For a server you keep, rather than this try, add two flags. <code>--alerts alerts.json</code> keeps the alert rules and routes you make in that file: without it a server on its own keeps them in memory, and a restart loses them (<a href="server.html#alerts">alerts</a>). <code>--environment production</code> (or <code>staging</code>, <code>dev</code>) names what it is: the command center shows it in its header and, on production, asks for a reason before each change. A server with none is shown as a sandbox when you reach it on this machine, and as production from another.</p>
 <p>Everything below talks to it over HTTP with JSON. To keep the commands short, <code>sql</code> sends the statement it reads from its input to <code>POST /v1/sql</code>, which runs any statement:</p>
 <pre data-lang="sh">sql() { curl -sS http://127.0.0.1:7700/v1/sql -H &#x27;content-type: application/json&#x27; --data-binary @-; echo; }</pre>
 <h2 id="3-make-a-table-and-fill-it">3. Make a table and fill it<a class="anchor" href="#3-make-a-table-and-fill-it" aria-label="Link to this section">#</a></h2>

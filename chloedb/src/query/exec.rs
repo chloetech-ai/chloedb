@@ -848,6 +848,11 @@ pub struct ExecStats {
     /// scores are those of a shorter walk.
     #[serde(default, skip_serializing_if = "is_false")]
     pub max_pushes_reached: bool,
+    /// A `ppr` walk ended with less than half of its mass in its scores:
+    /// its `eps` (or `max_pushes`) stopped it near its seeds, so rows
+    /// further away have no score (NADIA-302).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ppr_unsettled: bool,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -892,6 +897,45 @@ pub struct ResultSet {
     /// coordinator ranks every row by.
     pub parts: Option<RankParts>,
     pub stats: ExecStats,
+}
+
+impl ResultSet {
+    /// Each column's type, as its values have it, so that a client types
+    /// a column by its expression rather than by its name: `MAX(ts)`,
+    /// `ts AS d` and `date_trunc('month', ts)` are `timestamp` as `ts`
+    /// is ([`column_type`]).
+    pub fn types(&self) -> Vec<Option<&'static str>> {
+        (0..self.columns.len()).map(|c| column_type(self.rows.iter().map(|r| r.get(c).unwrap_or(&Value::Null)))).collect()
+    }
+}
+
+/// The type of a column of `values`: `int`, `float`, `bool`, `timestamp`,
+/// `text`, `vector` or `list`, the names a schema's short form gives its
+/// fields' types. A column of INTs and FLOATs is `float` (the operators
+/// and DataFusion widen a UNION's to FLOAT). None when it holds only
+/// NULLs, or values of types that do not mix (a CASE of text and
+/// numbers).
+pub fn column_type<'a>(values: impl Iterator<Item = &'a Value>) -> Option<&'static str> {
+    let name = |v: &Value| match v {
+        Value::Null => None,
+        Value::Int(_) => Some("int"),
+        Value::Float(_) => Some("float"),
+        Value::Bool(_) => Some("bool"),
+        Value::Timestamp(_) => Some("timestamp"),
+        Value::Str(_) => Some("text"),
+        Value::Vector(_) => Some("vector"),
+        Value::List(_) => Some("list"),
+    };
+    let mut ty = None;
+    for t in values.filter_map(name) {
+        ty = match (ty, t) {
+            (None, t) => Some(t),
+            (Some(a), b) if a == b => Some(a),
+            (Some("int" | "float"), "int" | "float") => Some("float"),
+            _ => return None,
+        };
+    }
+    ty
 }
 
 /// A search leaf's rows for DataFusion ([`Executor::execute_arrow`]):
@@ -4002,7 +4046,13 @@ impl<'a> Executor<'a> {
     /// ([`TextFieldReader::top_k_capped`]), by decreasing score.
     #[allow(clippy::too_many_arguments)]
     fn bm25_rows(&mut self, field: usize, query: &str, opts: &Opts, p: &Pred, k: usize, ties: bool, cap: Option<PerGroup>) -> Result<Vec<Hit>> {
+        // The words as the terms searched, with what typos, synonyms and
+        // prefixes add: a step of its own, the funnel's Expand
+        // ([`crate::query::funnel`]).
+        let m = self.mark();
         let (q, stats) = self.bm25_scoring(field, query, opts)?;
+        let added = q.terms.len().saturating_sub(q.n_base);
+        self.step(m, "terms", format!("{} of the text, {added} added by typos, synonyms and prefixes", q.n_base), Some(q.terms.len() as u64));
         let terms = &q.terms;
         if terms.is_empty() {
             return Ok(Vec::new());

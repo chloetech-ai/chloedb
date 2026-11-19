@@ -29,7 +29,7 @@ Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai
 npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.8/chloedb-0.3.8-darwin-arm64.tgz
 ```
 
-The workflow [`js-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml) builds both on a `chloedb-js-v<version>` tag, the way napi-rs packages are laid out (`chloedb` names each platform's package as an optional dependency, of which npm installs the one of your machine), and installs each into an empty app and runs it there before attaching the tarballs to the release and publishing the packages to npm (the workflow's header says what publishing needs). `node scripts/pack.mjs <platform>` packs a tarball by hand, and `--npm <platform>` and `--npm-main` the packages npm gets.
+The workflow [`js-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml) builds both on a `chloedb-js-v<version>` tag, the way napi-rs packages are laid out (`chloedb` names each platform's package as an optional dependency, of which npm installs the one of your machine), and installs each into an empty app and runs it there before attaching the tarballs to the release and publishing the packages to npm (the workflow's header says what publishing needs). `node scripts/pack.mjs <platform>` packs a tarball by hand, and `--npm <platform>` and `--npm-main` the packages npm gets. From 0.3.9 the release also carries the packages npm serves, byte for byte, and its `SHA256SUMS` lists them, so a package installed from npm can be checked against the release; npm's provenance names the workflow that published it (`npm audit signatures`): [checking what you download](../../SECURITY.md#checking-what-you-download).
 
 ### From source
 
@@ -93,7 +93,7 @@ Every call answers a promise and runs on a worker thread of Node's pool, so quer
 
 Parameters are `:name` in the SQL and an object of values: numbers, strings, booleans, null, `Date`s, arrays (an array of numbers or a `Float32Array` is a vector), an object of numbers (sparse term weights), `{embed: "some text"}` (the text's vector by an embedded field's model) or `{vector_of: key}` (a stored row's vector).
 
-A `Result` has `columns`, `rows` (arrays in column order), `keys` (each row's primary key), `scores` (what it was ranked by), `stats` (what the engine did) and, a page of a cursor's, `cursor`. Iterating it gives each row as an object; `r.at(i)`, `r.objects()`, `r.column(name)` and `r.scalar()` (a count, a sum) read it other ways.
+A `Result` has `columns`, `types` (each column's type as its values have it, `"timestamp"` for `MAX(ts)` and `ts AS d` as for `ts`, `null` for a column of only NULLs: [the types of an answer's columns](query-language.md#the-types-of-an-answers-columns)), `rows` (arrays in column order), `keys` (each row's primary key), `scores` (what it was ranked by), `stats` (what the engine did) and, a page of a cursor's, `cursor`. Iterating it gives each row as an object; `r.at(i)`, `r.objects()`, `r.column(name)` and `r.scalar()` (a count, a sum) read it other ways.
 
 `field` may be left out of `highlight` and `correct` when the table has one indexed TEXT field. Both are chloedb-server's routes (`POST /v1/highlight` and `POST /v1/correct`) on a `Client`, and the same answers from the database in the process, so a search page's code runs on either.
 

@@ -1262,11 +1262,11 @@ SELECT venue FROM papers WHERE year = 2023 EXCEPT SELECT venue FROM papers WHERE
 (SELECT id FROM papers ORDER BY cites DESC LIMIT 5) UNION ALL (SELECT id FROM preprints ORDER BY downloads DESC LIMIT 5);
 ```
 
-- **Columns.** Both sides select as many columns, matched by place, and the answer's columns are named as the first side's. Rows are equal when each of their values is, `NULL` equal to `NULL` and an `INT` equal to the `FLOAT` of its value.
+- **Columns.** Both sides select as many columns, matched by place, and the answer's columns are named as the first side's. A column of `INT`s on one side and `FLOAT`s on the other is `FLOAT`, the wider type, as in PostgreSQL and DuckDB: `SELECT 1 UNION ALL SELECT 2.5` is 1.0 and 2.5. Rows are equal when each of their values is, `NULL` equal to `NULL` and an `INT` equal to the `FLOAT` of its value.
 - **`ALL`.** Without it each row comes once. With it, `UNION ALL` keeps every row of both sides; `INTERSECT ALL` keeps a row as many times as both sides have it, the fewer of the two counts; `EXCEPT ALL` as many times as the first side has it more than the second.
 - **Order.** `INTERSECT` comes before `UNION` and `EXCEPT`, which go left to right, and parentheses group sides: `a UNION b INTERSECT c` is `a UNION (b INTERSECT c)`. `ORDER BY`, `LIMIT` and `OFFSET` at the end apply to the whole and name its columns; a side in parentheses takes its own. Without an `ORDER BY` the rows come in the sides' order: `UNION ALL` the first side's rows, then the second's; `UNION` those rows each where it first comes; `INTERSECT` and `EXCEPT` rows of the first side in its order, the first ones of rows equal to one another.
 - **Anywhere a query goes**: a `WITH` result, a derived table `FROM (SELECT .. UNION ..) d`, or a subquery `x IN (SELECT .. UNION ..)`, and each side may group, join, rank, or compute windows. `UNION BY NAME` is an error.
-- **Engines.** Both answer alike. The operators run a set operation DataFusion does not lower: one whose sides give a column different types (an `INT` and a `FLOAT`), and `INTERSECT`, `EXCEPT` or `UNION` without `ALL` of a multi-valued column.
+- **Engines.** Both answer alike. The operators run a set operation DataFusion does not lower: one whose sides give a column types other than an `INT` and a `FLOAT` (text and a number), and `INTERSECT`, `EXCEPT` or `UNION` without `ALL` of a multi-valued column.
 
 The plan's node is `SetOp` (`Union`, `Intersect all` and so on in `EXPLAIN`, the sides below it), and its JSON needs the plan feature `set_ops`; a version of ChloeDB from before it refuses the plan by that name.
 
@@ -1397,20 +1397,24 @@ ORDER BY rrf(bm25(body, :t), ppr(cites, (SELECT id FROM papers ORDER BY similari
 | `REACHABLE(f, seeds, …)` | rows *v* with `min_hops` ≤ *d*(seeds, *v*) ≤ `hops` | `hops 1`, `min_hops 1`, `dir 'out'` (or `'in'`, `'both'`), `label 'a,b'`, `through <predicate>`, `max_nodes 100000` |
 | `PATH(f, from, to, …)` | the rows of one shortest (unweighted) path | `max_hops 6`, `dir`, `label`, `through`, `max_nodes` |
 | `hops()` | a row's distance from the seeds, or its position on the path; `ORDER BY hops()` is nearest first | |
-| `ppr(f, seeds, …)` | personalized PageRank, usable wherever a score is, including `rrf` and weighted sums | `alpha 0.15`, `eps 1e-4` (a row is pushed while its residual is at least `eps` times its number of edges, so scaling every weight alike changes nothing), `dir 'both'`, `label`, `max_pushes` (a walk cut there says so: `max_pushes_reached` in the stats), `weighted 0` (`1`: the seed subquery's scores are the restart weights) |
+| `ppr(f, seeds, …)` | personalized PageRank, usable wherever a score is, including `rrf` and weighted sums | `alpha 0.15`, `eps` (a row is pushed while its residual is at least `eps` times its number of edges, so scaling every weight alike changes nothing; not given, the walk starts at `1e-4` and halves it while its scores hold less than half of the walk, for at most 100,000 pushes, [below](#how-far-ppr-walks)), `dir 'both'`, `label`, `max_pushes 1000000` (a walk cut there says so: `max_pushes_reached` in the stats), `weighted 0` (`1`: the seed subquery's scores are the restart weights) |
 | a `VECTOR` field as `f` | `REACHABLE` and `PATH` follow similarity edges: a row's neighbours are its `k` most similar rows | `k 10`, `min_sim` |
 
 Graph queries run on one database: a [coordinator](server.md#sharding-one-coordinator-many-shards) refuses them, since a row's edges point at rows other shards hold ([graphs on a cluster](graphs.md#on-a-cluster)).
 
 The [query console](server.md#the-query-console)'s Graph tab builds these queries (seeds from keys, a search or a condition; links or similarity; neighbourhood, path or PageRank) and draws the answer.
 
-`through` restricts the rows a traversal may pass through (seeds and end points are exempt); the rest of `WHERE` filters the rows it ends at. `max_nodes` bounds the rows a traversal meets besides its seeds (and a path's ends): a `REACHABLE` that would meet more, or a `PATH` that meets more before it finds a path, is an error saying so, never a part of the answer. `max_hops => 0` is a path of no hops (a seed that is also a target); `max_nodes` and `k` are 1 or more. `REACHABLE(f, seeds, hops => 0, min_hops => 0)` is the seed set itself, so `NOT` of it removes the seeds from a result. `hops()` refers to the first `REACHABLE` or `PATH` in `WHERE`. The [Graphs](graphs.md) page explains how edges are stored and what these queries cost.
+`through` restricts the rows a traversal may pass through (seeds and end points are exempt); the rest of `WHERE` filters the rows it ends at. **Changed:** a `PATH` with `through` could pass through a row that fails it, where the two halves of its search met, and so answer a path where none keeps to `through`; every middle row of a path now satisfies it. `max_nodes` bounds the rows a traversal meets besides its seeds (and a path's ends): a `REACHABLE` that would meet more, or a `PATH` that meets more before it finds a path, is an error saying so, never a part of the answer. `max_hops => 0` is a path of no hops (a seed that is also a target); `max_nodes` and `k` are 1 or more. `REACHABLE(f, seeds, hops => 0, min_hops => 0)` is the seed set itself, so `NOT` of it removes the seeds from a result. `hops()` refers to the first `REACHABLE` or `PATH` in `WHERE`. The [Graphs](graphs.md) page explains how edges are stored and what these queries cost.
 
 Edges are written as part of their row: a JSON array of target keys, each optionally with a label and a positive weight.
 
 ```text
 ["p2", ["cites", "p7"], ["extends", "p9", 0.5], {"to": "p11", "label": "refutes"}]
 ```
+
+### How far `ppr` walks
+
+A row's score is the share of the walk that has settled on it, and a row is pushed (its residual spread over its edges) while that residual is at least `eps` times its number of edges. From a seed whose neighbours have thousands of edges, `eps => 1e-4` pushes nothing past the seed: on the tests' user-item graph of 3,000 users with 30 items each, whose 100 items have 900 edges on average and at least 300, a user's items get 0.028 each, below 10⁻⁴ times their edges, so the walk ranks the user and no item. Without `eps`, the walk then halves it and pushes on from where it stopped, until its scores hold half of the walk (there, `eps` 3.1e-6, after 9,078 pushes), for at most 100,000 pushes; its plan line says where it went (`eps lowered to 3.1e-6, 72% settled`). With `eps`, it walks exactly as far as asked. A walk whose scores hold less than half of the walk, by its `eps` or its pushes, says so: `ppr_unsettled` in the stats, and in its plan line how much it settled and what to change. **Changed:** `eps` was 10⁻⁴ when not given, and such a walk returned only its seeds with no warning.
 
 ### Edge tables
 
@@ -1534,7 +1538,7 @@ DROP CLASSIFIER topic;
 
 ## Recommenders: `CREATE RECOMMENDER` and `recommend()`
 
-A recommender keeps counts of a table of events (what came right after what, what was seen together, how often each item was seen, each user's last items) as the events are written, and `recommend(name, user)` ranks items for a user by them, fused with the similarity of the user's recent items and with popularity, leaving out the items the user had.
+A recommender keeps counts of a table of events (what came right after what, what was seen together, how often each item was seen, each user's last items) as the events are written, and `recommend(name, user)` ranks items for a user by them, fused with the similarity of the user's recent items and with popularity, leaving out the user's recent items (the last `history`; an item the user had before those can come back: filter with `id NOT IN (SELECT item FROM events WHERE usr = :u)` to leave out every one).
 
 ```sql
 CREATE TABLE events (id KEYWORD PRIMARY KEY, usr KEYWORD, item KEYWORD, ts TIMESTAMP);
@@ -1558,6 +1562,114 @@ DROP RECOMMENDER shop;
 - **`recommend(name, user [, k => 100, next => 1, co => 1, similar => 1, popular => 0.2])`** reads the user's row and builds four lists of up to 200 items: what came next after the user's last item (and, at 0.4, after the one before), the items seen together with each of the user's recent items (the more recent weighing more, each item's counts as shares of its own), the items nearest the user's last eight by `maxsim` over the items' vectors, and the most popular items. An item scores the sum over the lists of the list's weight over 60 plus its rank there (reciprocal rank fusion); a weight of 0 leaves its list out. The user's recent items are left out, and the best `k` (at most 10,000) are the ranking: the call is then [`ranked(...)`](#rankedkeys-a-ranking-from-elsewhere) of their keys, so a row it does not list scores `NULL`, and `ORDER BY recommend(...)` on its own answers only the rows it lists (in a sum or `rrf` with other scores, the others rank by those). A user with no events gets the popular items. A call reads about two rows by key and one ranked page per recent item, some milliseconds. The answer's plan lines begin with one for each call: `recommend shop for 'u42': 100 items, from 12 next, 85 seen together, 200 similar, 120 popular; 9 of the user's items left out`.
 - **`FROM recommend(...)`** is a table of the items, best first, with `item`, `score`, and each list's rank of the item (`next`, `co`, `similar`, `popular`, `NULL` where it is not in a list); a `LIMIT` lowers `k`. It takes no join, `WHERE`, `ORDER BY` or `GROUP BY`: rank a table by `ORDER BY recommend(...)` for those.
 - **Where it runs.** On one database, and on chloedb-server over its own tables (`CREATE` and `DROP RECOMMENDER` need an admin key). A coordinator refuses both the statement and the call, since a user's events are spread over shards ([cluster limits](cluster-limits.md)); counts of your own in an [edge table](#edge-tables) or a [next-items table](next-items.md) work there. A version of ChloeDB from before recommenders opens the database, but does not feed the counts.
+
+## Blends: `CREATE BLEND` and `blend()`
+
+A blend makes one list from the rows of several queries, after each has ranked its own: stories and comments on one results page, sponsored rows among organic ones, fresh items beside popular ones. Each row is worth a utility, a weighted sum of values the sources name alike (its heads), each calibrated within its source, and the slots are filled best utility first under the slate's rules: a slot kept for a kind of row, a kind's share of the top rows, its spacing, a cap per value, diversity and near copies.
+
+```sql
+CREATE BLEND serp AS
+  SOURCES (
+    stories  AS (SELECT id, title, author, emb, score() AS relevance, ln(1 + points) AS quality
+                 FROM items WHERE kind = 'story' ORDER BY bm25(title, :q) DESC LIMIT 100),
+    comments AS (SELECT id, text AS title, author, emb, score() AS relevance, ln(1 + replies) AS quality
+                 FROM comments ORDER BY bm25(text, :q) DESC LIMIT 60)
+  )
+  HEADS (relevance CALIBRATE tmm, quality CALIBRATE minmax MISSING zero)
+  UTILITY 1 * relevance + 0.2 * quality
+  SLOT 1 => source = 'stories'
+  QUOTA (source = 'comments' BETWEEN 20% AND 40% IN TOP 10)
+  DIVERSIFY 0.3 ON emb
+  MAX 2 PER author
+  DEDUPE 0.95 ON emb
+  WITH (k => 10, note => 'stories first, a few comments');
+
+SELECT slot, source, id, title, utility, blend_decision FROM blend('serp', q => :q);
+-- slot | source     | id   | title           | utility | blend_decision
+-- 1    | 'stories'  | 's9' | 'Async Rust...' | 1.18    | 'slot 1 is kept for source = ''stories'''
+-- 2    | 'comments' | 'c4' | 'I moved our...'| 0.97    | 'the best utility left'
+SELECT * FROM blend('serp@3', q => 'rust async') LIMIT 20;   -- version 3
+DROP BLEND serp;
+```
+
+- **The definition**: `CREATE [OR REPLACE] BLEND name AS SOURCES (name AS (SELECT ...), ...)` (a source may be a blend of its own, `name AS BLEND (...)`: [stacking blends](#stacking-blends-a-blend-as-anothers-source)) and then, each optional and in this order:
+  - `HEADS (head [CALIBRATE tmm|minmax|rank|raw] [LO n] [MISSING neutral|zero], ...)`: the columns a row is worth by. A head is a column the sources name alike (`... AS relevance`), or `score`, each source's own ranking score, which needs no column. `tmm` (the default) divides by the source's best value, from `LO` (0 by default); `minmax` spans the source's lowest to its best; `rank` keeps only the order, as `rrf` does (61 / (60 + rank)); `raw` keeps the value. A source without the head gives its rows the mean of the others' (`MISSING neutral`, the default) or 0 (`MISSING zero`). Without `HEADS`, the one head is `score CALIBRATE tmm`.
+  - `UTILITY 1 * relevance + 0.2 * quality - 0.1 * age`: the heads' weights (a head not named weighs 0; a name not among the heads adds one, `tmm`). `BOOST (source w, ...)` adds `w` to every row of a source.
+  - `SLOT n => column = 'value'`, more than one: slot *n* is kept for rows of that value.
+  - `QUOTA (column = 'value' BETWEEN a% AND b% IN TOP n, ...)`, or `AT LEAST a%` or `AT MOST b%`, `IN TOP n` the blend's `k` by default; `IF ANY` holds the least only when the sources answered a row of the kind. A kind that could only reach its least by being placed now is placed now; one at its most is passed over.
+  - `SPACING (column = 'value' AT MOST n PER m ROWS, ...)`: at most *n* rows of the kind in any *m* in a row.
+  - `DIVERSIFY λ ON column`: each candidate loses λ (0 to 1) of the utilities' range for its likeness to the rows placed, the cosine of a vector column's values or 1 for an equal value of another column (maximal marginal relevance).
+  - `MAX n PER column`, more than one: at most *n* rows of one value, as [`MAX k PER`](#at-most-k-rows-of-a-value-max-k-per) does for one query.
+  - `DEDUPE t ON vector_column`: a row whose cosine to a row placed is *t* or more is left out.
+  - `WITH (k => 10, note => '...')`: the slots filled (1 to 1,000), and a note kept with the version.
+
+  At most 16 sources, each a `SELECT` (any ranking: a rank profile, `rrf`, `recommend(...)`, a stored function), named once. The rules' numbers are checked (a quota's least at most its most, spacing's *n* under its *m*, λ from 0 to 1), and so is that the quotas' least shares and the slots kept fit in their top rows. `CREATE` answers one row: `blend`, `version`, `sources`, `k`.
+- **A row's key** is its table's key, or the first column where it reads none: rows of one key from two sources are one row, kept where its utility is higher (`also` in the receipts names the others). Its `source` is the source's name, and a rule's column may be `source` or any column the sources answer.
+- **The fill** places the rows slot by slot. A slot kept by `SLOT` takes the best row of its kind; otherwise a quota that would fall short if not met now takes its kind's best row; otherwise the best utility left (less its diversity cost) of the rows no rule bars. When no row fits every rule, the fill sets rules aside for that slot, in this order, until one does: spacing, the caps, a quota's least, the slots kept, a quota's most; the row says so (`no row fit every rule: MAX 2 PER author set aside`), so a blend fills its slots while rows are left (`DEDUPE` is never set aside).
+- **`FROM blend('name[@version]' [, parameter => value, ...]) [LIMIT k]`** runs each source with the call's arguments and the query's parameters as its parameters (`:q`), and answers a row per slot, best first: `slot`, `source`, the sources' columns (all of them for `*`, each source's `NULL` where it has none), `utility` and `blend_decision`, the reason the row is in its slot. A `LIMIT` fills that many slots instead of `k` (a quota's least may then not fit). A call takes no join, `WHERE`, `ORDER BY` or `GROUP BY`; select the columns, and alias them, as `SELECT id, title AS name FROM blend('serp', q => :q)`. The answer's plan lines say what it did: `blend serp@2: 2 sources, 160 rows (stories 100 rows in 3.1 ms, comments 60 rows in 1.4 ms)`, then `blend placed 10 of 10 slots in 0.04 ms: stories 7, comments 3` and a line for each quota's count.
+- **Versions.** A blend is a [stored function](#stored-functions) `name()` whose body is the definition, so `CREATE OR REPLACE BLEND` writes the next version, `blend('serp@1')` reads an old one, `DROP BLEND [IF EXISTS] name` writes a tombstone (its versions stay readable by number), and versions are kept by checkpoints and copies and shipped to replicas as functions are. A function of the name that is not a blend is not replaced by one.
+- **From Rust**, `Db::sql` runs the statements and the calls, `Db::blends` lists each blend's current definition, and `Db::blend_run(&def, version, &params, k, Want { costs: true })` runs a definition, stored or not, into a `Blended` whose `receipts()` is the JSON of every row's heads, raw and as weighted parts of its utility, its slot and why, the rows passed over and what barred them, each quota's count and each rule's cost: the share of the slate's discounted utility (each slot's over log2(slot + 1), as DCG discounts) that it gives up, from filling the slate again without it.
+- **On chloedb-server**, `CREATE` and `DROP BLEND` need an admin key, and a key limited to tables reads a blend only when it may read every source's tables, of every version the call could read. `GET /v1/blends` lists the blends (each current version's definition, its SQL and how many versions), `GET /v1/blends/:name` every version, `PUT /v1/blends/:name {"def": {...}, "note": "..."}` writes the next version from a definition as JSON, and `DELETE /v1/blends/:name` drops it. `POST /v1/blends/preview {"name": "serp"}` (or `"version"`, or a definition not stored, `"def"`) with `"params"` and `"k"` runs it and answers the receipts, rule costs included unless `"costs": false`. The command center's **Labs → Blending** page edits a blend on these routes, previewing the draft as it changes.
+- **Through a coordinator** a blend's versions are written on every shard, as functions are, and each source runs as a query of the cluster, merged from the shards, before the fill: the slate is the one database's.
+
+### Stacking blends: a blend as another's source
+
+A source may be a blend of its own, a node stacked under the one above it: `name AS BLEND ( SOURCES (...) HEADS ... WITH (k => n) )`, the same clauses as a blend's. The node runs first, into its own *k* slots under its own rules, and the rows it places are that source's rows above, so the blend above weighs, places and rules them as one source among its others.
+
+```sql
+CREATE BLEND page AS
+  SOURCES (
+    organic AS BLEND (
+      SOURCES (
+        stories AS (SELECT id, title, author, score() AS relevance, pop AS engagement FROM stories ORDER BY bm25(title, :q) DESC LIMIT 50),
+        videos  AS (SELECT id, title, author, score() AS relevance, pop AS engagement FROM videos ORDER BY bm25(title, :q) DESC LIMIT 30)
+      )
+      HEADS (relevance CALIBRATE tmm, engagement CALIBRATE minmax)
+      UTILITY 1 * relevance + 0.4 * engagement
+      MAX 2 PER author
+      WITH (k => 20)
+    ),
+    sponsored AS BLEND (SOURCES (ads AS (SELECT id, title, author, bid AS score FROM ads ORDER BY bid DESC LIMIT 6)) WITH (k => 3)),
+    news AS (SELECT id, title, author, 1.0 / age AS freshness FROM news ORDER BY age LIMIT 10)
+  )
+  SLOT 2 => source = 'sponsored'
+  QUOTA (source = 'news' AT LEAST 20% IN TOP 5, via = 'organic/videos' AT MOST 30%)
+  WITH (k => 10);
+
+SELECT slot, source, via, id, title FROM blend('page', q => :q);
+-- slot | source      | via               | id    | title
+-- 1    | 'organic'   | 'organic/stories' | 's12' | 'Async Rust...'
+-- 2    | 'sponsored' | 'sponsored/ads'   | 'a3'  | '...'
+-- 3    | 'news'      | 'news'            | 'n1'  | '...'
+```
+
+- **A node's rows**, as the blend above reads them: its sources' columns, `slot` (its own), `via` and `utility`, which is also their score, so the head `score` above is the node's utility; their keys stay theirs, so a row a node and another source both give is one row above. `via` names the source a row came from, through each node on the way (`organic/stories`): every blend answers it, and a rule above may read it (`QUOTA (via = 'organic/videos' AT MOST 30%)`).
+- **Its rules hold among its own rows**: a node's quotas, caps and diversity shape the rows it gives, and the blend above may pass over some of them. A node is named as its source; its own `name` may be left out in JSON.
+- **Limits**: blends stack at most 4 deep, the top one counted, and a blend runs at most 32 queries under every node. A source that reads `blend('...')` is refused: stack the blend as a node instead.
+- **Logged and valued**, a stacked blend explores at the top only (each node takes its best rows), and the log keeps the rows each node gave as that source's rows, so [Value on the log](#valuing-a-blend-on-its-log-exploring-fills-cascade-doubly-robust-and-snips) and tuning work on the top blend's heads, quotas and diversity as they do for any blend.
+- **The receipts** of a stacked blend carry each node's own under `nodes` (`"nodes": {"organic": {...}}`, nodes of nodes within them), each row's `via`, and the SQL writes nodes back as `name AS BLEND (...)`. On chloedb-server a key limited to tables reads a stacked blend only when it may read the tables of every query under every node.
+
+### Valuing a blend on its log: exploring fills, cascade doubly robust and SNIPS
+
+A blend served with a [log](#the-rank-log-what-each-query-served) can explore, and a log of exploring pages values any other blend of the same sources (its weights, shares and rules changed) without serving it: what people clicked is reweighted by how likely each page was.
+
+```sql
+-- POST /v1/query, or Db::query_logged with a Log
+{"sql": "SELECT slot, source, id, title FROM blend('serp', q => :q)",
+ "params": {"q": "rust async"},
+ "log": {"context": "u42", "explore": {"policy": "softmax", "tau": 0.3, "top": 5}}}
+```
+
+- **The exploring fill.** At each slot the rows that fit the rules there (the same rows the best-taken fill would weigh) are ordered by their utility, less diversity's cost, and the slot draws among the best `top` of them with chances `exp(u / (tau × range))` (the range of those utilities, so `tau` is a share of it, not a number of the heads' units). `top` 1, or no `explore`, takes the best. The draws come from the request's id (`log.request`, or a random one), so a request served again draws the same page. Only `softmax` explores a blend (`by` the score, the utility); `candidates` and `interleave` are refused.
+- **What is logged**: every row of every source, not only those placed, with its cells (a vector column the rules read as its numbers; text up to 256 characters), its source and rank in it and its utility as the row's `score`; the rows placed come first, in slot order, each `shown` with its slot's chance (`propensity`) and the page's chance down to it (`prefix_propensity`); the first row's `policy` names the blend, its version, `k`, `tau`, `top` and sources. The answer has the chances as `propensities`, one a slot.
+- **Replay.** From the logged rows, a blend's fill runs again over each logged page, the logged rows above each slot taken as placed: it gives that blend's chance of the logged row at every slot, and the rows it would have weighed. Replayed through the logging blend's own version, it gives back the chances logged (a difference is reported as drift, and the verdict is not proven: the rows or the definition changed).
+- **Cascade doubly robust** (Kiyohara et al., 2022) values a blend over the logged pages as `Σ_l γ_l (w_l (r_l − q̂_l) + w_{l−1} Σ_a π(a | slot l) q̂(a))`, plus the model's value of the rest of the page where the weight is cut: `w_l` is the product, down to slot `l`, of the blend's chance of each logged row over the logging blend's, `r_l` the click at slot `l`, and `q̂` a click model (ridge regression over the slot, the rows' numbers and their numbers over log2(slot + 1)) fitted on one half of the searches to value the other (two folds by request). A search whose weight passes `max(1% of the searches, 10)` is valued by the model from that slot down (the share is `switched`). Without `"discount": true` a page is worth its clicks; with it, each slot's over log2(slot + 1).
+- **SNIPS beside it** (self-normalized importance sampling) reweights the clicks slot by slot with no model, normalized by the weights' sum, over the top slots that each have 100 effective searches or more (`check_depth`); cascade doubly robust over those same slots is compared with it. Far apart, beyond their intervals, the model or the chances are off.
+- **Support and coverage.** `support` is the effective number of searches at slot 1, `(Σw)² / Σw²` (400 or more is trusted). `coverage` is the share of the blend's value, slot by slot as the model weighs it, on pages the logging blend could have drawn: a blend far from the one that logged puts some of its rows where the log never could, and that part is the model's alone (below 95% the verdict is not proven: explore wider, a larger `top` or `tau`).
+- **The verdict.** The first blend valued is judged against the logged blend's own value, each other one against the first, paired search by search: `better` or `worse` when the 95% interval of the difference leaves 0, `same` when it holds 0, and `not proven`, with why, when there are no exploring searches, the replay drifts, coverage is short, support is thin or the two estimates disagree.
+- **Tuning** tries blends near a start (each head's weight scaled, a quota's shares moved, diversity changed; one or two changes each), values each by cascade doubly robust on one half of the searches (its click model cross-fitted over that half's two quarters), and values the best of those the log covers (95% or more), with the start, on the other half, which chose nothing: that held-out estimate is the one to trust. A blend the log mostly could not have drawn is not chosen, however well the click model guesses it does.
+- **From Rust**, `Db::blend_requests(&export, "serp")` gathers a log's exploring requests of a blend ([`Export`](#exporting-the-log-for-training): the log, the events and the window a click counts in), `blend_eval::evaluate(&mut requests, &logging, &targets, Options { discount })` values blends (`Target { label, def, explore }`, `explore` to value an exploring fill, the best taken without), and `blend_eval::tune` tunes one; `blend_eval::versions` gives the logging blend's definition of each version.
+- **On chloedb-server**, `POST /v1/blends/:name/evaluate {"export": {...}, "targets": ["serp@3", {"def": {...}, "label": "draft"}], "discount": false}` and `POST /v1/blends/:name/tune {"export": {...}, "start": ..., "rounds": 24}`, with read on the log and the events; through a coordinator, the log's rows are read from every shard. The command center's **Labs → Blending** sets a draft against the serving version this way (**Value on the log**) and tunes it toward the clicks.
 
 ## Chunks of a table's text: `chunks_of()`
 
@@ -1614,6 +1726,10 @@ A statement reaches ChloeDB from a program, over HTTP or in the command center. 
 | `--read-only` | opens the database read-only, to read it while another process writes it ([readers in other processes](index.md#readers-in-other-processes)); without it, the shell opens a database another process has open to write read-only, and says so |
 
 From Rust, `Db::query` takes a `SELECT` and a `Params` map. Over the network, [chloedb-server](server.md) serves the same SQL over every table of a database.
+
+### The types of an answer's columns
+
+An answer gives each column's type, as its values have it, whatever the column is named: `int`, `float`, `bool`, `timestamp`, `text`, `vector` or `list`, and none (`null`) for a column of only `NULL`s or of values of types that do not mix (a `CASE` of text and numbers). So `MAX(ts)`, `ts AS d`, `i.ts` in a join, `date_trunc('month', ts)`, `date_bin(...)`, `CAST(ts AS DATE)` and `ts + INTERVAL '1 day'` are `timestamp`, as `ts` is, and `CAST(ts AS TEXT) AS ts` is `text`. A column of `INT`s and `FLOAT`s is `float`. Over HTTP the answer's `types` lists them beside `columns` <!-- since 0.3.9 -->, in Python and JavaScript `result.types`, and in Rust `ResultSet::types`; Python's [DB-API driver](frameworks.md#db-api) and `Result.to_pandas()` make a `timestamp` column's values datetimes, and an [Arrow answer](server.md#http-api) types each column as an Arrow array. The values themselves stay as JSON has them: a `TIMESTAMP` as ISO 8601 text in UTC, a `BOOL` as `true` or `false`.
 
 ## Tables
 
@@ -1688,7 +1804,7 @@ ALTER TABLE IF EXISTS drafts DROP COLUMN body, DROP COLUMN title;
 
 `ALTER TABLE` changes the columns of any table, the first included, while it holds rows; the changes of one statement apply in order, as one change.
 
-- **`ADD COLUMN`** (or `ADD`) takes a column as `CREATE TABLE` does, with its type, `NOT NULL`, `DEFAULT`, `REFERENCES` and `OPTIONS`, and puts it last. Rows written before it read it as its default, or `NULL` without one (a `TIMESTAMP` with `DEFAULT CURRENT_TIMESTAMP` too: the default is the time of each later write): in `SELECT`, `WHERE`, `ORDER BY`, aggregates and searches alike. Writes from then on take it. A `NOT NULL` column without a default can only be added to a table without rows. A column added with `embed` gets its model and embeds the rows written from then on; the rows before get theirs from [the backfill](server.md#embedded-vector-fields), which a server runs once the model opens (from Rust, `Db::embed_backfill`), and until then have none. A generated `TEXT` column, a semantic-ID column, `EDGES` and a primary key cannot be added.
+- **`ADD COLUMN`** (or `ADD`) takes a column as `CREATE TABLE` does, with its type, `NOT NULL`, `DEFAULT`, `REFERENCES` and `OPTIONS`, and puts it last. Rows written before it read it as its default, or `NULL` without one (a `TIMESTAMP` with `DEFAULT CURRENT_TIMESTAMP` too: the default is the time of each later write): in `SELECT`, `WHERE`, `ORDER BY`, aggregates and searches alike. Writes from then on take it. A `NOT NULL` column without a default can only be added to a table without rows. A column added with `embed` gets its model and embeds the rows written from then on; the rows before get theirs from [the backfill](server.md#embedded-vector-fields), which a server runs once the model opens, Python's `Database` before the `ALTER TABLE` (or `add_column`) returns, and Rust with `Db::embed_backfill`; until then they have none, and `similarity()` does not find them. A generated `TEXT` column, a semantic-ID column, `EDGES` and a primary key cannot be added.
 - **`DROP COLUMN`** drops a column and its values; a column added again under the same name is a new column, `NULL` in the older rows. The primary key, a table's only column, a column another field names (as the source of a generated text, an embedding, a caption or semantic IDs) and one the table's options name (`shard_by`, `cluster_by`, `retain_by`, `expire_by`, `edges`) stay, and the statement says what names it; so do columns a [rank profile](#rank-profiles-a-ranking-kept-with-its-table) of the table ranks by.
 - **`RENAME COLUMN a TO b`** keeps the column's values, and the fields and options that name it follow it; a rank profile does not, so a column a profile ranks by keeps its name until the profile is dropped or replaced.
 - **`IF EXISTS`** after `ALTER TABLE` skips a table that is not there; `ADD COLUMN IF NOT EXISTS` and `DROP COLUMN IF EXISTS` skip a column that is, or is not. Positions (`FIRST`, `AFTER`), `ALTER COLUMN`, `RENAME TO` (of the table) and `CASCADE` are errors.
@@ -1781,7 +1897,7 @@ Every statement runs as its plan, and a plan in JSON runs on its own: `Db::run` 
 
 ## Differences from PostgreSQL
 
-A query written for PostgreSQL mostly runs here and gives the same rows, but not always. These are the differences people porting SQL from PostgreSQL meet, as this release has them: first the answers that differ without an error, then what is refused (most refusals' messages say what to do instead).
+A query written for PostgreSQL mostly runs here and gives the same rows, but not always. These are the differences people porting SQL from PostgreSQL meet most, as this release has them: first the answers that differ without an error, then what is refused (most refusals' messages say what to do instead). The list of refusals is not complete: a statement it does not name can still be refused, and its message says so.
 
 **Connecting.** There is no Postgres wire protocol: `psql`, DBeaver, Metabase, dbt's Postgres adapter and SQLAlchemy's Postgres dialect do not connect, and there is no dbt adapter or SQLAlchemy dialect of ChloeDB's own. [Running SQL](#running-sql) lists the ways in: Python's `chloedb.dbapi` (DB-API 2.0, which pandas' `read_sql` reads), JDBC, HTTP and the SQL workbench. [Following Postgres](postgres.md) copies a Postgres database into ChloeDB; it does not let Postgres's clients in.
 
@@ -1796,18 +1912,32 @@ A query written for PostgreSQL mostly runs here and gives the same rows, but not
 | `concat('a', TRUE)` | `'atrue'` | `'at'` | `CASE WHEN b THEN 't' ELSE 'f' END` |
 | `SELECT a.id, b.title FROM a JOIN b ...` | columns `a.id`, `b.title` | `id`, `title` | `a.id AS id, b.title AS title` |
 | a correlated `(SELECT COUNT(*) ... WHERE t.a = o.a)` | `10.0` (`FLOAT`) | `10` | alias it and read it as a number |
+| `UPDATE t SET n = n + 1` where `n` is `NULL` | `n` becomes `1`: in `SET`, `field + number` and `field - number` count a `NULL` as zero, as a counter does ([writes](#writes)) | stays `NULL` | `UPDATE t SET n = n + 1 WHERE n IS NOT NULL` |
 
 Ascending order puts `NULL`s last in both. [Following Postgres](postgres.md#how-postgres-columns-become-fields) makes a `numeric` column a `FLOAT`, so `CAST` and `round` take its halves to the even neighbour (2.5 to 2), where PostgreSQL rounds a `numeric`'s away from zero (to 3). **Changed:** 0.3.7 and earlier rounded every half away from zero, kept the rows without a value in `n != 1.5` on an `INT` column, and gave `'a'` for `'a' || NULL`; each now answers as PostgreSQL does. **Changed:** 0.3.8 and earlier refused `ORDER BY` the alias of a group column after `GROUP BY` or `DISTINCT` ("no such column") and `NULLS FIRST` there, read `json_extract(doc, '$.a.b')` as `NULL` outside `WHERE`, and on DataFusion (a query over more than 4,096 rows) added `FLOAT` sums in order, so totals that tie on fewer rows could differ in their last digit and a `RANK` over them change; each now answers as PostgreSQL does, and as on fewer rows.
 
 **`TEXT` and `KEYWORD`.** A `TEXT` column is text searched by its words (`MATCH`, `bm25`), and a `KEYWORD` a value compared whole; PostgreSQL's `text` is both. A stored `TEXT` column also groups (`GROUP BY country`, `SELECT DISTINCT country`) and compares with `=` and `LIKE`, by its stored text read row by row, where a `KEYWORD`'s index answers both. Imports make a column of prose a `TEXT` one, by its values (more than two and a half words a value on average: [SQLite](sqlite.md#how-sqlite-columns-become-fields), [Parquet](parquet.md#how-parquet-columns-become-fields)), and following Postgres makes every `text` and `varchar` one: create the table first with `KEYWORD` for the columns you group and filter by often.
 
-**Writes.** An `UPDATE` or a `DELETE` takes any `WHERE` a `SELECT` of its table takes ([writes](#writes)); one the indexes cannot answer (a subquery, a `TEXT` column compared, a function of a column) picks the rows' keys first, under the writer lock. **Changed:** 0.3.7 and earlier refused such a `WHERE` in a write. Refused: `UPDATE ... FROM`, `DELETE ... USING`, `RETURNING`, `TRUNCATE` (`DELETE FROM t` deletes every row), and `INSERT ... SELECT` except from `chunks_of`.
+**Writes.** An `UPDATE` or a `DELETE` takes any `WHERE` a `SELECT` of its table takes ([writes](#writes)); one the indexes cannot answer (a subquery, a `TEXT` column compared, a function of a column) picks the rows' keys first, under the writer lock. **Changed:** 0.3.7 and earlier refused such a `WHERE` in a write. Refused: `UPDATE ... FROM`, `DELETE ... USING`, `RETURNING`, `TRUNCATE` (`DELETE FROM t` deletes every row), `INSERT ... SELECT` except from `chunks_of`, a subquery as a value in `SET` (`SET x = (SELECT MIN(y) FROM t)`: run it first and pass its answer as a parameter), and `ON CONFLICT ... DO UPDATE ... WHERE` (put the condition in the value: `SET x = CASE WHEN n > 3 THEN excluded.x ELSE x END`).
 
 **Transactions.** `BEGIN`, `COMMIT` and `ROLLBACK` are refused: each statement is a transaction of its own. Several writes commit together as the operations of one `POST /v1/write` (or `write(ops)` in Python and JavaScript), and through Rust's transaction API ([Loading a file](#loading-a-file-csv-tsv-json-lines), at its end).
 
 **Tables, views and indexes.** Refused: `CREATE VIEW` and `CREATE MATERIALIZED VIEW` (a [stored function](#stored-functions) `RETURNS TABLE` is a view with parameters, and a [rollup](#rollups-create-rollup-a-materialized-view-of-counts-over-time) keeps counts up to date), `CREATE TABLE ... AS SELECT` and temporary tables (the messages say what to write instead), `CREATE INDEX` (every column is indexed by its type when the table is made), `ALTER COLUMN ... TYPE`, `ALTER TABLE ... RENAME TO`, `UNIQUE`, `CHECK`, and a primary key of more than one column. `REFERENCES` are recorded, not enforced. The first table of a database cannot be dropped.
 
-**Queries.** Refused: `WITH RECURSIVE` (walk a graph with [`REACHABLE` and `PATH`](#graphs)), `GROUP BY ROLLUP`, `CUBE` and `GROUPING SETS` (a `UNION ALL` of `GROUP BY`s), `CROSS JOIN`, tables listed with commas, `LATERAL`, `JOIN ... USING`, `NATURAL JOIN`, a join whose `ON` has no equality of the two tables' columns, and a window frame `RANGE` with an `INTERVAL` offset; the messages of the `ROLLUP` and `USING` refusals show the query to write instead. `INTERVAL '1 month'` moves a time written as a value, not a column's, and two times do not subtract: [`date_diff('second', a, b)`](#parts-of-times-date_trunc-extract-and-strftime) is the seconds between them (`'day'` the days), and `EXTRACT(epoch FROM b) - EXTRACT(epoch FROM a)` the seconds with their fractions.
+**Queries.** Refused: `WITH RECURSIVE` (walk a graph with [`REACHABLE` and `PATH`](#graphs)), `GROUP BY ROLLUP`, `CUBE` and `GROUPING SETS` (a `UNION ALL` of `GROUP BY`s), `CROSS JOIN`, tables listed with commas, `LATERAL`, `JOIN ... USING`, `NATURAL JOIN`, a join whose `ON` has no equality of the two tables' columns, and a window frame `RANGE` with an `INTERVAL` offset; the messages of the `ROLLUP` and `USING` refusals show the query to write instead. Also refused, with what to write:
+
+| refused | write instead |
+|---|---|
+| `a IS DISTINCT FROM 'x'` | `(a != 'x' OR a IS NULL)` |
+| `<`, `>`, `BETWEEN` on a `KEYWORD` (`sku BETWEEN 'A' AND 'C'`, `month >= '2023-01'`) | `IN`, `LIKE 'prefix%'`, or the value kept as a number or a time (`month` as the `INT` 202301, or a `TIMESTAMP`), which compares by range |
+| `SUM(DISTINCT x)`, `AVG(DISTINCT x)` | `SELECT SUM(x) FROM (SELECT DISTINCT x FROM t) d` |
+| `COUNT(DISTINCT a, b)` | `SELECT COUNT(*) FROM (SELECT DISTINCT a, b FROM t) d` |
+| a subquery as a value in `HAVING` (`HAVING SUM(x) > (SELECT AVG(x) FROM t)`) | run the inner query first and pass its answer as a parameter |
+| `LIKE ... ESCAPE` | none yet: `%` and `_` in a pattern are always wildcards |
+| `ILIKE ANY (ARRAY[...])` | `a ILIKE '%x%' OR a ILIKE '%y%'` |
+| `doc->>'color'`, `doc->'a'` | `doc.color`, or `json_extract(doc, '$.color')` ([JSON fields](#json-fields-keys-no-schema-names)) |
+
+`INTERVAL '1 month'` moves a time written as a value, not a column's, and two times do not subtract: [`date_diff('second', a, b)`](#parts-of-times-date_trunc-extract-and-strftime) is the seconds between them (`'day'` the days), and `EXTRACT(epoch FROM b) - EXTRACT(epoch FROM a)` the seconds with their fractions.
 
 **Functions.** Over rows ChloeDB computes `lower`, `upper`, `length`, [`substr` (`SUBSTRING`), `trim` (`TRIM`, `btrim`), `ltrim`, `rtrim`, `replace`, `concat`, `nullif`](#text-and-numbers-substr-trim-replace-concat-nullif-floor-and-ceil), `abs`, `round`, `floor`, `ceil`, `coalesce`, `ln`, `log`, `exp`, `sqrt`, `pow`, `least`, `greatest`, `sigmoid`, `clamp`, `dot`, `date_trunc`, `date_part` (`EXTRACT`), `date_diff`, `strftime`, `date_bin`, `time_bucket`, `hash`, `CASE` and `CAST`, besides its search, vector and JSON functions; over groups, the [aggregates](#aggregates), `STRING_AGG` among them. Among those PostgreSQL has and ChloeDB does not: `left`, `right`, `position`, `split_part`, `regexp_replace`, `lpad`, `initcap`, `concat_ws`, `trunc`, `mod`, `sign`, `random`, `md5`, `to_char`, `age` and `array_agg`. An unknown function's error lists those that exist. **Changed:** 0.3.8 and earlier refused `substr`, `trim`, `replace`, `concat`, `nullif`, `floor`, `ceil`, `date_diff` and `STRING_AGG`.
 

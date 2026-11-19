@@ -75,11 +75,18 @@ export declare class UnavailableError extends ChloeDBError {}
 /** `ChloeDBError` by its name when ChloeDB was called Strata: the same class. */
 export { ChloeDBError as StrataError };
 
+/** A column's type in a query's answer (`Result.types`). */
+export type ColumnType = "int" | "float" | "bool" | "timestamp" | "text" | "vector" | "list";
+
 /** A query's answer. Iterating gives each row as an object: a `T`, which
  * `query<T>()` names (a `type` or an `interface` of the columns; nothing
  * checks it against the query's). */
 export declare class Result<T = Record<string, Value>> implements Iterable<T> {
   columns: string[];
+  /** Each column's type as its values have it, whatever its name (`MAX(ts)`
+   * and `ts AS d` are "timestamp" as `ts` is); null for a column of only
+   * NULLs, and the whole list null from a server from before 0.3.9. */
+  types: (ColumnType | null)[] | null;
   rows: Value[][];
   /** Each row's primary key. */
   keys: Value[];

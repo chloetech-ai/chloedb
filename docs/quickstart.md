@@ -8,7 +8,7 @@ You need macOS 11 or later (Apple silicon or Intel), or Linux on x86-64 or aarch
 
 Pick one. Each gives you a `chloedb-server` program, prebuilt (a download of about 50 MB), in under a minute.
 
-**The install script** puts it in `~/.local/bin` (it says what to add to your `PATH` if that folder is not on it yet). It checks the download against the release's SHA-256 and, where [GitHub's CLI](https://cli.github.com) (`gh`) is installed, its build provenance (releases from 0.3.9: that this repository's release workflow built it), and changes nothing else. [Read it](install.sh) first if you like.
+**The install script** puts it in `~/.local/bin` (it says what to add to your `PATH` if that folder is not on it yet). It checks the download against the release's SHA-256 and, where [GitHub's CLI](https://cli.github.com) (`gh`) is installed, its build provenance (releases from 0.3.8: that this repository's release workflow built it), and changes nothing else. [Read it](install.sh) first if you like.
 
 ```sh
 # install
@@ -60,7 +60,7 @@ curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-serv
 tar xzf chloedb-server-$p.tar.gz && mkdir -p ~/.local/bin && mv chloedb-server-$p/chloedb-server ~/.local/bin/
 ```
 
-From 0.3.8 each archive also has GitHub's build provenance and an SBOM of what is compiled into it: [checking what you download](../SECURITY.md#checking-what-you-download) shows the `gh attestation verify` command that checks them (the install script runs it for you from 0.3.9).
+From 0.3.8 each archive also has GitHub's build provenance and an SBOM of what is compiled into it: [checking what you download](../SECURITY.md#checking-what-you-download) shows the `gh attestation verify` command that checks them (the install script runs it for you where `gh` is installed).
 
 Check that it runs:
 
@@ -80,6 +80,8 @@ chloedb-server --db quickstart.chloedb > server.log 2>&1 &
 server=$!
 until curl -sf http://127.0.0.1:7700/livez > /dev/null; do sleep 0.2; done
 ```
+
+For a server you keep, rather than this try, add two flags. `--alerts alerts.json` keeps the alert rules and routes you make in that file: without it a server on its own keeps them in memory, and a restart loses them ([alerts](chloedb/server.md#alerts)). `--environment production` (or `staging`, `dev`) names what it is: the command center shows it in its header and, on production, asks for a reason before each change. A server with none is shown as a sandbox when you reach it on this machine, and as production from another.
 
 Everything below talks to it over HTTP with JSON. To keep the commands short, `sql` sends the statement it reads from its input to `POST /v1/sql`, which runs any statement:
 
