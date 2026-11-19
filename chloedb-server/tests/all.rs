@@ -47,6 +47,7 @@ mod failover;
 mod feed;
 mod feedback;
 mod fleet;
+mod funnel;
 mod follow;
 mod follow_retries;
 mod hash_cluster;

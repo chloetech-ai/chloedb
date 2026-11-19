@@ -11,6 +11,24 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A query's funnel: each stage's time, and the rows each stage kept and
+  dropped.** Everything a query does between its text and its rows is laid
+  on thirteen stages in order (wait, understand, expand terms, embed, plan,
+  match, select, rank, rerank, blend, shards, fetch, other), each
+  microsecond counted once. The command center's new **Query funnel** page
+  (Watch, beside Queries) shows the latest queries' time by stage, by
+  statement and one by one, and traces one query: the words it understood,
+  the terms its words became with their typos, prefixes and synonyms and
+  the rows holding each, "did you mean", the texts embedded, each input's
+  matches, `WHERE` a condition at a time, the candidates and the ranking,
+  and every row it saw with where it left and why (on the page, ranked
+  past it, reranked off it, below every input's top, or dropped by the
+  condition it names). A query's drawer in Queries opens it with **Its
+  funnel**. `POST /v1/funnel` and `GET /v1/queries/funnel` on
+  chloedb-server, through a coordinator too; the request's trace has the
+  spans `understand`, `expand`, `embed` and `blend`; a BM25 search's
+  profile has a step `terms`; `Db::funnel` and `query::funnel` in Rust
+  ([server.md](docs/chloedb/server.md#a-querys-funnel)).
 - **Places on the Earth in SQL: trigonometry, `haversine`, H3 cells and
   shapes kept as text.** `sin`, `cos`, `tan`, `cot`, `asin`, `acos`,
   `atan`, `atan2`, `radians`, `degrees` and `pi` answer as PostgreSQL's;
