@@ -284,7 +284,14 @@ async fn exp_sample(State(svc): State<Shared>, Query(a): Query<ExpSample>) -> An
         c.rows("well known stories", &format!("SELECT {cols} FROM hn_stories WHERE points >= 100 AND id % 97 = {} ORDER BY points DESC LIMIT {}", seed % 97, n / 2), Value::Null),
         c.rows("ordinary stories", &format!("SELECT {cols} FROM hn_stories WHERE points >= 5 AND points < 100 AND id % 89 = {} ORDER BY id DESC LIMIT {}", seed % 89, n - n / 2), Value::Null),
     );
-    let rows: Vec<Value> = top?.iter().chain(plain?.iter()).map(exp_row).collect();
+    let mut rows: Vec<crate::strata::Row> = top?.into_iter().chain(plain?).collect();
+    if rows.len() < n / 2 {
+        // A small site: its stories, best voted first.
+        let more = c.soft("stories, best voted first", &format!("SELECT {cols} FROM hn_stories ORDER BY points DESC, id LIMIT {n}"), Value::Null).await;
+        let have: std::collections::HashSet<i64> = rows.iter().map(|r| r.i("id")).collect();
+        rows.extend(more.into_iter().filter(|r| !have.contains(&r.i("id"))).take(n - rows.len()));
+    }
+    let rows: Vec<Value> = rows.iter().map(exp_row).collect();
     Ok(Json(json!({"rows": rows})))
 }
 

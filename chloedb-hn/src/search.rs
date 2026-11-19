@@ -350,7 +350,7 @@ pub async fn stories(c: &Ctx<'_>, p: &Parsed, r: &Request, limit: usize, offset:
     let rows: Vec<Row> = rows.into_iter().skip(offset).take(limit).collect();
     let mut total = total;
     if total == 0 && !rows.is_empty() {
-        total = count(c, "hn_stories", &where_(STORY_MATCH_FUZZY), &params).await;
+        total = count(c, table, &where_(STORY_MATCH_FUZZY), &params).await;
     }
     Ok((rows, total))
 }

@@ -336,7 +336,7 @@ async fn searches_questions_and_completions() {
     let it: Value = exp("/v1/experiment/item/103").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
     assert!(it["text"].as_str().unwrap().contains("borrow checker"), "its comments too: {it}");
     let sm: Value = exp("/v1/experiment/sample?n=10&seed=1").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
-    assert!(sm["rows"].is_array(), "{sm}");
+    assert!(sm["rows"].as_array().unwrap().len() >= 5, "{sm}");
 
     app.stop();
 }
