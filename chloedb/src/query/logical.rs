@@ -485,6 +485,12 @@ pub enum Score {
     /// The sequence number of the write that last changed the row
     /// (`seq_no()`), in a ranking expression.
     SeqNo,
+    /// `hash(field, seed)` of the row's value of `field` (its primary key,
+    /// or a stored field), the same number `hash` gives a row in WHERE or
+    /// ORDER BY ([`crate::query::ir::eval::hash`]), from 0 to 2^63 - 1;
+    /// NULL for a row without a value. With a relevance leaf, a seeded
+    /// order of the rows it finds (`bm25(..) * 0 + hash(id, 7)`).
+    Hash { field: usize, seed: i64 },
     /// A ranking computed outside Strata (`ranked(:keys)`): the rows of
     /// `keys`, primary keys best first, in their order. Its value is
     /// `-(position)` from 1, and NULL for a row whose key is not listed;
@@ -632,6 +638,7 @@ impl Score {
                 | Score::Hops { .. }
                 | Score::Decay { .. }
                 | Score::SeqNo
+                | Score::Hash { .. }
                 | Score::Ranked { .. }
                 | Score::Cond(_)
                 | Score::CrossEncoder { .. }
@@ -687,7 +694,7 @@ impl Score {
     /// expressions: `hops()`, the number of hops in an expression, ranks
     /// nearest first in them.
     pub fn is_fusable(&self) -> bool {
-        self.is_leaf() && !matches!(self, Score::Hops { .. } | Score::SeqNo | Score::Cond(_))
+        self.is_leaf() && !matches!(self, Score::Hops { .. } | Score::SeqNo | Score::Hash { .. } | Score::Cond(_))
     }
 
     /// The expression with its sums of `w * minmax(score)` as

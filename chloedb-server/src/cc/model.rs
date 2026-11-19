@@ -349,6 +349,30 @@ pub fn nodes(shards: &[Shard]) -> Vec<(String, Option<String>, Vec<Copy>)> {
 /// `isProduction`): an environment that does not name a test or a
 /// sandbox, or none on a server that is not this machine's or is reached
 /// through a hub.
+/// The log tables in `GET /v1/tables` (the tables the key reads): those
+/// with a `TIMESTAMP`, as the web's Log explorer finds them, each with its
+/// time column (`ts` when it has one, else its first `TIMESTAMP`).
+pub fn log_tables(tables: &Json) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = tables["tables"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| {
+            let times: Vec<&str> = t["short"]["fields"].as_array()?.iter().filter(|f| f["type"] == "timestamp").filter_map(|f| f["name"].as_str()).collect();
+            let ts = times.iter().find(|n| **n == "ts").or(times.first())?;
+            Some((t["table"].as_str()?.to_string(), ts.to_string()))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// The newest lines of log table `table` by its time column `ts`, as the
+/// Log explorer's first look: the last 15 minutes.
+pub fn newest_lines_sql(table: &str, ts: &str) -> String {
+    format!("SELECT * FROM {table} WHERE {ts} > now() - INTERVAL '15 minutes' ORDER BY {ts} DESC LIMIT 100")
+}
+
 pub fn is_production(environment: Option<&str>, base: &str) -> bool {
     match environment.filter(|e| !e.trim().is_empty()) {
         Some(e) => {

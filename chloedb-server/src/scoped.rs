@@ -317,11 +317,23 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
     for n in &recommenders {
         who.may_table(Scope::Read, &chloedb::query::recommend::counts_table(n), "recommend()")?;
     }
+    // `FROM blend(...)` reads what its sources read, in any version.
+    let blends = chloedb::query::blend::names_sql(text);
+    for n in &blends {
+        for (d, _) in chloedb::query::blend::versions(functions, n) {
+            for s in d.iter().flat_map(|d| d.sources.iter()) {
+                reads(who, &s.sql, tables, functions, &[])?;
+            }
+        }
+    }
     for r in &walk.relations {
         if walk.ctes.contains(r) || made.iter().any(|m| m.eq_ignore_ascii_case(r)) {
             continue;
         }
         if r == chloedb::query::recommend::NAME && !recommenders.is_empty() {
+            continue;
+        }
+        if r == chloedb::query::blend::NAME && !blends.is_empty() {
             continue;
         }
         who.may_table(Scope::Read, r, "a query")?;

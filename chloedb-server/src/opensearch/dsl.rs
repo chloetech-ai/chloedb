@@ -374,6 +374,71 @@ fn coerce(v: &Json, kind: Option<&Kind>) -> Json {
     }
 }
 
+/// The known key nearest `k` (two edits at most), to name in a refusal.
+pub fn nearest<'a>(k: &str, known: &[&'a str]) -> Option<&'a str> {
+    fn dist(a: &str, b: &str) -> usize {
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        let mut row: Vec<usize> = (0..=b.len()).collect();
+        for i in 1..=a.len() {
+            let mut prev = row[0];
+            row[0] = i;
+            for j in 1..=b.len() {
+                let here = row[j];
+                row[j] = (row[j] + 1).min(row[j - 1] + 1).min(prev + usize::from(a[i - 1] != b[j - 1]));
+                prev = here;
+            }
+        }
+        row[b.len()]
+    }
+    known.iter().map(|c| (dist(k, c), *c)).filter(|(d, c)| *d <= 2 && *d < c.len()).min().map(|(_, c)| c)
+}
+
+/// `; did you mean [x]?` for a key close to a known one, else nothing.
+pub fn did_you_mean(k: &str, known: &[&str]) -> String {
+    nearest(k, known).map(|c| format!("; did you mean [{c}]?")).unwrap_or_default()
+}
+
+/// Refuses a key of `body` that `known` does not list, as OpenSearch
+/// does (`[bool] query does not support [filtr]`), rather than leave it
+/// out of the search: a misspelt `filter` would otherwise search every
+/// document (finding KENJI-302).
+pub fn only(body: &Json, what: &str, known: &[&str]) -> Result<(), OsError> {
+    if let Some(m) = body.as_object() {
+        if let Some(k) = m.keys().find(|k| !known.contains(&k.as_str())) {
+            return Err(OsError::parsing(format!("[{what}] query does not support [{k}]{}", did_you_mean(k, known))));
+        }
+    }
+    Ok(())
+}
+
+/// The keys of the queries on one field (`{"match": {"title": {...}}}`)
+/// besides the field, which OpenSearch reads, and so these do.
+const MATCH_KEYS: &[&str] = &["query", "operator", "minimum_should_match", "fuzziness", "prefix_length", "max_expansions", "fuzzy_transpositions", "fuzzy_rewrite", "lenient", "zero_terms_query", "analyzer", "auto_generate_synonyms_phrase_query", "cutoff_frequency", "boost", "_name"];
+const PHRASE_KEYS: &[&str] = &["query", "slop", "analyzer", "zero_terms_query", "boost", "_name"];
+const PHRASE_PREFIX_KEYS: &[&str] = &["query", "slop", "max_expansions", "analyzer", "zero_terms_query", "boost", "_name"];
+const BOOL_PREFIX_KEYS: &[&str] = &["query", "operator", "minimum_should_match", "fuzziness", "prefix_length", "max_expansions", "fuzzy_transpositions", "fuzzy_rewrite", "analyzer", "boost", "_name"];
+const TERM_KEYS: &[&str] = &["value", "boost", "case_insensitive", "_name"];
+const PREFIX_KEYS: &[&str] = &["value", "boost", "rewrite", "case_insensitive", "_name"];
+const WILDCARD_KEYS: &[&str] = &["value", "wildcard", "boost", "rewrite", "case_insensitive", "_name"];
+const FUZZY_KEYS: &[&str] = &["value", "fuzziness", "max_expansions", "prefix_length", "transpositions", "rewrite", "boost", "_name"];
+const RANGE_KEYS: &[&str] = &["gt", "gte", "lt", "lte", "from", "to", "include_lower", "include_upper", "boost", "format", "time_zone", "relation", "_name"];
+
+/// The option keys a query on one field reads, by the query's name.
+fn field_keys(what: &str) -> &'static [&'static str] {
+    match what {
+        "match" => MATCH_KEYS,
+        "match_phrase" => PHRASE_KEYS,
+        "match_phrase_prefix" => PHRASE_PREFIX_KEYS,
+        "match_bool_prefix" => BOOL_PREFIX_KEYS,
+        "term" => TERM_KEYS,
+        "prefix" => PREFIX_KEYS,
+        "wildcard" => WILDCARD_KEYS,
+        "fuzzy" => FUZZY_KEYS,
+        "range" => RANGE_KEYS,
+        _ => &[],
+    }
+}
+
 /// The boost of a query's body.
 fn boost(b: &Json) -> f64 {
     b.get("boost").and_then(Json::as_f64).unwrap_or(1.0)
@@ -381,9 +446,19 @@ fn boost(b: &Json) -> f64 {
 
 /// `{"field": value}` or `{"field": {"value"/"query": value, ...}}`: the
 /// field, its value and its options.
+///
+/// A second field is refused, as OpenSearch refuses it, and so is an
+/// option the query does not read ([`only`]).
 fn field_and(body: &Json, what: &str, key: &str) -> Result<(String, Json, Json), OsError> {
     let m = body.as_object().ok_or_else(|| OsError::parsing(format!("[{what}] query malformed, no start_object after query name")))?;
-    let (field, v) = m.iter().find(|(k, _)| !matches!(k.as_str(), "boost" | "_name")).ok_or_else(|| OsError::parsing(format!("[{what}] query has no field")))?;
+    let mut fields = m.iter().filter(|(k, _)| !matches!(k.as_str(), "boost" | "_name"));
+    let (field, v) = fields.next().ok_or_else(|| OsError::parsing(format!("[{what}] query has no field")))?;
+    if let Some((other, _)) = fields.next() {
+        return Err(OsError::parsing(format!("[{what}] query doesn't support multiple fields, found [{field}] and [{other}]")));
+    }
+    if v.is_object() {
+        only(v, what, field_keys(what))?;
+    }
     match v {
         Json::Object(o) if o.contains_key(key) => Ok((field.clone(), o[key].clone(), v.clone())),
         Json::Object(_) if what == "range" => Ok((field.clone(), Json::Null, v.clone())),
@@ -435,6 +510,31 @@ pub fn compile(q: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
         return Err(OsError::parsing(format!("[{}] malformed query, expected [END_OBJECT] but found [FIELD_NAME]", m.keys().next().cloned().unwrap_or_default())));
     }
     let (kind, body) = m.iter().next().expect("one query");
+    // The keys each query reads besides its fields' (those are checked
+    // where they are read: [`field_and`]).
+    let known: Option<&[&str]> = match kind.as_str() {
+        "match_all" => Some(&["boost", "_name"]),
+        "match_none" => Some(&["_name"]),
+        "bool" => Some(&["must", "filter", "should", "must_not", "minimum_should_match", "boost", "_name", "adjust_pure_negative"]),
+        "constant_score" => Some(&["filter", "boost", "_name"]),
+        "dis_max" => Some(&["queries", "tie_breaker", "boost", "_name"]),
+        "boosting" => Some(&["positive", "negative", "negative_boost", "boost", "_name"]),
+        "function_score" => Some(&["query", "functions", "field_value_factor", "gauss", "exp", "linear", "weight", "random_score", "script_score", "score_mode", "boost_mode", "boost", "_name"]),
+        "script_score" => Some(&["query", "script", "min_score", "boost", "_name"]),
+        "nested" => Some(&["path", "query", "score_mode", "ignore_unmapped", "boost", "_name"]),
+        "ids" => Some(&["values", "type", "boost", "_name"]),
+        "exists" => Some(&["field", "boost", "_name"]),
+        "multi_match" => Some(&["query", "fields", "type", "tie_breaker", "operator", "minimum_should_match", "fuzziness", "prefix_length", "max_expansions", "fuzzy_transpositions", "fuzzy_rewrite", "lenient", "zero_terms_query", "analyzer", "auto_generate_synonyms_phrase_query", "cutoff_frequency", "slop", "boost", "_name"]),
+        "query_string" => Some(&["query", "default_field", "fields", "default_operator", "analyzer", "quote_analyzer", "allow_leading_wildcard", "enable_position_increments", "fuzzy_max_expansions", "fuzziness", "fuzzy_prefix_length", "fuzzy_transpositions", "phrase_slop", "analyze_wildcard", "auto_generate_synonyms_phrase_query", "max_determinized_states", "lenient", "quote_field_suffix", "rewrite", "type", "tie_breaker", "escape", "boost", "_name"]),
+        "simple_query_string" => Some(&["query", "fields", "default_operator", "analyzer", "flags", "fuzzy_max_expansions", "fuzzy_prefix_length", "fuzzy_transpositions", "lenient", "quote_field_suffix", "analyze_wildcard", "auto_generate_synonyms_phrase_query", "boost", "_name"]),
+        _ => None,
+    };
+    if kind == "nested" && body.get("inner_hits").is_some() {
+        return Err(OsError::parsing("ChloeDB's nested query returns no inner_hits"));
+    }
+    if let Some(known) = known {
+        only(body, kind, known)?;
+    }
     match kind.as_str() {
         "match_all" => Ok(Compiled { pred: None, score: Score::Const(boost(body)) }),
         "match_none" => Ok(Compiled { pred: Some(NONE.into()), score: Score::None }),
@@ -692,7 +792,11 @@ fn compile_term(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
 
 fn compile_terms(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
     let m = body.as_object().ok_or_else(|| OsError::parsing("[terms] query malformed"))?;
-    let (f, v) = m.iter().find(|(k, _)| !matches!(k.as_str(), "boost" | "_name")).ok_or_else(|| OsError::parsing("[terms] query requires a field"))?;
+    let mut fields = m.iter().filter(|(k, _)| !matches!(k.as_str(), "boost" | "_name"));
+    let (f, v) = fields.next().ok_or_else(|| OsError::parsing("[terms] query requires a field"))?;
+    if let Some((other, _)) = fields.next() {
+        return Err(OsError::parsing(format!("[terms] query does not support multiple fields, found [{f}] and [{other}]")));
+    }
     let vals = match v {
         Json::Array(a) => a.clone(),
         Json::Object(_) => return Err(OsError::parsing("[terms] lookup is not supported: list the values")),
@@ -1441,6 +1545,10 @@ fn compile_query_string(body: &Json, cx: &mut Ctx, simple: bool) -> Result<Compi
 fn compile_knn(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
     let m = body.as_object().ok_or_else(|| OsError::parsing("[knn] query malformed"))?;
     let (f, spec) = m.iter().next().ok_or_else(|| OsError::parsing("[knn] query requires a field"))?;
+    if let Some(other) = m.keys().nth(1) {
+        return Err(OsError::parsing(format!("[knn] query takes one field, found [{f}] and [{other}]")));
+    }
+    only(spec, "knn", &["vector", "k", "filter", "boost", "_name"])?;
     let column = match cx.target(f) {
         Target::Vector(c) => c,
         _ => return Err(OsError::parsing(format!("Field '{f}' is not knn_vector type."))),
@@ -1473,6 +1581,15 @@ fn compile_function_score(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError
     for f in &fns {
         if f.get("filter").is_some() {
             return Err(OsError::parsing("ChloeDB's function_score takes functions without a filter"));
+        }
+        if let Some(m) = f.as_object() {
+            let known = ["weight", "field_value_factor", "gauss", "exp", "linear", "random_score", "script_score"];
+            if let Some(k) = m.keys().find(|k| !known.contains(&k.as_str())) {
+                return Err(OsError::parsing(format!("[function_score] function does not support [{k}]{}", did_you_mean(k, &known))));
+            }
+        }
+        if let Some(fv) = f.get("field_value_factor") {
+            only(fv, "field_value_factor", &["field", "factor", "modifier", "missing"])?;
         }
         let weight = f.get("weight").and_then(Json::as_f64);
         let mut factor = None;

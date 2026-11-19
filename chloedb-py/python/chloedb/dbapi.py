@@ -212,8 +212,10 @@ class _Type:
         return f"chloedb.dbapi.{self.name}"
 
 
-# A column's type code is ChloeDB's type of it when the column is a
-# table's field, else the type of its values.
+# A column's type code is the type of its values, as the answer gives it
+# (an alias, an aggregate or a function of a TIMESTAMP is "timestamp"); a
+# column of text that is a table's field by name keeps the field's own
+# ("keyword", "json"), and one of only NULLs takes the field's.
 STRING = _Type("STRING", "text", "keyword", "json", "media")
 BINARY = _Type("BINARY", "binary")
 NUMBER = _Type("NUMBER", "int", "float", "bool")
@@ -383,11 +385,19 @@ class Cursor:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    def _types(self, columns: Sequence[str], rows: Sequence[Sequence[Any]], tables: Sequence[str]) -> list[str | None]:
+    def _types(self, columns: Sequence[str], rows: Sequence[Sequence[Any]], tables: Sequence[str], given: Sequence[str | None] | None = None) -> list[str | None]:
+        """Each column's type code: the answer's (`given`, from the
+        column's values: `MAX(ts)`, `ts AS d` and `date_trunc` are
+        "timestamp"), the field's of that name for a string column or
+        one of only NULLs, else the type of the values here (an answer
+        from a server from before 0.3.9 gives none)."""
         fields = self._conn._fields(tables)
         out: list[str | None] = []
         for i, c in enumerate(columns):
-            t = fields.get(c)
+            t = given[i] if given is not None and i < len(given) else None
+            f = fields.get(c)
+            if t is None or (t == "text" and f in STRING.codes):
+                t = f or t
             if t is None:
                 t = next((_value_type(r[i]) for r in rows if r[i] is not None), None)
             out.append(t)
@@ -444,7 +454,7 @@ class Cursor:
         if hasattr(result, "columns"):
             columns = list(result.columns)
             tables = _tables_named(operation)
-            types = self._types(columns, result.rows, tables)
+            types = self._types(columns, result.rows, tables, getattr(result, "types", None))
             self._stamps = [i for i, t in enumerate(types) if t == "timestamp"]
             self.description = [(c, t, None, None, None, None, None) for c, t in zip(columns, types)]
             self._rows = self._take(result)

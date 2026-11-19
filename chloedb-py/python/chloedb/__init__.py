@@ -31,8 +31,12 @@ stored row's vector.
 from __future__ import annotations
 
 import builtins
+import contextlib
 import json
 import os
+import re
+import sys
+import time
 from typing import Any, Iterable, Iterator, Mapping
 
 from . import ngrams, train
@@ -286,6 +290,64 @@ class _Pending:
         pass
 
 
+class _Progress:
+    """`embed_backfill`'s report on stderr: nothing for a fill shorter than
+    two seconds, then how far it is every two seconds, and its end."""
+
+    def __init__(self, field: str, table: str):
+        self.what = f"{table}.{field}"
+        self.start = time.monotonic()
+        self.last = self.start
+        self.shown = False
+
+    def __call__(self, done: int, total: int) -> None:
+        now = time.monotonic()
+        if done < total and now - self.last < 2:
+            return
+        if done >= total and not self.shown:
+            return
+        self.last, self.shown = now, True
+        end = "\n" if done >= total else "\r"
+        sys.stderr.write(f"chloedb: embedding {self.what}: {done:,} of {total:,} rows ({now - self.start:.0f} s){end}")
+        sys.stderr.flush()
+
+
+@contextlib.contextmanager
+def _new_embedded(db: "Database", table: str | None, every: bool = False):
+    """Notes in `db._fill` the embedded fields the statement run inside
+    adds: of `table` (None: the first), or of every table with `every`."""
+
+    def embedded() -> set[tuple[str, str]]:
+        schemas = db.tables() if every or table is not None else [db.schema]
+        return {(t["table"], f["name"]) for t in schemas if every or table is None or t["table"] == table for f in t.get("fields", []) if f.get("embed")}
+
+    before = embedded()
+    yield
+    db._fill = sorted(embedded() - before)
+
+
+def _fill_new(db: "Database", progress: Any) -> None:
+    """Embeds the rows already there of the embedded fields a statement
+    added (`_new_embedded`), or warns that they have no vector yet when a
+    field's model is not open here."""
+    import warnings
+
+    added, db._fill = getattr(db, "_fill", []), []
+    if not added:
+        return
+    first = db.schema["table"]
+    for t, f in added:
+        try:
+            db.embed_backfill(f, table=t, progress=progress)
+        except ChloeDBError as e:
+            if "no model open" not in str(e):
+                raise
+            n = db.missing_vectors(f, table=t)
+            why = db.embed_errors.get(f if t == first else f"{t}.{f}")
+            if n:
+                warnings.warn(f"{t}.{f} was added, and its model is not open here{f' ({why})' if why else ''}: the {n:,} rows already in {t} have no vector, so similarity() does not find them, until the model opens and db.embed_backfill({f!r}, table={t!r}) embeds them", stacklevel=3)
+
+
 class Database(Search, FrameStore):
     """A ChloeDB database opened in this process.
 
@@ -431,7 +493,7 @@ class Database(Search, FrameStore):
             return []
         return [ordered_schema(json.loads(t)) for t in self._db.tables_json()]
 
-    def add_column(self, name: str, type: str, *, table: str | None = None, **options: Any) -> None:
+    def add_column(self, name: str, type: str, *, table: str | None = None, progress: Any = None, **options: Any) -> None:
         """Adds a column to the first table or `table`, as `ALTER TABLE ...
         ADD COLUMN` does: `options` are the field's, in the short form of a
         schema (`default`, `not_null`, `indexed`, `embed` and `model`, ...).
@@ -439,8 +501,35 @@ class Database(Search, FrameStore):
 
             db.add_column("price", "float", default=0.0)
             db.add_column("emb", "vector", embed=["title"], model="potion-retrieval-32M")
+
+        An embedded vector's model embeds the rows already there before
+        `add_column` returns (`embed_backfill`, whose `progress` it takes),
+        so that `similarity()` finds them; when its model is not open
+        here (see `embed_errors`), it warns that they have no vector yet.
         """
-        self._db.alter_table_json(json.dumps([{"add": {"name": name, "type": type, **options}}]), table)
+        with _new_embedded(self, table):
+            self._db.alter_table_json(json.dumps([{"add": {"name": name, "type": type, **options}}]), table)
+        _fill_new(self, progress)
+
+    def embed_backfill(self, field: str, *, table: str | None = None, progress: Any = None, batch: int = 256) -> int:
+        """Embeds the rows of the first table or `table` that have no
+        vector in embedded field `field`: rows written before it was added
+        (`add_column` and `ALTER TABLE ... ADD COLUMN` do this for them
+        themselves) or while its model was not open (`set_embed_later`).
+        `progress(done, total)` is called as the rows are written,
+        `batch` at a time; by default a fill that takes longer than two
+        seconds prints how far it is on stderr every two seconds, and
+        `progress=False` prints nothing. Ctrl-C stops it, keeping the rows
+        filled so far. Returns the rows it wrote."""
+        report = _Progress(field, table or self.schema["table"]) if progress is None else (progress or None)
+        return self._db.embed_backfill(field, table, max(int(batch), 1), report)
+
+    def missing_vectors(self, field: str, *, table: str | None = None) -> int:
+        """How many rows of the first table or `table` have no vector in
+        embedded field `field`, which `similarity()` cannot find:
+        `embed_backfill` fills them in (rows whose sources are all empty
+        get none)."""
+        return self._db.missing_vectors(field, table)
 
     def drop_column(self, name: str, *, table: str | None = None) -> None:
         """Drops a column of the first table or `table`, with its values,
@@ -518,14 +607,21 @@ class Database(Search, FrameStore):
             return
         r = self.query(sql, params, timeout_ms=timeout_ms, memory=memory, **kw)
         for i in range(0, max(len(r.rows), 1), n):
-            yield Result(r.columns, r.rows[i : i + n], r.keys[i : i + n], r.scores[i : i + n], r._stats if i == 0 else None, r.took_ms if i == 0 else None)
+            yield Result(r.columns, r.rows[i : i + n], r.keys[i : i + n], r.scores[i : i + n], r._stats if i == 0 else None, r.took_ms if i == 0 else None, types=r.types)
 
     def sql(self, sql: str, params: Mapping[str, Any] | None = None, *, timeout_ms: int | None = None, memory: int | None = None, min_seq_no: int | None = None, min_seq_nos: Any = None, **kw: Any) -> Result | int:
         """Runs any statement: a SELECT's `Result`, or the number of rows an
         INSERT, UPDATE or DELETE wrote. `timeout_ms` and `memory` limit a
         SELECT as `query` takes them; a write is not cut short. A client's
         `idempotency_key` raises TypeError (see `query`)."""
-        r = self._db.sql(sql, _local_params("sql", params, kw), *_limits(timeout_ms, memory))
+        p = _local_params("sql", params, kw)
+        if re.match(r"\s*alter\s+table\b", sql, re.I):
+            # A column a model embeds is filled in for the rows before it.
+            with _new_embedded(self, None, every=True):
+                r = self._db.sql(sql, p, *_limits(timeout_ms, memory))
+            _fill_new(self, None)
+        else:
+            r = self._db.sql(sql, p, *_limits(timeout_ms, memory))
         return r if isinstance(r, int) else Result._of(r)
 
     def _query_logged(self, sql: str, params: Mapping[str, Any] | None, log: dict) -> Result:

@@ -266,8 +266,40 @@ fn with_gh_the_build_provenance_is_checked_and_a_replaced_archive_is_refused() {
     release(&e.releases, "0.3.7", &fake_chloectx("released", &e.log), true);
     let (code, out, err) = e.run(&["setup"], "", &[("CHLOECTX_VERSION", "0.3.7"), ("CHLOECTX_GH", gh.as_str())]);
     assert_eq!(code, 0, "{out}{err}");
-    assert!(err.contains("release 0.3.7 is older than build provenance (0.3.9)"), "{err}");
+    assert!(err.contains("release 0.3.7 is older than build provenance (0.3.8)"), "{err}");
     assert!(!e.calls().contains("gh "), "{}", e.calls());
+}
+
+/// 0.3.8 is the first release with build provenance beside its archives
+/// (LENA-303 of round 3 of the persona study: the launcher took it on its
+/// SHA-256 alone, saying it was older than provenance, and
+/// CHLOECTX_VERIFY=require refused it).
+#[test]
+fn release_0_3_8_has_its_provenance_checked_and_require_takes_it() {
+    for verify in ["auto", "require"] {
+        let e = env();
+        let gh = e.home.join("tools/gh");
+        fake_gh(&gh, &e.log);
+        let gh = gh.to_string_lossy().into_owned();
+        release(&e.releases, "0.3.8", &fake_chloectx("released", &e.log), true);
+        bundle(&e.releases, "0.3.8");
+        let (code, out, err) = e.run(&["setup"], "", &[("CHLOECTX_VERSION", "0.3.8"), ("CHLOECTX_GH", gh.as_str()), ("CHLOECTX_VERIFY", verify)]);
+        assert_eq!(code, 0, "{verify}: {out}{err}");
+        assert!(err.contains("build provenance checked: built by chloetech-ai/chloedb's server-release.yml from refs/tags/chloedb-server-v0.3.8"), "{verify}: {err}");
+        assert!(e.installed().is_file(), "{verify}");
+        assert!(e.calls().contains("--source-ref refs/tags/chloedb-server-v0.3.8"), "{verify}: {}", e.calls());
+    }
+
+    // Its archive without the bundle: refused, as for any release from it.
+    let e = env();
+    let gh = e.home.join("tools/gh");
+    fake_gh(&gh, &e.log);
+    let gh = gh.to_string_lossy().into_owned();
+    release(&e.releases, "0.3.8", &fake_chloectx("released", &e.log), true);
+    let (code, _, err) = e.run(&["setup"], "", &[("CHLOECTX_VERSION", "0.3.8"), ("CHLOECTX_GH", gh.as_str())]);
+    assert_ne!(code, 0);
+    assert!(err.contains("the archive's build provenance: not installing it"), "{err}");
+    assert!(!e.installed().exists());
 }
 
 #[test]

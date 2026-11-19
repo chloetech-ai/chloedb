@@ -1476,9 +1476,11 @@ impl<'a> Binder<'a> {
             "path" => GraphKind::Path { to: self.seeds(args[2])?, max_hops: count("max_hops", 6.0)? },
             "ppr" => {
                 let alpha = num("alpha", 0.15)?;
-                let eps = num("eps", 1e-4)?;
-                if !(alpha > 0.0 && alpha < 1.0) || eps <= 0.0 {
-                    return Err(err("ppr needs 0 < alpha < 1 and eps > 0"));
+                // Not given: 0, which the walk reads as 10⁻⁴ lowered while
+                // it settles less than half of its mass.
+                let eps = num("eps", 0.0)?;
+                if !(alpha > 0.0 && alpha < 1.0) || (eps <= 0.0 && opts.contains_key("eps")) {
+                    return Err(err("ppr needs 0 < alpha < 1 and eps > 0 (or no eps, to let the walk lower it from 1e-4 as it needs)"));
                 }
                 GraphKind::Ppr { alpha, eps, max_pushes: num("max_pushes", 1e6)? as u64, weighted: num("weighted", 0.0)? != 0.0 }
             }
@@ -2082,7 +2084,7 @@ impl<'a> Binder<'a> {
                                 // A ranking reads hops nearest first.
                                 Expr::Function(g) if fname(g) == "hops" => Ok(Score::Hops { graph: self.hops_graph()?, far_first: false }),
                                 a => match self.rank(a)? {
-                                    s if s.is_leaf() && !matches!(s, Score::SeqNo | Score::Cond(_)) => Ok(s),
+                                    s if s.is_leaf() && !matches!(s, Score::SeqNo | Score::Hash { .. } | Score::Cond(_)) => Ok(s),
                                     _ => Err(err(format!("rrf fuses the rankings of scores and columns, not of {a}"))),
                                 },
                             })
@@ -2100,6 +2102,26 @@ impl<'a> Binder<'a> {
                     // The number of hops, in an expression.
                     "hops" if args.is_empty() => Ok(Score::Hops { graph: self.hops_graph()?, far_first: true }),
                     "seq_no" if args.is_empty() => Ok(Score::SeqNo),
+                    // A row's seeded hash, as WHERE and ORDER BY give it:
+                    // with a relevance leaf, a fixed random order of the
+                    // rows it finds.
+                    "hash" => {
+                        check_opts("hash", &opts, &[])?;
+                        let (x, seed) = match args.as_slice() {
+                            [x] => (*x, 0),
+                            [x, seed] => (*x, self.literal(seed)?.as_i64().ok_or_else(|| err(format!("hash's seed is an INT, not {seed}")))?),
+                            _ => return Err(err("hash(field, seed) takes a field and an INT seed")),
+                        };
+                        let field = self.field_of(x).map_err(|_| err(format!("hash in a ranking takes a field of the row (hash(id, 7)), not {x}")))?;
+                        let f = &self.schema.fields[field];
+                        if Some(field) != self.schema.primary_key && !f.stored {
+                            return Err(err(format!("hash in a ranking reads the row's value of a stored field, and {} is not stored", f.name)));
+                        }
+                        if f.multi || !matches!(f.ty, FieldType::Text { .. } | FieldType::Keyword | FieldType::Int | FieldType::Float) {
+                            return Err(err(format!("hash in a ranking takes a field of one value (text, a number, a BOOL or a TIMESTAMP), and {} is not one", f.name)));
+                        }
+                        Ok(Score::Hash { field, seed })
+                    }
                     // These take no options: `check_opts` refuses any.
                     "ranked" | "minmax" | "rank" | "zscore" if !opts.is_empty() => check_opts(&name, &opts, &[]).map(|()| Score::Num(0.0)),
                     "ranked" => match args.as_slice() {
@@ -2154,12 +2176,12 @@ impl<'a> Binder<'a> {
                             func.arity(args.len()).map_err(|a| err(format!("{n}() takes {a}")))?;
                             Ok(Score::Call { func, args: args.iter().map(|a| self.rank(a)).collect::<Result<_>>()? })
                         }
-                        None if matches!(n, "random" | "rand") => Err(err(format!("ORDER BY {n}() is not supported: rows come in the order of a score or a column; for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0"))),
+                        None if matches!(n, "random" | "rand") => Err(err(format!("ORDER BY {n}() is not supported: rows come in the order of a score or a column; for a seeded shuffle, ORDER BY hash(id, 7) (of the rows a search finds, bm25(body, :q) * 0 + hash(id, 7)), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0"))),
                         // Values of a row that the row evaluator computes,
                         // not a ranking with scores.
                         None if matches!(
                             n,
-                            "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime" | "date_bin" | "json_extract" | "floor" | "ceil" | "ceiling" | "substr" | "substring" | "trim" | "btrim" | "ltrim" | "rtrim" | "replace" | "concat" | "nullif" | "date_diff" | "datediff"
+                            "lower" | "upper" | "length" | "date_trunc" | "date_part" | "strftime" | "date_bin" | "json_extract" | "floor" | "ceil" | "ceiling" | "substr" | "substring" | "trim" | "btrim" | "ltrim" | "rtrim" | "replace" | "concat" | "nullif" | "date_diff" | "datediff"
                         ) =>
                         {
                             Err(err(format!(
@@ -2265,7 +2287,7 @@ impl<'a> Binder<'a> {
                 // with its dimensions.
                 return Err(err(match &fld.embed {
                     Some(e) => format!(
-                        "similarity({}, ...) takes a vector, and {} is text. {} holds {}'s embeddings of {}; give the text as a parameter for the server to embed, \"params\": {{\"q\": {{\"embed\": \"some words\", \"table\": \"{}\", \"field\": \"{}\"}}}} with similarity({}, :q) (in the SQL workbench, pick “embed text” for :q), or a vector of {dim} numbers as a JSON array",
+                        "similarity({}, ...) takes a vector, and {} is text. {} holds {}'s embeddings of {}; give the text as a parameter for the server to embed, \"params\": {{\"{q}\": {{\"embed\": \"some words\", \"table\": \"{}\", \"field\": \"{}\"}}}} with similarity({}, :{q}) (in the SQL workbench, pick “embed text” for :{q}), or a vector of {dim} numbers as a JSON array",
                         fld.name,
                         self.described(v),
                         fld.name,
@@ -2273,15 +2295,17 @@ impl<'a> Binder<'a> {
                         e.from.join(" and "),
                         self.schema.table,
                         fld.name,
-                        fld.name
+                        fld.name,
+                        q = param_name(v)
                     ),
                     None => format!(
-                        "similarity({}, ...) takes a vector, and {} is text. {} is embedded by no model (it has no OPTIONS(embed = ..., model = ...)), so text is not searched against it: give a vector of {dim} numbers as a JSON array, the vector of a stored row (\"params\": {{\"q\": {{\"vector_of\": \"<key>\", \"table\": \"{}\", \"field\": \"{}\"}}}}), or embed('<model>', :q) by a model of {dim} dimensions",
+                        "similarity({}, ...) takes a vector, and {} is text. {} is embedded by no model (it has no OPTIONS(embed = ..., model = ...)), so text is not searched against it: give a vector of {dim} numbers as a JSON array, the vector of a stored row (\"params\": {{\"{q}\": {{\"vector_of\": \"<key>\", \"table\": \"{}\", \"field\": \"{}\"}}}}), or embed('<model>', :{q}) by a model of {dim} dimensions",
                         fld.name,
                         self.described(v),
                         fld.name,
                         self.schema.table,
-                        fld.name
+                        fld.name,
+                        q = param_name(v)
                     ),
                 }));
             }
@@ -3771,6 +3795,18 @@ pub(crate) fn encode_call(f: &sql::Function, literal: &dyn Fn(&Expr) -> Result<V
         Some(v) => return Err(err(format!("encode's now is a time (a TIMESTAMP, or microseconds since the Unix epoch), not {v:?}"))),
     };
     Ok(ir::Expr::Encode { model, hash: String::new(), rows, now, open: Default::default() })
+}
+
+/// The name of the parameter `e` is (`:v` gives `v`), for the examples an
+/// error shows; `q` for a literal.
+fn param_name(e: &Expr) -> String {
+    match e {
+        Expr::Value(v) => match &v.value {
+            sql::Value::Placeholder(p) => p.trim_start_matches([':', '$', '@', '?']).to_string(),
+            _ => "q".to_string(),
+        },
+        _ => "q".to_string(),
+    }
 }
 
 fn fname(f: &sql::Function) -> String {

@@ -305,6 +305,25 @@ pub struct Daemon {
     /// comes is answered [`closing_answer`], and its client sends it to
     /// the next daemon.
     closing: std::sync::atomic::AtomicBool,
+    /// The private asides of each session's current turn
+    /// ([`crate::private`]), in memory only: what its reply must not say
+    /// again, and whether the whole turn is the user's to keep.
+    private: Mutex<HashMap<String, PrivateTurn>>,
+}
+
+/// The private asides of a session, as of its latest turn: a reply of a
+/// later turn that says one again ("I didn't save your interview note")
+/// loses that sentence too (WEI-304).
+struct PrivateTurn {
+    /// The latest turn, and whether its prompt was private as a whole.
+    turn: i64,
+    whole: bool,
+    /// The latest turn whose prompt held one.
+    aside_turn: i64,
+    /// What of the session's asides a reply could repeat, less what the
+    /// latest prompt says itself.
+    echo: crate::private::Echo,
+    asides: Vec<String>,
 }
 
 /// Work to do after the response is sent (so hooks return at once).
@@ -377,7 +396,7 @@ impl Daemon {
         Ok(Daemon { paths, project: project.to_string(), store, cfg, state: Mutex::new(state), dirty: Default::default(), pending: Default::default(), saving: Mutex::new(()),
             logging: Mutex::new(()), distilling: Mutex::new(()), distilled_since: Default::default(), deep_jobs: Mutex::new(HashMap::new()), next_files: Default::default(), from_hooks: Mutex::new((String::new(), None)), hook_distill: Default::default(), missed_checked: Default::default(), last_activity: AtomicI64::new(now()),
             receipts, receipts_on, unsaved: Default::default(), deferred: Default::default(), no_hook_receipts: Default::default(), snapshots, keep_pending: Default::default(),
-            serving: Default::default(), closing: Default::default() })
+            serving: Default::default(), closing: Default::default(), private: Mutex::new(HashMap::new()) })
     }
 
     /// Wraps work to run after the answer, so that shutdown waits for it.
@@ -670,7 +689,8 @@ impl Daemon {
         // The rows of records forgotten here go first (audit CTX-33): a
         // server that did not answer a forget's delete is asked again.
         let forgets = crate::sync::send_forgets(&remote, &key, &self.paths.dir);
-        let pushed = crate::sync::push(&remote, &self.store, &key, &mut st);
+        // `--again` sends the records pulled from other machines too.
+        let pushed = crate::sync::push_with(&remote, &self.store, &key, &mut st, again);
         // What a pull stores keeps the server's sequence numbers, and the
         // next push sends again those past what was pushed: the same rows,
         // replaced by themselves. Taking them as pushed (pushed_seq set to
@@ -681,11 +701,22 @@ impl Daemon {
             (Err(e), _, _) | (_, Err(e), _) | (_, _, Some(Err(e))) => e.to_string(),
             _ => String::new(),
         };
-        let (p, g) = (pushed.as_ref().map_or(0, |n| *n), pulled.as_ref().and_then(|r| r.as_ref().ok()).copied().unwrap_or(0));
-        if p > 0 || g > 0 || !st.last_error.is_empty() {
-            self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "pushed": p, "pulled": g, "error": st.last_error}));
+        let got = pulled.and_then(|r| r.ok()).unwrap_or_default();
+        let p = pushed.as_ref().map_or(0, |n| *n);
+        if p > 0 || got.stored > 0 || got.changed > 0 || !got.forget.is_empty() || !st.last_error.is_empty() {
+            self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "pushed": p, "pulled": got.stored, "changed": got.changed, "forgotten": got.forget.len(), "error": st.last_error}));
         }
         crate::sync::save_state(&self.paths.dir, &st);
+        drop(_one);
+        // What another machine forgot, or an admin deleted on the server,
+        // is forgotten here as `chloectx forget` does it: receipts
+        // scrubbed and segments rewritten (WEI-304, WEI-303). The pull
+        // noted them forgotten for the sync already.
+        if !got.forget.is_empty() {
+            if let Err(e) = self.forget(&json!({"ids": got.forget, "wait": true, "pulled": true})) {
+                self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "error": format!("forgetting what the server forgot: {e}")}));
+            }
+        }
         Some(st)
     }
 
@@ -703,7 +734,7 @@ impl Daemon {
         let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else { return String::new() };
         let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
         match crate::sync::send_forgets(&remote, &key, &self.paths.dir) {
-            Ok(_) => "its row on the sync server deleted too (a machine that pulled it before keeps its copy)".into(),
+            Ok(_) => "its row on the sync server replaced by a tombstone, which every machine that pulled it forgets on its next pull".into(),
             Err(e) => {
                 self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "error": format!("forget: {e}")}));
                 format!("the sync server's row is not deleted yet ({e}): each push asks again, and a pull never brings it back here")
@@ -715,35 +746,69 @@ impl Daemon {
     fn op_sync(&self, req: &Json) -> Result<Json> {
         let what = req.get("what").and_then(|v| v.as_str()).unwrap_or("status");
         if what == "accept" {
-            let origins: Vec<String> = req.get("origins").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
-            let by = crate::sync::accept(&crate::paths::home(), &self.store, &origins)?;
+            let names: Vec<String> = req.get("origins").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+            let all = req.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
+            let home = crate::paths::home();
+            let key = crate::sync::project_key(&home, &self.project);
+            let everyone = crate::sync::load_config(&home).trusted_everyone();
+            let (by, unknown) = crate::sync::accept(&home, &self.store, &key, &names, all)?;
             let mut text = String::new();
             if by.is_empty() {
-                text = "No records from other machines wait to be accepted.".into();
+                text = format!("No records from other machines wait to be accepted in {key}.\n");
             }
-            for (o, n, some) in &by {
-                let done = origins.iter().any(|x| x == "*" || x == o);
-                text += &format!("{o}: {n} record{}{}\n", if *n == 1 { "" } else { "s" }, if done { ", accepted" } else { "" });
-                for t in some {
+            for p in &by {
+                let done = all || names.iter().any(|n| n == "*" || p.named(n));
+                text += &format!("{}: {} record{}{}\n", p.label(), p.records, if p.records == 1 { "" } else { "s" }, if done { ", accepted" } else { "" });
+                for t in &p.some {
                     text += &format!("    {}\n", crate::envelope::defuse(t));
                 }
             }
-            if origins.is_empty() && !by.is_empty() {
-                text += "Accept a machine's records (its rules and decisions then reach the briefing): chloectx sync accept --origin ID, or --all";
+            for n in &unknown {
+                text += &format!("No machine {n} has records waiting here: give a machine as listed (its name or its id).\n");
             }
-            let me = crate::sync::origin(&crate::paths::home());
-            return Ok(json!({"text": text.trim_end(), "this_machine": me, "pending": by.iter().map(|(o, n, _)| json!({"origin": o, "records": n})).collect::<Vec<_>>()}));
+            if names.is_empty() && !all && !by.is_empty() {
+                text += &format!("Accept a machine's records in {key} (its rules and decisions then reach the briefing and the prompt's context): chloectx sync accept --origin NAME, or --all for the machines listed here (no machine that pushes later)\n");
+            }
+            if everyone {
+                text += "sync.json trusts every machine (\"*\", from `accept --all` before 0.3.9), which is no longer honoured: a project's machines are accepted one by one, or those listed now with --all.\n";
+            }
+            let me = crate::sync::origin(&home);
+            return Ok(json!({"text": text.trim_end(), "this_machine": me, "project": key, "unknown": unknown,
+                "pending": by.iter().map(|p| json!({"origin": p.origin, "key": p.key, "name": p.key.as_deref().map(crate::sync::machine_name), "records": p.records})).collect::<Vec<_>>()}));
         }
-        let key = crate::sync::project_key(&crate::paths::home(), &self.project);
-        let Some(remote) = crate::sync::remote_for(&crate::paths::home(), &key) else {
-            return Ok(json!({"server": null, "note": "no server set up: chloectx sync setup --url URL"}));
+        let home = crate::paths::home();
+        let key = crate::sync::project_key(&home, &self.project);
+        let Some(remote) = crate::sync::remote_for(&home, &key) else {
+            let Some(server) = crate::sync::remote(&home) else {
+                return Ok(json!({"server": null, "syncs": false, "note": "no server set up: chloectx sync setup --url URL"}));
+            };
+            // A server is set up for other projects of the machine, not this one (LENA-301).
+            let mut note = format!("this project ({key}) does not sync: {}. To sync it, run `chloectx sync setup --url {}` in its folder", crate::sync::scope_line(&home), server.url);
+            note += &crate::sync::sent_before(&crate::sync::saved_state(&self.paths.dir), &server.url);
+            return Ok(json!({
+                "server": server.url, "syncs": false, "project": self.project, "synced_as": key,
+                "projects": crate::sync::set_up_projects(&home), "every_project": false, "warning": note,
+            }));
         };
+        if what == "retire" {
+            // A rule (or any note) retired for the whole project: here, on
+            // the server, and on every machine's next pull (WEI-306).
+            let id = req.get("id").and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
+            let Some(r) = self.store.get(&[id.to_string()])?.pop() else {
+                return Err(err(format!("no record {id:?} here: give a rule's id as chloectx search, the briefing or the command center shows it")));
+            };
+            let _one = SYNC_ONE.lock().unwrap_or_else(|e| e.into_inner());
+            let r = crate::sync::retire(&remote, &self.store, &key, &r)?;
+            let line: String = r.text.lines().next().unwrap_or("").chars().take(120).collect();
+            self.log(&json!({"ts": now(), "event": "sync", "server": remote.url, "retired": r.id}));
+            return Ok(json!({"id": r.id, "kind": r.kind.as_str(), "text": format!("Retired {} ({}: {line}) here and on {}: every machine of {key} retires it on its next pull.", r.id, r.kind.as_str(), remote.url)}));
+        }
         let again = req.get("again").and_then(|v| v.as_bool()).unwrap_or(false);
         let st = match what {
             "push" => self.sync_with(false, again),
             "pull" => self.sync_now(true),
             "status" => Some(crate::sync::load_state(&self.paths.dir, &remote.url, &key)),
-            w => return Err(err(format!("sync: unknown {w:?} (status, push or pull)"))),
+            w => return Err(err(format!("sync: unknown {w:?} (status, push, pull, accept or retire)"))),
         }
         .unwrap_or_default();
         let on_server = if what == "status" { remote.count(&key).map_err(|e| e.to_string()) } else { Err(String::new()) };
@@ -752,7 +817,8 @@ impl Daemon {
         let warning = on_server.as_ref().ok().and_then(|n| crate::sync::short_on_server(upto, *n));
         Ok(json!({
             "warning": warning,
-            "server": remote.url, "token": remote.has_token(), "key_from": remote.key_from, "project": self.project, "synced_as": key,
+            "server": remote.url, "syncs": true, "why": crate::sync::syncs(&home, &key), "scope": crate::sync::scope_line(&home),
+            "token": remote.has_token(), "key_from": remote.key_from, "project": self.project, "synced_as": key,
             "local_records": self.store.len(), "last_seq": self.store.last_seq(),
             "pushed_seq": st.pushed_seq, "pushed": st.pushed, "pulled": st.pulled,
             "last_push": st.last_push, "last_pull": st.last_pull, "last_error": st.last_error,
@@ -927,6 +993,12 @@ impl Daemon {
                 // A harness's envelopes around the prompt go first: recalled
                 // later, they read as the conversation ([`crate::envelope`]).
                 let prompt = crate::redact::redact(&crate::envelope::clean(p.get("prompt").and_then(|v| v.as_str()).unwrap_or("")));
+                // What the user asked not to keep goes before anything is
+                // written: the state, the turn's records, its context, its
+                // card and what the distiller reads ([`crate::private`]).
+                let cut = crate::private::cut(&prompt);
+                let prompt = if cut.any() { cut.kept.clone() } else { prompt };
+                let whole = cut.whole;
                 let (turn, recent, tail) = self.with_session(&sid, |s| {
                     s.turn += 1;
                     // The briefing's part that changes every session.
@@ -941,10 +1013,25 @@ impl Daemon {
                     }
                     (s.turn, recent, tail)
                 });
+                {
+                    let mut private = self.private.lock().unwrap();
+                    let (mut asides, mut aside_turn) = private.remove(&sid).map(|p| (p.asides, p.aside_turn)).unwrap_or_default();
+                    asides.extend(cut.asides.iter().cloned());
+                    if cut.any() {
+                        aside_turn = turn;
+                    }
+                    if cut.any() {
+                        self.log(&json!({"ts": now(), "event": "private_aside", "session": sid, "turn": turn, "asides": cut.asides.len(), "whole": whole}));
+                    }
+                    if !asides.is_empty() {
+                        let echo = crate::private::Echo::new(&asides, &prompt);
+                        private.insert(sid.clone(), PrivateTurn { turn, whole, aside_turn, echo, asides });
+                    }
+                }
                 // Recall first: the prompt is in the live window anyway, and
                 // storing it afterwards keeps the write (and the memtable
                 // rebuild it causes) off the prompt's critical path.
-                let recalled = self.recall_for(&sid, &prompt, false, "prompt")?;
+                let recalled = if whole { None } else { self.recall_for(&sid, &prompt, false, "prompt")? };
                 // A question that stands on its own, for which nothing was
                 // recalled, gets nothing: the tail waits for the session's
                 // next prompt, no search runs after it, and a session that
@@ -952,7 +1039,7 @@ impl Daemon {
                 // the same first request, which the prompt cache serves
                 // (JONAH-202). Claude Code puts every hook's text after the
                 // prompt, so the briefing is cached across sessions only then.
-                let alone = recalled.is_none() && recall::stands_alone(&prompt);
+                let alone = !whole && recalled.is_none() && recall::stands_alone(&prompt);
                 if alone {
                     self.with_session(&sid, |s| s.episode.alone = true);
                 }
@@ -978,7 +1065,7 @@ impl Daemon {
                     let t = format!("ChloeCtx's search for your previous request finished after that turn ended:\n{t}");
                     text = if text.is_empty() { t } else { format!("{text}\n\n{t}") };
                 }
-                let deep = !alone && deep_cfg.wants(&prompt, self.store.len());
+                let deep = !alone && !whole && deep_cfg.wants(&prompt, self.store.len());
                 let deep_async = deep && mode == "async";
                 if deep && mode == "sync" {
                     let (t, _) = self.deep_for(&sid, &prompt, &recent, "sync");
@@ -993,6 +1080,12 @@ impl Daemon {
                     } else {
                         jobs.remove(&sid);
                     }
+                }
+                // The session is told what was left out, so that Claude can
+                // say what was kept (WEI-301, JONAH-301).
+                if cut.any() {
+                    let n = crate::private::notice(&cut);
+                    text = if text.is_empty() { n } else { format!("{n}\n\n{text}") };
                 }
                 Ok((
                     ctx_out("UserPromptSubmit", text),
@@ -1145,6 +1238,10 @@ impl Daemon {
                             }
                             me.log(&json!({"ts": now(), "event": "fix", "session": sid, "turn": turn, "fixes": fixed.len()}));
                         }
+                        // A turn the user asked not to keep keeps no tool call either.
+                        if me.private_whole(&sid, turn) {
+                            return;
+                        }
                         if let Err(e) = me.store.append(&sid, turn, end, drafts) {
                             me.log(&json!({"ts": now(), "error": e.to_string(), "event": "PostToolUse"}));
                         }
@@ -1190,14 +1287,19 @@ impl Daemon {
                 // A turn that called memory_forget: its reply may say again
                 // what it forgot.
                 let forgot = self.store.forgetting.is_forget_turn(&sid, cur);
+                // A turn whose prompt held a private aside: its reply is kept
+                // without what repeats the aside, and a turn the user asked
+                // not to keep at all keeps nothing ([`crate::private`]).
+                let whole = self.private_whole(&sid, cur);
+                let kept_answer = self.unsaid(&sid, cur, &answer);
                 let (turn, ep, first, ex) = self.with_session(&sid, |s| {
                     let first = !s.episode_stored;
                     s.episode_stored = true;
                     let ex = crate::distill::Exchange { by: Some(crate::record::Source::parse(&s.source)), agent: s.agent.clone(), prev_answer: s.prev_answer.clone() };
                     if first {
                         // Redacted: the state is a file too.
-                        let tail: Vec<char> = crate::redact::redact(&answer).chars().collect();
-                        s.prev_answer = if forgot { String::new() } else { tail[tail.len().saturating_sub(800)..].iter().collect() };
+                        let tail: Vec<char> = crate::redact::redact(&kept_answer).chars().collect();
+                        s.prev_answer = if forgot || whole { String::new() } else { tail[tail.len().saturating_sub(800)..].iter().collect() };
                         s.answered.push_back(crate::sync::fnv(answer.trim()));
                         while s.answered.len() > ANSWERS_KEPT {
                             s.answered.pop_front();
@@ -1212,6 +1314,9 @@ impl Daemon {
                 if forgot {
                     return Ok((json!({"output": null}), Some(self.after(move |me| me.end_forget_turn(&sid, turn, tpath.as_deref())))));
                 }
+                if whole {
+                    return Ok((json!({"output": null}), Some(self.after(move |me| me.end_private_turn(&sid, turn, tpath.as_deref())))));
+                }
                 Ok((
                     json!({"output": null}),
                     Some(self.after(move |me| {
@@ -1219,9 +1324,9 @@ impl Daemon {
                         if let Some(t) = &tpath {
                             me.sync_narration(&sid, turn, t, &answer, &ctx);
                         }
-                        let mut drafts: Vec<Draft> = capture::answer_drafts(&answer).into_iter().map(|d| d.ctx(ctx.clone())).collect();
-                        drafts.extend(ep.card(turn, &answer));
-                        let aside = ep.only_a_question(&answer);
+                        let mut drafts: Vec<Draft> = capture::answer_drafts(&kept_answer).into_iter().map(|d| d.ctx(ctx.clone())).collect();
+                        drafts.extend(ep.card(turn, &kept_answer));
+                        let aside = ep.only_a_question(&kept_answer);
                         if aside {
                             for d in drafts.iter_mut().filter(|d| d.tag == "-") {
                                 d.tag = crate::record::ASIDE.into();
@@ -1241,7 +1346,7 @@ impl Daemon {
                             return;
                         }
                         let files: Vec<String> = ep.files.iter().cloned().collect();
-                        me.distill_turn(&sid, turn, now(), &ep.prompt, &answer, &ep.commands, &files, &ex);
+                        me.distill_turn(&sid, turn, now(), &ep.prompt, &kept_answer, &ep.commands, &files, &ex);
                     })),
                 ))
             }
@@ -1362,7 +1467,17 @@ impl Daemon {
                     let st = self.state.lock().unwrap();
                     st.sessions.get(sid).map(|s| if s.shown_before.0 == turn { s.shown_before.1.clone() } else { s.injected.clone() }).unwrap_or_default()
                 };
-                let promoted = crate::repeats::promote(d.drafts, &checked.again, sid, &shown, &before);
+                // A question how to build something plans nothing (ANA-308).
+                let (drafts, asked) = crate::distill::not_planned(d.drafts, prompt, !files.is_empty());
+                // The model never sees a private aside; a note of the aside's
+                // turn that says it again all the same (from a note it knew)
+                // is not kept (WEI-301). A later turn's note that shares a
+                // word with it is the later turn's.
+                let n_drafts = drafts.len();
+                let in_aside_turn = self.private.lock().unwrap().get(sid).is_some_and(|p| p.aside_turn == turn);
+                let drafts: Vec<Draft> = drafts.into_iter().filter(|x| !crate::private::holds_aside(&x.text) && (!in_aside_turn || self.unsaid(sid, turn, &x.text) == x.text)).collect();
+                let aside_dropped = n_drafts - drafts.len();
+                let promoted = crate::repeats::promote(drafts, &checked.again, sid, &shown, &before);
                 // Near-copies of what is noted (other than what they replace,
                 // or repeat) add nothing.
                 let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
@@ -1449,7 +1564,7 @@ impl Daemon {
                 let repeated = crate::repeats::supersede_repeated(&self.store, &stored);
                 self.store.warm();
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "items": n, "kept": kept,
-                    "replaced": replaced, "done": done, "retired": retired, "stated": stated, "said_again": checked.again.len(), "said_again_dropped": checked.dropped.len(), "repeated": repeated, "cost_usd": d.cost_usd + checked.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
+                    "replaced": replaced, "done": done, "retired": retired, "stated": stated, "asked_not_planned": asked, "aside_dropped": aside_dropped, "said_again": checked.again.len(), "said_again_dropped": checked.dropped.len(), "repeated": repeated, "cost_usd": d.cost_usd + checked.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
             }
             Err(e) => {
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "error": e.to_string()}));
@@ -1666,30 +1781,32 @@ impl Daemon {
         (text, Some(res))
     }
 
-    /// The sequence number of a turn's first record (its prompt, stored
-    /// with the picks from its words).
-    /// Supersedes the decisions a turn's prompt stated ([`capture::decision_sentences`],
-    /// tagged `stated`) by the turn's distilled decision or rule that holds
-    /// most of their words, when it holds at least half: two copies of one
-    /// decision are one. Returns the ids superseded.
+    /// Supersedes the rules and decisions picked from a turn's prompt
+    /// ([`capture::decision_sentences`], tagged `stated`, and
+    /// [`capture::preference_sentences`], tagged `cue`) by the turn's
+    /// distilled decision or rule that holds most of their words, when the
+    /// turn's distilled notes together hold at least half of them: the
+    /// prompt's raw sentence ("User preference: Two project decisions to keep
+    /// in mind from now on (no code changes now, ...): 1) Money is ...")
+    /// and the notes written from it are one (ANA-204, ANA-308). Returns the
+    /// ids superseded.
     fn supersede_stated(&self, sid: &str, turn: i64, stored: &[Record]) -> Vec<String> {
         let terms = |t: &str| -> HashSet<String> { chloedb::text::analyze(t).into_iter().collect() };
         let Ok(rs) = self.store.query_with(
-            &format!("SELECT {} FROM memory WHERE session = :session AND turn = {turn} AND kind = 'decision' AND tag = 'stated' LIMIT 20", crate::record::COLUMNS),
+            &format!("SELECT {} FROM memory WHERE session = :session AND turn = {turn} AND kind IN ('decision', 'preference') AND tag IN ('stated', 'cue') LIMIT 20", crate::record::COLUMNS),
             &Params::new().set("session", Value::Str(sid.to_string())),
         ) else {
             return Vec::new();
         };
+        let notes: Vec<(&Record, HashSet<String>)> = stored.iter().filter(|r| matches!(r.kind, Kind::Decision | Kind::Preference) && r.tag != crate::record::TASK_TAG).map(|r| (r, terms(&r.text))).collect();
+        let all: HashSet<&String> = notes.iter().flat_map(|(_, t)| t.iter()).collect();
         let mut out = Vec::new();
         for old in rs.rows.iter().filter_map(|r| crate::store::row_record(r)) {
-            let o = terms(old.text.trim_start_matches("The user decided:"));
-            let best = stored
-                .iter()
-                .filter(|r| matches!(r.kind, Kind::Decision | Kind::Preference) && r.tag != crate::record::TASK_TAG)
-                .map(|r| (terms(&r.text).intersection(&o).count(), r))
-                .max_by_key(|(n, r)| (*n, -r.seq));
+            let o = terms(without_lead(&old.text));
+            let covered = o.iter().filter(|t| all.contains(t)).count();
+            let best = notes.iter().map(|(r, t)| (t.intersection(&o).count(), *r)).max_by_key(|(n, r)| (*n, -r.seq));
             if let Some((n, new)) = best {
-                if !o.is_empty() && n * 2 >= o.len() && self.store.supersede(&old.id, &new.id).unwrap_or(false) {
+                if !o.is_empty() && n >= 2.min(o.len()) && covered * 2 >= o.len() && self.store.supersede(&old.id, &new.id).unwrap_or(false) {
                     out.push(old.id.clone());
                 }
             }
@@ -1697,6 +1814,8 @@ impl Daemon {
         out
     }
 
+    /// The sequence number of a turn's first record (its prompt, stored
+    /// with the picks from its words).
     fn first_seq_of(&self, sid: &str, turn: i64) -> Option<i64> {
         self.store
             .query_with(
@@ -1998,6 +2117,107 @@ impl Daemon {
         self.missed_turns().len()
     }
 
+    /// Whether turn `turn` of `sid` was one the user asked not to keep at
+    /// all ([`crate::private::Cut::whole`]).
+    fn private_whole(&self, sid: &str, turn: i64) -> bool {
+        self.private.lock().unwrap().get(sid).is_some_and(|p| p.turn == turn && p.whole)
+    }
+
+    /// `text`, written in turn `turn` of `sid`, without what repeats that
+    /// turn's private asides ([`crate::private::scrub`]).
+    fn unsaid(&self, sid: &str, turn: i64, text: &str) -> String {
+        match self.private.lock().unwrap().get(sid) {
+            Some(p) if !(p.whole && p.turn == turn) => crate::private::scrub(text, &p.echo),
+            _ => text.to_string(),
+        }
+    }
+
+    /// Whether a request is `chloectx remember` (or another command) run in
+    /// a Claude Code session's Bash: its caller names that session's
+    /// process, so the session's agent may have run it.
+    fn in_session_cli(&self, req: &Json) -> bool {
+        let Some(c) = req.get("caller").filter(|c| c.get("via").and_then(|v| v.as_str()) == Some("cli")) else { return false };
+        let pid = c.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        pid > 0 && self.state.lock().unwrap().sessions.values().any(|s| s.pid == pid)
+    }
+
+    /// Whether the user's own prompts in session `sid` say most of `text`
+    /// ([`says_most_of`]): the latest ones the state keeps, and the stored
+    /// ones, a turn's chunks together.
+    fn user_said(&self, sid: &str, text: &str) -> bool {
+        let users = |src: &str| crate::record::Source::parse(src).is_user();
+        if self.state.lock().unwrap().sessions.get(sid).is_some_and(|s| users(&s.source) && s.last_prompts.iter().any(|p| says_most_of(p, text))) {
+            return true;
+        }
+        let Ok(rs) = self.store.query_with(
+            &format!("SELECT {} FROM memory WHERE session = :session AND kind = 'prompt' ORDER BY seq DESC LIMIT 400", crate::record::COLUMNS),
+            &Params::new().set("session", Value::Str(sid.to_string())),
+        ) else {
+            return false;
+        };
+        let mut turns: Vec<(i64, String)> = Vec::new();
+        for r in rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| matches!(r.source(), None | Some(crate::record::Source::User))) {
+            match turns.iter_mut().find(|(t, _)| *t == r.turn) {
+                Some((_, p)) => *p = format!("{}\n{p}", r.text),
+                None => turns.push((r.turn, r.text)),
+            }
+        }
+        turns.iter().any(|(_, p)| says_most_of(p, text))
+    }
+
+    /// Supersedes, by `new` (a note `memory_remember` just kept), the live
+    /// notes of the same kind and source that session `sid` wrote from its
+    /// prompts or turns (`stated`, `cue`, `distilled`) and that `text` says
+    /// most of: the copy the hooks kept of what the agent then remembered.
+    /// Returns their ids.
+    fn supersede_twins(&self, sid: &str, new: &Record, text: &str) -> Vec<String> {
+        if sid == "manual" || !matches!(new.kind, Kind::Decision | Kind::Preference | Kind::Fact | Kind::Todo) {
+            return Vec::new();
+        }
+        let Ok(rs) = self.store.query_with(
+            &format!("SELECT {} FROM memory WHERE session = :session AND kind = '{}' AND tag IN ('stated', 'cue', 'distilled', 'planned') LIMIT 400", crate::record::COLUMNS, new.kind.as_str()),
+            &Params::new().set("session", Value::Str(sid.to_string())),
+        ) else {
+            return Vec::new();
+        };
+        let whose = |r: &Record| r.source().unwrap_or(crate::record::Source::User);
+        let mut out = Vec::new();
+        for old in rs.rows.iter().filter_map(|r| crate::store::row_record(r)) {
+            if old.id == new.id || whose(&old) != whose(new) || !says_most_of(text, without_lead(&old.text)) {
+                continue;
+            }
+            if self.store.supersede(&old.id, &new.id).unwrap_or(false) {
+                out.push(old.id.clone());
+            }
+        }
+        out
+    }
+
+    /// The end of a turn the user asked not to keep: its reply, its card
+    /// and its commentary are not stored, it is not distilled, and a search
+    /// it left running is not offered at the next prompt.
+    fn end_private_turn(&self, sid: &str, turn: i64, transcript: Option<&str>) {
+        if let Some(t) = transcript {
+            let offset = self.state.lock().unwrap().sessions.get(sid).map_or(0, |s| s.transcript_offset);
+            if let Ok((_, next)) = crate::transcript::tail_texts(Path::new(t), offset) {
+                self.with_session(sid, |s| s.transcript_offset = next);
+            }
+        }
+        {
+            let mut jobs = self.deep_jobs.lock().unwrap();
+            if jobs.get(sid).is_some_and(|j| j.turn == turn) {
+                jobs.remove(sid);
+            }
+        }
+        // Marked, so that `chloectx distill` and a daemon that starts later
+        // leave it too.
+        let mark = Draft::new(Kind::Event, format!("Turn {turn} was one the user asked not to keep: not stored or distilled")).tag(TURN_SKIPPED);
+        if let Err(e) = self.store.append(sid, turn, now(), vec![mark]) {
+            self.log(&json!({"ts": now(), "event": "private_turn", "session": sid, "turn": turn, "error": e.to_string()}));
+        }
+        self.log(&json!({"ts": now(), "event": "distill_skipped", "session": sid, "turn": turn, "why": "the user asked not to keep it"}));
+    }
+
     /// The end of a turn that called `memory_forget` (JONAH-2): its reply,
     /// its card and the narration in its transcript are not stored, it is
     /// not distilled (a note would say again what it forgot), and a search
@@ -2059,7 +2279,7 @@ impl Daemon {
         let drafts: Vec<Draft> = texts
             .iter()
             .filter(|t| t.trim() != final_answer.trim() && !answered.contains(&crate::sync::fnv(t.trim())))
-            .flat_map(|t| capture::narration_drafts(t))
+            .flat_map(|t| capture::narration_drafts(&self.unsaid(sid, turn, t)))
             .map(|d| d.ctx(ctx.to_string()))
             .collect();
         if let Err(e) = self.store.append(sid, turn, now(), drafts) {
@@ -2197,7 +2417,8 @@ impl Daemon {
         where_.push("MATCH(files, :files)".into());
         let params = filter.params().set("files", Value::Str(terms.join(" AND ")));
         let rs = self.store.query_with(&format!("SELECT {} FROM memory WHERE {} ORDER BY seq DESC LIMIT 3", crate::record::COLUMNS, where_.join(" AND ")), &params)?;
-        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).collect();
+        // A rule or decision of a machine not accepted yet stays out (WEI-302).
+        let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| !crate::sync::held_back(r)).collect();
         if recs.is_empty() {
             return Ok(String::new());
         }
@@ -2244,7 +2465,7 @@ impl Daemon {
             where_.push("MATCH(files, :files)".into());
             let params = filter.params().set("files", Value::Str(terms.join(" AND ")));
             let rs = self.store.query_with(&format!("SELECT {} FROM memory WHERE {} ORDER BY seq DESC LIMIT 12", crate::record::COLUMNS, where_.join(" AND ")), &params)?;
-            let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| !shown.contains(&format!("[{}]", r.id))).collect();
+            let recs: Vec<Record> = rs.rows.iter().filter_map(|r| crate::store::row_record(r)).filter(|r| !shown.contains(&format!("[{}]", r.id)) && !crate::sync::held_back(r)).collect();
             if let Some(r) = recs.iter().find(|r| r.kind.is_knowledge()).or(recs.first()).cloned() {
                 let snip: String = r.text.chars().take(300).collect();
                 let label = ck.label_record(&r);
@@ -2566,24 +2787,38 @@ impl Daemon {
         // note that the turn's prompt says in most of its words is the
         // prompt author's (JONAH-205: the user's decision, kept by the
         // agent, read "the assistant said").
+        let agent = self.state.lock().unwrap().sessions.get(&sid).map(|s| s.agent.clone()).unwrap_or_default();
         let by = match req.get("by").and_then(|v| v.as_str()).filter(|b| !b.is_empty()) {
             Some(b) => crate::record::Source::parse(b),
             None => {
                 let st = self.state.lock().unwrap();
                 let s = st.sessions.get(&sid);
-                let agent = s.map(|s| s.agent.clone()).unwrap_or_default();
                 let author = s.map(|s| crate::record::Source::parse(&s.source)).unwrap_or(crate::record::Source::User);
                 let prompted = s.and_then(|s| s.last_prompts.back()).is_some_and(|p| says_most_of(p, &text));
                 match req.get("said_by").and_then(|v| v.as_str()) {
                     Some("user") => author,
-                    Some("assistant") => crate::record::Source::Assistant(agent),
+                    Some("assistant") => crate::record::Source::Assistant(agent.clone()),
                     _ if prompted => author,
-                    _ => crate::record::Source::Assistant(agent),
+                    _ => crate::record::Source::Assistant(agent.clone()),
                 }
             }
         };
+        // Only the user's own words make the user's rule (LENA-310): a rule
+        // an agent keeps as the user's, with the memory tool or with
+        // `chloectx remember` run in a session's Bash, is theirs only when
+        // the user's prompts in that session say most of it. Otherwise it is
+        // the agent's suggestion, which the briefing shows apart from the
+        // user's rules: an agent a web page or a file talked into it cannot
+        // plant a rule every later session follows.
+        let agent_call = req.get("by").and_then(|v| v.as_str()).is_none_or(|b| b.is_empty()) || self.in_session_cli(req);
+        let unconfirmed = kind == Kind::Preference && by.is_user() && agent_call && !self.user_said(&sid, &text);
+        let by = if unconfirmed { crate::record::Source::Assistant(agent) } else { by };
+        // A decision holds what was decided and why, not whether it is built
+        // yet (JONAH-304: "Not implemented yet; planned for a later session"
+        // stayed after the feature was built).
+        let text = if kind == Kind::Decision { capture::without_status(&text) } else { text };
         let a = anchor::make(Path::new(&self.tree_of(req)), &text, &files, &[]);
-        let mut d = Draft::new(kind, text).files(files).tag("remembered").by(&by);
+        let mut d = Draft::new(kind, text.clone()).files(files).tag("remembered").by(&by);
         if !a.is_empty() {
             d = d.ctx(a.to_line());
         }
@@ -2598,10 +2833,24 @@ impl Daemon {
                 replaced = Some(o.id.clone());
             }
         }
+        // The copy of it this session wrote already (the prompt's words kept
+        // as a rule or decision, a distilled note) is this one now: one
+        // decision is one note (JONAH-304).
+        let twins = self.supersede_twins(&sid, &recs[0], &text);
         let place = self.paths.dir.join("memory.strata");
-        Ok(json!({"id": recs[0].id, "supersedes": replaced, "store": place, "by": by.as_str(),
-            "text": format!("Stored {} as {}{} in ChloeCtx ({}), where every later session sees it.", kind.as_str(), recs[0].id,
-                replaced.as_ref().map(|o| format!(", replacing {o}")).unwrap_or_default(), place.display())}))
+        let mut said = format!("Stored {} as {}{} in ChloeCtx ({}), where every later session sees it.", kind.as_str(), recs[0].id,
+            replaced.as_ref().map(|o| format!(", replacing {o}")).unwrap_or_default(), place.display());
+        if !twins.is_empty() {
+            said += &format!(" It replaces the copy this session kept already ({}).", twins.join(", "));
+        }
+        if kind == Kind::Preference && !by.is_user() {
+            said += if unconfirmed {
+                " It is kept as the assistant's suggestion, not one of the user's rules: the user's messages in this session do not say it. Later sessions see it apart from the user's rules, and it becomes a rule when the user states it."
+            } else {
+                " It is kept as the assistant's suggestion, not one of the user's rules: later sessions see it apart from them."
+            };
+        }
+        Ok(json!({"id": recs[0].id, "supersedes": replaced, "replaces": twins, "store": place, "by": by.as_str(), "suggestion": kind == Kind::Preference && !by.is_user(), "text": said}))
     }
 
     /// `{"op": "forget", "id": ID}`, or `{"op": "forget", "ids": [...]}` for
@@ -2643,6 +2892,9 @@ impl Daemon {
             return Err(err(format!("forget needs the id of a record, or the text to forget ({} characters or more)", crate::forget::MIN_CHARS)));
         }
         let wait = req.get("wait").and_then(|v| v.as_bool()).unwrap_or(false);
+        // Forgotten because the sync server said so: noted for the sync
+        // already, and nothing to send it.
+        let from_server = req.get("pulled").and_then(|v| v.as_bool()).unwrap_or(false);
         // From here nothing that holds the text is written.
         self.store.forgetting.add(&needles, now());
         // Which segment holds how many live rows before the deletes: those
@@ -2670,7 +2922,7 @@ impl Daemon {
         // CTX-33): a pull that runs meanwhile then either stores none of
         // them again or stores them before the deletes, which remove them.
         let present: Vec<String> = self.store.get(&ids)?.into_iter().map(|r| r.id).collect();
-        let mut noted = crate::sync::forget(&self.paths.dir, &present);
+        let mut noted = if from_server { Ok(()) } else { crate::sync::forget(&self.paths.dir, &present) };
         let (mut deleted, mut missing) = (Vec::new(), Vec::new());
         let mut forgotten = crate::receipt::Forgotten { texts: needles.clone(), ..Default::default() };
         for id in &ids {
@@ -2720,13 +2972,13 @@ impl Daemon {
         // One a pull stored after the look above, and the sync server's
         // rows go too.
         let late: Vec<String> = deleted.iter().filter(|d| !present.contains(d)).cloned().collect();
-        if noted.is_ok() {
+        if noted.is_ok() && !from_server {
             noted = crate::sync::forget(&self.paths.dir, &late);
         }
         if let Err(e) = noted {
             scrubbed.push(format!("noting it forgotten for the sync failed ({e}): a pull may bring it back"));
         }
-        let synced = (!deleted.is_empty() || !cut.is_empty()) && crate::sync::remote(&crate::paths::home()).is_some();
+        let synced = !from_server && (!deleted.is_empty() || !cut.is_empty()) && crate::sync::remote(&crate::paths::home()).is_some();
         let mut later = None;
         if !deleted.is_empty() || !cut.is_empty() {
             // The hold passes to the compaction, which releases it.
@@ -2750,7 +3002,7 @@ impl Daemon {
                 }) as Box<dyn FnOnce(&Daemon) + Send>);
                 scrubbed.push(format!("{what} being rewritten"));
                 if synced {
-                    scrubbed.push("its row on the sync server being deleted (a pull never brings it back here)".into());
+                    scrubbed.push("its row on the sync server being replaced by a tombstone, which every machine that pulled it forgets on its next pull".into());
                 }
             }
         }
@@ -3309,6 +3561,11 @@ fn snippet_at(text: &str, at: usize, width: usize) -> String {
 /// its words (a replacement keeps what still holds, [`crate::distill`]).
 /// A note about something else that names `old` replaces nothing: half a
 /// ruling is not superseded by the other half.
+/// The words a note picked from a prompt opens with ([`capture::prompt_drafts_by`]).
+fn without_lead(t: &str) -> &str {
+    t.strip_prefix("User preference: ").or_else(|| t.strip_prefix("The user decided: ")).unwrap_or(t)
+}
+
 /// Whether `prompt` says most of `note`: at least half of the note's words
 /// (stemmed, stop words out), and two or more.
 fn says_most_of(prompt: &str, note: &str) -> bool {
@@ -3437,12 +3694,18 @@ pub fn serve(dir: &Path, project: &str) -> Result<()> {
         std::thread::spawn(move || d.housekeep());
     }
     // Rules a store took from a harness's envelopes before they were
-    // cleaned off prompts: retired once, off the hooks' path.
+    // cleaned off prompts, or from a private aside before asides were cut
+    // out: retired once, off the hooks' path.
     {
         let d = daemon.clone();
         std::thread::spawn(move || {
             if let Some(n) = crate::envelope::retire_once(&d.paths.dir, &d.store).filter(|n| *n > 0) {
                 d.log(&json!({"ts": now(), "event": "envelope_rules_retired", "count": n}));
+            }
+            // A prompt's private aside kept as a rule or a decision before
+            // asides were cut out (WEI-301): retired once.
+            if let Some(n) = crate::private::retire_once(&d.paths.dir, &d.store).filter(|n| *n > 0) {
+                d.log(&json!({"ts": now(), "event": "aside_rules_retired", "count": n}));
             }
         });
     }
