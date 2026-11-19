@@ -464,8 +464,8 @@ async function home(app, page) {
 }
 
 function backtestCard(rows) {
-  if (!rows?.length) return card("Fires like this one", "how well it foretold fires", h("p", { class: "ea-note" }, "Measured once the fire seasons are read: each fire is matched only against fires that were out before it, and its real size compared with what they became."));
-  return card("Fires like this one", "measured on past fires, each matched only against fires out before it",
+  if (!rows?.length) return card("Fires like this one, tested", "how well it foretold fires", h("p", { class: "ea-note" }, "Measured once the fire seasons are read: each fire is matched only against fires that were out before it, and its real size compared with what they became."));
+  return card("Fires like this one, tested", "measured on past fires, each matched only against fires out before it",
     h("div", { class: "ea-list" }, rows.map((r) => h("div", { class: "info" },
       h("span", { class: "t" }, `${REGION[r.region]?.title || r.region}, after ${r.hours === 1 ? "the first hour" : `${fmt(r.hours)} hours`}`),
       h("span", { class: "v" }, `${fmt(r.covered * 100)}% inside`),
