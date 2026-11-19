@@ -399,8 +399,15 @@ async function note(w, said) {
 }
 
 // ---- a turn ----
+// A question asked while a turn is still finishing (a button in an app
+// pressed as its answer is written) waits for it rather than being lost.
+const waiting = []
 async function ask(question) {
-  if (busy || !question.trim()) return
+  if (!question.trim()) return
+  if (busy) {
+    waiting.push(question)
+    return
+  }
   busy = true
   send.disabled = true
   col.querySelector('.hello')?.remove()
@@ -454,6 +461,7 @@ async function ask(question) {
     busy = false
     send.disabled = false
     await rail()
+    if (waiting.length) ask(waiting.shift())
   }
 }
 
