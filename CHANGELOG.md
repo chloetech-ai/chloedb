@@ -11,6 +11,19 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Blends stack, and Labs → Blending builds them by drag and drop.** A
+  blend's source may be a blend of its own, `name AS BLEND (SOURCES (...)
+  ... WITH (k => n))`: it runs into its own k slots under its own rules,
+  and its rows are that source's rows above, with `via` naming the source
+  each came from through the nodes (`organic/videos`), which every blend
+  answers and a rule above may read. Up to 4 blends deep and 32 queries;
+  the receipts carry each node's own; on one database and through a
+  coordinator alike. The command center's Blending editor opens on a
+  canvas of the stack, wired up to the top by each source's share: drag a
+  query, a blend, a copy of a saved blend, a rule or a head from the
+  palette onto a node, a source onto another to stack a blend on the two,
+  or onto the bin; a click selects a node, whose settings and rows show
+  below ([query-language.md](docs/chloedb/query-language.md#stacking-blends-a-blend-as-anothers-source)).
 - **Blends explore, are logged with each slot's chance, and are valued
   and tuned off-policy.** A blend served with `"log": {"explore":
   {"policy": "softmax", "tau": 0.3, "top": 5}}` draws each slot among the

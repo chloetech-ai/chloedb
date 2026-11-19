@@ -1923,7 +1923,7 @@ SELECT slot, source, id, title, utility, blend_decision FROM blend(&#x27;serp&#x
 SELECT * FROM blend(&#x27;serp@3&#x27;, q =&gt; &#x27;rust async&#x27;) LIMIT 20;   -- version 3
 DROP BLEND serp;</pre>
 <ul>
-<li><strong>The definition</strong>: <code>CREATE [OR REPLACE] BLEND name AS SOURCES (name AS (SELECT ...), ...)</code> and then, each optional and in this order:</li>
+<li><strong>The definition</strong>: <code>CREATE [OR REPLACE] BLEND name AS SOURCES (name AS (SELECT ...), ...)</code> (a source may be a blend of its own, <code>name AS BLEND (...)</code>: <a href="#stacking-blends-a-blend-as-anothers-source">stacking blends</a>) and then, each optional and in this order:</li>
 <li><code>HEADS (head [CALIBRATE tmm|minmax|rank|raw] [LO n] [MISSING neutral|zero], ...)</code>: the columns a row is worth by. A head is a column the sources name alike (<code>... AS relevance</code>), or <code>score</code>, each source's own ranking score, which needs no column. <code>tmm</code> (the default) divides by the source's best value, from <code>LO</code> (0 by default); <code>minmax</code> spans the source's lowest to its best; <code>rank</code> keeps only the order, as <code>rrf</code> does (61 / (60 + rank)); <code>raw</code> keeps the value. A source without the head gives its rows the mean of the others' (<code>MISSING neutral</code>, the default) or 0 (<code>MISSING zero</code>). Without <code>HEADS</code>, the one head is <code>score CALIBRATE tmm</code>.</li>
 <li><code>UTILITY 1 * relevance + 0.2 * quality - 0.1 * age</code>: the heads' weights (a head not named weighs 0; a name not among the heads adds one, <code>tmm</code>). <code>BOOST (source w, ...)</code> adds <code>w</code> to every row of a source.</li>
 <li><code>SLOT n =&gt; column = 'value'</code>, more than one: slot <em>n</em> is kept for rows of that value.</li>
@@ -1942,6 +1942,39 @@ DROP BLEND serp;</pre>
 - <strong>From Rust</strong>, <code>Db::sql</code> runs the statements and the calls, <code>Db::blends</code> lists each blend's current definition, and <code>Db::blend_run(&amp;def, version, &amp;params, k, Want { costs: true })</code> runs a definition, stored or not, into a <code>Blended</code> whose <code>receipts()</code> is the JSON of every row's heads, raw and as weighted parts of its utility, its slot and why, the rows passed over and what barred them, each quota's count and each rule's cost: the share of the slate's discounted utility (each slot's over log2(slot + 1), as DCG discounts) that it gives up, from filling the slate again without it.
 - <strong>On chloedb-server</strong>, <code>CREATE</code> and <code>DROP BLEND</code> need an admin key, and a key limited to tables reads a blend only when it may read every source's tables, of every version the call could read. <code>GET /v1/blends</code> lists the blends (each current version's definition, its SQL and how many versions), <code>GET /v1/blends/:name</code> every version, <code>PUT /v1/blends/:name {"def": {...}, "note": "..."}</code> writes the next version from a definition as JSON, and <code>DELETE /v1/blends/:name</code> drops it. <code>POST /v1/blends/preview {"name": "serp"}</code> (or <code>"version"</code>, or a definition not stored, <code>"def"</code>) with <code>"params"</code> and <code>"k"</code> runs it and answers the receipts, rule costs included unless <code>"costs": false</code>. The command center's <strong>Labs → Blending</strong> page edits a blend on these routes, previewing the draft as it changes.
 - <strong>Through a coordinator</strong> a blend's versions are written on every shard, as functions are, and each source runs as a query of the cluster, merged from the shards, before the fill: the slate is the one database's.</p>
+<h3 id="stacking-blends-a-blend-as-anothers-source">Stacking blends: a blend as another's source<a class="anchor" href="#stacking-blends-a-blend-as-anothers-source" aria-label="Link to this section">#</a></h3>
+<p>A source may be a blend of its own, a node stacked under the one above it: <code>name AS BLEND ( SOURCES (...) HEADS ... WITH (k =&gt; n) )</code>, the same clauses as a blend's. The node runs first, into its own <em>k</em> slots under its own rules, and the rows it places are that source's rows above, so the blend above weighs, places and rules them as one source among its others.</p>
+<pre data-lang="sql">CREATE BLEND page AS
+  SOURCES (
+    organic AS BLEND (
+      SOURCES (
+        stories AS (SELECT id, title, author, score() AS relevance, pop AS engagement FROM stories ORDER BY bm25(title, :q) DESC LIMIT 50),
+        videos  AS (SELECT id, title, author, score() AS relevance, pop AS engagement FROM videos ORDER BY bm25(title, :q) DESC LIMIT 30)
+      )
+      HEADS (relevance CALIBRATE tmm, engagement CALIBRATE minmax)
+      UTILITY 1 * relevance + 0.4 * engagement
+      MAX 2 PER author
+      WITH (k =&gt; 20)
+    ),
+    sponsored AS BLEND (SOURCES (ads AS (SELECT id, title, author, bid AS score FROM ads ORDER BY bid DESC LIMIT 6)) WITH (k =&gt; 3)),
+    news AS (SELECT id, title, author, 1.0 / age AS freshness FROM news ORDER BY age LIMIT 10)
+  )
+  SLOT 2 =&gt; source = &#x27;sponsored&#x27;
+  QUOTA (source = &#x27;news&#x27; AT LEAST 20% IN TOP 5, via = &#x27;organic/videos&#x27; AT MOST 30%)
+  WITH (k =&gt; 10);
+
+SELECT slot, source, via, id, title FROM blend(&#x27;page&#x27;, q =&gt; :q);
+-- slot | source      | via               | id    | title
+-- 1    | &#x27;organic&#x27;   | &#x27;organic/stories&#x27; | &#x27;s12&#x27; | &#x27;Async Rust...&#x27;
+-- 2    | &#x27;sponsored&#x27; | &#x27;sponsored/ads&#x27;   | &#x27;a3&#x27;  | &#x27;...&#x27;
+-- 3    | &#x27;news&#x27;      | &#x27;news&#x27;            | &#x27;n1&#x27;  | &#x27;...&#x27;</pre>
+<ul>
+<li><strong>A node's rows</strong>, as the blend above reads them: its sources' columns, <code>slot</code> (its own), <code>via</code> and <code>utility</code>, which is also their score, so the head <code>score</code> above is the node's utility; their keys stay theirs, so a row a node and another source both give is one row above. <code>via</code> names the source a row came from, through each node on the way (<code>organic/stories</code>): every blend answers it, and a rule above may read it (<code>QUOTA (via = 'organic/videos' AT MOST 30%)</code>).</li>
+<li><strong>Its rules hold among its own rows</strong>: a node's quotas, caps and diversity shape the rows it gives, and the blend above may pass over some of them. A node is named as its source; its own <code>name</code> may be left out in JSON.</li>
+<li><strong>Limits</strong>: blends stack at most 4 deep, the top one counted, and a blend runs at most 32 queries under every node. A source that reads <code>blend('...')</code> is refused: stack the blend as a node instead.</li>
+<li><strong>Logged and valued</strong>, a stacked blend explores at the top only (each node takes its best rows), and the log keeps the rows each node gave as that source's rows, so <a href="#valuing-a-blend-on-its-log-exploring-fills-cascade-doubly-robust-and-snips">Value on the log</a> and tuning work on the top blend's heads, quotas and diversity as they do for any blend.</li>
+<li><strong>The receipts</strong> of a stacked blend carry each node's own under <code>nodes</code> (<code>"nodes": {"organic": {...}}</code>, nodes of nodes within them), each row's <code>via</code>, and the SQL writes nodes back as <code>name AS BLEND (...)</code>. On chloedb-server a key limited to tables reads a stacked blend only when it may read the tables of every query under every node.</li>
+</ul>
 <h3 id="valuing-a-blend-on-its-log-exploring-fills-cascade-doubly-robust-and-snips">Valuing a blend on its log: exploring fills, cascade doubly robust and SNIPS<a class="anchor" href="#valuing-a-blend-on-its-log-exploring-fills-cascade-doubly-robust-and-snips" aria-label="Link to this section">#</a></h3>
 <p>A blend served with a <a href="#the-rank-log-what-each-query-served">log</a> can explore, and a log of exploring pages values any other blend of the same sources (its weights, shares and rules changed) without serving it: what people clicked is reweighted by how likely each page was.</p>
 <pre data-lang="sql">-- POST /v1/query, or Db::query_logged with a Log

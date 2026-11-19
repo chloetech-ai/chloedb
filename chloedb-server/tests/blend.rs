@@ -260,3 +260,74 @@ async fn a_coordinator_blends_as_one_database() {
     let e = svc.query(q("serp")).await.err().unwrap();
     assert!(e.message.contains("no blend named serp"), "{}", e.message);
 }
+
+/// A blend stacked under another as a node: its comments, one per author,
+/// are a source of the blend above. Each query integer-ordered, so that a
+/// coordinator merges the very rows one database reads.
+const STACKED: &str = "CREATE BLEND stacked AS
+  SOURCES (
+    talk AS BLEND (
+      SOURCES (
+        comments AS (SELECT id, body AS title, author, votes AS relevance FROM comments WHERE MATCH(body, :q) ORDER BY votes DESC LIMIT 20)
+      )
+      HEADS (relevance CALIBRATE rank)
+      MAX 1 PER author
+      WITH (k => 5)
+    ),
+    stories AS (SELECT id, title, author, points AS relevance FROM stories WHERE MATCH(title, :q) ORDER BY points DESC LIMIT 20)
+  )
+  HEADS (relevance CALIBRATE rank)
+  QUOTA (source = 'talk' AT LEAST 30% IN TOP 6)
+  WITH (k => 8)";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blends_stack_on_a_server_and_a_coordinator() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let urls = vec![serve_grpc(create(d, "s0.strata")).await, serve_grpc(create(d, "s1.strata")).await, serve_grpc(create(d, "s2.strata")).await];
+    let c = Arc::new(Coordinator::connect(urls).await.unwrap());
+    let schema = c.schema.clone();
+    let coord = Arc::new(Service::new(Backend::Cluster(c), schema, agent(), 16, Duration::from_secs(10)));
+    let db = create(d, "one.strata");
+    let schema = (*db.schema()).clone();
+    let mut one = Service::new(Backend::Local(db), schema, agent(), 16, Duration::from_secs(10));
+    one.keys = Arc::new(Keys::open(d.join("one.strata.keys.json")).unwrap());
+    let one = Arc::new(one);
+    for s in TABLES.iter().map(|s| s.to_string()).chain(inserts()).chain([STACKED.to_string()]) {
+        run(&coord, &s).await;
+        run(&one, &s).await;
+    }
+    // The coordinator's slate is the one database's.
+    let q = "SELECT slot, source, via, id, author FROM blend('stacked', q => 'rust')";
+    let want = one.query(QueryReq { sql: q.into(), ..Default::default() }).await.unwrap().rs;
+    let got = coord.query(QueryReq { sql: q.into(), ..Default::default() }).await.unwrap_or_else(|e| panic!("{}", e.message)).rs;
+    assert_eq!(want.rows.len(), 8);
+    assert_eq!((&got.columns, &got.rows), (&want.columns, &want.rows));
+    let talk: Vec<&Vec<Value>> = want.rows.iter().filter(|r| r[1] == Value::Str("talk".into())).collect();
+    assert!(talk.len() >= 2, "{:?}", want.rows);
+    assert!(talk.iter().all(|r| r[2] == Value::Str("talk/comments".into())), "{:?}", want.rows);
+    let mut authors: Vec<String> = talk.iter().map(|r| format!("{:?}", r[4])).collect();
+    authors.sort();
+    authors.dedup();
+    assert_eq!(authors.len(), talk.len(), "the node's own MAX 1 PER author: {:?}", want.rows);
+
+    // Over HTTP: a draft's preview has each node's receipts; a key limited
+    // to stories may not preview a blend whose node reads comments.
+    let base = serve_http(one.clone(), Access { token: Some(Secret::new("root-token")), ..Default::default() }).await;
+    let root = Some("root-token");
+    let (_, j) = call(&base, "GET", "/v1/blends/stacked", root, None).await;
+    let def = j["versions"][0]["def"].clone();
+    assert_eq!(def["sources"][0]["blend"]["k"], 5, "{j}");
+    let (st, r) = call(&base, "POST", "/v1/blends/preview", root, Some(json!({"def": def, "params": {"q": "rust"}}))).await;
+    assert_eq!(st, 200, "{r}");
+    assert_eq!(r["nodes"]["talk"]["rows"].as_array().map(Vec::len), Some(5), "{r}");
+    assert!(r["rows"].as_array().unwrap().iter().any(|x| x["via"] == "talk/comments"), "{r}");
+    assert!(r["sql"].as_str().unwrap().contains("talk AS BLEND ("), "{r}");
+    let (st, made) = call(&base, "POST", "/v1/admin/keys", root, Some(json!({"name": "storyteller", "tables": {"stories": "read"}}))).await;
+    assert_eq!(st, 200, "{made}");
+    let lim = made["secret"].as_str().map(str::to_string);
+    for (path, body) in [("/v1/blends/preview", json!({"def": def, "params": {"q": "rust"}})), ("/v1/query", json!({"sql": q}))] {
+        let (st, j) = call(&base, "POST", path, lim.as_deref(), Some(body)).await;
+        assert_eq!(st, 403, "{path}: {j}");
+    }
+}
