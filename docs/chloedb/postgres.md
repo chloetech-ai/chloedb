@@ -39,9 +39,26 @@ chloedb-server follow-postgres \
 | `--copy` | copy everything again, with a new slot. Each followed table is emptied first and filled again as the copy goes, so its searches and counts answer partly, or nothing, until its copy ends ([copying again](#run-it)) |
 | `--drop-slot` | drop the slot, release the tables it followed (they take other writes again) and exit |
 
-The first run makes the replication slot, which holds a snapshot of the database, and copies each table as of that snapshot while Postgres goes on taking writes; it then streams the slot's changes from the snapshot's position, so no change between the two is missed or applied twice. A ChloeDB table it lacks is made from the Postgres table; one that exists keeps its schema (see [below](#choosing-chloedb-types)). It logs how far it is every 30 seconds (`applied`, the server's WAL position, `behind_bytes`), and `GET /v1/sources` on ChloeDB shows the last LSN it applied (`postgres/<name>/<copy>`), with when.
+The first run makes the replication slot, which holds a snapshot of the database, and copies each table as of that snapshot while Postgres goes on taking writes; it then streams the slot's changes from the snapshot's position, so no change between the two is missed or applied twice. A ChloeDB table it lacks is made from the Postgres table; one that exists keeps its schema (see [below](#choosing-chloedb-types)). It tells ChloeDB how it stands every 2 seconds ([below](#how-far-behind-it-is)) and logs it every 30 (`applied`, `confirmed`, `postgres`, `behind_bytes`, `lag_s`), and `GET /v1/sources` on ChloeDB shows the last position it applied (`postgres/<name>/<copy>`, with its `lsn` as Postgres writes it), with when.
 
 Stop it whenever: started again it resumes from what ChloeDB applied. While it is stopped, **Postgres keeps the WAL the slot has not consumed**, which can fill its disk over days; when you stop following for good, drop the slot (`--drop-slot`, or `SELECT pg_drop_replication_slot('strata_shop')`). Postgres 13 and later can cap what a slot keeps (`max_slot_wal_keep_size`); a slot that lost WAL it needed is copied afresh on the next start. A copy afresh, this one or `--copy`, empties each followed table before it fills it again: until a table's copy ends, its searches and counts see only the rows copied so far (in a persona study, 50,000 products read 0 rows for 2 s and were partial for 10 s, and 318,514 orders for 16 s). Copy again when the site can do without those tables' answers for as long as the copy takes.
+
+## How far behind it is
+
+Every 2 seconds the follower tells ChloeDB how it stands (`POST /v1/admin/follow/status`, which takes the cluster's token or an admin key: where the server asks for keys, give `--target-token` one, or the follower logs once that its reports are refused and goes on following). ChloeDB shows it on Data > Connectors (`followers` in `GET /v1/admin/connectors`), in `/metrics` and to the built-in alert "A follower is behind its source" (`follow-behind`):
+
+| | |
+|---|---|
+| `state` | `copying`, `following`, `retrying` (ChloeDB refused a write, which it tries again; `error` says why), `failed` (it exited; `error`) or `stopped` (its slot was dropped) |
+| `applied_lsn` | where the last transaction it wrote to ChloeDB ended |
+| `confirmed_lsn` | the position it told Postgres it holds, before which Postgres may free the WAL: `applied_lsn` or later, since Postgres's WAL also holds what the publication does not send |
+| `postgres_lsn` | Postgres's own position, `pg_current_wal_lsn()` (on a standby, `pg_last_wal_replay_lsn()`), read every 2 seconds on a connection of its own |
+| `behind_bytes` | `postgres_lsn` less `confirmed_lsn`: the WAL Postgres keeps for it |
+| `lag_ms` | since Postgres's WAL first reached a position the follower has not confirmed (within 8 KB), so 0 once it has confirmed what Postgres had |
+
+Positions are written as Postgres writes them (`0/16B3748`), to compare with `pg_current_wal_lsn()` and `confirmed_flush_lsn` in `pg_replication_slots`. A transaction still open in Postgres is not behind: Postgres sends it when it commits.
+
+A follower that stops telling (killed, or cut off from ChloeDB) is *silent* after 10 seconds, and from then on its lag grows by the time since it last told, so `follow-behind` (over 60 seconds behind, for a minute) fires within about two minutes of it stopping. `/metrics` has `chloedb_follow_lag_seconds`, `chloedb_follow_behind_bytes` and `chloedb_follow_up` (1 while it follows, copies or catches up and told within 10 seconds; 0 while it retries, failed or is silent), labelled with its `name` and `kind="postgres"`. ChloeDB holds what followers told it in memory: after ChloeDB restarts, Data > Connectors lists a follower that has not told it since from its marks, as not reporting, and the alert waits for it to tell again.
 
 ## What it applies
 

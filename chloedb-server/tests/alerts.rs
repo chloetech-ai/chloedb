@@ -254,6 +254,106 @@ async fn a_route_is_told_what_fired_and_resolved() {
     assert!(got.lock().unwrap()[2]["text"].as_str().unwrap().starts_with("[chloedb TEST]"));
 }
 
+/// A route added while an alert fires is sent it (GRACE-305); the alert's
+/// page names its own messages, not the route's test; and a route that
+/// never saw an alert begin is not sent its end (MARCO-312).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_route_added_while_an_alert_fires_is_sent_it_and_only_its_routes_hear_it_end() {
+    let got: Arc<Mutex<Vec<(String, Json)>>> = Arc::default();
+    let keep = got.clone();
+    let hook = axum::Router::new().route(
+        "/hook/:name",
+        axum::routing::post(move |axum::extract::Path(name): axum::extract::Path<String>, axum::Json(j): axum::Json<Json>| {
+            let keep = keep.clone();
+            async move {
+                keep.lock().unwrap().push((name, j));
+                "ok"
+            }
+        }),
+    );
+    let hl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hurl = format!("http://127.0.0.1:{}", hl.local_addr().unwrap().port());
+    tokio::spawn(async move { axum::serve(hl, hook).await });
+    let route = |name: &str| json!({"name": name, "url": format!("{hurl}/hook/{name}"), "allow_internal": true});
+    let to = |name: &str| got.lock().unwrap().iter().filter(|(n, _)| n == name).map(|(_, j)| j["text"].as_str().unwrap_or_default().to_string()).collect::<Vec<_>>();
+    let wait = |name: &'static str, n: usize| {
+        let got = got.clone();
+        async move {
+            let t0 = Instant::now();
+            while got.lock().unwrap().iter().filter(|(x, _)| x == name).count() < n {
+                assert!(t0.elapsed() < Duration::from_secs(10), "{n} messages to {name}: {:?}", got.lock().unwrap());
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(dir.path()));
+    let base = http(svc.clone()).await;
+    // The alert's page once it names `n` messages (noted as each post ends).
+    let page = |n: usize| {
+        let base = base.clone();
+        async move {
+            let t0 = Instant::now();
+            loop {
+                let (_, one) = call(&base, "GET", "/v1/alerts/urgent", None).await;
+                if one["notified"].as_array().is_some_and(|a| a.len() >= n) {
+                    return one;
+                }
+                assert!(t0.elapsed() < Duration::from_secs(10), "{n} messages named: {one}");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    };
+    assert_eq!(call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [route("oncall")]}))).await.0, 200);
+    let rule = json!({"id": "urgent", "name": "Urgent tickets piling up", "metric": "p99_ms", "op": ">", "threshold": 100.0, "eval": "mean", "window_s": 60, "severity": "warning"});
+    assert_eq!(call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": [rule]}))).await.0, 200);
+    let firing = |t: u64| series(t, 31, |_| json!({"p99_ms": 300.0}));
+    let t = chloedb_server::telemetry::now_ms();
+    alerts::deliver(&svc, svc.alerts.check(&firing(t), t));
+    wait("oncall", 1).await;
+
+    // A route added while it fires, then tested: the test is not this
+    // alert's message, and the alert's page does not say it was told.
+    let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [route("oncall"), route("support")]}))).await;
+    assert_eq!(status, 200, "{j}");
+    let (status, j) = call(&base, "POST", "/v1/alerts/routes/support/test", Some(json!({}))).await;
+    assert_eq!((status, j["ok"].as_bool()), (200, Some(true)), "{j}");
+    let one = page(1).await;
+    let notified: Vec<(&str, &str, bool)> = one["notified"].as_array().unwrap().iter().map(|n| (n["route"].as_str().unwrap(), n["state"].as_str().unwrap(), n["ok"].as_bool().unwrap())).collect();
+    assert_eq!(notified, [("oncall", "firing", true)], "its own messages only, not support's test: {one}");
+    // The next round sends it what fires.
+    let t = chloedb_server::telemetry::now_ms();
+    alerts::deliver(&svc, svc.alerts.check(&firing(t), t));
+    wait("support", 2).await;
+    let support = to("support");
+    assert!(support[0].starts_with("[chloedb TEST]"), "{support:?}");
+    assert!(support[1].starts_with("[chloedb FIRING warning] Urgent tickets piling up on ") && support[1].contains("sent to support now: the route was added, or the rule routed to it, after the alert fired"), "{support:?}");
+    let one = page(2).await;
+    let routes: Vec<&str> = one["notified"].as_array().unwrap().iter().map(|n| n["route"].as_str().unwrap()).collect();
+    assert_eq!(routes, ["oncall", "support"], "{one}");
+    assert_eq!(one["paged"]["routes"], json!(["oncall", "support"]), "{one}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(to("oncall").len(), 1, "oncall is not told twice");
+
+    // A route added as it resolves never saw it begin: no RESOLVED for it.
+    assert_eq!(call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [route("oncall"), route("support"), route("late")]}))).await.0, 200);
+    let t = chloedb_server::telemetry::now_ms();
+    let changes = svc.alerts.check(&series(t, 31, |_| json!({"p99_ms": 10.0})), t);
+    assert_eq!(changes.iter().map(|e| e.state).collect::<Vec<_>>(), ["resolved"]);
+    alerts::deliver(&svc, changes);
+    wait("oncall", 2).await;
+    wait("support", 3).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(to("oncall")[1].starts_with("[chloedb RESOLVED warning] Urgent tickets piling up"), "{:?}", to("oncall"));
+    assert!(to("late").is_empty(), "late never saw it fire: {:?}", to("late"));
+    // The page names the episode's messages: both FIRING and RESOLVED.
+    let one = page(4).await;
+    let mut states: Vec<(&str, &str)> = one["notified"].as_array().unwrap().iter().map(|n| (n["route"].as_str().unwrap(), n["state"].as_str().unwrap())).collect();
+    states.sort();
+    assert_eq!(states, [("oncall", "firing"), ("oncall", "resolved"), ("support", "firing"), ("support", "resolved")], "{one}");
+}
+
 /// Where a route may post (CLU-5 of the 15 November audit, LENA-7 of the
 /// persona study): the public internet, unless the route says
 /// `"allow_internal": true`; never a link-local address (cloud metadata);

@@ -81,6 +81,21 @@ pub mod wire;
 
 pub use follow::{default_slot, drop_slot, run, Options, BATCH, COMPOSITE_KEY};
 
+/// Whether stream source `name` is a Postgres follower's mark whose
+/// offset is an LSN: `postgres/<name>/<copy>`, the end of the last
+/// transaction applied, and `postgres/<name>/<copy>/copied`, where the
+/// copy ended.
+pub fn is_lsn_mark(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("postgres/") else { return false };
+    let parts: Vec<&str> = rest.split('/').collect();
+    let copy = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
+    match parts.as_slice() {
+        [_, c] => copy(c),
+        [_, c, "copied"] => copy(c),
+        _ => false,
+    }
+}
+
 /// The tables Postgres followers follow, by name in lower case: the
 /// follower's `--name`. Of `sources` (every stream source's name and
 /// offset, `/v1/sources`), each follower's marks of its current copy
@@ -111,7 +126,16 @@ pub fn followed_tables(sources: &[(String, i64)]) -> HashMap<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::followed_tables;
+    use super::{followed_tables, is_lsn_mark};
+
+    #[test]
+    fn the_marks_that_hold_lsns_are_known() {
+        assert!(is_lsn_mark("postgres/shop/1795032445947"));
+        assert!(is_lsn_mark("postgres/shop/1795032445947/copied"));
+        for not in ["postgres/shop/copy", "postgres/shop/17/step", "postgres/shop/17/base", "postgres/shop/17/t/16399/products", "postgres/shop/17/again/16399", "orders-topic", "postgres/shop/x"] {
+            assert!(!is_lsn_mark(not), "{not}");
+        }
+    }
 
     #[test]
     fn followed_tables_are_those_of_the_current_copy_not_left() {

@@ -117,7 +117,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/postgres.md">docs/chloedb/postgres.md</a>.</p>
       <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#set-up-postgres">Set up Postgres</a></li><li><a href="#run-it">Run it</a></li><li><a href="#what-it-applies">What it applies</a></li><li><a href="#how-a-restart-resumes">How a restart resumes</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#set-up-postgres">Set up Postgres</a></li><li><a href="#run-it">Run it</a></li><li><a href="#how-far-behind-it-is">How far behind it is</a></li><li><a href="#what-it-applies">What it applies</a></li><li><a href="#how-a-restart-resumes">How a restart resumes</a></li></ol></details>
     <div class="doc-body">
 
 <p><code>chloedb-server follow-postgres</code> keeps ChloeDB in step with a Postgres database by logical replication: it copies the tables of a publication, then applies every insert, update, delete, <code>TRUNCATE</code> and new column a moment after Postgres commits it, so ChloeDB serves search over the rows Postgres holds without a nightly job or a Debezium and Kafka pipeline in between. It speaks Postgres's own protocol (<code>pgoutput</code>, the plugin Postgres ships, from version 10), and keeps what it applied in ChloeDB's <code>_sources</code>, in the same transactions as the rows, so a follower stopped and started again goes on from there and applies each change once.</p>
@@ -180,8 +180,46 @@ GRANT SELECT ON products, reviews TO chloedb;</pre>
 </tr>
 </tbody>
 </table></div>
-<p>The first run makes the replication slot, which holds a snapshot of the database, and copies each table as of that snapshot while Postgres goes on taking writes; it then streams the slot's changes from the snapshot's position, so no change between the two is missed or applied twice. A ChloeDB table it lacks is made from the Postgres table; one that exists keeps its schema (see <a href="#choosing-chloedb-types">below</a>). It logs how far it is every 30 seconds (<code>applied</code>, the server's WAL position, <code>behind_bytes</code>), and <code>GET /v1/sources</code> on ChloeDB shows the last LSN it applied (<code>postgres/&lt;name&gt;/&lt;copy&gt;</code>), with when.</p>
+<p>The first run makes the replication slot, which holds a snapshot of the database, and copies each table as of that snapshot while Postgres goes on taking writes; it then streams the slot's changes from the snapshot's position, so no change between the two is missed or applied twice. A ChloeDB table it lacks is made from the Postgres table; one that exists keeps its schema (see <a href="#choosing-chloedb-types">below</a>). It tells ChloeDB how it stands every 2 seconds (<a href="#how-far-behind-it-is">below</a>) and logs it every 30 (<code>applied</code>, <code>confirmed</code>, <code>postgres</code>, <code>behind_bytes</code>, <code>lag_s</code>), and <code>GET /v1/sources</code> on ChloeDB shows the last position it applied (<code>postgres/&lt;name&gt;/&lt;copy&gt;</code>, with its <code>lsn</code> as Postgres writes it), with when.</p>
 <p>Stop it whenever: started again it resumes from what ChloeDB applied. While it is stopped, <strong>Postgres keeps the WAL the slot has not consumed</strong>, which can fill its disk over days; when you stop following for good, drop the slot (<code>--drop-slot</code>, or <code>SELECT pg_drop_replication_slot('strata_shop')</code>). Postgres 13 and later can cap what a slot keeps (<code>max_slot_wal_keep_size</code>); a slot that lost WAL it needed is copied afresh on the next start. A copy afresh, this one or <code>--copy</code>, empties each followed table before it fills it again: until a table's copy ends, its searches and counts see only the rows copied so far (in a persona study, 50,000 products read 0 rows for 2 s and were partial for 10 s, and 318,514 orders for 16 s). Copy again when the site can do without those tables' answers for as long as the copy takes.</p>
+<h2 id="how-far-behind-it-is">How far behind it is<a class="anchor" href="#how-far-behind-it-is" aria-label="Link to this section">#</a></h2>
+<p>Every 2 seconds the follower tells ChloeDB how it stands (<code>POST /v1/admin/follow/status</code>, which takes the cluster's token or an admin key: where the server asks for keys, give <code>--target-token</code> one, or the follower logs once that its reports are refused and goes on following). ChloeDB shows it on Data &gt; Connectors (<code>followers</code> in <code>GET /v1/admin/connectors</code>), in <code>/metrics</code> and to the built-in alert "A follower is behind its source" (<code>follow-behind</code>):</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>state</code></td>
+<td><code>copying</code>, <code>following</code>, <code>retrying</code> (ChloeDB refused a write, which it tries again; <code>error</code> says why), <code>failed</code> (it exited; <code>error</code>) or <code>stopped</code> (its slot was dropped)</td>
+</tr>
+<tr>
+<td><code>applied_lsn</code></td>
+<td>where the last transaction it wrote to ChloeDB ended</td>
+</tr>
+<tr>
+<td><code>confirmed_lsn</code></td>
+<td>the position it told Postgres it holds, before which Postgres may free the WAL: <code>applied_lsn</code> or later, since Postgres's WAL also holds what the publication does not send</td>
+</tr>
+<tr>
+<td><code>postgres_lsn</code></td>
+<td>Postgres's own position, <code>pg_current_wal_lsn()</code> (on a standby, <code>pg_last_wal_replay_lsn()</code>), read every 2 seconds on a connection of its own</td>
+</tr>
+<tr>
+<td><code>behind_bytes</code></td>
+<td><code>postgres_lsn</code> less <code>confirmed_lsn</code>: the WAL Postgres keeps for it</td>
+</tr>
+<tr>
+<td><code>lag_ms</code></td>
+<td>since Postgres's WAL first reached a position the follower has not confirmed (within 8 KB), so 0 once it has confirmed what Postgres had</td>
+</tr>
+</tbody>
+</table></div>
+<p>Positions are written as Postgres writes them (<code>0/16B3748</code>), to compare with <code>pg_current_wal_lsn()</code> and <code>confirmed_flush_lsn</code> in <code>pg_replication_slots</code>. A transaction still open in Postgres is not behind: Postgres sends it when it commits.</p>
+<p>A follower that stops telling (killed, or cut off from ChloeDB) is <em>silent</em> after 10 seconds, and from then on its lag grows by the time since it last told, so <code>follow-behind</code> (over 60 seconds behind, for a minute) fires within about two minutes of it stopping. <code>/metrics</code> has <code>chloedb_follow_lag_seconds</code>, <code>chloedb_follow_behind_bytes</code> and <code>chloedb_follow_up</code> (1 while it follows, copies or catches up and told within 10 seconds; 0 while it retries, failed or is silent), labelled with its <code>name</code> and <code>kind="postgres"</code>. ChloeDB holds what followers told it in memory: after ChloeDB restarts, Data &gt; Connectors lists a follower that has not told it since from its marks, as not reporting, and the alert waits for it to tell again.</p>
 <h2 id="what-it-applies">What it applies<a class="anchor" href="#what-it-applies" aria-label="Link to this section">#</a></h2>
 <ul>
 <li><strong>Inserts and updates</strong> are upserts of the whole row by key; an update that changes the key deletes the old row. A large value an update leaves unchanged, which Postgres does not send (TOAST), is kept: taken from the old row with <code>REPLICA IDENTITY FULL</code>, or else read from ChloeDB's row.</li>

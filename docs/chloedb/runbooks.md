@@ -112,7 +112,8 @@ For: `replica-behind`, `out-of-sync`, `replica-reads`, `lag`, `follow-behind`
    primary's write rate, the replica's disk and CPU). `GET /v1/cluster`
    says each copy's role and whether it serves reads; its `txn` counts the
    transactions of each process since it started, so it does not compare
-   two copies. `GET /v1/admin/follow` for a follower cluster.
+   two copies. `GET /v1/admin/follow` for a follower cluster, Data > Connectors
+   (`followers` in `GET /v1/admin/connectors`) for a Postgres follower.
 2. A replica catching up after a restart: wait, with `GET
    /v1/events?after=<id>&wait_s=30`, and silence the alert for the while
    (tier 1).
