@@ -24,6 +24,14 @@ const KINDS: Kind[] = ['stock_quote', 'flight_track', 'shop_search', 'cart_add',
 const APP_TOOL = /^mcp__.+__(apps_find|app_kit|app_save|app_undo|my_apps)$/
 // The server's name when this plugin starts it.
 const SERVER = 'plugin_widgets_widgets'
+// The tools that find things on the web or read them, whose results an app
+// can show.
+const FOUND_TOOL = /^(WebSearch|WebFetch)$/
+const foundNote = (server: string) =>
+  `If the person would want to look through, compare or keep what you found, show it in an app before you answer: call mcp__${server}__app_open with id "search-results" ` +
+  '(their Search results app), request (their words) and args {query, documents, notes}: each document with its title, url, source, date, kind, a summary of what it ' +
+  'says for this request, quotes (passages quoted exactly) and facts (comparable values under the same names across documents). Or call apps_find for another of ' +
+  'their apps. Search first if you need more; then answer in a few sentences, since the app shows the details.'
 const MAX_CARDS = 40
 const REFRESH_MS = 20_000
 
@@ -46,7 +54,7 @@ export function widgetOf(tool: string): { server: string; kind: Kind } | null {
 export function parse(text: unknown): Data | null {
   const data = json(text)
   if (!data) return null
-  if (['stock', 'flight', 'shop'].includes(data.widget as string)) return data as Data
+  if (['stock', 'flight', 'shop', 'findings'].includes(data.widget as string)) return data as Data
   // A made app's data no card knows (recipes, tables).
   return data.instant ? ({ ...data, widget: 'app' } as Data) : null
 }
@@ -113,6 +121,8 @@ async function refresh($: EngineInterface) {
     // An app refreshes by its own tool, with what it was filled with: the
     // app tools would count a use, or make the app again.
     const app = pin.data.instant
+    // What Claude found stays as it was found: it has no tool to ask again.
+    if (pin.data.widget === 'findings') continue
     const data = app
       ? await dataOf($, pin.server, app.tool, app.args ?? {}).then(d => d && parse({ ...d, instant: app }), () => null)
       : await callTool($, pin.server, pin.kind, pin.args).catch(() => null)
@@ -151,6 +161,14 @@ export const register: Register = on => {
   })
 
   on('tool.call', async ($, e, next) => {
+    // What the model found on the web or in a page can fill an app: it is
+    // told so right after the results, where it decides what to do next.
+    if (FOUND_TOOL.test(e.tool)) {
+      const ran = await next(e)
+      if (ran.deny !== undefined || ran.isError) return ran
+      const server = (await read($, shelf)).server
+      return { ...ran, context: [...(ran.context ?? []), foundNote(server)] }
+    }
     // Your apps, asked of the model: the pane shows them.
     const shelfCall = /^mcp__(.+)__my_apps$/.exec(e.tool)
     if (shelfCall) {
@@ -322,7 +340,7 @@ async function cardBox($: EngineInterface, e: Site, id: string, card: Card) {
 function kit($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0]): Kit {
   const table = $.ui.resolve(e)
   const svg = e.surface !== 'terminal' && 'Svg' in table ? table.Svg : undefined
-  return { Box: table.Box, Text: table.Text, Button: table.Button, Svg: svg }
+  return { Box: table.Box, Text: table.Text, Button: table.Button, Link: table.Link, Svg: svg }
 }
 
 function actions($: EngineInterface, id: string, card: Card, isPinned: boolean): Actions {

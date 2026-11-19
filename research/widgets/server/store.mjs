@@ -22,7 +22,8 @@ const VERSIONS = `CREATE TABLE ia_versions (id KEYWORD PRIMARY KEY, app KEYWORD,
 const TURNS = `CREATE TABLE ia_turns (id KEYWORD PRIMARY KEY, request TEXT, app KEYWORD, how KEYWORD, at INT)`
 
 // The apps "made before", so the rail is not empty on the first start: the
-// three widgets, whose views were written by hand.
+// three widgets, and the list of what Claude found, whose views were
+// written by hand.
 export const SEEDS = [
   { id: 'stock-chart', name: 'Stock chart', kind: 'info', tool: 'stock_quote', tools: ['stock_quote'], source: 'view:stock', args: { symbol: 'NVDA' },
     about: 'The price of a stock, ETF, index or crypto now, its change and a chart over a range.', examples: 'how is nvidia doing today' },
@@ -30,6 +31,9 @@ export const SEEDS = [
     about: 'Where a flight is right now on a map, with its altitude, speed and heading.', examples: 'is lufthansa 773 in the air right now' },
   { id: 'shop', name: 'Shop', kind: 'action', tool: 'shop_search', tools: ['shop_search', 'cart_add', 'cart_view'], source: 'view:shop', args: { query: 'headphones' },
     about: 'Products that match a search, with pictures, prices and ratings, and a cart to add them to.', examples: 'wireless earphones under 100 dollars' },
+  { id: 'search-results', name: 'Search results', kind: 'info', tool: 'findings', tools: ['findings'], source: 'view:findings', args: { query: 'Nothing yet', documents: [] },
+    about: 'What Claude found for a question on the web or in documents: each page with its source, date, a summary and the passages that matter, side by side.',
+    examples: 'find reviews of noise cancelling headphones | research what people say about | look up articles on' },
 ]
 
 const id = name => `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24)}-${randomBytes(3).toString('hex')}`
@@ -87,9 +91,10 @@ export class Apps {
     }
     const apps = new Apps(db, { meaning })
     apps.child = child
-    if (!(await db.query('SELECT id FROM ia_apps LIMIT 1')).length) {
-      for (const seed of SEEDS) await apps.put({ ...seed, saved: true, uses: 1 }, 'made by hand')
-    }
+    // Each seed once, by its id: a folder from before a seed was added gets
+    // it, and a seed the person took out stays out.
+    const seeded = new Set((await db.get('ia_apps', SEEDS.map(seed => seed.id))).filter(Boolean).map(row => row.id))
+    for (const seed of SEEDS) if (!seeded.has(seed.id)) await apps.put({ ...seed, saved: true, uses: 1 }, 'made by hand')
     return apps
   }
 

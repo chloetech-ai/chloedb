@@ -314,3 +314,45 @@ test('the other app tools answer the model in the sentence the server wrote', as
   const ran = await $.tool.call({ tool: 'mcp__plugin_widgets_widgets__apps_find', request: 'compare two headphones' } as any)
   expect((ran as any).result).toBe(found.summary)
 })
+
+// What Claude found on the web, shown by the saved Search results app.
+const FOUND = {
+  widget: 'findings',
+  summary: '2 document(s) for "quiet headphones".',
+  query: 'quiet headphones',
+  documents: [
+    { n: 1, title: 'The best noise-cancelling headphones', url: 'https://example.com/best', source: 'example.com', date: '2026-10-02', kind: 'review', summary: 'Sony cancels the most noise.', quotes: ['The XM6 cut more rumble than anything else.'], facts: { price: 449 } },
+    { n: 2, title: 'A field note without an address', url: null, source: 'notes.md', date: null, kind: null, summary: 'Bose is the most comfortable.', quotes: [], facts: {} },
+  ],
+  facts: ['price'],
+  notes: 'Both put Sony first for quiet.',
+  instant: { ...APP, id: 'search-results', name: 'Search results', tool: 'findings', tools: ['findings'], how: 'recalled', saved: true, args: { query: 'quiet headphones' } },
+}
+
+test('what Claude found is a list of its documents with their links, and asks about them', async ($, on) => {
+  const seen = appEngine(on, FOUND)
+  const tool = 'mcp__widgets__app_open'
+  await $.tool.call({ tool, id: 'search-results' } as any)
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...row(seen.id, tool), surface } as any)
+    expect(await ui.find({ type: 'Text', text: /Search results/ })).toBeDefined()
+    expect(await ui.find({ type: 'Link', href: 'https://example.com/best' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /A field note without an address/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /example\.com · 2026-10-02 · review/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Both put Sony first/ })).toBeDefined()
+    await ui.unmount()
+  }
+  const ui = await $.ui.mount({ ...row(seen.id, tool), surface: 'desktop' } as any)
+  await ui.press({ key: 'compare' })
+  await settle()
+  expect(seen.filled).toEqual(['Compare what these sources say about quiet headphones.'])
+  await ui.unmount()
+})
+
+test('after a web search the model is told it can show what it found in an app', async ($, on) => {
+  on('tool.call', () => ({ result: { query: 'quiet headphones', results: [] } }))
+  const ran: any = await $.tool.call({ tool: 'WebSearch', query: 'quiet headphones' } as any)
+  expect(ran.context.at(-1)).toMatch(/mcp__plugin_widgets_widgets__app_open with id "search-results"/)
+  const other: any = await $.tool.call({ tool: 'Read', file_path: '/x' } as any)
+  expect(other.context ?? []).toEqual([])
+})

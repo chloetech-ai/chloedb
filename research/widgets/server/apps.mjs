@@ -56,8 +56,12 @@ export function registerApps(server, { TOOLS, callTool, fragmentOf }) {
   // Fills an app with its first tool and answers as every app tool does:
   // a sentence for the model, and the data with the app's details for the
   // view (and for Claude Code's mod).
-  async function show(apps, app, args, request, how, note) {
-    const data = await callTool(app.tool, args)
+  async function show(apps, app, args, request, how, note, data = null) {
+    try {
+      data ??= await callTool(app.tool, args)
+    } catch (error) {
+      return fail(error.message)
+    }
     await apps.used(app.id, request ?? '', args, how)
     const saved = app.saved ? '' : ` It is a draft until it is saved (its Save button, or app_save when the person asks), and only saved apps come back by themselves.`
     const said = `${note} The app "${app.name}" (id ${app.id}) shows this in the conversation, so answer in a sentence or two and leave the details to it.${saved}`
@@ -73,7 +77,8 @@ export function registerApps(server, { TOOLS, callTool, fragmentOf }) {
       title: 'Find an app',
       description:
         'Call this first when a request would be answered better by a small live app in the conversation than by text: live data (a price, where a flight is), ' +
-        'things to compare side by side, something to book or buy, or things to browse for ideas. It searches the person’s saved apps by words and meaning ' +
+        'things to compare side by side, something to book or buy, things to browse for ideas, or what you found yourself (pages from a web search, documents ' +
+        'you read) for the person to look through. It searches the person’s saved apps by words and meaning ' +
         'and lists those that may fit, best first, with the tool and arguments that fill each. When one does the job the request asks for (even with other ' +
         'inputs: another stock, city or dish), call app_open with its id and the arguments for this request. When none does, call app_kit, then app_make to ' +
         'make one: sharing a tool is not enough (comparing products side by side is another job than a shop’s list, a recipe to cook tonight another than ' +
@@ -169,10 +174,17 @@ export function registerApps(server, { TOOLS, callTool, fragmentOf }) {
       } catch (error) {
         return fail(`${error.message}: write it as app_kit says.`)
       }
+      // Filled first, so arguments its tool refuses make no app.
+      let data
+      try {
+        data = await callTool(tool, args)
+      } catch (error) {
+        return fail(error.message)
+      }
       const apps = await store()
       const allowed = [...new Set([tool, ...tools])].filter(t => known.has(t))
       const app = await apps.put({ name, about, kind, tool, tools: allowed, source, args, examples: request, saved: false }, `made for: ${request}`)
-      return show(apps, app, args, request, 'made', `Made the new app "${name}".`)
+      return show(apps, app, args, request, 'made', `Made the new app "${name}".`, data)
     },
   )
 

@@ -1,6 +1,7 @@
-// The model's four jobs in the chat, each one `claude -p` call: route a
-// request (open a saved app, make a new one, or just answer), make an app,
-// change one as asked, and write the short answer under it.
+// The model's jobs in the chat, each one `claude -p` call: route a request
+// (open a saved app, make a new one, or just answer), look things up on the
+// web for an app that shows what was found, make an app, change one as
+// asked, and write the short answer under it.
 //
 // WIDGETS_CLAUDE names the claude binary, WIDGETS_FAST_MODEL the model that
 // routes and answers, WIDGETS_MAKE_MODEL the one that writes apps. On a
@@ -14,6 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { KINDS, fragment, kitGuide, toolList } from '../server/guide.mjs'
+import { clip } from '../server/widgets/findings.mjs'
 
 export { fragment }
 
@@ -93,14 +95,19 @@ export function claude({
     budget.check()
     return turn(() => call(input))
   }
-  async function call({ system, prompt, model, schema, timeoutMs = 240_000 }) {
+  // `tools` are Claude Code's own tools the call may use: none, or the web
+  // search alone for research (never WebFetch, which would reach the
+  // services beside this one).
+  async function call({ system, prompt, model, schema, tools = [], turns = 0, timeoutMs = 240_000 }) {
     budget.check()
     const dir = await mkdtemp(path.join(os.tmpdir(), 'widgets-claude-'))
     try {
       const systemFile = path.join(dir, 'system.txt')
       await writeFile(systemFile, system, { mode: 0o600 })
-      const args = ['-p', '--output-format', 'json', '--model', model, '--system-prompt-file', systemFile, '--tools', '',
+      const args = ['-p', '--output-format', 'json', '--model', model, '--system-prompt-file', systemFile, '--tools', tools.join(','),
         '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence']
+      if (tools.length) args.push('--allowedTools', tools.join(','))
+      if (turns) args.push('--max-turns', String(turns))
       if (schema) args.push('--json-schema', JSON.stringify(schema))
       const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !PRIVATE.test(k)))
       const out = await new Promise((resolve, reject) => {
@@ -132,6 +139,12 @@ export function claude({
     async route(input) {
       return run({ system: ROUTE, prompt: routePrompt(input), model: fast, schema: ROUTE_SCHEMA, timeoutMs: 90_000 })
     },
+    // The web searched for a request, and what was found as the findings
+    // tool takes it.
+    async research(input) {
+      const found = await run({ system: RESEARCH, prompt: researchPrompt(input), model: fast, schema: RESEARCH_SCHEMA, tools: ['WebSearch'], turns: 8, timeoutMs: 180_000 })
+      return clip({ ...found, query: found.query || input.query })
+    },
     async make(input) {
       return fragment(await run({ system: await makeSystem(), prompt: makePrompt(input), model: strong }))
     },
@@ -155,6 +168,8 @@ For each request you decide one of three things:
 - "chat": the request needs no app (an explanation, an opinion, small talk, a question about what an app in the conversation already shows, something no tool has data for). Write the answer in "reply", in at most three sentences.
 
 A follow-up that changes what the app shown just before should show (another time, fewer people, not spicy, a cheaper one) is "use" of that app with the new arguments: it is filled again in the conversation.
+
+A request to find, research or look up things on the web (reviews, articles, news, papers, what people say about something, how to do something, the best of something) uses the tool "findings" with args {"query": the request in a few words}: the chat searches the web for it first and fills the app with the pages it found, each with its source, date and what it says. The saved app "Search results" shows any such list; make another app on findings only when the request needs another way to show them (a reading list, a comparison table of the products the reviews name). A question about what a "Search results" app in the conversation shows is "chat".
 
 For "make": name it in 2 or 3 words that fit later requests of the same kind ("Stock chart", "Product comparison", "Table booking", "Dinner ideas"; never one stock, product or city). "about" is one sentence on what it does, also general. "look" says what it shows and which controls it has, in 2 to 4 sentences that fit the tools' data. "tools" lists every tool it may call: its first one and those its buttons need (booking needs the search and the booking tool; a shop needs the cart tools; recipes the recipe tool).
 
@@ -254,6 +269,42 @@ ${source.startsWith('view:') ? '(a page made by hand; rewrite it as a fragment)'
 \`\`\`
 
 Change it as the person asks, keeping everything else as it is, and answer with the whole new fragment: ${change}`
+}
+
+const RESEARCH = `You look things up on the web for a chat, where what you find is shown as a list the person can read through, filter and compare. Search the web (at most 3 searches) and pick the 4 to 8 most useful pages for the request: recent, from sources that know, and different from each other. Use only what the search results say; never invent a page, an address, a date or a passage.
+
+For each page give its title, its address (url), the site or publisher (source), its date when the results give one (as written), what kind of page it is (review, article, news, paper, docs, forum, listing...), a summary of what it says that matters for this request in 1 to 3 sentences of your own, 1 or 2 short passages quoted exactly from the results (quotes), and, when the pages are about things to compare (products, places, options), facts: the same few names across pages (such as "pick", "price", "rating") with the values each page gives. "query" is the request in a few words, and "notes" says in a sentence or two what the pages agree or disagree on, or what is missing.`
+
+const FACT = { type: ['string', 'number', 'boolean', 'null'] }
+const RESEARCH_SCHEMA = {
+  type: 'object',
+  properties: {
+    query: { type: 'string' },
+    documents: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          url: { type: 'string' },
+          source: { type: 'string' },
+          date: { type: 'string' },
+          kind: { type: 'string' },
+          summary: { type: 'string' },
+          quotes: { type: 'array', items: { type: 'string' } },
+          facts: { type: 'object', additionalProperties: FACT },
+        },
+        required: ['title', 'url', 'summary'],
+      },
+    },
+    notes: { type: 'string' },
+  },
+  required: ['query', 'documents'],
+}
+
+function researchPrompt({ request, query, history = [] }) {
+  const said = history.length ? `The conversation so far:\n${history.map(h => `${h.role}: ${h.text}`).join('\n')}\n\n` : ''
+  return `Today is ${new Date().toDateString()}.\n\n${said}Look up on the web: ${query}\n\n(The person asked: ${request})`
 }
 
 const REPLY = `You answer in a chat. An app with the details is shown above your answer, so answer the request in one or two short sentences, at most 45 words: the answer itself, not every number or option, and nothing about the app or its buttons (the person can see them). If the data is made up for a demo, say so in a few words. The data you get is what the app's first call returned; when the request asks about several things (three stocks, two cities), the app loads the others itself, so answer from what you have and never say that the rest is missing.`

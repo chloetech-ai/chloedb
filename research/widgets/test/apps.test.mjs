@@ -148,3 +148,72 @@ test('a new app: the kit, then made, its calls held to its tools, saved and foun
   await ok('app_save', { id: app.id, saved: false })
   assert.ok(!(await ok('my_apps')).structuredContent.apps.some(a => a.id === app.id))
 })
+
+// What the Claude of the conversation found itself (a web search, pages it
+// read), handed to the saved Search results app.
+const FOUND = {
+  query: 'quiet headphones for flights',
+  documents: [
+    {
+      title: 'The best noise-cancelling headphones',
+      url: 'https://example.com/best',
+      date: '2026-10-02',
+      kind: 'review',
+      summary: 'Sony cancels the most noise.',
+      quotes: ['The XM6 cut more rumble than anything else.'],
+      facts: { pick: 'Sony WH-1000XM6', price: 449 },
+    },
+    { title: 'A page with an odd address', url: 'javascript:alert(1)', source: 'somewhere', summary: 'Bose is the most comfortable.', facts: { pick: 'Bose QC Ultra 2', price: 429 } },
+  ],
+  notes: 'Both put Sony first for quiet.',
+}
+
+test('what Claude found fills the Search results app, and is never a tool of its own', { skip }, async () => {
+  const { tools } = await client.listTools()
+  assert.ok(!tools.some(t => t.name === 'findings'), 'findings is only handed to apps')
+  assert.match(tools.find(t => t.name === 'apps_find').description, /found yourself/)
+
+  const found = await ok('apps_find', { request: 'find reviews of quiet headphones' })
+  assert.equal(found.structuredContent.apps[0].id, 'search-results')
+  assert.match(text(found), /Opens with findings .*"documents":"list/)
+  // A word of another app's ("flights") still lists it, for the model to pick.
+  const near = await ok('apps_find', { request: 'find reviews of quiet headphones for flights' })
+  assert.ok(near.structuredContent.apps.some(a => a.id === 'search-results'))
+
+  const opened = await ok('app_open', { id: 'search-results', args: FOUND, request: 'find reviews of quiet headphones for flights' })
+  const d = opened.structuredContent
+  assert.equal(d.widget, 'findings')
+  assert.equal(d.instant.how, 'recalled')
+  assert.equal(d.documents.length, 2)
+  // Its source from the address, and an address that is not the web dropped.
+  assert.equal(d.documents[0].source, 'example.com')
+  assert.equal(d.documents[1].url, null)
+  assert.deepEqual(d.facts, ['pick', 'price'])
+  assert.match(text(opened), /2 document\(s\) for "quiet headphones for flights": The best noise-cancelling headphones \(example\.com, 2026-10-02\)/)
+  const { structuredContent } = await ok('app_source', { id: 'search-results' })
+  assert.match(structuredContent.source, /Kit|link\(app, d\.url\)/)
+
+  // Opened again with nothing new, it shows what it showed last.
+  const again = await ok('app_open', { id: 'search-results' })
+  assert.equal(again.structuredContent.documents[0].title, 'The best noise-cancelling headphones')
+
+  // What its schema refuses makes no app and says why.
+  const bad = await call('app_make', { name: 'Reading list', about: 'Articles to read later.', kind: 'info', tool: 'findings', args: { query: 'x', documents: [{ url: 'https://example.com' }] }, tools: ['findings'], html: COMPARE, request: 'keep these to read' })
+  assert.equal(bad.isError, true)
+  assert.match(text(bad), /findings's args: documents\.0\.title/)
+  assert.ok(!(await apps.recall('Reading list articles to read later', 5)).some(a => a.name === 'Reading list'))
+
+  // A made app can be filled by what Claude found too, and the kit shows it.
+  const kit = await ok('app_kit', { tool: 'findings' })
+  assert.match(text(kit), /Kit\.link\(app, url\)/)
+  assert.match(text(kit), /"widget": "findings"/)
+})
+
+test('a folder from before a seed was added gets it once, and keeps it out once taken out', { skip }, async () => {
+  await apps.save('search-results', false)
+  const reopened = await Apps.open({ url: apps.db.url })
+  assert.equal((await reopened.get('search-results')).saved, false)
+  await apps.db.write([{ op: 'delete', table: 'ia_apps', key: 'search-results' }])
+  const again = await Apps.open({ url: apps.db.url })
+  assert.equal((await again.get('search-results')).saved, true)
+})

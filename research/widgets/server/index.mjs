@@ -20,8 +20,11 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { RESOURCE_MIME_TYPE, registerAppResource, registerAppTool } from '@modelcontextprotocol/ext-apps/server'
 
+import { z } from 'zod'
+
 import { RUNNER, SHELF, registerApps } from './apps.mjs'
 import { tableBook, tableSearch } from './widgets/booking.mjs'
+import { findings } from './widgets/findings.mjs'
 import flight from './widgets/flight.mjs'
 import { recipeGet, recipesBrowse } from './widgets/recipes.mjs'
 import { cartAdd, cartShow, shopSearch } from './widgets/shop.mjs'
@@ -29,9 +32,11 @@ import stock from './widgets/stock.mjs'
 
 // The tools with a view of their own, which any MCP Apps host draws.
 export const WIDGETS = [stock, flight, shopSearch, cartAdd, cartShow]
-// Every tool an app can get its data from or act through: the widgets', and
-// sources that only made apps draw (booking a table, recipes).
-export const TOOLS = [...WIDGETS, tableSearch, tableBook, recipesBrowse, recipeGet]
+// Every tool an app can get its data from or act through: the widgets',
+// sources that only made apps draw (booking a table, recipes), and what the
+// Claude of the conversation found itself (findings), which it hands to an
+// app rather than calls.
+export const TOOLS = [...WIDGETS, tableSearch, tableBook, recipesBrowse, recipeGet, findings]
 
 export const VIEWS = {
   stock: { title: 'Stock widget', domains: [] },
@@ -56,6 +61,11 @@ export const INSTRUCTIONS = [
   'already shows the details. A change the person asks for in an app is app_change; app_save keeps it when they',
   'ask, and my_apps shows what they kept. The tools stock_quote, flight_track and shop_search open the apps made',
   'by hand directly.',
+  'What you find yourself is data for an app too: after a web search, or pages or files you read, for a request',
+  'to find, research or compare things, show what you found before you answer, with app_open on id "search-results"',
+  '(the Search results app) or another app apps_find lists, with the tool findings and as its args the request in',
+  'query and the documents (title, url, source, date, a summary of what it says for this request, passages quoted',
+  'exactly, comparable facts under the same names).',
 ].join(' ')
 
 const here = path => new URL(path, import.meta.url)
@@ -156,8 +166,9 @@ export function build() {
     )
   }
 
-  // The sources without a view of their own answer as plain tools.
-  for (const tool of TOOLS.filter(t => !t.view)) {
+  // The sources without a view of their own answer as plain tools; what
+  // Claude found is only ever handed to an app.
+  for (const tool of TOOLS.filter(t => !t.view && !t.given)) {
     server.registerTool(
       tool.name,
       { title: tool.title, description: tool.description, inputSchema: tool.input, annotations: { readOnlyHint: tool.name !== 'table_book', openWorldHint: true } },
@@ -201,6 +212,13 @@ export function domainsOf(names) {
 export async function callTool(name, args) {
   const tool = TOOLS.find(t => t.name === name)
   if (!tool) throw new Error(`no tool ${name}`)
+  // What the model hands an app comes through app_open and app_make's
+  // loose args, so its own schema checks it here.
+  if (tool.given) {
+    const checked = z.object(tool.input).safeParse(args ?? {})
+    if (!checked.success) throw new Error(`${name}'s args: ${checked.error.issues.map(i => `${i.path.join('.') || 'args'} ${i.message}`).join('; ')}`)
+    args = checked.data
+  }
   const data = await tool.run(args ?? {})
   return { summary: tool.summary(data), ...data }
 }

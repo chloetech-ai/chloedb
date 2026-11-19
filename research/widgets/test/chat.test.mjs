@@ -25,11 +25,15 @@ const FRAGMENT = (label) => `<style>.x{color:var(--ink)}</style><div id="root" c
 // Routes as a model would: the saved app whose first tool fits, else a new
 // one; counts what it was asked to do.
 function scripted() {
-  const calls = { route: [], make: 0, edit: 0, reply: 0 }
+  const calls = { route: [], make: 0, edit: 0, reply: 0, research: [] }
   return {
     calls,
     async route(input) {
       calls.route.push(input)
+      if (/^find /i.test(input.request)) {
+        const saved = input.candidates.find(c => c.tool === 'findings')
+        return { mode: 'use', kind: 'info', use: saved.id, tool: 'findings', args: { query: input.request.slice(5) }, why: 'your search results' }
+      }
       const booking = /table|dinner/i.test(input.request)
       if (!booking) return { mode: 'chat', kind: 'info', tool: null, args: {}, reply: 'Just text.', why: 'no app needed' }
       const saved = input.candidates.find(c => c.tool === 'table_search')
@@ -38,6 +42,16 @@ function scripted() {
       return {
         mode: 'make', kind: 'action', use: null, tool: 'table_search', args, why: 'no saved app books tables yet',
         make: { name: 'Table booking', about: 'Find a restaurant with a free table and book it.', look: 'Places with their free times; Book.', tools: ['table_search', 'table_book', 'no_such_tool'] },
+      }
+    },
+    async research(input) {
+      calls.research.push(input)
+      return {
+        query: input.query,
+        documents: /nothing/.test(input.query)
+          ? []
+          : [{ title: 'Quiet headphones, tested', url: 'https://example.com/quiet', source: 'example.com', date: '2026-11-01', summary: 'Sony first.', quotes: ['Quietest we tried.'], facts: { pick: 'Sony' } }],
+        notes: 'One source.',
       }
     },
     async make() {
@@ -79,7 +93,7 @@ const post = async (route, body = {}) => (await fetch(chat.url + route.slice(1),
 const rail = async () => (await (await fetch(`${chat.url}api/apps`)).json()).apps
 
 test('the flow: make, act, change, undo, save, and recall', { skip }, async () => {
-  assert.deepEqual((await rail()).map(a => a.name).sort(), ['Flight tracker', 'Shop', 'Stock chart'])
+  assert.deepEqual((await rail()).map(a => a.name).sort(), ['Flight tracker', 'Search results', 'Shop', 'Stock chart'])
 
   // No saved app books tables: one is made, as a draft.
   const made = await events('/api/turn', { text: 'Book a table for 4 on Friday at 8 in North Beach' })
@@ -221,4 +235,25 @@ test('one visitor’s requests in an hour are limited', { skip }, async () => {
     chat.close()
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('a request to find things searches the web first, and the Search results app shows what was found', { skip }, async () => {
+  const found = await events('/api/turn', { text: 'find reviews of quiet headphones' })
+  assert.ok(found.some(e => e.type === 'status' && e.text === 'Searching the web'))
+  assert.deepEqual(model.calls.research.at(-1).query, 'reviews of quiet headphones')
+  const app = found.find(e => e.type === 'app')
+  assert.equal(app.app.id, 'search-results')
+  assert.equal(app.how, 'recalled')
+  const data = app.result.structuredContent
+  assert.equal(data.widget, 'findings')
+  assert.equal(data.documents[0].url, 'https://example.com/quiet')
+  assert.deepEqual(data.facts, ['pick'])
+  assert.match(app.html, /Found by Claude/)
+  // Kept with the app, so it shows them again when opened from the rail.
+  assert.equal((await rail()).find(a => a.id === 'search-results').uses, 2)
+
+  // Nothing found is said in words, with no app.
+  const none = await events('/api/turn', { text: 'find nothing at all' })
+  assert.ok(!none.some(e => e.type === 'app'))
+  assert.match(none.find(e => e.type === 'reply').text, /found nothing on the web/)
 })

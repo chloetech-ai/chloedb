@@ -20,6 +20,7 @@ The page already has a kit, globalThis.Kit:
 - await Kit.call(app, toolName, args) calls one of the app's tools and returns its data, the same shape as draw's: for buttons that fetch more or act (Book, Add to cart, Show the recipe, another range). Show that it is working while it runs, and the error in place if it throws.
 - Kit.ask(app, text) puts a message in the chat as the person's, for a follow-up ("Why did it move?", "What goes with this?").
 - Kit.tell(app, text) tells the conversation, in one sentence, what the person now sees or picked ("Selected: Huawei Matebook X Pro, $1,399"), so a later question can refer to it. Call it when they pick, select or filter something, not on every draw.
+- Kit.link(app, url) asks the host to open a web address (a document's link) in the browser; use it for links, since the page cannot navigate.
 - Kit.money(n, currency = 'USD'), Kit.number(n, digits), Kit.ago(ms), and Kit.esc(text), which escapes text for innerHTML: escape every text that comes from data.
 
 The kit's CSS follows the chat's light or dark theme: variables --bg (the page), --bg-2 (a raised surface), --ink, --ink-2 (secondary text), --ink-3 (faint), --line (borders), --accent, --up and --down (green and red, with --up-bg and --down-bg), --radius, --font, --mono; classes .row (a flex row), .between, .wrap, .muted, .faint, .num, .title, .big (a big number), .chip (with .up and .down), .tabs with .tab buttons (aria-pressed="true" for the chosen one), .btn and .btn.primary, .live (a pulsing dot), .foot (a footer line), .empty (a centered message). body has the font and 14px 16px of padding already.
@@ -54,6 +55,8 @@ function typeName(schema) {
   const inner = schema._def.typeName === 'ZodOptional' ? schema._def.innerType : schema
   if (inner._def.typeName === 'ZodEnum') return `one of ${inner._def.values.join(', ')}`
   if (inner._def.typeName === 'ZodNumber') return 'number'
+  if (inner._def.typeName === 'ZodArray') return 'list'
+  if (inner._def.typeName === 'ZodBoolean') return 'true or false'
   return 'text'
 }
 

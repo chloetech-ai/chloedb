@@ -117,7 +117,22 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       return
     }
     let app = plan.mode === 'use' && plan.use ? await apps.get(plan.use) : null
-    const args = plan.args ?? {}
+    let args = plan.args ?? {}
+    // An app of what was found: the web searched first, and what it found
+    // is the tool's arguments.
+    if (plan.tool === 'findings') {
+      send({ type: 'status', text: 'Searching the web' })
+      try {
+        args = await model.research({ request: text, query: String(args.query || text), history: history.slice(-6) })
+      } catch (error) {
+        send({ type: 'reply', text: `I could not search the web just now: ${error.message}` })
+        return
+      }
+      if (!args.documents.length) {
+        send({ type: 'reply', text: `I found nothing on the web for “${args.query}”.` })
+        return
+      }
+    }
     if (app) {
       send({ type: 'status', text: `Opening ${app.name}` })
       const { result, data } = await run(app.tools.includes(plan.tool) ? plan.tool : app.tool, args)

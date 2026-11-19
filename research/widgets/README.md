@@ -151,6 +151,34 @@ saved comparison first, and `app_open` with `{"query": "headphones"}`; a
 third did the same for smartphones, and "Which apps have I saved?" called
 `my_apps`.
 
+### What Claude found
+
+What Claude finds itself (a web search, pages or files it read) fills an app
+too. `findings` is a tool no model calls: it is what `app_open` and
+`app_make` take as the arguments of an app whose first tool it is, the
+request in `query` and a list of `documents`, each with its title, address,
+source, date, kind, a summary of what it says for the request, passages
+quoted exactly and comparable facts under the same names, with `notes` on
+what they agree on. The server checks them against its schema, keeps only
+web addresses, and names a document's source from its address when it has
+none. The saved app **Search results** (`server/views/findings.html`) shows
+them: the request and the notes first, each document with its link (opened
+through the host, `Kit.link`), source and date, summary, passages and facts,
+a filter, newest first, and the facts side by side when the documents share
+them; Ask about this puts a question in the chat. A made app can be filled by
+what Claude found too (a reading list, a table of the products the reviews
+name). The server's instructions tell Claude to show what it found this way,
+and in Claude Code the mod adds a line after each WebSearch and WebFetch
+result saying how, which Claude follows; it draws the documents as a card.
+
+A run (Claude Code, `claude -p --plugin-dir research/widgets` with WebSearch
+allowed, 2026-11-19): asked to "find the best noise cancelling headphones
+reviews from this year", Claude searched twice and called `app_open` on
+`search-results` with six review roundups (What Hi-Fi?, Tom's Guide,
+TechRadar, SoundGuys, T3, SlashGear), then answered in a paragraph; 29 s,
+$0.28. Without the mod's line, the same request got a table in text and no
+app.
+
 ## On instant.chloetech.ai
 
 The chat runs for friends at https://instant.chloetech.ai, behind a password
@@ -160,6 +188,12 @@ chloedb-server, on the `protos` node, with the apps on the node's disk. Claude
 is capped at $20 a day and $100 in all (`/healthz` says what was spent), 40
 requests a visitor an hour and 3 calls at once. Everyone who signs in shares
 the same saved apps.
+
+A request to find or research something is routed to `findings`: the chat
+first has Claude search the web (`claude -p` with WebSearch alone, never
+WebFetch, which could reach the services beside it, at most three searches,
+on the fast model and under the same caps), and what it found fills Search
+results, or the app made for it. One search took 18 s and $0.05.
 
 ## Tests
 
@@ -174,6 +208,9 @@ node test/host/host.mjs                      # a small MCP Apps host to look at 
 
 - The reservations service is made up and the store is DummyJSON's demo:
   nothing is booked, bought or charged, and the apps say so.
-- A made app reaches data only through the tools here. A connector per
-  source (a real reservations API, a shop's catalog) would give it more.
+- A made app reaches data only through the tools here and what Claude hands
+  it (`findings`). A connector per source (a real reservations API, a shop's
+  catalog) would give it more.
+- What Claude found is kept as it was found: Search results opened later
+  shows the same documents until Claude looks again.
 - One person, one machine: no accounts, and apps are not shared.

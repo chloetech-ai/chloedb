@@ -2,11 +2,11 @@
 // pane: the terminal gets text art, the other surfaces an SVG chart or map.
 import type { Elements, RenderElement } from 'claude-code'
 
-import type { Card, CartLine, Flight, Instant, Made, Shop, Stock } from '../types'
+import type { Card, CartLine, Findings, Flight, Instant, Made, Shop, Stock } from '../types'
 import { bars, brailleMap, flightSvg, stockSvg } from './charts'
 
 // The elements every surface has, and Svg where the surface has it.
-export type Kit = Pick<Elements['desktop'], 'Box' | 'Text' | 'Button'> & { Svg?: Elements['desktop']['Svg'] }
+export type Kit = Pick<Elements['desktop'], 'Box' | 'Text' | 'Button' | 'Link'> & { Svg?: Elements['desktop']['Svg'] }
 
 export type Actions = {
   isPinned: boolean
@@ -40,13 +40,22 @@ export function title(card: Card): string {
   if (d.instant) return d.instant.name
   if (d.widget === 'stock') return `${d.symbol} ${money(d.price, d.currency)}`
   if (d.widget === 'flight') return d.callsign
+  if (d.widget === 'findings') return `Found: ${d.query}`
   return d.mode === 'cart' ? 'Cart' : `Shop: ${d.query}`
 }
 
 export function drawCard(t: Kit, card: Card, place: Place, act: Actions): RenderElement {
   const d = card.data
   const body =
-    d.widget === 'stock' ? stock(t, d, place, act) : d.widget === 'flight' ? flight(t, d, place, act) : d.widget === 'shop' ? shop(t, d, place, act) : made(t, d, place)
+    d.widget === 'stock'
+      ? stock(t, d, place, act)
+      : d.widget === 'flight'
+        ? flight(t, d, place, act)
+        : d.widget === 'shop'
+          ? shop(t, d, place, act)
+          : d.widget === 'findings'
+            ? findings(t, d, place, act)
+            : made(t, d, place)
   if (!d.instant) return body
   const { Box } = t
   return (
@@ -106,6 +115,47 @@ function made(t: Kit, d: Made, place: Place): RenderElement {
           {line(row)}
         </Text>
       ))}
+    </Box>
+  )
+}
+
+// What Claude found: the request, what the documents agree on, and each
+// document's title (a link where it has an address), where and when it is
+// from, what it says and its first passage. Ask about one from its button.
+function findings(t: Kit, d: Findings, place: Place, act: Actions): RenderElement {
+  const { Box, Text, Button, Link } = t
+  const width = Math.max(24, place.columns - 6)
+  const cut = (text: string, n: number) => (text.length > n ? `${text.slice(0, n - 1)}…` : text)
+  const docs = d.documents.slice(0, place.compact ? 3 : 6)
+  if (!d.documents.length) return <Text dimColor>Nothing found for “{d.query}” yet.</Text>
+  return (
+    <Box flexDirection="column">
+      <Text>
+        <Text bold>{d.query}</Text>
+        <Text dimColor>
+          {'  '}
+          {d.documents.length} source{d.documents.length > 1 ? 's' : ''}, found by Claude
+        </Text>
+      </Text>
+      {d.notes && !place.compact && <Text italic>{cut(d.notes, width * 2)}</Text>}
+      {docs.map(doc => (
+        <Box key={`doc-${doc.n}`} flexDirection="column" marginTop={place.compact ? 0 : 1}>
+          <Text>
+            <Text dimColor>{doc.n} </Text>
+            {doc.url ? <Link href={doc.url} label={cut(doc.title, width)} /> : <Text bold>{cut(doc.title, width)}</Text>}
+          </Text>
+          {[doc.source, doc.date, doc.kind].some(Boolean) && <Text dimColor>{'  '}{[doc.source, doc.date, doc.kind].filter(Boolean).join(' · ')}</Text>}
+          {!place.compact && <Text>{'  '}{cut(doc.summary, width * 2)}</Text>}
+          {!place.compact && doc.quotes[0] && <Text dimColor>{'  '}“{cut(doc.quotes[0], width * 2)}”</Text>}
+        </Box>
+      ))}
+      {d.documents.length > docs.length && <Text dimColor>and {d.documents.length - docs.length} more</Text>}
+      {!place.compact && (
+        <Box gap={1} marginTop={1}>
+          <Button key="compare" label="Compare them" onPress={() => act.ask(`Compare what these sources say about ${d.query}.`)} />
+          <Button key="more" label="Find more" onPress={() => act.ask(`Find more sources on ${d.query}.`)} />
+        </Box>
+      )}
     </Box>
   )
 }

@@ -49,6 +49,12 @@ function tell(app, text) {
   return app.updateModelContext({ content: [{ type: 'text', text }] }).catch(() => {})
 }
 
+// Opens a web address through the host (a view's iframe may not open one
+// itself); anything but http(s) is left alone.
+function link(app, url) {
+  return /^https?:\/\//i.test(String(url ?? '')) ? app.openLink({ url: String(url) }).catch(() => {}) : Promise.resolve()
+}
+
 const money = (value, currency = 'USD') =>
   new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: value >= 1000 ? 0 : 2 }).format(value)
 const number = (value, digits = 0) => new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(value)
@@ -58,4 +64,4 @@ const ago = ms => {
 }
 const esc = text => String(text ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)
 
-globalThis.Kit = { connect, call, ask, tell, money, number, ago, esc }
+globalThis.Kit = { connect, call, ask, tell, link, money, number, ago, esc }

@@ -105,7 +105,31 @@ export type Shop = {
   note?: string
 }
 
-export type Data = ((Stock | Flight | Shop) & { instant?: Instant }) | Made
+// What the Claude of the conversation found itself (a web search, pages it
+// read), handed to an app through the tool findings.
+export type Found = {
+  n: number
+  title: string
+  url: string | null
+  source: string | null
+  date: string | null
+  kind: string | null
+  summary: string
+  quotes: string[]
+  facts: { [name: string]: string | number | boolean | null }
+}
+
+export type Findings = {
+  widget: 'findings'
+  summary: string
+  query: string
+  documents: Found[]
+  facts: string[]
+  notes: string | null
+  source?: string
+}
+
+export type Data = ((Stock | Flight | Shop | Findings) & { instant?: Instant }) | Made
 
 // One widget the model opened: which tool on which server, with what
 // arguments, and what it answered.
