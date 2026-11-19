@@ -906,6 +906,11 @@ curl -s &#x27;localhost:7700/v1/export&#x27; -o copy.sqlite</pre>
 <td>build with <code>--features vision</code>; about 0.5 s an image and 80 ms a text on a 4-vCPU cloud VM</td>
 </tr>
 <tr>
+<td><code>siglip-so400m-patch14-384</code></td>
+<td>SigLIP so400m: images and text in one space, 1152 dimensions, the model of <a href="https://huggingface.co/datasets/Major-TOM/Core-S2RGB-SigLIP">Major TOM's</a> Sentinel-2 vectors (a 3.5 GB download)</td>
+<td>build with <code>--features vision</code>; about 4.2 s a 384-pixel image and 0.75 s a text on a 4-vCPU cloud container</td>
+</tr>
+<tr>
 <td><code>clap-htsat-unfused</code></td>
 <td>CLAP (HTSAT and RoBERTa): sound and text in one space, 512 dimensions</td>
 <td>build with <code>--features audio</code>; about 0.27 s for each 10 seconds of sound and 20 ms a text on a 4-vCPU cloud VM</td>
