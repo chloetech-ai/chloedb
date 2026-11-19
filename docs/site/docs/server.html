@@ -3118,6 +3118,11 @@ curl -s localhost:7700/v1/query -H &#x27;content-type: application/json&#x27; -d
 <td>on a replica: transactions it applied from its primary, and copies of the primary it installed</td>
 </tr>
 <tr>
+<td><code>chloedb_replica_apply_batches_total</code>, <code>chloedb_replica_apply_seconds_total</code></td>
+<td></td>
+<td>on a replica: calls of its primary it applied, and the seconds they took (the wait for a free writer included); with <code>chloedb_replica_applied_total</code>, the transactions per call and the time per transaction</td>
+</tr>
+<tr>
 <td><code>chloedb_replica_serves_reads</code></td>
 <td></td>
 <td>on a replica: 1 while it <a href="#replication-a-primary-and-its-replicas">serves reads</a></td>
