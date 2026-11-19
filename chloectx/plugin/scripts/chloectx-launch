@@ -14,7 +14,7 @@
 #     chloedb-server-v<version>, or of the newest release when that one has
 #     none), checks its SHA-256 against the release's and, where GitHub's
 #     CLI is installed (gh, a version with `gh attestation verify
-#     --source-ref`), its build provenance (releases from 0.3.9: the
+#     --source-ref`), its build provenance (releases from 0.3.8: the
 #     Sigstore bundle beside the archive, GitHub's attestation that this
 #     repository's server-release.yml built it from the release's tag), and
 #     installs it into ~/.local/bin; one that does not verify is not
@@ -181,7 +181,7 @@ latest_version() {
 }
 
 # The first release whose archives have build provenance beside them.
-ATTESTED_FROM=0.3.9
+ATTESTED_FROM=0.3.8
 
 # Whether version $1 is $2 or later (numbers.numbers.numbers).
 at_least() {

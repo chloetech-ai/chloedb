@@ -25,6 +25,81 @@ changes collect under "Unreleased".
   the server's own log, which an admin key reads, says so for another key
   and lists the log tables it reads, and `Enter` shows one's newest lines
   in SQL ([server.md](docs/chloedb/server.md#security)).
+- **An answer gives its columns' types, and a column's type follows its
+  expression** (persona study round 3, SAM-301, SAM-308). `POST
+  /v1/query` answers `types` beside `columns` (`"timestamp"`, `"int"`,
+  `"float"`, `"bool"`, `"text"`, `"vector"`, `"list"`, `null` for a column
+  of only NULLs), and so do Python's and JavaScript's `Result.types` and
+  Rust's `ResultSet::types`, from the values, so that `MAX(ts)`, `ts AS
+  d`, `i.ts` in a join and `date_trunc('month', ts)` are timestamps as
+  `ts` is. Python's DB-API driver and `Result.to_pandas()` use them: those
+  columns come back as datetimes, where they were text unless selected by
+  their bare name. A `UNION` of an `INT` and a `FLOAT` column is `FLOAT`
+  (`SELECT 1 UNION ALL SELECT 2.5` is 1.0 and 2.5), on either engine
+  ([query-language.md](docs/chloedb/query-language.md#the-types-of-an-answers-columns)).
+- **Python's `add_column` embeds the rows already there** (PRIYA-301).
+  `db.add_column("emb", "vector", embed=["title"], model=...)`, as
+  python.md showed it, was "unknown option model": a schema's short form
+  takes `embed` as the fields with `model` beside it. The form that worked
+  left every row written before without a vector, so `similarity()` found
+  none of them and said nothing; `add_column` and `db.sql("ALTER TABLE
+  ... ADD COLUMN ...")` now embed them before returning (with progress on
+  stderr when it takes a while), or warn when the field's model is not
+  open. `db.embed_backfill(field)` and `db.missing_vectors(field)` are new.
+- **A vector parameter is the field it is ranked against** (PRIYA-303).
+  `{"embed": text}` and `{"vector_of": key}` without `"field"` took the
+  table's first vector field, so `similarity(bge, :v)` failed with "the
+  vector has 512 dimensions, and bge has 384"; they take `bge`, the field
+  `similarity`, `distance`, `maxsim` or `dot` names, in Python,
+  JavaScript and over HTTP, and for a field of no model the error says
+  so. The error for text against such a field names the query's own
+  parameter (`:v`), not `:q`.
+- **chloedb-server's OpenSearch API: a filtered alias keeps to its
+  documents, unknown keys are refused, and an alias swap is seen whole**
+  (persona study round 3, KENJI-301, KENJI-302, KENJI-303, KENJI-305;
+  #680). `_aliases` kept an alias's name and dropped its `filter`, so a
+  tenant's alias over a shared index searched, counted and aggregated
+  every tenant. An alias now keeps its `filter`, `is_write_index`, routing
+  and `is_hidden`, and every read through a filtered alias applies the
+  filter: searches, `_count`, aggregations (`global` too), `_msearch`,
+  scrolls, `_delete_by_query`, `_cat/count`, and gets by id, which
+  OpenSearch does not filter. An index is no longer deleted through an
+  alias, and a write through an alias of several indexes goes to its
+  `is_write_index`. A key a search body, a query, `_count`,
+  `_delete_by_query` or an `_aliases` action doesn't read (`qeury`,
+  `bool.filtr`, `match.operater`) was ignored and every document matched;
+  it is now a 400 that names the key and the one meant (`did you mean
+  [filter]?`), and the search features ChloeDB doesn't answer (`pit`,
+  `rescore`, `suggest`, `runtime_mappings`, `slice`, ...) are refused. An
+  alias swap in one `_aliases` request was written index by index, so a
+  search in between got a 404 or both indexes; every alias is now one row
+  of a new table, `opensearch_aliases`, written once per request, on one
+  server and over shards. Aliases kept by 0.3.8 are read until the first
+  alias change carries them over; a database taken back to 0.3.8 after
+  that sees its aliases as they were before the change. The docs say
+  Elasticsearch 7: Elasticsearch 8's clients refuse the server, so use
+  OpenSearch's client of the same language
+  ([opensearch.md](docs/chloedb/opensearch.md#elasticsearch-8s-clients)).
+- **ChloeCtx keeps a private aside nowhere, and only the user's words
+  make rules** (persona study round 3, WEI-301, JONAH-301, LENA-310,
+  JONAH-303, JONAH-304, ANA-308, and WEI-304's restated aside). A part
+  of a prompt marked private ("off the record, please don't save this
+  anywhere: ...", "keep that name private") was stored word for word, became a rule every later session
+  was told and was synced to the team, while Claude said it was not saved.
+  It is cut before anything is stored, distilled or synced, with
+  `[private aside left out]` in its place; the session is told what was
+  left out, the sentences of the session's replies that repeat it ("I
+  didn't save your interview note") are cut, and a prompt
+  private as a whole keeps nothing of its turn. Rules a store took from
+  asides before are retired when the daemon starts, and sync sends old
+  records without them. A rule an agent keeps (with `said_by: assistant`,
+  or as the user's in words the user never wrote) is its suggestion,
+  briefed apart from the user's rules. How to do one turn ("don't commit
+  yet", "no code changes") is not a rule, however often it is said; a
+  question how to build something is not planned work; a remembered note
+  replaces the session's copy of it, and a decision does not keep "not
+  implemented yet". The command center's overview lists the user's rules,
+  not a prompt's raw sentences ([what is kept](docs/chloectx/index.md#where-it-keeps-what-it-stores)).
 - **Blends: one list from several queries, after each has ranked its own.**
   `CREATE BLEND name AS SOURCES (stories AS (SELECT ...), comments AS
   (SELECT ...))` with calibrated heads (`HEADS (relevance CALIBRATE tmm,
@@ -294,6 +369,32 @@ knows of its tables; no answer changes.
   only the shards of those keys, as other reads by key do. Its statistics
   still come from every shard, so the scores are a fan-out's. No protocol
   change: servers of 0.3.8 mix with it in either order.
+
+### Security
+
+- **The installers check 0.3.8's build provenance** (persona study round
+  3, LENA-303): 0.3.8 is the first release whose archives have it, but the
+  website's installer, `install.sh` and ChloeCtx's plugin checked it only
+  from 0.3.9, so they installed 0.3.8 on its SHA-256 alone, saying it was
+  older than provenance, and `CHLOEDB_VERIFY=require`
+  (`CHLOECTX_VERIFY=require`) refused it as having none. Where `gh` is
+  installed they now check 0.3.8's archives against their bundles, refuse
+  one that does not verify, and `require` installs it. The website's
+  installer and the plugin's launcher run from main, so they do from
+  this change on; `install.sh`, in a checkout, from the next release's.
+- **npm's packages carry provenance, and the JavaScript release names what
+  npm serves** (persona study round 3, LENA-305, the npm part of LENA-11):
+  `js-release.yml` published without npm's provenance on the path every
+  release took (`from_run`), so `chloedb` and `@chloedb/<platform>` 0.3.5
+  to 0.3.8 have the registry's signatures alone. Every publish now carries
+  it (`npm publish --provenance`; `npm audit signatures` checks it), and a
+  run with `from_run` runs on the release's tag, publishing what the tag's
+  own run built: one on main or a branch publishes nothing. The release's
+  `SHA256SUMS` listed a tarball per platform that npm does not serve (the
+  JavaScript and the addon together) and left out `chloedb` itself; the
+  release now also carries the packages npm serves, under the names
+  `npm pack` gives them, and `SHA256SUMS` lists them
+  ([SECURITY.md](SECURITY.md#checking-what-you-download)).
 
 ## 0.3.8
 

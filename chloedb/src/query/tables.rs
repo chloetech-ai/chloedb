@@ -1,7 +1,7 @@
 //! The tables a query names, so that a database of several tables can run it
 //! on the one it reads ([`crate::db::Db::query`]).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use sqlparser::ast::{self as sql, Expr, SelectItem, TableFactor};
 
@@ -27,11 +27,68 @@ pub fn read_by_sql(sql_text: &str) -> Vec<String> {
     crate::query::sql::parse_query_cached(sql_text).map(|p| read_by(&p.query)).unwrap_or_default()
 }
 
+/// The field each `:name` parameter of a SELECT is ranked against, by
+/// name (without its `:`): `similarity(bge, :v)`, `distance`, `maxsim`
+/// and `dot` (in either order) give `v` → `bge` (the field's own name, a
+/// qualified `d.bge` too). A parameter used with two fields is left out,
+/// as are a text that is not a SELECT that parses. The bindings take a
+/// `{"embed": text}` or `{"vector_of": key}` parameter with no `"field"`
+/// as this field's, rather than the table's first vector field.
+pub fn param_fields(sql_text: &str) -> HashMap<String, String> {
+    let Ok(p) = crate::query::sql::parse_query_cached(sql_text) else { return HashMap::new() };
+    let mut w = Names::default();
+    w.query(&p.query);
+    let mut out: HashMap<String, Option<String>> = HashMap::new();
+    for (param, field) in w.uses {
+        let seen = out.entry(param).or_insert_with(|| Some(field.clone()));
+        if seen.as_deref().is_some_and(|f| !f.eq_ignore_ascii_case(&field)) {
+            *seen = None;
+        }
+    }
+    out.into_iter().filter_map(|(k, f)| f.map(|f| (k, f))).collect()
+}
+
+/// The parameter and the field of a call that ranks a field by a vector
+/// ([`param_fields`]).
+fn param_use(f: &sql::Function) -> Option<(String, String)> {
+    let name = f.name.0.last()?.as_ident()?.value.to_ascii_lowercase();
+    if !["similarity", "distance", "maxsim", "dot"].contains(&name.as_str()) {
+        return None;
+    }
+    let sql::FunctionArguments::List(l) = &f.args else { return None };
+    let args: Vec<&Expr> = l.args.iter().filter_map(|a| match a {
+        sql::FunctionArg::Unnamed(sql::FunctionArgExpr::Expr(e)) => Some(e),
+        _ => None,
+    }).collect();
+    let field = |e: &Expr| match e {
+        Expr::Identifier(i) => Some(i.value.clone()),
+        Expr::CompoundIdentifier(is) => is.last().map(|i| i.value.clone()),
+        _ => None,
+    };
+    let param = |e: &Expr| match e {
+        Expr::Value(v) => match &v.value {
+            sql::Value::Placeholder(p) => Some(p.trim_start_matches([':', '$', '@']).to_string()),
+            _ => None,
+        },
+        _ => None,
+    };
+    match args.as_slice() {
+        [a, b, ..] => match (field(a), param(b)) {
+            (Some(f), Some(p)) => Some((p, f)),
+            _ if name == "dot" => Some((param(a)?, field(b)?)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 struct Names {
     tables: Vec<String>,
     /// Names of the `WITH` results defined so far, lowercased.
     ctes: HashSet<String>,
+    /// Each parameter a call ranks a field by, and the field ([`param_use`]).
+    uses: Vec<(String, String)>,
 }
 
 impl Names {
@@ -107,10 +164,12 @@ impl Names {
         }
     }
 
-    /// The subqueries of `e`, at any depth.
+    /// The subqueries of `e`, at any depth, and the parameters its calls
+    /// rank fields by.
     fn expr(&mut self, e: &Expr) {
         walk(e, &mut |x| match x {
             Expr::InSubquery { subquery, .. } | Expr::Exists { subquery, .. } | Expr::Subquery(subquery) => self.query(subquery),
+            Expr::Function(f) => self.uses.extend(param_use(f)),
             _ => {}
         });
     }

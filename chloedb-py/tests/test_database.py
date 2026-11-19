@@ -289,9 +289,12 @@ def test_models_that_do_not_open(tmp_path):
         with pytest.raises(chloedb.ChloeDBError, match="did not open here: ") as refused:
             db.insert({"id": "a", "body": "no vector"})
         assert "Open the model" not in str(refused.value)
-        # ...as a query's {"embed": ...} does (PRIYA-203).
-        with pytest.raises(chloedb.ChloeDBError, match=r"no embedded field of t has its model open: v \(model potion-base-8M: "):
+        # ...as a query's {"embed": ...} does (PRIYA-203), of the field the
+        # query ranks by (PRIYA-303), or of every field when it names none.
+        with pytest.raises(chloedb.ChloeDBError, match=r"v has no embedding model open: model potion-base-8M: "):
             db.query("SELECT id FROM t ORDER BY similarity(v, :q) DESC LIMIT 1", q={"embed": "x"})
+        with pytest.raises(chloedb.ChloeDBError, match=r"no embedded field of t has its model open: v \(model potion-base-8M: "):
+            db.query("SELECT id, :q AS q FROM t LIMIT 1", q={"embed": "x"})
         db.insert({"id": "b", "body": "a vector", "v": [0.1] * 256})
         assert len(db) == 1
         # ...unless the caller writes it without on purpose.
@@ -862,6 +865,9 @@ def test_an_embed_parameter_on_a_table_with_no_model_says_so(tmp_path):
     with chloedb.Database.create(tmp_path / "own.strata", schema) as db:
         db.insert({"id": "a", "v": [1.0, 0.0, 0.0]})
         with pytest.raises(chloedb.ChloeDBError, match="t has no embedded field .*pass the query's vector as a list of numbers"):
+            db.query("SELECT id, :q AS q FROM t LIMIT 1", q={"embed": "x"})
+        # A parameter the query ranks a field by is that field's (PRIYA-303).
+        with pytest.raises(chloedb.ChloeDBError, match="t.v has no model: its vectors are the rows' own"):
             db.query("SELECT id FROM t ORDER BY similarity(v, :q) DESC LIMIT 1", q={"embed": "x"})
         with pytest.raises(chloedb.ChloeDBError, match="t.v has no model: its vectors are the rows' own"):
             db.query("SELECT id FROM t ORDER BY similarity(v, :q) DESC LIMIT 1", q={"embed": "x", "field": "v"})

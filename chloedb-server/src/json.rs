@@ -108,9 +108,13 @@ pub fn document_json(schema: &Schema, doc: &[Value]) -> Json {
     Json::Object(m)
 }
 
+/// A query's answer: `columns`, each column's type (`types`, from its
+/// values: [`ResultSet::types`], so that a client types `MAX(ts)` or
+/// `ts AS d` as it types `ts`), its rows, keys, scores and statistics.
 pub fn result(rs: &ResultSet, took_ms: f64) -> Json {
     json!({
         "columns": rs.columns,
+        "types": rs.types(),
         "rows": rs.rows.iter().map(|r| r.iter().map(to_json).collect::<Vec<_>>()).collect::<Vec<_>>(),
         "keys": rs.keys.iter().map(to_json).collect::<Vec<_>>(),
         "scores": rs.scores.iter().map(|s| if s.is_finite() { json!(s) } else { Json::Null }).collect::<Vec<_>>(),
