@@ -1,7 +1,8 @@
 //! What a coordinator keeps on its shards (OLU-201), as it keeps its keys
 //! there ([`crate::keysync`]): its alert rules, its routes, the alerts'
 //! states (what fires, acknowledgements, silences, notes, and what was
-//! paged), and the latest entries of its audit log.
+//! paged), the latest entries of its audit log, and its latest events, the
+//! Timeline's (OLU-301).
 //!
 //! A coordinator holds no data and needs no disk: without `--alerts FILE`
 //! and `--audit-log FILE` it held these in memory only, so a restart (a
@@ -25,6 +26,13 @@
 //!   coordinator that starts again answers them (`GET /v1/admin/audit`,
 //!   `source` `shards`) for the time before it started. `--audit-log FILE`
 //!   keeps every entry; the shards keep the latest.
+//! - its events go the same way: the shards keep the newest
+//!   [`EVENTS_KEPT`] of every coordinator's, and from when they hold every
+//!   one (`events_from`), so that a coordinator that starts again answers
+//!   `GET /v1/events` for the time before it started (`source` `shards`),
+//!   and says from when its record runs (`record_from_ms`), where a
+//!   coordinator without a log store had nothing before its start. A log
+//!   store keeps them all, for 30 days.
 //!
 //! A coordinator gives its copies nothing until it has read what they
 //! keep (a coordinator that started while its shards did not answer would
@@ -64,6 +72,13 @@ pub const AUDIT_KEPT: usize = 2_000;
 const AUDIT_BYTES: usize = 4 << 20;
 /// The most one call gives a copy of them, in bytes of JSON.
 const CALL_BYTES: usize = 1 << 20;
+/// The events the shards keep: the newest of every coordinator's.
+pub const EVENTS_KEPT: usize = 5_000;
+/// The most a copy keeps of them, in bytes of JSON.
+const EVENTS_BYTES: usize = 4 << 20;
+/// Two coordinators that watch one cluster each see a copy go down: on
+/// restore, the same event of another coordinator this close is one.
+const SAME_EVENT_MS: u64 = 60_000;
 /// How long a copy has to answer.
 const WAIT: Duration = Duration::from_secs(3);
 /// Copies called at once.
@@ -88,6 +103,28 @@ struct Held {
     /// `coordinator`.
     #[serde(default)]
     audit: Vec<Json>,
+    /// The coordinators' events, the oldest first, each naming its
+    /// `coordinator` ([`crate::events::Recorded`] as JSON).
+    #[serde(default)]
+    events: Vec<Json>,
+    /// The earliest time a coordinator said its events run from, when it
+    /// had given them all (0: none said).
+    #[serde(default)]
+    events_from: u64,
+    /// The time of the oldest event kept once older ones were let go
+    /// ([`EVENTS_KEPT`]): what came before may be gone.
+    #[serde(default)]
+    events_cut: u64,
+}
+
+impl Held {
+    /// From when the events held are every event the coordinators gave.
+    fn events_from(&self) -> u64 {
+        match self.events_from {
+            0 => 0,
+            f => f.max(self.events_cut),
+        }
+    }
 }
 
 /// What the copies of this process hold, by file (tests run several in one).
@@ -119,17 +156,56 @@ pub fn entry_key(e: &Json) -> String {
 /// The newest of `entries` (the oldest first) that fit [`AUDIT_KEPT`] and
 /// [`AUDIT_BYTES`].
 fn trim_audit(entries: &mut Vec<Json>) {
-    let mut bytes = 0;
+    trim(entries, AUDIT_KEPT, AUDIT_BYTES);
+}
+
+/// The newest of `entries` (the oldest first), `most` of them in `bytes`
+/// of JSON at most. Whether any was let go.
+fn trim(entries: &mut Vec<Json>, most: usize, bytes: usize) -> bool {
+    let mut used = 0;
     let mut keep = 0;
     for e in entries.iter().rev() {
-        bytes += e.to_string().len();
-        if keep == AUDIT_KEPT || bytes > AUDIT_BYTES {
+        used += e.to_string().len();
+        if keep == most || used > bytes {
             break;
         }
         keep += 1;
     }
     let cut = entries.len() - keep;
     entries.drain(..cut);
+    cut > 0
+}
+
+/// What tells one event from another, over every coordinator: its
+/// coordinator and its id.
+fn event_key(e: &Json) -> String {
+    format!("{}|{}", e["coordinator"].as_str().unwrap_or(""), e["id"].as_i64().unwrap_or(0))
+}
+
+/// What one event says, wherever it was seen: two coordinators that watch
+/// one cluster each make "s1-0 does not answer".
+fn event_says(e: &Json) -> String {
+    format!("{}|{}|{}|{}", e["kind"].as_str().unwrap_or(""), e["title"].as_str().unwrap_or(""), e["where"], e["detail"]["request_id"])
+}
+
+/// `events` (the oldest first) with each event that another coordinator
+/// recorded too, within [`SAME_EVENT_MS`], left out.
+fn one_of_each(events: Vec<Json>) -> Vec<Json> {
+    let mut last: HashMap<String, (String, u64)> = HashMap::new();
+    events
+        .into_iter()
+        .filter(|e| {
+            let (by, ts) = (e["coordinator"].as_str().unwrap_or("").to_string(), e["ts_ms"].as_u64().unwrap_or(0));
+            let says = event_says(e);
+            match last.get(&says) {
+                Some((other, at)) if *other != by && ts.saturating_sub(*at) <= SAME_EVENT_MS => false,
+                _ => {
+                    last.insert(says, (by, ts));
+                    true
+                }
+            }
+        })
+        .collect()
 }
 
 /// What a copy does when a coordinator gives it what it keeps
@@ -172,7 +248,33 @@ pub fn take(svc: &Service, b: &Json) -> Result<Json, ApiError> {
             trim_audit(&mut held.audit);
         }
     }
-    if !took.is_empty() || added > 0 {
+    let mut events_added = 0;
+    if let Some(entries) = b["events"].as_array().filter(|a| !a.is_empty()) {
+        let seen: HashSet<String> = held.events.iter().map(event_key).collect();
+        for e in entries {
+            if e["coordinator"].is_string() && e["id"].is_i64() && e["ts_ms"].is_u64() && !seen.contains(&event_key(e)) {
+                held.events.push(e.clone());
+                events_added += 1;
+            }
+        }
+        if events_added > 0 {
+            held.events.sort_by_key(|e| (e["ts_ms"].as_u64().unwrap_or(0), e["id"].as_i64().unwrap_or(0)));
+            if trim(&mut held.events, EVENTS_KEPT, EVENTS_BYTES) {
+                held.events_cut = held.events_cut.max(held.events.first().and_then(|e| e["ts_ms"].as_u64()).unwrap_or(0));
+            }
+        }
+    }
+    // A coordinator says from when its events run once it gave them all.
+    let mut from_moved = false;
+    if let Some(from) = b["events_from"].as_u64().filter(|f| *f > 0) {
+        let f = match held.events_from {
+            0 => from,
+            mine => mine.min(from),
+        };
+        from_moved = f != held.events_from;
+        held.events_from = f;
+    }
+    if !took.is_empty() || added > 0 || events_added > 0 || from_moved {
         let tmp = path.with_extension("json.tmp");
         let body = serde_json::to_vec(&*held).map_err(ApiError::internal)?;
         std::fs::write(&tmp, body).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| ApiError::internal(format!("write {}: {e}", path.display())))?;
@@ -183,10 +285,17 @@ pub fn take(svc: &Service, b: &Json) -> Result<Json, ApiError> {
         let n = newest.entry(e["coordinator"].as_str().unwrap_or("").to_string()).or_default();
         *n = (*n).max(e["ts_ms"].as_u64().unwrap_or(0));
     }
-    let mut j = json!({"took": took, "audit_added": added, "parts": versions, "audit_ms": newest});
+    let mut events_id: HashMap<String, i64> = HashMap::new();
+    for e in &held.events {
+        let n = events_id.entry(e["coordinator"].as_str().unwrap_or("").to_string()).or_default();
+        *n = (*n).max(e["id"].as_i64().unwrap_or(0));
+    }
+    let mut j = json!({"took": took, "audit_added": added, "parts": versions, "audit_ms": newest, "events_added": events_added, "events_id": events_id});
     if b["want"] == true {
         j["data"] = Json::Object(held.parts.clone());
         j["audit"] = json!(held.audit);
+        j["events"] = json!(held.events);
+        j["events_from"] = json!(held.events_from());
     }
     Ok(j)
 }
@@ -202,6 +311,8 @@ struct CopyHeld {
     stamp: Option<u64>,
     /// The newest of this coordinator's audit entries it holds.
     audit_ms: u64,
+    /// The newest of this coordinator's events it holds (its id).
+    events_id: i64,
     /// When it was last given everything.
     all_ms: u64,
     /// When it last answered, or why it did not.
@@ -220,6 +331,11 @@ pub struct Keeper {
     /// The audit entries the shards kept from before this coordinator
     /// started (the oldest first), which `GET /v1/admin/audit` answers.
     restored: Mutex<Vec<Json>>,
+    /// The events the shards kept from before this coordinator started
+    /// (the oldest first, one of each), which `GET /v1/events` answers.
+    restored_events: Mutex<Vec<Json>>,
+    /// From when the shards held every event, as the first read found.
+    events_from: Mutex<Option<u64>>,
     /// What the first read took, for `GET /v1/alerts`'s `kept`.
     took: Mutex<Option<Json>>,
     /// Woken when an audit entry is kept ([`Self::wake`]).
@@ -237,6 +353,27 @@ impl Keeper {
     /// started, the newest first.
     pub fn restored_audit(&self) -> Vec<Json> {
         lock(&self.restored).iter().rev().cloned().collect()
+    }
+
+    /// The events the shards kept from before this coordinator started,
+    /// from `from_ms` to `to_ms`, of the `kinds` given (all when empty),
+    /// the newest first, `limit` at most.
+    pub fn restored_events(&self, from_ms: u64, to_ms: u64, kinds: &[String], limit: usize) -> Vec<Json> {
+        lock(&self.restored_events)
+            .iter()
+            .rev()
+            .filter(|e| e["ts_ms"].as_u64().is_some_and(|t| t >= from_ms && t <= to_ms))
+            .filter(|e| kinds.is_empty() || kinds.iter().any(|k| e["kind"] == k.as_str()))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    /// From when the shards held every event of the coordinators before
+    /// this one, as it found when it started (none from copies of an older
+    /// version, or with no answer).
+    pub fn events_from(&self) -> Option<u64> {
+        *lock(&self.events_from)
     }
 }
 
@@ -288,6 +425,9 @@ pub async fn read(svc: &Arc<Service>, starting: bool) -> bool {
     let mut best: serde_json::Map<String, Json> = serde_json::Map::new();
     let mut audit: Vec<Json> = Vec::new();
     let mut seen = HashSet::new();
+    let mut events: Vec<Json> = Vec::new();
+    let mut events_seen = HashSet::new();
+    let mut events_from: Option<u64> = None;
     let mut answered = 0;
     let name = me(svc);
     let now = now_ms();
@@ -308,6 +448,15 @@ pub async fn read(svc: &Arc<Service>, starting: bool) -> bool {
             st.rules_ms = j["parts"]["rules"]["ms"].as_u64().unwrap_or(0);
             st.routes_ms = j["parts"]["routes"]["ms"].as_u64().unwrap_or(0);
             st.audit_ms = j["audit_ms"][name.as_str()].as_u64().unwrap_or(0);
+            st.events_id = j["events_id"][name.as_str()].as_i64().unwrap_or(0);
+            for e in j["events"].as_array().into_iter().flatten() {
+                if events_seen.insert(event_key(e)) {
+                    events.push(e.clone());
+                }
+            }
+            if let Some(f) = j["events_from"].as_u64().filter(|f| *f > 0) {
+                events_from = Some(events_from.map_or(f, |m| m.min(f)));
+            }
             for (k, p) in j["data"].as_object().into_iter().flatten() {
                 if best.get(k).is_none_or(|b| p["ms"].as_u64().unwrap_or(0) > b["ms"].as_u64().unwrap_or(0)) {
                     best.insert(k.clone(), p.clone());
@@ -336,16 +485,24 @@ pub async fn read(svc: &Arc<Service>, starting: bool) -> bool {
     audit.retain(|e| e["ts_ms"].as_u64().unwrap_or(0) < started);
     audit.sort_by_key(|e| e["ts_ms"].as_u64().unwrap_or(0));
     let n_audit = audit.len();
+    // This coordinator's own events are in its memory.
+    let own: HashSet<i64> = svc.events.after_id(0, usize::MAX).iter().map(|r| r.id).collect();
+    events.retain(|e| !(e["coordinator"] == name.as_str() && e["id"].as_i64().is_some_and(|id| own.contains(&id))));
+    events.sort_by_key(|e| (e["ts_ms"].as_u64().unwrap_or(0), e["id"].as_i64().unwrap_or(0)));
+    let events = one_of_each(events);
+    let n_events = events.len();
     let first = !svc.kept.read.swap(true, Ordering::AcqRel);
     if first {
         *lock(&svc.kept.restored) = audit;
+        *lock(&svc.kept.restored_events) = events;
+        *lock(&svc.kept.events_from) = events_from;
     }
     let custom = svc.alerts.rules().iter().filter(|r| !r.builtin && !crate::alerts::defaults().iter().any(|d| d.id == r.id)).count();
     let routes = svc.alerts.routes().len();
-    let summary = json!({"took": took, "copies": answers.len(), "answered": answered, "audit": n_audit, "at_ms": now});
+    let summary = json!({"took": took, "copies": answers.len(), "answered": answered, "audit": n_audit, "events": n_events, "events_from_ms": events_from, "at_ms": now});
     if first {
         *lock(&svc.kept.took) = Some(summary);
-        tracing::info!(took = ?took, copies = answers.len(), answered, rules_of_your_own = custom, routes, audit_entries = n_audit, "read what the shards keep of this coordinator's alert rules, routes, alert states and audit log");
+        tracing::info!(took = ?took, copies = answers.len(), answered, rules_of_your_own = custom, routes, audit_entries = n_audit, events = n_events, events_from_ms = ?events_from, "read what the shards keep of this coordinator's alert rules, routes, alert states, audit log and events");
     } else if !took.is_empty() {
         tracing::info!(took = ?took, "took newer alert rules, routes or states from the shards");
     }
@@ -380,7 +537,21 @@ pub async fn push(svc: &Arc<Service>) -> Json {
     own.retain(|e| e["ts_ms"].is_u64());
     let now = now_ms();
     let urls = copies(svc);
-    let plans: Vec<(String, Json, u64, u64)> = {
+    // Its events after the oldest a copy lacks, the newest EVENTS_KEPT of
+    // them (a copy keeps no more), the oldest first; and from when they
+    // run (its start, or its oldest once memory let older ones go).
+    let floor = {
+        let held = lock(&svc.kept.copies);
+        urls.iter().map(|u| held.get(u).map_or(0, |s| s.events_id)).min().unwrap_or(0)
+    };
+    let mut own_events = svc.events.after_id(floor, usize::MAX);
+    let skip = own_events.len().saturating_sub(EVENTS_KEPT);
+    own_events.drain(..skip);
+    let events_from = svc.events.held_from();
+    // A copy that lacks events older than those it can be given holds
+    // every one only from the oldest given.
+    let window = (skip > 0).then(|| (own_events[0].id, own_events.iter().map(|r| r.ts_ms).min().unwrap_or(events_from)));
+    let plans: Vec<(String, Json, u64, i64, u64)> = {
         let held = lock(&svc.kept.copies);
         urls.iter()
             .filter_map(|url| {
@@ -407,13 +578,36 @@ pub async fn push(svc: &Arc<Service>) -> Json {
                     last = e["ts_ms"].as_u64().unwrap_or(last);
                     entries.push(e.clone());
                 }
-                (!give.is_empty() || !entries.is_empty()).then(|| (url.clone(), json!({"op": "keep", "parts": give, "audit": entries, "by": name}), last, if all { now } else { st.all_ms }))
+                let mut events = Vec::new();
+                let mut bytes = 0;
+                let mut last_event = st.events_id;
+                let pending: Vec<&Arc<crate::events::Recorded>> = own_events.iter().filter(|r| r.id > st.events_id).collect();
+                for r in &pending {
+                    let mut e = json!(***r);
+                    e["coordinator"] = json!(name);
+                    bytes += e.to_string().len();
+                    if bytes > CALL_BYTES && !events.is_empty() {
+                        break;
+                    }
+                    last_event = r.id;
+                    events.push(e);
+                }
+                let mut body = json!({"op": "keep", "parts": give, "audit": entries, "events": events, "by": name});
+                // Every event it has to give, given: it says from when they run.
+                if events.len() == pending.len() {
+                    let from = match window {
+                        Some((first, ts)) if st.events_id < first => ts.max(events_from),
+                        _ => events_from,
+                    };
+                    body["events_from"] = json!(from);
+                }
+                (!give.is_empty() || !entries.is_empty() || !events.is_empty()).then(|| (url.clone(), body, last, last_event, if all { now } else { st.all_ms }))
             })
             .collect()
     };
-    let results: Vec<(String, Result<Json, String>, u64, u64)> = futures::stream::iter(plans.into_iter().map(|(url, body, last, all_ms)| async move {
+    let results: Vec<(String, Result<Json, String>, u64, i64, u64)> = futures::stream::iter(plans.into_iter().map(|(url, body, last, last_event, all_ms)| async move {
         let r = call(svc, &url, body).await;
-        (url, r, last, all_ms)
+        (url, r, last, last_event, all_ms)
     }))
     .buffer_unordered(AT_ONCE)
     .collect()
@@ -422,7 +616,7 @@ pub async fn push(svc: &Arc<Service>) -> Json {
     let mut took = 0;
     {
         let mut held = lock(&svc.kept.copies);
-        for (url, r, last, all_ms) in &results {
+        for (url, r, last, last_event, all_ms) in &results {
             let st = held.entry(url.clone()).or_default();
             st.at_ms = now;
             match r {
@@ -433,6 +627,10 @@ pub async fn push(svc: &Arc<Service>) -> Json {
                     st.routes_ms = j["parts"]["routes"]["ms"].as_u64().unwrap_or(0);
                     st.stamp = Some(stamp);
                     st.audit_ms = j["audit_ms"][name.as_str()].as_u64().unwrap_or(*last).max(*last);
+                    // A copy of an older version keeps no events and says no
+                    // `events_id`: what it was given counts as given, so that
+                    // it is not given them again at every push.
+                    st.events_id = j["events_id"][name.as_str()].as_i64().unwrap_or(*last_event).max(*last_event);
                     st.all_ms = *all_ms;
                 }
                 Err(e) => {
@@ -528,5 +726,46 @@ mod tests {
         trim_audit(&mut many);
         assert_eq!((many.len(), many[0]["ts_ms"].as_u64()), (AUDIT_KEPT, Some(10)));
         assert_eq!(file_of(Path::new("/d/db.chloedb")), PathBuf::from("/d/db.chloedb.coordinator.json"));
+    }
+
+    fn event(coord: &str, id: i64, ts: u64, title: &str) -> Json {
+        json!({"coordinator": coord, "id": id, "ts_ms": ts, "kind": "copy_down", "severity": "warning", "title": title, "where": {"shard": 0, "copy": "s0-2"}})
+    }
+
+    /// OLU-301: two coordinators of one cluster each record a copy going
+    /// down; restored, it is one event. The same coordinator's two are two.
+    #[test]
+    fn an_event_two_coordinators_saw_is_restored_once() {
+        let evs = vec![
+            event("a", 1, 1_000, "s0-2 does not answer"),
+            event("b", 2, 3_000, "s0-2 does not answer"),
+            event("a", 3, 90_000, "s0-2 does not answer"),
+            event("b", 4, 200_000, "s0-2 does not answer"),
+        ];
+        let kept = one_of_each(evs);
+        let ids: Vec<i64> = kept.iter().map(|e| e["id"].as_i64().unwrap()).collect();
+        assert_eq!(ids, vec![1, 3, 4], "b's at 3 s is a's at 1 s; a's second, and b's long after, are their own");
+        // Changes are told apart by their request.
+        let mut c1 = event("a", 5, 1_000, "root token: added a key");
+        c1["kind"] = json!("change");
+        c1["detail"] = json!({"request_id": "r1"});
+        let mut c2 = c1.clone();
+        c2["coordinator"] = json!("b");
+        c2["detail"] = json!({"request_id": "r2"});
+        assert_eq!(one_of_each(vec![c1, c2]).len(), 2);
+    }
+
+    /// The newest events are kept, and from when every one is held moves
+    /// up to the oldest kept once older ones are let go.
+    #[test]
+    fn a_copy_keeps_the_newest_events_and_says_from_when() {
+        let mut held = Held { events_from: 500, ..Held::default() };
+        held.events = (0..EVENTS_KEPT as i64 + 3).map(|i| event("a", i, 1_000 + i as u64, "x")).collect();
+        assert_eq!(held.events_from(), 500);
+        assert!(trim(&mut held.events, EVENTS_KEPT, EVENTS_BYTES));
+        held.events_cut = held.events[0]["ts_ms"].as_u64().unwrap();
+        assert_eq!((held.events.len(), held.events_from()), (EVENTS_KEPT, 1_003));
+        assert!(!trim(&mut held.events, EVENTS_KEPT, EVENTS_BYTES));
+        assert_eq!(Held::default().events_from(), 0, "no coordinator said: unknown");
     }
 }

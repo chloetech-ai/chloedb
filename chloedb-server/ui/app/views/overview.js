@@ -175,7 +175,9 @@ function render(page, r0) {
     h("section", { class: "card home-whocard" }, h("div", { class: "hd" }, h("h3", {}, "Who is affected"), whoSub, h("div", { class: "tools" }, h("a", { class: "btn ghost sm", href: link("queries", { tab: "statements" }) }, "Queries", icon("right")))), h("div", { class: "bd" }, whoBody))));
 
   // ------------------------------------------------------------ data the view reads itself
-  let events = [], eventsFrom = "events", eventsWhy = "", stats = null, statsKeys = false;
+  let events = [], eventsFrom = "events", eventsWhy = "", stats = null, statsKeys = false, recordFrom = null;
+  // OLU-301: a window that starts before this server's record says "since" that time, not "nothing".
+  const recordSince = () => (eventsFrom === "events" && recordFrom && recordFrom > timeRange().from + 60e3 ? ` since ${when(recordFrom, { sec: false })}, when the record of events starts` : "");
   const MARK = new Set(["copy_down", "copy_up", "primary_changed", "majority_lost", "majority_back", "rollout", "upgrade", "change", "alert_fired", "note", "moves_started", "contain"]);
   async function loadEvents() {
     const r = timeRange();
@@ -183,6 +185,7 @@ function render(page, r0) {
       const j = await api(`/v1/events?from=${Math.round(r.from)}&to=${Math.round(r.to)}&limit=500`, { timeout: 10000 });
       events = (j.events || []).slice().sort((a, b) => b.ts_ms - a.ts_ms);
       eventsFrom = "events";
+      recordFrom = j.record_from_ms ?? null;
     } catch (e) {
       // Refused (a key limited to tables): said, not shown as a quiet hour.
       if (e.status === 403) { events = []; eventsFrom = "refused"; eventsWhy = cannotSee(e, "the timeline"); drawEvents(); drawCharts(); return; }
@@ -591,12 +594,12 @@ function render(page, r0) {
         style: { left: `calc(46px + ${p.x0.toFixed(1)}px)`, top: p.row * 15 + "px", ...(p.left ? { width: p.width + "px" } : { maxWidth: p.width + "px" }) } },
         h("b", {}, when(p.first.ts_ms, { sec: false })), " ", n > 1 ? h("span", { class: "ev-n" }, `${n} changes: `) : null, p.first.title);
     }));
-    if (!evs.length) lane.append(h("div", { class: "small muted", style: { paddingLeft: "46px", paddingTop: "4px" } }, eventsFrom === "refused" ? eventsWhy : eventsFrom === "events" ? "No change in this window: no copy went down, no primary moved, nobody changed anything." : "This server keeps no events (it has no /v1/events): only alert changes show."));
+    if (!evs.length) lane.append(h("div", { class: "small muted", style: { paddingLeft: "46px", paddingTop: "4px" } }, eventsFrom === "refused" ? eventsWhy : eventsFrom === "events" ? (recordSince() ? `No change${recordSince()}: no copy went down, no primary moved, nobody changed anything.` : "No change in this window: no copy went down, no primary moved, nobody changed anything.") : "This server keeps no events (it has no /v1/events): only alert changes show."));
   }
   function drawEvents() {
     const evs = events.slice(0, 12);
     if (!evs.length && eventsFrom === "refused") { clear(evList, h("div", { class: "small muted" }, eventsWhy)); return; }
-    if (!evs.length) { clear(evList, h("div", { class: "small muted" }, eventsFrom === "events" ? `Nothing happened in ${timeRange().label.replace("last", "the last")}.` : "This server keeps no events: an older server.")); return; }
+    if (!evs.length) { clear(evList, h("div", { class: "small muted" }, eventsFrom === "events" ? (recordSince() ? `Nothing happened${recordSince()}.` : `Nothing happened in ${timeRange().label.replace("last", "the last")}.`) : "This server keeps no events: an older server.")); return; }
     clear(evList, evs.map((e) => h("a", { class: "home-ev", href: eventLink(e), title: whenTitle(e.ts_ms) },
       h("span", { class: "mono small" }, when(e.ts_ms)), h("span", { class: "home-kind " + kindTone(e) }, kindName(e.kind)), h("span", { class: "small" }, e.title, e.who ? h("span", { class: "muted" }, " · " + e.who) : null))));
   }

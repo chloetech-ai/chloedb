@@ -38,6 +38,8 @@ export const state = {
 };
 
 export const isCoordinator = () => state.health?.role === "coordinator" || state.system?.backend === "coordinator" || state.cluster?.role === "coordinator";
+/** Whether the health read says what this server is: read with no key, it says only whether it is up (OLU-308). */
+export const healthSays = () => !!state.health && Object.keys(state.health).some((k) => k !== "status");
 
 // ---------------------------------------------------------------- the time range
 /**

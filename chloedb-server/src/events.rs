@@ -152,6 +152,18 @@ impl Events {
         (v, oldest)
     }
 
+    /// This server's own events after the one of id `after`, the oldest
+    /// first (by id: a note about an earlier moment comes when it was
+    /// added), `limit` at most: what a coordinator gives its shards to keep
+    /// ([`crate::kept`]).
+    pub fn after_id(&self, after: i64, limit: usize) -> Vec<Arc<Recorded>> {
+        let ring = lock(&self.ring);
+        let mut v: Vec<Arc<Recorded>> = ring.iter().filter(|r| r.id > after).cloned().collect();
+        v.sort_by_key(|r| r.id);
+        v.truncate(limit);
+        v
+    }
+
     /// From when memory holds every event: since the server started, or
     /// since its oldest once it holds [`RING`]. What came before is in the
     /// log store.
