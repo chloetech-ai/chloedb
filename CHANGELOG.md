@@ -22,6 +22,30 @@ changes collect under "Unreleased".
   embeds pictures and words into the space of Major TOM's Sentinel-2
   vectors, as the Earth explorer (`chloedb-earth`, a new demo app:
   California and Chile from orbit, [earth.md](docs/chloedb/earth.md)) does.
+- **A search box's typo search keeps every row it matched, and takes the
+  text as words.** `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f,
+  :q)`, the search the docs teach, now ranks every row its `WHERE` keeps:
+  the `bm25` reads the words as the `MATCH` does, those spelt as typed
+  first. **Changed:** it ranked only the rows of the word typed when that
+  word was in the index, so "colour" returned 2 of the 7 rows it matched
+  and a misspelling found more than either spelling. A `bm25` alone still
+  corrects a typo rather than widening a word it knows.
+  `MATCH(f, :q, syntax => 'plain')` reads the text as words alone, so a
+  stray quote or bracket is never an error and `-`, `OR` and `*` are no
+  operators; the `bm25` beside it reads it as plain too. A bad `MATCH` query
+  says what is wrong in words (`has a ) without its (`) and how to search a
+  visitor's text, rather than naming the parser's tokens. A `?`, `?1` or
+  `$1` placeholder says that ChloeDB's parameters are named and how to give
+  them, over HTTP too.
+- **The Python and JavaScript packages name the table or refuse.** A call
+  that reads or writes one table (`search`, `insert`, `upsert`, `delete`,
+  `get`, `get_many`, `import_file`, `sid_next`, the column calls, `table()`
+  and `frame()` in Python) and names none, on a database or a server of
+  several tables, raises `ChloeDBError` naming them. **Changed:** it used
+  the first table. Values by position (`db.query(sql, ("soup",))` with
+  sqlite3's `?` or psycopg's `%s`; an array with better-sqlite3's `?` or
+  node-postgres's `$1`) raise a `TypeError` that shows the call with
+  names.
 - **A query's funnel: each stage's time, and the rows each stage kept and
   dropped.** Everything a query does between its text and its rows is laid
   on thirteen stages in order (wait, understand, expand terms, embed, plan,
@@ -413,6 +437,28 @@ or one server), so shards of older versions need nothing new.
   up, each experiment takes a fresh seed, and a report's Queries tab shows
   where the difference came from
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#checking-a-result)).
+
+- **Experiments on real sites** (`chloedb-experiments`, `chloedb-hn`,
+  `chloedb-arxiv`, demos). The Experiments app studies a site's real
+  search with AI agents, who play people written from the site's own
+  rows. A ChloeDB app opts in with `--experiments-token`, which opens
+  only `/v1/experiment`: these routes read, hold no key of the cluster,
+  and list the knobs an arm may change. The knobs are query understanding,
+  retrieval (typos, synonyms, meaning, code as written, authors), ranking
+  (each weight, or a whole `ORDER BY` expression), blending after the
+  ranking (at most so many of one site, category or author; places for
+  the last year), and an index built another way beside the main one
+  (`--experiment-index NAME=TABLE`). chloedb-hn and chloedb-arxiv take
+  experiments. A public search can be an arm too: HN's or arXiv's on
+  ChloeDB, or Algolia's of the same stories (`--source NAME=KIND:URL`).
+  Personas have needs that are either a row they remember (the exact
+  truth) or a topic, which a judge grades once, with the grades kept. A
+  study tries every need on every arm and compares them need by need,
+  with McNemar's test. Its page shows each need's sessions side by side,
+  and a site's page shows a search as it is beside your knobs, with a
+  line from each row to where it moved
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#real-sites),
+  [hn](docs/chloedb/hn.md#experiments), [arXiv](docs/chloedb/arxiv.md#experiments)).
 
 ### Query plans
 

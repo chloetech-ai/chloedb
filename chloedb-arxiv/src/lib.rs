@@ -13,6 +13,7 @@ pub mod api;
 pub mod ask;
 pub mod concepts;
 pub mod digest;
+pub mod experiment;
 pub mod fulltext;
 pub mod gaps;
 pub mod labs;

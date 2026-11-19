@@ -198,9 +198,26 @@ enum Tok {
     RParenAtLeast(Need),
     And,
     Or,
-    Not,
+    /// `-` or `NOT`, as written.
+    Not(&'static str),
     Phrase(String),
     Word(String),
+}
+
+impl std::fmt::Display for Tok {
+    /// The token as a person wrote it, for an error: `)`, `OR`, `-`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Tok::LParen => write!(f, "("),
+            Tok::RParen => write!(f, ")"),
+            Tok::RParenAtLeast(n) => write!(f, ")@{n}"),
+            Tok::And => write!(f, "AND"),
+            Tok::Or => write!(f, "OR"),
+            Tok::Not(s) => write!(f, "{s}"),
+            Tok::Phrase(s) => write!(f, "\"{s}\""),
+            Tok::Word(w) => write!(f, "{w}"),
+        }
+    }
 }
 
 /// The most indexed terms the last word of a phrase prefix
@@ -263,7 +280,7 @@ fn lex(q: &str) -> Result<(Vec<Tok>, MatchFeatures)> {
                         break;
                     }
                 }
-                let end = end.ok_or_else(|| Error::Query(format!("unterminated phrase in MATCH query {q:?}")))?;
+                let end = end.ok_or_else(|| Error::Query(format!("MATCH query {q:?} has a \" without its closing \": a phrase is words between two quotes (\"tomato soup\")")))?;
                 phrase_prefix |= phrase_prefix_head(&q[start..end]).is_some();
                 out.push(Tok::Phrase(q[start..end].to_string()));
                 // A weight right after the closing quote.
@@ -282,7 +299,7 @@ fn lex(q: &str) -> Result<(Vec<Tok>, MatchFeatures)> {
             }
             '-' => {
                 it.next();
-                out.push(Tok::Not);
+                out.push(Tok::Not("-"));
             }
             _ => {
                 let start = i;
@@ -312,7 +329,7 @@ fn lex(q: &str) -> Result<(Vec<Tok>, MatchFeatures)> {
                     }
                     ("AND", None) => Tok::And,
                     ("OR", None) => Tok::Or,
-                    ("NOT", None) => Tok::Not,
+                    ("NOT", None) => Tok::Not("NOT"),
                     (w, None) => Tok::Word(w.to_string()),
                 });
             }
@@ -466,7 +483,9 @@ pub fn word_shape(w: &str) -> Option<WordShape<'_>> {
     fuzzy_suffix(w).map(|(word, edits)| WordShape::Typo(word, edits))
 }
 
-struct Parser {
+struct Parser<'q> {
+    /// The query, for errors.
+    text: &'q str,
     toks: Vec<Tok>,
     analyzer: Analyzer,
     pos: usize,
@@ -488,7 +507,7 @@ pub fn parse_match(q: &str) -> Result<BoolQuery> {
 /// How many items a row could count of the group `(q)@n`: its top-level
 /// operands that are not negated and analyse to something.
 pub fn group_size(q: &str, analyzer: Analyzer) -> Result<usize> {
-    let mut p = Parser { toks: lex(q)?.0, analyzer, pos: 0, depth: 0 };
+    let mut p = Parser { text: q, toks: lex(q)?.0, analyzer, pos: 0, depth: 0 };
     Ok(match p.or()? {
         None | Some(BoolQuery::Not(_)) => 0,
         Some(BoolQuery::And(cs) | BoolQuery::Or(cs)) => distinct(cs).iter().filter(|c| !matches!(c, BoolQuery::Not(_))).count(),
@@ -496,17 +515,32 @@ pub fn group_size(q: &str, analyzer: Analyzer) -> Result<usize> {
     })
 }
 
+/// A search box's text as a `MATCH` query that reads it as words alone
+/// (`MATCH(field, :q, syntax => 'plain')`): each run of text between
+/// spaces a phrase of its own, so that no quote, bracket, `-`, `*`, `~`,
+/// `^`, `AND`, `OR` or `NOT` in it is an operator, and a row needs every
+/// word. A run of several words (`t-shirt`) is their phrase, as the query
+/// syntax reads it; a text of no words matches nothing.
+pub fn plain_match(text: &str) -> String {
+    let words: Vec<String> = text.split_whitespace().map(|w| format!("\"{}\"", w.replace(['"', '*'], " "))).collect();
+    match words.is_empty() {
+        true => "\"\"".to_string(),
+        false => words.join(" "),
+    }
+}
+
 /// [`parse_match`] of a field whose text `analyzer` analyses.
 pub fn parse_match_with(q: &str, analyzer: Analyzer) -> Result<BoolQuery> {
-    let mut p = Parser { toks: lex(q)?.0, analyzer, pos: 0, depth: 0 };
+    let mut p = Parser { text: q, toks: lex(q)?.0, analyzer, pos: 0, depth: 0 };
     let e = p.or()?;
-    if p.pos < p.toks.len() {
-        return Err(Error::Query(format!("unexpected {:?} in MATCH query {q:?}", p.toks[p.pos])));
+    // What stops the parse before the end is a `)` no `(` opened.
+    if let Some(t) = p.toks.get(p.pos) {
+        return Err(Error::Query(format!("MATCH query {q:?} has a {t} without its (")));
     }
     Ok(e.unwrap_or(BoolQuery::Or(Vec::new())))
 }
 
-impl Parser {
+impl Parser<'_> {
     fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos)
     }
@@ -535,7 +569,7 @@ impl Parser {
     }
 
     fn unary(&mut self) -> Result<Option<BoolQuery>> {
-        if self.peek() == Some(&Tok::Not) {
+        if matches!(self.peek(), Some(Tok::Not(_))) {
             self.pos += 1;
             self.enter()?;
             let q = self.unary()?.map(|q| BoolQuery::Not(Box::new(q)));
@@ -554,7 +588,16 @@ impl Parser {
     }
 
     fn primary(&mut self) -> Result<Option<BoolQuery>> {
-        let tok = self.toks.get(self.pos).cloned().ok_or_else(|| Error::Query("MATCH query ends where a term was expected".into()))?;
+        let q = self.text;
+        let before = self.pos.checked_sub(1).and_then(|i| self.toks.get(i));
+        let Some(tok) = self.toks.get(self.pos).cloned() else {
+            return Err(Error::Query(match before {
+                None => format!("MATCH query {q:?} has no words"),
+                Some(Tok::LParen) => format!("MATCH query {q:?} has a ( without its )"),
+                Some(Tok::Not(s)) => format!("MATCH query {q:?} ends after {s}, which leaves out the rows with the word after it ({})", if *s == "-" { "-word" } else { "NOT word" }),
+                Some(t) => format!("MATCH query {q:?} ends after {t}, which needs a word on each side (tomato {t} potato)"),
+            }));
+        };
         self.pos += 1;
         Ok(match tok {
             Tok::LParen => {
@@ -574,7 +617,7 @@ impl Parser {
                         Some(BoolQuery::And(cs) | BoolQuery::Or(cs)) => at_least(need, cs),
                         e => e.and_then(|e| at_least(need, vec![e])),
                     },
-                    _ => return Err(Error::Query("unbalanced parentheses in MATCH query".into())),
+                    _ => return Err(Error::Query(format!("MATCH query {:?} has a ( without its )", self.text))),
                 }
             }
             Tok::Phrase(s) => match phrase_prefix_head(&s) {
@@ -586,7 +629,12 @@ impl Parser {
                 (None, Some((word, edits))) => fuzzy_query(word, edits, self.analyzer)?,
                 _ => terms_query(self.analyzer.analyze(&w)),
             },
-            t => return Err(Error::Query(format!("unexpected {t:?} in MATCH query"))),
+            t => {
+                return Err(Error::Query(match before {
+                    None => format!("MATCH query {q:?} starts with {t}, where a word was expected"),
+                    Some(b) => format!("MATCH query {q:?} has {t} right after {b}, where a word was expected"),
+                }))
+            }
         })
     }
 }

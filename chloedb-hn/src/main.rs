@@ -158,6 +158,12 @@ struct ServeArgs {
     public: bool,
     #[arg(long, default_value_t = 120)]
     per_minute: usize,
+    /// Let the command center's Experiments app run experiments on the site with this token (/v1/experiment): its arms change the search's knobs, for its own searches only.
+    #[arg(long, env = "CHLOEDB_HN_EXPERIMENTS_TOKEN", hide_env_values = true)]
+    experiments_token: Option<String>,
+    /// An index an experiment's arm may read instead of hn_stories, NAME=TABLE (a table of stories built another way); again for more.
+    #[arg(long = "experiment-index")]
+    experiment_index: Vec<String>,
     /// Keep the tables live from the HN API: new items as they are posted, and the points and comments of the stories that change.
     #[arg(long)]
     feed: bool,
@@ -362,6 +368,20 @@ async fn serve(a: ServeArgs) {
         per_minute: a.per_minute.max(10),
         seen: Mutex::new(Default::default()),
         started: Instant::now(),
+        experiments_token: a.experiments_token.clone().filter(|t| !t.trim().is_empty()),
+        indexes: a
+            .experiment_index
+            .iter()
+            .map(|s| {
+                let (n, t) = s.split_once('=').unwrap_or((s.as_str(), s.as_str()));
+                let ok = |x: &str| !x.is_empty() && x.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if !ok(n) || !ok(t) {
+                    eprintln!("chloedb-hn: --experiment-index is NAME=TABLE, letters, digits and _");
+                    std::process::exit(2);
+                }
+                (n.to_string(), t.to_string())
+            })
+            .collect(),
     });
     eprintln!("chloedb-hn: the API answers at {me}{}{}", if token.is_some() && a.token.is_none() { " (token made for the server)" } else { "" }, if a.public { ", and the page at / to anyone" } else { "" });
     if local.is_none() {

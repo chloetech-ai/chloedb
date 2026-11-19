@@ -139,6 +139,12 @@ struct ServeArgs {
     /// Hours between the live feed's rounds.
     #[arg(long, default_value_t = 6)]
     live_every_hours: u64,
+    /// Take experiments from ChloeDB's Experiments app, which sends this token (Authorization: Bearer) to /v1/experiment: its arms run this site's search with their own knobs. Without it the site takes none.
+    #[arg(long, env = "CHLOEDB_ARXIV_EXPERIMENTS_TOKEN", hide_env_values = true)]
+    experiments_token: Option<String>,
+    /// Another index of the papers an experiment's arm may read, as NAME=TABLE (a table with ax_papers' columns, built another way); repeated for more.
+    #[arg(long = "experiment-index")]
+    experiment_index: Vec<String>,
 }
 
 #[derive(Args)]
@@ -328,6 +334,19 @@ async fn serve(a: ServeArgs) {
     if let Some(l) = &live {
         tokio::spawn(live::run(db.clone(), graph.clone(), l.clone(), Duration::from_secs(a.live_every_hours.max(1) * 3600)));
     }
+    let indexes: Vec<(String, String)> = a
+        .experiment_index
+        .iter()
+        .map(|s| {
+            let (n, t) = s.split_once('=').unwrap_or((s.as_str(), s.as_str()));
+            let ok = |x: &str| !x.is_empty() && x.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !ok(n) || !ok(t) {
+                eprintln!("chloedb-arxiv: --experiment-index is NAME=TABLE, letters, digits and _");
+                std::process::exit(2);
+            }
+            (n.to_string(), t.to_string())
+        })
+        .collect();
     let svc = Arc::new(Service {
         db,
         graph,
@@ -347,6 +366,8 @@ async fn serve(a: ServeArgs) {
         born: Default::default(),
         spread: Default::default(),
         memo: Default::default(),
+        experiments_token: a.experiments_token.clone().filter(|t| !t.is_empty()),
+        indexes,
     });
     // Standing questions are checked each hour.
     tokio::spawn(api::watch_rounds(svc.clone()));

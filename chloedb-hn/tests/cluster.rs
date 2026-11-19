@@ -37,6 +37,8 @@ fn at(y: i32, m: u32, d: u32) -> i64 {
     chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap().and_hms_opt(12, 0, 0).unwrap().and_utc().timestamp_micros()
 }
 
+const EXP_TOKEN: &str = "experiments-token";
+
 /// (id, author, date, title, url, points, comments)
 const STORIES: &[(u32, &str, (i32, u32, u32), &str, &str, i64, i64)] = &[
     (101, "steveklabnik", (2015, 5, 15), "Announcing Rust 1.0", "https://blog.rust-lang.org/2015/05/15/Rust-1.0.html", 1400, 610),
@@ -112,7 +114,7 @@ impl App {
             .arg(bin)
             .arg("--rows")
             .arg(rows)
-            .args(["--listen", &format!("127.0.0.1:{port}"), "--local-listen", &format!("127.0.0.1:{strata}"), "--token", TOKEN])
+            .args(["--listen", &format!("127.0.0.1:{port}"), "--local-listen", &format!("127.0.0.1:{strata}"), "--token", TOKEN, "--experiments-token", EXP_TOKEN, "--experiment-index", "v2=hn_stories"])
             .args(["--model", "potion-base-8M", "--comment-model", "none"])
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -280,6 +282,61 @@ async fn searches_questions_and_completions() {
     // A thread, from its story down.
     let th = get(&http, &app, "/v1/item/103", &[]).await;
     assert_eq!(th["story"]["title"], "Rust in the Linux kernel", "{th}");
+
+    // Experiments: the Experiments app's own token, and nobody else's.
+    let exp = |path: &str| http.get(format!("{}{path}", app.url));
+    assert_eq!(exp("/v1/experiment").bearer_auth(TOKEN).send().await.unwrap().status(), 401);
+    let d: Value = exp("/v1/experiment").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+    assert!(d["allowed"] == true && d["site"] == "hn", "{d}");
+    let keys: Vec<&str> = d["knobs"].as_array().unwrap().iter().filter_map(|k| k["key"].as_str()).collect();
+    for k in ["understand", "meaning", "typos", "votes", "rank", "max_per_site", "index"] {
+        assert!(keys.contains(&k), "{k}: {keys:?}");
+    }
+    let es = |q: &str, knobs: Value| {
+        let h = http.post(format!("{}/v1/experiment/search", app.url)).bearer_auth(EXP_TOKEN).json(&json!({"q": q, "knobs": knobs, "per": 5}));
+        async move {
+            let r = h.send().await.unwrap();
+            let status = r.status();
+            let v: Value = r.json().await.unwrap();
+            (status, v)
+        }
+    };
+    let ids = |v: &Value| v["rows"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    // As it is, the arm is the site's search.
+    let (st, as_is) = es("rust", json!({})).await;
+    assert!(st.is_success(), "{as_is}");
+    let site = search(&http, &app, "rust").await;
+    let site_ids: Vec<String> = site["stories"].as_array().unwrap().iter().take(5).map(|s| s["id"].as_i64().unwrap().to_string()).collect();
+    assert_eq!(ids(&as_is), site_ids, "{as_is}");
+    assert!(as_is["rows"][0]["snippet"].as_str().unwrap().contains("points"), "{as_is}");
+    // Words only finds the stories that say rust; votes that do not count
+    // and a ranking of its own order the same stories otherwise.
+    let (_, words) = es("rust", json!({"meaning": false})).await;
+    assert_eq!(words["total"], 4, "{words}");
+    let (_, flat) = es("rust", json!({"votes": 0, "tiers": false, "meaning": false})).await;
+    let mut a = ids(&words);
+    let mut b = ids(&flat);
+    a.sort();
+    b.sort();
+    assert_eq!(a, b, "{flat}");
+    let (_, newest) = es("rust", json!({"rank": "decay(created, now(), 157680000)", "tiers": false, "meaning": false})).await;
+    assert_eq!(ids(&newest), ["103", "104", "102", "101"], "newest first: {newest}");
+    // Words as typed: "by alice" is two more words, not a filter.
+    let (_, by) = es("rust by alice", json!({})).await;
+    assert!(ids(&by).iter().all(|i| i == "102" || i == "104"), "{by}");
+    let (_, typed) = es("rust by alice", json!({"understand": false})).await;
+    assert!(ids(&typed).iter().any(|i| i != "102" && i != "104") || ids(&typed).is_empty(), "{typed}");
+    // Another index, and knobs it refuses.
+    assert!(es("rust", json!({"index": "v2"})).await.0.is_success());
+    for bad in [json!({"index": "v3"}), json!({"votes": 9}), json!({"rank": "1; DROP TABLE hn_stories"}), json!({"nope": true})] {
+        let (st, v) = es("rust", bad.clone()).await;
+        assert_eq!(st, 400, "{bad}: {v}");
+    }
+    // Opening a story, and the stories personas are written from.
+    let it: Value = exp("/v1/experiment/item/103").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+    assert!(it["text"].as_str().unwrap().contains("borrow checker"), "its comments too: {it}");
+    let sm: Value = exp("/v1/experiment/sample?n=10&seed=1").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+    assert!(sm["rows"].as_array().unwrap().len() >= 5, "{sm}");
 
     app.stop();
 }

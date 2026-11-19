@@ -114,6 +114,7 @@ impl<'a> Executor<'a> {
     /// other than a plain scan may hold at most `hold` rows: one that
     /// answers more fails. Expired rows are those of the scroll's start.
     pub fn scroll(mut self, q: &Select, page: usize, hold: usize) -> Result<(ResultSet, Scroll)> {
+        self.see(q);
         let shard = self.opts.shard;
         if shard && !crate::cluster::streams(q) {
             return Err(err("a shard scrolls rows in no order, or ordered by one score or column, for a coordinator that merges them as they come; it answers any other query whole"));
@@ -199,6 +200,7 @@ impl<'a> Executor<'a> {
                 Ok(rs)
             }
             Paging::Held { q, hits, at } => {
+                self.see(q);
                 let end = at.saturating_add(page).min(hits.len());
                 let rs = self.rows_of(q, &hits[*at..end], columns)?;
                 *at = end;

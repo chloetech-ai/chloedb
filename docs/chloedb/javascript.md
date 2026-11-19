@@ -91,7 +91,7 @@ Every call answers a promise and runs on a worker thread of Node's pool, so quer
 | `db.queryLogged(sql, params, {context, variant, ...})`, `db.exportRankLog({...})` | the [rank log](query-language.md#the-rank-log-what-each-query-served): a ranked query that logs what it served, and the log as records for training |
 | `db.sidNext(prefixes, {field, where})`, `db.trainCodebook(field, name, {balanced})` | semantic IDs: the codes that can follow prefixes, and training a codebook (`balanced: true` uses every level's numbers evenly) |
 
-Parameters are `:name` in the SQL and an object of values: numbers, strings, booleans, null, `Date`s, arrays (an array of numbers or a `Float32Array` is a vector), an object of numbers (sparse term weights), `{embed: "some text"}` (the text's vector by an embedded field's model) or `{vector_of: key}` (a stored row's vector).
+Parameters are `:name` in the SQL and an object of values: numbers, strings, booleans, null, `Date`s, arrays (an array of numbers or a `Float32Array` is a vector), an object of numbers (sparse term weights), `{embed: "some text"}` (the text's vector by an embedded field's model) or `{vector_of: key}` (a stored row's vector). Values by position, better-sqlite3's `?` and node-postgres's `$1` with an array, throw a `TypeError` that shows the call with names (`query("SELECT id FROM recipes WHERE MATCH(name, :p1)", { p1: "soup" })`).
 
 A `Result` has `columns`, `types` (each column's type as its values have it, `"timestamp"` for `MAX(ts)` and `ts AS d` as for `ts`, `null` for a column of only NULLs: [the types of an answer's columns](query-language.md#the-types-of-an-answers-columns)), `rows` (arrays in column order), `keys` (each row's primary key), `scores` (what it was ranked by), `stats` (what the engine did) and, a page of a cursor's, `cursor`. Iterating it gives each row as an object; `r.at(i)`, `r.objects()`, `r.column(name)` and `r.scalar()` (a count, a sum) read it other ways.
 
@@ -144,6 +144,8 @@ A query checks its deadline and its signal between segments and every 1,024 rows
 | `db.get(key)`, `db.getMany(keys)` | rows by key without SQL, or null |
 | `db.addColumn(name, type, options)`, `dropColumn`, `renameColumn` | `ALTER TABLE` |
 | `db.expire()`, `db.optimize()`, `db.vacuum()`, `db.close()` | rows past their `expire_by`; a table that is done changing readied for queries (its segments merged into as few as can be, deleted rows dropped, the file shrunk); the space merges freed returned to the file system; the database closed, after merging small segments and returning the space merges freed when it is an eighth of the file or more (`await using db = ...` closes it too). Segments merge in the background as writes add them, one merge at a time |
+
+`table` names the table a call reads or writes, and may be left out where there is one table. Where there are several, `insert`, `upsert`, `delete`, `get`, `getMany`, `search`, `importFile`, `sidNext` and the column calls throw a `ChloeDBError` that names them rather than use the first (**Changed:** they used the first table before, on a `Client` too).
 
 A row is an object of field name to value. A vector may be a `Float32Array` (read from its bytes, without a number per element in between), a `Float64Array` or an array; a TIMESTAMP a `Date` or ISO 8601 text; a list field an array or a `Set`. Values come back as chloedb-server answers them: TIMESTAMPs as ISO 8601 text in UTC, vectors as arrays of numbers.
 

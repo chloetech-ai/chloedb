@@ -84,6 +84,25 @@ chloedb-server --app arxiv=http://arxiv-app:7860 ...    # the command center lis
 | `ax_labs`, `ax_lab_papers` | search | each organisation with its papers in all, in the last twelve months and the twelve before; each paper's organisations with the columns a lab page counts by |
 | `ax_watches`, `ax_matches` | graph | readers' standing questions, and each paper read for one with the model's verdict and why |
 
+## Experiments
+
+The Experiments app ([its README](../../chloedb-experiments/README.md#real-sites)) can study this site's real search. It puts AI agents, playing people written from the papers, on the search with some of it changed. The app takes experiments only when it is started with a token for them:
+
+```bash
+chloedb-arxiv serve ... --experiments-token "$ARXIV_EXPERIMENTS_TOKEN" --experiment-index v2=ax_papers_v2
+chloedb-experiments serve ... --source arxiv=app:http://arxiv-app:7860     # with CHLOEDB_SOURCE_ARXIV_TOKEN=$ARXIV_EXPERIMENTS_TOKEN
+```
+
+The token (`--experiments-token`, or `CHLOEDB_ARXIV_EXPERIMENTS_TOKEN`) opens only `/v1/experiment`, with the same routes as [chloedb-hn's](hn.md#experiments): the site, a search with knobs, a paper (`/v1/experiment/item/:id`) and a sample of papers, well cited and ordinary, across the years. These routes read, and write nothing.
+
+| group | knobs |
+|---|---|
+| Query understanding | `understand`: "by hinton", "since 2020", "cs.CL", "surveys", "newest" and questions in a sentence become filters and sorts |
+| Retrieval | `typos`, `synonyms` (rag, llm, gnn and the field's others), `meaning`, `authors` (papers whose authors the words name are candidates) |
+| Ranking | `cites` (the exponent of citations + 1), `recency`, `meaning_weight`, `phrase`, `abstract_weight`, `author_weight`; `rank`, a whole `ORDER BY` expression over `ax_papers` in place of them |
+| Blending | `max_per_category`, `max_per_author` (a primary category's or a first author's papers past this many move below the others), `fresh` |
+| Index | `index`: `main`, or an index named by `--experiment-index NAME=TABLE` |
+
 ## Tests
 
 `tests/cluster.rs` starts two chloedb-servers through `serve --local --local-graph`, loads a small made-up arXiv into them (embedded by the `hash:512` model, so nothing is downloaded), and checks every page: search, a paper's citations and what to read next, a person, a topic, the atlas, events becoming For you, a feed's preview, what to cite for a draft, people to work with, reviewers for a paper and for a pasted abstract with its authors left out, a standing question kept, listed, read as RSS and dropped, and that gaps, new topics, spread, rising people, code, labs and trends answer.

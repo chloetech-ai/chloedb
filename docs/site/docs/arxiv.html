@@ -118,7 +118,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/arxiv.md">docs/chloedb/arxiv.md</a>.</p>
       <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#where-the-data-comes-from">Where the data comes from</a></li><li><a href="#run-it">Run it</a></li><li><a href="#the-tables">The tables</a></li><li><a href="#tests">Tests</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#where-the-data-comes-from">Where the data comes from</a></li><li><a href="#run-it">Run it</a></li><li><a href="#the-tables">The tables</a></li><li><a href="#experiments">Experiments</a></li><li><a href="#tests">Tests</a></li></ol></details>
     <div class="doc-body">
 
 <blockquote>
@@ -244,6 +244,41 @@ chloedb-server --app arxiv=http://arxiv-app:7860 ...    # the command center lis
 <td><code>ax_watches</code>, <code>ax_matches</code></td>
 <td>graph</td>
 <td>readers' standing questions, and each paper read for one with the model's verdict and why</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="experiments">Experiments<a class="anchor" href="#experiments" aria-label="Link to this section">#</a></h2>
+<p>The Experiments app (<a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-experiments/README.md#real-sites">its README</a>) can study this site's real search. It puts AI agents, playing people written from the papers, on the search with some of it changed. The app takes experiments only when it is started with a token for them:</p>
+<pre data-lang="sh">chloedb-arxiv serve ... --experiments-token &quot;$ARXIV_EXPERIMENTS_TOKEN&quot; --experiment-index v2=ax_papers_v2
+chloedb-experiments serve ... --source arxiv=app:http://arxiv-app:7860     # with CHLOEDB_SOURCE_ARXIV_TOKEN=$ARXIV_EXPERIMENTS_TOKEN</pre>
+<p>The token (<code>--experiments-token</code>, or <code>CHLOEDB_ARXIV_EXPERIMENTS_TOKEN</code>) opens only <code>/v1/experiment</code>, with the same routes as <a href="hn.html#experiments">chloedb-hn's</a>: the site, a search with knobs, a paper (<code>/v1/experiment/item/:id</code>) and a sample of papers, well cited and ordinary, across the years. These routes read, and write nothing.</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>group</th>
+<th>knobs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Query understanding</td>
+<td><code>understand</code>: "by hinton", "since 2020", "cs.CL", "surveys", "newest" and questions in a sentence become filters and sorts</td>
+</tr>
+<tr>
+<td>Retrieval</td>
+<td><code>typos</code>, <code>synonyms</code> (rag, llm, gnn and the field's others), <code>meaning</code>, <code>authors</code> (papers whose authors the words name are candidates)</td>
+</tr>
+<tr>
+<td>Ranking</td>
+<td><code>cites</code> (the exponent of citations + 1), <code>recency</code>, <code>meaning_weight</code>, <code>phrase</code>, <code>abstract_weight</code>, <code>author_weight</code>; <code>rank</code>, a whole <code>ORDER BY</code> expression over <code>ax_papers</code> in place of them</td>
+</tr>
+<tr>
+<td>Blending</td>
+<td><code>max_per_category</code>, <code>max_per_author</code> (a primary category's or a first author's papers past this many move below the others), <code>fresh</code></td>
+</tr>
+<tr>
+<td>Index</td>
+<td><code>index</code>: <code>main</code>, or an index named by <code>--experiment-index NAME=TABLE</code></td>
 </tr>
 </tbody>
 </table></div>

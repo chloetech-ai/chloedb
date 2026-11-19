@@ -715,6 +715,12 @@ impl Database {
         Ok(self.get()?.catalog().iter().map(|s| s.to_short_json().to_string()).collect())
     }
 
+    /// Every table's name, the first first: what a call that names no
+    /// table checks, without making a schema's JSON each time.
+    fn table_names(&self) -> PyResult<Vec<String>> {
+        Ok(self.get()?.catalog().iter().map(|s| s.table.clone()).collect())
+    }
+
     /// The default table's live rows.
     fn count(&self) -> PyResult<u64> {
         Ok(self.get()?.count())
