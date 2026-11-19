@@ -3674,22 +3674,48 @@ impl Service {
 
     /// Runs blend `def` (as version `version`) into `k` slots: each source
     /// a query of `req`'s, with `params`, all at once, then the fill.
+    /// A source that is a node runs as a blend of its own, its queries at
+    /// once with the others', and gives its placed rows; only the top
+    /// blend explores.
     pub async fn run_blend(self: &Arc<Self>, req: &QueryReq, def: &chloedb::query::blend::Def, version: i64, params: &Params, k: usize, want: chloedb::query::blend::Want) -> Result<chloedb::query::blend::Blended, ApiError> {
-        let runs = def.sources.iter().map(|s| {
+        self.clone().run_blend_boxed(req.clone(), def.clone(), version, params.clone(), k, want).await
+    }
+
+    /// [`Service::run_blend`] as a future of a named type, which a node's
+    /// run awaits within its blend's.
+    fn run_blend_boxed(self: Arc<Self>, req: QueryReq, def: chloedb::query::blend::Def, version: i64, params: Params, k: usize, want: chloedb::query::blend::Want) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<chloedb::query::blend::Blended, ApiError>> + Send>> {
+        Box::pin(async move { self.run_blend_now(&req, &def, version, &params, k, want).await })
+    }
+
+    async fn run_blend_now(self: &Arc<Self>, req: &QueryReq, def: &chloedb::query::blend::Def, version: i64, params: &Params, k: usize, want: chloedb::query::blend::Want) -> Result<chloedb::query::blend::Blended, ApiError> {
+        use chloedb::query::blend::{Blended, Def, Input, Want};
+        type Run = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Input, Option<Blended>), ApiError>> + Send>>;
+        let runs = def.sources.iter().map(|s| -> Run {
+            let me = self.clone();
+            let (blend, source) = (def.name.clone(), s.name.clone());
+            if let Some(node) = &s.blend {
+                let named = Def { name: s.name.clone(), ..(**node).clone() };
+                let (req, params) = (req.clone(), params.clone());
+                return Box::pin(async move {
+                    let t0 = Instant::now();
+                    let b = me.run_blend_boxed(req, named.clone(), 0, params, named.k, Want { costs: want.costs, explore: None }).await.map_err(|e| ApiError { message: format!("blend {blend} node {source}: {}", e.message), ..e })?;
+                    Ok((Input { rs: b.as_source(), took_ms: t0.elapsed().as_secs_f64() * 1e3 }, Some(b)))
+                });
+            }
             let mut sub = req.clone();
             sub.sql = s.sql.clone();
             sub.params = params.clone();
             (sub.scroll, sub.hold, sub.release, sub.cache_key, sub.arrow, sub.profile) = (None, false, false, None, None, false);
-            let me = self.clone();
-            let (blend, source) = (def.name.clone(), s.name.clone());
-            async move {
+            Box::pin(async move {
                 let t0 = Instant::now();
                 let a = Box::pin(me.dispatch(sub)).await.map_err(|e| ApiError { message: format!("blend {blend} source {source}: {}", e.message), ..e })?;
-                Ok::<_, ApiError>(chloedb::query::blend::Input { rs: a.rs, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
-            }
+                Ok((Input { rs: a.rs, took_ms: t0.elapsed().as_secs_f64() * 1e3 }, None))
+            })
         });
-        let inputs = futures::future::try_join_all(runs).await?;
-        Ok(chloedb::query::blend::blend(def, version, k, inputs, want)?)
+        let (inputs, nodes): (Vec<Input>, Vec<Option<Blended>>) = futures::future::try_join_all(runs).await?.into_iter().unzip();
+        let mut b = chloedb::query::blend::blend(def, version, k, inputs, want)?;
+        b.nodes = nodes;
+        Ok(b)
     }
 
     /// `CREATE BLEND` or `DROP BLEND` ([`chloedb::query::blend`]): the
@@ -3717,8 +3743,8 @@ impl Service {
                 blend::may_define(&set, &def, replace)?;
                 // A key limited to tables writes a blend of the tables it reads.
                 if who.limited() {
-                    for s in &def.sources {
-                        crate::scoped::check_reads(who, &s.sql, &self.table_names(), &set)?;
+                    for q in def.queries() {
+                        crate::scoped::check_reads(who, q, &self.table_names(), &set)?;
                     }
                 }
                 Box::pin(self.sql_in(who, &def.function_sql(replace), &Params::new(), after, timeout_ms, None, None)).await?;
@@ -6305,11 +6331,17 @@ impl Service {
         }
         g.insert("running", self.running() as f64);
         g.insert("live", self.live.len() as f64);
-        // A cluster that follows another: its follow processes' lag.
+        // A cluster that follows another, or a Postgres follower: their
+        // follow processes' lag (the alert follow-behind's).
         let lags = self.follow_lags();
         if !lags.is_empty() {
-            g.insert("follow_lag_s", lags.iter().map(|l| l.1).fold(0.0, f64::max));
-            g.insert("follow_behind", lags.iter().map(|l| l.2).fold(0.0, f64::max));
+            g.insert("follow_lag_s", lags.iter().map(|l| l.lag_s).fold(0.0, f64::max));
+            if lags.iter().any(|l| l.behind.is_some()) {
+                g.insert("follow_behind", lags.iter().filter_map(|l| l.behind).fold(0.0, f64::max));
+            }
+            if lags.iter().any(|l| l.behind_bytes.is_some()) {
+                g.insert("follow_behind_bytes", lags.iter().filter_map(|l| l.behind_bytes).fold(0.0, f64::max));
+            }
         }
         g.insert("slots_free", self.admission.available_permits() as f64);
         if let Some(b) = &self.query_memory {
@@ -6686,11 +6718,18 @@ impl Service {
         ];
         let lags = self.follow_lags();
         if !lags.is_empty() {
-            let family = |name, help, f: fn(&(String, f64, f64)) -> f64| Family { name, ty: "gauge", help, values: lags.iter().map(|l| (format!("name=\"{}\"", metrics::esc(&l.0)), f(l))).collect() };
-            more.extend([
-                family("chloedb_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by the source's name: since the source first reached a transaction it has not applied (and while it is silent, since it last said).", |l| l.1),
-                family("chloedb_follow_behind_transactions", "Transactions of the source a follow process writing through this server has not applied, over the source's shards.", |l| l.2),
-            ]);
+            let label = |l: &crate::service::feed::FollowLag| format!("name=\"{}\",kind=\"{}\"", metrics::esc(&l.name), l.kind);
+            let family = |name, help, f: fn(&crate::service::feed::FollowLag) -> Option<f64>| Family { name, ty: "gauge", help, values: lags.iter().filter_map(|l| Some((label(l), f(l)?))).collect() };
+            more.extend(
+                [
+                    family("chloedb_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by its name and kind (cluster: a cluster following another; postgres: chloedb-server follow-postgres): since the source first reached a transaction (a cluster) or a WAL position (Postgres) it has not applied, and while it is silent, since it last said.", |l| Some(l.lag_s)),
+                    family("chloedb_follow_up", "1 while a follow process writing through this server says it follows (or copies, or catches up), and said so within the last 10 s; 0 while it retries, failed or is silent.", |l| Some(if l.up { 1.0 } else { 0.0 })),
+                    family("chloedb_follow_behind_transactions", "Transactions of the source a cluster's follow process writing through this server has not applied, over the source's shards.", |l| l.behind),
+                    family("chloedb_follow_behind_bytes", "Bytes of Postgres's WAL a Postgres follower writing through this server has not confirmed: Postgres's position (pg_current_wal_lsn()) less the follower's, as it last said.", |l| l.behind_bytes),
+                ]
+                .into_iter()
+                .filter(|f| !f.values.is_empty()),
+            );
         }
         if let Some(s) = &self.log_store {
             more.extend(s.metrics());

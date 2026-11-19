@@ -77,17 +77,23 @@ pub const NAME: &str = "blend";
 /// How a blend's function body begins.
 pub const MARK: &str = "blend:";
 /// How `CREATE BLEND` is written.
-pub const CREATE_FORM: &str = "CREATE [OR REPLACE] BLEND name AS SOURCES (name AS (SELECT ...), ...) [HEADS (head [CALIBRATE tmm|minmax|rank|raw] [LO n] [MISSING neutral|zero], ...)] [UTILITY w * head + ...] [BOOST (source w, ...)] [SLOT n => column = 'value'] [QUOTA (column = 'value' BETWEEN a% AND b% | AT LEAST a% [IF ANY] | AT MOST b% [IN TOP n], ...)] [SPACING (column = 'value' AT MOST n PER m ROWS, ...)] [DIVERSIFY λ ON column] [MAX n PER column] [DEDUPE t ON vector_column] [WITH (k => 10, note => '...')]";
+pub const CREATE_FORM: &str = "CREATE [OR REPLACE] BLEND name AS SOURCES (name AS (SELECT ...) | name AS BLEND (SOURCES (...) ...), ...) [HEADS (head [CALIBRATE tmm|minmax|rank|raw] [LO n] [MISSING neutral|zero], ...)] [UTILITY w * head + ...] [BOOST (source w, ...)] [SLOT n => column = 'value'] [QUOTA (column = 'value' BETWEEN a% AND b% | AT LEAST a% [IF ANY] | AT MOST b% [IN TOP n], ...)] [SPACING (column = 'value' AT MOST n PER m ROWS, ...)] [DIVERSIFY λ ON column] [MAX n PER column] [DEDUPE t ON vector_column] [WITH (k => 10, note => '...')]";
 /// How `DROP BLEND` is written.
 pub const DROP_FORM: &str = "DROP BLEND [IF EXISTS] name";
 /// How a call is written.
 pub const USAGE: &str = "SELECT ... FROM blend('name[@version]' [, parameter => value, ...]) [LIMIT k]";
 /// Sources a blend takes at most.
 pub const MAX_SOURCES: usize = 16;
+
+/// The most blends stacked one on another, the top one counted.
+pub const MAX_DEPTH: usize = 4;
+
+/// The most queries a blend runs, under every node.
+pub const MAX_QUERIES: usize = 32;
 /// Rows a blend places at most.
 pub const MAX_K: usize = 1000;
 /// The columns every blended row has, besides its source's.
-pub const COLUMNS: [&str; 5] = ["slot", "source", "key", "utility", "blend_decision"];
+pub const COLUMNS: [&str; 6] = ["slot", "source", "via", "key", "utility", "blend_decision"];
 /// The rank constant of `CALIBRATE rank`, as `rrf`'s.
 const RRF_K: f64 = 60.0;
 /// Rows passed over that the receipts list at most.
@@ -112,7 +118,8 @@ fn is_false(b: &bool) -> bool {
 /// A blend's definition.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Def {
-    /// Lower case.
+    /// Lower case. A node's is its source's, and may be left out.
+    #[serde(default)]
     pub name: String,
     pub sources: Vec<Source>,
     /// None: one head, `score`, each source's own score by `tmm`.
@@ -140,12 +147,27 @@ pub struct Def {
     pub note: Option<String>,
 }
 
-/// A query whose rows a blend places.
+/// What a blend places rows from: a query, or a node, a blend of its own
+/// stacked under this one whose placed rows are this source's rows.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Source {
     /// Lower case; the value of the column `source`.
     pub name: String,
+    /// Its query; empty for a node.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sql: String,
+    /// The node: its rows are those it places, with its sources' columns,
+    /// `slot`, `via` (the source under it that gave the row, `a/b` through
+    /// nodes) and `utility`, which is their score.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend: Option<Box<Def>>,
+}
+
+impl Source {
+    /// A source that is a query.
+    pub fn query(name: &str, sql: &str) -> Source {
+        Source { name: name.to_string(), sql: sql.to_string(), blend: None }
+    }
 }
 
 /// A value rows are worth by.
@@ -356,6 +378,23 @@ impl Def {
         format!("CREATE {}FUNCTION {}() RETURNS TEXT OPTIONS (description = {}) AS {}", if replace { "OR REPLACE " } else { "" }, self.name, quote(&what), quote(&body))
     }
 
+    /// Every query it runs: its sources' and those of the nodes under it.
+    pub fn queries(&self) -> Vec<&str> {
+        let mut out = Vec::new();
+        for s in &self.sources {
+            match &s.blend {
+                Some(b) => out.extend(b.queries()),
+                None => out.push(s.sql.as_str()),
+            }
+        }
+        out
+    }
+
+    /// How many blends are stacked here, this one counted.
+    pub fn depth(&self) -> usize {
+        1 + self.sources.iter().filter_map(|s| s.blend.as_ref()).map(|b| b.depth()).max().unwrap_or(0)
+    }
+
     /// The source named `name`.
     pub fn source(&self, name: &str) -> Option<usize> {
         self.sources.iter().position(|s| s.name.eq_ignore_ascii_case(name))
@@ -388,10 +427,23 @@ impl Def {
 
     /// `CREATE [OR REPLACE] BLEND` that defines it, as it reads back.
     pub fn sql(&self, replace: bool) -> String {
+        format!("CREATE {}BLEND {} AS\n{}", if replace { "OR REPLACE " } else { "" }, crate::query::sql::ident(&self.name), self.body_sql())
+    }
+
+    /// What follows `AS`, each clause on a line of its own: a node's is
+    /// the same, inside `name AS BLEND ( ... )`.
+    fn body_sql(&self) -> String {
         use crate::query::sql::ident;
-        let mut s = format!("CREATE {}BLEND {} AS\n  SOURCES (\n", if replace { "OR REPLACE " } else { "" }, ident(&self.name));
+        let mut s = "  SOURCES (\n".to_string();
         for (i, src) in self.sources.iter().enumerate() {
-            s += &format!("    {} AS ({}){}\n", ident(&src.name), src.sql.trim(), if i + 1 < self.sources.len() { "," } else { "" });
+            let comma = if i + 1 < self.sources.len() { "," } else { "" };
+            match &src.blend {
+                Some(b) => {
+                    let inner: Vec<String> = b.body_sql().lines().map(|l| format!("    {l}")).collect();
+                    s += &format!("    {} AS BLEND (\n{}\n    ){comma}\n", ident(&src.name), inner.join("\n"));
+                }
+                None => s += &format!("    {} AS ({}){comma}\n", ident(&src.name), src.sql.trim()),
+            }
         }
         s += "  )";
         if !self.heads.is_empty() {
@@ -453,10 +505,24 @@ impl Def {
     }
 
     /// Checks what a definition says of itself: its names, numbers and
-    /// rules, each source a query, and quotas the slots can hold.
+    /// rules, each source a query or a node that checks too, no more than
+    /// [`MAX_DEPTH`] blends stacked and [`MAX_QUERIES`] queries, and quotas
+    /// the slots can hold.
     pub fn check(&self) -> Result<()> {
+        let depth = self.depth();
+        if depth > MAX_DEPTH {
+            return Err(err(format!("blends stack at most {MAX_DEPTH} deep, the top one counted; this one is {depth}")));
+        }
+        let n = self.queries().len();
+        if n > MAX_QUERIES {
+            return Err(err(format!("a blend runs at most {MAX_QUERIES} queries, under every node; this one runs {n}")));
+        }
+        self.check_node(true)
+    }
+
+    fn check_node(&self, top: bool) -> Result<()> {
         let plain = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !n.starts_with(|c: char| c.is_ascii_digit());
-        if !plain(&self.name) {
+        if (top || !self.name.is_empty()) && !plain(&self.name) {
             return Err(err(format!("a blend's name is letters, digits and _, not {:?}", self.name)));
         }
         if self.sources.is_empty() || self.sources.len() > MAX_SOURCES {
@@ -469,9 +535,19 @@ impl Def {
             if self.sources[..i].iter().any(|o| o.name.eq_ignore_ascii_case(&s.name)) {
                 return Err(err(format!("two sources are named {}", s.name)));
             }
+            if let Some(b) = &s.blend {
+                if !s.sql.trim().is_empty() {
+                    return Err(err(format!("source {} is a query or a node, not both", s.name)));
+                }
+                if !b.name.is_empty() && !b.name.eq_ignore_ascii_case(&s.name) {
+                    return Err(err(format!("node {} holds a blend named {}: a node is named as its source", s.name, b.name)));
+                }
+                b.check_node(false).map_err(|e| e.within(&format!("node {}", s.name)))?;
+                continue;
+            }
             let q = crate::query::sql::parse_query(&s.sql).map_err(|e| err(format!("source {}: {e}", s.name)))?;
             if call_name(&q).is_some() {
-                return Err(err(format!("source {} reads blend(...): a blend's sources are queries of tables", s.name)));
+                return Err(err(format!("source {} reads blend(...): stack the blend under this one as a node (source AS BLEND (...)) instead", s.name)));
             }
         }
         if !(1..=MAX_K).contains(&self.k) {
@@ -823,8 +899,18 @@ pub fn parse_statement(text: &str) -> Result<Option<Statement>> {
             "SOURCES" => t.list("the sources", |t| {
                 let name = t.name("a source's name")?;
                 t.want_word("AS", "AS after the source's name")?;
+                if t.eat_word("BLEND") {
+                    // A node: the clauses of a blend of its own.
+                    let inner = t.group_text(&format!("node {name}'s blend"))?;
+                    let node = match parse_statement(&format!("CREATE BLEND {} AS {inner}", crate::query::sql::ident(&name))).map_err(|e| e.within(&format!("node {name}")))? {
+                        Some(Statement::Create { def, .. }) => def,
+                        _ => return Err(err(format!("node {name}: expected the clauses of a blend inside BLEND ( ... )"))),
+                    };
+                    def.sources.push(Source { name, sql: String::new(), blend: Some(Box::new(node)) });
+                    return Ok(());
+                }
                 let sql = t.group_text(&format!("source {name}'s query"))?;
-                def.sources.push(Source { name, sql });
+                def.sources.push(Source { name, sql, blend: None });
                 Ok(())
             })?,
             "HEADS" => t.list("the heads", |t| {
@@ -1293,6 +1379,10 @@ pub struct Blended {
     pub explore: Option<Explore>,
     /// Every source's rows, as they came.
     pub inputs: Vec<Input>,
+    /// Each source's node, run, for a source that is one.
+    pub nodes: Vec<Option<Blended>>,
+    /// Whether each source is a node.
+    pub is_node: Vec<bool>,
 }
 
 /// What the fill reads of each candidate, made once.
@@ -1546,8 +1636,15 @@ fn build(def: &Def, inputs: &[&Input]) -> Built {
 fn context<'a>(def: &'a Def, k: usize, b: &'a Built) -> Ctx<'a> {
     let (cands, col_of) = (&b.cands, &b.col_of);
     let get = |c: &Cand, col: &str| -> Value {
+        let src = &def.sources[c.source];
         if col.eq_ignore_ascii_case("source") {
-            return Value::Str(def.sources[c.source].name.clone());
+            return Value::Str(src.name.clone());
+        }
+        if col.eq_ignore_ascii_case("via") {
+            return Value::Str(match col_of[c.source].get("via").map(|&i| &c.row[i]) {
+                Some(Value::Str(v)) if src.blend.is_some() => format!("{}/{v}", src.name),
+                _ => src.name.clone(),
+            });
         }
         col_of[c.source].get(&col.to_ascii_lowercase()).map_or(Value::Null, |&i| c.row[i].clone())
     };
@@ -1665,6 +1762,8 @@ pub fn blend(def: &Def, version: i64, k: usize, inputs: Vec<Input>, want: Want) 
         fill_ms: t0.elapsed().as_secs_f64() * 1e3,
         explore,
         inputs,
+        nodes: Vec::new(),
+        is_node: def.sources.iter().map(|s| s.blend.is_some()).collect(),
     })
     .map(|mut b| {
         b.sources.truncate(n_src);
@@ -2189,12 +2288,51 @@ fn fill(ctx: &Ctx, skip: Option<Rule>, mode: &mut Mode) -> Fill {
 }
 
 impl Blended {
+    /// The rows it placed as the rows of a source of the blend above it:
+    /// its sources' columns, `slot`, `via` (the source that gave the row,
+    /// `node/source` through a node under it) and `utility`, which is
+    /// also their score; their keys stay theirs.
+    pub fn as_source(&self) -> ResultSet {
+        let own = |c: &str| ["slot", "via", "utility", "score"].contains(&c.to_ascii_lowercase().as_str());
+        let cols: Vec<&String> = self.columns.iter().filter(|c| !own(c)).collect();
+        let mut columns = vec!["slot".to_string(), "via".to_string()];
+        columns.extend(cols.iter().map(|c| c.to_string()));
+        columns.push("utility".into());
+        let rows = self
+            .placed
+            .iter()
+            .map(|p| {
+                let c = &self.cands[p.cand];
+                let mut row = vec![Value::Int(p.slot as i64), Value::Str(self.via(c))];
+                row.extend(cols.iter().map(|col| self.col_of[c.source].get(&col.to_ascii_lowercase()).map_or(Value::Null, |&i| c.row[i].clone())));
+                row.push(Value::Float(round(c.utility)));
+                row
+            })
+            .collect();
+        ResultSet { columns, rows, keys: self.placed.iter().map(|p| self.cands[p.cand].key.clone()).collect(), scores: self.placed.iter().map(|p| round(self.cands[p.cand].utility)).collect(), parts: None, stats: Default::default() }
+    }
+
+    /// The source that gave a row: its own, or `node/source` through
+    /// the nodes under it.
+    pub fn via(&self, c: &Cand) -> String {
+        let src = &self.sources[c.source];
+        match self.col_of[c.source].get("via").map(|&i| &c.row[i]) {
+            Some(Value::Str(v)) if self.is_node.get(c.source) == Some(&true) => format!("{src}/{v}"),
+            _ => src.clone(),
+        }
+    }
+
+    fn stacked(&self) -> bool {
+        self.is_node.iter().any(|&n| n)
+    }
+
     /// The value of output column `col` of the row in slot `p`.
     fn cell(&self, p: &Placed, col: &str) -> Value {
         let c = &self.cands[p.cand];
         match col.to_ascii_lowercase().as_str() {
             "slot" => Value::Int(p.slot as i64),
             "source" => Value::Str(self.sources[c.source].clone()),
+            "via" => Value::Str(self.via(c)),
             "key" => c.key.clone(),
             "utility" => Value::Float(round(c.utility)),
             "blend_decision" => Value::Str(p.why.clone()),
@@ -2205,7 +2343,11 @@ impl Blended {
     /// The columns `*` stands for.
     pub fn star(&self) -> Vec<String> {
         let mut cols = vec!["slot".to_string(), "source".to_string()];
-        cols.extend(self.columns.iter().cloned());
+        // `via` after the source, for a blend with nodes under it.
+        if self.stacked() {
+            cols.push("via".into());
+        }
+        cols.extend(self.columns.iter().filter(|c| !(self.stacked() && c.eq_ignore_ascii_case("via"))).cloned());
         cols.push("utility".into());
         cols.push("blend_decision".into());
         cols
@@ -2274,6 +2416,7 @@ impl Blended {
             }
             json!({
                 "source": self.sources[c.source],
+                "via": self.via(c),
                 "rank": c.rank,
                 "key": value_json(&c.key),
                 "utility": round(c.utility),
@@ -2324,6 +2467,7 @@ impl Blended {
             "explore": self.explore.map(Explore::to_json),
             "chance": round(self.chance()),
             "plan": self.lines(),
+            "nodes": self.sources.iter().zip(&self.nodes).filter_map(|(s, n)| n.as_ref().map(|n| (s.clone(), n.receipts()))).collect::<serde_json::Map<String, Json>>(),
         })
     }
 }
@@ -2701,7 +2845,7 @@ mod tests {
         for round in 0..300 {
             let n_src = rng.gen_range(1..=4);
             let names: Vec<String> = (0..n_src).map(|i| format!("s{i}")).collect();
-            let sources = names.iter().map(|n| Source { name: n.clone(), sql: "SELECT id, author, rel FROM t LIMIT 5".into() }).collect();
+            let sources = names.iter().map(|n| Source::query(n, "SELECT id, author, rel FROM t LIMIT 5")).collect();
             let k = rng.gen_range(1..=12);
             let mut d = Def { name: "r".into(), sources, heads: vec![Head { name: "rel".into(), weight: 1.0, calibrate: [Calibrate::Tmm, Calibrate::Minmax, Calibrate::Rank, Calibrate::Raw][rng.gen_range(0..4)], lo: None, missing: Missing::Neutral }], boost: Vec::new(), slots: Vec::new(), quotas: Vec::new(), spacing: Vec::new(), diversify: None, caps: Vec::new(), dedupe: None, k, note: None };
             if rng.gen_bool(0.5) {

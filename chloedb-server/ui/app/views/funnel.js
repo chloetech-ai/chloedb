@@ -402,6 +402,7 @@ function fatesCard(rows) {
 function blendCard(j, rerun) {
   const b = j.blend;
   const srcSql = Object.fromEntries((j.sources || []).map((s) => [s.name, s.sql]));
+  const nodes = new Set((j.sources || []).filter((s) => s.node).map((s) => s.name));
   const params = paramsObj(j.params);
   return card({ title: "Blend", sub: `${b.blend} v${b.version}: each source a query of its own, then the fill into ${fmt.plural(b.k, "slot")}`, body: [
     table([
@@ -409,7 +410,7 @@ function blendCard(j, rerun) {
       { key: "rows", label: "Rows", num: true },
       { key: "took_ms", label: "Took", num: true, render: (s) => fmt.ms(s.took_ms) },
       { key: "placed", label: "Placed", num: true, render: (s) => typeof s.placed === "number" ? fmt.pct(s.placed) : JSON.stringify(s.placed) },
-      { label: "", sortable: false, render: (s) => srcSql[s.name] ? h("button", { class: "btn ghost sm", title: "Trace this source's own funnel", onclick: () => rerun(srcSql[s.name], params) }, "Its funnel", icon("right")) : null },
+      { label: "", sortable: false, render: (s) => srcSql[s.name] ? h("button", { class: "btn ghost sm", title: "Trace this source's own funnel", onclick: () => rerun(srcSql[s.name], params) }, "Its funnel", icon("right")) : nodes.has(s.name) ? h("span", { class: "small dim", title: "A blend stacked under this one: its own sources each have a funnel" }, "a stacked blend") : null },
     ], { rows: b.sources, compact: true }),
     h("div", { class: "small", style: { fontWeight: 600, margin: "10px 0 4px" } }, "Placed"),
     table([

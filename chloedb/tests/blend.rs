@@ -120,3 +120,79 @@ fn blends_two_tables_by_its_rules() {
     run(&db, "CREATE FUNCTION two() RETURNS INT AS '2'");
     assert!(fails(&db, "CREATE OR REPLACE BLEND two AS SOURCES (a AS (SELECT id FROM stories LIMIT 3))").contains("not a blend"));
 }
+
+/// A blend stacked under another as a node (`name AS BLEND (...)`): it
+/// runs into its own k slots under its own rules, and its placed rows are
+/// that source's rows above, with `via` naming the source under it and
+/// its utility as their score; written back as it was read, and no more
+/// than four blends deep.
+#[test]
+fn blends_stack_as_nodes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = setup(&dir.path().join("n.strata"));
+    let page = "CREATE BLEND page AS
+  SOURCES (
+    web AS BLEND (
+      SOURCES (
+        stories AS (SELECT id, title, author, score() AS relevance FROM stories ORDER BY bm25(title, :q) DESC LIMIT 20),
+        comments AS (SELECT id, body AS title, author, score() AS relevance FROM comments ORDER BY bm25(body, :q) DESC LIMIT 20)
+      )
+      HEADS (relevance CALIBRATE tmm)
+      UTILITY 1 * relevance
+      MAX 1 PER author
+      WITH (k => 6)
+    ),
+    fresh AS (SELECT id, title, author, points FROM stories ORDER BY points DESC LIMIT 4)
+  )
+  QUOTA (source = 'web' AT LEAST 60%)
+  WITH (k => 5)";
+    run(&db, page);
+    let (def, _) = db.blends().unwrap().into_iter().next().unwrap();
+    assert_eq!(def.depth(), 2);
+    assert_eq!(def.queries().len(), 3);
+    // Read back as written.
+    let again = chloedb::query::blend::parse_statement(&def.sql(true)).unwrap().unwrap();
+    assert!(matches!(&again, chloedb::query::blend::Statement::Create { def: d, replace: true } if *d == def), "{}", def.sql(true));
+
+    let p = Params::new().set("q", Value::Str("rust async".into()));
+    let (cols, rows, _) = sql(&db, "SELECT slot, source, via, id, author FROM blend('page', q => :q)", &p);
+    assert_eq!(cols, ["slot", "source", "via", "id", "author"]);
+    assert_eq!(rows.len(), 5);
+    let web: Vec<&Vec<Value>> = rows.iter().filter(|r| text(&r[1]) == "web").collect();
+    assert!(web.len() >= 3, "{rows:?}");
+    // The node's own rule held: one row per author among the rows it gave.
+    let mut authors: Vec<String> = web.iter().map(|r| text(&r[4])).collect();
+    authors.sort();
+    authors.dedup();
+    assert_eq!(authors.len(), web.len(), "{rows:?}");
+    for r in &web {
+        assert!(["web/stories", "web/comments"].contains(&text(&r[2]).as_str()), "{r:?}");
+    }
+    for r in rows.iter().filter(|r| text(&r[1]) == "fresh") {
+        assert_eq!(text(&r[2]), "fresh", "{r:?}");
+    }
+
+    // Each node's receipts come with the blend's.
+    let b = db.blend_run(&def, 1, &p, 5, chloedb::query::blend::Want::default()).unwrap();
+    let j = b.receipts();
+    assert_eq!(j["nodes"]["web"]["rows"].as_array().unwrap().len(), 6, "{}", j["nodes"]);
+    assert_eq!(j["nodes"]["web"]["blend"], "web");
+
+    // A source that reads blend(...) is told to stack it as a node; five
+    // blends deep is refused.
+    run(&db, "CREATE BLEND solo AS SOURCES (a AS (SELECT id, title FROM stories LIMIT 3))");
+    assert!(fails(&db, "CREATE BLEND bad AS SOURCES (a AS (SELECT * FROM blend('solo')))").contains("AS BLEND"));
+    let mut deep = "SOURCES (a AS (SELECT id FROM stories LIMIT 3))".to_string();
+    for i in 0..4 {
+        deep = format!("SOURCES (n{i} AS BLEND ({deep}))");
+    }
+    assert!(fails(&db, &format!("CREATE BLEND deep AS {deep}")).contains("stack at most 4 deep"));
+
+    // A rule above reads `via`: at most one of the node's comments in the
+    // top 5.
+    run(&db, &page.replace("CREATE BLEND page", "CREATE OR REPLACE BLEND page").replace("QUOTA (source = 'web' AT LEAST 60%)", "QUOTA (source = 'web' AT LEAST 60%, via = 'web/comments' AT MOST 20%)"));
+    let rows = sql(&db, "SELECT via FROM blend('page', q => :q)", &p).1;
+    assert!(rows.iter().filter(|r| text(&r[0]) == "web/comments").count() <= 1, "{rows:?}");
+    let (cols, _, _) = sql(&db, "SELECT * FROM blend('page', q => :q) LIMIT 2", &p);
+    assert_eq!(cols[..3], ["slot", "source", "via"]);
+}

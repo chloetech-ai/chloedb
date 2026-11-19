@@ -151,7 +151,8 @@ async fn run(svc: Arc<Service>, who: Principal, ask: Ask, trace: Arc<Trace>) -> 
             out["ran"] = json!(req.sql);
             out["text"] = Json::Object(text);
             out["blend"] = b.receipts();
-            out["sources"] = json!(def.sources.iter().map(|s| json!({"name": s.name, "sql": s.sql})).collect::<Vec<_>>());
+            // A node (a blend stacked under this one) has no query of its own.
+            out["sources"] = json!(def.sources.iter().map(|s| json!({"name": s.name, "sql": (!s.sql.is_empty()).then_some(&s.sql), "node": s.blend.is_some()})).collect::<Vec<_>>());
             out["params"] = json!(telemetry::params_json(&call.params));
             out["answer"] = answer(&rs, t.total_us / 1e3);
             return Ok(out);

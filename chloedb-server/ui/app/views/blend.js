@@ -37,8 +37,48 @@ function srcTag(def, name, extra) {
 // The parameters the sources name (:q), each once.
 function paramsOf(def) {
   const out = [];
-  for (const s of def.sources) for (const m of s.sql.matchAll(/(^|[^:\w]):([A-Za-z_]\w*)/g)) if (!out.includes(m[2])) out.push(m[2]);
+  for (const q of queriesOf(def)) for (const m of q.matchAll(/(^|[^:\w]):([A-Za-z_]\w*)/g)) if (!out.includes(m[2])) out.push(m[2]);
   return out;
+}
+
+// ------------------------------------------------------------ the stack
+// A source is a query ({name, sql}) or a node ({name, blend: {sources,
+// ...}}), a blend of its own stacked under this one. A node is found by
+// its path from the top: the index of each source on the way down.
+const MAX_DEPTH = 4, MAX_QUERIES = 32;
+const isNode = (s) => !!s?.blend;
+function queriesOf(def) { return def.sources.flatMap((s) => (isNode(s) ? queriesOf(s.blend) : [s.sql || ""])); }
+function depthOf(def) { return 1 + Math.max(0, ...def.sources.filter(isNode).map((s) => depthOf(s.blend))); }
+function nodeAt(top, path) { let n = top; for (const i of path) { const s = n?.sources?.[i]; if (!isNode(s)) return null; n = s.blend; } return n; }
+// The receipts of the node at path, from the top's.
+function recAt(rec, top, path) {
+  let r = rec, n = top;
+  for (const i of path) { if (!r || !n) return null; const s = n.sources[i]; r = r.nodes?.[s.name] || null; n = s.blend; }
+  return r;
+}
+// The path of a source object, or null.
+function pathOf(top, obj, at = []) {
+  for (const [i, s] of top.sources.entries()) {
+    if (s === obj) return [...at, i];
+    if (isNode(s)) { const p = pathOf(s.blend, obj, [...at, i]); if (p) return p; }
+  }
+  return null;
+}
+const within = (a, b) => b.length >= a.length && a.every((x, i) => b[i] === x);
+function uniqName(def, base) {
+  const taken = new Set(def.sources.map((s) => s.name));
+  if (!taken.has(base)) return base;
+  for (let i = 2; ; i++) if (!taken.has(base + i)) return base + i;
+}
+// A source gone from a node: its boost, kept slots, quotas and spacing go too.
+function dropRefs(def, n) {
+  def.boost = (def.boost || []).filter((b) => b.source !== n);
+  const keep = (x) => !(x.when.column === "source" && x.when.value === n);
+  def.slots = (def.slots || []).filter(keep); def.quotas = (def.quotas || []).filter(keep); def.spacing = (def.spacing || []).filter(keep);
+}
+function renameRefs(def, from, to) {
+  for (const b of def.boost || []) if (b.source === from) b.source = to;
+  for (const list of [def.slots, def.quotas, def.spacing]) for (const x of list || []) if (x.when.column === "source" && x.when.value === from) x.when.value = to;
 }
 
 // What changed from a to b, in words.
@@ -46,7 +86,13 @@ function diffDefs(a, b) {
   const out = [];
   if (!a) return ["the first version"];
   const names = (d) => d.sources.map((s) => s.name);
-  for (const s of b.sources) { const was = a.sources.find((x) => x.name === s.name); if (!was) out.push(`source ${s.name} added`); else if (was.sql.trim() !== s.sql.trim()) out.push(`source ${s.name}'s query changed`); }
+  for (const s of b.sources) {
+    const was = a.sources.find((x) => x.name === s.name);
+    if (!was) out.push(isNode(s) ? `blend ${s.name} stacked` : `source ${s.name} added`);
+    else if (isNode(s) && isNode(was)) out.push(...diffDefs(was.blend, s.blend).map((c) => `in ${s.name}: ${c}`));
+    else if (isNode(s) !== isNode(was)) out.push(isNode(s) ? `a blend stacked on ${s.name}` : `${s.name} is a query again`);
+    else if ((was.sql || "").trim() !== (s.sql || "").trim()) out.push(`source ${s.name}'s query changed`);
+  }
   for (const n of names(a)) if (!names(b).includes(n)) out.push(`source ${n} removed`);
   const hs = (d) => (d.heads?.length ? d.heads : [{ name: "score", weight: 1, calibrate: "tmm" }]);
   for (const hd of hs(b)) {
@@ -78,7 +124,8 @@ function diffDefs(a, b) {
 
 function quotaText(q) {
   const top = q.top ? ` of the top ${q.top}` : "";
-  const who = q.when.column === "source" ? q.when.value : `${q.when.column} = ${q.when.value}`;
+  // via names a source through the blends stacked under this one: node/source.
+  const who = q.when.column === "source" || q.when.column === "via" ? q.when.value : `${q.when.column} = ${q.when.value}`;
   if (q.min > 0 && q.max < 100) return `${who} ${q.min}–${q.max}%${top}`;
   if (q.min > 0) return `${who} at least ${q.min}%${top}${q.if_any ? " if any" : ""}`;
   return `${who} at most ${q.max}%${top}`;
@@ -169,6 +216,9 @@ function render(page, r) {
 function editor(page, head, body, name, asked) {
   let alive = true;
   let saved = null, savedVersion = 0, versions = [], draft = null, last = null, seq = 0;
+  // The selected node (its path), its definition and its receipts; the
+  // source being dragged; the other blends, which the palette offers.
+  let sel = [], nd = null, lr = null, moving = null, savedBlends = [];
   // The sources' parameters, from the link (#/blend/serp?q=rust) at first.
   const params = {};
   for (const [k, v] of asked || []) params[k] = v;
@@ -190,10 +240,15 @@ function editor(page, head, body, name, asked) {
   const titleEl = h("h1", { class: "mono" }, name);
   clear(head, h("div", {}, h("div", { class: "small" }, h("a", { href: "#/blend" }, "← Blending")), h("div", { class: "row nw", style: { gap: "10px" } }, titleEl, dirtyPill), status),
     h("div", { class: "tools" }, discardBtn, h("button", { class: "btn", onclick: () => versionsDrawer() }, icon("clock"), "Versions"), h("button", { class: "btn", title: "Set this draft against the serving version over the pages the blend logged, and tune it toward what people clicked", onclick: () => trainDrawer() }, icon("recsys"), "Value on the log"), saveBtn, more));
+  const canvas = h("div", { class: "bn-canvas" });
   const ed = h("div", { class: "bl-ed" }, settings, preview);
   // A slider let go, or moved by its keys: the draft runs again.
   ed.addEventListener("bl-change", () => changed());
-  clear(body, ed);
+  clear(body, h("div", { class: "bl-build" }, canvas, ed));
+  // The wires follow the blocks when the page's width changes.
+  const ro = new ResizeObserver(debounce(() => { const st = canvas.querySelector(".bn-stage"); const w = st?.querySelector(".bn-wires"); if (st && w) drawWires(st, w); }, 60));
+  ro.observe(canvas);
+  api("/v1/blends").then((j) => { savedBlends = j.blends || []; if (alive && draft) drawCanvas(); }).catch(() => {});
   load();
 
   async function load() {
@@ -245,8 +300,8 @@ function editor(page, head, body, name, asked) {
       const j = await api("/v1/blends/preview", { method: "POST", body: { def: { ...draft, name }, params: p, costs: true } });
       if (my !== seq || !alive) return;
       last = j;
-      drawPreview();
       drawSettings();
+      drawPreview();
     } catch (e) {
       if (my !== seq || !alive) return;
       last = null;
@@ -255,36 +310,372 @@ function editor(page, head, body, name, asked) {
   }
 
   // ---------------------------------------------------------- settings
+  // The node the cards edit and the slate shows, by its path from the top.
+  function select(path) {
+    sel = path;
+    drawSettings();
+    if (last) drawPreview();
+  }
+
   function drawSettings() {
     if (!draft) return;
+    if (!nodeAt(draft, sel)) sel = [];
+    nd = nodeAt(draft, sel); lr = recAt(last, draft, sel);
+    drawCanvas();
     const focus = settings.contains(document.activeElement) ? document.activeElement.getAttribute("aria-label") : null;
-    clear(settings, sourcesCard(), headsCard(), slotsCard(), quotasCard(), rulesCard());
+    clear(settings, nodeCard(), sourcesCard(), headsCard(), slotsCard(), quotasCard(), rulesCard());
     refocus(settings, focus);
   }
 
-  function srcStat(n) { return last?.sources?.find((s) => s.name === n); }
+  // A change to the stack, undone when it leaves the blend too deep, too
+  // big or empty.
+  function edit(f) {
+    const before = clone(draft), at = sel.slice();
+    const why = f();
+    const bad = why === false ? "" : !draft.sources.length ? "A blend keeps at least one source" : depthOf(draft) > MAX_DEPTH ? `Blends stack at most ${MAX_DEPTH} deep, the top one counted` : queriesOf(draft).length > MAX_QUERIES ? `A blend runs at most ${MAX_QUERIES} queries` : null;
+    if (bad !== null) { draft = before; sel = at; if (bad) toast(bad, "bad"); changed(); return false; }
+    changed();
+    return true;
+  }
+
+  // A source taken out of its node; a node left empty goes too.
+  function take(obj) {
+    const path = pathOf(draft, obj);
+    if (!path) return null;
+    const parent = nodeAt(draft, path.slice(0, -1));
+    parent.sources.splice(path.at(-1), 1);
+    dropRefs(parent, obj.name);
+    if (!parent.sources.length && path.length > 1) take(nodeAt(draft, path.slice(0, -2)).sources[path.at(-2)]);
+    return obj;
+  }
+
+  // A source put in the node at path, named apart from the others there.
+  function put(path, src) {
+    const n = nodeAt(draft, path);
+    src.name = uniqName(n, src.name);
+    if (isNode(src)) src.blend.name = "";
+    n.sources.push(src);
+    return [...path, n.sources.length - 1];
+  }
+
+  // A blend stacked on a source, in its place and with its name, so the
+  // rules above that named the source name the blend of it.
+  function stack(obj) {
+    const path = pathOf(draft, obj);
+    const parent = nodeAt(draft, path.slice(0, -1));
+    parent.sources[path.at(-1)] = { name: obj.name, blend: { name: "", sources: [obj], k: parent.k || 10 } };
+    return path;
+  }
+
+  // A node taken apart: its sources join the node above it.
+  // One source dropped on another: a blend stacked on the two, in the
+  // other's place, named for both. The rules above that named either now
+  // name it by way of the new blend (via = 'node/source'), and their boosts
+  // go into it, so the page above asks for what it asked for before.
+  function group(src, obj) {
+    const from = pathOf(draft, obj), at0 = pathOf(draft, src);
+    const same = from.slice(0, -1).join() === at0.slice(0, -1).join();
+    const old = obj.name;
+    if (same) { const p = nodeAt(draft, from.slice(0, -1)); p.sources.splice(from.at(-1), 1); } else take(obj);
+    const at = pathOf(draft, src);
+    const parent = nodeAt(draft, at.slice(0, -1));
+    const node = { name: uniqName(parent, `${src.name}_${obj.name}`.slice(0, 40)), blend: { name: "", sources: [src], k: parent.k || 10 } };
+    obj.name = uniqName(node.blend, obj.name);
+    node.blend.sources.push(obj);
+    const moved = [[src.name, src.name], ...(same ? [[old, obj.name]] : [])];
+    for (const [was, now] of moved) {
+      for (const list of [parent.slots, parent.quotas, parent.spacing]) for (const x of list || []) if (x.when.column === "source" && x.when.value === was) x.when = { column: "via", value: `${node.name}/${now}` };
+      for (const bo of (parent.boost || []).filter((x) => x.source === was)) node.blend.boost = [...(node.blend.boost || []), { ...bo, source: now }];
+      parent.boost = (parent.boost || []).filter((x) => x.source !== was);
+    }
+    parent.sources[at.at(-1)] = node;
+    return at;
+  }
+
+  function unstack(path) {
+    const parent = nodeAt(draft, path.slice(0, -1));
+    const node = parent.sources[path.at(-1)];
+    parent.sources.splice(path.at(-1), 1);
+    dropRefs(parent, node.name);
+    for (const s of node.blend.sources) { s.name = uniqName(parent, s.name); parent.sources.push(s); }
+  }
+
+  function newQuery() { return { name: "q", sql: queriesOf(draft)[0] || "" }; }
+  function newNode() { return { name: "mix", blend: { name: "", sources: [{ name: "q", sql: queriesOf(draft)[0] || "" }], k: 10 } }; }
+
+  // What a palette's piece does dropped on the node at path.
+  function dropNew(what, path) {
+    if (what === "query") { select(path); editSource(-1, queriesOf(draft)[0] || ""); return; }
+    if (what === "node") { if (edit(() => { sel = put(path, newNode()); })) toast("A blend is stacked here: drop queries or blends on it"); return; }
+    if (what.startsWith("saved:")) {
+      const b = savedBlends.find((x) => x.name === what.slice(6));
+      if (b) edit(() => { sel = put(path, { name: b.name, blend: { ...clone(b.def), name: "" } }); });
+      return;
+    }
+    select(path);
+    const n = nd;
+    if (what.startsWith("head:")) {
+      const c = what.slice(5);
+      if (!n.heads?.length) n.heads = [];
+      if (!n.heads.some((x) => x.name === c)) n.heads.push({ name: c, weight: 1, calibrate: "tmm", missing: "neutral" });
+    } else if (what === "slot") {
+      const free = Array.from({ length: n.k || 10 }, (_, i) => i + 1).find((i) => !(n.slots || []).some((x) => x.slot === i));
+      if (!free) { toast("Every slot is kept already", "bad"); return; }
+      n.slots = [...(n.slots || []), { slot: free, when: { column: "source", value: n.sources[0].name } }].sort((a, b) => a.slot - b.slot);
+    } else if (what === "quota") {
+      n.quotas = [...(n.quotas || []), { when: { column: "source", value: n.sources.at(-1).name }, min: 20, max: 100 }];
+    } else if (what === "spacing") {
+      n.spacing = [...(n.spacing || []), { when: { column: "source", value: n.sources.at(-1).name }, at_most: 1, per: 3 }];
+    } else if (what === "cap") {
+      const cols = lr?.columns || [];
+      n.caps = [...(n.caps || []), { at_most: 2, per: cols.find((c) => /author|site|domain|user|owner|brand/i.test(c)) || cols[0] || "id" }];
+    } else if (what === "diversity") {
+      const on = lr?.vectors?.[0] || lr?.columns?.[0] || "id";
+      n.diversify = { lambda: 0.3, on };
+    } else if (what === "dedupe") {
+      const v = lr?.vectors?.[0];
+      if (!v) { toast("Near copies are found by a vector column: this node's sources have none", "bad"); return; }
+      n.dedupe = { threshold: 0.95, on: v };
+    }
+    changed();
+  }
+
+  // A source dragged onto a node: it moves there.
+  function moveInto(obj, path) {
+    const from = pathOf(draft, obj);
+    if (!from || within(from, path) && isNode(obj)) { toast("A blend does not go inside itself", "bad"); return; }
+    if (from.slice(0, -1).join() === path.join()) return;
+    const target = nodeAt(draft, path);
+    edit(() => { take(obj); const p = pathOf(draft, target === draft ? null : findNodeSource(target)); put(p ? p : [], obj); sel = p || []; });
+  }
+  // The source that holds node def `n`.
+  function findNodeSource(n, at = draft) {
+    for (const s of at.sources) { if (isNode(s)) { if (s.blend === n) return s; const f = findNodeSource(n, s.blend); if (f) return f; } }
+    return null;
+  }
+
+  // ---------------------------------------------------------- the stack, drawn
+  // The blend at the top and the nodes under it, each with its sources
+  // below it; rows go up the wires, as wide as the share each source has
+  // of the rows placed above. Pieces of the palette are dragged onto a
+  // node; a source onto a node moves it there, onto another source stacks
+  // a blend on the two, onto the bin removes it.
+  function drawCanvas() {
+    const wires = svg("svg", { class: "bn-wires", "aria-hidden": "true" });
+    const stage = h("div", { class: "bn-stage" }, wires, block(draft, [], null));
+    const bin = h("div", { class: "bn-bin", title: "Drop a source here to remove it" }, icon("trash"), "Remove");
+    target(bin, { move: (obj) => edit(() => { take(obj); }) });
+    // Where the canvas was scrolled stays; the first time, the top blend is
+    // in the middle of a narrow screen.
+    const was = canvas.querySelector(".bn-scroll")?.scrollLeft;
+    const scroll = h("div", { class: "bn-scroll" }, stage);
+    clear(canvas, palette(), scroll, bin);
+    requestAnimationFrame(() => {
+      scroll.scrollLeft = was ?? Math.max(0, (scroll.scrollWidth - scroll.clientWidth) / 2);
+      drawWires(stage, wires);
+    });
+  }
+
+  function palette() {
+    const piece = (what, label, ic, tip, color) => {
+      const el = h("button", { type: "button", class: "bn-piece", draggable: "true", title: tip, "aria-label": `${label}: add to the selected node` },
+        color ? h("i", { class: "bl-dot", style: { background: color } }) : icon(ic), label);
+      el.ondragstart = (e) => { e.dataTransfer.setData("text/bn-new", what); e.dataTransfer.effectAllowed = "copy"; dragOn("new"); };
+      el.ondragend = dragOff;
+      el.onclick = () => dropNew(what, sel);
+      return el;
+    };
+    const heads = new Set(["score"]);
+    const walk = (r) => { if (!r) return; for (const row of [...(r.rows || []), ...(r.passed || [])]) for (const [c, v] of Object.entries(row.cells || {})) if (typeof v === "number") heads.add(c); for (const x of Object.values(r.nodes || {})) walk(x); };
+    walk(last);
+    return h("div", { class: "bn-palette" },
+      h("div", { class: "bn-group" }, h("span", { class: "bn-gl" }, "Sources"),
+        piece("query", "Query", "search", "A query that ranks its own rows"),
+        piece("node", "Blend", "layers", "A blend of its own, stacked under the node you drop it on"),
+        ...savedBlends.filter((b) => b.name !== name).slice(0, 6).map((b) => piece("saved:" + b.name, b.name, "sliders", `A copy of blend ${b.name} v${b.version}, stacked here as a node`))),
+      h("div", { class: "bn-group" }, h("span", { class: "bn-gl" }, "Rules"),
+        piece("slot", "Keep a slot", "pin", "Keep the next free slot for a source"),
+        piece("quota", "Quota", "sliders", "A share of the top rows for a source"),
+        piece("spacing", "Spacing", "grip", "At most n of a source in any m rows"),
+        piece("cap", "Max per", "filter", "At most n rows per value of a column"),
+        piece("diversity", "Diversity", "sparkle", "Rows unlike those above them first"),
+        piece("dedupe", "Near copies", "copy", "Drop rows whose vectors are near one above")),
+      h("div", { class: "bn-group" }, h("span", { class: "bn-gl" }, "Heads"), [...heads].slice(0, 8).map((c) => piece("head:" + c.toLowerCase(), c, "", `Weigh rows by ${c}`, "var(--text-2)"))));
+  }
+
+  // While a piece is dragged, the canvas shows where it may go.
+  function dragOn(kind) { canvas.classList.add("bn-dragging", "bn-" + kind); }
+  function dragOff() { canvas.classList.remove("bn-dragging", "bn-new", "bn-move"); for (const e of canvas.querySelectorAll(".bn-over")) e.classList.remove("bn-over"); }
+
+  // A drop target: `fresh(what)` for a palette's piece, `move(obj)` for a
+  // source dragged from the canvas.
+  function target(el, { fresh, move }) {
+    el.addEventListener("dragover", (e) => {
+      const t = [...e.dataTransfer.types];
+      if (!(fresh && t.includes("text/bn-new") || move && t.includes("text/bn-move"))) return;
+      e.preventDefault(); e.stopPropagation();
+      el.classList.add("bn-over");
+    });
+    el.addEventListener("dragleave", (e) => { if (!el.contains(e.relatedTarget)) el.classList.remove("bn-over"); });
+    el.addEventListener("drop", (e) => {
+      const what = e.dataTransfer.getData("text/bn-new"), from = e.dataTransfer.getData("text/bn-move");
+      if (!what && !from) return;
+      e.preventDefault(); e.stopPropagation();
+      dragOff();
+      if (what && fresh) fresh(what);
+      else if (from && move) { const obj = moving; moving = null; if (obj) move(obj); }
+    });
+  }
+
+  // One block: the blend at path (its card, then its sources), or a query.
+  function block(def, path, src) {
+    const r = recAt(last, draft, path);
+    const parentRec = path.length ? recAt(last, draft, path.slice(0, -1)) : null;
+    const parentDef = path.length ? nodeAt(draft, path.slice(0, -1)) : null;
+    const color = parentDef ? colorOf(parentDef, src.name) : "var(--accent)";
+    const st = parentRec?.sources?.find((x) => x.name === src?.name);
+    const chosen = within(path, sel) && path.length === sel.length;
+    const grab = (el, obj) => {
+      el.draggable = true;
+      el.ondragstart = (e) => { e.stopPropagation(); moving = obj; e.dataTransfer.setData("text/bn-move", obj.name); e.dataTransfer.effectAllowed = "move"; dragOn("move"); };
+      el.ondragend = () => { moving = null; dragOff(); };
+    };
+    if (!def) {
+      // A query.
+      const q = h("div", { class: "bn-q", tabindex: "0", "data-path": path.join("."), title: src.sql },
+        h("div", { class: "row nw", style: { gap: "6px" } }, h("i", { class: "bn-sw", style: { background: color } }), icon("search"), h("b", { class: "mono grow ellipsis" }, src.name),
+          h("button", { class: "btn ghost icon sm", "aria-label": `More for ${src.name}`, onclick: (e) => { e.stopPropagation(); blockMenu(e.currentTarget, src, path); } }, icon("dots"))),
+        h("div", { class: "bn-sql mono" }, src.sql),
+        h("div", { class: "small muted" }, st ? `${fmt.plural(st.rows, "row")} · ${st.placed} placed` : "\u00a0"));
+      q.onclick = () => { select(path.slice(0, -1)); editSource(path.at(-1)); };
+      q.onkeydown = (e) => { if (e.key === "Enter") q.onclick(); };
+      grab(q, src);
+      target(q, { fresh: (what) => (what === "node" ? edit(() => { sel = stack(src); }) : dropNew(what, path.slice(0, -1))), move: (obj) => { if (obj === src) return; if (isNode(obj) && pathOf(draft, src) && within(pathOf(draft, obj), pathOf(draft, src))) { toast("A blend does not go inside itself", "bad"); return; } edit(() => { sel = group(src, obj); }); } });
+      return h("div", { class: "bn-branch" }, q);
+    }
+    // A blend: the top, or a node.
+    const shares = (r?.sources || []).filter((x) => x.placed > 0);
+    const chips = [];
+    const hs = def.heads?.length ? def.heads : [{ name: "score", weight: 1 }];
+    chips.push(h("span", { class: "bn-chip" }, hs.map((x, i) => `${i ? " + " : ""}${n2(x.weight ?? 1)}·${x.name}`).join("")));
+    for (const sl of def.slots || []) chips.push(h("span", { class: "bn-chip" }, icon("pin"), `${sl.slot} ${sl.when.value}`));
+    for (const q of def.quotas || []) chips.push(h("span", { class: "bn-chip" }, quotaText(q)));
+    for (const sp of def.spacing || []) chips.push(h("span", { class: "bn-chip" }, `${sp.when.value} ≤${sp.at_most}/${sp.per}`));
+    for (const c of def.caps || []) chips.push(h("span", { class: "bn-chip" }, `≤${c.at_most} per ${c.per}`));
+    if (def.diversify?.lambda) chips.push(h("span", { class: "bn-chip" }, `diverse ${n2(def.diversify.lambda)}`));
+    if (def.dedupe) chips.push(h("span", { class: "bn-chip" }, `no near copies`));
+    const top = !path.length;
+    const nodeCardEl = h("div", { class: "bn-node" + (top ? " bn-top" : "") + (chosen ? " sel" : ""), tabindex: "0", "data-path": path.join("."), "aria-label": top ? `The blend ${name}` : `Node ${src.name}` },
+      h("div", { class: "row nw", style: { gap: "6px" } }, top ? icon("sliders") : h("i", { class: "bn-sw", style: { background: color } }), h("b", { class: "mono grow ellipsis" }, top ? name : src.name),
+        h("span", { class: "pill" }, `${top ? "page" : "gives"} ${def.k || 10}`),
+        h("button", { class: "btn ghost icon sm", "aria-label": `More for ${top ? name : src.name}`, onclick: (e) => { e.stopPropagation(); blockMenu(e.currentTarget, src, path); } }, icon("dots"))),
+      h("div", { class: "bl-sbar", title: shares.map((x) => `${x.name} ${x.placed}`).join(" · ") }, shares.length ? shares.map((x) => h("i", { style: { flexGrow: x.placed, background: colorOf(def, x.name) } })) : h("i", { style: { flexGrow: 1, background: "var(--surface-3)" } })),
+      h("div", { class: "bn-chips" }, chips.map((c) => { c.title = c.textContent; return c; })),
+      h("div", { class: "bn-tray small" }, icon("plus"), "drop it here"));
+    nodeCardEl.onclick = () => select(path);
+    nodeCardEl.onkeydown = (e) => { if (e.key === "Enter") select(path); };
+    if (!top) grab(nodeCardEl, src);
+    target(nodeCardEl, { fresh: (what) => dropNew(what, path), move: (obj) => moveInto(obj, path) });
+    const kids = h("div", { class: "bn-kids" }, def.sources.map((s, i) => block(isNode(s) ? s.blend : null, [...path, i], s)));
+    return h("div", { class: "bn-branch" }, nodeCardEl, kids);
+  }
+
+  function blockMenu(anchor, src, path) {
+    const top = !path.length;
+    const node = top || isNode(src);
+    const nodes = [];
+    const walk = (def, p) => { nodes.push(p); def.sources.forEach((s, i) => { if (isNode(s)) walk(s.blend, [...p, i]); }); };
+    walk(draft, []);
+    const label = (p) => (p.length ? p.map((_, j) => nodeAt(draft, p.slice(0, j)).sources[p[j]].name).join(" › ") : name);
+    const items = [];
+    if (node) items.push({ label: "Open its settings", icon: "sliders", onclick: () => select(path) }, { label: "Add a query to it", icon: "search", onclick: () => dropNew("query", path) }, { label: "Stack a blend under it", icon: "layers", onclick: () => dropNew("node", path) });
+    if (!top) {
+      items.push({ label: "Stack a blend on it", icon: "layers", onclick: () => edit(() => { sel = stack(src); }) });
+      const here = path.slice(0, -1).join();
+      for (const p of nodes) if (p.join() !== here && !(isNode(src) && within(path, p))) items.push({ label: `Move into ${label(p)}`, icon: "right", onclick: () => moveInto(src, p) });
+      if (isNode(src)) items.push({ label: "Take it apart", icon: "undo", onclick: () => edit(() => { unstack(path); sel = path.slice(0, -1); }) });
+      items.push("-", { label: "Remove", icon: "trash", danger: true, onclick: () => edit(() => { take(src); }) });
+    }
+    menu(anchor, items);
+  }
+
+  // The wires: from each source's card up to its blend's.
+  function drawWires(stage, wires) {
+    if (!stage.isConnected) return;
+    const box = stage.getBoundingClientRect();
+    wires.setAttribute("width", stage.scrollWidth); wires.setAttribute("height", stage.scrollHeight);
+    wires.replaceChildren();
+    for (const card of stage.querySelectorAll(".bn-node")) {
+      const path = card.dataset.path ? card.dataset.path.split(".").map(Number) : [];
+      const def = nodeAt(draft, path);
+      const r = recAt(last, draft, path);
+      if (!def) continue;
+      const a = card.getBoundingClientRect();
+      const x1 = a.left + a.width / 2 - box.left, y1 = a.bottom - box.top;
+      const total = Math.max(1, (r?.sources || []).reduce((t, x) => t + x.placed, 0));
+      def.sources.forEach((sv, i) => {
+        const el = stage.querySelector(`[data-path="${[...path, i].join(".")}"]`);
+        if (!el) return;
+        const b = el.getBoundingClientRect();
+        const x2 = b.left + b.width / 2 - box.left, y2 = b.top - box.top;
+        const placed = r?.sources?.find((x) => x.name === sv.name)?.placed ?? 0;
+        const w = r ? 1.5 + 7 * (placed / total) : 2;
+        const my = (y1 + y2) / 2;
+        // Colors as styles: an attribute does not read the theme's variables.
+        wires.append(svg("path", { d: `M${x2},${y2} C${x2},${my} ${x1},${my} ${x1},${y1 + 4}`, fill: "none", style: { stroke: colorOf(def, sv.name), strokeWidth: w.toFixed(1), strokeLinecap: "round", opacity: placed || !r ? 0.85 : 0.3 } }));
+      });
+      if (def.sources.length) wires.append(svg("path", { d: `M${x1 - 5},${y1 + 10} L${x1},${y1 + 3} L${x1 + 5},${y1 + 10}`, fill: "none", style: { stroke: "var(--text-2)", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round" } }));
+    }
+  }
+
+  // The selected node: where it sits, its name and what it gives.
+  function nodeCard() {
+    const top = !sel.length;
+    const parentDef = top ? null : nodeAt(draft, sel.slice(0, -1));
+    const src = top ? null : parentDef.sources[sel.at(-1)];
+    const crumbs = [h("button", { class: "btn ghost sm mono", onclick: () => select([]) }, name)];
+    for (let j = 0; j < sel.length; j++) crumbs.push(h("span", { class: "muted" }, "›"), h("button", { class: "btn ghost sm mono", onclick: () => select(sel.slice(0, j + 1)) }, nodeAt(draft, sel.slice(0, j)).sources[sel[j]].name));
+    if (top) return card({ title: "The top blend", sub: `serves SELECT ... FROM blend('${name}')`, body: [h("div", { class: "row wrap", style: { gap: "4px" } }, crumbs), h("div", { class: "small dim" }, depthOf(draft) > 1 ? `${fmt.plural(depthOf(draft) - 1, "level")} of blends stacked under it, ${fmt.plural(queriesOf(draft).length, "query", "queries")} in all. Click a node on the canvas to set its heads and rules.` : "Drag a Blend from the palette onto it, or onto one of its queries, to stack a blend under it.")] });
+    const nameIn = h("input", { class: "input sm mono", value: src.name, "aria-label": "The node's name", style: { width: "140px" } });
+    nameIn.onchange = () => {
+      const n = nameIn.value.trim().toLowerCase();
+      if (!plain(n) || parentDef.sources.some((x) => x !== src && x.name === n)) { toast(plain(n) ? `Another source beside it is named ${n}` : "A name is letters, digits and _", "bad"); nameIn.value = src.name; return; }
+      renameRefs(parentDef, src.name, n); src.name = n; changed();
+    };
+    const parentName = sel.length > 1 ? nodeAt(draft, sel.slice(0, -2)).sources[sel.at(-2)].name : name;
+    return card({ title: "A stacked blend", sub: `its ${nd.k || 10} rows are source ${src.name} of ${parentName}`, body: [
+      h("div", { class: "row wrap", style: { gap: "4px" } }, crumbs),
+      h("div", { class: "row nw", style: { gap: "8px" } }, h("span", { class: "small dim" }, "Name"), nameIn, h("span", { class: "grow" }),
+        h("button", { class: "btn sm", onclick: () => edit(() => { unstack(sel); sel = sel.slice(0, -1); }), title: "Its sources join the blend above it" }, icon("undo"), "Take it apart")),
+      h("div", { class: "small dim" }, "Its rules hold among its own rows; the blend above weighs them by their utility here (its head score), and reads via for the source each came from."),
+    ] });
+  }
+
+  function srcStat(n) { return lr?.sources?.find((s) => s.name === n); }
 
   function sourcesCard() {
-    const rows = draft.sources.map((s, i) => {
+    const rows = nd.sources.map((s, i) => {
       const st = srcStat(s.name);
-      const b = (draft.boost || []).find((x) => x.source === s.name)?.by || 0;
-      const boost = slider(-0.5, 0.5, 0.01, b, (v) => { draft.boost = (draft.boost || []).filter((x) => x.source !== s.name); if (Math.abs(v) > 1e-9) draft.boost.push({ source: s.name, by: Math.round(v * 100) / 100 }); }, { label: `Boost of ${s.name}`, fmtv: (v) => (v > 0 ? "+" : "") + v.toFixed(2) });
+      const b = (nd.boost || []).find((x) => x.source === s.name)?.by || 0;
+      const boost = slider(-0.5, 0.5, 0.01, b, (v) => { nd.boost = (nd.boost || []).filter((x) => x.source !== s.name); if (Math.abs(v) > 1e-9) nd.boost.push({ source: s.name, by: Math.round(v * 100) / 100 }); }, { label: `Boost of ${s.name}`, fmtv: (v) => (v > 0 ? "+" : "") + v.toFixed(2) });
       return h("div", { class: "bl-src" },
         h("div", { class: "row nw", style: { gap: "8px" } },
-          h("span", { class: "bl-sw", style: { background: colorOf(draft, s.name) }, draggable: "true", title: "Drag onto a slot to keep it for this source", ondragstart: (e) => e.dataTransfer.setData("text/blend-source", s.name) }),
+          h("span", { class: "bl-sw", style: { background: colorOf(nd, s.name) }, draggable: "true", title: "Drag onto a slot to keep it for this source", ondragstart: (e) => e.dataTransfer.setData("text/blend-source", s.name) }),
           h("b", { class: "mono grow" }, s.name),
           h("span", { class: "small muted" }, st ? `${fmt.plural(st.rows, "row")} · ${fmt.ms(st.took_ms)} · ${st.placed} placed` : ""),
-          h("button", { class: "btn ghost icon sm", title: "Edit its query", "aria-label": `Edit source ${s.name}`, onclick: () => editSource(i) }, icon("edit")),
-          draft.sources.length > 1 ? h("button", { class: "btn ghost icon sm", title: "Remove the source", "aria-label": `Remove source ${s.name}`, onclick: () => removeSource(i) }, icon("x")) : null),
-        h("div", { class: "small mono muted ellipsis", title: s.sql }, s.sql),
+          isNode(s) ? h("button", { class: "btn ghost sm", title: "Open the blend stacked here", "aria-label": `Open node ${s.name}`, onclick: () => select([...sel, i]) }, icon("layers"), "Open")
+            : h("button", { class: "btn ghost icon sm", title: "Edit its query", "aria-label": `Edit source ${s.name}`, onclick: () => editSource(i) }, icon("edit")),
+          nd.sources.length > 1 || sel.length ? h("button", { class: "btn ghost icon sm", title: "Remove the source", "aria-label": `Remove source ${s.name}`, onclick: () => removeSource(i) }, icon("x")) : null),
+        isNode(s) ? h("div", { class: "small muted ellipsis" }, `a blend of ${s.blend.sources.map((x) => x.name).join(", ")}: its ${s.blend.k || 10} rows`) : h("div", { class: "small mono muted ellipsis", title: s.sql }, s.sql),
         h("div", { class: "row nw", style: { gap: "8px" } }, h("span", { class: "small dim", style: { width: "48px" } }, "Boost"), boost));
     });
     const add = h("button", { class: "btn sm", onclick: () => editSource(-1) }, icon("plus"), "Add a source");
-    return card({ title: "Sources", sub: "each a query that ranks its own rows", body: [h("div", { class: "bl-list" }, rows), add] });
+    return card({ title: "Sources", sub: "queries, and blends stacked under this one", body: [h("div", { class: "bl-list" }, rows), add] });
   }
 
-  function editSource(i) {
-    const s = i >= 0 ? draft.sources[i] : { name: "s" + (draft.sources.length + 1), sql: "" };
+  function editSource(i, sql) {
+    if (i >= 0 && isNode(nd.sources[i])) { select([...sel, i]); return; }
+    const s = i >= 0 ? nd.sources[i] : { name: uniqName(nd, "q"), sql: sql || "" };
     const nameIn = h("input", { class: "input mono", value: s.name, "aria-label": "The source's name" });
     const sqlIn = h("textarea", { class: "input mono", rows: 7, spellcheck: "false", "aria-label": "The source's query", style: { width: "100%" }, value: s.sql, placeholder: "SELECT id, title, score() AS relevance FROM t ORDER BY bm25(body, :q) DESC LIMIT 50" });
     const ok = h("button", { class: "btn primary" }, i >= 0 ? "Keep" : "Add");
@@ -295,37 +686,27 @@ function editor(page, head, body, name, asked) {
     ok.onclick = () => {
       const n = nameIn.value.trim().toLowerCase();
       if (!plain(n)) { toast("A source's name is letters, digits and _", "bad"); return; }
-      if (draft.sources.some((x, j) => j !== i && x.name === n)) { toast(`Another source is named ${n}`, "bad"); return; }
+      if (nd.sources.some((x, j) => j !== i && x.name === n)) { toast(`Another source is named ${n}`, "bad"); return; }
       if (!sqlIn.value.trim()) { toast("The source needs its query", "bad"); return; }
       if (i >= 0 && n !== s.name) renameSource(s.name, n);
-      if (i >= 0) draft.sources[i] = { name: n, sql: sqlIn.value.trim() }; else draft.sources.push({ name: n, sql: sqlIn.value.trim() });
-      for (const p of paramsOf(draft)) if (params[p] == null) params[p] = "";
+      if (i >= 0) Object.assign(nd.sources[i], { name: n, sql: sqlIn.value.trim() }); else nd.sources.push({ name: n, sql: sqlIn.value.trim() });
+      for (const p of paramsOf(nd)) if (params[p] == null) params[p] = "";
       m.close(); changed();
     };
   }
 
-  function renameSource(from, to) {
-    for (const b of draft.boost || []) if (b.source === from) b.source = to;
-    for (const list of [draft.slots, draft.quotas, draft.spacing]) for (const x of list || []) if (x.when.column === "source" && x.when.value === from) x.when.value = to;
-  }
+  function renameSource(from, to) { renameRefs(nd, from, to); }
 
-  function removeSource(i) {
-    const n = draft.sources[i].name;
-    draft.sources.splice(i, 1);
-    draft.boost = (draft.boost || []).filter((b) => b.source !== n);
-    const keep = (x) => !(x.when.column === "source" && x.when.value === n);
-    draft.slots = (draft.slots || []).filter(keep); draft.quotas = (draft.quotas || []).filter(keep); draft.spacing = (draft.spacing || []).filter(keep);
-    changed();
-  }
+  function removeSource(i) { edit(() => take(nd.sources[i])); }
 
   function numericColumns() {
     const cols = new Set();
-    for (const r of [...(last?.rows || []), ...(last?.passed || [])]) for (const [c, v] of Object.entries(r.cells || {})) if (typeof v === "number") cols.add(c);
+    for (const r of [...(lr?.rows || []), ...(lr?.passed || [])]) for (const [c, v] of Object.entries(r.cells || {})) if (typeof v === "number") cols.add(c);
     return [...cols];
   }
 
   function headsCard() {
-    const heads = draft.heads || [];
+    const heads = nd.heads || [];
     const list = h("div", { class: "bl-list" });
     if (!heads.length) list.append(h("div", { class: "small dim" }, "One head, ", h("b", { class: "mono" }, "score"), ": each source's own score, scaled by tmm so that each source's best row is 1. Add heads to weigh rows by more than one value."));
     heads.forEach((hd, i) => {
@@ -334,7 +715,7 @@ function editor(page, head, body, name, asked) {
           h("i", { class: "bl-shade", style: { opacity: HEAD_SHADES[i % HEAD_SHADES.length] } }),
           h("b", { class: "mono grow" }, hd.name),
           seg(CALS, hd.calibrate || "tmm", (v) => { hd.calibrate = v; changed(); }, { "aria-label": `Calibration of ${hd.name}` }),
-          h("button", { class: "btn ghost icon sm", title: "Remove the head", "aria-label": `Remove head ${hd.name}`, onclick: () => { heads.splice(i, 1); draft.heads = heads; changed(); } }, icon("x"))),
+          h("button", { class: "btn ghost icon sm", title: "Remove the head", "aria-label": `Remove head ${hd.name}`, onclick: () => { heads.splice(i, 1); nd.heads = heads; changed(); } }, icon("x"))),
         h("div", { class: "row nw", style: { gap: "8px" } }, h("span", { class: "small dim", style: { width: "48px" } }, "Weight"),
           slider(-1, 2, 0.05, hd.weight ?? 1, (v) => { hd.weight = Math.round(v * 100) / 100; }, { label: `Weight of ${hd.name}` }),
           seg([["neutral", "neutral", "A source without it gives its rows the others' mean"], ["zero", "zero", "A source without it gives its rows 0"]], hd.missing || "neutral", (v) => { hd.missing = v; changed(); }, { "aria-label": `Missing ${hd.name}` }))));
@@ -348,50 +729,50 @@ function editor(page, head, body, name, asked) {
     const addHead = (c) => {
       const n = c.trim().toLowerCase();
       if (!plain(n)) { toast("A head is a column's name", "bad"); return; }
-      if (!draft.heads?.length) draft.heads = [];
-      if (!draft.heads.some((x) => x.name === n)) draft.heads.push({ name: n, weight: 1, calibrate: "tmm", missing: "neutral" });
+      if (!nd.heads?.length) nd.heads = [];
+      if (!nd.heads.some((x) => x.name === n)) nd.heads.push({ name: n, weight: 1, calibrate: "tmm", missing: "neutral" });
       changed();
     };
     const terms = (heads.length ? heads : [{ name: "score", weight: 1 }]).map((x) => `${n2(x.weight ?? 1)} × ${x.name}`).join(" + ");
-    return card({ title: "Heads and utility", sub: "what a row is worth", body: [list, h("div", { class: "bl-formula mono small" }, `utility = ${terms}${draft.boost?.length ? " + the source's boost" : ""}`), add] });
+    return card({ title: "Heads and utility", sub: "what a row is worth", body: [list, h("div", { class: "bl-formula mono small" }, `utility = ${terms}${nd.boost?.length ? " + the source's boost" : ""}`), add] });
   }
 
   function slotsCard() {
-    const k = draft.k || 10;
+    const k = nd.k || 10;
     const strip = h("div", { class: "bl-slots", role: "list" });
     for (let i = 1; i <= Math.min(k, 30); i++) {
-      const pin = (draft.slots || []).find((s) => s.slot === i);
-      const row = last?.rows?.find((x) => x.slot === i);
-      const cell = h("button", { class: "bl-slot" + (pin ? " pinned" : ""), role: "listitem", title: pin ? `Slot ${i} is kept for ${pin.when.column} = ${pin.when.value}: click to free it` : `Slot ${i}${row ? `: ${row.source} now` : ""}. Drop a source here, or click, to keep it for that source`, style: pin && pin.when.column === "source" ? { borderColor: colorOf(draft, pin.when.value) } : {} },
-        h("span", { class: "n" }, String(i)), h("i", { style: { background: row ? colorOf(draft, row.source) : "transparent" } }), pin ? icon("pin") : null);
+      const pin = (nd.slots || []).find((s) => s.slot === i);
+      const row = lr?.rows?.find((x) => x.slot === i);
+      const cell = h("button", { class: "bl-slot" + (pin ? " pinned" : ""), role: "listitem", title: pin ? `Slot ${i} is kept for ${pin.when.column} = ${pin.when.value}: click to free it` : `Slot ${i}${row ? `: ${row.source} now` : ""}. Drop a source here, or click, to keep it for that source`, style: pin && pin.when.column === "source" ? { borderColor: colorOf(nd, pin.when.value) } : {} },
+        h("span", { class: "n" }, String(i)), h("i", { style: { background: row ? colorOf(nd, row.source) : "transparent" } }), pin ? icon("pin") : null);
       cell.ondragover = (e) => { if ([...e.dataTransfer.types].includes("text/blend-source")) { e.preventDefault(); cell.classList.add("over"); } };
       cell.ondragleave = () => cell.classList.remove("over");
       cell.ondrop = (e) => { e.preventDefault(); cell.classList.remove("over"); pinSlot(i, e.dataTransfer.getData("text/blend-source")); };
       cell.onclick = () => {
-        if (pin) { draft.slots = draft.slots.filter((s) => s !== pin); changed(); return; }
-        menu(cell, draft.sources.map((s) => ({ label: `Keep slot ${i} for ${s.name}`, color: colorOf(draft, s.name), onclick: () => pinSlot(i, s.name) })));
+        if (pin) { nd.slots = nd.slots.filter((s) => s !== pin); changed(); return; }
+        menu(cell, nd.sources.map((s) => ({ label: `Keep slot ${i} for ${s.name}`, color: colorOf(nd, s.name), onclick: () => pinSlot(i, s.name) })));
       };
       strip.append(cell);
     }
-    const kIn = stepper(1, 100, k, (v) => { draft.k = v; draft.slots = (draft.slots || []).filter((s) => s.slot <= v); for (const q of draft.quotas || []) if (q.top && q.top > v) q.top = v; changed(); }, "Rows placed");
-    const chips = h("div", { class: "row wrap", style: { gap: "6px" } }, draft.sources.map((s) => { const t = srcTag(draft, s.name); t.draggable = true; t.classList.add("drag"); t.ondragstart = (e) => e.dataTransfer.setData("text/blend-source", s.name); return t; }));
+    const kIn = stepper(1, 100, k, (v) => { nd.k = v; nd.slots = (nd.slots || []).filter((s) => s.slot <= v); for (const q of nd.quotas || []) if (q.top && q.top > v) q.top = v; changed(); }, "Rows placed");
+    const chips = h("div", { class: "row wrap", style: { gap: "6px" } }, nd.sources.map((s) => { const t = srcTag(nd, s.name); t.draggable = true; t.classList.add("drag"); t.ondragstart = (e) => e.dataTransfer.setData("text/blend-source", s.name); return t; }));
     return card({ title: "Slots", sub: "drag a source onto a slot to keep it", tools: h("label", { class: "row nw small dim", style: { gap: "6px" } }, "Rows", kIn), body: [strip, chips] });
   }
 
   function pinSlot(i, src) {
-    if (!draft.sources.some((s) => s.name === src)) return;
-    draft.slots = (draft.slots || []).filter((s) => s.slot !== i);
-    draft.slots.push({ slot: i, when: { column: "source", value: src } });
-    draft.slots.sort((a, b) => a.slot - b.slot);
+    if (!nd.sources.some((s) => s.name === src)) return;
+    nd.slots = (nd.slots || []).filter((s) => s.slot !== i);
+    nd.slots.push({ slot: i, when: { column: "source", value: src } });
+    nd.slots.sort((a, b) => a.slot - b.slot);
     changed();
   }
 
   function quotasCard() {
-    const k = draft.k || 10;
-    const quotas = draft.quotas || [];
+    const k = nd.k || 10;
+    const quotas = nd.quotas || [];
     const list = h("div", { class: "bl-list" });
     quotas.forEach((q, i) => {
-      const met = last?.quotas?.[i];
+      const met = lr?.quotas?.[i];
       const n = Math.min(q.top || k, k);
       const label = h("span", { class: "small" });
       const sayIt = () => { label.textContent = `${q.min}%–${q.max}% of the top ${n}`; };
@@ -401,23 +782,23 @@ function editor(page, head, body, name, asked) {
       const topIn = stepper(1, k, n, (v) => { q.top = v >= k ? undefined : v; changed(); }, "Over the top rows");
       list.append(h("div", { class: "bl-quota" },
         h("div", { class: "row nw", style: { gap: "8px" } },
-          q.when.column === "source" ? srcTag(draft, q.when.value) : h("span", { class: "bl-tag mono" }, `${q.when.column} = ${q.when.value}`),
+          q.when.column === "source" ? srcTag(nd, q.when.value) : h("span", { class: "bl-tag mono" }, `${q.when.column} = ${q.when.value}`),
           label, h("span", { class: "grow" }),
           met ? h("span", { class: "small " + (met.idle ? "muted" : met.met ? "good" : "bad"), title: met.idle ? "No row of its kind: it holds only if any" : "" }, met.idle ? "idle" : `${met.got} of ${met.top} now${met.met ? "" : ": not met"}`) : null,
-          h("button", { class: "btn ghost icon sm", "aria-label": "Remove the quota", title: "Remove the quota", onclick: () => { quotas.splice(i, 1); draft.quotas = quotas; changed(); } }, icon("x"))),
+          h("button", { class: "btn ghost icon sm", "aria-label": "Remove the quota", title: "Remove the quota", onclick: () => { quotas.splice(i, 1); nd.quotas = quotas; changed(); } }, icon("x"))),
         track,
         h("div", { class: "row nw small dim", style: { gap: "10px" } }, h("label", { class: "row nw", style: { gap: "6px" } }, "of the top", topIn),
           q.min > 0 ? h("label", { class: "row nw", style: { gap: "6px" }, title: "The least share holds only when some row is of its kind" }, h("input", { type: "checkbox", checked: !!q.if_any, onchange: (e) => { q.if_any = e.target.checked || undefined; changed(); } }), "only if any") : null)));
     });
     const add = h("button", { class: "btn sm" }, icon("plus"), "Add a quota");
-    add.onclick = () => menu(add, draft.sources.map((s) => ({ label: `A share of ${s.name}`, color: colorOf(draft, s.name), onclick: () => { draft.quotas = [...quotas, { when: { column: "source", value: s.name }, min: 0, max: 100 }]; changed(); } })));
+    add.onclick = () => menu(add, nd.sources.map((s) => ({ label: `A share of ${s.name}`, color: colorOf(nd, s.name), onclick: () => { nd.quotas = [...quotas, { when: { column: "source", value: s.name }, min: 0, max: 100 }]; changed(); } })));
     if (!quotas.length) list.append(h("div", { class: "small dim" }, "No quotas: each source gets the share its utility earns. A quota holds a source between two shares of the top rows."));
     return card({ title: "Quotas", sub: "shares of the top rows", body: [list, add] });
   }
 
   function rulesCard() {
-    const cols = last?.columns || [];
-    const vecs = last?.vectors || [];
+    const cols = lr?.columns || [];
+    const vecs = lr?.vectors || [];
     const colSel = (value, onChange, prefer) => {
       const opts = [...new Set([...(prefer || []), ...cols, value].filter(Boolean))];
       const sel = h("select", { class: "input sm", onchange: () => onChange(sel.value) }, opts.map((c) => h("option", { value: c, selected: c === value }, c)));
@@ -425,33 +806,33 @@ function editor(page, head, body, name, asked) {
     };
     const parts = [];
     // Spacing
-    for (const [i, sp] of (draft.spacing || []).entries()) {
+    for (const [i, sp] of (nd.spacing || []).entries()) {
       parts.push(h("div", { class: "bl-rule" }, h("span", { class: "small dim" }, "Spacing"),
-        h("select", { class: "input sm", "aria-label": "Source", onchange: (e) => { sp.when = { column: "source", value: e.target.value }; changed(); } }, draft.sources.map((s) => h("option", { value: s.name, selected: sp.when.value === s.name }, s.name))),
+        sp.when.column === "source" ? h("select", { class: "input sm", "aria-label": "Source", onchange: (e) => { sp.when = { column: "source", value: e.target.value }; changed(); } }, nd.sources.map((s) => h("option", { value: s.name, selected: sp.when.value === s.name }, s.name))) : h("span", { class: "bl-tag mono" }, `${sp.when.column} = ${sp.when.value}`),
         h("span", { class: "small" }, "at most"), stepper(0, Math.max(0, sp.per - 1), sp.at_most, (v) => { sp.at_most = v; changed(); }, "At most"),
         h("span", { class: "small" }, "in any"), stepper(2, 50, sp.per, (v) => { sp.per = v; sp.at_most = Math.min(sp.at_most, v - 1); changed(); }, "Rows"), h("span", { class: "small" }, "rows"),
-        h("button", { class: "btn ghost icon sm", "aria-label": "Remove", onclick: () => { draft.spacing.splice(i, 1); changed(); } }, icon("x"))));
+        h("button", { class: "btn ghost icon sm", "aria-label": "Remove", onclick: () => { nd.spacing.splice(i, 1); changed(); } }, icon("x"))));
     }
     // Caps
-    for (const [i, c] of (draft.caps || []).entries()) {
+    for (const [i, c] of (nd.caps || []).entries()) {
       parts.push(h("div", { class: "bl-rule" }, h("span", { class: "small dim" }, "Cap"), h("span", { class: "small" }, "at most"), stepper(1, 50, c.at_most, (v) => { c.at_most = v; changed(); }, "At most"), h("span", { class: "small" }, "per"), colSel(c.per, (v) => { c.per = v; changed(); }),
-        h("button", { class: "btn ghost icon sm", "aria-label": "Remove", onclick: () => { draft.caps.splice(i, 1); changed(); } }, icon("x"))));
+        h("button", { class: "btn ghost icon sm", "aria-label": "Remove", onclick: () => { nd.caps.splice(i, 1); changed(); } }, icon("x"))));
     }
     // Diversity
-    const lam = draft.diversify?.lambda || 0;
+    const lam = nd.diversify?.lambda || 0;
     parts.push(h("div", { class: "bl-rule" }, h("span", { class: "small dim" }, "Diversity"),
-      slider(0, 1, 0.05, lam, (v) => { const on = draft.diversify?.on || vecs[0] || cols[0] || "id"; draft.diversify = v > 0 ? { lambda: Math.round(v * 100) / 100, on } : undefined; }, { label: "Diversity", fmtv: (v) => (v > 0 ? v.toFixed(2) : "off") }),
-      lam > 0 ? h("span", { class: "small" }, "on") : null, lam > 0 ? colSel(draft.diversify.on, (v) => { draft.diversify.on = v; changed(); }, vecs) : null));
+      slider(0, 1, 0.05, lam, (v) => { const on = nd.diversify?.on || vecs[0] || cols[0] || "id"; nd.diversify = v > 0 ? { lambda: Math.round(v * 100) / 100, on } : undefined; }, { label: "Diversity", fmtv: (v) => (v > 0 ? v.toFixed(2) : "off") }),
+      lam > 0 ? h("span", { class: "small" }, "on") : null, lam > 0 ? colSel(nd.diversify.on, (v) => { nd.diversify.on = v; changed(); }, vecs) : null));
     // Dedupe
-    const dd = draft.dedupe;
+    const dd = nd.dedupe;
     parts.push(h("div", { class: "bl-rule" }, h("span", { class: "small dim" }, "Near copies"),
-      h("label", { class: "row nw small", style: { gap: "6px" } }, h("input", { type: "checkbox", checked: !!dd, disabled: !vecs.length && !dd, onchange: (e) => { draft.dedupe = e.target.checked ? { threshold: 0.95, on: vecs[0] || "emb" } : undefined; changed(); } }), dd ? "dropped at cosine" : vecs.length ? "kept" : "need a vector column in the sources"),
+      h("label", { class: "row nw small", style: { gap: "6px" } }, h("input", { type: "checkbox", checked: !!dd, disabled: !vecs.length && !dd, onchange: (e) => { nd.dedupe = e.target.checked ? { threshold: 0.95, on: vecs[0] || "emb" } : undefined; changed(); } }), dd ? "dropped at cosine" : vecs.length ? "kept" : "need a vector column in the sources"),
       dd ? slider(0.8, 1, 0.005, dd.threshold, (v) => { dd.threshold = Math.round(v * 1000) / 1000; }, { label: "Cosine", fmtv: (v) => v.toFixed(3) }) : null,
       dd ? colSel(dd.on, (v) => { dd.on = v; changed(); }, vecs) : null));
     const add = h("button", { class: "btn sm" }, icon("plus"), "Add a rule");
     add.onclick = () => menu(add, [
-      { label: "Spacing: at most n of a source in any m rows", onclick: () => { draft.spacing = [...(draft.spacing || []), { when: { column: "source", value: draft.sources.at(-1).name }, at_most: 1, per: 3 }]; changed(); } },
-      { label: "Cap: at most n rows per value of a column", onclick: () => { draft.caps = [...(draft.caps || []), { at_most: 2, per: cols.find((c) => /author|site|domain|user|owner/i.test(c)) || cols[0] || "id" }]; changed(); } },
+      { label: "Spacing: at most n of a source in any m rows", onclick: () => { nd.spacing = [...(nd.spacing || []), { when: { column: "source", value: nd.sources.at(-1).name }, at_most: 1, per: 3 }]; changed(); } },
+      { label: "Cap: at most n rows per value of a column", onclick: () => { nd.caps = [...(nd.caps || []), { at_most: 2, per: cols.find((c) => /author|site|domain|user|owner/i.test(c)) || cols[0] || "id" }]; changed(); } },
     ]);
     return card({ title: "The slate's rules", sub: "spacing, caps, diversity, near copies", body: [h("div", { class: "bl-list" }, parts), add] });
   }
@@ -465,7 +846,8 @@ function editor(page, head, body, name, asked) {
   }
 
   function drawPreview() {
-    const j = last;
+    const j = lr;
+    if (!j) { clear(preview, paramsCard(), card({ body: empty("layers", "No rows for this node yet", "The draft runs as it changes.") })); return; }
     const focus = document.activeElement?.closest?.(".bl-preview") ? document.activeElement.getAttribute("aria-label") : null;
     const shares = j.sources.filter((s) => s.placed > 0);
     const total = Math.max(1, j.rows.length);
@@ -477,23 +859,23 @@ function editor(page, head, body, name, asked) {
     const heads = (j.heads || []).map((hd) => hd.name);
     const partsOf = (r) => heads.map((n) => [n, r.parts[n] ?? 0]);
     const ubar = (r) => h("div", { class: "bl-ubar", title: [...partsOf(r).map(([k, v]) => `${k} ${v.toFixed(3)}`), r.boost ? `boost ${r.boost.toFixed(3)}` : null].filter(Boolean).join(" · ") },
-      partsOf(r).map(([, v], i) => h("i", { style: { width: (Math.max(0, v) / maxU) * 100 + "%", background: colorOf(draft, r.source), opacity: HEAD_SHADES[i % HEAD_SHADES.length] } })),
+      partsOf(r).map(([, v], i) => h("i", { style: { width: (Math.max(0, v) / maxU) * 100 + "%", background: colorOf(nd, r.source), opacity: HEAD_SHADES[i % HEAD_SHADES.length] } })),
       r.boost > 0 ? h("i", { class: "boost", style: { width: (r.boost / maxU) * 100 + "%" } }) : null);
     const slate = h("ol", { class: "bl-slate" }, j.rows.map((r) => h("li", { class: "bl-row" },
       h("span", { class: "slot" }, String(r.slot)),
       h("div", { class: "grow", style: { minWidth: 0 } },
         h("div", { class: "row nw", style: { gap: "8px" } }, srcTag(draft, r.source, r.also?.length ? h("span", { class: "muted" }, ` +${r.also.join(", ")}`) : null), h("span", { class: "ellipsis grow", title: titleOf(r) }, titleOf(r)), kindPill(r)),
         h("div", { class: "row nw", style: { gap: "8px" } }, ubar(r), h("span", { class: "small mono num" }, n2(r.utility)), r.adjusted < r.utility - 1e-9 ? h("span", { class: "small muted mono", title: "after diversity" }, `→ ${n2(r.adjusted)}`) : null),
-        h("div", { class: "small muted ellipsis", title: r.why }, `#${r.rank} in ${r.source} · ${r.why}`)))));
+        h("div", { class: "small muted ellipsis", title: r.why }, `#${r.rank} in ${r.via && r.via !== r.source ? r.via : r.source} · ${r.why}`)))));
     const quotaRows = j.quotas.map((q) => h("div", { class: "row nw small", style: { gap: "8px" } }, icon(q.idle ? "minus" : q.met ? "check" : "warn"), h("span", { class: "mono grow ellipsis" }, q.rule), h("span", { class: q.idle ? "muted" : q.met ? "good" : "bad" }, q.idle ? "idle" : `${q.got} of ${q.top} (needs ${q.least}–${q.most})`)));
     const maxCost = Math.max(0.001, ...j.costs.map((c) => c.share));
     const costRows = j.costs.map((c) => h("div", { class: "bl-cost" }, h("span", { class: "mono small ellipsis", title: c.rule }, c.rule), h("div", { class: "barbox" }, h("div", { class: "bar", style: { width: (c.share / maxCost) * 100 + "%" } })), h("span", { class: "small num" }, `${(c.share * 100).toFixed(1)}%`), h("span", { class: "small muted num" }, fmt.plural(c.moved, "row") + " moved")));
     const passed = j.passed.map((r) => h("div", { class: "bl-passed" }, srcTag(draft, r.source), h("span", { class: "ellipsis grow", title: titleOf(r) }, titleOf(r)), h("span", { class: "small mono" }, n2(r.utility)), h("span", { class: "small muted ellipsis", title: r.why, style: { maxWidth: "45%" } }, r.why)));
     clear(preview,
       paramsCard(),
-      card({ title: "The slate", sub: `${j.rows.length} rows · sources ${fmt.ms(Math.max(...j.sources.map((s) => s.took_ms), 0))} · fill ${fmt.ms(j.fill_ms)}`, body: [
-        h("div", { class: "bl-sbar big", title: shares.map((s) => `${s.name} ${s.placed}`).join(" · ") }, shares.map((s) => h("i", { style: { flexGrow: s.placed, background: colorOf(draft, s.name) } }))),
-        h("div", { class: "row wrap small", style: { gap: "10px" } }, j.sources.map((s) => h("span", { class: "row nw", style: { gap: "4px" } }, h("i", { class: "bl-dot", style: { background: colorOf(draft, s.name) } }), `${s.name} ${s.placed} of ${total} (${fmt.pct(s.placed / total)})`))),
+      card({ title: sel.length ? `What ${nodeAt(draft, sel.slice(0, -1)).sources[sel.at(-1)].name} gives the blend above it` : "The slate", sub: `${j.rows.length} rows · sources ${fmt.ms(Math.max(...j.sources.map((s) => s.took_ms), 0))} · fill ${fmt.ms(j.fill_ms)}`, body: [
+        h("div", { class: "bl-sbar big", title: shares.map((s) => `${s.name} ${s.placed}`).join(" · ") }, shares.map((s) => h("i", { style: { flexGrow: s.placed, background: colorOf(nd, s.name) } }))),
+        h("div", { class: "row wrap small", style: { gap: "10px" } }, j.sources.map((s) => h("span", { class: "row nw", style: { gap: "4px" } }, h("i", { class: "bl-dot", style: { background: colorOf(nd, s.name) } }), `${s.name} ${s.placed} of ${total} (${fmt.pct(s.placed / total)})`))),
         h("div", { class: "row wrap small muted", style: { gap: "10px" } }, (j.heads || []).map((hd, i) => h("span", { class: "row nw", style: { gap: "4px" } }, h("i", { class: "bl-dot", style: { background: "var(--text-2)", opacity: HEAD_SHADES[i % HEAD_SHADES.length] } }), `${hd.name} ×${n2(hd.weight)} (${hd.calibrate})`))),
         j.rows.length ? slate : empty("info", "No rows", "The sources found nothing for these parameters."),
       ] }),
@@ -756,7 +1138,7 @@ function editor(page, head, body, name, asked) {
     try { await api(`/v1/blends/${encodeURIComponent(name)}`, { method: "DELETE" }); toast(`Dropped ${name}`, "ok"); location.hash = "#/blend"; } catch (e) { toast(e.message, "bad", 8000); }
   }
 
-  return () => { alive = false; seq++; };
+  return () => { alive = false; seq++; ro.disconnect(); };
 }
 
 // ------------------------------------------------------------ small parts

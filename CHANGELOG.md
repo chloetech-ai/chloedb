@@ -29,6 +29,19 @@ changes collect under "Unreleased".
   spans `understand`, `expand`, `embed` and `blend`; a BM25 search's
   profile has a step `terms`; `Db::funnel` and `query::funnel` in Rust
   ([server.md](docs/chloedb/server.md#a-querys-funnel)).
+- **Blends stack, and Labs → Blending builds them by drag and drop.** A
+  blend's source may be a blend of its own, `name AS BLEND (SOURCES (...)
+  ... WITH (k => n))`: it runs into its own k slots under its own rules,
+  and its rows are that source's rows above, with `via` naming the source
+  each came from through the nodes (`organic/videos`), which every blend
+  answers and a rule above may read. Up to 4 blends deep and 32 queries;
+  the receipts carry each node's own; on one database and through a
+  coordinator alike. The command center's Blending editor opens on a
+  canvas of the stack, wired up to the top by each source's share: drag a
+  query, a blend, a copy of a saved blend, a rule or a head from the
+  palette onto a node, a source onto another to stack a blend on the two,
+  or onto the bin; a click selects a node, whose settings and rows show
+  below ([query-language.md](docs/chloedb/query-language.md#stacking-blends-a-blend-as-anothers-source)).
 - **A write racing ALTER TABLE is bound again until its deadline**: an
   INSERT, UPDATE or DELETE whose table an `ALTER TABLE` changed while it
   ran was bound again ten times at most, and a stream of `ALTER TABLE`s

@@ -1822,10 +1822,10 @@ async fn blend_preview(State(app): State<App>, w: Option<axum::Extension<Princip
             app.svc.blend_def(&name, v).await?
         }
     };
-    for s in &def.sources {
-        reads_ok(&app, &w, &s.sql).await?;
+    for q in def.queries() {
+        reads_ok(&app, &w, q).await?;
     }
-    let params = app.svc.params_for(b.get("params"), def.sources.first().map(|s| s.sql.as_str()), &w).await?;
+    let params = app.svc.params_for(b.get("params"), def.queries().first().copied(), &w).await?;
     let k = match body_u64(&b, "k")? {
         0 => def.k,
         n => (n as usize).min(chloedb::query::blend::MAX_K),
@@ -3658,10 +3658,14 @@ async fn follow_view(State(app): State<App>) -> Res {
     Ok(AxJson(app.svc.follow_view().await?))
 }
 
-/// `POST /v1/admin/follow/status`: a follow process says how it stands
-/// (the cluster's token only).
+/// `POST /v1/admin/follow/status`: a follow process says how it stands:
+/// a cluster's with the cluster's token only; a Postgres follower's
+/// (`"kind": "postgres"`, [`crate::postgres`]) with that or an admin's
+/// key, which its `--target-token` may be.
 async fn follow_status(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
-    root_only(&who(w), "a follow process's status")?;
+    if b["kind"] != "postgres" {
+        root_only(&who(w), "a follow process's status")?;
+    }
     let name = b["name"].as_str().filter(|n| crate::service::follow_name_ok(n)).ok_or_else(|| ApiError::bad("the status names its cluster: {\"name\": ...}"))?.to_string();
     app.svc.note_follow_status(&name, b);
     Ok(AxJson(json!({"noted": name})))
@@ -3781,7 +3785,12 @@ async fn source(State(app): State<App>, axum::extract::Path(name): axum::extract
 }
 
 fn source_json(s: chloedb::db::Source) -> Json {
-    json!({"name": s.name, "offset": s.offset, "updated": s.updated.map(chloedb::timestamp::format)})
+    let mut j = json!({"name": s.name, "offset": s.offset, "updated": s.updated.map(chloedb::timestamp::format)});
+    // A Postgres follower's positions, as Postgres writes them (ROSA-307).
+    if crate::postgres::is_lsn_mark(&s.name) {
+        j["lsn"] = json!(crate::postgres::pgoutput::lsn_text(s.offset.max(0) as u64));
+    }
+    j
 }
 
 /// Whether a statement would run on this deployment, without running it
