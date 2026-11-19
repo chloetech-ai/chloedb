@@ -80,8 +80,8 @@ For: `copy-down`, `copy-silent`, `under-replicated`, `shard-no-majority`, `copie
 2. A copy that restarts by itself (a pod killed for memory, a rollout):
    wait for it, `GET /v1/events?after=<id>&wait_s=30` answers as soon as
    its next event comes. Silence the alert meanwhile (tier 1, two hours at
-   most for an agent): `POST /v1/alerts/copy-down/silence {"minutes": 30}`
-   (tool `silence_alert`).
+   most for an agent): `POST /v1/alerts/copy-down/silence {"minutes": 30, "reason": "s1-0 restarting"}`
+   (tool `silence_alert`; the server refuses a silence without a `reason`).
 3. A copy that does not come back (tier 2): replace it. `POST
    /v1/admin/plan {"shards": [{"shard": <i>, "copies": [...]}]}`, the
    gRPC URLs the shard keeps with the dead copy left out and its
@@ -126,13 +126,23 @@ For: `disk-full`, `disk-critical`, `disk-filling`, `disk`
 
 1. Read which tables grow: `GET /v1/tables` and `GET /v1/load` (each
    copy's disk).
-2. Old rows a table keeps for a set time: a retention (`retain`) on the
-   table drops them (tier 2, a change request).
+2. Old rows a table keeps for a set time: a table made with a retention
+   (`retain`) drops them on its own. A table's retention is set when it is
+   made and cannot be changed (`ALTER TABLE ... SET (retain = ...)` is
+   refused): for a table made without one, or with too long a one, make a
+   new table with the retention, move the writers to it, and drop the old
+   one once its rows are no longer needed (tier 2 and 3, change requests).
 3. More room (tier 2): add disk in the spec (`POST /v1/admin/kube/plan`),
    or add a shard and move slots to it (`POST /v1/admin/plan`), each filed
    as a change request.
 4. Deleted rows still on disk: `POST /v1/admin/vacuum` frees them for good
-   (tier 3: it loses old versions, and is a person's alone).
+   (tier 3: it loses old versions, and is a person's alone). It needs room
+   first: the file grows while it runs, by what lies above its first free
+   gap, which is written twice (in a persona study, a 1.4 GB file reached
+   2.5 GB before it shrank to 1.1 GB, and the process's memory 3 GB), so on
+   a disk that is nearly full, free room another way first. Pages a
+   statement freed become reusable two commits later: a vacuum straight
+   after a `DROP TABLE` can free nothing, and the next one frees them.
 
 ## Writes fail or queue
 

@@ -19,7 +19,9 @@ A chloedb-server with `chloectx` installed beside it (in the same directory, as 
 ```bash
 cd chloectx && cargo build --release --bin chloectx
 ./target/release/chloectx fetch-model                # the embedding model, 129 MB, once
-./target/release/chloectx app --server http://127.0.0.1:7700 --port 7760 --token "$APP_TOKEN"
+# the key and the token from the environment, not flags, which every user of the machine sees in ps
+CHLOEDB_KEY="$ADMIN_KEY" CHLOECTX_APP_TOKEN="$APP_TOKEN" \
+  ./target/release/chloectx app --server http://127.0.0.1:7700 --port 7760
 # and the coordinator shows it:
 CHLOEDB_APP_TOKEN="$APP_TOKEN" chloedb-server --shards ... --app chloectx=http://127.0.0.1:7760
 ```
@@ -27,15 +29,15 @@ CHLOEDB_APP_TOKEN="$APP_TOKEN" chloedb-server --shards ... --app chloectx=http:/
 | option | default | what |
 |---|---|---|
 | `--server` (`CHLOEDB_URL`) | `http://127.0.0.1:7700` | the chloedb-server (a coordinator, or a server on its own) the spaces live in |
-| `--key` (`CHLOEDB_KEY`) | none | its key for the app's reads and writes: an admin key, since a new space is a new table and the on-call agent takes admin calls |
-| `--token` (`CHLOECTX_APP_TOKEN`) | none | the token every caller must send (`Authorization: Bearer`); chloedb-server sends its `CHLOEDB_APP_TOKEN`. Without one, `chloectx app` refuses to start unless `--insecure` |
+| `--key` (`CHLOEDB_KEY`) | none | its key for the app's reads and writes: an admin key, since a new space is a new table and the on-call agent takes admin calls. Give it in `CHLOEDB_KEY`: a flag shows in `ps` |
+| `--token` (`CHLOECTX_APP_TOKEN`) | none | the token every caller must send (`Authorization: Bearer`); chloedb-server sends its `CHLOEDB_APP_TOKEN`. Without one, `chloectx app` refuses to start unless `--insecure`. Give it in `CHLOECTX_APP_TOKEN`, as the key |
 | `--insecure` | off | serve any caller with no token; without it, `chloectx app` refuses to start with no token, on loopback too, since whoever reached the port (on loopback, any program of the machine) could read and write every space and start model calls billed to its key. On loopback it then answers only requests whose `Host` is this machine (`127.0.0.1`, `localhost`, `[::1]`), so that a page reaching it through DNS rebinding is refused |
 | `--host`, `--port` | `127.0.0.1`, `7760` | where it listens |
 | `--embedder` (`CHLOECTX_EMBEDDER`) | `static` | `hash:<dim>` for tests without the model |
 
 Model calls (writing a conversation's notes down, drafting an incident from a postmortem) go to Anthropic's API when `ANTHROPIC_API_KEY` is set (model `CHLOECTX_APP_MODEL`, by default Haiku), else to the `claude` CLI when it is on the PATH (`CHLOECTX_DISTILL_MODEL`). `CHLOECTX_APP_MODEL=off` turns them off. Everything else, asking included, works without a model. At most four conversations are distilled at once and 256 wait; past that an exchange is stored without notes (its answer says `skipped`, and `/v1/info` counts it under `distill.skipped`). The app serves 64 requests at once and answers one more with 503.
 
-The app refuses requests that carry an `Origin` header. chloedb-server checks the signed-in key and reaches the app with the app's token and who called (`x-chloedb-scope`, and `x-chloedb-tables` for a key limited to tables); start the app with `--token` wherever it runs (see [Security model](../chloedb/security.md)). The app's manifest says `"checks_callers": true`, and it refuses what the caller's key may not do itself: reading a space or asking it needs read on its table (`ctx_<space>`), adding or retiring notes and exchanges write there, making a space admin there (it makes the table), the incidents are the space `incidents`'s (`ctx_incidents`), and what is not a space's (building apps, handing an alert to the on-call agent, this machine's stores) needs an admin key of every table to change and a key of every table to read. So a write key records notes, and a key limited to `ctx_ops_*=write` writes the spaces `ops_*` and nothing else (`GET /v1/spaces` lists the spaces it reads). A request with none of those headers (a program calling the app itself with its token) may do anything, as before.
+The app refuses requests that carry an `Origin` header. chloedb-server checks the signed-in key and reaches the app with the app's token and who called (`x-chloedb-scope`, and `x-chloedb-tables` for a key limited to tables); start the app with a token (`CHLOECTX_APP_TOKEN`) wherever it runs (see [Security model](../chloedb/security.md)). The app's manifest says `"checks_callers": true`, and it refuses what the caller's key may not do itself: reading a space or asking it needs read on its table (`ctx_<space>`), adding or retiring notes and exchanges write there, making a space admin there (it makes the table), the incidents are the space `incidents`'s (`ctx_incidents`), and what is not a space's (building apps, handing an alert to the on-call agent, this machine's stores) needs an admin key of every table to change and a key of every table to read. So a write key records notes, and a key limited to `ctx_ops_*=write` writes the spaces `ops_*` and nothing else (`GET /v1/spaces` lists the spaces it reads). A request with none of those headers (a program calling the app itself with its token) may do anything, as before.
 
 ### On Kubernetes
 

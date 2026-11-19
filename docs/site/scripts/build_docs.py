@@ -180,6 +180,7 @@ NAV = [
         ("postgres", "Following Postgres", "docs/chloedb/postgres.md", "reference"),
         ("connectors", "Connectors", "docs/chloedb/connectors.md", "reference"),
         ("opensearch", "OpenSearch API", "docs/chloedb/opensearch.md", "reference"),
+        ("tenants", "Tenants in an object store (experimental)", "docs/chloedb/tenants.md", "reference"),
         ("compatibility", "Versions and compatibility", "docs/compatibility.md", "reference"),
     ]),
     ("ChloeCtx", [

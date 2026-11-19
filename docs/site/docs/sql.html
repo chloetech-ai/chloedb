@@ -87,6 +87,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
       <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">ChloeCtx</span>
       <a href="chloectx.html">ChloeCtx</a>
@@ -1876,7 +1877,7 @@ DROP CLASSIFIER topic;</pre>
 <li><strong>Measured</strong> on Wayfair's WANDS (<code>chloedb-classify-eval</code>, <code>chloedb/results/text/classify_wands.json</code>, an Intel Xeon at 2.10 GHz, 4 cores): 42,994 products, <code>emb</code> potion-retrieval-32M's vector of a product's name, 501 product classes. The logistic classifier names the class of 81.9% of held-out products (centroid 81.3%) and the class of 62.9% of the 480 queries (centroid 51.0%; among its best three, 80.4%), at 0.07 ms a query's text, embedding included; it trains in 31 s (centroid 2 s), and a row's class costs 40 µs. As a boost, <code>bm25(body, :q) * (1 + 0.1 * CASE WHEN class = topic(:v) THEN 1 ELSE 0 END)</code> raised nDCG@10 from 0.433 to 0.439 (p = 0.002, the same on the odd-numbered queries not used to choose the weight), and a weight of 0.5 lowered it: a wrong class costs the rows that are right.</li>
 </ul>
 <h2 id="recommenders-create-recommender-and-recommend">Recommenders: <code>CREATE RECOMMENDER</code> and <code>recommend()</code><a class="anchor" href="#recommenders-create-recommender-and-recommend" aria-label="Link to this section">#</a></h2>
-<p>A recommender keeps counts of a table of events (what came right after what, what was seen together, how often each item was seen, each user's last items) as the events are written, and <code>recommend(name, user)</code> ranks items for a user by them, fused with the similarity of the user's recent items and with popularity, leaving out the items the user had.</p>
+<p>A recommender keeps counts of a table of events (what came right after what, what was seen together, how often each item was seen, each user's last items) as the events are written, and <code>recommend(name, user)</code> ranks items for a user by them, fused with the similarity of the user's recent items and with popularity, leaving out the user's recent items (the last <code>history</code>; an item the user had before those can come back: filter with <code>id NOT IN (SELECT item FROM events WHERE usr = :u)</code> to leave out every one).</p>
 <pre data-lang="sql">CREATE TABLE events (id KEYWORD PRIMARY KEY, usr KEYWORD, item KEYWORD, ts TIMESTAMP);
 CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS items(emb) OPTIONS (window = 3, history = 20);
 
@@ -2176,7 +2177,7 @@ GROUP BY category HAVING COUNT(*) &gt;= 2 ORDER BY n DESC, category LIMIT 5;</pr
 <h2 id="reading-a-plan">Reading a plan<a class="anchor" href="#reading-a-plan" aria-label="Link to this section">#</a></h2>
 <p><code>--plan</code> shows what the planner decided, segment by segment. The same statement can get different plans as the data changes. In the evaluation, an <code>OR</code> filter matching about 15% of documents was scanned exactly on SciFact's 5,183 documents, but on the larger collections the planner measured 11% near the query and post-filtered the HNSW result. An RRF query's topic filter matched 11% of Quora globally but only 3.4% near the query, so the planner switched to an exact scan of its 58,767 members, at 3.1 ms. <a href="design.html#planning-and-execution">Planning and execution</a> describes the choices.</p>
 <h2 id="differences-from-postgresql">Differences from PostgreSQL<a class="anchor" href="#differences-from-postgresql" aria-label="Link to this section">#</a></h2>
-<p>A query written for PostgreSQL mostly runs here and gives the same rows, but not always. These are the differences people porting SQL from PostgreSQL meet, as this release has them: first the answers that differ without an error, then what is refused (most refusals' messages say what to do instead).</p>
+<p>A query written for PostgreSQL mostly runs here and gives the same rows, but not always. These are the differences people porting SQL from PostgreSQL meet most, as this release has them: first the answers that differ without an error, then what is refused (most refusals' messages say what to do instead). The list of refusals is not complete: a statement it does not name can still be refused, and its message says so.</p>
 <p><strong>Connecting.</strong> There is no Postgres wire protocol: <code>psql</code>, DBeaver, Metabase, dbt's Postgres adapter and SQLAlchemy's Postgres dialect do not connect, and there is no dbt adapter or SQLAlchemy dialect of ChloeDB's own. <a href="#running-sql">Running SQL</a> lists the ways in: Python's <code>chloedb.dbapi</code> (DB-API 2.0, which pandas' <code>read_sql</code> reads), JDBC, HTTP and the SQL workbench. <a href="postgres.html">Following Postgres</a> copies a Postgres database into ChloeDB; it does not let Postgres's clients in.</p>
 <p><strong>Answers that differ, with no error:</strong></p>
 <div class="doc-table"><table>
@@ -2231,14 +2232,63 @@ GROUP BY category HAVING COUNT(*) &gt;= 2 ORDER BY n DESC, category LIMIT 5;</pr
 <td><code>10</code></td>
 <td>alias it and read it as a number</td>
 </tr>
+<tr>
+<td><code>UPDATE t SET n = n + 1</code> where <code>n</code> is <code>NULL</code></td>
+<td><code>n</code> becomes <code>1</code>: in <code>SET</code>, <code>field + number</code> and <code>field - number</code> count a <code>NULL</code> as zero, as a counter does (<a href="#writes">writes</a>)</td>
+<td>stays <code>NULL</code></td>
+<td><code>UPDATE t SET n = n + 1 WHERE n IS NOT NULL</code></td>
+</tr>
 </tbody>
 </table></div>
 <p>Ascending order puts <code>NULL</code>s last in both. <a href="postgres.html#how-postgres-columns-become-fields">Following Postgres</a> makes a <code>numeric</code> column a <code>FLOAT</code>, so <code>CAST</code> and <code>round</code> take its halves to the even neighbour (2.5 to 2), where PostgreSQL rounds a <code>numeric</code>'s away from zero (to 3). <strong>Changed:</strong> 0.3.7 and earlier rounded every half away from zero, kept the rows without a value in <code>n != 1.5</code> on an <code>INT</code> column, and gave <code>'a'</code> for <code>'a' || NULL</code>; each now answers as PostgreSQL does. <strong>Changed:</strong> 0.3.8 and earlier refused <code>ORDER BY</code> the alias of a group column after <code>GROUP BY</code> or <code>DISTINCT</code> ("no such column") and <code>NULLS FIRST</code> there, read <code>json_extract(doc, '$.a.b')</code> as <code>NULL</code> outside <code>WHERE</code>, and on DataFusion (a query over more than 4,096 rows) added <code>FLOAT</code> sums in order, so totals that tie on fewer rows could differ in their last digit and a <code>RANK</code> over them change; each now answers as PostgreSQL does, and as on fewer rows.</p>
 <p><strong><code>TEXT</code> and <code>KEYWORD</code>.</strong> A <code>TEXT</code> column is text searched by its words (<code>MATCH</code>, <code>bm25</code>), and a <code>KEYWORD</code> a value compared whole; PostgreSQL's <code>text</code> is both. A stored <code>TEXT</code> column also groups (<code>GROUP BY country</code>, <code>SELECT DISTINCT country</code>) and compares with <code>=</code> and <code>LIKE</code>, by its stored text read row by row, where a <code>KEYWORD</code>'s index answers both. Imports make a column of prose a <code>TEXT</code> one, by its values (more than two and a half words a value on average: <a href="sqlite.html#how-sqlite-columns-become-fields">SQLite</a>, <a href="parquet.html#how-parquet-columns-become-fields">Parquet</a>), and following Postgres makes every <code>text</code> and <code>varchar</code> one: create the table first with <code>KEYWORD</code> for the columns you group and filter by often.</p>
-<p><strong>Writes.</strong> An <code>UPDATE</code> or a <code>DELETE</code> takes any <code>WHERE</code> a <code>SELECT</code> of its table takes (<a href="#writes">writes</a>); one the indexes cannot answer (a subquery, a <code>TEXT</code> column compared, a function of a column) picks the rows' keys first, under the writer lock. <strong>Changed:</strong> 0.3.7 and earlier refused such a <code>WHERE</code> in a write. Refused: <code>UPDATE ... FROM</code>, <code>DELETE ... USING</code>, <code>RETURNING</code>, <code>TRUNCATE</code> (<code>DELETE FROM t</code> deletes every row), and <code>INSERT ... SELECT</code> except from <code>chunks_of</code>.</p>
+<p><strong>Writes.</strong> An <code>UPDATE</code> or a <code>DELETE</code> takes any <code>WHERE</code> a <code>SELECT</code> of its table takes (<a href="#writes">writes</a>); one the indexes cannot answer (a subquery, a <code>TEXT</code> column compared, a function of a column) picks the rows' keys first, under the writer lock. <strong>Changed:</strong> 0.3.7 and earlier refused such a <code>WHERE</code> in a write. Refused: <code>UPDATE ... FROM</code>, <code>DELETE ... USING</code>, <code>RETURNING</code>, <code>TRUNCATE</code> (<code>DELETE FROM t</code> deletes every row), <code>INSERT ... SELECT</code> except from <code>chunks_of</code>, a subquery as a value in <code>SET</code> (<code>SET x = (SELECT MIN(y) FROM t)</code>: run it first and pass its answer as a parameter), and <code>ON CONFLICT ... DO UPDATE ... WHERE</code> (put the condition in the value: <code>SET x = CASE WHEN n &gt; 3 THEN excluded.x ELSE x END</code>).</p>
 <p><strong>Transactions.</strong> <code>BEGIN</code>, <code>COMMIT</code> and <code>ROLLBACK</code> are refused: each statement is a transaction of its own. Several writes commit together as the operations of one <code>POST /v1/write</code> (or <code>write(ops)</code> in Python and JavaScript), and through Rust's transaction API (<a href="#loading-a-file-csv-tsv-json-lines">Loading a file</a>, at its end).</p>
 <p><strong>Tables, views and indexes.</strong> Refused: <code>CREATE VIEW</code> and <code>CREATE MATERIALIZED VIEW</code> (a <a href="#stored-functions">stored function</a> <code>RETURNS TABLE</code> is a view with parameters, and a <a href="#rollups-create-rollup-a-materialized-view-of-counts-over-time">rollup</a> keeps counts up to date), <code>CREATE TABLE ... AS SELECT</code> and temporary tables (the messages say what to write instead), <code>CREATE INDEX</code> (every column is indexed by its type when the table is made), <code>ALTER COLUMN ... TYPE</code>, <code>ALTER TABLE ... RENAME TO</code>, <code>UNIQUE</code>, <code>CHECK</code>, and a primary key of more than one column. <code>REFERENCES</code> are recorded, not enforced. The first table of a database cannot be dropped.</p>
-<p><strong>Queries.</strong> Refused: <code>WITH RECURSIVE</code> (walk a graph with <a href="#graphs"><code>REACHABLE</code> and <code>PATH</code></a>), <code>GROUP BY ROLLUP</code>, <code>CUBE</code> and <code>GROUPING SETS</code> (a <code>UNION ALL</code> of <code>GROUP BY</code>s), <code>CROSS JOIN</code>, tables listed with commas, <code>LATERAL</code>, <code>JOIN ... USING</code>, <code>NATURAL JOIN</code>, a join whose <code>ON</code> has no equality of the two tables' columns, and a window frame <code>RANGE</code> with an <code>INTERVAL</code> offset; the messages of the <code>ROLLUP</code> and <code>USING</code> refusals show the query to write instead. <code>INTERVAL '1 month'</code> moves a time written as a value, not a column's, and two times do not subtract: <a href="#parts-of-times-date_trunc-extract-and-strftime"><code>date_diff('second', a, b)</code></a> is the seconds between them (<code>'day'</code> the days), and <code>EXTRACT(epoch FROM b) - EXTRACT(epoch FROM a)</code> the seconds with their fractions.</p>
+<p><strong>Queries.</strong> Refused: <code>WITH RECURSIVE</code> (walk a graph with <a href="#graphs"><code>REACHABLE</code> and <code>PATH</code></a>), <code>GROUP BY ROLLUP</code>, <code>CUBE</code> and <code>GROUPING SETS</code> (a <code>UNION ALL</code> of <code>GROUP BY</code>s), <code>CROSS JOIN</code>, tables listed with commas, <code>LATERAL</code>, <code>JOIN ... USING</code>, <code>NATURAL JOIN</code>, a join whose <code>ON</code> has no equality of the two tables' columns, and a window frame <code>RANGE</code> with an <code>INTERVAL</code> offset; the messages of the <code>ROLLUP</code> and <code>USING</code> refusals show the query to write instead. Also refused, with what to write:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>refused</th>
+<th>write instead</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>a IS DISTINCT FROM 'x'</code></td>
+<td><code>(a != 'x' OR a IS NULL)</code></td>
+</tr>
+<tr>
+<td><code>&lt;</code>, <code>&gt;</code>, <code>BETWEEN</code> on a <code>KEYWORD</code> (<code>sku BETWEEN 'A' AND 'C'</code>, <code>month &gt;= '2023-01'</code>)</td>
+<td><code>IN</code>, <code>LIKE 'prefix%'</code>, or the value kept as a number or a time (<code>month</code> as the <code>INT</code> 202301, or a <code>TIMESTAMP</code>), which compares by range</td>
+</tr>
+<tr>
+<td><code>SUM(DISTINCT x)</code>, <code>AVG(DISTINCT x)</code></td>
+<td><code>SELECT SUM(x) FROM (SELECT DISTINCT x FROM t) d</code></td>
+</tr>
+<tr>
+<td><code>COUNT(DISTINCT a, b)</code></td>
+<td><code>SELECT COUNT(*) FROM (SELECT DISTINCT a, b FROM t) d</code></td>
+</tr>
+<tr>
+<td>a subquery as a value in <code>HAVING</code> (<code>HAVING SUM(x) &gt; (SELECT AVG(x) FROM t)</code>)</td>
+<td>run the inner query first and pass its answer as a parameter</td>
+</tr>
+<tr>
+<td><code>LIKE ... ESCAPE</code></td>
+<td>none yet: <code>%</code> and <code>_</code> in a pattern are always wildcards</td>
+</tr>
+<tr>
+<td><code>ILIKE ANY (ARRAY[...])</code></td>
+<td><code>a ILIKE '%x%' OR a ILIKE '%y%'</code></td>
+</tr>
+<tr>
+<td><code>doc-&gt;&gt;'color'</code>, <code>doc-&gt;'a'</code></td>
+<td><code>doc.color</code>, or <code>json_extract(doc, '$.color')</code> (<a href="#json-fields-keys-no-schema-names">JSON fields</a>)</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>INTERVAL '1 month'</code> moves a time written as a value, not a column's, and two times do not subtract: <a href="#parts-of-times-date_trunc-extract-and-strftime"><code>date_diff('second', a, b)</code></a> is the seconds between them (<code>'day'</code> the days), and <code>EXTRACT(epoch FROM b) - EXTRACT(epoch FROM a)</code> the seconds with their fractions.</p>
 <p><strong>Functions.</strong> Over rows ChloeDB computes <code>lower</code>, <code>upper</code>, <code>length</code>, <a href="#text-and-numbers-substr-trim-replace-concat-nullif-floor-and-ceil"><code>substr</code> (<code>SUBSTRING</code>), <code>trim</code> (<code>TRIM</code>, <code>btrim</code>), <code>ltrim</code>, <code>rtrim</code>, <code>replace</code>, <code>concat</code>, <code>nullif</code></a>, <code>abs</code>, <code>round</code>, <code>floor</code>, <code>ceil</code>, <code>coalesce</code>, <code>ln</code>, <code>log</code>, <code>exp</code>, <code>sqrt</code>, <code>pow</code>, <code>least</code>, <code>greatest</code>, <code>sigmoid</code>, <code>clamp</code>, <code>dot</code>, <code>date_trunc</code>, <code>date_part</code> (<code>EXTRACT</code>), <code>date_diff</code>, <code>strftime</code>, <code>date_bin</code>, <code>time_bucket</code>, <code>hash</code>, <code>CASE</code> and <code>CAST</code>, besides its search, vector and JSON functions; over groups, the <a href="#aggregates">aggregates</a>, <code>STRING_AGG</code> among them. Among those PostgreSQL has and ChloeDB does not: <code>left</code>, <code>right</code>, <code>position</code>, <code>split_part</code>, <code>regexp_replace</code>, <code>lpad</code>, <code>initcap</code>, <code>concat_ws</code>, <code>trunc</code>, <code>mod</code>, <code>sign</code>, <code>random</code>, <code>md5</code>, <code>to_char</code>, <code>age</code> and <code>array_agg</code>. An unknown function's error lists those that exist. <strong>Changed:</strong> 0.3.8 and earlier refused <code>substr</code>, <code>trim</code>, <code>replace</code>, <code>concat</code>, <code>nullif</code>, <code>floor</code>, <code>ceil</code>, <code>date_diff</code> and <code>STRING_AGG</code>.</p>
 <p><strong>The catalog.</strong> There is no <code>information_schema</code> or <code>pg_catalog</code>, and <code>DESCRIBE</code> runs in the SQL workbench only. <code>SHOW TABLES</code> lists the tables, and <code>GET /v1/tables</code> gives each table's columns and the <code>CREATE TABLE</code> that makes it.</p>
     </div>

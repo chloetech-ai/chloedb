@@ -87,6 +87,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
       <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">ChloeCtx</span>
       <a href="chloectx.html">ChloeCtx</a>
@@ -193,8 +194,8 @@ servers outside Kubernetes, is for no alert.</p>
 <li>A copy that restarts by itself (a pod killed for memory, a rollout):
    wait for it, <code>GET /v1/events?after=&lt;id&gt;&amp;wait_s=30</code> answers as soon as
    its next event comes. Silence the alert meanwhile (tier 1, two hours at
-   most for an agent): <code>POST /v1/alerts/copy-down/silence {"minutes": 30}</code>
-   (tool <code>silence_alert</code>).</li>
+   most for an agent): <code>POST /v1/alerts/copy-down/silence {"minutes": 30, "reason": "s1-0 restarting"}</code>
+   (tool <code>silence_alert</code>; the server refuses a silence without a <code>reason</code>).</li>
 <li>A copy that does not come back (tier 2): replace it. <code>POST
    /v1/admin/plan {"shards": [{"shard": &lt;i&gt;, "copies": [...]}]}</code>, the
    gRPC URLs the shard keeps with the dead copy left out and its
@@ -237,13 +238,23 @@ servers outside Kubernetes, is for no alert.</p>
 <ol>
 <li>Read which tables grow: <code>GET /v1/tables</code> and <code>GET /v1/load</code> (each
    copy's disk).</li>
-<li>Old rows a table keeps for a set time: a retention (<code>retain</code>) on the
-   table drops them (tier 2, a change request).</li>
+<li>Old rows a table keeps for a set time: a table made with a retention
+   (<code>retain</code>) drops them on its own. A table's retention is set when it is
+   made and cannot be changed (<code>ALTER TABLE ... SET (retain = ...)</code> is
+   refused): for a table made without one, or with too long a one, make a
+   new table with the retention, move the writers to it, and drop the old
+   one once its rows are no longer needed (tier 2 and 3, change requests).</li>
 <li>More room (tier 2): add disk in the spec (<code>POST /v1/admin/kube/plan</code>),
    or add a shard and move slots to it (<code>POST /v1/admin/plan</code>), each filed
    as a change request.</li>
 <li>Deleted rows still on disk: <code>POST /v1/admin/vacuum</code> frees them for good
-   (tier 3: it loses old versions, and is a person's alone).</li>
+   (tier 3: it loses old versions, and is a person's alone). It needs room
+   first: the file grows while it runs, by what lies above its first free
+   gap, which is written twice (in a persona study, a 1.4 GB file reached
+   2.5 GB before it shrank to 1.1 GB, and the process's memory 3 GB), so on
+   a disk that is nearly full, free room another way first. Pages a
+   statement freed become reusable two commits later: a vacuum straight
+   after a <code>DROP TABLE</code> can free nothing, and the next one frees them.</li>
 </ol>
 <h2 id="writes-fail-or-queue">Writes fail or queue<a class="anchor" href="#writes-fail-or-queue" aria-label="Link to this section">#</a></h2>
 <p>For: <code>failing</code>, <code>flush-failing</code>, <code>merge-failing</code>, <code>write-queue</code>, <code>write-p99</code>, <code>write_error_ratio</code></p>
