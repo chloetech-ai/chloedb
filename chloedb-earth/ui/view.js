@@ -787,7 +787,11 @@ function placePanel(app, j) {
     mixOut.replaceChildren(h("p", { class: "ea-note" }, "Mixing…"));
     try {
       const m = await app.api(`/v1/mix?id=${encodeURIComponent(p.id)}&plus=${encodeURIComponent(plus.value)}&minus=${encodeURIComponent(minus.value)}&region=${where.value}`);
-      mixOut.replaceChildren(h("div", { class: "ea-grid small" }, m.places.slice(0, 12).map((x) => tile(app, x))));
+      const note = m.how === "look"
+        ? `No place's description has \u201c${m.plus}\u201d: its picture is mixed with the look of the places a search for it finds first.`
+        : `The places that look most like it${m.plus ? `, described with \u201c${m.plus}\u201d` : ""}${m.minus ? `, without \u201c${m.minus}\u201d` : ""}.`;
+      mixOut.replaceChildren(h("p", { class: "ea-note" }, note),
+        m.places.length ? h("div", { class: "ea-grid small" }, m.places.slice(0, 12).map((x) => tile(app, x))) : h("p", { class: "ea-note" }, "None found."));
     } catch (err) { mixOut.replaceChildren(h("div", { class: "ea-err" }, String(err.message || err))); }
   };
   return [

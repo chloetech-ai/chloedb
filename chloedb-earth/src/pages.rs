@@ -54,14 +54,6 @@ impl Ctx<'_> {
         json!({"embed": prompt(text), "table": "ea_words", "field": "emb"})
     }
 
-    /// A vector of words, read once from the server (for mixing).
-    pub async fn word_vector(&self, text: &str) -> R<Vec<f32>> {
-        let t0 = std::time::Instant::now();
-        let j = self.db.post("/v1/embed", &json!({"text": prompt(text), "table": "ea_words", "field": "emb"})).await?;
-        self.trace.push(&format!("the vector of \u{201c}{text}\u{201d}"), "POST /v1/embed", &json!({"text": prompt(text)}), 1, t0.elapsed().as_secs_f64() * 1000.0, None);
-        Ok(floats(&j["vector"]))
-    }
-
     /// The newest scan read for a region (Unix seconds).
     pub async fn clock(&self, region: &str) -> i64 {
         let rows = self.soft("the newest scan", "SELECT MAX(ts) AS t FROM ea_scans WHERE region = :r", json!({"r": region})).await;
@@ -410,8 +402,12 @@ pub async fn picture(c: &Ctx<'_>, image_b64: &str, f: Filters) -> R<Value> {
     Ok(json!({"region": f.region, "places": rows}))
 }
 
-/// A place mixed with words: its picture's vector, moved towards `plus`
-/// and away from `minus` (each by weight `w`), searched for in a region.
+/// A place mixed with words: the places that look most like it whose
+/// description (what covers them, their terrain, crops and mines) has the
+/// words of `plus` and none of `minus`, searched for in a region. When no
+/// description has them (Chile has no crop map), the words become a
+/// picture instead: the mean look of the places a search for them finds
+/// first, added to the place's own by weight `w`.
 pub async fn mix(c: &Ctx<'_>, id: &str, plus: &str, minus: &str, w: f32, f: Filters) -> R<Value> {
     let rows = c.rows("the place's vector", "SELECT id, look FROM ea_places WHERE id = :id", json!({"id": id})).await?;
     let Some(base) = rows.first() else { return Err(ApiError(axum::http::StatusCode::NOT_FOUND, format!("no place {id}"))) };
@@ -419,30 +415,68 @@ pub async fn mix(c: &Ctx<'_>, id: &str, plus: &str, minus: &str, w: f32, f: Filt
     if v.is_empty() {
         return Err(bad("the place has no picture's vector"));
     }
-    // The words' vectors are far shorter in the pictures' direction than
-    // a picture's own: scale them by how far the picture is from words.
-    for (t, sign) in [(plus, 1.0f32), (minus, -1.0f32)] {
-        if t.trim().is_empty() {
-            continue;
-        }
-        let tv = c.word_vector(t).await?;
-        for (x, y) in v.iter_mut().zip(&tv) {
-            *x += sign * w * y;
+    norm(&mut v);
+    let (add, take) = (match_words(plus), match_words(minus));
+    if add.is_empty() && take.is_empty() {
+        return Err(bad("words to add or take away: vineyards, a lake, houses"));
+    }
+    let what = match (add.is_empty(), take.is_empty()) {
+        (false, true) => format!("it, with \u{201c}{}\u{201d}", plus.trim()),
+        (true, false) => format!("it, without \u{201c}{}\u{201d}", minus.trim()),
+        _ => format!("it, with \u{201c}{}\u{201d}, without \u{201c}{}\u{201d}", plus.trim(), minus.trim()),
+    };
+    // By the words: its look, among the places described with them (all
+    // the words, fewer while that finds too few).
+    let mut p = json!({"v": param(&v), "id": id});
+    let mut wh = f.sql(&mut p);
+    let mut and = vec!["id <> :id".to_string()];
+    if !take.is_empty() {
+        and.push("NOT MATCH(about, :take)".into());
+        p["take"] = json!(take.join(" OR "));
+    }
+    // The guarded MATCH last: ChloeDB refuses one followed by another AND.
+    if !add.is_empty() {
+        and.push("MATCH(about, :add, min => 1, min_rows => 24)".into());
+        p["add"] = json!(add.join(" "));
+    }
+    wh = if wh.is_empty() { format!("WHERE {}", and.join(" AND ")) } else { format!("{wh} AND {}", and.join(" AND ")) };
+    let found = c.rows(&what, format!("SELECT {PLACE_SMALL}, score() AS score FROM ea_places {wh} ORDER BY similarity(look, :v) DESC LIMIT 48"), p).await?;
+    if found.len() >= 6 || add.is_empty() {
+        return Ok(json!({"id": id, "plus": plus, "minus": minus, "how": "words", "region": f.region, "places": found}));
+    }
+    // By the look: no description has the words.
+    let looks = c.rows(&format!("the places that look most like \u{201c}{}\u{201d}", plus.trim()), "SELECT look FROM ea_places ORDER BY rrf(similarity(look, :t), bm25(about, :q)) DESC LIMIT 24", json!({"t": c.words(plus.trim()), "q": plus.trim()})).await?;
+    let mut mean = vec![0f32; v.len()];
+    for r in &looks {
+        let mut x = floats(&r["look"]);
+        if x.len() == mean.len() {
+            norm(&mut x);
+            mean.iter_mut().zip(&x).for_each(|(m, y)| *m += y);
         }
     }
+    norm(&mut mean);
+    v.iter_mut().zip(&mean).for_each(|(x, y)| *x += w * y);
     norm(&mut v);
     let mut p = json!({"v": param(&v), "id": id});
     let mut wh = f.sql(&mut p);
-    wh = if wh.is_empty() { "WHERE id <> :id".to_string() } else { format!("{wh} AND id <> :id") };
-    let sql = format!("SELECT {PLACE_SMALL}, score() AS score FROM ea_places {wh} ORDER BY similarity(look, :v) DESC LIMIT 48");
-    let what = match (plus.trim().is_empty(), minus.trim().is_empty()) {
-        (true, true) => "places that look like it".to_string(),
-        (false, true) => format!("it, with \u{201c}{plus}\u{201d}"),
-        (true, false) => format!("it, without \u{201c}{minus}\u{201d}"),
-        _ => format!("it, with \u{201c}{plus}\u{201d}, without \u{201c}{minus}\u{201d}"),
-    };
-    let found = c.rows(&what, sql, p).await?;
-    Ok(json!({"id": id, "plus": plus, "minus": minus, "w": w, "region": f.region, "places": found}))
+    let mut and = vec!["id <> :id".to_string()];
+    if !take.is_empty() {
+        and.push("NOT MATCH(about, :take)".into());
+        p["take"] = json!(take.join(" OR "));
+    }
+    wh = if wh.is_empty() { format!("WHERE {}", and.join(" AND ")) } else { format!("{wh} AND {}", and.join(" AND ")) };
+    let found = c.rows(&what, format!("SELECT {PLACE_SMALL}, score() AS score FROM ea_places {wh} ORDER BY similarity(look, :v) DESC LIMIT 48"), p).await?;
+    Ok(json!({"id": id, "plus": plus, "minus": minus, "how": "look", "w": w, "region": f.region, "places": found}))
+}
+
+/// The words of a mix, for MATCH: letters and digits only (so no word is
+/// read as an operator), lower case, without the short ones.
+fn match_words(s: &str) -> Vec<String> {
+    s.split(|ch: char| !ch.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| w.chars().count() > 2 && !matches!(w.as_str(), "and" | "the" | "with" | "not" | "near"))
+        .take(8)
+        .collect()
 }
 
 /// Climate twins: the places of one region whose pictures look most like
