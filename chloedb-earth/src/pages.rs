@@ -691,6 +691,7 @@ pub const SOURCES: &[(&str, &str, &str, &str)] = &[
     ("geoBoundaries", "regions, counties and comunas", "CC BY 3.0 IGO (Chile), public domain (US)", "https://www.geoboundaries.org/"),
     ("GeoNames", "towns and their populations", "CC BY 4.0", "https://www.geonames.org/"),
     ("EOX Sentinel-2 cloudless 2016", "the map's picture of the ground", "CC BY 4.0 (EOX IT Services, Copernicus Sentinel data 2016)", "https://s2maps.eu/"),
+    ("GOES GeoColor from NASA GIBS", "Satellite now on Live: the newest picture of the sky, every 10 minutes", "free to use with credit (NOAA, CIRA, NASA GIBS)", "https://www.earthdata.nasa.gov/gibs"),
     ("Element 84 Earth Search (Sentinel-2 L2A)", "each place's picture every year, for how it changed", "free licence (Copernicus Sentinel data)", "https://earth-search.aws.element84.com/v1"),
 ];
 

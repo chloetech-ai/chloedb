@@ -30,6 +30,34 @@ const EOX = "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}
 const LABELS = "https://tiles.maps.eox.at/wmts/1.0.0/overlay_bright_3857/default/g/{z}/{y}/{x}.png";
 const DEM = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
 const ATTRIB = '<a href="https://s2maps.eu" target="_blank" rel="noopener">Sentinel-2 cloudless 2016</a> by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016), labels © OpenStreetMap contributors, terrain: Mapzen terrain tiles';
+// The picture of the sky now: GOES's GeoColor from NASA's GIBS, every 10
+// minutes, about half an hour after the scan. GOES-West sees California and
+// GOES-East sees Chile. GIBS lists the times it has; a time just listed can
+// still lack tiles for a minute, so the newest one whose tiles answer (one
+// far out and one close in, over the region) is taken, and the tiles are
+// asked for at that time, so every tile on the map is the same picture.
+const GIBS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
+const SKY = { california: { layer: "GOES-West_ABI_GeoColor", probes: ["4/6/2", "7/49/21"] }, chile: { layer: "GOES-East_ABI_GeoColor", probes: ["4/9/4", "7/77/38"] } };
+const SKY_ATTRIB = 'Satellite now: GOES GeoColor (NOAA, CIRA) from <a href="https://www.earthdata.nasa.gov/gibs" target="_blank" rel="noopener">NASA GIBS</a>';
+const skyTiles = (layer, t) => `${GIBS}/${layer}/default/${t}/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png`;
+const isoMin = (ms) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+async function skyTime(region) {
+  const k = SKY[region];
+  const r = await fetch(`${GIBS}/1.0.0/${k.layer}/default/GoogleMapsCompatible_Level7/all/${isoMin(Date.now() - 6 * 3600e3)}--${isoMin(Date.now() + 3600e3)}.xml`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`GIBS answered ${r.status}`);
+  const dom = (await r.text()).match(/<Domain>([^<]*)<\/Domain>/)?.[1] || "";
+  const times = [];
+  for (const part of dom.split(",").reverse()) {
+    const [a, b] = part.split("/").map(Date.parse);
+    for (let t = b; t >= a && times.length < 6; t -= 600e3) times.push(t);
+  }
+  for (const t of times) {
+    const at = isoMin(t);
+    const ok = await Promise.all(k.probes.map((z) => fetch(skyTiles(k.layer, at).replace("{z}/{y}/{x}", z), { method: "HEAD" }).then((x) => x.ok, () => false)));
+    if (ok.every(Boolean)) return at;
+  }
+  throw new Error("no recent picture");
+}
 const HALF = 3.84 / 2 / 111.32;
 // Half a GOES fire pixel, in degrees of latitude (about 2.5 km a side over
 // California from GOES-West and over central Chile from GOES-East).
@@ -276,6 +304,8 @@ async function makeMap(box, o = {}) {
   bl.onclick = () => { const on = !bl.classList.contains("on"); bl.classList.toggle("on", on); map.setLayoutProperty("labels", "visibility", on ? "visible" : "none"); };
   tr.append(...(o.buttons || []), bl, b3);
   box.append(tr);
+  // On a phone the credits start folded, behind their (i), so they cover no map.
+  if (matchMedia("(max-width: 640px)").matches) box.querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show");
   map.ea = { tr };
   return map;
 }
@@ -486,6 +516,35 @@ async function live(app, page, region) {
   app.stops.push(() => map.remove());
   const tl = h("div", { class: "ea-maptl" });
   box.append(tl);
+  // Satellite now: on by default, under the fire pixels and the names.
+  const skyNote = h("div", { class: "ea-mapttl" }, "Satellite now: finding the newest picture…");
+  const bs = h("button", { class: "ea-mapbtn on", title: "Show or hide the newest GOES picture of the sky" }, "Satellite now");
+  map.ea.tr.prepend(bs);
+  let skyAt = null;
+  const sky = async () => {
+    let t;
+    try { t = await skyTime(region); } catch (e) { if (!skyAt) skyNote.textContent = `Satellite now: no picture (${e.message})`; return; }
+    if (t !== skyAt && !(skyAt && t < skyAt)) {
+      skyAt = t;
+      const src = map.getSource("sky");
+      if (src) src.setTiles([skyTiles(SKY[region].layer, t)]);
+      else {
+        map.addSource("sky", { type: "raster", tiles: [skyTiles(SKY[region].layer, t)], tileSize: 256, maxzoom: 7, attribution: SKY_ATTRIB });
+        map.addLayer({ id: "sky", type: "raster", source: "sky", layout: { visibility: bs.classList.contains("on") ? "visible" : "none" },
+          paint: { "raster-opacity": ["interpolate", ["linear"], ["zoom"], 6, 0.92, 9, 0.5, 11, 0.25], "raster-fade-duration": 0 } }, "labels");
+      }
+    }
+    skyNote.replaceChildren(h("b", {}, `${R.sat} picture`), ` of ${when(skyAt, region)}, ${ago((Date.now() - Date.parse(skyAt)) / 1000)}`);
+  };
+  bs.onclick = () => {
+    const on = !bs.classList.contains("on");
+    bs.classList.toggle("on", on);
+    skyNote.style.display = on ? "" : "none";
+    if (map.getLayer("sky")) map.setLayoutProperty("sky", "visibility", on ? "visible" : "none");
+  };
+  await sky();
+  const st = setInterval(() => sky().catch(() => {}), 120000);
+  app.stops.push(() => clearInterval(st));
   let fitted = false;
   const draw = async (fresh) => {
     const j = await app.api(`/v1/live?region=${region}`, { fresh, keep: 15000 });
@@ -503,7 +562,8 @@ async function live(app, page, region) {
     }
     tl.replaceChildren(
       h("div", { class: "ea-mapttl" }, h("b", {}, R.title), ` · ${R.sat} fire pixels, the last hour`),
-      onAir(j.live, j.now ? (j.live ? `${R.sat}, a scan every ${region === "chile" ? 10 : 5} min` : `last scan ${ago(j.lag_s)}`) : "no scans read yet"));
+      onAir(j.live, j.now ? (j.live ? `${R.sat}, a scan every ${region === "chile" ? 10 : 5} min` : `last scan ${ago(j.lag_s)}`) : "no scans read yet"),
+      skyNote);
     swap(side, 
       card(`${fmt(j.fires.length)} ${j.fires.length === 1 ? "fire" : "fires"} burning`, j.now ? `as of ${when(j.now, region)}` : "",
         j.fires.length ? h("div", { class: "ea-list" }, j.fires.slice(0, 40).map((f) => fireRow(app, f, { date: false }))) : h("p", { class: "ea-empty" }, j.live ? "No fire in the last scans." : "The feed is not reading scans now.")),
