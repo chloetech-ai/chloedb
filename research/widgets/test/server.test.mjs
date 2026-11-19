@@ -175,3 +175,13 @@ test('a dish’s time is an estimate from its own words, and says so (MAYA-4)', 
   assert.equal(estimate(meal('Stew', 'Simmer for 30 minutes, stirring every 5 minutes.\nBake in the oven until golden.')).minutes, 50)
   assert.equal(estimate(meal('Salad', 'Chop everything finely.\nToss it all together and serve.')).minutes_note, 'a rough guess: the recipe gives no times')
 })
+
+test('a typed pattern that runs without end is refused outside the chat, and matches are found (DEV-1)', () => {
+  const runaway = new Function(`${kit.match(/const RUNAWAY = [^\n]*/)[0]}\nreturn RUNAWAY`)()
+  for (const p of ['(a+)+$', '(a*)*', '(\\w+\\s?)+$', '(x+x+)+y', '([a-z]+)*']) assert.ok(runaway.test(p), p)
+  for (const p of ['a+$', '(ab)+', '\\d{3}-\\d{4}', '(foo|bar)+', '^(\\w+)@(\\w+)\\.com$']) assert.ok(!runaway.test(p), p)
+  const matchAll = fn('matchAll')
+  assert.deepEqual(matchAll('(\\d+)-(\\d+)', '', 'a 12-34 b 5-6').matches.map(m => [m.index, m.text, m.groups]), [[2, '12-34', ['12', '34']], [10, '5-6', ['5', '6']]])
+  assert.equal(matchAll('a*', '', 'bab').matches.length, 4, 'an empty match moves on')
+  assert.match(matchAll('(', '', 'x').error, /Invalid|Unterminated|group/i)
+})

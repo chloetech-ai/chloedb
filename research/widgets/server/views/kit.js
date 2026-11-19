@@ -87,7 +87,12 @@ function drawing(draw, connection, keeps = true) {
         sharedKept = true
         if (document.body) textForm(document.body)
       }
-      draw({ ...replayed(data, kept), kept })
+      const start = performance.now()
+      try {
+        draw({ ...replayed(data, kept), kept })
+      } finally {
+        slow(performance.now() - start)
+      }
     }).catch(error => broke(error?.message ?? error)))
 }
 
@@ -96,6 +101,72 @@ async function call(app, name, args) {
   const result = await app.callServerTool({ name, arguments: args })
   if (result.isError) throw new Error(result.content?.find(c => c.type === 'text')?.text ?? `${name} failed`)
   return result.structuredContent
+}
+
+// A pattern the person types can run without end on some texts ((a+)+$ on a
+// run of a's) and freeze the page with the app (DEV-1). In the chat, the page
+// runs it apart, in a worker it stops after a second, and the text never
+// leaves the browser; elsewhere a pattern that repeats a repeat is refused
+// and the text is cut to 20,000 characters. It never throws: it answers
+// { matches: [{ index, text, groups, named }], error, timedOut }.
+const RUNAWAY = /\((?:[^()\\]|\\.)*(?:[+*]|\{\d*,\d*\})(?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d*,)/
+function matchAll(pattern, flags, text) {
+  try {
+    const re = new RegExp(pattern, flags.includes('g') ? flags : `${flags}g`)
+    const matches = []
+    let m
+    while ((m = re.exec(text)) && matches.length < 1000) {
+      matches.push({ index: m.index, text: m[0], groups: m.slice(1), named: m.groups ?? null })
+      if (m[0] === '') re.lastIndex++
+    }
+    return { matches }
+  } catch (error) {
+    return { matches: [], error: error.message }
+  }
+}
+async function regex(app, pattern, flags = '', text = '') {
+  const asked = { pattern: String(pattern ?? ''), flags: String(flags ?? ''), text: String(text ?? '').slice(0, 200_000) }
+  if (app?.getHostVersion?.()?.name === 'instant-apps') {
+    try {
+      return await call(app, 'app_regex', asked)
+    } catch (error) {
+      return { matches: [], error: error.message }
+    }
+  }
+  if (RUNAWAY.test(asked.pattern)) return { matches: [], error: 'This pattern repeats a repeat, such as (a+)+, which can run without end on some texts and freeze the page: write it as a+.' }
+  return matchAll(asked.pattern, asked.flags, asked.text.slice(0, 20_000))
+}
+
+// An app's own code can still run for seconds (a loop on what was typed)
+// and freeze the page with it. The kit times the app's event handlers and its
+// draws, and one that ran over two seconds is told to the chat, which names
+// the app and opens it next time without what it kept (DEV-1).
+const SLOW = 2000
+function slow(ms) {
+  if (ms < SLOW || !connected) return
+  connected.then(app => app.getHostVersion?.()?.name === 'instant-apps' && app.callServerTool({ name: 'app_froze', arguments: { ms: Math.round(ms) } })).catch(() => {})
+}
+const timedListeners = new WeakMap()
+const addListener = EventTarget.prototype.addEventListener
+const removeListener = EventTarget.prototype.removeEventListener
+EventTarget.prototype.addEventListener = function (type, listener, options) {
+  if (typeof listener !== 'function') return addListener.call(this, type, listener, options)
+  let timed = timedListeners.get(listener)
+  if (!timed) {
+    timed = function (...args) {
+      const start = performance.now()
+      try {
+        return listener.apply(this, args)
+      } finally {
+        slow(performance.now() - start)
+      }
+    }
+    timedListeners.set(listener, timed)
+  }
+  return addListener.call(this, type, timed, options)
+}
+EventTarget.prototype.removeEventListener = function (type, listener, options) {
+  return removeListener.call(this, type, timedListeners.get(listener) ?? listener, options)
 }
 
 // Puts a message in the conversation as the person's, for "Ask Claude".
@@ -311,4 +382,4 @@ new MutationObserver(changes => {
 }).observe(document.documentElement, { childList: true, subtree: true, characterData: true })
 if (document.body) textForm(document.body)
 
-globalThis.Kit = { connect, drawing, replayed, call, ask, tell, keep, kept, link, money, number, parse, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }
+globalThis.Kit = { connect, drawing, replayed, call, ask, tell, keep, kept, link, money, number, parse, regex, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }
