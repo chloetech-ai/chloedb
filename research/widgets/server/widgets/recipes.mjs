@@ -158,8 +158,10 @@ function spread(ids, key) {
 }
 const PAGE = 24
 // The most dishes looked up in full for one search: when a search needs more
-// than the list gives (a second filter, a time, quickest first).
-const LOOKED = 120
+// than the list gives (a second filter, a time, quickest first). Every list
+// TheMealDB has is smaller, so a total is the total, and each dish is looked
+// up once (the cache keeps it): about five seconds the first time.
+const LOOKED = 600
 async function lookup(ids) {
   const out = []
   for (let i = 0; i < ids.length; i += 20) out.push(...(await Promise.all(ids.slice(i, i + 20).map(id => get(`lookup.php?i=${id}`).then(b => b.meals?.[0]).catch(() => null)))))
