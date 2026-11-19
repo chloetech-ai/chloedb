@@ -17,8 +17,8 @@ Steps, each its own command:
   fetch  each place's picture of each year, into <out>/chips/<place>_<year>.jpg
   embed  their vectors, by the server's POST /v1/embed (the slow step:
          seconds a picture on four cores)
-  rows   ea_years.jsonl (a row a place and year, its label the nearest of a
-         few words) and ea_changes.jsonl (a row a place: its first and last
+  rows   ea_years.jsonl (a row a place and year whose picture is clear, its
+         label the nearest of a few words) and ea_changes.jsonl (a row a place: its first and last
          look, how far it moved, the year it moved most, the direction)
 
   python3 -I tools/years.py pick  --out DIR [--per-region 150]
@@ -262,6 +262,20 @@ def embed(a):
 
 # --- rows -------------------------------------------------------------------
 
+def clear(path):
+    """Whether a year's picture can stand for the place: not dark or flat
+    (deep water, shadowed forest: Sentinel-2's true colour leaves them near
+    black, and their looks drift with the noise), not cloudy. On the 1,237
+    pictures fetched on 18 and 19 November 2026, a mean under 25 of 255 or
+    a spread under 6 was a lake or a black square, and white over 5% was
+    cloud or snow; 957 passed. A test for grey haze was tried and left out:
+    it took towns and mines too."""
+    from PIL import Image
+    a = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32)
+    white = float(np.mean(np.all(a >= 225, axis=2)))
+    return a.mean() >= 25 and a.mean(axis=2).std() >= 6 and white <= 0.05
+
+
 def unit(v):
     v = np.asarray(v, dtype=np.float32)
     return v / (np.linalg.norm(v) or 1.0)
@@ -281,7 +295,7 @@ def rows(a):
             seen = []
             for y in YEARS:
                 k = f"{pid}_{y}"
-                if k not in vec:
+                if k not in vec or not clear(f"{a.out}/chips/{k}.jpg"):
                     continue
                 m = json.load(open(f"{a.out}/chips/{k}.json"))
                 v = vec[k]
