@@ -2,9 +2,9 @@
 //! the slot's stream of changes, a moment behind Postgres
 //! ([`super`] describes what it keeps and how a restart resumes).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as Json};
@@ -68,6 +68,16 @@ const POLL_EVERY: Duration = Duration::from_secs(30);
 
 /// How often it logs how it stands.
 const LOG_EVERY: Duration = Duration::from_secs(30);
+
+/// How often it tells ChloeDB how it stands (`POST /v1/admin/follow/status`),
+/// and asks Postgres how far its WAL reaches: a follower silent for
+/// [`crate::service::feed::SILENT_MS`] counts as behind for as long.
+const REPORT_EVERY: Duration = Duration::from_secs(2);
+
+/// A Postgres position within this many bytes of what the follower
+/// confirmed counts as reached: Postgres's write position can sit a page
+/// header past the end of the last record, which no stream reaches.
+const REACHED_SLACK: Lsn = 8192;
 
 /// The key column of a table whose Postgres key has several columns: their
 /// values joined by `:`, with `:` and `\` escaped by a `\`.
@@ -295,6 +305,171 @@ struct Stats {
     skipped: u64,
 }
 
+/// How the follower stands, shared with the task that tells ChloeDB
+/// ([`report`]).
+#[derive(Default)]
+struct Shared {
+    /// The end of the last transaction written to ChloeDB.
+    applied: AtomicU64,
+    rows_copied: AtomicU64,
+    transactions: AtomicU64,
+    changes: AtomicU64,
+    tables: AtomicU64,
+    /// Postgres's WAL position as last asked (0: not known), and the lag
+    /// last worked out from it ([`Lag`]).
+    postgres_lsn: AtomicU64,
+    lag_ms: AtomicU64,
+    now: Mutex<Now>,
+}
+
+/// The follower's state and errors.
+#[derive(Default)]
+struct Now {
+    /// `starting`, `copying`, `following`, `retrying` (the stream or
+    /// ChloeDB failed, and it connects again) or `failed` (it stopped).
+    state: &'static str,
+    /// What it is copying while it copies a table that joined.
+    copying: Option<String>,
+    /// The error it is retrying after, or failed with.
+    error: Option<String>,
+    /// The last error, and when (ms), kept once it recovered.
+    last_error: Option<(String, u64)>,
+    /// Why Postgres's position could not be asked.
+    postgres_error: Option<String>,
+}
+
+impl Shared {
+    fn set(&self, state: &'static str, error: Option<String>) {
+        let mut n = self.now.lock().unwrap_or_else(|e| e.into_inner());
+        n.state = state;
+        if let Some(e) = &error {
+            n.last_error = Some((e.clone(), crate::telemetry::now_ms()));
+        }
+        n.error = error;
+    }
+
+    fn copying(&self, table: Option<String>) {
+        self.now.lock().unwrap_or_else(|e| e.into_inner()).copying = table;
+    }
+}
+
+/// Since when the follower is behind Postgres: the positions Postgres's
+/// WAL reached, each with when it was seen there, that the follower has
+/// not confirmed yet; the oldest one's age is the lag (ROSA-307).
+#[derive(Default)]
+struct Lag {
+    seen: VecDeque<(Lsn, Instant)>,
+}
+
+impl Lag {
+    /// Takes Postgres's position `at` (if asked) and the follower's
+    /// `confirmed` one, and answers the lag in ms.
+    fn step(&mut self, at: Option<Lsn>, confirmed: Lsn) -> u64 {
+        if let Some(at) = at.filter(|a| self.seen.back().is_none_or(|b| *a > b.0)) {
+            self.seen.push_back((at, Instant::now()));
+        }
+        while self.seen.front().is_some_and(|f| f.0 <= confirmed.saturating_add(REACHED_SLACK)) {
+            self.seen.pop_front();
+        }
+        self.seen.front().map_or(0, |f| f.1.elapsed().as_millis() as u64)
+    }
+}
+
+/// What the follower tells ChloeDB of itself.
+struct Info {
+    name: String,
+    source: String,
+    publication: String,
+    slot: String,
+    started_ms: u64,
+}
+
+/// The follower's status as ChloeDB keeps it (`POST /v1/admin/follow/status`,
+/// `kind: "postgres"`): its state; the end of the last transaction it
+/// applied (`applied_lsn`), what it confirmed to Postgres (`confirmed_lsn`,
+/// at least that: past transactions of other tables too), Postgres's own
+/// position (`postgres_lsn`); how far behind, in bytes (`behind_bytes`:
+/// `postgres_lsn - confirmed_lsn`, as `pg_wal_lsn_diff(pg_current_wal_lsn(),
+/// confirmed_flush_lsn)` reads on Postgres) and in time (`lag_ms`: since
+/// Postgres's WAL first reached a position it has not confirmed); LSNs as
+/// Postgres writes them.
+fn status_body(info: &Info, sh: &Shared, flushed: Lsn) -> Json {
+    let n = sh.now.lock().unwrap_or_else(|e| e.into_inner());
+    let pg_lsn = sh.postgres_lsn.load(Ordering::Relaxed);
+    let applied = sh.applied.load(Ordering::Relaxed);
+    let confirmed = flushed.max(applied);
+    let known = |l: Lsn| (l > 0).then(|| lsn_text(l));
+    json!({
+        "name": info.name, "kind": "postgres", "state": if n.state.is_empty() { "starting" } else { n.state },
+        "source": info.source, "publication": info.publication, "slot": info.slot,
+        "applied_lsn": known(applied), "confirmed_lsn": known(confirmed), "postgres_lsn": known(pg_lsn),
+        "behind_bytes": (pg_lsn > 0).then(|| pg_lsn.saturating_sub(confirmed)),
+        "lag_ms": sh.lag_ms.load(Ordering::Relaxed),
+        "copying": n.copying, "error": n.error,
+        "last_error": n.last_error.as_ref().map(|(m, at)| json!({"message": m, "at_ms": at})),
+        "postgres_error": n.postgres_error,
+        "tables": sh.tables.load(Ordering::Relaxed), "transactions": sh.transactions.load(Ordering::Relaxed), "changes": sh.changes.load(Ordering::Relaxed),
+        "rows_copied": sh.rows_copied.load(Ordering::Relaxed),
+        "started_ms": info.started_ms, "time_ms": crate::telemetry::now_ms(),
+    })
+}
+
+/// Postgres's WAL position now (on a standby, how far it replayed).
+async fn postgres_lsn(cfg: &wire::Config, conn: &mut Option<Conn>) -> Result<Lsn, String> {
+    if conn.is_none() {
+        *conn = Some(Conn::connect(cfg, false).await.map_err(|e| e.to_string())?);
+    }
+    let c = conn.as_mut().expect("connected");
+    let r = c.query("SELECT (CASE WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn() ELSE pg_current_wal_lsn() END)::text");
+    match r.await {
+        Ok(rows) => rows.rows.first().and_then(|r| r.first()).and_then(|v| v.as_deref()).and_then(parse_lsn).ok_or_else(|| "Postgres gave no WAL position".to_string()),
+        Err(e) => {
+            *conn = None;
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Tells ChloeDB how the follower stands every [`REPORT_EVERY`], until
+/// dropped, asking Postgres how far its WAL reaches on a connection of its
+/// own; says once in the log when ChloeDB refuses it.
+async fn report(cfg: wire::Config, dst: Http, info: Arc<Info>, sh: Arc<Shared>, flushed: Arc<AtomicU64>) {
+    let mut conn = None;
+    let mut lag = Lag::default();
+    let mut refused = false;
+    loop {
+        // A Postgres that does not answer must not keep the follower from
+        // saying how it stands.
+        let asked = tokio::time::timeout(REPORT_EVERY * 3, postgres_lsn(&cfg, &mut conn)).await.unwrap_or_else(|_| Err(format!("Postgres did not answer within {} s", (REPORT_EVERY * 3).as_secs())));
+        if asked.is_err() {
+            conn = None;
+        }
+        let at = match asked {
+            Ok(l) => {
+                sh.postgres_lsn.store(l, Ordering::Relaxed);
+                sh.now.lock().unwrap_or_else(|e| e.into_inner()).postgres_error = None;
+                Some(l)
+            }
+            Err(e) => {
+                sh.now.lock().unwrap_or_else(|e| e.into_inner()).postgres_error = Some(e);
+                None
+            }
+        };
+        let confirmed = flushed.load(Ordering::Relaxed).max(sh.applied.load(Ordering::Relaxed));
+        sh.lag_ms.store(lag.step(at, confirmed), Ordering::Relaxed);
+        let body = status_body(&info, &sh, flushed.load(Ordering::Relaxed));
+        match dst.post("/v1/admin/follow/status", &body).await {
+            Err(e) if matches!(e.status, 401 | 403 | 404) && !refused => {
+                refused = true;
+                tracing::warn!(status = e.status, "ChloeDB does not take the follower's status ({}): its state and lag are not in /metrics, the alerts or Data > Connectors; give --target-token the cluster's token or an admin key (a newer chloedb-server takes it)", e.message);
+            }
+            Err(e) => tracing::debug!("telling ChloeDB how the follower stands: {}", e.message),
+            Ok(_) => refused = false,
+        }
+        tokio::time::sleep(REPORT_EVERY).await;
+    }
+}
+
 /// The follower.
 struct Follower {
     o: Options,
@@ -319,18 +494,33 @@ struct Follower {
     base: i64,
     /// What it tells Postgres it flushed.
     flushed: Arc<AtomicU64>,
-    /// The end of the server's WAL, as last heard.
-    server_end: Lsn,
     /// The shards' numbers from its last write, which a read waits for.
     seen: Vec<u64>,
     stats: Stats,
     polled: Instant,
     logged: Instant,
+    /// How it stands, for ChloeDB ([`report`]).
+    shared: Arc<Shared>,
 }
 
-/// Follows `o.source` into `o.target` until it fails for good.
+/// Follows `o.source` into `o.target` until it fails for good, telling
+/// ChloeDB how it stands every [`REPORT_EVERY`] ([`report`]): its state,
+/// positions and lag, in `/metrics`, the alerts and Data > Connectors
+/// (ROSA-302). Failed, it says so before it returns.
 pub async fn run(o: Options) -> Result<(), ApiError> {
     let mut f = Follower::new(o).await?;
+    let info = Arc::new(Info { name: f.o.name.clone(), source: f.cfg.shown(), publication: f.o.publication.clone(), slot: f.slot.clone(), started_ms: crate::telemetry::now_ms() });
+    let _report = Aborted(tokio::spawn(report(f.cfg.clone(), f.dst.clone(), info.clone(), f.shared.clone(), f.flushed.clone())));
+    let r = follow_all(&mut f).await;
+    if let Err(e) = &r {
+        f.shared.set("failed", Some(e.message.clone()));
+        let body = status_body(&info, &f.shared, f.flushed.load(Ordering::Relaxed));
+        let _ = tokio::time::timeout(Duration::from_secs(5), f.dst.post("/v1/admin/follow/status", &body)).await;
+    }
+    r
+}
+
+async fn follow_all(f: &mut Follower) -> Result<(), ApiError> {
     f.check().await?;
     let kept = f.kept().await?;
     f.load_tables().await?;
@@ -343,6 +533,8 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
             f.followed = kept.tables.iter().filter(|(_, (_, on, _))| *on).map(|(oid, (t, ..))| (*oid, t.clone())).collect();
             let at = kept.applied.unwrap_or(0);
             f.written = at;
+            f.flushed.store(at, Ordering::Relaxed);
+            f.mirror();
             tracing::info!(slot = %f.slot, at = %lsn_text(at), tables = f.followed.len(), "resuming from what ChloeDB applied");
             None
         }
@@ -353,6 +545,7 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
                     Some(_) => tracing::warn!(slot = %f.slot, "the replication slot lost WAL it needed (max_slot_wal_keep_size): copying the tables again"),
                 }
             }
+            f.shared.set("copying", None);
             Some(f.copy_all(kept.copy, s.is_some()).await?)
         }
     };
@@ -377,6 +570,8 @@ pub async fn drop_slot(o: Options) -> Result<Json, ApiError> {
         released = kept.tables.values().filter(|(_, on, _)| *on).map(|(t, _, _)| t.clone()).collect();
         f.write(marks).await?;
     }
+    // No longer following: ChloeDB stops counting it as behind.
+    let _ = f.dst.post("/v1/admin/follow/status", &json!({"name": f.o.name, "kind": "postgres", "state": "stopped", "slot": f.slot, "why": "its slot was dropped (--drop-slot)", "time_ms": crate::telemetry::now_ms()})).await;
     Ok(json!({"slot": f.slot, "dropped": found, "released": released}))
 }
 
@@ -421,13 +616,23 @@ impl Follower {
             written: 0,
             base: 0,
             flushed: Arc::new(AtomicU64::new(0)),
-            server_end: 0,
             seen: Vec::new(),
             stats: Stats::default(),
             polled: Instant::now(),
             logged: Instant::now(),
+            shared: Arc::new(Shared::default()),
             o,
         })
+    }
+
+    /// What the reporter shows of the follower's own counts.
+    fn mirror(&self) {
+        let sh = &self.shared;
+        sh.applied.store(self.written, Ordering::Relaxed);
+        sh.transactions.store(self.stats.txns, Ordering::Relaxed);
+        sh.changes.store(self.stats.changes, Ordering::Relaxed);
+        sh.tables.store(self.followed.len() as u64, Ordering::Relaxed);
+        sh.rows_copied.store(self.stats.copied, Ordering::Relaxed);
     }
 
     /// The catalog connection, connected again if it was lost.
@@ -786,11 +991,13 @@ impl Follower {
             rel.filter = p.filter;
         }
         let schema = self.schema(&rel.table)?;
+        self.shared.copying(Some(rel.shown.clone()));
         let mut conn = Conn::connect(&self.cfg, false).await.map_err(pg)?;
         conn.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await.map_err(pg)?;
-        let rows = copy_table(&mut conn, &self.dst, &rel, &schema, self.o.batch).await?;
+        let rows = copy_table(&mut conn, &self.dst, &rel, &schema, self.o.batch, &self.shared.rows_copied).await?;
         conn.query("COMMIT").await.map_err(pg)?;
         conn.close().await;
+        self.shared.copying(None);
         self.stats.copied += rows;
         self.write(vec![mark(name, crate::telemetry::now_ms() as i64 * 2)]).await?;
         tracing::info!(table = %rel.table, rows, "copied the table again, with the column Postgres added");
@@ -867,6 +1074,9 @@ impl Follower {
         let at = made.get(0, "consistent_point").and_then(parse_lsn).ok_or_else(|| ApiError::internal("CREATE_REPLICATION_SLOT answered no consistent point"))?;
         let snapshot = made.get(0, "snapshot_name").ok_or_else(|| ApiError::internal("CREATE_REPLICATION_SLOT answered no snapshot"))?.to_string();
         tracing::info!(slot = %self.slot, at = %lsn_text(at), "made the replication slot: copying the tables as of it");
+        // The slot starts here: what Postgres writes from now on is behind
+        // until the copy is done and the stream applies it.
+        self.flushed.store(at, Ordering::Relaxed);
         if rels.is_empty() {
             tracing::warn!(publication = %self.o.publication, "the publication has no tables yet: following it, for those it gains");
         }
@@ -881,7 +1091,7 @@ impl Follower {
         let queue = Arc::new(tokio::sync::Mutex::new(rels.clone()));
         let mut workers = tokio::task::JoinSet::new();
         for _ in 0..self.o.copy_workers.clamp(1, rels.len().max(1)) {
-            let (cfg, dst, queue, snapshot, batch) = (self.cfg.clone(), self.dst.clone(), queue.clone(), snapshot.clone(), self.o.batch);
+            let (cfg, dst, queue, snapshot, batch, shared) = (self.cfg.clone(), self.dst.clone(), queue.clone(), snapshot.clone(), self.o.batch, self.shared.clone());
             let tables = self.tables.clone();
             workers.spawn(async move {
                 let mut conn = Conn::connect(&cfg, false).await.map_err(pg)?;
@@ -891,7 +1101,7 @@ impl Follower {
                 loop {
                     let Some(rel) = queue.lock().await.pop() else { break };
                     let schema = tables.get(&rel.table.to_ascii_lowercase()).cloned().ok_or_else(|| ApiError::internal(format!("table {} is not in ChloeDB", rel.table)))?;
-                    rows += copy_table(&mut conn, &dst, &rel, &schema, batch).await?;
+                    rows += copy_table(&mut conn, &dst, &rel, &schema, batch, &shared.rows_copied).await?;
                 }
                 conn.query("COMMIT").await.map_err(pg)?;
                 conn.close().await;
@@ -910,6 +1120,7 @@ impl Follower {
         self.write(marks).await?;
         self.written = at;
         self.base = 0;
+        self.mirror();
         tracing::info!(tables = rels.len(), rows, took_s = t0.elapsed().as_secs_f64(), "copied: following the stream");
         Ok((repl, at))
     }
@@ -932,11 +1143,13 @@ impl Follower {
             self.sql(&format!("DELETE FROM {}", ident(&rel.table))).await?;
         }
         let schema = self.schema(&rel.table)?;
+        self.shared.copying(Some(rel.shown.clone()));
         let mut conn = Conn::connect(&self.cfg, false).await.map_err(pg)?;
         conn.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await.map_err(pg)?;
-        let rows = copy_table(&mut conn, &self.dst, &rel, &schema, self.o.batch).await?;
+        let rows = copy_table(&mut conn, &self.dst, &rel, &schema, self.o.batch, &self.shared.rows_copied).await?;
         conn.query("COMMIT").await.map_err(pg)?;
         conn.close().await;
+        self.shared.copying(None);
         self.stats.copied += rows;
         self.write(vec![mark(self.names.table(self.copy, rel.oid, &rel.table), crate::telemetry::now_ms() as i64 * 2 + 1)]).await?;
         self.followed.insert(rel.oid, rel.table.clone());
@@ -961,6 +1174,7 @@ impl Follower {
                 self.copy_added(rel).await?;
             }
         }
+        self.mirror();
         Ok(())
     }
 
@@ -982,6 +1196,7 @@ impl Follower {
                 Ok(()) => wait = Duration::from_secs(1),
                 Err(e) if e.status == 503 => {
                     tracing::warn!("following {}: {}; connecting again in {} s", self.cfg.shown(), e.message, wait.as_secs());
+                    self.shared.set("retrying", Some(e.message.clone()));
                     tokio::time::sleep(wait).await;
                     wait = (wait * 2).min(Duration::from_secs(30));
                 }
@@ -1002,6 +1217,7 @@ impl Follower {
         );
         let (mut reader, mut writer) = conn.start_replication(&cmd).await.map_err(pg)?;
         tracing::info!(slot = %self.slot, from = %lsn_text(at), "following the stream");
+        self.shared.set("following", None);
         // The reader hands frames over; the writer tells Postgres how far
         // the follower is every STATUS_EVERY, or when asked, also while
         // the follower copies a table or waits on Strata.
@@ -1066,15 +1282,13 @@ impl Follower {
             let b = b.map_err(pg)?;
             match pgoutput::frame(&b).map_err(pg)? {
                 Frame::Keepalive { end, .. } => {
-                    self.server_end = self.server_end.max(end);
                     // Nothing of the publication's left unwritten: Postgres
                     // may let go of the WAL up to here.
                     if open.is_none() && buf.ops.is_empty() && buf.end.is_none() {
                         self.flushed.fetch_max(end, Ordering::Relaxed);
                     }
                 }
-                Frame::XLogData { end, data, .. } => {
-                    self.server_end = self.server_end.max(end);
+                Frame::XLogData { data, .. } => {
                     let m = pgoutput::message(data).map_err(pg)?;
                     self.apply(m, &mut buf, &mut open, rx.is_empty()).await?;
                 }
@@ -1249,6 +1463,7 @@ impl Follower {
             self.written = self.written.max(e);
             self.flushed.fetch_max(e, Ordering::Relaxed);
         }
+        self.mirror();
         Ok(())
     }
 
@@ -1372,10 +1587,16 @@ impl Follower {
         }
         self.logged = Instant::now();
         let s = &self.stats;
+        // The positions as ChloeDB shows them ([`status_body`]): applied,
+        // confirmed to Postgres, and Postgres's own, as last asked.
+        let confirmed = self.flushed.load(Ordering::Relaxed).max(self.written);
+        let postgres = self.shared.postgres_lsn.load(Ordering::Relaxed);
         tracing::info!(
             applied = %lsn_text(self.written),
-            server = %lsn_text(self.server_end),
-            behind_bytes = self.server_end.saturating_sub(self.flushed.load(Ordering::Relaxed)),
+            confirmed = %lsn_text(confirmed),
+            postgres = %if postgres > 0 { lsn_text(postgres) } else { "unknown".into() },
+            behind_bytes = postgres.saturating_sub(confirmed),
+            lag_s = self.shared.lag_ms.load(Ordering::Relaxed) as f64 / 1e3,
             transactions = s.txns,
             changes = s.changes,
             writes = s.writes,
@@ -1405,7 +1626,7 @@ fn size(t: &[Datum]) -> usize {
 
 /// Copies `rel`'s rows over `conn` (in the transaction it is in) into
 /// Strata, answering how many.
-async fn copy_table(conn: &mut Conn, dst: &Http, rel: &Rel, schema: &Schema, batch: usize) -> Result<u64, ApiError> {
+async fn copy_table(conn: &mut Conn, dst: &Http, rel: &Rel, schema: &Schema, batch: usize, progress: &AtomicU64) -> Result<u64, ApiError> {
     let cols: Vec<String> = rel.columns.iter().map(|c| wire::ident(&c.name)).collect();
     let from = format!("{}.{}", wire::ident(&rel.schema_name), wire::ident(&rel.rel_name));
     let sql = match &rel.filter {
@@ -1437,7 +1658,9 @@ async fn copy_table(conn: &mut Conn, dst: &Http, rel: &Rel, schema: &Schema, bat
             ops.push(json!({"op": "upsert", "table": rel.table, "doc": doc}));
             rows += 1;
             if ops.len() >= batch || bytes >= COPY_BYTES {
+                let n = ops.len() as u64;
                 send(std::mem::take(&mut ops)).await?;
+                progress.fetch_add(n, Ordering::Relaxed);
                 bytes = 0;
             }
         }
@@ -1445,7 +1668,9 @@ async fn copy_table(conn: &mut Conn, dst: &Http, rel: &Rel, schema: &Schema, bat
             break;
         }
     }
+    let n = ops.len() as u64;
     send(ops).await?;
+    progress.fetch_add(n, Ordering::Relaxed);
     tracing::info!(table = %rel.table, rows, took_s = t0.elapsed().as_secs_f64(), "copied {}", rel.shown);
     Ok(rows)
 }

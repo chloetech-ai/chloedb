@@ -995,7 +995,10 @@ pub async fn list_json(svc: &Arc<Service>, caller: &Caller) -> Result<Json, ApiE
     } else {
         json!({"on": true})
     };
-    Ok(json!({"connectors": connectors, "kinds": kinds_json(), "health": by_health, "scheduler": scheduler, "sources": sources, "tables": {"configs": CONFIGS, "runs": RUNS, "state": STATE}, "at_ms": now_ms()}))
+    // Postgres followers writing through this server, as each last said
+    // of itself (ROSA-302).
+    let followers = svc.postgres_followers();
+    Ok(json!({"connectors": connectors, "kinds": kinds_json(), "health": by_health, "scheduler": scheduler, "sources": sources, "followers": followers, "tables": {"configs": CONFIGS, "runs": RUNS, "state": STATE}, "at_ms": now_ms()}))
 }
 
 /// `GET /v1/admin/connectors/:name`.

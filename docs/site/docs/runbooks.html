@@ -224,7 +224,8 @@ servers outside Kubernetes, is for no alert.</p>
    primary's write rate, the replica's disk and CPU). <code>GET /v1/cluster</code>
    says each copy's role and whether it serves reads; its <code>txn</code> counts the
    transactions of each process since it started, so it does not compare
-   two copies. <code>GET /v1/admin/follow</code> for a follower cluster.</li>
+   two copies. <code>GET /v1/admin/follow</code> for a follower cluster, Data &gt; Connectors
+   (<code>followers</code> in <code>GET /v1/admin/connectors</code>) for a Postgres follower.</li>
 <li>A replica catching up after a restart: wait, with <code>GET
    /v1/events?after=&lt;id&gt;&amp;wait_s=30</code>, and silence the alert for the while
    (tier 1).</li>

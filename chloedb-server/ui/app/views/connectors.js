@@ -109,7 +109,7 @@ function render(page) {
         h("thead", {}, h("tr", {}, h("th", {}, "connector"), h("th", {}, "target"), h("th", {}, "health"), h("th", {}, "last run"), h("th", { class: "num", title: "Rows written by every run so far (upserts counted each time), not the rows of the table" }, "rows written"), h("th", {}, "schedule"), h("th", {}, "last error"))),
         h("tbody", {}, rows)))
         : empty("streams", "No connectors yet", "Add one: Prometheus rollups, Jira or ServiceNow tickets and changes, Oxidized configs, carriers' emails, Alertmanager or any webhook, any REST API, Kafka topics."),
-    }), sourcesCard());
+    }), postgresCard(), sourcesCard());
     main.prepend(kafkaCard());
     if (!(quiet && (side.dataset.dirty || side.contains(document.activeElement)))) { delete side.dataset.dirty; clear(side, brokerCard(), addCard()); }
   }
@@ -330,14 +330,66 @@ function render(page) {
   }
   const kindTitle = (k) => (v?.kinds || []).find((x) => x.kind === k)?.title || k;
 
+  // ----- Postgres followers (chloedb-server follow-postgres): each one's
+  // state, lag and positions, as it tells this server every 2 s (ROSA-302).
+  // A follower that has marks here but says nothing is shown too: it may
+  // be down, older, or refused (its log says why).
+  function pgNames() {
+    const said = new Set((v.followers || []).map((f) => f.name));
+    const marked = new Set((v.sources || []).map((s) => /^postgres\/([^/]+)\/copy$/.exec(s.name)?.[1]).filter(Boolean));
+    return { said, all: [...new Set([...said, ...marked])].sort() };
+  }
+  const PG_STATE = { following: ["ok", "following"], copying: ["info", "copying"], starting: ["info", "starting"], retrying: ["failing", "retrying"], failed: ["failing", "failed"], stopped: ["disabled", "stopped"] };
+  function postgresCard() {
+    const { all } = pgNames();
+    if (!all.length) return null;
+    const marksOf = (n) => (v.sources || []).filter((s) => s.name.startsWith(`postgres/${n}/`));
+    const one = (n) => {
+      const f = (v.followers || []).find((x) => x.name === n);
+      const marks = marksOf(n);
+      const applied = marks.filter((s) => s.lsn && !s.name.endsWith("/copied")).sort((a, b) => b.offset - a.offset)[0];
+      if (!f) {
+        return h("div", { class: "stack", style: { gap: "4px" } },
+          h("div", { class: "row", style: { gap: "8px", flexWrap: "wrap" } }, h("b", {}, n), pill("warn", "no report")),
+          h("div", { class: "small dim" }, `This server has heard nothing from follower ${n} since it started: it is down, or an older follower, or its key may not report (its log says so). Last applied${applied ? ` ${applied.lsn}, ${applied.updated ? fmt.ago(Date.parse(applied.updated)) : "–"}` : ": nothing yet"}.`));
+      }
+      const [k, text] = f.silent && f.state !== "stopped" && f.state !== "failed" ? ["failing", `silent ${fmt.dur(f.age_ms / 1000)}`] : PG_STATE[f.state] || ["info", f.state];
+      const lag = f.lag_s ?? (f.lag_ms || 0) / 1000;
+      const kv = (label, val, title) => h("div", { class: "stack", style: { gap: "1px" }, title: title || null }, h("span", { class: "tiny dim" }, label), h("span", { class: "mono" }, val ?? "–"));
+      return h("div", { class: "stack", style: { gap: "6px" } },
+        h("div", { class: "row", style: { gap: "8px", flexWrap: "wrap", alignItems: "center" } }, h("b", {}, n), pill(k, text),
+          f.copying ? h("span", { class: "small dim" }, `copying ${f.copying}`) : null,
+          h("span", { class: "small dim" }, `${f.source || ""}${f.publication ? ` · publication ${f.publication}` : ""}${f.slot ? ` · slot ${f.slot}` : ""}`)),
+        f.state === "stopped" ? h("div", { class: "small dim" }, f.why || "It stopped following.") : h("div", { class: "row", style: { gap: "18px", flexWrap: "wrap" } },
+          kv("lag", lag >= 1 ? fmt.dur(lag) : `${fmt.n(lag, 1)} s`, "Since Postgres's WAL first reached a position the follower has not confirmed; while it is silent, plus how long. The alert follow-behind fires when this stays over a minute for a minute."),
+          kv("behind", f.behind_bytes == null ? "–" : fmt.bytes(f.behind_bytes), "Postgres's WAL position less the follower's confirmed one: pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) on Postgres reads about the same"),
+          kv("applied", f.applied_lsn, "The end of the last Postgres transaction written to ChloeDB"),
+          kv("confirmed", f.confirmed_lsn, "What the follower told Postgres it has (past transactions of other tables too): the slot keeps the WAL after it"),
+          kv("Postgres at", f.postgres_lsn, f.postgres_error ? `Not asked: ${f.postgres_error}` : "Postgres's own WAL position (pg_current_wal_lsn()), as the follower last asked"),
+          kv("tables", fmt.n(f.tables || 0)), kv("transactions", fmt.si(f.transactions || 0), "Applied since the follower started"),
+          kv("last report", fmt.ago(Date.now() - (f.age_ms || 0)))),
+        f.error ? h("div", { class: "small error", style: { overflowWrap: "anywhere" } }, f.error) : f.last_error ? h("div", { class: "small dim", style: { overflowWrap: "anywhere" } }, `Last error ${fmt.ago(f.last_error.at_ms)}: ${f.last_error.message}`) : null,
+        f.postgres_error && !f.error ? h("div", { class: "small warn" }, `Postgres's position could not be asked: ${f.postgres_error}`) : null,
+        marks.length ? h("details", {}, h("summary", { class: "small dim" }, `Its marks in _sources (${marks.length})`),
+          h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" }, h("tbody", {}, marks.slice(0, 60).map((s) => h("tr", {}, h("td", { class: "mono small" }, s.name), h("td", { class: "num mono small" }, s.lsn || fmt.n(s.offset)), h("td", { class: "small" }, s.updated ? fmt.ago(Date.parse(s.updated)) : "–"))))))) : null);
+    };
+    return card({
+      title: "Postgres followers", sub: "chloedb-server follow-postgres, as each says every 2 s",
+      body: h("div", { class: "stack small", style: { gap: "14px" } }, all.map(one),
+        h("div", { class: "dim tiny" }, "Its lag is in /metrics (chloedb_follow_lag_seconds, chloedb_follow_behind_bytes, chloedb_follow_up) and the built-in alert follow-behind (\"A follower is behind its source\"), which a follower that stops reporting fires too.")),
+    });
+  }
+
   function sourcesCard() {
-    const ss = v.sources || [];
+    // A Postgres follower's marks are on its card.
+    const { all } = pgNames();
+    const ss = (v.sources || []).filter((s) => !all.some((n) => s.name.startsWith(`postgres/${n}/`)));
     return card({
       title: "Other ways in", sub: "streams and followed databases, by their last offset",
       body: h("div", { class: "stack small", style: { gap: "8px" } },
         ss.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, h("th", {}, "source"), h("th", { class: "num" }, "offset"), h("th", {}, "last event"))),
-          h("tbody", {}, ss.slice(0, 50).map((s) => h("tr", {}, h("td", { class: "mono" }, s.name), h("td", { class: "num mono" }, fmt.n(s.offset)), h("td", {}, s.updated ? fmt.ago(Date.parse(s.updated)) : "–"))))))
-          : h("div", { class: "dim" }, "No stream sources yet."),
+          h("tbody", {}, ss.slice(0, 50).map((s) => h("tr", {}, h("td", { class: "mono" }, s.name), h("td", { class: "num mono" }, s.lsn || fmt.n(s.offset)), h("td", {}, s.updated ? fmt.ago(Date.parse(s.updated)) : "–"))))))
+          : h("div", { class: "dim" }, all.length ? "No other stream sources." : "No stream sources yet."),
         h("div", { class: "dim" }, "OpenTelemetry logs: ", h("span", { class: "mono" }, "POST /v1/logs"), " (the Collector's otlphttp exporter). Kafka and other streams: ", h("span", { class: "mono" }, "POST /v1/stream"), " with offsets, applied once. Postgres: ", h("span", { class: "mono" }, "chloedb-server follow-postgres"), ". Files: Import and export.")),
     });
   }

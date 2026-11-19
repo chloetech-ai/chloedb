@@ -299,7 +299,7 @@ pub fn defaults() -> Vec<Rule> {
         (rule("query-memory", "Query memory almost spent", "query_memory_ratio", ">", 0.9, "mean", 60, 0, "warning", s, "The running queries hold over 90% of --query-memory-mb; more are refused with 429."), 0.8),
         (rule("write-queue", "Writes queue up", "write_queue", ">", 512.0, "mean", 60, 0, "warning", c, "Write requests wait for the writer; at --max-queued-writes they are refused."), 256.0),
         (rule("write-p99", "Writes are slow", "write_p99_ms", ">", 500.0, "mean", 60, 0, "warning", s, "The p99 of writes over a minute is over 500 ms: a replica or the link to it is slow (with --write-acks all a write waits for every copy), or the disk is."), 250.0),
-        (rule("follow-behind", "A follower is behind its source", "follow_lag_s", ">", 60.0, "min", 60, 0, "warning", s, "This cluster follows another, and its follow process has been over a minute behind for a minute: it is down, catching up, or held (GET /v1/admin/follow says which)."), 30.0),
+        (rule("follow-behind", "A follower is behind its source", "follow_lag_s", ">", 60.0, "min", 60, 0, "warning", s, "A follow process writing here (a cluster following another, or chloedb-server follow-postgres) has been over a minute behind its source, or silent, for a minute: it is down, catching up, or held. GET /v1/admin/follow says which of a cluster's, Data > Connectors of a Postgres follower's."), 30.0),
     ];
     let slo = crate::service::Slo::default();
     v.into_iter()
@@ -455,14 +455,21 @@ pub struct Note {
     pub text: String,
 }
 
-/// Who sent an alert's FIRING message (a coordinator), when, and the key
-/// its messages carry ([`Alerts::dedup_key`]).
+/// Who sent an alert's FIRING message (a coordinator), when, the key
+/// its messages carry ([`Alerts::dedup_key`]), and the routes it went to.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Paged {
     pub by: String,
     pub at_ms: u64,
     #[serde(default)]
     pub key: String,
+    /// The routes its FIRING message went to: a route added later, or a
+    /// rule routed to one later, is sent it then ([`Alerts::due`]), and
+    /// only these are sent its RESOLVED (GRACE-305, MARCO-312). `None`
+    /// from a state kept before they were named: every route that takes
+    /// the alert now counts as told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routes: Option<Vec<String>>,
 }
 
 /// Notes kept per rule.
@@ -760,6 +767,10 @@ pub struct Event {
     /// coordinator that sent its FIRING message chose.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dedup_key: Option<String>,
+    /// The routes its episode's FIRING message went to ([`Paged::routes`]):
+    /// a resolution goes to these alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paged_routes: Option<Vec<String>>,
     /// The rule's `vs`: `before` when the value is a ratio to the window
     /// before, not the metric's own.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -809,6 +820,7 @@ impl Event {
                 _ => (st.state == "firing").then_some(st.since_ms),
             },
             dedup_key: (if state == "resolved" { st.paged.as_ref().or(st.paged_before.as_ref()) } else { st.paged.as_ref() }).map(|p| p.key.clone()).filter(|k| !k.is_empty()),
+            paged_routes: (if state == "resolved" { st.paged.as_ref().or(st.paged_before.as_ref()) } else { st.paged.as_ref() }).and_then(|p| p.routes.clone()),
             vs: r.vs.clone(),
         }
     }
@@ -860,6 +872,16 @@ impl Route {
         self.severities.is_empty() || self.severities.iter().any(|s| s == severity)
     }
 
+    /// Whether it takes the messages of an alert of rule route `route`
+    /// (empty: every route that takes its severity) and `severity`.
+    fn takes_alert(&self, route: &str, severity: &str) -> bool {
+        if route.is_empty() {
+            self.takes(severity)
+        } else {
+            self.name == route
+        }
+    }
+
     fn internal(&self) -> bool {
         self.allow_internal == Some(true)
     }
@@ -881,6 +903,27 @@ impl Route {
         }
     }
 }
+
+/// One message of an alert posted to one route, as the alert's page
+/// shows it ("Notified"): which route, FIRING or RESOLVED, of which
+/// episode (when it fired), when, and whether it was delivered.
+#[derive(Clone, Debug, Serialize)]
+struct Notified {
+    route: String,
+    state: &'static str,
+    episode_ms: u64,
+    at_ms: u64,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    /// Why it went then: a route added, or the rule routed to it, after
+    /// the alert fired.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<String>,
+}
+
+/// Messages kept per rule ([`Notified`]).
+const NOTIFIED: usize = 20;
 
 #[derive(Clone, Debug, Default, Serialize)]
 struct Delivery {
@@ -979,6 +1022,8 @@ pub struct Alerts {
     events: Mutex<VecDeque<Arc<Event>>>,
     routes: Mutex<Vec<Route>>,
     deliveries: Mutex<HashMap<String, Delivery>>,
+    /// Each rule's latest messages to routes, the newest last.
+    notified: Mutex<HashMap<String, VecDeque<Notified>>>,
     file: Option<PathBuf>,
     /// The clients routes post through: to the public internet, and to
     /// this network too, for the routes that allow it. Neither reaches a
@@ -1164,6 +1209,7 @@ impl Alerts {
             events: Mutex::new(VecDeque::new()),
             routes: Mutex::new(kept.routes),
             deliveries: Mutex::new(HashMap::new()),
+            notified: Mutex::new(HashMap::new()),
             file,
             http,
             http_internal,
@@ -2256,6 +2302,9 @@ impl Alerts {
                 if let Some(p) = &s.paged {
                     j["paged"] = json!(p);
                 }
+                // This alert's own messages (GRACE-305): of the episode
+                // firing now, or else of the last one.
+                j["notified"] = self.notified_json(&r.id, (s.state == "firing").then_some(s.since_ms));
                 if let Some((by, why)) = &s.held {
                     (j["held_by"], j["held_why"]) = (json!(by), json!(why));
                     if let Some(u) = s.settle_ms {
@@ -2573,11 +2622,15 @@ impl Alerts {
     /// yet and that is neither silenced nor held back. This coordinator
     /// sends them when it is the one that sends messages, or when that one
     /// has not said it sent one within [`PAGER_WAIT_MS`] of the firing.
-    /// Also the alerts a route sends again ([`Route::repeat_min`]). Each is
-    /// noted as sent (and told to the other coordinators); its event is a
-    /// message's, not a change.
+    /// Also the alerts a route sends again ([`Route::repeat_min`]), and
+    /// those firing when a route that takes them was added, or their rule
+    /// routed to one: the coordinator that sent their FIRING message sends
+    /// it to that route too. Each is noted as sent (and told to the other
+    /// coordinators); its event is a message's, not a change.
     pub fn due(&self, t: u64) -> Vec<(Arc<Event>, Option<String>)> {
         let (me, pager) = self.pager();
+        // How this server names itself as an alert's sender ([`Paged::by`]).
+        let by_me = if me.is_empty() { "this server".to_string() } else { me.clone() };
         let rules = self.rules();
         let routes = self.routes();
         let cluster = self.identity().name;
@@ -2624,7 +2677,8 @@ impl Alerts {
                         (None, _) if waited > 30_000 => Some(format!("firing since {}", clock(st.since_ms))),
                         (None, _) => None,
                     };
-                    let p = Paged { by: if me.is_empty() { "this server".into() } else { me.clone() }, at_ms: t, key: format!("strata/{cluster}/{}/{}", r.id, st.since_ms) };
+                    let taking: Vec<String> = routes.iter().filter(|rt| rt.takes_alert(&r.route, &r.severity)).map(|rt| rt.name.clone()).collect();
+                    let p = Paged { by: by_me.clone(), at_ms: t, key: format!("strata/{cluster}/{}/{}", r.id, st.since_ms), routes: Some(taking) };
                     st.paged = Some(p.clone());
                     st.late = None;
                     e.paged_by = Some(p.by.clone());
@@ -2633,12 +2687,43 @@ impl Alerts {
                     out.push((Arc::new(e), None));
                     continue;
                 }
+                // A route added since it was sent, or the rule routed to
+                // one since (GRACE-305): sent what fires now, by the
+                // coordinator that sent its FIRING message, so that the
+                // route sees it begin before it sees it end (MARCO-312).
+                if st.paged.as_ref().is_some_and(|p| p.by == by_me) {
+                    let taking: Vec<String> = routes.iter().filter(|rt| rt.takes_alert(&r.route, &r.severity)).map(|rt| rt.name.clone()).collect();
+                    match st.paged.as_ref().and_then(|p| p.routes.clone()) {
+                        // Kept from before the routes were named: they were told.
+                        None => {
+                            if let Some(p) = st.paged.as_mut() {
+                                p.routes = Some(taking);
+                            }
+                            told.push(json!({"states": {r.id.clone(): {"paged": st.paged}}}));
+                        }
+                        Some(had) => {
+                            let new: Vec<String> = taking.into_iter().filter(|n| !had.contains(n)).collect();
+                            if !new.is_empty() {
+                                for n in &new {
+                                    let mut e = Event::of(r, "firing", st, t);
+                                    (e.ts_ms, e.episode_ms) = (st.since_ms, Some(st.since_ms));
+                                    e.context = Some(format!("firing since {}; sent to {n} now: the route was added, or the rule routed to it, after the alert fired", clock(st.since_ms)));
+                                    out.push((Arc::new(e), Some(n.clone())));
+                                }
+                                if let Some(p) = st.paged.as_mut() {
+                                    p.routes.get_or_insert_with(Vec::new).extend(new);
+                                }
+                                told.push(json!({"states": {r.id.clone(): {"paged": st.paged}}}));
+                            }
+                        }
+                    }
+                }
                 // Sent again, by the routes that do, while nobody acknowledges a critical alert.
                 if r.severity != "critical" || st.ack.is_some() || me != pager {
                     continue;
                 }
                 let mut repeated = lock(&self.repeated);
-                for rt in routes.iter().filter(|rt| rt.repeat_min > 0 && (if r.route.is_empty() { rt.takes(&r.severity) } else { rt.name == r.route })) {
+                for rt in routes.iter().filter(|rt| rt.repeat_min > 0 && rt.takes_alert(&r.route, &r.severity)) {
                     let key = format!("{}/{}", rt.name, r.id);
                     let last = repeated.get(&key).copied().unwrap_or(st.paged.as_ref().map_or(t, |p| p.at_ms)).max(st.since_ms);
                     if t.saturating_sub(last) >= rt.repeat_min * 60_000 {
@@ -2806,6 +2891,15 @@ impl Alerts {
                             st.paged_hint = Some(p);
                         }
                         changed = true;
+                    } else if let (Some(mine), Some(theirs)) = (st.paged.as_mut().filter(|m| m.key == p.key), p.routes) {
+                        // The routes it went to since (a route added later).
+                        let had = mine.routes.get_or_insert_with(Vec::new);
+                        for n in theirs {
+                            if !had.contains(&n) {
+                                had.push(n);
+                                changed = true;
+                            }
+                        }
                     }
                 }
             }
@@ -2928,30 +3022,65 @@ impl Alerts {
     /// at most.
     pub async fn notify_to(&self, messages: &[(Arc<Event>, Option<String>)]) {
         let routes = self.routes();
-        let mut each: Vec<(Route, Vec<(Json, String)>)> = Vec::new();
+        let mut each: Vec<(Route, Vec<(Json, String, &Arc<Event>)>)> = Vec::new();
         for (e, only) in messages {
             let text = self.message(e);
             for r in routes.iter().filter(|r| match only {
                 Some(n) => &r.name == n,
-                None if e.route.is_empty() => r.takes(&e.severity),
-                None => r.name == e.route,
+                // A resolution goes to the routes its FIRING went to, and
+                // to no route that never saw the alert begin (MARCO-312).
+                None if e.state == "resolved" && e.paged_routes.is_some() => e.paged_routes.as_ref().is_some_and(|p| p.contains(&r.name)),
+                None => r.takes_alert(&e.route, &e.severity),
             }) {
                 let (body, key) = self.body(r, e, &text);
                 match each.iter_mut().find(|(x, _)| x.name == r.name) {
-                    Some((_, bodies)) => bodies.push((body, key)),
-                    None => each.push((r.clone(), vec![(body, key)])),
+                    Some((_, bodies)) => bodies.push((body, key, e)),
+                    None => each.push((r.clone(), vec![(body, key, e)])),
                 }
             }
         }
         futures::future::join_all(each.into_iter().map(|(r, bodies)| async move {
             let turn = lock(&self.turns).entry(r.name.clone()).or_default().clone();
             let _turn = turn.lock().await;
-            for (b, key) in &bodies {
+            for (b, key, e) in &bodies {
                 let url = if r.kind == "opsgenie" && b["action"] == "close" { format!("{}/{}/close?identifierType=alias", r.url.trim_end_matches('/'), urlencode(b["alias"].as_str().unwrap_or_default())) } else { r.url.clone() };
-                let _ = self.post(&r, &url, b, key).await;
+                let res = self.post(&r, &url, b, key).await;
+                self.note_notified(&r.name, e, res.err());
             }
         }))
         .await;
+    }
+
+    /// Keeps that message `e` went to route `route` (delivered, or failed
+    /// with `error`), for the alert's page ([`Self::notified_json`]).
+    fn note_notified(&self, route: &str, e: &Event, error: Option<String>) {
+        if !matches!(e.state, "firing" | "resolved") {
+            return;
+        }
+        let n = Notified {
+            route: route.to_string(),
+            state: e.state,
+            episode_ms: e.episode_ms.or(e.fired_ms).unwrap_or(e.ts_ms),
+            at_ms: now_ms(),
+            ok: error.is_none(),
+            error,
+            context: e.context.clone(),
+        };
+        let mut all = lock(&self.notified);
+        let q = all.entry(e.rule.clone()).or_default();
+        q.push_back(n);
+        while q.len() > NOTIFIED {
+            q.pop_front();
+        }
+    }
+
+    /// What rule `id`'s episode `episode_ms` (when it fired; the latest
+    /// with `None`) sent to routes, from this server, the oldest first.
+    fn notified_json(&self, id: &str, episode_ms: Option<u64>) -> Json {
+        let all = lock(&self.notified);
+        let Some(q) = all.get(id) else { return json!([]) };
+        let episode = episode_ms.or_else(|| q.iter().map(|n| n.episode_ms).max());
+        json!(q.iter().filter(|n| Some(n.episode_ms) == episode).collect::<Vec<_>>())
     }
 
     /// The key that names an alert's episode in every message of it, on
@@ -4850,6 +4979,58 @@ mod tests {
 
     /// A route that sends an unacknowledged critical again does, every
     /// `repeat_min`, until someone acknowledges it (NEW-12).
+    /// A route added while an alert fires, or a route its rule is routed
+    /// to then, is sent the FIRING message once (GRACE-305), and the
+    /// resolution goes to the routes the FIRING went to (MARCO-312).
+    #[test]
+    fn a_route_added_or_routed_to_while_an_alert_fires_is_sent_it_once() {
+        let t = now_ms();
+        let a = Alerts::new(None, None).unwrap();
+        let rt = |name: &str| Route { name: name.into(), url: "http://127.0.0.1:9/hook".into(), allow_internal: Some(true), ..Route::default() };
+        a.set_rules(vec![slow("max", 2, 0)], "t").unwrap();
+        a.check(&points(&[(t - 2_000, 500.0), (t, 500.0)]), t);
+        assert_eq!(a.due(t).len(), 1, "paged, with no route to take it yet");
+        assert_eq!(a.one("p99").unwrap()["paged"]["routes"], json!([]));
+        a.set_routes(vec![rt("chat")]).unwrap();
+        let late = a.due(t + 2_000);
+        let sent = |d: &[(Arc<Event>, Option<String>)]| d.iter().map(|(e, r)| (e.state, r.clone())).collect::<Vec<_>>();
+        assert_eq!(sent(&late), [("firing", Some("chat".to_string()))], "the route added is sent what fires");
+        let e = &late[0].0;
+        assert!(e.context.as_deref().is_some_and(|c| c.contains("sent to chat now") && c.contains("after the alert fired")), "{:?}", e.context);
+        assert_eq!((e.episode_ms, e.dedup_key.as_deref().is_some_and(|k| k.ends_with(&format!("/p99/{t}")))), (Some(t), true), "the same episode, under the same key");
+        assert!(a.due(t + 4_000).is_empty(), "once");
+        // A route that does not take a warning is sent nothing, until
+        // the rule is routed to it.
+        a.set_routes(vec![rt("chat"), Route { severities: vec!["critical".into()], ..rt("db-team") }]).unwrap();
+        assert!(a.due(t + 6_000).is_empty(), "db-team takes critical alerts only");
+        a.set_rules(vec![Rule { route: "db-team".into(), ..slow("max", 2, 0) }], "t").unwrap();
+        assert_eq!(a.one("p99").unwrap()["state"], "firing", "routing a rule leaves it firing");
+        assert_eq!(sent(&a.due(t + 8_000)), [("firing", Some("db-team".to_string()))]);
+        assert_eq!(a.one("p99").unwrap()["paged"]["routes"], json!(["chat", "db-team"]));
+        // A route added as it resolves never sees it begin: its RESOLVED
+        // goes to the routes that saw the FIRING.
+        a.set_routes(vec![rt("chat"), rt("db-team"), rt("late")]).unwrap();
+        let res = a.check(&points(&[(t - 2_000, 500.0), (t, 500.0), (t + 10_000, 10.0), (t + 12_000, 10.0)]), t + 12_000);
+        assert_eq!(res.iter().map(|e| e.state).collect::<Vec<_>>(), ["resolved"]);
+        assert_eq!(res[0].paged_routes.as_deref(), Some(&["chat".to_string(), "db-team".to_string()][..]));
+        assert_eq!(a.resolutions(&res).len(), 1);
+    }
+
+    /// A state kept before the routes were named counts every route that
+    /// takes the alert as told: a restart sends nothing again.
+    #[test]
+    fn a_page_kept_without_its_routes_is_not_sent_again() {
+        let t = now_ms();
+        let a = Alerts::new(None, None).unwrap();
+        a.set_rules(vec![slow("max", 2, 0)], "t").unwrap();
+        a.set_routes(vec![Route { name: "chat".into(), url: "http://127.0.0.1:9/hook".into(), allow_internal: Some(true), ..Route::default() }]).unwrap();
+        a.check(&points(&[(t - 2_000, 500.0), (t, 500.0)]), t);
+        assert_eq!(a.due(t).len(), 1);
+        lock(&a.states).get_mut("p99").unwrap().paged.as_mut().unwrap().routes = None;
+        assert!(a.due(t + 2_000).is_empty(), "taken as told");
+        assert_eq!(a.one("p99").unwrap()["paged"]["routes"], json!(["chat"]));
+    }
+
     #[test]
     fn an_unacknowledged_critical_is_sent_again() {
         let t = now_ms();
