@@ -11,6 +11,14 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A replica counts its applied batches, and the test of a copy stops
+  flaking.** `chloedb_replica_apply_batches_total` and
+  `chloedb_replica_apply_seconds_total` (the seconds include the wait for a
+  free writer). `replication::a_replica_the_log_does_not_reach_is_sent_a_copy`
+  failed about a quarter of its runs on a two-CPU machine: its ship log was
+  2,000 bytes under an unthrottled writer, so the primary sent copy after
+  copy and the test, which waits for exactly one per replica, timed out. It
+  keeps a log that holds seconds of a throttled writer now.
 - **Blends explore, are logged with each slot's chance, and are valued
   and tuned off-policy.** A blend served with `"log": {"explore":
   {"policy": "softmax", "tau": 0.3, "top": 5}}` draws each slot among the
