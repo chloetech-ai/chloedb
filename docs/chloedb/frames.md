@@ -7,7 +7,8 @@
 Frames are part of the `chloedb` package ([Python](python.md#install)) and need pyarrow 14 or later; pandas and Polars are optional, for `to_pandas()` and `to_polars()`:
 
 ```sh
-pip install "./chloedb-py[frame]" polars pandas    # from the repository's root; needs Rust
+pip install "chloedb[frame]" polars pandas          # the wheel from PyPI, no Rust
+pip install "./chloedb-py[frame]" polars pandas    # or a build from the repository's root, which needs Rust
 ```
 
 Frames came in release 0.2.0: release 0.1.0's wheel (`strata-db`, from before the rename) has no frames and no `frame` extra.

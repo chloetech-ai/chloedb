@@ -166,7 +166,7 @@ receivers:
 A `kafka` connector reads topics into a table while it is on, and writes each event once. Its section on **Data > Connectors** lists the Kafka connectors with their consumers live: state, events a second, lag (each partition's end less the next offset to write, since there is no consumer group for Kafka's own lag tools to see), events and rows since the server started, replays skipped, events that made no row, and a table of partitions; **Start** and **Stop** turn one on and off (kept in its row, so it stays so across restarts), and **Add a Kafka connector** has a form with a dry run that connects and shows the rows a few events would make.
 
 ```bash
-curl -X POST localhost:7700/v1/admin/connectors -H "Authorization: Bearer $KEY" -d '{
+curl -X POST localhost:7700/v1/admin/connectors -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{
   "name": "orders", "kind": "kafka", "target": "orders",
   "config": {
     "brokers": "kafka-1:9092,kafka-2:9092", "topics": "orders", "allow_internal": true, "create_target": true,
@@ -189,9 +189,9 @@ The settings, in `config`: `brokers` (bootstrap brokers, `host:port`, joined by 
 To try a connector without Kafka, the server has a test broker: a broker in its own process that speaks as much of Kafka's protocol as a consumer needs (and producing, so any Kafka client can write to it), keeps topics in memory (the last 200,000 events of each partition), and writes made-up click events (`{event_id, user, item, action, page, at, price}`, keyed by user) into a topic at a rate. On **Data > Connectors** the **Test Kafka broker** card starts and stops it, sets the rate, sends an event typed in, and **Connect a connector to it** fills the form with its address, its topic and a map into `demo_clicks`. By the API:
 
 ```bash
-curl -X POST localhost:7700/v1/admin/kafka/test-broker -H "Authorization: Bearer $KEY" \
+curl -X POST localhost:7700/v1/admin/kafka/test-broker -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"listen": "127.0.0.1:19092", "topic": "demo.clicks", "partitions": 3, "rate": 5}'   # or {"rate": 50} while it runs
-curl -X POST localhost:7700/v1/admin/kafka/test-broker/produce -H "Authorization: Bearer $KEY" \
+curl -X POST localhost:7700/v1/admin/kafka/test-broker/produce -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"topic": "orders", "messages": [{"key": "c42", "value": {"order_id": "o1", "total": 19.5}}]}'
 curl localhost:7700/v1/admin/kafka/test-broker -H "Authorization: Bearer $KEY"        # its topics, offsets and counts
 curl -X DELETE localhost:7700/v1/admin/kafka/test-broker -H "Authorization: Bearer $KEY"

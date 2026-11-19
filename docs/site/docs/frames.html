@@ -87,6 +87,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="postgres.html">Following Postgres</a>
       <a href="connectors.html">Connectors</a>
       <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
       <a href="compatibility.html">Versions and compatibility</a>
       <span class="h">ChloeCtx</span>
       <a href="chloectx.html">ChloeCtx</a>
@@ -122,7 +123,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p><code>store["table"]</code> is a <code>chloedb.Frame</code>: a lazy dataframe written the way Polars writes one. Nothing is read until you ask for rows. Then the whole chain compiles to one SQL statement, which runs where the data is (a file in your process, or a chloedb-server), and the answer comes back as an Arrow table, which pandas, Polars, NumPy, DuckDB and PyTorch read without a copy. The same code runs on a file and on a server.</p>
 <h2 id="install">Install<a class="anchor" href="#install" aria-label="Link to this section">#</a></h2>
 <p>Frames are part of the <code>chloedb</code> package (<a href="python.html#install">Python</a>) and need pyarrow 14 or later; pandas and Polars are optional, for <code>to_pandas()</code> and <code>to_polars()</code>:</p>
-<pre data-lang="sh">pip install &quot;./chloedb-py[frame]&quot; polars pandas    # from the repository&#x27;s root; needs Rust</pre>
+<pre data-lang="sh">pip install &quot;chloedb[frame]&quot; polars pandas          # the wheel from PyPI, no Rust
+pip install &quot;./chloedb-py[frame]&quot; polars pandas    # or a build from the repository&#x27;s root, which needs Rust</pre>
 <p>Frames came in release 0.2.0: release 0.1.0's wheel (<code>strata-db</code>, from before the rename) has no frames and no <code>frame</code> extra.</p>
 <h2 id="a-first-frame">A first frame<a class="anchor" href="#a-first-frame" aria-label="Link to this section">#</a></h2>
 <pre data-lang="python">import polars as pl
