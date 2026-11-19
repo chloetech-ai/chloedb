@@ -378,3 +378,14 @@ test("a saved app's value names are read from its script, so new numbers land in
   assert.equal(callsignOf('TAP244'), 'TAP244')
   assert.equal(callsignOf('UA 857'), 'UAL857')
 })
+
+test('a made app that uses what the frame forbids is refused with what to use instead', async () => {
+  const { checkFragment } = await import('../server/guide.mjs')
+  const app = code => `<div id="root"></div><script type="module">${code}</script>`
+  assert.match(await checkFragment(app("localStorage.setItem('stars', '3')")), /Kit\.keep\(app, key, value\)/)
+  assert.match(await checkFragment(app("const w = new Worker('x.js')")), /cannot start workers/)
+  assert.match(await checkFragment(app("const f = new Function('x', 'return x')")), /Kit\.math\.parse/)
+  assert.match(await checkFragment(app("import * as d3 from 'https://cdn.jsdelivr.net/npm/d3@7/+esm'")), /loads nothing from the network/)
+  assert.match(await checkFragment(`<script src="https://unpkg.com/x"></script>${app('1')}`), /loads nothing from the network/)
+  assert.equal(await checkFragment(app("const { connect, keep, kept } = globalThis.Kit; connect('t', async () => keep(1, 'k', await kept(1, 'k')))")), null)
+})

@@ -39,6 +39,25 @@ export function useStore(apps) {
 const KIND = z.enum(['info', 'action', 'discover', 'tool'])
 const ARGS = z.record(z.string(), z.any())
 
+// Kit.keep and Kit.kept, which every app may call: what it keeps between
+// openings, stored with it for one person (owner: the chat's browser; one
+// person alone in Claude Desktop or Claude Code).
+export const KEEPING = ['app_keep', 'app_kept']
+export async function keeping(apps, appId, name, args = {}, owner = '') {
+  const key = String(args?.key ?? '').slice(0, 80)
+  if (!key) return { content: [{ type: 'text', text: 'Say what to keep it as (a key).' }], isError: true }
+  try {
+    if (name === 'app_keep') {
+      await apps.keep(appId, key, args.value, owner)
+      return { content: [{ type: 'text', text: `Kept as ${key}.` }], structuredContent: { key, kept: true } }
+    }
+    const value = await apps.kept(appId, key, owner)
+    return { content: [{ type: 'text', text: value == null ? `Nothing kept as ${key} yet.` : `What was kept as ${key}.` }], structuredContent: { key, value } }
+  } catch (error) {
+    return { content: [{ type: 'text', text: error.message }], isError: true }
+  }
+}
+
 // What the view and the mod are told about the app they show.
 const meta = (app, how) => ({ id: app.id, name: app.name, about: app.about, kind: app.kind, tool: app.tool, tools: app.tools, version: app.version, saved: app.saved, how })
 
@@ -339,7 +358,7 @@ export function registerApps(server, { TOOLS, callTool, fragmentOf }) {
     {
       title: 'An app’s call',
       description: 'Only an app’s view calls this: one of the tools the app was made with, for its buttons.',
-      inputSchema: { id: z.string().min(1).max(64), tool: TOOL, args: ARGS.optional() },
+      inputSchema: { id: z.string().min(1).max(64), tool: z.union([TOOL, z.enum(KEEPING)]), args: ARGS.optional() },
       annotations: { openWorldHint: true },
       _meta: { ui: { resourceUri: RUNNER, visibility: ['app'] } },
     },
@@ -347,6 +366,7 @@ export function registerApps(server, { TOOLS, callTool, fragmentOf }) {
       const apps = await store()
       const app = await apps.get(id)
       if (!app) return fail(`No app ${id}.`)
+      if (KEEPING.includes(tool)) return keeping(apps, id, tool, args)
       if (!app.tools.includes(tool)) return fail(`${tool} is not one of this app’s tools`)
       const data = await callTool(tool, args ?? {})
       // A tool that acts (a booking, the cart): the view tells the model.

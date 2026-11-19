@@ -23,6 +23,7 @@ The page already has a kit, globalThis.Kit:
 - await Kit.call(app, toolName, args) calls one of the app's tools and returns its data, the same shape as draw's: for buttons that fetch more or act (Book, Add to cart, Show the recipe, another range). Show that it is working while it runs, and the error in place if it throws.
 - Kit.ask(app, text) puts a message in the chat as the person's, for a follow-up ("Why did it move?", "What goes with this?").
 - Kit.tell(app, text) tells the conversation, in one sentence, what the person now sees or picked ("Selected: Huawei Matebook X Pro, $1,399"), so a later question can refer to it. Call it when they pick, select or filter something, not on every draw.
+- Kit.keep(app, key, value) keeps what the person enters or does (a list they add to, stars they tick, prices they note, a rate or setting they change) with the app, for every later opening; await Kit.kept(app, key) reads it back (null when nothing was kept yet). Keep it each time it changes, read it when the app opens before drawing, and when draw brings new data, add to what was kept rather than wiping it. Nothing else lasts: the frame has no localStorage, sessionStorage, cookies or IndexedDB, and cannot start workers, run eval or new Function, or load anything from a CDN or the network. So never write in the app, and never say, that something is kept, remembered, live or run in the background unless it really is (Kit.keep, a tool's live data); when a change asks for one of those things, do what the kit allows and say plainly in the app what it cannot do.
 - Kit.link(app, url) asks the host to open a web address (a document's link) in the browser; use it for links, since the page cannot navigate.
 - Kit.money(n, currency = 'USD'), Kit.number(n, digits), Kit.ago(ms), and Kit.esc(text), which escapes text for innerHTML: escape every text that comes from data.
 - Kit.math.parse(text) reads a formula as a person types it ("x^2 sin x", "e^(-x)", "ln(x)/x", "sqrt(1-x^2)", "2x+1", "|x|", "y = 3x^4", "sin^2 x"): it returns an expression e with e.text and e.html (written back neatly; e.html has <sup> for powers and is safe for innerHTML), e.f(x) (its value; NaN outside its domain), e.eval({ x, t, a }) for several variables, e.vars (['x']) and e.derive('x'), its exact derivative as another expression (so e.derive().derive() is the second). It throws an Error whose message says what is wrong ("Missing ) after sin(… at the end"): show it in place while the person types, and keep the last good one drawn. Also Kit.math.slope(f, x) (a numerical derivative), Kit.math.integrate(f, a, b), Kit.math.zeros(f, a, b) (where f crosses zero) and Kit.math.format(n) (a short number, 1/3 as a fraction).
@@ -45,6 +46,15 @@ ${example}`
 export async function checkFragment(html) {
   const scripts = [...String(html).matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1])
   if (!scripts.length) return 'it has no <script type="module">'
+  // What the frame forbids fails there at run time: said now, with what to use.
+  const FORBIDDEN = [
+    [/\b(localStorage|sessionStorage|indexedDB)\b|document\.cookie/, 'the frame has no storage (localStorage, sessionStorage, IndexedDB, cookies): keep data with Kit.keep(app, key, value) and read it with await Kit.kept(app, key)'],
+    [/\bnew\s+(Shared)?Worker\s*\(/, 'the frame cannot start workers: keep the work small, or split it with setTimeout so the page stays responsive'],
+    [/\beval\s*\(|\bnew\s+Function\s*\(/, 'the frame cannot run eval or new Function: read formulas with Kit.math.parse'],
+    [/<script\b[^>]*\bsrc=|\bimport\s*\(\s*['"]https?:|\bfrom\s+['"]https?:/, 'the frame loads nothing from the network or a CDN: write the code in the app, or draw with Kit.plot and canvas'],
+  ]
+  const code = scripts.join('\n')
+  for (const [pattern, said] of FORBIDDEN) if (pattern.test(code) || (pattern.source.includes('script') && pattern.test(html))) return said
   const dir = await mkdtemp(path.join(os.tmpdir(), 'widgets-check-'))
   try {
     for (const [i, code] of scripts.entries()) {

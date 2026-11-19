@@ -30,8 +30,13 @@ function scripted() {
     calls,
     async route(input) {
       calls.route.push(input)
+      const change = /^(make|undo) it/i.exec(input.request)
+      if (change) {
+        const app = input.screen[0]?.id
+        return change[1].toLowerCase() === 'undo' ? { mode: 'undo', kind: 'action', app, why: 'take it back' } : { mode: 'change', kind: 'action', app, what: input.request.slice(8), why: 'a change' }
+      }
       if (/^find /i.test(input.request)) {
-        const saved = input.candidates.find(c => c.tool === 'findings')
+        const saved = input.candidates.find(c => c.id === (this.pick ?? 'search-results'))
         return { mode: 'use', kind: 'info', use: saved.id, tool: 'findings', args: { query: input.request.slice(5) }, why: 'your search results' }
       }
       const booking = /table|dinner/i.test(input.request)
@@ -50,7 +55,9 @@ function scripted() {
         query: input.query,
         documents: /nothing/.test(input.query)
           ? []
-          : [{ title: 'Quiet headphones, tested', url: 'https://example.com/quiet', source: 'example.com', date: '2026-11-01', summary: 'Sony first.', quotes: ['Quietest we tried.'], facts: { pick: 'Sony' } }],
+          : /camera/.test(input.query)
+            ? [{ title: 'Cameras compared', url: 'https://example.com/cameras', source: 'example.com', date: '2026-11-02', summary: 'Fuji first.', quotes: ['Best colour.'], facts: { pick: 'Fuji' } }]
+            : [{ title: 'Quiet headphones, tested', url: 'https://example.com/quiet', source: 'example.com', date: '2026-11-01', summary: 'Sony first.', quotes: ['Quietest we tried.'], facts: { pick: 'Sony' } }],
         notes: 'One source.',
       }
     },
@@ -62,9 +69,10 @@ function scripted() {
       calls.edit++
       return FRAGMENT(`v2: ${change}`)
     },
-    async reply({ summary }) {
+    async reply({ summary, shows }) {
       calls.reply++
-      return summary.slice(0, 40)
+      calls.shows = shows
+      return shows ? `On screen: ${shows.slice(0, 30)}` : summary.slice(0, 40)
     },
   }
 }
@@ -97,7 +105,13 @@ test('the flow: make, act, change, undo, save, and recall', { skip }, async () =
 
   // No saved app books tables: one is made, as a draft.
   const made = await events('/api/turn', { text: 'Book a table for 4 on Friday at 8 in North Beach' })
-  assert.deepEqual(made.map(e => e.type).filter(t => t !== 'status'), ['recall', 'route', 'making', 'app', 'reply', 'done'])
+  assert.deepEqual(made.map(e => e.type).filter(t => t !== 'status'), ['recall', 'route', 'making', 'app', 'say', 'done'])
+  // The answer is written from what the app shows, once the page says, and only once.
+  const say = made.find(e => e.type === 'say')
+  assert.deepEqual(Object.keys(say).sort(), ['token', 'type'], 'the page cannot choose what the answer is written from')
+  const said = await post('/api/say', { token: say.token, shows: 'On screen now:\nTrattoria Lucca 20:15' })
+  assert.equal(said.text, 'On screen: On screen now:\nTrattoria Lucca')
+  assert.equal((await fetch(chat.url + 'api/say', { method: 'POST', body: JSON.stringify({ token: say.token }) })).status, 404)
   const app = made.find(e => e.type === 'app')
   assert.equal(app.how, 'made')
   assert.equal(app.app.saved, false)
@@ -117,7 +131,7 @@ test('the flow: make, act, change, undo, save, and recall', { skip }, async () =
   const refused = await post('/api/call', { app: app.app.id, name: 'stock_quote', arguments: { symbol: 'NVDA' } })
   assert.equal(refused.isError, true)
 
-  // A change is a new version; undo goes back.
+  // A change is a new version; undo goes back, and redo forward again.
   const changed = await events(`/api/apps/${app.app.id}/change`, { text: 'best rated first' })
   const v2 = changed.find(e => e.type === 'app')
   assert.equal(v2.app.version, 2)
@@ -125,6 +139,32 @@ test('the flow: make, act, change, undo, save, and recall', { skip }, async () =
   const undone = await post(`/api/apps/${app.app.id}/undo`)
   assert.equal(undone.app.version, 1)
   assert.match(undone.html, />v1</)
+  assert.equal(undone.newer, true)
+  const redone = await post(`/api/apps/${app.app.id}/redo`)
+  assert.equal(redone.app.version, 2)
+  assert.match(redone.html, /v2: best rated first/)
+  assert.equal(redone.newer, false)
+  // A new change after an undo replaces the version the undo left.
+  await post(`/api/apps/${app.app.id}/undo`)
+  const other = (await events(`/api/apps/${app.app.id}/change`, { text: 'cheapest first' })).find(e => e.type === 'app')
+  assert.equal(other.app.version, 2)
+  assert.match(other.html, /v2: cheapest first/)
+  assert.equal((await post(`/api/apps/${app.app.id}/redo`)).app.version, 2, 'nothing newer to go to')
+
+  // Asked in words, a change is made for real, and so is an undo.
+  const screenNow = [{ id: app.app.id, version: 2, name: 'Table booking', shows: 'Places', did: [] }]
+  const worded = await events('/api/turn', { text: 'make it show the price', screen: screenNow })
+  const wordedApp = worded.find(e => e.type === 'app')
+  assert.equal(wordedApp.how, 'changed')
+  assert.equal(wordedApp.app.version, 3)
+  assert.match(wordedApp.html, /v2: show the price/)
+  assert.match(worded.find(e => e.type === 'reply').text, /Changed Table booking/)
+  const back = await events('/api/turn', { text: 'undo it', screen: [{ ...screenNow[0], version: 3 }] })
+  const backApp = back.find(e => e.type === 'app')
+  assert.equal(backApp.how, 'undone')
+  assert.equal(backApp.app.version, 2)
+  assert.equal(backApp.newer, true)
+  assert.match(back.find(e => e.type === 'reply').text, /back to version 2/)
 
   // Saved, it joins the rail.
   await post(`/api/apps/${app.app.id}/save`)
@@ -152,6 +192,75 @@ test('the flow: make, act, change, undo, save, and recall', { skip }, async () =
   const plain = await events('/api/turn', { text: 'what is a mutex' })
   assert.deepEqual(plain.filter(e => e.type === 'reply').map(e => e.text), ['Just text.'])
   assert.ok(!plain.some(e => e.type === 'app'))
+
+  // The router sees every app on the page, with its id and what it shows.
+  const many = Array.from({ length: 14 }, (_, i) => ({ id: `a${i}`, version: 1, name: `App ${i}`, folded: i > 0, shows: 'x', did: [], told: `On screen now:\n${'y'.repeat(3000)}` }))
+  await events('/api/turn', { text: 'what is a mutex', screen: many })
+  const seen = model.calls.route.at(-1).screen
+  assert.equal(seen.length, 12)
+  assert.equal(seen[1].folded, true)
+  assert.equal(seen[0].told.length, 2500)
+  assert.equal(seen[5].told.length, 400)
+})
+
+test('what an app keeps is kept for one browser, and goes when the app is removed', { skip }, async () => {
+  const made = (await events('/api/turn', { text: 'dinner for two tonight' })).find(e => e.type === 'app')
+  const id = made.app.id
+  const me = 'a'.repeat(32)
+  const friend = 'b'.repeat(32)
+  const kept = await post('/api/call', { app: id, me, name: 'app_keep', arguments: { key: 'stars', value: { mon: 3 } } })
+  assert.equal(kept.isError, undefined)
+  assert.deepEqual((await post('/api/call', { app: id, me, name: 'app_kept', arguments: { key: 'stars' } })).structuredContent.value, { mon: 3 })
+  assert.equal((await post('/api/call', { app: id, me: friend, name: 'app_kept', arguments: { key: 'stars' } })).structuredContent.value, null, 'another browser sees none of it')
+  const big = await post('/api/call', { app: id, me, name: 'app_keep', arguments: { key: 'big', value: 'x'.repeat(100_001) } })
+  assert.equal(big.isError, true)
+  await post(`/api/apps/${id}/save`)
+  assert.ok((await rail()).some(a => a.id === id))
+  await post(`/api/apps/${id}/remove`)
+  assert.ok(!(await rail()).some(a => a.id === id), 'gone from the rail')
+  assert.equal((await fetch(`${chat.url}api/apps/${id}/open`, { method: 'POST', body: '{}' })).status, 404)
+  assert.equal((await chat.apps.kept(id, 'stars', me)), null, 'what it kept went with it')
+})
+
+test('a conversation is kept for its browser, and each app in it opens again as it was', { skip }, async () => {
+  const talk = 'c'.repeat(32)
+  const first = await events('/api/turn', { text: 'find reviews of quiet headphones', talk })
+  const answer = first.find(e => e.type === 'app')
+  assert.ok(answer.shown, 'an app shown in a conversation is recorded')
+  await post('/api/talk', { talk, request: 'find reviews of quiet headphones', reply: 'Sony first.', shown: [{ id: answer.shown, app: answer.app.id, name: answer.app.name, kind: 'info', how: answer.how, shows: 'x' }] })
+  const second = (await events('/api/turn', { text: 'find good cameras', talk })).find(e => e.type === 'app')
+  assert.notEqual(second.shown, answer.shown)
+  await post('/api/talk', { talk, request: 'find good cameras', reply: '', shown: [] })
+
+  const { turns } = await (await fetch(`${chat.url}api/talk?talk=${talk}`)).json()
+  assert.deepEqual(turns.map(t => t.request), ['find reviews of quiet headphones', 'find good cameras'])
+  assert.equal(turns[0].shown[0].id, answer.shown)
+  assert.deepEqual((await (await fetch(`${chat.url}api/talk?talk=${'d'.repeat(32)}`)).json()).turns, [], 'another browser reads none of it')
+
+  // The first answer opens again with what it found then, though the same
+  // app showed another search since.
+  const again = await (await fetch(`${chat.url}api/shown/${answer.shown}?talk=${talk}`)).json()
+  assert.equal(again.app.id, 'search-results')
+  assert.equal(again.args.documents[0].title, 'Quiet headphones, tested')
+  assert.equal((await fetch(`${chat.url}api/shown/${answer.shown}?talk=${'d'.repeat(32)}`)).status, 404, 'only in its own conversation')
+
+  // Kept as its own app, it keeps those findings when searches follow.
+  const keptApp = (await post('/api/apps/search-results/keep-answer', { talk, shown: answer.shown, name: 'Quiet headphones · Nov 19', request: 'find reviews of quiet headphones' })).app
+  assert.match(keptApp.id, /^answer-/)
+  assert.equal(keptApp.saved, true)
+  assert.ok((await rail()).some(a => a.id === keptApp.id))
+  await chat.apps.used(keptApp.id, 'find other things', { query: 'other', documents: [] }, 'recalled')
+  assert.equal((await chat.apps.get(keptApp.id)).args.documents[0].title, 'Quiet headphones, tested')
+  const opened = (await events(`/api/apps/${keptApp.id}/open`, { talk })).find(e => e.type === 'app')
+  assert.equal(opened.result.structuredContent.documents[0].title, 'Quiet headphones, tested')
+  // Asked for again, it opens with what it found then, and no search.
+  const searches = model.calls.research.length
+  model.pick = keptApp.id
+  const asked = (await events('/api/turn', { text: 'find that headphones answer I kept', talk })).find(e => e.type === 'app')
+  delete model.pick
+  assert.equal(asked.app.id, keptApp.id)
+  assert.equal(asked.result.structuredContent.documents[0].title, 'Quiet headphones, tested')
+  assert.equal(model.calls.research.length, searches)
 })
 
 test('a saved app is recalled by meaning, with no word in common', { skip }, async () => {
@@ -260,6 +369,7 @@ test('one visitor’s requests in an hour are limited', { skip }, async () => {
 })
 
 test('a request to find things searches the web first, and the Search results app shows what was found', { skip }, async () => {
+  const usesBefore = (await rail()).find(a => a.id === 'search-results').uses
   const found = await events('/api/turn', { text: 'find reviews of quiet headphones' })
   assert.ok(found.some(e => e.type === 'status' && e.text === 'Searching the web'))
   assert.deepEqual(model.calls.research.at(-1).query, 'reviews of quiet headphones')
@@ -272,7 +382,7 @@ test('a request to find things searches the web first, and the Search results ap
   assert.deepEqual(data.facts, ['pick'])
   assert.match(app.html, /Found by Claude/)
   // Kept with the app, so it shows them again when opened from the rail.
-  assert.equal((await rail()).find(a => a.id === 'search-results').uses, 2)
+  assert.equal((await rail()).find(a => a.id === 'search-results').uses, usesBefore + 1)
 
   // A follow-up starts from what it found.
   await events('/api/turn', { text: 'find which of those is best for flights', lastApp: { id: 'search-results', args: app.args } })

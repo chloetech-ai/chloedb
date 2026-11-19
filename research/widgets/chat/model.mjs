@@ -199,10 +199,12 @@ export function claude({
 
 const ROUTE = `You run a chat in which answers can come with small apps: interactive views shown in the conversation. An app is for ${KINDS}. The person keeps the apps they like in a rail beside the chat, and a saved app opens again by itself when a later request needs it.
 
-For each request you decide one of three things:
-- "use": a saved app (or the app shown just before) does the job the request asks for, even with other inputs (another stock, another city, another dish). Give its id in "use" and, in "tool" and "args", the tool call that fills it for this request. Prefer a saved app whenever it does the same job: that is the point of saving it. Sharing a tool is not enough: comparing products side by side is another job than a shop's list, and a recipe to cook tonight another than browsing ideas.
+For each request you decide one of five things:
+- "use": a saved app (or the app shown just before) does the job the request asks for, even with other inputs (another stock, another city, another dish). Give its id in "use" and, in "tool" and "args", the tool call that fills it for this request. Prefer a saved app whenever it does the same job: that is the point of saving it. Sharing a tool is not enough: comparing products side by side is another job than a shop's list, and a recipe to cook tonight another than browsing ideas. A kept answer (an id that starts with answer-) opens with what was found then and never searches again: use it only when the person asks to see that answer again, and Search results for any new search.
 - "make": no saved app fits, and the request is better served by an app than by text: live data, things to compare, something to book or buy, things to browse. Describe the new app in "make" and give its first tool call in "tool" and "args".
-- "chat": the request needs no app (an explanation, an opinion, small talk, a question about what an app in the conversation already shows, something no tool has data for and no app could work out). Write the answer in "reply", in at most three sentences.
+- "change": the request asks to change how an app in the conversation looks or works, not what it shows ("make the text bigger", "also draw the second derivative", "add a sales tax field", "fit my phone", "fix it", "it freezes on this pattern", "show both loans side by side"). Give the app's id in "app" and the change in the person's words, with what they said about the problem, in "what". It is changed for real, as its Change box does, so never answer such a request in "chat" as if it were done.
+- "undo": the request asks to take back an app's last change ("undo that", "go back to how it was", "take the second derivative back out" right after adding it). Give the app's id in "app".
+- "chat": the request needs no app (an explanation, an opinion, small talk, a question about what an app in the conversation already shows, something no tool has data for and no app could work out). Write the answer in "reply", in at most three sentences. Answer a question about an app from what it shows on screen, given below: never say an app is missing, failed or shows something unless what it shows says so, and never say you did something to an app (rebuilt, changed, saved, kept) in a reply: only "change" and "undo" change apps. When you can't do what is asked, say so plainly.
 
 An app can also work things out itself, with no data from anywhere: a calculator of any kind (calculus, loans, units, statistics), a function plotted with its derivative or integral and animated, a simulation (physics, growth, a queue), a visual explanation, a timer, a small game, a drawing or music toy. When a request asks for one ("make me", "build", "a calculator that", "show me how ... changes", "animate"), it is "make" (or "use" of a saved app that does the same job) with tool "inputs" and args {"request": the request in a few words, "values": the values it names, such as {"f": "x^2 sin(x)"} or {"amount": 600000, "rate": 6, "years": 30}; {} when none}, and kind "tool". Its "look" says what it draws and every control it has (a field for the formula, sliders, play and pause, presets), as an expert would build it, in up to 6 sentences.
 
@@ -217,7 +219,9 @@ The tools and their arguments are listed in the request; use only those, with ar
 const ROUTE_SCHEMA = {
   type: 'object',
   properties: {
-    mode: { type: 'string', enum: ['use', 'make', 'chat'] },
+    mode: { type: 'string', enum: ['use', 'make', 'change', 'undo', 'chat'] },
+    app: { type: ['string', 'null'] },
+    what: { type: ['string', 'null'] },
     kind: { type: 'string', enum: ['info', 'action', 'discover', 'tool'] },
     use: { type: ['string', 'null'] },
     make: {
@@ -242,7 +246,7 @@ const ROUTE_SCHEMA = {
 function screenText(screen = []) {
   if (!screen.length) return 'No app is in the conversation yet.'
   return screen
-    .map(w => `- "${w.name}" shows: ${w.shows || '(nothing yet)'}${w.did.length ? ` Done in it: ${w.did.join(' ')}` : ''}${w.told ? ` It says the person now sees: ${w.told}` : ''}`)
+    .map(w => `- id ${w.id}, "${w.name}" (version ${w.version}${w.folded ? ', an earlier answer folded above' : ''}), filled with: ${w.shows || '(nothing yet)'}${w.did.length ? ` Done in it: ${w.did.join(' ')}` : ''}${w.told ? `\n  What it shows: ${w.told.replace(/\n/g, ' | ')}` : ''}`)
     .join('\n')
 }
 
@@ -402,7 +406,7 @@ function researchPrompt({ request, query, history = [], found }) {
   return `Today is ${new Date().toDateString()}.\n\n${said}${before(found)}Look up on the web: ${query}\n\n(The person asked: ${request})`
 }
 
-const REPLY = `You answer in a chat. An app with the details is shown above your answer, so answer the request in one or two short sentences, at most 45 words: the answer itself, not every number or option, and nothing about the app or its buttons (the person can see them). If the data is made up for a demo, say so in a few words. The data you get is what the app's first call returned; when the request asks about several things (three stocks, two cities), the app loads the others itself, so answer from what you have and never say that the rest is missing.`
+const REPLY = `You answer in a chat. An app with the details is shown above your answer, so answer the request in one or two short sentences, at most 45 words: the answer itself, not every number or option, and nothing about the app or its buttons (the person can see them). You get what the app shows on screen: when it shows the answer (a payment, a total, a margin, a pick, a count), give that answer with the app's own numbers exactly as it shows them. Never work out yourself a number the app shows, and never give a different one. Never say the app failed, is missing something or shows something unless what it shows says so. If the data is made up for a demo, say so in a few words. When nothing on screen is given, answer from the data the app was filled with; when the request asks about several things (three stocks, two cities), the app loads the others itself, so never say that the rest is missing. Plain text: no markdown, no asterisks.`
 
 const NOTE = `You are the assistant in a chat in which answers come with small apps. The person just did something in one of the apps (booked, added to a cart). Write what you say about it in the chat: one or two short sentences, at most 35 words, in plain words. The person did it themselves, so do not say you did it: confirm what happened in their terms ("Your table at ... is booked", "The whisk is in your cart"; if it is a demo and nothing real happened, say so in a few words), then offer one useful next step you could help with. No markdown, no lists.`
 
@@ -411,6 +415,6 @@ function notePrompt({ app, summary, history }) {
   return `The conversation so far:\n${said}\n\nIn the app "${app.name}" (${app.about}), the person just did this. The app's answer: ${summary}`
 }
 
-function replyPrompt({ request, summary }) {
-  return `The request: ${request}\n\nThe data the app shows, in short: ${summary}`
+function replyPrompt({ request, summary, shows }) {
+  return `The request: ${request}\n\nThe data the app was filled with, in short: ${summary}${shows ? `\n\nWhat the app shows on screen now:\n${shows}` : ''}`
 }

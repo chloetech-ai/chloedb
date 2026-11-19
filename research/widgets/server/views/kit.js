@@ -31,6 +31,7 @@ async function connect(name, draw) {
   connected = app.connect().then(() => app)
   await connected
   theme(app.getHostContext())
+  report()
   return app
 }
 
@@ -48,8 +49,67 @@ function ask(app, text) {
 
 // Tells the conversation what the person now sees or picked in the view
 // ("Selected: Pasta Fresca at 7:30"), so a later question can refer to it.
+// What the page shows goes with it (below).
+let toldWords = ''
+let seenWords = ''
 function tell(app, text) {
-  return app.updateModelContext({ content: [{ type: 'text', text }] }).catch(() => {})
+  toldWords = String(text ?? '').slice(0, 600)
+  return context(app)
+}
+function context(app) {
+  const parts = [toldWords, seenWords && `On screen now:\n${seenWords}`].filter(Boolean)
+  return app.updateModelContext({ content: [{ type: 'text', text: parts.join('\n') }] }).catch(() => {})
+}
+
+// What the person sees, told to the conversation a moment after the page
+// settles: its text and the values in its fields. The chat answers from
+// it, so the words under an app repeat the app's own numbers rather than
+// working them out again, and a question about the app is about this.
+function fieldsText() {
+  const out = []
+  for (const f of document.querySelectorAll('input, select, textarea')) {
+    if (/^(hidden|password|submit|button|file)$/.test(f.type) || f.closest('[hidden]')) continue
+    const label = (f.labels?.[0]?.innerText || f.getAttribute('aria-label') || f.placeholder || f.name || f.id || '').replace(/\s+/g, ' ').trim().slice(0, 60)
+    const value = f.type === 'checkbox' || f.type === 'radio' ? (f.checked ? 'on' : 'off') : f.tagName === 'SELECT' ? f.selectedOptions?.[0]?.text ?? f.value : f.value
+    if (label || value) out.push(`${label || 'field'}: ${String(value ?? '').slice(0, 120)}`)
+    if (out.length >= 30) break
+  }
+  return out.join('; ')
+}
+function onScreen() {
+  const text = (document.body?.innerText ?? '').replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim().slice(0, 2500)
+  const fields = fieldsText()
+  return `${text}${fields ? `\nFields: ${fields}` : ''}`
+}
+// Told once the page is still for 700 ms, and at least every 2 s while it
+// keeps changing (an animation's readout), so the chat is never left waiting.
+let seenTimer = null
+let seenSince = 0
+function report() {
+  clearTimeout(seenTimer)
+  seenSince ||= Date.now()
+  seenTimer = setTimeout(async () => {
+    seenSince = 0
+    if (!connected) return
+    const now = onScreen()
+    if (!now || now === seenWords) return
+    seenWords = now
+    context(await connected)
+  }, Math.max(0, Math.min(700, 2000 - (Date.now() - seenSince))))
+}
+addEventListener('input', report, true)
+addEventListener('change', report, true)
+
+// What an app keeps from one opening to the next (a chore chart's stars,
+// prices typed into a tracker, the rate the person set): stored with the
+// app, in the same place as the app. The frame itself keeps nothing (no
+// storage, cookies or IndexedDB). A value is anything JSON holds.
+async function keep(app, key, value) {
+  await globalThis.Kit.call(app, 'app_keep', { key: String(key), value: value ?? null })
+}
+async function kept(app, key) {
+  const data = await globalThis.Kit.call(app, 'app_kept', { key: String(key) })
+  return data?.value ?? null
 }
 
 // Opens a web address through the host (a view's iframe may not open one
@@ -153,7 +213,8 @@ new MutationObserver(changes => {
     if (c.type === 'characterData') textForm(c.target)
     else c.addedNodes.forEach(textForm)
   }
+  report()
 }).observe(document.documentElement, { childList: true, subtree: true, characterData: true })
 if (document.body) textForm(document.body)
 
-globalThis.Kit = { connect, call, ask, tell, link, money, number, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }
+globalThis.Kit = { connect, call, ask, tell, keep, kept, link, money, number, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }

@@ -20,6 +20,16 @@ const APPS = `CREATE TABLE ia_apps (id KEYWORD PRIMARY KEY, name TEXT, about TEX
 const VERSIONS = `CREATE TABLE ia_versions (id KEYWORD PRIMARY KEY, app KEYWORD, version INT, change TEXT, made INT,
   source TEXT OPTIONS(indexed = false))`
 const TURNS = `CREATE TABLE ia_turns (id KEYWORD PRIMARY KEY, request TEXT, app KEYWORD, how KEYWORD, at INT)`
+// What an app keeps between openings (Kit.keep), by the browser that kept
+// it (its owner), the app and the key: one friend's prices are not another's.
+const STATE = `CREATE TABLE ia_state (id KEYWORD PRIMARY KEY, owner KEYWORD, app KEYWORD, name KEYWORD, value TEXT OPTIONS(indexed = false), at INT)`
+// Each app shown in a conversation, with what it was filled with, so a
+// reload or a folded answer opens it again as it was.
+const SHOWN = `CREATE TABLE ia_shown (id KEYWORD PRIMARY KEY, talk KEYWORD, app KEYWORD, version INT, tool KEYWORD, args TEXT OPTIONS(indexed = false), how KEYWORD, at INT)`
+// A conversation's turns: what was asked, which apps it showed, what was
+// said. A conversation is one browser's (its talk id is that browser's
+// secret), so it is read back only by that id.
+const TALK = `CREATE TABLE ia_talk (id KEYWORD PRIMARY KEY, talk KEYWORD, at INT, request TEXT OPTIONS(indexed = false), reply TEXT OPTIONS(indexed = false), shown TEXT OPTIONS(indexed = false))`
 
 // The apps "made before", so the rail is not empty on the first start: the
 // three widgets, and the list of what Claude found, whose views were
@@ -38,6 +48,7 @@ export const SEEDS = [
 
 const id = name => `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24)}-${randomBytes(3).toString('hex')}`
 const now = () => Date.now()
+const stateId = (owner, appId, key) => `${owner || '-'}|${appId}|${key}`
 
 export class Apps {
   constructor(db, { meaning }) {
@@ -89,6 +100,12 @@ export class Apps {
       await create(VERSIONS)
       await create(TURNS)
     }
+    // Tables added later: a folder from before them gets them.
+    const create = sql => db.sql(sql).catch(error => {
+      if (!/already exists/i.test(error.message)) throw error
+    })
+    const tables = new Set((await db.tables()).map(t => t.table ?? t.name ?? t))
+    for (const [name, sql] of [['ia_state', STATE], ['ia_shown', SHOWN], ['ia_talk', TALK]]) if (!tables.has(name)) await create(sql)
     const apps = new Apps(db, { meaning })
     apps.child = child
     // Each seed once, by its id: a folder from before a seed was added gets
@@ -169,15 +186,49 @@ export class Apps {
 
   async change(appId, source, change) {
     const app = await this.get(appId)
+    // A change after an undo replaces the versions the undo left.
+    const later = Array.from({ length: 50 }, (_, i) => `${appId}@${app.version + 2 + i}`)
+    const stale = (await this.db.get('ia_versions', later)).filter(Boolean)
+    if (stale.length) await this.db.write(stale.map(v => ({ op: 'delete', table: 'ia_versions', key: v.id })))
     return this.put({ ...app, source, version: app.version + 1 }, change)
   }
 
+  // Back one version, keeping the newer one for redo until the next change
+  // replaces it.
   async undo(appId) {
     const app = await this.get(appId)
     if (app.version <= 1) return app
     const [before] = await this.db.get('ia_versions', [`${appId}@${app.version - 1}`])
-    await this.db.write([{ op: 'delete', table: 'ia_versions', key: `${appId}@${app.version}` }])
+    if (!before) return app
     return this.put({ ...app, source: before.source, version: app.version - 1 }, null)
+  }
+
+  // Forward again to the version an undo left.
+  async redo(appId) {
+    const app = await this.get(appId)
+    const [after] = await this.db.get('ia_versions', [`${appId}@${app.version + 1}`])
+    if (!after) return app
+    return this.put({ ...app, source: after.source, version: app.version + 1 }, null)
+  }
+
+  // Whether an undo left a newer version to go forward to.
+  async hasNewer(appId, version) {
+    const [after] = await this.db.get('ia_versions', [`${appId}@${version + 1}`])
+    return Boolean(after)
+  }
+
+  // Takes an app out of the person's apps and out of recall; its versions
+  // and what it kept go with it.
+  async remove(appId) {
+    const app = await this.get(appId)
+    if (!app) return null
+    const versions = Array.from({ length: app.version + 50 }, (_, i) => `${appId}@${i + 1}`)
+    const there = (await this.db.get('ia_versions', versions)).filter(Boolean)
+    const ops = [{ op: 'delete', table: 'ia_apps', key: appId }, ...there.map(v => ({ op: 'delete', table: 'ia_versions', key: v.id }))]
+    const state = await this.db.query('SELECT id FROM ia_state WHERE app = :app LIMIT 1000', { app: appId }).catch(() => [])
+    for (const row of state) ops.push({ op: 'delete', table: 'ia_state', key: row.id })
+    await this.db.write(ops)
+    return app
   }
 
   async save(appId, saved = true, name) {
@@ -185,13 +236,56 @@ export class Apps {
     return this.put({ ...app, saved, name: name || app.name }, null)
   }
 
+  // Kit.keep and Kit.kept: what an app keeps for one browser (its owner),
+  // kept across the app's versions.
+  async keep(appId, key, value, owner = '') {
+    const text = JSON.stringify(value ?? null)
+    if (text.length > 100_000) throw new Error('That is too much to keep (100 KB at most).')
+    await this.db.write([{ op: 'upsert', table: 'ia_state', doc: { id: stateId(owner, appId, key), owner, app: appId, name: key, value: text, at: now() } }])
+  }
+
+  async kept(appId, key, owner = '') {
+    const [row] = await this.db.get('ia_state', [stateId(owner, appId, key)])
+    return row ? JSON.parse(row.value) : null
+  }
+
+  // A copy of an answer of what was found, kept as its own app: it opens
+  // with the same findings, which a later search does not replace.
+  async keepAnswer(appId, { name, request, args }) {
+    const app = await this.get(appId)
+    if (!app) return null
+    return this.put({ ...app, id: `answer-${id(name)}`, name, about: `What was found for: ${request}`.slice(0, 200), examples: request, args, saved: true, uses: 0, version: 1, made: now() }, 'kept answer')
+  }
+
+  // An app shown in a conversation, with what it was filled with.
+  async show({ id: shownId, talk, app, version, tool, args, how }) {
+    await this.db.write([{ op: 'upsert', table: 'ia_shown', doc: { id: shownId, talk, app, version: version ?? 1, tool: tool ?? '', args: JSON.stringify(args ?? {}), how: how ?? '', at: now() } }])
+  }
+
+  async shownOf(shownId, talk) {
+    const [row] = await this.db.get('ia_shown', [shownId])
+    if (!row || row.talk !== talk) return null
+    return { ...row, args: JSON.parse(row.args || '{}') }
+  }
+
+  // A turn of a conversation, and the conversation read back in order.
+  async talked({ talk, request, reply, shown }) {
+    await this.db.write([{ op: 'upsert', table: 'ia_talk', doc: { id: `${talk}:${now()}-${randomBytes(2).toString('hex')}`, talk, at: now(), request: request ?? '', reply: reply ?? '', shown: JSON.stringify(shown ?? []) } }])
+  }
+
+  async talk(talk, limit = 200) {
+    const rows = await this.db.query(`SELECT id, at, request, reply, shown FROM ia_talk WHERE talk = :talk ORDER BY at DESC LIMIT ${limit}`, { talk })
+    return rows.reverse().map(r => ({ at: r.at, request: r.request, reply: r.reply, shown: JSON.parse(r.shown || '[]') }))
+  }
+
   // An app served a request: counted, its arguments kept for the rail, and
-  // the request added to those it is recalled by.
+  // the request added to those it is recalled by. A kept answer keeps its
+  // own findings.
   async used(appId, request, args, how) {
     const app = await this.get(appId)
     const examples = [request, ...app.examples.split(' | ').filter(e => e !== request)].filter(Boolean).slice(0, 8).join(' | ')
     await this.db.write([
-      { op: 'upsert', table: 'ia_apps', doc: { ...untidy(app), examples, args: JSON.stringify(args ?? {}), uses: app.uses + 1, used: now() } },
+      { op: 'upsert', table: 'ia_apps', doc: { ...untidy(app), examples, args: JSON.stringify(appId.startsWith('answer-') ? app.args : args ?? {}), uses: app.uses + 1, used: now() } },
       { op: 'upsert', table: 'ia_turns', doc: { id: `${now()}-${randomBytes(3).toString('hex')}`, request, app: appId, how, at: now() } },
     ])
   }

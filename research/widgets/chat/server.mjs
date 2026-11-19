@@ -14,6 +14,7 @@
 //
 // CHLOEDB_URL uses a running chloedb-server instead of starting one.
 import { mkdirSync, readFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import os from 'node:os'
@@ -22,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 
 import { described } from '../server/guide.mjs'
 import { TOOLS, callTool, domainsOf, render } from '../server/index.mjs'
+import { KEEPING, keeping } from '../server/apps.mjs'
 import { claude } from './model.mjs'
 import { Apps, valueNames } from '../server/store.mjs'
 
@@ -70,6 +72,32 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   // What each app shown in this process last drew, so a change redraws it
   // with the same data.
   const shown = new Map()
+  // What each turn's answer is written from, once the page says what its
+  // app shows (/api/say): by a one-time token the turn hands the page, so
+  // the answer is part of the turn and not a request of its own.
+  const sayable = new Map()
+  const sayToken = (request, summary) => {
+    const token = randomBytes(12).toString('hex')
+    sayable.set(token, { request, summary, at: Date.now() })
+    for (const [t, v] of sayable) if (Date.now() - v.at > 600_000) sayable.delete(t)
+    return token
+  }
+  // A browser's own ids (its conversation, its kept values): random, from the page.
+  const own = value => (typeof value === 'string' && /^[A-Za-z0-9-]{16,64}$/.test(value) ? value : '')
+  // Each app sent to a page with a conversation is recorded as shown in it,
+  // with what it was filled with, so it opens again as it was.
+  function recording(talk, send) {
+    const writes = []
+    const out = event => {
+      if (event.type === 'app' && talk) {
+        event.shown = `${Date.now().toString(36)}-${randomBytes(6).toString('hex')}`
+        writes.push(apps.show({ id: event.shown, talk, app: event.app.id, version: event.app.version, tool: event.tool, args: event.args, how: event.how }).catch(log))
+      }
+      send(event)
+    }
+    out.written = () => Promise.all(writes)
+    return out
+  }
 
   // An app as the page draws it.
   const view = app => ({
@@ -90,12 +118,18 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   // What the apps in the conversation show now, as the page tells it: what
   // each was last filled with, what was done in it, and what it said it
   // shows. The model reads it to answer about them ("which is quickest?").
+  // Every app on the page, newest first: the three newest in full, the
+  // older ones in short, so "the regex tester" or "the headphones you found"
+  // is always one the chat can see.
   const onScreen = screen =>
-    (Array.isArray(screen) ? screen : []).slice(0, 4).map(w => ({
+    (Array.isArray(screen) ? screen : []).slice(0, 12).map((w, i) => ({
+      id: String(w.id ?? '').slice(0, 64),
+      version: Number(w.version) || 1,
       name: String(w.name ?? '').slice(0, 60),
-      shows: String(w.shows ?? '').slice(0, 900),
+      folded: Boolean(w.folded),
+      shows: String(w.shows ?? '').slice(0, i < 3 ? 900 : 300),
       did: (Array.isArray(w.did) ? w.did : []).slice(-3).map(d => String(d).slice(0, 300)),
-      told: String(w.told ?? '').slice(0, 300),
+      told: String(w.told ?? '').slice(0, i < 3 ? 2500 : 400),
     }))
 
   async function turn({ text, history = [], lastApp, screen }, send) {
@@ -112,15 +146,36 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       tools: described(TOOLS),
     })
     send({ type: 'route', mode: plan.mode, kind: plan.kind, why: plan.why })
+    // A change asked in words is the same change as the app's Change box,
+    // and an undo the same as its version button: done, never just said.
+    if ((plan.mode === 'change' || plan.mode === 'undo') && plan.app && (await apps.get(plan.app))) {
+      if (plan.mode === 'undo') {
+        const was = await apps.get(plan.app)
+        if (was.version <= 1) {
+          send({ type: 'reply', text: `${was.name} has no earlier version to go back to.` })
+          return
+        }
+        await undo(plan.app, send)
+        send({ type: 'reply', text: `${was.name} is back to version ${was.version - 1}. Its Redo button brings the change back.` })
+        return
+      }
+      const what = String(plan.what || text)
+      await change(plan.app, what, send)
+      send({ type: 'reply', text: `Changed ${(await apps.get(plan.app)).name} as you asked. Its Undo button takes the change back.` })
+      return
+    }
     if (plan.mode === 'chat' || !plan.tool || !KNOWN.has(plan.tool)) {
       send({ type: 'reply', text: plan.reply || 'I could not find a way to answer that with an app.' })
       return
     }
     let app = plan.mode === 'use' && plan.use ? await apps.get(plan.use) : null
     let args = plan.args ?? {}
+    // A kept answer opens with what it found then; a new search is Search results'.
+    const keptAnswer = app?.id.startsWith('answer-')
+    if (keptAnswer) args = app.args
     // An app of what was found: the web searched first, and what it found
     // is the tool's arguments.
-    if (plan.tool === 'findings') {
+    if (plan.tool === 'findings' && !keptAnswer) {
       send({ type: 'status', text: 'Searching the web' })
       try {
         // A follow-up starts from what the app shown just before found.
@@ -138,13 +193,15 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     }
     if (app) {
       send({ type: 'status', text: `Opening ${app.name}` })
-      const { result, data } = await run(app.tools.includes(plan.tool) ? plan.tool : app.tool, args)
+      const tool = app.tools.includes(plan.tool) && !keptAnswer ? plan.tool : app.tool
+      const { result, data } = await run(tool, args)
       // The app just shown, filled again for a follow-up, is an update.
       const how = lastApp?.id === app.id ? 'updated' : app.saved ? 'recalled' : 'again'
-      send({ type: 'app', app: view(app), html: htmlOf(app), args, result, how, why: plan.why })
-      shown.set(app.id, { args, result, data, tool: plan.tool })
+      send({ type: 'app', app: view(app), html: htmlOf(app), tool, args, result, how, why: plan.why })
+      shown.set(app.id, { args, result, data, tool })
       await apps.used(app.id, text, args, how)
-      send({ type: 'reply', text: await model.reply({ request: text, summary: data.summary }).catch(() => data.summary) })
+      // The answer is written once the page tells what the app shows (/api/say).
+      send({ type: 'say', token: sayToken(text, data.summary) })
       return
     }
     // A new app: its data first, then the model writes it, and the answer
@@ -153,7 +210,6 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const tools = [...new Set([plan.tool, ...(make.tools ?? [])])].filter(t => KNOWN.has(t))
     send({ type: 'making', name: make.name, kind: plan.kind, why: plan.why })
     const { result, data } = await run(plan.tool, args)
-    const replied = model.reply({ request: text, summary: data.summary }).catch(() => data.summary)
     const source = await model.make({
       request: text,
       plan: make,
@@ -165,8 +221,8 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     app = await apps.put({ name: make.name, about: make.about, kind: plan.kind, tool: plan.tool, tools, source, args, examples: text, saved: false }, `made for: ${text}`)
     await apps.used(app.id, text, args, 'made')
     shown.set(app.id, { args, result, data, tool: plan.tool })
-    send({ type: 'app', app: view(app), html: htmlOf(app), args, result, how: 'made', why: plan.why })
-    send({ type: 'reply', text: await replied })
+    send({ type: 'app', app: view(app), html: htmlOf(app), tool: plan.tool, args, result, how: 'made', why: plan.why })
+    send({ type: 'say', token: sayToken(text, data.summary) })
   }
 
   async function change(appId, text, send) {
@@ -187,7 +243,14 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       tools: described(TOOLS.filter(t => app.tools.includes(t.name))),
     })
     const next = await apps.change(appId, source, text)
-    send({ type: 'app', app: view(next), html: htmlOf(next), args: was.args, result: was.result, how: 'changed' })
+    send({ type: 'app', app: view(next), html: htmlOf(next), tool: was.tool, args: was.args, result: was.result, how: 'changed', newer: false })
+  }
+
+  // Back one version, as the version button does.
+  async function undo(appId, send) {
+    const app = await apps.undo(appId)
+    const was = shown.get(appId) ?? (await run(app.tool, app.args).then(({ result, data }) => ({ args: app.args, result, data, tool: app.tool })))
+    send({ type: 'app', app: view(app), html: htmlOf(app), tool: was.tool, args: was.args, result: was.result, how: 'undone', newer: true })
   }
 
   // Opens an app from the rail with what it last showed.
@@ -195,7 +258,19 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const app = await apps.get(appId)
     const { result, data } = await run(app.tool, app.args)
     shown.set(app.id, { args: app.args, result, data, tool: app.tool })
-    send({ type: 'app', app: view(app), html: htmlOf(app), args: app.args, result, how: 'opened' })
+    send({ type: 'app', app: view(app), html: htmlOf(app), tool: app.tool, args: app.args, result, how: 'opened' })
+  }
+
+  // An app shown earlier in a conversation, filled again with what it showed then.
+  async function reopen(shownId, talk) {
+    const row = await apps.shownOf(shownId, talk)
+    if (!row) return null
+    const app = await apps.get(row.app)
+    if (!app) return { removed: true }
+    const tool = app.tools.includes(row.tool) ? row.tool : app.tool
+    const { result, data } = await run(tool, row.args)
+    shown.set(app.id, { args: row.args, result, data, tool })
+    return { type: 'app', app: view(app), html: htmlOf(app), tool, args: row.args, result, how: 'again', shown: row.id }
   }
 
   const body = req =>
@@ -238,12 +313,37 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       if (req.method === 'POST' && url.pathname === '/api/turn') {
         const input = await body(req)
         if (limited(req)) return stream(res, () => Promise.reject(new Error(tooMany)))
-        return stream(res, send => turn(input, send))
+        return stream(res, async send => {
+          const out = recording(own(input.talk), send)
+          await turn(input, out)
+          await out.written()
+        })
+      }
+      // A conversation of this browser, read back after a reload or the next day.
+      if (req.method === 'GET' && url.pathname === '/api/talk') {
+        const talk = own(url.searchParams.get('talk'))
+        return json(res, { turns: talk ? await apps.talk(talk) : [] })
+      }
+      if (req.method === 'POST' && url.pathname === '/api/talk') {
+        const { talk, request, reply, shown: was = [] } = await body(req)
+        if (!own(talk)) return json(res, { error: 'no conversation' }, 400)
+        const tidyShown = (Array.isArray(was) ? was : []).slice(0, 8).map(w => ({
+          id: String(w?.id ?? '').slice(0, 64), app: String(w?.app ?? '').slice(0, 64), name: String(w?.name ?? '').slice(0, 80),
+          kind: String(w?.kind ?? '').slice(0, 12), how: String(w?.how ?? '').slice(0, 12), shows: String(w?.shows ?? '').slice(0, 400), in: Boolean(w?.in),
+        }))
+        await apps.talked({ talk: own(talk), request: String(request ?? '').slice(0, 2000), reply: String(reply ?? '').slice(0, 4000), shown: tidyShown })
+        return json(res, { ok: true })
+      }
+      if (req.method === 'GET' && parts[0] === 'api' && parts[1] === 'shown' && parts[2]) {
+        const event = await reopen(decodeURIComponent(parts[2]), own(url.searchParams.get('talk')))
+        if (!event) return json(res, { error: 'not in this conversation' }, 404)
+        return json(res, event)
       }
       // A tool an app calls from its view: only the tools it was made with.
       if (req.method === 'POST' && url.pathname === '/api/call') {
-        const { app: appId, name, arguments: args } = await body(req)
+        const { app: appId, name, arguments: args, me } = await body(req)
         const app = await apps.get(appId)
+        if (app && KEEPING.includes(name)) return json(res, await keeping(apps, app.id, name, args, own(me)))
         if (!app || !app.tools.includes(name)) return json(res, { content: [{ type: 'text', text: `${name} is not one of this app's tools` }], isError: true })
         const { result, data } = await run(name, args)
         // A call of its first tool (another range, another search) is what
@@ -252,6 +352,16 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         // A tool that acts (a booking, the cart): the page has the chat say so.
         const acted = !result.isError && TOOLS.find(t => t.name === name)?.acts === true
         return json(res, acted ? { ...result, acted: true } : result)
+      }
+      // What the chat says under an app, from what the app shows on screen.
+      if (req.method === 'POST' && url.pathname === '/api/say') {
+        const { token, shows } = await body(req)
+        const turned = sayable.get(String(token ?? ''))
+        if (!turned) return json(res, { error: 'nothing to say' }, 404)
+        sayable.delete(String(token))
+        const { request, summary } = turned
+        const said = await model.reply({ request: String(request ?? '').slice(0, 500), summary: String(summary ?? '').slice(0, 4000), shows: String(shows ?? '').slice(0, 3000) }).catch(() => '')
+        return json(res, { text: said || String(summary ?? '') })
       }
       // What the chat says after something was done in an app.
       if (req.method === 'POST' && url.pathname === '/api/note') {
@@ -267,12 +377,31 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         const input = await body(req)
         if (!(await apps.get(appId))) return json(res, { error: 'no such app' }, 404)
         if (parts[3] === 'change') return stream(res, send => (limited(req) ? Promise.reject(new Error(tooMany)) : change(appId, String(input.text ?? ''), send)))
-        if (parts[3] === 'open') return stream(res, send => open(appId, send))
+        if (parts[3] === 'open') {
+          return stream(res, async send => {
+            const out = recording(own(input.talk), send)
+            await open(appId, out)
+            await out.written()
+          })
+        }
+        // An answer of what was found, kept as its own app with these findings.
+        if (parts[3] === 'keep-answer') {
+          const row = await apps.shownOf(String(input.shown ?? ''), own(input.talk))
+          const args = row?.args ?? shown.get(appId)?.args
+          if (!args) return json(res, { error: 'that answer is not here any more' }, 404)
+          const name = String(input.name ?? '').trim().slice(0, 60) || 'Kept answer'
+          const kept = await apps.keepAnswer(appId, { name, request: String(input.request ?? name).slice(0, 300), args })
+          return json(res, { app: view(kept) })
+        }
         if (parts[3] === 'save') return json(res, { app: view(await apps.save(appId, true, input.name)) })
         if (parts[3] === 'unsave') return json(res, { app: view(await apps.save(appId, false)) })
-        if (parts[3] === 'undo') {
-          const app = await apps.undo(appId)
-          return json(res, { app: view(app), html: htmlOf(app) })
+        if (parts[3] === 'undo' || parts[3] === 'redo') {
+          const app = parts[3] === 'undo' ? await apps.undo(appId) : await apps.redo(appId)
+          return json(res, { app: view(app), html: htmlOf(app), newer: await apps.hasNewer(appId, app.version) })
+        }
+        if (parts[3] === 'remove') {
+          await apps.remove(appId)
+          return json(res, { removed: appId })
         }
       }
       res.writeHead(404).end()

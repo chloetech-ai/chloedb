@@ -7,26 +7,29 @@
 <style>
   :root {
     color-scheme: light;
-    --bg: #faf9f5; --panel: #ffffff; --panel-2: #f3f1ea; --ink: #1f1e1d; --ink-2: #67655f; --ink-3: #9a978f;
+    --bg: #faf9f5; --panel: #ffffff; --panel-2: #f3f1ea; --ink: #1f1e1d; --ink-2: #57554f; --ink-3: #76736b;
     --line: #e5e2d9; --bubble: #efece3; --accent: #c4623f; --accent-ink: #ffffff;
     --info: #2f6fde; --info-bg: #e6eefc; --action: #1a8a4a; --action-bg: #e3f4ea; --discover: #b0569c; --discover-bg: #f7e6f3; --tool: #b8650f; --tool-bg: #fbeedd;
     --shadow: 0 1px 2px rgba(30, 28, 20, .06), 0 4px 18px rgba(30, 28, 20, .05);
   }
   :root[data-theme='dark'] {
     color-scheme: dark;
-    --bg: #1f1f1d; --panel: #262624; --panel-2: #2e2e2b; --ink: #f2f1ee; --ink-2: #b4b2ac; --ink-3: #85837d;
+    --bg: #1f1f1d; --panel: #262624; --panel-2: #2e2e2b; --ink: #f2f1ee; --ink-2: #c4c2bc; --ink-3: #9d9b95;
     --line: #3b3a37; --bubble: #33322f; --accent: #d97757;
     --info: #6d9ff0; --info-bg: #23314a; --action: #4cc27a; --action-bg: #1e3a29; --discover: #e08ccd; --discover-bg: #3d2537; --tool: #f0a85a; --tool-bg: #3d2d1c;
     --shadow: none;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; }
   button, input, textarea { font: inherit; color: inherit; }
   .shell { display: grid; grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: minmax(0, 1fr); height: 100vh; height: 100dvh; }
   .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .top { display: flex; align-items: baseline; gap: 10px; padding: 14px 22px; }
-  .top b { font-size: 15px; }
-  .faint { color: var(--ink-3); font-size: 12px; }
+  .top { display: flex; align-items: center; gap: 10px; padding: 12px 22px; }
+  .top b { font-size: 16px; white-space: nowrap; }
+  .top .faint { flex: 1; min-width: 0; }
+  .faint { color: var(--ink-3); font-size: 13px; }
+  .newchat { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 6px 12px; cursor: pointer; font-size: 14px; white-space: nowrap; }
+  .newchat:hover { border-color: var(--ink-3); }
   .log { flex: 1; overflow-y: auto; padding: 8px 22px 24px; }
   .col { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
   .user { align-self: flex-end; max-width: 80%; background: var(--bubble); border-radius: 18px; padding: 9px 15px; white-space: pre-wrap; }
@@ -35,12 +38,12 @@
   .av { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; margin-top: 1px; }
   .av svg { width: 14px; height: 14px; }
   .body { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
-  .status { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; min-height: 26px; }
+  .status { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 14px; min-height: 26px; }
   .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; flex: none; }
   @keyframes spin { to { transform: rotate(1turn); } }
   .reply { white-space: pre-wrap; }
-  .error { color: #c8372d; font-size: 14px; }
-  .toolline { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); min-height: 26px; }
+  .error { color: #c8372d; font-size: 15px; }
+  .toolline { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); min-height: 26px; }
   .toolline b { font-weight: 600; color: var(--ink); }
 
   .tile { width: 28px; height: 28px; border-radius: 8px; display: inline-grid; place-items: center; flex: none; }
@@ -56,30 +59,34 @@
   .widget { max-width: 680px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
   .widget.fresh { animation: rise .35s ease-out; }
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
-  .wbar { display: flex; align-items: center; gap: 7px; padding: 5px 6px 5px 8px; border-bottom: 1px solid var(--line); font-size: 12.5px; min-height: 34px; }
+  .wbar { display: flex; align-items: center; gap: 7px; padding: 5px 6px 5px 8px; border-bottom: 1px solid var(--line); font-size: 14px; min-height: 40px; flex-wrap: wrap; }
   .wname { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: none; border: 0; padding: 0; cursor: default; }
-  .chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+  .chip { font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
   .chip.made { background: #fdf0e8; color: var(--accent); }
   :root[data-theme='dark'] .chip.made { background: #43291f; }
   .chip.recalled, .chip.saved { background: var(--action-bg); color: var(--action); }
   .chip.updated { background: var(--info-bg); color: var(--info); }
   .spacer { flex: 1; }
-  .wbtn { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; color: var(--ink-2); border-radius: 7px; padding: 4px 7px; cursor: pointer; font-size: 12.5px; white-space: nowrap; }
+  .acts { display: flex; flex-wrap: wrap; gap: 2px; }
+  .wbtn { display: inline-flex; align-items: center; gap: 5px; border: 0; background: none; color: var(--ink-2); border-radius: 8px; padding: 5px 9px; min-height: 32px; cursor: pointer; font-size: 14px; white-space: nowrap; }
   .wbtn svg { width: 13px; height: 13px; }
   .wbtn:hover { background: var(--panel-2); color: var(--ink); }
   .wbtn.save { color: var(--accent); font-weight: 600; }
   .wbtn:disabled { opacity: .5; cursor: default; }
   .fold-note { display: none; color: var(--ink-3); }
+  .reopen { display: none; }
   .widget.folded { box-shadow: none; }
   .widget.folded .wbar { border-bottom: 0; }
   .widget.folded .wname { cursor: pointer; }
-  .widget.folded .frame, .widget.folded .changer, .widget.folded .wbtn { display: none; }
+  .widget.folded .frame, .widget.folded .changer, .widget.folded .acts { display: none; }
   .widget.folded .fold-note { display: inline; }
+  .widget.folded .reopen { display: inline-flex; color: var(--accent); font-weight: 600; }
+  .gone { color: var(--ink-3); font-size: 13px; }
   .frame iframe { display: block; width: 100%; height: 160px; border: 0; background: transparent; }
   .changer[hidden] { display: none; }
   .changer { display: flex; gap: 6px; padding: 7px 8px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
-  .changer input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 5px 9px; font-size: 13px; }
-  .btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
+  .changer input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 10px; font-size: 16px; }
+  .btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 5px 12px; cursor: pointer; font-size: 14px; }
   .making { padding: 16px 14px 18px; display: flex; flex-direction: column; gap: 9px; }
   .bar { height: 10px; border-radius: 6px; background: linear-gradient(90deg, var(--panel-2), var(--line), var(--panel-2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
   @keyframes shimmer { to { background-position: -200% 0; } }
@@ -94,45 +101,70 @@
   .hello h1 { font-size: 26px; font-weight: 600; margin: 0 0 6px; letter-spacing: -.01em; }
   .hello p { color: var(--ink-2); margin: 0 0 22px; }
   .ideas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: left; }
-  .idea-col h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
-  .idea { display: block; width: 100%; text-align: left; margin-bottom: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 11px; cursor: pointer; font-size: 13px; }
+  .idea-col h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+  .idea { display: block; width: 100%; text-align: left; margin-bottom: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; cursor: pointer; font-size: 15px; }
   .idea:hover { border-color: var(--ink-3); }
 
   .rail { border-left: 1px solid var(--line); background: var(--panel-2); overflow-y: auto; min-height: 0; padding: 16px 14px; }
-  .rail-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
-  .rail-head b { font-size: 15px; }
-  .rail-tip { margin: 0 0 14px; font-size: 12px; color: var(--ink-2); }
-  .group h4 { margin: 14px 0 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+  .rail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; width: 100%; border: 0; background: none; padding: 0; text-align: left; cursor: default; }
+  .rail-head b { font-size: 16px; }
+  .rail-head .chev { display: none; width: 14px; height: 14px; color: var(--ink-2); transition: transform .15s; }
+  .rail-tip { margin: 0 0 14px; font-size: 13px; color: var(--ink-2); }
+  .group h4 { margin: 14px 0 6px; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
   .app { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 1px solid transparent; background: transparent; border-radius: 12px; padding: 7px 8px; cursor: pointer; }
   .app:hover { background: var(--panel); border-color: var(--line); }
   .app.new { background: var(--panel); border-color: var(--accent); animation: glow 2.4s ease-out; }
   @keyframes glow { from { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 35%, transparent); } }
   .app .text { min-width: 0; flex: 1; }
-  .app b { display: block; font-size: 13px; font-weight: 600; }
-  .app small { display: block; font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .app .uses { font-size: 11px; color: var(--ink-3); }
-  .group .none { font-size: 12px; color: var(--ink-3); padding: 2px 8px; }
-  .rail-foot { margin-top: 18px; font-size: 11px; color: var(--ink-3); }
+  .app b { display: block; font-size: 14px; font-weight: 600; }
+  .app small { display: block; font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .app .uses { font-size: 12px; color: var(--ink-3); }
+  .row-app { position: relative; }
+  .row-app .x { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: none; border: 0; background: var(--panel); color: var(--ink-2); border-radius: 8px; padding: 4px 8px; font-size: 13px; cursor: pointer; }
+  .row-app:hover .x, .row-app:focus-within .x { display: block; }
+  .row-app:hover .uses, .row-app:focus-within .uses { visibility: hidden; }
+  .ask-remove { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 14px; }
+  .ask-remove span { flex: 1 1 120px; }
+  .ask-remove .yes { color: #c8372d; border-color: #e7b9b4; }
+  .group .none { font-size: 13px; color: var(--ink-3); padding: 2px 8px; }
+  .rail-foot { margin-top: 18px; font-size: 12px; color: var(--ink-3); }
+
+  /* Touch screens: every button big enough for a finger, and Remove always there. */
+  @media (pointer: coarse) {
+    .wbtn, .btn, .newchat { min-height: 44px; }
+    .send { width: 44px; height: 44px; }
+    .app { min-height: 52px; }
+    .row-app .x { display: block; position: static; transform: none; min-height: 44px; }
+    .row-app { display: flex; align-items: center; gap: 4px; }
+    .row-app .uses { display: none; }
+  }
 
   @media (max-width: 860px) {
     .shell { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
-    .rail { border-left: 0; border-top: 1px solid var(--line); max-height: 34vh; }
+    .rail { border-left: 0; border-top: 1px solid var(--line); max-height: 55vh; padding: 10px 16px; }
+    /* The rail folds to one line on a small screen; its head opens it. */
+    .rail-head { cursor: pointer; min-height: 40px; margin: 0; }
+    .rail-head .chev { display: block; }
+    .rail:not(.closed) .rail-head .chev { transform: rotate(180deg); }
+    .rail.closed .rail-tip, .rail.closed #groups, .rail.closed .rail-foot { display: none; }
     .ideas { grid-template-columns: 1fr; }
     .log, .composer, .top { padding-left: 16px; padding-right: 16px; }
+    .top .faint { display: none; }
+    .user { max-width: 88%; }
   }
 </style>
 </head>
 <body>
 <div class="shell">
   <main class="chat">
-    <div class="top"><b>Instant apps</b><span class="faint">a prototype: answers come with apps, and the apps you keep come back</span></div>
+    <div class="top"><b>Instant apps</b><span class="faint">a prototype: answers come with apps, and the apps you keep come back</span><button class="newchat" id="newchat" type="button" title="Start a new conversation; this one stays in this browser until you start another">New chat</button></div>
     <div class="log" id="log"><div class="col" id="col"></div></div>
     <div class="composer">
       <form id="ask"><textarea id="text" rows="1" placeholder="Ask anything"></textarea><button class="send" id="send" aria-label="Send">↑</button></form>
     </div>
   </main>
   <aside class="rail" id="rail" aria-label="Your apps">
-    <div class="rail-head"><b>Your apps</b><span class="faint" id="count"></span></div>
+    <button class="rail-head" id="railhead" type="button" aria-expanded="true"><b>Your apps</b><span class="spacer"></span><span class="faint" id="count"></span><svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4"/></svg></button>
     <p class="rail-tip">Open one any time. A saved app opens by itself when you ask for something like what it did before.</p>
     <div id="groups"></div>
     <div class="rail-foot">Kept in ChloeDB, found by words and meaning.</div>
@@ -169,6 +201,25 @@ let lastApp = null
 let busy = false
 window.events = []
 
+// This browser's own ids: `me` for what apps keep for it (Kit.keep), `talk`
+// for its conversation, which a reload or the next day opens again. Both
+// are random and stay in this browser, so no one else sees either. Where
+// the browser keeps nothing, they last as long as the page.
+const local = {
+  get: key => { try { return localStorage.getItem(key) } catch { return null } },
+  set: (key, value) => { try { localStorage.setItem(key, value) } catch {} },
+}
+const newId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('')
+const me = local.get('instant-apps-me') || newId()
+local.set('instant-apps-me', me)
+let talk = local.get('instant-apps-talk') || newId()
+local.set('instant-apps-talk', talk)
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+const textOf = result => result?.content?.find(c => c.type === 'text')?.text ?? ''
+// A turn of the conversation, kept for this browser.
+const record = turn => fetch('/api/talk', { method: 'POST', body: JSON.stringify({ talk, ...turn }) }).catch(() => {})
+const entry = (ev, how = ev.how) => ({ id: ev.shown, app: ev.app.id, name: ev.app.name, kind: ev.app.kind, how, shows: textOf(ev.result).slice(0, 400) })
+
 function el(cls, html, parent = col) {
   const node = document.createElement('div')
   node.className = cls
@@ -189,14 +240,46 @@ async function rail(highlight) {
       const mine = apps.filter(a => a.kind === kind)
       return `<div class="group"><h4>${label}</h4>${
         mine.length
-          ? mine.map(a => `<button class="app${a.id === highlight ? ' new' : ''}" data-id="${esc(a.id)}">${tile(a.kind)}<span class="text"><b>${esc(a.name)}</b><small>${esc(a.about)}</small></span><span class="uses">${a.uses}×</span></button>`).join('')
+          ? mine.map(a => `<div class="row-app"><button class="app${a.id === highlight ? ' new' : ''}" data-id="${esc(a.id)}">${tile(a.kind)}<span class="text"><b>${esc(a.name)}</b><small>${esc(a.about)}</small></span><span class="uses">${a.uses}×</span></button><button class="x" type="button" aria-label="Remove ${esc(a.name)}" title="Take it out of your apps">Remove</button></div>`).join('')
           : '<div class="none">Nothing yet</div>'
       }</div>`
     })
     .join('')
-  groups.querySelectorAll('.app').forEach(b => (b.onclick = () => openFromRail(b.dataset.id, b.querySelector('b').textContent)))
+  groups.querySelectorAll('.row-app').forEach(row => {
+    const b = row.querySelector('.app')
+    const name = b.querySelector('b').textContent
+    b.onclick = () => openFromRail(b.dataset.id, name)
+    row.querySelector('.x').onclick = () => askRemove(row, b.dataset.id, name)
+  })
   known = new Set(apps.map(a => a.id))
 }
+
+// Removing an app asks first, in place: never a browser dialog.
+function askRemove(row, id, name) {
+  row.innerHTML = `<div class="ask-remove"><span>Remove <b>${esc(name)}</b> from your apps? What it kept goes with it.</span><button class="btn yes" type="button">Remove</button><button class="btn no" type="button">Keep it</button></div>`
+  row.querySelector('.no').onclick = () => rail()
+  row.querySelector('.yes').onclick = async () => {
+    await fetch(`/api/apps/${encodeURIComponent(id)}/remove`, { method: 'POST', body: '{}' })
+    for (const w of widgets) {
+      if (w.app.id !== id) continue
+      w.removed = true
+      if (!w.stub) bar(w)
+    }
+    await rail()
+  }
+}
+
+// On a small screen the rail folds to its head, which opens it.
+const railBox = document.getElementById('rail')
+const railHead = document.getElementById('railhead')
+const small = matchMedia('(max-width: 860px)')
+const foldRail = closed => {
+  railBox.classList.toggle('closed', closed)
+  railHead.setAttribute('aria-expanded', String(!closed))
+}
+foldRail(small.matches)
+railHead.onclick = () => small.matches && foldRail(!railBox.classList.contains('closed'))
+small.addEventListener?.('change', e => foldRail(e.matches))
 
 function hello() {
   el('hello', `<h1>What do you need?</h1><p>Ask for anything. When an answer is better as an app, one opens here.<br>Keep the ones you like: they show up again when you need them.</p>
@@ -232,6 +315,7 @@ const ICON = {
   save: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M4 2.5h8v11L8 10.5l-4 3z"/></svg>',
   change: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M10.5 2.5l3 3-8 8H2.5v-3z"/></svg>',
   undo: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4L2 7l3 3"/><path d="M2.5 7H10a3.5 3.5 0 010 7H7"/></svg>',
+  redo: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4l3 3-3 3"/><path d="M13.5 7H6a3.5 3.5 0 000 7h3"/></svg>',
 }
 const miniTile = kind => `<span class="tile mini k-${kind}">${KINDS[kind]?.icon ?? ''}</span>`
 
@@ -247,13 +331,17 @@ function bot() {
 const widgets = []
 window.widgets = widgets
 
+// Every app in the conversation, newest first, folded ones too: the chat
+// reads what each shows on screen to answer about it, and its id to change it.
 function screen() {
-  return widgets.slice().reverse().filter(w => !w.folded).slice(0, 4).map(w => ({ name: w.app.name, shows: w.shows, did: w.did, told: w.told }))
+  return widgets.slice().reverse().slice(0, 12).map(w => ({ id: w.app.id, version: w.app.version, name: w.app.name, folded: w.folded, shows: w.shows, did: w.did, told: w.told }))
 }
 
 async function draw(w) {
   const frame = w.node.querySelector('.frame')
   frame.innerHTML = ''
+  // Settles once the app has said what it shows (or never, for an app that can't).
+  w.seen = new Promise(resolve => (w.saw = resolve))
   const iframe = document.createElement('iframe')
   iframe.setAttribute('sandbox', 'allow-scripts')
   iframe.title = w.app.name
@@ -265,7 +353,7 @@ async function draw(w) {
     { hostContext: { theme, displayMode: 'inline', availableDisplayModes: ['inline'], platform: 'web', locale: 'en-US' } },
   )
   bridge.oncalltool = async params => {
-    const { acted, ...result } = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: w.app.id, ...params }) })).json()
+    const { acted, ...result } = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: w.app.id, me, ...params }) })).json()
     const said = result.content?.find(c => c.type === 'text')?.text ?? ''
     if (!result.isError && params.name === w.app.tool) {
       lastApp = { id: w.app.id, args: params.arguments }
@@ -294,6 +382,7 @@ async function draw(w) {
   }
   bridge.onupdatemodelcontext = async params => {
     w.told = (params.content ?? []).filter(c => c.type === 'text').map(c => c.text).join(' ')
+    if (/On screen now:/.test(w.told)) w.saw?.()
     return {}
   }
   bridge.onopenlink = async ({ url }) => { window.open(url, '_blank', 'noopener'); return {} }
@@ -311,25 +400,54 @@ const LINE = {
   updated: why => `Updated${why ? ` · ${why}` : ''}`,
   again: why => `Opened again${why ? ` · ${why}` : ''}`,
   opened: () => 'Opened from your apps',
+  changed: () => 'Changed it, as you asked',
+  undone: () => 'Back to the version before',
 }
 const CHIP = { made: ['made', 'New app'], recalled: ['recalled', 'From your apps'], updated: ['updated', 'Updated'] }
 
-function widget(body, payload) {
+// A widget of an app; `at` is a folded answer from before that it opens in place of.
+function widget(body, payload, { at = null, request = '' } = {}) {
   const { app, how } = payload
-  el('toolline', `${miniTile(app.kind)}<span>${esc((LINE[how] ?? LINE.opened)(payload.why))}</span>`, body)
+  if (!at) el('toolline', `${miniTile(app.kind)}<span>${esc((LINE[how] ?? LINE.opened)(payload.why))}</span>`, body)
   const node = el('widget fresh', `
-    <div class="wbar">${miniTile(app.kind)}<button class="wname" type="button">${esc(app.name)}</button><span class="slot"></span><span class="fold-note">· updated below</span><span class="spacer"></span><span class="acts"></span></div>
+    <div class="wbar">${miniTile(app.kind)}<button class="wname" type="button">${esc(app.name)}</button><span class="slot"></span><span class="fold-note">· an earlier answer</span><button class="wbtn reopen" type="button">Show it again</button><span class="spacer"></span><span class="acts"></span></div>
     <form class="changer" hidden><input placeholder="What should change? For example: put the best rated first" /><button class="btn">Change</button></form>
     <div class="frame"></div>`, body)
   // An earlier widget of this app folds to its bar: the new one is its state now.
   for (const old of widgets) if (old.app.id === app.id && !old.folded) fold(old, true)
-  const w = { node, app, payload, how, shows: payload.result?.content?.find(c => c.type === 'text')?.text ?? '', did: [], told: '', folded: false }
+  if (at) at.replaceWith(node)
+  const w = { node, app, payload, how, shows: textOf(payload.result), did: [], told: '', folded: false, shownId: payload.shown, newer: Boolean(payload.newer), request }
   widgets.push(w)
   node.querySelector('.wname').onclick = () => w.folded && fold(w, false)
+  node.querySelector('.reopen').onclick = () => fold(w, false)
   draw(w)
   bar(w)
   lastApp = { id: app.id, args: payload.args }
   return w
+}
+
+// An app shown earlier in this browser's conversation, folded to its bar
+// until it is opened again with what it showed then.
+function stub(body, shown, request) {
+  const node = el('widget folded', `<div class="wbar">${miniTile(shown.kind)}<button class="wname" type="button">${esc(shown.name)}</button><span class="fold-note">· from before</span><button class="wbtn reopen" type="button">Show it again</button><span class="spacer"></span></div>`, body)
+  const w = { node, app: { id: shown.app, name: shown.name, kind: shown.kind, version: 1 }, shows: shown.shows ?? '', did: [], told: '', folded: true, stub: true, shownId: shown.id, request }
+  widgets.push(w)
+  const open = async () => {
+    const button = node.querySelector('.reopen')
+    if (!button) return
+    button.textContent = 'Opening…'
+    const res = await fetch(`/api/shown/${encodeURIComponent(shown.id)}?talk=${talk}`)
+    const ev = await res.json().catch(() => ({}))
+    if (!res.ok || ev.removed || w.removed) {
+      button.outerHTML = `<span class="gone">${ev.removed || w.removed ? 'This app was removed' : 'It can’t be opened again'}</span>`
+      return
+    }
+    widgets.splice(widgets.indexOf(w), 1)
+    widget(body, ev, { at: node, request })
+  }
+  node.querySelector('.reopen').onclick = open
+  node.querySelector('.wname').onclick = open
+  return open
 }
 
 function fold(w, folded) {
@@ -340,11 +458,38 @@ function fold(w, folded) {
 // The widget's bar: how it came, and Save, Change and Undo.
 function bar(w) {
   const { app } = w
-  const [cls, label] = w.how === 'saved' ? ['saved', 'Saved'] : CHIP[w.how] ?? (app.saved ? ['saved', 'Saved'] : [])
-  w.node.querySelector('.slot').innerHTML = label ? `<span class="chip ${cls}">${label}</span>` : ''
   const acts = w.node.querySelector('.acts')
-  acts.innerHTML = `${app.saved ? '' : `<button class="wbtn save" type="button" title="Keep it in your apps: it opens by itself next time">${ICON.save}Save</button>`}<button class="wbtn change" type="button" title="Change how it looks or works, by asking">${ICON.change}Change</button>${app.version > 1 ? `<button class="wbtn undo" type="button" title="Back to version ${app.version - 1}">${ICON.undo}v${app.version}</button>` : ''}`
+  if (w.removed) {
+    w.node.querySelector('.slot').innerHTML = '<span class="chip">Removed</span>'
+    acts.innerHTML = ''
+    return
+  }
+  const changed = w.how === 'changed' || w.how === 'undone'
+  const [cls, label] = w.how === 'saved' ? ['saved', 'Saved'] : changed ? ['updated', `Version ${app.version}`] : CHIP[w.how] ?? (app.saved ? ['saved', 'Saved'] : [])
+  w.node.querySelector('.slot').innerHTML = label ? `<span class="chip ${cls}">${label}</span>` : ''
+  // An answer of what was found is kept as its own app, as it is now; any
+  // other app is saved, and changes with it.
+  const answer = app.tool === 'findings' && !app.id.startsWith('answer-')
+  const keep = w.keptAs
+    ? `<span class="chip saved">Kept as ${esc(w.keptAs)}</span>`
+    : answer
+      ? `<button class="wbtn save keep" type="button" title="Keep this answer in your apps as it is: a later search does not replace it">${ICON.save}Keep this answer</button>`
+      : app.saved ? '' : `<button class="wbtn save" type="button" title="Keep it in your apps: it opens by itself next time">${ICON.save}Save</button>`
+  acts.innerHTML = `${keep}<button class="wbtn change" type="button" title="Change how it looks or works, by asking">${ICON.change}Change</button>${app.version > 1 ? `<button class="wbtn undo" type="button" title="Back to version ${app.version - 1}">${ICON.undo}Undo change</button>` : ''}${w.newer ? `<button class="wbtn redo" type="button" title="Forward to version ${app.version + 1}">${ICON.redo}Redo</button>` : ''}`
   const changer = w.node.querySelector('.changer')
+  acts.querySelector('.keep')?.addEventListener('click', async () => {
+    const when = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    const asked = (w.request || app.name).replace(/\s+/g, ' ').trim()
+    const name = `${asked.length > 44 ? `${asked.slice(0, 43)}…` : asked} · ${when}`
+    const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/keep-answer`, { method: 'POST', body: JSON.stringify({ talk, shown: w.shownId, name, request: asked }) })).json().catch(error => ({ error: error.message }))
+    if (out.error) {
+      acts.querySelector('.keep').outerHTML = `<span class="error">${esc(out.error)}</span>`
+      return
+    }
+    w.keptAs = out.app.name
+    bar(w)
+    await rail(out.app.id)
+  })
   acts.querySelector('.save')?.addEventListener('click', async () => {
     const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/save`, { method: 'POST', body: '{}' })).json()
     w.app = out.app
@@ -356,13 +501,18 @@ function bar(w) {
     changer.hidden = !changer.hidden
     if (!changer.hidden) changer.querySelector('input').focus()
   })
-  acts.querySelector('.undo')?.addEventListener('click', async () => {
-    const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/undo`, { method: 'POST', body: '{}' })).json()
+  // Undo goes back a version and Redo forward again, until a new change.
+  const step = async way => {
+    const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/${way}`, { method: 'POST', body: '{}' })).json()
     w.app = out.app
+    w.newer = out.newer
+    w.how = 'changed'
     w.payload.html = out.html
     draw(w)
     bar(w)
-  })
+  }
+  acts.querySelector('.undo')?.addEventListener('click', () => step('undo'))
+  acts.querySelector('.redo')?.addEventListener('click', () => step('redo'))
   changer.onsubmit = async e => {
     e.preventDefault()
     const what = changer.querySelector('input').value.trim()
@@ -377,6 +527,8 @@ function bar(w) {
     await events(res, async ev => {
       if (ev.type === 'app') {
         w.app = ev.app
+        w.newer = false
+        w.how = 'changed'
         w.payload = { ...w.payload, html: ev.html }
         await draw(w)
         bar(w)
@@ -395,11 +547,12 @@ async function note(w, said) {
   scroll()
   history.push({ role: 'app', text: `${w.app.name}: ${said}` })
   try {
-    const { text } = await (await fetch('/api/note', { method: 'POST', body: JSON.stringify({ app: w.app.id, summary: said, history: history.slice(-6) }) })).json()
+    const { text } = await (await fetch('/api/note', { method: 'POST', body: JSON.stringify({ app: w.app.id, summary: said, history: history.slice(-10) }) })).json()
     status.remove()
     el('reply', esc(text), body)
     history.push({ role: 'assistant', text })
     window.events.push({ type: 'note', app: w.app.id, text })
+    record({ request: '', reply: text, shown: [{ app: w.app.id, name: w.app.name, kind: w.app.kind, in: true }] })
   } catch (error) {
     status.remove()
     el('error', esc(error.message), body)
@@ -427,9 +580,11 @@ async function ask(question) {
   let started = 0
   let timer = null
   let reply = ''
+  let shownNow = null
+  const here = []
   scroll()
   try {
-    const res = await fetch('/api/turn', { method: 'POST', body: JSON.stringify({ text: question, history: history.slice(-6), lastApp, screen: screen() }) })
+    const res = await fetch('/api/turn', { method: 'POST', body: JSON.stringify({ text: question, history: history.slice(-10), lastApp, screen: screen(), talk }) })
     await events(res, async ev => {
       if (ev.type === 'status') status.lastChild.textContent = ev.text
       if (ev.type === 'making') {
@@ -448,8 +603,22 @@ async function ask(question) {
           making.previousElementSibling?.remove()
           making.remove()
         }
-        widget(body, ev)
+        shownNow = widget(body, ev, { request: question })
+        here.push(entry(ev))
         scroll()
+      }
+      // The answer under an app is written from what the app shows, once it
+      // has said (or after a few seconds, from the data it was filled with).
+      if (ev.type === 'say') {
+        const wait = el('status', '<span class="spin"></span><span>…</span>', body)
+        if (shownNow) await Promise.race([shownNow.seen, sleep(4000)])
+        const out = await (await fetch('/api/say', { method: 'POST', body: JSON.stringify({ token: ev.token, shows: shownNow?.told ?? '' }) })).json().catch(() => ({}))
+        wait.remove()
+        if (out.text) {
+          reply = out.text
+          el('reply', esc(out.text), body)
+          scroll()
+        }
       }
       if (ev.type === 'reply') {
         reply = ev.text
@@ -467,6 +636,7 @@ async function ask(question) {
     clearInterval(timer)
     status.remove()
     history.push({ role: 'user', text: question }, { role: 'assistant', text: reply })
+    record({ request: question, reply, shown: here })
     busy = false
     send.disabled = false
     await rail()
@@ -479,15 +649,54 @@ async function openFromRail(id, name) {
   col.querySelector('.hello')?.remove()
   const body = bot()
   const status = el('status', `<span class="spin"></span><span>Opening ${esc(name)}</span>`, body)
-  const res = await fetch(`/api/apps/${encodeURIComponent(id)}/open`, { method: 'POST', body: '{}' })
+  const res = await fetch(`/api/apps/${encodeURIComponent(id)}/open`, { method: 'POST', body: JSON.stringify({ talk }) })
   await events(res, async ev => {
     if (ev.type === 'app') {
       status.remove()
       widget(body, ev)
+      record({ request: '', reply: '', shown: [entry(ev)] })
       scroll()
     }
   })
   status.remove()
+}
+
+// This browser's conversation, as it was: each app folded to its bar, the
+// last one open again.
+async function restore() {
+  const { turns = [] } = await fetch(`/api/talk?talk=${talk}`).then(r => r.json()).catch(() => ({}))
+  if (!turns.length) return hello()
+  let last = null
+  for (const t of turns) {
+    if (t.request) {
+      el('user', esc(t.request))
+      history.push({ role: 'user', text: t.request })
+    }
+    const body = bot()
+    for (const shown of t.shown ?? []) {
+      if (shown.in) el('toolline', `${miniTile(shown.kind)}<span>In <b>${esc(shown.name)}</b></span>`, body)
+      else if (shown.id) last = stub(body, shown, t.request)
+    }
+    if (t.reply) {
+      el('reply', esc(t.reply), body)
+      history.push({ role: 'assistant', text: t.reply })
+    }
+    if (!body.children.length) body.parentElement.remove()
+  }
+  await last?.()
+  scroll()
+}
+
+// A new conversation; the one before is no longer opened in this browser.
+document.getElementById('newchat').onclick = () => {
+  if (busy) return
+  talk = newId()
+  local.set('instant-apps-talk', talk)
+  widgets.length = 0
+  history.length = 0
+  lastApp = null
+  col.innerHTML = ''
+  hello()
 }
 
 document.getElementById('ask').onsubmit = e => {
@@ -503,7 +712,7 @@ text.addEventListener('keydown', e => {
   }
 })
 window.ask = ask
-hello()
+restore()
 rail()
 </script>
 </body>
